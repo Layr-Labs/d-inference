@@ -374,6 +374,11 @@ func buildCoordinatorDoctorChecks(
     let removalAuthorization = state?.currentProviderAuthorization(
         coordinatorURL: coordinatorOverride ?? snapshot.config.coordinator.url, now: now)
     let appAttestAuthorized = authorization?.hasCurrentAppAttestAuthorization(now: now) == true
+    // Display only, and only when no current decision is shown.
+    let lastReported = authorization == nil
+        ? state?.lastReportedProviderAuthorization(
+            coordinatorURL: coordinatorOverride ?? snapshot.config.coordinator.url, now: now)
+        : nil
 
     let linked = AuthTokenStore.load() != nil
     checks.append(.init(
@@ -427,6 +432,15 @@ func buildCoordinatorDoctorChecks(
                             detail: ProviderAuthorizationReadiness.summary(
                                 authorization, removalAuthorization: removalAuthorization, now: now)))
         return checks
+    }
+    // An older none/legacy decision is history, not a grant: legacy is
+    // informational, a denial (none) warns. Either way the public attestation
+    // identity and proof checks below still run.
+    if let lastReported, let receivedAt = state?.trust?.receivedAt {
+        checks.append(.init(name: "last reported authorization",
+                            status: lastReported.path == "legacy" ? .info : .warn,
+                            detail: ProviderAuthorizationReadiness.lastReportedSummary(
+                                lastReported, receivedAt: receivedAt, now: now)))
     }
 
     let localSEPublicKey: String

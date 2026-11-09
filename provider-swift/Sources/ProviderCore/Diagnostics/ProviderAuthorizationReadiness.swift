@@ -39,6 +39,33 @@ public enum ProviderAuthorizationReadiness {
         return live
     }
 
+    /// Paths whose last coordinator report may be shown after `snapshotMaxAge`.
+    /// Neither can pass `removalReady`, so showing one grants nothing.
+    static let lastReportedPaths: Set<String> = ["none", "legacy"]
+
+    /// Display only, where `displayedStatus` returns nil: an older `none` or
+    /// `legacy` report, which would otherwise vanish after `snapshotMaxAge`
+    /// and let a denied Mac look healthy. Only the receipt's age is relaxed;
+    /// the snapshot write must still be at most `snapshotMaxAge` old and every
+    /// identity guard still applies. Never a removal, enrollment, migration
+    /// or serving decision.
+    public static func lastReportedStatus(
+        _ authorization: ProviderAuthorizationStatus?,
+        status: String?, writtenAt: Double, receivedAt: Double,
+        startedAt: Double, now: Double, processMatches: Bool,
+        coordinatorMatches: Bool
+    ) -> ProviderAuthorizationStatus? {
+        guard displayedStatus(authorization, status: status, writtenAt: writtenAt, receivedAt: receivedAt,
+                              startedAt: startedAt, now: now, processMatches: processMatches,
+                              coordinatorMatches: coordinatorMatches) == nil,
+              let live = liveDecision(authorization, status: status, writtenAt: writtenAt,
+                                      receivedAt: receivedAt, startedAt: startedAt, now: now,
+                                      processMatches: processMatches, coordinatorMatches: coordinatorMatches),
+              lastReportedPaths.contains(live.path)
+        else { return nil }
+        return live
+    }
+
     /// The latest decision this live process received from the expected
     /// coordinator, written by a daemon that is still updating its snapshot.
     private static func liveDecision(
@@ -98,6 +125,26 @@ public enum ProviderAuthorizationReadiness {
         return "This coordinator has not enabled App Attest serving; legacy enrollment is still required on older macOS. "
             + ProviderOnboardingPolicy.retirementNotice
     }
+
+    /// Wording for a `lastReportedStatus` result: the report's age, that it is
+    /// not a current grant, then what it said. A path outside
+    /// `lastReportedPaths` reads as unconfirmed.
+    public static func lastReportedSummary(
+        _ authorization: ProviderAuthorizationStatus, receivedAt: Double, now: Double,
+        macOSMajorVersion: Int = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+    ) -> String {
+        let reported = lastReportedPaths.contains(authorization.path) ? authorization : nil
+        return "received \(ageDescription(now - receivedAt)); not a fresh dispatch grant. "
+            + summary(reported, removalAuthorization: nil, now: now, macOSMajorVersion: macOSMajorVersion)
+    }
+
+    private static func ageDescription(_ seconds: Double) -> String {
+        guard seconds.isFinite else { return "at an unknown time" }
+        let age = max(0, seconds)
+        if age < 120 { return "\(Int(age))s ago" }
+        if age < 7200 { return "\(Int(age / 60))m ago" }
+        return "\(Int(min(age / 3600, 1_000_000)))h ago"
+    }
 }
 
 extension DaemonState {
@@ -125,6 +172,22 @@ extension DaemonState {
     ) -> ProviderAuthorizationStatus? {
         let matches = snapshotMatches(coordinatorURL: expectedCoordinator, readProcessIdentity: readProcessIdentity)
         return ProviderAuthorizationReadiness.displayedStatus(
+            trust?.authorization, status: trust?.status,
+            writtenAt: writtenAt, receivedAt: trust?.receivedAt ?? 0,
+            startedAt: startedAt, now: now,
+            processMatches: matches.process, coordinatorMatches: matches.coordinator)
+    }
+
+    /// For `status`, `doctor` and `verify` when `displayedProviderAuthorization`
+    /// is nil: an older `none` or `legacy` report as dated history, never a
+    /// grant (`ProviderAuthorizationReadiness.lastReportedStatus`).
+    public func lastReportedProviderAuthorization(
+        coordinatorURL expectedCoordinator: String,
+        now: Double = Date().timeIntervalSince1970,
+        readProcessIdentity: (Int32) -> ProcessIdentity? = ProcessIdentity.read
+    ) -> ProviderAuthorizationStatus? {
+        let matches = snapshotMatches(coordinatorURL: expectedCoordinator, readProcessIdentity: readProcessIdentity)
+        return ProviderAuthorizationReadiness.lastReportedStatus(
             trust?.authorization, status: trust?.status,
             writtenAt: writtenAt, receivedAt: trust?.receivedAt ?? 0,
             startedAt: startedAt, now: now,

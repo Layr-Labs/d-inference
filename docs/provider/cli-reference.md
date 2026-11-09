@@ -3498,6 +3498,12 @@ on another Mac, that record is this Mac's relay's (written by its cluster
 service): its own address and its own key. Without it, or with the pair's other
 Mac away, it says why, as `darkbloom status` does.
 
+Under the key, a `key file:` line names the file that holds it, for tools that
+read the key from a file: `~/.darkbloom/local_token`, this Mac's own key. On a
+pair's API (the leading Mac's, or this Mac's relay to it), the pair's key works
+too, and the line says so: ``key file: ~/.darkbloom/local_token (the pair's key,
+in ~/.darkbloom/cluster_local_token, works here too)`` (`Local.keyFileLine`).
+
 ## `darkbloom route`
 
 Where your requests go when this Mac's local API can't take them: this Mac

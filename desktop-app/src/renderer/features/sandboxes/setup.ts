@@ -200,8 +200,6 @@ export interface SetupChoice {
   linux: string;
   macos: string;
   disk: string;
-  // Keep this Mac's internal disk beside the work disk (`--disk ~`).
-  keepInternal: boolean;
   waitReady: boolean;
 }
 
@@ -224,14 +222,15 @@ export function slotCounts(linux: string, macos: string): SlotCounts {
   return { counts: { linux_slots: linuxSlots, macos_slots: macosSlots } };
 }
 
-// A work disk is a full path (or under `~`), such as /Volumes/FastSSD. The CLI checks the drive
-// itself before it installs anything.
+// A work disk is an absolute path that stays one argument, such as /Volumes/FastSSD: the runtime
+// takes no `~`, `..` or control and format characters. The CLI checks the drive itself (APFS,
+// ownership on) before it installs anything.
 export function workDisk(text: string): { path?: string; error?: string } {
   const path = text.trim();
   if (!path) return {};
-  if (path.length > 1024 || /[\u0000-\u001f\u007f]/.test(path))
+  if (path.length > 1024 || /[\p{Cc}\p{Cf}]/u.test(path))
     return { error: 'Enter the drive’s path, such as /Volumes/FastSSD.' };
-  if (!(path.startsWith('/') || path === '~' || path.startsWith('~/')))
+  if (!path.startsWith('/') || path.split('/').includes('..'))
     return { error: 'Enter the drive’s full path, such as /Volumes/FastSSD.' };
   return { path };
 }
@@ -244,14 +243,11 @@ export function setupRequest(choice: SetupChoice): {
   const slots: SlotCounts = choice.automatic ? {} : slotCounts(choice.linux, choice.macos);
   const disk = workDisk(choice.disk);
   if (slots.error || disk.error) return { slotsError: slots.error, diskError: disk.error };
-  const disks = disk.path
-    ? [disk.path, ...(choice.keepInternal && disk.path !== '~' ? ['~'] : [])]
-    : [];
   return {
     action: {
       action: 'sandbox_setup',
       ...slots.counts,
-      ...(disks.length ? { disks } : {}),
+      ...(disk.path ? { disks: [disk.path] } : {}),
       ...(choice.waitReady ? { wait_ready: true } : {}),
     },
   };

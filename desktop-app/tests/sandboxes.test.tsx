@@ -116,9 +116,6 @@ describe('a Mac without the add-on', () => {
     ).toBeVisible();
     fireEvent.change(disk, { target: { value: '/Volumes/FastSSD' } });
     fireEvent.click(
-      within(form).getByRole('checkbox', { name: 'Use this Mac’s internal disk too' }),
-    );
-    fireEvent.click(
       within(form).getByRole('checkbox', { name: 'Wait until images are downloaded' }),
     );
     fireEvent.click(within(form).getByRole('button', { name: 'Set up' }));
@@ -126,7 +123,7 @@ describe('a Mac without the add-on', () => {
       action: 'sandbox_setup',
       linux_slots: 3,
       macos_slots: 0,
-      disks: ['/Volumes/FastSSD', '~'],
+      disks: ['/Volumes/FastSSD'],
       wait_ready: true,
     });
   });

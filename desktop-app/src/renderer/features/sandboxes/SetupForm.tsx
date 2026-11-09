@@ -65,7 +65,6 @@ export function SetupForm({ backend, blocked }: { backend: BackendState; blocked
     linux: '1',
     macos: '1',
     disk: '',
-    keepInternal: false,
     waitReady: false,
   });
   const update = (next: Partial<SetupChoice>) => setChoice((current) => ({ ...current, ...next }));
@@ -141,16 +140,6 @@ export function SetupForm({ backend, blocked }: { backend: BackendState; blocked
           {request.diskError ??
             'Optional. An APFS drive with ownership on, for the VM images and jobs.'}
         </small>
-        {choice.disk.trim() && choice.disk.trim() !== '~' && (
-          <label className={styles.check}>
-            <input
-              type="checkbox"
-              checked={choice.keepInternal}
-              onChange={(event) => update({ keepInternal: event.target.checked })}
-            />
-            Use this Mac’s internal disk too
-          </label>
-        )}
       </div>
       <label className={styles.check}>
         <input

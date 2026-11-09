@@ -67,8 +67,8 @@ export type SandboxAction =
   // `darkbloom sandbox uninstall --yes`: running jobs end unpaid.
   | { action: 'sandbox_uninstall' }
   // `darkbloom sandbox setup --yes --no-browser [--linux-slots n] [--macos-slots n] [--disk p]…
-  // [--wait-ready]`. A disk is a full path, or `~` to keep this Mac's internal disk as well. Its
-  // operation reports `sandbox_setup` (below) while it runs.
+  // [--wait-ready]`. A disk is an absolute path, such as /Volumes/FastSSD. Its operation reports
+  // `sandbox_setup` (below) while it runs.
   | {
       action: 'sandbox_setup';
       linux_slots?: number;

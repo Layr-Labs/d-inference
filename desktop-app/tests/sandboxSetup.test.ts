@@ -207,7 +207,6 @@ describe('the setup form', () => {
     linux: '1',
     macos: '1',
     disk: '',
-    keepInternal: false,
     waitReady: false,
     ...overrides,
   });
@@ -223,17 +222,20 @@ describe('the setup form', () => {
     expect(slotCounts('-1', '1').error).toBe('Linux jobs: 0 to 16.');
   });
 
-  it('takes a work disk as a full path', () => {
+  // As the runtime takes it: an absolute path that stays one argument.
+  it('takes a work disk as an absolute path', () => {
+    const full = 'Enter the drive’s full path, such as /Volumes/FastSSD.';
+    const plain = 'Enter the drive’s path, such as /Volumes/FastSSD.';
     expect(workDisk('  ')).toEqual({});
     expect(workDisk(' /Volumes/FastSSD ')).toEqual({ path: '/Volumes/FastSSD' });
-    expect(workDisk('~/Jobs')).toEqual({ path: '~/Jobs' });
-    expect(workDisk('Volumes/FastSSD').error).toBe(
-      'Enter the drive’s full path, such as /Volumes/FastSSD.',
-    );
-    expect(workDisk('/Volumes/Fast\nSSD').error).toBe(
-      'Enter the drive’s path, such as /Volumes/FastSSD.',
-    );
-    expect(workDisk('/' + 'a'.repeat(1024)).error).toBeDefined();
+    expect(workDisk('/Volumes/Fast SSD/Jobs')).toEqual({ path: '/Volumes/Fast SSD/Jobs' });
+    expect(workDisk('Volumes/FastSSD').error).toBe(full);
+    expect(workDisk('~/Jobs').error).toBe(full);
+    expect(workDisk('~').error).toBe(full);
+    expect(workDisk('/Volumes/FastSSD/../Other').error).toBe(full);
+    expect(workDisk('/Volumes/Fast\nSSD').error).toBe(plain);
+    expect(workDisk('/Volumes/\u202eDSStsaF').error).toBe(plain);
+    expect(workDisk('/' + 'a'.repeat(1024)).error).toBe(plain);
   });
 
   it('sends only what was chosen', () => {
@@ -245,7 +247,6 @@ describe('the setup form', () => {
           linux: '3',
           macos: '0',
           disk: '/Volumes/FastSSD',
-          keepInternal: true,
           waitReady: true,
         }),
       ),
@@ -254,12 +255,11 @@ describe('the setup form', () => {
         action: 'sandbox_setup',
         linux_slots: 3,
         macos_slots: 0,
-        disks: ['/Volumes/FastSSD', '~'],
+        disks: ['/Volumes/FastSSD'],
         wait_ready: true,
       },
     });
-    expect(setupRequest(choice({ disk: '~', keepInternal: true })).action?.disks).toEqual(['~']);
-    expect(setupRequest(choice({ keepInternal: true })).action).toEqual({
+    expect(setupRequest(choice({ waitReady: false, disk: ' ' })).action).toEqual({
       action: 'sandbox_setup',
     });
     expect(setupRequest(choice({ automatic: false, linux: '0', macos: '0', disk: 'x' }))).toEqual({

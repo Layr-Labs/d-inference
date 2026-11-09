@@ -1,0 +1,63 @@
+[
+  {
+    "state": "running",
+    "started_at": 1794210456.131465,
+    "events": [],
+    "id": "4E62E986-31FB-4946-8E8A-1235D8416025",
+    "kind": "setup",
+    "question": null
+  },
+  {
+    "state": "running",
+    "started_at": 1794210456.131465,
+    "events": [
+      {
+        "text": "Clusters is open to the accounts Darkbloom approves from its waitlist.",
+        "type": "say"
+      },
+      {
+        "text": "Join the Clusters waitlist now?",
+        "type": "say"
+      }
+    ],
+    "id": "4E62E986-31FB-4946-8E8A-1235D8416025",
+    "kind": "setup",
+    "question": {
+      "selected": 1,
+      "options": [["Yes"], ["No"]],
+      "id": "q1",
+      "type": "choose"
+    }
+  },
+  {
+    "kind": "setup",
+    "events": [
+      {
+        "text": "Clusters is open to the accounts Darkbloom approves from its waitlist.",
+        "type": "say"
+      },
+      {
+        "text": "Join the Clusters waitlist now?",
+        "type": "say"
+      },
+      {
+        "text": "  ▸ No",
+        "type": "say"
+      },
+      {
+        "text": "  Join it: darkbloom waitlist cluster",
+        "type": "say"
+      },
+      {
+        "text": "  Serving on your own Macs only needs no approval: darkbloom cluster local",
+        "type": "say"
+      }
+    ],
+    "started_at": 1794210456.131465,
+    "exit_code": 1,
+    "finished_at": 1794210456.417934,
+    "question": null,
+    "id": "4E62E986-31FB-4946-8E8A-1235D8416025",
+    "state": "failed"
+  }
+]

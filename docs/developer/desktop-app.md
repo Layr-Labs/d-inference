@@ -760,9 +760,30 @@ that doesn't fit). Then it shows copy and download bars, each Mac's loading
 row, and the ✓ card, and the status reads serving. The joining Mac follows the
 leading Mac's start. On a set-up pair, **Change model or how it serves** plays
 the list with "serving now", **Change how the pair serves** and **Start over**.
-A preview module holds the preview's store only during an action, so
-`Snapshot.pair` follows a finished setup at the next action. Tests:
-`tests/cluster*.test.ts(x)`.
+`Snapshot.pair` follows a finished setup at once (`previewClusterSession.start`
+takes the preview's store). Tests: `tests/cluster*.test.ts(x)`.
+
+Two of those tests run on what the real runtime printed:
+
+- `tests/clusterLiveStatus.test.tsx` renders `cluster status --json` exactly as a
+  live pair serving in tensor parallel printed it
+  (`tests/fixtures/cluster-status-live-serving.json`; only this Mac's name is
+  replaced). Its `split` names the Macs without shares, so the page says it as
+  text rather than as a bar.
+- `tests/clusterSessionReplay.test.tsx` replays the sessions the real desktop
+  API streamed (`tests/fixtures/cluster-session-waitlist-gate.json`) and checks
+  that the page's answer is the one that API took.
+
+`scripts/test-desktop-cluster-session.py <darkbloom>` records that fixture
+(`--record FILE`) and drives the guided setup end to end: the API runs this
+build's own `cluster --app-console`, in a home of its own, against a local
+coordinator that never approves clusters. The real onboarding then stops at its
+waitlist question, before its operations exist, so no cable, pairing, service
+or network setting is read or changed; the script cancels and fails if the
+setup's screen ever opens. It checks the question, No, Yes (a join), a cancel,
+one session at a time, the mutation slot and the event stream. The stream
+samples the session every 200 ms, so the script, like a person, answers only
+once the stream has shown the question.
 
 ## Sandboxes
 

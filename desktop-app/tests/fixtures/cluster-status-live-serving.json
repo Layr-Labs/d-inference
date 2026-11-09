@@ -1,0 +1,26 @@
+{
+  "exit_code": 0,
+  "lines": ["Serving Qwen 3.8 27B through Darkbloom on both Macs (tensor parallel)."],
+  "mode": "tensor parallel",
+  "model": {
+    "id": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+    "name": "Qwen 3.8 27B"
+  },
+  "next": "To stop or change it: `darkbloom cluster` on this Mac.",
+  "other_mac": {
+    "answers": true,
+    "name": "Apple M5 Ultra, 256 GB"
+  },
+  "paired": true,
+  "reason": null,
+  "role": "leader",
+  "schema": 1,
+  "serves": "darkbloom",
+  "service": {
+    "running": true,
+    "starts_at_login": true
+  },
+  "split": "Apple M5 Ultra, 256 GB / Apple M5 Ultra, 256 GB",
+  "state": "serving",
+  "this_mac": "Mac Studio"
+}

@@ -6,5 +6,6 @@
   ends an unseeded donor's response as soon as the answer is complete. The
   provider still holds the request's rows, KV reservation and service
   allowance until the write settles, so other requests see no added
-  capacity. A follow-up that arrives before the write finishes prefills in
-  full. Seeded requests keep the old order.
+  capacity. A follow-up that arrives before the write finishes can't use
+  that checkpoint yet: it restores an earlier one, if any, and prefills the
+  rest. Seeded requests keep the old order.

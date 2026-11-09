@@ -495,9 +495,8 @@ idle_timeout_mins = 60
                 assert local["mode"] is None and local["me_first"] is True and local["me_first_idle_minutes"] == 2, local
                 assert local["port"] is None and local["bind"] == "127.0.0.1" and local["paused_until"] is None, local
                 assert isinstance(local["route_key"], bool) and local["route"] in ("this-mac", "my-macs"), local
-                assert {"cluster", "sandbox", "waitlists", "local_serving", "tool_setup", "update_rollback"} <= set(
-                    snapshot["capabilities"]), snapshot["capabilities"]
-                assert "cluster_session" not in snapshot["capabilities"]
+                assert {"cluster", "cluster_session", "sandbox", "waitlists", "local_serving", "tool_setup",
+                        "update_rollback"} <= set(snapshot["capabilities"]), snapshot["capabilities"]
                 settings_id = str(uuid.uuid4())
                 assert request("actions", {"id": settings_id, "action": "local_settings", "me_first": False,
                                            "me_first_idle_minutes": 30})[0] == 202

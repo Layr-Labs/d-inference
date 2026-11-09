@@ -5535,22 +5535,23 @@ it alone:
   context: 6.4 GB and 8.6 GB at 262,144 tokens, against 2.0 GB and 2.2 GB at
   the standard request. Its lookahead frame does not grow with the prompt.
   READY's capacity covers the longest request, and each stage's serving
-  context is searched up to 262,144; the pair serves the smaller of the two.
-  A pipeline with lanes keeps its READY figure, as every lane owner of the
-  stage modes does. A stage whose memory refuses a request while it runs ends
-  that request alone, on both ranks
+  context is searched up to 262,144; the pair serves the smaller of its two
+  stages' contexts. A pipeline with lanes keeps its READY figure, as every
+  lane owner of the stage modes does. A stage whose memory refuses a request
+  while it runs ends that request alone, on both ranks
   ([a pipeline stage's memory refusal](#a-pipeline-stages-memory-refusal-ends-that-request-alone)),
   as tensor parallel's ranks do. 0.10.11 serves the memory plan's request in
-  the pipeline (#1930): on pair-2 a 128K request had failed the M5 Max stage's
-  running-request memory check mid-prefill (594 MiB compressed, so no file
-  cache counted), and the stage's worker exited, so the client got a 500 and
-  the pair stopped serving for about a minute (journey 3, D6). 0.10.12 ends
-  such a refusal alone, and the pipeline serves its whole profile again.
+  the pipeline: in `dev` before it, a 128K request on pair-2 had failed the M5
+  Max stage's running-request memory check mid-prefill (594 MiB compressed,
+  so no file cache counted), and the stage's worker exited, so the client got
+  a 500 and the pair stopped serving for about a minute (journey 3, D6).
+  0.10.12 ends such a refusal alone, and the pipeline serves the whole
+  profile.
 
 The provider holds a request to what its mode serves
-(`ClusterModelFeaturePolicy.servedProfile`: a Gemma pipeline's whole profile)
-as one Mac holds a request to its window. A `max_tokens` past the output limit,
-or past what the prompt leaves of the context, is cut to fit
+(`ClusterModelFeaturePolicy.servedProfile`: Gemma's whole profile in both
+modes) as one Mac holds a request to its window. A `max_tokens` past the
+output limit, or past what the prompt leaves of the context, is cut to fit
 (`EngineV2Bridge.pairServedLimits`, by the rule that cuts one Mac's to its
 window). A prompt that fills the context is refused with one Mac's 400,
 `context_length_exceeded`, in one Mac's words

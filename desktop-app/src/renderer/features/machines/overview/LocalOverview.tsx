@@ -6,6 +6,7 @@ import { MacEarnings } from './MacEarnings';
 import { TokensChart } from './TokensChart';
 import { hourlyTokens } from './hourlyTokens';
 import { ServingModels } from './ServingModels';
+import { PairCard } from '../../cluster/PairCard';
 
 export function LocalOverview({
   backend,
@@ -24,6 +25,7 @@ export function LocalOverview({
   return (
     <>
       <HealthBar backend={backend} navigate={navigate} />
+      {state.pair && <PairCard pair={state.pair} onOpen={() => navigate('cluster')} />}
       <MacEarnings
         label="This Mac’s earnings"
         lifetime={cloud?.local_lifetime_micro_usd}

@@ -67,18 +67,15 @@ struct Gemma4TensorParallelRequestBudget: Equatable {
     var laneBytes: Int { requestBytes }
 
     /// What a rank's LOAD gate reserves beside its shard for `lanes` requests at once: the allowance (one request and
-    /// the rank's reserve) and `laneBytes` for each lane after the first.
+    /// the rank's reserve) and `laneBytes` for each lane after the first. The allowance is `requestBytes` and
+    /// `rankBytes`, so this is every lane's request and the rank's reserve once: what the prompt-prefix memory tier is
+    /// measured beside too.
     func reservedBytes(lanes: Int) throws -> Int {
         guard (1...QwenBatchWire.maximumLanes).contains(lanes) else {
             throw ProbeError("Gemma tensor-parallel lanes are 1...\(QwenBatchWire.maximumLanes)")
         }
         return try QwenLongPrefillCheckedBytes.sum([allowance.reservedBytes,
             QwenLongPrefillCheckedBytes.product([laneBytes, lanes - 1])])
-    }
-
-    /// The room the prompt-prefix memory tier is measured beside: `lanes` requests and the rank's reserve.
-    func chargeBytes(lanes: Int) throws -> Int {
-        try QwenLongPrefillCheckedBytes.sum([QwenLongPrefillCheckedBytes.product([requestBytes, lanes]), rankBytes])
     }
 
     /// One prefix capture of a prompt of `promptTokens` at the allocator's

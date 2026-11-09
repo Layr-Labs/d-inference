@@ -215,10 +215,11 @@ public final class Gemma4TensorParallelResidentRuntime {
                     try checked()
                 }
                 // The prefix memory tier, charged nowhere: the pipeline's budget,
-                // half the admissible room measured beside the longest request
-                // of every lane and this rank's reserve (at most `maximumBudgetBytes`).
+                // half the admissible room measured beside what LOAD reserved,
+                // the longest request of every lane and this rank's reserve (at
+                // most `maximumBudgetBytes`).
                 if keepsPrefixes {
-                    let room = try ClusterStagePrefixBudget.roomBytes(chargeBytes: budget.chargeBytes(lanes: lanes))
+                    let room = try ClusterStagePrefixBudget.roomBytes(chargeBytes: reserved)
                     prefixCache.setBudget(QwenStagePrefixCache.budget(roomBytes: room))
                     prefixCharges = (budget.prefixCaptureBytes, room)
                 }

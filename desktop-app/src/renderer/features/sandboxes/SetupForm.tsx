@@ -1,4 +1,4 @@
-import { useId, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { sandboxSlotLimits } from '../../../shared/sandbox';
 import type { BackendState } from '../../useBackend';
 import { Button } from '../../components/UI';
@@ -59,7 +59,7 @@ export function SlotInputs({
 
 // First setup: `darkbloom sandbox setup` with the owner's choices. Nothing is installed before
 // the CLI's own checks pass, and the approval is one click in the browser.
-export function SetupForm({ backend, blocked }: { backend: BackendState; blocked?: boolean }) {
+export function SetupForm({ backend }: { backend: BackendState }) {
   const [choice, setChoice] = useState<SetupChoice>({
     automatic: true,
     linux: '1',
@@ -70,6 +70,14 @@ export function SetupForm({ backend, blocked }: { backend: BackendState; blocked
   const update = (next: Partial<SetupChoice>) => setChoice((current) => ({ ...current, ...next }));
   const request = setupRequest(choice);
   const diskHint = useId();
+  // Sent: the page follows the setup once its operation arrives with the next snapshot. A
+  // refused one, or one that never shows, gives the button back.
+  const [sent, setSent] = useState(false);
+  useEffect(() => {
+    if (!sent) return;
+    const timer = setTimeout(() => setSent(false), 10_000);
+    return () => clearTimeout(timer);
+  }, [sent]);
   return (
     <form
       className={styles.form}
@@ -77,7 +85,11 @@ export function SetupForm({ backend, blocked }: { backend: BackendState; blocked
       noValidate
       onSubmit={(event) => {
         event.preventDefault();
-        if (request.action && !blocked) void backend.act(request.action);
+        if (!request.action || sent) return;
+        setSent(true);
+        void backend.act(request.action).then((ok) => {
+          if (!ok) setSent(false);
+        });
       }}
     >
       <h2>Set up</h2>
@@ -150,12 +162,8 @@ export function SetupForm({ backend, blocked }: { backend: BackendState; blocked
         Wait until images are downloaded
       </label>
       <div className={styles.submit}>
-        <Button
-          variant="primary"
-          type="submit"
-          disabled={backend.busy || blocked || !request.action}
-        >
-          Set up
+        <Button variant="primary" type="submit" disabled={backend.busy || sent || !request.action}>
+          {sent ? 'Setting up…' : 'Set up'}
         </Button>
         <small>You approve this Mac once, in your browser.</small>
       </div>

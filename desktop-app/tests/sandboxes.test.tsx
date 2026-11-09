@@ -98,6 +98,17 @@ describe('a Mac without the add-on', () => {
     ).not.toBeChecked();
     fireEvent.click(within(form).getByRole('button', { name: 'Set up' }));
     expect(backend.act).toHaveBeenCalledWith({ action: 'sandbox_setup' });
+    // Held until the operation arrives, so a second click can't send it twice.
+    expect(within(form).getByRole('button', { name: 'Setting up…' })).toBeDisabled();
+    fireEvent.submit(form);
+    expect(backend.act).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives Set up back when the runtime refuses it', async () => {
+    const { backend } = show(statuses.notInstalled);
+    vi.mocked(backend.act).mockResolvedValueOnce(false);
+    fireEvent.click(await screen.findByRole('button', { name: 'Set up' }));
+    expect(await screen.findByRole('button', { name: 'Set up' })).toBeEnabled();
   });
 
   it('sends the chosen jobs, work disk and wait, and refuses both counts at 0', async () => {

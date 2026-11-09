@@ -148,28 +148,38 @@ extension QwenResidentRuntime {
                     try autoreleasepool {
                         try MLX.withError { nativeError in
                             var lastResourceCheck: UInt64 = 0
+                            // Request cancellation waits for a shared step boundary.
+                            // An announced collective must complete on both ranks.
                             func checked() throws {
-                                try nativeError.check(); try control.check()
+                                try nativeError.check(); try control.check(); try nativeError.check()
+                            }
+                            // The lanes' live check, at a step boundary only: a
+                            // memory refusal stops one lane alone (D6), never the
+                            // batch; any other refusal still fails it.
+                            func memoryRefused() throws -> Bool {
                                 let now = DispatchTime.now().uptimeNanoseconds
-                                // Request cancellation waits for a shared step boundary.
-                                // An announced collective must complete on both ranks.
-                                if lastResourceCheck == 0 || now - lastResourceCheck >= 250_000_000 {
-                                    // Kept prefixes give way to the lanes' own admission.
-                                    let allowances = laneBook.allowances()
-                                    if let first = allowances.first {
-                                        let others = try QwenLongPrefillCheckedBytes.sum(allowances.dropFirst().map(\.stateBytes))
-                                        try prefixCache.yieldingMemory { try first.requireLive(additionalNativeBytes: others, onLoadedStage: true) }
-                                    }
-                                    lastResourceCheck = DispatchTime.now().uptimeNanoseconds
+                                guard lastResourceCheck == 0 || now - lastResourceCheck >= 250_000_000 else { return false }
+                                lastResourceCheck = now
+                                // Kept prefixes give way to the lanes' own admission.
+                                let allowances = laneBook.allowances()
+                                guard let first = allowances.first else { return false }
+                                let others = try QwenLongPrefillCheckedBytes.sum(allowances.dropFirst().map(\.stateBytes))
+                                do {
+                                    try prefixCache.yieldingMemory { try first.requireLive(additionalNativeBytes: others, onLoadedStage: true) }
+                                    return false
+                                } catch let refusal as QwenResidentMemoryRefusal {
+                                    log("darkbloom-batch-v1 rank=\(collective.rank) memory-refused: \(refusal.message)")
+                                    return true
                                 }
-                                try nativeError.check()
                             }
                             let opening = try openBatch(stage: stage, records: records, check: checked)
                             let split = opening
                             if collective.rank == 0 {
-                                try leadBatch(stage: stage, split: split, lanes: lanes, host: host, records: records, observation: observed, check: checked)
+                                try leadBatch(stage: stage, split: split, lanes: lanes, host: host, records: records, observation: observed,
+                                    memoryRefused: memoryRefused, check: checked)
                             } else {
-                                try followBatch(stage: stage, split: split, lanes: lanes, host: host, records: records, observation: observed, check: checked)
+                                try followBatch(stage: stage, split: split, lanes: lanes, host: host, records: records, observation: observed,
+                                    memoryRefused: memoryRefused, check: checked)
                             }
                         }
                     }
@@ -305,11 +315,28 @@ extension QwenResidentRuntime {
         }, publish: { try host.publishLeft(requestID: lane.id) })
     }
 
+    /// A lane both ranks end alone because a rank's memory refused it while it
+    /// ran (D6): its state is retired as a cancelled lane's, its freed buffers
+    /// go back to the system, and it is published as `aborted`. Nothing of it is stored.
+    private func abortLane(_ lane: QwenBatchLane, abort: ClusterWorkerAbort, host: QwenBatchServingHost) throws {
+        var sessions: [any QwenBatchCancellableSession] = []
+        if let session = lane.session { sessions.append(session) }
+        if let restored = lane.restored { sessions.append(restored.session) }
+        try QwenBatchCancellation.retire(sessions: sessions, release: {
+            lane.session = nil; lane.restored = nil
+            laneBook.finish(lane.id)
+            Stream.gpu.synchronize(); Memory.clearCache()
+        }, publish: { try host.publishAborted(requestID: lane.id, abort: abort) })
+        log("darkbloom-batch-v1 rank=\(collective.rank) lane-aborted request=\(lane.id.uuidString.lowercased())"
+            + " stopped_rank=\(abort.rank) reason=\(abort.reason.rawValue)")
+    }
+
     // MARK: Rank 0
 
     private func leadBatch(stage: any LayerStageResidentStage, split: Bool, lanes: QwenBatchLaneTable,
                            host: QwenBatchServingHost, records: QwenBatchRecordBinding,
-                           observation: StageBatchObservation, check: () throws -> Void) throws {
+                           observation: StageBatchObservation, memoryRefused: () throws -> Bool,
+                           check: () throws -> Void) throws {
         var step = 0, order = 0
         let trace = try QwenBatchRowCapture.traceRequested()
         var summary = QwenBatchStepSummary()
@@ -317,23 +344,42 @@ extension QwenResidentRuntime {
         var decisions = QwenBatchDecisionProgress()
         var coalescing = QwenBatchDecodeCoalescing()
         var peerCancelled = Set<UUID>()
-        var leaving: [Int: (id: UUID, reason: QwenLayerStageGenerationFinishReason?, cancelled: Bool, selected: Int)] = [:]
+        // Lanes a rank's memory refused (D6), each leaving alone once it owes no token decision.
+        var memoryStopped: [UUID: ClusterWorkerAbort] = [:]
+        var leaving: [Int: (id: UUID, reason: QwenLayerStageGenerationFinishReason?, cancelled: Bool, selected: Int,
+                            aborted: ClusterWorkerAbort?)] = [:]
         // One autorelease scope per step, as the one-request loop has per frame.
         while try !autoreleasepool(invoking: { () throws -> Bool in
             let pendingCredits = decisions.pendingCount
             let answered = try decisions.serviceAndPoll(host)
             try check()
+            // This rank's own memory: the newest running lane stops, alone.
+            // While a stopped lane has yet to leave, its memory is still held:
+            // the check waits for it rather than stop another lane.
+            if memoryStopped.isEmpty, try memoryRefused(), let id = QwenBatchMemoryStop.lane(
+                orders: Dictionary(uniqueKeysWithValues: lanes.values.filter { !cancellationRequested($0) && !peerCancelled.contains($0.id) }
+                    .map { ($0.id, $0.order) }), stopping: Set(memoryStopped.keys)) {
+                memoryStopped[id] = .init(reason: .memory, rank: 0)
+            }
             for slot in lanes.keys.sorted() {
                 let lane = lanes[slot]!
                 if cancellationRequested(lane) || peerCancelled.contains(lane.id) {
                     try cancelLane(lane, host: host)
                     decisions.retired(lane.id)
-                    peerCancelled.remove(lane.id)
-                    leaving[slot] = (lane.id, nil, true, lane.selected.count)
+                    peerCancelled.remove(lane.id); memoryStopped[lane.id] = nil
+                    leaving[slot] = (lane.id, nil, true, lane.selected.count, nil)
                     lanes[slot] = nil
                 } else if let proceed = answered[lane.id], let reason = lane.finish(continueRequested: proceed) {
+                    // A lane that ends anyway ends as it would have.
                     try finishLane(lane, reason: reason, host: host)
-                    leaving[slot] = (lane.id, reason, false, lane.selected.count)
+                    memoryStopped[lane.id] = nil
+                    leaving[slot] = (lane.id, reason, false, lane.selected.count, nil)
+                    lanes[slot] = nil
+                } else if let abort = memoryStopped[lane.id], decisions.canForward(lane.id) {
+                    // It owes the owner no answer: no answer can reach a lane that is gone.
+                    try abortLane(lane, abort: abort, host: host)
+                    memoryStopped[lane.id] = nil
+                    leaving[slot] = (lane.id, nil, false, lane.selected.count, abort)
                     lanes[slot] = nil
                 }
             }
@@ -355,11 +401,12 @@ extension QwenResidentRuntime {
             let stop = lanes.isEmpty
             // The step's plan: every decoding lane together, one prefill frame.
             let decodeLanes = lanes.keys.sorted().filter {
-                lanes[$0]!.nextPhase == .decode && !cancellationRequested(lanes[$0]!)
+                lanes[$0]!.nextPhase == .decode && !cancellationRequested(lanes[$0]!) && memoryStopped[lanes[$0]!.id] == nil
             }
             var decodeSlots = decodeLanes.filter { decisions.canForward(lanes[$0]!.id) }
             let prefillSlot = lanes.values.filter {
                 $0.nextPhase == .prefill && decisions.canForward($0.id) && !cancellationRequested($0)
+                    && memoryStopped[$0.id] == nil
             }.min(by: { $0.order < $1.order })?.slot
             // Keep control exchanges moving while nearby token credits arrive.
             // The absolute window cannot be extended by additional answers.
@@ -371,7 +418,7 @@ extension QwenResidentRuntime {
             var slots = [QwenBatchWire.Slot](repeating: .init(), count: batch.lanes)
             for (slot, left) in leaving {
                 slots[slot] = .init(state: .leaving, requestID: left.id, selectedTokens: left.selected,
-                    leaveReason: left.reason, leaveCancelled: left.cancelled)
+                    leaveReason: left.reason, leaveCancelled: left.cancelled, leaveAborted: left.aborted)
             }
             for (slot, lane) in lanes.slots {
                 var value = QwenBatchWire.Slot(state: joining.contains(slot) ? .joining : .active, requestID: lane.id)
@@ -422,6 +469,10 @@ extension QwenResidentRuntime {
             let reply = try QwenBatchWire.Reply(words: receiveBatchWords(QwenBatchWire.replyWords, scope: records.reply(step: step), check: check),
                 expectedStep: step, lanes: batch.lanes)
             peerCancelled.formUnion(try QwenBatchCancellation.peerRequests(mask: reply.cancelledMask, slots: slots))
+            for id in try QwenBatchCancellation.peerMemoryStops(mask: reply.memoryMask, slots: slots)
+            where memoryStopped[id] == nil {
+                memoryStopped[id] = .init(reason: .memory, rank: 1)
+            }
             // Prefix agreements of this step's joins: rank 1 restored what it
             // could of what was offered; rank 0 restores the same frontier or
             // both start cold (the next header says which).
@@ -459,8 +510,8 @@ extension QwenResidentRuntime {
                 lane.selected.append(reply.tokens[slot])
                 try check()
                 // Both ranks keep the selected frontier for the next leave,
-                // but a known cancelled lane publishes no additional output.
-                if cancellationRequested(lane) || peerCancelled.contains(lane.id) { continue }
+                // but a known cancelled or stopping lane publishes no additional output.
+                if cancellationRequested(lane) || peerCancelled.contains(lane.id) || memoryStopped[lane.id] != nil { continue }
                 try decisions.published(lane.id)
                 try host.publishToken(requestID: lane.id, ordinal: lane.selected.count - 1, tokenID: reply.tokens[slot],
                     committedTokens: lane.request.promptCount + lane.selected.count - 1)
@@ -480,8 +531,11 @@ extension QwenResidentRuntime {
 
     private func followBatch(stage: any LayerStageResidentStage, split: Bool, lanes: QwenBatchLaneTable,
                              host: QwenBatchServingHost, records: QwenBatchRecordBinding,
-                             observation: StageBatchObservation, check: () throws -> Void) throws {
+                             observation: StageBatchObservation, memoryRefused: () throws -> Bool,
+                             check: () throws -> Void) throws {
         var step = 0, order = 0
+        // Lanes this rank's memory refused and named in a reply (D6), until they leave.
+        var reportedMemory = Set<UUID>()
         let capture = try QwenBatchRowCapture.fromEnvironment()
         while try !autoreleasepool(invoking: { () throws -> Bool in
             let header = try QwenBatchWire.Header(words: receiveBatchWords(QwenBatchWire.headerWords, scope: records.header(step: step), check: check),
@@ -491,8 +545,13 @@ extension QwenResidentRuntime {
                       value.selectedTokens == lane.selected.count else {
                     throw ProbeError("Batch header ends a lane this rank does not hold, or at another frontier")
                 }
+                reportedMemory.remove(lane.id)
                 if value.leaveCancelled {
                     try cancelLane(lane, host: host)
+                } else if let abort = value.leaveAborted {
+                    // Both ranks end it alone, as rank 0 did; an owner's cancel
+                    // that crossed it retires it as cancelled (the lane host's call).
+                    try abortLane(lane, abort: abort, host: host)
                 } else {
                     guard let reason = value.leaveReason,
                           lane.finish(continueRequested: reason != .clientStop) == reason else {
@@ -637,8 +696,16 @@ extension QwenResidentRuntime {
             let cancelledMask = lanes.values.reduce(0) {
                 $0 | (cancellationRequested($1) ? (1 << $1.slot) : 0)
             }
+            // This rank's own memory: the newest running lane is named, and
+            // rank 0 ends it alone at the next step it can.
+            var memoryMask = 0
+            if reportedMemory.isEmpty, try memoryRefused(), let id = QwenBatchMemoryStop.lane(
+                orders: Dictionary(uniqueKeysWithValues: lanes.values.filter { !cancellationRequested($0) }.map { ($0.id, $0.order) }),
+                stopping: reportedMemory), let lane = lanes.values.first(where: { $0.id == id }) {
+                reportedMemory.insert(id); memoryMask = 1 << lane.slot
+            }
             try sendBatchWords(QwenBatchWire.Reply(step: step, tokens: tokens, restored: restoredNow,
-                cancelledMask: cancelledMask).words,
+                cancelledMask: cancelledMask, memoryMask: memoryMask).words,
                 scope: records.reply(step: step), check: check)
             step += 1
             return false

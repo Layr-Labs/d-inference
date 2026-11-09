@@ -52,6 +52,25 @@ private final class SubmissionEndpoint: ClusterWorkerEndpoint, @unchecked Sendab
     }
 }
 
+/// What a request's consumer saw, in order.
+private final class AbortRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [String] = []
+    func record(_ event: ClusterWorkerRequestEvent) {
+        let line: String
+        switch event {
+        case .token(let token, _): line = "token \(token)"
+        case .aborted(let abort): line = "aborted \(abort.reason.rawValue) \(abort.rank)"
+        case .finished(let reason): line = "finished \(reason.rawValue)"
+        case .failed: line = "failed"
+        case .promptCache: line = "promptCache"
+        case .telemetry: line = "telemetry"
+        }
+        lock.withLock { values.append(line) }
+    }
+    var events: [String] { lock.withLock { values } }
+}
+
 private final class AdmissionCompletion: @unchecked Sendable {
     private let lock = NSLock()
     private var value: Bool?
@@ -69,10 +88,42 @@ private final class AdmissionCompletion: @unchecked Sendable {
         try await servingContext(executable)
         try await admissionDeadline(executable)
         try await missingProof(executable)
-        print("{\"passed\":true,\"groups\":8,\"actualLocalChildren\":true,\"partialAdmission\":true,"
+        try await abortedWhileRunning(executable)
+        print("{\"passed\":true,\"groups\":9,\"actualLocalChildren\":true,\"partialAdmission\":true,"
             + "\"requestScopedRefusal\":true,\"endpointRefusal\":true,\"cancelBeforeStart\":true,\"servingContext\":true,"
-            + "\"admissionDeadline\":true}")
+            + "\"admissionDeadline\":true,\"abortedWhileRunning\":true}")
         alarm(0)
+    }
+
+    /// D6: both ranks report that rank 1's memory refused the running request
+    /// (`aborted`, then `retired(aborted)`). The request's consumer gets the
+    /// abort after the token it already had; nothing is cancelled, fenced or
+    /// invalidated, and the same pair serves the next request.
+    static func abortedWhileRunning(_ executable: URL) async throws {
+        let end = DispatchTime.now().uptimeNanoseconds + 10_000_000_000
+        let endpoints = try launch(executable, ["abort-once", "abort-once"], until: end)
+        defer { for endpoint in endpoints { endpoint.requestNativeCleanup() } }
+        let pair = try ClusterWorkerPair(workers: endpoints, startupDeadline: DispatchTime.now().uptimeNanoseconds + 3_000_000_000)
+        let lease = try pair.reserve(requestID: UUID(), reservation: reservation(output: 3, until: end))
+        let seen = AbortRecorder()
+        // The provider's engine cancels a lease on every failure, this one too:
+        // that cancel crosses the abort and must change nothing.
+        try lease.start { event in
+            seen.record(event)
+            if case .aborted = event { lease.cancel(reason: .callerCancelled) }
+            return true
+        }
+        await lease.waitUntilRetired(); lease.releaseResources()
+        try requirePartial(seen.events == ["token 9", "aborted memory 1"], "The consumer saw \(seen.events)")
+        try requirePartial(pair.readiness != nil && pair.admissionState.isValid, "An aborted request ended the pair")
+        try requirePartial(pair.requestsAborted == 1, "The abort was not counted")
+        try requirePartial(endpoints.map { $0.counts.1 } == [0, 0], "An aborted request was cancelled")
+        try requirePartial(endpoints.allSatisfy { $0.fenceCount == 0 && $0.child.termination == nil },
+            "A rank was fenced for an aborted request")
+        try await serve(pair, until: end)
+        try requirePartial(pair.readiness != nil, "The pair did not stay ready after the next request")
+        await pair.shutdown()
+        try requirePartial(endpoints.allSatisfy { $0.child.termination == .exited(0) }, "A rank did not exit cleanly")
     }
 
     fileprivate static func launch(_ executable: URL, _ behaviors: [String], until end: UInt64,

@@ -57,27 +57,33 @@ extension MiMoResidentRuntime {
                     try MLX.withError { nativeError in
                         var lastCheck: UInt64 = 0
                         let book = laneBook, control = control
-                        func checked() throws {
-                            try nativeError.check(); try control.check()
+                        func checked() throws { try nativeError.check(); try control.check(); try nativeError.check() }
+                        // The lanes' live check, at a step boundary: a memory refusal
+                        // stops one lane alone (D6); any other refusal fails the batch.
+                        let rank = collective.rank
+                        let memoryRefused: () throws -> Bool = {
                             let now = DispatchTime.now().uptimeNanoseconds
-                            if lastCheck == 0 || now - lastCheck >= 250_000_000 {
-                                let values = book.reservations()
-                                if let first = values.first {
-                                    let others = try QwenLongPrefillCheckedBytes.sum(values.dropFirst().map(\.nativeBytes))
-                                    try first.allowance.requireLive(additionalNativeBytes:
-                                        QwenLongPrefillCheckedBytes.sum([others, workspace.native]),
-                                        additionalHostBytes: QwenLongPrefillCheckedBytes.sum(values.map(\.hostBytes) + [workspace.host]))
-                                }
-                                lastCheck = now
+                            guard lastCheck == 0 || now - lastCheck >= 250_000_000 else { return false }
+                            lastCheck = now
+                            let values = book.reservations()
+                            guard let first = values.first else { return false }
+                            do {
+                                let others = try QwenLongPrefillCheckedBytes.sum(values.dropFirst().map(\.nativeBytes))
+                                try first.allowance.requireLive(additionalNativeBytes:
+                                    QwenLongPrefillCheckedBytes.sum([others, workspace.native]),
+                                    additionalHostBytes: QwenLongPrefillCheckedBytes.sum(values.map(\.hostBytes) + [workspace.host]))
+                                return false
+                            } catch let refusal as QwenResidentMemoryRefusal {
+                                log("darkbloom-mimo-batch-v1 rank=\(rank) memory-refused: \(refusal.message)")
+                                return true
                             }
-                            try nativeError.check()
                         }
                         let native = MiMoNativeBatchExecutor(stage: stage, admission: admission, collective: collective,
                             records: records, capacity: batchLanes, check: checked)
                         let driver = try IndependentHistoryBatchDriver(rank: collective.rank, capacity: batchLanes,
                             vocabulary: admission.profile.vocabularySize, book: laneBook, executor: native)
                         batchDriver = driver
-                        try driver.serve(host: host, check: checked)
+                        try driver.serve(host: host, memoryRefused: memoryRefused, check: checked)
                         // serve returns only after each native session retired;
                         // the lane ledger is observed separately from page bytes.
                         log("darkbloom-mimo-batch-memory-v1 rank=\(collective.rank) scope=\(records.requestID.uuidString)"

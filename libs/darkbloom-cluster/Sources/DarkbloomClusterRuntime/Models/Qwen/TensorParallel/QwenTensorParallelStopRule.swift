@@ -61,6 +61,35 @@ enum QwenTensorParallelStopRule {
         slot >= lengthStopBase ? (Int(slot - lengthStopBase), .length) : (Int(slot), .clientStop)
     }
 
+    /// The end-of-request agreement (D6): rank 0's count, finish and whether
+    /// its owner asked to stop, then each rank's memory stop, each rank in
+    /// words of its own (`QwenTensorParallelGroup.exchangeIntegers` sums them).
+    static func endWords(rank: Int, count: Int, finish: Finish, clientStopped: Bool, stoppedForMemory: Bool) -> [Int32] {
+        rank == 0 ? [Int32(count), finish.code, clientStopped ? 1 : 0, stoppedForMemory ? 1 : 0, 0]
+            : [0, 0, 0, 0, stoppedForMemory ? 1 : 0]
+    }
+
+    struct End: Equatable {
+        let rank0Count: Int
+        let rank0Finish: Finish
+        /// Set when a rank's live memory check stopped the request and nothing
+        /// else ended it (its stop token, its length, its owner's stop): both
+        /// ranks end it alone, naming that rank (rank 0 when both stopped).
+        /// `abort` is its worker abort. (This file builds without the protocol
+        /// module too, for TensorParallelPlanChecks.)
+        let memoryStopRank: Int?
+    }
+
+    static func readEnd(_ words: [Int32]) throws -> End {
+        guard words.count == 5, words[0] >= 0, let finish = Finish(code: words[1]),
+              words[2...].allSatisfy({ $0 == 0 || $0 == 1 }) else {
+            throw ProbeError("Tensor-parallel ranks did not agree how the request ended")
+        }
+        let memoryRank: Int? = words[3] == 1 ? 0 : words[4] == 1 ? 1 : nil
+        let localStop = finish == .clientStop && words[2] == 0
+        return .init(rank0Count: Int(words[0]), rank0Finish: finish, memoryStopRank: localStop ? memoryRank : nil)
+    }
+
     /// The finish and token count this rank reports, given rank 0's.
     static func reconcile(rank: Int, localFinish: Finish, localCount: Int, localStopped: Bool,
                           rank0Finish: Finish, rank0Count: Int) -> (finish: Finish, count: Int) {

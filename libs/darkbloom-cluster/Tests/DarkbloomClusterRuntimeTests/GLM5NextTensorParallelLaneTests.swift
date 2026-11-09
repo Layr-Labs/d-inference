@@ -47,6 +47,26 @@ struct GLM5NextTensorParallelLaneTests {
         }
     }
 
+    /// D6: rank 1's memory stop crosses in its report's leave word (2), and
+    /// a lane rank 0 ends alone for a rank's memory leaves with that rank.
+    @Test func aMemoryStopCrossesTheSumExactly() throws {
+        var plan = Wire.Plan(step: 7, stop: false, lanes: 3, depth: 0, prefixEnabled: false,
+            slots: Array(repeating: .init(), count: 3))
+        plan.slots[0] = .init(state: .leaving, requestID: UUID(), tokens: 9, leave: .abortedRank0, kept: 6)
+        plan.slots[2] = .init(state: .leaving, requestID: UUID(), tokens: 4, leave: .abortedRank1, kept: 4)
+        let report = Wire.Report(step: 7, lanes: 3, prefixEnabled: false, leaveWanted: [true, false, false],
+            memoryWanted: [false, true, false], tokens: [9, 3, 4])
+        let read = try Wire.read(zip(try Wire.words(plan), try Wire.words(report)).map { $0 + $1 }, lanes: 3, step: 7)
+        #expect(read.plan == plan && read.report == report)
+        #expect(read.plan.slots[0].leave?.abort == .init(reason: .memory, rank: 0) && read.plan.slots[0].leave?.finish == nil)
+        #expect(read.plan.slots[2].leave?.abort == .init(reason: .memory, rank: 1))
+        #expect(Wire.Leave.cancelled.abort == nil && Wire.Leave.eos.abort == nil)
+        // A cancel and a memory stop for one lane do not both cross.
+        let both = Wire.Report(step: 7, lanes: 3, prefixEnabled: false, leaveWanted: [false, true, false],
+            memoryWanted: [false, true, false], tokens: [9, 3, 4])
+        #expect(throws: ProbeError.self) { try Wire.words(both) }
+    }
+
     @Test func anotherStepOrADamagedWordStopsBothRanks() throws {
         let plan = Wire.Plan(step: 7, stop: false, lanes: 2, depth: 2, prefixEnabled: false,
             slots: [.init(state: .joining, requestID: UUID()), .init()])
@@ -266,6 +286,40 @@ struct GLM5NextTensorParallelLaneTests {
         }
         #expect(run.natives[0].takenTwice.isEmpty)
         #expect(run.link.mismatch == nil)
+    }
+
+    /// D6: a rank's live memory check refuses while lanes run. The newest
+    /// running lane alone leaves, on both ranks, published as aborted with
+    /// the refusing rank (rank 0 only once the owner answered its last token);
+    /// its tokens are its solo prefix. The older lane runs to its length, and
+    /// a request that comes after is served as if nothing happened.
+    @Test func aMemoryRefusalOnEitherRankEndsTheNewestLaneAloneOnBothRanks() throws {
+        for refusing in 0...1 {
+            let run = try FakePair(lanes: 3)
+            run.memoryRefusal = (rank: refusing, tick: 8)
+            let specs: [FakePair.Spec] = [
+                .init(tick: 0, prompt: 6, output: 60),
+                .init(tick: 1, prompt: 5, output: 60),
+                .init(tick: 40, prompt: 4, output: 6),
+            ]
+            try run.serve(specs)
+            let older = run.ids[0], newer = run.ids[1], later = run.ids[2]
+            for rank in 0...1 {
+                let lane = run.hosts[rank].record(newer)
+                #expect(lane.aborted == .init(reason: .memory, rank: refusing), "rank \(rank), rank \(refusing) refusing")
+                #expect(lane.finish == nil && !lane.left)
+                #expect(run.hosts[rank].record(older).finish == .length && run.hosts[rank].record(older).aborted == nil)
+                #expect(run.hosts[rank].record(later).finish == .length)
+            }
+            let stopped = run.hosts[0].record(newer).tokens
+            #expect(stopped.count < 60 && stopped == Array(FakeLaneNative.solo(prompt: run.prompts[1], count: 61)
+                .prefix(stopped.count)))
+            #expect(run.hosts[0].record(older).tokens == Array(FakeLaneNative.solo(prompt: run.prompts[0], count: 61).prefix(60)))
+            #expect(run.hosts[0].record(later).tokens == Array(FakeLaneNative.solo(prompt: run.prompts[2], count: 7).prefix(6)))
+            #expect(run.memoryRefusals == 1, "one refusal, one lane")
+            #expect(run.link.mismatch == nil)
+            #expect(run.books.allSatisfy { $0.isEmpty })
+        }
     }
 
     @Test func aSingleLaneRunsAsOneRequest() throws {
@@ -540,6 +594,7 @@ final class FakeLaneNative: GLM5NextTensorParallelLaneNative {
 final class FakeLaneHost: QwenBatchServingHost, @unchecked Sendable {
     struct Record {
         var tokens: [Int] = []; var finish: ClusterWorkerFinishReason?; var left = false
+        var aborted: ClusterWorkerAbort?
         var logprobs: [ClusterWorkerTokenLogprobs] = []; var telemetry: [ClusterWorkerRequestTelemetry] = []
     }
     let rank: Int
@@ -608,6 +663,14 @@ final class FakeLaneHost: QwenBatchServingHost, @unchecked Sendable {
     func publishLeft(requestID: UUID) throws {
         lock.withLock { outstanding[requestID] = nil; records[requestID, default: .init()].left = true }
     }
+    func publishAborted(requestID: UUID, abort: ClusterWorkerAbort) throws {
+        try lock.withLock {
+            guard outstanding[requestID] == nil, records[requestID]?.finish == nil, records[requestID]?.aborted == nil else {
+                throw ProbeError("fake host: aborted before its last answer, or ended twice")
+            }
+            records[requestID, default: .init()].aborted = abort
+        }
+    }
 }
 
 /// Two ranks' loops on two threads, fed by one script of arrivals, cancels
@@ -641,6 +704,9 @@ final class FakePair: @unchecked Sendable {
     private var cancelledOn: [Int: Set<UUID>] = [0: [], 1: []]
     private var prepared = Set<UUID>()
     private let profile: QwenLayerStageGenerationProfile
+    /// D6: this rank's live memory check refuses once, from this tick on.
+    var memoryRefusal: (rank: Int, tick: Int)?
+    private(set) var memoryRefusals = 0
 
     init(lanes: Int) throws {
         self.lanes = lanes
@@ -653,6 +719,14 @@ final class FakePair: @unchecked Sendable {
     }
 
     func isPrepared(_ id: UUID) -> Bool { lock.withLock { prepared.contains(id) } }
+
+    func memoryRefused(rank: Int) -> Bool {
+        lock.withLock {
+            guard let refusal = memoryRefusal, refusal.rank == rank, tick >= refusal.tick, memoryRefusals == 0 else { return false }
+            memoryRefusals += 1
+            return true
+        }
+    }
 
     var now: UInt64 { lock.withLock { clock } }
 
@@ -732,7 +806,7 @@ final class FakePair: @unchecked Sendable {
                 let loop = GLM5NextTensorParallelLaneLoop(native: natives[rank], lanes: lanes, book: books[rank],
                     host: hosts[rank], joinWaitNanoseconds: 10_000_000_000, deadlineMarginNanoseconds: 0,
                     now: { [self] in now })
-                do { try loop.run(check: {}) } catch {
+                do { try loop.run(memoryRefused: { [self] in memoryRefused(rank: rank) }, check: {}) } catch {
                     failures.lock.withLock { failures.errors[rank] = error }; link.fail("rank \(rank): \(error)")
                 }
             }

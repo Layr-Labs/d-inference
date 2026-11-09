@@ -3912,6 +3912,7 @@ evidence, not a change to the normal final-row contract or the near-tie rule
 | Cold load refused with the ordinary slot (503) or insufficient-memory error although an idle model is resident | That slot holds an unexpired Autopilot placement hold: held slots are excluded from eviction (`ProviderLoop.evictableModelSlots`, `autopilotHoldsModel`) and their weights get no `free_for_load_gb` reclaim credit (`autopilotHeldWeightBytes`); the refusal's `Not evictable:` list names it with the hold's UTC expiry; see [Autopilot placements](model-autopilot.md#placements-after-an-operation) | `provider-swift/Sources/ProviderCore/Autopilot/ProviderLoop+AutopilotPlacement.swift`, `provider-swift/Sources/ProviderCore/ProviderLoop+EvictionExclusions.swift` |
 | Load refused (503), or a running load ends before it installs a slot | An [add-on hold](addon-hold.md) is active: no load takes the load gate, and one already running stops at its next check (after hashing, after the weight load or before install; the managed Super and native MiMo loads before their weights and at publication) | `provider-swift/Sources/ProviderCore/Addon/ProviderLoop+AddonHold.swift` (`addonHoldLoadRefusal`), `provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift` (`ensureModelLoaded`), `provider-swift/Sources/ProviderCore/MiMo/ProviderLoop+NativeMiMo.swift` (`requireNativeMiMoPublication`) |
 | Slot flagged wedged | No engine progress for `suspectStallSeconds = 10`; a two-Mac pair only once a request is 40 s past its own first-token allowance | `WedgeMonitor.swift` |
+| A pair's request ends mid-generation with 503 or a `request_exceeds_node_budget` error chunk; both workers keep serving, and their logs show `darkbloom-stage-abort-v1` | A pipeline stage's running memory check refused it; both ranks ended that request alone ([a pipeline stage's memory refusal](#a-pipeline-stages-memory-refusal-ends-that-request-alone)) | `QwenStageAbort.swift`, `WorkerCoordinator.swift`, `DistributedPipeExecutionOwner.swift` |
 | Provider exits with `Trace/BPT trap: 5`; its log shows `[metal::Device] Unable to build metal library from source` | MLX compiled a Metal kernel at runtime and the compile failed. mlx-swift builds MLX's JIT kernel path, and the release metallib holds no NAX attention kernels, so on M5 GPUs fused attention compiles on the Mac when a shape is first used; MLX throws on a failed compile and the Swift error handler stops the process. 0.10.2 failed this way for full attention with head dim 256 or 512 and at least 1,024 query tokens (`attention_nax_dsplit`), fixed in 0.10.3. Check an MLX pin change that touches `jit_kernels.cpp` or the NAX kernels on an M5 with a long Gemma 4 or Qwen prompt | `libs/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/jit_kernels.cpp`, `device.cpp` (`build_library_`) |
 | Provider crashes in a loop on a pre-release macOS 27.2 build (for example 26B5091g); the crash report shows a call to address 0 | The build was made with SDK 27.2 and compares Dates with `>=` or `<=`. SDK 27.2 back-deploys these two operators: Swift 6.4.2 calls them through weak Foundation imports behind an OS version check. These macOS builds pass the check but do not export the symbols. DevNet build `0.10.6-dev.branch.87` crashed this way. The cluster service's timed checks (memory replan, member sync, update and approval checks, part restart backoff, supervision wait, model manifest repair retry and deadline) compare with `timeIntervalSince(_:)` and keep the same thresholds. `scripts/check-date-comparisons.py` (the `Provider Tests` gate and Release Integrity) refuses the pattern in shipped source. To fix a hit, write `a.timeIntervalSince(b) >= 0` for `a >= b` and `a.timeIntervalSince(b) <= 0` for `a <= b`; `<`, `>` and `==` are safe. The release lane runs `scripts/check-provider-weak-imports.py` on the built binaries. A failure means a binary still imports `Date.>=` or `Date.<=`; the check names the calling functions. See the [build guide](../developer/build.md#sdk-27-release-builds-and-caches) | `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterService.swift`, `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterModelProvisioningStore.swift`; `scripts/check-date-comparisons.py`, `scripts/check-provider-weak-imports.py` |
 
@@ -5530,12 +5531,11 @@ it alone:
   one rule, so a pair never advertises a context its ranks refuse. A Gemma
   pipeline served its whole profile in `dev` before 0.10.11. On pair-2 a 128K
   request then failed the M5 Max stage's running-request memory check
-  mid-prefill (594 MiB compressed, so no file cache counted). A pipeline stage
-  whose check refuses a running request ends its worker
-  (`QwenResidentRequestExecution.run`'s check, the worker coordinator's
-  failure path), so the client got a 500 and the pair stopped serving for
-  about a minute (journey 3, D6). Tensor parallel's ranks end such a request
-  alone, so a longer Gemma request goes there. Each stage charges the whole
+  mid-prefill (594 MiB compressed, so no file cache counted). The stage's
+  worker exited, so the client got a 500 and the pair stopped serving for
+  about a minute (journey 3, D6). Such a refusal now ends that request alone
+  ([a pipeline stage's memory refusal](#a-pipeline-stages-memory-refusal-ends-that-request-alone)).
+  Tensor parallel's ranks end such a request alone too. Each stage charges the whole
   model's ledger (`Gemma4StateBudget`) at the request's context: 2.0 GB, plus
   one prompt frame's 2.2 GB on a stage with a full-attention layer, at the
   standard request.
@@ -5569,6 +5569,158 @@ Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Gemma4/R
 (`pipelineServesWholeProfile`),
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Resident/QwenResidentRuntime+Load.swift`
 and `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`.
+
+## A pipeline stage's memory refusal ends that request alone
+
+A layer-stage pipeline (the Qwen and Gemma 4 stages, GLM's and MiMo V2.6's)
+checks each running request against its rank's live memory gate, at most
+every 250 ms:
+kept prompt prefixes give way first, then the request's own prefix capture
+(`QwenResidentRequestExecution.checkRunning`; the gate is
+`QwenResidentRequestAllowance.requireContinuing`, GLM's `requireResources`).
+Before 0.10.11 a refusal that remained was thrown from the request's `check`,
+which also runs inside every transfer. The refusing rank left the data plane
+mid-exchange and its worker exited (the worker coordinator's failure path), the
+other rank lost its input, the client got an untyped 500 and the pair stopped
+serving for about a minute (journey 3, D6). Now the refusal ends that request
+on both ranks, and nothing else:
+
+- **The stop latch.** The memory check moves out of `check` into a
+  per-request latch (`QwenStageAbort`), polled where the rank owes its peer
+  its next message or is about to run a forward: in each send and each owed
+  acknowledgement of `QwenLayerStageGenerationTransport`, at rank 0's frame
+  start (before its forward), before rank 1 consumes a boundary (before its
+  forward), and in rank 0's one-chunk lookahead, which then prepares no next
+  chunk. Only a memory refusal latches (`QwenResidentMemoryRefusal`). Power,
+  thermal, native errors, the deadline and a cancel still throw. A recording
+  (benchmark) request keeps the memory check in `check`.
+- **The marker.** The stages' messages strictly alternate, so a rank that must
+  stop owes exactly one next message, and its peer is already waiting for it.
+  The rank sends a marker in that message's own record (type, label and size,
+  so the keyed data plane counts and authenticates it as it would the
+  message): length word `0xFFFF_FFF1` in a length-prefixed slot (boundary
+  header, token, decision), an acknowledgement of phase `abortedMemory` in an
+  acknowledgement slot, and a `qwen_stage_generation_abort_v1` packet as the
+  body of a fixed frame (compact decode's frames, relays, the hand-off header,
+  MTP rounds). Each is a value the message it replaces never takes
+  (`QwenStageAbortWire`). A rank never stops in an array slot (a residual
+  payload, a hand-off segment, an MTP window): an array always follows its own
+  handshake, so the rank sends it and stops at its next control slot. Rank 0
+  replaces only a decision to go on; one that ends the request anyway (end of
+  sequence, length, the owner's stop) is sent as it is.
+- **The handshake.** The peer receives the marker in the receive it was
+  already in, answers with one confirmation (`abortConfirmed`, on a record of
+  its own) and stops too. Both cancel the request's session (its KV, capture,
+  MTP head history and any prepared lookahead boundary), return MLX's freed
+  buffers (`Memory.clearCache()`), confirm each other's retirement
+  (`exchangeAbortRetirement`: `requestRetired`, bound to the abort) and report
+  the abort with the refusing rank. Neither transport is failed and no record
+  is left in flight, so the next request runs on the same workers, data plane
+  and prefix caches. Nothing of the aborted request is stored; kept prefixes
+  stay on both ranks.
+
+| State | Where a stop goes |
+|---|---|
+| Prefill | Rank 0 at the next boundary header, before its forward; rank 1 in place of `boundaryReady`, or of `boundaryConsumed` with its forward skipped (D6 was rank 1 here) |
+| One-chunk lookahead | A latched rank 0 prepares no next chunk, reads `boundaryConsumed` (or rank 1's marker there), then stops at the next header |
+| Decode, plain or compact | The token frame's header, token, `tokenAccepted`, decision and `decisionAccepted` slots; compact decode's boundary, token and decision frames |
+| A published token | Rank 0 publishes a token and waits for the owner's answer before it decides, so a stop never crosses an answer; the client keeps the tokens it has |
+| Pipeline MTP | Rank 1 at its round (before it drafts) or its result (before it verifies); rank 0 at its round decision, after the window it was sent |
+| Phase split, alone route | Rank 0 at the hand-off header; rank 1 at `handoffReady` or `handoffAccepted`. After the hand-off, rank 1 at its next relay and rank 0 at a relay decision; on the alone route, rank 1's prompt digests too |
+| Before the first frame | No stop point: the reservation's own gate admitted the request just before, and a refusal is caught at the first frame |
+
+**Batch lanes** (`QwenResidentRuntime+Batch.swift`, wire v3; MiMo's
+`IndependentHistoryBatchDriver` on the same wire). A refusal
+stops one lane, the newest still running (`QwenBatchMemoryStop`), never the
+batch. Rank 0 polls before it builds a step's header, and rank 1 before its
+reply, which names its lane in `memoryMask` (word 6). Rank 0 lets the lane
+leave once it owes the owner no answer, with disposition 5 and the refusing
+rank (slot word 27). Both ranks retire it as a cancelled lane is retired and
+publish its abort. Neither polls again until that lane has left; the other
+lanes run on.
+
+**The worker, the owner and the client.** The runtime's `start` throws
+`ClusterResidentRequestAbort` after its request scope ended cleanly. The worker
+publishes `aborted(memory, rank)` then `retired(aborted)` (a lane through its
+lane host), keeps its model and begins no forced exit (`WorkerCoordinator`).
+The worker sessions accept `aborted` only for a running request, and on rank 0
+only once the owner answered its last token. The owner
+(`ClusterWorkerRequest.run`) reads both ranks' aborts, which must agree. It
+cancels, fences and invalidates nothing, and counts the abort
+(`ClusterWorkerPair.requestsAborted`); a cancel that crosses it changes
+nothing. The owner's lease state retires it without quarantine
+(`ClusterOwnerLeaseState.observeRetired`). The provider's lease ends the
+request with the pair's capacity refusal (`DistributedMemoryAbort`:
+`token_budget_exhausted: request requires N context tokens but only M available
+on this cluster pair now (rank r's memory refused it while it ran)`). On the
+pair's local API a request that isn't streamed then gets one Mac's memory 503,
+and a streamed one its tokens, then an error chunk with `code`
+`request_exceeds_node_budget` and the 503's words
+(`DistributedHTTPEventStream.memoryFailureFrame`). Coordinator traffic gets
+`capacity` (503) with `request_exceeds_node_budget`, as for the pair's refusal
+at reservation.
+
+**Tensor parallel.** The ranks already stop a request after the same step
+when either rank's own check asks (the stop slot each step's agreement
+carries). Rank 0 then threw "The peer rank stopped …", and the Qwen and Gemma
+batches failed whole on a refusal, so the worker exited either way. Now:
+
+- **One request** (Gemma 4, GLM, MiMo): each rank records whether its stop was
+  its memory gate's (`QwenResidentMemoryRefusal`, from
+  `ClusterLiveMemory.requireTensorParallel`). The end-of-request agreement,
+  which both ranks always reach, carries rank 0's count, finish and owner stop,
+  and each rank's memory stop (`QwenTensorParallelStopRule.endWords`,
+  `readEnd`; MiMo's one extra exchange). A local stop with a memory stop is an
+  abort naming that rank on both ranks; a stop token, the length or the owner's
+  stop end the request as before. The request's state retires normally, its
+  prompt capture is withdrawn, and nothing goes to the SSD tier. The check runs
+  after each committed token, as before; a prompt's chunks run on the
+  reservation's charge.
+- **Batches** (Qwen 3.8 27B in every width, its one-request singleton and its
+  assistant lanes, and Gemma 4's lanes: `QwenTensorParallelBatchDriver`): the
+  memory check leaves `check` for `memoryRefused`, polled at a step boundary
+  (rank 0's plan, rank 1's report, and each build-ahead decision, which then
+  asks for a barrier). A refusal stops the newest running lane alone, as the
+  pipeline's batch does: rank 1 names it in its report's `memoryMask`, rank 0
+  plans it to leave with disposition 5 once it owes no answer, both retire it
+  as a cancelled lane, and it is published as aborted. The singleton host
+  returns the abort as its completion.
+- **GLM's lanes** (`GLM5NextTensorParallelLaneLoop.run(memoryRefused:check:)`):
+  the same at each step's start. Rank 1 names its lane with 2 in that slot's
+  leave word (`Report.memoryWanted`); rank 0 stops it running and publishing
+  and lets it leave, once it owes no answer, with `abortedRank0` or
+  `abortedRank1` (leave words 5 and 6).
+
+Every pair mode is covered: pipeline and tensor parallel, one request or
+lanes, MTP and assistant lanes, for every family that serves in it. Native
+errors, protocol violations, a peer that doesn't confirm within the progress
+limit, the deadline and power or thermal refusals fail the worker as before.
+
+**The dev memory fault.** Dev and DevNet builds can make a rank's live gate
+refuse the next request from its Nth check on (`ClusterMemoryFault`, the file
+`~/.darkbloom-dev/cluster-setup/memory-fault`, read and deleted when a request
+starts, never in a production install), through each gate's own throw; see
+[the test guide](../developer/test.md#a-memory-refusal-on-a-real-pair-dev-memory-fault).
+
+**Builds.** A pair forms only between Macs on the same build
+(`ClusterConfiguration.peerBuildDiffers`), and each request's agreement binds
+both ranks' builds (`rankBuildSHA256`). An older rank would refuse a marker as
+a malformed message, and both workers would fail as they did before this
+change. The worker protocol version and the coordinator are unchanged.
+
+Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Generation/QwenStageAbort.swift`
+(`QwenStageAbort`, `QwenStageAbortWire`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Generation/QwenLayerStageGenerationTransport.swift`
+(`stopIfLatched`, `exchangeAbortRetirement`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Generation/QwenLayerStageGenerationDriver.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/MTP/QwenPipelineMTPGeneration.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Resident/QwenResidentRequestExecution.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Resident/QwenResidentRuntime+Batch.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Generation/GLM5NextPipelineGeneration.swift`,
+`libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/Execution/WorkerCoordinator.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerRequest.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedPipeExecutionOwner.swift`
+and `provider-swift/Sources/ProviderCore/Server/Distributed/DistributedHTTPEventStream.swift`.
 
 ## MiMo V2.6 tensor parallel
 

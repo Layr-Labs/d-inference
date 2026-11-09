@@ -1,6 +1,6 @@
 # Experimental cluster control protocol
 
-> Last updated: 2026-11-01
+> Last updated: 2026-11-09
 
 Exact member-role and native-pair public-control shapes on the provider
 WebSocket, as staged in draft pull requests: the provider side in this
@@ -154,14 +154,20 @@ candidate.
 A member connection is not a provider of the public fleet. Neither connection
 of a pair is counted in `/v1/models` provider counts or model availability,
 listed in the public statistics roster or the public attestation listing,
-counted as fleet capacity, eligible for base rewards, a warm-pool or load
-target, sent a capacity probe or sent an autopilot control lease, whether or
-not the pair is serving
+counted as fleet capacity, a warm-pool or load target, sent a capacity probe or
+sent an autopilot control lease, whether or not the pair is serving
 (`pair_routing.go`, `listedForModelLocked`;
 `darkbloom-platform:coordinator/registry/verification.go`, `ForEachProviderVerification`;
-`darkbloom-platform:coordinator/registry/provider_snapshot.go`, `providerRewardSnapshotLocked`;
 `darkbloom-platform:coordinator/registry/capacity_quotes.go`, `capacityQuoteReady`;
-`darkbloom-platform:coordinator/registry/autopilot_activation.go`, `refreshControlLeases`). In its
+`darkbloom-platform:coordinator/registry/autopilot_activation.go`, `refreshControlLeases`).
+Base rewards count a member only while its pair is publicly serving-ready, for
+its share of the pair's capacity with the pair's model; a pair that serves only
+its owner earns none
+(`darkbloom-platform:coordinator/registry/provider_snapshot.go`, `providerRewardSnapshotLocked`;
+`darkbloom-platform:coordinator/registry/cluster_serving_intervals.go`, `memberPubliclyServingLocked`).
+While the pair is paused for its owner, its members keep that reward from
+darkbloom-platform#709 on, and lose it on coordinators before #709
+([owner pause](../architecture/owner-pause.md#pairs)). In its
 owner's own views the pair is counted once, through the leader, for the pair
 model. Every request a pair serves is its owner's self-route traffic, so it
 settles free: no charge, no payout and no public usage row.

@@ -210,7 +210,7 @@ Routed requests that arrive during a hold get the typed draining rejection.
 An add-on hold outranks the owner pause: while both apply the fields describe
 the hold, and its release hands them back to the pause (`ProviderBusy.publishing`).
 Coordinators key the add-on hold on `addon` only, so they treat `owner` as a
-plain drain: the Mac leaves routing and keeps its uptime. Because a coordinator
+plain drain for routing: the Mac leaves routing and keeps its uptime. Because a coordinator
 does not act on `owner` in `register`, the first event heartbeat of a fresh
 connection repeats the draining status. Routed requests that race the owner
 pause's heartbeat get the same typed draining rejection. On a pair, only the

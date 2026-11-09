@@ -344,7 +344,7 @@ final class MiMoV26LocalContractTests: XCTestCase {
         XCTAssertEqual(serving.releases.value, 1)
         XCTAssertEqual(serving.backend.cancelCount, 1)
         XCTAssertEqual(serving.backend.outstanding, 0)
-        let attempts = MiMoConsumerCounter()
+        let attempts = EventCounter()
         let expired = MultiModelBatchSchedulerEngine(registryProvider: { [:] },
             ensureLoaded: { _ in attempts.increment() },
             firstContentDeadline: .init(relativeBudgetMilliseconds: -1))

@@ -369,7 +369,7 @@ extension ClusterOnboardingDriver {
                 console.progress({ width in followWaitingLine(leader, step: shown, waited: waited, bound: timing.seconds, width: width) },
                                  logged: false)
             }
-            if let key = console.key(milliseconds: 120), leaves(key) { return leftFollow(operations, console) }
+            if let key = console.key(milliseconds: 120, taking: [.leave]), leaves(key) { return leftFollow(operations, console) }
             if console.closed { usleep(120_000) }
         }
     }

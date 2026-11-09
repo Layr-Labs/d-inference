@@ -53,10 +53,22 @@ extension Cluster {
         var worker: String?
         @Flag(help: ArgumentHelp("Developer: open the earlier six-step setup wizard instead of the onboarding.", visibility: .hidden))
         var wizard = false
+        @Flag(name: .customLong("app-console"),
+              help: ArgumentHelp("Desktop app: run the onboarding without a terminal, its screens as JSON lines on standard output and its answers read as JSON lines from standard input.", visibility: .hidden))
+        var appConsole = false
 
-        func validate() throws { try validateWizardOptions() }
+        func validate() throws {
+            try validateWizardOptions()
+            if appConsole, json || yes || temporary || dryRun || linkOnly || plain || wizard {
+                throw ValidationError("--app-console runs the onboarding: it takes none of the link setup's or the wizard's options.")
+            }
+        }
 
         mutating func run() async throws {
+            if appConsole {
+                return try await Self.runAppOnboarding(config: configOptions.config, modelDir: modelDir, worker: worker, request: .init(),
+                                                       needsTerminal: Self.needsTerminalLine)
+            }
             if plain { return try await printWizardPlain() }
             switch Self.entry(json: json, yes: yes, temporary: temporary, dryRun: dryRun, linkOnly: linkOnly, wizard: wizard,
                 inputIsTerminal: isatty(STDIN_FILENO) == 1, outputIsTerminal: isatty(STDOUT_FILENO) == 1,

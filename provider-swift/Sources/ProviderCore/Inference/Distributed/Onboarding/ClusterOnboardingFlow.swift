@@ -1707,6 +1707,9 @@ public protocol ClusterOnboardingConsole: AnyObject {
     /// One key, or nil when `milliseconds` passed with none. "\r" is enter; a lone escape is "\u{1B}"; a key that
     /// sends a sequence (an arrow) reads as none, so it never stops a wait.
     func key(milliseconds: Int) -> Character?
+    /// `key(milliseconds:)` in a wait that acts only on `keys` (none: it only waits), each named as the screen says it.
+    /// A console that offers its keys (the desktop app's) offers these; a terminal reads any key, as `key(milliseconds:)`.
+    func key(milliseconds: Int, taking keys: [ClusterOnboardingWaitKey]) -> Character?
     /// One of `options` (their order), as `darkbloom start` picks models: ↑↓ and enter where the console can redraw,
     /// else a number, enter for `selected`, or an option's first letter. Nil when the person cancelled (q or escape),
     /// the input closed, or `abandon` turned true while it waited (asked between keys).
@@ -1724,7 +1727,19 @@ public protocol ClusterOnboardingConsole: AnyObject {
     var liveWidth: Int? { get }
 }
 
+/// A key a wait acts on (`ClusterOnboardingConsole.key(milliseconds:taking:)`), with what it does in the screen's words.
+public struct ClusterOnboardingWaitKey: Equatable, Sendable {
+    public let key: Character
+    public let label: String
+    public init(_ key: Character, _ label: String) { self.key = key; self.label = label }
+    /// q where the screen says "q cancels": the pairing's wait, and the wait for Allow.
+    public static let cancel = ClusterOnboardingWaitKey("q", "Cancel")
+    /// q where it leaves a wait whose work goes on by itself: the start, and the other Mac's start followed here.
+    public static let leave = ClusterOnboardingWaitKey("q", "Leave")
+}
+
 public extension ClusterOnboardingConsole {
+    func key(milliseconds: Int, taking keys: [ClusterOnboardingWaitKey]) -> Character? { key(milliseconds: milliseconds) }
     func sayStressed(_ lead: String, _ stressed: String, _ tail: String) { say(lead + stressed + tail) }
     var width: Int? { nil }
 
@@ -2184,7 +2199,7 @@ public enum ClusterOnboardingDriver {
                 fitted(["Waiting for Allow \u{00B7} " + waitedWords(waited, of: bound) + " (q cancels)",
                         "Waiting for Allow \u{00B7} " + waitedWords(waited, of: bound), "Allow \u{00B7} " + waitedWords(waited, of: bound)], width: width)
             }, logged: false)
-            if let key = console.key(milliseconds: 1_000), key == "q" || key == "Q" || key == "\u{1B}" { break }
+            if let key = console.key(milliseconds: 1_000, taking: [.cancel]), key == "q" || key == "Q" || key == "\u{1B}" { break }
             state = operations.localNetwork(subject)
             if state == .allowed {
                 console.settle()
@@ -2300,7 +2315,7 @@ public enum ClusterOnboardingDriver {
                 for line in ClusterOnboardingPairing.otherMacNotFoundLines { console.say("  " + line) }
             }
             if let working = pairing.working { console.working(working) }
-            guard let key = console.key(milliseconds: 100) else {
+            guard let key = console.key(milliseconds: 100, taking: pairing.phase == .confirmed ? [] : [.cancel]) else {
                 if console.closed { console.say("Input closed: nothing paired."); return 1 }
                 continue
             }
@@ -3417,7 +3432,7 @@ public enum ClusterOnboardingDriver {
             }
             if let value = finished.take().first { console.settle(); return value }
             console.workingRows(clock.rows(title, report: latest, now: Date(), width: console.liveWidth))
-            if let key = console.key(milliseconds: 120), leaving(key) { console.settle(); return nil }
+            if let key = console.key(milliseconds: 120, taking: leaving("q") ? [.leave] : []), leaving(key) { console.settle(); return nil }
         }
     }
 
@@ -3475,7 +3490,7 @@ public enum ClusterOnboardingDriver {
             if let value = finished.take().first { result = value; break }
             // The petal keeps turning while a step reports nothing new (the check of every file after a download).
             if let live { console.progress(live, logged: false) }
-            _ = console.key(milliseconds: 200)
+            _ = console.key(milliseconds: 200, taking: [])
         }
         show()
         console.settle()

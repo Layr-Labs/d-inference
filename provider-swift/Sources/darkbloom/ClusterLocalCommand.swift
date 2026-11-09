@@ -37,6 +37,10 @@ extension Cluster {
               help: "Select the unqualified GLM PNG candidate on the paired local leader; exact GLM model id required.")
         var privateGLMImageQualification = false
 
+        @Flag(name: .customLong("app-console"),
+              help: ArgumentHelp("Desktop app: run the onboarding without a terminal, its screens as JSON lines on standard output and its answers read as JSON lines from standard input.", visibility: .hidden))
+        var appConsole = false
+
         var onboardingRequest: ClusterOnboardingRequest {
             .init(scope: .localOnly(bind: bind ?? ClusterServingScope.localOnlyDefaultBind), model: model,
                   privateMiMoImageQualification: privateMiMoImageQualification, privateGLMImageQualification: privateGLMImageQualification)
@@ -60,6 +64,10 @@ extension Cluster {
         }
 
         mutating func run() async throws {
+            if appConsole {
+                return try await Cluster.Setup.runAppOnboarding(config: configOptions.config, modelDir: modelDir, worker: worker,
+                                                                request: onboardingRequest, needsTerminal: Self.needsTerminalLine)
+            }
             guard isatty(STDIN_FILENO) == 1, isatty(STDOUT_FILENO) == 1 else {
                 print(Self.needsTerminalLine)
                 throw ExitCode.failure

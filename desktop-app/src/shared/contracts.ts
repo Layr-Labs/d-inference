@@ -270,12 +270,15 @@ export interface Leader {
   earnings_micro_usd?: string;
 }
 export type Action =
-  // `solo`: on a paired Mac, `start --solo` serves this Mac alone instead of the pair.
+  // `local`: Only me (`--local`); `endpoint`: Both, me first (`--local-endpoint`); `network`:
+  // the Darkbloom network with no local API (`--network`). Each is saved as `[local] mode`, which
+  // later starts follow. `solo`: on a paired Mac, `start --solo` serves this Mac alone.
   | {
       action: 'start' | 'switch';
       models: string[];
       local?: boolean;
       endpoint?: boolean;
+      network?: boolean;
       solo?: boolean;
     }
   | {

@@ -113,7 +113,7 @@ extension EngineV2Bridge {
             // A pair's refusal finalized its lookup too; it keeps its marker
             // and its words (the rule and the model's limits) in-band.
             let (stream, continuation) = AsyncStream<GenerationEvent>.makeStream()
-            continuation.yield(.error(EngineV2Translation.distributedRefusalPrefix + refusal.rawValue + ": " + message))
+            continuation.yield(.error(EngineV2Translation.distributedRefusalMessage(refusal, text: message)))
             continuation.finish()
             return stream
         } catch {
@@ -370,12 +370,13 @@ extension EngineV2Bridge {
             usageSignal: usageSignal)
         // A single Mac slot refuses a prompt that fills its window, naming the
         // window: no output fits after it. Any other prompt's output is already
-        // cut to what it leaves (`outputTokens(requested:promptTokens:)`).
+        // cut to what it leaves (`outputTokens(requested:promptTokens:)`). A
+        // pair's engine refuses the same prompt in the same words.
         if let window = modelWindowTokens, promptTokens.count >= window {
             usageSignal?.finalizeLookup(failure: .policy, fallbackTier: prefixCacheFallbackTier)
             continuation.finish()
             throw MultiModelBatchSchedulerEngineError.promptExceedsContext(
-                Self.promptExceedsContextMessage(contextTokens: window))
+                DistributedRequestRefusal.contextLengthExceededMessage(contextTokens: window))
         }
         let (worstCaseTokens, tokenCountOverflow) = promptTokens.count.addingReportingOverflow(
             cbv2Request.maxTokens)
@@ -1077,23 +1078,23 @@ extension EngineV2Bridge {
             // `token_budget_exhausted:` prefix contract so
             // `fromSchedulerMessage` classifies it as a retryable capacity
             // error (429/503) exactly as the legacy engine's rejections.
-            let distributedProfile = (ownedEngine as? DistributedCBv2Engine)?.profile
-            let message = EngineV2Translation.admissionErrorMessage(for: error, distributedProfile: distributedProfile)
+            let message = EngineV2Translation.admissionErrorMessage(for: error, distributedProfile: distributed?.profile)
             let typed = MultiModelBatchSchedulerEngineError.fromSchedulerMessage(message)
-            // Refused before any stream exists, so a streamed local request
-            // gets its status, not a 200 stream that fails at once: a request
-            // the memory can't hold (this Mac's engine: a paged slot's only
-            // memory gate, one that can never fit its grant; a pair: both
-            // Macs' memory now) gets the 503, and a pair's refusal of this
-            // request (its limits) its typed 400. A refused admission on the
-            // pair's own API has no native terminal for its HTTP writer to
-            // report, so any refusal there is thrown too. Nonthrowing callers
-            // still get the message in-band.
-            let refusedBeforeStream: Bool
-            switch typed {
-            case .tokenBudgetExhausted: refusedBeforeStream = true
-            case .distributedRequestRefused: refusedBeforeStream = distributed != nil
-            default: refusedBeforeStream = distributed != nil && httpResponse != nil
+            // Refusals are typed, as on one Mac: thrown before any stream
+            // exists, so a streamed request gets its status rather than a 200
+            // that fails at once ("Response generation failed": a long prompt
+            // to a Gemma 4 pair on the leader's local API, pair-2 2026-11-08).
+            // - Memory: the 503, on this Mac (a paged slot's only memory gate,
+            //   a request that can never fit its grant) and on a pair (both
+            //   Macs' memory now).
+            // - A pair's refusal of this request by its limits: its typed 400.
+            // - Anything else a pair refuses on its own API, whose HTTP writer
+            //   has no native terminal to report.
+            // Nonthrowing callers still get the message in-band.
+            let refusedBeforeStream = switch typed {
+            case .tokenBudgetExhausted: true
+            case .distributedRequestRefused: distributed != nil
+            default: distributed != nil && httpResponse != nil
             }
             if refusedBeforeStream, !retirementTransfer.isClaimed {
                 continuation.finish()

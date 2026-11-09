@@ -134,8 +134,7 @@ struct PairContextWindowTests {
         let answer = try await Self.answer(bridge, prompt: 8, maxTokens: 8_000, stream: stream)
         #expect(answer.status == 503, "\(answer.body.prefix(300))")
         #expect(answer.contentType == "application/json")
-        #expect(answer.error["message"] as? String == "This Mac's memory can't hold this request right now. Lower "
-            + "max_tokens or shorten the prompt (or send less media), or retry when this Mac's other requests finish.")
+        #expect(answer.error["message"] as? String == memoryRefusalWords)
         #expect(owner.reservedRequests.isEmpty)
         await bridge.shutdown()
     }
@@ -193,6 +192,8 @@ struct PairContextWindowTests {
             context: 1_048_576)
         #expect(ClusterModelFeaturePolicy.servedProfile(glm, mode: .pipeline) == glm.profile.memoryScope)
         #expect(ClusterModelFeaturePolicy.servedProfile(glm, mode: .tensorParallel) == glm.profile)
+        // The one rule the worker's stages read too: only Gemma 4's pipeline serves its whole profile.
+        #expect(ClusterRuntimeAdapter.allCases.filter(\.pipelineServesWholeProfile) == [.gemma4LayerStage])
     }
 
     /// `darkbloom cluster local` lists the context and output its mode serves,

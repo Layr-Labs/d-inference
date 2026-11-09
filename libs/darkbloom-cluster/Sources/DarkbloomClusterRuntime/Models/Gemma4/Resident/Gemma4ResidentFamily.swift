@@ -9,12 +9,6 @@ extension Gemma4ResidentAdmission: LayerStageResidentAdmission {
     var runtimeModelID: String { specification.model.rawValue }
     var supportedGenerationModes: [ClusterGenerationMode] { Gemma4ResidentAdapterDefinition.supportedGenerationModes }
 
-    /// The pipeline serves the model's native context as tensor parallel
-    /// does: LOAD sizes the memory plan's request, and each stage charges a
-    /// longer one at its own context when it is reserved (the whole model's
-    /// ledger, `Gemma4StateBudget`), admitted by that rank's live gate.
-    var servedProfile: QwenLayerStageGenerationProfile { profile }
-
     /// Rank, local path and local uptime are intentionally absent. The explicit
     /// allocator and prefill policies must agree before either stage is loaded.
     func loadAgreementFingerprint() throws -> String {
@@ -53,6 +47,13 @@ extension Gemma4ResidentLoadedStage: LayerStageResidentStage {
         try Gemma4ResidentResourceCeilings(specification: specification).namedStateByteCeiling
     }
 
+    /// One request charged at its own context (`maximumTokens`, its prompt and
+    /// output): the whole model's state ledger, not only this stage's layers,
+    /// and one prefill frame's attention transient over this stage's layers.
+    /// That is why the pipeline serves the model's whole profile while LOAD
+    /// sizes the memory plan's request
+    /// (`ClusterRuntimeAdapter.pipelineServesWholeProfile`): a longer request
+    /// is admitted or refused by this rank's live gate when it is reserved.
     func requestAllowance(plan: QwenLayerStagePlan, rank: Int, maximumTokens: Int, chunkSize: Int,
                           decode: LayerStageDecodeShape,
                           bound: (Int) throws -> Int) throws -> QwenResidentRequestAllowance {

@@ -312,12 +312,16 @@ extension QwenResidentRuntime {
                             return .init(activeBytes: value.activeMemory, cachedBytes: value.cacheMemory,
                                 peakBytes: value.peakMemory)
                         }, clearCache: { Memory.clearCache() }, check: checked)
-                    let prefill = try QwenResidentPrefillSelection.allowance(
-                        QwenResidentPrefillSelection.policy(configuration.prefillSchedule), rank: collective.rank,
-                        promptCount: admission.memoryProfile.maximumPromptTokens, chunkSize: admission.memoryProfile.maximumChunkTokens,
-                        hiddenSize: admission.profile.hiddenSize,
-                        elementBytes: qwenStageWireElementBytes(admission.profile.activationDType),
-                        bound: QwenResidentResourceEnvironment.allocationBound)
+                    // The schedule's named prefill storage for the longest prompt of `p`.
+                    func prefillAllowance(_ p: QwenLayerStageGenerationProfile) throws -> QwenGenerationPrefillAllowance? {
+                        try QwenResidentPrefillSelection.allowance(
+                            QwenResidentPrefillSelection.policy(configuration.prefillSchedule), rank: collective.rank,
+                            promptCount: p.maximumPromptTokens, chunkSize: p.maximumChunkTokens,
+                            hiddenSize: admission.profile.hiddenSize,
+                            elementBytes: qwenStageWireElementBytes(admission.profile.activationDType),
+                            bound: QwenResidentResourceEnvironment.allocationBound)
+                    }
+                    let prefill = try prefillAllowance(admission.memoryProfile)
                     let split = try QwenResidentRuntime.phaseSplitAllowance(mode, admission: admission,
                         stage: loaded, rank: collective.rank, promptCount: admission.memoryProfile.maximumPromptTokens,
                         speculativeTerms: speculativeTerms)
@@ -364,14 +368,8 @@ extension QwenResidentRuntime {
                         maximumTokens: served.maximumContextTokens, chunkSize: served.maximumChunkTokens,
                         decode: .init(mode: mode, rank: collective.rank, speculativeTerms: speculativeTerms),
                         bound: QwenResidentResourceEnvironment.allocationBound)
-                    let longestPrefill = try QwenResidentPrefillSelection.allowance(
-                        QwenResidentPrefillSelection.policy(configuration.prefillSchedule), rank: collective.rank,
-                        promptCount: served.maximumPromptTokens, chunkSize: served.maximumChunkTokens,
-                        hiddenSize: admission.profile.hiddenSize,
-                        elementBytes: qwenStageWireElementBytes(admission.profile.activationDType),
-                        bound: QwenResidentResourceEnvironment.allocationBound)
                     return max(planned, try QwenLongPrefillCheckedBytes.sum([longest.reservedBytes,
-                        longestPrefill?.reservedBytes ?? 0]))
+                        prefillAllowance(served)?.reservedBytes ?? 0]))
                 } catch {
                     // Prefer a recorded native fault over a secondary Swift
                     // validation/shape error before leaving this error scope.

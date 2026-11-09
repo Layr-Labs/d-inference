@@ -64,9 +64,12 @@ public struct DistributedResidentExecutionProfile: Sendable {
     public let maxContextTokens: Int
     /// The prompt, output and context the selected generation mode serves
     /// within the limits above (`ClusterModelFeaturePolicy.servedProfile`):
-    /// all of them in tensor parallel, the memory plan's request in a
-    /// pipeline. A longer request is refused before any rank is asked, and
-    /// the pair's slot reports these (`SlotRequestLimits`).
+    /// all of them in tensor parallel and in a Gemma 4 pipeline, the memory
+    /// plan's request in every other mode. The one source of what the pair
+    /// advertises (its slot's `SlotRequestLimits`, `LocalModelLimits(served:)`)
+    /// and of what it holds a request to: a `max_tokens` past them is cut to
+    /// fit (`EngineV2Bridge.pairServedLimits`), and a prompt past them is
+    /// refused before any rank is asked (`refusal(for:)`).
     public let served: (promptTokens: Int, outputTokens: Int, contextTokens: Int)
     public let requestTimeout: Duration
     /// Whether the selected resident runtime emits committed-token logprobs.
@@ -309,7 +312,8 @@ public enum DistributedEngineError: Error, Sendable, Equatable {
 public enum DistributedRequestRefusal: String, Sendable, Equatable, CaseIterable {
     case emptyPrompt = "empty_prompt"
     /// The prompt fills the context the pair serves: no output fits after it.
-    /// One Mac's code and words for the same bound (`promptExceedsContext`).
+    /// One Mac's code and words for the same bound (`promptExceedsContext`,
+    /// `contextLengthExceededMessage`).
     case contextLengthExceeded = "context_length_exceeded"
     case promptTooLong = "prompt_too_long"
     case invalidMaxTokens = "invalid_max_tokens"
@@ -333,14 +337,10 @@ public enum DistributedRequestRefusal: String, Sendable, Equatable, CaseIterable
 
     /// The client-facing text. With the profile it names the model's limits.
     public func message(_ profile: DistributedResidentExecutionProfile?) -> String {
-        func limit(_ value: Int?) -> String { value.map { " of \($0) tokens" } ?? "" }
+        let limit = Self.limit
         switch self {
         case .emptyPrompt: return "The prompt is empty."
-        case .contextLengthExceeded:
-            // One Mac's words (`EngineV2Bridge.promptExceedsContextMessage`), kept here: the cluster checks
-            // compile this file without the bridge.
-            return "The prompt fills this model's context window\(limit(profile?.served.contextTokens)), leaving no room"
-                + " for an answer. Shorten the prompt or start a new conversation."
+        case .contextLengthExceeded: return Self.contextLengthExceededMessage(contextTokens: profile?.served.contextTokens)
         case .promptTooLong:
             return "The prompt is longer than this model's limit\(limit(profile?.served.promptTokens)) on this cluster."
         case .invalidMaxTokens: return "max_tokens must be at least 1."
@@ -362,6 +362,21 @@ public enum DistributedRequestRefusal: String, Sendable, Equatable, CaseIterable
             return "logit_bias has more than \(ClusterWorkerSampling.maximumLogitBiasEntries) entries."
         }
     }
+
+    /// The words of `context_length_exceeded`: a prompt that fills a context
+    /// window of `contextTokens` (unnamed when nil) leaves no room for an
+    /// answer. The one text for that refusal on one Mac
+    /// (`MultiModelBatchSchedulerEngineError.promptExceedsContext`) and on a
+    /// pair, so a client reads the same answer on both: the window, never
+    /// request content. In this file because the cluster checks compile it
+    /// without the bridge.
+    static func contextLengthExceededMessage(contextTokens: Int?) -> String {
+        "The prompt fills this model's context window\(limit(contextTokens)), leaving no room for an answer."
+            + " Shorten the prompt or start a new conversation."
+    }
+
+    /// " of N tokens", or nothing when the limit is not known here.
+    private static func limit(_ value: Int?) -> String { value.map { " of \($0) tokens" } ?? "" }
 }
 
 extension DistributedResidentExecutionProfile {

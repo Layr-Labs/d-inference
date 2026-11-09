@@ -97,6 +97,15 @@ public enum ClusterRuntimeAdapter: String, Sendable, CaseIterable {
         Self.qwenTensorParallelRuntimeModelIDs.contains(runtimeModelID)
             && Self.registering(runtimeModelID: runtimeModelID) == self
     }
+
+    /// Whether this adapter's layer stages serve its rows' whole profile in the pipeline: LOAD still sizes the
+    /// memory plan's request (`ClusterWorkerProfile.memoryScope`), and each stage charges a longer request at its
+    /// own context when it is reserved (Gemma 4: the whole model's state ledger at the request's context), admitted
+    /// by that rank's live memory gate. Every other adapter's pipeline serves the memory plan's request. The one
+    /// place for this rule: the provider advertises and holds requests to it (`ClusterModelFeaturePolicy.servedProfile`)
+    /// and the worker's stages admit it (`LayerStageResidentAdmission.servedProfile`), so a pair never advertises a
+    /// context its ranks refuse.
+    public var pipelineServesWholeProfile: Bool { self == .gemma4LayerStage }
 }
 
 public struct ClusterRuntimeStage: Equatable, Sendable {

@@ -13,8 +13,9 @@ struct QwenGenerationPrefillAllowance: Encodable, Equatable {
 
     static func derive(rank: Int, promptCount: Int, chunkSize: Int, hiddenSize: Int,
                        elementBytes: Int, bound: (Int) throws -> Int) throws -> Self {
-        guard (0...1).contains(rank), (1...ClusterWorkerLimits.wirePromptTokens).contains(promptCount), (1...512).contains(chunkSize),
-              (1...8192).contains(hiddenSize), [2, 4].contains(elementBytes) else {
+        // Any prompt the wire carries: the request is held to its profile.
+        guard (0...1).contains(rank), (1...ClusterWorkerLimits.wirePromptTokens).contains(promptCount),
+              (1...512).contains(chunkSize), (1...8192).contains(hiddenSize), [2, 4].contains(elementBytes) else {
             throw ProbeError("Invalid lookahead allowance geometry")
         }
         // No next prompt frame exists for a one-chunk request. Both ranks still

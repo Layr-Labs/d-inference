@@ -5522,28 +5522,33 @@ it alone:
   longest context the reservation gate admits now (`servingContextTokens`,
   `refreshServingContext`; kept prefix entries count as room). The paged
   host's bound is the profile's; pages grow with each request.
-- Pipeline: a layer-stage family names the requests its stages serve
-  (`LayerStageResidentAdmission.servedProfile`, the memory plan for every
-  other family). Gemma's is its whole profile. Each stage charges the whole
-  model's ledger (`Gemma4StateBudget`) at the request's context and, on a
-  stage with a full-attention layer, one prompt frame's FP32 scores over the
-  whole context: 6.4 GB and 8.6 GB at 262,144 tokens, against 2.0 GB and
-  2.2 GB at the standard request. Its lookahead frame does not grow with the
-  prompt. READY's capacity covers the longest request, and each stage's
-  serving context is searched up to 262,144; the pair serves the smaller of
-  the two. A pipeline with lanes keeps its READY figure, as every lane owner
-  of the stage modes does.
+- Pipeline: the adapter says whether its stages serve the whole profile
+  (`ClusterRuntimeAdapter.pipelineServesWholeProfile`; the memory plan for
+  every other adapter). The worker's stages
+  (`LayerStageResidentAdmission.servedProfile`) and the provider
+  (`ClusterModelFeaturePolicy.servedProfile`) both read that one rule, so a
+  pair never advertises a context its ranks refuse. Gemma's pipeline serves
+  its whole profile. Each stage charges the whole model's ledger
+  (`Gemma4StateBudget`) at the request's context and, on a stage with a
+  full-attention layer, one prompt frame's FP32 scores over the whole
+  context: 6.4 GB and 8.6 GB at 262,144 tokens, against 2.0 GB and 2.2 GB at
+  the standard request. Its lookahead frame does not grow with the prompt.
+  READY's capacity covers the longest request, and each stage's serving
+  context is searched up to 262,144; the pair serves the smaller of the two.
+  A pipeline with lanes keeps its READY figure, as every lane owner of the
+  stage modes does.
 
 The provider holds a request to what its mode serves
 (`ClusterModelFeaturePolicy.servedProfile`: a Gemma pipeline's whole profile)
 as one Mac holds a request to its window. A `max_tokens` past the output limit,
 or past what the prompt leaves of the context, is cut to fit
-(`EngineV2Bridge.pairServedLimits`). A prompt that fills the context is refused
-with one Mac's 400, `context_length_exceeded`, in one Mac's words
-(`DistributedRequestRefusal.contextLengthExceeded`). A request longer than the
-context both Macs admit now gets one Mac's memory 503. Each refusal is thrown
-before a stream exists, so a streamed request gets its status on the leader's
-local endpoint as on the pair's own API.
+(`EngineV2Bridge.pairServedLimits`, by the rule that cuts one Mac's to its
+window). A prompt that fills the context is refused with one Mac's 400,
+`context_length_exceeded`, in one Mac's words
+(`DistributedRequestRefusal.contextLengthExceededMessage`, one text for both).
+A request longer than the context both Macs admit now gets one Mac's memory
+503. Each refusal is thrown before a stream exists, so a streamed request gets
+its status on the leader's local endpoint as on the pair's own API.
 
 Fingerprints: Gemma's profile fingerprint changes, and with it the capability
 record's `profileFingerprint`, both modes' load agreements, the installed
@@ -5557,6 +5562,8 @@ Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Gemma4/R
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Gemma4/Resident/Gemma4ResidentAdapterDefinition.swift`,
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/LayerStageResident.swift`
 (`servedProfile`, `requireWithinServedProfile`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapability.swift`
+(`pipelineServesWholeProfile`),
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Resident/QwenResidentRuntime+Load.swift`
 and `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`.
 

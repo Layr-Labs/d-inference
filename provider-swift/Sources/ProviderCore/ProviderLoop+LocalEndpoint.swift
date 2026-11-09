@@ -148,8 +148,7 @@ extension ProviderLoop {
         let input = localInputModalities(modelId)
         guard let slot = modelSlots[modelId] else { return input.map { LocalModelLimits(inputModalities: $0) } }
         if let pair = slot.modelContainer.clusterPair {
-            return LocalModelLimits(contextLength: pair.served.contextTokens, maxOutputLength: pair.served.outputTokens,
-                                    inputModalities: input)
+            return LocalModelLimits(served: pair.served, inputModalities: input)
         }
         return LocalModelLimits(window: slot.engineV2.advertisedContextTokens ?? slot.sizing.maxContextLength,
                                 inputModalities: input)

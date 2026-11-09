@@ -44,15 +44,20 @@ enum ClusterModelFeaturePolicy {
     /// The requests a cluster serving `mode` takes within the capability's
     /// profile, as its resident runtime admits them: the whole profile in
     /// tensor parallel, which charges a request beyond the memory plan at its
-    /// own context when a rank reserves it, and in a Gemma 4 pipeline, whose
-    /// stages do the same (`Gemma4ResidentAdmission.servedProfile`); the
-    /// memory plan's request (`ClusterWorkerProfile.memoryScope`) in every
-    /// other mode, whose LOAD gates size it and whose ranks refuse a longer
-    /// reservation (`requireWithinServedProfile`, GLM's pipeline admission).
-    /// The same for every profile within the standard request.
+    /// own context when a rank reserves it, and in the pipeline of an adapter
+    /// whose stages do the same (`ClusterRuntimeAdapter.pipelineServesWholeProfile`,
+    /// the rule the worker's stages read too: Gemma 4); the memory plan's
+    /// request (`ClusterWorkerProfile.memoryScope`) in every other mode, whose
+    /// LOAD gates size it and whose ranks refuse a longer reservation
+    /// (`requireWithinServedProfile`, GLM's pipeline admission). The same for
+    /// every profile within the standard request.
+    ///
+    /// What a pair advertises is what it serves: its slot's request limits,
+    /// both local `/v1/models` lists, the bridge's cut of `max_tokens` and the
+    /// engine's refusals all read this (`DistributedResidentExecutionProfile.served`).
     static func servedProfile(_ capability: ClusterRuntimeCapability, mode: ClusterGenerationMode) -> ClusterWorkerProfile {
-        let wholeProfile = mode == .tensorParallel
-            || (mode == .pipeline && capability.adapterID == ClusterRuntimeAdapter.gemma4LayerStage.rawValue)
+        let wholeProfile = mode == .tensorParallel || (mode == .pipeline
+            && ClusterRuntimeAdapter(rawValue: capability.adapterID)?.pipelineServesWholeProfile == true)
         return wholeProfile ? capability.profile : capability.profile.memoryScope
     }
 

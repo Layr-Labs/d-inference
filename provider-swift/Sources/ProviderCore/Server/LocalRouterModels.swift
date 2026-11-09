@@ -25,6 +25,16 @@ public struct LocalModelLimits: Sendable, Equatable {
     public init(window: Int?, inputModalities: [String]? = nil) {
         self.init(contextLength: window, maxOutputLength: window, inputModalities: inputModalities)
     }
+
+    /// A pair's limits: the context and the output its mode serves
+    /// (`DistributedResidentExecutionProfile.served`), never its profile's when
+    /// the mode serves less. They are what its slot reports to the coordinator
+    /// and what its bridge cuts a `max_tokens` to, so a client that sizes a
+    /// request from the list is served.
+    init(served: (promptTokens: Int, outputTokens: Int, contextTokens: Int), inputModalities: [String]? = nil) {
+        self.init(contextLength: served.contextTokens, maxOutputLength: served.outputTokens,
+                  inputModalities: inputModalities)
+    }
 }
 
 /// One entry of the router's `/v1/models`: the integration contract for OpenCode and Hermes.

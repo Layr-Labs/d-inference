@@ -105,7 +105,7 @@ public final class QwenResidentRuntime {
             found = admitted.contextTokens; room = admitted.roomBytes
         } catch {
             guard String(describing: error).hasPrefix("Resident load refused: not even") else { return nil }
-            found = min(admission.servedProfile.maximumContextTokens, admission.servedProfile.maximumChunkTokens + 1)
+            found = LayerStageContextGate.minimumContextTokens(admission.servedProfile)
         }
         // The cache's budget follows the room beside the serving context now, in
         // both directions (models stay loaded until unloaded, so a dip at load
@@ -312,7 +312,7 @@ public final class QwenResidentRuntime {
         }
         func admits(_ context: Int) throws -> Bool { try judge(context).admitted }
         // One prefill frame and one output token: the least a loaded stage serves.
-        let minimum = min(maximumContext, served.maximumChunkTokens + 1)
+        let minimum = LayerStageContextGate.minimumContextTokens(served)
         let plain = try QwenResidentContextAdmission.largest(minimum: minimum, maximum: maximumContext, admits: admits)
         // A Mac whose memory bounds the context keeps room for the prompt-prefix cache when that costs at most a
         // quarter of the context: the largest context left the cache no budget at all (0.4 MB beside 29,072 tokens

@@ -10,10 +10,12 @@ import Foundation
 /// (`servingContextTokens`), so the pair refuses a longer request before
 /// either rank is asked.
 ///
-/// The terms are LOAD's (`Gemma4TensorParallelRequestBudget`) at the request's
-/// context instead of the memory plan's: this rank's own KV heads, its query
+/// The one place this rank's charges are derived (`budget`): LOAD's quote, a
+/// reservation or lane at its own context, prompt and chunk, the share probe,
+/// READY's capacity and the serving context all take the same terms
+/// (`Gemma4TensorParallelRequestBudget`): this rank's own KV heads, its query
 /// heads' attention transient, the FP32 partials, the vocabulary rows and the
-/// prompt-prefix capture at the request's longest prompt.
+/// prompt-prefix capture.
 struct Gemma4TensorParallelRequestCharge {
     /// What the pair advertises and holds a request to.
     let profile: QwenLayerStageGenerationProfile
@@ -33,12 +35,23 @@ struct Gemma4TensorParallelRequestCharge {
         self.allocationBound = allocationBound
     }
 
+    /// One request of `contextTokens` (its prompt and output) prefilled in
+    /// chunks of `chunkTokens`, with the capture of a prompt of `promptTokens`
+    /// (nil: the context's longest) when `keepsPrefixes` (nil: this rank's
+    /// setting; a request whose cache is off, or the share probe, captures
+    /// none), every array at the allocator's bound.
+    func budget(contextTokens: Int, chunkTokens: Int, promptTokens: Int? = nil,
+                keepsPrefixes: Bool? = nil) throws -> Gemma4TensorParallelRequestBudget {
+        try .derive(contextTokens: contextTokens, chunkTokens: chunkTokens, promptTokens: promptTokens,
+            keepsPrefixes: keepsPrefixes ?? self.keepsPrefixes, allocationBound: allocationBound)
+    }
+
     /// LOAD's quote: one request at the memory plan's longest context, with
     /// the memory plan's longest prompt's capture.
     var memoryPlan: Gemma4TensorParallelRequestBudget {
         get throws {
-            try .derive(contextTokens: memory.maximumContextTokens, chunkTokens: memory.maximumChunkTokens,
-                promptTokens: memory.maximumPromptTokens, keepsPrefixes: keepsPrefixes, allocationBound: allocationBound)
+            try budget(contextTokens: memory.maximumContextTokens, chunkTokens: memory.maximumChunkTokens,
+                promptTokens: memory.maximumPromptTokens)
         }
     }
 
@@ -47,9 +60,8 @@ struct Gemma4TensorParallelRequestCharge {
         guard (2...profile.maximumContextTokens).contains(contextTokens) else {
             throw ProbeError("Gemma tensor-parallel charge needs a context within the profile")
         }
-        return try Gemma4TensorParallelRequestBudget.derive(contextTokens: contextTokens,
-            chunkTokens: profile.maximumChunkTokens, promptTokens: min(profile.maximumPromptTokens, contextTokens - 1),
-            keepsPrefixes: keepsPrefixes, allocationBound: allocationBound).requestBytes
+        return try budget(contextTokens: contextTokens, chunkTokens: profile.maximumChunkTokens,
+            promptTokens: min(profile.maximumPromptTokens, contextTokens - 1)).requestBytes
     }
 
     /// READY's request capacity: LOAD's quote, or one request at the
@@ -85,7 +97,7 @@ struct Gemma4TensorParallelRequestCharge {
     /// when it is reserved.
     func servingContextTokens(reclaimableBytes: Int, on os: QwenDenseStageLoadOSObservation, now: UInt64) throws -> Int? {
         guard profile.maximumContextTokens > memory.maximumContextTokens else { return nil }
-        let minimum = min(profile.maximumContextTokens, profile.maximumChunkTokens + 1)
+        let minimum = LayerStageContextGate.minimumContextTokens(profile)
         // Charges grow with the context: the search is over a monotone gate.
         return try QwenResidentContextAdmission.largest(minimum: minimum, maximum: profile.maximumContextTokens) {
             try admits(contextTokens: $0, reclaimableBytes: reclaimableBytes, on: os, now: now)

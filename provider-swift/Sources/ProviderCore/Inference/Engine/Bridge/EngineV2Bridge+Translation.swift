@@ -278,9 +278,10 @@ enum EngineV2Translation {
     /// stopping): retry later, 503.
     static let distributedUnavailableMessage = "distributed_session_unavailable"
 
-    static func distributedRefusalMessage(_ refusal: DistributedRequestRefusal,
-                                          profile: DistributedResidentExecutionProfile?) -> String {
-        distributedRefusalPrefix + refusal.rawValue + ": " + refusal.message(profile)
+    /// A refusal and its client-facing text as the marker: the one encoding,
+    /// whether the text was just rendered or carried by a typed refusal.
+    static func distributedRefusalMessage(_ refusal: DistributedRequestRefusal, text: String) -> String {
+        distributedRefusalPrefix + refusal.rawValue + ": " + text
     }
 
     static func distributedRefusal(fromMessage message: String) -> (refusal: DistributedRequestRefusal, message: String)? {
@@ -304,7 +305,7 @@ enum EngineV2Translation {
         if let distributed = error as? DistributedEngineError {
             switch distributed {
             case .refused(let refusal):
-                return distributedRefusalMessage(refusal, profile: distributedProfile)
+                return distributedRefusalMessage(refusal, text: refusal.message(distributedProfile))
             case .unavailable:
                 return distributedUnavailableMessage
             case .shuttingDown:
@@ -407,10 +408,13 @@ extension EngineV2Bridge {
     ///   coordinator sizes a request by its own estimate of the prompt, so one it
     ///   sends may pass the window once tokenized here, and is served within it.
     ///   Only a prompt that leaves no room is refused (`promptExceedsContext`);
-    /// - on a pair (`pairServedLimits`) `requested` is cut the same way, to the
-    ///   output limit and the context its mode serves; a prompt that leaves no
-    ///   room is refused by the pair's engine, in one Mac's words
-    ///   (`DistributedRequestRefusal.contextLengthExceeded`).
+    /// - on a pair (`pairServedLimits`) `requested` is cut by the same rule, to
+    ///   the output limit and the context its mode serves (one Mac's output
+    ///   limit is its window); a prompt that leaves no room is refused by the
+    ///   pair's engine, in one Mac's code and words
+    ///   (`DistributedRequestRefusal.contextLengthExceeded`). These are the
+    ///   limits the pair lists in `/v1/models` and reports to the coordinator,
+    ///   so a client that sizes `max_tokens` from the list is served.
     /// Resolving the result again for the same prompt gives the same value, so
     /// the text path can name it on the request before the bridge resolves it.
     nonisolated func outputTokens(requested: Int?, promptTokens: Int) -> Int {
@@ -418,20 +422,8 @@ extension EngineV2Bridge {
             return EngineV2Translation.defaultOutputTokens(defaultMaxTokens, promptTokens: promptTokens,
                 contextLimit: defaultOutputContextLimit)
         }
-        if let pair = pairServedLimits {
-            guard promptTokens < pair.contextTokens else { return requested }
-            return min(requested, pair.outputTokens, pair.contextTokens - promptTokens)
-        }
-        guard let window = modelWindowTokens, promptTokens < window else { return requested }
-        return min(requested, window - promptTokens)
-    }
-
-    /// The refusal of a prompt that leaves no room in the model window, in the
-    /// words a client sees: the window, never request content. A pair refuses
-    /// in the same words (`DistributedRequestRefusal.contextLengthExceeded`,
-    /// which keeps its own copy; `PairContextWindowTests` holds them equal).
-    static func promptExceedsContextMessage(contextTokens: Int) -> String {
-        "The prompt fills this model's context window of \(contextTokens) tokens, leaving no room for an answer. "
-            + "Shorten the prompt or start a new conversation."
+        guard let limits = pairServedLimits ?? modelWindowTokens.map({ (outputTokens: $0, contextTokens: $0) }),
+              promptTokens < limits.contextTokens else { return requested }
+        return min(requested, limits.outputTokens, limits.contextTokens - promptTokens)
     }
 }

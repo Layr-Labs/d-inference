@@ -185,8 +185,7 @@ struct LocalContextWindowTests {
         let answer = try await Self.answer(bridge, tokenizer: tokenizer, stream: stream)
         #expect(answer.status == 503)
         #expect(answer.contentType == "application/json")
-        #expect(answer.error["message"] as? String == "This Mac's memory can't hold this request right now. Lower "
-            + "max_tokens or shorten the prompt (or send less media), or retry when this Mac's other requests finish.")
+        #expect(answer.error["message"] as? String == memoryRefusalWords)
         #expect(engine.submissions == 1)
         await bridge.shutdown()
     }
@@ -209,8 +208,7 @@ struct LocalContextWindowTests {
         let answer = try await Self.answer(bridge, tokenizer: tokenizer, stream: stream)
         #expect(answer.status == 503)
         #expect(answer.contentType == "application/json")
-        #expect(answer.error["message"] as? String == "This Mac's memory can't hold this request right now. Lower "
-            + "max_tokens or shorten the prompt (or send less media), or retry when this Mac's other requests finish.")
+        #expect(answer.error["message"] as? String == memoryRefusalWords)
         #expect(engine.submittedOutputs.isEmpty)
         await bridge.shutdown()
     }

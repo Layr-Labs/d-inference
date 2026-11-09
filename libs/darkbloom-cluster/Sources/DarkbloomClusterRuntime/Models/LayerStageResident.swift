@@ -17,8 +17,6 @@ protocol LayerStageResidentAdmission {
     var profile: QwenLayerStageGenerationProfile { get }
     /// The request every LOAD gate of the stage modes charges (default: the profile).
     var memoryProfile: QwenLayerStageGenerationProfile { get }
-    /// The requests the stage modes admit (default: the memory plan's).
-    var servedProfile: QwenLayerStageGenerationProfile { get }
     var arithmeticContract: String { get }
     var arithmeticSHA256: String { get }
     /// What both ranks compare before either stage is read. Rank, local path
@@ -43,11 +41,16 @@ extension LayerStageResidentAdmission {
     /// (`QwenResidentAdmission.memoryProfile`).
     var memoryProfile: QwenLayerStageGenerationProfile { profile }
 
-    /// The layer-stage modes size LOAD for `memoryProfile` and, by default,
-    /// serve no longer request. A family whose stages charge a longer request
-    /// at its own context when a rank reserves it serves its whole profile
-    /// (Gemma 4: `Gemma4ResidentAdmission.servedProfile`).
-    var servedProfile: QwenLayerStageGenerationProfile { memoryProfile }
+    /// The layer-stage modes size LOAD for `memoryProfile`. They serve the
+    /// whole profile when the adapter registering this row says its stages
+    /// charge a longer request at its own context
+    /// (`ClusterRuntimeAdapter.pipelineServesWholeProfile`: Gemma 4), and no
+    /// longer request than the memory plan's otherwise. The provider reads the
+    /// same rule for what it advertises, so the two never differ.
+    var servedProfile: QwenLayerStageGenerationProfile {
+        ClusterRuntimeAdapter.registering(runtimeModelID: runtimeModelID)?.pipelineServesWholeProfile == true
+            ? profile : memoryProfile
+    }
 
     /// A longer request than `servedProfile` is not served by the layer-stage
     /// modes (their READY's serving context says so too). Every request within

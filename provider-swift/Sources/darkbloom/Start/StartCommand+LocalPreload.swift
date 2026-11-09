@@ -38,8 +38,8 @@ final class LocalStartupPreloadBarrier: @unchecked Sendable {
 extension Start {
     /// Standalone preload runs before binding HTTP. Install a temporary signal
     /// handler first so Ctrl-C can stop startup even if one load is wedged.
-    internal func runLocalStartupPreload(
-        server: StandaloneServer, config: ProviderConfig
+    internal func runLocalStartupPreload<Server: OnlyMeServer>(
+        server: Server, config: ProviderConfig, termination: ProviderTermination = .shared
     ) async -> Bool {
         guard config.backend.startupPreload else { return true }
         let barrier = LocalStartupPreloadBarrier()
@@ -48,7 +48,7 @@ extension Start {
                 configuredModelIDs: config.backend.preloadModels)
             barrier.complete(summary)
         }
-        await ProviderTermination.shared.install {
+        await termination.install {
             preload.cancel()
             barrier.interrupt()
             return true
@@ -57,7 +57,7 @@ extension Start {
         case .interrupted:
             return false
         case .completed(let summary):
-            guard !(await ProviderTermination.shared.terminationRequested) else {
+            guard !(await termination.terminationRequested) else {
                 return false
             }
             print("Startup preload: \(summary.loaded.count) model(s) loaded")

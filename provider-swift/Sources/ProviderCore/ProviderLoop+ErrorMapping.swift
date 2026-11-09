@@ -69,8 +69,8 @@ extension ProviderLoop {
         case .modelNotLoaded, .noModelLoadedForTokenization:
             return .modelLoad
         case .invalidRole, .invalidToolPayload, .missingUserQuery, .unsupportedReasoningEffort,
-            .unsupportedNativeReasoningEffort, .mediaUnsupportedByModel, .multimodalRejected,
-            .advertisedContextExceeded, .unsupportedOutputControl:
+            .conflictingReasoningEfforts, .mediaUnsupportedByModel, .multimodalRejected,
+            .advertisedContextExceeded, .promptExceedsContext, .unsupportedOutputControl:
             return .clientError
         case .toolChoiceViolation:
             return .toolNoncompliance
@@ -168,7 +168,8 @@ extension ProviderLoop {
             case .modelNotLoaded, .noModelLoadedForTokenization:
                 return .modelUnavailable
             case .invalidRole, .invalidToolPayload, .missingUserQuery, .unsupportedReasoningEffort,
-                .unsupportedNativeReasoningEffort, .advertisedContextExceeded, .unsupportedOutputControl:
+                .conflictingReasoningEfforts, .advertisedContextExceeded, .promptExceedsContext,
+                .unsupportedOutputControl:
                 return .invalidRequest
             case .toolChoiceViolation, .generationFailed:
                 return .generationFailure
@@ -273,9 +274,9 @@ extension ProviderLoop {
                 return 400
             case .invalidToolPayload, .missingUserQuery:
                 return 400
-            case .unsupportedReasoningEffort, .unsupportedNativeReasoningEffort:
+            case .unsupportedReasoningEffort, .conflictingReasoningEfforts:
                 return 400
-            case .advertisedContextExceeded, .unsupportedOutputControl:
+            case .advertisedContextExceeded, .promptExceedsContext, .unsupportedOutputControl:
                 return 400
             case .toolChoiceViolation:
                 // The MODEL failed the forced tool_choice contract — output-

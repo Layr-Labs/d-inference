@@ -183,6 +183,17 @@ struct ClusterPairSummary: Sendable, Equatable {
     /// "This Mac is in a two-Mac cluster with the other Mac (Apple M5 Max, 128 GB): stopping both Macs."
     func actingLine(_ action: String) -> String { "This Mac is in a two-Mac cluster with \(otherMac): \(action)." }
 
+    /// The line `darkbloom start` says in a terminal before the pair's screen, in words for what that screen does: on the
+    /// leading Mac of a stopped pair, Enter starts the model last used (before one is chosen, the choice); otherwise the
+    /// screen shows the pair as it is, and the Mac that follows starts nothing there. Never "starting": nothing starts
+    /// before a choice (journey 2a on pair-2, J2-d).
+    var screenLine: String {
+        guard role == .leader, !started else { return actingLine("opening the pair's screen") }
+        let stopped = "This Mac is in a two-Mac cluster with \(otherMac), which is stopped."
+        guard let model else { return stopped + " Choose its model to start it." }
+        return stopped + " Press Enter to start it with \(model) (last used), or choose another model."
+    }
+
     static let stoppedLine =
         "Stopped on both Macs. They stay stopped after a restart; `\(Self.cli) start` on either Mac starts the pair again."
     /// A stop both Macs accepted whose parts haven't all ended yet (`stop` waits for them, bounded).
@@ -201,7 +212,42 @@ struct ClusterPairSummary: Sendable, Equatable {
         "Memory: not checked (" + (failure.first ?? "no answer") + ")"
     }
     static let unreachableLine = "This Mac's cluster can't be reached from this command; run `\(Self.cli) cluster` on this Mac to see it."
-    static let noModelLine = "No model was chosen for the pair yet: run `\(Self.cli) start` in a terminal to choose one."
+
+    /// A pair with no model yet: where its model is chosen. Only the leading Mac's screen has the model list (the Mac
+    /// that follows shows the pair and starts nothing, `darkbloom start` in a terminal there included), so the line names
+    /// the leading Mac, from this Mac's point of view (#1905's review: it said `darkbloom start` in a terminal on either
+    /// Mac).
+    var noModelLine: String {
+        "No model was chosen for the pair yet: choose one with `\(Self.cli) cluster` in a terminal on \(leadingMac)."
+    }
+
+    /// The pair's state as the desktop app is told it (`Snapshot.pair.state`), from this Mac's own view: no other Mac is
+    /// asked, as the snapshot reads `local()`. `serving` only where that view knows it (the part that runs rank 0 says
+    /// so); `started` where the pair runs here and this Mac can't tell (the Mac that follows reads no pair line of its
+    /// own); `notRunning` for a started pair that doesn't run here (its other Mac stopped taking part, or this Mac's
+    /// cluster service is off); `stopped`; `unreadable` when the pairing record can't be read.
+    enum AppState: String, Sendable {
+        case serving, started, notRunning = "not_running", stopped, unreadable
+    }
+
+    var appState: AppState {
+        if pairingUnreadable { return .unreadable }
+        if !started { return .stopped }
+        if pairIdle { return .notRunning }
+        return state == .serving ? .serving : .started
+    }
+
+    /// The pair as the desktop app's words say it, without a final period: "serves" only where this Mac's own view says
+    /// the pair serves (#1905's review: "This Mac serves in a pair" was said in every state).
+    var appPairSentence: String {
+        switch appState {
+        case .serving: return "This Mac serves in a pair"
+        case .stopped: return "This Mac is in a pair, which is stopped"
+        case .notRunning: return "This Mac is in a pair that isn't running here"
+        case .started: return "This Mac is in a pair"
+        case .unreadable: return "This Mac's pairing record couldn't be read, so it may be in a pair"
+        }
+    }
 
     /// After a stop, what each Mac has left running (`cluster verify-teardown`'s lines): one line when nothing is.
     static func memoryLines(_ lines: [String]) -> [String] {
@@ -288,12 +334,30 @@ struct ClusterPairSummary: Sendable, Equatable {
             + "here: `\(Self.cli) stop` on \(otherMac) stops the pair."
     }
 
-    /// The desktop app's Start on a paired Mac named `models` (`start --model <id>`); the pair started with its own. One
-    /// line the app shows when that isn't the one model named; nil when it is, or when no model was named.
-    func appStartModelLine(named models: [String]) -> String? {
-        guard !models.isEmpty, let saved = modelID, models != [saved] else { return nil }
-        return "This Mac serves in a pair: started the pair with \(modelName ?? saved); `\(Self.cli) cluster` changes its model."
+    /// The desktop app's Start on a paired Mac (`Start.appStartOptions`): after the pair's own lines, what the app asked
+    /// for and the pair didn't take. After a start that serves (`code` 0) or doesn't serve yet (3), one line when it named
+    /// another model than the pair's (`models`), and one when it asked for a local API (`localEndpoint`) that the pair
+    /// doesn't give this Mac. Nothing after another outcome: the pair's lines say it.
+    func appStartLines(named models: [String], localEndpoint: Bool, code: Int32) -> [String] {
+        guard code == 0 || code == 3 else { return [] }
+        var lines: [String] = []
+        if !models.isEmpty, let saved = modelID, models != [saved] {
+            let name = modelName ?? saved
+            let outcome = code == 0 ? "This Mac serves in a pair: the pair serves \(name)"
+                : "This Mac is in a pair: the pair was asked to start with \(name), and isn't serving (above)"
+            lines.append(outcome + "; `\(Self.cli) cluster` changes its model.")
+        }
+        if localEndpoint, !givesThisMacALocalAPI {
+            lines.append("No local API was added on this Mac: a pair's local API comes from how the pair serves "
+                + "(`\(Self.cli) cluster` on the leading Mac changes it).")
+        }
+        return lines
     }
+
+    /// The pair serves a local API on this Mac: Only me on both Macs (the other Mac relays its own port to the leader's),
+    /// Both, me first on the Mac that leads, whose part runs rank 0. The role says so before the pair runs too, as when
+    /// the app's Start reads it (`localAPI.runsRankZero` only once it runs). Through Darkbloom alone, on neither.
+    var givesThisMacALocalAPI: Bool { localOnly || (localAPI != nil && leads) }
 
     /// `darkbloom stop`, `start --solo`, `restart` and `update` on a Mac whose pair doesn't run, before its leftover part
     /// stops: what they do, said while nothing has changed yet.
@@ -454,9 +518,6 @@ extension ClusterPairSummary {
     /// (`ClusterControlNode.mode`: running the cluster, or confirming its claim).
     static let otherMacPresentModes: Set<String> = ["cluster", "confirming"]
 
-    /// The coordinator's pairing, in the status line's reason place: progress, not a reason (`pairLook`'s wait).
-    static let pairingProgress: Set<String> = ["the coordinator paired both Macs", "waiting for the coordinator to pair both Macs"]
-
     /// A reason that ends a start's wait: one that needs a person (a login, the clock, a coordinator rule, matching
     /// builds, a pair not offered to Darkbloom, which only a new plan or approval changes, single-Mac serving on a Mac). Others (Apple verification
     /// retrying, memory freeing, a busy or reconnecting Mac, the coordinator retrying) are waited through, as the setup
@@ -478,7 +539,9 @@ extension ClusterPairSummary {
         }
         if first.hasPrefix("Serving ") { return (.serving, nil) }
         if let reason = ClusterOnboardingNotServing.reason(inStatusLine: first) {
-            return (Self.pairingProgress.contains(reason) ? .loading : .notServing, reason)
+            // What the pair waits for (the coordinator's pairing, or Apple's check of a new part) is progress, read as
+            // loading: the leading Mac's look turns Apple's check into the ✗ only once its warning is real.
+            return (ClusterOnboardingPairWait.isProgress(reason) ? .loading : .notServing, reason)
         }
         if first.hasPrefix("Stopped") { return (.stopped, nil) }
         if first.hasPrefix("Loading ") || first.hasPrefix("Starting ") || first == ClusterOnboardingUpdate.statusLine
@@ -504,6 +567,12 @@ extension ClusterPairSummary {
         return reason
     }
 
+    /// The Mac left behind by `darkbloom cluster leave` on the other Mac stays paired, and can't tell that Mac having
+    /// left from it being off: where its lines say how to start the pair, they say how to leave it too.
+    static var leftBehindLine: String {
+        "If the other Mac left the pair, `\(cli) cluster leave` here unpairs this Mac too."
+    }
+
     /// What to do next, in commands.
     var next: String? {
         switch state {
@@ -515,12 +584,18 @@ extension ClusterPairSummary {
             if reason != nil { return "Both Macs keep trying by themselves; `\(Self.cli) cluster` on \(leadingMac) shows more." }
             return "Loading takes a few minutes for a large model; check again with `\(Self.cli) cluster status`."
         case .stopped:
-            return "`\(Self.cli) start` on either Mac starts the pair again."
+            // Not "on either Mac": the other Mac may have left the pair, which this Mac can't tell from it being off.
+            return "`\(Self.cli) start` starts the pair again."
                 + (serviceRunning ? "" : " This Mac's cluster service is off; `\(Self.cli) start` here turns it back on.")
+                + " " + Self.leftBehindLine
         case .otherMacAway:
             return "\(ClusterOnboardingMacName.sentence(otherMac)) isn't answering over the cable. Its cluster service may "
                 + "have been turned off with `\(Self.cli) cluster stop --service`, or that Mac is asleep, off, or waiting for "
                 + "someone to log in. On that Mac, run `\(Self.cli) start` (or `\(Self.cli) cluster`)."
+                // Named only where `start --solo` serves (`Start.pairStart`: `pairIdle`): once this Mac's part was given
+                // up, it holds no serving lock. Before that, --solo would be refused.
+                + (pairIdle ? " Or serve this Mac alone: `\(Self.cli) start --solo`." : "")
+                + " " + Self.leftBehindLine
         case .notServing:
             if let words = localNetworkWords { return words.next }
             let reason = reason ?? ""
@@ -609,7 +684,8 @@ extension ClusterPairSummary {
         if let speculationNote { out.append(speculationNote) }
         if let idle = startedButNotRunningLine {
             out.append(idle)
-            out.append("Next: `\(Self.cli) start --solo` serves this Mac alone; `\(Self.cli) start` starts the pair again.")
+            out.append("Next: `\(Self.cli) start --solo` serves this Mac alone; `\(Self.cli) start` starts the pair again. "
+                + Self.leftBehindLine)
             return out
         }
         out.append(contentsOf: stateLines)

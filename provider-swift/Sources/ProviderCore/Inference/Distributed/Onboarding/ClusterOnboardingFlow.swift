@@ -1896,11 +1896,13 @@ public enum ClusterOnboardingDriver {
     /// The other Mac does not answer over the cable: that Mac by the name pairing showed, its likely reasons and the one
     /// thing to do there. Silence is not a broken pairing, so it is followed by Start over (which asks first), never by
     /// Pair again (2026-11-04 UX audit P3: a Mac asleep, at its FileVault login after a restart, or with its cluster
-    /// service stopped was offered Pair again after 8 s of silence).
+    /// service stopped was offered Pair again after 8 s of silence). A Mac that left the pair (`darkbloom cluster leave`)
+    /// is silent too, and this Mac can't tell: what to do here then, last.
     public static func otherMacSilentLine(_ other: String?) -> String {
         ClusterOnboardingMacName.sentence(ClusterOnboardingMacName.other(named: other))
             + " isn't answering over the cable. Its cluster service is off, or that Mac is asleep, off, or waiting for someone "
-            + "to log in. On that Mac, run `darkbloom start` or `darkbloom cluster`."
+            + "to log in. On that Mac, run `darkbloom start` or `darkbloom cluster`. If it left the pair, choose Start over "
+            + "to pair again, or Quit and run `darkbloom cluster leave` here."
     }
 
     /// The saved pairing cannot be used: why, in one sentence, then Pair again or Quit (which changes nothing).

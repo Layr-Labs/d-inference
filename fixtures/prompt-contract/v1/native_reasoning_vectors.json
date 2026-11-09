@@ -405,7 +405,7 @@
     }
   },
   {
-    "name": "native-high-rejected",
+    "name": "native-high-renders-xhigh",
     "model_type": "qwen4_exp",
     "request": {
       "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
@@ -431,10 +431,12 @@
         "effort": "high"
       }
     },
-    "error": true
+    "additional_context": {
+      "reasoning_effort": "xhigh"
+    }
   },
   {
-    "name": "native-minimal-rejected",
+    "name": "native-minimal-renders-low",
     "model_type": "qwen4_exp",
     "request": {
       "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
@@ -460,7 +462,9 @@
         "effort": "minimal"
       }
     },
-    "error": true
+    "additional_context": {
+      "reasoning_effort": "low"
+    }
   },
   {
     "name": "native-enabled-false-precedence",
@@ -645,7 +649,7 @@
     "error": true
   },
   {
-    "name": "native-effort-space-rejected",
+    "name": "native-effort-space-renders-low",
     "model_type": "qwen4_exp",
     "request": {
       "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
@@ -671,7 +675,86 @@
         "effort": " low "
       }
     },
+    "additional_context": {
+      "reasoning_effort": "low"
+    }
+  },
+  {
+    "name": "native-max-renders-xhigh",
+    "model_type": "qwen4_exp",
+    "request": {
+      "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Please call weather."
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "weather",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        }
+      ],
+      "reasoning": {
+        "effort": "max"
+      }
+    },
+    "additional_context": {
+      "reasoning_effort": "xhigh"
+    }
+  },
+  {
+    "name": "native-unknown-effort-rejected",
+    "model_type": "qwen4_exp",
+    "request": {
+      "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Please call weather."
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "weather",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        }
+      ],
+      "reasoning": {
+        "effort": "turbo"
+      }
+    },
     "error": true
+  },
+  {
+    "name": "qwen38-raw-max-renders-xhigh",
+    "model_type": "qwen3_5",
+    "request": {
+      "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Please call weather."
+        }
+      ],
+      "reasoning_effort": "max"
+    },
+    "additional_context": {
+      "reasoning_effort": "xhigh"
+    }
   },
   {
     "name": "null-tool-choice-is-auto",

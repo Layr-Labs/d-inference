@@ -1,6 +1,6 @@
 # Set up Darkbloom with an AI agent
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-08
 
 This page is a setup prompt for an AI agent. The agent installs Darkbloom,
 logs in with the person's help, makes one Mac (or two Macs joined by one
@@ -621,7 +621,7 @@ Check all three:
    | `3` | `not_serving` with another `reason` | Follow `next` and [troubleshooting](#troubleshooting) |
    | `3` | `loading`, `unknown` | Check again every few minutes, for up to 15 minutes, without restarting anything (rule 8). If it still says so after 15 minutes, **STOP**: the human runs `darkbloom cluster` on the leader, which shows more |
    | `4` | `stopped` | The pair is stopped. If the other Mac isn't answering too, the lines add ``The other Mac (…) isn't answering over the cable.``. During a model or mode change, or while the pair updates Darkbloom, `status` and `cluster status` can read `stopped` (exit 4) or `unknown` for a minute or two while the pair is actually reloading. If such a change happened recently, or the status showed "Updating…", wait about a minute and check again before you act. Only if it still reads `stopped`: **STOP**, ask the human, then run `darkbloom start` |
-   | `5` | `other_mac_away` | The other Mac isn't answering over the cable. **STOP**: `next` says why and what to run on that Mac |
+   | `5` | `other_mac_away` | The other Mac isn't answering over the cable. **STOP**: `next` says why and what to run on that Mac, and, once this Mac's part was given up, that `darkbloom start --solo` serves this Mac alone (only with the human's go) |
    | `6` | `not_paired` | This Mac isn't in a pair. Go back to [step 5](#5-two-macs-pair-them) |
    | `7` | `pairing_unreadable` | This Mac's pairing record couldn't be read. **STOP**: the human runs `darkbloom cluster` on this Mac to check it |
 
@@ -692,16 +692,27 @@ otherwise ([stopping and starting again](two-mac-cluster.md#stopping-and-startin
 | List the cluster commands | Any Mac | `darkbloom cluster --help` |
 
 `darkbloom start` without a terminal needs a model chosen earlier. Otherwise
-it says ``No model was chosen for the pair yet: run `darkbloom start` in a
-terminal to choose one.`` and exits with status 1. Other single-Mac options
+it says ``No model was chosen for the pair yet: choose one with `darkbloom
+cluster` in a terminal on this Mac.`` (on the Mac that follows: ``… on the
+other Mac (…).``, which leads) and exits with status 1. Other single-Mac options
 are refused there by name, without `--solo` (exit status 64); `--model <id>`
 (and `--local-endpoint`), the desktop app's Start, start the pair with its own
-model and end with ``This Mac serves in a pair: started the pair with <model>;
-`darkbloom cluster` changes its model.`` when that isn't `<id>`.
-Without a terminal it looks like this:
+model and end with ``This Mac serves in a pair: the pair serves <model>;
+`darkbloom cluster` changes its model.`` when that isn't `<id>` (after exit
+status 3: ``This Mac is in a pair: the pair was asked to start with <model>, and
+isn't serving (above); …``).
+Without a terminal, a stopped pair's start looks like this. `checking both
+Macs with Apple` is the usual first minute of each part, not a failure: wait
+through it. On a pair that already serves, the first line is ``…: the pair
+already serves.``, the result block follows at once, and nothing is asked of
+either Mac.
 
 ```text
 This Mac is in a two-Mac cluster with the other Mac (Apple M5 Max, 128 GB): starting the pair.
+  Qwen 3.8 27B: registering both Macs with the coordinator for pairing.
+  Waiting until the pair serves (up to 10 min).
+  Qwen 3.8 27B is not serving yet: checking both Macs with Apple.
+  Qwen 3.8 27B is not serving yet: the coordinator paired both Macs.
 ✓ Serving Qwen 3.8 27B through Darkbloom on both Macs (tensor parallel).
   Model:   Qwen 3.8 27B · tensor parallel · M3 Ultra 50% / M5 Max 50%
   Macs:    this Mac (Mac Studio) leads · the other Mac (Apple M5 Max, 128 GB) follows
@@ -794,7 +805,7 @@ port setup and the shared models for the other app, so it asks for no password
 
 | Signal | Cause | Do |
 |---|---|---|
-| The console says the Mac is waiting for verification, or `✗ Not serving: <Mac> isn't verified by Apple yet; Darkbloom retries by itself at about HH:MM. Don't restart either Mac until then.` | Apple's App Attest has not verified that Mac yet. The coordinator sends work only to verified Macs, and pairs only those | Run `darkbloom doctor` on that Mac. If `app attest key — no usable key; the local key-generation safeguard clears in <time>` appears, wait that long. Don't restart, stop or start anything, and don't delete Keychain items. Leave the Macs alone: Darkbloom retries by itself. Check every few minutes with `darkbloom status` (one Mac) or `darkbloom cluster status` (a pair). From 0.10.8, a stop, an update or a lost connection during Apple's call keeps the attestation, but a crash or a forced kill still blocks a new key for up to an hour |
+| The console says the Mac is waiting for verification, or `✗ Not serving: <Mac> isn't verified by Apple yet; Darkbloom retries by itself at about HH:MM. Don't restart either Mac until then.` | Apple's App Attest has not verified that Mac yet. The coordinator sends work only to verified Macs, and pairs only those. On a pair the ✗ comes only once a Mac's part has run 2 minutes without it, or its key-generation safeguard holds it back; before that, `… is not serving yet: checking both Macs with Apple.` is the usual first minute (`loading`, nothing to do) | Run `darkbloom doctor` on that Mac. If `app attest key — no usable key; the local key-generation safeguard clears in <time>` appears, wait that long. Don't restart, stop or start anything, and don't delete Keychain items. Leave the Macs alone: Darkbloom retries by itself. Check every few minutes with `darkbloom status` (one Mac) or `darkbloom cluster status` (a pair). From 0.10.8, a stop, an update or a lost connection during Apple's call keeps the attestation, but a crash or a forced kill still blocks a new key for up to an hour |
 | doctor: ``[FAIL] app attest support — Apple reports App Attest as unsupported for this provider process (`is_supported_false`), although it already runs in the logged-in GUI session …``, usually right after an update | macOS still describes the app that the update replaced. 0.10.8 refreshes that record after an update, and again when Apple first says unsupported | Wait up to 10 minutes, then run `darkbloom doctor` again. If the line stays, tell the human, then run the `lsregister -f` command that doctor prints under `↳ fix:`. It changes no Darkbloom file or key. Then wait for the next check (up to 10 minutes) instead of restarting (rule 8) |
 | `Traffic: NOT receiving coordinator work: …` with `→ fix: …` | The coordinator doesn't route work to this Mac | Do what the fix line says |
 | Anything else, or no progress | — | [Report it](#report-a-problem) |

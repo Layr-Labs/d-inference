@@ -89,6 +89,15 @@ export interface Snapshot {
   account_revision?: string;
   resource_revision?: string;
   capabilities?: string[];
+  // The two-Mac pair this Mac is in: its model (the name, else the ID; null until the pair has
+  // one), its state from this Mac's own view, and whether this Mac leads it, so chooses its model
+  // (null when not known). Null when this Mac isn't paired; absent from older runtimes, and
+  // `state` and `leads` from runtimes before they were reported. Start serving starts the pair.
+  pair?: {
+    model: string | null;
+    state?: 'serving' | 'started' | 'not_running' | 'stopped' | 'unreadable';
+    leads?: boolean | null;
+  } | null;
   account?: {
     signed_in: boolean;
     email?: string | null;

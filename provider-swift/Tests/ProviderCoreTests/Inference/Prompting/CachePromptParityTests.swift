@@ -8,19 +8,19 @@ struct CachePromptParityTests {
     func nativeReasoningContextVectors() throws {
         let url = try vectorFile("native_reasoning_vectors.json")
         let cases = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [[String: Any]])
-        #expect(cases.count == 25)
+        #expect(cases.count == 28)
         for fixture in cases {
             let body = try JSONSerialization.data(withJSONObject: #require(fixture["request"]))
             do {
                 let request = try ProviderLoop.decodeOpenAIRequest(body)
                 let prepared = try ToolChoicePromptPolicy.prepare(request)
+                let controls = ProviderLoop.extractChatTemplateControls(from: body)
+                try ReasoningEffortPolicy.validate(request, controls: controls,
+                    modelType: fixture["model_type"] as? String)
                 let context = MultiModelBatchSchedulerEngine.templateAdditionalContext(
-                    for: request, controls: ProviderLoop.extractChatTemplateControls(from: body),
+                    for: request, controls: controls,
                     modelType: fixture["model_type"] as? String,
                     requiresToolCall: prepared.requiresToolCall) ?? [:]
-                try Qwen4SupportPolicy.validateReasoningContext(
-                    modelID: request.model, modelType: fixture["model_type"] as? String,
-                    additionalContext: context)
                 #expect(fixture["error"] as? Bool != true)
                 let actual = try JSONSerialization.jsonObject(with: JSONSerialization.data(withJSONObject: context))
                 let expected = try #require(fixture["additional_context"] as? [String: Any])

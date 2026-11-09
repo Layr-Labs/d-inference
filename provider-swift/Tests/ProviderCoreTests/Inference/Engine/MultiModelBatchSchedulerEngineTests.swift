@@ -406,7 +406,7 @@ func templateContextLeavesOtherFormatsAndFamiliesUnchanged() {
     }
 }
 
-@Test("none off and zero disable; minimal remains an explicit effort")
+@Test("none off and zero disable; minimal reasons, at the model's lowest level")
 func templateContextNormalizesOnlyReviewedDisableSpellings() {
     let request = OpenAIChatCompletionRequest(
         model: "EigenLabs/Qwen3.8-27B-4bit",
@@ -423,7 +423,8 @@ func templateContextNormalizesOnlyReviewedDisableSpellings() {
         for: request,
         controls: .init(reasoningEffort: "minimal"),
         hasMedia: true)
-    #expect(minimal?["reasoning_effort"] as? String == "minimal")
+    // Qwen 3.8's lowest level.
+    #expect(minimal?["reasoning_effort"] as? String == "low")
     #expect(minimal?["enable_thinking"] == nil)
 }
 

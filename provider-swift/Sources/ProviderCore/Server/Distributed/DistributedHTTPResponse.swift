@@ -12,6 +12,10 @@ final class DistributedHTTPResponse: @unchecked Sendable {
         let promptTokens: Int
         let completionTokens: Int
         let cause: InferenceTerminalCause?
+        /// The pair ended the request alone because a Mac's memory refused it
+        /// while it ran (`DistributedMemoryAbort`): its stream ends with the
+        /// typed memory error, not the generic failure frame.
+        var memoryRefused = false
     }
     private let lock = NSLock()
     private var bound = false

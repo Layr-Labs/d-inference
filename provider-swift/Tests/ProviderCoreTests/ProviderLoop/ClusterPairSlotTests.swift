@@ -188,9 +188,9 @@ struct ClusterPairSlotTests {
     }
 
     /// The leader's local `/v1/models` lists the pair's own limits: the context and the output its mode serves, as
-    /// its slot reports them to the coordinator. The pair refuses a `max_tokens` past its output (`output_too_long`),
-    /// so a client that sizes `max_tokens` from the list (Hermes) must be given that output, never the pair's whole
-    /// context: a pair that serves 128 output tokens in 8,320 listed 8,320.
+    /// its slot reports them to the coordinator. The pair cuts a `max_tokens` past its output to it, so a client that
+    /// sizes `max_tokens` from the list (Hermes) must be given that output, never the pair's whole context: a pair
+    /// that serves 128 output tokens in 8,320 listed 8,320.
     @Test(arguments: [false, true])
     func theLeaderListsThePairsOwnLimits(memoryPlan: Bool) async throws {
         let loop = try await clusterPairMemberLoop()

@@ -47,15 +47,22 @@ extension ProviderLoop {
         lookupReceiptFinalizer.sendTerminal(
             .inferenceError(
                 requestId: requestId,
-                failure: CapacityRejectionEnrichment.enrich(
-                    InferenceFailure(code: .capacity, statusCode: 503, errorReason: .draining),
-                    modelId: nil,
-                    published: state.publishedCapacity,
-                    fallbackReason: .slotState),
+                failure: Self.drainRefusal(modelId: nil, published: state.publishedCapacity),
                 profile: inflightProfiles[requestId]),
             fallbackFailure: .capacity,
             send: send)
         return true
+    }
+
+    /// The typed drain refusal, `capacity / 503 / draining`: coordinators
+    /// serve the request on another Mac, or answer a retryable 429 when none
+    /// can take it, with no retry charge or health strike. A dispatch refused
+    /// at admission above gets it, and so does a queued Darkbloom request that
+    /// gave way to the owner (`giveWayToOwner`).
+    static func drainRefusal(modelId: String?, published: BackendCapacity?) -> InferenceFailure {
+        CapacityRejectionEnrichment.enrich(
+            InferenceFailure(code: .capacity, statusCode: 503, errorReason: .draining),
+            modelId: modelId, published: published, fallbackReason: .slotState)
     }
 
     /// Preserve the retryable capacity/status compatibility contract while
@@ -565,9 +572,22 @@ extension ProviderLoop {
         powerAssertion.acquire()
         syncWarmModelState()
         let token = await cancellationRegistry.register(requestId: requestId)
+        if let afterTokenRegistered = afterTokenRegisteredForTesting { await afterTokenRegistered(requestId) }
+        // Me first: a request that gave way to the owner (`giveWayToOwner`)
+        // ends with this one terminal, before or after its stream started.
+        let sendGaveWayRefusal: @Sendable () -> Void = { [state] in
+            lookupReceiptFinalizer.sendTerminal(
+                .inferenceError(
+                    requestId: requestId,
+                    failure: Self.drainRefusal(modelId: modelId, published: state.publishedCapacity),
+                    profile: profile),
+                fallbackFailure: .capacity,
+                send: send)
+        }
         guard requestToModel[requestId] == modelId else {
             await cancellationRegistry.finish(requestId: requestId)
             logger.info("[\(requestId)] Request cancelled during admission")
+            if token.gaveWay { sendGaveWayRefusal() }
             return
         }
         if await rejectAcceptedRequestIfFirstContentDeadlineExpired(
@@ -641,6 +661,7 @@ extension ProviderLoop {
         guard requestToModel[requestId] == modelId else {
             await cancellationRegistry.finish(requestId: requestId)
             logger.info("[\(requestId)] Request cancelled during model load")
+            if token.gaveWay { sendGaveWayRefusal() }
             return
         }
 
@@ -741,6 +762,17 @@ extension ProviderLoop {
             return
         }
 
+        // Me first: a request that gave way to the owner during the awaits
+        // above never starts its stream. No await separates this check from
+        // the task's registration below, so one that gives way later finds
+        // the task to cancel, and the task ends with the same refusal.
+        if token.gaveWay {
+            await cancellationRegistry.finish(requestId: requestId)
+            logger.info("[\(requestId)] Request gave way to the owner before its stream started")
+            sendGaveWayRefusal()
+            return
+        }
+
         // 8. Spawn inference task. The streaming pipeline now flows through
         // the upstream `MLXLMServer` library:
         //   - `MultiModelBatchSchedulerEngine` adapts the selected slot's
@@ -752,6 +784,7 @@ extension ProviderLoop {
         // the assembled assistant text, extracted by parsing each emitted
         // chunk back from its JSON delta.
         let me = self
+        let terminalMemory = terminalMemoryForTesting
         receiptTransferredToTask = true
         profile.mark(.taskSpawned)
         let task = Task.detached {
@@ -782,8 +815,8 @@ extension ProviderLoop {
                 framesEmitted, bytesEmitted, usageRecovered, seSign in
                 let thermal = ProfileThermalState(ProcessInfo.processInfo.thermalState)
                 let lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
-                let mlxActive = Int64(max(0, MLX.Memory.activeMemory))
-                let mlxPeak = Int64(max(0, MLX.Memory.peakMemory))
+                let (mlxActive, mlxPeak) = terminalMemory?()
+                    ?? (Int64(max(0, MLX.Memory.activeMemory)), Int64(max(0, MLX.Memory.peakMemory)))
                 profile.update { f, now in
                     f.set(.framesEmitted, Int64(framesEmitted))
                     f.set(.bytesEmitted, Int64(bytesEmitted))
@@ -821,6 +854,14 @@ extension ProviderLoop {
                 } catch {
                     return false
                 }
+            }
+
+            /// Me first: this request gave way to the owner while it was still
+            /// queued (`giveWayToOwner`), so it ends with the re-route refusal.
+            let endAfterGivingWay: @Sendable (Int, Int) -> Void = { framesEmitted, bytesEmitted in
+                log.info("[\(requestId)] Gave way to the owner while queued; the coordinator re-routes it")
+                finalizeProfile(framesEmitted, bytesEmitted, false, nil)
+                sendGaveWayRefusal()
             }
 
             if rejectExpiredDeadline() { return }
@@ -997,9 +1038,12 @@ extension ProviderLoop {
             let frames: AsyncThrowingStream<String, Error>
             do {
                 if rejectExpiredDeadline() { return }
-                frames = try await service.streamChatCompletionFrames(
-                    request: streamingRequest
-                )
+                // Me first: the engine records the coordinator id, so a waiting
+                // owner's request can tell whether the engine has admitted this
+                // one (`giveWayToOwner`).
+                frames = try await MeFirstDarkbloomRequest.$id.withValue(requestId) {
+                    try await service.streamChatCompletionFrames(request: streamingRequest)
+                }
                 if rejectExpiredDeadline() { return }
             } catch {
                 // A cancel that lands while the stream is STARTING — the
@@ -1015,6 +1059,10 @@ extension ProviderLoop {
                 // (provider, model) 5xx routing cooldown for a client's own
                 // cancel.
                 if error is CancellationError || token.isCancelled {
+                    if token.gaveWay {
+                        endAfterGivingWay(0, 0)
+                        return
+                    }
                     log.info("[\(requestId)] Request cancelled while starting the stream")
                     providerStats.incrementCancellationsBeforeOutput()
                     profile.mark(.cancelAborted)
@@ -1253,6 +1301,14 @@ extension ProviderLoop {
                             // First content frame (both counters flip here,
                             // so one check suffices).
                             if contentFrameCount == 0 {
+                                // Me first: claimed before the first output
+                                // frame goes out, once per request, so one
+                                // that gave way to the owner sends none and
+                                // one that streams never gives way.
+                                guard token.claimOutput() else {
+                                    endAfterGivingWay(framesEmitted, bytesEmitted)
+                                    return
+                                }
                                 // Withheld output was the first generated output.
                                 let firstOutputAt = v2UsageSignal.firstWithheldOutputAt ?? .now
                                 let elapsed = firstOutputAt - dispatchReceivedAt
@@ -1401,6 +1457,11 @@ extension ProviderLoop {
                 )
             }
 
+            if cancelledMidStream, token.gaveWay {
+                // It gave way before its first output, so it sent none.
+                endAfterGivingWay(framesEmitted, bytesEmitted)
+                return
+            }
             if cancelledMidStream {
                 let generatedReasoning = generatedReasoningText()
                 if reasoningTokens == 0 && !generatedReasoning.isEmpty {

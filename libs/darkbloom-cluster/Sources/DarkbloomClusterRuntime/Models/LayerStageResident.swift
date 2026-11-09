@@ -41,16 +41,26 @@ extension LayerStageResidentAdmission {
     /// (`QwenResidentAdmission.memoryProfile`).
     var memoryProfile: QwenLayerStageGenerationProfile { profile }
 
-    /// The layer-stage modes size LOAD for `memoryProfile`, never more: a
-    /// longer request is not served by them (their READY's serving context
-    /// says so too). Every request within the profile passes when the two are
-    /// one profile.
-    func requireWithinMemoryProfile(_ value: ClusterWorkerReservation) throws {
-        let p = memoryProfile
+    /// The layer-stage modes size LOAD for `memoryProfile`. They serve the
+    /// whole profile when the adapter registering this row says its stages
+    /// charge a longer request at its own context
+    /// (`ClusterRuntimeAdapter.pipelineServesWholeProfile`: none today), and no
+    /// longer request than the memory plan's otherwise. The provider reads the
+    /// same rule for what it advertises, so the two never differ.
+    var servedProfile: QwenLayerStageGenerationProfile {
+        ClusterRuntimeAdapter.registering(runtimeModelID: runtimeModelID)?.pipelineServesWholeProfile == true
+            ? profile : memoryProfile
+    }
+
+    /// A longer request than `servedProfile` is not served by the layer-stage
+    /// modes (their READY's serving context says so too). Every request within
+    /// the profile passes when the two are one profile.
+    func requireWithinServedProfile(_ value: ClusterWorkerReservation) throws {
+        let p = servedProfile
         guard value.promptTokenIDs.count <= p.maximumPromptTokens, value.outputCount <= p.maximumOutputTokens,
               value.promptTokenIDs.count <= p.maximumContextTokens - value.outputCount else {
             throw ProbeError("A request of \(value.promptTokenIDs.count + value.outputCount) context tokens is longer"
-                + " than this mode serves (\(p.maximumContextTokens)); only tensor parallel serves the model's native context")
+                + " than this mode serves (\(p.maximumContextTokens))")
         }
     }
 }

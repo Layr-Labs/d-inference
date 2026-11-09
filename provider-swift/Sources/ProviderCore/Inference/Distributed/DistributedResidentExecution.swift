@@ -64,9 +64,12 @@ public struct DistributedResidentExecutionProfile: Sendable {
     public let maxContextTokens: Int
     /// The prompt, output and context the selected generation mode serves
     /// within the limits above (`ClusterModelFeaturePolicy.servedProfile`):
-    /// all of them in tensor parallel, the memory plan's request in a
-    /// pipeline. A longer request is refused before any rank is asked, and
-    /// the pair's slot reports these (`SlotRequestLimits`).
+    /// all of them in tensor parallel and in a Gemma 4 pipeline, the memory
+    /// plan's request in every other mode. The one source of what the pair
+    /// advertises (its slot's `SlotRequestLimits`, `LocalModelLimits(served:)`)
+    /// and of what it holds a request to: a `max_tokens` past them is cut to
+    /// fit (`EngineV2Bridge.pairServedLimits`), and a prompt past them is
+    /// refused before any rank is asked (`refusal(for:)`).
     public let served: (promptTokens: Int, outputTokens: Int, contextTokens: Int)
     public let requestTimeout: Duration
     /// Whether the selected resident runtime emits committed-token logprobs.
@@ -303,11 +306,36 @@ public enum DistributedEngineError: Error, Sendable, Equatable {
     case refusedForCapacity(requestedContextTokens: Int, servingContextTokens: Int, reason: String)
 }
 
+/// The engine's terminal for a request both ranks of a pair ended alone
+/// because one rank's memory refused it while it ran (D6, the owner's
+/// `aborted`). It is the pair's capacity refusal in `refusedForCapacity`'s
+/// words, so the bridge answers it as one Mac's memory refusal
+/// (`tokenBudgetExhausted`): the memory 503, or a typed error event in a
+/// stream already under way. The coordinator gets `capacity` with
+/// `request_exceeds_node_budget`.
+public enum DistributedMemoryAbort {
+    static let phrase = "memory refused it while it ran"
+
+    public static func message(requestedContextTokens: Int, servingContextTokens: Int, rank: Int) -> String {
+        "token_budget_exhausted: request requires \(requestedContextTokens) context tokens but only "
+            + "\(servingContextTokens) available on this cluster pair now (rank \(rank)'s \(phrase))"
+    }
+
+    /// Whether an engine failure is this terminal.
+    public static func matches(_ message: String) -> Bool {
+        message.hasPrefix("token_budget_exhausted: ") && message.hasSuffix("'s \(phrase))")
+    }
+}
+
 /// Why a request was refused before it reached the pair. A closed set: the
 /// text names the rule and the model's own limits, never request content, so
 /// it may be returned to the client as is.
 public enum DistributedRequestRefusal: String, Sendable, Equatable, CaseIterable {
     case emptyPrompt = "empty_prompt"
+    /// The prompt fills the context the pair serves: no output fits after it.
+    /// One Mac's code and words for the same bound (`promptExceedsContext`,
+    /// `contextLengthExceededMessage`).
+    case contextLengthExceeded = "context_length_exceeded"
     case promptTooLong = "prompt_too_long"
     case invalidMaxTokens = "invalid_max_tokens"
     case outputTooLong = "output_too_long"
@@ -325,14 +353,15 @@ public enum DistributedRequestRefusal: String, Sendable, Equatable, CaseIterable
     /// The prompt or output does not fit the model's limits on the pair:
     /// the coordinator classifies these as exceeding context.
     public var exceedsContext: Bool {
-        [.promptTooLong, .outputTooLong, .contextTooLong].contains(self)
+        [.contextLengthExceeded, .promptTooLong, .outputTooLong, .contextTooLong].contains(self)
     }
 
     /// The client-facing text. With the profile it names the model's limits.
     public func message(_ profile: DistributedResidentExecutionProfile?) -> String {
-        func limit(_ value: Int?) -> String { value.map { " of \($0) tokens" } ?? "" }
+        let limit = Self.limit
         switch self {
         case .emptyPrompt: return "The prompt is empty."
+        case .contextLengthExceeded: return Self.contextLengthExceededMessage(contextTokens: profile?.served.contextTokens)
         case .promptTooLong:
             return "The prompt is longer than this model's limit\(limit(profile?.served.promptTokens)) on this cluster."
         case .invalidMaxTokens: return "max_tokens must be at least 1."
@@ -354,6 +383,21 @@ public enum DistributedRequestRefusal: String, Sendable, Equatable, CaseIterable
             return "logit_bias has more than \(ClusterWorkerSampling.maximumLogitBiasEntries) entries."
         }
     }
+
+    /// The words of `context_length_exceeded`: a prompt that fills a context
+    /// window of `contextTokens` (unnamed when nil) leaves no room for an
+    /// answer. The one text for that refusal on one Mac
+    /// (`MultiModelBatchSchedulerEngineError.promptExceedsContext`) and on a
+    /// pair, so a client reads the same answer on both: the window, never
+    /// request content. In this file because the cluster checks compile it
+    /// without the bridge.
+    static func contextLengthExceededMessage(contextTokens: Int?) -> String {
+        "The prompt fills this model's context window\(limit(contextTokens)), leaving no room for an answer."
+            + " Shorten the prompt or start a new conversation."
+    }
+
+    /// " of N tokens", or nothing when the limit is not known here.
+    private static func limit(_ value: Int?) -> String { value.map { " of \($0) tokens" } ?? "" }
 }
 
 extension DistributedResidentExecutionProfile {
@@ -396,6 +440,7 @@ extension DistributedResidentExecutionProfile {
         if p.topLogprobs > 0, !supportsLogprobs { return .logprobCaptureUnsupported }
         if request.priority != 0 { return .priorityUnsupported }
         if request.promptTokens.isEmpty { return .emptyPrompt }
+        if request.promptTokens.count >= served.contextTokens { return .contextLengthExceeded }
         if request.promptTokens.count > served.promptTokens { return .promptTooLong }
         if request.maxTokens <= 0 { return .invalidMaxTokens }
         if request.maxTokens > served.outputTokens { return .outputTooLong }

@@ -99,8 +99,8 @@ public enum ClusterLocalServing {
 
     /// The coordinator-paired part's start (`start --foreground --cluster-member` and the configuration). With Both, me
     /// first, the part that runs rank 0, which hosts the pair's slot, also runs the pair's local API on `port`, on the
-    /// scope's address, with the pair's key (`darkbloom start` reads it). Every other rank, and the other two scopes,
-    /// start as before. Only the rank decides: nothing counts the Macs.
+    /// scope's address, with that Mac's own key and the pair's (`darkbloom start` reads them). Every other rank, and the
+    /// other two scopes, start as before. Only the rank decides: nothing counts the Macs.
     public static func memberArguments(_ base: [String], scope: ClusterServingScope, localRank: Int, port: Int) -> [String] {
         guard case .publicServingWithLocalAPI(let bind) = scope, localRank == 0 else { return base }
         return base + ["--local-endpoint", "--port", String(port), "--bind", bind]
@@ -143,6 +143,18 @@ public enum ClusterLocalServing {
         guard !here.isEmpty else { return localAPIPorts[0] }
         let freeOnEveryMac = peersFree.map { peers in here.filter { port in peers.allSatisfy { $0.contains(port) } } }
         return sharedPort(localFree: here, peerFree: freeOnEveryMac, preferred: preferred)
+    }
+
+    /// The port the pair's API takes on the Mac whose part runs rank 0 (`ClusterService.leaderAPIPort`), for every way a
+    /// pair serves: this Mac's own (`own`: `LocalAPIPort.thisMac`, its saved `[local] port`, used as it is, even 8000),
+    /// whatever the other Macs' are. Only without it the earlier rule, on this Mac alone: beside Darkbloom, the port used
+    /// last (`previous`) while free, else the first free one it may take (`localAPIPort`); otherwise the port used last
+    /// while free, else 8000 or the next free one (`sharedPort`).
+    public static func apiPort(own: Int?, scope: ClusterServingScope, previous: Int?,
+                               isFree: (Int) -> Bool = portIsFree) -> Int {
+        if let own { return own }
+        guard scope.addsLocalAPI else { return sharedPort(localFree: freePorts(isFree: isFree), peerFree: nil, preferred: previous) }
+        return localAPIPort(localFree: localAPIFreePorts(isFree: isFree), peersFree: nil, preferred: previous)
     }
 
     /// The solo server (this Mac alone after the absence grace) is coordinator-less already; local-only serving gives

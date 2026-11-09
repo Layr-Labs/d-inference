@@ -16,6 +16,10 @@ extension DesktopBackend {
       localAt = now
     }
     refreshCatalogIfNeeded(coordinator: loaded.config.coordinator.url, now: now)
+    if now.timeIntervalSince(pairAt) > 30 {
+      pair = ClusterPairSummary.local()
+      pairAt = now
+    }
     let daemon = DaemonStateFile.read()
     let current = daemon?.processIdentity?.isCurrent() == true
     let fresh = current && daemon?.isStale(now: now.timeIntervalSince1970) == false
@@ -120,7 +124,8 @@ extension DesktopBackend {
       "linked": .bool(AuthTokenStore.load() != nil),
       "account_revision": .string(accountSession.observe("\(loaded.config.coordinator.url)\n\(accountReadToken() ?? "")")),
       "account": accountStatus(),
-      "capabilities": .array(["account-signin", "account-signout", "request-history", "autopilot"].map(DV.string)),
+      "capabilities": .array(Self.snapshotCapabilities(paired: pair.paired).map(DV.string)),
+      "pair": Self.pairSnapshot(pair),
       "autopilot": Self.autopilotSnapshot(loaded.config.backend.modelAutopilot, daemon: daemon, fresh: fresh),
       "state": .string(phase),
       "provider_status": providerStatus,
@@ -157,6 +162,21 @@ extension DesktopBackend {
       } ?? .null,
       "link": link, "catalog_error": catalogError.map(DV.string) ?? .null,
     ])
+  }
+
+  /// What this runtime offers the app. Autopilot serves one Mac, so a paired Mac leaves it out: the app then offers its
+  /// Start, which starts the pair (`Start.appStartOptions`), as it does for a runtime without Autopilot.
+  static func snapshotCapabilities(paired: Bool) -> [String] {
+    ["account-signin", "account-signout", "request-history"] + (paired ? [] : ["autopilot"])
+  }
+
+  /// The pair this Mac is in, for the app's words: its model (the name, else the ID; null before one was chosen), its
+  /// state from this Mac's own view (`ClusterPairSummary.appState`), and whether this Mac leads it, so chooses its
+  /// model (null when not known). Null when this Mac isn't paired.
+  static func pairSnapshot(_ pair: ClusterPairSummary) -> JSONValue {
+    guard pair.paired else { return .null }
+    return .dict(["model": pair.model.map(DV.string) ?? .null, "state": .string(pair.appState.rawValue),
+                  "leads": pair.role.map { .bool($0 == .leader) } ?? .null])
   }
 
   /// What the live coordinator registration carries for a model: `routable`

@@ -10,10 +10,12 @@ final class LocalHostTestSession: DistributedLocalServerSession, @unchecked Send
     var concurrentRequests = 1
     var failStart = false
 
-    init(requestTimeout: Duration = .seconds(315), maxPromptTokens: Int = 8192) {
+    /// `served`: what the placed mode serves of the profile (nil: all of it).
+    init(requestTimeout: Duration = .seconds(315), maxPromptTokens: Int = 8192,
+         served: (promptTokens: Int, outputTokens: Int, contextTokens: Int)? = nil) {
         profile = try! .init(id: "fabricated-greedy", vocabularySize: 100,
             maxPromptTokens: maxPromptTokens, maxOutputTokens: 128,
-            maxContextTokens: maxPromptTokens + 128, requestTimeout: requestTimeout)
+            maxContextTokens: maxPromptTokens + 128, requestTimeout: requestTimeout, served: served)
     }
     let model = DistributedInstalledModel(publicModelID: "public/example", directory: URL(fileURLWithPath: "/fabricated"),
         modelType: "qwen3_5", eosTokenIDs: [99], vocabularySize: 100)
@@ -124,8 +126,8 @@ final class LocalHostDiscovery: @unchecked Sendable {
 }
 
 func localHost(_ session: LocalHostTestSession, port: UInt16 = 0,
-               discovery: LocalHostDiscovery? = nil) -> DistributedLocalServer {
-    .init(session: session, config: .init(host: "127.0.0.1", port: port),
+               discovery: LocalHostDiscovery? = nil, router: LocalRouterConfig? = nil) -> DistributedLocalServer {
+    .init(session: session, config: .init(host: "127.0.0.1", port: port, router: router),
           tokenizerLoader: { _ in TokenizerHandle(DistributedTestTokenizer()) }, discovery: discovery?.client)
 }
 

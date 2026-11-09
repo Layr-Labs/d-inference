@@ -4,7 +4,8 @@ import ProviderCore
 
 // `darkbloom --opencode` / `--hermes`: start Darkbloom only if no local API runs, then point the tools at it
 // (ToolIntegrationStep). They run once, at start: never in the launchd child, never per request. A start without a
-// tool flag reads nothing here. No line, and no tool file, holds a key.
+// tool flag never writes a tool's config: it only reads the tools' configs, to say when one points elsewhere
+// (ToolAddress). No line, and no tool file, holds a key.
 extension Start {
     /// Why `--opencode` / `--hermes` can't go with these flags; nil when they can.
     var toolFlagsRefusal: String? {
@@ -30,12 +31,6 @@ extension Start {
                 + "\(first.displayName) up for the cluster's local API."
         }
         return nil
-    }
-
-    /// Whether `--local`'s banner prints its key: only for `--local` itself, as it always has, never with a tool flag,
-    /// whose start prints no key anywhere, and never in launchd's child, whose banner goes to the log.
-    func bannerShowsKey(_ serving: StartServing) -> Bool {
-        serving.source == .flag(.local) && requestedTools.isEmpty && !foreground
     }
 
     /// Options that change what serves: with any of them, a running local API isn't enough, and the start runs.
@@ -65,31 +60,67 @@ extension Start {
             print(ToolIntegrationStep.keyless(port: live.port))
             throw ExitCode.failure
         }
-        guard let endpoint = runningLocalAPI(live, keyFile: { LocalEndpoint.keyFile(forPort: Int($0)) }) else {
-            return false
-        }
-        print("Darkbloom already serves on \(live.host):\(live.port); setting up "
-            + "\(ToolIntegrationStep.names(requestedTools)) for it.")
-        try await setUpToolsWithSavedSettings(endpoint, step: step)
-        return true
-    }
-
-    /// Beside a pair that just started: for its local API on this Mac, when there is one. A pair starts only without
-    /// single-Mac options, or with the app's Start's (`Start.appStartOptions`), which don't change what the pair serves.
-    func setUpToolsBesidePair() async throws {
-        guard !requestedTools.isEmpty else { return }
-        guard let endpoint = IntegrationEndpoint.live() else {
-            print(ToolIntegrationStep.noPairAPI(requestedTools))
+        // On a Mac of a pair, the live API may be this Mac's relay to the pair's API on another Mac. While it answers 503
+        // (`memberAPIDown`: the other Mac away), that is said at once, in `status`'s words, and nothing is set up.
+        let pair = ClusterPairSummary.local()
+        let relayed = pair.relaying?.port == live.port
+        if relayed, let down = pair.memberAPIDown {
+            print(ToolIntegrationStep.noMemberAddress(requestedTools, localAPI: down))
             print(ToolIntegrationStep.keepsServing)
             throw ExitCode.failure
         }
-        try await setUpToolsWithSavedSettings(endpoint, step: nil)
+        guard let endpoint = runningLocalAPI(live, keyFile: { LocalEndpoint.keyFile(forPort: Int($0)) }) else {
+            return false
+        }
+        print(ToolIntegrationStep.alreadyServes(live, tools: requestedTools))
+        try await setUpToolsWithSavedSettings(endpoint, step: step, relayed: relayed)
+        return true
+    }
+
+    /// Beside a pair that just started: once this Mac's local API for it answers (its part's own on the Mac that runs the
+    /// pair's API; on every other Mac, with that API on every address, its relay), waiting at most `toolWaitSeconds`. A
+    /// pair that serves only the Darkbloom network has none anywhere, said at once; one whose API stays on its own Mac
+    /// has none on another, said once the wait ends. A pair starts only without single-Mac options, or with the app's
+    /// Start's (`Start.appStartOptions`), which don't change what the pair serves.
+    func setUpToolsBesidePair(pair given: ClusterPairSummary? = nil,
+                              waitForAPI: () async -> LocalAPIWait = {
+                                  await Start.waitForLocalAPI(port: nil, seconds: Start.toolWaitSeconds)
+                              },
+                              step: ToolIntegrationStep? = nil) async throws {
+        guard !requestedTools.isEmpty else { return }
+        func fail(_ line: String) throws -> Never {
+            print(line)
+            print(ToolIntegrationStep.keepsServing)
+            throw ExitCode.failure
+        }
+        let pair = given ?? ClusterPairSummary.local()
+        guard let bind = pair.localAPIBind else { try fail(ToolIntegrationStep.noPairAPI(requestedTools)) }
+        // This Mac relays the pair's API, and its cluster service says why it can't answer now: said at once, no wait.
+        if let down = pair.memberAPIDown { try fail(ToolIntegrationStep.noMemberAddress(requestedTools, localAPI: down)) }
+        switch await waitForAPI() {
+        case .ready(let endpoint):
+            // `pair` was read before the wait, maybe before the relay was up: on a member in Both, whose part runs no
+            // API, the API that answered is its relay all the same.
+            let relayed = pair.relaying != nil || pair.localAPI?.runsRankZero == false
+            try await setUpToolsWithSavedSettings(endpoint, step: step, relayed: relayed)
+        case .noKeyFile:
+            try fail(ToolIntegrationStep.noKeyFile(requestedTools, port: LocalEndpoint.readLiveInfo()?.port ?? 0))
+        case .notUp:
+            try fail(pair.answersOnEveryMac
+                ? ToolIntegrationStep.notUp(requestedTools, seconds: Self.toolWaitSeconds)
+                : ToolIntegrationStep.pairAPIElsewhere(requestedTools, bind: bind))
+        }
     }
 
     /// Beside the coordinator-less server, once it is bound, on a task of its own: the server keeps serving whatever
-    /// happens there.
-    func setUpToolsBesideLocalServer(_ info: LocalEndpoint.Info, serving: StartServing, coordinatorURL: String) {
-        guard !requestedTools.isEmpty else { return }
+    /// happens there. Without a tool flag, it says when a tool points elsewhere (`noteTools`, by default
+    /// `noteToolsPointingElsewhere`), except in a service's child (`foreground`), whose lines go to a log.
+    func setUpToolsBesideLocalServer(_ info: LocalEndpoint.Info, serving: StartServing, coordinatorURL: String,
+                                     noteTools: ((StartServing) -> Void)? = nil) {
+        guard !requestedTools.isEmpty else {
+            if !foreground { (noteTools ?? { noteToolsPointingElsewhere($0) })(serving) }
+            return
+        }
         guard let endpoint = IntegrationEndpoint.live(info) else {
             print("✗ \(ToolIntegrationStep.names(requestedTools)) couldn't be set up: no key file holds this server's "
                 + "key. \(ToolIntegrationStep.keepsServing)")
@@ -100,15 +131,22 @@ extension Start {
     }
 
     /// After the background provider started: once its local API is bound, which `local.json` says, waiting at most
-    /// `toolWaitSeconds`. A step that fails ends the start with exit 1; the provider keeps serving.
+    /// `waitSeconds` (Only me listens only once its models are loaded, so it waits longer). A step that fails ends the
+    /// start with exit 1; the provider keeps serving. Without a tool flag, it says when a tool points elsewhere
+    /// (`noteTools`, by default `noteToolsPointingElsewhere`).
     func setUpToolsBesideDaemon(serving: StartServing, coordinatorURL: String,
-                                waitForAPI: (UInt16) async -> LocalAPIWait = {
-                                    await Start.waitForLocalAPI(port: $0, seconds: Start.toolWaitSeconds)
+                                waitSeconds: Int = Start.toolWaitSeconds,
+                                waitForAPI: (_ port: UInt16, _ seconds: Int) async -> LocalAPIWait = {
+                                    await Start.waitForLocalAPI(port: $0, seconds: $1)
                                 },
-                                step: ToolIntegrationStep? = nil) async throws {
-        guard !requestedTools.isEmpty else { return }
+                                step: ToolIntegrationStep? = nil,
+                                noteTools: ((StartServing) -> Void)? = nil) async throws {
+        guard !requestedTools.isEmpty else {
+            (noteTools ?? { noteToolsPointingElsewhere($0) })(serving)
+            return
+        }
         let endpoint: IntegrationEndpoint
-        switch await waitForAPI(serving.port) {
+        switch await waitForAPI(serving.port, waitSeconds) {
         case .ready(let found):
             endpoint = found
         case .noKeyFile:
@@ -116,7 +154,7 @@ extension Start {
             print(ToolIntegrationStep.keepsServing)
             throw ExitCode.failure
         case .notUp:
-            print(ToolIntegrationStep.notUp(requestedTools, seconds: Self.toolWaitSeconds))
+            print(ToolIntegrationStep.notUp(requestedTools, seconds: waitSeconds))
             print(ToolIntegrationStep.keepsServing)
             throw ExitCode.failure
         }
@@ -125,14 +163,39 @@ extension Start {
                                coordinatorURL: coordinatorURL, step: step) else { throw ExitCode.failure }
     }
 
+    /// A start without `--opencode` / `--hermes` that serves a local API never changes a tool's config: when a tool set
+    /// up for Darkbloom points elsewhere (another port or address, or another key file), one line says so and names
+    /// the command that points it here (`ToolAddress`). With a tool flag, nothing: that start points the tools here
+    /// itself. `keyFile`: the one this Mac's local API takes; `localHostName`: this Mac's Bonjour name.
+    func noteToolsPointingElsewhere(_ serving: StartServing, environment: ToolIntegrationEnvironment = .current,
+                                    provider: IntegrationProvider = .current, keyFile: URL = LocalEndpoint.tokenPath(),
+                                    localHostName: () -> String? = { Local.localHostName() },
+                                    say: (String) -> Void = { print($0) }) {
+        guard requestedTools.isEmpty, serving.hasLocalAPI,
+              let line = ToolAddress.notice(
+                  baseURL: serving.baseURL, keyFile: serving.noAuth ? nil : keyFile, environment: environment,
+                  provider: provider,
+                  thisMac: ToolAddress.thisMacsNames(listeningOn: serving.bind, localHostName: localHostName))
+        else { return }
+        say("")
+        say(line)
+    }
+
     /// For a local API this start didn't resolve (one already running, or the pair's): where your requests go comes
     /// from the saved `[local] route`, and the catalog from `--coordinator-url`, else the config's, else the build's.
-    /// Reads the config once, without detecting hardware.
-    private func setUpToolsWithSavedSettings(_ endpoint: IntegrationEndpoint, step: ToolIntegrationStep?) async throws {
+    /// Reads the config once, without detecting hardware. `relayed`: the API is this Mac's relay to a pair's API on
+    /// another Mac, whose route decides, and which never takes the paid network for a relayed request: this Mac's
+    /// route and account key aren't read.
+    private func setUpToolsWithSavedSettings(_ endpoint: IntegrationEndpoint, step: ToolIntegrationStep?,
+                                             relayed: Bool = false) async throws {
         let saved = try? savedConfig(configPath: configOptions.config)
         let coordinator = coordinatorURL ?? saved?.coordinator.url ?? BuildEnvironment.current.coordinatorWebSocketURL
-        guard await setUpTools(endpoint: endpoint, route: saved?.local?.route, accountKeySaved: nil,
-                               coordinatorURL: coordinator, step: step) else { throw ExitCode.failure }
+        let ready = relayed
+            ? await setUpTools(endpoint: endpoint, requests: LocalFirstWords.relayedRequests, coordinatorURL: coordinator,
+                               step: step)
+            : await setUpTools(endpoint: endpoint, route: saved?.local?.route, accountKeySaved: nil,
+                               coordinatorURL: coordinator, step: step)
+        guard ready else { throw ExitCode.failure }
     }
 
     /// Sets the requested tools up for `endpoint` with `step` (nil: the tools on this Mac, `ToolIntegrationStep.live`);
@@ -140,8 +203,16 @@ extension Start {
     func setUpTools(endpoint: IntegrationEndpoint, route: LocalSettings.Route?, accountKeySaved: Bool?,
                     coordinatorURL: String, step: ToolIntegrationStep? = nil) async -> Bool {
         let keySaved = accountKeySaved ?? Start.accountKeySaved()
-        return await (step ?? ToolIntegrationStep.live(tools: requestedTools, coordinatorURL: coordinatorURL))
-            .run(endpoint: endpoint, requests: LocalFirstWords.requests(route: route, accountKeySaved: keySaved))
+        return await setUpTools(endpoint: endpoint,
+                                requests: LocalFirstWords.requests(route: route, accountKeySaved: keySaved),
+                                coordinatorURL: coordinatorURL, step: step)
+    }
+
+    /// The same, with where the tools' requests go already in words (`LocalFirstWords`).
+    private func setUpTools(endpoint: IntegrationEndpoint, requests: String, coordinatorURL: String,
+                            step: ToolIntegrationStep?) async -> Bool {
+        await (step ?? ToolIntegrationStep.live(tools: requestedTools, coordinatorURL: coordinatorURL))
+            .run(endpoint: endpoint, requests: requests)
     }
 
     /// How long a background start waits for its local API before setting tools up.
@@ -155,16 +226,16 @@ extension Start {
         case notUp
     }
 
-    /// Waits for the background provider's local API on `port`: it writes `local.json` once bound. Bounded, and only
-    /// at start.
-    static func waitForLocalAPI(port: UInt16, seconds: Int,
+    /// Waits for the background provider's local API on `port` (nil: on any port, a pair's): it writes `local.json` once
+    /// bound. Bounded, and only at start.
+    static func waitForLocalAPI(port: UInt16?, seconds: Int,
                                 live: () -> LocalEndpoint.Info? = { LocalEndpoint.readLiveInfo() },
                                 keyFile: (UInt16) -> URL? = { LocalEndpoint.keyFile(forPort: Int($0)) },
                                 pause: () async -> Void = { try? await Task.sleep(nanoseconds: 250_000_000) })
         async -> LocalAPIWait {
         let deadline = Date().addingTimeInterval(TimeInterval(seconds))
         repeat {
-            if let info = live(), info.port == port {
+            if let info = live(), port.map({ info.port == $0 }) ?? true {
                 if let endpoint = IntegrationEndpoint.live(info, keyFile: keyFile) { return .ready(endpoint) }
                 if !info.apiKey.isEmpty { return .noKeyFile }
             }

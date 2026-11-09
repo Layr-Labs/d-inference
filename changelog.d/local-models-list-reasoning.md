@@ -1,0 +1,4 @@
+### This Mac's model list says which models reason
+
+- This Mac's `/v1/models`, and a pair's, lists `"supported_features": ["reasoning"]` for each model it serves that reasons, loaded or not, and `[]` for one that doesn't, by the model's type: the same table that takes every reasoning effort for a model and refuses one that is none of the names. Your other Macs' and the network's models keep the coordinator's `supported_features`, the catalog's.
+- `darkbloom start --opencode` offers reasoning for a model this Mac or its pair serves exactly when the list says so, whatever Darkbloom's catalog says, also when the catalog can't be reached. Qwen 3.8 27B, which the catalog lists without reasoning, now gets it; a model whose effort would be ignored no longer does. Hermes has no per-model reasoning setting in a provider's block and sends your effort to every model; the ones that reason take it and the others ignore it.

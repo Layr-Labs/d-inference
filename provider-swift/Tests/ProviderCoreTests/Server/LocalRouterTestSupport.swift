@@ -192,17 +192,21 @@ struct RouterFixture {
     let routerConfig: LocalRouterConfig?
     let localModels: [String]
     let localLimits: [String: LocalModelLimits]
+    /// Each local model's type, as a server's `modelTypeProvider` gives it; empty gives none.
+    let modelTypes: [String: String]
     /// The local API's key; nil is `--no-auth`.
     let localKey: String?
     var app: LocalInferenceApplication { makeApp() }
 
     /// - Parameters:
     ///   - route: `[local] route`; nil = absent.
+    ///   - settingsFile: the provider.toml the router reads `[local] route` from again when it changes; nil = none.
     ///   - key: the saved account key; nil = none.
     ///   - router: false builds the endpoint without a router (today's endpoint).
-    init(route: LocalSettings.Route? = .myMacs, key: String? = RouterFixture.accountKey, router: Bool = true,
-         takesCoordinatorWork: Bool = false, localModels: [String] = RouterStubEngine.servedModels,
-         localLimits: [String: LocalModelLimits] = [:], timing: LocalRouter.Timing = .init(),
+    init(route: LocalSettings.Route? = .myMacs, settingsFile: URL? = nil, key: String? = RouterFixture.accountKey,
+         router: Bool = true, takesCoordinatorWork: Bool = false, localModels: [String] = RouterStubEngine.servedModels,
+         localLimits: [String: LocalModelLimits] = [:], modelTypes: [String: String] = [:],
+         timing: LocalRouter.Timing = .init(),
          engineServes: Set<String> = [], engineBusy: Set<String> = [], localKey: String? = RouterFixture.localKey,
          upstream script: @escaping @Sendable (LocalRouterUpstreamRequest) throws -> RouterStubUpstream.Answer = { _ in
              .json(200, #"{"id":"chatcmpl-up","object":"chat.completion","choices":[]}"#)
@@ -214,9 +218,10 @@ struct RouterFixture {
         keys = CountingAccountKeyStore(key)
         self.localModels = localModels
         self.localLimits = localLimits
+        self.modelTypes = modelTypes
         let factory = factory, log = log
         var config = LocalRouterConfig(
-            settings: LocalSettings(route: route), upstreamBaseURL: Self.upstreamBase,
+            settings: LocalSettings(route: route), settingsFile: settingsFile, upstreamBaseURL: Self.upstreamBase,
             takesCoordinatorWork: takesCoordinatorWork, accountKeys: keys,
             makeTransport: { factory.make() }, log: { log.append($0) }, timing: timing)
         // A change notification of this fixture's own, never an install's `route key` one.
@@ -227,12 +232,13 @@ struct RouterFixture {
     /// One endpoint over this fixture's engine, router and coordinator; each call makes a new application.
     func makeApp(onServerRunning: @escaping @Sendable (any Channel) async -> Void = { _ in }) -> LocalInferenceApplication {
         Self.makeApp(router: routerConfig, engine: engine, localModels: localModels, localLimits: localLimits,
-                     localKey: localKey, onServerRunning: onServerRunning)
+                     modelTypes: modelTypes, localKey: localKey, onServerRunning: onServerRunning)
     }
 
     /// The local API with `router` (nil: the endpoint without a router) over `engine`, which plays this Mac.
     static func makeApp(router: LocalRouterConfig?, engine: RouterStubEngine, localModels: [String],
-                        localLimits: [String: LocalModelLimits] = [:], localKey: String? = RouterFixture.localKey,
+                        localLimits: [String: LocalModelLimits] = [:], modelTypes: [String: String] = [:],
+                        localKey: String? = RouterFixture.localKey,
                         onServerRunning: @escaping @Sendable (any Channel) async -> Void = { _ in })
         -> LocalInferenceApplication {
         makeLocalInferenceApplication(
@@ -242,6 +248,7 @@ struct RouterFixture {
             tokenizerProvider: { _ in throw MultiModelBatchSchedulerEngineError.noModelLoadedForTokenization },
             availableModels: { localModels }, mtpSlots: { [] },
             onServerRunning: onServerRunning,
+            modelTypeProvider: modelTypes.isEmpty ? nil : { @Sendable model in modelTypes[model] },
             managedSuperEngine: { _, _, _ in engine },
             modelLimits: { localLimits[$0] })
     }

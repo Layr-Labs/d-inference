@@ -112,6 +112,8 @@ enum ClusterWorkerValidation {
             try workerRequire(value.identity.membershipEpoch == frame.membershipEpoch, "Ready epoch differs")
         case .admitted(let bytes):
             try workerRequire((1...ClusterWorkerLimits.capacityBytes).contains(bytes), "Invalid reserved bytes")
+        case .aborted(let abort):
+            try workerRequire((0...1).contains(abort.rank), "An abort names no rank of the pair")
         case .keptWarm(let ordinal, let microseconds, let serving):
             try workerRequire((1..<ClusterWorkerLimits.keepWarmOrdinals).contains(ordinal) && microseconds >= 0
                 && (serving.map { (1...ClusterWorkerLimits.wireContextTokens).contains($0) } ?? true),

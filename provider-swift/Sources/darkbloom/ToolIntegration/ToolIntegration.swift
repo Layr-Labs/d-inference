@@ -26,13 +26,16 @@ enum IntegrationTool: String, CaseIterable, Sendable {
 
     func plan(
         existing: Data?, file: URL, endpoint: IntegrationEndpoint, models: [IntegrationModel],
-        provider: IntegrationProvider, home: URL
+        provider: IntegrationProvider, environment: ToolIntegrationEnvironment
     ) -> ToolConfigPlan {
         switch self {
         case .opencode:
-            OpenCodeConfigPlan.plan(existing: existing, fileName: file.lastPathComponent, endpoint: endpoint,
-                                    models: models, provider: provider, home: home,
-                                    defaultModelElsewhere: OpenCodeConfigPlan.otherGlobalConfigSetsModel(besides: file))
+            OpenCodeConfigPlan.plan(
+                existing: existing, fileName: file.lastPathComponent, endpoint: endpoint, models: models,
+                provider: provider, home: environment.home,
+                defaultElsewhere: OpenCodeConfigPlan.otherGlobalDefault(besides: file),
+                rememberedPick: OpenCodeConfigPlan.rememberedPick(home: environment.home,
+                                                                  variables: environment.variables))
         case .hermes:
             HermesConfigPlan.plan(existing: existing, endpoint: endpoint, models: models, provider: provider)
         }
@@ -57,13 +60,21 @@ struct IntegrationEndpoint: Equatable, Sendable {
     /// `http://<host>:<port>/v1`, as `local.json` names the live server.
     let baseURL: String
     let keyFile: URL
+    /// The server is this Mac's part of a pair (of two Macs or more): the models it serves itself are the pair's.
+    var servesThePair = false
 
     /// The live local server `info`, by default the one in `local.json` (its own port, never an assumed one), with the
-    /// key file for that port; nil when no server runs, it serves without a key, or no key file holds its key.
+    /// key file for that port; nil when no server runs, it serves without a key, or no key file holds its key. It
+    /// serves the pair when its process is one of this Mac's running pair's (`pairProcesses`). Each default reads this
+    /// Mac's own state, so a test gives its own or points them elsewhere: `DARKBLOOM_LOCAL_DIR` for `local.json` and
+    /// the key files, `ClusterPairSummary.readerForTesting` for the cluster service.
     static func live(_ info: LocalEndpoint.Info? = LocalEndpoint.readLiveInfo(),
-                     keyFile: (UInt16) -> URL? = { LocalEndpoint.keyFile(forPort: Int($0)) }) -> IntegrationEndpoint? {
+                     keyFile: (UInt16) -> URL? = { LocalEndpoint.keyFile(forPort: Int($0)) },
+                     pairProcesses: () -> Set<Int32> = { ClusterPairSummary.runningPairProcesses() })
+        -> IntegrationEndpoint? {
         guard let info, !info.apiKey.isEmpty, let file = keyFile(info.port) else { return nil }
-        return IntegrationEndpoint(baseURL: info.baseURL, keyFile: file)
+        return IntegrationEndpoint(baseURL: info.baseURL, keyFile: file,
+                                   servesThePair: pairProcesses().contains(info.pid))
     }
 }
 
@@ -99,7 +110,7 @@ enum ToolIntegration {
         let writer = ToolConfigWriter(tool: tool, stateDirectory: environment.stateDirectory)
         return try writer.apply(to: file, newFileMode: tool.newFileMode, dryRun: dryRun) { existing in
             tool.plan(existing: existing, file: file, endpoint: endpoint, models: models, provider: provider,
-                      home: environment.home)
+                      environment: environment)
         }
     }
 

@@ -15034,17 +15034,25 @@
               }
             ],
             "additional_context": {
+              "enable_thinking": true,
               "reasoning_effort": "medium"
             },
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
             "prompt_contract_id": "7fa068ecc627ed26fa67d6aa1d5e937d868b54d3d5e5fd6ef6febf6ae7ace8bd",
-            "prompt_token_count": 16,
+            "prompt_token_count": 19,
             "block_boundaries": []
           },
           "token_ids": [
             2,
+            105,
+            9731,
+            107,
+            98,
+            107,
+            106,
+            107,
             105,
             2364,
             107,
@@ -15055,11 +15063,7 @@
             107,
             105,
             4368,
-            107,
-            100,
-            45518,
-            107,
-            101
+            107
           ]
         },
         {
@@ -22713,17 +22717,25 @@
               }
             ],
             "additional_context": {
+              "enable_thinking": true,
               "reasoning_effort": "medium"
             },
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
             "prompt_contract_id": "7fa068ecc627ed26fa67d6aa1d5e937d868b54d3d5e5fd6ef6febf6ae7ace8bd",
-            "prompt_token_count": 16,
+            "prompt_token_count": 19,
             "block_boundaries": []
           },
           "token_ids": [
             2,
+            105,
+            9731,
+            107,
+            98,
+            107,
+            106,
+            107,
             105,
             2364,
             107,
@@ -22734,11 +22746,7 @@
             107,
             105,
             4368,
-            107,
-            100,
-            45518,
-            107,
-            101
+            107
           ]
         },
         {
@@ -30392,17 +30400,25 @@
               }
             ],
             "additional_context": {
+              "enable_thinking": true,
               "reasoning_effort": "medium"
             },
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
             "prompt_contract_id": "a4f3a9b5aa9f83d80bf19926c3e4c6de2b994eba690e91f15e0b90248646c8a7",
-            "prompt_token_count": 16,
+            "prompt_token_count": 19,
             "block_boundaries": []
           },
           "token_ids": [
             2,
+            105,
+            9731,
+            107,
+            98,
+            107,
+            106,
+            107,
             105,
             2364,
             107,
@@ -30413,11 +30429,7 @@
             107,
             105,
             4368,
-            107,
-            100,
-            45518,
-            107,
-            101
+            107
           ]
         },
         {

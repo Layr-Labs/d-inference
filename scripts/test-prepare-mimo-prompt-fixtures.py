@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
 """Offline tests of exact-byte metadata setup; no model or credential access."""
+import copy
+import email.message
 import hashlib
 import importlib.util
+import io
 from pathlib import Path
 import ssl
 import tempfile
 import unittest
 from unittest.mock import patch
 import urllib.error
+import urllib.request
+import urllib.response
+
+import fixture_redirects
 
 SPEC = importlib.util.spec_from_file_location("fixture_setup", Path(__file__).with_name("prepare-mimo-prompt-fixtures.py"))
 SETUP = importlib.util.module_from_spec(SPEC)
@@ -17,8 +24,8 @@ SPEC.loader.exec_module(SETUP)
 class Response:
     """A Hub response whose body may end early or fail as a cut TLS stream does."""
 
-    def __init__(self, body, declared=None, url="https://huggingface.co/x", error=None):
-        self.body, self.url, self.error = body, url, error
+    def __init__(self, body, declared=None, error=None):
+        self.body, self.error = body, error
         self.headers = {} if declared is None else {"Content-Length": str(declared)}
 
     def __enter__(self):
@@ -26,9 +33,6 @@ class Response:
 
     def __exit__(self, *_):
         return False
-
-    def geturl(self):
-        return self.url
 
     def read(self, size):
         if self.error is not None:
@@ -38,6 +42,32 @@ class Response:
 
 def ssl_eof():
     return ssl.SSLEOFError(8, "[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol")
+
+
+class Origins(urllib.request.BaseHandler):
+    """Answers every HTTP and HTTPS request from a fixed route table and records it.
+
+    The script's own redirect handler runs on these answers, as it does on the Hub's.
+    """
+
+    handler_order = 100  # Before urllib's own HTTP and HTTPS handlers.
+
+    def __init__(self, routes):
+        self.routes, self.requested = routes, []
+
+    def answer(self, request):
+        self.requested.append(request.full_url)
+        status, value = self.routes[request.full_url]
+        headers = email.message.Message()
+        body = value if status == 200 else b""
+        if status != 200:
+            headers["Location"] = value
+        headers["Content-Length"] = str(len(body))
+        response = urllib.response.addinfourl(io.BytesIO(body), headers, request.full_url, status)
+        response.msg = "OK" if status == 200 else "Found"
+        return response
+
+    http_open = https_open = answer
 
 
 class FixtureSetupTests(unittest.TestCase):
@@ -127,12 +157,80 @@ class FixtureSetupTests(unittest.TestCase):
             SETUP.prepare(self.root / "metadata", self.corpus, lambda _: self.fail("network must not run"))
 
     def test_unknown_names_cannot_download_weights(self):
-        with patch.object(SETUP.urllib.request, "urlopen", side_effect=AssertionError("network")):
+        with patch.object(SETUP.OPENER, "open", side_effect=AssertionError("network")):
             with self.assertRaises(ValueError):
                 SETUP.public_metadata("model.safetensors")
 
     def network(self, *outcomes):
-        return patch.object(SETUP.urllib.request, "urlopen", side_effect=list(outcomes))
+        return patch.object(SETUP.OPENER, "open", side_effect=list(outcomes))
+
+    def redirected(self, location, *routes):
+        """Fetch the first pinned file through the script's redirect handler.
+
+        The Hub answers its URL with a 302 to location; routes answer the later
+        hops. self.requested keeps every URL that was requested, in order.
+        """
+        name = next(iter(self.payloads))
+        url = f"https://huggingface.co/{SETUP.REPOSITORY}/resolve/{SETUP.REVISION}/{name}"
+        origins = Origins({url: (302, location), **dict(routes)})
+        self.requested = origins.requested
+        redirects = next(h for h in SETUP.OPENER.handlers if isinstance(h, SETUP.OriginRedirect))
+        # A copy: build_opener rebinds a handler's parent, and the module's opener keeps its own.
+        opener = urllib.request.build_opener(copy.copy(redirects), origins)
+        with patch.object(SETUP, "OPENER", opener), patch.object(SETUP.time, "sleep") as sleep:
+            try:
+                return SETUP.public_metadata(name)
+            finally:
+                sleep.assert_not_called()
+
+    def test_same_origin_and_hugging_face_cdn_redirects_are_followed(self):
+        data = next(iter(self.payloads.values()))
+        hub = "https://huggingface.co"
+        cases = {
+            "same-origin resolve cache": f"{hub}/api/resolve-cache/models/x/config.json?etag=1",
+            "same origin, explicit port": "https://huggingface.co:443/api/resolve-cache/x",
+            "Xet bridge CDN": "https://us.aws.cdn.hf.co/xet-bridge-us/a/b?Expires=1&Signature=s",
+            "Xet CAS bridge": "https://cas-bridge.xethub.hf.co/xet-bridge-us/a/b?X-Amz-Signature=s",
+            "LFS CDN": "https://cdn-lfs-us-1.hf.co/repos/a/b?Expires=1",
+            "CDN apex": "https://hf.co/a",
+        }
+        for case, location in cases.items():
+            with self.subTest(case=case):
+                self.assertEqual(self.redirected(location, (location, (200, data))), data)
+                self.assertEqual(self.requested[1:], [location])
+
+    def test_other_redirects_fail_at_once_without_requesting_the_target(self):
+        cases = {
+            "plain-HTTP CDN": "http://us.aws.cdn.hf.co/xet-bridge-us/a",
+            "plain-HTTP downgrade": "http://huggingface.co/a",
+            "another host": "https://evil.example/a",
+            "another port": "https://huggingface.co:8443/a",
+            "CDN on another port": "https://us.aws.cdn.hf.co:8443/a",
+            "CDN with credentials": "https://user:secret@us.aws.cdn.hf.co/a",
+            "CDN name as a prefix": "https://hf.co.evil.example/a",
+            "CDN name without a dot": "https://evilhf.co/a",
+            "Hub name as a CDN": "https://huggingface.co.hf.co.evil.example/a",
+        }
+        for case, location in cases.items():
+            with self.subTest(case=case):
+                with self.assertRaisesRegex(ValueError, "another origin"):
+                    self.redirected(location)
+                # The target is never requested, and redirected() asserts no retry.
+                self.assertEqual(len(self.requested), 1)
+
+    def test_the_cdn_allowance_covers_only_the_hub_hop(self):
+        cdn = "https://us.aws.cdn.hf.co/xet-bridge-us/a"
+        # A CDN host may not send the download on to another host, CDN or not.
+        for onward in ("https://evil.example/a", "https://cas-bridge.xethub.hf.co/a"):
+            with self.subTest(onward=onward):
+                with self.assertRaisesRegex(ValueError, "another origin"):
+                    self.redirected(cdn, (cdn, (302, onward)))
+                self.assertEqual(self.requested[1:], [cdn])
+        # Only a redirect from https://huggingface.co may reach a CDN host.
+        for source in ("http://huggingface.co/a", "https://huggingface.co:8443/a", "https://hf.co/a",
+                       "https://models.darkbloom.ai/a"):
+            with self.subTest(source=source):
+                self.assertFalse(fixture_redirects.redirect_allowed(source, cdn, hugging_face_cdn=True))
 
     def test_cut_transfers_are_retried_with_backoff(self):
         name = next(iter(self.payloads))
@@ -170,7 +268,6 @@ class FixtureSetupTests(unittest.TestCase):
         cases = {
             "full-size wrong digest": (Response(b"x" * len(data), len(data)), SETUP.MAXIMUM),
             "oversize body": (Response(b"x" * 9, 20), 8),
-            "insecure redirect": (Response(data, len(data), url="http://huggingface.co/x"), SETUP.MAXIMUM),
             "HTTP 404": (urllib.error.HTTPError("https://huggingface.co/x", 404, "Not Found", {}, None),
                          SETUP.MAXIMUM),
         }

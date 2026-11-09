@@ -46,6 +46,23 @@ private struct SecretInferenceError: Error, LocalizedError, CustomStringConverti
     #expect(!failure.message.contains("PROMPT_SECRET"))
 }
 
+/// D6: a request a pair aborted mid-stream for one Mac's memory reaches the
+/// coordinator as the pair's capacity refusal does, retryable, with no
+/// numbers or rank in its wire text.
+@Test func aPairsMemoryAbortIsTheCoordinatorsCapacityRefusal() throws {
+    let message = DistributedMemoryAbort.message(requestedContextTokens: 131_072, servingContextTokens: 65_536, rank: 1)
+    #expect(DistributedMemoryAbort.matches(message))
+    #expect(!DistributedMemoryAbort.matches("token_budget_exhausted: KV capacity exhausted after requeues"))
+    let failure = ProviderLoop.sanitizedInferenceFailure(
+        from: MultiModelBatchSchedulerEngineError.fromSchedulerMessage(message), phase: .generation)
+    #expect(failure.code == .capacity)
+    #expect(failure.errorReason == .requestExceedsNodeBudget)
+    #expect(failure.statusCode == 503)
+    let wire = try ProviderProtocolCodec.encodeProviderMessage(.inferenceError(.init(requestId: "request-id", failure: failure)))
+    let text = try #require(String(data: wire, encoding: .utf8))
+    #expect(!text.contains("131072") && !text.contains("refused it while it ran"))
+}
+
 @Test func typedMediaFailuresPreserveSpecificClosedCodesOnWire() throws {
     let cases: [(error: any Error, code: InferenceFailureCode, message: String)] = [
         (

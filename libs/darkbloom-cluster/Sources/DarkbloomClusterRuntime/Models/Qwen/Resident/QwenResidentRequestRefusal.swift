@@ -14,6 +14,19 @@ public struct ClusterResidentRequestRefusal: Error, CustomStringConvertible, Sen
     public init(reason: ClusterWorkerRefusal, message: String) { self.reason = reason; self.message = message }
 }
 
+/// A started request both ranks ended alone because a rank's memory refused
+/// it while it ran (D6): the refusing rank stopped in the message it owed its
+/// peer, the peer confirmed, and both retired the request. A resident runtime's
+/// `start` throws this only after that, with its control available again, so
+/// the worker publishes `aborted` then `retired(aborted)` and keeps serving.
+public struct ClusterResidentRequestAbort: Error, CustomStringConvertible, Sendable {
+    public let abort: ClusterWorkerAbort
+    /// The refusing rank's own sentence, or the peer's abort as this rank saw it.
+    public let message: String
+    public var description: String { message }
+    public init(abort: ClusterWorkerAbort, message: String) { self.abort = abort; self.message = message }
+}
+
 extension QwenResidentControl {
     /// Runs the checks of a reservation the control already holds (`reserve`).
     /// A throw from `body` gives the reservation back and becomes a refusal of

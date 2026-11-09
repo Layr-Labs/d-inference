@@ -8,7 +8,7 @@ struct DiffusionGemmaReasoningControlTests {
     @Test func emissionPermissionMatchesNativeRenderingPrecedence() throws {
         for nested: Bool? in [nil, false, true] {
             for raw: Bool? in [nil, false, true] {
-                for effort: String? in [nil, "none", "OFF", "0", "minimal", "medium", "xhigh"] {
+                for effort: String? in [nil, "none", "OFF", "0", "minimal", "medium", "xhigh", "max"] {
                     let request = OpenAIChatCompletionRequest(model: "native-diffusion", messages: [],
                         reasoning: .init(enabled: nested, effort: effort))
                     let controls = ChatTemplateControls(reasoningEffort: "high", enableThinking: raw)
@@ -31,10 +31,10 @@ struct DiffusionGemmaReasoningControlTests {
     }
 
     @Test func responsesPositiveEffortActivatesNativeThinking() throws {
-        for effort in ["minimal", "low", "medium", "high", "xhigh"] {
+        for effort in ["minimal", "low", "medium", "high", "xhigh", "max", " Max "] {
             let request = OpenAIResponseRequest(model: "native-diffusion", input: .text("hello"),
                 reasoning: .init(effort: effort)).chatCompletionRequest
-            try DiffusionGemmaReasoningControl.validate(request: request, controls: .init(), modelType: "diffusion_gemma")
+            try ReasoningEffortPolicy.validate(request, controls: .init(), modelType: "diffusion_gemma")
             let context = MultiModelBatchSchedulerEngine.templateAdditionalContext(
                 for: request, controls: .init(), modelType: "diffusion_gemma")
             #expect(context?["enable_thinking"] as? Bool == true)
@@ -62,16 +62,19 @@ struct DiffusionGemmaReasoningControlTests {
     @Test func unknownEffortFailsClosedWithoutChangingOtherModels() throws {
         let request = OpenAIChatCompletionRequest(model: "native-diffusion", messages: [],
             reasoning: .init(effort: "unsupported"))
-        #expect(throws: MultiModelBatchSchedulerEngineError.unsupportedNativeReasoningEffort) {
-            try DiffusionGemmaReasoningControl.validate(request: request, controls: .init(), modelType: "diffusion_gemma")
+        #expect(throws: MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort(.reasoningObject)) {
+            try ReasoningEffortPolicy.validate(request, controls: .init(), modelType: "diffusion_gemma")
         }
         for type: String? in [nil, "qwen4_exp", "gemma4", "llama"] {
-            try DiffusionGemmaReasoningControl.validate(request: request, controls: .init(), modelType: type)
             let context = MultiModelBatchSchedulerEngine.templateAdditionalContext(
                 for: request, controls: .init(), modelType: type)
             #expect(context?["enable_thinking"] == nil)
         }
+        // A model that doesn't reason ignores the effort.
+        for type: String? in [nil, "llama"] {
+            try ReasoningEffortPolicy.validate(request, controls: .init(), modelType: type)
+        }
         #expect(ProviderLoop.mapInferenceErrorToStatus(
-            MultiModelBatchSchedulerEngineError.unsupportedNativeReasoningEffort) == 400)
+            MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort(.reasoningObject)) == 400)
     }
 }

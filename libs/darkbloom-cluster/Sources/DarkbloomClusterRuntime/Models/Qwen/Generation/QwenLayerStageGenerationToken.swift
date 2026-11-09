@@ -92,6 +92,10 @@ enum QwenLayerStageGenerationAcknowledgement {
         case boundaryReady, boundaryConsumed, tokenAccepted, decisionAccepted, requestRetired
         /// Phase split: the adopting rank's answers to the hand-off header and to its payload.
         case handoffReady, handoffAccepted, handoffRefused
+        /// D6: the stop marker of a rank whose memory refused the running
+        /// request, in an acknowledgement slot it owes, and the one
+        /// confirmation its peer answers any marker with (`QwenStageAbortWire`).
+        case abortedMemory, abortConfirmed
     }
     static func values(agreement: QwenLayerStageGenerationAgreement, phase: Phase,
                        packetFingerprint: String, rank: Int) throws -> [Int32] {

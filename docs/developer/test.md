@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-09
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -984,20 +984,25 @@ The [config writers'](../architecture/tool-integrations.md) suites are CPU-only
 and need no model, credential or live provider. The planners' goldens are
 inline strings; the writer and end-to-end cases use temp homes and fresh fake
 keys, and the live-endpoint case runs in a child process that alone points
-`DARKBLOOM_LOCAL_DIR` at a temp folder. None reads a real OpenCode or Hermes
-config.
+`DARKBLOOM_LOCAL_DIR` at a temp folder. Every case that reaches
+`IntegrationEndpoint.live` keeps it off this Mac's cluster service: it gives
+`pairPart`, binds `ClusterPairSummary.readerForTesting`, or, in a child
+process, calls `keepCommandsOffThisMacsCluster()`. None reads a real OpenCode
+or Hermes config, or this Mac's cluster service.
 
 ```bash
 swift test --skip-build --no-parallel \
-  --filter 'OpenCodeConfigPlanTests|HermesConfigPlanTests|HermesVersionTests|ToolConfigWriterTests|IntegrationModelsTests|ToolIntegrationTests|AtomicFileTests|keyFileIsTheFileHoldingThePortsKey'
+  --filter 'OpenCodeConfigPlanTests|HermesConfigPlanTests|HermesVersionTests|ToolConfigWriterTests|IntegrationModelsTests|ToolIntegrationTests|ToolSetupWordsTests|ModelLoadWaitTests|ToolAddressTests|AtomicFileTests|keyFileIsTheFileHoldingThePortsKey'
 ```
 
 | Coverage | Suites |
 |---|---|
-| New file, an owner's commented JSONC file, strict `.json`, a V1 `provider` map, the default model (also when the other global file sets one), re-runs, refusals, the config file choice | `OpenCodeConfigPlanTests` |
-| New file, Hermes' fresh-install `model: ""`, a file as oMLX writes it (PyYAML's column-0 lists too), the `model:` alias key, the kept default, the 64,000-token floor, quoting, refusals, every written key against Hermes' documented keys; the `key_cmd` version warning | `HermesConfigPlanTests`, `HermesVersionTests` |
+| New file, an owner's commented JSONC file, strict `.json`, a V1 `provider` map, the default model (also when the other global file sets one, this file's own winning, named when kept; two `model` keys name none; a remembered `/models` pick, and how its `model.json` is read), re-runs, refusals, the config file choice | `OpenCodeConfigPlanTests` |
+| New file, Hermes' fresh-install `model: ""`, a file as oMLX writes it (PyYAML's column-0 lists too), the `model:` alias key, the kept default, the main model it replaces, a pair's model as the main one, the 64,000-token floor, quoting, refusals, every written key against Hermes' documented keys; the `key_cmd` version warning | `HermesConfigPlanTests`, `HermesVersionTests` |
 | Backups (exact bytes, 0600, five kept), unchanged writes nothing, atomic replace, symlinks, a concurrent edit, dry run, the undo command run through `/bin/sh` | `ToolConfigWriterTests`, `AtomicFileTests` |
-| Catalog names, limits and capability aliases; the fetch with the key file's key; `local.json`'s endpoint and key file; the modes of new files; the owner's default in the other global OpenCode file; no written file holds the key | `IntegrationModelsTests`, `ToolIntegrationTests`, `keyFileIsTheFileHoldingThePortsKey` |
+| Catalog names, limits and capability aliases; a pair's models named `(your pair)`, with their engine's image input and reasoning; the fetch with the key file's key; `local.json`'s endpoint and key file; the modes of new files; the owner's default in the other global OpenCode file; no written file holds the key | `IntegrationModelsTests`, `ToolIntegrationTests`, `keyFileIsTheFileHoldingThePortsKey` |
+| What a start says, in a temp home with a user's two OpenCode files and his Hermes config: the default model's own line (none set, set in either file, set without a name, OpenCode 1's `config.json`, a `/models` pick OpenCode remembers in a fake `model.json`, under `XDG_STATE_HOME` too), Hermes' main model before, the URL for an API on `0.0.0.0`, a pair's API (`(your pair)`, a member's relay, a run again online and offline changes nothing); every `Changed:` wording and default line | `ToolSetupWordsTests` |
+| The wait for this Mac's models (a scripted process and a clock that moves only between looks; every fake ends a wait at its bound, so a regression fails instead of hanging, and each suite has a one-minute limit), Ctrl-C (SIGUSR2 stands in for SIGINT), the run-again line; a plain start's notice, the address rule and the start's two hooks | `ModelLoadWaitTests`, `ToolAddressTests` |
 
 `scripts/integrations/opencode-smoke.sh` then runs the real OpenCode 2 on the
 written config. It runs the writer through the opt-in `OpenCodeSmokeSetup`
@@ -1260,21 +1265,44 @@ weights. The downloader identifies itself as `darkbloom-prompt-fixtures/1` to
 the CDN and retains same-origin HTTPS, byte-budget and integrity checks.
 It retries only a cut or failed transfer (a TLS, socket or connection error, a
 timeout, a body that ends before its declared size, or HTTP 5xx), at most 3
-attempts per artifact with 1 s and 3 s backoff inside the 120 s deadline. A
-full-size body with the wrong SHA-256, an oversize body, a Content-Length
-mismatch, a cross-origin response, another non-200 status or the deadline fails
-at once. `scripts/prepare-mimo-prompt-fixtures.py` and
+attempts per artifact with 1 s and 3 s backoff inside the contract's deadline.
+The deadline is 120 s plus the time the contract's missing bytes take at
+128 KiB/s, at most 900 s: 256 s for the 17 MB Nemotron contract and 376 s for a
+32 MB Gemma 4 contract. A full-size body with the wrong SHA-256, an oversize
+body, a Content-Length mismatch, a cross-origin response, another non-200
+status or the deadline fails at once.
+
+With `PROMPT_PARITY_DOWNLOAD_CACHE` set (CI sets it for both parity scripts),
+`--download-cache` names a directory with one file per pinned SHA-256
+(`scripts/verified_download_cache.py`). An artifact is copied from it only if
+the entry is a regular file with the pinned size and digest; a missing, linked,
+special, short, long or changed entry, or one that cannot be read, is
+downloaded, and the verified download replaces it. A failure to store an entry
+is printed and ignored. The cache's bytes do not count toward the deadline, and
+the Gemma 4 and Qwen contracts that share a `tokenizer.json` download it once.
+For each contract the script prints how many artifacts came from the cache, how
+many it downloaded, their bytes and the seconds it took.
+
+`scripts/prepare-mimo-prompt-fixtures.py` and
 `scripts/prepare-mimo-image-http-fixtures.py` apply the same retry rule to each
-metadata file, with these differences. The MiMo prompt script refuses a
-redirect to plain HTTP but follows a redirect to a different HTTPS host: Hugging
-Face serves `tokenizer.json` from its CDN host. It has no total deadline: each
-connect and read has a 60 s socket timeout. The image script has a 120 s
-deadline for each file, and it classifies curl's exit code: a cut transfer (for
-example exit 18 or 56) retries, and an oversize body (63) or a certificate
-failure does not. curl does not follow redirects for the image script. The
-script follows a redirect only when its scheme, host and port are those of the
-requested URL, for at most 10 redirects. A redirect to another origin, plain
-HTTP included, fails at once and is not requested. Provisioning failures fail
+metadata file, with these differences. The MiMo prompt script has no total
+deadline: each connect and read has a 60 s socket timeout. The image script has
+a 120 s deadline for each file, and it classifies curl's exit code: a cut
+transfer (for example exit 18 or 56) retries, and an oversize body (63) or a
+certificate failure does not. curl does not follow redirects for the image
+script.
+
+The three downloaders share one redirect rule (`scripts/fixture_redirects.py`),
+for at most 10 redirects. A download follows a redirect only when the target
+has the scheme, host and port of the URL that answered with it, and the target
+has no credentials. The MiMo prompt script also follows an HTTPS redirect from
+`https://huggingface.co` to a Hugging Face CDN host on port 443: `hf.co` or a
+name that ends in `.hf.co`. Hugging Face answers `tokenizer.json` at the pinned
+revision with a 302 to `us.aws.cdn.hf.co`; the other three metadata files take a
+same-origin 307. The pinned SHA-256 values still protect the bytes. Any other
+redirect (another host, another port or plain HTTP) fails at once, is not
+retried, and its target is never requested. The prompt-asset downloader also
+refuses a redirect target with a query or fragment. Provisioning failures fail
 qualification; they must not silently skip vectors.
 
 Public validation means **this implementation matches those fixed expectations**.
@@ -1291,12 +1319,96 @@ SHA-256 in the commit. A provider change to the rendered prompt, such as the
 Qwen JSON `response_format` thinking default, lands with the regenerated
 vectors and must pass `scripts/verify-prompt-parity.sh` before review.
 
+`fixtures/prompt-contract/v1/native_reasoning_vectors.json` (28 cases) is this
+repository's: the template context the provider gives each reasoning control,
+or its refusal. `CachePromptParityTests` checks the provider against it, and
+the platform's prompt sidecar and first-party pool read the same cases, so a
+change lands here first and the platform follows. Since the reasoning-effort
+levels ([reasoning effort](../architecture/inference.md#reasoning-effort)),
+Qwen 3.8 Flash-Next's `high`, `max`, `minimal` and ` low ` render a level and
+`turbo` is refused. `ReasoningEffortValuesTests` checks every family's table
+against the rounding rule and sends every effort to every family through the
+production prompt pipeline, and
+`ReasoningEffortLocalAPITests` sends them to one Mac's local API and a pair
+leader's over the `ClusterAPIParityTests` harness. It also renders Nemotron 3.5
+Super's refusal of two efforts that differ through `SuperHTTPErrors` and
+`CORSResponder`; `NemotronSuperLocalHTTPTests`' live text route sends it, and
+an unknown `reasoning.effort`, through the real application (it needs Metal,
+so it runs in CI).
+
+`fixtures/prompt-contract/v1/reasoning_effort_vectors.json` (446 cases) is
+also this repository's, and it is the contract with the coordinator: every
+family's reading of every effort, in both fields and other spellings (a
+non-ASCII `HİGH` among them), with the field an unknown effort is refused in,
+and cases for every type that reasons. It also lists the sets the table keeps:
+the types that reason, the Qwen 3.5 template family's, the types whose effort
+sets a thinking switch, and the concrete Qwen 3.8 builds. It is generated,
+never edited by hand: `scripts/generate-reasoning-effort-vectors.py` restates
+the tables in `ReasoningEffort.swift` and writes it, and running the script
+again must leave the file unchanged. Regenerate it with the tables, and check
+the result with `CachePromptParityTests.reasoningEffortVectors`, which requires
+each set to equal the table's and every type that reasons to have cases, and
+runs every case through the production prompt pipeline. darkbloom-platform
+copies the file byte for byte from a reviewed commit of this repository (its
+provider contract snapshot, which `make contracts-check` verifies there) and
+checks its ingress refusal, first-party pool and prompt sidecar against it,
+sets included, so a type added or dropped on one side only fails a test on the
+other, and a change to a table changes the file in both repositories together.
+A new family that reasons adds its model types to the sets, its table (if it
+has levels) with a row in
+`ReasoningEffortValuesTests.everyFamilyTableCoversEveryEffort`, a `Family` to
+the script, and the regenerated file with its new case count; the coordinator
+learns the family when the platform takes that commit's file.
+
 darkbloom-platform keeps byte-identical copies of the provider's
 `paged_footprint_wire.json` and `process_memory_wire.json` for its own
 coordinator and console tests. Coordinate fixture changes with the platform and
 run each implementation's checks in its owner repo.
 The [immutable platform test guide](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/developer/test.md)
 is historical context, not the current backend source authority.
+
+### A memory refusal on a real pair (dev memory fault)
+
+Dev and DevNet builds can make one rank's live memory check refuse the next
+request, so a real pair can prove that such a refusal ends that request alone,
+in every mode (D6). Both workers keep running, the client gets the memory 503
+(or, once a stream has started, an error chunk with `code`
+`request_exceeds_node_budget`), and the pair serves the next request at once.
+
+- **Where.** The file `cluster-setup/memory-fault` in the dev install's home,
+  `~/.darkbloom-dev/cluster-setup/memory-fault`, on the Mac whose rank should
+  refuse. Rank 0 is the Mac that leads (`darkbloom-dev cluster status` names
+  it), rank 1 the other. Only a worker of a dev or DevNet app (installed in
+  `~/.darkbloom-dev`) reads it; a production install never does
+  (`ClusterMemoryFault.permitted`, pinned by
+  `TensorParallelMemoryAbortTests.theMemoryFaultIsInertInAProductionInstallAndOneShotInADevOne`).
+- **What.** One integer N ≥ 1: the rank's live memory gate refuses from that
+  request's Nth check on, for the rest of the request. A check runs at most
+  every 250 ms while the request runs: a pipeline stage checks at its first
+  frame and then before each message it owes its peer; a tensor-parallel rank
+  checks after each token it commits; a batch checks at its step boundaries. So
+  `1` refuses at the first check (a pipeline's first prompt frame, a tensor
+  pair's first token), and `40` about 10 s into the request.
+- **When.** The worker reads the file when the next request starts on that Mac
+  and deletes it, so it fires once; a running pair needs no restart. The
+  request's end disarms it.
+- **How.** The fault throws inside each live gate, where a real refusal is
+  thrown (`ClusterMemoryFault.refuseIfDue`), so everything after it is a real
+  refusal's path. The worker logs `darkbloom-memory-fault-v1 … armed_check=N`,
+  then `darkbloom-stage-abort-v1` (pipeline), `finish=aborted … reason=memory`
+  (tensor parallel) or `memory-refused` (a batch).
+
+On the refusing rank's Mac, for example to refuse at the third check:
+
+```bash
+mkdir -p ~/.darkbloom-dev/cluster-setup
+printf '3\n' > ~/.darkbloom-dev/cluster-setup/memory-fault
+```
+
+Then send one request long enough to reach that check. The file is gone once
+the request starts; the answer is the 503 or the typed error chunk; both
+workers' processes are the same before and after; and the next request is
+served.
 
 ### Two-Mac Cluster Checks
 
@@ -1332,8 +1444,10 @@ release build of the cluster runtime. Shard 2 of `test-cluster-focused`
 `libs/darkbloom-cluster/Tests/NemotronStageChecks/run.sh`,
 `provider-swift/Tests/ClusterModelProvisioningChecks/run.sh provisioning`,
 the onboarding checks and `provider-swift/Tests/ClusterConsoleChecks/run.sh`.
-Shard 1 runs every other runner under `libs/darkbloom-cluster/Tests` and
-`provider-swift/Tests/ClusterPairingChecks/run.sh`. Each runner compiles only its own small source
+Shard 1 runs every other runner under `libs/darkbloom-cluster/Tests`,
+`provider-swift/Tests/ClusterPairingChecks/run.sh`,
+`provider-swift/Tests/ClusterDiagnosticsChecks/run.sh` and
+`provider-swift/Tests/ClusterPlacementChecks/run-flow.sh`. Each runner compiles only its own small source
 closure. The provisioning runner runs the
 provisioning checks only. Its download cache-policy check
 reads how many written pages stay in the file cache, which the host's kernel

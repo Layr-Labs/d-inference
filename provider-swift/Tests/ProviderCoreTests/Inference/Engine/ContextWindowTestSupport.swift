@@ -2,16 +2,22 @@ import Foundation
 import MLXLMCommon
 @testable import ProviderCore
 
-// Shared by `LocalDefaultOutputTests`, `LocalContextWindowTests` and the tests that pin a
-// slot's context (`Qwen4SupportPolicyTests`, `Bonsai9BContextTests`, `FlintContextAdmissionTests`,
-// `ServingPerformanceProfileTests`, `GLM5NextManagedLoadTests`).
+// Shared by `LocalDefaultOutputTests`, `LocalContextWindowTests`, `PairContextWindowTests` and the
+// tests that pin a slot's context (`Qwen4SupportPolicyTests`, `Bonsai9BContextTests`,
+// `FlintContextAdmissionTests`, `ServingPerformanceProfileTests`, `GLM5NextManagedLoadTests`).
 
 /// The words a client is refused with when a prompt alone fills a single Mac
-/// slot's window of `contextTokens` (its advertised context, else its model's).
+/// slot's window of `contextTokens` (its advertised context, else its model's),
+/// or the context a pair serves.
 func windowRefusalWords(_ contextTokens: Int) -> String {
     "The prompt fills this model's context window of \(contextTokens) tokens, leaving no room for an answer. "
         + "Shorten the prompt or start a new conversation."
 }
+
+/// The words of the memory 503, on one Mac and on a pair: a request the
+/// memory can't hold now.
+let memoryRefusalWords = "This Mac's memory can't hold this request right now. Lower max_tokens or shorten the prompt "
+    + "(or send less media), or retry when this Mac's other requests finish."
 
 /// That refusal as the bridge throws it.
 func windowRefusal(_ contextTokens: Int) -> MultiModelBatchSchedulerEngineError {

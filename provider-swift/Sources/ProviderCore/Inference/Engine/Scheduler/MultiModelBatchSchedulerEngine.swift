@@ -362,9 +362,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             ?? distributedRequestOrigin
         // Preparation, on this task or the lease's child task, decodes media.
         return try await VideoReaderFailureReport.reporting(to: (engineV2Vision ?? .production).emitTelemetry) {
-            try await prepareAcquiredCompletion(
-                request: request, templateControls: templateControls, requestUsage: requestUsage,
-                distributedRequestOrigin: origin, acquired: acquired)
+            try await MeFirstOwnerRequest.$makeRoom.withValue(acquired.makeRoomForOwner) {
+                try await prepareAcquiredCompletion(
+                    request: request, templateControls: templateControls, requestUsage: requestUsage,
+                    distributedRequestOrigin: origin, acquired: acquired)
+            }
         }
     }
 
@@ -511,8 +513,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 nativeMiMoThinkingEnabled = try MiMoV26TemplateFix.effectiveThinkingEnabled(
                     request: request, controls: templateControls)
             } else { nativeMiMoThinkingEnabled = true }
-            try DiffusionGemmaReasoningControl.validate(
-                request: request, controls: templateControls, modelType: modelType)
+            try ReasoningEffortPolicy.validate(request, controls: templateControls, modelType: modelType)
             prepared = try ToolChoicePromptPolicy.prepare(
                 request,
                 modelType: modelType,

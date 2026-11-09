@@ -10,7 +10,7 @@ extension QwenTensorParallelResidentRuntime {
         guard usesRequestOwnedSingleton, let reserved = batchBook.reservation(requestID) else {
             throw ProbeError("Singleton TP start has no matching request-owned reservation")
         }
-        let host = QwenTensorParallelSingletonHost(request: reserved.request, channel: channel)
+        let host = QwenTensorParallelSingletonHost(request: reserved.request, channel: channel, rank: collective.rank)
         try startLane(requestID: requestID)
         try serveBatch(host: host, retiredSelection: host.retiredSelection)
         return try host.completion()
@@ -30,9 +30,12 @@ final class QwenTensorParallelSingletonHost: QwenBatchServingHost {
     private var reused = 0
     private var stored: [Int] = []
     private var telemetry: ClusterWorkerRequestTelemetry?
+    private let rank: Int
+    /// Both ranks ended the request alone for a rank's memory (D6).
+    private var aborted: ClusterWorkerAbort?
 
-    init(request: QwenLayerStageGenerationRequest, channel: ClusterCommittedTokenChannel) {
-        self.request = request; self.channel = channel
+    init(request: QwenLayerStageGenerationRequest, channel: ClusterCommittedTokenChannel, rank: Int = 0) {
+        self.request = request; self.channel = channel; self.rank = rank
     }
     private func require(_ id: UUID) throws {
         guard id == request.requestID else { throw ProbeError("Singleton TP host received another request") }
@@ -83,6 +86,12 @@ final class QwenTensorParallelSingletonHost: QwenBatchServingHost {
         }
         finished = true
     }
+    /// The driver calls this only after both ranks retired the lane it ended for memory.
+    func publishAborted(requestID: UUID, abort: ClusterWorkerAbort) throws {
+        try require(requestID)
+        guard selected == nil, !finished, aborted == nil else { throw ProbeError("Singleton TP request ended twice") }
+        aborted = abort
+    }
     func publishLeft(requestID: UUID) throws {
         try require(requestID)
         // The lane is already unbooked and retired on both ranks; preserve the
@@ -90,6 +99,10 @@ final class QwenTensorParallelSingletonHost: QwenBatchServingHost {
         throw ProbeError("Singleton TP request cancelled before clean completion")
     }
     func completion() throws -> QwenResidentGenerationCompletion {
+        if let aborted {
+            return .aborted(requestID: request.requestID, abort: aborted,
+                message: "Qwen tensor parallel: rank \(aborted.rank)'s memory refused the request while it ran", rank: rank)
+        }
         guard finished, let selected, let reason else { throw ProbeError("Singleton TP returned without native retirement") }
         return .init(requestID: request.requestID, finishReason: reason,
             selectedTokenIDs: selected, completedFrames: selected.count,

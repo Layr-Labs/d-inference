@@ -139,8 +139,7 @@ enum ProviderPromptContractPipeline {
         }
         try MediaIngest.rejectUnsupportedAudio(request,
             modelType: preserveMiMoMediaParts ? modelType : nil)
-        try DiffusionGemmaReasoningControl.validate(
-            request: request, controls: templateControls, modelType: modelType)
+        try ReasoningEffortPolicy.validate(request, controls: templateControls, modelType: modelType)
         let isMiMo = MiMoV26TemplateFix.applies(to: .init(modelType: modelType))
         if isMiMo { try MiMoV26TemplateFix.validateRequest(request) }
         guard preserveMiMoMediaParts || !MediaIngest.hasAudio(request) else {
@@ -182,8 +181,6 @@ enum ProviderPromptContractPipeline {
                 hasMedia: MediaIngest.hasMedia(request),
                 requiresToolCall: prepared.requiresToolCall)
         }
-        try Qwen4SupportPolicy.validateReasoningContext(
-            modelID: request.model, modelType: modelType, additionalContext: additionalContext)
         return try NormalizedInput(
             messages: ChatTemplateFixes.normalizeMessages(messages, context: context),
             tools: ChatTemplateFixes.normalizeTools(tools, context: context),

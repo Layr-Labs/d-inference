@@ -93,6 +93,7 @@ build_module InstalledContract \
   "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingFollow.swift" "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingLeaderStep.swift" \
   "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingPairServing.swift" \
   "${task_placement[@]}" \
+  "$task_sources/Diagnostics/GLM5NextGPULimitEligibility.swift" \
   "$task_sources"/Inference/Distributed/LinkControl/*.swift \
   "$task_sources/Inference/Distributed/Observability/ClusterObservability.swift" \
   "$task_sources/Inference/Distributed/Observability/ClusterIncidentLog+Install.swift" \

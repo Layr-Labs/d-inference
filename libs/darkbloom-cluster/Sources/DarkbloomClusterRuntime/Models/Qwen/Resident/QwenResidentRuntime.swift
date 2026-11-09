@@ -105,7 +105,7 @@ public final class QwenResidentRuntime {
             found = admitted.contextTokens; room = admitted.roomBytes
         } catch {
             guard String(describing: error).hasPrefix("Resident load refused: not even") else { return nil }
-            found = min(admission.memoryProfile.maximumContextTokens, admission.memoryProfile.maximumChunkTokens + 1)
+            found = LayerStageContextGate.minimumContextTokens(admission.servedProfile)
         }
         // The cache's budget follows the room beside the serving context now, in
         // both directions (models stay loaded until unloaded, so a dip at load
@@ -264,22 +264,23 @@ public final class QwenResidentRuntime {
                                 rank: Int, mode: QwenResidentGenerationMode,
                                 speculativeTerms: QwenMTPTerms? = nil,
                                 reclaimableBytes: Int = 0) throws -> QwenResidentAdmittedContext {
-        // The admitted profile carries the model's limits (`QwenResidentContextLimits`
+        // The served profile carries the model's limits (`QwenResidentContextLimits`
         // for a registered Qwen row; the earlier reservation for a family without one).
-        let maximumContext = admission.memoryProfile.maximumContextTokens
+        let served = admission.servedProfile
+        let maximumContext = served.maximumContextTokens
         let policy = QwenResidentPrefillSelection.policy(admission.configuration.prefillSchedule)
         let sum = QwenLongPrefillCheckedBytes.sum
         // A charge is the same for a context on this loaded stage every time; it is derived from the plan and costs
         // tens of milliseconds (Bonsai's Prism configuration more), and the idle refresh searches it often: kept.
         let memoKey = "\(admission.plan.fingerprint)|\(rank)|\(mode)|\(speculativeTerms.map { "mtp\($0.depth)" } ?? "none")"
-            + "|\(admission.memoryProfile.maximumContextTokens)|\(admission.memoryProfile.maximumPromptTokens)"
-            + "|\(admission.memoryProfile.maximumChunkTokens)|\(admission.configuration.prefillSchedule)"
+            + "|\(served.maximumContextTokens)|\(served.maximumPromptTokens)"
+            + "|\(served.maximumChunkTokens)|\(admission.configuration.prefillSchedule)"
         func charge(_ context: Int) throws -> QwenResidentAdmittedContext {
             try QwenResidentChargeMemo.shared.value(key: memoKey, context: context) { try uncachedCharge(context) }
         }
         func uncachedCharge(_ context: Int) throws -> QwenResidentAdmittedContext {
-            let prompt = min(admission.memoryProfile.maximumPromptTokens, context - 1)
-            let chunk = min(admission.memoryProfile.maximumChunkTokens, prompt)
+            let prompt = min(served.maximumPromptTokens, context - 1)
+            let chunk = min(served.maximumChunkTokens, prompt)
             let allowance = try stage.requestAllowance(plan: admission.plan, rank: rank,
                 maximumTokens: context, chunkSize: chunk,
                 decode: .init(mode: mode, rank: rank, speculativeTerms: speculativeTerms),
@@ -311,7 +312,7 @@ public final class QwenResidentRuntime {
         }
         func admits(_ context: Int) throws -> Bool { try judge(context).admitted }
         // One prefill frame and one output token: the least a loaded stage serves.
-        let minimum = min(maximumContext, admission.memoryProfile.maximumChunkTokens + 1)
+        let minimum = LayerStageContextGate.minimumContextTokens(served)
         let plain = try QwenResidentContextAdmission.largest(minimum: minimum, maximum: maximumContext, admits: admits)
         // A Mac whose memory bounds the context keeps room for the prompt-prefix cache when that costs at most a
         // quarter of the context: the largest context left the cache no budget at all (0.4 MB beside 29,072 tokens
@@ -366,7 +367,7 @@ public final class QwenResidentRuntime {
         guard operation.try() else { throw ProbeError("Resident native operation is already active") }
         defer { operation.unlock() }
         let request = try admission.request(value, id: requestID, now: DispatchTime.now().uptimeNanoseconds)
-        try admission.requireWithinMemoryProfile(value)
+        try admission.requireWithinServedProfile(value)
         try control.check(); try control.reserve(requestID)
         // Nothing below allocates: a throw gives the reservation back and is
         // a refusal of this request alone (`ClusterResidentRequestRefusal`).
@@ -476,9 +477,13 @@ public final class QwenResidentRuntime {
 
     /// Only rank0 invokes the callback, after both ranks commit/accept the token.
     /// False requests agreed clean stop; a thrown callback is abnormal failure.
+    /// A request both ranks ended alone for memory (D6) throws
+    /// `ClusterResidentRequestAbort` once its scope has ended cleanly: this
+    /// owner is available again and takes the next request.
     public func start(requestID: UUID,
                       onCommittedToken: (Int, Int, Int) throws -> Bool) throws -> QwenResidentGenerationCompletion {
         try execute(requestID: requestID, mode: .serving, onCommittedToken: onCommittedToken) { completion, _ in completion }
+            .requireNotAborted()
     }
 
     /// Returns bounded CPU evidence only after bilateral retirement, local

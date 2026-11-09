@@ -159,6 +159,7 @@ public actor EngineV2Bridge {
     nonisolated let promptWorkIdentity: PromptWorkIdentity?
     let unqualifiedMaxConcurrentRequests: Int
     nonisolated let serviceBudget: WholeMacServiceBudget?
+    nonisolated let visionFeatureCache: VisionFeatureCache
     let serviceOwnerPrefix = UUID().uuidString
     /// Operational control for atomic first-token deadline admission.
     /// Parsed once per bridge so runtime behavior cannot change mid-request.
@@ -516,6 +517,7 @@ public actor EngineV2Bridge {
         self.unqualifiedMaxConcurrentRequests = min(maxConcurrentRequests,
             max(1, unqualifiedMaxConcurrentRequests ?? min(maxConcurrentRequests, 8)))
         self.serviceBudget = kvBudget?.serviceBudget
+        self.visionFeatureCache = VisionFeatureCache(budget: kvBudget?.visionFeatureCacheBudget)
         self.prefillDeadlineMode = prefillDeadlineMode
         self.prefillDeadlineProjectionEnabled = prefillDeadlineProjectionEnabled
         self.partialPrefillCap = partialPrefillCap

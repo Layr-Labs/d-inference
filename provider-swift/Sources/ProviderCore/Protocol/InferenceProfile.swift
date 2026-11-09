@@ -212,6 +212,9 @@ public struct InferenceProfile: Codable, Sendable, Equatable {
     // Durations (µs)
     public var toolConstraintUs: Int64?
     public var visionPrepUs: Int64?
+    /// Image encoder reuse only; never cached prompt/KV token credit.
+    public var visionFeatureCacheHits: Int64?
+    public var visionEncoderImages: Int64?
     public var ssdStageUs: Int64?
     public var kvReserveUs: Int64?
     public var flushUs: Int64?
@@ -277,6 +280,8 @@ public struct InferenceProfile: Codable, Sendable, Equatable {
         case totalUs = "total_us"
         case toolConstraintUs = "tool_constraint_us"
         case visionPrepUs = "vision_prep_us"
+        case visionFeatureCacheHits = "vision_feature_cache_hits"
+        case visionEncoderImages = "vision_encoder_images"
         case ssdStageUs = "ssd_stage_us"
         case kvReserveUs = "kv_reserve_us"
         case flushUs = "flush_us"
@@ -359,6 +364,8 @@ public struct InferenceProfile: Codable, Sendable, Equatable {
         p.totalUs = us(p.totalUs)
         p.toolConstraintUs = us(p.toolConstraintUs)
         p.visionPrepUs = us(p.visionPrepUs)
+        p.visionFeatureCacheHits = p.visionFeatureCacheHits.map { min(1024, max(0, $0)) }
+        p.visionEncoderImages = p.visionEncoderImages.map { min(1024, max(0, $0)) }
         p.ssdStageUs = us(p.ssdStageUs)
         p.kvReserveUs = us(p.kvReserveUs)
         p.flushUs = us(p.flushUs)

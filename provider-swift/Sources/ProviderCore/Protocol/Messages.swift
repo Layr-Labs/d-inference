@@ -1662,6 +1662,8 @@ public enum CoordinatorMessage: Sendable, Equatable {
         public var promptWork: PromptWork?
         public var cacheReceiptNonce: String?
         public var cacheScope: String?
+        /// Authenticated coordinator image-feature namespace, independent of prefix receipts.
+        public var visionCacheScope: String?
         public var prefixCacheProtocol: Int?
         public var cacheReceiptBoundaryMode: String?
         /// Coordinator-observed fleet-wide repeat demand: the deepest boundary
@@ -1681,6 +1683,7 @@ public enum CoordinatorMessage: Sendable, Equatable {
             firstContentBudgetMs: Int64? = nil,
             cacheReceiptNonce: String? = nil,
             cacheScope: String? = nil,
+            visionCacheScope: String? = nil,
             prefixCacheProtocol: Int? = nil,
             cacheReceiptBoundaryMode: String? = nil,
             cacheRepeatedPrefixTokens: Int? = nil,
@@ -1693,6 +1696,7 @@ public enum CoordinatorMessage: Sendable, Equatable {
             self.firstContentBudgetMs = firstContentBudgetMs.flatMap { $0 > 0 ? $0 : nil }
             self.cacheReceiptNonce = cacheReceiptNonce
             self.cacheScope = cacheScope
+            self.visionCacheScope = visionCacheScope
             self.prefixCacheProtocol = prefixCacheProtocol
             self.cacheReceiptBoundaryMode = cacheReceiptBoundaryMode
             self.cacheRepeatedPrefixTokens = cacheRepeatedPrefixTokens.map { max(0, $0) }
@@ -1883,6 +1887,7 @@ extension CoordinatorMessage: Codable {
         case serviceReservationID = "service_reservation_id"
         case cacheReceiptNonce = "cache_receipt_nonce"
         case cacheScope = "cache_scope"
+        case visionCacheScope = "vision_cache_scope"
         case prefixCacheProtocol = "prefix_cache_protocol"
         case cacheReceiptBoundaryMode = "cache_receipt_boundary_mode"
         case cacheRepeatedPrefixTokens = "cache_repeated_prefix_tokens"
@@ -1932,6 +1937,7 @@ extension CoordinatorMessage: Codable {
             }
             try container.encodeIfPresent(r.cacheReceiptNonce, forKey: .cacheReceiptNonce)
             try container.encodeIfPresent(r.cacheScope, forKey: .cacheScope)
+            try container.encodeIfPresent(r.visionCacheScope, forKey: .visionCacheScope)
             try container.encodeIfPresent(r.prefixCacheProtocol, forKey: .prefixCacheProtocol)
             try container.encodeIfPresent(r.cacheReceiptBoundaryMode, forKey: .cacheReceiptBoundaryMode)
             try container.encodeIfPresent(r.cacheRepeatedPrefixTokens, forKey: .cacheRepeatedPrefixTokens)
@@ -2044,6 +2050,7 @@ extension CoordinatorMessage: Codable {
                     Int64.self, forKey: .firstContentBudgetMs),
                 cacheReceiptNonce: try container.decodeIfPresent(String.self, forKey: .cacheReceiptNonce),
                 cacheScope: try container.decodeIfPresent(String.self, forKey: .cacheScope),
+                visionCacheScope: try container.decodeIfPresent(String.self, forKey: .visionCacheScope),
                 prefixCacheProtocol: try container.decodeIfPresent(
                     Int.self, forKey: .prefixCacheProtocol),
                 cacheReceiptBoundaryMode: try container.decodeIfPresent(

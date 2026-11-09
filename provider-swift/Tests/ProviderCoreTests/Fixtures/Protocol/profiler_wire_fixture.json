@@ -33,6 +33,8 @@
       "total_us": 3982400,
       "tool_constraint_us": 850,
       "vision_prep_us": 0,
+      "vision_feature_cache_hits": 2,
+      "vision_encoder_images": 0,
       "ssd_stage_us": 0,
       "kv_reserve_us": 310,
       "flush_us": 95,

@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-09
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -1370,3 +1370,13 @@ state at and after the boundary, hits and misses on both ranks, the request
 loop and lanes, budget and eviction, the SSD round trip, refused records and
 the cache rules) and the paged oracle matrix's `--prefix repeat` runs
 ([focused checks](../developer/test.md#focused-gemma-4-tensor-parallel-checks)).
+
+## Separate image encoder reuse
+
+[Gemma image feature caching](image-feature-cache.md) reuses evaluated encoder
+outputs before full current-prompt prefill. It does not adopt KV, emit prefix
+receipts, change `cache_scope`/`cacheEnabled`, or count feature hits as cached
+prompt tokens. The independent outer `vision_cache_scope` is optional; no scope
+means cold image encoding. Source:
+`provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift`
+(`prepareCompletion`).

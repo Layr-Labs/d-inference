@@ -46,7 +46,7 @@ struct SSDOwnedEntryRetirementTests {
         var diskBytesOnDisk: Int { index.totalBytes }
         func oldestEntryAccess() -> Int64? { index.oldest()?.lastAccess }
         func evictOldestEntry() -> Int { evictOldest() }
-        func retireOwnedEntries(_ urls: [URL], unusedSince: Int64?) -> Set<String> {
+        func retireOwnedEntries(_ urls: [URL], unusedSince: Int64? = nil) -> Set<String> {
             retire(urls, unusedSince: unusedSince).removed
         }
         func reconcileExternalRemovals() {
@@ -61,7 +61,8 @@ struct SSDOwnedEntryRetirementTests {
         }
         private func retire(_ urls: [URL], unusedSince: Int64? = nil) -> SSDOwnedEntryRetirement.Result {
             let result = SSDOwnedEntryRetirement.remove(
-                urls: urls, root: model, index: index, epochStore: epoch, unusedSince: unusedSince) ?? .init()
+                urls: urls, root: model, index: index, epochStore: epoch,
+                unusedSince: unusedSince) ?? .init()
             if result.externalChange { reconcileExternalRemovals() }
             return result
         }
@@ -279,6 +280,21 @@ struct SSDOwnedEntryRetirementTests {
         let budget = try #require(SSDOwnedEntryRetirement.remove(
             urls: [live], root: f.model, index: f.index, epochStore: f.epoch))
         #expect(budget.removed == [live.path] && f.index.lastAccess(tag16: Data(repeating: 2, count: 16)) == nil)
+    }
+
+    @Test("store-protocol retirement forwards the TTL cutoff and permits unconditional removal")
+    func protocolRetirementHonorsCutoff() throws {
+        let f = try Fixture()
+        let stale = try f.file(1), live = try f.file(2)
+        f.index.touch(tags16: [Data(repeating: 2, count: 16)], now: 2000)
+        let store: any SSDEvictableStore = f
+        #expect(store.retireOwnedEntries([stale, live], unusedSince: 1000) == [stale.path])
+        #expect(!FileManager.default.fileExists(atPath: stale.path))
+        #expect(try Data(contentsOf: live) == Data(repeating: 2, count: 64))
+        #expect(store.diskBytesOnDisk == 64)
+        #expect(store.retireOwnedEntries([live], unusedSince: nil) == [live.path])
+        #expect(!FileManager.default.fileExists(atPath: live.path))
+        #expect(store.diskBytesOnDisk == 0)
     }
 
     @Test("known retirement preserves durable identity, sequence and survivor bytes")

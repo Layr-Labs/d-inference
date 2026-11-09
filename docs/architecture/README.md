@@ -1,6 +1,6 @@
 # Provider And Native Architecture
 
-> Last updated: 2026-11-06
+> Last updated: 2026-11-09
 
 Provider execution, local security and external contracts. Backend and console implementation live in [platform architecture](https://github.com/Layr-Labs/darkbloom-platform/tree/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture).
 
@@ -11,6 +11,7 @@ Provider execution, local security and external contracts. Backend and console i
 - [Landing public HTML, Markdown, pricing and API discovery](components/landing.md)
 - [Hardware support and the provider memory model](hardware-support.md)
 - [Provider inference engine](inference.md)
+- [Gemma image feature cache: ownership and qualification](image-feature-cache.md)
 - [Provider Autopilot](model-autopilot.md)
 - [Provider Model Registry Boundary](model-registry.md)
 - [Model artifact revisions](model-revisions.md)

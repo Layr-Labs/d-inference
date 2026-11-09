@@ -317,32 +317,80 @@ public enum EngineV2VisionPrefill {
     static func prepare(
         container: ModelContainer,
         request: OpenAIChatCompletionRequest,
-        templateControls: ChatTemplateControls = .init()
+        templateControls: ChatTemplateControls = .init(),
+        featureCache: VisionFeatureCache? = nil,
+        visionCacheScope: String? = nil,
+        profile: RequestProfileBuilder? = nil
     ) async throws -> PreparedSubmission {
+        try Task.checkCancellation()
         try MediaIngest.rejectUnsupportedAudio(request)
-        if await container.perform({ $0.model is GLM5NextModel }) {
+        if featureCache?.preparationOwner.isClosed == true { throw CancellationError() }
+        let kind = await container.perform { ctx -> (glm: Bool, gemma: Bool, nativeTools: String?) in
+            let nativeTools: String?
+            if ctx.model is MLXVLM.Qwen4Exp { nativeTools = "qwen4_exp" }
+            else if ctx.model is MLXVLM.PrismHadamardQwen35 { nativeTools = "prism_hadamard_qwen35" }
+            else { nativeTools = nil }
+            return (ctx.model is GLM5NextModel,
+                ctx.model is Gemma4 && ctx.processor is Gemma4Processor, nativeTools)
+        }
+        if featureCache?.preparationOwner.isClosed == true { throw CancellationError() }
+        if kind.glm {
             return try await prepareGLM5NextMedia(
                 container: container, request: request, templateControls: templateControls)
         }
-        // Same decode path as the legacy stream (same caps, same MediaError
-        // surface). Inline video bytes stay in the UserInput's owned
-        // memory-backed asset while processor preparation samples and
-        // rasterizes its frames; no plaintext file exists to clean up.
-        // Bind native tool/history templating to the actual loaded wrapper,
-        // not a caller-supplied model label. Other VLMs retain their path.
-        let nativeToolModelType: String? = await container.perform { ctx in
-            if ctx.model is MLXVLM.Qwen4Exp { return "qwen4_exp" }
-            if ctx.model is MLXVLM.PrismHadamardQwen35 { return "prism_hadamard_qwen35" }
-            return nil
+        // Disabled, unsupported and unscoped requests acquire no cache lease.
+        // Eligible work is owned before decode/container suspension so shutdown
+        // can signal cancellation before joining its actual completion.
+        if let featureCache, featureCache.isEnabled, kind.gemma,
+            let scope = visionCacheScope, !scope.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            scope.utf8.count <= 1024,
+            let prepared = try await featureCache.preparationOwner.perform(operation: {
+                let transaction = try featureCache.begin(scope: scope)
+                defer { transaction.finish() }
+                return try await prepareMedia(container: container, request: request,
+                    templateControls: templateControls, featureCache: featureCache,
+                    visionCacheScope: scope, profile: profile, transaction: transaction,
+                    supportedCacheModel: kind.gemma, nativeToolModelType: kind.nativeTools)
+            }) {
+            return prepared
         }
+        return try await prepareMedia(container: container, request: request,
+            templateControls: templateControls, featureCache: featureCache,
+            visionCacheScope: nil, profile: profile, transaction: nil,
+            supportedCacheModel: kind.gemma, nativeToolModelType: kind.nativeTools)
+    }
+
+    private static func prepareMedia(
+        container: ModelContainer, request: OpenAIChatCompletionRequest,
+        templateControls: ChatTemplateControls, featureCache: VisionFeatureCache?,
+        visionCacheScope: String?, profile: RequestProfileBuilder?,
+        transaction: VisionFeatureCache.Transaction?, supportedCacheModel: Bool,
+        nativeToolModelType: String?
+    ) async throws -> PreparedSubmission {
+        try Task.checkCancellation()
+        if featureCache?.preparationOwner.isClosed == true { throw CancellationError() }
         let nativeToolMessages = nativeToolModelType != nil
+        let activity = VisionFeatureCacheActivity()
+        defer {
+            if supportedCacheModel {
+                let counts = activity.counts
+                profile?.update { fields, _ in
+                    fields.set(.visionFeatureCacheHits, counts.hits)
+                    fields.set(.visionEncoderImages, counts.encoded)
+                }
+            }
+        }
+        let identityCharge = transaction?.scratch(byteCount: 4096)
+        defer { withExtendedLifetime(identityCharge) {} }
+        let imageIdentity = identityCharge == nil ? nil : VisionImageIdentityCapture()
         let userInput = try await MediaIngest.buildUserInput(
             from: request, templateControls: templateControls,
             tools: nativeToolMessages ? request.tools?.map { $0.toolSpec() } : nil,
             preserveTemplateFields: nativeToolMessages,
-            modelType: nativeToolModelType)
+            modelType: nativeToolModelType, imageIdentity: imageIdentity)
         let towerLimits = VisionTowerBudget.liveLimits
         return try await container.perform(nonSendable: userInput) { ctx, userInput in
+            try Task.checkCancellation()
             // MLX's DEFAULT error handler is `fatalError`. A C++ fault raised
             // anywhere under this closure — most consequentially an allocation
             // the Metal allocator refuses because it exceeds
@@ -362,13 +410,24 @@ public enum EngineV2VisionPrefill {
             // allocation and let a later Swift throw hide the real cause.
             do {
                 return try await MLX.withError { (mlxErrors: MLX.ErrorBox) in
-                    let submission = try await Self.buildSubmission(
-                        ctx: ctx, userInput: userInput, towerLimits: towerLimits,
-                        mlxErrors: mlxErrors)
-                    try Self.throwIfMLXFaulted(mlxErrors)
-                    return submission
+                    do {
+                        let submission = try await Self.buildSubmission(
+                            ctx: ctx, userInput: userInput, towerLimits: towerLimits,
+                            mlxErrors: mlxErrors, transaction: transaction,
+                            visionCacheScope: visionCacheScope, rawDigests: imageIdentity?.values ?? [], activity: activity)
+                        try Self.throwIfMLXFaulted(mlxErrors)
+                        try Task.checkCancellation()
+                        transaction?.commit()
+                        return submission
+                    } catch {
+                        // A native fault can invalidate committed features. A
+                        // client error or cancellation only aborts this transaction.
+                        if mlxErrors.firstError != nil { featureCache?.invalidate() }
+                        throw error
+                    }
                 }
             } catch let mlxError as MLX.MLXError {
+                featureCache?.invalidate()
                 throw Self.visionPrefillError(for: mlxError)
             }
         }
@@ -415,7 +474,9 @@ public enum EngineV2VisionPrefill {
         ctx: ModelContext,
         userInput: UserInput,
         towerLimits: VisionTowerBudget.Limits,
-        mlxErrors: MLX.ErrorBox
+        mlxErrors: MLX.ErrorBox,
+        transaction: VisionFeatureCache.Transaction?, visionCacheScope: String?, rawDigests: [Data],
+        activity: VisionFeatureCacheActivity
     ) async throws -> PreparedSubmission {
         if let wrapper = ctx.model as? MLXVLM.Qwen4Exp, !wrapper.servesVision {
             throw EngineV2VisionPrefillError.unsupportedMedia(MLXVLM.Qwen4Exp.mediaRejectedMessage)
@@ -426,6 +487,7 @@ public enum EngineV2VisionPrefill {
         }
         try Task.checkCancellation()
         let lmInput = try await ctx.processor.prepare(input: userInput)
+        try Task.checkCancellation()
         guard lmInput.image != nil || lmInput.video != nil else {
             throw EngineV2VisionPrefillError.noProcessedMedia
         }
@@ -449,9 +511,13 @@ public enum EngineV2VisionPrefill {
             throw EngineV2VisionPrefillError.unsupportedVLM(
                 String(describing: type(of: ctx.model)))
         }
+        let processorIdentity = rawDigests.isEmpty ? nil : transaction.flatMap {
+            gemmaProcessorIdentity(ctx: ctx, transaction: $0)
+        }
         return try buildGemmaSubmission(
             wrapper: wrapper, lmInput: lmInput, promptTokens: promptTokens,
-            mlxErrors: mlxErrors)
+            mlxErrors: mlxErrors, transaction: transaction, visionCacheScope: visionCacheScope,
+            processorIdentity: processorIdentity, rawDigests: rawDigests, activity: activity)
     }
 
     static let qwen3VLUnsupportedVideoDetail =
@@ -617,7 +683,9 @@ public enum EngineV2VisionPrefill {
         wrapper: MLXVLM.Gemma4,
         lmInput: LMInput,
         promptTokens: [Int],
-        mlxErrors: MLX.ErrorBox
+        mlxErrors: MLX.ErrorBox,
+        transaction: VisionFeatureCache.Transaction?, visionCacheScope: String?,
+        processorIdentity: String?, rawDigests: [Data], activity: VisionFeatureCacheActivity
     ) throws -> PreparedSubmission {
         // Vision tower + multimodal projector — the SAME arrays the
         // wrapper's own `prepare` scatters: one per image, one per
@@ -626,8 +694,9 @@ public enum EngineV2VisionPrefill {
         // image).
         var imageFeatures: [MLXArray] = []
         if let image = lmInput.image {
-            imageFeatures = wrapper.perImageVisionFeatures(
-                pixels: image.pixels, frames: image.frames)
+            imageFeatures = try gemmaImageFeatures(wrapper: wrapper, image: image,
+                transaction: transaction, scope: visionCacheScope,
+                processorIdentity: processorIdentity, rawDigests: rawDigests, mlxErrors: mlxErrors, activity: activity)
             guard !imageFeatures.isEmpty else {
                 throw EngineV2VisionPrefillError.emptyVisionFeatures(kind: .image)
             }

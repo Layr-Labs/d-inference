@@ -190,6 +190,7 @@ extension EngineV2Bridge {
             throw MiMoV26NativeBridgeShutdownError.pendingConsumers
         }
         if !nativeShutdownClosed {
+            visionFeatureCache.close()
             if let task = cancelModelCalibration() { nativeShutdownTasks.append(task) }
             nativeShutdownActivity = serviceBudget?.beginUnboundedActivity()
             nativeShutdownIdentity = identity
@@ -232,9 +233,10 @@ extension EngineV2Bridge {
         // Return explicit pending instead of fabricating host completion or
         // awaiting an unowned caller task. The registered owner retries after
         // that operation's actual completion, retaining every resource meantime.
-        guard nativeHostConsumersHaveFinished else {
+        guard nativeHostConsumersHaveFinished, visionFeatureCache.preparationOwner.isDrained else {
             throw MiMoV26NativeBridgeShutdownError.pendingConsumers
         }
+        await visionFeatureCache.closeAndDrain()
         for task in nativeShutdownTasks { await task.value }
         guard nativeHostConsumersHaveFinished,
             nativeShutdownIdentity == identity,

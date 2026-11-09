@@ -3459,3 +3459,61 @@ one-line explanation and that request lengths still come from every build;
 read and the router's build-keyed setup. `swift test --filter
 DistributedAutomaticBatchPlannerTests` and `--filter ClusterObservabilityTests`
 from `provider-swift` cover replacement calibration and the recorded builds.
+
+## Image feature cache verification
+
+Run the real CPU cache, process-ledger and profile tests without resolving MLX:
+
+```bash
+VISION_CACHE_TEST_SCRATCH="/absolute/task-owned/scratch" \
+  bash provider-swift/Tests/Support/run-vision-feature-cache-tests.sh
+```
+
+The scratch parent must already exist. The runner retains its isolated compiler
+outputs for evidence; it does not touch the live provider or shared builds.
+`VisionFeatureCacheTests` exercises producer skips, raw/pixel/scope/model identity,
+bounds, pending and pinned charges, cross-scope eviction fairness, LRU/TTL,
+cancellation, fault fencing, transaction aborts that preserve other scopes, drain,
+policy epochs, pressure and concurrent fills. `VisionFeaturePreparationOwnerTests`
+checks capacity refusal, synchronous close/caller cancellation and retention of
+suspended work until actual completion. `VisionFeatureCacheProfileTests`
+checks optional numeric counters, clamping, unchanged prompt-token accounting and
+the populated profile under the existing 4096-byte cap. The isolated runner also
+compiles the unchanged SDK `SerialAccessContainer` source to exercise concurrent
+same-image preparations across awaited work without loading MLX.
+`VisionCacheScopeProtocolTests` belongs to the normal provider test product and
+checks optional outer scope round-trip independently of prefix scope.
+
+For an exclusively owned native lane with the exact incident Gemma QAT artifact,
+select `GemmaVisionFeatureCacheLiveTests` from a freshly built exact-composition
+provider test product. It requires all four environment flags:
+`DARKBLOOM_LIVE_MLX_TESTS=1`, `DARKBLOOM_LIVE_MLX_GEMMA=1`,
+`DARKBLOOM_LIVE_VISION_FEATURE_CACHE=1` and `DARKBLOOM_VISION_FEATURE_CACHE=1`.
+Set `DARKBLOOM_LIVE_GEMMA_QAT_MODEL_DIRECTORY` to its absolute directory. Each test
+verifies aggregate `2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785`
+when executed, before loading; it performs no artifact read while disabled.
+`realEncoderSkipFeatureBitsCurrentSpansAndGreedyColorOracles` compares cold/miss/hit
+feature dtype, shape and bit patterns under the
+MLX error boundary, and
+current spans, reorders red/blue images, changes text, checks scope misses, and
+requires exact encoder counts plus greedy red/blue color oracles through the
+production scheduler. It also checks zero prefix-cache token credit and that
+system-role-only media rejected in another scope preserves subsequent warm hits. Missing
+native inputs fail once enabled; a disabled suite is not native evidence.
+`realFeatureChargesTrimAndCloseRelease` performs real cold, warm and refill
+preparations and checks the production process ledger: each retained feature
+charges its exact payload plus metadata, warm reuse adds no persistent charge,
+and explicit budget trim and close return every feature owner to the loaded
+engine baseline. Request-owned hydrated features remain byte-identical after
+trim and close. This test does not induce OS memory pressure, native faults or
+cancellation during a pending copy; those invariants have separate coverage.
+The 64-token output and 48-GiB helper budget establish only narrow functional
+coverage. Production output caps/deadlines, LOAD/SLA behavior and two authenticated
+HTTP users require the separate qualification harness.
+
+Record cold/warm preparation and end-to-end latency, metadata read/hash,
+decode/resize, pixel hash, snapshot/hydration, actual encoder execution and peak
+memory separately. Native cancellation, unload/reload, shutdown/decode overlap,
+minimum-tier memory and scope fairness remain qualification gates. CPU passes,
+syntax parsing and test source alone cannot establish these results. See the
+[feature-cache architecture](../architecture/image-feature-cache.md).

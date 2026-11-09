@@ -1,6 +1,6 @@
 # Provider telemetry
 
-> Last updated: 2026-10-23
+> Last updated: 2026-10-29
 
 Provider diagnostics travel on typed heartbeats and terminal profiles. The Swift event-emitter facade is inert; do not add prompt or completion content to heartbeats or profiles. The [wire schema](../reference/telemetry-schema.md) and [protocol reference](../reference/protocol-messages.md) define the boundary.
 
@@ -209,3 +209,12 @@ Coordinator validation, persistence, Datadog transport and retention are owned b
 - [Prediction and deadline observations](../reference/prediction-decision-telemetry.md)
 - [Privacy model](security/encryption.md)
 - [Provider component](components/provider.md)
+
+## Image encoder work
+
+Gemma preparation adds only the two bounded numeric
+[terminal-profile counters](../reference/telemetry-schema.md#image-feature-work-in-terminal-profiles).
+They report successful feature hydrations and attempted image encoder executions,
+independently of token/KV cache accounting. Scopes and media digests are never
+emitted. `RequestProfileBuilder` batches this update once per preparation;
+unsupported families leave the optional fields absent.

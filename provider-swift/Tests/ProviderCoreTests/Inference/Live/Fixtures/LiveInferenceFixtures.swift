@@ -264,18 +264,22 @@ enum LiveInferenceFixtures {
         maxConcurrentRequests: Int = 4,
         memoryBudgetBytes: Int? = nil,
         defaultMaxTokens: Int = 256,
-        kvBackendConfig: String = "auto"
+        kvBackendConfig: String = "auto",
+        kvBudget: GlobalKVCacheBudget? = nil,
+        modelDirectoryOverride: URL? = nil
     ) async throws -> LoadedBridge {
         guard ensureMetallibColocated() != nil else {
             throw LiveFixtureSkip.missingMetallib
         }
 
         let directory: URL
-        switch locate(modelID) {
-        case .found(let url):
-            directory = url
-        case .missing(let id):
-            throw LiveFixtureSkip.modelNotInCache(id)
+        if let modelDirectoryOverride {
+            directory = modelDirectoryOverride
+        } else {
+            switch locate(modelID) {
+            case .found(let url): directory = url
+            case .missing(let id): throw LiveFixtureSkip.modelNotInCache(id)
+            }
         }
 
         applyMemoryBudget(maxBytes: memoryBudgetBytes ?? 12 * 1024 * 1024 * 1024)
@@ -311,7 +315,7 @@ enum LiveInferenceFixtures {
             sizing: sizing,
             kvBytesCapacity: grant,
             maxConcurrentRequests: maxConcurrentRequests,
-            kvBudget: nil,
+            kvBudget: kvBudget,
             kvBackendConfig: kvBackendConfig,
             // Hermetic tests: master-kill EVERY prefix-cache tier. An empty
             // environment is no longer dormant — the SSD tier (v0.7.5) is

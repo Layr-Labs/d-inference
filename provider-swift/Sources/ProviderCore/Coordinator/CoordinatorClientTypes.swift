@@ -105,6 +105,7 @@ public enum CoordinatorEvent: Sendable {
         senderPublicKey: Data?,
         cacheReceiptNonce: String?,
         cacheScope: String?,
+        visionCacheScope: String? = nil,
         prefixCacheProtocol: Int?,
         cacheReceiptBoundaryMode: String? = nil,
         /// Coordinator-observed fleet-wide repeat demand (token count); nil

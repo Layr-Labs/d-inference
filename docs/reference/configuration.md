@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-09
 
 Provider CLI and native-runtime environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -1813,3 +1813,19 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/C
 The wizard’s optional local stopDrain token is saved with stopped intent and retained after a local timeout. Leases preserve the peer’s prior intent until the local supervisor retires its owned part and outstanding lease. The token is not a wire or user-facing configuration field; older records decode without it. A new serve is refused while it remains, and a model change retries the shared stop first.
 
 Every write of the wizard's record (`~/.darkbloom/cluster-setup/wizard.json`) takes the `wizard.json.lock` flock. When another writer holds that lock, the write waits up to 2 seconds for it (`ClusterSetupStore.recordLockWaitSeconds`). After 2 seconds the write fails with "Configuration or native device lease is currently held". The cluster service writes the record while it holds its own service lock, so it tries once and writes again on its next supervision cycle. Source: `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterSetupWizardStore.swift` (`ClusterSetupStore.updateRecord`).
+
+## Image feature cache
+
+The opt-in Gemma encoder cache has the following bounded policy. See
+[ownership and qualification](../architecture/image-feature-cache.md).
+
+| Setting or bound | Value | Source |
+|---|---|---|
+| `DARKBLOOM_VISION_FEATURE_CACHE` | Only exact `1` enables; unset, `0` or any other value disables. Read when the bridge is constructed; restart/reload to change it | `provider-swift/Sources/ProviderCore/Inference/Vision/VisionFeatureCache.swift` — `Policy.production` |
+| Process / slot / scope charged bytes | `64 * 1024 * 1024` / `32 * 1024 * 1024` / `16 * 1024 * 1024` | Same file — `VisionFeatureCacheBudget`, `Policy` |
+| Process / slot / scope outstanding charges | `128` / `64` / `16`; includes pending, scratch and pinned retired entries | Same file — `reserve` |
+| Feature payload limit / per-charge metadata allowance | `8 * 1024 * 1024` / `1024` bytes | Same file — `Transaction.stage`, `charge` |
+| Absolute TTL / sweep period | `60` seconds / `5` seconds; expiry is not refreshed on hits | Same file — `Policy.ttl`, `publish` |
+
+The size/count limits are implementation policy, not additional environment
+knobs. They never lower the ordinary memory reserves or admission requirements.

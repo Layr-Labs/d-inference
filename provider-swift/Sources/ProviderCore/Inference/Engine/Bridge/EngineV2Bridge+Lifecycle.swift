@@ -144,6 +144,7 @@ extension EngineV2Bridge {
     /// can't keep a pump (and its KV reservation) alive past shutdown, then
     /// await the engine drain.
     public func shutdown() async {
+        visionFeatureCache.close()
         if glm5NextNativeOwner != nil {
             do {
                 try await shutdownGLM5NextReportingCompletion()
@@ -189,6 +190,9 @@ extension EngineV2Bridge {
         if let engine = ownedEngine {
             await engine.shutdown()
         }
+        // Engine closure/cancellation precedes any preparation wait. Retain
+        // cache bytes and the concrete engine until producers/readers really exit.
+        await visionFeatureCache.closeAndDrain()
         await calibrationTask?.value
         for task in live.values {
             await task.value

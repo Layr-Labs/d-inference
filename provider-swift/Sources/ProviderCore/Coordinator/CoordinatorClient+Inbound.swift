@@ -169,6 +169,7 @@ extension CoordinatorClient {
                 senderPublicKey: senderKeyBytes,
                 cacheReceiptNonce: request.cacheReceiptNonce,
                 cacheScope: request.cacheScope,
+                visionCacheScope: request.visionCacheScope,
                 prefixCacheProtocol: request.prefixCacheProtocol,
                 cacheReceiptBoundaryMode: request.cacheReceiptBoundaryMode,
                 cacheRepeatedPrefixTokens: request.cacheRepeatedPrefixTokens,

@@ -103,6 +103,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// Authenticated remote or configured local prefix-cache scope. Maps to
     /// `CBv2Request.cacheSalt` for both cache tiers.
     private let cacheScope: String
+    private let visionCacheScope: String?
     /// Trusted single-key local-application namespace, used only by native
     /// diffusion. Remote requests never fall back to this scope.
     private let nativeLocalCacheScope: String?
@@ -173,6 +174,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         defaultMaxTokens: Int = 4096,
         templateControls: ChatTemplateControls = .init(),
         cacheScope: String = "",
+        visionCacheScope: String? = nil,
         cacheEnabled: Bool = true,
         donationDemand: SSDCheckpointDonationDemand? = nil,
         engineV2Logprobs: EngineV2LogprobsPlumbing? = nil,
@@ -197,6 +199,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.defaultMaxTokens = defaultMaxTokens
         self.templateControls = templateControls
         self.cacheScope = cacheScope
+        self.visionCacheScope = visionCacheScope
         self.nativeLocalCacheScope = nil
         self.cacheEnabled = cacheEnabled
         self.donationDemand = donationDemand
@@ -252,6 +255,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.defaultMaxTokens = defaultMaxTokens
         self.templateControls = templateControls
         self.cacheScope = ""
+        self.visionCacheScope = nil
         self.nativeLocalCacheScope = nativeLocalCacheScope
         self.cacheEnabled = true
         self.donationDemand = nil
@@ -741,8 +745,16 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                             request: visionRequest, templateControls: templateControls)
                     } else if let container {
                         // GLM normalizes the original request exactly as its text path does.
-                        visionPrepared = try await plumbing.prepare(
-                            container, glmMedia ? request : visionRequest, templateControls)
+                        if engineV2Vision == nil {
+                            visionPrepared = try await EngineV2VisionPrefill.prepare(
+                                container: container, request: glmMedia ? request : visionRequest,
+                                templateControls: templateControls,
+                                featureCache: bridge.visionFeatureCache,
+                                visionCacheScope: visionCacheScope, profile: profile)
+                        } else {
+                            visionPrepared = try await plumbing.prepare(
+                                container, glmMedia ? request : visionRequest, templateControls)
+                        }
                     } else {
                         throw EngineV2VisionPrefillError.unsupportedVLM("missing typed model owner")
                     }

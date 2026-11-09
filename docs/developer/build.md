@@ -1,6 +1,6 @@
 # Build The Provider And Landing
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-09
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. Backend, sidecar, console and admin builds
@@ -1058,3 +1058,18 @@ Qwen27 TP batch prefix capture/restore changes the Runtime target only; it
 reuses the pinned SDK owned-state APIs. Rebuild the worker and planner together
 because the same complete LOAD budget prices the additional snapshot banks.
 See [warm-prefix validation](test.md#qwen27-tp-warm-prefix-checks).
+
+## Image feature cache CPU check
+
+The [isolated cache runner](test.md#image-feature-cache-verification) compiles only
+Foundation/CryptoKit accounting and profile sources with Swift 6. It uses an
+explicit task-owned scratch directory and does not resolve the MLX package graph.
+A passing result is not a native provider build or typecheck of the Gemma adapter.
+
+The native `GemmaVisionFeatureCacheLiveTests` suite requires a freshly built
+provider test product and the compiled MLX Metal resources. Its encoder/output
+test and process-ledger trim/close test share the exact artifact and opt-in
+requirements in the [verification instructions](test.md#image-feature-cache-verification).
+When changing only these tests, record the new test executable identity and
+verify whether the provider executable, Metal libraries and runtime resources
+changed before reusing earlier serving evidence.

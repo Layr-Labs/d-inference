@@ -1467,3 +1467,13 @@ memory is free. Admission limits and native memory guards are unchanged. See
 [planned cluster stop ordering](inference.md#planned-cluster-stop-ordering) and
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterService.swift`
 (`ClusterService.stopLocalPart`).
+
+## Image feature host ownership
+
+The optional [Gemma image feature cache](image-feature-cache.md) uses the existing
+`GlobalKVCacheBudget.processLedger` for host Data, with no materialized MLX credit.
+Persistent features and bounded hash/hydration scratch reserve before allocation;
+pending and pinned retired bytes stay charged across eviction and shutdown.
+This does not change OS reserves, activation floors, LOAD quotations or KV caps.
+Source: `provider-swift/Sources/ProviderCore/Inference/Vision/VisionFeatureCache.swift`
+(`VisionFeatureCacheBudget`).

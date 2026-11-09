@@ -193,6 +193,26 @@ it('saves me first and its minutes, then offers Restart serving to apply them', 
   expect(meFirst.queryByText('Saved. Restart serving to apply.')).not.toBeInTheDocument();
 });
 
+it('stops offering Restart serving once serving restarted another way', async () => {
+  const state = localSnapshot();
+  const view = render(<Studio backend={backendWith(state)} />);
+  const meFirst = () => within(screen.getByRole('region', { name: 'Me first' }));
+  fireEvent.click(meFirst().getByRole('switch', { name: /Pause Darkbloom/ }));
+  await act(async () => fireEvent.click(meFirst().getByRole('button', { name: 'Save' })));
+  expect(meFirst().getByText('Saved. Restart serving to apply.')).toBeVisible();
+  view.rerender(
+    <Studio
+      backend={backendWith({
+        ...state,
+        local: { ...state.local!, me_first: false },
+        activity: { ...state.activity, started_at: 1_790_000_600 },
+      })}
+    />,
+  );
+  expect(meFirst().queryByText('Saved. Restart serving to apply.')).not.toBeInTheDocument();
+  expect(meFirst().getByRole('switch', { name: /Pause Darkbloom/ })).not.toBeChecked();
+});
+
 it('turns me first off with the saved minutes, and needs no restart while stopped', async () => {
   const backend = backendWith(localSnapshot({ me_first_idle_minutes: 7 }, { state: 'stopped' }));
   render(<Studio backend={backend} />);

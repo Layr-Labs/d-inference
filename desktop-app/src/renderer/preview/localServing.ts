@@ -30,7 +30,12 @@ const settle = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
 export const localServingPreview: FeaturePreview = {
   snapshot(snapshot) {
-    if (scenario === 'unsupported') return snapshot;
+    if (scenario === 'unsupported')
+      return {
+        ...snapshot,
+        capabilities: snapshot.capabilities?.filter((name) => !capabilities.includes(name)),
+        local: undefined,
+      };
     const mode = modes[scenario ?? ''] ?? 'both';
     const local: LocalServing = {
       mode,

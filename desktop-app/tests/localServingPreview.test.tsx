@@ -92,7 +92,18 @@ it('pauses Darkbloom for you with &local=paused, and offers nothing with &local=
   const state = base();
   const paused = (await previewWith('&local=paused')).snapshot!(state);
   expect(paused.local?.paused_until).toBe(state.observed_at + 100);
-  expect((await previewWith('&local=unsupported')).snapshot!(state)).toBe(state);
+  const unsupported = await previewWith('&local=unsupported');
+  const older = unsupported.snapshot!(state);
+  expect(older.local).toBeUndefined();
+  expect(older.capabilities).toBeUndefined();
+  expect(older.endpoint).toEqual(state.endpoint);
+  // Drops them from a runtime that listed them too.
+  expect(
+    unsupported.snapshot!({
+      ...state,
+      capabilities: ['autopilot', 'local_serving', 'tool_setup', 'update_rollback'],
+    }).capabilities,
+  ).toEqual(['autopilot']);
 });
 
 it('refuses a route that passes requests on until a key is saved, and never keeps the key', async () => {

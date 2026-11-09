@@ -78,7 +78,7 @@ export function ServingChoice({
               <label className="setting-row">
                 <span>
                   <strong>Model</strong>
-                  <small>Nothing serves now. Choose one.</small>
+                  <small>Choose a model to serve.</small>
                 </span>
                 <select value={pick} onChange={(event) => setChosen(event.target.value)}>
                   {choices.map((model) => (

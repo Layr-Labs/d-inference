@@ -20,6 +20,8 @@ export function MeFirst({ backend, local }: { backend: BackendState; local: Loca
     setIdle(String(local.me_first_idle_minutes));
   }, [local.me_first, local.me_first_idle_minutes]);
   const [restart, setRestart] = useState(false);
+  // A new serving session has read the saved settings, however it was restarted.
+  useEffect(() => setRestart(false), [state.activity.started_at]);
   const value = idleMinutes(idle);
   const invalid = on && value === undefined;
   const changed = on !== local.me_first || (on && value !== local.me_first_idle_minutes);

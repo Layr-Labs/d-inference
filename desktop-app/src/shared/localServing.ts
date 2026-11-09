@@ -18,8 +18,9 @@ export interface LocalServing {
   // `me_first_idle_minutes` after (1–120). False: Darkbloom keeps serving beside you.
   me_first: boolean;
   me_first_idle_minutes: number;
-  // Where your requests go when this Mac's local API can't take them. Null before a route was
-  // saved: this Mac only, or only my Macs once an account key is saved (`resolvedRoute`).
+  // Where your requests go when this Mac's local API can't take them: the saved route, else the
+  // one that applies (`LocalSettings.resolvedRoute`: only my Macs once an account key is saved,
+  // else this Mac only). The app resolves a null the same way.
   route: RequestRoute | null;
   // An account API key is saved (`darkbloom route key`); the key itself never crosses.
   route_key: boolean;

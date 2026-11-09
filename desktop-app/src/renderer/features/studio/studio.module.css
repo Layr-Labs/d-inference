@@ -193,10 +193,22 @@
   .field {
     justify-items: start;
   }
+  /* The key field takes its own full line under its label. */
+  .keyRow {
+    flex-wrap: wrap;
+  }
+  .keyRow > span:first-child {
+    flex-basis: 100%;
+  }
+  .keyRow > .field {
+    width: 100%;
+    justify-items: stretch;
+  }
   .keyControls {
     flex-wrap: wrap;
   }
   .keyInput {
-    width: 100%;
+    flex: 1 1 160px;
+    width: auto;
   }
 }

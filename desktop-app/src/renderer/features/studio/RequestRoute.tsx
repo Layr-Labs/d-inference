@@ -79,7 +79,7 @@ function AccountKey({ backend, saved }: { backend: BackendState; saved: boolean 
     if (await backend.act({ action: 'route_key', key }, true)) setReplacing(false);
   };
   return (
-    <form className="setting-row" onSubmit={(event) => void submit(event)}>
+    <form className={`setting-row ${styles.keyRow}`} onSubmit={(event) => void submit(event)}>
       <span>
         <label htmlFor={inputId}>
           <strong>Account API key</strong>

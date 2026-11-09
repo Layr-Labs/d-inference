@@ -475,8 +475,9 @@ the prompt is done, so a long prompt reads "in progress" until its first token,
 which ends the comments. A prompt done within 5 seconds gets none. The local
 router and a pair member's relay pass them on unchanged. On a pair's own API
 (`darkbloom cluster local`) the comment takes the place of the leader's 500 ms
-keep-alive probe every 5 seconds (`LocalPrefillProgress`,
-`provider-swift/Sources/ProviderCore/Server/LocalPrefillProgress.swift`).
+keep-alive probe every 5 seconds, on the probes' own clock (`LocalPrefillProgress`,
+`provider-swift/Sources/ProviderCore/Server/LocalPrefillProgress.swift`; the
+pair's writer, `DistributedHTTPEventStream`).
 
 Each streamed request has one timer, from its first frame to its first token,
 and nothing runs per token. A request that isn't streamed gets nothing until its

@@ -146,4 +146,8 @@ struct DesktopOperation: Codable, Sendable {
   var cancellable: Bool
   var model: String?
   var progress: Double?
+  /// The last lines a long action printed, sanitized, newest last (`sandbox_setup`).
+  var lines: [String]?
+  /// A `sandbox_setup` operation's installer stage and its one browser approval.
+  var sandbox_setup: DesktopSandboxSetupProgress?
 }

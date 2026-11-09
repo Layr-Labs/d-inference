@@ -43,6 +43,15 @@ struct DesktopNewActionsTests {
     Case(action: action("sandbox_pause"), argv: ["sandbox", "pause"], forwardsConfig: false),
     Case(action: action("sandbox_resume"), argv: ["sandbox", "resume"], forwardsConfig: false),
     Case(action: action("sandbox_uninstall"), argv: ["sandbox", "uninstall", "--yes"], forwardsConfig: false),
+    Case(action: action("sandbox_setup"),
+         argv: ["sandbox", "setup", "--yes", "--no-browser", "--json-events"], forwardsConfig: false),
+    Case(action: action("sandbox_setup") {
+      $0.linux_slots = 3
+      $0.macos_slots = 0
+      $0.disks = ["/Volumes/FastSSD", "/Volumes/Other Disk"]
+      $0.wait_ready = true
+    }, argv: ["sandbox", "setup", "--yes", "--no-browser", "--json-events", "--linux-slots", "3", "--macos-slots", "0",
+              "--disk", "/Volumes/FastSSD", "--disk", "/Volumes/Other Disk", "--wait-ready"], forwardsConfig: false),
     Case(action: action("route") { $0.route = "my-macs-first" }, argv: ["route", "my-macs-first"], forwardsConfig: true),
     Case(action: action("tool_setup") { $0.tool = "opencode" }, argv: ["start", "--opencode"], forwardsConfig: true),
     Case(action: action("tool_setup") { $0.tool = "hermes" }, argv: ["start", "--hermes"], forwardsConfig: true),
@@ -89,6 +98,20 @@ struct DesktopNewActionsTests {
     Refusal(action: action("waitlist_join") { $0.feature = String(repeating: "a", count: 65) },
             message: "Invalid waitlist"),
     Refusal(action: action("waitlist_join"), message: "Invalid waitlist"),
+    Refusal(action: action("sandbox_setup") { $0.linux_slots = 17 },
+            message: "Linux jobs at a time must be from 0 to 16."),
+    Refusal(action: action("sandbox_setup") { $0.macos_slots = 3 },
+            message: "macOS jobs at a time must be from 0 to 2."),
+    Refusal(action: action("sandbox_setup") { $0.linux_slots = 0; $0.macos_slots = 0 },
+            message: "0 Linux and 0 macOS jobs leaves nothing to run."),
+    Refusal(action: action("sandbox_setup") { $0.disks = ["/a", "/b", "/c", "/d", "/e"] },
+            message: "Choose up to four different work disks."),
+    Refusal(action: action("sandbox_setup") { $0.disks = ["Volumes/FastSSD"] },
+            message: "A work disk must be an absolute path, such as /Volumes/FastSSD."),
+    Refusal(action: action("sandbox_setup") { $0.disks = ["/Volumes/../etc"] },
+            message: "A work disk must be an absolute path, such as /Volumes/FastSSD."),
+    Refusal(action: action("sandbox_setup") { $0.disks = ["/Volumes/Fast\nSSD"] },
+            message: "A work disk must be an absolute path, such as /Volumes/FastSSD."),
     Refusal(action: action("route") { $0.route = "everywhere" }, message: "Invalid route"),
     Refusal(action: action("local_settings") { $0.me_first = true; $0.me_first_idle_minutes = 0 },
             message: "Me first needs on or off, and 1 to 120 idle minutes."),

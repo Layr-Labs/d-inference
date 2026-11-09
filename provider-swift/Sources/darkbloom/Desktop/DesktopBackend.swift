@@ -92,7 +92,8 @@ actor DesktopBackend {
     }
     let operation = DesktopOperation(
       id: request.id, action: request.action, started_at: Date().timeIntervalSince1970,
-      cancellable: ["download", "diagnose", "link", "account-signin", "autopilot"].contains(request.action))
+      cancellable: ["download", "diagnose", "link", "account-signin", "autopilot", "sandbox_setup"]
+        .contains(request.action))
     requests[request.id] = request
     operations.insert(operation, at: 0)
     operations = Array(operations.prefix(32))
@@ -173,19 +174,25 @@ actor DesktopBackend {
         let arguments = try arguments(for: request)
         try await requireRuntimeSupport(arguments)
         try Task.checkCancellation()
-        let worker = DesktopWorker(executable: executable)
+        let worker = DesktopWorker(
+          executable: executable, terminationGrace: request.action == "sandbox_setup" ? Self.sandboxSetupGrace : 1)
         workers[request.id] = worker
         if request.action == "download" {
           setDownloadModel(request.id, model: request.model)
         }
         let before = Self.currentExecutableStamp()
-        let (code, output) = request.action == "autopilot"
-          ? try await runAutopilot(request, arguments: arguments, worker: worker, beforeStart: { [configPath] in
+        let (code, output): (Int32, String)
+        if request.action == "autopilot" {
+          (code, output) = try await runAutopilot(request, arguments: arguments, worker: worker, beforeStart: { [configPath] in
               if DesktopLocalLifecycle.isActive { try await DesktopLocalLifecycle.stop(configPath: configPath) }
             })
-          : try await worker.run(arguments, progress: { [weak self] output in
+        } else if request.action == "sandbox_setup" {
+          (code, output) = try await runSandboxSetup(request, arguments: arguments, worker: worker)
+        } else {
+          (code, output) = try await worker.run(arguments, progress: { [weak self] output in
               Task { await self?.setProgress(request.id, output: output) }
             })
+        }
         complete(request.id, code: code, message: output)
         if ["update", "update_rollback"].contains(request.action), code == 0,
           Self.shouldRestartForReplacedExecutable(
@@ -259,6 +266,7 @@ actor DesktopBackend {
     case "sandbox_pause": return ["sandbox", "pause"]
     case "sandbox_resume": return ["sandbox", "resume"]
     case "sandbox_uninstall": return ["sandbox", "uninstall", "--yes"]
+    case "sandbox_setup": return sandboxSetupArguments(request)
     case "route": return ["route", request.route!] + config
     case "tool_setup": return ["start", "--\(request.tool!)"] + config
     case "update_rollback": return ["update", "--rollback", "--yes"] + config

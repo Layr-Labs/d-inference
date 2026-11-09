@@ -11,7 +11,7 @@ extension DesktopAction {
     "update", "diagnose", "cancel", "cooling", "account-signin", "account-signout",
     "autopilot", "autopilot_pin", "autopilot_unpin", "autopilot_pause", "autopilot_resume",
     "autopilot_disable", "autopilot_models",
-    "cluster_leave", "waitlist_join", "sandbox_pause", "sandbox_resume", "sandbox_uninstall",
+    "cluster_leave", "waitlist_join", "sandbox_pause", "sandbox_resume", "sandbox_uninstall", "sandbox_setup",
     "route", "local_settings", "tool_setup", "update_rollback",
   ]
 
@@ -41,6 +41,8 @@ extension DesktopAction {
     switch action {
     case "waitlist_join":
       guard let feature, Self.isWaitlistName(feature) else { throw ValidationError("Invalid waitlist") }
+    case "sandbox_setup":
+      try validateSandboxSetup()
     case "route":
       guard let route, LocalSettings.Route(rawValue: route) != nil else { throw ValidationError("Invalid route") }
     case "local_settings":
@@ -51,6 +53,32 @@ extension DesktopAction {
       guard let tool, IntegrationTool(rawValue: tool) != nil else { throw ValidationError("Unknown tool") }
     default:
       break
+    }
+  }
+
+  /// `sandbox setup`'s own limits: Linux 0–16 and macOS 0–2 jobs at a time, not both 0, and up to four work disks, each
+  /// an absolute path that stays one argument.
+  private func validateSandboxSetup() throws {
+    if let linux_slots, !(0...SandboxEligibility.maximumLinuxSlots).contains(linux_slots) {
+      throw ValidationError("Linux jobs at a time must be from 0 to \(SandboxEligibility.maximumLinuxSlots).")
+    }
+    if let macos_slots, !(0...SandboxEligibility.maximumMacOSSlots).contains(macos_slots) {
+      throw ValidationError("macOS jobs at a time must be from 0 to \(SandboxEligibility.maximumMacOSSlots).")
+    }
+    if linux_slots == 0, macos_slots == 0 {
+      throw ValidationError("0 Linux and 0 macOS jobs leaves nothing to run.")
+    }
+    let disks = self.disks ?? []
+    guard disks.count <= 4, Set(disks).count == disks.count else {
+      throw ValidationError("Choose up to four different work disks.")
+    }
+    for disk in disks {
+      guard disk.hasPrefix("/"), disk.count <= 1024,
+        !disk.split(separator: "/").contains(".."),
+        !disk.unicodeScalars.contains(where: {
+          CharacterSet.controlCharacters.contains($0) || $0.properties.generalCategory == .format
+        })
+      else { throw ValidationError("A work disk must be an absolute path, such as /Volumes/FastSSD.") }
     }
   }
 }

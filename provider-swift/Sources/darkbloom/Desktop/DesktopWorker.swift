@@ -36,6 +36,7 @@ final class DesktopWorker: @unchecked Sendable {
   private let lock = NSLock()
   private var invocation: Invocation?
   private var cancelled = false
+  private var ended: (status: Int32, signaled: Bool)?
   private let executable: URL?
   /// How long a stopped child has between SIGTERM and SIGKILL: a second for ordinary commands, longer for one that
   /// first ends its own child, such as `sandbox setup --json-events`, whose installer gets SIGINT
@@ -46,6 +47,10 @@ final class DesktopWorker: @unchecked Sendable {
     self.executable = executable
     self.terminationGrace = terminationGrace
   }
+
+  /// How the last child ended: its exit status, or the signal that ended it (`signaled`). Also after a cancel or a
+  /// timeout, which `run` reports by throwing.
+  var lastTermination: (status: Int32, signaled: Bool)? { lock.withLock { ended } }
 
   func cancel() {
     let current = lock.withLock {
@@ -120,6 +125,7 @@ final class DesktopWorker: @unchecked Sendable {
           reader.notify(queue: .global()) {
             let reason = self.lock.withLock {
               if self.invocation === current { self.invocation = nil }
+              self.ended = (process.terminationStatus, process.terminationReason == .uncaughtSignal)
               return current.stopReason
             }
             child.terminationHandler = nil

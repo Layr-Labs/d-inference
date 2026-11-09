@@ -43,7 +43,9 @@ export const previewSandboxStates = [
 
 const gib = 2 ** 30;
 const host = '0b7d4e2a-91c3-4f6e-8a25-7c1d3e9f4b60';
-const server = 'https://api-sandbox.darkbloom.dev';
+// A reserved name that never resolves (RFC 2606), so Open approval page and Open console in the
+// preview contact no Darkbloom service.
+const server = 'https://api-sandbox.darkbloom.invalid';
 const approval = {
   user_code: 'WDJB-MJHT',
   verification_uri: `${server}/device`,

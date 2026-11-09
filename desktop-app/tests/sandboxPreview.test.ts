@@ -79,7 +79,7 @@ describe('the simulated setup', () => {
       step: 4,
       approval: {
         user_code: 'WDJB-MJHT',
-        verification_uri_complete: 'https://api-sandbox.darkbloom.dev/device?code=WDJB-MJHT',
+        verification_uri_complete: 'https://api-sandbox.darkbloom.invalid/device?code=WDJB-MJHT',
       },
       background: true,
     });

@@ -6,6 +6,7 @@ import type { GUIUpdate } from '../../shared/contracts';
 import { Button, Header } from '../components/UI';
 import { AutoUpdateSwitch } from './updates/AutoUpdateSwitch';
 import { ReleaseTimeline } from './updates/ReleaseTimeline';
+import { Rollback } from './updates/Rollback';
 import { RuntimeVersion } from './updates/RuntimeVersion';
 import styles from './updates/updates.module.css';
 
@@ -105,6 +106,7 @@ export function Updates({ backend }: { backend: BackendState }) {
             </Button>
           </div>
         )}
+        <Rollback backend={backend} />
       </section>
       <ReleaseTimeline
         history={backend.releaseHistory}

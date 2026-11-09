@@ -2,6 +2,7 @@ import Foundation
 import MLXLMCommon
 import MLXLMServer
 import Testing
+import XCTest
 @testable import ProviderCore
 
 @Test("shared local engine preserves per-request cache usage across concurrent calls")
@@ -80,11 +81,12 @@ func localDisconnectCancelsQuietNativeRow() async throws {
     let consumer = Task<Void, Never> {
         do { for try await _ in events {} } catch {}
     }
+    // The scheduler cancels the native row on a task that nothing joins. Wait
+    // for the cancel itself: a clock budget fails whenever the runner stalls past it.
+    let cancelled = native.cancellations.expectation(reaching: 1, "native row cancelled")
     scope.cancel()
-    let deadline = ContinuousClock.now.advanced(by: .seconds(2))
-    while native.cancelCount == 0 && ContinuousClock.now < deadline {
-        try await Task.sleep(for: .milliseconds(10))
-    }
+    let waited = await XCTWaiter.fulfillment(of: [cancelled], timeout: 10)
+    #expect(waited == .completed)
     #expect(native.cancelCount == 1)
     if native.cancelCount == 0 { consumer.cancel() }
     await consumer.value
@@ -96,18 +98,16 @@ func localDisconnectCancelsQuietNativeRow() async throws {
 private final class QuietCancellationEngine: CBv2Engine, @unchecked Sendable {
     private let lock = NSLock()
     private var streams: [CBv2RequestID: AsyncStream<CBv2Event>.Continuation] = [:]
-    private var cancellations = 0
-    var cancelCount: Int { lock.withLock { cancellations } }
+    /// Counts after the row has left `streams`, so `outstanding` already agrees.
+    let cancellations = EventCounter()
+    var cancelCount: Int { cancellations.value }
     var outstanding: Int { lock.withLock { streams.count } }
     func submit(_ request: CBv2Request) throws -> AsyncStream<CBv2Event> {
         AsyncStream { continuation in lock.withLock { streams[request.id] = continuation } }
     }
     func cancel(_ id: CBv2RequestID) {
-        let stream = lock.withLock {
-            let stream = streams.removeValue(forKey: id)
-            if stream != nil { cancellations += 1 }
-            return stream
-        }
+        let stream = lock.withLock { streams.removeValue(forKey: id) }
+        if stream != nil { cancellations.increment() }
         stream?.yield(.finished(reason: .cancelled, usage: .init(promptTokens: 3, completionTokens: 0)))
         stream?.finish()
     }

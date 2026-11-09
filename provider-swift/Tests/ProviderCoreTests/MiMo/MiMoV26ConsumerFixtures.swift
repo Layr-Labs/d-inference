@@ -98,34 +98,6 @@ enum MiMoConsumerFixture {
     }
 }
 
-final class MiMoConsumerCounter: @unchecked Sendable {
-    private let lock = NSLock()
-    private var count = 0
-    private var waiters: [(target: Int, expectation: XCTestExpectation)] = []
-    func increment() {
-        let reached = lock.withLock {
-            count += 1
-            let due = waiters.filter { $0.target <= count }
-            waiters.removeAll { $0.target <= count }
-            return due
-        }
-        for waiter in reached { waiter.expectation.fulfill() }
-    }
-    var value: Int { lock.withLock { count } }
-    /// Fulfilled by the increment that reaches `target`, or at once if the
-    /// count already has. A test awaits the event itself, not a clock.
-    func expectation(reaching target: Int, _ description: String) -> XCTestExpectation {
-        let expectation = XCTestExpectation(description: description)
-        let reached = lock.withLock {
-            if count >= target { return true }
-            waiters.append((target, expectation))
-            return false
-        }
-        if reached { expectation.fulfill() }
-        return expectation
-    }
-}
-
 final class MiMoConsumerResponseID: @unchecked Sendable {
     private let lock = NSLock()
     private var stored: String?
@@ -141,8 +113,8 @@ final class MiMoConsumerEngine: CBv2Engine, @unchecked Sendable {
     let holdOpen: Bool
     /// Held rows registered, and held rows cancelled. Each counts after the
     /// pending map has changed, so `outstanding` already agrees with it.
-    let holds = MiMoConsumerCounter()
-    let cancellations = MiMoConsumerCounter()
+    let holds = EventCounter()
+    let cancellations = EventCounter()
     init(output: String = "Ready", width: Int = 1, holdOpen: Bool = false) {
         let scalars = Array(output.unicodeScalars)
         self.chunks = stride(from: 0, to: scalars.count, by: width).map {
@@ -188,9 +160,9 @@ struct MiMoConsumerServing: Sendable {
     let tokenizer: TokenizerHandle
     let backend: MiMoConsumerEngine
     let bridge: EngineV2Bridge
-    let acquireCount = MiMoConsumerCounter()
-    let lookupCount = MiMoConsumerCounter()
-    let releases = MiMoConsumerCounter()
+    let acquireCount = EventCounter()
+    let lookupCount = EventCounter()
+    let releases = EventCounter()
     let modelType: String
     init(tokenizer: TokenizerHandle, output: String = "Ready", width: Int = 1,
          holdOpen: Bool = false, modelType: String = "mimo_v2") {

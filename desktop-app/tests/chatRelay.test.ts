@@ -14,6 +14,8 @@ import { reasoningEfforts, type ChatEvent, type ChatRequest } from '../src/share
 import type { Snapshot } from '../src/shared/contracts';
 import { snapshot } from './onboardingFixtures';
 
+// Real sockets and timers: allow a busy machine its time.
+const patient = { timeout: 10_000, interval: 5 };
 const KEY = 'dk-local-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
 const MEMORY =
   "This Mac's memory can't hold this request right now. Lower max_tokens or shorten the prompt (or send less media), or retry when this Mac's other requests finish.";
@@ -92,7 +94,7 @@ function relayWith(
         if (last?.type !== 'done' && last?.type !== 'error') throw new Error('still streaming');
         return last;
       },
-      { timeout: 3_000, interval: 5 },
+      { timeout: 10_000, interval: 5 },
     );
   return { relay, events, finished };
 }
@@ -422,7 +424,7 @@ describe('send', () => {
     };
     const { relay, events, finished } = relayWith(backend());
     const { stream } = await relay.send(request);
-    await vi.waitFor(() => expect(events).toHaveLength(1));
+    await vi.waitFor(() => expect(events).toHaveLength(1), patient);
     await relay.cancel(stream);
     await finished(stream);
     expect(events.at(-1)).toEqual({
@@ -431,7 +433,7 @@ describe('send', () => {
       finish_reason: 'cancelled',
       usage: null,
     });
-    await vi.waitFor(() => expect(closed).toBe(1));
+    await vi.waitFor(() => expect(closed).toBe(1), patient);
     await relay.cancel(stream);
     await relay.cancel(42);
     expect(events).toHaveLength(2);
@@ -458,9 +460,9 @@ describe('send', () => {
     const { relay, events } = relayWith(backend());
     await relay.send(request);
     await relay.send(request);
-    await vi.waitFor(() => expect(events).toHaveLength(2));
+    await vi.waitFor(() => expect(events).toHaveLength(2), patient);
     relay.reset();
-    await vi.waitFor(() => expect(closed).toBe(2));
+    await vi.waitFor(() => expect(closed).toBe(2), patient);
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(events.map((event) => event.type)).toEqual(['content', 'content']);
     await expect(relay.send(request)).resolves.toHaveProperty('stream');

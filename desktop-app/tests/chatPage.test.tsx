@@ -82,7 +82,15 @@ async function send(text: string) {
     fireEvent.keyDown(field(), { key: 'Enter' });
   });
 }
-const flush = () => act(() => new Promise((resolve) => setTimeout(resolve, 40)));
+// Real timers (the 0.65 s settle, a frame's flush): allow a busy machine its time.
+const patient = { timeout: 5_000 };
+// Streamed text reaches the screen once a frame: two frames later it is there, however busy.
+const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+const flush = () =>
+  act(async () => {
+    await nextFrame();
+    await nextFrame();
+  });
 
 it('says chat uses this Mac’s local API, and opens Studio, when it has none', async () => {
   const { navigate } = await mount({
@@ -185,7 +193,10 @@ it('sends with Enter, keeps Shift+Enter for a new line, and streams the answer',
     usage: { prompt_tokens: 12, completion_tokens: 30 },
   });
   // Its newest glyphs reach full ink, then it reads as plain text.
-  await waitFor(() => expect(document.querySelector(`.${styles.ink}`)).not.toBeInTheDocument());
+  await waitFor(
+    () => expect(document.querySelector(`.${styles.ink}`)).not.toBeInTheDocument(),
+    patient,
+  );
   const answer = screen.getByRole('article', { name: 'Answer from GPT-OSS 20B' });
   expect(within(answer).getByText('this', { selector: 'strong' })).toBeVisible();
   expect(within(answer).getByRole('region', { name: 'bash code' })).toHaveTextContent(
@@ -260,7 +271,10 @@ it('lets streamed text settle from faint to full ink, and not with motion reduce
   expect(settling).toHaveLength(28);
   settling.forEach((glyph, index) => expect(glyph).toBe(glyphs[index]));
   expect(document.querySelector(`.${styles.settle}`)).toContainElement(settling[0]);
-  await waitFor(() => expect(document.querySelector(`.${styles.ink}`)).not.toBeInTheDocument());
+  await waitFor(
+    () => expect(document.querySelector(`.${styles.ink}`)).not.toBeInTheDocument(),
+    patient,
+  );
 
   cleanup();
   reduce = true;

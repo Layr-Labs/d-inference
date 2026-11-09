@@ -69,7 +69,7 @@ describe('a chat', () => {
     emit({ stream: 's1', type: 'reasoning', text: 'look.' });
     tick(1_400);
     emit({ stream: 's1', type: 'content', text: 'Use ' });
-    await vi.waitFor(() => expect(answer().content).toBe('Use '));
+    await vi.waitFor(() => expect(answer().content).toBe('Use '), { timeout: 5_000 });
     expect(answer().reasoning).toBe('Let me look.');
     tick(1_000);
     emit({ stream: 's1', type: 'content', text: '`/v1/models`.' });

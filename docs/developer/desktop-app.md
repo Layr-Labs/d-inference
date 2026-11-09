@@ -559,7 +559,88 @@ Preview links (`?preview` plus):
 
 ## Chat
 
-Chat is documented with its implementation.
+Chat talks to the models this Mac's local API serves (Only me, or Both, me
+first), with the iPhone app's chat look and motion. The renderer never calls
+the local API: the main process does, and the key stays there.
+
+| Piece | Where | What it does |
+|---|---|---|
+| Contract | `desktop-app/src/shared/chat.ts` | `ChatModel(s)`, `ChatRequest`, `ChatEvent`, `ChatAPI`; `reasoningEfforts`, `chatLimits`, `validateChatRequest` |
+| Relay | `desktop-app/src/main/chat.ts` (`ChatRelay`) | IPC `chat:models`, `chat:send`, `chat:cancel`; streams `chat:event` |
+| Page | `desktop-app/src/renderer/features/chat/` | `Chat.tsx` (layout, pickers, states), `store.ts` (chats and live answers), `storage.ts`, `text.ts`, `Hero.tsx`, `Indicators.tsx`, `Messages.tsx`, `Composer.tsx`, `ChatList.tsx`, `chat.module.css` |
+| Preview | `desktop-app/src/renderer/preview/chat.ts` | `previewChatAPI`, `chatPreview` |
+
+`ChatRelay` calls only `Snapshot.endpoint.base_url`, and only when it is plain
+`http` on `127.0.0.1`, `localhost` or `[::1]` (`loopbackBase`). With no
+endpoint, `models()` answers `code: 'no_endpoint'`; anything else that stops
+the list is `code: 'unavailable'` with the local API's own message. When the
+endpoint is `authenticated` it reads the key per request through the
+`endpoint-key` resource and sends it as a bearer token; no event or result
+carries it.
+
+- **Models.** `GET <base>/models` (5 s) is the local router's list
+  ([direct mode](../provider/direct-mode.md#when-this-mac-cant-take-a-request-the-local-router)).
+  `parseModelList` keeps `owned_by` (`this-mac`, `my-macs`, `darkbloom`),
+  `context_length` (or `max_model_len`), `max_output_length` and
+  `input_modalities`. `reasoning` is true when `supported_features` lists
+  `reasoning`, and such a model takes all seven
+  [reasoning efforts](../provider/direct-mode.md#reasoning-effort)
+  (`reasoning_efforts`). A model the list doesn't name gets this Mac's
+  `display_name`.
+- **Answers.** `send` refuses more than 200 messages or 400,000 characters,
+  roles other than `system`, `user` and `assistant`, and an effort outside the
+  seven. It then POSTs `<base>/chat/completions` with `stream: true`,
+  `stream_options.include_usage` and the chosen `reasoning_effort`. Each chunk
+  becomes `reasoning` (from `reasoning_content`, else `reasoning`: the local
+  API sends the same text in both), `content`, then `done` with the finish
+  reason and usage. A refused request (such as the 503 when this Mac's memory
+  can't hold it) or the mid-answer failure frame becomes `error` with the
+  local API's own message (`apiErrorMessage`, `parseChatData`).
+- **Streams.** At most two stream at once. A stream may wait 10 minutes for its
+  head (a cold load, then the engine's 120 s admission) and 5 minutes between
+  chunks. `cancel` ends one with `done` and `finish_reason: 'cancelled'`;
+  `reset` (the window navigates or its renderer goes) ends all of them without
+  another event.
+
+The page keeps chats in `localStorage` (`darkbloom.chat.conversations`): at
+most 200 chats and 1,500,000 characters, newest first; a full storage halves
+the room and tries again. Every read and write is guarded, so a storage that
+throws leaves chat working for the session. The last model, effort, speed line
+and chat list state are kept under `darkbloom.chat.*`. `ChatStore` lives
+outside React, so an answer keeps streaming while another page is shown; its
+text reaches the screen once a frame. A request carries the newest messages
+that fit the limits, without answers that failed.
+
+| iPhone app (`darkbloom-ios-redesign`) | Here |
+|---|---|
+| `LaunchHero`, `TileField`, `ExtrudedMark`, `Tagline` | `Hero.tsx`, `launchTagline` in `text.ts`: the bloom, the tile canvas at 20 fps, the mark from `landing/public/footer-logo.svg`'s three paths turning toward the pointer, one line per launch in serif italic; behind messages it recedes |
+| `PixelLoader`, `SweepText`, `InkTail` | `Indicators.tsx`: CSS keyframes for the 1.8 s diagonal wave and the 2.6 s band; the newest 28 characters of a streaming answer as faint spans |
+| `MessageRows`, `ReasoningDisclosure` | `Messages.tsx`: your words in a blue-tinted slab, replies as text with fenced code blocks, "Thinking N s" then "Thought for N s" |
+| `Composer`, `LiveLine` | `Composer.tsx`, the Show speed line in `Chat.tsx` |
+| `Motion`, `PressableStyle` | `chat.module.css`: `cubic-bezier(.16, .84, .28, 1)`, no bounce, press scale 0.96 |
+
+Colors are the app's tokens, so Light, Dark and System follow
+`styles/theme.css`. With reduced motion the tiles hold one frame, the mark
+doesn't tilt, streamed text is full ink at once, and every CSS animation is
+off. Chats restored from storage, or opened from the list, never settle in;
+only messages written while the page is open do. The page fills the workspace:
+`chat.module.css` styles the `chat-page` class `App.tsx` gives `<main>` and
+hides the page footer there.
+
+Preview links (`?preview` plus):
+
+| Query | Shows |
+|---|---|
+| none | GPT-OSS 20B (reasons, every effort), Qwen3-VL 30B (doesn't reason) and Gemma 4 26B (your Macs); canned answers with reasoning and a code block at about 55 and 42 tokens a second |
+| `&chat=no_endpoint` | No local API: the line and **Open Studio** (the snapshot has no endpoint) |
+| `&chat=unavailable` | The local API doesn't answer: the message and **Try again** |
+| `&chat=fail` | Each answer refused with the busy Mac's 503 message |
+
+`chatRelay.test.ts` runs the relay against a local HTTP server (loopback
+only, key handling, parsing, refusals, cancel, reset, limits);
+`chatStore.test.ts`, `chatText.test.ts`, `chatPage.test.tsx`,
+`chatPreview.test.ts` and `chatApp.test.tsx` cover the page, storage, the
+preview and the route.
 
 ## Clusters
 

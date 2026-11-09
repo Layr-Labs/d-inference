@@ -26,7 +26,7 @@ const billed: ChatModel = {
 };
 const listed: ChatModels = {
   base_url: 'http://127.0.0.1:8000/v1',
-  models: [...previewChatModels, billed],
+  models: [...previewChatModels(), billed],
 };
 let emit: (event: ChatEvent) => void;
 let reduce = false;
@@ -68,7 +68,9 @@ async function mount(models: ChatModels = listed) {
   );
   const view = render(<Chat backend={backend} navigate={navigate} store={store} />);
   await waitFor(() => expect(api.chatModels).toHaveBeenCalled());
-  return { view, store, navigate };
+  // The page again, as when you come back to it.
+  const again = () => render(<Chat backend={backend} navigate={navigate} store={store} />);
+  return { view, store, navigate, again };
 }
 
 const field = () => screen.getByRole('textbox', { name: 'Message' });
@@ -379,4 +381,22 @@ it('hides and shows the chat list, and remembers it', async () => {
     'false',
   );
   expect(localStorage.getItem('darkbloom.chat.list')).toBe('0');
+});
+
+it('lets new messages settle in once, not again when you come back to the page', async () => {
+  const { view, again } = await mount();
+  await screen.findByRole('button', { name: 'Model: GPT-OSS 20B' });
+  await send('Hello');
+  expect(screen.getByText('Hello', { selector: 'p' })).toHaveClass(styles.enter);
+  view.unmount();
+  const later = Date.now() + 5_000;
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(later);
+  try {
+    again();
+    expect(await screen.findByText('Hello', { selector: 'p' })).not.toHaveClass(styles.enter);
+    // The answer is still streaming: Stop is where Send was.
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeVisible();
+  } finally {
+    clock.mockRestore();
+  }
 });

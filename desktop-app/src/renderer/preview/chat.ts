@@ -13,6 +13,9 @@ import { previewParam, type FeaturePreview } from './types';
 //
 // `&chat=no_endpoint`: this Mac runs no local API. `&chat=unavailable`: the local API doesn't
 // answer. `&chat=fail`: it refuses each answer as a busy Mac does (503, in its own words).
+//
+// Nothing here runs or is built when the module loads (data comes from functions, state is made
+// on first use), so a production build, which never uses the preview, leaves it all out.
 const mode = () => previewParam('chat');
 
 export const chatPreview: FeaturePreview = {
@@ -21,13 +24,13 @@ export const chatPreview: FeaturePreview = {
     mode() === 'no_endpoint' ? { ...snapshot, endpoint: undefined } : snapshot,
 };
 
-export const previewChatModels: ChatModel[] = [
+export const previewChatModels = (): ChatModel[] => [
   {
     id: 'gpt-oss-20b',
     name: 'GPT-OSS 20B',
     owned_by: 'this-mac',
     reasoning: true,
-    reasoning_efforts: [...reasoningEfforts],
+    reasoning_efforts: reasoningEfforts.slice(),
     context_length: 131_072,
     max_output_length: 131_072,
     input_modalities: ['text'],
@@ -47,14 +50,14 @@ export const previewChatModels: ChatModel[] = [
     name: 'Gemma 4 26B',
     owned_by: 'my-macs',
     reasoning: true,
-    reasoning_efforts: [...reasoningEfforts],
+    reasoning_efforts: reasoningEfforts.slice(),
     context_length: 131_072,
     max_output_length: null,
     input_modalities: ['text', 'image'],
   },
 ];
 
-const answers = [
+const answers = () => [
   {
     reasoning:
       'They want to see which models this Mac serves. The local API lists them at /v1/models, so a short script that reads that list and prints each model with its context window answers it. The standard library is enough.\n\nI’ll keep it to a few lines and say where the key comes from.',
@@ -75,14 +78,21 @@ const memory =
 // About one token each: a word with its leading space, long words in pieces.
 export const pieces = (text: string) => text.match(/\s*[^\s]{1,5}|\s+/g) ?? [];
 
-const listeners = new Set<(event: ChatEvent) => void>();
-const timers = new Map<string, ReturnType<typeof setTimeout>>();
-const usage = new Map<string, number>();
-let asked = 0;
+let made:
+  | {
+      listeners: Set<(event: ChatEvent) => void>;
+      timers: Map<string, ReturnType<typeof setTimeout>>;
+      usage: Map<string, number>;
+      asked: number;
+    }
+  | undefined;
+const state = () =>
+  (made ??= { listeners: new Set(), timers: new Map(), usage: new Map(), asked: 0 });
 
-const publish = (event: ChatEvent) => listeners.forEach((listener) => listener(event));
+const publish = (event: ChatEvent) => state().listeners.forEach((listener) => listener(event));
 
 function end(stream: string, event: ChatEvent) {
+  const { timers, usage } = state();
   clearTimeout(timers.get(stream));
   timers.delete(stream);
   usage.delete(stream);
@@ -101,16 +111,18 @@ export const previewChatAPI: ChatAPI = {
         code: 'unavailable',
         error: 'This Mac’s local API didn’t answer.',
       };
-    return { base_url, models: structuredClone(previewChatModels) };
+    return { base_url, models: previewChatModels() };
   },
   async chatSend(value) {
     const request = validateChatRequest(value);
+    const { timers, usage } = state();
     if (mode() === 'no_endpoint') throw new Error('This Mac’s local API isn’t running.');
     if (timers.size >= 2)
       throw new Error('Two answers are already streaming. Wait for one to finish.');
     const stream = crypto.randomUUID();
-    const model = previewChatModels.find((item) => item.id === request.model);
-    const answer = answers[asked++ % answers.length];
+    const model = previewChatModels().find((item) => item.id === request.model);
+    const canned = answers();
+    const answer = canned[state().asked++ % canned.length];
     const reasoning = !model?.reasoning
       ? []
       : pieces(
@@ -159,6 +171,7 @@ export const previewChatAPI: ChatAPI = {
     return { stream };
   },
   async chatCancel(stream) {
+    const { timers, usage } = state();
     if (!timers.has(stream)) return;
     end(stream, {
       stream,
@@ -168,6 +181,7 @@ export const previewChatAPI: ChatAPI = {
     });
   },
   onChat(callback) {
+    const { listeners } = state();
     listeners.add(callback);
     return () => {
       listeners.delete(callback);

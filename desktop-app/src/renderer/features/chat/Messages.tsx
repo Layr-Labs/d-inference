@@ -1,4 +1,13 @@
-import { Fragment, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+  Fragment,
+  memo,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { ArrowDown, Brain, Check, ChevronRight, Copy, Info, TriangleAlert } from 'lucide-react';
 import { api } from '../../useBackend';
 import { inked, PixelLoader, SweepText, type Ink } from './Indicators';
@@ -36,7 +45,14 @@ export function MessageList({
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
+  // A smooth return to the end in progress: it passes through positions that aren't near it.
+  const gliding = useRef(false);
   const [nearBottom, setNearBottom] = useState(true);
+  // Messages from before this page appeared are shown as they are, even when they're new: only
+  // what is written while it is open settles in.
+  const since = useRef(Date.now() - 1_000);
+  const settles = (message: StoredMessage) =>
+    fresh.has(message.id) && message.created_at >= since.current;
   const lastQuestion = conversation.messages
     .filter((message) => message.role === 'user')
     .at(-1)?.id;
@@ -45,8 +61,8 @@ export function MessageList({
     if (!element) return;
     pinned.current = true;
     setNearBottom(true);
-    if (smooth && typeof element.scrollTo === 'function')
-      element.scrollTo({ top: element.scrollHeight, behavior: 'smooth' });
+    gliding.current = smooth && typeof element.scrollTo === 'function';
+    if (gliding.current) element.scrollTo({ top: element.scrollHeight, behavior: 'smooth' });
     else element.scrollTop = element.scrollHeight;
   };
   // A new chat, or a new question, starts at the end.
@@ -60,6 +76,8 @@ export function MessageList({
     const element = scroller.current;
     if (!element) return;
     const near = element.scrollHeight - element.scrollTop - element.clientHeight < 48;
+    if (near) gliding.current = false;
+    if (gliding.current) return;
     pinned.current = near;
     if (near !== nearBottom) setNearBottom(near);
   };
@@ -69,13 +87,13 @@ export function MessageList({
         <div className={styles.messages}>
           {conversation.messages.map((message) =>
             message.role === 'user' ? (
-              <Question key={message.id} message={message} fresh={fresh.has(message.id)} />
+              <Question key={message.id} message={message} fresh={settles(message)} />
             ) : (
               <Answer
                 key={message.id}
                 message={message}
                 live={live[message.id]}
-                fresh={fresh.has(message.id)}
+                fresh={settles(message)}
                 reduced={reduced}
                 name={names(message.model)}
               />
@@ -97,18 +115,25 @@ export function MessageList({
   );
 }
 
-// Your words: a quiet blue-tinted slab on the right.
-function Question({ message, fresh }: { message: StoredMessage; fresh: boolean }) {
+// Your words: a quiet blue-tinted slab on the right. Rows re-render only when their own message
+// changes, so a streaming answer redraws alone.
+const Question = memo(function Question({
+  message,
+  fresh,
+}: {
+  message: StoredMessage;
+  fresh: boolean;
+}) {
   return (
     <p className={cx(styles.question, fresh && styles.enter)}>
       <span className={styles.srOnly}>You: </span>
       {message.content}
     </p>
   );
-}
+});
 
 // The model's reply: plain text on the canvas, with its reasoning above and its actions below.
-function Answer({
+const Answer = memo(function Answer({
   message,
   live,
   fresh,
@@ -167,7 +192,7 @@ function Answer({
       {!streaming && <Actions message={message} name={name} />}
     </article>
   );
-}
+});
 
 // "Thinking N s" while it reasons, with the last lines of its reasoning drifting up; "Thought for
 // N s" afterwards, which opens to the reasoning.

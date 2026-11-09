@@ -36,7 +36,7 @@ afterEach(async () => {
 it('lists development models: this Mac’s, one that reasons with every effort, and your Macs’', async () => {
   const list = await previewChatAPI.chatModels();
   expect(list.code).toBeUndefined();
-  expect(list.models).toEqual(previewChatModels);
+  expect(list.models).toEqual(previewChatModels());
   expect(list.models.map((model) => [model.id, model.owned_by, model.reasoning])).toEqual([
     ['gpt-oss-20b', 'this-mac', true],
     ['qwen3-vl-30b', 'this-mac', false],

@@ -103,6 +103,32 @@ struct EngineV2SamplingDefaultsTests {
         }
     }
 
+    /// These builds' embedded MTP heads keep the prompt history (`mtp_mode`
+    /// `auto` for `qwen3_5`/`qwen3_5_moe`), so the engine captures their
+    /// resident and SSD checkpoints only from rows that can speculate, and it
+    /// never speculates a row with a repetition, frequency or presence penalty
+    /// (`EngineLoopV2.mtpBasicEligible`, `mtpTakeHistoryState`). A default
+    /// penalty turns off MTP and the prefix cache for every request that omits
+    /// it, coordinator bodies included: they carry the registry's temperature,
+    /// top_p and top_k, never a penalty.
+    @Test func qwen35CardDefaultsLeaveDefaultRequestsSpeculativeAndCacheable() throws {
+        let coordinatorBody =
+            #"{"model":"m","messages":[{"role":"user","content":"hi"}],"temperature":1,"top_p":0.95,"top_k":20}"#
+        for (id, type) in EngineV2SamplingDefaults.qwen35CardModelTypes {
+            #expect(MTPMode.auto.enablesMTP(forModelType: type, embeddedArtifactDeclared: true, modelID: id))
+            let defaults = EngineV2SamplingDefaults.resolve(modelId: id, modelType: type, modelDirectory: nil)
+            for body in [bareRequest, coordinatorBody] {
+                let sampling = EngineV2Translation.samplingParams(from: try request(body), defaults: defaults)
+                #expect(sampling.temperature == 1 && sampling.topP == 0.95 && sampling.topK == 20, "\(id)")
+                #expect(sampling.presencePenalty == 0, "\(id): \(body)")
+                #expect(sampling.frequencyPenalty == 0 && sampling.repetitionPenalty == 1, "\(id)")
+            }
+            let explicit = EngineV2Translation.samplingParams(
+                from: try request(#"{"model":"m","messages":[],"presence_penalty":1.5}"#), defaults: defaults)
+            #expect(explicit.presencePenalty == 1.5, "\(id)")
+        }
+    }
+
     /// The exact locally qualified GLM artifact declares temperature 1.0 and
     /// top_p 0.95 without `do_sample`; other GLM IDs or types stay legacy.
     @Test func gateAdmitsOnlyTheQualifiedGLMArtifact() throws {

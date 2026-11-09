@@ -2782,6 +2782,22 @@ not restore native KV state or grant model capacity. Its application-local
 history LRU and the SDK response-object store have different retention rules;
 see [Responses continuation and retention](../provider/direct-mode.md#responses-continuation-and-retention).
 
+### Gemma with `tool_choice` `none`
+
+On a pinned Gemma 4 prompt contract, `tool_choice` `none` samples under
+`GemmaNoToolTokenConstraint`, which refuses the tool-call markers
+(`<|tool_call>`, `<start_function_call>`) anywhere in the output, even split
+across tokens. `GemmaTokenVocabulary` keeps Gemma 4's reasoning delimiters,
+`<|channel>` and `<channel|>`, in a set of their own
+(`noToolReasoningDelimiterTokenIDs`), outside the byte pieces the structured
+tool grammar reads. The no-tool automaton allows them only at its neutral
+state, where no marker is partial, so a request with reasoning on opens and
+closes its thought as it would without the constraint, and a marker can't be
+spliced across a boundary the reasoning parser later hides. Required and named
+`tool_choice` grammars and the other families are unchanged
+(`provider-swift/Sources/ProviderCore/Inference/Tools/GemmaNoToolTokenConstraint.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Tools/GemmaTokenVocabulary.swift`).
+
 ### Constrained Qwen JSON answers
 
 The format instruction alone leaves some Qwen answers outside the requested

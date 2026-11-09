@@ -200,6 +200,9 @@ struct DoctorLocalAPI {
 
     private var addressLine: Diagnostic {
         let cli = Self.cli
+        // A pair's Mac that passes the pair's API on through its own port (#1894) and can't answer for it now: why, and
+        // what to do, in `status`'s words. With the other Mac away its relay answers 503, which no restart mends.
+        if let down = pairServing?.memberAPIDown { return line("address", .warn, down) }
         if let live = facts.live {
             if facts.answers == false {
                 return line("address", .fail, "\(live.baseURL) — its server runs, but port \(live.port) doesn't answer",

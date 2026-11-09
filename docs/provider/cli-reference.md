@@ -579,12 +579,15 @@ here (its other Mac gone). It first says so in one line, in words for what it do
   (up to 10 min).`), and a status that stays the same is said again once a
   minute (`Still waiting (up to 10 min in all): …`). The exit status is `darkbloom cluster status`'s (`0`
   serving, `3` not serving yet, `4` stopped, `5` the other Mac isn't
-  answering); `1` when no model was chosen yet (``No model was chosen for the pair yet: choose one with `darkbloom cluster` in a terminal on <the leading Mac>.``:
-  only the leading Mac's screen has the model list) or the cluster can't be
-  reached. A pair that runs
+  answering); `1` when no model was chosen yet (only ``No model was chosen for the pair yet: choose one with `darkbloom cluster` in a terminal on <the leading Mac>.``,
+  never `starting the pair` first: only the leading Mac's screen has the model
+  list) or the cluster can't be reached. A pair that runs
   here and already serves, by one look at the status `darkbloom cluster status`
   reads, is kept as it is: `…: the pair already serves.` and the result block,
   exit `0`, with nothing asked of either Mac (`ClusterPairCommands.servingLook`).
+  That look is taken only while this Mac's cluster service starts at login: one
+  that runs from a terminal session gets the start, which moves it to its login
+  agent, so the pair comes back after a restart.
 
 A stopped pair started from a script, as on pair-2 (45 s):
 

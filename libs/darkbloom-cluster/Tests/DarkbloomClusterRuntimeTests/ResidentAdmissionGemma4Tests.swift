@@ -395,14 +395,17 @@ struct ResidentAdmissionGemma4Tests {
     }
 
     /// Each stage of a Gemma pipeline holds and covers the longest request it
-    /// serves, 262,144 tokens in 512-token chunks. Its KV host is bounded by
+    /// serves: the memory plan's, 65,536 tokens in 512-token chunks (#1930:
+    /// 32,768 + 32,768, as every family's pipeline). Its KV host is bounded by
     /// it (`QwenResidentRuntime.stageKVHostBound`, which `load` installs the
     /// host with). READY's request capacity (`stageRequestCapacity`, which
-    /// `load` returns) is the larger of the memory plan's planned bytes and
-    /// one such request with its prompt's prefill, so it is at least what any
-    /// reservation charges: its allowance at its own length and chunk, and its
-    /// prompt's prefill. Every registered row, a sliding-only and a
-    /// full-attention stage on each rank, both prefill schedules.
+    /// `load` returns) is the memory plan's planned bytes, with no longer
+    /// request asked of the stage, and it is at least what any reservation
+    /// within the plan charges: its allowance at its own length and chunk, and
+    /// its prompt's prefill. Every registered row, a sliding-only and a
+    /// full-attention stage on each rank, both prefill schedules. (Once a Gemma
+    /// pipeline serves its whole profile again, #1932, these are 262,144 and
+    /// READY covers that request.)
     @Test func eachStageHoldsAndCoversTheLongestRequestItServes() throws {
         func bound(_ bytes: Int) -> Int { ((bytes + 16_383) / 16_384) * 16_384 }
         for model in Gemma4RegisteredModel.allCases {
@@ -410,7 +413,7 @@ struct ResidentAdmissionGemma4Tests {
                 for rank in 0...1 {
                     let a = try Self.admit(model, rank: rank, cut: cut)
                     let host = QwenResidentRuntime.stageKVHostBound(a)
-                    #expect(host.maximumTokensPerRequest == 262_144 && host.maximumChunkTokens == 512)
+                    #expect(host.maximumTokensPerRequest == 65_536 && host.maximumChunkTokens == 512)
                     let decode = LayerStageDecodeShape(mode: .pipeline, rank: rank, speculativeTerms: nil)
                     func allowance(_ tokens: Int, _ chunk: Int, _ shape: LayerStageDecodeShape = .plain) throws -> Int {
                         try Gemma4ResidentLoadedStage.requestAllowance(specification: a.specification, plan: a.plan,
@@ -433,12 +436,10 @@ struct ResidentAdmissionGemma4Tests {
                             return try Gemma4ResidentLoadedStage.requestAllowance(specification: a.specification,
                                 plan: a.plan, rank: rank, maximumTokens: tokens, chunkSize: chunk, decode: decode, bound: bound)
                         }
-                        let longest = try allowance(262_144, 512, decode) + prefill(prompt: 262_143, chunk: 512)
                         let label = "\(model) cut \(cut) rank \(rank) \(schedule)"
-                        #expect(asked == [[262_144, 512]], "\(label)")
-                        #expect(ready == max(planned, longest) && ready > planned, "\(label): READY \(ready)")
-                        for (prompt, output) in [(262_143, 1), (229_376, 32_768), (131_071, 1), (65_536, 32_768),
-                                                 (32_768, 32_768), (513, 1), (1, 1)] {
+                        #expect(asked.isEmpty, "\(label)")
+                        #expect(ready == planned, "\(label): READY \(ready)")
+                        for (prompt, output) in [(32_768, 32_768), (32_767, 1), (16_384, 32_768), (513, 1), (1, 1)] {
                             let chunk = min(512, prompt)
                             let charge = try allowance(prompt + output, chunk, decode) + prefill(prompt: prompt, chunk: 512)
                             let lane = try allowance(prompt + output, chunk)

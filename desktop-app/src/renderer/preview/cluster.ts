@@ -68,12 +68,6 @@ export function setPreviewPair(next: Partial<PreviewPair>) {
   changed = true;
 }
 
-// Back to the pair the query names (tests).
-export function resetPreviewPair() {
-  Object.assign(pair, initial());
-  changed = false;
-}
-
 const names = () =>
   pair.role === 'leader'
     ? { thisMac: 'Studio A', other: 'Apple M5 Max, 128 GB' }

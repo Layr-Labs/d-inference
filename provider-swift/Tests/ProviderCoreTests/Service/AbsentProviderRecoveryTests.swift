@@ -10,17 +10,9 @@ struct AbsentProviderRecoveryTests {
     private enum FixtureError: Error { case busy, failed }
     private var noGuard: AbsentProviderRecovery.StagedGuard { .init(undo: nil, emit: {}) }
 
-    /// Baseline mode reproduces the exact old runTick policy inputs. Green
-    /// mode calls the new production mapping seam, using the SAME snapshots.
     private func mapped(_ intent: AbsentProviderRecovery.Snapshot,
                         state: WatchdogState, now: Double) -> WatchdogDecision {
-        #if ABSENT_JOB_BASELINE
-        return WatchdogPolicy.decide(autoRestartEnabled: intent.autoRestart,
-            providerLoaded: intent.loaded, providerRunning: intent.running,
-            downSince: WatchdogPolicy.effectiveDownSince(state.downSince, bootTime: 0), now: now)
-        #else
-        return AbsentProviderRecovery.decision(snapshot: intent, state: state, now: now, bootTime: 0)
-        #endif
+        AbsentProviderRecovery.decision(snapshot: intent, state: state, now: now, bootTime: 0)
     }
 
     @Test func intentMappingDistinguishesEnabledAbsenceFromStop() {
@@ -41,7 +33,9 @@ struct AbsentProviderRecoveryTests {
         s = enabled; s.running = true; controls.append(s)
         s = enabled; s.installed = false; controls.append(s)
         s = enabled; s.explicitlyEnabled = false; controls.append(s)
+        s = enabled; s.pairServes = true; controls.append(s)
         for control in controls { #expect(!control.eligible) }
+        #expect(enabled.eligible)
     }
 
     @Test func enableOverrideMustBeExplicitAndUnambiguous() {
@@ -204,7 +198,6 @@ struct AbsentProviderRecoveryTests {
         }
     }
 
-
     @Test func optedOutServiceNeverPreparesUpdateRecovery() throws {
         var intent = enabled
         intent.autoRestart = false
@@ -219,24 +212,13 @@ struct AbsentProviderRecoveryTests {
         #expect(!prepared)
         #expect(released)
     }
-
 }
 
 struct AbsentProviderProbeClassificationTests {
     private let label = "io.darkbloom.provider"
 
     private func classify(_ status: Int32, _ stderr: String) throws -> Bool {
-        #if ABSENCE_LABEL_BASELINE
-        // Exact previous result predicate from jobIsLoaded, isolated from I/O.
-        if status == 0 { return true }
-        guard [Int32(3), Int32(113)].contains(status),
-              stderr.localizedCaseInsensitiveContains("could not find service") else {
-            throw AbsentProviderRecovery.RecoveryError.unrecognizedLaunchdResult
-        }
-        return false
-        #else
-        return try AbsentProviderRecovery.jobIsLoadedResult(status: status, stderr: stderr, label: label)
-        #endif
+        try AbsentProviderRecovery.jobIsLoadedResult(status: status, stderr: stderr, label: label)
     }
 
     @Test func differentOrUnidentifiedServiceIsNotConfirmedAbsence() {

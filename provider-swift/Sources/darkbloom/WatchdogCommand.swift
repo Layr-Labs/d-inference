@@ -50,6 +50,13 @@ struct Watchdog: AsyncParsableCommand {
         autoUpdate && !jobIsClusterMember && !pairServes
     }
 
+    /// The watchdog brings back a job launchd lost (`AbsentProviderRecovery`) only for single-Mac serving: never a
+    /// cluster member's job, and never while the pair runs here (`ClusterService.pairServesHere`), whose part owns the
+    /// serving lock. The recovery checks both again under the lifecycle lease, last just before its bootstrap.
+    static func recoversAbsentJob(jobIsClusterMember: Bool, pairServes: Bool) -> Bool {
+        !jobIsClusterMember && !pairServes
+    }
+
     static func runTick(configPath: String?) async {
         let now = Date().timeIntervalSince1970
         let tickDeadline = ContinuousClock.now
@@ -66,7 +73,7 @@ struct Watchdog: AsyncParsableCommand {
         // grace, under the lifecycle lease stop and update hold; its launchctl calls are bounded
         // (`AbsentProviderRecovery`). Never for a cluster member's job, or while the pair runs here: the pair's
         // own supervision owns those, as in the loaded path below.
-        if !pairServes && !jobIsClusterMember {
+        if Self.recoversAbsentJob(jobIsClusterMember: jobIsClusterMember, pairServes: pairServes) {
             do {
                 let outcome = try AbsentProviderRecovery.handleTick(
                     updater: SelfUpdater(coordinatorBaseURL: settings.coordinatorURL),

@@ -14,10 +14,13 @@ public enum AbsentProviderRecovery {
         var autoRestart: Bool
         var loaded: Bool
         var running: Bool
+        /// The provider's own single-Mac `RunAtLoad` job; never a cluster member's.
         var installed: Bool
         var explicitlyEnabled: Bool
+        /// The pair runs on this Mac (`ClusterService.pairServesHere`): its part owns the serving lock.
+        var pairServes = false
         var eligible: Bool {
-            autoRestart && !loaded && !running && installed && explicitlyEnabled
+            autoRestart && !loaded && !running && installed && explicitlyEnabled && !pairServes
         }
     }
     struct RestartTarget {
@@ -41,8 +44,8 @@ public enum AbsentProviderRecovery {
         return trimmed[value] == "false" || trimmed[value] == "enabled"
     }
 
-    /// This is the production mapping seam: the old CLI mapping passed only
-    /// snapshot.loaded, losing the distinction between enabled and stopped.
+    /// An eligible absent job counts as loaded, so it gets the outage grace and
+    /// the restart; a stopped (disabled) or ineligible one stays `notManaged`.
     static func decision(snapshot: Snapshot, state: WatchdogState,
                          now: Double, bootTime: Double) -> WatchdogDecision {
         WatchdogPolicy.decide(
@@ -161,7 +164,7 @@ public enum AbsentProviderRecovery {
         return false
     }
 
-    // MARK: - Effectful adapter (omit only this section for an explicit leaf fixture)
+    // MARK: - Effectful adapter
 
     /// Internal boundary-only test seam. File stores, update sessions and
     /// journal recovery remain real; production resolves the same live paths.
@@ -177,7 +180,6 @@ public enum AbsentProviderRecovery {
         }
     }
 
-
     /// All newly introduced launchctl operations use the existing bounded runner.
     /// No WatchdogProbe.probeProvider/isLoaded/launchSnapshot calls are hidden in
     /// this adapter: those use unbounded launchctl plumbing.
@@ -187,7 +189,12 @@ public enum AbsentProviderRecovery {
                                      stderr: printed.stderr, label: LaunchAgent.label)
     }
 
-    static func snapshot(autoRestart: Bool, runner: SecurityCommandRunner, paths: Paths = .live) throws -> Snapshot {
+    /// Each snapshot under the lease checks again what the watchdog checked when its tick started: the job is the
+    /// provider's own single-Mac job, not a cluster member's, and the pair doesn't run here. The last snapshot comes
+    /// just before the bootstrap, so a pair that started, or a member job installed, during journal replay or a
+    /// rollback is left alone.
+    static func snapshot(autoRestart: Bool, runner: SecurityCommandRunner, paths: Paths,
+                         pairServes: () -> Bool) throws -> Snapshot {
         if try jobIsLoaded(runner: runner) {
             return Snapshot(autoRestart: autoRestart, loaded: true, running: false,
                             installed: false, explicitlyEnabled: false)
@@ -201,21 +208,25 @@ public enum AbsentProviderRecovery {
         }
         let installed = (plist?["Label"] as? String) == LaunchAgent.label
             && (plist?["RunAtLoad"] as? Bool) == true
+            && !LaunchAgent.isClusterMemberJob(plist?["ProgramArguments"] as? [String] ?? [])
         return Snapshot(autoRestart: autoRestart, loaded: false, running: orphanAlive,
                         installed: installed,
-                        explicitlyEnabled: explicitlyEnabled(overrides.stdout, label: LaunchAgent.label))
+                        explicitlyEnabled: explicitlyEnabled(overrides.stdout, label: LaunchAgent.label),
+                        pairServes: pairServes())
     }
 
     public static func handleTick(updater: SelfUpdater, autoRestart: () -> Bool) throws -> Outcome {
         try handleTick(updater: updater, autoRestart: autoRestart,
                        runner: .bounded(timeout: 3), paths: .live,
                        clock: { Date().timeIntervalSince1970 },
-                       bootTime: Date().timeIntervalSince1970 - ProcessInfo.processInfo.systemUptime)
+                       bootTime: Date().timeIntervalSince1970 - ProcessInfo.processInfo.systemUptime,
+                       pairServes: ClusterService.pairServesHere)
     }
 
     static func handleTick(updater: SelfUpdater, autoRestart: () -> Bool,
                            runner: SecurityCommandRunner, paths: Paths,
-                           clock: () -> Double, bootTime: Double) throws -> Outcome {
+                           clock: () -> Double, bootTime: Double,
+                           pairServes: () -> Bool) throws -> Outcome {
         // Reconcile an uncertain absent-job bootstrap before handing a loaded
         // candidate to the existing health/startup-timeout path. No launch or
         // health is inferred solely from registration.
@@ -233,7 +244,7 @@ public enum AbsentProviderRecovery {
             session = lease
             return { lease.release() }
         }, snapshot: {
-            try snapshot(autoRestart: autoRestart(), runner: runner, paths: paths)
+            try snapshot(autoRestart: autoRestart(), runner: runner, paths: paths, pairServes: pairServes)
         }, prepare: {
             guard let session else { return nil }
             try session.recover(now: clock())
@@ -377,5 +388,4 @@ public enum AbsentProviderRecovery {
             try session.writeState(recovery)
         }
     }
-
 }

@@ -3647,12 +3647,14 @@ identity. After the normal grace period, the watchdog bootstraps that plist unde
 the lifecycle lease shared with stop and update. It never enables a disabled job,
 so a deliberate stop stays stopped. It never does this for a cluster member's
 job, or while the pair runs on this Mac (`ClusterService.pairServesHere`): the
-pair's own supervision owns those. Pending candidates use the existing
-failed-attempt threshold, verified rollback and refused-rollback retry backoff
-after grace. A confirmed attempt is charged once; an expired refusal backoff
-permits one retry of the intact candidate. Rollback errors reload durable state
-before recording the refusal, preserving a rollback that committed before
-cleanup failed. This path downloads no update.
+pair's own supervision owns those. The watchdog checks both when its tick
+starts (`Watchdog.recoversAbsentJob`), and every sample of the job under the
+lease checks them again, the last one just before the bootstrap. Pending
+candidates use the existing failed-attempt threshold, verified rollback and
+refused-rollback retry backoff after grace. A confirmed attempt is charged once;
+an expired refusal backoff permits one retry of the intact candidate. Rollback
+errors reload durable state before recording the refusal, preserving a rollback
+that committed before cleanup failed. This path downloads no update.
 
 Its launchctl probes and its bootstrap each have a three-second bound. A
 missing-service diagnostic must name the complete provider label; an error about

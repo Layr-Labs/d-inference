@@ -12,6 +12,8 @@ struct AbsentProviderRecoveryIntegrationTests {
         var now = 1000.0
         var autoRestart = true
         var enabled = true
+        /// What `ClusterService.pairServesHere` says, read by every snapshot.
+        var pairServes = false
         var loaded = false
         var loadedOutput = "runs = 1"
         var disabledProbes = 0
@@ -33,9 +35,7 @@ struct AbsentProviderRecoveryIntegrationTests {
             try FileManager.default.createDirectory(at: installRoot, withIntermediateDirectories: true)
             // This is a real temporary plist; no executable or signed bundle is
             // substituted for the updater. Its command boundary is intercepted.
-            let plist: [String: Any] = ["Label": LaunchAgent.label, "RunAtLoad": true,
-                                       "ProgramArguments": ["/usr/bin/false"]]
-            try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0).write(to: paths.plist)
+            try writePlist(arguments: ["/usr/bin/false"])
         }
 
         func cleanup() { try? FileManager.default.removeItem(at: root) }
@@ -85,7 +85,11 @@ struct AbsentProviderRecoveryIntegrationTests {
         func tick() throws -> AbsentProviderRecovery.Outcome {
             try AbsentProviderRecovery.handleTick(updater: updater, autoRestart: { self.autoRestart },
                 runner: SecurityCommandRunner { try self.run($0, $1) }, paths: paths,
-                clock: { self.now }, bootTime: 0)
+                clock: { self.now }, bootTime: 0, pairServes: { self.pairServes })
+        }
+        func writePlist(arguments: [String]) throws {
+            let plist: [String: Any] = ["Label": LaunchAgent.label, "RunAtLoad": true, "ProgramArguments": arguments]
+            try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0).write(to: paths.plist)
         }
         func assertLeaseReleased() throws {
             let lease = try updater.beginUpdateSession(operation: "integration-release-probe", timeout: 0)
@@ -168,6 +172,42 @@ struct AbsentProviderRecoveryIntegrationTests {
         }
     }
 
+    @Test func clusterMemberJobIsNeverBootstrapped() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        // The provider's label, `RunAtLoad` and an enabled override, but a cluster member's job (S18).
+        try fixture.writePlist(arguments: ["/usr/bin/false", "start", "--foreground", "--cluster-member"])
+        let journalBefore = try fixture.createInvalidJournal()
+        #expect(try fixture.tick() == .ineligible)
+        fixture.now = 1301
+        #expect(try fixture.tick() == .ineligible)
+        #expect(fixture.bootstrapCount == 0)
+        #expect(try Data(contentsOf: fixture.journal) == journalBefore)
+        #expect(!FileManager.default.fileExists(atPath: fixture.paths.watchdogState.path))
+        try fixture.assertLeaseReleased()
+    }
+
+    /// The pair starts on this Mac while a restart tick runs: before journal
+    /// replay, after it, or after the candidate step just before the bootstrap.
+    @Test(arguments: [1, 2, 3])
+    func aPairThatStartsDuringTheTickIsNeverBootstrappedOver(snapshot: Int) throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        try fixture.expireGrace()
+        let probesBefore = fixture.disabledProbes
+        fixture.onDisabledProbe = { count in
+            if count - probesBefore == snapshot { fixture.pairServes = true }
+        }
+        #expect(try fixture.tick() == .ineligible)
+        #expect(fixture.disabledProbes - probesBefore == snapshot)
+        #expect(fixture.bootstrapCount == 0)
+        #expect(fixture.state.lastRestartAt == nil)
+        try fixture.assertLeaseReleased()
+        // While the pair runs, the next tick leaves the job alone too.
+        #expect(try fixture.tick() == .ineligible)
+        #expect(fixture.bootstrapCount == 0)
+    }
+
     @Test func realBusyUpdateSessionPreventsMutationThenRecoversAfterRelease() throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }
@@ -245,7 +285,6 @@ struct AbsentProviderRecoveryIntegrationTests {
         #expect(!FileManager.default.fileExists(atPath: fixture.paths.watchdogState.path))
         try fixture.assertLeaseReleased()
     }
-
 
     @Test func candidateExpiredBackoffBootstrapsAndPersistsOneIssuedAttempt() throws {
         let fixture = try Fixture()

@@ -1163,15 +1163,17 @@ distinct. See [release](../operations/provider-release.md).
 
 `AbsentProviderRecoveryIntegrationTests` drives the absent-job `handleTick`
 adapter with real temporary plist, journal and watchdog-state files and the real
-lifecycle lock. Only command execution, paths and time are injected; bootstrap is
-intercepted and code-signature verification stays on. The fixtures cover saved
-grace, lock ownership at issuance, a deliberate stop, the opt-out, a competing
-session, candidate failure attribution and backoff expiry, a missing-predecessor
-refusal, uncertain launch intent and loaded reconciliation, persistence failures
-before and after the command, and a corrupt journal. The rollback error-handler
-fixture reloads real persisted committed state without resurrecting a stale
-candidate; it does not perform the signed bundle exchange. These tests install no
-bundle and never touch launchd.
+lifecycle lock. Only command execution, paths, time and whether the pair runs
+here are injected; bootstrap is intercepted and code-signature verification
+stays on. The fixtures cover saved grace, lock ownership at issuance, a
+deliberate stop, the opt-out, a cluster member's job, a pair that starts on this
+Mac at each of the tick's three samples, a competing session, candidate failure
+attribution and backoff expiry, a missing-predecessor refusal, uncertain launch
+intent and loaded reconciliation, persistence failures before and after the
+command, and a corrupt journal. The rollback error-handler fixture reloads real
+persisted committed state without resurrecting a stale candidate; it does not
+perform the signed bundle exchange. These tests install no bundle and never
+touch launchd.
 
 ```bash
 swift test --skip-build --no-parallel \

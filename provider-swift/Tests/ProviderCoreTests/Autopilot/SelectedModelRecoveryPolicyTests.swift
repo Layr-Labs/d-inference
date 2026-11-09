@@ -115,6 +115,61 @@ struct SelectedModelRecoveryPolicyTests {
         #expect(await loop.selectedModelRecovery.isEmpty)
     }
 
+    /// A memory refusal after the weights loaded (here the KV headroom guard)
+    /// costs a whole load each time. After three, Super is no longer checked
+    /// on the backoff: an unload or a configuration change makes it due again,
+    /// for three more.
+    @Test(.timeLimit(.minutes(1)))
+    func postLoadMemoryRefusalsStopTheChecksUntilAnUnloadOrAConfigurationChange() async throws {
+        let fixture = try await Fixture.superWaitingBehindAdoptedGLM()
+        defer { Task { await fixture.remove() } }
+        let loop = fixture.loop
+        let limit = 3
+        let refusal = "Model '\(Fixture.superID)' loaded but has insufficient KV headroom under the memory cap "
+            + "(1.2 GB free, need 2.0 GB to serve) — unloaded"
+        let loads = ScriptedCounter()
+        await loop.setSelectedModelRecoveryLoadOverrideForTesting { _ in
+            loads.increment()
+            throw InferenceError.modelLoadFailed(refusal)
+        }
+        /// Runs `count` checks, each when the previous one made the next due.
+        func check(_ count: Int) async throws {
+            for _ in 0..<count {
+                let due = try await superRecoveryEntry(loop).nextCheckAt
+                await checkSelectedModelRecovery(loop, at: due)
+            }
+        }
+
+        // The first check evicts GLM; every load is refused after loading.
+        try await check(limit)
+        #expect(loads.value == limit)
+        #expect(fixture.shutdownCalls(Fixture.glmID) == 1)
+        let stopped = try await superRecoveryEntry(loop)
+        #expect(stopped.blocker == refusal + "; stopped after \(limit) memory refusals after loading",
+                "\(stopped.blocker ?? "")")
+        // No check is due, however late.
+        await checkSelectedModelRecovery(loop, at: .now.advanced(by: .seconds(86_400)))
+        #expect(loads.value == limit)
+        let state = try #require(await loop.currentDaemonState().selectedModelRecovery?.first)
+        #expect(state.nextCheckAt == nil && state.loading == nil && state.blocker == stopped.blocker)
+
+        // An unload makes it due at once, for three more.
+        #expect(await loop.unloadModel(Fixture.gemmaID))
+        try await check(limit)
+        #expect(loads.value == 2 * limit)
+        await checkSelectedModelRecovery(loop, at: .now.advanced(by: .seconds(86_400)))
+        #expect(loads.value == 2 * limit)
+
+        // So does a change to the saved configuration the daemon re-reads.
+        var config = try ConfigManager.load(from: fixture.configPath)
+        config.backend.modelAutopilot.minIdleSeconds += 1
+        try ConfigManager.save(config, to: fixture.configPath)
+        await loop.refreshAutopilotSettings()
+        try await check(1)
+        #expect(loads.value == 2 * limit + 1)
+        #expect(await loop.currentDaemonState().selectedModelRecovery?.first?.nextCheckAt != nil)
+    }
+
     @Test(.timeLimit(.minutes(1)))
     func anotherLoadPausesTheCheckWithoutBackingOff() async throws {
         let fixture = try await Fixture.superWaitingBehindAdoptedGLM()
@@ -177,6 +232,51 @@ struct SelectedModelRecoveryPolicyTests {
         #expect(paused.blocker == "Darkbloom is paused while you use this Mac")
         #expect(paused.nextCheckAt == now.advanced(by: SelectedModelRecovery.pauseRecheck))
         #expect(fixture.shutdownCalls(Fixture.glmID) == 0)
+    }
+
+    /// What begins while an attempt's last victim unloads.
+    enum PauseDuringEviction: String, Sendable {
+        case meFirst, drain, lease
+    }
+
+    /// A pause that begins while the attempt's last victim unloads stops the
+    /// load, as it stops the next eviction: the owner starts using the Mac
+    /// under me first, a drain begins or a live Autopilot lease arrives while
+    /// GLM's engine shuts down. GLM's unload finishes; Super is not loaded and
+    /// waits without a backoff step.
+    @Test(.timeLimit(.minutes(1)), arguments: [
+        (PauseDuringEviction.meFirst, "Darkbloom is paused while you use this Mac"),
+        (.drain, "the provider is draining"),
+        (.lease, "Autopilot manages residency under its live lease"),
+    ])
+    func aPauseThatBeginsDuringTheLastEvictionStopsTheLoad(_ pause: PauseDuringEviction, blocker: String)
+        async throws {
+        let fixture = try await Fixture.superWaitingBehindAdoptedGLM()
+        defer { Task { await fixture.remove() } }
+        let loop = fixture.loop
+        let loads = ScriptedCounter()
+        await loop.setSelectedModelRecoveryLoadOverrideForTesting { id in
+            loads.increment()
+            await fixture.install(id)
+        }
+        if pause == .meFirst { await loop.enableMeFirst(idle: .seconds(60)) }
+        fixture.duringNextShutdown(of: Fixture.glmID) {
+            switch pause {
+            case .meFirst: await loop.noteLocalUse(.start)
+            case .drain: await loop.raiseBusyFlagForTesting(.draining)
+            case .lease: await loop.activateAutopilotForTesting()
+            }
+        }
+        let start = ContinuousClock.now
+        await checkSelectedModelRecovery(loop, at: start)
+        if pause == .drain { await loop.lowerBusyFlagForTesting(.draining) }
+        #expect(fixture.shutdownCalls(Fixture.glmID) == 1)
+        #expect(loads.value == 0)
+        #expect(await loop.modelLoadingResidentIDs() == [Fixture.gemmaID])
+        let paused = try await superRecoveryEntry(loop)
+        #expect(paused.blocker == blocker)
+        #expect(paused.checks == 0)
+        #expect(paused.nextCheckAt >= start.advanced(by: SelectedModelRecovery.pauseRecheck))
     }
 
     /// A live Autopilot lease manages residency: recovery waits for it.

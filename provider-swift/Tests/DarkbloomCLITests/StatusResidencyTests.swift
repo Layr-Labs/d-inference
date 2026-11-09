@@ -144,6 +144,33 @@ struct StatusResidencyTests {
             "\(status)")
     }
 
+    /// After repeated memory refusals that came after its weights loaded, the
+    /// daemon schedules no check for the model: status says what makes one due.
+    @Test("a selected model whose checks wait for an unload or a configuration change")
+    func retryingSelectedModelAfterRefusalsAfterLoading() async throws {
+        let result = try await #require(processExitsWith: .success, observing: [\.standardOutputContent]) {
+            let sandbox = try CLICommandSandbox.enter(enabledModels: [Self.superID, Self.gemmaID], autoRestart: false)
+            defer { sandbox.remove() }
+            let now = Date().timeIntervalSince1970
+            try sandbox.writeState(Self.reportedState(now: now, adoptedHoldExpiresAtMs: nil), adding: [
+                "selected_model_recovery": [[
+                    "model": Self.superID, "waiting_since": now - 3 * 3_600 - 240, "checks": 3,
+                    "blocker": "Model '\(Self.superID)' loaded but has insufficient KV headroom under the memory cap "
+                        + "(1.2 GB free, need 2.0 GB to serve) — unloaded; stopped after 3 memory refusals after loading",
+                ]],
+            ])
+            print("== STATUS")
+            try await runCLICommand(Status.self, ["status", "--config", sandbox.config.path])
+            print("== END")
+        }
+        let output = decodedText(result.standardOutputContent)
+        let status = try #require(outputSection(output, from: "== STATUS", to: "== END"))
+        #expect(status.contains("\nRetrying \(Self.superID) when memory frees; next check after an unload or a "
+            + "configuration change (waiting 3h4m)\n  Last check: Model '\(Self.superID)' loaded but has insufficient "
+            + "KV headroom under the memory cap (1.2 GB free, need 2.0 GB to serve) — unloaded; stopped after 3 "
+            + "memory refusals after loading\n"), "\(status)")
+    }
+
     /// `darkbloom switch` saves the filter it applies, so the running
     /// selection already matches the saved file; only a later edit waits for
     /// a restart, and it is compared with the switch, not the start.

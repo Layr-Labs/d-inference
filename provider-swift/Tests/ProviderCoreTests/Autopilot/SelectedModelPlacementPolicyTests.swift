@@ -84,6 +84,38 @@ struct SelectedModelPlacementPolicyTests {
         #expect(fixture.shutdownCalls(Fixture.glmID) == 0)
     }
 
+    /// The owner's own local request on the adoption blocks its release, with
+    /// me first off too: a model the owner is using is never withdrawn under
+    /// the request, whatever Darkbloom traffic it also serves. Once no local
+    /// request holds it, its Darkbloom traffic alone is released as before.
+    @Test(.timeLimit(.minutes(1)))
+    func theOwnersLocalRequestBlocksTheRelease() async throws {
+        let fixture = try await Fixture.make(glm: .autopilotInventory)
+        defer { Task { await fixture.remove() } }
+        let loop = fixture.loop
+        await loop.settleAutopilotOperationForTesting(target: Fixture.glmID, holdSeconds: 600)
+        await loop.setAutopilotHoldForTesting(Fixture.glmID, until: .now.advanced(by: .seconds(-660)))
+        await loop.setSelectedModelRecoveryLoadOverrideForTesting { id in await fixture.install(id) }
+        await loop.enqueueSelectedModelRecovery([Fixture.superID])
+        let start = ContinuousClock.now
+        await fixture.beginGLMRequest()
+        await loop.setLocalRequestForTesting(Fixture.glmID, active: true)
+
+        await checkSelectedModelRecovery(loop, at: start)
+        await checkSelectedModelRecovery(loop, at: start.advanced(by: .seconds(601)))
+        #expect(await loop.autopilotServesModel(Fixture.glmID))
+        #expect(await loop.isModelAdvertised(Fixture.glmID))
+        let waiting = try await superRecoveryEntry(loop)
+        #expect(waiting.blocker?.contains("1 request in flight; serving a local request") == true,
+                "\(waiting.blocker ?? "")")
+
+        await loop.setLocalRequestForTesting(Fixture.glmID, active: false)
+        await checkSelectedModelRecovery(loop, at: waiting.nextCheckAt)
+        #expect(await loop.autopilotServesModel(Fixture.glmID) == false)
+        #expect(fixture.shutdownCalls(Fixture.glmID) == 0)
+        await fixture.endGLMRequest()
+    }
+
     /// A model in the running daemon's selection is the operator's, however
     /// busy: never released or evicted.
     @Test(.timeLimit(.minutes(1)))

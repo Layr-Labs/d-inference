@@ -66,6 +66,7 @@ struct UnreclaimableLoadMemoryFixture: Sendable {
     /// Super loads that reached the scripted loader, which always refuses.
     let superLoads: ScriptedCounter
     private let engines: EngineRegistry
+    private let shutdownHooks = ShutdownHooks()
 
     /// `resident` models are installed as idle stub slots, the first least
     /// recently used. `persistedLoadedModels` seeds the loaded-models file the
@@ -160,7 +161,11 @@ struct UnreclaimableLoadMemoryFixture: Sendable {
     /// Installs `id` as a resident stub slot holding its scripted bytes.
     func install(_ id: String, idleFor idle: Duration = .zero) async {
         let memory = self.memory
-        let stub = makeInertStubBridge(modelId: id, onShutdown: { memory.remove(id) })
+        let hooks = shutdownHooks
+        let stub = makeInertStubBridge(modelId: id, onShutdown: {
+            memory.remove(id)
+            await hooks.take(id)?()
+        })
         engines.add(id, stub.engine)
         memory.set(id, Self.residentBytes(id))
         await loop.modelLoadingInstallSlot(id, bridge: stub.bridge, weightsBytes: Int(Self.residentBytes(id)),
@@ -168,6 +173,12 @@ struct UnreclaimableLoadMemoryFixture: Sendable {
     }
 
     func shutdownCalls(_ id: String) -> Int { engines.engine(id)?.shutdownCalls ?? 0 }
+
+    /// Runs `hook` inside `id`'s next engine shutdown, once its bytes are
+    /// freed: something that begins while that unload is in progress.
+    func duringNextShutdown(of id: String, _ hook: @escaping @Sendable () async -> Void) {
+        shutdownHooks.set(id, hook)
+    }
 
     /// A GLM request is accepted and decoding: GLM has work in flight and its
     /// KV holds `glmRequestKVBytes`.
@@ -227,6 +238,13 @@ struct UnreclaimableLoadMemoryFixture: Sendable {
         private var engines: [String: InertStubEngine] = [:]
         func add(_ id: String, _ engine: InertStubEngine) { lock.withLock { engines[id] = engine } }
         func engine(_ id: String) -> InertStubEngine? { lock.withLock { engines[id] } }
+    }
+
+    private final class ShutdownHooks: @unchecked Sendable {
+        private let lock = NSLock()
+        private var hooks: [String: @Sendable () async -> Void] = [:]
+        func set(_ id: String, _ hook: @escaping @Sendable () async -> Void) { lock.withLock { hooks[id] = hook } }
+        func take(_ id: String) -> (@Sendable () async -> Void)? { lock.withLock { hooks.removeValue(forKey: id) } }
     }
 }
 

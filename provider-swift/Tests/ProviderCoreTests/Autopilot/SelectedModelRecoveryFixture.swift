@@ -29,3 +29,11 @@ func checkSelectedModelRecovery(_ loop: ProviderLoop, at now: ContinuousClock.In
 func superRecoveryEntry(_ loop: ProviderLoop) async throws -> SelectedModelRecovery.Entry {
     try #require(await loop.selectedModelRecovery.entries[UnreclaimableLoadMemoryFixture.superID])
 }
+
+extension ProviderLoop {
+    /// The owner's local request takes (`active`) or returns its reservation
+    /// on `id`, as `acquireModelForLocal` and `releaseLocalReservation` do.
+    func setLocalRequestForTesting(_ id: String, active: Bool) {
+        if active { localReservations.reserve(id) } else { localReservations.release(id) }
+    }
+}

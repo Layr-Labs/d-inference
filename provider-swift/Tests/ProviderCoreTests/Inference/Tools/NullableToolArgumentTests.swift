@@ -28,8 +28,6 @@ struct NullableToolArgumentTests {
         ]
     }
 
-    private static let labels = ["integer", "integer, anyOf", "boolean", "object"]
-
     private func request(_ schema: [String: Any]) throws -> OpenAIChatCompletionRequest {
         let body: [String: Any] = [
             "model": Self.modelID,
@@ -57,20 +55,21 @@ struct NullableToolArgumentTests {
         return try #require(calls.first?.function.arguments)
     }
 
-    @Test(arguments: labels)
+    @Test(arguments: shapes.map { $0.label })
     func xmlNullForANullableParameterIsJSONNull(_ label: String) throws {
         let shape = try #require(Self.shapes.first { $0.label == label })
         #expect(try serve(shape.schema, argument: "null")["p"] == .null, "\(label)")
     }
 
-    @Test(arguments: labels)
+    @Test(arguments: shapes.map { $0.label })
     func aValueForANullableParameterKeepsItsType(_ label: String) throws {
         let shape = try #require(Self.shapes.first { $0.label == label })
         #expect(try serve(shape.schema, argument: shape.value)["p"] == shape.parsed, "\(label)")
     }
 
     @Test func xmlNullForANonNullableParameterStaysRefused() throws {
-        #expect(throws: (any Error).self) {
+        #expect(throws: MultiModelBatchSchedulerEngineError.toolChoiceViolation(
+            "tool call arguments do not satisfy the declared schema")) {
             _ = try serve(["type": "integer"], argument: "null")
         }
     }

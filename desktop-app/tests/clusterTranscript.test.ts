@@ -203,6 +203,45 @@ describe('the setup screen as steps', () => {
     expect(view.outcome).toMatchObject({ ok: false, lines: ['Retry below.'] });
   });
 
+  it('reads a list’s answer as its option, never as the next question’s prompt', () => {
+    const question = { id: 'q2', type: 'choose' as const, options: [['A'], ['B']], selected: 0 };
+    const view = transcript(
+      session(
+        [
+          { type: 'heading', text: '3/4 Model' },
+          say('  How should this pair serve?'),
+          say('  ▸ Both, me first · The pair serves Darkbloom while you aren’t using it.'),
+        ],
+        { question },
+      ),
+    );
+    expect(view.prompt).toBeNull();
+    expect(view.steps[0].blocks[1]).toMatchObject({
+      line: {
+        answer: true,
+        text: 'Both, me first · The pair serves Darkbloom while you aren’t using it.',
+      },
+    });
+  });
+
+  it('leaves out the keys a terminal reads while it waits', () => {
+    const view = transcript(
+      session([
+        {
+          type: 'working',
+          rows: ['Waiting for the other Mac (run `darkbloom cluster` there; q cancels)'],
+        },
+      ]),
+    );
+    expect(view.live).toMatchObject({
+      rows: [{ text: 'Waiting for the other Mac (run `darkbloom cluster` there)' }],
+    });
+    expect(progressReport('Waiting for Allow · 0:05 of 10 min (q cancels)')).toMatchObject({
+      label: 'Waiting for Allow',
+      figures: ['0:05 of 10 min'],
+    });
+  });
+
   it('skips events a newer runtime added', () => {
     const view = transcript(
       session([{ type: 'chart' } as unknown as ClusterConsoleEvent, say('  Still here')]),
@@ -251,12 +290,22 @@ describe('a choice’s rows', () => {
       title: 'Only me (this pair, local)',
       details: ['Darkbloom never contacts these Macs. Your tools use the leading Mac’s API.'],
     });
+    // A mode's menu line pads its label before what it does, then its markers.
     expect(
-      option(['Tensor parallel          both Macs work on every layer', 'second row']),
-    ).toMatchObject({
+      option([
+        'Tensor parallel          both Macs work on every layer, each holding a share of it (this Mac 50% / the other Mac 50%) · serves up to 8 requests at once · recommended for these Macs',
+      ]),
+    ).toEqual({
       title: 'Tensor parallel',
-      details: ['both Macs work on every layer', 'second row'],
+      details: [
+        'both Macs work on every layer, each holding a share of it (this Mac 50% / the other Mac 50%)',
+      ],
+      modes: [],
+      marks: ['recommended for these Macs'],
+      warnings: [],
+      facts: ['serves up to 8 requests at once'],
     });
+    expect(option(['Pipeline', 'second row']).details).toEqual(['second row']);
   });
 });
 

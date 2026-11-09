@@ -154,7 +154,8 @@ export function ChoiceList({
   );
 }
 
-// What the setup accepts while it works, one button per key.
+// What the setup accepts while it works, one button per key. A key that cancels is the setup's own
+// Cancel, at the top, which also asks first while a pairing is in progress.
 export function KeyButtons({
   question,
   disabled,
@@ -164,10 +165,11 @@ export function KeyButtons({
   disabled: boolean;
   onKey: (key: string) => void;
 }) {
-  if (!question.keys.length) return null;
+  const keys = question.keys.filter((item) => item.label.trim().toLowerCase() !== 'cancel');
+  if (!keys.length) return null;
   return (
     <div className={styles.keyButtons}>
-      {question.keys.map((item) => (
+      {keys.map((item) => (
         <Button key={item.key} disabled={disabled} onClick={() => onKey(item.key)}>
           {item.label}
         </Button>

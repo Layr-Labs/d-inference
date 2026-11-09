@@ -510,6 +510,23 @@
   color: var(--negative);
 }
 
+/* The option a list took, under its question. */
+.answer {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  width: fit-content;
+  max-width: 100%;
+  margin: -2px 0 2px 22px;
+  padding: 3px 10px 3px 8px;
+  border-radius: 999px;
+  background: var(--blue-wash);
+  font-size: 12px;
+  color: var(--accent-brand);
+  overflow-wrap: anywhere;
+  animation: rise 0.2s ease-out;
+}
+
 /* "Run `darkbloom cluster` on the other Mac.": the one thing to do now. */
 .instruction {
   display: flex;
@@ -1377,6 +1394,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .line,
+  .answer,
   .instruction,
   .question,
   .outcome,

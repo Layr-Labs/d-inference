@@ -171,7 +171,7 @@ function pairAsLeader(next: () => Step[]): Step[] {
     say('Run `darkbloom cluster` on the other Mac.', 200),
     working(['Waiting for the other Mac (run `darkbloom cluster` there; q cancels)'], 0),
     waitKeys(
-      [{ key: 'q', label: 'Stop waiting' }],
+      [{ key: 'q', label: 'Cancel' }],
       {
         ms: 5200,
         then: () => [
@@ -681,7 +681,7 @@ class Player {
       clearTimeout(this.timer);
       this.asking = null;
       session.question = null;
-      session.events.push({ type: 'settle' }, { type: 'say', text: 'Nothing changed.' });
+      this.add({ type: 'say', text: 'Nothing changed.' });
       this.finish('cancelled', 0);
       return clone(session);
     }
@@ -699,6 +699,9 @@ class Player {
     clearTimeout(this.timer);
     this.asking = null;
     session.question = null;
+    // A list folds to the option it took, as in Terminal.
+    if ('choice' in answer && question.type === 'choose')
+      this.add({ type: 'say', text: `  ▸ ${question.options[answer.choice][0]}` });
     this.queue = [...asking.then(answer), ...this.queue];
     this.publish();
     this.schedule(250);
@@ -715,8 +718,19 @@ class Player {
     this.listeners.forEach((callback) => callback(clone(session)));
   }
 
+  // As the desktop API keeps the screen: live work only as the last event, ended by the next one
+  // or by `settle`, which isn't kept.
+  private add(event: ClusterConsoleEvent) {
+    const events = this.session?.events;
+    if (!events) return;
+    const last = events.at(-1);
+    if (last && (last.type === 'working' || last.type === 'progress')) events.pop();
+    if (event.type !== 'settle') events.push(event);
+  }
+
   private finish(state: ClusterSession['state'], exit: number) {
     if (!this.session) return;
+    this.add({ type: 'settle' });
     this.session.state = state;
     this.session.exit_code = exit;
     this.session.finished_at = Date.now() / 1000;
@@ -750,7 +764,7 @@ class Player {
           }, after.ms);
         return;
       }
-      session.events.push(step.event);
+      this.add(step.event);
       if (step.wait > 0) {
         this.publish();
         return this.schedule(step.wait);

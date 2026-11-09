@@ -646,9 +646,13 @@ it, with `darkbloom cluster`'s own steps and words
   default starts selected and focused. An option's first row is its title and
   the rest its detail. Its " · " markers show as tags: the split ("tensor
   parallel", "pipeline"), "serving now", "last used" or "recommended", and
-  "does not fit now" or "not enough free disk". `key` is one button per key,
-  labelled from `keys`. **Cancel** sends `{ cancel: true }`. While the pairing
-  step runs and hasn't said "Paired", it asks first ("Stop pairing?").
+  "does not fit now" or "not enough free disk". The option a list took shows
+  under its question (the CLI's "▸" line). `key` is one button per key,
+  labelled from `keys`, except a key labelled Cancel: the setup's own
+  **Cancel** does that. A terminal's key hints in live rows ("(q cancels)",
+  "q leaves") are left out. **Cancel** sends `{ cancel: true }`. While the
+  pairing step runs and hasn't said "Paired", it asks first ("Stop
+  pairing?").
 - **This Mac's overview.** With `Snapshot.pair` set, the pair in one line
   (`PairCard.tsx`) and a link to Clusters.
 
@@ -664,9 +668,11 @@ Preview links (`?preview` plus):
 | `&waitlist-cluster=waitlisted` (and the other standings) | Where the account stands on the cluster waitlist |
 
 The scripted setup (`desktop-app/src/renderer/preview/clusterSession.ts`) uses
-the CLI's own lines. On the Mac that leads it checks the cable, says "Run
-`darkbloom cluster` on the other Mac." with **Stop waiting** (the other Mac
-shows up after 5 s), then shows the code 482 913 with Yes and No, asks how the
+the CLI's own lines and keeps them as the desktop API does (live work only as
+the last event, each list's answer as a "▸" line). On the Mac that leads it
+checks the cable, says "Run `darkbloom cluster` on the other Mac." and waits
+(the other Mac shows up after 5 s), then shows the code 482 913 with Yes and
+No, asks how the
 pair serves (Only me, Darkbloom network, Both, me first), and lists the models
 (one tensor parallel, one downloaded with the mode question, one copied, one
 that doesn't fit). Then it shows copy and download bars, each Mac's loading

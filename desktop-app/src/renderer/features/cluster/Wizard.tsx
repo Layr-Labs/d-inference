@@ -1,4 +1,11 @@
-import { Check, ChevronRight, LoaderCircle, SquareTerminal, X } from 'lucide-react';
+import {
+  Check,
+  ChevronRight,
+  CornerDownRight,
+  LoaderCircle,
+  SquareTerminal,
+  X,
+} from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import type { ClusterSession } from '../../../shared/cluster';
 import { Button, Modal, Notice } from '../../components/UI';
@@ -6,6 +13,7 @@ import { PairGlyph } from './PairGlyph';
 import { KeyButtons, PairingCode, QuestionCard } from './Question';
 import { CopyCommand, Rich, Said } from './Rich';
 import {
+  option,
   pairingInProgress,
   transcript,
   type Block,
@@ -33,6 +41,14 @@ function Mark({ tone }: { tone: Line['tone'] }) {
 }
 
 function LineView({ line }: { line: Line }) {
+  // The answer a list took, by its option's title.
+  if (line.answer)
+    return (
+      <p className={styles.answer}>
+        <CornerDownRight size={13} aria-hidden="true" />
+        <span>{option([line.text]).title}</span>
+      </p>
+    );
   if (line.code)
     return (
       <div className={styles.codeLine}>

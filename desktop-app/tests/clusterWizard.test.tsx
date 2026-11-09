@@ -237,6 +237,49 @@ describe('questions', () => {
     expect(bridge.answerClusterSession).toHaveBeenCalledWith({ question: 'wait', key: 'q' });
   });
 
+  it('leaves a key that cancels to the setup’s own Cancel', async () => {
+    await open();
+    push(
+      session(
+        [
+          { type: 'heading', text: '2/4 Pair' },
+          {
+            type: 'working',
+            rows: ['Waiting for the other Mac (run `darkbloom cluster` there; q cancels)'],
+          },
+        ],
+        { id: 'wait', type: 'key', keys: [{ key: 'q', label: 'Cancel' }] },
+      ),
+    );
+    expect(await screen.findByText(/Waiting for the other Mac \(run/)).toHaveTextContent(
+      'Waiting for the other Mac (run darkbloom cluster there)',
+    );
+    expect(screen.getAllByRole('button', { name: 'Cancel' })).toHaveLength(1);
+    push(
+      session([{ type: 'heading', text: '4/4 Start' }], {
+        id: 'follow',
+        type: 'key',
+        keys: [{ key: 'q', label: 'Leave' }],
+      }),
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Leave' }));
+    expect(bridge.answerClusterSession).toHaveBeenCalledWith({ question: 'follow', key: 'q' });
+  });
+
+  it('shows the option a list took under its question', async () => {
+    await open();
+    push(
+      session([
+        { type: 'heading', text: '3/4 Model' },
+        say('How should this pair serve?'),
+        say('▸ Both, me first · The pair serves Darkbloom while you aren’t using it.'),
+      ]),
+    );
+    const answer = await screen.findByText('Both, me first');
+    expect(answer.closest('p')).toHaveTextContent(/^Both, me first$/);
+    expect(screen.queryByText(/▸/)).not.toBeInTheDocument();
+  });
+
   it('says when an answer isn’t taken', async () => {
     bridge.answerClusterSession.mockRejectedValue(new Error('That question isn’t asked anymore.'));
     await open();

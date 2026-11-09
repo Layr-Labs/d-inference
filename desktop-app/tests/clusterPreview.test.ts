@@ -144,7 +144,12 @@ describe('the scripted setup', () => {
     vi.useFakeTimers();
     const preview = await load(query);
     let latest: ClusterSession | undefined;
-    preview.previewClusterSession.watch((next) => (latest = next));
+    // Every session the stream published: live work is kept only as the last event.
+    const seen: ClusterSession[] = [];
+    preview.previewClusterSession.watch((next) => {
+      latest = next;
+      seen.push(next);
+    });
     const until = async (test: (session: ClusterSession) => boolean) => {
       for (let waited = 0; waited < 180_000; waited += 100) {
         if (latest && test(latest)) return latest;
@@ -158,7 +163,12 @@ describe('the scripted setup', () => {
       const question = latest!.question!;
       await preview.previewClusterSession.answer({ question: question.id, choice });
     };
-    return { ...preview, until, asked, answer, latest: () => latest! };
+    const lives = () =>
+      seen.flatMap((session) => {
+        const last = session.events.at(-1);
+        return last && (last.type === 'working' || last.type === 'progress') ? [last] : [];
+      });
+    return { ...preview, until, asked, answer, lives, latest: () => latest! };
   }
   // The rows of the open list's options.
   const options = (session: ClusterSession) =>
@@ -171,7 +181,7 @@ describe('the scripted setup', () => {
     await run.previewClusterSession.start({ kind: 'setup' });
     // Waiting for the other Mac: q is the only key, and the wait ends by itself.
     const waiting = await run.until((session) => session.question?.type === 'key');
-    expect(waiting.question).toMatchObject({ keys: [{ key: 'q', label: 'Stop waiting' }] });
+    expect(waiting.question).toMatchObject({ keys: [{ key: 'q', label: 'Cancel' }] });
     expect(said(waiting)).toContain('Run `darkbloom cluster` on the other Mac.');
     const code = await run.until(run.asked(2));
     expect(said(code).at(-1)).toBe('Code 482 913. Same on the other Mac?');
@@ -196,8 +206,14 @@ describe('the scripted setup', () => {
       ok: true,
       title: 'Serving Qwen3.8-27B-4bit-mtp through Darkbloom on both Macs (tensor parallel)',
     });
-    expect(done.events.some((event) => event.type === 'working' && event.rows.length === 2)).toBe(
+    expect(run.lives().some((event) => event.type === 'working' && event.rows.length === 2)).toBe(
       true,
+    );
+    // Each answer folds its list to the option it took, and nothing live is left at the end.
+    expect(said(done)).toEqual(expect.arrayContaining(['▸ Yes']));
+    expect(said(done).some((line) => line.startsWith('▸ Both, me first'))).toBe(true);
+    expect(done.events.some((event) => event.type === 'working' || event.type === 'progress')).toBe(
+      false,
     );
     expect(run.previewClusterStatus()).toMatchObject({
       state: 'serving',
@@ -228,13 +244,13 @@ describe('the scripted setup', () => {
     await run.answer(1);
     const done = await run.until((session) => session.state !== 'running');
     expect(done.state).toBe('succeeded');
-    expect(done.events.some((event) => event.type === 'progress' && /\d+%/.test(event.text))).toBe(
+    expect(run.lives().some((event) => event.type === 'progress' && /\d+%/.test(event.text))).toBe(
       true,
     );
     expect(
-      done.events.some(
-        (event) => event.type === 'working' && event.rows.every((row) => /\d+%/.test(row)),
-      ),
+      run
+        .lives()
+        .some((event) => event.type === 'working' && event.rows.every((row) => /\d+%/.test(row))),
     ).toBe(true);
     expect(run.previewClusterStatus()).toMatchObject({
       mode: 'pipeline',

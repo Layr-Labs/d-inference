@@ -22,6 +22,8 @@ export interface Line {
   // A "Label:   value" row of the pair's card, or a "darkbloom stop     Stop both Macs" row
   // (`command`).
   fact?: { label: string; value: string; command?: boolean };
+  // The option a list was answered with ("▸ Yes"), as a terminal folds its list to it.
+  answer?: boolean;
 }
 
 export type Block =
@@ -78,6 +80,13 @@ export function heading(title: string): Pick<Step, 'title' | 'index' | 'total'> 
   return { title: match[3], index, total };
 }
 
+// The keys a terminal reads while it waits ("q cancels", "q leaves") are the app's buttons here.
+export const withoutKeys = (value: string) =>
+  value
+    .replace(/;\s*q (?:cancels|leaves)(?=\))/gi, '')
+    .replace(/\s*\(q (?:cancels|leaves)\)/gi, '')
+    .trim();
+
 // A share such as "M3 Ultra 50% / M5 Max 50%" is not progress.
 const share = /\d\s?%\s*\//;
 
@@ -92,7 +101,7 @@ export function percent(value: string): number | undefined {
 // A copy's or download's report, "Downloading X  42%  6.8 GB of 16.3 GB  1.2 GB/s  2 min left":
 // its label, then its figures, with any drawn bar left out (the page draws its own).
 export function progressReport(value: string): Extract<Live, { kind: 'progress' }> {
-  const parts = value
+  const parts = withoutKeys(value)
     .replace(/\[[█░#.= -]*\]/g, ' ')
     .trim()
     .split(/\s{2,}| · /)
@@ -140,6 +149,8 @@ export function sayLine(event: Extract<ClusterConsoleEvent, { type: 'say' }>, ke
     tone = 'failed';
     shown = shown.slice(1).trimStart();
   }
+  if (/^[▸▶]\s/.test(shown))
+    return { key, text: shown.slice(1).trim(), tone, indent: false, answer: true } as Line;
   const line: Line = { key, text: shown, tone, indent: leading >= 4 || shown.startsWith('· ') };
   const code = shown.match(codeLine);
   if (code) {
@@ -172,7 +183,12 @@ function lastIndex<T>(items: T[], test: (item: T, index: number) => boolean) {
 // leave the step.
 function liftPrompt(blocks: Block[]): Prompt | null {
   let start = blocks.length;
-  while (start > 0 && blocks[start - 1].kind === 'line' && blocks.length - start < 4) start -= 1;
+  // Back over the last said lines, stopping at the answer to the question before.
+  while (start > 0 && blocks.length - start < 4) {
+    const block = blocks[start - 1];
+    if (block.kind !== 'line' || block.line.answer) break;
+    start -= 1;
+  }
   const tail = blocks.slice(start).map((block) => (block as Extract<Block, { kind: 'line' }>).line);
   const asks = lastIndex(tail, isQuestion);
   if (asks < 0) return null;
@@ -222,9 +238,9 @@ export function transcript(session: ClusterSession): Transcript {
       }
       case 'working': {
         const rows = (Array.isArray(event.rows) ? event.rows : [])
-          .map(text)
-          .filter((row) => row.trim())
-          .map((row) => ({ text: row.trim(), percent: percent(row) }));
+          .map((row) => withoutKeys(text(row)))
+          .filter(Boolean)
+          .map((row) => ({ text: row, percent: percent(row) }));
         live = rows.length ? { kind: 'working', rows } : null;
         break;
       }
@@ -308,15 +324,14 @@ const isMode = (part: string) =>
 const isMark = (part: string) =>
   /^(serving now\b.*|last used|recommended( for these Macs)?)$/i.test(part);
 const isWarning = (part: string) => /^(does not fit now|not enough free disk)$/i.test(part);
-// A planner note ("tensor parallel: slower here") or a split ("M3 Ultra 40 layers / M5 Ultra 24 layers").
-const isNote = (part: string) =>
-  /^(tensor parallel|pipeline)\b.*:/i.test(part) || /\d+(\s?%| layers?) \/ /.test(part);
+// What it does, in a sentence; anything short (a size, "copy", a split, a planner note such as
+// "tensor parallel: slower here", how many requests at once) is a fact.
 const isSentence = (part: string) => part.length > 48 || /[.!?]$/.test(part);
 
 export function option(rows: string[]): Option {
   const [first = '', ...rest] = rows.map((row) => row.trim()).filter(Boolean);
   // A menu line pads its label before what it does ("Tensor parallel     both Macs …").
-  const [label, ...said] = first.split(/\s{3,}/);
+  const [label, ...said] = first.split(/\s{2,}/);
   const parts = label.split(' · ');
   const result: Option = {
     title: parts[0] ?? '',
@@ -326,14 +341,14 @@ export function option(rows: string[]): Option {
     warnings: [],
     facts: [],
   };
-  for (const part of parts.slice(1)) {
+  const more = said.join('  ').split(' · ');
+  for (const part of [...parts.slice(1), ...more].map((item) => item.trim()).filter(Boolean)) {
     if (isMode(part)) result.modes.push(part);
     else if (isMark(part)) result.marks.push(part);
     else if (isWarning(part)) result.warnings.push(part);
-    else if (isNote(part)) result.facts.push(part);
     else if (isSentence(part)) result.details.push(part);
     else result.facts.push(part);
   }
-  result.details.push(...said.map((part) => part.trim()).filter(Boolean), ...rest);
+  result.details.push(...rest);
   return result;
 }

@@ -105,7 +105,7 @@ function Requirement({ state, children }: { state: RequirementState; children: R
         <Circle size={7} aria-hidden />
       )}
       <span>
-        <span className={styles.srOnly}>{requirementWords[state]}: </span>
+        <span className="sr-only">{requirementWords[state]}: </span>
         {children}
       </span>
     </li>

@@ -77,7 +77,7 @@ export function SetupProgress({
       </header>
       {!running && outcome?.detail && <p className={styles.outcome}>{outcome.detail}</p>}
       {/* The stage and the approval are announced as they change, not each percent. */}
-      <p className={styles.srOnly} aria-live="polite">
+      <p className="sr-only" aria-live="polite">
         {approval ? 'Approve this Mac in your browser.' : current?.title.replace(/ \d+%$/, '')}
       </p>
       {(steps.length > 0 || approval || (running && progress.waitlisted)) && (
@@ -114,7 +114,7 @@ function Steps({ steps }: { steps: SetupStep[] }) {
         >
           <StepMark state={step.state} />
           <span>
-            <span className={styles.srOnly}>{stateWords[step.state]}: </span>
+            <span className="sr-only">{stateWords[step.state]}: </span>
             {step.title}
           </span>
           {step.progress !== undefined && (

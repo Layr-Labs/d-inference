@@ -229,7 +229,7 @@ export function Chat({
 
   return (
     <div className={styles.chat} data-list={open ? 'open' : 'closed'}>
-      <h1 className={styles.srOnly}>Chat</h1>
+      <h1 className="sr-only">Chat</h1>
       <ChatList
         id={listID}
         conversations={state.conversations}

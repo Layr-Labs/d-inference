@@ -126,7 +126,7 @@ const Question = memo(function Question({
 }) {
   return (
     <p className={cx(styles.question, fresh && styles.enter)}>
-      <span className={styles.srOnly}>You: </span>
+      <span className="sr-only">You: </span>
       {message.content}
     </p>
   );

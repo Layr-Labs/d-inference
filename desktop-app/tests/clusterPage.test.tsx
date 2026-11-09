@@ -18,6 +18,7 @@ vi.mock('../src/renderer/useBackend', () => ({ api: bridge, isPreview: false }))
 
 import { Cluster } from '../src/renderer/features/cluster/Cluster';
 import { PairCard } from '../src/renderer/features/cluster/PairCard';
+import { PairGlyph } from '../src/renderer/features/cluster/PairGlyph';
 import { resetWaitlists } from '../src/renderer/features/waitlists/waitlistStore';
 import { backendWith, pairedMac, snapshot } from './onboardingFixtures';
 
@@ -408,6 +409,23 @@ describe('a paired Mac', () => {
     render(<Cluster backend={backendWith(paired())} navigate={vi.fn()} />);
     expect(await screen.findByText('Reading the pair…')).toBeVisible();
     expect(screen.getByText('Qwen 3.8 27B')).toBeVisible();
+  });
+});
+
+describe('the illustration', () => {
+  it('is decorative, and its pulses follow the cable it names', () => {
+    const { container } = render(<PairGlyph mood="serving" />);
+    const svg = container.querySelector('svg')!;
+    expect(svg).toHaveAttribute('aria-hidden', 'true');
+    const paths = [...container.querySelectorAll('mpath')].map((item) => item.getAttribute('href'));
+    expect(paths).toHaveLength(2);
+    for (const href of paths) {
+      expect(href).toMatch(/^#[A-Za-z0-9_-]+$/);
+      expect(container.querySelector(href!)).not.toBeNull();
+    }
+    cleanup();
+    // Stopped: nothing moves.
+    expect(render(<PairGlyph mood="stopped" />).container.querySelector('mpath')).toBeNull();
   });
 });
 

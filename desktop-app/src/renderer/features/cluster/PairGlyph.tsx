@@ -26,7 +26,9 @@ function Mac({ x, dim, led }: { x: number; dim?: boolean; led: string }) {
 
 export function PairGlyph({ mood, className }: { mood: PairMood; className?: string }) {
   const reduced = useReducedMotion();
-  const id = useId().replace(/:/g, '');
+  // React's ids carry characters a URL fragment would escape (`«r1»`); the cable's `href` must
+  // match its id as written.
+  const id = useId().replace(/[^A-Za-z0-9_-]/g, '');
   const moving = !reduced && (mood === 'serving' || mood === 'invite');
   const led =
     mood === 'serving' ? 'on' : mood === 'starting' ? 'wait' : mood === 'failed' ? 'fail' : 'off';

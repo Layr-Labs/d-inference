@@ -175,7 +175,7 @@ struct ToolIntegrationTests {
     }
 
     // The live endpoint reads the discovery folder through the process-wide DARKBLOOM_LOCAL_DIR, so it runs in a
-    // child process that alone points it at a temp folder.
+    // child process that alone points it at a temp folder, and keeps it off this Mac's cluster service.
     @Test("the live endpoint is local.json's address and port, with the key file that holds its key")
     func liveEndpoint() async {
         await #expect(processExitsWith: .success) {
@@ -183,6 +183,7 @@ struct ToolIntegrationTests {
                 .appendingPathComponent("tool-integration-live-\(UUID().uuidString)", isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             setenv("DARKBLOOM_LOCAL_DIR", directory.path, 1)
+            keepCommandsOffThisMacsCluster()
             func publish(port: UInt16, key: String, pid: Int32 = getpid()) throws {
                 try LocalEndpoint.writeInfo(LocalEndpoint.Info(
                     host: "0.0.0.0", port: port, apiKey: key, version: "9.9.9", pid: pid, updatedAt: "t"))

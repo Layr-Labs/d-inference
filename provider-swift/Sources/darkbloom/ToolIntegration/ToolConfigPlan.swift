@@ -23,6 +23,15 @@ struct ToolConfigSummary: Equatable, Sendable {
     var models: [String]
     /// The tool's default model as this edit sets it; nil when the edit leaves the default alone.
     var defaultModel: String?
+    /// The default model the edit leaves alone, as the tool's config names it (OpenCode: the `model` a global config
+    /// file sets, `exo/llama-3.3-70b`); nil when the edit sets one, or the config's default has no name.
+    var keptDefault: String?
+    /// The model OpenCode's TUI remembers from `/models` (`provider/model`), which new sessions start on when no config
+    /// sets `model`: the edit leaves the default to it. Nil when the edit sets one, or a config's default stays.
+    var rememberedPick: String?
+    /// The main model this edit replaced, in the tool's words (Hermes: `gpt-6-astra via opencodex`); nil when there
+    /// was none, or it was Darkbloom's already.
+    var replacedDefault: String?
     /// The endpoint's models the tool can't use, left out of its config (Hermes: under 64K context).
     var leftOut: [String] = []
     /// Comments on the lines the edit replaced or removed. The backup keeps them.

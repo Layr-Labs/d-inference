@@ -5521,7 +5521,7 @@ it alone:
   and every keep-warm answer while no request or lane is held, carry the
   longest context the reservation gate admits now (`servingContextTokens`,
   `refreshServingContext`; kept prefix entries count as room). The paged
-  host's bound is the profile's; pages grow with each request.
+  host's bound is the profile's (`hostBound`); pages grow with each request.
 - Pipeline: the adapter says whether its stages serve the whole profile
   (`ClusterRuntimeAdapter.pipelineServesWholeProfile`; the memory plan for
   every other adapter). The worker's stages
@@ -5533,10 +5533,16 @@ it alone:
   full-attention layer, one prompt frame's FP32 scores over the whole
   context: 6.4 GB and 8.6 GB at 262,144 tokens, against 2.0 GB and 2.2 GB at
   the standard request. Its lookahead frame does not grow with the prompt.
-  READY's capacity covers the longest request, and each stage's serving
-  context is searched up to 262,144; the pair serves the smaller of the two.
-  A pipeline with lanes keeps its READY figure, as every lane owner of the
-  stage modes does.
+  READY's capacity covers the longest request: the larger of the memory
+  plan's planned bytes and one 262,144-token request with its prompt's
+  prefill (`QwenResidentRuntime.stageRequestCapacity`). Each stage's KV host
+  is bounded by that request (`stageKVHostBound`), and its serving context is
+  searched up to 262,144; the pair serves the smaller of the two stages'. A
+  pipeline with lanes keeps its READY figure, as every lane owner of the
+  stage modes does. `load` takes READY's capacity and both hosts' bounds from
+  these functions, so the tests pin them per stage and per rank
+  (`ResidentAdmissionGemma4Tests.eachStageHoldsAndCoversTheLongestRequestItServes`,
+  `Gemma4NativeContextTests.aRankHoldsAndCoversTheLongestRequestItServes`).
 
 The provider holds a request to what its mode serves
 (`ClusterModelFeaturePolicy.servedProfile`: a Gemma pipeline's whole profile)
@@ -5565,6 +5571,9 @@ Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Gemma4/R
 `libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapability.swift`
 (`pipelineServesWholeProfile`),
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Resident/QwenResidentRuntime+Load.swift`
+(`stageKVHostBound`, `stageRequestCapacity`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Gemma4/Resident/Gemma4ResidentFamily.swift`
+(`Gemma4ResidentLoadedStage.requestAllowance`)
 and `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`.
 
 ## MiMo V2.6 tensor parallel

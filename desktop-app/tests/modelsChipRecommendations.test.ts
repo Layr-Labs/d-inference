@@ -9,6 +9,7 @@ import {
 import { poolModels } from './modelsFixtures';
 import {
   chipNetwork,
+  mapModels,
   partialChipNetwork,
   skewedChipNetwork,
   uncoveredChipNetwork,
@@ -61,17 +62,11 @@ describe('recommendations from Macs with the same chip', () => {
       recommendedModels(poolModels, null, chipRanking(poolModels, partial)).map((m) => m.id),
     ).toEqual(['qwen-3.5-9b', 'gpt-oss-20b']);
     // An omitted by_chip is partial data; a null one is malformed, so the totals rank.
-    const earnings = chipNetwork().model_earnings!;
-    const nulled: NetworkData = {
-      model_earnings: {
-        ...earnings,
-        models: earnings.models.map((model) =>
-          model.id === 'gemma-4-26b'
-            ? { ...model, by_chip: null as unknown as ChipModelEarning[] }
-            : model,
-        ),
-      },
-    };
+    const nulled = mapModels(chipNetwork(), (model) =>
+      model.id === 'gemma-4-26b'
+        ? { ...model, by_chip: null as unknown as ChipModelEarning[] }
+        : model,
+    );
     expect(chipEarnings(nulled, 'Apple M4 Max')).toBeNull();
   });
 

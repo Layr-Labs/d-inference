@@ -9,7 +9,7 @@ const row = (chip: string, machines: number, median: string, mean: string) => ({
   mean_micro_usd_per_machine_day: mean,
 });
 
-function mapModels(network: NetworkData, map: (model: ModelRow) => ModelRow): NetworkData {
+export function mapModels(network: NetworkData, map: (model: ModelRow) => ModelRow): NetworkData {
   const earnings = network.model_earnings!;
   return { model_earnings: { ...earnings, models: earnings.models.map(map) } };
 }

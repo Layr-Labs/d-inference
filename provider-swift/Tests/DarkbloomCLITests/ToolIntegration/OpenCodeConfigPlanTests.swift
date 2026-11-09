@@ -241,6 +241,49 @@ struct OpenCodeConfigPlanTests {
         #expect(OpenCodeConfigPlan.otherGlobalDefault(besides: directory.file("opencode/opencode.jsonc")) == .unnamed)
     }
 
+    @Test("a model OpenCode remembers from /models stands as its default: no model is added, and the pick is noted")
+    func aRememberedPickStands() throws {
+        func plan(_ existing: String, defaultElsewhere: OpenCodeConfigPlan.GlobalDefault = .none) -> ToolConfigPlan {
+            OpenCodeConfigPlan.plan(existing: Data(existing.utf8), fileName: "opencode.jsonc", endpoint: F.endpoint,
+                                    models: F.models, provider: F.provider, home: F.home,
+                                    defaultElsewhere: defaultElsewhere, rememberedPick: "omlx/qwen3.6")
+        }
+        let remembered = plan("{\n  \"theme\": \"dark\"\n}\n")
+        #expect(F.newText(remembered)?.contains("\"model\"") == false)
+        #expect(F.summary(remembered)?.defaultModel == nil && F.summary(remembered)?.rememberedPick == "omlx/qwen3.6")
+        // A config's default comes before a remembered pick in OpenCode's TUI: it is the one that stays.
+        for (existing, elsewhere) in [("{ \"model\": \"mine/m\" }", OpenCodeConfigPlan.GlobalDefault.none),
+                                      ("{}", .model("mine/m"))] {
+            let configured = plan(existing, defaultElsewhere: elsewhere)
+            #expect(F.summary(configured)?.keptDefault == "mine/m", "\(existing)")
+            #expect(F.summary(configured)?.rememberedPick == nil, "\(existing)")
+        }
+        #expect(F.summary(plan("{ \"model\": \"\" }"))?.rememberedPick == nil, "a default without a name stays first")
+    }
+
+    @Test("OpenCode's remembered pick: the first named entry of recent in model.json, in its state folder")
+    func rememberedPick() throws {
+        let directory = try TemporaryDirectory()
+        let home = directory.file("home")
+        let state = ["XDG_STATE_HOME": directory.file("state").path]
+        #expect(OpenCodeConfigPlan.rememberedPick(home: home, variables: [:]) == nil, "no file")
+        try directory.write(#"{ "recent": [{ "providerID": "", "modelID": "x" }, { "modelID": "y" }, "#
+            + #"{ "providerID": "omlx", "modelID": "qwen3.6" }, { "providerID": "exo", "modelID": "llama" }] }"#,
+            to: "home/.local/state/opencode/model.json")
+        #expect(OpenCodeConfigPlan.rememberedPick(home: home, variables: [:]) == "omlx/qwen3.6")
+        #expect(OpenCodeConfigPlan.rememberedPick(home: home, variables: ["XDG_STATE_HOME": ""]) == "omlx/qwen3.6",
+                "an empty XDG_STATE_HOME is no folder, as OpenCode reads it")
+        #expect(OpenCodeConfigPlan.rememberedPick(home: home, variables: state) == nil, "another state folder")
+        try directory.write(#"{ "recent": [{ "providerID": "exo", "modelID": "llama" }] }"#,
+                            to: "state/opencode/model.json")
+        #expect(OpenCodeConfigPlan.rememberedPick(home: home, variables: state) == "exo/llama")
+        for text in [#"{ "recent": [], "favorite": [{ "providerID": "omlx", "modelID": "q" }] }"#, "{ \"recent\": ",
+                     "[]", #"{ "recent": { "providerID": "omlx", "modelID": "q" } }"#] {
+            try directory.write(text, to: "state/opencode/model.json")
+            #expect(OpenCodeConfigPlan.rememberedPick(home: home, variables: state) == nil, "\(text)")
+        }
+    }
+
     @Test("the global files' default, merged as OpenCode 2 merges them: opencode.json, then opencode.jsonc")
     func otherGlobalDefault() throws {
         let directory = try TemporaryDirectory()

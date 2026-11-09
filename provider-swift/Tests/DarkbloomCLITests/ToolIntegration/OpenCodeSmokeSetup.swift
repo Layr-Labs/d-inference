@@ -28,7 +28,7 @@ struct OpenCodeSmokeSetup {
         try #require(isInside(URL(fileURLWithPath: localDirectory)))
 
         // The script's fake server is no pair's part: this Mac's own cluster service isn't read.
-        let endpoint = try #require(IntegrationEndpoint.live(pairPart: { nil }),
+        let endpoint = try #require(IntegrationEndpoint.live(pairProcesses: { [] }),
                                     "no live endpoint in \(localDirectory)/local.json")
         try #require(isInside(endpoint.keyFile))
         let models = IntegrationModels.resolve(try await IntegrationModels.fetch(endpoint), catalog: nil)

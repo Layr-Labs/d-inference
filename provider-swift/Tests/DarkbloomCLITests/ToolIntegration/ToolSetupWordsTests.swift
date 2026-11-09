@@ -35,9 +35,19 @@ private final class WordsSandbox: @unchecked Sendable {
                      maxOutputLength: 65_536, capabilities: ["tools", "vision"]),
     ], aliases: [])
 
+    /// The start's environment variables (`XDG_STATE_HOME`, `XDG_CONFIG_HOME`).
+    var variables: [String: String] = [:]
+
+    /// OpenCode's TUI's remembered `/models` picks, as OpenCode 2.2.6 writes them: `model.json` in its state folder.
+    func remember(_ picks: [(provider: String, model: String)], in state: String = "home/.local/state") throws {
+        let recent = picks.map { #"{ "providerID": "\#($0.provider)", "modelID": "\#($0.model)" }"# }
+        try directory.write(#"{ "recent": [\#(recent.joined(separator: ", "))], "favorite": [], "variant": {} }"#,
+                            to: "\(state)/opencode/model.json")
+    }
+
     func step(_ tools: [IntegrationTool], catalog: CatalogSnapshot? = WordsSandbox.catalog) -> ToolIntegrationStep {
         ToolIntegrationStep(
-            tools: tools, environment: ToolIntegrationEnvironment(home: home, variables: [:]), provider: F.provider,
+            tools: tools, environment: ToolIntegrationEnvironment(home: home, variables: variables), provider: F.provider,
             findTool: { .installed(URL(fileURLWithPath: "/fake/\($0.rawValue)")) },
             fetchModels: { _ in [EndpointModel(id: Self.qwen, ownedBy: "this-mac", contextLength: 262_144)] },
             fetchCatalog: { catalog }, say: { [self] in said.append($0) })
@@ -95,7 +105,8 @@ struct ToolSetupWordsTests {
             "  Changed: ~/.config/opencode/opencode.jsonc (added the \"darkbloom\" provider and the default model; "
                 + "nothing else changed)",
             "  Backup:  <backup>",
-            "  New OpenCode sessions now use Darkbloom's Qwen 3.8 27B. Switch back with /models.",
+            "  New OpenCode sessions now use Darkbloom's Qwen 3.8 27B. To go back, remove \"model\" from "
+                + "~/.config/opencode/opencode.jsonc or run the Undo below.",
             "  Undo:    cp <backup> \(ToolIntegration.shellQuoted(sandbox.openCodeJSONC.path))",
         ])
         #expect(F.utf8(try Data(contentsOf: sandbox.openCodeJSONC))
@@ -109,8 +120,59 @@ struct ToolSetupWordsTests {
             "✓ OpenCode can use Darkbloom: 1 model.",
             "  Changed: ~/.config/opencode/opencode.jsonc (a new file with the \"darkbloom\" provider and the default "
                 + "model)",
-            "  New OpenCode sessions now use Darkbloom's Qwen 3.8 27B. Switch back with /models.",
+            "  New OpenCode sessions now use Darkbloom's Qwen 3.8 27B. To go back, remove \"model\" from "
+                + "~/.config/opencode/opencode.jsonc or run the Undo below.",
         ])
+    }
+
+    @Test("a model picked with /models, which OpenCode remembers, stays its default: no model is written")
+    func aRememberedPickStays() async throws {
+        let sandbox = try WordsSandbox()
+        try sandbox.directory.write(hisOpenCodeJSON, to: "home/.config/opencode/opencode.json")
+        try sandbox.remember([("omlx", "qwen3.6"), ("exo", "llama-3.3-70b")])
+        #expect(await sandbox.run([.opencode]) == [
+            "✓ OpenCode can use Darkbloom: 1 model.",
+            "  Changed: ~/.config/opencode/opencode.json (added the \"darkbloom\" provider; nothing else changed)",
+            "  Backup:  <backup>",
+            "  Pick Darkbloom once with /models; OpenCode remembers it.",
+            "  Undo:    cp <backup> \(ToolIntegration.shellQuoted(sandbox.openCodeJSON.path))",
+        ])
+        let written = F.utf8(try Data(contentsOf: sandbox.openCodeJSON))
+        #expect(!written.contains("\"model\""), "\(written)")
+        #expect(written.contains("\"omlx\": { \"npm\""), "his providers stay")
+        // A run again changes nothing.
+        #expect(await sandbox.run([.opencode]) == ["✓ OpenCode already lists Darkbloom's 1 model (nothing changed)."])
+
+        // OpenCode's state folder under XDG_STATE_HOME, as it finds it; then ~/.local/state isn't read.
+        let xdg = try WordsSandbox()
+        xdg.variables = ["XDG_STATE_HOME": xdg.directory.file("state").path]
+        try xdg.remember([("omlx", "qwen3.6")], in: "state")
+        #expect(await xdg.run([.opencode]).contains("  Pick Darkbloom once with /models; OpenCode remembers it."))
+        let elsewhere = try WordsSandbox()
+        elsewhere.variables = ["XDG_STATE_HOME": elsewhere.directory.file("state").path]
+        try elsewhere.remember([("omlx", "qwen3.6")])
+        _ = await elsewhere.run([.opencode])
+        #expect(F.utf8(try Data(contentsOf: elsewhere.openCodeJSONC)).contains("\"model\": \"darkbloom/"),
+                "the pick is in another state folder than OpenCode's")
+
+        // A config's default outranks a remembered pick in OpenCode, so it is the one named.
+        let both = try WordsSandbox()
+        try both.directory.write("{\n  \"model\": \"exo/llama-3.3-70b\"\n}\n", to: "home/.config/opencode/opencode.json")
+        try both.remember([("omlx", "qwen3.6")])
+        #expect(await both.run([.opencode]).contains("  Your default stays exo/llama-3.3-70b; pick Darkbloom with /models."))
+    }
+
+    @Test("no pick OpenCode would read (none, only favorites, malformed or unreadable): Darkbloom's becomes the default")
+    func noRememberedPickSetsDarkbloomsDefault() async throws {
+        let empty = #"{ "recent": [], "favorite": [{ "providerID": "omlx", "modelID": "qwen3.6" }], "variant": {} }"#
+        let unnamed = #"{ "recent": [{ "providerID": "", "modelID": "qwen3.6" }, { "providerID": "omlx" }] }"#
+        for text in [empty, unnamed, "{ \"recent\": ", "[]"] {
+            let sandbox = try WordsSandbox()
+            try sandbox.directory.write(text, to: "home/.local/state/opencode/model.json")
+            #expect(await sandbox.run([.opencode]).contains(
+                "  New OpenCode sessions now use Darkbloom's Qwen 3.8 27B. To go back, remove \"model\" from "
+                    + "~/.config/opencode/opencode.jsonc or run the Undo below."), "\(text)")
+        }
     }
 
     @Test("a default in any global file stays, named; none is written, in either file")
@@ -157,7 +219,8 @@ struct ToolSetupWordsTests {
         let sandbox = try WordsSandbox()
         try sandbox.directory.write("{ \"model\": \"anthropic/claude-sonnet-4\" }\n", to: "home/.config/opencode/config.json")
         #expect(await sandbox.run([.opencode]).contains(
-            "  New OpenCode sessions now use Darkbloom's Qwen 3.8 27B. Switch back with /models."))
+            "  New OpenCode sessions now use Darkbloom's Qwen 3.8 27B. To go back, remove \"model\" from "
+                + "~/.config/opencode/opencode.jsonc or run the Undo below."))
     }
 
     // MARK: - Hermes' main model
@@ -200,10 +263,15 @@ struct ToolSetupWordsTests {
         let keyFile = URL(fileURLWithPath: "/tmp/fixture/local_token")
         let info = LocalEndpoint.Info(host: "0.0.0.0", port: 8001, apiKey: "dk-local-fixture", version: "t", pid: 41,
                                       updatedAt: "")
-        #expect(IntegrationEndpoint.live(info, keyFile: { _ in keyFile }, pairPart: { 41 })?.servesThePair == true,
-                "this Mac's running part of the pair serves it")
-        #expect(IntegrationEndpoint.live(info, keyFile: { _ in keyFile }, pairPart: { 7 })?.servesThePair == false)
-        #expect(IntegrationEndpoint.live(info, keyFile: { _ in keyFile }, pairPart: { nil })?.servesThePair == false)
+        #expect(IntegrationEndpoint.live(info, keyFile: { _ in keyFile }, pairProcesses: { [41, 40] })?.servesThePair
+                == true, "this Mac's running part of the pair serves it")
+        #expect(IntegrationEndpoint.live(info, keyFile: { _ in keyFile }, pairProcesses: { [7] })?.servesThePair == false)
+        #expect(IntegrationEndpoint.live(info, keyFile: { _ in keyFile }, pairProcesses: { [] })?.servesThePair == false)
+        // A member's relay writes local.json with its cluster service's pid: the pair's API too.
+        let relay = LocalEndpoint.Info(host: "0.0.0.0", port: 8001, apiKey: "dk-local-fixture", version: "t", pid: 40,
+                                       updatedAt: "")
+        #expect(IntegrationEndpoint.live(relay, keyFile: { _ in keyFile }, pairProcesses: { [41, 40] })?.servesThePair
+                == true, "the relay serves the pair")
 
         let sandbox = try WordsSandbox()
         let first = await sandbox.run([.opencode, .hermes], pair: true)
@@ -220,6 +288,18 @@ struct ToolSetupWordsTests {
                                         "✓ Hermes already uses Darkbloom's current models (nothing changed)."])
             #expect(try Data(contentsOf: sandbox.openCodeJSONC) == openCode && Data(contentsOf: sandbox.hermesFile) == hermes)
         }
+    }
+
+    @Test("the pair's processes: its part's, and its cluster service's, whose relay serves a member's API")
+    func thePairsProcesses() {
+        var status = ClusterServiceStatus(role: "follower", serving: true, modelName: "m", sessionLeader: false,
+                                          localRank: 1, setup: nil, child: .init(running: true, starts: 1, pid: 41),
+                                          session: nil)
+        status.servicePID = 40
+        #expect(ClusterPairSummary.pairProcesses(of: status) == [41, 40])
+        status.child.running = false
+        #expect(ClusterPairSummary.pairProcesses(of: status).isEmpty, "no part runs: no pair serves here")
+        #expect(ClusterPairSummary.pairProcesses(of: nil).isEmpty, "no cluster service")
     }
 
     // MARK: - Every line an edit can give
@@ -252,16 +332,20 @@ struct ToolSetupWordsTests {
         let pair = [IntegrationModel(id: "m", name: "Qwen 3.8 27B (your pair)", location: .yourPair,
                                      contextLength: 262_144, outputLimit: 65_536, tools: true, imageInput: false,
                                      reasoning: false)]
-        func line(_ defaultModel: String?, kept: String? = nil) -> String {
-            ToolIntegrationStep.openCodeDefault(
-                ToolConfigSummary(provider: .added, models: ["m"], defaultModel: defaultModel, keptDefault: kept),
-                models: pair, provider: F.provider)
+        func line(_ defaultModel: String?, kept: String? = nil, remembered: String? = nil) -> String {
+            var summary = ToolConfigSummary(provider: .added, models: ["m"], defaultModel: defaultModel,
+                                            keptDefault: kept)
+            summary.rememberedPick = remembered
+            return ToolIntegrationStep.openCodeDefault(summary, models: pair, provider: F.provider,
+                                                       file: "~/.config/opencode/opencode.json")
         }
-        #expect(line("darkbloom/m")
-            == "New OpenCode sessions now use Darkbloom's Qwen 3.8 27B. Switch back with /models.")
+        #expect(line("darkbloom/m") == "New OpenCode sessions now use Darkbloom's Qwen 3.8 27B. To go back, remove "
+            + "\"model\" from ~/.config/opencode/opencode.json or run the Undo below.")
         #expect(line(nil, kept: "exo/llama-3.3-70b")
             == "Your default stays exo/llama-3.3-70b; pick Darkbloom with /models.")
-        #expect(line(nil, kept: "darkbloom/m") == "Your default stays darkbloom/m; switch with /models.")
+        #expect(line(nil, kept: "darkbloom/m")
+            == "Your default stays darkbloom/m (the \"model\" in your OpenCode config).")
+        #expect(line(nil, remembered: "omlx/qwen3.6") == "Pick Darkbloom once with /models; OpenCode remembers it.")
         #expect(line(nil) == "Your default model stays as your config sets it; pick Darkbloom with /models.")
     }
 }

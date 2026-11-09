@@ -358,7 +358,8 @@ struct StartToolIntegrationTests {
             "✓ OpenCode can use Darkbloom: 2 models.",
             "  Changed: ~/.config/opencode/opencode.jsonc (a new file with the \"darkbloom\" provider and the default "
                 + "model)",
-            "  New OpenCode sessions now use Darkbloom's gemma-4-26b-qat-4bit. Switch back with /models.",
+            "  New OpenCode sessions now use Darkbloom's gemma-4-26b-qat-4bit. To go back, remove \"model\" from "
+                + "~/.config/opencode/opencode.jsonc or run the Undo below.",
             "  Undo:    rm \(ToolIntegration.shellQuoted(sandbox.openCodeFile.path))",
             "✓ Hermes can use Darkbloom: 1 model.",
             "  Changed: ~/.hermes/config.yaml (a new file with the \"darkbloom\" provider as the main model)",
@@ -391,7 +392,7 @@ struct StartToolIntegrationTests {
             "✓ OpenCode can use Darkbloom: 1 model.",
             "  Changed: ~/.config/opencode/opencode.jsonc (updated the \"darkbloom\" provider; nothing else changed)",
             "  Backup:  ~/.darkbloom/integrations/backups/opencode/\(backup.lastPathComponent)",
-            "  Your default stays darkbloom/gemma-4-26b-qat-4bit; switch with /models.",
+            "  Your default stays darkbloom/gemma-4-26b-qat-4bit (the \"model\" in your OpenCode config).",
             "  Undo:    cp \(ToolIntegration.shellQuoted(backup.path)) \(ToolIntegration.shellQuoted(sandbox.openCodeFile.path))",
         ])
 

@@ -71,6 +71,17 @@ extension ClusterPairSummary {
         return ClusterService.publishedLive().flatMap { $0.child.running ? $0.child.pid : nil }
     }
 
+    /// The processes that serve this Mac's running pair. Empty while a test gives the pair.
+    static func runningPairProcesses() -> Set<Int32> {
+        readsThisMacsCluster ? pairProcesses(of: ClusterService.publishedLive()) : []
+    }
+
+    /// The processes that serve the pair `status` publishes.
+    static func pairProcesses(of status: ClusterServiceStatus?) -> Set<Int32> {
+        guard let status, status.child.running, let part = status.child.pid else { return [] }
+        return [part]
+    }
+
     private static func localFacts() -> ClusterPairSummary {
         let agents = ClusterServiceAgent.status()
         let running = ClusterService.running()

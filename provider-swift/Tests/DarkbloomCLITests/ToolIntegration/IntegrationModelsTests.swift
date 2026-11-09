@@ -197,6 +197,24 @@ struct IntegrationModelsTests {
         }
     }
 
+    @Test("a pair's model keeps its engine's word on reasoning, a \"no\" too, online and offline, as this Mac's would")
+    func aPairsReasoningIsServedHere() throws {
+        // `supported_features: []` is the engine's "no": the catalog's reasoning can't add it, nor a tool's old entry.
+        let listed = try JSONDecoder().decode([EndpointModel].self, from: Data("""
+            [{"id": "q", "owned_by": "this-mac", "context_length": 262144, "supported_features": []},
+             {"id": "r", "owned_by": "this-mac", "context_length": 262144, "supported_features": ["reasoning"]}]
+            """.utf8))
+        let online = catalog([catalogModel("q", display: "Q", context: 262_144, capabilities: ["tools", "reasoning"])])
+        for snapshot in [online, nil] as [CatalogSnapshot?] {
+            let here = IntegrationModels.resolve(listed, catalog: snapshot)
+            let pair = IntegrationModels.resolve(listed, catalog: snapshot, here: .yourPair)
+            let mode = snapshot == nil ? "offline" : "online"
+            #expect(here.map(\.reasoning) == [false, true], "\(mode)")
+            #expect(pair.map(\.reasoning) == here.map(\.reasoning), "\(mode)")
+            #expect(pair.map(\.fallback) == here.map(\.fallback), "\(mode)")
+        }
+    }
+
     @Test("the endpoint's own process serves this Mac's models and its pair's, not your Macs' or the network's")
     func whereAModelIsServedHere() {
         #expect(IntegrationModel.Location.allCases.filter(\.servedHere) == [.thisMac, .yourPair])

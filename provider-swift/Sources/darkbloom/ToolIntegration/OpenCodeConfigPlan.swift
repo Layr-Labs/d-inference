@@ -42,7 +42,8 @@ enum OpenCodeConfigPlan {
     /// otherwise the summary names the default that stays (`keptDefault`).
     static func plan(
         existing: Data?, fileName: String, endpoint: IntegrationEndpoint, models listed: [IntegrationModel],
-        provider: IntegrationProvider, home: URL, defaultElsewhere: GlobalDefault = .none
+        provider: IntegrationProvider, home: URL, defaultElsewhere: GlobalDefault = .none,
+        rememberedPick: String? = nil
     ) -> ToolConfigPlan {
         guard !listed.isEmpty else {
             return .refused(.models("Darkbloom's endpoint lists no chat models yet, so OpenCode has none to use."))
@@ -203,6 +204,11 @@ enum OpenCodeConfigPlan {
     ///   project's `opencode.json`, `opencode.jsonc` and `.opencode` folder, `OPENCODE_CONFIG_CONTENT`, and the
     ///   managed files.
     static let globalFileNames = ["opencode.json", "opencode.jsonc"]
+
+    /// The model OpenCode's TUI remembers from `/models`.
+    static func rememberedPick(home: URL, variables: [String: String]) -> String? {
+        nil
+    }
 
     /// The default model the global config files other than `file` set together (`GlobalDefault.merged`); one that
     /// can't be read counts as setting a default Darkbloom can't name. Only `file`'s folder is read.

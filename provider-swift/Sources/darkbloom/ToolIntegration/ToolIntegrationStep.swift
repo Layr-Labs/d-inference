@@ -261,7 +261,9 @@ struct ToolIntegrationStep {
             if let backup { lines.append("  Backup:  \(ToolIntegration.displayPath(backup, home: home))") }
             switch tool {
             case .opencode:
-                lines += ["  " + openCodeDefault(summary, models: models, provider: provider), "  Undo:    \(undo)"]
+                lines += ["  " + openCodeDefault(summary, models: models, provider: provider,
+                                                 file: ToolIntegration.displayPath(file, home: home)),
+                          "  Undo:    \(undo)"]
             case .hermes:
                 let main = summary.defaultModel.map { "Darkbloom's \(name(of: $0, in: models))" } ?? "Darkbloom"
                 let before = summary.replacedDefault.map { " (before: \($0))" } ?? ""
@@ -303,7 +305,7 @@ struct ToolIntegrationStep {
     /// OpenCode's default model after a written edit, on its own line: Darkbloom's when no global config file set
     /// one, else the one they set, which stays.
     static func openCodeDefault(_ summary: ToolConfigSummary, models: [IntegrationModel],
-                                provider: IntegrationProvider) -> String {
+                                provider: IntegrationProvider, file: String) -> String {
         let ours = provider.id + "/"
         if let set = summary.defaultModel {
             let id = set.hasPrefix(ours) ? String(set.dropFirst(ours.count)) : set

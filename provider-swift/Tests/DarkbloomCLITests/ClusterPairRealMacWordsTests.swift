@@ -151,6 +151,70 @@ struct StartSoloModeFlagTests {
         #expect(single.change.mode == .local)
         #expect(config.local?.mode == .local)
     }
+
+    /// The pair's settings, as `darkbloom cluster` and an owner leave them: Both, its pause turned off, a route.
+    private static let pairSettings = """
+        [provider]
+        name = "ls5b-fixture"
+
+        [local]
+        mode = "both"
+        me_first = false
+        route = "my-macs"
+        port = 8001
+        """
+
+    /// #1931's review: `--solo --choose` saved its answer over the pair's `[local] mode`, D7's bug by another flag. The
+    /// answer serves that start only, and no route question follows: the route is the pair's setting too.
+    @Test("--solo --choose: the answer serves that start only, and asks for no route")
+    func aSoloChoiceIsForThatStartOnly() throws {
+        let config = try TempConfig(Self.pairSettings)
+        defer { config.remove() }
+        let before = config.bytes
+        let terminal = ScriptedTerminal(["1"])
+        let solo = try #require(try terminal.resolve(config.start(["--solo", "--choose", "--model", "m"]), terminal: true, keySaved: true))
+        #expect(solo.mode == .local && solo.source == .question)
+        #expect(solo.change.mode == nil && solo.change.route == nil)
+        #expect(terminal.reads == 1, "the mode question only")
+        #expect(config.bytes == before, "the pair's [local] stays as it was")
+    }
+
+    /// #1931's review: beside `--solo`, `--me-first` (over a saved `me_first = false`), `--no-me-first`, `--me-first-idle`
+    /// and `--route` still wrote `[local]` keys the pair reads (its pause, its idle minutes, its router). The background
+    /// service reads them from `[local]`, so beside `--solo` they can't serve that start alone: each is refused, naming
+    /// the key, and nothing starts or is saved.
+    @Test("beside --solo, a flag that would change a [local] key the pair reads is refused, and nothing is saved",
+          arguments: [(["--me-first"], "me_first"), (["--no-me-first"], "me_first"),
+                      (["--me-first-idle", "30"], "me_first_idle_minutes"), (["--route", "this-mac"], "route")])
+    func aSoloSettingsFlagIsRefused(flags: [String], key: String) throws {
+        // `--no-me-first` changes the pair's setting only where its pause is on (no `me_first` saved).
+        let toml = flags == ["--no-me-first"] ? Self.pairSettings.replacingOccurrences(of: "me_first = false\n", with: "")
+            : Self.pairSettings
+        let config = try TempConfig(toml)
+        defer { config.remove() }
+        let before = config.bytes
+        do {
+            _ = try ScriptedTerminal().resolve(config.start(["--solo"] + flags + ["--model", "m"]), terminal: false)
+            Issue.record("\(flags) was not refused")
+        } catch let refusal as ValidationError {
+            #expect(refusal.message.contains("[local] \(key)"), "\(refusal.message)")
+            #expect(refusal.message.hasSuffix("Nothing was started or saved."), "\(refusal.message)")
+        }
+        #expect(config.bytes == before, "\(flags): nothing saved")
+    }
+
+    /// The same values as the pair's write nothing, so a solo start takes them.
+    @Test("beside --solo, flags equal to the pair's settings serve, and nothing is saved")
+    func aSoloStartWithThePairsOwnSettingsServes() throws {
+        let config = try TempConfig(Self.pairSettings)
+        defer { config.remove() }
+        let before = config.bytes
+        let solo = try #require(try ScriptedTerminal().resolve(
+            config.start(["--solo", "--local-endpoint", "--no-me-first", "--route", "my-macs", "--model", "m"]), terminal: false))
+        #expect(solo.mode == .both && !solo.meFirst && solo.route == .myMacs)
+        #expect(solo.change.isEmpty)
+        #expect(config.bytes == before)
+    }
 }
 
 @Suite("darkbloom local names the key's file (journey 2a, J2-a)")

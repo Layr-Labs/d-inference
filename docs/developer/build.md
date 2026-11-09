@@ -1,6 +1,6 @@
 # Build The Provider And Landing
 
-> Last updated: 2026-11-06
+> Last updated: 2026-11-09
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. Backend, sidecar, console and admin builds
@@ -332,10 +332,12 @@ the component classifier, the tested-change lookup, the route and the workflow
 pins. It also runs the offline self-tests of the prompt fixture downloaders
 (`scripts/test-prepare-prompt-fixtures.py`,
 `scripts/test-prepare-mimo-prompt-fixtures.py`,
-`scripts/test-prepare-mimo-image-http-fixtures.py`) and the Date comparison
-checks. It needs no Mac and no test result, so it runs from the start of the
-run, and the gate fails unless it succeeded. `dev` has no Release Integrity,
-so these run there too.
+`scripts/test-prepare-mimo-image-http-fixtures.py`), the GPT-OSS checkpoint and
+replay tools' CPU tests (`scripts/test_gptoss_checkpoint.py`,
+`scripts/test_gptoss_replay.py`; Python 3.11+) and the Date comparison checks.
+It needs no Mac and no test result, so it runs from the start of the run, and
+the gate fails unless it succeeded. `dev` has no Release Integrity, so these
+run there too.
 
 | Workflow | Runs for | Jobs |
 |---|---|---|
@@ -894,8 +896,9 @@ passes do not qualify the shipping provider, MTP speed or full image support.
 ## Related
 
 - [Prepare a publisher-precision GPT-OSS checkpoint](gptoss-checkpoint.md): the
-  converter uses Python's standard library and needs no native build; large
-  checkpoint reads and writes still require a separate resource window.
+  converter uses Python's standard library (Python 3.11+) and needs no native
+  build; large checkpoint reads and writes still require a separate resource
+  window.
 - [Provider and SDK tests](test.md)
 - [Native ownership](navigation.md)
 - [Serving-performance qualification](serving-performance-qualification.md)

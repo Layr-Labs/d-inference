@@ -1110,6 +1110,13 @@ jobs:
           python3 scripts/test-prepare-prompt-fixtures.py
           python3 scripts/test-prepare-mimo-prompt-fixtures.py
           python3 scripts/test-prepare-mimo-image-http-fixtures.py
+      # The GPT-OSS checkpoint and replay tools' CPU tests: no model, no MLX and
+      # no server. They need Python 3.11+; ubuntu-24.04's python3 is 3.12.
+      - name: Test the GPT-OSS checkpoint and replay tools offline
+        if: ${{ !cancelled() }}
+        run: |
+          python3 --version
+          python3 -m unittest discover -s scripts -p 'test_gptoss_*.py' -v
 
   provider-test-gate:
     name: Provider Tests
@@ -1159,7 +1166,8 @@ jobs:
       # audit against the sources and this workflow, the provider shard plan,
       # the component classifier, the tested-change lookup, the route, the
       # workflow pins, the test products hand-off, the resource sampler, the
-      # Date comparison check and the prompt fixture downloaders.
+      # Date comparison check, the prompt fixture downloaders and the GPT-OSS
+      # checkpoint and replay tools.
       - name: Require the CI plan checks
         env:
           PLAN_CHECKS_RESULT: ${{ needs.ci-plan-checks.result }}

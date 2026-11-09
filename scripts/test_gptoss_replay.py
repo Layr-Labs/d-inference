@@ -1,10 +1,15 @@
+import email.message
+import http.client
 import json
 import io
+import os
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+import urllib.request
+import urllib.response
 
 import gptoss_replay as r
 
@@ -14,12 +19,30 @@ METRICS = '\n'.join([
     'mtp_active{model="gpt-oss-20b"} 0',
     'kv_active_requests{model="gpt-oss-20b"} 0',
     'kv_waiting_requests{model="gpt-oss-20b"} 0'])
+BUILD_OPENER = urllib.request.build_opener
 
 
 def case(name="hit"):
     return {"id": name, "cache": "hit", "minimum_cached_tokens": 8192, "fixed_tokens": True,
             "payload": {"model": r.MODEL, "stream": True, "max_tokens": 128,
                         "stream_options": {"include_usage": True}}}
+
+
+class Endpoint(urllib.request.HTTPHandler):
+    """Answers HTTP in memory and records where each request went; never opens a socket."""
+    def __init__(self, answer):
+        super().__init__()
+        self.answer, self.seen = answer, []
+
+    def http_open(self, req):
+        self.seen.append((req.get_method(), req.host))
+        status, body, location = self.answer(req)
+        headers = email.message.Message()
+        if location:
+            headers["Location"] = location
+        response = urllib.response.addinfourl(io.BytesIO(body), headers, req.full_url, status)
+        response.msg = http.client.responses[status]
+        return response
 
 
 class ReplayTests(unittest.TestCase):
@@ -202,6 +225,48 @@ class ReplayRunTests(unittest.TestCase):
     def test_redirects_are_refused(self):
         with self.assertRaisesRegex(ValueError, "must not redirect"):
             r.NoRedirect().redirect_request(None, None, 307, "", {}, "http://external.invalid/")
+
+    def test_only_a_bare_loopback_http_endpoint_is_contacted(self):
+        for url in ("https://api.darkbloom.dev", "http://api.darkbloom.dev", "https://127.0.0.1:18241",
+                    "http://localhost.evil.test:18241", "http://10.0.0.8:18241", "http://user:pw@127.0.0.1:18241",
+                    "http://user@localhost:18241", "http://127.0.0.1:18241/v1", "http://127.0.0.1:18241/?x=1",
+                    "http://127.0.0.1:18241/#top"):
+            with self.subTest(url=url):
+                self.args.base_url = url
+                with self.assertRaisesRegex(ValueError, "local, explicitly allocated"):
+                    r.run(self.args)
+                self.assertFalse(self.open.called)
+                self.assertFalse(self.args.output.exists())
+        for index, url in enumerate(("http://127.0.0.1:18241", "http://localhost:18241/", "http://[::1]:18241")):
+            with self.subTest(url=url):
+                self.open.reset_mock()
+                self.args.base_url, self.args.output = url, self.root / f"accepted-{index}"
+                r.run(self.args)
+                opened = [c.args[0] if isinstance(c.args[0], str) else c.args[0].full_url
+                          for c in self.open.call_args_list]
+                self.assertTrue(opened)
+                self.assertTrue(all(u.startswith(url.rstrip("/") + "/") for u in opened), opened)
+
+    def through_the_real_opener(self, endpoint):
+        # run() builds its own opener; the endpoint replaces only the socket-level HTTP handler.
+        return patch.object(r.urllib.request, "build_opener", lambda *handlers: BUILD_OPENER(*handlers, endpoint))
+
+    def test_an_environment_proxy_never_carries_the_traffic(self):
+        endpoint = Endpoint(lambda req: (200, METRICS.encode() if req.get_method() == "GET" else self.raw_stream, None))
+        proxy = {"http_proxy": "http://proxy.invalid:3128", "HTTP_PROXY": "http://proxy.invalid:3128",
+                 "no_proxy": "", "NO_PROXY": ""}
+        with patch.dict(os.environ, proxy), self.through_the_real_opener(endpoint):
+            r.run(self.args)
+        self.assertEqual({host for _, host in endpoint.seen}, {"127.0.0.1:1"})
+        self.assertEqual([method for method, _ in endpoint.seen].count("POST"), 2)
+        self.assertTrue((self.args.output / "complete.json").exists())
+
+    def test_a_redirect_stops_the_run_unfollowed(self):
+        endpoint = Endpoint(lambda req: (307, b"", "http://external.invalid/metrics"))
+        with self.through_the_real_opener(endpoint), self.assertRaisesRegex(ValueError, "must not redirect"):
+            r.run(self.args)
+        self.assertEqual(endpoint.seen, [("GET", "127.0.0.1:1")])
+        self.assertFalse((self.args.output / "metrics-before.txt").exists())
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 # Prepare A Publisher-Precision GPT-OSS Checkpoint
 
-> Last updated: 2026-10-23
+> Last updated: 2026-11-09
 
 Use the offline GPT-OSS tools to preserve publisher MXFP4 expert bytes and BF16
 non-expert tensors, then compare the candidate with the current serving artifact.
@@ -8,6 +8,8 @@ Conversion and CPU fixtures do not establish model quality or performance.
 
 ## Prerequisites
 
+- Python 3.11 or later for both tools and their tests; they use only the
+  standard library. macOS's `/usr/bin/python3` (3.9) is too old.
 - A pinned local `openai/gpt-oss-20b` snapshot and an independently authenticated
   JSON manifest with `repo`, full `revision`, and `files` mapping filenames to
   SHA-256 digests. Include every indexed shard, config/index, prompt files,
@@ -77,6 +79,11 @@ Conversion and CPU fixtures do not establish model quality or performance.
      --suite /evidence/frozen-suite.json --identity /evidence/launch-identity.json \
      --output /evidence/new-run --resource-window allocated-window-reference
    ```
+
+   `--base-url` must be a bare loopback `http://` URL: host `127.0.0.1`,
+   `localhost` or `[::1]` (any port), and no credentials, path, query or
+   fragment. Anything else is refused before any request, so the replay never
+   reaches a remote or production endpoint.
 
    Identity JSON requires `model_artifact_sha256`, `prompt_contract_sha256`,
    `binary_sha256`, `metallib_sha256`, and `config_sha256`. These are supplied

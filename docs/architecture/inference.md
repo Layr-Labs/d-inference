@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-05
+> Last updated: 2026-11-09
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -380,10 +380,27 @@ without a login is named before the Start step
 setup ends with the outcome block (`ClusterOnboardingConsole.result`,
 `ClusterOnboardingReady.outcome`). The other Mac's `darkbloom cluster` shows the
 same block from the status line (`ClusterOnboardingNotServing.statusLine`,
-`ClusterOnboardingDriver.showOutcome`). A member's missing App Attest names its
-local key-generation safeguard's end
+`ClusterOnboardingDriver.showOutcome`). A member without App Attest is what the
+pair waits for while its part is new: the coordinator's first trust status for
+a part carries none, and the authorization lands about a minute after the part
+registers. Until a Mac's part has run `ClusterOnboardingAppleCheck.slowSeconds`
+(2 minutes) without one, the status line's reason is the wait's own words,
+"checking both Macs with Apple" or the one Mac
+(`ClusterOnboardingAppleCheck.look`, `ClusterOnboardingPairWait.words`), which
+every reader takes as progress (`ClusterOnboardingPairWait.isProgress`): loading
+in `cluster status` on both Macs, and "Checking …" on the Mac that joined
+(`ClusterOnboardingDriver.offeredWaitingWords`). Only the leading Mac's look
+decides it. The warning `ClusterOnboardingNotServing.notVerified` names a Mac
+once that wait is over, at once when its local key-generation safeguard holds
+it back, with that safeguard's end
 (`ClusterServiceStatus.Child.appAttestRetryAt`, read from the daemon state's
-`AppAttestKeyState.generationBlockedUntil`).
+`AppAttestKeyState.generationBlockedUntil`), and for a part whose age isn't
+known (`ClusterOnboardingAppleCheck.Mac.warns`). While the pair serves Both, me
+first, the leading Mac's status adds the owner's pause under its serving line,
+read once per status from the state file of its part when that part runs rank 0
+(`OnboardingLive.pauseLines`, words from `MeFirstWords.pairLines`, said from now
+in that Mac's clock): the Mac that follows shows it from that status, with
+nothing more on the link or the heartbeat, and nothing per request.
 How the approval is fetched, matched,
 checked on each Mac and saved:
 [coordinator-paired member](../reference/configuration.md#coordinator-paired-member).
@@ -442,7 +459,7 @@ start, `OnboardingLive.markRegistrationPending`, never by `serve` alone as `dark
 it; cleared by `localRegister`, a failed test or a stop; honoured only while that start's process runs, the same
 process by its start time) and the leader's status says a start line, "checking with Darkbloom before it offers
 the pair" (`ClusterOnboardingReady.offerPendingLine`), which the Mac that joins follows as a start not yet over
-and no screen shows as ✓. Every screen start, local only too, marks itself
+and no screen shows as ✓. Every screen start, Only me too, marks itself
 the same way until its test is answered (locally the status says `ClusterOnboardingReady.testingLine`, never
 "checking with Darkbloom") and publishes that test's outcome, compare-and-set on the mark's pid and start time
 (`OnboardingLive.settleTest`): a pass as `ClusterSetupRecord.startTestPassed`, the time under the serving line
@@ -542,21 +559,97 @@ lists it under Local Network or in its firewall reads `ClusterService.appName`
 (`BuildEnvironment.current.appDisplayName`): the screens (through
 `ClusterOnboardingCommand.app`, including the pairing hint's firewall line and
 the line that asks to pair again after a reinstall) and the link follower's
-refusal. Both apps serve a pair's API on port 8000,
-so one of them serves a pair on a Mac at a time. Each keeps its own cluster
-incident log, owned by `DarkbloomClusterRemote`
-(`ClusterIncidentLog.defaultFile(homeDirectory:install:)`): production's is
-`~/.darkbloom/cluster/incidents.json`, another install's its own file, such as
-`incidents.dev.json`, which a build from before installs had their own files
-never reads or rewrites; a corrupt one is kept beside it under its own name
-(`incidents.corrupt.json`, `incidents.dev.corrupt.json`). `ClusterIncidentLog.files`
-names a log's files: the log, its lock sidecar and that corrupt copy.
-`darkbloom uninstall` removes an install's own with it while the shared folder
-stays for the other install; production's shared `incidents.json` stays. Every
+refusal.
+
+Each build keeps its own cluster state, in its own folders (`ClusterUserPaths`,
+from `BuildEnvironment.installDirectory` and `configDirectory`): the pairing
+store, the setup and service folder (the service's lock, pid, status, update
+request and logs, the screens' transcripts), the device folder (lease, journal,
+link records, the prefix cache's key), the observability files and the saved
+setups. Production's stay in `~/.darkbloom` and `~/.config/darkbloom`; DevNet's
+are in `~/.darkbloom-dev` and `~/.config/darkbloom-dev`. The cluster service's
+login job carries the build's prefix (`BuildEnvironment.clusterServiceLabelPrefix`),
+and a build lists, replaces and removes only its own jobs
+(`ClusterServiceAgentPlan.isOwnAgent`: a production-shaped job an older DevNet
+build wrote is DevNet's by its program). The per-user locks are named after the
+build's CLI (`ClusterConsoleInstanceLock.lockFileName`), the pair's prefix cache
+is in the build's cache namespace (`ClusterPrefixCacheSettings.rootDirectoryName`),
+and every port on the cable adds the build's `BuildEnvironment.clusterPortOffset`
+(`ClusterCablePorts`). Two builds' pairs on the same Macs therefore never read,
+stop or answer each other. A new local API that `darkbloom start` creates never
+takes 8000 or the cable ports pairs pair and talk on, production's and this
+build's own (`ClusterLocalServing.neverChosenPorts`,
+`LocalSettings.neverChosenPorts`); its refusal names production's, 47420–47423,
+as the owner's rule does (`ClusterLocalServing.pairPortsWords`). Their device leases and journals are separate, but
+every build's device scope (a pair's owner session, a member's preparation, a
+GLM calibration) also takes one lock all builds share
+(`ClusterMachineDeviceLock`: `~/Library/Application Support/io.darkbloom.cluster/native-device.lock`,
+flock only, in a folder no app or build owns; `ClusterUserPaths.machineDeviceLock`),
+after its own lease. So one build's native session never runs on the GPU beside
+another's, and the refusal names the other app. A build other than production's
+also refuses while production serves here, so production wins by default
+(`ClusterMachineDeviceLock.productionServingHere`, read only, never
+production's locks): a serving process of production's own app runs
+(`productionServing`: `darkbloom start`, `cluster link-follower`, its worker
+owner or its worker, run from production's folder, from the process table),
+which covers production before 0.10.11 (it takes no lock), or production's
+cluster service published within two minutes that its pair serves here
+(`productionPairStatus`: its `service-status.json`, `serving` and `pairRunning`),
+which covers the seconds production's part restarts (an update, a crash). A
+fresh status it can't read or decode counts as serving (fail safe, said in the
+refusal); no status, an old one, or one dated ahead of the clock doesn't. That
+build's cluster service also steps a running part aside when production starts
+serving (both start at login, say): it fences the part's GPU work at once
+(SIGUSR1 to the worker owners the part started, `ClusterService.fenceOwners`,
+whose force-cancel hook ends each worker's requests and unloads it), then stops
+the part. No model of such a build loads for single-Mac serving while
+production serves here either (`ClusterGPUHold.productionServesHere`): both
+slot owners (`ProviderLoop.ensureModelLoaded`, `StandaloneServer.ensureModelLoaded`)
+refuse a cold load at its start, before any eviction, weight hash or load
+reservation, as a transient 503, and `ModelContainerLoading.loadServingContainer`
+refuses too, for any other caller; a model already loaded keeps serving. A
+cluster member whose start is refused that way prints the refusal's `Error:`
+line (which its cluster service waits on) and exits with
+`ClusterMemberRunEnd.gpuHeldExitCode` (76, reserved for that alone: a source
+check keeps every other path off it), so the developer `--always-on` supervisor
+waits for the hold (`ClusterGPUHold.now`) instead of spending its restart
+budget. The cluster service never starts its part
+into a hold: `ClusterMachineDeviceLock.heldByAnotherBuild`
+probes the lock shared and lets it go at once (a start at that moment retries
+for up to 100 ms, `ClusterDeviceExclusion.machineLockTries`), and the part
+waits (`ClusterOtherAppHold`), named in the status's `heldBack`. A part that
+ended on the refusal never counts toward the local-only fallback
+(`ClusterApprovalCheck.memberQuickEnds`), and the part starts on the first tick
+after the hold ends, with its backoff and any approval set aside as failing
+cleared (`blockerCleared`). Each
+build's model copies stage under its own name in the store both share
+(`ClusterModelStore.stagingPrefix`: production's `.darkbloom-incoming-<digest>`,
+DevNet's `.darkbloom-incoming-dev-<digest>`), and a copy short of disk reclaims
+only its own build's abandoned staging. They share the models, and the cable
+port setup, which `darkbloom uninstall` keeps while the other build is
+installed; `cluster link --remove` names another build whose link record still
+holds the port and asks at a terminal (`ClusterLinkRepair.otherInstallsUsingCable`).
+A port the other build set up is adopted with what its link record
+says that setup changed (its bridge slot and the services it turned off), read
+from that record and never written there
+(`ClusterLinkRepair.Environment.otherInstallsIsolationEntries`), so the build
+uninstalled last can still undo it all. Each
+keeps its own cluster incident log, owned by `DarkbloomClusterRemote`
+(`ClusterIncidentLog.defaultFile(installDirectory:install:)`): production's is
+`~/.darkbloom/cluster/incidents.json`, DevNet's `~/.darkbloom-dev/cluster/incidents.dev.json`;
+a corrupt one is kept beside it under its own name (`incidents.corrupt.json`,
+`incidents.dev.corrupt.json`). Every
 reader and writer opens this build's with
 `ClusterIncidentLog.forThisInstall`. Each record also names the install that
 wrote it (`ClusterIncident.install`), and a build reads only its own, counting
-records without one as production's (`ClusterIncidentLog.install`). The
+records without one as production's (`ClusterIncidentLog.install`). A
+follower sends its status to the leader on the link edge once per interval
+(`ClusterLinkStatusPublisher.defaultInterval = .seconds(2)`) while the edge is
+connected, and none while it is down
+(`libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterLinkStatusExchange.swift`,
+`ClusterLinkStatusPublisher`). A send may come up to a tenth of the interval
+late, 100 ms at most (`min(nanoseconds / 10, 100_000_000)`), so a late send
+never merges with the next one. The
 leader's service log notes a following window's `status` requests once a minute
 (`ClusterService.logsControl`). Each Mac's cluster service tells the other
 whether it starts at login (`ClusterServiceStatus.startsAtLogin`: it runs under
@@ -684,8 +777,15 @@ the reader's one cancellation, runs in order on the reader's own serial queue
 while the pulling thread waits for the sample, so the reader is never
 cancelled during a read. Waiting on the decoder is bounded by
 `NemotronSuperVideoDecode.decodeAllowance` (5 s, then 2 ms a frame and 4 ns a
-coded pixel, at most 120 s): when it is spent the wait ends and the video is
-refused. Cancelling the request, as the binding's `drain` does, ends the wait
+coded pixel, at most `maximumDecodeAllowance`, 120 s): when it is spent the
+wait ends and the video is refused with `decodeAllowanceSpent`. The allowance
+is wall time, so a loaded machine spends it faster than the decoder's work
+alone. A spent allowance stops the reader; it is not a reader failure and is
+not decoded again. Because the movie's work is already bounded by the plan's
+decoded pixels, a spent allowance is this provider's fault: it refuses as a
+retryable 503 (failure code `capacity`), so the coordinator can send the
+request to another provider.
+Cancelling the request, as the binding's `drain` does, ends the wait
 at once. Either way the reader is cancelled once the read in progress
 returns, and that read's sample is dropped.
 `NemotronSuperVideoFeatures.prepare` runs
@@ -700,7 +800,8 @@ the previous tubelet; the host scores then select the kept rows, the same rows
 EVS selects over the whole video. Each tubelet's kept rows are substituted
 at its `<image>` run as a causal span with `mediaKind` `video`. A tubelet whose
 rows were all pruned keeps its label and wrappers and has no span. Invalid,
-oversized or undecodable videos map to the invalid-media 400. AVFoundation's
+oversized or undecodable videos map to the invalid-media 400; a spent decode
+allowance maps to the retryable 503. AVFoundation's
 BGRA conversion differs from FFmpeg's at chroma edges, so frames are close to,
 not equal to, the reference loader's.
 
@@ -1134,7 +1235,7 @@ decode-window peak above idle at 131,041 prompt tokens fell from 3.80 to
 recall degrades beyond about 32K tokens. The slot still serves the whole
 window; whether a long prompt's prefill time suits a request is the
 coordinator's routing decision, not a provider cap. On the default owner (paged KV,
-prefix bank, MTP) a 258,036-token needle through the managed local endpoint
+prefix bank, MTP) a 258,036-token needle through the managed local API
 returned its passphrase exactly in 888.8 s (2026-10-21, M3 Ultra).
 
 Coordinator requests on the slot (`ProviderLoop+InferenceHandler`) and unified
@@ -1634,6 +1735,24 @@ Rate averaging and sample counts still follow receipt consumption order;
 an older receipt cannot move freshness backward or create a false evidence gap
 for the next observation. A heartbeat snapshot alone never renews evidence.
 
+A cluster's engine (`DistributedCBv2Engine`) reports the same measurements from
+the requests the cluster serves (`DistributedCBv2Engine+Timing.swift`). Each
+request's terminal usage carries its timing in the engine contract's terms. The
+prompt runs from the owner's start, after every rank reserved, to the first
+committed token. Decode runs from the first committed token to the last, in MTP
+rounds when the ranks report them. The ranks report what they restored only at
+the finish, so the bridge fixes the prompt's overlap with other work and its
+date when the first committed token arrives (`EnginePrefillReceipt.freezeAtFirstToken`,
+`EngineV2Bridge.recordFirstToken`). At a clean finish (`stop` or `length`), the
+engine then reports the prompt observation once, with the final reuse. A
+prompt that ran alone is therefore isolated even when another request joins its
+decode, and a partly restored prompt is never measured as a cold one. A failed
+request reports none, and a request with media is never a text rate. The
+cluster's warmup canary submits as `startupWarmup`, so its few tokens never
+become the slot's rates. Before 0.10.10, a cluster's slot reported no
+measurements. The coordinator's first-content forecast of a cluster therefore
+stayed `unknown`, and a feasible single Mac always displaced the cluster.
+
 Owner-bound native MiMo submissions retain target-decoder prefill observations
 in the separate `native_media_prefill` workload phase. Its timer starts at the
 first target prefill launch, after image/video/audio preparation, and ends at
@@ -1712,7 +1831,16 @@ MoE Qwens, and standalone `CBv2NativeBlockEngine` slots run an excluded
 128-token warmup followed by two uncached solo probes
 of at most 512 prompt tokens and 32 output tokens. Completed calibration seeds
 prefill/decode evidence without requiring a customer job and runs once per loaded
-engine. Failure backs off for 120 seconds; interruption backs off for 30 seconds.
+engine. A probe's prompt sample must pass the same filters as a serving sample
+(`EngineV2Bridge.classifyPrefillSample`): a computation window of at least 1 ms
+and a rate of at most 20,000 tokens per second (`maxPlausiblePrefillTps`). This
+ceiling is equal to the coordinator's
+[`MaxPrefillTPS`](https://github.com/Layr-Labs/darkbloom-platform/blob/d7de2162f2097fc9f47ae469e7933db1121482b2/coordinator/internal/registry/capacityvalue/normalize.go#L17),
+and the coordinator drops a published rate above it. A probe that prefills
+faster gives no prefill sample, but its decode sample still counts. One counted
+probe is enough to complete the bootstrap. If no probe counts and no fresh
+serving rate exists, the bootstrap fails. Failure backs off for 120 seconds;
+interruption backs off for 30 seconds.
 An unfinished bootstrap retries when that backoff expires even if its completed
 probes left fresh partial rates. Fresh serving samples from an early request do
 not suppress an unfinished first bootstrap either. Only completed native MiMo
@@ -1897,12 +2025,30 @@ an explicit Boolean. Input IDs, sampling and cache keys do not depend on it.
 
 Bridge-side order (`EngineV2Bridge.submitTokenized`): request-id
 normalisation (`maxRequestIdLength = 256`; duplicates rejected) → first
-deadline check → translation (`maxTokens = request.max_tokens ??
-defaultMaxTokens`, 4096) → resident probe / useful SSD stage → shared-KV reservation (contiguous slots
+deadline check → translation (`maxTokens = outputTokens(requested:promptTokens:)`: an omitted `max_tokens` is the
+slot's 32,768-token default cut to the window the prompt leaves; every single-Mac slot refuses a prompt that fills
+its window, its advertised context else its model's, `promptExceedsContext`, and cuts a larger `max_tokens` to what
+the prompt leaves; a pair keeps its own limits) → resident probe / useful SSD stage → shared-KV reservation (contiguous slots
 only; segmented paged admission and backing use the shared native process owner) → final deadline
 check → engine request-id mint → `engine.submit`. The terminal `CBv2Usage`
 carries `CBv2RequestTiming`, copied verbatim onto the wire and folded into
 `EngineProfile` (`EngineV2Bridge+Profile.swift`).
+
+A streamed request on the local API carries a `LocalPrefillProgress`
+(`provider-swift/Sources/ProviderCore/Server/LocalPrefillProgress.swift`, the task-local
+`LocalPrefillProgress.current` that `LocalChatUploadResponder` binds around the frames call). The
+bridge reports into it what the engine reports of the prompt: its tokens once the engine admits the
+request (`accept(promptTokens:)` after `holdHeadUntilAdmitted`; on a pair's API once its engine accepts it),
+all of them from `CBv2Request.onPrefillCompleted`, and the end at the
+first committed token (the pump's first-token branch) or when the pump ends without one. The engine
+publishes no count in between (`EngineLoopV2` keeps each row's `numComputedTokens` for its prefill
+lease only), so until the prompt is done the API's comments give only its size
+(`: prefill in progress, <total> prompt tokens`), never a count the engine didn't report. Coordinator
+requests have none, and neither do calibration probes: a calibration session that a streamed request's
+model load starts (`scheduleLoadedModelCalibration`) inherits the request's task-locals, so
+`runModelCalibrationRequest` unbinds `current` around its submit, and the probe neither says nor ends
+the request's progress. Nothing runs per token
+([prefill progress](../provider/direct-mode.md#a-long-prompts-progress)).
 
 The SSD stage runs before `engine.submit`, off the engine queue, while the
 engine may be evaluating another request's prefill chunk under MLX-Swift's
@@ -2592,7 +2738,7 @@ spends the caller's `max_tokens` before any JSON is written. A nested
 `reasoning.enabled`, a raw `enable_thinking` or `chat_template_kwargs`
 switch, any reasoning effort, or a positive `reasoning.max_tokens` budget
 keeps the caller's choice. The family predicate also matches Qwen3.8
-Flash-Next by model ID; `Qwen4SupportPolicy.validateReasoningContext` accepts
+Flash-Next by model ID, whose template takes
 the closed block. Other families keep their thinking defaults because the
 predicate excludes them; GLM5-Next, MiMo and Nemotron Super also build their
 own template context, and Flint's template ignores the switch.
@@ -2672,9 +2818,10 @@ and cached like Flint's (`TokenizerVocabularyCache`, four entries).
 
 A constraint's budget must equal the engine request's `maxTokens`, or the engine
 refuses it (`CBv2SchedulerError.tokenConstraintBudgetMismatch`). The bridge
-resolves an omitted `max_tokens` with its own default (`EngineV2Bridge`
-`defaultMaxTokens`, from the model's sizing), so the text path builds every token
-constraint, Qwen's and Flint's, from that same default.
+resolves the request's output once (`EngineV2Bridge.outputTokens(requested:promptTokens:)`:
+an omitted `max_tokens` is its default cut to the window the prompt leaves, and a slot
+held to its model window cuts a larger one), and the text path names that value on the
+request before it builds any token constraint, Qwen's and Flint's.
 
 The request streams through the native reasoning split (`NativeToolStreamRouter`
 seeded from `JSONAnswerConstraint.channelPrefix`), so `JSONAnswerOutput` checks
@@ -2815,14 +2962,105 @@ and the coordinator can refuse to route
 
 A template `raise_exception` at request time is classified `jinja_template`
 and returned as HTTP 500, the provider-fault class, so a caller control that
-a template is known to reject must be validated before rendering. The
-Flash-Next and Qwen3.8-27B templates accept only `low`, `medium` and `xhigh`
-while thinking is enabled; any other active effort, such as OpenAI's `high`
-or `minimal`, is a typed HTTP 400 `client_error` and never reaches Jinja, on
-text and media requests alike
-(`provider-swift/Sources/ProviderCore/Inference/Qwen4SupportPolicy.swift`,
-`validateReasoningContext`). Media preparation rethrows such typed request
-errors instead of wrapping them as a retryable 503 construction refusal.
+a template is known to reject must be resolved before rendering. The
+Flash-Next and Qwen3.8-27B templates raise for any effort but `low`, `medium`
+and `xhigh` while thinking; they receive one of those for every effort a
+client sends ([reasoning effort](#reasoning-effort)), on text and media
+requests alike. Media preparation rethrows typed request errors instead of
+wrapping them as a retryable 503 construction refusal.
+
+### Reasoning effort
+
+Every model that reasons takes each effort a client names (`none`,
+`minimal`, `low`, `medium`, `high`, `xhigh`, `max`) as `reasoning_effort` or
+`reasoning.effort`; Responses' `reasoning.effort` arrives as the latter, which
+wins over the top-level spelling (Nemotron 3.5 Super reads both, below). Its
+template receives one of the model's own levels: its own where the model has
+it, else the next one up (an effort between two levels rounds up, toward more
+reasoning), and the highest past them all. So `minimal` selects the lowest
+level and `max` the highest. `none` (also `off` or `0`) switches thinking off
+where the model can, and selects the lowest level where it can't. Spellings
+are trimmed and read in any case,
+except by GLM-5.3-Flash and Flint, which read the names exactly as written.
+Each family's table of the seven efforts is in one place,
+`provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningEffort.swift`,
+and `ReasoningEffortValuesTests` checks every row against this rule. One Mac,
+a pair's leader (tensor parallel and pipeline) and the coordinator path render
+through the same prompt pipeline; the local router returns this Mac's answer
+as it is, or passes the request's body on unchanged.
+
+| Family | Its levels | What each effort renders | Source |
+|---|---|---|---|
+| The Qwen 3.5 template family (`qwen3_5`, `qwen3_5_moe`, `prism_hadamard_qwen35`: Qwen 3.5, 3.6 and 3.8, Bonsai 2) and the owned Qwen 3.8 Flash-Next build | Qwen 3.8's `low`, `medium` and `xhigh` (its default), and a thinking switch | While thinking: `minimal` and `low` render `low`, `medium` renders `medium`, `high`, `xhigh` and `max` render `xhigh`, as the coordinator's first-party pool sends `high`. Thinking off: the effort as sent, which the template ignores. The 3.5, 3.6 and Bonsai templates read only the switch | `ReasoningEffort.qwen38Level`, `ReasoningEffortPolicy.templateEffort`, `Qwen4SupportPolicy.ownsEffortTemplate` |
+| GLM-5.3-Flash | `low`, `high` and `max` (its default); thinking off closes `<think>` | `minimal` and `low` render `low`, `medium` and `high` render `high`, `xhigh` and `max` render `max`, as the platform sidecar maps them | `ReasoningEffort.glmLevel` (`GLM5NextPromptPolicy`) |
+| Nemotron 3.5 Super | `medium_effort`, and the template's default depth | `minimal`, `low` and `medium` set `medium_effort`; `high`, `xhigh` and `max` keep the default | `ReasoningEffort.nemotronSuperMediumEffort` (`NemotronSuperPromptContract.controls(body:)`) |
+| MiMo V2.6, Gemma 4 (`gemma4`, `gemma4_text`, `gemma4_vision`), DiffusionGemma | one depth, and a thinking switch | Every effort but `none` thinks (Gemma 4's template defaults thinking off) | `ReasoningEffort.oneDepthThinking` (`MiMoV26TemplateFix`; `ReasoningEffortPolicy.effortSetsThinkingSwitch` in `templateAdditionalContext`; `DiffusionGemmaReasoningControl`) |
+| Nemotron 3.5 Lightning | a thinking switch | `none` switches thinking off; any other effort keeps the template's default (on) | `MultiModelBatchSchedulerEngine.templateAdditionalContext` |
+| GPT-OSS | Harmony's `low`, `medium` (its default) and `high`; no thinking switch | `none`, `minimal` and `low` render `low`, `medium` renders `medium`, `high`, `xhigh` and `max` render `high`. OpenRouter's traffic is capped at `medium` by the coordinator's service cap (darkbloom-platform#721, #703's rule), which must be live before any Mac runs this table (below) | `ReasoningEffort.harmonyLevel`, `ReasoningEffortPolicy.templateEffort` |
+| Flint | none: Flint decides whether to reason | Every effort is taken, with no effect | `FlintRequestPolicy` |
+
+An effort that is none of the names is refused on any model that reasons,
+with `MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort(field)`
+(HTTP 400), before the prompt renders or any KV is reserved. The engine
+checks the effort once the request holds its model
+(`MultiModelBatchSchedulerEngine.prepareCompletion`, after
+`acquireForCompletion`; Super's owner in `NemotronSuperRequestPlan`), so a
+cold model may load first, and on one Mac's unified endpoint the request
+counts as the owner's use for "me first". The refusal releases the model.
+MiMo's and Flint's efforts are checked before that when the model is
+resident, and through the coordinator MiMo's, Flint's and GLM-5.3-Flash's are
+refused before the request is accepted
+(`ProviderPromptContractPipeline.nativeControlsRefusal`). The local API
+answers `invalid_reasoning_effort` naming the field and the names ([direct
+mode](../provider/direct-mode.md#reasoning-effort)); the coordinator receives
+the closed `invalid_request` failure, which it shows as "invalid inference
+request". A model of no family above ignores any effort
+(`ReasoningEffortPolicy.validate`). The same table (`ReasoningEffortPolicy.reasons`)
+says which models the local `/v1/models` lists as reasoning
+(`"supported_features": ["reasoning"]`, `LocalModelFeatures` in
+`provider-swift/Sources/ProviderCore/Server/LocalModelFeatures.swift`), by the
+type a model registers or a pair installs, so the list and the API never
+disagree ([the list](../provider/direct-mode.md#when-this-mac-cant-take-a-request-the-local-router)).
+
+Nemotron 3.5 Super reads both fields rather than letting `reasoning.effort`
+win, and refuses two that differ, even two names such as `high` and `max`,
+with `conflictingReasoningEfforts` (HTTP 400) at the same point
+(`NemotronSuperPromptContract.controls(body:)`). The local API answers it in
+the same shape: code `invalid_reasoning_effort`, `param` naming both fields
+(`"reasoning_effort, reasoning.effort"`), and a message naming both fields and
+the names, never the values sent. Through the coordinator it is the same
+closed `invalid_request`. The same effort in both fields, in any spelling, is
+served.
+
+The coordinator maps every effort from a copy of these tables: darkbloom-platform's
+ingress refusal, first-party pool and prompt sidecar, which plans these prompts
+for cache-aware routing. `fixtures/prompt-contract/v1/reasoning_effort_vectors.json`
+is the agreement test, the provider's reading of 446 requests: every family and
+every type that reasons, every effort in both fields, other spellings, an effort
+that is none of the names, and both fields together. It also lists the sets
+these tables keep (the types that reason, the Qwen 3.5 template family's, the
+types whose effort sets a thinking switch, the concrete Qwen 3.8 builds), which
+each copy checks for equality, so a type added on one side only fails a test.
+`scripts/generate-reasoning-effort-vectors.py` restates these tables and writes
+it, `CachePromptParityTests.reasoningEffortVectors` runs every case through the
+production prompt pipeline, and the platform copies the file byte for byte and
+checks its readers against it
+([how it is kept in step](../developer/test.md#public-fixtures-and-private-qualification)).
+Gemma 4's thinking switch and GPT-OSS's Harmony levels change the prompt of
+the requests that name such an effort. The platform's production prompt vectors
+(`ProductionPromptParityTests`) carry one effort case per model,
+`reasoning_effort: "medium"`, so they pin Gemma 4's switch; GPT-OSS's levels are
+bound by the agreement test above. The platform keeps its normalization
+version, so while a provider and the sidecar render different levels, during a
+staggered rollout, those requests' cache receipts mismatch and their cache
+affinity is quarantined; serving continues.
+
+No Mac may run these levels before the coordinator's OpenRouter GPT-OSS cap
+(darkbloom-platform#721) is live: until then, OpenRouter's GPT-OSS `high` would
+render `high`, which #703 capped at `medium` to avoid upstream timeouts. So a
+provider release with them is tagged without being published to auto-update,
+snapshotted into #721, and published only once #721 is deployed, each step on
+the owner's go.
 
 ### Vision constraints
 
@@ -2842,6 +3080,24 @@ errors instead of wrapping them as a retryable 503 construction refusal.
   `maxMediaDecodedBytes` 25 MiB, `maxVideoDurationSeconds` 600,
   `maxImagesPerRequest` 16, `maxVideosPerRequest` 8,
   `maxRequestVideoFramePixels` 384 Mpx; `decodeOverheadFactor = 4`.
+- **A failed video or audio reader decodes again once.** An `AVAssetReader` can
+  fail on a valid clip. When a reader pass of the GLM 5.3, MiMo V2.6, Qwen4 or
+  Nemotron Super video decoder, or of the MiMo V2.6 audiovisual decoder's audio
+  track (LPCM or AAC), ends in a state other than `.completed`, the decoder
+  keeps the track's medium, the reader status and the domain and code of its
+  error chain (`VideoReaderFailure`) and decodes again with a new reader over
+  the same in-memory asset (`VideoReaderRetry`; the Super frame reader replaces
+  its reader once and decodes from the first frame again). A second success
+  gives the same frames or samples. A second failure with an AVFoundation or
+  VideoToolbox decoder, hardware or interruption code
+  (`VideoReaderFailure.isTransient`) refuses as a retryable 503 (failure code
+  `capacity`), so the coordinator can send the request to another provider.
+  Any other second failure is the media's `invalid_media` 400. Each failed pass
+  emits a WARN `engine_health` event, operation `video_reader_failed` for a
+  video track and `audio_reader_failed` for an audio track, with `retrying`,
+  `transient`, `reader_status` and `reader_error` (codes only)
+  (`libs/mlx-swift-lm/Libraries/MLXLMCommon/VideoReaderFailure.swift`,
+  `provider-swift/Sources/ProviderCore/Inference/Vision/VideoReaderFailureReport.swift`).
 - Vision requests never stage SSD blocks and get no deadline projection; VLM
   slots require a backend that honors span masks. The current paged cache
   satisfies that structural gate; supported vision serving still requires its
@@ -3191,10 +3447,12 @@ The slot factory passes native context (or an explicitly lower operator limit)
 into the bridge; the generic bridge does not impose a second Qwen-sized cap
 on this or other model families. Coordinator admission owns SLA policy, while
 provider context and physical-memory checks remain mandatory.
-`EngineV2Bridge.submitTokenized` checks prompt plus the translated output
-reservation with overflow-safe arithmetic before cache probes or tickets.
-`advertisedContextExceeded` stays a content-free client error through both
-submission overloads and the shared HTTP mapper; cache hits cannot bypass it.
+`EngineV2Bridge.submitTokenized` cuts the output reservation to what the prompt
+leaves of the context and refuses a prompt that fills it
+(`promptExceedsContext`), with overflow-safe arithmetic, before cache probes or
+tickets. Both refusals (`promptExceedsContext`, and `advertisedContextExceeded`
+for an invalid reservation) stay client errors through both submission
+overloads and the shared HTTP mapper; cache hits cannot bypass them.
 The [candidate reference](../reference/qwen4-next-support.md) owns the
 identity, configuration and qualification boundary.
 
@@ -3335,7 +3593,10 @@ cluster service re-plans and re-adopts the same model by itself
 answer with the same worker build (`ClusterOnboardingUpdate.oneBuild`): the
 [pair's coordinated update](../provider/cluster-always-on.md#the-pairs-coordinated-update)
 restarts the two Macs seconds apart, and a plan made while one still runs the
-other build would fail and wait 600 s. A Mac that rolls a release back is followed by the other
+other build would fail and wait 600 s. It acts only once the other Mac confirmed
+the leader's claim (the Mac back first may have taken control meanwhile), and a
+failure, of its stop too, keeps the pair's saved start
+([planned cluster stop ordering](#planned-cluster-stop-ordering)). A Mac that rolls a release back is followed by the other
 Mac to the same release ([a rollback on one Mac](../provider/cluster-always-on.md#a-rollback-on-one-mac)),
 which the leader then plans the same way. A model change of
 a serving cluster (`m`, or `darkbloom cluster local <model>`) plans the same way:
@@ -3347,7 +3608,15 @@ chosen model's new plan, found by its id (`OnboardingLive.localAdopt`,
 plan stands (it was priced with less memory than the Macs then have); a model
 the new plan does not offer is not started, and the screen says why. The
 automatic re-plan after repeated memory refusals at load adopts through the
-same path (`ClusterService.noteMemoryRefusal`). The stage memory
+same path (`ClusterService.noteMemoryRefusal`, `replanForMemory`). It comes due
+when a part ends, so also right after an owner's stop: once it holds the
+command lock it acts only while the pair's start is still saved and this Mac's
+claim is confirmed, so it never starts a pair its owner stopped. Finding the
+pair stopped, it gives its 10-minute slot back, so the owner's next start is
+re-planned at its next refusals. Its adoption
+stops a serving pair first; from there every failure, of that stop too, puts
+the saved start back (`ClusterService.restoreStart`), as the re-plan after an
+update does, so a failed automatic stop never leaves the pair stopped. The stage memory
 gate's two fixed margins (the admissible floor, 6 GiB, and the loading
 headroom, 4 GiB, measured on 256 GiB Macs) apply on Macs with 96 GiB or more;
 below that they are the same share of the observed Mac's memory, never under
@@ -3568,7 +3837,8 @@ evidence, not a change to the normal final-row contract or the near-tie rule
    guard (404) — `EngineV2SupportedModels.swift`.
 2. A request is admitted to a contiguous slot only after
    `prompt + maxTokens` bytes are reserved in `GlobalKVCacheBudget`; a second
-   reservation failure rejects with `token_budget_exhausted` —
+   reservation failure throws `token_budget_exhausted` before any stream exists
+   (a nonthrowing caller gets it in-band) —
    `EngineV2Bridge+Submission.swift` (`submitTokenized`).
 3. Every request carries a first-content deadline anchored at frame receipt and
    checked before submit; the budget value is the coordinator's, not a provider
@@ -3622,14 +3892,20 @@ evidence, not a change to the normal final-row contract or the near-tie rule
 | Symptom | Cause | Where |
 |---|---|---|
 | `token_budget_exhausted: duplicate request ID` | Request id already live on the bridge | `EngineV2Bridge+Submission.swift` |
-| `token_budget_exhausted: … shared KV budget has no headroom` | Two failed `GlobalKVCacheBudget` reservations | `EngineV2Bridge+Submission.swift` |
+| `token_budget_exhausted: … shared KV budget has no headroom` | Two failed `GlobalKVCacheBudget` reservations; thrown before any stream exists (in-band to a nonthrowing caller) | `EngineV2Bridge+Submission.swift` |
+| `token_budget_exhausted: …` from engine admission | On one Mac, a request the engine's own admission can never hold (a paged slot's only memory gate, `EngineV2.requireRequestCanEverFit`); thrown before any stream exists, so a streamed local request gets 503 (in-band to a nonthrowing caller) | `EngineV2Bridge+Submission.swift` (`submitTokenized`) |
 | `PreContentDeadlineFailure.deadlineUnreachable` | First-content budget spent before submit or during prefill projection | `CoordinatorClientTypes.swift`, `EngineV2Bridge+Submission.swift`, `EngineV2Bridge+Admission.swift` |
-| Request cancelled by lease | No admission/prefill/decode progress within 120 s, or a step over 30 s | `EngineLoopV2.swift` |
-| `advertisedContextExceeded` (400) | Candidate prompt plus resolved output reservation is invalid, overflowing or above its context limit | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift` (`submitTokenized`); `provider-swift/Sources/ProviderCore/ProviderLoop+ErrorMapping.swift` (`sanitizedInferenceFailure`) |
-| `unsupportedReasoningEffort` (400) | Active effort outside `low`/`medium`/`xhigh` on a restricted-effort template (Flash-Next, Qwen3.8-27B) | `provider-swift/Sources/ProviderCore/Inference/Qwen4SupportPolicy.swift` (`validateReasoningContext`) |
+| Request cancelled by lease | No admission/prefill/decode progress within 120 s, or a step over 30 s. On this Mac's API a streamed request's head waits for its admission (`holdHeadUntilAdmitted`), so a queued request that waits out the admission lease gets the memory 503 before any SSE header, as does one a paged pool keeps full through its requeues; one that isn't streamed gets the same words | `EngineLoopV2.swift`; `EngineV2Bridge+Events.swift`; `EngineV2Bridge+HeadHold.swift` |
+| `promptExceedsContext` (400) | The prompt alone fills the slot's window (its advertised context, else its model's); a larger output is cut, never refused | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift` (`submitTokenized`) |
+| `advertisedContextExceeded` (400) | Candidate output reservation is negative or overflows; with the output cut to the window, nothing larger reaches it on one Mac | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift` (`submitTokenized`); `provider-swift/Sources/ProviderCore/ProviderLoop+ErrorMapping.swift` (`sanitizedInferenceFailure`) |
+| `unsupportedReasoningEffort` (400; on the local API `invalid_reasoning_effort`) | A model that reasons received an effort that is none of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` ([reasoning effort](#reasoning-effort)) | `provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningEffort.swift` (`ReasoningEffortPolicy.validate`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`) |
+| `conflictingReasoningEfforts` (400; on the local API `invalid_reasoning_effort`, `param` naming both fields) | Nemotron 3.5 Super received `reasoning_effort` and `reasoning.effort` that differ ([reasoning effort](#reasoning-effort)) | `provider-swift/Sources/ProviderCore/Inference/Prompting/NemotronSuperPromptContract.swift` (`controls(body:)`); `provider-swift/Sources/ProviderCore/Server/NemotronSuperLocalImageHTTP.swift` (`SuperHTTPErrors.map`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`) |
 | Model dropped from advertised set | Unsupported `model_type` | `EngineV2SupportedModels.swift` |
 | Model advertised, capacity quotes rejected with reason `template` | Scan-time render check failed (`template_render_ok = false`) | `TemplateRenderCheck.swift`, `provider-swift/Sources/ProviderCore/Coordinator/CapacityQuoteEngine.swift` (`reject(.template)`) |
 | Image rejected | Over `MediaIngest` caps or over the N² tower budget | `MediaIngest.swift`, `VisionTowerBudget.swift` |
+| `video_reader_failed` or `audio_reader_failed` WARN event, `retrying: true`, and the request served | A video or audio reader pass failed and the second pass decoded the track; `reader_error` names the reader's error codes | `libs/mlx-swift-lm/Libraries/MLXLMCommon/VideoReaderFailure.swift` (`VideoReaderRetry`), `VideoReaderFailureReport.swift` |
+| Video refused after two `video_reader_failed` or `audio_reader_failed` events (503 `capacity` or 400 `invalid_media`) | Both reader passes failed: 503 for a transient decoder, hardware or interruption code, 400 otherwise | `EngineV2VisionPrefill.swift` (`clientFault(for:)`), `EngineV2GLM5NextMediaPrefill.swift` (`glm5NextInputError`), `MiMoV26EncodedMediaIngress.swift` (`outwardFailure`), `NemotronSuperLocalImageHTTP.swift` (`SuperHTTPErrors.map`) |
+| Nemotron Super video refused with 503 `capacity` and no `video_reader_failed` event | The wait on the decoder outlasted `decodeAllowance` (wall time; a slow or loaded Mac), `NemotronSuperVideoDecode.Failure.decodeAllowanceSpent` | `NemotronSuperVideoDecode.swift` (`decodeAllowance`, `SerialReader.earlyEnd`), `NemotronSuperLocalImageHTTP.swift` (`SuperHTTPErrors.map`) |
 | `missingUserQuery` (400) | Qwen 3.5/3.6/3.8 or Bonsai 2 history with no user turn beyond `<tool_response>` wrappers | `provider-swift/Sources/ProviderCore/Inference/Prompting/Qwen35TemplateFixes.swift` (`validateUserQuery`) |
 | `Inference failure: invalid request (<reason>)` in `darkbloom logs` (400) | The sealed request, its body decode or the model's native controls refused it before the inference task, or a prompt policy or engine admission refused it while its prompt was prepared; the reason is the closed [refusal line](../provider/cli-reference.md#refusal-lines) | `provider-swift/Sources/ProviderCore/Inference/Engine/InferenceRefusalReason.swift` (`InferenceRefusalReason`, `init(promptRefusal:)`); `provider-swift/Sources/ProviderCore/Inference/Prompting/ProviderPromptContractPipeline.swift` (`nativeControlsRefusal`) |
 | Load refused: `pagedUnavailable` (503) | Explicit `engine_v2_kv_backend = paged` and the paged pool/kernels failed | `EngineV2Factory+BackendPreparation.swift` — see [`prefix-cache.md`](prefix-cache.md) |
@@ -3667,6 +3943,8 @@ these sources recursively (`provider-swift/Package.swift`, `package`).
 | Request identity | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Identity.swift` (`normalizedRequestId`, `mintEngineRequestId`) |
 | Admission and resizing | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Admission.swift` (`firstTokenDeadlineAdmission`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Resizing.swift` (`updateKVBytesCapacity`) |
 | Cancellation and completion | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Lifecycle.swift` (`cancel`, `shutdown`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Events.swift` (`runPump`, `finishAndEmit`) |
+| Me first: an owner's request waiting in the queue | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+OwnerWait.swift` (`watchOwnerWait`, `hasAdmitted(darkbloomRequest:)`, `MeFirstOwnerRequest`, `MeFirstDarkbloomRequest`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+QueueState.swift` (`queueState(of:)`, which a held head reads too); `provider-swift/Sources/ProviderCore/ProviderLoop+MeFirst.swift` (`giveWayToOwner`); `provider-swift/Sources/ProviderCore/Inference/Engine/InferenceCancellation.swift` (`claimOutput`, `giveWay`): Darkbloom work still queued gives way ([owner pause](owner-pause.md#when-the-owners-request-waits)) |
+| A streamed local request's head, held until admission | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+HeadHold.swift` (`holdHeadUntilAdmitted`, `recordHeadHoldRefusal`, `LocalHeadHold`): the memory 503 before any SSE header for a request the engine queued and couldn't admit |
 | Sampling translation | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Translation.swift` (`samplingParams`) |
 | Slot construction | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory.swift` and `EngineV2SlotFactory+AttentionPrefixCache.swift` |
 | Scheduler config, backend prep | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` (`productionSchedulerConfig`); `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BackendPreparation.swift` (`prepareProductionBackend`) |
@@ -3726,9 +4004,11 @@ Flint always decides for itself whether to reason; it has no trained switch,
 effort level or budget, and its pinned template reads none of these controls
 ([Recursive's serving guide](https://github.com/RecursiveSI/flint/blob/2a247be0c0aec895ccb0ac7ca92229ec6df37288/sglang/README.md)).
 `FlintRequestPolicy` accepts `reasoning_effort` and `reasoning.effort` (none,
-minimal, low, medium, high or xhigh), `reasoning.enabled`, `enable_thinking`
-and `chat_template_kwargs.enable_thinking`/`thinking` with no effect on the
-prompt. Malformed values, unknown efforts, `preserve_thinking`, other reasoning
+minimal, low, medium, high, xhigh or max, exactly as written),
+`reasoning.enabled`, `enable_thinking` and
+`chat_template_kwargs.enable_thinking`/`thinking` with no effect on the
+prompt. Malformed values, unknown efforts (`invalid_reasoning_effort`),
+`preserve_thinking`, other reasoning
 keys and media are refused. When a request sets `reasoning.exclude` true,
 `include_reasoning` false or `reasoning.enabled` false, `NativeToolStreamRouter`
 withholds the generated reasoning, so chat completions, the Responses API and
@@ -3943,8 +4223,8 @@ part the same key with a different file (`ClusterServiceAgent.partHealthPath`,
 service's heartbeat and still waits for its registration as a supervised member.
 An empty or absent key is passed on unchanged.
 
-One cluster service runs per home: it holds an exclusive `flock` on
-`~/.darkbloom/cluster-setup/service.lock` while it runs, and `ClusterService.running`
+One cluster service runs per home and build: it holds an exclusive `flock` on
+`~/.darkbloom/cluster-setup/service.lock` (DevNet's in `~/.darkbloom-dev`) while it runs, and `ClusterService.running`
 reports whether one holds it. `darkbloom update --rollback` takes the same lock
 (`ClusterService.holdStopped`) while it swaps the installed release, so no cluster
 service starts on a release that is being replaced; a service that starts then
@@ -3958,9 +4238,13 @@ other Mac stops taking part (unplugged, off, or serving on its own). Each tick,
 the cluster service asks `ClusterPairWatch` whether the pair actually runs here,
 from the intent, the other Mac's last real answer over the link
 (`ClusterControlNode.otherAnsweredAt`, set only by a lease or an answer, never at
-start) and whether this Mac's part serves (a coordinator-paired part's pair line
-says serving, or a part runs while the other Mac answers within the lease's
-time-to-live). Every start gets 15 minutes (`ClusterPairWatch.giveUpSeconds`).
+start) and whether this Mac's part serves (`ClusterService.partServesNow`: it
+runs while the other Mac answers within the lease's time-to-live, and on rank 0
+of a coordinator-paired pair its pair line says serving too). Only rank 0, which
+hosts the pair's slot, writes pair lines; the other rank's link follower reports
+to it over the cable, so on the Mac that follows the verdict never waits for a
+line it can't write. Every start gets 15 minutes
+(`ClusterPairWatch.giveUpSeconds`).
 
 | Verdict | When | The service |
 |---|---|---|
@@ -3974,16 +4258,18 @@ reason with the command to serve this Mac alone. `ClusterService.pairServesHere`
 status) read the verdict. Nothing automatic stops a `notServing` part, whose pair
 may still be loading: `ClusterService.pairKeepsLock` keeps update and the watchdog
 off the serving lock while the other Mac answers, and `Start.pairStart` and
-`Restart.pairRestart` act on the pair then, except for `start --solo` and the
-terminal's choice. A 0.10.8 service publishes none; its control mode then
+`Restart.pairRestart` act on the pair then, except for `start --solo`. A plain
+`start` starts the pair in every state; only `--solo` serves this Mac alone. A
+0.10.8 service publishes none; its control mode then
 decides (`waiting`, `alone`, `cannotServe` and `idle` mean the other Mac isn't
 taking part). A reboot of a few minutes stays `running`. The windows run on
 `ClusterControlClock.awakeSeconds` (`CLOCK_UPTIME_RAW`, paused in system sleep):
 `ClusterPairWatch.tick(raw:awake:...)` places each new answer from the lease clock
 on the awake clock no earlier than the previous tick, so waking from a long sleep
-never gives up a part by itself. `darkbloom start` on a
-Mac whose pair doesn't run clears the intent and waits for the part to end
-(`ClusterService.releaseForSingleMac`) before single-Mac serving starts
+never gives up a part by itself. `darkbloom start --solo` (and `restart` or
+`update` when they serve this Mac alone) on a Mac whose pair doesn't run clears
+the intent and waits for the part to end (`ClusterService.releaseForSingleMac`,
+`Start.releaseLeftoverPartToServeAlone`) before single-Mac serving starts
 ([going back to serving on one Mac](../provider/two-mac-cluster.md#going-back-to-serving-on-one-mac)).
 
 Single-Mac serving holds a Mac's one serving lock and never ends by itself, so
@@ -4033,6 +4319,34 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/C
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterSetupLinkExchange.swift`
 (`ClusterSetupLinkExchange.Responder`).
 
+## Link control session ends
+
+A link control edge has one live session at a time. When the connector
+authenticates a new session, the new session supersedes the previous one.
+Each session's end gives exactly one `disconnected` event on the edge's serial
+event queue.
+
+A session can end before its reader reads the other Mac's goodbye. This
+occurs when the connector's record budget runs out: the connector says goodbye
+with `rekey`, dials again at once, and its next session can arrive first. The
+listener then shuts down only the sending side of the superseded session. A
+full shutdown on Darwin discards the bytes that the reader did not read. The
+old reader reads what the other Mac sent before, up to its goodbye or the end
+of the stream, and drops each frame. It keeps only the goodbye's reason.
+
+The superseded session's event comes after the newer session's `connected`.
+Its reason is `rekey` when the session ended as a rollover (this side's record
+budget, or the other Mac's goodbye), and `superseded` for all other ends. The
+newer session is up, so the event never gives a loss reason. Peer liveness
+(`ClusterLinkPeerLiveness`) and the leader's link observability ignore both
+reasons. When the edge stops, it also ends each superseded session that is
+still reading.
+
+Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterLinkControlChannel.swift`
+(`ClusterLinkControlPeer.attach`, `connectionEnded`, `close`; `LinkConnection.supersede`) and
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterLinkControlSocket.swift`
+(`LinkSocket.shutdownWrite`).
+
 ## Mode choice on a set-up pair
 
 `darkbloom cluster` offers every mode family the planner could place for these
@@ -4050,12 +4364,29 @@ away; mixed pairs are first-class).
 - **Measured speed:** `ClusterServedModes.figures` over this build's served
   records of this model on these Macs (`ClusterServedSpeedRecords.servedBy`), as
   the planner reads them: a figure from 3 served requests on. Never a
-  prediction; without one the model list says "not measured on these Macs yet".
-  The mode question uses these figures (else the planner's predictions) only
-  to rank the modes: its recommendation and its mode lines quote no tokens per
-  second (owner, 2026-11-05), and a re-plan's "Planned in the mode chosen" line
-  gives the size, mode and shares without the planner's predicted speed
-  (`ClusterOnboardingModeAdvice.fasterWords`, `OnboardingLive.localPlanModels`).
+  prediction. Beside it, each mode carries the rate the latest other build
+  served it at (`ClusterSetupPlanning.earlierFigures`; an earlier build, or a
+  newer one after a rollback), from records that name how they were served and
+  were served the way the plan will serve (through Darkbloom or locally;
+  tensor parallel with Qwen's tensor assistant exactly when the plan decodes
+  with it). Records name it from #1819 on (provider 0.10.11, DevNet .100):
+  0.10.10's never count, so the update from 0.10.10 to 0.10.11 still ranks by
+  the planner's predictions until a mode serves with 0.10.11. No safe scope can
+  be read from a record that names none: equal tensor-parallel shares serve
+  through Darkbloom and locally alike. The mode question ranks the modes by this
+  build's figures, else, while this build has served none of them (every
+  update starts there), by the other builds', else by the planner's
+  predictions (`ClusterOnboardingModeAdvice.advise`). The planner itself still
+  reads only this build's records. The list puts the recommended mode first,
+  and a model named on the command line starts in it
+  (`ClusterOnboardingMode.defaultIndex`), so neither contradicts the
+  recommendation. No screen quotes these figures (owner, 2026-11-05: "the
+  model and mode choice never quote tok/s"): the model list names the modes
+  (`ClusterOnboardingMode.listWords`);
+  the recommendation and the mode lines say why in words; a re-plan's "Planned
+  in the mode chosen" line gives the size, mode and shares
+  (`ClusterOnboardingDeployment.choiceLine`); and the six-step developer
+  wizard's model step and check show no speed (`ClusterSetupContent`).
 - **The current model:** on a set-up pair the list preselects the model serving
   now (or the last one used); it keeps the mode the saved setup served in when
   the plan still lists it (`keepMode`, from `ClusterOnboardingResume.servingMode`),
@@ -4068,8 +4399,13 @@ away; mixed pairs are first-class).
   alone. A chosen tensor parallel is the family a tensor quote prices, so the
   singleton and assistant quotes accept it (`applySingleton`, the planner's
   assistant guard).
-- **Default:** the fastest measured family, else the planner's
-  (`ClusterOnboardingMode.defaultIndex`).
+- **Default:** the recommended family when it is listed, else the fastest
+  measured with this build, else the planner's
+  (`ClusterOnboardingMode.defaultIndex`). The list names it first and a model
+  named on the command line starts in it. The question's cursor starts on the
+  recommendation, else on the mode the pair serves in, else on the default; a
+  model started again the other way (Only me or through Darkbloom) keeps
+  its mode.
 - **Local Network truth:** the follower the service runs is the process that
   dials the other Mac, so its last dial decides (`ClusterService.followerRefusal`:
   the refusal macOS gave it, or a link it opened since, or a dial that failed
@@ -4160,8 +4496,10 @@ Mac holding this pairing's edge secret answers; it is not asked right after
 pairing, nor when the cable is on a port that is not set up. Silence cannot
 tell a Mac that is only away (asleep, at its login window after a restart, its
 cluster service stopped) from one that no longer holds the pairing. So the
-screen names that Mac, its likely reasons and the command to run there
-(`ClusterOnboardingDriver.otherMacSilentLine`), and keeps **Start over** with its question: both Macs offer **Try again**, **Start over** and **Quit** (the leader's list needs the other Mac). It never offers **Pair
+screen names that Mac, its likely reasons and the command to run there, then,
+for a Mac that left the pair (`darkbloom cluster leave`), **Start over** or
+`darkbloom cluster leave` here (`ClusterOnboardingDriver.otherMacSilentLine`),
+and keeps **Start over** with its question: both Macs offer **Try again**, **Start over** and **Quit** (the leader's list needs the other Mac). It never offers **Pair
 again**, which does not ask.
 
 **Start over** is in every resumed Mac's list, after one
@@ -4809,6 +5147,12 @@ resident runtime's own request path instead of the SDK's legacy caches;
 `--layer-stride N` submits each decode step every N layers instead of the
 product's `decodeLayerStride` (1), so a pair can measure the stride before the
 product's changes (Qwen's measured choice is 8, `QwenTensorParallelLaunch`).
+`--prompt-parts N` (shard or tp, paged) runs each prompt chunk's work after
+attention in N row parts whose sums are issued as built
+(`Gemma4TensorParallelPromptParts`; the product keeps 1): bit-identical to the
+whole chunk on the GPU for two ranks while every op after attention is per-row,
+not on the CPU backend, not exact with more than two ranks, and not enforced,
+so it stays a bench option (two M5 Ultras: 4 parts, +13 % at 9,651 tokens).
 `tp-check gemma lanes` serves several requests together through the batch
 driver and checks each against itself alone.
 
@@ -4843,7 +5187,10 @@ stops, cancellations and retirements.
 - Prompt. Each chunk runs through the product's CBv2 entry
   (`Gemma4TextModel.cbv2Prefill`, whose last layer keeps only the row it
   projects) under the registered prompt policy (`Gemma4PrefillProjectionScope`),
-  on the request's chunk grid.
+  on the request's chunk grid. A rank computes the chunk's experts in one shared
+  dispatch per projection (`SwitchGLU.expertRowsByRow`: gathers never hinted as
+  sorted, so each (token, expert) pair stays the M=1 product its own call
+  computes) before the same packed collective of all 9 rows per token.
 - Decode. One evaluation per step, with 100-operation command buffers. The
   step is submitted layer by layer as the host builds it
   (`Gemma4LayerSubmission`; evaluation order only). Lanes decode in one
@@ -4926,7 +5273,7 @@ measured activation floor are not built yet.
 | `reductionsPerLayer`, `reductionsPerStep` | 2 (attention, packed feed-forward), 1 (vocabulary-split selection): 61 a decode step | `Gemma4TensorParallelPlan.reductionsPerLayer` |
 | `partialBytesPerToken`, `layerPartialBytesPerToken` | 101,376 (the dense and 8 expert FP32 rows), 112,640 (with the attention row) | `feedForwardPartialBytesPerToken`, `layerPartialBytesPerToken` |
 | `stateDividesByHeads` | true: each rank keeps its own KV heads | `Gemma4TensorParallelPlan.kvHeadsPerRank` |
-| `requestAllowance` | the rank's reserve at the profile's longest request, where the allocator's bound is known | `Gemma4TensorParallelRequestBudget` |
+| `requestAllowance` | the rank's reserve at the memory plan's longest request (32,768 + 32,768), where the allocator's bound is known | `Gemma4TensorParallelRequestBudget` |
 | `choice` | `fastest_v1` | `ClusterTensorParallelChoice` |
 
 Each stored tensor's cut is the plan's (`tensorParallelCut(ofStoredTensor:)`).
@@ -5143,6 +5490,85 @@ Code map:
 - `libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/Execution/NativeWorkerRuntime.swift` (routes Gemma `tensor_parallel_v1` loads)
 
 See [focused Gemma 4 tensor-parallel checks](../developer/test.md#focused-gemma-4-tensor-parallel-checks).
+
+### Gemma 4 native context on a pair
+
+A Gemma 4 26B pair in tensor parallel serves the model's declared context, as
+one Mac serving it does: prompts up to 262,143 tokens and up to 32,768 output
+tokens (the catalog's `max_output_length`) within 262,144
+(`Gemma4ResidentAdapterDefinition.contextLimits`,
+`QwenResidentContextLimits.Ceiling.native`). Before, the pair advertised
+65,536. On pair-2 (2026-11-08) a streamed prompt longer than 32,768 tokens to
+the leader's local API got a 200 and then "Response generation failed", and a
+`max_tokens` above 32,768 got a 400 `output_too_long`.
+
+LOAD, every quote and the planner still size the pair for the standard
+request, 32,768 prompt plus 32,768 output tokens (`memoryProfile`). The
+placement family plans it, and both ranks bind it into their load agreement,
+so placement and LOAD are unchanged. A longer request is charged at its own
+context when it is reserved, and each rank's live gate admits it or refuses
+it alone:
+
+- Tensor parallel: `Gemma4TensorParallelRequestCharge` takes LOAD's terms
+  (`Gemma4TensorParallelRequestBudget`) at the request's context: this rank's
+  own KV heads (10 KiB a token on the five full layers), the attention
+  transient over its 8 query heads, the partials, the vocabulary rows and the
+  prompt's prefix capture. At 262,144 tokens that is 10.4 GB a rank (3.2 GB of
+  state, a 4.3 GB transient, a 2.8 GB capture), against LOAD's 2.6 GB at the
+  standard request, beside the rank's 7.4 GB reserve and its 8.0 GB of QAT
+  4-bit weights. READY's request capacity is the larger of LOAD's quote and
+  one request at 262,144 tokens, a ceiling and never a grant. READY,
+  and every keep-warm answer while no request or lane is held, carry the
+  longest context the reservation gate admits now (`servingContextTokens`,
+  `refreshServingContext`; kept prefix entries count as room). The paged
+  host's bound is the profile's; pages grow with each request.
+- Pipeline: the memory plan's request, as for every family. The adapter says
+  whether its stages serve the whole profile
+  (`ClusterRuntimeAdapter.pipelineServesWholeProfile`, false for every
+  adapter), and the worker's stages (`LayerStageResidentAdmission.servedProfile`)
+  and the provider (`ClusterModelFeaturePolicy.servedProfile`) both read that
+  one rule, so a pair never advertises a context its ranks refuse. A Gemma
+  pipeline served its whole profile in `dev` before 0.10.11. On pair-2 a 128K
+  request then failed the M5 Max stage's running-request memory check
+  mid-prefill (594 MiB compressed, so no file cache counted). A pipeline stage
+  whose check refuses a running request ends its worker
+  (`QwenResidentRequestExecution.run`'s check, the worker coordinator's
+  failure path), so the client got a 500 and the pair stopped serving for
+  about a minute (journey 3, D6). Tensor parallel's ranks end such a request
+  alone, so a longer Gemma request goes there. Each stage charges the whole
+  model's ledger (`Gemma4StateBudget`) at the request's context: 2.0 GB, plus
+  one prompt frame's 2.2 GB on a stage with a full-attention layer, at the
+  standard request.
+
+The provider holds a request to what its mode serves
+(`ClusterModelFeaturePolicy.servedProfile`: tensor parallel's whole profile, a
+pipeline's memory plan)
+as one Mac holds a request to its window. A `max_tokens` past the output limit,
+or past what the prompt leaves of the context, is cut to fit
+(`EngineV2Bridge.pairServedLimits`, by the rule that cuts one Mac's to its
+window). A prompt that fills the context is refused with one Mac's 400,
+`context_length_exceeded`, in one Mac's words
+(`DistributedRequestRefusal.contextLengthExceededMessage`, one text for both).
+A request longer than the context both Macs admit now gets one Mac's memory
+503. Each refusal is thrown before a stream exists, so a streamed request gets
+its status on the leader's local endpoint as on the pair's own API.
+
+Fingerprints: Gemma's profile fingerprint changes, and with it the capability
+record's `profileFingerprint`, both modes' load agreements, the installed
+start's `profileSHA256` and request fingerprints. Bundled pair qualification
+records do not bind it. Gemma setups re-plan after the update, as for any
+worker change.
+
+Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Gemma4/Resources/Gemma4TensorParallelRequestCharge.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Gemma4/TensorParallel/Gemma4TensorParallelResidentRuntime.swift`
+(`refreshServingContext`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Gemma4/Resident/Gemma4ResidentAdapterDefinition.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/LayerStageResident.swift`
+(`servedProfile`, `requireWithinServedProfile`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapability.swift`
+(`pipelineServesWholeProfile`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Resident/QwenResidentRuntime+Load.swift`
+and `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`.
 
 ## MiMo V2.6 tensor parallel
 
@@ -6930,9 +7356,12 @@ and gate rows whose SwiGLU inputs reach its range (about ±30). A row's logits
 and history equal its run alone, on a one- or an eight-lane host, beside rows
 of 100 to 4,600 tokens that join and leave, across two KV segments, while an
 assistant observes the cohort, and at every position of a four-column verify
-window alone and in a cohort. Both ranks run it in one process
-(`QwenTensorParallelRealGeometryRowsTests`, `QWEN_TP_REAL_GEOMETRY_GPU=1`) or
-as two processes over the loopback ring (`darkbloom-cluster-tp-check
+window alone and in a cohort. The check has two halves
+(`QwenTensorParallelRowsCheck.Part`): the rows of 100 to 4,090 tokens, and the
+rows that span KV segments. Each compares only against the solo runs it makes
+itself, so each also runs alone. Both ranks run it in one process
+(`QwenTensorParallelRealGeometryRowsTests`, `QWEN_TP_REAL_GEOMETRY_GPU=1`, one
+test a half) or, both halves, as two processes over the loopback ring (`darkbloom-cluster-tp-check
 qwen-rows`, native or sealed sums, with the worker's arithmetic environment).
 It refuses to report when a logit is not finite, when its reference logits are
 not all distinct, when the long rows fit one KV segment, or when its comparison
@@ -7046,8 +7475,8 @@ A Qwen TP prompt frame of 512 rows used to compute, then wait for its own
 sealed FP32 sums: two per layer, each read by the next residual norm, so the
 GPU and the link took turns. On the pair at 11K tokens a 27B frame computes for
 about 165 ms and its 128 sums take about 186 ms, so prefill ran at 0.75x one Mac
-[INFERENCE: split from `qwen27-tp-speed-plan` measurements, not traced]. A plain
-text lane now prefills up to eight consecutive frames as one graph, built layer
+[INFERENCE: split from `qwen27-tp-speed-plan` measurements, not traced]. A text
+lane, assisted or not, now prefills up to eight consecutive frames as one graph, built layer
 by layer as GLM's micro-batches are (`GLM5NextTextStage.microBatchedLayer`): a
 frame's mixer through its row-parallel output projection, that sum submitted at
 once, the next frame's mixer while it crosses; then each frame's MLP the same
@@ -7068,7 +7497,8 @@ flowchart LR
 - **Planning.** The leader plans one prompt step a driver step: up to
   `QwenTensorParallelPromptWavefront.maximumFrames` (8) frames, or
   `framesBesideDecoding` (2) while another lane decodes, ending at the prompt's
-  end or at the lane's capture frontier (`QwenTensorParallelBatchSession.promptFrames`).
+  end, at the lane's capture frontier or, for an assisted lane, at its assistant's
+  capture frontier (`QwenTensorParallelBatchSession.promptFrames`).
   The plan carries the step's offset, tokens and final flag; each rank runs it
   only as a prefix of its own frames (`promptStep(tokens:)`), so both ranks run
   the same frames.
@@ -7090,8 +7520,13 @@ flowchart LR
   when the step reaches the frontier, as after a lone frame.
 
 Invariants:
-1. Every frame runs the operations it runs alone, at its own 512-row shapes;
-   only submission order changes. Logits, attention rows, conv and SSM states
+1. Every frame of a plain lane runs the operations it runs alone, at its own
+   512-row shapes; only submission order changes. A merged assisted frame runs
+   the plain lane's operations, while a lone assisted frame takes the target's
+   hidden forward with its fused residual norms; their equality rests on
+   `ResidualRMSNorm`'s byte parity with the unfused ops on its verified GPU
+   families (`Qwen35DecodeFusionParityTests.residualRMSNormEqualsTheUnfusedOps`;
+   on Mac A, family 17, the hybrid assisted test passed with the kernel on). Logits, attention rows, conv and SSM states
    and prefix captures are the per-frame bytes
    (`QwenTensorParallelPromptWavefrontTests.mergedFramesKeepEveryBit`: both
    ranks, paged with the mirror and with page gathers, contiguous, a prompt
@@ -7101,8 +7536,14 @@ Invariants:
    same order on both ranks. They stay sealed FP32 all-sums: no BF16 partial,
    no TF32 change.
 3. Only text lanes of dense models on native KV rows merge
-   (`QwenTensorParallelPromptWavefront.merges`). Assisted (MTP) lanes, media
-   lanes, packed KV and routed-expert models run one frame a step.
+   (`QwenTensorParallelPromptWavefront.merges`). Media lanes, packed KV and
+   routed-expert models run one frame a step. An assisted (MTP) lane merges too:
+   its step also ends at its assistant's capture frontier, runs the same
+   wavefront (`Qwen35PromptWavefront.prefillWithHidden` also returns each
+   frame's last-layer rows), and its assistant then takes each frame's rows in
+   order as after a lone frame (`QwenTensorParallelMTPDecoder.prefill(frames:)`;
+   `QwenTensorParallelAssistedPromptWavefrontTests`: the unassisted wavefront's
+   logits and rows, and the one-frame assistant state, bit for bit).
 4. A step's further frames in flight are charged:
    `QwenTensorParallelPromptWavefront.inFlightBytes` (per further frame, five
    frames' FP32 collective payload: two partials, two sums and the BF16
@@ -7145,13 +7586,19 @@ Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Ten
 ### Qwen27 tensor-parallel native context
 
 The registered Qwen3.8 27B row advertises the limits the single-Mac product
-serves: up to 262,143 prompt tokens and 32,768 output tokens within a 262,144-token
-context (the catalog's `max_context_length` and `max_output_length`;
-`QwenDenseRegisteredSpecification.nativeOutputTokens`,
-`QwenResidentContextLimits.Ceiling.native`). The worker profile, request
-validation on both ranks and every profile fingerprint use these limits. LOAD,
-the placement planner and every width quote still size the pair for the standard
-request, 32,768 prompt plus 32,768 output tokens
+serves: up to 262,143 prompt tokens and 65,536 output tokens within a 262,144-token
+context. These are the catalog's `max_context_length` and `max_output_length`
+(`QwenDenseRegisteredSpecification.nativeOutputTokens`,
+`QwenResidentContextLimits.Ceiling.native`). 65,536 is also the `max_tokens`
+that the coordinator gives a request that omits it. A single Mac takes any
+`max_tokens` whose sum with the prompt fits its context. Until 0.10.10 the pair
+refused every `max_tokens` above 32,768, so production's 18,774-token prompts
+that asked for 65,536 were refused. The output limit is 65,536, not the
+wire's 131,072. At the pair's measured 35 tokens a second, 65,536 output tokens
+take about 31 minutes, inside the 3,600-second request limit; 131,072 would
+not fit. The worker profile, request validation on both ranks and every profile
+fingerprint use these limits. LOAD, the placement planner and every width quote
+still size the pair for the standard request, 32,768 prompt plus 32,768 output tokens
 (`QwenResidentAdapterDefinition.memoryProfile`, `ClusterWorkerProfile.memoryScope`).
 No lane reserves KV for the native context in advance, and widths one through
 eight are planned and admitted as before. Every other Qwen row's profile is its
@@ -7184,7 +7631,9 @@ before either rank is asked. With the registered inventory on an M5 Ultra
 (`QwenTensorParallelNativeContextTests`).
 
 The pipeline and hand-off modes stay at the memory plan. Their LOAD gates size
-it, and they refuse a longer reservation (`requireWithinMemoryProfile`). Provider
+it, and they refuse a longer reservation (`requireWithinServedProfile`; only
+Gemma 4's stages serve their whole profile,
+[Gemma 4 native context](#gemma-4-native-context-on-a-pair)). Provider
 quotes, placement comparisons and installed-plan checks compare memory scopes,
 so a profile's longer native limits never re-price or re-plan a pair.
 
@@ -7217,7 +7666,7 @@ Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Ten
 (`servingContext`, `refreshServingContext`),
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Resources/QwenResidentContextLimits+Registered.swift`,
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/LayerStageResident.swift`
-(`requireWithinMemoryProfile`) and
+(`requireWithinServedProfile`) and
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/State/CBv2OwnedRequestState.swift`
 (`growReservation`).
 
@@ -7372,6 +7821,142 @@ candidate choice),
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledFiles.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledNativeStart.swift`.
 
+## The pair's leader takes local requests beside Darkbloom
+
+The member that hosts a pair's slot (`ProviderLoop.hostsClusterPairSlot`, the
+serving host role a rank-0 installation gives through
+`installClusterPairServing`) can serve that slot on its local API while the
+pair serves through Darkbloom (Both, me first)
+([the local API](../provider/direct-mode.md#a-pairs-leader-beside-darkbloom)).
+Local requests reach the slot's one bridge, the one Darkbloom requests reach, so
+both share the pair's lanes (`ClusterPairSlotOwner.concurrentRequests`), its
+capacity report and its admission. Nothing is loaded, no session forms and no
+device lock is taken
+(`provider-swift/Sources/ProviderCore/ProviderLoop+ClusterPairLocal.swift`).
+
+```mermaid
+flowchart LR
+  L["Local request"] --> S{"Slot live?"}
+  S -- "no" --> N["503"]
+  S -- "yes" --> F{"Admission open,<br/>a lane free,<br/>nobody waiting?"}
+  F -- "yes" --> B["The slot's bridge"]
+  F -- "no" --> Q["FIFO queue<br/>(parked)"]
+  Q -- "woken" --> F
+  Q -- "full / ceiling / retired" --> E["429 / 503"]
+  D["Darkbloom request"] --> B
+```
+
+1. Only the slot's host runs a local API, and only with a key; any other member
+   refuses one at startup (`ProviderLoop.prepareClusterMemberControl`,
+   `admitsClusterPairLocalAPI`).
+2. A local request takes a lane only while fewer requests hold the pair's lanes
+   than it has: local ones granted here (`ClusterPairLocalLanes.lanesHeld`) and
+   Darkbloom ones accepted (`requestToModel`), with the engine's own count
+   below the lanes too, read without waiting for its queue
+   (`grantClusterPairLaneIfFree`, `EngineV2Bridge.capacitySnapshot`). The drain
+   check and the reservation (`localReservations`) have no suspension between
+   them, so a drain counts every granted local request.
+3. Waiters are parked continuations (`ClusterPairLocalLanes.park`), never
+   polled. A released local lane (`releaseClusterPairLane`), each Darkbloom
+   request's end and the periodic capacity refresh (`refreshClusterPairCapacity`
+   calls `wakeClusterPairLocalWaiters`), admission opening, a drain beginning
+   (`beginServingDrain`) and retirement wake them; cancellation and the
+   queue's ceiling refuse them. A reset connection cancels its request at
+   once; a connection closed normally is seen only at the request's first
+   write, after its turn (`LocalHTTPConnectionCancellationRegistry`), as on
+   `cluster local`.
+4. Local admission opens only once the warmup canary passed
+   (`clusterPairAdmissionOpenSlotID`, set in `publishClusterPairSlot`) and
+   closes when retirement starts (`retireClusterPairSlot`).
+5. A Darkbloom request never waits for this queue; its path through the pair
+   is unchanged.
+6. The owner-pause hook `noteClusterPairLocalUse` brackets each local request
+   once: from when it starts waiting for a lane, or takes one, until it leaves
+   without one or its lane is released. With me first on (`[local]`), it drives
+   the leader's [owner pause](owner-pause.md#pairs): the leader's heartbeat
+   drains for the owner, which takes the whole pair out of routing until two
+   idle minutes after the owner's last request, while every other member stays
+   as it is.
+7. Nothing keys on two ranks: the host is a serving role, not a rank, and the
+   pair engine takes any identity of two or more distinct peers
+   (`DistributedResidentIdentity.validate`). That check is only the shape of
+   the roster the provider expects: a repeated peer is still refused, and an
+   impostor still is too, because the engine serves only an owner whose
+   readiness equals that identity, peer for peer (`DistributedCBv2Engine`).
+   Every roster formed today is still two distinct peers.
+8. `darkbloom cluster` starts the API when the person chooses Both, me first
+   (`ClusterServingScope.publicServingWithLocalAPI`, kept in the setup record as
+   `localAPI` with `localBind` and carried to the other Mac by the serve
+   command). The cluster service gives `--local-endpoint --port --bind` to the
+   coordinator-paired part of the plan's rank 0 only
+   (`ClusterLocalServing.memberArguments`), on that Mac's own port
+   (`ClusterService.leaderAPIPort` → `ClusterLocalServing.apiPort(own:…)`):
+   `LocalAPIPort.thisMac` from the service's provider config
+   (`ClusterService.ownAPIPort`), the saved `[local] port` as it is, else the
+   port its local API already uses, else a new choice that is never
+   `LocalAPIPort.neverChosen` (8000, 47420–47423), saved. The same port serves Only me's
+   leader. Only when it can't be read or chosen does the earlier rule, on this
+   Mac alone, decide (`localAPIPort`, `sharedPort`). The part's start gives the
+   endpoint to the member that hosts the slot
+   (`ClusterMemberPreparation.hostsPairSlot`) with this Mac's own key
+   (`LocalEndpoint.loadOrCreateToken`, what its tools read) and the pair's
+   (`LocalInferenceHTTPConfig.pairToken`; `LocalEndpoint.loadOrCreateClusterToken`,
+   synced by the serve command), and the local router. The part key marks the
+   scope (`:local-api@`), so switching between Darkbloom network and Both, me
+   first restarts only that part. An older record or serve command has no
+   `localAPI` and reads as the Darkbloom network.
+9. Every other Mac answers locally too, as with Only me (`cluster local`): with
+   the API on every address (`ClusterServingScope.answersOnEveryMac`), the
+   cluster service of each Mac whose part isn't rank 0 runs `ClusterLocalRelay`
+   on its own port (`ClusterLocalRelay.rankZeroHost`, from the roster by rank,
+   not by counting Macs) to rank 0's cable address, at the port rank 0's service
+   reports (`ClusterServiceStatus.pairAPIPort`: from its part's discovery
+   record, once bound on every address, `ClusterLocalRelay.pairAPIPort`). An
+   older build's `cluster local`, which doesn't report it, is relayed at its
+   ready local session's port; Both, me first never is
+   (`ClusterLocalRelay.rankZeroPort`): while Darkbloom doesn't have the pair,
+   rank 0's session listens on loopback with its own key alone, so the member
+   relays nothing and its status says why
+   (`ClusterLocalRelay.rankZeroAnswersOnItsMacOnly`,
+   `ClusterServiceStatus.relayWaitsForOffer`). The relay's port is this Mac's
+   own (`ClusterLocalRelay.port(own:…)`, `LocalAPIPort.thisMac` read only when a
+   relay starts), so the Macs' ports may differ and each keeps its own whichever
+   Mac runs rank 0; one another program holds is said once, tried again every 10
+   s, and reported (`ClusterServiceStatus.relayPortHeld`). It writes this Mac's
+   discovery record with this Mac's own key (`ClusterService.relayDiscovery`).
+   The relay reads each request's head (`ClusterLocalRelay.relayedHead`):
+   `Authorization: Bearer` with this Mac's own key goes on with the pair's;
+   every other byte goes on as it came, a body by its Content-Length, so a
+   kept-alive connection's every request is read. A body framed otherwise
+   (chunked, an upgrade) makes that request the connection's last
+   (`Connection: close`), and a head it can't read passes unchanged. Answers are
+   never read: that direction is the same byte copy (`ClusterLocalRelay.pump`),
+   so the relay adds nothing per token. Rank 0's API sees each relayed request
+   come from the relaying Mac's cable address: another machine, so the router
+   never takes the paid hop for it (`LocalHTTPClient.isAnotherMachine`), and it
+   is the owner's use like any local request (item 6). A relay never closes a
+   connection it can't pass on: while rank 0's Mac is away
+   (`ClusterService.relayAway`: `otherMacSilentSeconds`, 12 s, without an answer
+   over the cable; a status request to it that fails while it answers there
+   doesn't count, and before any answer in the cluster service's life
+   `askFailuresWithoutLease`, two, failed in a row do) it answers each request
+   at once with a 503 in the local API's error shape, `code`
+   `pair_mac_unreachable`, in words that name the other Mac
+   (`ClusterLocalRelay.Refusals`), which the member's `status` and
+   `darkbloom local` repeat (`ClusterServiceStatus.relayRankZeroAway`), to a
+   caller with this Mac's key or the pair's, as the local API checks them
+   (`ClusterLocalRelay.Caller`): any other gets the API's own 401, and a CORS
+   preflight or a liveness check the 503 without names; otherwise it waits at
+   most 3 s for rank 0 to take a connection
+   (`ClusterLocalRelay.connect(_:within:)`) and answers a failed one the same
+   way, `pair_api_unavailable` when rank 0's Mac refuses the port. The request
+   is read first, so the answer isn't lost to a reset. It clears once that Mac
+   answers over the cable again, and asks of it go back to every 10 s then
+   (`ClusterService.updateRelayAway`). The solo server a pair falls back to
+   takes this Mac's own port too (`thisMacPort`, else 8000), after the relay
+   gives it back; the status names the running part's port
+   (`ClusterServiceStatus.Child.port`, `ClusterService.soloPort(of:)`).
+
 ## Cluster pair capability honesty
 
 A pair advertises what its placed mode serves, not what the artifact's
@@ -7427,7 +8012,7 @@ configuration declares, and answers each request shape as one Mac does.
    construction faults (processor configuration, MLX, tower budget, span
    agreement) remain the retriable 503 refusal. Wire and HTTP details:
    [protocol messages](../reference/protocol-messages.md#unserved-content-part-types),
-   [direct mode](../provider/direct-mode.md#refused-request-shapes).
+   [the local API](../provider/direct-mode.md#refused-request-shapes).
 
 ### Cross-stream fence ordering
 
@@ -7486,13 +8071,30 @@ recovery/reconciliation can continue. After a completed local retirement, a peer
 that does not answer (`ClusterOnboardingFailure.otherMacUnanswered`, set only by
 `localStop`) no longer keeps `cluster stop --service` from removing this Mac's
 service: the command says the other Mac was not asked to stop. Model-change and
-update callers still refuse to continue on either failure.
+update callers still refuse to continue on either failure. The control leader's
+automatic steps that stop the pair only to start it again (the re-plan after an
+update, `ClusterService.replanAfterUpdate`, and a change of cluster approval,
+`ClusterService.stopForApprovalChange`) then put the saved start back and drop
+the stop token (`ClusterService.restoreStart`), under the command lock: both
+steps act only while the start is saved, so stopped intent retained there would
+leave the pair stopped on both Macs until a person started it. A failed restart
+after an approval change puts it back too (`restartAfterApprovalChange`). Both
+steps also act only on a claim the other Mac confirmed
+(`ClusterService.leadershipConfirmed`), as forwarded commands do, checked again
+once they hold the command lock. The restore never undoes an owner's stop: every
+stop of the pair holds that lock, `ClusterService.releaseForSingleMac` too, and a
+step that waited for it stops and starts the pair only while the start is still
+saved (the re-plan reads it again; the approval change decides again). An
+approval change that would stop a serving pair waits while the other Mac
+doesn't answer its status, since every change is sent to it.
 A forwarded stop allows 330 seconds for the local retirement and peer command.
 
 Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingLive.swift`
 (`OnboardingLive.localStop`),
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterService.swift`
-(`ClusterService.stopLocalPart`, `syncMembers`), and
+(`ClusterService.stopLocalPart`, `syncMembers`, `checkForUpdate`, `checkApproval`, `releaseForSingleMac`),
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterService+RestartingStop.swift`
+(`ClusterService.replanAfterUpdate`, `stopForApprovalChange`, `restartAfterApprovalChange`, `restoreStart`), and
 `provider-swift/Sources/darkbloom/ClusterServiceCommand.swift` (`Cluster.Stop.finishStop`).
 
 A live service acknowledges planned local stop only through a fresh private supervision-cycle publication (`service-supervision.json`) with its current PID and idle state. Ordinary status writes cannot acknowledge an in-flight child start; the stop waits boundedly for the actual supervisor to finish that start and retire it before peer stop.

@@ -69,6 +69,21 @@ struct ClusterMemberSupervisionTests {
         #expect(served.record(.operatorStop, runSeconds: 1) == .stop)
     }
 
+    /// Final review of #1846: the always-on member route counted a start refused for this Mac's GPU (another Darkbloom
+    /// build's pair or model check, or production serving here) as a quick failure, and parked after three. The member
+    /// exits with its own code for that, and the budget waits for the hold without counting or doubling anything.
+    @Test func aMemberRefusedForTheGPUWaitsAndNeverSpendsTheBudget() {
+        #expect(ClusterMemberRunEnd.classify(stopRequested: false, exitCode: ClusterMemberRunEnd.gpuHeldExitCode, signal: nil)
+                == .gpuHeld)
+        #expect(ClusterMemberRunEnd.classify(stopRequested: true, exitCode: ClusterMemberRunEnd.gpuHeldExitCode, signal: nil)
+                == .operatorStop)
+        var budget = ClusterMemberRestartBudget()
+        #expect(budget.record(.failure(exitCode: 1), runSeconds: 3) == .restart(afterSeconds: 15))
+        for _ in 0..<5 { #expect(budget.record(.gpuHeld, runSeconds: 1) == .waitForGPU) }
+        #expect(budget.quickFailures == 1 && budget.backoffSeconds == 30, "a wait counts nothing and doubles nothing")
+        #expect(budget.record(.failure(exitCode: 1), runSeconds: 3) == .restart(afterSeconds: 30))
+    }
+
     @Test func heartbeatGuardRecyclesAWedgedMemberOnly() {
         var guardState = ClusterMemberLivenessGuard()
         let beat = ClusterMemberHealth(pid: 5, version: "v", phase: .registered, writtenAt: 1_000)

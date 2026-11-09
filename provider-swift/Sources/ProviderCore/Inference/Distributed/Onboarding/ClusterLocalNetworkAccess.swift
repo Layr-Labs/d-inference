@@ -169,7 +169,7 @@ public enum ClusterLocalNetworkAccess {
 
     // MARK: - The cable's port, where macOS cannot show its prompt
 
-    /// Runs Darkbloom's own link setup script (`~/.darkbloom/cluster-device/link-fix.sh`, written owner-only by the
+    /// Runs Darkbloom's own link setup script (this install's `cluster-device/link-fix.sh`, written owner-only by the
     /// link setup) with sudo, attached to this terminal: sudo asks for the password itself; Darkbloom never reads it.
     /// Any other path, or a file that is not this user's private regular file, is refused. True when it exited 0.
     public static func runLinkScriptWithSudo(_ shown: String, paths: ClusterUserPaths) -> Bool {

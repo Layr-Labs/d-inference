@@ -11,7 +11,8 @@ extension Cluster {
     /// digits; type y on each Mac when they match. Each Mac then pins the
     /// other's attested Secure Enclave key, both countersign the cluster
     /// roster the coordinator registers, and both store the key of their link
-    /// control channel, in owner-only files under ~/.darkbloom/cluster-pairing.
+    /// control channel, in owner-only files in this install's pairing store
+    /// (production's ~/.darkbloom/cluster-pairing, DevNet's ~/.darkbloom-dev/cluster-pairing).
     struct Pair: ParsableCommand {
         static let configuration = CommandConfiguration(commandName: "pair",
             abstract: "Pair with the other Mac over the Thunderbolt link (Secure Enclave keys, a code on both screens, no SSH).", shouldDisplay: false)
@@ -85,5 +86,9 @@ extension Cluster {
                 throw ValidationError(failure.description)
             }
         }
+
+        /// Forgets the pairing with the Mac whose pin it is, as `cluster pair --forget <pin>` does, saying what each
+        /// step did. `darkbloom cluster leave` and `darkbloom uninstall` unpair this way.
+        static func forget(pin: String) throws { try parse(["--forget", pin]).run() }
     }
 }

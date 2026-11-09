@@ -108,7 +108,9 @@ extension ProviderLoop {
             autopilot: state.modelAutopilot,
             autopilotPhase: autopilotPhase,
             autopilotOperation: autopilotOperationView,
-            addonHold: addonHoldSnapshot
+            addonHold: addonHoldSnapshot,
+            meFirst: meFirstSnapshot,
+            localAPIFailure: localEndpointFailure
         )
     }
 

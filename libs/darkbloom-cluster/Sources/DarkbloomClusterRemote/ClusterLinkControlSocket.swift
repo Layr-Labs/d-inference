@@ -266,6 +266,16 @@ final class LinkSocket: @unchecked Sendable {
         }
     }
 
+    /// Ends only the sending direction: the other end reads the end of the
+    /// stream, and what it sent before stays readable here. Shutting down the
+    /// receiving direction on Darwin discards unread bytes.
+    func shutdownWrite() {
+        lock.withLock {
+            guard descriptor >= 0, !isShut else { return }
+            _ = Darwin.shutdown(descriptor, SHUT_WR)
+        }
+    }
+
     /// Owner only, after every reader and writer has stopped using the socket.
     func close() {
         lock.withLock {

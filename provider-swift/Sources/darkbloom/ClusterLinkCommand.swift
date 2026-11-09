@@ -62,15 +62,23 @@ extension Cluster {
         }
 
         /// `--remove` on a paired Mac: what it undoes first, then one question; without a terminal (or with --json)
-        /// only with --yes. A dry run changes nothing, so it is never asked.
+        /// only with --yes. Beside another app that still uses the port (`otherApps`, its lines): that app is named too,
+        /// and only the person at a terminal answers for it, never --yes. A dry run changes nothing, so it is never asked.
         enum RemovalGate: Equatable {
             case proceed
             case ask([String])
             case refuse([String])
         }
 
-        static func removalGate(_ pair: ClusterPairSummary, yes: Bool, dryRun: Bool, json: Bool, terminal: Bool) -> RemovalGate {
-            guard pair.paired, !yes, !dryRun else { return .proceed }
+        static func removalGate(_ pair: ClusterPairSummary, yes: Bool, dryRun: Bool, json: Bool, terminal: Bool,
+                                otherApps: [String] = []) -> RemovalGate {
+            guard !dryRun else { return .proceed }
+            if !otherApps.isEmpty {
+                let lines = (pair.paired ? pair.linkRemoveWarning : []) + otherApps
+                guard terminal, !json else { return .refuse(lines + [ClusterPairSummary.linkRemoveOtherAppNeedsTerminal]) }
+                return .ask(lines)
+            }
+            guard pair.paired, !yes else { return .proceed }
             guard terminal, !json else { return .refuse(pair.linkRemoveWarning + [ClusterPairSummary.linkRemoveNeedsYes]) }
             return .ask(pair.linkRemoveWarning)
         }
@@ -80,8 +88,10 @@ extension Cluster {
         }
 
         private func confirmRemoval() throws {
+            let others = (try? ClusterUserPaths()).map { ClusterLinkRepair.otherInstallsUsingCable(paths: $0, device: device) } ?? []
             switch Self.removalGate(ClusterPairSummary.local(), yes: yes, dryRun: dryRun, json: json,
-                                    terminal: isatty(STDIN_FILENO) == 1) {
+                                    terminal: isatty(STDIN_FILENO) == 1,
+                                    otherApps: ClusterLinkRepair.otherInstallsUsingCableLines(others)) {
             case .proceed: return
             case .refuse(let lines):
                 // Never in the JSON on standard output.

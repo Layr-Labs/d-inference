@@ -93,6 +93,8 @@ build_module InstalledContract \
   "$task_sources/Config/ClusterNativeMemberAttachment.swift" "$task_sources/Config/ClusterLinkControlAttachment.swift" \
   "$task_sources/Config/ClusterPairApproval.swift" \
   "$task_sources/Config/ClusterRuntimeApproval.swift" "$task_sources/Protocol/ClusterRosterRegistration.swift" \
+  "$task_sources/Inference/Distributed/Membership/ClusterApproval/ClusterApprovalFallback.swift" \
+  "$task_sources/Diagnostics/GLM5NextGPULimitEligibility.swift" \
   "$task_sources/Coordinator/NativePairMemberServing.swift" "$task_fixtures/AttestationSignerStandIn.swift" \
   "$task_sources/Coordinator/NativePairMemberPolicy+NativeStart.swift" \
   "$task_sources/Config/ClusterGenerationSelection.swift" \
@@ -120,6 +122,7 @@ build_module InstalledContract \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterDeviceRecovery.swift \
   "$task_sources"/Inference/Distributed/Diagnostics/Link/*.swift \
   "${task_console[@]}" \
+  "$task_sources/Inference/Distributed/Pairing/ClusterPairingStore+Install.swift" \
   "$task_sources/Inference/Distributed/Onboarding/ClusterModelProvisioning.swift" \
   "$task_sources/Inference/Distributed/Onboarding/ClusterModelProvisioningLink.swift"
 

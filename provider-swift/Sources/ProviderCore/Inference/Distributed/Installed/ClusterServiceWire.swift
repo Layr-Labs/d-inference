@@ -7,6 +7,9 @@ import Foundation
 
 /// What one Mac's cluster service reports to its leader.
 public struct ClusterServiceStatus: Codable, Sendable, Equatable {
+    /// The file each cluster service publishes its status in every tick, in its setup folder (`ClusterService`); another
+    /// build reads production's, read only (`ClusterMachineDeviceLock.productionPairStatus`).
+    static let fileName = "service-status.json"
     public struct Child: Codable, Sendable, Equatable {
         public var running: Bool
         public var starts: Int
@@ -24,6 +27,9 @@ public struct ClusterServiceStatus: Codable, Sendable, Equatable {
         /// as it was), nil before the first such end and from an older build.
         public var lastRunSeconds: Double? = nil
         public var solo: Bool? = nil
+        /// While it runs: the port it listens on, rank 0's API or the solo server's (this Mac's own saved port, else the
+        /// earlier rule's); nil for any other part, and from an older build.
+        public var port: Int? = nil
         /// While it runs: `ClusterLocalServing.notice` when this part (rank 0) serves on its local API only because the
         /// coordinator cannot take the cluster member role; nil when it serves publicly or is not rank 0.
         public var notice: String? = nil
@@ -75,10 +81,28 @@ public struct ClusterServiceStatus: Codable, Sendable, Equatable {
     /// This Mac's record says the cluster serves locally only (`ClusterServingScope`); the leader sends the start again
     /// to a member whose answer differs from its own. Nil from an older build.
     public var localOnly: Bool? = nil
+    /// This Mac's record says the pair serves Both, me first (`ClusterServingScope.publicServingWithLocalAPI`); compared
+    /// as `localOnly` is. Nil from an older build.
+    public var localAPI: Bool? = nil
     /// In the answer to a `status` command: the ports of `ClusterLocalServing.servingPorts` free on this Mac (those
-    /// its own API, relay or solo server holds count as free), so rank 0 takes a port free on both Macs. Nil from an
-    /// older build.
+    /// its own API, relay or solo server holds count as free), which an older build's rank 0 reads to take a port free
+    /// on both Macs; this build's rank 0 takes its own Mac's port (`LocalAPIPort.thisMac`). Nil from an older build.
     public var freePorts: [Int]? = nil
+    /// In the answer to a `status` command, from the Mac whose part runs rank 0: the port the pair's local API listens
+    /// on, on every address, once bound (its part's discovery record), Both or local only. Every other Mac's relay
+    /// passes there (`ClusterLocalRelay`). Nil otherwise, and from an older build (its local only session's port then).
+    public var pairAPIPort: Int? = nil
+    /// On a Mac whose relay passes the pair's API (`ClusterLocalRelay`): this Mac's port, which another program holds, so
+    /// the relay can't listen. Nil otherwise, and from an older build.
+    public var relayPortHeld: Int? = nil
+    /// On a Mac whose relay passes the pair's API: rank 0 answers on its own Mac only, as Both, me first does while
+    /// Darkbloom doesn't have the pair (`ClusterLocalRelay.rankZeroAnswersOnItsMacOnly`), so this Mac passes nothing on.
+    /// Nil otherwise, and from an older build.
+    public var relayWaitsForOffer: Bool? = nil
+    /// On a Mac whose relay passes the pair's API: rank 0's Mac can't be reached now (an ask of it failed, or it hasn't
+    /// answered over the cable for `ClusterService.otherMacSilentSeconds`), so the relay answers each request a 503 that
+    /// says so (`ClusterLocalRelay.Refusals`). Nil otherwise, and from an older build.
+    public var relayRankZeroAway: Bool? = nil
     /// This Mac's coordinator-paired parts that ended in a row right after starting (`ClusterApprovalCheck`); the
     /// control leader makes the pair serve locally when either Mac's count reaches the solo server's limit. Nil from an
     /// older build.
@@ -100,8 +124,9 @@ public struct ClusterServiceStatus: Codable, Sendable, Equatable {
     /// never ends by itself, so this Mac's part doesn't start beside it and the other Mac's start names it. Nil when
     /// none, and from an older build.
     public var soloServing: SoloServing? = nil
-    /// Why this Mac's part can't start now, for a reason that doesn't clear by itself (single-Mac serving here): the
-    /// leading Mac's part waits for it to change instead of starting and ending again. Nil when none, and from an older build.
+    /// Why this Mac's part can't start now, for a reason that doesn't clear by itself (single-Mac serving here, or the
+    /// other Darkbloom app holding this Mac's GPU): the leading Mac's part waits for it to change instead of starting and
+    /// ending again. Nil when none, and from an older build.
     public var heldBack: String? = nil
     /// Whether the pair actually runs on this Mac (`ClusterPairWatch`): `serving` is only the saved intent, which stays
     /// on for a Mac whose other Mac stopped taking part. Nil from an older build (read the intent then).
@@ -174,7 +199,9 @@ public struct ClusterServiceCommand: Codable, Sendable, Equatable {
     /// moves to it: true for local only, with the API's address in `bind`. Nil from an older build (nothing recorded).
     public var localOnly: Bool?
     public var bind: String?
-    /// `serve`, local only: the pair's local API key (`LocalEndpoint.loadOrCreateClusterToken`), kept by the member
+    /// `serve`: true for Both, me first, with the local API's address in `bind`. Nil from an older build.
+    public var localAPI: Bool?
+    /// `serve`, local only or Both: the pair's local API key (`LocalEndpoint.loadOrCreateClusterToken`), kept by the member
     /// so the key stays the same whichever Mac runs the API. Only inside the keyed link control session; never logged.
     public var localToken: String?
     /// A drained same-model replacement from the currently saved rank-0
@@ -191,11 +218,12 @@ public struct ClusterServiceCommand: Codable, Sendable, Equatable {
         self.op = op; self.model = model; self.text = text; self.cache = cache; self.clusterID = clusterID
         self.claim = claim; self.running = running; self.facts = facts
         self.alonePlan = alonePlan; self.control = control; self.serving = serving; self.deployment = deployment
-        self.localOnly = scope.map(\.isLocalOnly); self.bind = scope?.bind
+        self.localOnly = scope.map(\.isLocalOnly); self.bind = scope?.localAPIBind
+        self.localAPI = scope?.addsLocalAPI == true ? true : nil
     }
 
     /// The scope a `serve` carries; nil when the sender's build sends none or its address is not one the API takes.
-    public var scope: ClusterServingScope? { ClusterServingScope.carried(localOnly: localOnly, bind: bind) }
+    public var scope: ClusterServingScope? { ClusterServingScope.carried(localOnly: localOnly, localAPI: localAPI, bind: bind) }
 }
 
 /// A test request's answer, sent back over the link.

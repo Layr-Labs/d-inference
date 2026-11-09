@@ -184,9 +184,12 @@ extension ClusterLinkRepair {
 
     /// Ports that are isolated exactly as link setup v2 leaves them (no
     /// finding, Darkbloom's service present, this Mac's own derived address on
-    /// the port) but have no record entry: the commands were run by hand. Each
-    /// is recorded with the services found switched off on it, so `--remove`
-    /// can restore them. Returns the interfaces recorded.
+    /// the port) but have no record entry: the commands were run by hand, or
+    /// the other app on this Mac set the port up. Each is recorded with the
+    /// services found switched off on it, so `--remove` can restore them; when
+    /// the other app's record has the port at the same address, with what that
+    /// setup changed (its bridge slot too), so this app can still undo it all
+    /// once the other app and its record are gone. Returns the interfaces recorded.
     static func adoptIsolatedPorts(report: ClusterLinkReadinessReport, record: ClusterLinkIsolationRecord?, run: ClusterLinkToolRunner,
                                    in environment: Environment) -> [String] {
         guard let record, let machineID = environment.machineIdentifier(),
@@ -199,11 +202,21 @@ extension ClusterLinkRepair {
             guard ClusterLinkNetworkFacts.lists(address.dottedDecimal, on: interface, inListing: listing) else { continue }
             let ours = ClusterLinkServiceName.cluster(interface: interface)
             let disabled = machine.services.filter { $0.interface == interface && !$0.enabled && $0.name != ours }.map(\.name)
-            let entry = ClusterLinkIsolationRecord.Entry(interface: interface, address: address, hardwarePort: hardwarePort,
-                bridge: nil, disabledServices: disabled)
+            let entry = adoptionEntry(interface: interface, address: address, hardwarePort: hardwarePort, disabledHere: disabled,
+                                      others: environment.otherInstallsIsolationEntries(interface))
             if (try? environment.updateIsolationRecord { $0.set(entry) }) != nil { adopted.append(interface) }
         }
         return adopted
+    }
+
+    /// The entry an adopted port gets: what the other install's record says its setup changed (the bridge slot, the
+    /// services it turned off) when that record has the port at the same address and hardware port; otherwise the
+    /// services found turned off on it now, and no bridge slot.
+    static func adoptionEntry(interface: String, address: ClusterLinkClusterAddress, hardwarePort: String, disabledHere: [String],
+                              others: [ClusterLinkIsolationRecord.Entry]) -> ClusterLinkIsolationRecord.Entry {
+        let setUp = others.first { $0.interface == interface && $0.address == address && $0.hardwarePort == hardwarePort }
+        return .init(interface: interface, address: address, hardwarePort: hardwarePort, bridge: setUp?.bridge,
+                     disabledServices: setUp?.disabledServices ?? disabledHere)
     }
 
     /// What is still to undo for a port: read now, from the record entry when

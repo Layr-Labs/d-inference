@@ -1,3 +1,4 @@
+import ArgumentParser
 import Foundation
 import ProviderCore
 
@@ -14,6 +15,27 @@ func withMutableConfig<Result>(
         var config = try FileManager.default.fileExists(atPath: savePath.path)
             ? ConfigManager.load(from: savePath) : loaded.config
         return try body(savePath, &config)
+    }
+}
+
+/// Changes the values of `[local]` (`LocalSettings`) and no other value in the config, so keys this build does not
+/// know keep their values; comments are dropped and keys re-sorted, as with every config writer (`updateLocal`).
+/// Shaped like `setIdleUnloadMinutes`: the same config path, the config lock with a re-read inside it, a plain
+/// refusal before anything is written, and an explicit value written even when it equals the default. Returns the
+/// config path and whether the file changed.
+///
+/// Internal (not `private`) so `DarkbloomCLITests` can drive it with temp config fixtures via `configPath`.
+@discardableResult
+func setLocalSettings(
+    configPath: String?,
+    _ change: (inout LocalSettings) -> Void
+) throws -> (path: URL, changed: Bool) {
+    let loaded = try loadRuntimeConfiguration(configPath: configPath)
+    do {
+        let changed = try ConfigManager.updateLocal(at: loaded.configPath, fallbackConfig: loaded.config, change)
+        return (loaded.configPath, changed)
+    } catch let refusal as LocalSettingsError {
+        throw ValidationError(refusal.description)
     }
 }
 

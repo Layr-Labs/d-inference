@@ -50,6 +50,9 @@ struct Update: AsyncParsableCommand {
     /// Tests run `update` as root without being root.
     @TaskLocal static var runsAsRootForTesting: Bool?
 
+    /// Tests give `update` an updater for the coordinator URL it chose, with an install root of their own.
+    @TaskLocal static var updaterForTesting: (@Sendable (String) -> SelfUpdater)?
+
     /// Whether this process runs as root: `--rollback` refuses it.
     static var runsAsRoot: Bool { runsAsRootForTesting ?? (geteuid() == 0) }
 
@@ -75,7 +78,7 @@ struct Update: AsyncParsableCommand {
         print("")
 
         let coordinatorURL = coordinator ?? config.coordinator.url
-        let updater = SelfUpdater(coordinatorBaseURL: coordinatorURL)
+        let updater = Self.updaterForTesting?(coordinatorURL) ?? SelfUpdater(coordinatorBaseURL: coordinatorURL)
 
         if rollback {
             guard !refusesRollbackAsRoot else {
@@ -121,8 +124,8 @@ struct Update: AsyncParsableCommand {
                 print("A strictly newer release remains eligible automatically.")
                 print("Use --override-quarantine only for an explicit operator retry.")
 
-            case .checkFailed(let reason):
-                printError("update check failed: \(reason)")
+            case .checkFailed(let failure):
+                for line in Self.checkFailedLines(failure, checkOnly: true) { printError(line) }
                 throw ExitCode.failure
             }
             return
@@ -154,7 +157,7 @@ struct Update: AsyncParsableCommand {
             case .clusterService:
                 try await restartClusterService(into: to, look: look)
             case .nothing:
-                print("Restart the provider for the new version to take effect.")
+                print(Self.nothingRestartedLine(version: to))
             }
 
         case .restartRequired(let from, let to):
@@ -169,7 +172,7 @@ struct Update: AsyncParsableCommand {
             case .clusterService:
                 try await restartClusterService(into: to, look: look)
             case .nothing:
-                print("Restart the provider for v\(to) to take effect.")
+                print(Self.nothingRestartedLine(version: to))
             }
 
         case .quarantined(let version, let reason):
@@ -184,6 +187,10 @@ struct Update: AsyncParsableCommand {
 
         case .cancelled(let reason):
             printError("update cancelled: \(reason)")
+            throw ExitCode.failure
+
+        case .checkFailed(let failure):
+            for line in Self.checkFailedLines(failure, checkOnly: false) { printError(line) }
             throw ExitCode.failure
 
         case .downloadFailed(let reason):
@@ -203,6 +210,23 @@ struct Update: AsyncParsableCommand {
         }
     }
 
+    /// A failed release check in plain words: what failed, that nothing changed, and what to do. Only a check that got
+    /// no answer points at this Mac's network connection.
+    static func checkFailedLines(_ failure: UpdateCheckFailure, checkOnly: Bool) -> [String] {
+        let command = "`\(BuildEnvironment.current.cliName) update\(checkOnly ? " --check-only" : "")`"
+        let reason = failure.reason
+        let failed = "Couldn't check for updates: " + (reason.hasSuffix(".") ? reason : reason + ".")
+            + (checkOnly ? "" : " Nothing was downloaded or changed.")
+        switch failure.cause {
+        case .noAnswer:
+            return [failed, "Run \(command) again in a minute. If it keeps failing, check this Mac's network connection."]
+        case .badAnswer:
+            return [failed, "The coordinator answered, so this Mac's network connection works. Run \(command) again later."]
+        case .thisMac:
+            return [failed, "This is on this Mac, not its network connection: fix it, then run \(command) again."]
+        }
+    }
+
     /// A single-Mac provider job is loaded on a Mac whose pair is started: the update restarts the pair, never that job
     /// (0.10.7 restarted it first, and it took the serving lock the pair's parts need: the pair could not start again).
     static func soloJobBesidePair(soloJobLoaded: Bool = LaunchAgent.isLoaded() && !LaunchAgent.installedJobIsClusterMember(),
@@ -215,7 +239,7 @@ struct Update: AsyncParsableCommand {
         /// The pair, which runs here; a single-Mac job beside it is left as it is (`soloJobLeftLines`).
         case pair
         /// Single-Mac serving, which this Mac has; `releaseLeftover`: a pair that doesn't run here first gives back the
-        /// serving lock its leftover part holds (`Start.releaseLeftoverPart`).
+        /// serving lock its leftover part holds (`Start.releaseLeftoverPartToServeAlone`).
         case singleMac(releaseLeftover: Bool)
         case clusterService
         case nothing
@@ -226,24 +250,16 @@ struct Update: AsyncParsableCommand {
     static func restartChoice(soloJobLoaded: Bool = LaunchAgent.isLoaded(),
                               soloJobIsMember: Bool = LaunchAgent.installedJobIsClusterMember(),
                               pairServes: Bool = ClusterService.pairServesHere(),
-                              leftoverPart: Bool = leftoverPartHere(ClusterPairSummary.local()),
+                              leftoverPart: Bool = ClusterPairSummary.local().leftoverPartHere,
                               clusterServiceRunning: Bool = ClusterService.running()) -> RestartChoice {
         if soloJobBesidePair(soloJobLoaded: soloJobLoaded && !soloJobIsMember, pairServes: pairServes) { return .pair }
         if soloJobLoaded { return .singleMac(releaseLeftover: leftoverPart && !soloJobIsMember) }
         return clusterServiceRunning ? .clusterService : .nothing
     }
 
-    /// A pair that doesn't run here while its saved start and cluster service are left on this Mac.
-    static func leftoverPartHere(_ pair: ClusterPairSummary) -> Bool { pair.pairIdle && pair.started && pair.serviceRunning }
-
     private func releaseLeftoverPart(_ release: Bool) async throws {
         guard release else { return }
-        let pair = ClusterPairSummary.local()
-        print(pair.servingAloneLine)
-        guard await Start.releaseLeftoverPart() else {
-            for line in pair.releaseFailedLines { print(line) }
-            throw ExitCode.failure
-        }
+        try await Start.releaseLeftoverPartToServeAlone(ClusterPairSummary.local())
     }
 
     static var soloJobLeftLines: [String] {
@@ -264,11 +280,12 @@ struct Update: AsyncParsableCommand {
             return
         }
         print("Accepted requests drained. Restarting the installed provider...")
+        let restarted: SavedChoiceService.Alignment
         do {
-            try await look.working("Restarting the provider") {
+            restarted = try await look.working("Restarting the provider") {
                 try updater.prepareCandidateLaunch(session: session, baseline: LaunchAgent.launchSnapshot())
                 try await ServiceDrain.stopDrainedProvider(unloadService: false)
-                try LaunchAgent.restartAfterDrain()
+                return try SavedChoiceService.restartAsSaved(configPath: configOptions.config)
             }
             ServiceDrain.rearmWatchdog(explicitConfig: configOptions.config)
         } catch {
@@ -276,10 +293,21 @@ struct Update: AsyncParsableCommand {
             try? updater.cancelPendingCandidateAttempt(operation: operation + "-failure")
             throw error
         }
+        if let line = restarted.line { print(line) }
         session.release()
-        try await look.working("Waiting for the restarted provider's fresh authorization") {
-            try await ServiceDrain.waitForRestart(previous: previous, timeout: 180)
+        try await ServiceDrain.waitForRestartedService(serving: restarted.mode, previous: previous, timeout: 180,
+                                                       look: look)
+    }
+
+    /// Nothing serves in the background to restart into `version`: Only me in a terminal, or nothing at all.
+    static func nothingRestartedLine(version: String, terminalOnlyMe: Bool = Restart.terminalOnlyMe(
+        ServiceDrain.soloProviderState())) -> String {
+        let cli = BuildEnvironment.current.cliName
+        guard terminalOnlyMe else {
+            return "Nothing serves in the background now; your next `\(cli) start` serves v\(version)."
         }
+        return "Only me serves in a terminal now (`\(cli) start --local --here`): press Ctrl-C there, then "
+            + "`\(cli) start` serves v\(version) in the background."
     }
 
     /// A `darkbloom cluster` Mac: its cluster service supervisor restarts into the installed release together with
@@ -342,7 +370,7 @@ enum ClusterServiceUpdateRequest {
             }
             try await Task.sleep(nanoseconds: UInt64(pollSeconds * 1_000_000_000))
         }
-        say("Still waiting after \(timeoutSeconds) s; the cluster service goes on by itself. Its log: ~/.darkbloom/cluster-setup/service.log")
+        say("Still waiting after \(timeoutSeconds) s; the cluster service goes on by itself. Its log: \(ClusterUserPaths.serviceLogShown)")
         return .waiting
     }
 

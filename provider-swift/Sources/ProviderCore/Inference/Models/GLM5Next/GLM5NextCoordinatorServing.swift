@@ -9,9 +9,9 @@ struct GLM5NextServingPlan {
     let plan: GLM5NextArtifactPlan
     let maximumContextLength: Int
 
-    /// The default output budget leaves half the bound for the prompt, so a
-    /// request that omits `max_tokens` cannot exceed the bound by default.
-    /// Longer requests are refused at the bridge's advertised context.
+    /// The default output budget is at most half the bound. The bridge cuts
+    /// every output, the default included, to what the prompt leaves of the
+    /// bound (its advertised context), and refuses only a prompt that fills it.
     func boundedSizing(_ sizing: SlotSizingSnapshot) throws -> SlotSizingSnapshot {
         let context = try GLM5NextExecutionBound.require(maximumContextLength,
             modelMaximum: sizing.maxContextLength)

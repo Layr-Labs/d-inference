@@ -97,6 +97,16 @@ public enum ClusterRuntimeAdapter: String, Sendable, CaseIterable {
         Self.qwenTensorParallelRuntimeModelIDs.contains(runtimeModelID)
             && Self.registering(runtimeModelID: runtimeModelID) == self
     }
+
+    /// Whether this adapter's layer stages serve its rows' whole profile in the pipeline. None does: every
+    /// pipeline serves the memory plan's request (`ClusterWorkerProfile.memoryScope`), and a longer one goes to
+    /// tensor parallel. A pipeline stage whose live memory check refuses a running request ends its worker, and with
+    /// it the pair for about a minute, where tensor parallel's ranks end that request alone (journey 3, D6: a
+    /// 128K-token Gemma 4 pipeline request on a MacBook under memory pressure). The one place for this rule: the
+    /// provider advertises and holds requests to it (`ClusterModelFeaturePolicy.servedProfile`) and the worker's
+    /// stages admit it (`LayerStageResidentAdmission.servedProfile`), so a pair never advertises a context its ranks
+    /// refuse.
+    public var pipelineServesWholeProfile: Bool { false }
 }
 
 public struct ClusterRuntimeStage: Equatable, Sendable {

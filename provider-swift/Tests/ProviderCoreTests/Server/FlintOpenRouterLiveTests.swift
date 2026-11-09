@@ -98,7 +98,7 @@ struct FlintOpenRouterLiveTests {
             // Reasoning controls are accepted. Flint always chooses whether to
             // reason; effort has no effect and enabled/exclude only control
             // whether reasoning is returned.
-            for effort in ["minimal", "low", "medium", "high", "xhigh"] {
+            for effort in ["minimal", "low", "medium", "high", "xhigh", "max"] {
                 var request = chat(reasoningPrompt)
                 request["reasoning"] = ["effort": effort]
                 let (code, data) = try await post(request, name: "reasoning-effort-\(effort)")

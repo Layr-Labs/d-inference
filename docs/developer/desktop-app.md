@@ -1,6 +1,6 @@
 # Build and validate the macOS desktop app
 
-> Last updated: 2026-10-26
+> Last updated: 2026-11-08
 
 Build the Electron frontend and its Swift CLI/backend API in this repository.
 This guide covers development and review artifacts; production distribution also
@@ -129,8 +129,8 @@ update replaces the executable). `DesktopRuntimeProfile` validates stdout alone
 for this probe, ignoring stderr notices such as the macOS upgrade warning; failed,
 invalid, or oversized output is not a version. Ordinary `DesktopWorker` commands
 still capture stderr diagnostics. The API also probes `desktop --help`: actions that need
-a `desktop` subcommand the runtime lacks (provider cooling, Studio's local-only
-serving) are refused with an explanation, and cooling controls are reported as
+a `desktop` subcommand the runtime lacks (provider cooling, and Studio's "Local
+only", which serves Only me) are refused with an explanation, and cooling controls are reported as
 unavailable.
 
 Initialize the Swift submodules, install the frontend dependencies, then run:
@@ -234,7 +234,10 @@ one `OperationFeed` outside page content; its body portal stays at the bottom
 on Home, My Macs (including remote Macs and all tabs), Leaderboard and Updates.
 Successful operations disappear after ten seconds, using their native completion
 time when available; navigation and state refresh do not reset the countdown.
-Failures and immediate `backend.error` messages remain until Close. Dismissal
+Failures and immediate `backend.error` messages remain until Close. A refused
+action's message is its own words: `useBackend`'s `act` drops the "Error invoking
+remote method …" prefix Electron puts on errors that cross IPC (`errorMessage`;
+`desktop-app/tests/actionRefusal.test.tsx`). Dismissal
 persists across remounts, and expanded details retain native diagnostic messages. Cooling labels use the
 enabled fan policy independently of its current firmware mode (`coolingStatus`).
 
@@ -416,8 +419,8 @@ from a first install, and cancels a link in progress.
 - **Autopilot.** "Start serving with Autopilot" sends
   `{ action: 'autopilot', models, pinned, downloads, endpoint: true }`
   (`desktop-app/src/shared/autopilot.ts`). It mirrors
-  `darkbloom start --autopilot --model … --local-endpoint` followed by
-  `darkbloom autopilot pin …`.
+  `darkbloom start --autopilot --model … --local-endpoint` (Both, me first)
+  followed by `darkbloom autopilot pin …`.
   - With network earnings available, choose from the top three compatible earners
     over seven days; all three are checked initially. `downloads` contains only
     chosen models missing from disk. Swift completes downloads before enrollment.
@@ -441,6 +444,38 @@ from a first install, and cancels a link in progress.
 - **Fallback.** A runtime that rejects `autopilot` by name keeps the starting
   model selected and offers "Choose models manually". That path uses the
   existing `start` action with the chosen models.
+- **A paired Mac.** The snapshot names the pair (`Snapshot.pair`: its model, its
+  state from the runtime's own view, and whether this Mac leads it) and reports
+  no `autopilot` capability, so the page offers **Start serving** for the pair.
+  Its lead says the pair as it is, then what Start serving does there
+  (`startPlan.pairLead`): "This Mac serves in a pair with <model>. Start serving
+  keeps it serving." only when the runtime says it serves; "This Mac is in a
+  pair, which is stopped. Start serving starts it with <model>."; "… that isn't
+  running here …"; "This Mac is in a pair, started with <model>. Start serving
+  makes sure it serves." on the Mac that follows, whose runtime can't tell. A
+  runtime that reports no state gets "This Mac is in a pair. Start serving starts
+  the pair with <model>.", true in every state. It sends
+  `{ action: 'start', models: [], local: false }`, with no model and no local API
+  of its own, since the pair serves its own (`startPlan.ts`), and hides the
+  advanced model choice. An app from before this reads the missing capability as
+  a runtime without Autopilot, and offers the plain start too.
+- **A pair that needs Terminal first.** With no model yet, or a pairing record
+  that can't be read, Start serving would be refused (`pairStartable`). The page
+  says the Terminal step instead ("… Choose one with “darkbloom cluster” in
+  Terminal on this Mac, then come back to Start serving." or "… on the other Mac,
+  which leads the pair, …"; "Run “darkbloom cluster” in Terminal on this Mac to
+  check it."), disables Start serving with why under it (`pairBlocked`), and
+  leaves out the summary.
+- **A start with no models.** The runtime takes it only on a paired Mac
+  (`DesktopBackend.startsThePair`, the same test `start` makes), where its
+  `start` starts the pair with the pair's own model. On a Mac that isn't paired
+  it is refused at once, as before: "Choose at least one model". A pair with no
+  model yet is refused at once with the CLI's one line for that, which the app
+  shows: ``No model was chosen for the pair yet: choose one with `darkbloom cluster` in a terminal on this Mac.``
+  (``… on the other Mac (…).`` on the Mac that follows).
+  `DesktopAppOnAPairedMacTests` posts the app's exact JSON through
+  `DesktopHTTP.decodeAction` and `submit`, and `backend.test.ts` pins that JSON
+  as the main process posts it.
 - **Updates.** Onboarding never writes settings, so an automatic-update opt-out
   is preserved.
 

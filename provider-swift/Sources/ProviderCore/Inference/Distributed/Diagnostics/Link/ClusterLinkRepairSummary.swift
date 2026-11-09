@@ -62,7 +62,7 @@ extension ClusterLinkRepairResult {
         case .machineIdentityUnavailable:
             return "Darkbloom could not read this Mac's hardware identifier, which it uses to choose the address; nothing was changed."
         case .recordUnavailable:
-            return "Darkbloom could not read or update its owner-only record of the addresses it adds (~/.darkbloom/cluster-device/link-alias.json); nothing was changed."
+            return "Darkbloom could not read or update its owner-only record of the addresses it adds (\(ClusterUserPaths.shown("cluster-device/link-alias.json"))); nothing was changed."
         case .approvalDeclined:
             return "The macOS prompt was cancelled; nothing was changed."
         case .approvalUnavailable where manualScript != nil:

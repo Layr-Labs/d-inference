@@ -2,7 +2,7 @@ import Foundation
 import DarkbloomClusterProtocol
 
 /// Where the setup wizard keeps what only it knows, in an owner-only
-/// directory of its own: `~/.darkbloom/cluster-setup/`.
+/// directory of its own: `~/.darkbloom/cluster-setup/` (the install's own, `ClusterUserPaths.setupDirectory`).
 public struct ClusterSetupPaths: Sendable, Equatable {
     public let directory: URL
     /// The wizard's progress: the pair it was given, codes confirmed, setups sent, checks passed.
@@ -12,7 +12,7 @@ public struct ClusterSetupPaths: Sendable, Equatable {
     public var inboxCapability: URL { directory.appendingPathComponent("inbox-capability.json") }
 
     public init(paths: ClusterUserPaths) {
-        directory = paths.homeDirectory.appendingPathComponent(".darkbloom/cluster-setup", isDirectory: true)
+        directory = paths.setupDirectory
     }
 }
 
@@ -202,14 +202,21 @@ public struct ClusterOnboardingLeadership: Codable, Sendable, Equatable {
     /// through the coordinator, as before. A member records the leader's choice from its start command.
     public var localOnly: Bool?
     public var localBind: String?
+    /// True for Both, me first (`ClusterServingScope.publicServingWithLocalAPI`): through the coordinator, with the
+    /// pair's local API on `localBind`. Nil: an older build's record, or no local API.
+    public var localAPI: Bool?
 
     public init(role: String, leaderPin: String, peerPin: String, peerName: String, since: String) {
         self.role = role; self.leaderPin = leaderPin; self.peerPin = peerPin; self.peerName = peerName; self.since = since
     }
 
     public var scope: ClusterServingScope {
-        get { ClusterServingScope(localOnly: localOnly, bind: localBind) }
-        set { localOnly = newValue.isLocalOnly ? true : nil; localBind = newValue.bind }
+        get { ClusterServingScope(localOnly: localOnly, localAPI: localAPI, bind: localBind) }
+        set {
+            localOnly = newValue.isLocalOnly ? true : nil
+            localAPI = newValue.addsLocalAPI ? true : nil
+            localBind = newValue.localAPIBind
+        }
     }
 }
 

@@ -564,6 +564,8 @@ final class FakeIsolationWorld {
     var base: FakeRepairWorld
     var isolationRecord = ClusterLinkIsolationRecord()
     var isolationRecordFails = false
+    /// The other app's record on this Mac (production's beside DevNet's), which this app only reads.
+    var otherInstallRecord = ClusterLinkIsolationRecord()
     var isolationApproval: (ClusterLinkIsolationRequest, FakeIsolationWorld) -> ClusterLinkApprovalResult = { _, _ in .unavailable }
     private(set) var isolationRequests = [ClusterLinkIsolationRequest]()
     private(set) var isolationRecordSaves = 0
@@ -591,6 +593,7 @@ final class FakeIsolationWorld {
             isolationRecordSaves += 1
             change(&isolationRecord)
         }
+        environment.otherInstallsIsolationEntries = { [self] interface in otherInstallRecord.entry(on: interface).map { [$0] } ?? [] }
         return environment
     }
 

@@ -466,25 +466,31 @@ extension CoordinatorClient {
                 throw CoordinatorError.connectionClosed(NWError.posix(.ECONNRESET))
             }
 
-            // Control frames (ping/pong) handled by autoReplyPing / the pong
-            // handler carry no application payload — skip them and keep reading.
-            // Only skip when WS metadata confirms a known control opcode;
-            // nil/empty receives WITHOUT metadata indicate a transport-level
-            // close (peer dropped TCP without a WS close frame) — surface as
-            // disconnection instead of spinning in a tight loop.
-            guard let data, !data.isEmpty else {
-                if let wsMeta, (wsMeta.opcode == .ping || wsMeta.opcode == .pong) {
-                    continue
-                }
-                // No data and no control-frame metadata → connection closed
-                // without a proper WS close frame (TCP reset, intermediary drop).
+            switch Self.inboundFrame(data: data, opcode: wsMeta?.opcode) {
+            case .control:
+                continue
+            case .transportClosed:
                 throw CoordinatorError.connectionClosed(NWError.posix(.ECONNRESET))
+            case .message(let data):
+                await handleIncomingFrame(
+                    data, receivedAt: receivedAt, profileAnchor: profileAnchor,
+                    connection: connection)
             }
-
-            await handleIncomingFrame(
-                data, receivedAt: receivedAt, profileAnchor: profileAnchor,
-                connection: connection)
         }
+    }
+
+    /// What one received WebSocket message (other than a close frame) is to
+    /// the session. Pings and pongs are answered by autoReplyPing / the pong
+    /// handler and are never application messages, whatever their payload: the
+    /// coordinator's transport probe pings with a counter ("1", "2", …) every
+    /// 30 s. Only a confirmed control opcode is skipped; no data and no control
+    /// opcode means the peer dropped the transport without a close frame (TCP
+    /// reset, intermediary drop), surfaced as a disconnection instead of
+    /// spinning in a tight loop.
+    static func inboundFrame(data: Data?, opcode: NWProtocolWebSocket.Opcode?) -> CoordinatorInboundFrame {
+        if opcode == .ping || opcode == .pong { return .control }
+        guard let data, !data.isEmpty else { return .transportClosed }
+        return .message(data)
     }
 
 

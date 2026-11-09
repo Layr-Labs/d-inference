@@ -76,6 +76,10 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
         var startCheckTimeoutSeconds = ClusterCandidateRecovery.startCheckTimeoutSeconds
         /// The orphan sweep before every run signals this user's orphaned cluster processes; a test never does.
         var sweepsOrphans = true
+        /// Why another Darkbloom build holds this Mac's GPU now (`ClusterGPUHold.now`); a test stands in.
+        var gpuHold: @Sendable () -> String? = { ClusterGPUHold.now() }
+        /// How often a member held back by another build's hold on the GPU looks again.
+        var gpuHoldPollSeconds: Double = 2
     }
 
     private let configuration: Configuration
@@ -208,6 +212,9 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
                         + "\(configuration.restartHint); see the log")
                     update(phase: .exhausted, detail: reason)
                     while !isStopping { await sleepInterruptibly(seconds: 3600) }
+                case .waitForGPU:
+                    await waitForGPU(after: runSeconds, detail: detail)
+                    continue
                 }
             }
             if isStopping || state.phase == .exhausted { break }
@@ -215,6 +222,33 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
         update(phase: .stopped, detail: "operator stop")
         log("supervisor stopped")
         return 0
+    }
+
+    // MARK: - Another build's hold on the GPU
+
+    /// The member ended because another Darkbloom build holds this Mac's GPU, or production serves here
+    /// (`ClusterMemberRunEnd.gpuHeld`): a wait, never a failure, so the restart budget is not spent. The member starts
+    /// again as soon as the hold ends. A hold already over by now starts it after the first backoff, so refusals that
+    /// keep coming never spin.
+    private func waitForGPU(after runSeconds: Double, detail: String) async {
+        var said: String?
+        while !isStopping, let hold = configuration.gpuHold() {
+            if hold != said {
+                log("member ended after \(Int(runSeconds)) s (\(detail)): \(hold) The member waits for it; not counted")
+                update(phase: .backoff, detail: hold)
+                said = hold
+            }
+            await sleepInterruptibly(seconds: configuration.gpuHoldPollSeconds)
+        }
+        guard !isStopping else { return }
+        if said != nil {
+            log("this Mac's GPU is free again: starting the member")
+            return
+        }
+        let wait = budget.limits.initialBackoffSeconds
+        log("member ended after \(Int(runSeconds)) s (\(detail)); starting it again in \(wait) s, not counted")
+        update(phase: .backoff, detail: detail, restartAt: Date().timeIntervalSince1970 + Double(wait))
+        await sleepInterruptibly(seconds: Double(wait))
     }
 
     // MARK: - Orphan sweep
@@ -393,6 +427,7 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
         switch end {
         case .operatorStop: detail = "operator stop"
         case .guardTeardown: detail = "JACCL guard teardown (exit 75)"
+        case .gpuHeld: detail = "another Darkbloom build held this Mac's GPU (exit \(ClusterMemberRunEnd.gpuHeldExitCode))"
         case .failure(let code): detail = recycleReason.map { "recycled by the liveness guard: \($0)" } ?? "exit \(code)"
         case .signaled(let number): detail = recycleReason.map { "recycled by the liveness guard: \($0)" } ?? "signal \(number)"
         }

@@ -19,6 +19,9 @@ covers every component it would run:
   request whose head S merges, tested against S's first parent), and
   `<tree(S)>-push-<S>` (an earlier run of this push).
 
+A dispatched run (the hourly full run of dev) never skips: it reads no
+record.
+
 It accepts a record only from a completed, successful run of the same
 workflow file in this repository (not a fork), of the matching event, whose
 head commit is the record's head. Any doubt runs the tests: no record, an
@@ -139,6 +142,8 @@ def decide(repository, workflow_ref, event, commit, tree, base, head, selected, 
     """Return (skip, run_url, note). Every failure runs the tests."""
     if not any(selected.values()):
         return False, "", "No component is selected; there is nothing to test or skip."
+    if event == "workflow_dispatch":
+        return False, "", "A dispatched run (the hourly full run) tests every component and never skips."
     try:
         url = tested_run(repository, workflow_path(workflow_ref, repository), event, commit, tree,
                          base, head, selected, run_id, get)

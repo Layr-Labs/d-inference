@@ -37,10 +37,14 @@ FIELDS = {
     "legacyConfigDirectoryNames": "Configuration directories from earlier product names.",
     "launchAgentLabel": "launchd label of the provider LaunchAgent.",
     "watchdogAgentLabel": "launchd label of the crash-recovery watchdog LaunchAgent.",
+    "clusterServiceLabelPrefix": "launchd label prefix of the cluster service login agent; the label ends\n"
+                                 "in 12 hex digits of the install's app path.",
     "logSubsystem": "Unified logging subsystem of the engine and the KV cache.",
     "serviceLogSubsystem": "Unified logging subsystem of the provider service. `logs` and `report`\n"
                            "read this subsystem.",
     "defaultLocalPort": "Default port of the direct-mode local OpenAI endpoint (`start --local`).",
+    "clusterPortOffset": "Added to each port a two-Mac pair uses on the cable, so two installs'\n"
+                         "pairs on the same Macs never reach each other.",
     "keychainServicePrefix": "Prefix of keychain service names and key labels that this install owns.\n"
                              "The keychain access group does not change.",
     "encryptedCacheNamespace": "Directory of this install's encrypted KV cache, in the user cache\n"
@@ -82,6 +86,9 @@ def validate(document):
         port = environment["defaultLocalPort"]
         if isinstance(port, bool) or not isinstance(port, int) or not 0 < port < 65536:
             raise ValueError(f"{name}: defaultLocalPort must be a TCP port")
+        offset = environment["clusterPortOffset"]
+        if isinstance(offset, bool) or not isinstance(offset, int) or not 0 <= offset < 1000:
+            raise ValueError(f"{name}: clusterPortOffset must be a whole number below 1000")
 
 
 def render_swift(document):

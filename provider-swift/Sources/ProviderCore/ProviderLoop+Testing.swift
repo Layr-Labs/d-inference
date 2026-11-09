@@ -385,6 +385,10 @@ extension ProviderLoop {
         return bridge
     }
 
+    func setProductionServesForTesting(_ check: (@Sendable () -> String?)?) {
+        productionServesForTesting = check
+    }
+
     #if DEBUG
     func setGLM5NextPublicationRefusalForTesting(
         _ refusal: (@Sendable (EngineV2Bridge) async -> String?)?

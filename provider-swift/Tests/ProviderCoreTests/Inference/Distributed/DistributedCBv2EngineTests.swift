@@ -203,6 +203,7 @@ struct DistributedCBv2EngineTests {
         request = distributedTestRequest(); request.promptTokens = [100]; cases.append((request, .tokenOutsideVocabulary))
         request = distributedTestRequest(); request.stopTokens = [100]; cases.append((request, .tokenOutsideVocabulary))
         request = distributedTestRequest(); request.promptTokens = Array(repeating: 1, count: 8193); cases.append((request, .promptTooLong))
+        request = distributedTestRequest(); request.promptTokens = Array(repeating: 1, count: 8320); cases.append((request, .contextLengthExceeded))
         request = distributedTestRequest(); request.maxTokens = 0; cases.append((request, .invalidMaxTokens))
         request = distributedTestRequest(); request.maxTokens = 129; cases.append((request, .outputTooLong))
         request = distributedTestRequest(); request.maxTokens = Int.max; cases.append((request, .outputTooLong))
@@ -292,6 +293,8 @@ struct DistributedCBv2EngineTests {
             #expect(failure.errorReason == (refusal.exceedsContext ? .requestExceedsContext : .clientError))
         }
         #expect(DistributedRequestRefusal.outputTooLong.message(profile).contains("128"))
+        // A prompt that fills the pair's context: one Mac's words for its window.
+        #expect(DistributedRequestRefusal.contextLengthExceeded.message(profile) == windowRefusalWords(8320))
         let unavailable = MultiModelBatchSchedulerEngineError.fromSchedulerMessage(
             EngineV2Translation.admissionErrorMessage(for: DistributedEngineError.unavailable))
         #expect(ProviderLoop.mapInferenceErrorToStatus(unavailable) == 503)

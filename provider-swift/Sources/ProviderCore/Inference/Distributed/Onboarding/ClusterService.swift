@@ -107,16 +107,30 @@ public final class ClusterService: @unchecked Sendable {
     /// On the leader: why the other Mac's part can't start now, as its status last said (`ClusterService.heldBack(of:)`);
     /// this Mac's part waits for it instead of starting and ending again. Nil when it says none or didn't answer.
     private var peerHeldBack: String?
+    /// Why this Mac's part waits while the other Darkbloom app holds this Mac's GPU (`holdsBackForOtherApp`); nil when
+    /// it doesn't.
+    private var otherAppHolds: String?
+    /// Production serving on this Mac, in words (`ClusterMachineDeviceLock.productionServingHere`): this build's check,
+    /// nil in production's own build; tests stand in.
+    var productionServes: (@Sendable () -> String?)?
+    /// Fences the GPU work of this Mac's part (`partPID`) at once when it steps aside for production, and says how many
+    /// worker owners it asked (`fenceOwners`); tests stand in.
+    var fenceGPUWork: @Sendable (_ partPID: Int32) -> Int = { ClusterService.fenceOwners(of: $0) }
     /// A step aside of single-Mac serving runs (`stepAsideIfUnchosen`), and the process it was for.
     private var steppingAside = false
     private var steppedAsidePID: Int32?
     /// How single-Mac serving is stopped (`stop --solo`); tests stand in.
     var stopSingleMac: @Sendable (URL) -> Result<Void, ClusterSetupFailure> = { ClusterService.stopSoloServing(executable: $0) }
+    /// The re-plan after an update (`checkForUpdate`): each Mac's running worker digest by member, and the re-plan's
+    /// steps; tests stand in. Nil: this Mac's worker and the other Mac's as it answers over the cable, and the control
+    /// leader's onboarding operations.
+    var updateReplan: (running: () -> [String: String?], steps: UpdateReplan)?
     private var peerHeldBackSaid: String?
     private var nextSync = Date.distantPast
-    // Setting the cluster up again after a Darkbloom update (`checkForUpdate`).
+    // Setting the cluster up again after a Darkbloom update (`checkForUpdate`); a test moves the next check instead of
+    // waiting for it.
     private var updateInFlight = false
-    private var nextUpdateCheck = Date.distantPast
+    var nextUpdateCheck = Date.distantPast
     private var updatingLine: String?
     /// Said once while the Macs run different builds after an update.
     private var updateWaitLine: String?
@@ -128,15 +142,19 @@ public final class ClusterService: @unchecked Sendable {
     private var otherVersionAsked = Date.distantPast
     private var otherVersionAsking = false
     // The cluster approval is asked for once per run of this service on the control leader, and again every minute
-    // while the pair is offered or serves locally with its approval set aside (`checkApproval`).
+    // while the pair is offered or serves locally with its approval set aside (`checkApproval`); a test moves the next
+    // check instead of waiting for it.
     private var approvalChecked = false
     private var approvalInFlight = false
-    private var nextApprovalCheck = Date.distantPast
+    var nextApprovalCheck = Date.distantPast
     private var approvalWatch = ClusterApprovalCheck.Watch()
     // This Mac's coordinator-paired parts that ended in a row right after starting (`ClusterApprovalCheck.memberQuickEnds`),
     // and whether the running part is one.
     private var memberQuickEnds = 0
-    private var childIsMember = false
+    private var childIsMember: Bool { childMemberRank != nil }
+    /// The running coordinator-paired part's rank (nil for any other part): only rank 0, which hosts the pair's slot,
+    /// writes the pair's `Pair: …` lines.
+    private var childMemberRank: Int?
     /// The running part is the link follower (`followerArguments`), the only part that writes a Local Network refusal.
     private var childIsLinkFollower = false
     /// The running follower's refusal as last read, by its log's size (`runningPartRefusal`).
@@ -153,28 +171,83 @@ public final class ClusterService: @unchecked Sendable {
     // Derived control (ClusterServiceControl.swift).
     var control: ClusterControlNode?
     var controlResponder: ClusterSetupLinkExchange.Responder?
-    /// The port the cluster's API last used on this Mac (rank 0's here, or the relay's); kept while it is free on both.
+    /// The port the cluster's API last used on this Mac (rank 0's here, or the relay's): kept, while free, only when this
+    /// Mac's own port (`thisMacPort`) can't be read.
     private var apiPort: Int?
     /// The port the running part listens on: rank 0's API or the solo server's; nil for any other part.
     private var childPort: Int?
+    /// The memory re-plan's steps (`replanForMemory`); tests stand in. Nil: the control leader's onboarding operations.
+    var memoryReplan: MemoryReplan?
     /// Starts of this setup that ended on a memory-gate refusal (a Mac's memory moved after the plan was made), and
-    /// when the plan may next be made again (`memoryReplan`).
+    /// when the plan may next be made again (`noteMemoryRefusal`); tests read whether one is under way.
     private var memoryRefusals: (key: String, count: Int)?
     private var nextMemoryReplan = Date.distantPast
-    private var memoryReplanInFlight = false
+    var memoryReplanInFlight = false
     /// Re-plans in a row that came back with the same split: after `memoryReplansWithSameSplit` the service stops
     /// re-planning (the memory is short for every split) until a re-plan finds another one or the service restarts.
     private var sameSplitReplans = 0
     static let memoryReplansWithSameSplit = 3
-    /// Local only, on the Mac that is not rank 0: its own port passed to rank 0's API (`ClusterLocalRelay`).
-    private var relay: ClusterLocalRelay?
+    /// The pair's API on every address (local only, or Both), on a Mac that is not rank 0: its own port passed to rank
+    /// 0's API (`ClusterLocalRelay`). Tests set it.
+    var relay: ClusterLocalRelay?
     /// Rank 0's API port as the other Mac's status last said it, and when it was asked (a thread of its own).
     private var relayTargetPort: Int?
+    /// What this Mac's relay waits on, as `status()` publishes it (`relayStatus`); tests set it.
+    var relayState = RelayState()
+    /// The last reason this Mac's own port couldn't be read (`thisMacPort`), said once.
+    private var portProblem: String?
+    static let relayRetrySeconds: Double = 10
+    /// How long the other Mac may go unheard over the cable (two missed lease renewals) before this Mac's relay answers
+    /// that it can't be reached (`relayAway`).
+    static let otherMacSilentSeconds: Double = 12
+    /// Failed asks in a row that make rank 0's Mac away while no lease from it was heard in this service's life
+    /// (`relayAway`).
+    static let askFailuresWithoutLease = 2
+
+    /// What this Mac's relay waits on: set by `relayTick` and `askRankZeroPort`.
+    struct RelayState: Equatable {
+        /// Rank 0's cable address while this Mac would relay the pair's API (`ClusterLocalRelay.rankZeroHost`); nil
+        /// otherwise.
+        var host: String?
+        /// Rank 0's last status said it answers on its own Mac only (`ClusterLocalRelay.rankZeroAnswersOnItsMacOnly`).
+        var waitsForOffer = false
+        /// A relay that couldn't listen on this Mac's port, which another program holds: for which target, on which port,
+        /// and when it is tried again (`relayRetrySeconds`), so this Mac's port is never read on every tick.
+        var held: Held?
+        /// Asks of rank 0's Mac that failed in a row (`askRankZeroPort`).
+        var askFailures = 0
+        /// Rank 0's Mac is away (`relayAway`): the relay answers each request a 503 that says so.
+        var away = false
+
+        struct Held: Equatable {
+            var target: ClusterLocalRelay.Target
+            var port: Int
+            var retryAt: Date
+        }
+    }
+
+    /// What `status()` says of this Mac's relay, only while this Mac would relay: the port another program holds, rank
+    /// 0 answering on its own Mac only, and rank 0's Mac away.
+    static func relayStatus(_ state: RelayState) -> (portHeld: Int?, waitsForOffer: Bool?, away: Bool?) {
+        guard state.host != nil else { return (nil, nil, nil) }
+        return (state.held?.port, state.waitsForOffer ? true : nil, state.away ? true : nil)
+    }
+
+    /// Whether rank 0's Mac is away for this Mac's relay: it hasn't answered over the cable (`otherAnsweredAt`, its
+    /// lease or answer, `ClusterControlNode`) for `otherMacSilentSeconds`. A failed ask of it says nothing then: the
+    /// exchange can be slow or busy while that Mac is there (its answer behind another command, a lost discovery, this
+    /// Mac's exchange lock busy), and the 503 tells the owner to stop the pair. Only before it has answered over the cable
+    /// in this service's life do the asks decide: `askFailuresWithoutLease` failed in a row. A connection rank 0 never
+    /// takes gets its 503 within `ClusterLocalRelay.connectSeconds` either way.
+    static func relayAway(askFailures: Int, otherAnsweredAt: Double?, now: Double) -> Bool {
+        guard let answered = otherAnsweredAt else { return askFailures >= askFailuresWithoutLease }
+        return now - answered >= otherMacSilentSeconds
+    }
     private var relayAsked = Date.distantPast
     private var relayAsking = false
     /// Seconds before the next ask: 10 while the other Mac answers, longer (to 120) while it does not, so the link's
-    /// one-at-a-time request lock is not held for the other commands.
-    private var relayAskInterval: Double = 10
+    /// one-at-a-time request lock is not held for the other commands. Tests read it.
+    var relayAskInterval: Double = 10
     /// When each listener last checked its cable port and its pairing (`listenerChange`).
     var responderCheck = Date.distantPast
     var controlCheck = Date.distantPast
@@ -210,10 +283,10 @@ public final class ClusterService: @unchecked Sendable {
         self.environment = environment
         self.listening = listening
         self.powerAssertionReason = powerAssertionReason
-        pairingStore = .default(home: paths.homeDirectory)
+        pairingStore = .default(home: paths.homeDirectory, environment: paths.environment)
         // This home's provider instance lock (`ProcessLifecycle.defaultPIDFile`'s, unless DARKBLOOM_PID_FILE moves it).
         providerInstanceLock = (ProcessInfo.processInfo.environment["DARKBLOOM_PID_FILE"].map { URL(fileURLWithPath: $0) }
-            ?? BuildEnvironment.current.installDirectory(home: paths.homeDirectory).appendingPathComponent("provider.pid"))
+            ?? paths.installDirectory.appendingPathComponent("provider.pid"))
             .appendingPathExtension("lock")
         var wizard = settings.wizard
         wizard.derivedPlacement = true
@@ -223,6 +296,7 @@ public final class ClusterService: @unchecked Sendable {
         store = ClusterSetupStore(paths: .init(paths: paths))
         context = LiveContext(paths: paths, store: store, settings: wizard,
             clean: ClusterConsoleFreeText(homeDirectory: paths.homeDirectory.path))
+        productionServes = paths.machineDeviceLock.otherHolder
     }
 
     // MARK: - Files
@@ -293,7 +367,7 @@ public final class ClusterService: @unchecked Sendable {
             if running() { return true }
             var status: Int32 = 0
             if waitpid(pid, &status, WNOHANG) == pid {
-                throw ClusterOnboardingFailure("this Mac's cluster service stopped at start; its log is ~/.darkbloom/cluster-setup/service.log")
+                throw ClusterOnboardingFailure("this Mac's cluster service stopped at start; its log is \(ClusterUserPaths.serviceLogShown)")
             }
             usleep(50_000)
         }
@@ -527,8 +601,19 @@ public final class ClusterService: @unchecked Sendable {
     static let memoryRefusalsBeforeReplan = 2
     static let memoryReplanSeconds: Double = 600
 
-    private func noteMemoryRefusal(key: String, since: Date, model: String, say: @escaping @Sendable (String) -> Void) {
-        let log = ClusterIncidentLog.forThisInstall()
+    /// The memory re-plan's steps (`replanForMemory`), as the control leader's onboarding operations run them
+    /// (`controlLive`); tests stand in.
+    struct MemoryReplan {
+        var reachMembers: () -> Result<[ClusterOnboardingMachine], ClusterOnboardingFailure>
+        var planModels: () -> Result<[ClusterOnboardingModelChoice], ClusterOnboardingFailure>
+        var adopt: (Int) -> Result<[String], ClusterOnboardingFailure>
+        var serve: () -> Result<[String], ClusterOnboardingFailure>
+        /// Puts the pair's saved start back (`ClusterService.restoreStart`).
+        var restoreStart: () -> Void
+    }
+
+    func noteMemoryRefusal(key: String, since: Date, model: String, say: @escaping @Sendable (String) -> Void) {
+        let log = ClusterIncidentLog.forThisInstall(homeDirectory: context.paths.homeDirectory)
         let refused = log.feed().incidents.contains { $0.ts >= since.timeIntervalSince1970 && $0.guidanceCode == "memory_gate_refused" }
         let due = lock.withLock { () -> Bool in
             guard refused else { memoryRefusals = nil; return false }
@@ -544,48 +629,77 @@ public final class ClusterService: @unchecked Sendable {
         Thread.detachNewThread { [weak self] in
             guard let self else { return }
             defer { self.lock.withLock { self.memoryReplanInFlight = false; self.memoryRefusals = nil } }
-            guard let held = ClusterControlCommandLock.acquire(seconds: 5) else { return }
-            defer { held.release() }
-            say("a Mac's memory no longer holds its share of \(model) (refused at load twice): planning again on the memory now")
-            let before = try? self.context.savedConfiguration().reference.get()?.sha256
-            let live = self.controlLive
-            func failed(_ lines: [String]) { say("could not plan \(model) again: " + lines.joined(separator: " ")) }
-            if case .failure(let failure) = live.localReachMembers({ _ in }) { return failed(failure.lines) }
-            let choices: [ClusterOnboardingModelChoice]
-            switch live.localPlanModels() {
-            case .success(let value): choices = value
-            case .failure(let failure): return failed(failure.lines)
-            }
-            guard let index = ClusterOnboardingUpdate.servableIndex(of: model, in: choices) else {
-                return failed(["\(model) does not fit these Macs' memory now: \(choices.first { ($0.modelID ?? $0.title) == model }?.blocker ?? "not offered")"])
-            }
-            if case .failure(let failure) = live.localAdopt(index) { return failed(failure.lines) }
-            if case .failure(let failure) = live.localServe() { return failed(failure.lines) }
-            let after = try? self.context.savedConfiguration().reference.get()?.sha256
-            self.lock.withLock { self.sameSplitReplans = before == after ? self.sameSplitReplans + 1 : 0 }
-            // `localAdopt` stops the serving parts and plans once more when their memory is back, so the split adopted
-            // need not be `choices[index]` (planned while they ran): it is said from the setup the start recorded.
-            let deployment = (try? self.store.readRecord())?.leadership?.deployment
-            say(before == after ? "planned \(model) again: the same split is still the one that fits; trying it again"
-                                : "planned \(model) again on the memory now: a new split is starting on both Macs" + (deployment.map { " (\($0))" } ?? ""))
+            self.replanForMemory(model: model, say: say)
         }
     }
 
-    /// Local only, on the Mac whose part is not rank 0: the same port as rank 0's API (else 8000 or the next free one)
-    /// passes each connection over the cable to rank 0's API, so the cluster answers at the same address whichever Mac
-    /// the plan made rank 0, with the same key (`LocalEndpoint.loadOrCreateClusterToken`). Stopped whenever this Mac's part
-    /// is not running or is rank 0, before rank 0 here takes the port.
+    /// `noteMemoryRefusal`'s re-plan of `model` on the memory now, on a thread of its own: it holds the command lock so a
+    /// person's command and this never run at once.
+    func replanForMemory(model: String, say: @escaping @Sendable (String) -> Void) {
+        // It comes due when a part ends, so also right after the owner's `darkbloom stop`, which holds the command
+        // lock: its `localServe` would start that pair again. A hand-over may have finished meanwhile too.
+        guard let held = commandLockIfStillStarted() else {
+            // The owner stopped the pair: this re-plan did nothing, so its slot is given back, and a start of theirs
+            // within the 10 minutes is re-planned at its next refusals instead of being refused until the slot passes.
+            if (try? store.readRecord())?.leadership?.serving != true { lock.withLock { nextMemoryReplan = .distantPast } }
+            return
+        }
+        defer { held.release() }
+        say("a Mac's memory no longer holds its share of \(model) (refused at load twice): planning again on the memory now")
+        let before = try? context.savedConfiguration().reference.get()?.sha256
+        let live = controlLive
+        let steps = memoryReplan ?? .init(reachMembers: { live.localReachMembers({ _ in }) }, planModels: { live.localPlanModels() },
+                                          adopt: { live.localAdopt($0) }, serve: { live.localServe() },
+                                          restoreStart: { self.restoreStart() })
+        func failed(_ lines: [String]) { say("could not plan \(model) again: " + lines.joined(separator: " ")) }
+        if case .failure(let failure) = steps.reachMembers() { return failed(failure.lines) }
+        let choices: [ClusterOnboardingModelChoice]
+        switch steps.planModels() {
+        case .success(let value): choices = value
+        case .failure(let failure): return failed(failure.lines)
+        }
+        guard let index = ClusterOnboardingUpdate.servableIndex(of: model, in: choices) else {
+            return failed(["\(model) does not fit these Macs' memory now: \(choices.first { ($0.modelID ?? $0.title) == model }?.blocker ?? "not offered")"])
+        }
+        // On a serving pair `localAdopt` stops both parts first, and that stop clears the saved start. From there every
+        // failure, the stop's own included, puts it back (`restoreStart`), so the pair serves as before and the next
+        // refusals bring the next re-plan. Always before `held` is let go: every stop of the pair takes this lock, so an
+        // owner's stop can't land just before the restore and be undone.
+        func restored(_ lines: [String]) {
+            steps.restoreStart()
+            failed(lines + ["The pair stays started."])
+        }
+        if case .failure(let failure) = steps.adopt(index) { return restored(failure.lines) }
+        if case .failure(let failure) = steps.serve() { return restored(failure.lines) }
+        let after = try? context.savedConfiguration().reference.get()?.sha256
+        lock.withLock { sameSplitReplans = before == after ? sameSplitReplans + 1 : 0 }
+        // `localAdopt` stops the serving parts and plans once more when their memory is back, so the split adopted
+        // need not be `choices[index]` (planned while they ran): it is said from the setup the start recorded.
+        let deployment = (try? store.readRecord())?.leadership?.deployment
+        say(before == after ? "planned \(model) again: the same split is still the one that fits; trying it again"
+                            : "planned \(model) again on the memory now: a new split is starting on both Macs" + (deployment.map { " (\($0))" } ?? ""))
+    }
+
+    /// Local only or Both, me first, with the API on every address, on each Mac whose part is not rank 0: this Mac's own
+    /// port (`thisMacPort`, its saved `[local] port`) passes each connection over the cable to rank 0's API
+    /// (`ClusterLocalRelay.rankZeroHost`, `port(own:for:scope:isFree:)`), so the pair answers on every Mac, each at its own
+    /// address whichever Mac the plan made rank 0. Tools here use this Mac's own key, which the relay passes on as the
+    /// pair's (`ClusterLocalRelay.Keys`). This Mac's port is read only when a relay starts: a port another program holds
+    /// is said once and tried again every `relayRetrySeconds`. Stopped whenever this Mac's part is not running or is rank
+    /// 0, before rank 0 here takes the port.
     private func relayTick(say: @escaping @Sendable (String) -> Void) {
-        let record = try? store.readRecord()
+        let leadership = (try? store.readRecord())?.leadership
         let saved = context.savedConfiguration().configuration
-        let runsMember = lock.withLock { child?.isRunning == true && childSetup?.hasPrefix("solo:") != true }
+        let partRuns = lock.withLock { child?.isRunning == true && childSetup?.hasPrefix("solo:") != true }
         var wanted: ClusterLocalRelay.Target?
-        // Only when the API listens on every address (local only's default): with a loopback or one-address bind,
-        // rank 0's API is not reachable over the cable, and this Mac must not open what the person kept closed.
-        if let record, record.leadership?.serving == true, record.leadership?.scope.bind == "0.0.0.0",
-           let saved, saved.role != .leader, saved.peers.indices.contains(0), runsMember {
+        let host = leadership.flatMap { leadership in saved.flatMap { saved in
+            ClusterLocalRelay.rankZeroHost(serving: leadership.serving, scope: leadership.scope, memberID: saved.memberID,
+                                           roster: saved.peers.map { .init(id: $0.id, rank: $0.rank, host: $0.host) }, partRuns: partRuns)
+        } }
+        let away = updateRelayAway(host: host, now: Self.monotonicSeconds())
+        if let host {
             askRankZeroPort()
-            if let port = lock.withLock({ relayTargetPort }) { wanted = .init(host: saved.peers[0].host, port: port) }
+            if let port = lock.withLock({ relayTargetPort }) { wanted = .init(host: host, port: port) }
         }
         let current = lock.withLock { relay }
         if let current, current.target == wanted, !current.isStopped { return }
@@ -595,18 +709,117 @@ public final class ClusterService: @unchecked Sendable {
             LocalEndpoint.removeInfo(ifPID: getpid())
             say("stopped passing this Mac's port \(current.port) to the API on the other Mac")
         }
-        guard let wanted, let token = try? LocalEndpoint.loadOrCreateClusterToken() else { return }
-        let port = ClusterLocalServing.portIsFree(wanted.port) ? wanted.port : ClusterLocalServing.servingPort()
-        guard let started = ClusterLocalRelay(port: port, target: wanted) else { return }
-        lock.withLock { relay = started; apiPort = port }
+        guard let wanted, let scope = leadership?.scope,
+              let keys = try? ClusterLocalRelay.Keys(own: LocalEndpoint.loadOrCreateToken(), pair: LocalEndpoint.loadOrCreateClusterToken())
+        else { lock.withLock { relayState.held = nil }; return }
+        let due = lock.withLock { () -> Bool in
+            guard let held = relayState.held, held.target == wanted else { return true }
+            return Date().timeIntervalSince(held.retryAt) >= 0
+        }
+        guard due, let started = startRelay(to: wanted, scope: scope, keys: keys, say: say) else { return }
+        started.setAway(away)
+        lock.withLock { relay = started; apiPort = started.port }
         // The discovery file only when no other live server on this Mac owns it (`darkbloom start --local`).
         if LocalEndpoint.readLiveInfo().map({ $0.pid == getpid() }) ?? true {
-            try? LocalEndpoint.writeInfo(.init(host: "0.0.0.0", port: UInt16(port), apiKey: token,
-                version: ProviderCore.version, pid: getpid(), updatedAt: ISO8601DateFormatter().string(from: Date())))
+            try? LocalEndpoint.writeInfo(Self.relayDiscovery(port: started.port, keys: keys))
         }
-        say(port == wanted.port
-            ? "the API answers on this Mac's port \(port) too, the same port as on the other Mac (rank 0), passed over the cable"
-            : "port \(wanted.port) is taken on this Mac: the API answers here on port \(port), passed over the cable to port \(wanted.port) on the other Mac (rank 0)")
+        say("the pair's API answers on this Mac's own port \(started.port) too, passed over the cable to port \(wanted.port) on the other Mac (rank 0)")
+    }
+
+    /// Rank 0's Mac away or back for this Mac's relay (`relayAway`, from the cable's lease in `control` and the asks of
+    /// that Mac, `recordRankZeroAsk`): published (`relayState.away`), and told to the running relay with the words that
+    /// name the other Mac, so it answers a 503 at once while away. Once that Mac answers over the cable again after
+    /// failed asks, asks go back to every 10 s (from up to 120 s), so this Mac learns rank 0's port again within about
+    /// 10 s, without asking on every tick.
+    @discardableResult
+    func updateRelayAway(host: String?, now: Double) -> Bool {
+        let (away, words, running) = lock.withLock { () -> (Bool, ClusterLocalRelay.Refusals, ClusterLocalRelay?) in
+            relayState.host = host
+            let answered = control?.otherAnsweredAt
+            if host != nil, relayState.askFailures > 0, let answered, now - answered < Self.otherMacSilentSeconds {
+                relayAskInterval = 10
+            }
+            relayState.away = host != nil && Self.relayAway(askFailures: relayState.askFailures, otherAnsweredAt: answered, now: now)
+            return (relayState.away, .pair(otherMac: otherMacNameLocked(), cli: BuildEnvironment.current.cliName), relay)
+        }
+        running?.setRefusals(words)
+        running?.setAway(away)
+        return away
+    }
+
+    /// This Mac's relay to `wanted`, on this Mac's own port (`thisMacPort`, read only here, when a relay starts; else the
+    /// earlier rule). Nil when another program holds that port: said once per port, and tried again every
+    /// `relayRetrySeconds` (`relayState.held`).
+    func startRelay(to wanted: ClusterLocalRelay.Target, scope: ClusterServingScope, keys: ClusterLocalRelay.Keys,
+                    say: @Sendable (String) -> Void) -> ClusterLocalRelay? {
+        let port = ClusterLocalRelay.port(own: thisMacPort(say: say), for: wanted, scope: scope)
+        let words = lock.withLock { ClusterLocalRelay.Refusals.pair(otherMac: otherMacNameLocked(), cli: BuildEnvironment.current.cliName) }
+        guard let started = ClusterLocalRelay(port: port, target: wanted, keys: keys, refusals: words) else {
+            let first = lock.withLock { () -> Bool in
+                defer { relayState.held = .init(target: wanted, port: port, retryAt: Date().addingTimeInterval(Self.relayRetrySeconds)) }
+                return relayState.held.map { $0.target != wanted || $0.port != port } ?? true
+            }
+            if first {
+                say("this Mac's port \(port) is held by another program, so the pair's API doesn't answer on this Mac: free it, "
+                    + "or set another [local] port in \(settings.wizard.providerConfiguration.path), then `\(BuildEnvironment.current.cliName) restart`; "
+                    + "trying again every \(Int(Self.relayRetrySeconds)) s")
+            }
+            return nil
+        }
+        lock.withLock { relayState.held = nil }
+        return started
+    }
+
+    /// This Mac's own port for the pair's API or relay (`ownAPIPort`), saying one newly saved; nil when it can't be read
+    /// or chosen (the earlier rules then), said once per reason.
+    private func thisMacPort(say: @Sendable (String) -> Void) -> Int? {
+        let path = settings.wizard.providerConfiguration
+        do {
+            let choice = try Self.ownAPIPort(configPath: path)
+            lock.withLock { portProblem = nil }
+            if let note = choice.note { say(note) }
+            return Int(choice.port)
+        } catch {
+            let line = "this Mac's local API port can't be read from \(path.path) (\(error)): the pair's API or relay here takes a free port"
+            if lock.withLock({ () -> Bool in defer { portProblem = line }; return portProblem != line }) { say(line) }
+            return nil
+        }
+    }
+
+    /// The discovery record this Mac's relay writes for its tools (`darkbloom local`, `start --opencode`): its port on
+    /// every address, and this Mac's own key, which the relay passes on as the pair's.
+    public static func relayDiscovery(port: Int, keys: ClusterLocalRelay.Keys) -> LocalEndpoint.Info {
+        LocalEndpoint.Info(host: ClusterServingScope.localOnlyDefaultBind, port: UInt16(port), apiKey: keys.own,
+                           version: ProviderCore.version, pid: getpid(), updatedAt: ISO8601DateFormatter().string(from: Date()))
+    }
+
+    /// This Mac's one local API port, which the pair's API or relay on this Mac takes as every local API here does
+    /// (`LocalAPIPort.thisMac`, from the provider config at `configPath`): the saved `[local] port` as it is, else the
+    /// one this Mac's local API already uses, else a new choice, saved there. Throws without a provider config (the
+    /// service writes none), when the config can't be read, and when no port is free for a new choice.
+    static func ownAPIPort(configPath: URL, ownLivePort: () -> UInt16? = LocalAPIPort.ownLivePort,
+                           installedPort: () -> UInt16? = LocalAPIPort.installedJobPort,
+                           isFree: (UInt16) -> Bool = LocalAPIPort.isFreeOnThisMac) throws -> LocalAPIPort.Choice {
+        guard FileManager.default.fileExists(atPath: configPath.path) else {
+            throw CocoaError(.fileNoSuchFile, userInfo: [NSFilePathErrorKey: configPath.path])
+        }
+        return try LocalAPIPort.thisMac(configPath: configPath, fallbackConfig: ConfigManager.load(from: configPath),
+                                        ownLivePort: ownLivePort, installedPort: installedPort, isFree: isFree)
+    }
+
+    /// This Mac is rank 0 now: its relay gives the port back first.
+    private func handRelayPortBack() {
+        guard let passing = lock.withLock({ () -> ClusterLocalRelay? in defer { relay = nil }; return relay }) else { return }
+        passing.stop()
+        LocalEndpoint.removeInfo(ifPID: getpid())
+    }
+
+    /// Where the pair's API listens on every address of this Mac, for the other Macs' relays: its part's discovery
+    /// record (written once that part's API is bound). Nil while there is none, for a solo server, and for an API on
+    /// loopback or one address.
+    private func pairAPIPort() -> Int? {
+        let part = lock.withLock { child?.isRunning == true && childSetup?.hasPrefix("cluster:") == true ? child?.processIdentifier : nil }
+        return ClusterLocalRelay.pairAPIPort(part: part, record: LocalEndpoint.readLiveInfo().map { ($0.pid, $0.host, $0.port) })
     }
 
     /// Asks the other Mac (every 10 s, never on this loop's thread) where its rank 0 API listens.
@@ -619,40 +832,38 @@ public final class ClusterService: @unchecked Sendable {
         let context = self.context, pairingStore = self.pairingStore
         Thread.detachNewThread { [weak self] in
             defer { self?.lock.withLock { self?.relayAsking = false } }
-            guard let pairing = try? ClusterSetupLinkExchange.pairing(store: pairingStore), let selection = try? context.linkSelection(),
-                  let body = try? JSONEncoder().encode(ClusterServiceCommand(op: .status)),
-                  let reply = try? ClusterSetupLinkExchange.command(pairing: pairing, selection: selection, peerAddress: nil,
-                      body: body, seconds: 5).reply,
-                  let status = try? JSONDecoder().decode(ClusterServiceStatus.self, from: reply) else {
-                self?.lock.withLock { if let self { self.relayAskInterval = min(self.relayAskInterval * 2, 120) } }
-                return
-            }
-            let port = status.sessionLeader && status.session?.ready == true ? status.session?.port : nil
-            self?.lock.withLock { self?.relayTargetPort = port; self?.relayAskInterval = 10 }
+            let status: ClusterServiceStatus? = {
+                guard let pairing = try? ClusterSetupLinkExchange.pairing(store: pairingStore), let selection = try? context.linkSelection(),
+                      let body = try? JSONEncoder().encode(ClusterServiceCommand(op: .status)),
+                      let reply = try? ClusterSetupLinkExchange.command(pairing: pairing, selection: selection, peerAddress: nil,
+                          body: body, seconds: 5).reply else { return nil }
+                return try? JSONDecoder().decode(ClusterServiceStatus.self, from: reply)
+            }()
+            self?.recordRankZeroAsk(status)
         }
     }
 
-    /// The ports the other Mac has free (its status's `freePorts`), asked on a thread of its own and waited for at most
-    /// `seconds`; nil when it does not answer in time or its build does not say.
-    private func peerFreePorts(seconds: Double) -> [Int]? {
-        let context = self.context, pairingStore = self.pairingStore
-        let answered = ClusterOnboardingMailbox<[Int]>()
-        let done = DispatchSemaphore(value: 0)
-        Thread.detachNewThread {
-            defer { done.signal() }
-            guard let pairing = try? ClusterSetupLinkExchange.pairing(store: pairingStore), let selection = try? context.linkSelection(),
-                  let body = try? JSONEncoder().encode(ClusterServiceCommand(op: .status)),
-                  let reply = try? ClusterSetupLinkExchange.command(pairing: pairing, selection: selection, peerAddress: nil,
-                      body: body, seconds: seconds).reply,
-                  let ports = try? JSONDecoder().decode(ClusterServiceStatus.self, from: reply).freePorts else { return }
-            answered.post(ports)
+    /// What an ask of rank 0's Mac found (`askRankZeroPort`): its status, or nil when the ask failed (no answer within
+    /// 5 s, behind another command on that Mac or a lost discovery, or this Mac's exchange lock busy). A failed ask backs
+    /// the asks off, to 120 s, and is counted (`relayState.askFailures`, which `relayAway` reads); an answer gives rank
+    /// 0's port and resets both.
+    func recordRankZeroAsk(_ status: ClusterServiceStatus?) {
+        lock.withLock {
+            guard let status else {
+                relayAskInterval = min(relayAskInterval * 2, 120)
+                relayState.askFailures += 1
+                return
+            }
+            relayTargetPort = ClusterLocalRelay.rankZeroPort(in: status)
+            relayState.waitsForOffer = ClusterLocalRelay.rankZeroAnswersOnItsMacOnly(in: status)
+            relayAskInterval = 10
+            relayState.askFailures = 0
         }
-        guard done.wait(timeout: .now() + seconds) == .success else { return nil }
-        return answered.take().first
     }
 
     /// The ports this Mac reports free: those no program listens on, and those its own API, relay or solo server holds
-    /// (given back when the other Mac becomes rank 0 or the pair re-forms).
+    /// (given back when the other Mac becomes rank 0 or the pair re-forms). An older build's rank 0 reads them to take a
+    /// port free on both Macs; this build's takes its own.
     private func reportedFreePorts() -> [Int] {
         let own = lock.withLock { () -> Set<Int> in
             var ports = Set<Int>()
@@ -709,12 +920,13 @@ public final class ClusterService: @unchecked Sendable {
                   self.leadsAndRunsCluster() else { return }
             switch ClusterOnboardingSync.action(leaderServing: leadership.serving, leaderModel: leadership.modelName,
                                                 memberServing: member?.serving, memberModel: member?.modelName,
-                                                leaderLocalOnly: leadership.scope.isLocalOnly, memberLocalOnly: member?.localOnly) {
+                                                leaderLocalOnly: leadership.scope.isLocalOnly, memberLocalOnly: member?.localOnly,
+                                                leaderLocalAPI: leadership.scope.addsLocalAPI, memberLocalAPI: member?.localAPI) {
             case .none: return
             case .serve(let model):
                 let runsIt = member?.serving == true && member?.modelName == model
                 var serve = ClusterServiceCommand(op: .serve, model: model, deployment: leadership.deployment, scope: leadership.scope)
-                if leadership.scope.isLocalOnly { serve.localToken = try? LocalEndpoint.loadOrCreateClusterToken() }
+                if leadership.scope.localAPIBind != nil { serve.localToken = try? LocalEndpoint.loadOrCreateClusterToken() }
                 if send(serve, seconds: 10) != nil {
                     say(runsIt ? "synced how the cluster serves to the member" : "the member had missed the start: started its part")
                 }
@@ -755,6 +967,7 @@ public final class ClusterService: @unchecked Sendable {
         case .status:
             var value = status()
             value.freePorts = reportedFreePorts()
+            value.pairAPIPort = pairAPIPort()
             return try encoder.encode(value)
         case .serve, .stop:
             if let sent = command.claim, let own = lock.withLock({ control?.claim }), own.supersedes(sent) {
@@ -865,15 +1078,23 @@ public final class ClusterService: @unchecked Sendable {
     /// How often a part that has not ended yet is sent SIGTERM again while it is waited for.
     static let stopResendSeconds: Double = 5
 
-    /// Degraded serving alone listens where `start --local` listens by default, on this Mac's loopback.
-    public static let soloPort = 8000
+    /// Degraded serving alone listens on this Mac's own saved port (`thisMacPort`), as every local API here does; only
+    /// when that can't be read, where `start --local` listened by default.
+    public static let defaultSoloPort = 8000
+
+    /// The port the solo server in `status` listens on (its published part's), for the screens that check it.
+    public static func soloPort(of status: ClusterServiceStatus?) -> Int {
+        guard status?.child.solo == true, let port = status?.child.port else { return defaultSoloPort }
+        return port
+    }
 
     /// What the solo port shows: THIS service's solo server (the published solo child, checked by its start time so a
     /// recycled process number never counts, or a process it started) holding the listening socket and answering its
     /// model list; that server still loading; or another program answering there (never taken for ours).
     public enum SoloReadiness: Equatable { case ready, loading, foreign }
 
-    static func soloReadiness(_ status: ClusterServiceStatus?, port: Int = soloPort) -> SoloReadiness {
+    static func soloReadiness(_ status: ClusterServiceStatus?, port given: Int? = nil) -> SoloReadiness {
+        let port = given ?? soloPort(of: status)
         guard let child = status?.child, child.running, child.solo == true, let pid = child.pid, let startedAt = child.startedAt,
               let now = ClusterProcessTable.startTime(of: pid), abs(now - startedAt) < 0.001 else { return .loading }
         let ours = ([pid] + ClusterProcessTable.descendants(of: pid)).contains { ClusterProcessTable.listeningTCPPorts(of: $0).contains(port) }
@@ -922,7 +1143,7 @@ public final class ClusterService: @unchecked Sendable {
         var owned: RecordedPart?
         repeat {
             let status = published(in: directory)
-            if status == nil, FileManager.default.fileExists(atPath: directory.appendingPathComponent("service-status.json").path) {
+            if status == nil, FileManager.default.fileExists(atPath: directory.appendingPathComponent(ClusterServiceStatus.fileName).path) {
                 return false
             }
             if let child = status?.child, child.running, child.pid == nil || child.startedAt == nil { return false }
@@ -953,7 +1174,7 @@ public final class ClusterService: @unchecked Sendable {
     /// `authorized`: whether a server answers its model list on the solo port with this Mac's local API token (only
     /// ever sent to this service's own solo server: see `soloReadiness`); otherwise whether anything answers HTTP there,
     /// asked without the token.
-    static func soloAnswers(port: Int = soloPort, authorized: Bool = true) -> Bool {
+    static func soloAnswers(port: Int = defaultSoloPort, authorized: Bool = true) -> Bool {
         var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/models")!)
         request.timeoutInterval = 3
         if authorized, let token = LocalEndpoint.readToken() { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
@@ -984,9 +1205,16 @@ public final class ClusterService: @unchecked Sendable {
                 + (reply.keptLive > 0 ? ", \(reply.keptLive) still in use (removed when its part stops)" : "") + "."
         } catch {
             let reason = (error as? ClusterSetupFailure)?.text ?? String(describing: error)
-            return "The other Mac was not reached (\(ClusterConsoleText.bounded(reason, maximum: 160))): "
-                + "its pair cache stays until it unpairs too (`\(OnboardingLive.cli) cluster pair --forget \(pairing.localPin)` there)."
+            return memberNotReachedLine(reason: reason)
         }
+    }
+
+    /// The leader's line when the member it tells of the unpair isn't reached. That Mac may have left the pair already
+    /// (`darkbloom cluster leave` there first, which reclaims its pair cache), so what to run there only if it is still
+    /// paired, and no pin.
+    public static func memberNotReachedLine(reason: String) -> String {
+        "The other Mac was not reached (\(ClusterConsoleText.bounded(reason, maximum: 160))). If that Mac is still paired, "
+            + "run `\(OnboardingLive.cli) cluster leave` there."
     }
 
     /// Where this Mac keeps the cache settings its leader synced.
@@ -1050,6 +1278,7 @@ public final class ClusterService: @unchecked Sendable {
                     pid: child?.isRunning == true ? child?.processIdentifier : oldPart?.pid,
                     startedAt: child?.isRunning == true ? childStartedAt : oldPart?.startedAt, lastRunSeconds: lastRunSeconds,
                     solo: child?.isRunning == true ? childSetup?.hasPrefix("solo:") == true : oldPart?.solo,
+                    port: child?.isRunning == true ? childPort : nil,
                     notice: oldPart != nil ? "the previous run's part is still releasing; waiting before starting another"
                         : child?.isRunning == true && childSetup?.hasPrefix("solo:") != true ? Self.servingNotice(in: serviceFiles.rankLog, from: childLogOffset) : nil,
                     configurationSHA256: child?.isRunning == true && childSetup?.hasPrefix("cluster:") == true
@@ -1062,9 +1291,10 @@ public final class ClusterService: @unchecked Sendable {
                 control: controlStatusLocked(model: record?.leadership?.modelName), servicePID: getpid())
             value.updating = updatingLine
             value.localOnly = record?.leadership.map { $0.scope.isLocalOnly }
+            value.localAPI = record?.leadership.map { $0.scope.addsLocalAPI }
             value.loggedIn = AuthTokenStore.load() != nil
             value.startsAtLogin = ClusterServiceAgent.startsAtLogin(environment: ProcessInfo.processInfo.environment,
-                                                                    installedAgents: ClusterServiceAgent.installedLabels)
+                                                                    installedAgents: { ClusterServiceAgent.installedLabels() })
             if child?.isRunning == true, childIsMember {
                 value.child.pair = Self.pairReport(in: serviceFiles.rankLog, from: childLogOffset).map(ClusterOnboardingPairReport.text)
                 let state = DaemonStateFile.read()
@@ -1072,10 +1302,11 @@ public final class ClusterService: @unchecked Sendable {
                 value.child.appAttestRetryAt = Self.memberAppAttestRetryAt(pid: child?.processIdentifier, state: state)
             }
             value.soloServing = soloNow.map { .init(pid: $0.pid) }
-            value.heldBack = soloNow.map(Self.soloServingError)
+            value.heldBack = soloNow.map(Self.soloServingError) ?? otherAppHolds
             value.pairRunning = value.serving && pairVerdict.running
             value.pairNotRunning = value.serving ? ClusterPairWatch.line(pairVerdict, otherMac: otherMacNameLocked(),
                                                                          cli: BuildEnvironment.current.cliName) : nil
+            (value.relayPortHeld, value.relayWaitsForOffer, value.relayRankZeroAway) = Self.relayStatus(relayState)
             value.memberQuickEnds = memberQuickEnds
             value.approvalID = configuration?.nativeMember?.clusterApproval?.id ?? ""
             value.pairUpdate = ClusterPairUpdate.readProgress(from: ClusterServiceAgent.updateProgressPath(serviceDirectory: store.paths.directory))
@@ -1083,11 +1314,6 @@ public final class ClusterService: @unchecked Sendable {
         }
     }
 
-    /// On the control leader, while the cluster serves: when a Darkbloom update changed a Mac's worker (its digest no
-    /// longer matches the saved setup's pin, so both Macs refuse their parts), the same model is planned again,
-    /// adopted, synced to the member and served, as `m` with the same model would, with nobody running a command.
-    /// Checked every `ClusterOnboardingUpdate.checkEverySeconds` on a thread of its own; holds the command lock so a
-    /// person's command and this never run at once.
     /// The other Mac's version for the wait lines: asked over the cable at most every 30 s, off the caller's thread unless
     /// `refresh` (already a background thread); the last answer meanwhile, nil before the first.
     private func otherMacVersion(refresh: Bool = false) -> String? {
@@ -1108,9 +1334,17 @@ public final class ClusterService: @unchecked Sendable {
         return lock.withLock { otherVersion }
     }
 
+    /// On the control leader, while the cluster serves: when a Darkbloom update changed a Mac's worker (its digest no
+    /// longer matches the saved setup's pin, so both Macs refuse their parts), the same model is planned again,
+    /// adopted, synced to the member and served, as `m` with the same model would, with nobody running a command.
+    /// Checked every `ClusterOnboardingUpdate.checkEverySeconds` on a thread of its own (every `recheckWhileWaitingSeconds`
+    /// while the Macs run different builds, `retryAfterFailureSeconds` after a failure); holds the command lock so a
+    /// person's command and this never run at once.
     private func checkForUpdate(say: @escaping @Sendable (String) -> Void) {
+        // Only on a claim the other Mac confirmed: the Macs restart into an update seconds apart, and the one back first
+        // may take control meanwhile, so a restarted leader's saved claim may be superseded (and its stop refused).
         guard let leadership = (try? store.readRecord())?.leadership, leadership.serving, let model = leadership.modelName,
-              lock.withLock({ control?.leads == true }) else { return }
+              leadershipConfirmed() else { return }
         let begin: Bool = lock.withLock {
             guard !updateInFlight, !stopping, Date().timeIntervalSince(nextUpdateCheck) >= 0 else { return false }
             updateInFlight = true
@@ -1125,8 +1359,13 @@ public final class ClusterService: @unchecked Sendable {
             guard let saved = context.savedConfiguration().configuration, saved.peers.indices.contains(saved.localRank) else { return }
             let pinned = Dictionary(saved.peers.map { ($0.id, $0.runtimeBinarySHA256) }, uniquingKeysWith: { a, _ in a })
             let local = saved.peers[saved.localRank]
+            let standIn = self.updateReplan
             var current: [String: String?] = [local.id: try? context.workerSHA256(local.workerExecutable)]
-            if case .reached = context.reachPeer(), let facts = context.peerFacts { current[facts.memberID] = facts.runtimeBinarySHA256 }
+            if let standIn {
+                current = standIn.running()
+            } else if case .reached = context.reachPeer(), let facts = context.peerFacts {
+                current[facts.memberID] = facts.runtimeBinarySHA256
+            }
             let changed = ClusterOnboardingUpdate.changed(pinned: pinned, current: current)
             guard !changed.isEmpty else { return }
             let macs = changed.count == 1 && changed[0] == local.id ? "this Mac" : changed.count == 1 ? "the other Mac" : "both Macs"
@@ -1144,45 +1383,35 @@ public final class ClusterService: @unchecked Sendable {
                 return
             }
             self.lock.withLock { self.updateWaitLine = nil }
-            guard let held = ClusterControlCommandLock.acquire(seconds: 5) else { return }
+            // Held, the command lock keeps a hand-over and a person's stop off; either may have finished while the builds
+            // were compared, and the re-plan's stop would put back a start the person cleared.
+            guard let held = self.commandLockIfStillStarted() else { return }
             defer { held.release() }
             self.lock.withLock { self.updatingLine = ClusterOnboardingUpdate.statusLine }
             self.publish()
             say("Darkbloom changed on \(macs): setting the cluster up again for \(model)")
-            func failed(_ lines: [String]) {
-                say("could not set the cluster up again after the update: " + lines.joined(separator: " "))
-                self.lock.withLock { self.nextUpdateCheck = Date().addingTimeInterval(ClusterOnboardingUpdate.retryAfterFailureSeconds) }
-            }
             let live = self.controlLive
-            if case .failure(let failure) = live.localReachMembers({ _ in }) { return failed(failure.lines) }
-            // Both Macs refuse the old parts once their workers changed, and the parts hold the model's memory until
-            // they stop: stop them and wait for the memory before planning. Planned while they run, a tensor-parallel
-            // pair does not fit "now" and a pipeline is chosen in its place. A failure from here on keeps the
-            // serving intent, so the next check tries again.
-            if case .failure(let failure) = live.localStop() { return failed(failure.lines) }
-            live.awaitReleased()
-            func failedStopped(_ lines: [String]) {
-                try? self.store.updateRecord { $0.leadership?.serving = true }
-                failed(lines)
-            }
             // The same model keeps the mode the pair served it in, unless the planner and the pair's own served
             // requests both find another faster (`ClusterServedModes.hold`). `localPlanModels` asks the other Mac for
-            // its report again: the one `localReachMembers` took above still counts its old part's memory.
+            // its report again: the one `localReachMembers` took still counts its old part's memory.
             let keeping = saved.publicModelID == model ? [model: saved.selectedGenerationMode] : [:]
-            let choices: [ClusterOnboardingModelChoice]
-            switch live.localPlanModels(keeping: keeping) {
-            case .success(let value): choices = value
-            case .failure(let failure): return failedStopped(failure.lines)
+            let replanned = Self.replanAfterUpdate(model: model, standIn?.steps ?? .init(
+                reachMembers: { live.localReachMembers({ _ in }) }, stop: { live.localStop() },
+                awaitReleased: { live.awaitReleased() }, planModels: { live.localPlanModels(keeping: keeping) },
+                adopt: { live.localAdopt($0) }, serve: { live.localServe() }, restoreStart: { self.restoreStart() }))
+            let choice: ClusterOnboardingModelChoice
+            switch replanned {
+            case .success(let value): choice = value
+            case .failure(let failure):
+                // `replanAfterUpdate` kept the saved start: the next check tries again.
+                say("could not set the cluster up again after the update: " + failure.lines.joined(separator: " ")
+                    + " The pair stays started; this is tried again in \(Int(ClusterOnboardingUpdate.retryAfterFailureSeconds) / 60) minutes.")
+                self.lock.withLock { self.nextUpdateCheck = Date().addingTimeInterval(ClusterOnboardingUpdate.retryAfterFailureSeconds) }
+                return
             }
-            // `model` is the model's id (the record keeps ids; the screens show catalog names).
-            guard let index = ClusterOnboardingUpdate.servableIndex(of: model, in: choices) else {
-                return failedStopped(["\(model) is not offered on these Macs with this release: \(choices.first { ($0.modelID ?? $0.title) == model }?.blocker ?? "not found")"])
-            }
-            if case .failure(let failure) = live.localAdopt(index) { return failedStopped(failure.lines) }
-            if case .failure(let failure) = live.localServe() { return failedStopped(failure.lines) }
             // The plan's own line and its reason for the mode (tensor parallel or a pipeline), so the log says why.
             say("set the cluster up again after the update: \(model) is starting on both Macs ("
-                + choices[index].lines.joined(separator: " ") + ")")
+                + choice.lines.joined(separator: " ") + ")")
             // The re-adopted setups carry no cluster approval: the next check finds the same model approval again, or the
             // build-pinned entry of the updated app.
             self.lock.withLock { self.approvalChecked = false; self.nextApprovalCheck = .distantPast }
@@ -1193,12 +1422,15 @@ public final class ClusterService: @unchecked Sendable {
     /// `ClusterOnboardingUpdate.checkEverySeconds` while the pair is registered or serves locally with its approval set
     /// aside (`ClusterApprovalCheck.asks`). Only when a setup must change (`ClusterApprovalCheck.step`: an approval to
     /// save, or one to serve without because the coordinator gave no answer for the grace, no longer lists it, or the
-    /// parts keep failing with it) it stops both parts, changes both Macs' setups and serves again. A coordinator that
-    /// serves nothing new changes nothing and stops nothing. An approval that ended is removed by each Mac itself
-    /// before its part starts (`supervise`), never by stopping a running pair.
+    /// parts keep failing with it) it stops both parts, changes both Macs' setups and serves again; a change that would
+    /// stop a serving pair waits while the other Mac doesn't answer its status. A coordinator that serves nothing new
+    /// changes nothing and stops nothing. An approval that ended is removed by each Mac itself before its part starts
+    /// (`supervise`), never by stopping a running pair.
     private func checkApproval(say: @escaping @Sendable (String) -> Void) {
+        // Only on a claim the other Mac confirmed, as `checkForUpdate`: a change of approval stops the pair.
+        guard leadershipConfirmed() else { return }
         let begin: Bool = lock.withLock {
-            guard !approvalInFlight, !updateInFlight, !stopping, control?.leads == true, Date().timeIntervalSince(nextApprovalCheck) >= 0 else { return false }
+            guard !approvalInFlight, !updateInFlight, !stopping, Date().timeIntervalSince(nextApprovalCheck) >= 0 else { return false }
             approvalInFlight = true
             return true
         }
@@ -1224,6 +1456,8 @@ public final class ClusterService: @unchecked Sendable {
                 let serving: Bool
                 /// The saved setup's worker digest, recorded with an approval set aside.
                 let worker: String
+                /// The other Mac answered its status: every change of the approval sends to it.
+                let peerAnswered: Bool
             }
             func decide(_ answer: () -> ClusterApprovalFetch.Outcome?) -> Decided? {
                 let record = try? self.store.readRecord()
@@ -1254,7 +1488,7 @@ public final class ClusterService: @unchecked Sendable {
                     memberQuickEnds: quickEnds, peerApprovalID: peerApprovalID, watch: &watch, clock: ClusterService.monotonicSeconds(),
                     grace: ClusterService.soloGraceSeconds, now: now)
                 return Decided(step: step, watch: watch, serving: record?.leadership?.serving == true,
-                               worker: saved.capability.runtimeBinarySHA256)
+                               worker: saved.capability.runtimeBinarySHA256, peerAnswered: peer != nil)
             }
             var fetched: ClusterApprovalFetch.Outcome?
             func answer() -> ClusterApprovalFetch.Outcome? {
@@ -1268,36 +1502,33 @@ public final class ClusterService: @unchecked Sendable {
             guard initial.step != .keep else { return checked() }
             // A person's command and this never run at once. A busy lock is tried again at the next check, a minute on,
             // not at every tick.
-            guard let held = ClusterControlCommandLock.acquire(seconds: 5) else {
+            guard let held = ClusterControlCommandLock.acquire(seconds: 5,
+                file: self.store.paths.directory.appendingPathComponent("control.lock")) else {
                 say("another cluster command is running: the cluster approval is checked again in a minute")
                 return checked()
             }
             defer { held.release() }
             checked()
-            // Decided again under the lock, with the same answer: a person's command may have changed the setup, the
-            // scope or the other Mac while this check waited.
+            // Confirmed and decided again under the lock, with the same answer: a hand-over, or a person's command that
+            // changed the setup, the scope or the other Mac, may have finished while this check waited.
+            guard self.leadershipConfirmed() else { return }
             guard let decided = decide(answer) else { return }
             self.lock.withLock { self.approvalWatch = decided.watch }
             let step = decided.step, serving = decided.serving
             guard step != .keep else { return }
+            // A change can't succeed while the other Mac doesn't answer: one that stops a serving pair waits for it, or this
+            // Mac's part would stop for nothing at every check.
+            guard decided.peerAnswered || !serving else { return }
             let send: (ClusterServiceCommand) throws -> Void = { request in _ = try live.command(request, seconds: 180) }
             let result = ClusterApprovalSync.apply(step, grace: ClusterService.soloGraceSeconds, paths: paths,
                 providerConfiguration: configuration, pairingStore: pairingStore, scratch: scratch, now: Date().timeIntervalSince1970,
                 stop: {
-                    guard serving else { return nil }
-                    if case .failure(let failure) = live.localStop() {
-                        return "could not stop the parts to change the cluster approval: " + failure.lines.joined(separator: " ")
-                    }
-                    guard live.drained(seconds: 300) else {
-                        try? self.store.updateRecord { $0.leadership?.serving = true }
-                        return "a part did not stop within 5 minutes: the cluster approval stays as it is"
-                    }
-                    return nil
+                    Self.stopForApprovalChange(serving: serving, stop: { live.localStop() }, drained: { live.drained(seconds: 300) },
+                                               restoreStart: { self.restoreStart() })
                 },
                 serve: {
-                    guard serving, case .failure(let failure) = live.localServe() else { return }
-                    try? self.store.updateRecord { $0.leadership?.serving = true }
-                    say("could not start the parts again after the cluster approval changed: " + failure.lines.joined(separator: " "))
+                    if let line = Self.restartAfterApprovalChange(serving: serving, serve: { live.localServe() },
+                                                                  restoreStart: { self.restoreStart() }) { say(line) }
                 },
                 sendToPeer: send)
             try? self.store.updateRecord { stored in
@@ -1475,7 +1706,7 @@ public final class ClusterService: @unchecked Sendable {
     /// Kept beside the lock each tick, so `darkbloom cluster` on this Mac reads it without the link.
     private func publish(afterSupervision: Bool = false) {
         let value = status()
-        let file = store.paths.directory.appendingPathComponent("service-status.json")
+        let file = store.paths.directory.appendingPathComponent(ClusterServiceStatus.fileName)
         guard let data = try? JSONEncoder().encode(value) else { return }
         try? data.write(to: file, options: .atomic)
         if afterSupervision {
@@ -1520,7 +1751,7 @@ public final class ClusterService: @unchecked Sendable {
     }
 
     private static func published(in directory: URL) -> ClusterServiceStatus? {
-        let file = directory.appendingPathComponent("service-status.json")
+        let file = directory.appendingPathComponent(ClusterServiceStatus.fileName)
         guard let data = try? Data(contentsOf: file) else { return nil }
         return try? JSONDecoder().decode(ClusterServiceStatus.self, from: data)
     }
@@ -1542,20 +1773,47 @@ public final class ClusterService: @unchecked Sendable {
         return pairRuns(status) || status.control.map { !otherMacAbsentModes.contains($0.mode) } == true
     }
 
+    /// How `releaseForSingleMac` ended.
+    public enum SingleMacRelease: Equatable, Sendable {
+        /// This Mac's saved start is cleared, and its part stopped.
+        case released
+        /// A cluster command held the command lock for the whole wait: nothing was read or written.
+        case commandStillRunning
+        /// The start couldn't be cleared, or the part didn't stop in time.
+        case partNotStopped
+    }
+
     /// Going back to single-Mac serving on a Mac whose pair isn't running: this Mac's saved start is cleared, so its
     /// cluster service runs no part (and never takes the serving lock back by itself), and the part still running stops
-    /// within `seconds`, freeing the lock. The pairing stays: `darkbloom cluster` starts the pair again. False when the
-    /// start couldn't be cleared or the part didn't stop in time.
-    public static func releaseForSingleMac(seconds: Double) -> Bool {
-        guard let paths = try? ClusterUserPaths() else { return false }
+    /// within `seconds`, freeing the lock. The pairing stays: `darkbloom cluster` starts the pair again. It holds the
+    /// control command lock, as every stop of the pair does (waiting up to 600 s for a cluster command that runs), so
+    /// the service's steps that stop the pair only to start it again never put this start back (`restoreStart`).
+    /// `waiting` is called once, before that wait, so the person is told at once.
+    public static func releaseForSingleMac(seconds: Double, waiting: () -> Void = {}) -> SingleMacRelease {
+        guard let paths = try? ClusterUserPaths() else { return .partNotStopped }
+        return releaseForSingleMac(seconds: seconds, paths: paths, waiting: waiting)
+    }
+
+    /// `releaseForSingleMac(seconds:waiting:)` in the home `paths` names, waiting `commandSeconds` for the command lock;
+    /// tests give their own.
+    static func releaseForSingleMac(seconds: Double, paths: ClusterUserPaths, commandSeconds: Double = 600,
+                                    waiting: () -> Void = {}) -> SingleMacRelease {
         let setup = ClusterSetupPaths(paths: paths)
         let store = ClusterSetupStore(paths: setup)
+        let file = setup.directory.appendingPathComponent("control.lock")
+        var taken = ClusterControlCommandLock.acquire(seconds: 0, file: file)
+        if taken == nil {
+            waiting()
+            taken = ClusterControlCommandLock.acquire(seconds: commandSeconds, file: file)
+        }
+        guard let held = taken else { return .commandStillRunning }
+        defer { held.release() }
         do {
             if (try? store.readRecord())?.leadership?.serving == true {
                 try store.updateRecord { $0.leadership?.serving = false }
             }
-        } catch { return false }
-        return stopLocalPart(in: setup.directory, seconds: seconds)
+        } catch { return .partNotStopped }
+        return stopLocalPart(in: setup.directory, seconds: seconds) ? .released : .partNotStopped
     }
 
     public static func pairRuns(_ status: ClusterServiceStatus?) -> Bool {
@@ -1596,6 +1854,55 @@ public final class ClusterService: @unchecked Sendable {
             blockerCleared(say: say)
         }
         return false
+    }
+
+    /// Whether the other Darkbloom app on this Mac holds its GPU now (`ClusterMachineDeviceLock.heldByAnotherBuild`), so
+    /// this Mac's part waits instead of starting, being refused and counting as failing: said once, and named in the
+    /// status. It starts on the first tick after the hold ends, with its restart backoff and any approval set aside as
+    /// failing cleared (`blockerCleared`).
+    private func holdsBackForOtherApp(say: @escaping @Sendable (String) -> Void) -> Bool {
+        let now = ClusterMachineDeviceLock.heldByAnotherBuild(context.paths, otherHolder: productionServes)
+        let before = lock.withLock { () -> String? in defer { otherAppHolds = now }; return otherAppHolds }
+        switch ClusterOtherAppHold.step(before: before, now: now) {
+        case .none: return false
+        case .waits(let reason, let first):
+            if first { say(reason + " This Mac's part waits for it.") }
+            return true
+        case .resumes:
+            say("the other Darkbloom app no longer holds this Mac's GPU: starting this Mac's part")
+            blockerCleared(say: say)
+            return false
+        }
+    }
+
+    /// SIGUSR1 to the worker owners the part `partPID` started (`fenceTargets`): their force-cancel hook
+    /// (`ClusterOwnerForceCancel`) fences each one's worker, which cancels its requests, releases its model and exits by
+    /// itself, the protocol's own drain. Its owner journals and reports that end, so nothing of the part's own state is
+    /// left behind. Returns how many were asked.
+    static func fenceOwners(of partPID: Int32) -> Int {
+        let targets = fenceTargets(processes: ClusterProcessTable.running(), partPID: partPID,
+                                   image: ClusterProcessTable.executablePath(of:))
+        return targets.filter { kill($0, SIGUSR1) == 0 }.count
+    }
+
+    /// The worker owners among `partPID`'s descendants that run the part's own executable (`image`), chosen as
+    /// `cluster cancel-all` chooses the owners it signals (`ClusterOrphanReaper.cancelTargets`): only such an owner
+    /// carries the force-cancel hook for certain, and any other process would die of SIGUSR1. No other build's process is
+    /// ever one of them, and there are none once the part's executable can't be read (it is gone).
+    static func fenceTargets(processes: [ClusterProcessTable.Entry], partPID: Int32, image: (Int32) -> String?) -> [Int32] {
+        var lineage: Set<Int32> = [partPID]
+        var grew = true
+        while grew {
+            grew = false
+            for entry in processes where !lineage.contains(entry.processIdentifier) {
+                guard let parent = entry.parentProcessIdentifier, lineage.contains(parent) else { continue }
+                lineage.insert(entry.processIdentifier)
+                grew = true
+            }
+        }
+        let tree = processes.filter { lineage.contains($0.processIdentifier) }
+        return ClusterOrphanReaper.cancelTargets(processes: tree, ownImage: image(partPID),
+                                                 protectedProcessIdentifiers: [partPID], image: image).signal
     }
 
     /// Single-Mac serving that nobody chose since the pair was last started here (`ClusterSoloChoice.stepsAside`; for
@@ -1689,12 +1996,11 @@ public final class ClusterService: @unchecked Sendable {
     private func watchPair(_ want: PartWant, intent: Bool, scope: ClusterServingScope,
                            say: @escaping @Sendable (String) -> Void) -> PartWant {
         let now = Self.monotonicSeconds()
-        let (answered, partUp, member, offset) = lock.withLock {
-            (control?.otherAnsweredAt, child?.isRunning == true && childSetup?.hasPrefix("cluster:") == true, childIsMember, childLogOffset)
+        let (answered, partUp, memberRank, offset) = lock.withLock {
+            (control?.otherAnsweredAt, child?.isRunning == true && childSetup?.hasPrefix("cluster:") == true, childMemberRank, childLogOffset)
         }
-        var servingNow = partUp && answered.map { now - $0 < Self.leaseTTLSeconds } == true
-        if servingNow, member {
-            if case .serving = Self.pairReport(in: serviceFiles.rankLog, from: offset) {} else { servingNow = false }
+        let servingNow = Self.partServesNow(partUp: partUp, otherAnsweredAt: answered, now: now, memberRank: memberRank) {
+            Self.pairReport(in: serviceFiles.rankLog, from: offset)
         }
         let (verdict, previous) = lock.withLock { () -> (ClusterPairWatch.Verdict, ClusterPairWatch.Verdict) in
             let verdict = pairWatch.tick(raw: now, awake: ClusterControlClock.awakeSeconds(), intent: intent,
@@ -1714,6 +2020,19 @@ public final class ClusterService: @unchecked Sendable {
             say(line)
         }
         return part
+    }
+
+    /// Whether this Mac's part serves now, as far as this Mac can tell (`pairWatch`'s `serving`): it runs, and the other
+    /// Mac answered within the lease's time-to-live. Rank 0 of a coordinator-paired pair (`memberRank` 0), which hosts the
+    /// pair's slot, must also have written `Pair: serving` to its log (`pairReport`, read only then). The other rank writes
+    /// no pair line (its link follower reports to rank 0 over the cable), so its log can never say the pair serves: it
+    /// goes by its running part and the other Mac's answers, as every part that isn't coordinator-paired does.
+    static func partServesNow(partUp: Bool, otherAnsweredAt: Double?, now: Double, memberRank: Int?,
+                              pairReport: () -> ClusterOnboardingPairReport.State?) -> Bool {
+        guard partUp, let answered = otherAnsweredAt, now - answered < leaseTTLSeconds else { return false }
+        guard memberRank == 0 else { return true }
+        if case .serving = pairReport() { return true }
+        return false
     }
 
     /// The other Mac's name as control knows it; nil before control.
@@ -1774,13 +2093,18 @@ public final class ClusterService: @unchecked Sendable {
                 backoff = ran >= 120 ? 3 : min(backoff * 2, 30)
                 nextStart = Date().addingTimeInterval(ran >= 120 ? 3 : backoff)
             }
+            // A part refused because the other Darkbloom app holds this Mac's GPU (`ClusterMachineDeviceLock`) waits for
+            // it from the next tick (`holdsBackForOtherApp`), which starts it again as soon as the hold ends.
+            let lastError = setup?.hasPrefix("cluster:") == true
+                ? Self.lastError(in: serviceFiles.rankLog, from: lock.withLock { childLogOffset }, preferStopReason: false) : nil
+            if ClusterMachineDeviceLock.isRefusal(lastError) { lock.withLock { otherAppHolds = otherAppHolds ?? lastError } }
             // A coordinator-paired part that keeps ending right after its start makes the leader serve locally
             // (`ClusterApprovalCheck.step`); an end the coordinator decided (out of reach, or the member role not
             // accepted in time) is not counted.
             if lock.withLock({ childIsMember }) {
-                let lastError = Self.lastError(in: serviceFiles.rankLog, from: lock.withLock { childLogOffset }, preferStopReason: false)
-                // An end while either Mac's part is held back (single-Mac serving) is the blocker's, not the approval's.
-                let heldBack = lock.withLock { peerHeldBack != nil || soloServing != nil }
+                // An end while either Mac's part is held back (single-Mac serving, or the other app on a Mac holding its
+                // GPU) is the blocker's, not the approval's.
+                let heldBack = lock.withLock { peerHeldBack != nil || soloServing != nil || otherAppHolds != nil }
                 lock.withLock { memberQuickEnds = ClusterApprovalCheck.memberQuickEnds(after: memberQuickEnds, ranSeconds: ran, lastError: lastError,
                                                                                         heldBack: heldBack) }
             }
@@ -1803,6 +2127,18 @@ public final class ClusterService: @unchecked Sendable {
             if let setup, setup.hasPrefix("cluster:"), leadsSession, let model = record.leadership?.modelName {
                 noteMemoryRefusal(key: setup, since: Date().addingTimeInterval(-ran - 5), model: model, say: say)
             }
+            return
+        }
+        // Outside production's build, this Mac's part steps aside once production serves here: production before 0.10.11
+        // takes no GPU lock, so its pair started after this one (both start at login, say) would load beside it. The part's
+        // GPU work is fenced at once, not drained (`fenceGPUWork`); the part then stops, never counted as failing, and
+        // waits (`holdsBackForOtherApp`) until production stops serving here.
+        if let part = running, setup?.hasPrefix("cluster:") == true, let reason = productionServes?() {
+            lock.withLock { otherAppHolds = reason }
+            say(reason + " This Mac's part stops and waits for it.")
+            let fenced = fenceGPUWork(part.processIdentifier)
+            if fenced > 0 { say("asked this part's \(fenced == 1 ? "worker owner" : "\(fenced) worker owners") to release the GPU now") }
+            _ = stopChild(say: say, seconds: 300)
             return
         }
         // A part offered to the coordinator whose approval ended, or whose leader now serves locally only, stops
@@ -1833,9 +2169,7 @@ public final class ClusterService: @unchecked Sendable {
             say(key == nil ? (solo ? "stopping the solo server" : "the leader stopped serving: stopping this Mac's part")
                 : key!.hasPrefix("solo:") ? "serving alone: stopping this Mac's part first"
                 : solo ? "the cluster re-forms: stopping the solo server first"
-                : ClusterLocalServing.scopeChangedOnly(from: setup, to: key)
-                    ? (scope.isLocalOnly ? "serving locally only now (no coordinator): restarting this Mac's part"
-                                         : "serving through Darkbloom now: restarting this Mac's part")
+                : ClusterLocalServing.scopeChangedOnly(from: setup, to: key) ? Self.scopeChangeRestartLine(scope)
                 : "the setup changed: restarting this Mac's part")
             _ = running
             _ = stopChild(say: say, seconds: 300)
@@ -1852,6 +2186,10 @@ public final class ClusterService: @unchecked Sendable {
         // in a loop on both Macs). Nothing starts until it stops; the status names it meanwhile.
         if running == nil, key != nil, holdsBackForSoloServing(key: key, say: say) { return }
         if key == nil { lock.withLock { soloServing = nil } }
+        // The other Darkbloom app's pair (or model check) holds this Mac's GPU: this Mac's part waits for it, not counted as
+        // failing, and starts as soon as it ends (re-review of #1846: the refusals took production off Darkbloom for an hour).
+        if running == nil, let key, key.hasPrefix("cluster:"), holdsBackForOtherApp(say: say) { return }
+        if key == nil || key?.hasPrefix("cluster:") == false { lock.withLock { otherAppHolds = nil } }
         // The other Mac said its part can't start for a reason that doesn't clear by itself: this Mac's part waits for that
         // to change instead of starting, waiting for its missing follower and ending every 38 s (0.10.9 DevNet f1).
         if running == nil, let key {
@@ -1873,12 +2211,16 @@ public final class ClusterService: @unchecked Sendable {
         else { return }
         let arguments: [String]
         let what: String
-        var memberRoute = false, linkFollower = false
+        var linkFollower = false
+        var memberRank: Int?
         var port: Int?
         if case .solo(let model) = want {
-            arguments = ClusterLocalServing.soloArguments(settings.soloArguments, scope: scope) + ["--model", model, "--port", String(Self.soloPort)]
+            // This Mac's own port, as every local API here takes it: a relay that held it gives it back first.
+            handRelayPortBack()
+            let soloPort = thisMacPort(say: say) ?? Self.defaultSoloPort
+            arguments = ClusterLocalServing.soloArguments(settings.soloArguments, scope: scope) + ["--model", model, "--port", String(soloPort)]
             what = "degraded: serving \(model) on this Mac alone"
-            port = Self.soloPort
+            port = soloPort
         } else {
             guard let configuration = saved.configuration else { return }
             // After an update a member's saved setup still pins the earlier build's worker: its part would refuse the
@@ -1912,15 +2254,22 @@ public final class ClusterService: @unchecked Sendable {
                 return
             }
             if offered {
-                memberRoute = true
+                memberRank = configuration.localRank
                 // Registered with the coordinator as a cluster member: both Macs run the coordinator-formed pair's member; the
-                // leader's rank hosts the link listener and the pair's slot, the other rank dials it.
-                arguments = settings.memberArguments
-            } else if configuration.role == .leader {
-                // This Mac is rank 0 now: the relay gives its port back first.
-                if let passing = lock.withLock({ () -> ClusterLocalRelay? in defer { relay = nil }; return relay }) {
-                    passing.stop(); LocalEndpoint.removeInfo(ifPID: getpid())
+                // leader's rank hosts the link listener and the pair's slot, the other rank dials it. With Both, me first,
+                // the part that runs rank 0 (the slot's host) also runs the pair's local API, on this Mac's own port
+                // (`leaderAPIPort`); no other part takes a port (the other Macs' relays take theirs).
+                if scope.addsLocalAPI, configuration.localRank == 0 {
+                    handRelayPortBack()
+                    let apiPort = leaderAPIPort(scope: scope, say: say)
+                    port = apiPort
+                    arguments = ClusterLocalServing.memberArguments(settings.memberArguments, scope: scope,
+                                                                    localRank: configuration.localRank, port: apiPort)
+                } else {
+                    arguments = settings.memberArguments
                 }
+            } else if configuration.role == .leader {
+                handRelayPortBack()
                 let leaderPort = leaderAPIPort(scope: scope, say: say)
                 port = leaderPort
                 arguments = ClusterLocalServing.leaderArguments(settings.leaderArguments, scope: scope) + ["--port", String(leaderPort)]
@@ -1930,6 +2279,7 @@ public final class ClusterService: @unchecked Sendable {
             }
             what = "this Mac's part: " + (offered
                 ? "rank \(configuration.localRank), registered with the coordinator as a cluster member"
+                    + (port.map { " with the pair's local API on port \($0)" } ?? "")
                 : configuration.role == .leader
                 ? "rank 0 and the serving API" + (scope.isLocalOnly ? " (local only, no coordinator)" : "")
                 : "rank \(configuration.localRank)")
@@ -1964,9 +2314,9 @@ public final class ClusterService: @unchecked Sendable {
         let startedAt = ClusterProcessTable.startTime(of: process.processIdentifier)
         lock.withLock {
             child = process; childSetup = key; childPort = port; childStarted = Date(); childStartedAt = startedAt; starts += 1
-            childIsMember = memberRoute; childLogOffset = logOffset
+            childMemberRank = memberRank; childLogOffset = logOffset
             childIsLinkFollower = linkFollower; followerRefusalRead = nil
-            if !memberRoute { memberQuickEnds = 0 }
+            if memberRank == nil { memberQuickEnds = 0 }
         }
         say("started \(what) (pid \(process.processIdentifier))")
     }
@@ -2006,19 +2356,24 @@ public final class ClusterService: @unchecked Sendable {
         }
     }
 
-    /// The port rank 0's API takes on this Mac (another local server may hold 8000). Local only on every address (where
-    /// the other Mac relays it), one free on both Macs (`ClusterLocalServing.sharedPort`), asked of the other Mac for
-    /// at most 5 s; otherwise, or when it does not answer, one free here.
-    private func leaderAPIPort(scope: ClusterServingScope, say: @Sendable (String) -> Void) -> Int {
-        let peerFree = scope.bind == "0.0.0.0" ? peerFreePorts(seconds: 5) : nil
-        let previous = lock.withLock { apiPort }
-        let port = ClusterLocalServing.sharedPort(localFree: ClusterLocalServing.freePorts(), peerFree: peerFree, preferred: previous)
-        lock.withLock { apiPort = port }
-        if port != previous, port != ClusterLocalServing.servingPorts.lowerBound {
-            say(peerFree == nil ? "port 8000 is taken on this Mac: the API listens on port \(port)"
-                : peerFree!.contains(port) ? "port 8000 is not free on both Macs: the API listens on port \(port) on both"
-                : "no port from 8000 to 8020 is free on both Macs: the API listens on port \(port) on this Mac")
+    /// What this Mac's part says when it starts again only because the scope changed.
+    private static func scopeChangeRestartLine(_ scope: ClusterServingScope) -> String {
+        switch scope {
+        case .localOnly: return "serving locally only now (no coordinator): restarting this Mac's part"
+        case .publicServingWithLocalAPI: return "serving through Darkbloom with the pair's local API now: restarting this Mac's part"
+        case .publicServing: return "serving through Darkbloom now: restarting this Mac's part"
         }
+    }
+
+    /// The port rank 0's API takes on this Mac, for every way the pair serves: this Mac's own (`thisMacPort`, its saved
+    /// `[local] port`, the same for every local API here), whatever the other Macs' are, so tools on this Mac keep its
+    /// address whichever Mac runs rank 0. Only when it can't be read or chosen, the earlier rule on this Mac alone
+    /// (`ClusterLocalServing.apiPort`). A port another program holds stays this Mac's: the part's bind fails and says so.
+    private func leaderAPIPort(scope: ClusterServingScope, say: @Sendable (String) -> Void) -> Int {
+        let previous = lock.withLock { apiPort }
+        let port = ClusterLocalServing.apiPort(own: thisMacPort(say: say), scope: scope, previous: previous)
+        lock.withLock { apiPort = port }
+        if port != previous { say("the pair's local API listens on this Mac's port \(port)") }
         return port
     }
 

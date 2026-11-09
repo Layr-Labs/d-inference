@@ -85,8 +85,11 @@ final class ClusterApprovalMacs: @unchecked Sendable {
             try file(helpers.appendingPathComponent(ClusterRuntimeApprovalFacts.Installation.placementToolName), "plan", executable: true)
             try file(helpers.appendingPathComponent(ClusterRuntimeApprovalFacts.Installation.metallibName), "metallib", executable: false)
             try file(helpers.appendingPathComponent(ClusterRuntimeApprovalFacts.Installation.resourceLibraryName), "resource", executable: false)
+            // This Mac's saved local API port, as every Mac that has served locally since one port per Mac keeps it: the
+            // service's parts take it as it is and never write this file (`ClusterService.ownAPIPort`). Not one the
+            // earlier rule would pick (the lowest free from 8000), so a part on it took this Mac's own port.
             let provider = home.appendingPathComponent("provider.toml")
-            try file(provider, "[coordinator]\nurl = \"\(coordinatorURL)\"\n", executable: false)
+            try file(provider, "[coordinator]\nurl = \"\(coordinatorURL)\"\n\n[local]\nport = \(Self.savedPort)\n", executable: false)
             built.append(Mac(rank: rank, home: home, paths: try ClusterUserPaths(homeDirectory: home), pairing: stores[rank],
                 provider: provider, scratch: home.appendingPathComponent("scratch", isDirectory: true),
                 memberID: ClusterSetupMemberFacts.memberID(pin: pins[rank]), pin: pins[rank], owner: owner, worker: worker,
@@ -169,6 +172,9 @@ final class ClusterApprovalMacs: @unchecked Sendable {
     }
 
     deinit { try? FileManager.default.removeItem(at: root) }
+
+    /// The local API port each Mac's provider configuration saves.
+    static let savedPort = 8017
 
     /// A Mac's saved setup as its provider configuration points to it.
     func saved(_ mac: Mac) throws -> ClusterConfigurationStore.Saved {

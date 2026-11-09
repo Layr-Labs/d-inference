@@ -82,6 +82,18 @@ extension DistributedCBv2Engine {
         return snapshot
     }
 
+    /// The request sizes this cluster serves, as `validate` enforces them:
+    /// what the selected mode serves of the profile (`served`), and the
+    /// context every rank's memory admits now (the owner's minimum over its
+    /// ranks) when the owner states one. Read from any
+    /// thread without waiting for the queue, like `capacity()`.
+    public func requestLimits() -> SlotRequestLimits {
+        let served = profile.served
+        let serving = owner.readiness()?.servingContextTokens.map { min($0, served.contextTokens) }
+        return SlotRequestLimits(maxPromptTokens: served.promptTokens, maxOutputTokens: served.outputTokens,
+            maxContextTokens: served.contextTokens, servingContextTokens: serving.flatMap { $0 > 0 ? $0 : nil })
+    }
+
     /// `readyCapacity` without its side effects, for a reader off the queue.
     private func liveReadyCapacity(limit: Int) -> Int {
         guard let ready = owner.readiness(), ready.identity == identity,

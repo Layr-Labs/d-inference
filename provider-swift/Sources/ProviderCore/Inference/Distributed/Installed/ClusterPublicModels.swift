@@ -88,8 +88,7 @@ public enum ClusterPublicModels {
     public static let evidenceDocument = "docs/reports/2026-10-31-public-cluster-models.md"
     public static let evidenceSHA256 = "cb16451549b2ba1f3a1908e280c17f572260c227aa27e86b73d39b8c3e6530a9"
     public static let qualifiedAt = "2026-11-03T00:00:00Z"
-    /// A public request's prompt and output allowance: the coordinator's
-    /// maximum, so only the model's own limits apply.
+    /// The coordinator's bound on an envelope's prompt and output allowances.
     public static let maximumTokens = 1_048_576
 
     /// Two Apple M5 Ultras (Metal `applegpu_g17d`, NAX on) on macOS 27.0: where the declared evidence ran. It names the
@@ -149,16 +148,22 @@ public enum ClusterPublicModels {
     }
 
     /// The request shape a placement of a declared model serves publicly:
-    /// sampling and tools, prompts and outputs up to the model's own limits,
-    /// and, when the placement serves media at all (`servesMedia`: both
-    /// declared models' tensor-parallel paths take media as the single-Mac
-    /// product does, `ClusterGLMMedia` and `ClusterQwenMedia`; a pipeline is
-    /// text only), media as the model's catalog entry in the release's
-    /// environment lists it (`image` for vision, `video` as well for video).
-    public static func requestEnvelope(inputModalities: [String], servesMedia: Bool) -> ClusterRequestEnvelope {
+    /// sampling and tools, prompts and outputs up to the limits the cluster
+    /// enforces in that placement's mode (`profile`: what the mode serves of
+    /// the worker's runtime profile; a longer prompt or a larger `max_tokens`
+    /// is refused), so the coordinator sends a larger public request to a
+    /// single Mac instead of to a refusal; and, when the placement serves media
+    /// at all (`servesMedia`: both declared models' tensor-parallel paths take
+    /// media as the single-Mac product does, `ClusterGLMMedia` and
+    /// `ClusterQwenMedia`; a pipeline is text only), media as the model's
+    /// catalog entry in the release's environment lists it (`image` for vision,
+    /// `video` as well for video).
+    public static func requestEnvelope(inputModalities: [String], servesMedia: Bool,
+                                       profile: ClusterWorkerProfile) -> ClusterRequestEnvelope {
         let vision = servesMedia && inputModalities.contains("image")
         return .init(sampling: true, tools: true, vision: vision, video: vision && inputModalities.contains("video"),
-                     maxPromptTokens: maximumTokens, maxOutputTokens: maximumTokens)
+                     maxPromptTokens: min(profile.maximumPromptTokens, maximumTokens),
+                     maxOutputTokens: min(profile.maximumOutputTokens, maximumTokens))
     }
 
     /// The families `models` declare for a runtime model's artifact (the

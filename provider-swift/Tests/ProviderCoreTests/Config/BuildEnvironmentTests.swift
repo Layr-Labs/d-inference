@@ -44,9 +44,11 @@ struct BuildEnvironmentTests {
         #expect(prod.legacyConfigDirectoryNames == [".config/eigeninference"])
         #expect(prod.launchAgentLabel == "io.darkbloom.provider")
         #expect(prod.watchdogAgentLabel == "io.darkbloom.watchdog")
+        #expect(prod.clusterServiceLabelPrefix == "io.darkbloom.cluster-service.")
         #expect(prod.logSubsystem == "com.darkbloom.provider")
         #expect(prod.serviceLogSubsystem == "dev.darkbloom.provider")
         #expect(prod.defaultLocalPort == 8000)
+        #expect(prod.clusterPortOffset == 0)
         #expect(prod.encryptedCacheNamespace == "darkbloom")
         #expect(prod.modelRevisionRef == "main")
         #expect(prod.keychainServicePrefix == "io.darkbloom")
@@ -78,9 +80,11 @@ struct BuildEnvironmentTests {
         #expect(dev.legacyConfigDirectoryNames == [])
         #expect(dev.launchAgentLabel == "io.darkbloom.provider.dev")
         #expect(dev.watchdogAgentLabel == "io.darkbloom.watchdog.dev")
+        #expect(dev.clusterServiceLabelPrefix == "io.darkbloom.cluster-service.dev.")
         #expect(dev.logSubsystem == "com.darkbloom.provider.dev")
         #expect(dev.serviceLogSubsystem == "dev.darkbloom.provider.dev")
         #expect(dev.defaultLocalPort == 8001)
+        #expect(dev.clusterPortOffset == 10)
         #expect(dev.encryptedCacheNamespace == "darkbloom-dev")
         #expect(dev.modelRevisionRef == "darkbloom-dev")
         #expect(dev.keychainServicePrefix == "io.darkbloom.dev")
@@ -104,9 +108,11 @@ struct BuildEnvironmentTests {
         #expect(staging.legacyConfigDirectoryNames == [])
         #expect(staging.launchAgentLabel == "io.darkbloom.provider.staging")
         #expect(staging.watchdogAgentLabel == "io.darkbloom.watchdog.staging")
+        #expect(staging.clusterServiceLabelPrefix == "io.darkbloom.cluster-service.staging.")
         #expect(staging.logSubsystem == "com.darkbloom.provider.staging")
         #expect(staging.serviceLogSubsystem == "dev.darkbloom.provider.staging")
         #expect(staging.defaultLocalPort == 8002)
+        #expect(staging.clusterPortOffset == 20)
         #expect(staging.encryptedCacheNamespace == "darkbloom-staging")
         #expect(staging.modelRevisionRef == "darkbloom-staging")
         #expect(staging.keychainServicePrefix == "io.darkbloom.staging")
@@ -117,11 +123,11 @@ struct BuildEnvironmentTests {
         func identity(_ environment: BuildEnvironment) -> [String] {
             [environment.cliName, environment.enclaveName, environment.appBundleName,
              environment.installDirectoryName, environment.configDirectoryName,
-             environment.launchAgentLabel, environment.watchdogAgentLabel,
+             environment.launchAgentLabel, environment.watchdogAgentLabel, environment.clusterServiceLabelPrefix,
              environment.logSubsystem, environment.serviceLogSubsystem,
              environment.keychainServicePrefix, environment.encryptedCacheNamespace,
              environment.modelRevisionRef,
-             String(environment.defaultLocalPort)]
+             String(environment.defaultLocalPort), String(environment.clusterPortOffset)]
         }
         let allIdentities = BuildEnvironment.allCases.map(identity)
         for i in allIdentities.indices {

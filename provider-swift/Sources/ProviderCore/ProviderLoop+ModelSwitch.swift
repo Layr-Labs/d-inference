@@ -183,6 +183,12 @@ extension ProviderLoop {
             // before its routing receipt. Restore prefetch before sending
             // readiness so that snapshot never fails without a retry.
             prefetchCoordinator = makePrefetchCoordinator()
+            // A known gap of the owner pause (docs/architecture/owner-pause.md):
+            // the coordinator reopens routing on an `idle` or `serving`
+            // heartbeat only, and the pause's heartbeats say `draining`. A
+            // pause that outlasts `readyTimeout` lands in the catch below, so
+            // `darkbloom switch` exits with an error. The selection holds, and
+            // the heartbeat that ends the pause reopens routing.
             do {
                 try await client.confirmModelReplacementReady(
                     requestID: requestID, drainID: drainID, capacitySeq: capacitySeq,
@@ -197,7 +203,8 @@ extension ProviderLoop {
             await coordinatorClient?.sendEventHeartbeat()
             prefetchCoordinator = makePrefetchCoordinator()
         }
-        if let entries = deferredDesiredModels, let send = outboundSend {
+        // An owner pause that goes on replays them when it ends.
+        if !ownerPausesPublic, let entries = deferredDesiredModels, let send = outboundSend {
             deferredDesiredModels = nil
             await reconcileDesiredModels(entries, send: send)
         }

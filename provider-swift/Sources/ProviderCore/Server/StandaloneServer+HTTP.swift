@@ -54,7 +54,8 @@ extension StandaloneServer {
         // their first request to pick a valid id; an empty list at cold start
         // would make them give up.
         makeLocalInferenceApplication(
-            config: LocalInferenceHTTPConfig(host: config.host, port: config.port, authToken: config.authToken),
+            config: LocalInferenceHTTPConfig(host: config.host, port: config.port, authToken: config.authToken,
+                                             router: config.router),
             defaultMaxTokens: Self.slotDefaultMaxTokens,
             acquire: { [weak self] modelId in
                 guard let self else {
@@ -82,6 +83,9 @@ extension StandaloneServer {
             },
             modelTypeProvider: { [weak self] modelId in
                 await self?.localModelTypeForAudioAdmission(modelId)
+            },
+            modelLimits: { [weak self] modelId in
+                await self?.localModelLimits(modelId)
             }
         )
     }
@@ -89,6 +93,15 @@ extension StandaloneServer {
     /// Metadata only: cold native audio still uses normal strict acquisition.
     func localModelTypeForAudioAdmission(_ modelId: String) -> String? {
         slots[modelId]?.modelType ?? models.first(where: { $0.id == modelId })?.modelType
+    }
+
+    /// What the router's `/v1/models` says of a model this Mac serves: the input it takes (`LocalInputModalities`), and
+    /// once it is loaded its window as its engine admits it, the most a prompt or its output may be.
+    func localModelLimits(_ modelId: String) -> LocalModelLimits? {
+        let input = models.first(where: { $0.id == modelId }).map { LocalInputModalities.of($0) }
+        guard let slot = slots[modelId] else { return input.map { LocalModelLimits(inputModalities: $0) } }
+        return LocalModelLimits(window: slot.bridge.advertisedContextTokens ?? slot.sizing.maxContextLength,
+                                inputModalities: input)
     }
 }
 
@@ -160,6 +173,17 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
             return Self.openAIErrorResponse(
                 status: HTTPResponse.Status(code: Int(failure.statusCode)),
                 message: failure.message)
+        } catch MultiModelBatchSchedulerEngineError.promptExceedsContext(let message) {
+            // The model window this Mac holds requests to, in plain words.
+            return Self.openAIErrorResponse(status: .badRequest, message: message, code: "context_length_exceeded")
+        } catch MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort(let field) {
+            // The field and the names a model that reasons takes (fixed text, never the value sent).
+            return Self.openAIErrorResponse(status: .badRequest, message: field.refusalMessage,
+                code: "invalid_reasoning_effort", param: field.rawValue)
+        } catch MultiModelBatchSchedulerEngineError.conflictingReasoningEfforts {
+            // Both fields and the names, as for an unknown name (fixed text, never the values sent).
+            return Self.openAIErrorResponse(status: .badRequest, message: ReasoningEffortField.conflictMessage,
+                code: "invalid_reasoning_effort", param: ReasoningEffortField.conflictParam)
         } catch MultiModelBatchSchedulerEngineError.distributedRequestRefused(let refusal, let message) {
             // A cluster pair's refusal names its rule and the model's limits
             // (a closed template, never request content): the client sees why.
@@ -180,8 +204,39 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
                 FileHandle.standardError.write(Data("local API: error text (debug): \(String(describing: error).prefix(400))\n".utf8))
             }
             let status = HTTPResponse.Status(code: Int(failure.statusCode))
-            return Self.openAIErrorResponse(status: status, message: failure.message)
+            // A request beyond what this Mac's memory holds now, or one an
+            // advertised context's own guard refuses (with the output cut to
+            // the window, only an invalid output reaches it), is answered in
+            // words that name the bound and what to change (fixed text, never
+            // request content).
+            switch error as? MultiModelBatchSchedulerEngineError {
+            case .advertisedContextExceeded?:
+                return Self.openAIErrorResponse(status: status, message: Self.advertisedContextExceededMessage,
+                    code: "context_length_exceeded")
+            case .tokenBudgetExhausted?, .platformTerminal(cause: .admissionTimeout, _, _)?:
+                // Both are this Mac's memory: a memory refusal, or a request
+                // the engine queued and couldn't admit within its admission
+                // lease (not streamed: a streamed one is refused at its head,
+                // `EngineV2Bridge.holdHeadUntilAdmitted`).
+                return Self.openAIErrorResponse(status: status, message: Self.memoryRefusalMessage)
+            default:
+                return Self.openAIErrorResponse(status: status, message: failure.message)
+            }
         }
+    }
+
+    /// This Mac's answer to a prompt and `max_tokens` that together pass an
+    /// advertised context.
+    static var advertisedContextExceededMessage: String {
+        "The prompt and max_tokens together don't fit in this model's context window "
+            + "(its context_length in /v1/models). Shorten the prompt or lower max_tokens."
+    }
+
+    /// This Mac's answer to a request its memory can't hold now: each request
+    /// reserves its prompt and its output when it starts.
+    static var memoryRefusalMessage: String {
+        "This Mac's memory can't hold this request right now. Lower max_tokens or shorten the prompt "
+            + "(or send less media), or retry when this Mac's other requests finish."
     }
 
     /// Headers returned on a `OPTIONS` preflight. Matches the
@@ -200,14 +255,16 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
     /// `/v1/embeddings` route emits when the engine is missing). Sets
     /// the CORS allow-origin header so browser clients can read the
     /// body even on a cross-origin request. `code` is the optional OpenAI
-    /// error code; it is omitted from the body when nil.
+    /// error code and `param` the request field it names; each is omitted
+    /// from the body when nil.
     static func openAIErrorResponse(
         status: HTTPResponse.Status,
         message: String,
-        code: String? = nil
+        code: String? = nil,
+        param: String? = nil
     ) -> Response {
         let body = OpenAIErrorEnvelope(
-            error: .init(message: message, type: "invalid_request_error", code: code)
+            error: .init(message: message, type: "invalid_request_error", param: param, code: code)
         )
         let data: Data
         do {
@@ -234,7 +291,8 @@ private struct OpenAIErrorEnvelope: Encodable {
     struct ErrorObject: Encodable {
         let message: String
         let type: String
-        /// Omitted when nil, so every existing envelope is unchanged.
+        /// Both omitted when nil, so every existing envelope is unchanged.
+        var param: String? = nil
         var code: String? = nil
     }
     let error: ErrorObject

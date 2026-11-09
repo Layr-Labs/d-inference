@@ -86,6 +86,13 @@ public struct ProviderLoopConfig: Sendable {
         self.pairServingGrantedModelIDs = pairServingGrantedModelIDs
     }
 
+    /// The owner's idle time where me first applies to this provider (`LocalSettings.meFirstIdle`), else nil. A
+    /// provider loop always has a coordinator, so it applies with the local endpoint beside it, as `[local]` says
+    /// (`config.local`; an absent section keeps the defaults).
+    var meFirstIdle: Duration? {
+        (config.local ?? LocalSettings()).meFirstIdle(local: false, localEndpoint: localEndpoint != nil)
+    }
+
     /// Whether this configuration admits a model (`ProviderExecutionRole.admitsModel`).
     func admitsModel(_ modelID: String) -> Bool {
         executionRole.admitsModel(modelID, pairServingGrantedModelIDs: pairServingGrantedModelIDs,

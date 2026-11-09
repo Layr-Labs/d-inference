@@ -16,7 +16,8 @@ import Foundation
 public struct ClusterPrefixCacheSettings: Equatable, Sendable {
     /// Where every rank on this Mac keeps its records: the product's cache
     /// base (the chosen cache volume or this user's caches) plus
-    /// `darkbloom/cluster-prefix-v1`, beside the single-Mac `kv3` tier.
+    /// `darkbloom/cluster-prefix-v1` (`rootDirectoryName`: the install's own
+    /// cache namespace), beside the single-Mac `kv3` tier.
     public var root: URL
     /// The product's prefix-cache gate: off turns the pair's prefix cache and
     /// its SSD tier off (the rank keeps nothing anywhere).
@@ -37,7 +38,13 @@ public struct ClusterPrefixCacheSettings: Equatable, Sendable {
         self.dailyWriteBytes = dailyWriteBytes; self.ttlSeconds = ttlSeconds
     }
 
-    public static let rootDirectoryName = "darkbloom/cluster-prefix-v1"
+    /// `<encryptedCacheNamespace>/cluster-prefix-v1`. Each install has its own namespace, as for `kv3`
+    /// (`CacheStorage.rootDirectoryName`), so a DevNet pair never reads, evicts or sweeps production's records.
+    public static let rootDirectoryName = directoryName(for: .current)
+
+    static func directoryName(for environment: BuildEnvironment) -> String {
+        environment.encryptedCacheNamespace + "/cluster-prefix-v1"
+    }
 
     /// The root under a cache base directory (`~/Library/Caches` by default,
     /// or the directory `darkbloom cache set --directory` pinned).

@@ -112,7 +112,7 @@ struct ResidentAdmission27BTests {
         // The native context with the catalog's output limit; LOAD and the
         // planner size the pair for the standard request under the same ID.
         #expect(profile.maximumPromptTokens == 262_143 && profile.maximumChunkTokens == 512)
-        #expect(profile.maximumOutputTokens == 32_768 && profile.maximumContextTokens == 262_144)
+        #expect(profile.maximumOutputTokens == 65_536 && profile.maximumContextTokens == 262_144)
         let memory = try QwenResidentAdapterDefinition.memoryProfile(specification: large.specification)
         #expect(memory.identifier == profile.identifier && memory.hiddenSize == 5120)
         #expect(memory.maximumPromptTokens == 32_768 && memory.maximumChunkTokens == 512)
@@ -409,7 +409,7 @@ struct ResidentAdmission27BTests {
     @Test func theNativeProfileAndItsMemoryPlanAreBoundIntoOneAgreement() throws {
         let large = try Self.admit(Self.configuration(identity: try Self.identity()))
         #expect(large.wireProfile == ClusterWorkerProfile(id: "registered_qwen38_27b_greedy_generation_v1",
-            vocabularySize: 248_320, maximumPromptTokens: 262_143, maximumOutputTokens: 32_768,
+            vocabularySize: 248_320, maximumPromptTokens: 262_143, maximumOutputTokens: 65_536,
             maximumChunkTokens: 512, maximumContextTokens: 262_144))
         #expect(large.memoryProfile == (try QwenResidentAdapterDefinition.memoryProfile(specification: large.specification)))
         #expect(large.memoryProfile.maximumContextTokens == 65_536 && large.memoryProfile.identifier == large.profile.identifier)
@@ -448,7 +448,13 @@ struct ResidentAdmission27BTests {
             == 262_144)
         #expect(try large.request(reservation(prompt: 262_143, output: 1), id: UUID(), now: Self.now).maximumTokens == 262_144)
         #expect(throws: (any Error).self) { _ = try large.request(reservation(prompt: 229_377, output: 32_768), id: UUID(), now: Self.now) }
-        #expect(throws: (any Error).self) { _ = try large.request(reservation(prompt: 16, output: 32_769), id: UUID(), now: Self.now) }
+        // The catalog's output limit: production's 18,774-token prompts asking for 65,536 (11-06) are admitted.
+        #expect(try large.request(reservation(prompt: 18_774, output: 65_536), id: UUID(), now: Self.now).maximumTokens == 84_310)
+        #expect(throws: (any Error).self) { _ = try large.request(reservation(prompt: 16, output: 65_537), id: UUID(), now: Self.now) }
+        // Its layer stages serve the memory plan's request: a longer one is tensor parallel's.
+        #expect(large.servedProfile == large.memoryProfile)
+        try large.requireWithinServedProfile(reservation(prompt: 32_768, output: 32_768))
+        #expect(throws: (any Error).self) { try large.requireWithinServedProfile(reservation(prompt: 65_537, output: 128)) }
         #expect(throws: (any Error).self) { _ = try small.request(.init(profileID: small.profile.identifier,
             promptTokenIDs: Array(repeating: 1000, count: 32_769), stopTokenIDs: [], outputCount: 1, chunkSize: 512,
             deadlineUptimeNanoseconds: Self.now + 1_000_000, capacityLimitBytes: 1, sampling: nil, prefixCache: nil), id: UUID(), now: Self.now) }

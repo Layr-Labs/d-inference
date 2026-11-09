@@ -1,6 +1,6 @@
 # Desktop control API
 
-> Last updated: 2026-11-02
+> Last updated: 2026-11-08
 
 The Electron app controls the Swift CLI/backend through its authenticated local
 API. The backend owns provider operations, configuration, model state, credentials,
@@ -95,7 +95,7 @@ observations are not evidence of zero memory usage or zero historical activity.
 
 The existing state snapshot adds `provider_status`, the fresh daemon trust status
 from the coordinator (`DesktopBackend.state`). It is `null` when the daemon is
-stale or only the local endpoint is active. `readiness` retains the diagnostic
+stale or only the local API is active (Only me). `readiness` retains the diagnostic
 event reason for compatibility; Electron derives the primary readiness label
 from lifecycle, loaded selected models, update requirements and `provider_status`
 (`assessReadiness`). `untrusted` requires verification; `offline` waits for the
@@ -164,7 +164,7 @@ Sample:
 | `ane.active` | Fraction of polls with the ANE powered; the driver holds power a few seconds after work stops | Public |
 | `memory.used_gb`, `memory.wired_gb`, `memory.pressure` | `host_statistics64`, `kern.memorystatus_vm_pressure_level` (`normal`, `warn`, `critical`) | Public |
 | `thermal.state` | `nominal`, `fair`, `serious` or `critical` | Public |
-| `provider.running` | The daemon's recorded process is current, or a local-only endpoint is live | Public |
+| `provider.running` | The daemon's recorded process is current, or an Only me local API is live | Public |
 | `gpu.power_w`, `gpu.frequency_mhz` | IOReport Energy Model and GPU performance-state residency over the DVFS table | IOReport |
 | `memory.bandwidth_gbps`, `ane.bandwidth_gbps` | IOReport PMP DCS histograms, estimated at each bucket's upper bound | IOReport |
 | `ane.power_w` | IOReport Energy Model ANE channels | IOReport |
@@ -199,13 +199,13 @@ that cleanup completes, then the operation becomes `cancelled`.
 
 | Action | Additional fields | Behavior |
 |---|---|---|
-| `start` | `models`; optional `local`, `endpoint` | Existing start path; local-only mode uses the same canonical provider LaunchAgent |
-| `autopilot` | `models`, `pinned`; optional `downloads`, `endpoint` | Complete selected native downloads, then verified `start --autopilot --model …`; pin only after successful start. Fail before enrollment when a download fails. Every startup model must be a network model (`models[].network`) |
+| `start` | `models`; optional `local`, `endpoint` | Existing start path; `local` (Only me, the app's "Local only") uses the same canonical provider LaunchAgent, on this Mac's one local API port (`[local] port`, else the one its local API already uses, else one chosen; `desktop start-local`), and saves Only me (`[local] mode = "local"`) and that port once the service started, and `endpoint` (Both, me first, the app's "Alongside the network") passes `--local-endpoint`. `models` may be empty only for a `start` without `local` on a paired Mac, which starts the pair with its own model; a pair with no model yet refuses it with the CLI's line (`DesktopBackend.startsThePair`) |
+| `autopilot` | `models`, `pinned`; optional `downloads`, `endpoint` | Complete selected native downloads, then verified `start --autopilot --model …`; pin only after successful start. Fail before enrollment when a download fails. Every startup model must be a network model (`models[].network`). On a paired Mac, failed before any download, with the pair's state and what works there: ``This Mac is in a pair, which is stopped; Autopilot isn't available for pairs yet. Use Start serving.`` ("serves in a pair" only while it serves; the no-model line, or the check of an unreadable pairing record, instead of "Use Start serving.") (`DesktopBackend.pairRefusedActions`, `pairAutopilotRefusal`) |
 | `autopilot_pin`, `autopilot_unpin` | `models` | Existing CLI pin/unpin; pin budget is rechecked against downloaded estimates and configured slots |
 | `autopilot_pause`, `autopilot_resume`, `autopilot_disable` | — | Existing CLI policy commands |
-| `autopilot_models` | — | Explicit saved startup selection through `start --autopilot`; same inventory verification and drain/restart as the CLI wizard, preserving live endpoint options |
+| `autopilot_models` | — | Explicit saved startup selection through `start --autopilot`; same inventory verification and drain/restart as the CLI wizard, preserving live endpoint options. Failed on a paired Mac, as `autopilot` |
 | `switch` | `models` | Existing validated live model-switch path |
-| `stop`, `restart` | — | Existing native drain; local-only owner uses its registered native termination handler |
+| `stop`, `restart` | — | Existing native drain; an Only me owner uses its registered native termination handler |
 | `download`, `remove` | `model` | Native model management; removal refuses models reported serving/resident |
 | `settings` | `revision`, `name`, `idle_minutes`, `auto_update`; optional `schedule`, `startup_preload` | Expected-revision check and mutation under the existing configuration lock |
 | `account-signin`, `account-signout` | — | Separate dashboard session; browser approval, owner-only storage, cache clearing; provider credentials remain independent |
@@ -227,9 +227,9 @@ installation (`Desktop.Serve.run`, `DesktopFanRuntime.resolve`). Normal builds
 invoke their own shared CLI executable.
 
 Each `Snapshot.models` entry reports `network`: whether the catalog lists it.
-The list is the catalog plus every model found on disk, so a local-only model
-can be `eligible` for Local only yet never be advertised or enrolled in
-Autopilot (`DesktopBackend.state`).
+The list is the catalog plus every model found on disk, so a model outside the
+catalog can be `eligible` for Only me (the app's "Local only") yet never be
+advertised or enrolled in Autopilot (`DesktopBackend.state`).
 
 Each entry also reports `registration`: what the live coordinator registration
 carries for the model (`DesktopBackend.modelRegistration`).
@@ -239,13 +239,32 @@ carries for the model (`DesktopBackend.modelRegistration`).
 | `routable` | In the registration's `models`. The network sends it requests. |
 | `autopilot` | In `autopilot_inventory` only. Autopilot can load it. |
 | `none` | In neither. The network does not know this Mac has it. |
-| `null` | Not known: the daemon is stopped, stale, Local only, not connected, a cluster member, or older. |
+| `null` | Not known: the daemon is stopped, stale, Only me (the app's "Local only"), not connected, a cluster member, or older. |
 
 The daemon writes the set to `registered_models` in its state file: the
 `register` sent on the live connection, plus each written `models_update`,
 replaced by an accepted `models_replace` (`ProviderState.registeredModels`).
 `serving` is different: it is the selection. The Models page warns when a selected
 or pool model is `none` (`ModelRegistration`).
+
+On a Mac in a two-Mac pair, `capabilities` leaves out `autopilot`, which serves one
+Mac, and `Snapshot.pair` is `{ model, state, leads }` (`DesktopBackend.snapshotCapabilities`,
+`pairSnapshot`, read again after 30 seconds):
+
+- `model`: the pair's model name, or null before one was chosen;
+- `state`, from this Mac's own files, with nothing asked over the cable
+  (`ClusterPairSummary.appState`): `serving` only where they say the pair serves
+  (the part that runs rank 0 says so), `started` where the pair runs here and
+  this Mac can't tell (the Mac that follows), `not_running` for a started pair
+  that doesn't run here, `stopped`, or `unreadable` when the pairing record can't
+  be read;
+- `leads`: whether this Mac leads the pair, and so chooses its model; null when
+  not known.
+
+It is null on a Mac that isn't paired. The app then offers its plain
+**Start serving**, whose `start` starts the pair with its own model
+([`darkbloom start` on a paired Mac](../provider/cli-reference.md#darkbloom-start)),
+or, with no model yet or an unreadable record, the Terminal step instead.
 
 `Snapshot.autopilot` contains `configured` (consent recorded), `enabled`, `paused`,
 `selected` and `pinned`. Its `phase` is populated only by a fresh live daemon;

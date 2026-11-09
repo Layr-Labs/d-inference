@@ -40,7 +40,7 @@ try! FileManager.default.createDirectory(at: scratch, withIntermediateDirectorie
 
 func incidentChecks() throws {
     let home = scratch.appendingPathComponent("home-a")
-    let file = ClusterIncidentLog.defaultFile(homeDirectory: home)
+    let file = ClusterIncidentLog.defaultFile(installDirectory: home.appendingPathComponent(".darkbloom"))
     let log = ClusterIncidentLog(file: file, redact: { $0.replacingOccurrences(of: "secret-host", with: "<host>") })
     let empty = log.feed()
     check(empty.incidents.isEmpty && empty.loadError == nil && empty.epoch.isEmpty, "A1 a missing log reads as empty, no error")
@@ -126,7 +126,7 @@ func incidentChecks() throws {
     // Each install keeps its own corrupt copy: DevNet's never replaces production's.
     let productionAside = file.deletingLastPathComponent().appendingPathComponent("incidents.corrupt.json")
     let kept = try Data(contentsOf: productionAside)
-    let devFile = ClusterIncidentLog.defaultFile(homeDirectory: home, install: "dev")
+    let devFile = ClusterIncidentLog.defaultFile(installDirectory: home.appendingPathComponent(".darkbloom"), install: "dev")
     try Data("{not json either".utf8).write(to: devFile)
     _ = try ClusterIncidentLog(file: devFile, install: "dev").record(.init(severity: .error, source: "leader",
         stateCode: .activationLaunchFailed, message: "after corruption"))
@@ -278,13 +278,13 @@ func telemetryChecks() throws {
     check(read?.records.count == 4 && read?.sessionID == "session-1" && read?.summary == log.summary, "C6 the file reads back")
     var info = stat()
     check(stat(file.path, &info) == 0 && info.st_mode & 0o777 == 0o600, "C7 the telemetry file is owner-only")
-    let snapshot = ClusterObservabilitySnapshot.read(homeDirectory: scratch.appendingPathComponent("home-c"))
+    let snapshot = ClusterObservabilitySnapshot.read(installDirectory: scratch.appendingPathComponent("home-c/.darkbloom"))
     check(snapshot.telemetry?.recent.first?.requestID == "r5" && snapshot.incidents == nil && snapshot.followers == nil,
           "C8 the status snapshot shows the newest request first and no absent section")
     check(snapshot.lines.contains { $0.contains("phase_split_mtp_v1 cut 0-16|16-32") && $0.contains("hand-off 80.0 ms") },
           "C9 status lines name mode, cut and hand-off")
     // Speed records from served requests: cold completed requests only, kept across sessions, with their route.
-    let history = ClusterServedSpeedFile.defaultFile(homeDirectory: scratch.appendingPathComponent("home-c"))
+    let history = ClusterServedSpeedFile.defaultFile(installDirectory: scratch.appendingPathComponent("home-c/.darkbloom"))
     check(ClusterServedSpeedFile.read(history)?.records.map(\.requestID) == ["r3", "r5"],
           "C10 every completed request that computed its whole prompt is a speed record (not cached, not failed, not the session's first on its route)")
     let next = ClusterPairTelemetryLog(file: file, sessionID: "session-2", capacity: 4)
@@ -309,7 +309,7 @@ func telemetryChecks() throws {
             outcome: "length"), to: many)
     }
     check(many.count == ClusterServedSpeedFile.keptPerRoute && many.first?.requestID == "x8", "C13 speed records are bounded per setup and route")
-    let routed = ClusterObservabilitySnapshot.read(homeDirectory: scratch.appendingPathComponent("home-c"))
+    let routed = ClusterObservabilitySnapshot.read(installDirectory: scratch.appendingPathComponent("home-c/.darkbloom"))
     check(routed.lines.contains { $0.contains("route alone:second") } && routed.lines.contains { $0.contains("route: second alone is predicted") }
             && routed.lines.contains { $0.hasPrefix("Speed records from served requests") && $0.contains("alone:second 1") && $0.contains("pair 2") },
           "C14 status shows each request's route and why, and the speed records by route")
@@ -477,12 +477,33 @@ func protocolChecks() throws {
 
 // MARK: E. Status mirror
 
+/// The link a publisher under check sends on. Each timer tick asks
+/// `isConnected` once (`tick`), so this records every tick: when it ran and
+/// whether it was told the link was up.
 final class Captured: @unchecked Sendable {
+    struct Tick { let at: Int; let connected: Bool }
     private let lock = NSLock()
     private var values: [ClusterLinkControlMessage] = []
-    var connected = true
+    private var up = true
+    private var recorded: [Tick] = []
     func append(_ value: ClusterLinkControlMessage) { lock.withLock { values.append(value) } }
     var messages: [ClusterLinkControlMessage] { lock.withLock { values } }
+    var ticks: [Tick] { lock.withLock { recorded } }
+    func disconnect() { lock.withLock { up = false } }
+    func tick() -> Bool {
+        lock.withLock {
+            recorded.append(.init(at: Int(DispatchTime.now().uptimeNanoseconds), connected: up)); return up
+        }
+    }
+    /// Waits until the ticks so far satisfy `condition`, for 10 s at most.
+    func waitForTicks(_ condition: ([Tick]) -> Bool) -> Bool {
+        let deadline = DispatchTime.now().uptimeNanoseconds + 10_000_000_000
+        while !condition(ticks) {
+            if DispatchTime.now().uptimeNanoseconds > deadline { return false }
+            usleep(1_000)
+        }
+        return true
+    }
 }
 
 final class Clock: @unchecked Sendable {
@@ -535,20 +556,41 @@ func statusChecks() throws {
     board.receive(restarted)
     check(board.entries().first?.status.sequence == 1, "E11 a restarted sender (sequence and uptime reset) is accepted")
 
-    // The publisher sends only while connected, with increasing sequences.
+    // The publisher sends once per interval while connected, nothing after,
+    // with increasing sequences. The check counts the publisher's ticks, not
+    // the messages that arrived in a stretch of wall time.
+    let interval = 200_000_000, leeway = interval / 10   // the publisher's leeway: a tenth of the interval
     let captured = Captured()
-    let publisher = ClusterLinkStatusPublisher(epoch: epoch, rank: 1, interval: .milliseconds(100),
-        send: { captured.append($0) }, isConnected: { captured.connected },
+    // The publisher's queue names no quality of service: the probe waits at the default one.
+    let probe = WakeLatencyProbe(qos: .default, periodNanoseconds: 5_000_000)
+    let publisher = ClusterLinkStatusPublisher(epoch: epoch, rank: 1, interval: .nanoseconds(interval),
+        send: { captured.append($0) }, isConnected: { captured.tick() },
         snapshot: { .init(state: .ready, modelID: "m", requestsServed: 2, incidentEpoch: "e", incidents: [summary]) },
         sample: { .init(freeBytes: 1, wiredBytes: 2, physicalBytes: 3, thermalState: "nominal") })
     publisher.start()
-    usleep(450_000)
-    captured.connected = false
+    let sawUp = captured.waitForTicks { $0.filter(\.connected).count >= 4 }
+    captured.disconnect()
+    // The ticks run one at a time on the publisher's queue: once one was told
+    // the link is down, every tick told it was up has finished its send.
+    let sawDown = captured.waitForTicks { $0.contains { !$0.connected } }
+    let latency = probe.stop()
     let sentWhileConnected = captured.messages.count
-    usleep(350_000)
+    let upTicks = captured.ticks.filter(\.connected).map(\.at)
+    let sawDownAgain = captured.waitForTicks { $0.filter { !$0.connected }.count >= 3 }
     publisher.stop()
+    // A tick may be late by its leeway plus the lateness the probe allows a
+    // wake on this host. That must stay under one interval, so a tick on time
+    // is told apart from one a whole interval late (a skipped interval).
+    let late = leeway + Int(latency.allowedLateness)
+    let gaps = zip(upTicks.dropFirst(), upTicks).map { $0 - $1 }
+    let span = (upTicks.last ?? 0) - (upTicks.first ?? 0)
+    let onCadence = late < interval && gaps.allSatisfy { $0 <= interval + late } && span >= gaps.count * interval - late
+    output.write(Data(String(format: "INFO E12 %ld ticks while connected, longest gap %.1f ms, span %.1f ms; "
+        + "host wake latency worst %.1f ms in %ld waits; a tick may be %.1f ms late\n", upTicks.count,
+        Double(gaps.max() ?? 0) / 1e6, Double(span) / 1e6, Double(latency.worst) / 1e6, latency.samples, Double(late) / 1e6).utf8))
     let sequences = captured.messages.compactMap { message -> UInt64? in if case .status(let s) = message { return s.sequence }; return nil }
-    check(sentWhileConnected >= 3 && captured.messages.count == sentWhileConnected, "E12 sent every interval while connected, nothing after")
+    check(sawUp && sawDown && sawDownAgain && onCadence && upTicks.count >= 4 && sentWhileConnected == upTicks.count
+          && captured.messages.count == sentWhileConnected, "E12 sent every interval while connected, nothing after")
     check(zip(sequences, sequences.dropFirst()).allSatisfy { $0 < $1 }, "E13 sequences increase")
     check(publisher.counters.skipped >= 2, "E14 ticks while disconnected are counted as skipped")
 
@@ -581,9 +623,9 @@ func statusChecks() throws {
 
     // The leader's file and the snapshot `cluster status` reads.
     let home = scratch.appendingPathComponent("home-e")
-    let file = ClusterLinkStatusBoardFile.defaultFile(homeDirectory: home)
+    let file = ClusterLinkStatusBoardFile.defaultFile(installDirectory: home.appendingPathComponent(".darkbloom"))
     try ClusterLinkStatusBoardFile(updatedAt: clock.now, entries: board.entries()).write(to: file)
-    let snapshot = ClusterObservabilitySnapshot.read(homeDirectory: home, now: clock.now + 30)
+    let snapshot = ClusterObservabilitySnapshot.read(installDirectory: home.appendingPathComponent(".darkbloom"), now: clock.now + 30)
     check(snapshot.followers?.entries.first?.stale == true && snapshot.followers?.entries.first?.ageSeconds == 30,
           "E16 the snapshot recomputes age and staleness from the file")
     check(snapshot.lines.contains { $0.contains("Rank 1 (mirrored over the link)") && $0.contains("STALE") }, "E17 status lines show it")

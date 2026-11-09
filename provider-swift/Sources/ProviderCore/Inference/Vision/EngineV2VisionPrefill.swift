@@ -873,7 +873,8 @@ public enum EngineV2VisionPrefill {
     ///
     /// PRIVACY: the human-readable `error` field is emitted ONLY for our own
     /// `EngineV2VisionPrefillError` (content-safe by construction — see the
-    /// enum doc). Foreign throws (processor/MLX/media errors) carry
+    /// enum doc) and for a `VideoReaderFailure` (reader status and error
+    /// domains and codes only). Other throws (processor/MLX/media errors) carry
     /// `error_class` only: `MediaError.invalidURL`, for one, embeds up to
     /// 200 chars of the request's URI. The same throw now comes directly from
     /// this preparer's single decode pass, so filtering by class is the
@@ -896,8 +897,8 @@ public enum EngineV2VisionPrefill {
             "media_kind": .string(mediaKind.rawValue),
             "error_class": .string(String(reflecting: type(of: error))),
         ]
-        if let visionError = error as? EngineV2VisionPrefillError {
-            fields["error"] = .string(String(describing: visionError))
+        if let detail = contentSafeDescription(of: error) {
+            fields["error"] = .string(detail)
         }
         event.fields = fields
         return event
@@ -907,10 +908,19 @@ public enum EngineV2VisionPrefill {
     /// errors are content-safe by construction; foreign errors contribute
     /// their type name only (same stance as `refusalTelemetryEvent`).
     static func refusalDetail(for error: Error) -> String {
+        contentSafeDescription(of: error) ?? String(reflecting: type(of: error))
+    }
+
+    /// Our own errors and a video reader's status and error codes; nil for any
+    /// other error, whose description may carry request content.
+    private static func contentSafeDescription(of error: Error) -> String? {
         if let visionError = error as? EngineV2VisionPrefillError {
             return String(describing: visionError)
         }
-        return String(reflecting: type(of: error))
+        if let readerFailure = error as? VideoReaderFailure {
+            return String(describing: readerFailure)
+        }
+        return nil
     }
 
     /// The 400 for a media preparation throw that is the request's own fault.
@@ -919,10 +929,17 @@ public enum EngineV2VisionPrefill {
     /// deterministic prefill shapes, and the processor refusing the media
     /// itself (a geometry its resize cannot use, such as Qwen's side below
     /// `patch_size × merge_size` or aspect ratio over 200:1; a video without a
-    /// decodable track; a media count the processor does not take). nil for
-    /// any other throw, which the caller refuses as a construction failure.
+    /// decodable track; a video or audio track whose reader failed twice
+    /// without a transient decoder fault; a media count the processor does
+    /// not take). nil for any other throw, which the caller refuses as a
+    /// construction failure.
     /// Processor text carries media dimensions, so the messages are fixed.
     static func clientFault(for error: Error) -> MultiModelBatchSchedulerEngineError? {
+        if let readerFailure = error as? VideoReaderFailure {
+            return readerFailure.isTransient
+                ? nil
+                : .multimodalRejected("multimodal_rejected: the \(readerFailure.medium.rawValue) could not be decoded")
+        }
         if let visionError = error as? EngineV2VisionPrefillError {
             switch visionError {
             case .noProcessedMedia:

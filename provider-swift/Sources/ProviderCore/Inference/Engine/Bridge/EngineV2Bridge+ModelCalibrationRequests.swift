@@ -51,8 +51,14 @@ extension EngineV2Bridge {
         guard !Task.isCancelled else { return .failed }
         let request = ChatCompletionRequest(model: modelId, messages: [],
             temperature: cell.sampled ? nil : 0, max_tokens: cell.outputTokens, seed: 42)
-        let stream = await submitTokenized(promptTokens: tokens, request: request, requestId: id,
-            cacheEnabled: false)
+        // A session that a streamed local request's model load starts inherits that request's task-locals. This probe
+        // is no request's: it must not say, or end, the request's prompt progress, nor make room as the owner's
+        // request.
+        let stream = await LocalPrefillProgress.$current.withValue(nil) {
+            await MeFirstOwnerRequest.$makeRoom.withValue(nil) {
+                await submitTokenized(promptTokens: tokens, request: request, requestId: id, cacheEnabled: false)
+            }
+        }
         var outcome = ModelCalibrationPolicy.CellOutcome.failed
         for await event in stream {
             if Task.isCancelled { cancel(requestId: id); break }

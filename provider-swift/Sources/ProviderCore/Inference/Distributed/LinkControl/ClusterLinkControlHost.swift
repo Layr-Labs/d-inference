@@ -88,7 +88,7 @@ public struct ClusterLinkChannelQualificationRequest: Sendable {
     public var device: String?
     public var localAddress: String?
     public var peerAddress: String?
-    public var port: Int = Int(ClusterLinkControlListener.defaultPort)
+    public var port: Int = Int(ClusterCablePorts.current.linkControl)
     public var epoch: String
     public var edge: String
     public var loopbackForTests = false

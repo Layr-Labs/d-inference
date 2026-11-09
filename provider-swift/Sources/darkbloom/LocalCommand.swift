@@ -153,8 +153,12 @@ struct Local: AsyncParsableCommand {
     /// For a server listening on every interface: this Mac's Bonjour (`.local`) URL, which other computers on the
     /// same network can dial; nil for a loopback or specific-address server, or when the Mac has no local host name.
     static func networkURL(host: String, port: UInt16) -> String? {
-        guard host == "0.0.0.0" || host == "::",
-              let name = SCDynamicStoreCopyLocalHostName(nil) as String?, !name.isEmpty else { return nil }
+        guard host == "0.0.0.0" || host == "::", let name = localHostName() else { return nil }
         return "http://\(name).local:\(port)/v1"
+    }
+
+    /// This Mac's Bonjour host name, without `.local`; nil when it has none.
+    static func localHostName() -> String? {
+        (SCDynamicStoreCopyLocalHostName(nil) as String?).flatMap { $0.isEmpty ? nil : $0 }
     }
 }

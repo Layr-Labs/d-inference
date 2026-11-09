@@ -590,6 +590,12 @@ extension ClusterPairSummary {
         return reason
     }
 
+    /// The Mac left behind by `darkbloom cluster leave` on the other Mac stays paired, and can't tell that Mac having
+    /// left from it being off: where its lines say how to start the pair, they say how to leave it too.
+    static var leftBehindLine: String {
+        "If the other Mac left the pair, `\(cli) cluster leave` here unpairs this Mac too."
+    }
+
     /// What to do next, in commands.
     var next: String? {
         switch state {
@@ -601,8 +607,10 @@ extension ClusterPairSummary {
             if reason != nil { return "Both Macs keep trying by themselves; `\(Self.cli) cluster` on \(leadingMac) shows more." }
             return "Loading takes a few minutes for a large model; check again with `\(Self.cli) cluster status`."
         case .stopped:
-            return "`\(Self.cli) start` on either Mac starts the pair again."
+            // Not "on either Mac": the other Mac may have left the pair, which this Mac can't tell from it being off.
+            return "`\(Self.cli) start` starts the pair again."
                 + (serviceRunning ? "" : " This Mac's cluster service is off; `\(Self.cli) start` here turns it back on.")
+                + " " + Self.leftBehindLine
         case .otherMacAway:
             return "\(ClusterOnboardingMacName.sentence(otherMac)) isn't answering over the cable. Its cluster service may "
                 + "have been turned off with `\(Self.cli) cluster stop --service`, or that Mac is asleep, off, or waiting for "
@@ -610,6 +618,7 @@ extension ClusterPairSummary {
                 // Named only where `start --solo` serves (`Start.pairStart`: `pairIdle`): once this Mac's part was given
                 // up, it holds no serving lock. Before that, --solo would be refused.
                 + (pairIdle ? " Or serve this Mac alone: `\(Self.cli) start --solo`." : "")
+                + " " + Self.leftBehindLine
         case .notServing:
             if let words = localNetworkWords { return words.next }
             let reason = reason ?? ""
@@ -698,7 +707,8 @@ extension ClusterPairSummary {
         if let speculationNote { out.append(speculationNote) }
         if let idle = startedButNotRunningLine {
             out.append(idle)
-            out.append("Next: `\(Self.cli) start --solo` serves this Mac alone; `\(Self.cli) start` starts the pair again.")
+            out.append("Next: `\(Self.cli) start --solo` serves this Mac alone; `\(Self.cli) start` starts the pair again. "
+                + Self.leftBehindLine)
             return out
         }
         out.append(contentsOf: stateLines)

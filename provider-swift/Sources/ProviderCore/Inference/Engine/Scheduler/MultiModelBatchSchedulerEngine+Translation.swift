@@ -82,11 +82,7 @@ public struct ChatTemplateControls: Sendable, Equatable {
     }
 
     var effortDisablesThinking: Bool {
-        guard let value = reasoningEffort?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        else { return false }
-        return ["none", "off", "0"].contains(value)
+        reasoningEffort.map(ReasoningEffort.switchesThinkingOff) ?? false
     }
 
     var hasExplicitThinkingControl: Bool {
@@ -114,18 +110,11 @@ extension MultiModelBatchSchedulerEngine {
         let fixContext = ChatTemplateFixContext(
             modelId: request.model,
             modelType: modelType)
-        if let effectiveEffort = GPTOSSHarmonyTemplateFix.effectiveReasoningEffort(
-            effort,
-            context: fixContext)
-        {
-            context["reasoning_effort"] = effectiveEffort
-        }
 
         // Reviewed precedence: the typed nested control wins over both raw-body
-        // aliases; explicit booleans win over effort shorthands; only the exact
-        // none/off/0 spellings disable through reasoning_effort. `minimal` is
-        // preserved as an effort value and intentionally is not rewritten to
-        // false.
+        // aliases; explicit booleans win over effort shorthands; only the
+        // none/off/0 spellings disable through reasoning_effort. `minimal`
+        // reasons, at the model's lowest level, and is not rewritten to false.
         if requiresToolCall && Qwen35TemplateFix.applies(to: fixContext)
             && !ToolChoiceEnforcementPolicy.nativeStructuredTarget(fixContext)
         {
@@ -161,6 +150,10 @@ extension MultiModelBatchSchedulerEngine {
             // control or a reasoning budget. The coordinator prompt sidecar
             // mirrors this rule.
             context["enable_thinking"] = false
+        }
+        if let effort {
+            context["reasoning_effort"] = ReasoningEffortPolicy.templateEffort(
+                effort, modelID: request.model, modelType: modelType, thinking: context["enable_thinking"] as? Bool)
         }
         if let preserveThinking = controls.preserveThinking {
             context["preserve_thinking"] = preserveThinking

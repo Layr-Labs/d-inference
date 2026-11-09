@@ -295,7 +295,8 @@ struct StartToolIntegrationTests {
 
     @Test("a model this Mac hasn't loaded yet gets one line: run the start again once it is loaded")
     func unloadedModelsSayRunAgain() async throws {
-        let line = "  Run `darkbloom --opencode` again once the model is loaded, to pick up its limits."
+        let line = "  Run `darkbloom --opencode` again once `darkbloom status` shows gpt-oss-120b loaded, to pick up "
+            + "its limits."
         let sandbox = try StepSandbox()
         let unloaded = StepSandbox.listed + [EndpointModel(id: "gpt-oss-120b", ownedBy: "this-mac")]
         #expect(await sandbox.step([.opencode], listed: unloaded).run(endpoint: sandbox.endpoint, requests: "x"))
@@ -306,6 +307,9 @@ struct StartToolIntegrationTests {
             _ = await quiet.step([.opencode], listed: listed).run(endpoint: quiet.endpoint, requests: "x")
             #expect(!quiet.said.contains { $0.hasPrefix("  Run `") })
         }
+        #expect(ToolIntegrationStep.runAgainOnceLoaded(["Gemma 4 26B", "Qwen 3.8 27B"], tools: [.opencode, .hermes])
+            == "  Run `darkbloom --opencode --hermes` again once `darkbloom status` shows Gemma 4 26B and Qwen 3.8 27B "
+            + "loaded, to pick up their limits.")
     }
 
     // MARK: - Finding the tools

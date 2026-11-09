@@ -74,8 +74,9 @@ enum ToolLocator {
 }
 
 /// `darkbloom --opencode` / `--hermes`: once, at start, points each tool at this Mac's live local API, with a
-/// backup and a one-line undo. It never prints or writes a key, and a tool it can't set up never stops Darkbloom
-/// serving.
+/// backup and a one-line undo. It first waits while the API's process still loads this Mac's models (`ModelLoadWait`),
+/// so the tools get each model's own limits. It never prints or writes a key, and a tool it can't set up never stops
+/// Darkbloom serving.
 struct ToolIntegrationStep {
     var tools: [IntegrationTool]
     var environment: ToolIntegrationEnvironment = .current
@@ -87,13 +88,16 @@ struct ToolIntegrationStep {
     var say: (String) -> Void
     /// `<tool> --version`'s first line; nil when it doesn't answer.
     var versionOutput: (IntegrationTool, URL) -> String? = { _, _ in nil }
+    /// The wait, before anything is written, while the local API's process still loads this Mac's models; nil: none.
+    var modelLoadWait: ModelLoadWait?
 
     /// How long the step waits for the local API's `/v1/models`. That list waits for the coordinator's up to the
     /// router's own deadline (`LocalRouter.Timing.list`), so with an unreachable coordinator it answers late: the step
     /// gives it well over that, once, at start.
     static let modelListTimeout: TimeInterval = 15
 
-    /// The step as `start` runs it: the tools found on this Mac, the endpoint's models and the coordinator's catalog.
+    /// The step as `start` runs it: the tools found on this Mac, the endpoint's models, the coordinator's catalog, and
+    /// the wait for this Mac's models to load.
     static func live(tools: [IntegrationTool], coordinatorURL: String) -> ToolIntegrationStep {
         let environment = ToolIntegrationEnvironment.current
         return ToolIntegrationStep(
@@ -109,7 +113,8 @@ struct ToolIntegrationStep {
                 return try? await client.fetchCatalogSnapshot(includeAliases: true)
             },
             say: { print($0) },
-            versionOutput: { _, executable in ToolLocator.version(of: executable) })
+            versionOutput: { _, executable in ToolLocator.version(of: executable) },
+            modelLoadWait: .live())
     }
 
     /// Sets each tool up for `endpoint`. `requests` says where the owner's requests go, in the start screen's words.
@@ -140,15 +145,16 @@ struct ToolIntegrationStep {
 
     private func configure(_ ready: [(tool: IntegrationTool, executable: URL)], endpoint: IntegrationEndpoint,
                            requests: String) async -> Bool {
-        let listed: [EndpointModel]
-        do {
-            listed = try await fetchModels(endpoint)
-        } catch {
-            say("✗ Couldn't read the models of this Mac's local API (\(Self.describe(error))), so "
-                + "\(Self.notSetUp(ready.map(\.tool))).")
+        let tools = ready.map(\.tool)
+        guard let read = await readModels(endpoint, tools: tools) else { return false }
+        let catalog = await fetchCatalog()
+        // No tool's config is written while the local API's process still loads a model this Mac lists for its start:
+        // a wait that ends before it is loaded (the deadline, a model that didn't load, Ctrl-C) returns here, before
+        // any file is touched.
+        guard let afterWait = await waitForModels(read, endpoint: endpoint, tools: tools, catalog: catalog) else {
             return false
         }
-        let catalog = await fetchCatalog()
+        let listed = afterWait.listed
         let models = IntegrationModels.resolve(listed, catalog: catalog)
         var ok = true
         var summaries: [ToolConfigSummary] = []
@@ -175,21 +181,66 @@ struct ToolIntegrationStep {
         }
         if catalog == nil, !summaries.isEmpty {
             say(summaries.allSatisfy(\.undescribed.isEmpty) ? Self.catalogUnreachableKept
-                : Self.catalogUnreachable(ready.map(\.tool)))
+                : Self.catalogUnreachable(tools))
         }
-        // This Mac lists a model's context only while it is loaded, so the tools got the catalog's limits for the rest.
-        let unloaded = listed.filter {
-            $0.contextLength == nil && IntegrationModels.location(ownedBy: $0.ownedBy) == .thisMac
-        }
+        let unloaded = Self.notLoaded(listed, loaded: afterWait.loaded)
         if !unloaded.isEmpty {
-            let one = unloaded.count == 1
-            say("  Run `\(Self.command(ready.map(\.tool)))` again once the "
-                + "\(one ? "model is" : "models are") loaded, to pick up \(one ? "its" : "their") limits.")
+            say(Self.runAgainOnceLoaded(unloaded.map { IntegrationModels.displayName(of: $0.id, in: catalog) },
+                                        tools: tools))
         }
         let keyFile = ToolIntegration.displayPath(endpoint.keyFile, home: environment.home)
         say("  Requests: \(requests)")
         say("  Other tools: OPENAI_BASE_URL=\(endpoint.baseURL) OPENAI_API_KEY=\"$(cat \(keyFile))\"")
         return ok
+    }
+
+    /// The endpoint's models; nil, said in one line, when they can't be read.
+    private func readModels(_ endpoint: IntegrationEndpoint, tools: [IntegrationTool]) async -> [EndpointModel]? {
+        do {
+            return try await fetchModels(endpoint)
+        } catch {
+            say("✗ Couldn't read the models of this Mac's local API (\(Self.describe(error))), so "
+                + "\(Self.notSetUp(tools)).")
+            return nil
+        }
+    }
+
+    /// This Mac's models the tools got no limits of this Mac's for: those its process hasn't `loaded`, by its own word.
+    /// Without that word, those listed without a context, which this Mac lists only while a model is loaded (unless its
+    /// router fills the catalog's in, with an account key and a route that dials out).
+    static func notLoaded(_ listed: [EndpointModel], loaded: Set<String>?) -> [EndpointModel] {
+        let thisMac = listed.filter { IntegrationModels.location(ownedBy: $0.ownedBy) == .thisMac }
+        guard let loaded else { return thisMac.filter { $0.contextLength == nil } }
+        return thisMac.filter { !loaded.contains($0.id) }
+    }
+
+    /// Waits (`modelLoadWait`; none without it) while the local API's process still loads this Mac's models in
+    /// `listed`, then gives what the endpoint lists now, their own limits included, and what the process has loaded
+    /// by its own word (nil without it); nil, said in one line, when nothing may be written: the model didn't load,
+    /// is still loading at the deadline, or Ctrl-C stopped the wait, even as it ended.
+    private func waitForModels(_ listed: [EndpointModel], endpoint: IntegrationEndpoint, tools: [IntegrationTool],
+                               catalog: CatalogSnapshot?) async -> (listed: [EndpointModel], loaded: Set<String>?)? {
+        guard let wait = modelLoadWait else { return (listed, nil) }
+        let thisMac = listed.filter { IntegrationModels.location(ownedBy: $0.ownedBy) == .thisMac }.map(\.id)
+        let name = { (id: String) in IntegrationModels.displayName(of: id, in: catalog) }
+        switch await wait.run(thisMac: thisMac, tools: tools, name: name, say: say) {
+        case .ready(let waited, let loaded):
+            // Ctrl-C after the wait's last look, as it ended: still nothing is written. Past the wait, Ctrl-C does
+            // what it did before it.
+            guard !wait.interrupt.wasPressed else {
+                say(ModelLoadWait.stoppedBeforeWriting(tools))
+                return nil
+            }
+            guard waited else { return (listed, loaded) }
+            return await readModels(endpoint, tools: tools).map { ($0, loaded) }
+        case .notLoaded(let model):
+            say(ModelLoadWait.didNotLoad(name(model), tools: tools))
+        case .timedOut(let model):
+            say(ModelLoadWait.stillLoading(name(model), tools: tools, after: wait.timeout))
+        case .interrupted(let model):
+            say(ModelLoadWait.stopped(name(model), tools: tools))
+        }
+        return nil
     }
 
     /// The lines for one tool's outcome, and whether the tool is set up. Never a key.
@@ -237,6 +288,13 @@ struct ToolIntegrationStep {
         "This Mac serves only the Darkbloom network, so \(names(tools)) \(tools.count == 1 ? "has" : "have") no local "
             + "address to use. Choose \"Both, me first\" (`\(command(tools)) --me-first`) or \"Only me\" "
             + "(`\(command(tools)) --local`)."
+    }
+
+    /// The line for this Mac's models that were neither loaded nor loading as the tools were set up (unloaded when
+    /// idle, or loaded only on a request), so the tools got no limits of this Mac's for them.
+    static func runAgainOnceLoaded(_ models: [String], tools: [IntegrationTool]) -> String {
+        "  Run `\(command(tools))` again once `\(cli) status` shows \(ModelLoadWait.list(models)) loaded, to pick up "
+            + "\(models.count == 1 ? "its" : "their") limits."
     }
 
     /// The line when the local API didn't come up in time after a background start.

@@ -270,4 +270,9 @@ enum IntegrationModels {
     private static func positive(_ value: Int?) -> Int? {
         value.flatMap { $0 > 0 ? $0 : nil }
     }
+
+    /// An endpoint ID's name in the catalog (an alias's, else its build's), else the ID: `Gemma 4 26B`.
+    static func displayName(of id: String, in catalog: CatalogSnapshot?) -> String {
+        catalogDetails(id, in: catalog).name.flatMap { $0.isEmpty ? nil : $0 } ?? id
+    }
 }

@@ -378,9 +378,11 @@ struct ClusterStatusPlainTests {
         var away = pair(role: .member)
         away.state = .otherMacAway
         away.lines = ["The other Mac (Apple M5 Max, 128 GB) did not answer over the cable: connection refused"]
-        #expect(away.clusterStatusLines.last == "Next: The other Mac (Apple M5 Max, 128 GB) isn't answering over the cable. Its "
-            + "cluster service may have been turned off with `darkbloom cluster stop --service`, or that Mac is asleep, off, "
-            + "or waiting for someone to log in. On that Mac, run `darkbloom start` (or `darkbloom cluster`).")
+        let awayNext = "Next: The other Mac (Apple M5 Max, 128 GB) isn't answering over the cable. Its cluster service may "
+            + "have been turned off with `darkbloom cluster stop --service`, or that Mac is asleep, off, or waiting for someone "
+            + "to log in. On that Mac, run `darkbloom start` (or `darkbloom cluster`). If the other Mac left the pair, "
+            + "`darkbloom cluster leave` here unpairs this Mac too."
+        #expect(away.clusterStatusLines.last == awayNext)
         var stopped = pair(started: false, serviceRunning: false, localOnly: true)
         stopped.state = .stopped
         stopped.lines = ["Stopped; last model Qwen 3.8 27B.", "When it starts: Local only, on this Mac's networks; API key: `darkbloom local`."]
@@ -388,8 +390,8 @@ struct ClusterStatusPlainTests {
             "Serves: locally only (API key: `darkbloom local` on the Mac that serves it)",
             "■ Stopped; last model Qwen 3.8 27B.",
             "  When it starts: Local only, on this Mac's networks; API key: `darkbloom local`.",
-            "Next: `darkbloom start` on either Mac starts the pair again. This Mac's cluster service is off; "
-                + "`darkbloom start` here turns it back on.",
+            "Next: `darkbloom start` starts the pair again. This Mac's cluster service is off; "
+                + "`darkbloom start` here turns it back on. If the other Mac left the pair, `darkbloom cluster leave` here unpairs this Mac too.",
         ])
         #expect(ClusterPairSummary.notPaired.clusterStatusLines == ["This Mac isn't in a cluster.",
             "Next: To set up a cluster: `darkbloom cluster` on each Mac."])
@@ -527,7 +529,7 @@ struct ClusterPairClusterCommandsTests {
         // `--local-only` turns this Mac's service off; the other Mac, if it comes back, needs the same (`--service`).
         func flat(_ text: String) -> String { text.split(whereSeparator: \.isWhitespace).joined(separator: " ") }
         #expect(flat(Stop.helpMessage()).contains("Run `darkbloom cluster stop --service` there too if it comes back."))
-        #expect(try Stop.finishStop(nil, localOnly: true) { ["fixture"] }.last
+        #expect(try Stop.finishStop(nil, localOnly: true) { ["fixture"] }.lines.last
             == "The other Mac was not asked to stop. If it comes back, run `darkbloom cluster stop --service` there too.")
         #expect(Stop.refusal(unreadable()) == [
             "This Mac's pairing record couldn't be read (\(unreadableReason)), so it may be in a two-Mac cluster.",
@@ -559,7 +561,7 @@ struct ClusterPairClusterCommandsTests {
                 "To stop only this Mac: `darkbloom cluster stop --local-only` (the other Mac then serves alone, or waits for this one)."])
         }
         #expect(!removed)
-        #expect(try Stop.finishStop(.success(["Stopping both Macs. Run `darkbloom cluster` to serve again."]), forwarded: true) { ["label"] }
+        #expect(try Stop.finishStop(.success(["Stopping both Macs. Run `darkbloom cluster` to serve again."]), forwarded: true) { ["label"] }.lines
             == ["Stopping both Macs. Run `darkbloom cluster` to serve again.",
                 "This Mac's cluster service is stopped and will not start at login. Run `darkbloom cluster` to start it again."])
     }
@@ -665,9 +667,11 @@ struct ClusterPairTruthTests {
         member.read(status: [silent], leaderMode: nil)
         #expect(member.state == .otherMacAway && member.otherMacAnswers == false)
         #expect(member.clusterStatusLines.contains("✗ " + silent))
-        #expect(member.clusterStatusLines.last == "Next: The other Mac (Apple M5 Max, 128 GB) isn't answering over the cable. Its "
-            + "cluster service may have been turned off with `darkbloom cluster stop --service`, or that Mac is asleep, off, "
-            + "or waiting for someone to log in. On that Mac, run `darkbloom start` (or `darkbloom cluster`).")
+        let awayNext = "Next: The other Mac (Apple M5 Max, 128 GB) isn't answering over the cable. Its cluster service may "
+            + "have been turned off with `darkbloom cluster stop --service`, or that Mac is asleep, off, or waiting for someone "
+            + "to log in. On that Mac, run `darkbloom start` (or `darkbloom cluster`). If the other Mac left the pair, "
+            + "`darkbloom cluster leave` here unpairs this Mac too."
+        #expect(member.clusterStatusLines.last == awayNext)
         let object = try jsonObject(member)
         #expect((object["other_mac"] as? [String: Any])?["answers"] as? Bool == false)
         #expect(object["state"] as? String == "other_mac_away" && object["exit_code"] as? Int == 5)
@@ -2166,7 +2170,7 @@ struct ClusterDevNetFindingsTests {
     func clusterTextsNameTheIdentity() async {
         let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
             ClusterOnboardingCommand.use("darkbloom-dev")
-            var lines = try Cluster.Stop.finishStop(nil, localOnly: true) { ["agent"] }
+            var lines = try Cluster.Stop.finishStop(nil, localOnly: true) { ["agent"] }.lines
             lines += Cluster.Stop.refusal(unreadable()) + [Cluster.Local.needsTerminalLine]
             for line in lines { print(line) }
         }
@@ -2863,7 +2867,8 @@ struct DesktopAppOnAPairedMacTests {
         var givenUp = pair()
         givenUp.state = .otherMacAway
         givenUp.pairRunning = false
-        #expect(givenUp.next?.hasSuffix(" Or serve this Mac alone: `darkbloom start --solo`.") == true, "\(givenUp.next ?? "")")
+        #expect(givenUp.next?.hasSuffix(" Or serve this Mac alone: `darkbloom start --solo`. If the other Mac left the pair, "
+            + "`darkbloom cluster leave` here unpairs this Mac too.") == true, "\(givenUp.next ?? "")")
         // Still inside its 15 minutes: the part holds the lock, so --solo would be refused; it isn't named.
         var waiting = pair()
         waiting.state = .otherMacAway

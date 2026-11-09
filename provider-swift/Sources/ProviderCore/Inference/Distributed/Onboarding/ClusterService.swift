@@ -1205,9 +1205,16 @@ public final class ClusterService: @unchecked Sendable {
                 + (reply.keptLive > 0 ? ", \(reply.keptLive) still in use (removed when its part stops)" : "") + "."
         } catch {
             let reason = (error as? ClusterSetupFailure)?.text ?? String(describing: error)
-            return "The other Mac was not reached (\(ClusterConsoleText.bounded(reason, maximum: 160))): "
-                + "its pair cache stays until it unpairs too (`\(OnboardingLive.cli) cluster pair --forget \(pairing.localPin)` there)."
+            return memberNotReachedLine(reason: reason)
         }
+    }
+
+    /// The leader's line when the member it tells of the unpair isn't reached. That Mac may have left the pair already
+    /// (`darkbloom cluster leave` there first, which reclaims its pair cache), so what to run there only if it is still
+    /// paired, and no pin.
+    public static func memberNotReachedLine(reason: String) -> String {
+        "The other Mac was not reached (\(ClusterConsoleText.bounded(reason, maximum: 160))). If that Mac is still paired, "
+            + "run `\(OnboardingLive.cli) cluster leave` there."
     }
 
     /// Where this Mac keeps the cache settings its leader synced.

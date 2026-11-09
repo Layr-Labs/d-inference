@@ -198,10 +198,11 @@ final class ClusterPlacementTensorWidthTests {
         #expect(need(sized) > need(alone))
     }
 
-    /// GLM tensor parallel keeps its own default; a pipeline, and a Qwen TP setup saved without a width, keep theirs.
+    /// A GLM tensor-parallel setup saved without a width serves one request at a time, as a Qwen TP one does; a
+    /// pipeline keeps its default.
     @Test func otherFamiliesAndUnsizedSetupsKeepTheirLanes() throws {
         typealias Plan = DistributedInstalledPlan
-        #expect(Plan.defaultBatchLanes(adapter: .glm5NextLayerStage, mode: .tensorParallel, hasPrivateImages: false) == 8)
+        #expect(Plan.defaultBatchLanes(adapter: .glm5NextLayerStage, mode: .tensorParallel, hasPrivateImages: false) == 1)
         #expect(Plan.defaultBatchLanes(adapter: .qwen35Dense, mode: .tensorParallel, hasPrivateImages: false,
             runtimeModelID: "registered_qwen38_27b") == 1)
         #expect(Plan.defaultBatchLanes(adapter: .qwen35Dense, mode: .pipeline, hasPrivateImages: false) == Plan.defaultBatchLanes)

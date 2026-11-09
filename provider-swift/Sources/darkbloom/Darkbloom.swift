@@ -18,7 +18,7 @@ struct Darkbloom: AsyncParsableCommand {
     // in provider.log. Without this, all Logger calls go to the no-op
     // handler and produce zero output.
     static let _bootstrapLogging: Void = {
-        LoggingSystem.bootstrap(StreamLogHandler.standardError)
+        LoggingSystem.bootstrap { QuietShutdownLogHandler(StreamLogHandler.standardError(label: $0)) }
     }()
 
     static let configuration = CommandConfiguration(
@@ -79,11 +79,60 @@ struct Darkbloom: AsyncParsableCommand {
         _ = _bootstrapLogging
     }
 
-    static func refusalText(afterParse error: Error) -> String? { nil }
+    /// What a refusal thrown by a command that already parsed and ran prints: its own words, without the root's usage
+    /// block ("Usage: darkbloom <subcommand> / See 'darkbloom --help' …"), which names no step (journey 1, J-10). Nil
+    /// for any other error, which `exit(withError:)` prints as before. Exit 64 either way.
+    static func refusalText(afterParse error: Error) -> String? {
+        (error as? ValidationError).map { "Error: " + $0.message }
+    }
+
+    /// Ends the process for an error a command's `run()` threw: a refusal in its own words (`refusalText`), else as
+    /// ArgumentParser does.
+    static func exit(afterRunWithError error: Error) -> Never {
+        guard let text = refusalText(afterParse: error) else { exit(withError: error) }
+        printError(text)
+        Foundation.exit(exitCode(for: error).rawValue)
+    }
 }
 
-struct QuietShutdownLogHandler {
-    static func drops(source: String, message: String) -> Bool { false }
+/// The CLI's log handler: every line as `StreamLogHandler` writes it, except the local server's own shutdown noise
+/// when its owner ends it (journey 1, J-7: ^C on `start --local --here` printed `[HummingbirdCore] Server shutdown
+/// error: Already closed` and `Waiting on child channel: CancellationError()`, which nobody has to act on).
+struct QuietShutdownLogHandler: LogHandler {
+    private var inner: any LogHandler
+
+    init(_ inner: any LogHandler) { self.inner = inner }
+
+    /// Whether a line is that noise: HummingbirdCore's two shutdown lines, exactly.
+    static func drops(source: String, message: String) -> Bool {
+        source == "HummingbirdCore"
+            && (message == "Server shutdown error: Already closed" || message.hasPrefix("Waiting on child channel: CancellationError"))
+    }
+
+    func log(event: LogEvent) {
+        guard !Self.drops(source: event.source, message: event.message.description) else { return }
+        inner.log(event: event)
+    }
+
+    var metadataProvider: Logger.MetadataProvider? {
+        get { inner.metadataProvider }
+        set { inner.metadataProvider = newValue }
+    }
+
+    subscript(metadataKey key: String) -> Logger.Metadata.Value? {
+        get { inner[metadataKey: key] }
+        set { inner[metadataKey: key] = newValue }
+    }
+
+    var metadata: Logger.Metadata {
+        get { inner.metadata }
+        set { inner.metadata = newValue }
+    }
+
+    var logLevel: Logger.Level {
+        get { inner.logLevel }
+        set { inner.logLevel = newValue }
+    }
 }
 
 // MARK: - `darkbloom --opencode` and `darkbloom --hermes`

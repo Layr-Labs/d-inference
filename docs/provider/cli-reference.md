@@ -153,7 +153,15 @@ Before most subcommands run, `runUpdateBannerIfEnabled`
 (`provider-swift/Sources/darkbloom/Darkbloom.swift`) checks for a newer release
 with a 2 s hard timeout and prints a one-line banner; `DARKBLOOM_NO_UPDATE_CHECK`
 set to any value skips it. Logging goes to stderr so launchd captures it in
-`~/.darkbloom/provider.log`.
+`~/.darkbloom/provider.log`. The local server's own two shutdown lines when its
+owner ends it (`[HummingbirdCore] Server shutdown error: Already closed` and
+`Waiting on child channel: CancellationError()`, at Ctrl-C) are left out
+(`QuietShutdownLogHandler`); every other line is written as before.
+
+Errors: a mistyped flag or option, or options a command refuses together before
+it runs, print `Error: …` and that command's usage (exit 64). A refusal a
+command makes once it runs prints only its own `Error: …` line, which names the
+next step, and no usage block (exit 64, `Darkbloom.exit(afterRunWithError:)`).
 
 In a terminal, `start`, `stop`, `restart`, `status` and `update` open with the
 Darkbloom mark beside the command's name and show a one-row live line while

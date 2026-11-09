@@ -47,15 +47,22 @@ if ProviderAppKitHost.shouldHost(commandArgs) {
 
 // Non-serve path: parse + dispatch as ArgumentParser's async main() would, done
 // manually because @main is removed (it would fight AppKit for the main thread).
+// A parse error keeps ArgumentParser's usage block; a refusal the command made once it ran is its own words
+// (`Darkbloom.exit(afterRunWithError:)`).
+var command: any ParsableCommand
 do {
-    var command = try Darkbloom.parseAsRoot(commandArgs)
+    command = try Darkbloom.parseAsRoot(commandArgs)
+} catch {
+    Darkbloom.exit(withError: error)
+}
+do {
     if var asyncCommand = command as? any AsyncParsableCommand {
         try await runAsyncCommand(&asyncCommand)
     } else {
         try command.run()
     }
 } catch {
-    Darkbloom.exit(withError: error)
+    Darkbloom.exit(afterRunWithError: error)
 }
 
 // The helper boundary is load-bearing: at top-level scope a bare

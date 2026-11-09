@@ -25,17 +25,19 @@ import { readPref, windowStorage, writePref } from './storage';
 import {
   fixed,
   grouped,
+  launchIndex,
   launchTagline,
   modelName,
   modelPlace,
   placeLines,
   placeTaglines,
+  staysOnThisMac,
 } from './text';
 import styles from './chat.module.css';
 
-// The launch line: the first one this app launch read, kept while it runs.
-let launchLine: string | undefined;
-const tagline = () => (launchLine ??= launchTagline(windowStorage()));
+// This launch's place in the launch lines, read once while the app runs.
+let launch: number | undefined;
+const launchLine = () => (launch ??= launchIndex(windowStorage()));
 // The last model list, shown while the page reads it again.
 let lastModels: ChatModels | undefined;
 
@@ -294,7 +296,10 @@ export function Chat({
         <div className={styles.stage}>
           <Hero
             receded={hasMessages}
-            tagline={placeTaglines[place] ?? tagline()}
+            tagline={
+              placeTaglines[place] ??
+              launchTagline(launchLine(), staysOnThisMac(backend.state?.local))
+            }
             modelLine={model ? `${modelName(model)} · ${placeLines[place]}` : undefined}
           />
           {conversation && hasMessages && (

@@ -3,8 +3,9 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import type { ChatEvent, ChatModel, ChatModels } from '../src/shared/chat';
+import type { Snapshot } from '../src/shared/contracts';
 import { previewChatModels } from '../src/renderer/preview/chat';
-import { taglines } from '../src/renderer/features/chat/text';
+import { anywhereTaglines, taglines } from '../src/renderer/features/chat/text';
 import styles from '../src/renderer/features/chat/chat.module.css';
 import { backendWith, snapshot } from './onboardingFixtures';
 
@@ -53,7 +54,7 @@ afterEach(() => {
   vi.resetAllMocks();
 });
 
-async function mount(models: ChatModels = listed) {
+async function mount(models: ChatModels = listed, local?: Snapshot['local']) {
   // A fresh page and store each time: the page keeps its last list and launch line per launch.
   vi.resetModules();
   const { Chat } = await import('../src/renderer/features/chat/Chat');
@@ -64,6 +65,7 @@ async function mount(models: ChatModels = listed) {
   const backend = backendWith(
     snapshot({
       endpoint: { base_url: 'http://127.0.0.1:8000/v1', authenticated: true, models: [] },
+      local,
     }),
   );
   const view = render(<Chat backend={backend} navigate={navigate} store={store} />);
@@ -108,7 +110,8 @@ it('opens on the mark and the launch line, naming the model it will ask', async 
   expect(await screen.findByRole('button', { name: 'Model: GPT-OSS 20B' })).toBeVisible();
   expect(screen.getByRole('heading', { level: 1, name: 'Chat' })).toBeInTheDocument();
   expect(screen.getByRole('img', { name: 'Darkbloom' })).toBeInTheDocument();
-  expect(taglines).toContain(document.querySelector(`.${styles.tagline}`)?.textContent);
+  // A runtime that doesn't say where requests go gets no line that says they stay here.
+  expect(anywhereTaglines).toContain(document.querySelector(`.${styles.tagline}`)?.textContent);
   expect(screen.getByText('GPT-OSS 20B · on this Mac')).toBeVisible();
   expect(field()).toHaveAttribute('placeholder', 'Ask GPT-OSS 20B');
   expect(screen.getByRole('button', { name: 'Reasoning effort: Default' })).toBeVisible();
@@ -411,4 +414,26 @@ it('says so when an answer ends with nothing written', async () => {
   emit({ stream: 's1', type: 'done', finish_reason: 'stop' });
   expect(await screen.findByText('No answer.')).toBeVisible();
   expect(screen.queryByRole('button', { name: 'Copy' })).not.toBeInTheDocument();
+});
+
+it('says your words stay on this Mac only while its local API keeps them here', async () => {
+  const local = {
+    mode: 'local' as const,
+    me_first: false,
+    me_first_idle_minutes: 5,
+    route: 'this-mac' as const,
+    route_key: false,
+    port: 8000,
+    bind: '127.0.0.1',
+  };
+  localStorage.setItem('darkbloom.chat.tagline', '7');
+  await mount(listed, local);
+  expect(await screen.findByText('Your questions never leave this Mac.')).toBeVisible();
+  expect(taglines).toContain('Your questions never leave this Mac.');
+  cleanup();
+  localStorage.setItem('darkbloom.chat.tagline', '7');
+  await mount(listed, { ...local, route: 'my-macs-first', route_key: true });
+  await screen.findByRole('button', { name: 'Model: GPT-OSS 20B' });
+  expect(screen.queryByText('Your questions never leave this Mac.')).not.toBeInTheDocument();
+  expect(anywhereTaglines).toContain(document.querySelector(`.${styles.tagline}`)?.textContent);
 });

@@ -613,7 +613,7 @@ that fit the limits, without answers that failed.
 
 | iPhone app (`darkbloom-ios-redesign`) | Here |
 |---|---|
-| `LaunchHero`, `TileField`, `ExtrudedMark`, `Tagline` | `Hero.tsx`, `launchTagline` in `text.ts`: the bloom, the tile canvas at 20 fps, the mark from `landing/public/footer-logo.svg`'s three paths turning toward the pointer, one line per launch in serif italic; behind messages it recedes |
+| `LaunchHero`, `TileField`, `ExtrudedMark`, `Tagline` | `Hero.tsx`, `launchIndex` and `launchTagline` in `text.ts`: the bloom, the tile canvas at 20 fps, the mark from `landing/public/footer-logo.svg`'s three paths turning toward the pointer, one line per launch in serif italic; behind messages it recedes. Lines that say your words stay on this Mac show only while `Snapshot.local` keeps every request here (`route` `this-mac`, or no route and no account key: `staysOnThisMac`); otherwise, and on a runtime that doesn't say, the lines that claim nothing about it take their turn |
 | `PixelLoader`, `SweepText`, `InkTail` | `Indicators.tsx`: CSS keyframes for the 1.8 s diagonal wave and the 2.6 s band; the newest 28 characters of a streaming answer as faint spans |
 | `MessageRows`, `ReasoningDisclosure` | `Messages.tsx`: your words in a blue-tinted slab, replies as text with fenced code blocks, "Thinking N s" then "Thought for N s" |
 | `Composer`, `LiveLine` | `Composer.tsx`, the Show speed line in `Chat.tsx` |

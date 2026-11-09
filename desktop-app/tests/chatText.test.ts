@@ -1,13 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import {
+  anywhereTaglines,
   chatTitle,
   dateGroups,
+  launchIndex,
   launchTagline,
   modelName,
   modelPlace,
   parseBlocks,
   parseInline,
   proseLine,
+  staysOnThisMac,
   taglines,
 } from '../src/renderer/features/chat/text';
 import { inkOpacity } from '../src/renderer/features/chat/Indicators';
@@ -115,17 +118,29 @@ describe('chats', () => {
       getItem: (key: string) => saved.get(key) ?? null,
       setItem: (key: string, value: string) => void saved.set(key, value),
     };
-    const seen = taglines.map(() => launchTagline(storage));
+    const seen = taglines.map(() => launchTagline(launchIndex(storage), true));
     expect(seen).toEqual(taglines);
-    expect(launchTagline(storage)).toBe(taglines[0]);
+    expect(launchIndex(storage)).toBe(0);
     const broken = {
       getItem: () => {
         throw new Error('denied');
       },
       setItem: () => {},
     };
-    expect(launchTagline(broken)).toBe(taglines[0]);
-    expect(launchTagline(undefined)).toBe(taglines[0]);
+    expect(launchIndex(broken)).toBe(0);
+    expect(launchIndex(undefined)).toBe(0);
+  });
+
+  it('says your words stay on this Mac only while its local API keeps every request here', () => {
+    expect(staysOnThisMac({ route: 'this-mac', route_key: true })).toBe(true);
+    expect(staysOnThisMac({ route: null, route_key: false })).toBe(true);
+    expect(staysOnThisMac({ route: null, route_key: true })).toBe(false);
+    expect(staysOnThisMac({ route: 'my-macs' })).toBe(false);
+    expect(staysOnThisMac({ route: 'my-macs-first' })).toBe(false);
+    expect(staysOnThisMac(undefined)).toBe(false);
+    for (let index = 0; index < taglines.length; index++)
+      expect(anywhereTaglines).toContain(launchTagline(index, false));
+    expect(launchTagline(7, true)).toBe('Your questions never leave this Mac.');
   });
 
   it('names a model and where it runs', () => {

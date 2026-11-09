@@ -149,7 +149,9 @@ export function dateGroups<T extends { updated_at: number }>(items: T[], now = D
 }
 
 // The launch lines under the mark: one per launch, in order, so the idea comes from a few angles
-// without repeats. They speak of this Mac, so they show only for a model it serves.
+// without repeats. Most say your words stay on this Mac, which is true only while its local API
+// keeps every request here (`[local] route` `this-mac`); otherwise the lines that claim nothing
+// about where a request goes take their turn.
 export const taglines = [
   'Own your intelligence.',
   'Your AI. Your Mac. Nobody else’s.',
@@ -160,20 +162,34 @@ export const taglines = [
   'Think out loud. Nobody’s listening.',
   'Your questions never leave this Mac.',
 ];
+export const anywhereTaglines = ['Own your intelligence.', 'Own your AI.'];
 
 const taglineKey = 'darkbloom.chat.tagline';
 
-// Advances once per launch (the first read in this window), remembered across launches.
-export function launchTagline(storage: Pick<Storage, 'getItem' | 'setItem'> | undefined) {
+// This launch's place in the lines: it advances once per launch (the first read in this window)
+// and is remembered across launches.
+export function launchIndex(storage: Pick<Storage, 'getItem' | 'setItem'> | undefined) {
   let index = 0;
   try {
-    index = Number.parseInt(storage?.getItem(taglineKey) ?? '0', 10) || 0;
+    index = Math.max(0, Number.parseInt(storage?.getItem(taglineKey) ?? '0', 10) || 0);
     storage?.setItem(taglineKey, String((index + 1) % taglines.length));
   } catch {
     /* A launch without storage starts at the first line. */
   }
-  return taglines[((index % taglines.length) + taglines.length) % taglines.length];
+  return index % taglines.length;
 }
+
+// Whether this Mac's local API keeps every request here: its saved route, else the CLI's default
+// (`this-mac`, or `my-macs` once an account key is saved). Unknown on a runtime that doesn't say.
+export function staysOnThisMac(
+  local: { route?: string | null; route_key?: boolean } | null | undefined,
+) {
+  if (!local) return false;
+  return (local.route ?? (local.route_key ? 'my-macs' : 'this-mac')) === 'this-mac';
+}
+
+export const launchTagline = (index: number, private_: boolean) =>
+  private_ ? taglines[index % taglines.length] : anywhereTaglines[index % anywhereTaglines.length];
 
 // Where a model runs, as the list's `owned_by` says.
 export type ModelPlace = 'this-mac' | 'my-macs' | 'darkbloom';

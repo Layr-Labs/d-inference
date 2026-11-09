@@ -1,6 +1,6 @@
 # Build and validate the macOS desktop app
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-09
 
 Build the Electron frontend and its Swift CLI/backend API in this repository.
 This guide covers development and review artifacts; production distribution also
@@ -1066,6 +1066,8 @@ menu bar item stays available. Passing `--hidden` also starts hidden.
 | `desktop-app/src/main/backend.ts` | runtime discovery, signature checks and the native API client |
 | `desktop-app/src/main/installProgress.ts` | installer output: bounded line reader, plain-language steps, sanitized failure reason |
 | `desktop-app/src/main/hardware.ts` | `HardwareWatch`: the reference-counted hardware SSE client, hardware event parser and size guard |
+| `desktop-app/src/main/clusterSession.ts` | `ClusterSessionRelay`: the guided cluster setup's routes with checked shapes, and its reference-counted `cluster/session/events` stream |
+| `desktop-app/src/main/chat.ts` | `ChatRelay`: Chat's calls to this Mac's local API (loopback only; the local API key stays in the main process), streamed as `ChatEvent`s |
 | `desktop-app/src/main/sse.ts` | server-sent event framing (`splitFrames`, `frameData`, `eventPayload`) and the wait before a stream opens again (`sleep`), shared by the state, hardware and cluster setup streams |
 
 `Backend.verifyRuntime` checks the runtime's code signature in packaged builds before

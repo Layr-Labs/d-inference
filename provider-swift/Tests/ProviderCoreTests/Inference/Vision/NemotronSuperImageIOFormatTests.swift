@@ -75,8 +75,9 @@ struct NemotronSuperImageIOFormatTests {
         #expect(metadata.exif == Data([1, 2, 3]) && metadata.xmp == Data([4, 5]))
         let none = try NemotronSuperImageIOContainer.webPMetadata(riff([("VP8L", [0, 0])]))
         #expect(none.exif == nil && none.xmp == nil)
-        // A chunk past the RIFF payload, or a header shorter than RIFF's.
-        let overrun = riff([("EXIF", [1, 2, 3, 4])], declared: 10)
+        // A chunk past the RIFF payload (its header fits, its 4 bytes do
+        // not), or a file shorter than RIFF's header.
+        let overrun = riff([("EXIF", [1, 2, 3, 4])], declared: 14)
         #expect(throws: Decode.Failure.invalidHeader) { try NemotronSuperImageIOContainer.webPMetadata(overrun) }
         #expect(throws: Decode.Failure.invalidHeader) {
             try NemotronSuperImageIOContainer.webPMetadata(Data("RIFF".utf8))

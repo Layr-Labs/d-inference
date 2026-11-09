@@ -210,11 +210,11 @@ struct NemotronSuperVideoBindingTests {
                                                      templateBytes: Policy.pinnedTemplateBytes)
         #expect(ingress + plan.totalBytes <= (Policy.videoMediaChargeBytes ?? 0))
         // A prompt beyond the context is the request's own fault: 400, not a retryable 503.
-        #expect(throws: Binding.Failure.invalidInput) {
+        #expect(throws: Binding.Failure.contextExceeded) {
             try Binding.encodedVideoPlan(video, prompt: prompt, pruningRate: 0.5, contextLength: length - 1)
         }
         // Unpruned, every one of the 1,512 rows needs room.
-        #expect(throws: Binding.Failure.invalidInput) {
+        #expect(throws: Binding.Failure.contextExceeded) {
             try Binding.encodedVideoPlan(video, prompt: prompt, pruningRate: 0, contextLength: length)
         }
     }

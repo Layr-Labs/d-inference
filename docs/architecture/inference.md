@@ -708,10 +708,12 @@ owner, holds its own media reservations (its prompt's KV pages are charged
 like text's, by the engine's process-memory owner), and cancels/drains
 through terminal retirement. Synthetic tests exercise image cancellation, reuse
 and close. It does not manufacture a shared native lease; the managed slot's
-chat route is its only production caller. The CPU `NemotronSuperImageDecode` sniffs PNG or JPEG content and
+chat route is its only production caller. The CPU `NemotronSuperImageDecode` sniffs PNG, JPEG, WebP, GIF or BMP content and
 reproduces the reference loader's RGB8 conversion: PNG of every colour type and
 bit depth is decoded in-process and matches Pillow exactly, while JPEG samples
-come from ImageIO within test-enforced bounds. Container limits are checked
+come from ImageIO within test-enforced bounds. WebP, GIF (frame 0) and BMP
+come from ImageIO (`NemotronSuperImageIORaster`), read without colour
+management with alpha dropped. Container limits are checked
 before any raster buffer exists, and the SDK resize is bitwise equal to CPU
 PyTorch on the golden fixtures; see the
 [image format reference](../reference/nemotron-super-image-formats.md).
@@ -719,12 +721,13 @@ Its quote alone is not admission. The exact-owner `runEncoded` boundary charges
 ingress before JSON/base64/header inspection and media before decode. The media
 charge adds the SDK's shape-derived tower and projector working-memory bound for
 the largest image, which preparation evaluates one at a time; the global
-activation reserve is unchanged. It only accepts `data:image/png;base64,` and
-`data:image/jpeg;base64,` URIs, whose content selects the format, and uses the
+activation reserve is unchanged. It only accepts `data:image/png;base64,`,
+`data:image/jpeg;base64,`, `data:image/webp;base64,`, `data:image/gif;base64,`
+and `data:image/bmp;base64,` URIs, whose content selects the format, and uses the
 owned tokenizer. Native input arrays are constructed in a separate retained,
 fenced epoch before tower preparation. Synthetic RGB tests cover generation,
 cancellation, busy rejection and release after task completion; loopback HTTP
-tests serve PNG and JPEG variants through the tiny synthetic owner. Actual
+tests serve PNG, JPEG, WebP, GIF and BMP variants through the tiny synthetic owner. Actual
 tokenizer parity, RADIO peak workspace and full-checkpoint image qualification
 remain required.
 

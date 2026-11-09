@@ -1,6 +1,6 @@
 # Nemotron Super image formats
 
-> Last updated: 2026-10-23
+> Last updated: 2026-11-09
 
 Reference for the inline image encodings that the unregistered Nemotron Super
 image owner decodes, how each becomes RGB8, and how that compares with the
@@ -15,9 +15,9 @@ at model revision `7d4bc747b6bdc2cff64c58d65da0d08dd9caa25c`.
 
 | Step | Reference behaviour | Provider behaviour | Source |
 |---|---|---|---|
-| Format | `PIL.Image.open` sniffs content; the data-URI media type is not used | Content is sniffed. PNG and JPEG, the model card's input formats, are decoded; every other signature fails with `unsupportedEncoding`. The route admits only the `data:image/png;base64,` and `data:image/jpeg;base64,` labels, and either label carries either format | `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperImageDecode.swift` (`NemotronSuperImageDecode`) |
+| Format | `PIL.Image.open` sniffs content; the data-URI media type is not used | Content is sniffed. PNG and JPEG, the model card's input formats, and WebP, GIF and BMP, which the coordinator also fetches and inlines, are decoded; every other signature fails with `unsupportedEncoding`. The route admits the `data:image/png;base64,`, `data:image/jpeg;base64,`, `data:image/webp;base64,`, `data:image/gif;base64,` and `data:image/bmp;base64,` labels, and every label carries every format | `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperImageDecode.swift` (`NemotronSuperImageDecode`) |
 | Orientation | `ImageOps.exif_transpose`: IFD0 Orientation; only when that tag is absent, the first XMP `tiff:Orientation` match. Values 2–8 transpose; other values are ignored | Same rules for `.applyEXIF`, which the image owner uses; `.preserveRaster` ignores both | `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperImageOrientation.swift` (`NemotronSuperImageOrientation`) |
-| Mode conversion | `Image.convert("RGB")` | The PNG and JPEG tables below | `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperPNGRaster.swift` (`NemotronSuperPNGRaster`), `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperJPEGRaster.swift` (`NemotronSuperJPEGRaster`) |
+| Mode conversion | `Image.convert("RGB")` | The PNG, JPEG, and WebP, GIF and BMP sections below | `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperPNGRaster.swift` (`NemotronSuperPNGRaster`), `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperJPEGRaster.swift` (`NemotronSuperJPEGRaster`) |
 | Colour management | None: ICC profiles, `gAMA`, `cHRM` and `sRGB` do not change samples | None. ImageIO samples are read without drawing | as above |
 | Frames | Frame 0 | APNG: the IDAT image. MPO: the primary JPEG. Bytes after the primary JPEG's EOI are ignored and never reach ImageIO | `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperPNGContainer.swift` (`NemotronSuperPNGContainer`), `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperJPEGContainer.swift` (`NemotronSuperJPEGContainer`) |
 | Resize and normalization | Float32 `interpolate(bicubic, align_corners=False, antialias=True)`, then `(t / 255 - mean) / std` | SDK `normalizeRGB`, which reproduces CPU PyTorch 2.12.0 rounding and is bitwise equal on the golden fixtures | `libs/mlx-swift-lm/Libraries/MLXVLM/NemotronSuperImagePreprocessing.swift` (`NemotronSuperImagePreprocessing`) |
@@ -74,11 +74,34 @@ The test-enforced bounds on |ImageIO − Pillow| per RGB8 sample are:
 
 Source: `provider-swift/Tests/ProviderCoreTests/Inference/Vision/NemotronSuperImageGoldenTests.swift` (`jpegBound`).
 
+## WebP, GIF and BMP
+
+ImageIO decodes frame 0 after the header check. The signature (`RIFF`…`WEBP`,
+`GIF87a` or `GIF89a`, `BM`) selects the format, and ImageIO must report the
+same type (`org.webmproject.webp`, `com.compuserve.gif`, `com.microsoft.bmp`).
+The width and height come from ImageIO's header properties, so the pixel,
+byte and resize-workspace limits below apply before any raster exists.
+
+| Property | Behaviour | Source |
+|---|---|---|
+| Frames | Frame 0. A GIF is decoded at its canvas size | `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperImageIORaster.swift` (`NemotronSuperImageIORaster.decode`) |
+| Orientation | WebP: the first `EXIF` and `XMP ` chunks, read with the same rules as PNG and JPEG (Pillow's WebP plugin keeps both). GIF and BMP carry none | `NemotronSuperImageIORaster.swift` (`NemotronSuperImageIOContainer.webPMetadata`) |
+| Samples | 8-bit gray, gray with alpha, RGB, RGBA in either 32-bit byte order and an 8-bit RGB palette are read without drawing. Gray replicates, a palette expands, and alpha is dropped, as Pillow's `convert("RGB")` does. Any other RGB layout is drawn once into an 8-bit context in the image's own colour space, which converts no colour; any other layout fails with `unsupportedEncoding` | `NemotronSuperImageIORaster.swift` (`directLayout`, `write`) |
+| Premultiplied alpha | Samples are divided by their alpha, rounded. A pixel with alpha 0 reads as black, where Pillow keeps the stored colour | `NemotronSuperImageIORaster.swift` (`unpremultiply`) |
+
+Lossless WebP, BMP, and GIF of at most 256 colours decode to the same RGB8 as
+the PNG they were made from; the lossless WebP fixture matches Pillow's
+reference raster of `png-rgb8.png`. Lossy WebP colour conversion is
+ImageIO's. A GIF frame smaller than its canvas leaves the rest transparent
+(black), where Pillow fills it with the background index. Source:
+`provider-swift/Tests/ProviderCoreTests/Inference/Vision/NemotronSuperImageIOFormatTests.swift`.
+
 ## Refused inputs
 
 | Input | Failure |
 |---|---|
-| GIF, WebP, BMP, TIFF, HEIF or any other signature | `unsupportedEncoding` |
+| TIFF, HEIF or any other signature, or a WebP, GIF or BMP sample layout that is neither read nor drawn | `unsupportedEncoding` |
+| A WebP, GIF or BMP signature that ImageIO does not read as that type or without a frame size, or a WebP chunk past the RIFF payload | `invalidHeader` |
 | PNG with an unknown critical chunk (for example `CgBI`), a raw-profile EXIF text chunk without `eXIf`, a text chunk keyed `exif` or `xmp`, two XMP packets, a non-SHORT/LONG Orientation, a non-TIFF or BigTIFF EXIF header, or an APNG whose first frame is smaller than the canvas | `unsupportedEncoding` |
 | PNG with a CRC mismatch, invalid IHDR, misplaced PLTE/tRNS, non-consecutive IDAT, data after IEND, an APNG sequence error, a non-zlib `zTXt`/`iCCP` method, or a second `iCCP` (hardening: Pillow reads every copy) | `invalidHeader` |
 | PNG whose zlib stream is truncated, longer than the raster or has an Adler-32 mismatch, or with an invalid filter type or palette index | `invalidRaster` |
@@ -95,9 +118,9 @@ Source: `provider-swift/Tests/ProviderCoreTests/Inference/Vision/NemotronSuperIm
 | Declared pixels | `min(MediaIngest.maxImagePixels, 64 Mi)`, each axis at most 131072, JPEG axes at most 65500. Checked from the container before any raster buffer exists | `NemotronSuperImageDecode.swift` (`parse`) |
 | Resize workspace | SDK limit of 256 MiB for the oriented source and its grid, checked as each image is planned: before the media reservation and before any raster buffer exists. The largest admitted square is 5751x5751; 5752x5752, 8064x6048 and 8192x8192 are refused | `NemotronSuperImageDecode.swift` (`plan`); `NemotronSuperImagePreprocessing.validateWorkspace` |
 | Largest grid | 13312 patches (3328 tokens) per image, for example a 2048x1664 target; a 5751x5751 source resizes to 1856x1824 | `NemotronSuperImagePreprocessing.grid` |
-| Decoder quote | `data.count * 2 + pixels * 14` (PNG) or `* 16` (JPEG) `+ height * 128 + 8 MiB`; `normalizationWorkspaceBytes` adds 256 MiB. Images decode one at a time, so the media reservation charges the largest image's `normalizationWorkspaceBytes` once, beside every image's two normalized Float32 copies (24 bytes per grid pixel) and features | `NemotronSuperImageDecode.swift` (`Quote`); `NemotronSuperLocalImageBinding.swift` (`encodedPlan`) |
+| Decoder quote | `data.count * 2 + pixels * 14` (PNG), `* 16` (JPEG) or `* 20` (WebP, GIF, BMP: ImageIO's raster, at most one drawn copy and the decoder's frame buffers) `+ height * 128 + 8 MiB`; `normalizationWorkspaceBytes` adds 256 MiB. Images decode one at a time, so the media reservation charges the largest image's `normalizationWorkspaceBytes` once, beside every image's two normalized Float32 copies (24 bytes per grid pixel) and features | `NemotronSuperImageDecode.swift` (`Quote`); `NemotronSuperLocalImageBinding.swift` (`encodedPlan`) |
 | Tower working memory | The media reservation adds the pinned composition's derived bound for the request's largest image, 2,095,272,960 bytes at 13312 patches. The global activation reserve is unchanged | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/NemotronSuperLocalImageBinding.swift` (`towerActivationBytes`); `libs/mlx-swift-lm/Libraries/MLXVLM/Models/NemotronSuperImageActivation.swift` (`pinnedActivationBytes`) |
-| Route | The binding admits only `data:image/png;base64,` and `data:image/jpeg;base64,` URIs (`admittedDataURIPrefixes`); the decoder sniffs their content | `NemotronSuperLocalImageBinding.swift` (`parseEncodedBody`) |
+| Route | The binding admits only `data:image/png;base64,`, `data:image/jpeg;base64,`, `data:image/webp;base64,`, `data:image/gif;base64,` and `data:image/bmp;base64,` URIs (`admittedDataURIPrefixes`); the decoder sniffs their content. Another label is `unsupported_media` | `NemotronSuperLocalImageBinding.swift` (`encodedBody`) |
 
 ## Related
 

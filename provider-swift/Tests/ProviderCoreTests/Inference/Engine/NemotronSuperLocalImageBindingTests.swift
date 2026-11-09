@@ -41,7 +41,7 @@ struct NemotronSuperLocalImageBindingTests {
 
     @Test func encodedBodyRefusesRemoteMediaAndTakesTheTextRoutesControls() throws {
         for uri in ["https://example.invalid/image.png", "file:///tmp/image.png",
-                    "data:image/gif;base64,AA==", "data:image/jpg;base64,AA==", "data:image/png,abc",
+                    "data:image/tiff;base64,AA==", "data:image/jpg;base64,AA==", "data:image/png,abc",
                     "data:image/jpeg,abc"] {
             let data = try body(image: uri)
             #expect(throws: NemotronSuperLocalImageBinding.Failure.unsupportedMedia(.imageSource)) {

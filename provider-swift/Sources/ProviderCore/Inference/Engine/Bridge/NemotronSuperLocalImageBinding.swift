@@ -42,7 +42,7 @@ actor NemotronSuperLocalImageBinding {
         var message: String {
             switch self {
             case .imageSource:
-                "an image must be an inline base64 data: URI labelled image/png or image/jpeg"
+                "an image must be an inline base64 data: URI labelled image/png, image/jpeg, image/webp, image/gif or image/bmp"
             case .videoSource:
                 "a video must be an inline base64 data: URI labelled video/mp4 or video/quicktime"
             case .audio: "this model takes no audio input"
@@ -276,7 +276,9 @@ actor NemotronSuperLocalImageBinding {
     /// Data-URI labels of the formats `NemotronSuperImageDecode` admits. The
     /// decoder sniffs content as the reference loader does, so a label only
     /// gates the URI shape: PNG bytes under the JPEG label decode as PNG.
-    private static let admittedDataURIPrefixes = ["data:image/png;base64,", "data:image/jpeg;base64,"]
+    private static let admittedDataURIPrefixes = ["data:image/png;base64,", "data:image/jpeg;base64,",
+                                                  "data:image/webp;base64,", "data:image/gif;base64,",
+                                                  "data:image/bmp;base64,"]
     /// The inline movie labels `MediaIngest.decodeVideo` admits.
     private static let admittedVideoDataURIPrefixes = ["data:video/mp4;base64,", "data:video/quicktime;base64,"]
 

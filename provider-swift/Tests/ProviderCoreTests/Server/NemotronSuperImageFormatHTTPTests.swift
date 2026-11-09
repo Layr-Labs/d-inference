@@ -57,6 +57,13 @@ struct NemotronSuperImageFormatHTTPTests {
         var corrupt = accepted[0]
         corrupt[40] ^= 0x10
         let rejected = [oversize, twelveBit, corrupt, Data("GIF89a".utf8) + Data(count: 16)]
+        let rgb = try NemotronSuperImageIOFormatTests.raster("png-rgb8.png")
+        let imageIO: [(String, Data)] = [
+            ("webp", try NemotronSuperImageFixtures.data("webp-rgb8-lossless.webp")),
+            ("webp", try NemotronSuperImageFixtures.data("webp-exif6.webp")),
+            ("gif", try NemotronSuperImageIOFormatTests.gif(NemotronSuperImageIOFormatTests.raster("png-palette8.png"))),
+            ("bmp", NemotronSuperImageIOFormatTests.bmp(rgb)),
+        ]
         let app = makeLocalInferenceApplication(
             config: .init(host: "127.0.0.1", port: 0, authToken: "synthetic-super-formats"),
             defaultMaxTokens: 2, acquire: { requested in
@@ -82,10 +89,22 @@ struct NemotronSuperImageFormatHTTPTests {
                     #expect(await budget.outstandingReservedBytes() == baseline)
                 }
             }
+            // WebP, GIF and BMP under their own labels and under PNG's.
+            for (label, image) in imageIO {
+                for sent in [label, "png"] {
+                    try await client.execute(uri: "/v1/chat/completions", method: .post,
+                        headers: headers, body: try body([image], label: sent)) { response in
+                        let output = String(buffer: response.body)
+                        #expect(response.status == .ok, "\(label) as \(sent): \(output)")
+                        #expect(!output.contains("\"error\""), "\(label) as \(sent)")
+                    }
+                    #expect(await budget.outstandingReservedBytes() == baseline)
+                }
+            }
             // Content decides the format; a label outside the decoder's formats
             // is refused even when the content would decode.
             let refusals = rejected.flatMap { image in admittedLabels.map { (image, $0) } }
-                + [(accepted[0], "gif"), (accepted[0], "jpg")]
+                + [(accepted[0], "tiff"), (accepted[0], "jpg")]
             for (image, label) in refusals {
                 try await client.execute(uri: "/v1/chat/completions", method: .post,
                     headers: headers, body: try body([image], label: label)) { response in

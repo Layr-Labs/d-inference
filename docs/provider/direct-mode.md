@@ -612,8 +612,9 @@ request-cancellation scope. Its default is absent; only the qualification
 runner installs it as a hook, and it does not advertise a new model. When installed it serves
 every chat request for the Super model ID: text on the owner's text binding with
 its own tokenizer, and bounded inline images on the owner's image binding:
-`data:image/png;base64,` or `data:image/jpeg;base64,` URIs whose content, not the
-label, selects PNG or JPEG (see the
+`data:image/png;base64,`, `data:image/jpeg;base64,`, `data:image/webp;base64,`,
+`data:image/gif;base64,` or `data:image/bmp;base64,` URIs whose content, not the
+label, selects PNG, JPEG, WebP, GIF (frame 0) or BMP (see the
 [image format reference](../reference/nemotron-super-image-formats.md)), or one
 `data:video/mp4;base64,` or `data:video/quicktime;base64,` video as the only
 media of the request ([managed slot](../architecture/inference.md#managed-nemotron-super-slot)).

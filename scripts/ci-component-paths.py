@@ -33,7 +33,7 @@ PROVIDER = (
     "scripts/provider-test-shard-weights.json",
     "scripts/cluster-test-plan.py", "scripts/cluster-stage-content-inventory.py",
     "scripts/swift_test_lock_retry.py",
-    "scripts/prepare-mimo-*-fixtures.py", "scripts/verified_download_cache.py",
+    "scripts/prepare-mimo-*-fixtures.py", "scripts/verified_download_cache.py", "scripts/fixture_redirects.py",
     "scripts/verify-*-prompt-parity.sh",
     "scripts/prepare-prompt-fixtures.py", "scripts/test-prepare-prompt-fixtures.py",
     "scripts/verify-prompt-parity.sh", "scripts/test-qwen4-packaged-resources.py",

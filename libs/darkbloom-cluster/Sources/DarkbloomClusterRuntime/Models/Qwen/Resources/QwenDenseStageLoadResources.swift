@@ -149,6 +149,8 @@ final class QwenDenseStageLoadWatch: @unchecked Sendable {
     func admits(_ os: QwenDenseStageLoadOSObservation, bytes: Int,
                 now: UInt64 = DispatchTime.now().uptimeNanoseconds,
                 floor: Int? = nil) throws -> Bool {
+        // A dev install's memory fault, once due, is this pass's reading (`ClusterMemoryFault`).
+        let os = ClusterMemoryFault.current.reading(os)
         lock.lock()
         let register = !registered
         registered = true

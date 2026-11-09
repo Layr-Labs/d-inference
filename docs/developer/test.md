@@ -1369,33 +1369,41 @@ is historical context, not the current backend source authority.
 
 ### A memory refusal on a real pair (dev memory fault)
 
-Dev and DevNet builds can make one rank's live memory check refuse the next
-request, so a real pair can prove that such a refusal ends that request alone,
-in every mode (D6). Both workers keep running, the client gets the memory 503
-(or, once a stream has started, an error chunk with `code`
+A dev or DevNet install can make one rank's memory read as taken while the
+next request runs, so a real pair can prove that a memory refusal ends that
+request alone, in every mode (D6). Both workers keep running, the client gets
+the memory 503 (or, once a stream has started, an error chunk with `code`
 `request_exceeds_node_budget`), and the pair serves the next request at once.
 
 - **Where.** The file `cluster-setup/memory-fault` in the dev install's home,
   `~/.darkbloom-dev/cluster-setup/memory-fault`, on the Mac whose rank should
   refuse. Rank 0 is the Mac that leads (`darkbloom-dev cluster status` names
-  it), rank 1 the other. Only a worker of a dev or DevNet app (installed in
-  `~/.darkbloom-dev`) reads it; a production install never does
+  it), rank 1 the other. Only a worker in a dev or DevNet install
+  (`~/.darkbloom-dev`) reads it; a production install never does
   (`ClusterMemoryFault.permitted`, pinned by
   `TensorParallelMemoryAbortTests.theMemoryFaultIsInertInAProductionInstallAndOneShotInADevOne`).
-- **What.** One integer N ≥ 1: the rank's live memory gate refuses from that
-  request's Nth check on, for the rest of the request. A check runs at most
-  every 250 ms while the request runs: a pipeline stage checks at its first
-  frame and then before each message it owes its peer; a tensor-parallel rank
-  checks after each token it commits; a batch checks at its step boundaries. So
-  `1` refuses at the first check (a pipeline's first prompt frame, a tensor
-  pair's first token), and `40` about 10 s into the request.
+- **What.** One integer N ≥ 1: from that request's Nth pass of the rank's host
+  memory gate on, for the rest of the request, the gate reads the Mac's memory
+  as taken. A running request's gate passes at most every 250 ms: a pipeline
+  stage checks at its first frame and then before each message it owes its
+  peer; a tensor-parallel rank checks after each token it commits; a batch
+  checks at its step boundaries. So `1` refuses at the first check (a
+  pipeline's first prompt frame, a tensor pair's first token), and `40` about
+  10 s into the request.
 - **When.** The worker reads the file when the next request starts on that Mac
   and deletes it, so it fires once; a running pair needs no restart. The
   request's end disarms it.
-- **How.** The fault throws inside each live gate, where a real refusal is
-  thrown (`ClusterMemoryFault.refuseIfDue`), so everything after it is a real
-  refusal's path. The worker logs `darkbloom-memory-fault-v1 … armed_check=N`,
-  then `darkbloom-stage-abort-v1` (pipeline), `finish=aborted … reason=memory`
+- **How.** The fault changes only the sample the gate judges
+  (`ClusterMemoryFault.reading`, in `QwenDenseStageLoadWatch.admits`): no free
+  page and no file cache, as on a Mac whose memory another process has taken
+  (`withMemoryTaken`). The policy refuses it with its own sentence, so the
+  first check that judges it throws, exactly as for a real reading: a gate's
+  typed check, or any check outside it, which would end the worker on a real
+  Mac too. Pinned by `TensorParallelMemoryAbortTests.anArmedFaultIsTheReadingEveryCheckJudges`;
+  `RealMemoryRefusalTests` shows the same refusals on a taken reading with no
+  fault. The worker logs `darkbloom-memory-fault-v1 … armed_check=N`, then
+  `darkbloom-memory-fault-v1 … memory=taken` at the Nth pass, then
+  `darkbloom-stage-abort-v1` (pipeline), `finish=aborted … reason=memory`
   (tensor parallel) or `memory-refused` (a batch).
 
 On the refusing rank's Mac, for example to refuse at the third check:

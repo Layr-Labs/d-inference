@@ -469,8 +469,9 @@ They run once, at `start`:
    to run the start again online for names and image support.
    Each model's name says where it runs: `(this Mac)`, `(your pair)` when the
    local API is this Mac's part of a running pair (its pid is the part's, or the
-   cluster service's for a member's relay; `IntegrationEndpoint.servesThePair`),
-   `(your Macs)` or `(Darkbloom network, billed)`.
+   cluster service's for a member's relay; `IntegrationEndpoint.servesThePair`;
+   never the cluster service's solo server, which serves this Mac alone while
+   the other Mac is away), `(your Macs)` or `(Darkbloom network, billed)`.
    The result block names the file changed, the backup, the default model on a
    line of its own and a one-line undo. OpenCode's default is set only when
    OpenCode has none: neither of its global files (`opencode.json`,

@@ -78,9 +78,10 @@ extension ClusterPairSummary {
 
     /// The processes that serve the pair `status` publishes, while this Mac's part of it runs: the part's provider
     /// (`runningPartPID`), and the cluster service itself, whose relay answers a member's local API for the pair
-    /// (`ClusterService.relayTick` writes `local.json` with the service's own pid).
+    /// (`ClusterService.relayTick` writes `local.json` with the service's own pid). None while the service runs its solo
+    /// server (`child.solo`, the other Mac away): that serves this Mac alone (#1911's review, N7).
     static func pairProcesses(of status: ClusterServiceStatus?) -> Set<Int32> {
-        guard let status, status.child.running else { return [] }
+        guard let status, status.child.running, status.child.solo != true else { return [] }
         return Set([status.child.pid, status.servicePID].compactMap { $0 })
     }
 

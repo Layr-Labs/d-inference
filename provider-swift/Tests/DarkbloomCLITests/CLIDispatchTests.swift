@@ -112,9 +112,10 @@ private final class BundleAnchor {}
         let home = try makeTempHome()
         defer { try? FileManager.default.removeItem(at: home) }
         let config = home.appendingPathComponent("provider.toml").path
-        let (out, status) = try runWithStatus(["start", "--network", "--opencode", "--config", config], home: home)
+        // `--choose` without a terminal is refused once `start` runs (`LocalFirstOptions.modeStep`), not at parse.
+        let (out, status) = try runWithStatus(["start", "--choose", "--config", config], home: home)
         #expect(status == 64)
-        #expect(out.contains("Error: This Mac serves only the Darkbloom network, so OpenCode has no local address"), "Got:\n\(out)")
-        #expect(!out.contains("Usage: darkbloom <subcommand>") && !out.contains("See 'darkbloom --help'"), "Got:\n\(out)")
+        #expect(out.contains("Error: `--choose` asks in a terminal. Without one, name how this Mac serves"), "Got:\n\(out)")
+        #expect(!out.contains("Usage: darkbloom") && !out.contains("for more information"), "Got:\n\(out)")
     }
 }

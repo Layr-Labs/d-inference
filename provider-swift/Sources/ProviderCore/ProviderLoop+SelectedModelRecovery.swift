@@ -8,13 +8,15 @@ import Foundation
 /// machine, so behind a busy model outside the selection it never loaded:
 /// nothing retried it. Each such model now waits in `selectedModelRecovery`,
 /// and the capacity tick checks it when due (backoff from 30 s to 10 min; an
-/// unload makes it due at once). A check loads it without evicting: before
-/// the load it may unload only models outside the selection that no request
-/// could load back, that serve no request and hold no placement or pin, that
-/// meet Autopilot's own victim rules (`selectedModelRecoveryVictimWait`), and
-/// whose memory makes the room. It never evicts a selected model, so a
-/// recovered model is never displaced by another recovery. While a live
-/// Autopilot lease manages residency, recovery waits.
+/// unload or a configuration change makes it due at once, and after
+/// `postLoadRefusalLimit` memory refusals after loading only those do). A
+/// check loads it without evicting: before the load it may unload only models
+/// outside the selection that no request could load back, that serve no
+/// request and hold no placement or pin, that meet Autopilot's own victim
+/// rules (`selectedModelRecoveryVictimWait`), and whose memory makes the
+/// room. It never evicts a selected model, so a recovered model is never
+/// displaced by another recovery. While a live Autopilot lease manages
+/// residency, recovery waits.
 extension ProviderLoop {
     /// The startup preload's candidates it left cold for memory or a slot
     /// join the recovery (`finishStartupPreload`), as do the selected victims
@@ -260,12 +262,14 @@ extension ProviderLoop {
 
     /// Evicts the planned victims, each rechecked against the plan's rules
     /// and then by the eviction gate, and loads the target without eviction.
-    /// A victim that no longer qualifies ends the attempt before any further
-    /// unload; the next check plans again. A refusal for memory, a slot or a
-    /// transient state keeps the target waiting; any other failure ends its
-    /// recovery (the request path still loads it on demand). The load's own
-    /// checks run after the evictions, so such a failure has still evicted
-    /// this attempt's victims.
+    /// A pause that begins before an unload or before the load stops the
+    /// attempt there; so does a victim that no longer qualifies. The next
+    /// check plans again. A refusal for memory, a slot or a transient state
+    /// keeps the target waiting, and `postLoadRefusalLimit` refusals after
+    /// loading make it wait for an unload or a configuration change; any
+    /// other failure ends its recovery (the request path still loads it on
+    /// demand). The load's own checks run after the evictions, so such a
+    /// failure has still evicted this attempt's victims.
     private func attemptSelectedModelRecovery(_ target: String, evicting victims: [String],
                                               plannedAt: ContinuousClock.Instant) async {
         defer {
@@ -291,6 +295,12 @@ extension ProviderLoop {
             }
         }
         guard !Task.isCancelled, !isShuttingDown else { return }
+        // A pause that began while the last victim unloaded, or before this
+        // task started, stops the load as it stops an eviction.
+        if let reason = selectedModelRecoveryPauseReason() {
+            selectedModelRecovery.pause(target, blocker: reason, now: .now)
+            return
+        }
         do {
             if let override = selectedModelRecoveryLoadOverride {
                 try await override(target)
@@ -305,7 +315,14 @@ extension ProviderLoop {
             return
         } catch {
             let message = Self.recoveryFailureText(error)
-            if Self.recoveryMayRetry(error) {
+            if Self.isPostLoadMemoryRefusal(error) {
+                selectedModelRecovery.deferAfterPostLoadRefusal(target, blocker: message, now: .now)
+                if selectedModelRecovery.entries[target]?.waitsForChange == true {
+                    logger.warning("Selected-model recovery: \(target) was refused after loading "
+                        + "\(SelectedModelRecovery.postLoadRefusalLimit) times; it is checked again after an unload "
+                        + "or a configuration change: \(message)")
+                }
+            } else if Self.recoveryMayRetry(error) {
                 selectedModelRecovery.deferCheck(target, blocker: message, now: .now)
             } else {
                 selectedModelRecovery.remove(target)
@@ -331,6 +348,15 @@ extension ProviderLoop {
         }
     }
 
+    /// A memory refusal that came after the weights loaded: the KV headroom
+    /// guards, the re-slice checks and MiMo's grant. The load gate's own
+    /// refusals, before any weights load, all begin "Insufficient memory".
+    private static func isPostLoadMemoryRefusal(_ error: any Error) -> Bool {
+        guard StartupPreloader.isInsufficientMemoryLoad(error),
+              case .modelLoadFailed(let message)? = error as? InferenceError else { return false }
+        return !message.hasPrefix("Insufficient memory")
+    }
+
     /// `InferenceError` has no localized description; its message is the text.
     private static func recoveryFailureText(_ error: any Error) -> String {
         switch error as? InferenceError {
@@ -351,7 +377,8 @@ extension ProviderLoop {
                 let loading = selectedModelRecovery.attempt?.model == id
                 let untilNext = now.duration(to: entry.nextCheckAt)
                 return .init(model: id, waitingSince: entry.sinceEpoch,
-                    nextCheckAt: loading ? nil : nowEpoch + max(0, Self.recoverySecondsValue(untilNext)),
+                    nextCheckAt: loading || entry.waitsForChange
+                        ? nil : nowEpoch + max(0, Self.recoverySecondsValue(untilNext)),
                     checks: entry.checks, blocker: entry.blocker, loading: loading ? true : nil)
             }
     }

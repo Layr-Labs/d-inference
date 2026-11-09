@@ -222,17 +222,20 @@ restart.
 The operator's selection outranks a placement outside it once the placement's
 hold is over (policy pending owner review,
 `ProviderLoop+SelectedModelPlacementPolicy.swift`). When an adopted, unheld
-target keeps a waiting selected model out only because it serves requests,
-recovery releases the adoption ten minutes after the later of its hold's expiry
-(when it had a hold) and the moment the selected model began waiting, and never
-before the target's `min_dwell_seconds` or per-model lease ends
-(`adoptionReleaseTime`, `adoptionReleaseDelay`), and only if evicting it would
-make the room. The released model is withdrawn and refuses new requests as
-`model_not_selected`; its requests in flight finish, and the next check evicts
-it without waiting for the idle threshold. An unexpired hold, a model in the
-ordinary selection and an Autopilot pin are never released. The selected
-model's own `min_dwell_seconds` then protects it from an operation's victim
-list as for any resident model.
+target keeps a waiting selected model out only because it serves Darkbloom
+requests, recovery releases the adoption ten minutes after the later of its
+hold's expiry (when it had a hold) and the moment the selected model began
+waiting, and never before the target's `min_dwell_seconds` or per-model lease
+ends (`adoptionReleaseTime`, `adoptionReleaseDelay`), and only if evicting it
+would make the room. The released model is withdrawn and refuses new requests
+as `model_not_selected`; its requests in flight finish, and a later check
+evicts it without waiting for the idle threshold: the check 15 seconds after
+the release, or, while its requests still run, the first backoff check after
+they finish (up to 10 minutes later). An unexpired hold, a model in the
+ordinary selection, an Autopilot pin and a model a local request is using (the
+owner's, with or without me first, or the startup self-test) are never
+released. The selected model's own `min_dwell_seconds` then protects it from
+an operation's victim list as for any resident model.
 
 ## Busy reasons and stalled transitions
 
@@ -321,6 +324,11 @@ stops the driver at its next candidate, and the current step finishes normally.
 - A restart drops adoptions and holds. Startup preload skips unadvertised
   inventory, so adopted inventory is not reloaded; the operator's ordinary
   selection and idle policy apply.
+- A restart also drops the selected-model recovery queue, which lives in
+  memory. Only the startup preload rebuilds it, from the selected models it
+  skips or fails to load for memory or a slot: with `startup_preload = false`,
+  or a nonempty `preload_models` that omits a model, a model that waited before
+  the restart is not queued again and loads on request.
 - A saved `enabled_models` edit reaches the running selection only through a
   restart or a committed `switch`; until then the old selection keeps serving,
   recovery never evicts it, and `darkbloom status` prints `Configuration change

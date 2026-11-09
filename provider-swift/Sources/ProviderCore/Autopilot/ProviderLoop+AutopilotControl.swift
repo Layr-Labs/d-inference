@@ -77,6 +77,11 @@ extension ProviderLoop {
     func refreshAutopilotSettings() {
         guard let path = loopConfig.configPath,
               let config = try? ConfigManager.load(from: path) else { return }
+        // A configuration change: every model waiting in the selected-model
+        // recovery is checked again, as after an unload.
+        if config.backend.enabledModels != savedEnabledModels || config.backend.modelAutopilot != autopilotSettings {
+            selectedModelRecovery.makeAllDue(now: .now)
+        }
         savedEnabledModels = config.backend.enabledModels
         // Download settings are provider configuration, never consent: they
         // change no control, lease or revision.

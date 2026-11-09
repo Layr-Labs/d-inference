@@ -2783,7 +2783,9 @@ Output includes:
   the startup preload left cold for memory or a slot, or one an Autopilot
   operation unloaded to load another model
   ([selected-model recovery](../architecture/hardware-support.md#load-gate-modelloadadmission)),
-  followed by `Last check:` and what kept it out. `Not evictable for a load
+  followed by `Last check:` and what kept it out. After three memory refusals
+  that came after the model's weights loaded, it says `next check after an
+  unload or a configuration change` instead of a time. `Not evictable for a load
   now` lists the resident models no load can evict at the snapshot, with the
   same reasons a refusal gives (`provider-swift/Sources/darkbloom/StatusCommand+Residency.swift`).
 - `Traffic:` whether the coordinator can route work to this connection, judged

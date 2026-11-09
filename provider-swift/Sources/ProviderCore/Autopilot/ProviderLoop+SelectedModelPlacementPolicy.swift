@@ -7,23 +7,27 @@ import Foundation
 /// within Autopilot's victim rules.
 ///
 /// An adopted model outside the selection that keeps a waiting selected model
-/// out only because it serves requests, with no unexpired hold, is released
-/// `adoptionReleaseDelay` after its hold expired (or after the selected model
-/// began waiting, without a hold), and never before its minimum dwell or its
-/// per-model lease ends: it takes no new requests, finishes those in flight,
-/// and the next check evicts it. A hold is always honoured, and a selected or
-/// pinned model is never released.
+/// out only because it serves Darkbloom requests, with no unexpired hold, is
+/// released `adoptionReleaseDelay` after its hold expired (or after the
+/// selected model began waiting, without a hold), and never before its
+/// minimum dwell or its per-model lease ends: it takes no new requests,
+/// finishes those in flight, and a later check evicts it. A hold is always
+/// honoured; a selected or pinned model, and one a local request is using
+/// (the owner's, or the startup self-test), is never released.
 extension ProviderLoop {
     static let adoptionReleaseDelay: Duration = .seconds(600)
 
     /// When `id` may be released for a model waiting since `since`: adopted
     /// outside the selection, unheld, and excluded from eviction only by the
-    /// work it serves. Nil when it never may.
+    /// Darkbloom requests it serves. Nil when it may not be at this check,
+    /// including while a local request uses it: released, it would refuse
+    /// the owner's next one as `model_not_selected`.
     func adoptionReleaseTime(_ id: String, reasons: [EvictionExclusionReason],
                              waitingSince since: ContinuousClock.Instant,
                              now: ContinuousClock.Instant) -> ContinuousClock.Instant? {
         guard !isProtectedFromRecoveryEviction(id), autopilotAdoptionIsValid(id),
-              !autopilotHoldsModel(id, now: now), !reasons.isEmpty, reasons.allSatisfy(\.isServing)
+              !autopilotHoldsModel(id, now: now), !reasons.isEmpty, !reasons.contains(.localRequest),
+              reasons.allSatisfy(\.isServing)
         else { return nil }
         let anchor = autopilotHolds[id].map { max(since, $0.until) } ?? since
         var release = anchor.advanced(by: Self.adoptionReleaseDelay)

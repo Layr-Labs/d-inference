@@ -124,7 +124,7 @@ struct SelectedModelRecoveryPolicyTests {
         let fixture = try await Fixture.superWaitingBehindAdoptedGLM()
         defer { Task { await fixture.remove() } }
         let loop = fixture.loop
-        let limit = 3
+        let limit = SelectedModelRecovery.postLoadRefusalLimit
         let refusal = "Model '\(Fixture.superID)' loaded but has insufficient KV headroom under the memory cap "
             + "(1.2 GB free, need 2.0 GB to serve) — unloaded"
         let loads = ScriptedCounter()
@@ -379,5 +379,27 @@ struct SelectedModelRecoveryPolicyTests {
         #expect(recovery.nextDue(now: start) == "m")
         recovery.deferCheck("m", blocker: "hold", now: late, retryAt: late.advanced(by: .seconds(45)))
         #expect(recovery.entries["m"]!.nextCheckAt == late.advanced(by: .seconds(45)))
+    }
+
+    @Test func refusalsAfterLoadingStopTheChecksUntilEveryEntryIsMadeDue() {
+        var recovery = SelectedModelRecovery()
+        let start = ContinuousClock.now
+        let limit = SelectedModelRecovery.postLoadRefusalLimit
+        recovery.enqueue("m", now: start, nowEpoch: 0)
+        // A refusal before loading (the load gate's) counts toward nothing.
+        recovery.deferCheck("m", blocker: "Insufficient memory", now: start)
+        for refused in 1...limit {
+            let now = recovery.entries["m"]!.nextCheckAt
+            #expect(recovery.nextDue(now: now) == "m")
+            recovery.deferAfterPostLoadRefusal("m", blocker: "refused after loading", now: now)
+            #expect(recovery.entries["m"]!.postLoadRefusals == refused)
+            #expect(recovery.entries["m"]!.waitsForChange == (refused == limit))
+        }
+        #expect(recovery.entries["m"]!.blocker
+            == "refused after loading; stopped after \(limit) memory refusals after loading")
+        #expect(recovery.nextDue(now: start.advanced(by: .seconds(86_400))) == nil)
+        recovery.makeAllDue(now: start)
+        #expect(recovery.nextDue(now: start) == "m")
+        #expect(recovery.entries["m"]!.postLoadRefusals == 0)
     }
 }

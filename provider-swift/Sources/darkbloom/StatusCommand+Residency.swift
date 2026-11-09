@@ -63,11 +63,13 @@ extension Status {
     }
 
     /// Selected models the daemon keeps trying to load, when the next check
-    /// runs and what kept the last one out.
+    /// runs (none is scheduled after repeated refusals after loading) and what
+    /// kept the last one out.
     static func recoveryLines(state: DaemonState, now: Double) -> [String] {
         (state.selectedModelRecovery ?? []).flatMap { entry -> [String] in
             let next = entry.loading == true ? "loading now"
-                : entry.nextCheckAt.map { "next check in \(compactDuration(max(0, $0 - now)))" } ?? "check pending"
+                : entry.nextCheckAt.map { "next check in \(compactDuration(max(0, $0 - now)))" }
+                    ?? "next check after an unload or a configuration change"
             var lines = ["Retrying \(entry.model) when memory frees; \(next) "
                 + "(waiting \(compactDuration(max(0, now - entry.waitingSince))))"]
             if let blocker = entry.blocker { lines.append("  Last check: \(blocker)") }

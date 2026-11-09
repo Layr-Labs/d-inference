@@ -10,6 +10,45 @@ import Testing
 /// `/usr/bin/true`, which ends at once; nothing loads a model and no other Mac answers.
 @Suite("Cluster service: a part whose other Mac is away", .serialized)
 struct ClusterServicePartRestartTests {
+    /// The waits between the starts of a part that keeps ending: while the other Mac answers, 6, 12 and 24 s, then 30 s
+    /// (3 s after a run of 2 minutes); while it doesn't, 30 s, then twice as long each time up to 10 min, whatever the
+    /// run's length.
+    @Test func aPartsRestartWaitGrowsTo10MinutesOnlyWhileTheOtherMacIsAway() {
+        func waits(away: Bool, ran: Double = 1) -> [Double] {
+            var backoff = ClusterControlPartChoice.firstBackoffSeconds
+            return (0..<8).map { _ in
+                backoff = ClusterControlPartChoice.restartBackoff(after: backoff, ranSeconds: ran, otherMacAway: away)
+                return backoff
+            }
+        }
+        #expect(waits(away: false) == [6, 12, 24, 30, 30, 30, 30, 30])
+        #expect(waits(away: false, ran: 120) == [3, 3, 3, 3, 3, 3, 3, 3])
+        #expect(waits(away: true) == [30, 60, 120, 240, 480, 600, 600, 600])
+        #expect(waits(away: true, ran: 120) == [30, 60, 120, 240, 480, 600, 600, 600])
+        // A part already backing off when the other Mac goes away doubles from where it was.
+        #expect(ClusterControlPartChoice.restartBackoff(after: 24, ranSeconds: 1, otherMacAway: true) == 48)
+    }
+
+    /// Only the leader's modes with a member of the plan absent count as the other Mac away.
+    @Test func theOtherMacIsAwayInTheLeadersModesWithAnAbsentMember() {
+        let away: [ClusterControlNode.Mode] = [.waiting(missing: ["b"], soloInSeconds: 60, canServeAlone: false),
+                                               .alone(missing: ["b"]), .cannotServe(missing: ["b"], reason: "fixture")]
+        let present: [ClusterControlNode.Mode] = [.cluster, .confirming, .idle, .following(leaderID: "a")]
+        #expect(away.allSatisfy(\.othersAway) && !present.contains(where: \.othersAway))
+    }
+
+    /// `darkbloom cluster status` on the leading Mac, under the line that it waits for the other Mac: when its part starts
+    /// again, and that the other Mac's answer starts it at once. Nothing while the wait is the ordinary one.
+    @Test func theLeadersStatusSaysWhenItsPartStartsAgain() {
+        var child = ClusterServiceStatus.Child(running: false, starts: 3, lastEnd: "exit 1", restartInSeconds: 240,
+                                               restartWaitsForOtherMac: true, lastError: nil)
+        #expect(OnboardingLive.partWaitLine(child, here: "This Mac", there: "the other Mac")
+            == "This Mac's part starts again in 4 min, or as soon as the other Mac answers: while the other Mac is away, each "
+            + "start waits twice as long as the last, up to 10 min.")
+        child.restartWaitsForOtherMac = nil
+        #expect(OnboardingLive.partWaitLine(child, here: "This Mac", there: "the other Mac") == nil)
+    }
+
     @Test func aLeaderWhoseOtherMacIsAwayWaitsLongerToStartItsPartAgainAndStartsItAtOnceWhenItAnswers() throws {
         let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:9/ws/provider")
         try withExtendedLifetime(macs) {
@@ -65,6 +104,7 @@ struct ClusterServicePartRestartTests {
             let child = try #require(waiting, "the part did not start and end: \(lines.values)")
             #expect((child.restartInSeconds ?? 0) >= 29,
                     "it waits 30 s, not the 6 s of a part whose other Mac answers: \(String(describing: child.restartInSeconds))")
+            #expect(child.restartWaitsForOtherMac == true, "the status says the other Mac's answer ends the wait")
             #expect(starts.values.count == 1, "\(lines.values)")
 
             // The other Mac answers: the part starts again at once.

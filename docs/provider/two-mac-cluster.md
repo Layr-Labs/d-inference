@@ -1262,6 +1262,14 @@ plan: normally the re-plan after its update, which restarts both parts anyway.
 Manage the cluster on the Mac that leads; on the other
 Mac, `darkbloom cluster` shows the status and names the Mac to use.
 
+While the leading Mac waits for the other Mac, its part can't form the pair, and
+each start reads its share of the model and registers it again. A part that
+ends then starts again after 30 seconds, then 1, 2 and 4 minutes, twice as long
+each time up to 10 minutes, instead of every 30 seconds; it starts at once when
+the other Mac answers. `darkbloom cluster status` on the leading Mac says when,
+under the line that it waits for the other Mac: ``This Mac's part starts again in
+4 min, or as soon as the other Mac answers: …``.
+
 While the Mac that runs the pair's API is away, the other Mac's own port for it
 (with **Only me**, and with **Both, me first** on every address) is never a
 connection that just closes: it answers every request at once with a `503`

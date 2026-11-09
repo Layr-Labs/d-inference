@@ -2156,6 +2156,13 @@ final class OnboardingLive: @unchecked Sendable {
         return "; \(mac)'s part ended (\(end)\(child.lastError.map { ": " + $0 } ?? "")) and starts again by itself"
     }
 
+    /// While the leading Mac waits for the other Mac (`localStatus`): when its part, which ended, starts again, while that
+    /// wait grew because the other Mac doesn't answer (`ClusterControlWords.partWaitLine`); nil otherwise.
+    static func partWaitLine(_ child: ClusterServiceStatus.Child?, here: String, there: String) -> String? {
+        guard let child, child.restartWaitsForOtherMac == true, let seconds = child.restartInSeconds else { return nil }
+        return ClusterControlWords.partWaitLine(seconds: seconds, here: here, there: there)
+    }
+
     /// Whether a part's end is said in the live rows (`readinessOnce`, `offeredReadiness`) as an end that starts again by
     /// itself, on either Mac: not a clean stop ("stopped", or exit 0 with no reason), which a planned switch makes on both
     /// Macs (the DevNet run, A-10, B18); an exit 0 that says why (a refused dial, A-3) is still said.
@@ -2429,6 +2436,10 @@ final class OnboardingLive: @unchecked Sendable {
                 }
             }
             lines.append((answering ? Self.sentence(hereShort) + ": " : "") + line + ".")
+            if control.mode == "waiting",
+               let wait = Self.partWaitLine(ClusterService.published()?.child, here: Self.sentence(hereShort), there: thereShort) {
+                lines.append(wait)
+            }
             return lines
         }
         // One line for the screen (the banner above says which Mac leads): what serves and where, or why it does not.

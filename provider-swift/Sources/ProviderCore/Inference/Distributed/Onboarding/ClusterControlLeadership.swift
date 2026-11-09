@@ -151,6 +151,14 @@ public struct ClusterControlNode: Sendable, Equatable {
         case alone(missing: [String])
         /// The members present cannot serve the plan: a stated failure, nothing runs.
         case cannotServe(missing: [String], reason: String)
+
+        /// The leader with a member of the plan absent past its time-to-live: it waits for it, serves alone or can't serve.
+        public var othersAway: Bool {
+            switch self {
+            case .waiting, .alone, .cannotServe: return true
+            case .following, .confirming, .cluster, .idle: return false
+            }
+        }
     }
 
     public enum LeaseAnswer: Codable, Sendable, Equatable {
@@ -585,6 +593,27 @@ public enum ClusterControlPartChoice: Sendable, Equatable {
         backoffElapsed || key != endedKey
     }
 
+    /// The restart backoff a part starts with, and after a run of `longRunSeconds` or more.
+    public static let firstBackoffSeconds: Double = 3
+    public static let longRunSeconds: Double = 120
+    /// The longest wait between starts of a part that keeps ending while the other Mac answers.
+    public static let backoffCapSeconds: Double = 30
+    /// The longest wait while the other Mac doesn't answer (`restartBackoff`).
+    public static let awayBackoffCapSeconds: Double = 600
+
+    /// The restart backoff after this Mac's part ended having run `ranSeconds`, from the backoff before (`backoff`), and
+    /// the wait before it starts again (the same value). A part that ran `longRunSeconds` starts again after
+    /// `firstBackoffSeconds`; one that keeps ending waits twice as long each time, up to `backoffCapSeconds`. While the
+    /// other Mac doesn't answer (`otherMacAway`, `ClusterControlNode.Mode.othersAway`), the wait doubles from
+    /// `backoffCapSeconds` up to `awayBackoffCapSeconds` whatever the run's length: such a part cannot form the pair, and
+    /// each start reads its share of the model again and registers again (a MiMo leader whose follower slept started
+    /// every 48 s, 2026-11-09). The service starts it again at once when the other Mac answers.
+    public static func restartBackoff(after backoff: Double, ranSeconds: Double, otherMacAway: Bool) -> Double {
+        if otherMacAway { return min(max(backoff * 2, backoffCapSeconds), awayBackoffCapSeconds) }
+        if ranSeconds >= longRunSeconds { return firstBackoffSeconds }
+        return min(backoff * 2, backoffCapSeconds)
+    }
+
     /// Why this Mac's part of the pair (`key` "cluster:…") waits instead of starting: the other Mac reports its own part
     /// can't start for a reason that doesn't clear by itself (`otherMacHeldBack`; single-Mac serving there). A part started
     /// anyway only waits for its missing follower and ends again (every 38 s on pair-2). Never for serving alone ("solo:"),
@@ -736,6 +765,14 @@ public enum ClusterControlWords {
     public static func duration(_ seconds: Int) -> String {
         let value = max(0, seconds)
         return value >= 60 ? "\(value / 60) min" + (value % 60 == 0 ? "" : " \(value % 60) s") : "\(value) s"
+    }
+
+    /// While the leader's part waits longer to start again because the other Mac doesn't answer
+    /// (`ClusterControlPartChoice.restartBackoff`): when it starts, and that the other Mac's answer starts it at once.
+    /// `here` and `there` as the status names the two Macs ("This Mac", "the other Mac").
+    public static func partWaitLine(seconds: Int, here: String, there: String) -> String {
+        "\(here)'s part starts again in \(duration(seconds)), or as soon as \(there) answers: while \(there) is away, "
+            + "each start waits twice as long as the last, up to \(duration(Int(ClusterControlPartChoice.awayBackoffCapSeconds)))."
     }
 
     /// `aloneRefusal`: this Mac's own reason it cannot serve the model alone (`ClusterControlMember.aloneRefusal`).

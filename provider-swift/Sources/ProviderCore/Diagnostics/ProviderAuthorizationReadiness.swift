@@ -41,7 +41,7 @@ public enum ProviderAuthorizationReadiness {
 
     /// Paths whose last coordinator report may be shown after `snapshotMaxAge`.
     /// Neither can pass `removalReady`, so showing one grants nothing.
-    static let lastReportedPaths: Set<String> = ["none", "legacy"]
+    private static let lastReportedPaths: Set<String> = ["none", "legacy"]
 
     /// Display only, where `displayedStatus` returns nil: an older `none` or
     /// `legacy` report, which would otherwise vanish after `snapshotMaxAge`

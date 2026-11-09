@@ -374,11 +374,9 @@ func buildCoordinatorDoctorChecks(
     let removalAuthorization = state?.currentProviderAuthorization(
         coordinatorURL: coordinatorOverride ?? snapshot.config.coordinator.url, now: now)
     let appAttestAuthorized = authorization?.hasCurrentAppAttestAuthorization(now: now) == true
-    // Display only, and only when no current decision is shown.
-    let lastReported = authorization == nil
-        ? state?.lastReportedProviderAuthorization(
-            coordinatorURL: coordinatorOverride ?? snapshot.config.coordinator.url, now: now)
-        : nil
+    // Display only; nil whenever `authorization` is a current decision.
+    let lastReported = state?.lastReportedProviderAuthorization(
+        coordinatorURL: coordinatorOverride ?? snapshot.config.coordinator.url, now: now)
 
     let linked = AuthTokenStore.load() != nil
     checks.append(.init(

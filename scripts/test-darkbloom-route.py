@@ -129,7 +129,7 @@ CI_ROUTED = {
     ("ci-master.yml", "docs"): "needs.plan.outputs.routes",
 }
 # darkbloom-sandbox's GitHub-side watchdog (public/darkbloom-actions
-# .github/workflows/watchdog.yml at 31236c54), copied unchanged.
+# .github/workflows/watchdog.yml at d6d257c2), copied unchanged.
 WATCHDOG = "darkbloom-watchdog.yml"
 # The hourly full run of dev: a schedule on master that dispatches CI (dev) on
 # dev. One GitHub-hosted job that routes nothing and tests nothing.
@@ -950,6 +950,11 @@ class RouteWorkflowTests(unittest.TestCase):
         self.assertIn('route_job=${ROUTE_JOB:-Select Runners}', body)
         self.assertIn('(.name | endswith(" / " + $name))', body)
         self.assertIn("    name: Select Runners\n", jobs(self.texts["darkbloom-route.yml"])["select"])
+        # A listing reaches jq through a file or stdin, never as an argument:
+        # one argument is at most 128 KiB on Linux, less than a busy day of
+        # this repository's runs ("Argument list too long", exit 126).
+        for listing in ("all", "more", "runs", "jobs", "cancelled"):
+            self.assertNotRegex(body, rf'--arg(json)? [a-z_]+ "\${listing}"', listing)
 
     def test_hourly_full_run_only_dispatches_ci_dev_on_dev(self):
         text = self.texts[HOURLY]

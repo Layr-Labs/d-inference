@@ -41,7 +41,7 @@ describe('pool state', () => {
   it('never offers a model found only on disk to the pool', () => {
     const localOnly = { ...byId('qwen-3.5-9b'), id: 'mlx-community/local', network: false };
     expect(poolState(localOnly, activeAutopilot, false)).toBe('ineligible');
-    expect(modelFacts(localOnly, true)).toBe('Not on the Darkbloom network. Runs in Local only.');
+    expect(modelFacts(localOnly, true)).toBe('Not on the Darkbloom network. Runs with Only me.');
     expect(modelFacts(localOnly)).not.toContain('Darkbloom network');
   });
 

@@ -511,8 +511,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 nativeMiMoThinkingEnabled = try MiMoV26TemplateFix.effectiveThinkingEnabled(
                     request: request, controls: templateControls)
             } else { nativeMiMoThinkingEnabled = true }
-            try DiffusionGemmaReasoningControl.validate(
-                request: request, controls: templateControls, modelType: modelType)
+            try ReasoningEffortPolicy.validate(request, controls: templateControls, modelType: modelType)
             prepared = try ToolChoicePromptPolicy.prepare(
                 request,
                 modelType: modelType,

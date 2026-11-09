@@ -571,7 +571,61 @@ Sandboxes are documented with their implementation.
 
 ## Early access
 
-Early access is documented with its implementation.
+Early access lists every waitlist the coordinator offers, in its order, and
+where this Mac's account stands on each, as
+[`darkbloom waitlist`](../provider/cli-reference.md#darkbloom-waitlist) does
+(`desktop-app/src/renderer/features/waitlists/`). A waitlist is per account, so
+the answer is the linked account's.
+
+- **Reading.** The `waitlists` resource (`Waitlists` in
+  `desktop-app/src/shared/waitlists.ts`) is read only on a runtime with the
+  `waitlists` capability and only while a page that shows it is open. One read
+  serves every hook and card on the page (`waitlistStore.ts`). Opening a page
+  starts from loading and reads, as `useResource` does. On the page, a new
+  `resource_revision`, the window becoming visible and **Try again** read again
+  and keep the last answer on screen meanwhile. A new `account_revision`, or
+  linking or unlinking this Mac (the CLI asks with the link token), shows
+  loading until that account's answer arrives. A runtime without the capability
+  gets one line, "Early access needs a newer Darkbloom CLI.", and
+  **Open Updates**.
+- **Standing.** Each card says where the account stands in the CLI's words:
+  - not joined, with **Join the waitlist**;
+  - its place (`#<n> in line`), the day it joined and "Darkbloom reviews
+    accounts in the order they joined.";
+  - `Approved since <day>`, with **Open** for a feature that has a page here
+    (`cluster` opens Clusters, `sandbox` opens Sandboxes), or else its start
+    command to copy;
+  - `Revoked on <day>` and "Joining again doesn’t restore it.", with nothing to
+    join.
+
+  Coordinator text shows each control or format character as `�`, as the CLI
+  prints it.
+- **Join.** **Join the waitlist** sends `{ action: 'waitlist_join', feature }`
+  (`darkbloom waitlist <feature>`), then reads the list again. A refusal shows
+  under the card in the runtime's own words.
+- **Unavailable.** `code: 'login'` on an unlinked Mac offers the app's link flow:
+  **Link account**, its code and **Open link page**. A linked Mac whose link the
+  coordinator refuses shows the runtime's words and **Open Settings**, where it
+  is unlinked and linked again. `code: 'none'` says there is nothing to join.
+  Anything else shows the runtime's reason with **Try again**.
+
+Clusters and Sandboxes use the same hook and card:
+
+| Export | Use |
+|---|---|
+| `useWaitlist(backend, feature)` | `{ entry, standing, open, error, joining, join, refresh, problem, supported }`. `open` is true once approved, or when the coordinator has no waitlist for the feature; `join()` resolves `true` when it joined |
+| `WaitlistCard` (`feature`, `backend`, `compact?`, `onOpen?`) | The card. `compact` is the one-row notice above a feature's page; it shows nothing while loading or once the feature is open |
+
+Preview links (`?preview` plus):
+
+| Query | Shows |
+|---|---|
+| none | Clusters approved, Darkbloom Sandbox third in line |
+| `&waitlist-cluster=`, `&waitlist-sandbox=`, `&waitlist-labs=` (`none`, `waitlisted`, `approved`, `revoked`) | Where the account stands on that waitlist |
+| `&waitlists=more` | A third, illustrative waitlist with no page in the app: it shows its start command |
+| `&waitlists=login`, `none`, `fail` | The list unavailable for that reason |
+| `&waitlists=unsupported` | A runtime without the `waitlists` capability |
+| `&waitlist-join=fail` | Every join refused |
 
 ## Local API and serving modes
 

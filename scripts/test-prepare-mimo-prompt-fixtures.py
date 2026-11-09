@@ -175,6 +175,7 @@ class FixtureSetupTests(unittest.TestCase):
         origins = Origins({url: (302, location), **dict(routes)})
         self.requested = origins.requested
         redirects = next(h for h in SETUP.OPENER.handlers if isinstance(h, SETUP.OriginRedirect))
+        # A copy: build_opener rebinds a handler's parent, and the module's opener keeps its own.
         opener = urllib.request.build_opener(copy.copy(redirects), origins)
         with patch.object(SETUP, "OPENER", opener), patch.object(SETUP.time, "sleep") as sleep:
             try:

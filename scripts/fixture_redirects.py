@@ -14,7 +14,7 @@ import urllib.parse
 import urllib.request
 
 DEFAULT_PORTS = {"http": 80, "https": 443}
-HUGGING_FACE_HUB = ("https", "huggingface.co", 443)
+HUGGING_FACE_HUB_ORIGIN = ("https", "huggingface.co", 443)
 HUGGING_FACE_CDN_DOMAIN = "hf.co"
 
 
@@ -29,10 +29,11 @@ def redirect_allowed(source, target, hugging_face_cdn=False):
         return False
     if origin(target) == origin(source):
         return True
+    if not hugging_face_cdn or origin(source) != HUGGING_FACE_HUB_ORIGIN:
+        return False
     host = parts.hostname or ""
     # An exact name or a dot-separated suffix: hf.co.evil.example and evilhf.co do not match.
-    return (hugging_face_cdn and origin(source) == HUGGING_FACE_HUB
-            and origin(target) == ("https", host, 443)
+    return (origin(target) == ("https", host, 443)
             and (host == HUGGING_FACE_CDN_DOMAIN or host.endswith("." + HUGGING_FACE_CDN_DOMAIN)))
 
 

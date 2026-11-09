@@ -6,8 +6,9 @@ import ProviderCore
 /// OpenCode and Hermes point at it. Every problem names the next command. On a Mac set to Only me the Darkbloom
 /// network's checks don't apply (`onlyMe`), and `doctor` skips them.
 ///
-/// No line holds the key: of the running API's key only whether there is one is read (`keyLine`), and of the tools'
-/// configs only the path of the file each reads its key from (`DoctorToolSetup`).
+/// No line holds the key: of the running API's key only whether there is one is read, and of the tools' configs only
+/// the file each reads its key from (`DoctorToolSetup`), which is compared with this Mac's (`ToolAddress.miss`), never
+/// shown.
 struct DoctorLocalAPI {
     /// What the section reads: `live` reads this Mac's; tests give their own.
     struct Facts {
@@ -23,15 +24,18 @@ struct DoctorLocalAPI {
         var keyFile: URL?
         /// This Mac's pair, as it knows it by itself (`ClusterPairSummary.local`).
         var pair: ClusterPairSummary = .notPaired
-        /// RED SEAM: not read yet. On a paired Mac, the running provider is single-Mac serving (`start --solo`).
+        /// On a paired Mac, the running provider is single-Mac serving (`start --solo`), not the pair's part
+        /// (`ServiceDrain.soloProviderState`): this Mac serves alone, and its own way is described, not the pair's.
         var servingAlone = false
-        /// RED SEAM: not read yet. The running provider is Only me in a terminal (`start --local --here`).
+        /// The running provider is Only me in a terminal (`start --local --here`, `Restart.terminalOnlyMe`): the
+        /// person's own session, which `restart` never stops and which saves no choice.
         var terminalOnlyMe = false
-        /// RED SEAM: not read yet. The provider's background service is installed.
+        /// The provider's background service is installed (`LaunchAgent.isInstalled`): `restart` starts it again as
+        /// saved, with no questions.
         var serviceInstalled = false
         /// What OpenCode's and Hermes' configs say of Darkbloom.
         var tools: [DoctorToolSetup] = []
-        /// RED SEAM: not read yet. The names this Mac's local API answers to.
+        /// The names this Mac's local API answers to, as `start` counts them (`ToolAddress.thisMacsNames`).
         var thisMac: Set<String> = ToolAddress.loopbackNames
         var home: URL = FileManager.default.homeDirectoryForCurrentUser
         /// The port `start --port` would take instead of one in use (`LocalAPIPort.nextFree`).
@@ -47,31 +51,35 @@ struct DoctorLocalAPI {
         facts.pair.paired && !facts.pair.pairingUnreadable ? facts.pair : nil
     }
 
+    /// The pair whose lines describe this Mac: its pair, unless this Mac serves alone (`servingAlone`).
+    private var pairServing: ClusterPairSummary? { facts.servingAlone ? nil : pair }
+
     /// How that pair serves, as its leader saved it: Only me when it serves locally only, Both, me first when its local
-    /// API runs beside Darkbloom, else the Darkbloom network.
+    /// API runs beside Darkbloom, else the Darkbloom network. Nil before the pair has chosen (no role yet).
     private var pairMode: LocalSettings.Mode? {
-        guard let pair else { return nil }
+        guard let pair = pairServing, pair.role != nil else { return nil }
         return pair.localOnly ? .local : pair.localAPI != nil ? .both : .network
     }
 
-    /// How the running provider serves, read as `status` reads it (`Status.servingLines`): with its own local API,
-    /// Only me when it serves only its owner, else Both; without one, Both when its local API failed to open, else the
-    /// Darkbloom network. Nil when none runs.
+    /// How the running provider serves, read as `status` reads it (`Status.servingLines`): Only me from its first load,
+    /// before its local API listens; with its own local API, Both; without one, Both when its local API failed to open,
+    /// else the Darkbloom network. Nil when none runs.
     var runningMode: LocalSettings.Mode? {
         guard let state = facts.running else { return nil }
-        if facts.live?.pid == state.pid { return state.servesOnlyItsOwner ? .local : .both }
+        if state.servesOnlyItsOwner { return .local }
+        if facts.live?.pid == state.pid { return .both }
         return state.localAPIFailure != nil ? .both : .network
     }
 
     /// How this Mac serves on its own: the running provider's way, else the saved choice; nil when neither says.
     var mode: LocalSettings.Mode? { runningMode ?? facts.saved?.mode }
 
-    /// How this Mac serves: its pair's way, else its own.
-    private var servingMode: LocalSettings.Mode? { pairMode ?? mode }
+    /// How this Mac serves: its pair's way, else its own (also while it serves alone).
+    private var servingMode: LocalSettings.Mode? { pairServing == nil ? mode : pairMode }
 
-    /// This Mac serves only its owner (a single Mac's Only me, or a pair serving locally only): Darkbloom never
-    /// contacts it, so the account, trust, App Attest and coordinator checks don't apply. Never while its pairing record
-    /// can't be read: it may be in a pair that serves Darkbloom.
+    /// This Mac serves only its owner (a single Mac's Only me, a pair serving locally only, or Only me served alone on
+    /// a paired Mac): Darkbloom never contacts it, so the account, trust, App Attest and coordinator checks don't
+    /// apply. Never while its pairing record can't be read: it may be in a pair that serves Darkbloom.
     var onlyMe: Bool { !facts.pair.pairingUnreadable && servingMode == .local }
 
     /// Whether `doctor` runs the Darkbloom network's checks: on every Mac but one set to Only me, and there too when
@@ -81,16 +89,17 @@ struct DoctorLocalAPI {
     /// Whether this Mac has, or is set to have, a local API: one runs, or it serves Only me or Both, me first.
     private var hasLocalAPI: Bool { facts.live != nil || (servingMode.map { $0 != .network } ?? false) }
 
-    /// The address this Mac's local API is reached at: the running one's, else the saved port's on a single Mac.
+    /// The address this Mac's local API is reached at: the running one's, else the saved port's when this Mac serves on
+    /// its own (the pair's API takes a port of its own).
     var address: String? {
         if let live = facts.live { return live.baseURL }
-        guard pair == nil, let saved = facts.saved, let port = saved.port else { return nil }
+        guard pairServing == nil, let saved = facts.saved, let port = saved.port else { return nil }
         return LocalEndpoint.baseURL(host: saved.resolvedBind, port: port)
     }
 
     /// On a pair serving Both, me first, the Mac that doesn't lead: the pair's API, with its address and key, is on the
     /// other Mac.
-    private var pairAPIOnTheOtherMac: Bool { pair?.role == .member && pair?.localAPI != nil }
+    private var pairAPIOnTheOtherMac: Bool { pairServing?.role == .member && pairServing?.localAPI != nil }
 
     /// The section's lines; `networkChecks` false (`runsNetworkChecks`) adds the line that says the Darkbloom network's
     /// checks are skipped.
@@ -109,6 +118,36 @@ struct DoctorLocalAPI {
         Diagnostic(section: .localAPI, name: name, level: level, message: message, fix: fix)
     }
 
+    // MARK: - The next commands
+
+    /// `start`, or `start --solo` where this Mac serves alone beside its pair.
+    private var start: String { "\(Self.cli) start\(facts.servingAlone ? " --solo" : "")" }
+
+    /// The command that starts the running local API again as it serves now, never another way.
+    /// - Only me in a terminal (`start --local --here`) is the person's own session: `restart` never stops it, and it
+    ///   saved no choice, so `restart` could serve another one. It starts again in its terminal.
+    /// - `restart` serves the saved choice: the fix while that is what runs (or nothing is saved, and the service
+    ///   restarts as installed). Else `start` with the flag of the way it runs. `--solo` where this Mac serves alone;
+    ///   the pair's own API restarts with the pair.
+    private var restartFix: String {
+        let cli = Self.cli
+        let solo = facts.servingAlone ? " --solo" : ""
+        if facts.terminalOnlyMe { return "press Ctrl-C in its window, then `\(start) --local --here`" }
+        if pairServing == nil, let running = runningMode, let saved = facts.saved?.mode, saved != running {
+            return "`\(start) \(Self.startFlags(running, meFirst: facts.running?.meFirst != nil))`"
+        }
+        return "`\(cli) restart\(solo)`"
+    }
+
+    /// The `start` flags that serve `mode`, with me first as it runs.
+    private static func startFlags(_ mode: LocalSettings.Mode, meFirst: Bool) -> String {
+        switch mode {
+        case .local: "--local"
+        case .network: "--network"
+        case .both: meFirst ? "--me-first" : "--local-endpoint --no-me-first"
+        }
+    }
+
     // MARK: - The lines
 
     private var modeLine: Diagnostic {
@@ -117,21 +156,31 @@ struct DoctorLocalAPI {
             return line("mode", .info, "this Mac's pairing record couldn't be read, so how it serves is unknown",
                         fix: "`\(cli) cluster` on this Mac checks it")
         }
-        if let pair, let pairMode {
+        if let pair = pairServing {
+            guard let pairMode else {
+                return line("mode", .info, "this Mac is paired, but how the pair serves isn't chosen yet",
+                            fix: "`\(cli) cluster` sets it up")
+            }
+            let name = LocalFirstWords.choice(pairMode) + " (this pair)"
             let words = switch pairMode {
-            case .local: "Only me (this pair) — Darkbloom never contacts these Macs; the pair's API runs on "
-                + pair.leadingMac
-            case .both: "Both, me first (this pair) — the pair's API runs on \(pair.leadingMac)"
-            case .network: "Darkbloom network (this pair) — no local API"
+            case .local: "\(name) — Darkbloom never contacts these Macs; the pair's API runs on \(pair.leadingMac)"
+            case .both: "\(name) — the pair's API runs on \(pair.leadingMac)"
+            case .network: "\(name) — no local API"
             }
             return line("mode", .info, words)
         }
         if let mode = runningMode, let state = facts.running {
             let idle = state.meFirst.map { LocalFirstWords.idleMinutes(milliseconds: $0.idleMs) } ?? 0
             let words = LocalFirstWords.serving(mode: mode, meFirst: state.meFirst != nil, idleMinutes: idle)
-            guard let saved = facts.saved?.mode, saved != mode else { return line("mode", .info, words + " (serving now)") }
-            return line("mode", .info, words + " (serving now; your saved choice, \(Self.name(saved)), serves at the next "
-                + "`\(cli) start`)")
+            // Only me's server reports itself from its first load: its local API opens once its models are loaded.
+            let starting = mode == .local && facts.live?.pid != state.pid
+            if facts.servingAlone {
+                return line("mode", .info, words + " (\(starting ? "starting; " : "")this Mac serves alone, not the pair)")
+            }
+            let now = starting ? "starting" : "serving now"
+            guard let saved = facts.saved?.mode, saved != mode else { return line("mode", .info, words + " (\(now))") }
+            return line("mode", .info, words + " (\(now); your saved choice, \(LocalFirstWords.choice(saved)), serves at "
+                + "the next `\(cli) start`)")
         }
         guard let saved = facts.saved, let mode = saved.mode else {
             return line("mode", .info, "not chosen yet: `\(cli) start` asks how this Mac serves (Only me, Darkbloom "
@@ -142,8 +191,9 @@ struct DoctorLocalAPI {
     }
 
     private var networkLine: Diagnostic {
-        let change = pair == nil ? "`\(Self.cli) start --choose` changes how this Mac serves"
-            : "`\(Self.cli) cluster` changes how the pair serves"
+        let change = pairServing != nil ? "`\(Self.cli) cluster` changes how the pair serves"
+            : facts.servingAlone ? "`\(start) --choose` changes how this Mac serves alone"
+            : "`\(start) --choose` changes how this Mac serves"
         return line("darkbloom network", .info, "not needed (Only me): the account, trust, App Attest and coordinator "
             + "checks are skipped; " + change)
     }
@@ -153,11 +203,11 @@ struct DoctorLocalAPI {
         if let live = facts.live {
             if facts.answers == false {
                 return line("address", .fail, "\(live.baseURL) — its server runs, but port \(live.port) doesn't answer",
-                            fix: "`\(cli) restart`")
+                            fix: restartFix)
             }
             return line("address", .pass, "\(live.baseURL) — up on port \(live.port)")
         }
-        if let pair {
+        if let pair = pairServing {
             if !pair.started {
                 return line("address", .warn, "the pair is stopped, so its API isn't up", fix: "`\(cli) start` starts the pair")
             }
@@ -170,20 +220,27 @@ struct DoctorLocalAPI {
         }
         let shown = address ?? "no port yet"
         if let state = facts.running {
+            if state.servesOnlyItsOwner {
+                return line("address", .info, "\(shown) — starting: it opens once its models are loaded")
+            }
             if let failure = state.localAPIFailure {
-                return line("address", .fail, "\(shown) isn't up",
+                return line("address", .fail, "\(LocalEndpoint.baseURL(host: failure.host, port: failure.port)) isn't up",
                             fix: LocalFirstWords.whyNotUp(failure, nextFree: facts.nextFreePort(failure.port),
-                                                          server: .singleMac(paired: false)))
+                                                          server: .singleMac(paired: facts.pair.paired)))
             }
             return line("address", .warn, "\(shown) — not listening yet", fix: "`\(cli) status` shows how this Mac serves")
         }
-        return line("address", .warn, address.map { "\($0) — not running" } ?? "not running; the first start chooses its port",
-                    fix: "`\(cli) start`")
+        guard let address else {
+            return line("address", .warn, "not running; the first start chooses its port", fix: "`\(start)`")
+        }
+        // A stopped background service keeps its job: `restart` starts it again as saved, where `start` asks again.
+        return line("address", .warn, "\(address) — not running",
+                    fix: facts.serviceInstalled ? "`\(cli) restart` starts it again as saved" : "`\(cli) start`")
     }
 
     private var keyLine: Diagnostic? {
         let cli = Self.cli
-        // The section's one read of the key: whether the API takes one.
+        // Whether the running API takes a key: the one thing read of it.
         if let live = facts.live, live.apiKey.isEmpty {
             return line("key file", .info, "none: this API takes no key (--no-auth), so it keeps every request on this Mac")
         }
@@ -193,7 +250,7 @@ struct DoctorLocalAPI {
         }
         if facts.live != nil {
             return line("key file", .fail, "no key file holds the running API's key, so tools that read it are refused",
-                        fix: "`\(cli) restart`")
+                        fix: restartFix)
         }
         if pairAPIOnTheOtherMac { return nil }
         return line("key file", .info, "none yet: the first start writes it")
@@ -211,35 +268,28 @@ struct DoctorLocalAPI {
             guard hasLocalAPI else { return nil }
             return line(name, .warn, "can't read \(file): \(why)")
         case .entry(let pointer):
-            // RED SEAM: doctor's own comparison, on `ToolAddress`'s shape.
             guard let pointsAt = pointer.baseURL else {
                 guard hasLocalAPI else { return nil }
-                return line(name, .warn, "can't read \(file): its provider has no address")
+                return line(name, .warn, "Darkbloom's provider in \(file) has no address", fix: setUpCommand)
             }
             guard let here = address else {
                 guard !hasLocalAPI else { return line(name, .info, "points at \(pointsAt) (\(file))") }
                 return line(name, .warn, "points at \(pointsAt), but this Mac serves no local API (\(file))",
-                            fix: pair == nil ? "`\(Self.cli) start --choose` (Only me or Both, me first)" : nil)
+                            fix: pairServing != nil ? "`\(Self.cli) cluster` changes how the pair serves"
+                                : "`\(start) --choose` (Only me or Both, me first)")
             }
-            guard DoctorToolSetup.sameAddress(pointsAt, here) else {
-                return line(name, .warn, "points at \(pointsAt), not this Mac's local API (\(here)) (\(file))",
-                            fix: setUpCommand)
+            // An API without a key takes any key file.
+            let ours = facts.live?.apiKey.isEmpty == true ? nil : facts.keyFile
+            switch ToolAddress.miss(pointer, baseURL: here, keyFile: ours, thisMac: facts.thisMac) {
+            case .address(let url)?:
+                return line(name, .warn, "points at \(url), not this Mac's local API (\(here)) (\(file))", fix: setUpCommand)
+            case .key(let path)?:
+                let theirs = ToolIntegration.displayPath(URL(fileURLWithPath: path), home: facts.home)
+                let mine = ours.map { ", not " + ToolIntegration.displayPath($0, home: facts.home) } ?? ""
+                return line(name, .warn, "points here, but reads its key from \(theirs)\(mine) (\(file))", fix: setUpCommand)
+            case nil:
+                return line(name, .pass, "points here (\(file))")
             }
-            if let keyFile = pointer.keyFile, let ours = facts.keyFile, keyFile.path != ours.path {
-                return line(name, .warn, "points here, but reads its key from "
-                    + ToolIntegration.displayPath(keyFile, home: facts.home) + ", not "
-                    + ToolIntegration.displayPath(ours, home: facts.home) + " (\(file))", fix: setUpCommand)
-            }
-            return line(name, .pass, "points here (\(file))")
-        }
-    }
-
-    /// A way to serve, as the start question names it.
-    static func name(_ mode: LocalSettings.Mode) -> String {
-        switch mode {
-        case .local: "Only me"
-        case .network: "Darkbloom network"
-        case .both: "Both, me first"
         }
     }
 }
@@ -264,13 +314,20 @@ extension DoctorLocalAPI {
     static func live(config: ProviderConfig, daemonState: DaemonState?, daemonRunning: Bool,
                      pair: ClusterPairSummary, reads: Reads = Reads()) async -> DoctorLocalAPI {
         let live = reads.liveInfo()
-        var facts = Facts(saved: config.local, running: daemonRunning ? daemonState : nil, live: live)
+        let running = daemonRunning ? daemonState : nil
+        var facts = Facts(saved: config.local, running: running, live: live)
+        // The running API's key file, else the saved port's.
         facts.keyFile = (live?.port ?? config.local?.port).flatMap { reads.keyFile(Int($0)) }
         facts.pair = pair
+        let solo = running.flatMap(reads.soloState)
+        facts.servingAlone = pair.paired && solo != nil
+        facts.terminalOnlyMe = solo.map { $0.servesOnlyItsOwner && reads.terminalOnlyMe($0) } ?? false
+        facts.serviceInstalled = reads.serviceInstalled()
         facts.tools = reads.tools()
+        let bind = live?.host ?? config.local?.resolvedBind ?? LocalSettings.defaultBind
+        facts.thisMac = ToolAddress.thisMacsNames(listeningOn: bind, localHostName: reads.localHostName)
         facts.nextFreePort = reads.nextFreePort
         if let live { facts.answers = await reads.answers(live) }
-        // RED SEAM: whether this Mac serves alone, Only me in a terminal, the service, and this Mac's names: not read.
         return DoctorLocalAPI(facts: facts)
     }
 

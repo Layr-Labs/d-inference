@@ -148,7 +148,20 @@ enum OpenCodeConfigPlan {
     /// Where the provider's block in a config's `bytes` points: its `settings.baseURL`, and the file its `apiKey`
     /// reads (`keyFile(inReference:home:)`); nil when the file has no such block or isn't JSONC.
     static func pointer(in bytes: Data, provider: IntegrationProvider, home: URL) -> ToolPointer? {
-        guard let document = try? JSONCDocument([UInt8](bytes)), let root = document.root.object,
+        try? readPointer(in: bytes, provider: provider, home: home)
+    }
+
+    /// `pointer(in:provider:home:)`, saying where a file that isn't JSONC goes wrong. Of the key only the file
+    /// `apiKey` names is kept: a key written into the config is never read.
+    static func readPointer(in bytes: Data, provider: IntegrationProvider,
+                            home: URL) throws(ToolAddress.Unreadable) -> ToolPointer? {
+        let document: JSONCDocument
+        do {
+            document = try JSONCDocument([UInt8](bytes))
+        } catch {
+            throw ToolAddress.Unreadable(reason: "it isn't valid JSON (line \(error.line))")
+        }
+        guard let root = document.root.object,
               let block = root.members(named: "providers").first?.value.object?.members(named: provider.id).first?
                 .value.object else { return nil }
         let settings = block.members(named: "settings").first?.value.object

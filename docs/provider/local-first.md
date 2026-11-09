@@ -335,9 +335,14 @@ LOCAL API   (how this Mac serves you and your tools)
          ↳ fix: `darkbloom --hermes`
 ```
 
-Each problem names the command that fixes it, and no line shows the key. With
-**Only me**, `doctor` skips the Darkbloom network's checks (account, trust, App
-Attest, the coordinator) and says `darkbloom network — not needed (Only me)`
+Each problem names the command that fixes it, and no line shows the key. A
+local API that stops answering is started again the way it serves now: Only me
+in a terminal with Ctrl-C there, then `darkbloom start --local --here`; the
+background service with `darkbloom restart`, which serves your saved choice.
+With **Only me**, also while it loads its models, `doctor` skips the Darkbloom
+network's checks (account, trust, App Attest, the coordinator) and says
+`darkbloom network — not needed (Only me)`. A paired Mac serving alone
+(`start --solo`) is described by what it serves, not by its pair
 ([every line](./cli-reference.md#the-local-api-section)).
 
 ## If you used `--local-endpoint` before

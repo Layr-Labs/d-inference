@@ -500,7 +500,8 @@ scheme's own port when none is given) and path (one `/` at its end aside);
 `localhost`, `127.0.0.1` and `::1` are one host, and so is this Mac's `.local`
 name for an API on every address (`ToolAddress.sameAddress`). Single-Mac only
 for now: a paired Mac's `start` starts the pair and says nothing about the
-tools.
+tools. `darkbloom doctor` judges each tool the same way
+([the Local API section](#the-local-api-section)).
 
 On a Mac in a two-Mac cluster (one that holds a pairing; a cluster service left
 without one is a leftover, which `darkbloom cluster status` names), `start` starts the pair, as `darkbloom cluster` does
@@ -2816,14 +2817,27 @@ No line shows the key or a speed, and every problem names the next command:
 
 | Line | What it says |
 |---|---|
-| `mode` | How this Mac serves, in the start summary's words: what the running provider serves (`serving now`, read as `status` reads it), else `[local] mode` (`saved`); a saved choice the running provider doesn't serve is named with `` serves at the next `darkbloom start` ``. Nothing saved and nothing running: ``not chosen yet: `darkbloom start` asks …``. On a paired Mac, the pair's way (**Only me (this pair)**, **Both, me first (this pair)** or **Darkbloom network (this pair)**) and the Mac that runs its API |
-| `darkbloom network` | Only with **Only me**: ``not needed (Only me): the account, trust, App Attest and coordinator checks are skipped; `darkbloom start --choose` changes how this Mac serves`` (on a pair, `darkbloom cluster`) |
-| `address` | With a local API: ✓ `http://127.0.0.1:8001/v1 — up on port 8001` once it answers `GET /health` (2 s); ✗ when its process runs but the port doesn't answer (fix `darkbloom restart`); ✗ `… isn't up` when the running provider's API couldn't listen, fix in `status`'s words (``port 8001 is in use (`darkbloom start --port 8002`)``); ⚠ `— not running` (fix `darkbloom start`). On a pair: ⚠ while it is stopped (`darkbloom start` starts the pair); on the Mac that doesn't run the pair's API, where it runs |
-| `key file` | ✓ the file the API's key is in (`~/.darkbloom/local_token`, `LocalEndpoint.keyFile`); ✗ when no file holds a running API's key, so tools that read it are refused (fix `darkbloom restart`); `none` for an API started with `--no-auth`, or before the first start |
-| `OpenCode`, `Hermes` | Darkbloom's provider in the tool's own config (`~/.config/opencode/opencode.jsonc` or `opencode.json`, `~/.hermes/config.yaml`, as `darkbloom --opencode` / `--hermes` choose them; `DoctorToolSetup`): ✓ `points here`; ⚠ `points at <address>, not this Mac's local API (…)`, or at the right address but another key file (fix `darkbloom --opencode` / `--hermes`); ⚠ a config Darkbloom can't read, with why; `not set up` with the command that sets it up. With no local API (Darkbloom network), only a tool still pointing at one is shown (⚠, fix `darkbloom start --choose`) |
+| `mode` | How this Mac serves, in the start summary's words: what the running provider serves (`serving now`, read as `status` reads it), else `[local] mode` (`saved`); a saved choice the running provider doesn't serve is named with `` serves at the next `darkbloom start` ``. Only me's server is Only me from its first load: `(starting)` until its local API listens. Nothing saved and nothing running: ``not chosen yet: `darkbloom start` asks …``. On a paired Mac, the pair's way (**Only me (this pair)**, **Both, me first (this pair)** or **Darkbloom network (this pair)**, the start question's names) and the Mac that runs its API; before the pair has chosen, ``this Mac is paired, but how the pair serves isn't chosen yet`` (fix `darkbloom cluster`). A paired Mac serving alone (`start --solo`) is described by what it serves, with `(this Mac serves alone, not the pair)` |
+| `darkbloom network` | Only with **Only me**: ``not needed (Only me): the account, trust, App Attest and coordinator checks are skipped; `darkbloom start --choose` changes how this Mac serves`` (on a pair, `darkbloom cluster`; serving alone, `darkbloom start --solo --choose`) |
+| `address` | With a local API: ✓ `http://127.0.0.1:8001/v1 — up on port 8001` once it answers `GET /health` (2 s); ✗ when its process runs but the port doesn't answer; ✗ `<address> isn't up` with the address that couldn't listen, fix in `status`'s words (``port 8001 is in use (`darkbloom start --port 8002`)``, with `--solo` on a paired Mac serving alone); `— starting: it opens once its models are loaded` while Only me loads; ⚠ `— not running`, fix `` `darkbloom restart` starts it again as saved `` when the background service is installed, else `darkbloom start`. On a pair: ⚠ while it is stopped (`darkbloom start` starts the pair); on the Mac that doesn't run the pair's API, where it runs |
+| `key file` | ✓ the file the API's key is in (`~/.darkbloom/local_token`, `LocalEndpoint.keyFile`); ✗ when no file holds a running API's key, so tools that read it are refused; `none` for an API started with `--no-auth`, or before the first start |
+| `OpenCode`, `Hermes` | Darkbloom's provider in the tool's own config (`~/.config/opencode/opencode.jsonc` or `opencode.json`, `~/.hermes/config.yaml`, as `darkbloom --opencode` / `--hermes` choose them), read and judged as `start`'s notice judges it (`ToolAddress.readPointer`, `ToolAddress.miss`): `localhost`, `127.0.0.1` and `::1` are this Mac, and so is its `.local` name for an API on every address; another file that holds the same key is the same key; Hermes' `key_cmd` names a key file only as `/bin/cat <full path>`. ✓ `points here`; ⚠ `points at <address>, not this Mac's local API (…)`, or at the right address but another key file, or a provider block with no address (fix `darkbloom --opencode` / `--hermes`); ⚠ a config Darkbloom can't read, with why (not valid, larger than 4 MiB); `not set up` with the command that sets it up. With no local API (Darkbloom network), only a tool still pointing at one is shown (⚠, fix `darkbloom start --choose`; on a pair, `darkbloom cluster`) |
 
-With **Only me** (the running provider serves only its owner, or nothing runs and
-`[local] mode = "local"`; on a pair, a pair serving locally only), `doctor`
+The ✗ lines of a running local API (its port doesn't answer; no file holds its
+key) name the command that starts it again as it serves now, never another way.
+`restart` serves the saved choice and never stops Only me in a terminal:
+
+| Running now | Fix |
+|---|---|
+| Only me in a terminal (`start --local --here`) | `` press Ctrl-C in its window, then `darkbloom start --local --here` `` |
+| The background service, serving the saved choice (or nothing is saved) | `darkbloom restart` |
+| The background service, serving another way than the saved choice | `darkbloom start` with that way's flag: `--local`, `--me-first`, or `--local-endpoint --no-me-first` |
+| A paired Mac serving alone | the same with `--solo` (`darkbloom restart --solo`, `darkbloom start --solo --local --here`, …) |
+| The pair's API | `darkbloom restart` |
+
+With **Only me** (the running provider serves only its owner, from its first
+load, or nothing runs and `[local] mode = "local"`; on a pair, a pair serving
+locally only, unless this Mac serves alone), `doctor`
 skips the Darkbloom network's checks: `account link`, `mdm enrollment`,
 `coordinator health` and the coordinator trust check in the detailed checks,
 and the attestation key, App Attest, attestation readiness, trust, coordinator

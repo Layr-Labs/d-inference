@@ -93,7 +93,7 @@ struct EngineV2SamplingDefaultsTests {
             modelId: "Qwen3.5-9B", modelType: "qwen3_5", modelDirectory: nil)
         let omitted = EngineV2Translation.samplingParams(from: try request(bareRequest), defaults: defaults)
         #expect(omitted.temperature == 1 && omitted.topP == 0.95 && omitted.topK == 20)
-        #expect(omitted.presencePenalty == 1.5 && omitted.repetitionPenalty == 1)
+        #expect(omitted.presencePenalty == 0 && omitted.repetitionPenalty == 1)
         let explicit = EngineV2Translation.samplingParams(
             from: try request(#"{"model":"m","messages":[],"temperature":0,"presence_penalty":0}"#),
             defaults: defaults)

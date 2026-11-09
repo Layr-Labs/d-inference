@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-09
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -958,6 +958,17 @@ rules applied to these signals.
    geometry; a matching longer token branch cannot supply an absent shorter
    checkpoint — `HybridPrefixCache.swift` (`lookup`),
    `HybridPrefixCacheContract.swift` (`CBv2RecurrentCheckpointGeometry`).
+9. On a slot whose MTP head keeps the prompt history (the Qwen inline heads
+   under `mtp_mode = "auto"`), only a row that can speculate stages a resident
+   or SSD checkpoint. A row with a token constraint, logprobs, `logit_bias`, a
+   repetition, frequency or presence penalty, or a `stop` string
+   (`EngineLoopV2.mtpBasicEligible`) observes no assistant history, so it
+   donates nothing, though it can still restore. Provider sampling defaults
+   therefore set no penalty on these builds —
+   `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPExecution.swift`
+   (`mtpTakeHistoryState`),
+   `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CompleteCheckpointCapture.swift`,
+   `EngineV2SamplingDefaults.swift`.
 
 ## Failure modes
 
@@ -969,6 +980,7 @@ rules applied to these signals.
 | `pending` / `scan_pending`, `error` / `scan_failed` | Startup disk scan not finished or failed | `SSDPrefixCache.swift` |
 | SSD repeat served cold | Prefix shorter than one block; staging reservation refused; donation below the effective-token floor; TTL expiry; box-wide LRU eviction | `SSDPrefixCache.swift` (`donate`), `SSDBlockIndex.swift` |
 | Recurrent repeat served cold | No actual checkpoint, incompatible geometry/identity, scope mismatch, SSD stage refusal/eviction, or opt-in memory bank eviction | `HybridPrefixCache.swift`, `EngineLoopV2+HybridPrefix.swift`, `PrefixCachePolicy+Hybrid.swift` |
+| A Qwen MTP model gets no coordinator holders although its slots are cache-ready | Its requests cannot speculate (a penalty, `stop` string, logprobs, `logit_bias` or token constraint), so they stage no checkpoint ([invariant 9](#invariants)) | `EngineLoopV2+MTPExecution.swift` (`mtpTakeHistoryState`), `CompleteCheckpointCapture.swift`, `EngineV2SamplingDefaults.swift` |
 | Local memory hit gives no coordinator routing preference | Paged resident publication is not implemented; recurrent slot missing verified identity; or holder evidence expired/invalidated | `ResidentPrefixCacheEvidence.swift`, [coordinator/registry/cache_routing_hints.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/cache_routing_hints.go) |
 | Load refused with `pagedUnavailable` | Explicit `paged` and preflight/capacity/pool construction failed | `EngineV2Factory+BackendPreparation.swift` |
 | Every slot contiguous despite `paged` config | `DARKBLOOM_CBV2_PAGED_KV` set to a negative value, or `supportsPagedKV == false` | `EngineV2KVBackendPolicy.swift`, `EngineV2Factory+BackendPreparation.swift` |

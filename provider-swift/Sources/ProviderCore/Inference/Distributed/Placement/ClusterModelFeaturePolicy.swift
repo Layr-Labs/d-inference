@@ -46,7 +46,7 @@ enum ClusterModelFeaturePolicy {
     /// tensor parallel, which charges a request beyond the memory plan at its
     /// own context when a rank reserves it, and in the pipeline of an adapter
     /// whose stages do the same (`ClusterRuntimeAdapter.pipelineServesWholeProfile`,
-    /// the rule the worker's stages read too: Gemma 4); the memory plan's
+    /// the rule the worker's stages read too: none today); the memory plan's
     /// request (`ClusterWorkerProfile.memoryScope`) in every other mode, whose
     /// LOAD gates size it and whose ranks refuse a longer reservation
     /// (`requireWithinServedProfile`, GLM's pipeline admission). The same for

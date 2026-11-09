@@ -9,10 +9,16 @@ import styles from './waitlists.module.css';
 
 export type WaitlistProblemKind = 'login' | 'none' | 'unavailable';
 
-export const linkFirst = 'Link this Mac to your Darkbloom account first.';
+const linkFirst = 'Link this Mac to your Darkbloom account first.';
 const relink = 'Unlink this Mac in Settings, then link it again.';
 const noWaitlists = 'There’s nothing to join here yet.';
 const unavailable = 'Waitlists are unavailable right now.';
+// Linking is a next step; nothing to join is quiet; an unavailable list is a warning.
+const tones: Record<WaitlistProblemKind, string | undefined> = {
+  login: undefined,
+  none: 'muted',
+  unavailable: 'warning',
+};
 
 // Why the waitlists can't be shown, and the one thing to do about it: link this Mac (the app's
 // own link flow), try again, or nothing when the coordinator has no waitlists. `error` is the
@@ -57,7 +63,7 @@ export function WaitlistProblem({
   const Icon = kind === 'login' ? Link2 : kind === 'none' ? Ticket : CircleAlert;
   return (
     <section className={compact ? styles.compact : styles.panel} aria-label={label}>
-      <span className={styles.icon} data-tone={kind === 'unavailable' ? 'warning' : 'muted'}>
+      <span className={styles.icon} data-tone={tones[kind]}>
         <Icon size={17} />
       </span>
       <div className={styles.copy}>

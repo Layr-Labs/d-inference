@@ -67,18 +67,22 @@ describe('one read for the page', () => {
     await screen.findByText('standing: approved');
     expect(waitlistReads()).toHaveLength(1);
 
-    // Another page with the same clock reads afresh, and shows the last answer meanwhile.
+    // Another page with the same clock starts from loading, as `useResource` does, and reads.
     view.unmount();
     render(<FeaturePage backend={backend} feature="cluster" />);
-    expect(screen.getByText('standing: approved')).toBeVisible();
-    await waitFor(() => expect(waitlistReads()).toHaveLength(2));
+    expect(screen.getByText('standing: loading')).toBeVisible();
+    expect(await screen.findByText('standing: approved')).toBeVisible();
+    expect(waitlistReads()).toHaveLength(2);
 
     cleanup();
     const page = render(<FeaturePage backend={backend} feature="cluster" />);
     await waitFor(() => expect(waitlistReads()).toHaveLength(3));
+    await screen.findByText('standing: approved');
+    // On the page, a new resource clock keeps the last answer on screen while it reads.
     page.rerender(
       <FeaturePage backend={waitlistBackend({ resource_revision: '1001' })} feature="cluster" />,
     );
+    expect(screen.getByText('standing: approved')).toBeVisible();
     await waitFor(() => expect(waitlistReads()).toHaveLength(4));
 
     Object.defineProperty(document, 'hidden', { configurable: true, value: false });

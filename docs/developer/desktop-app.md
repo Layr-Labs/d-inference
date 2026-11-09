@@ -580,11 +580,14 @@ the answer is the linked account's.
 - **Reading.** The `waitlists` resource (`Waitlists` in
   `desktop-app/src/shared/waitlists.ts`) is read only on a runtime with the
   `waitlists` capability and only while a page that shows it is open. One read
-  serves every hook and card on the page (`waitlistStore.ts`). Opening a page, a
-  new `resource_revision` or `account_revision`, the window becoming visible and
-  **Try again** read again. The last answer stays on screen meanwhile; another
-  account's answer is never shown. A runtime without the capability gets one
-  line, "Early access needs a newer Darkbloom CLI.", and **Open Updates**.
+  serves every hook and card on the page (`waitlistStore.ts`). Opening a page
+  starts from loading and reads, as `useResource` does. On the page, a new
+  `resource_revision`, the window becoming visible and **Try again** read again
+  and keep the last answer on screen meanwhile. A new `account_revision`, or
+  linking or unlinking this Mac (the CLI asks with the link token), shows
+  loading until that account's answer arrives. A runtime without the capability
+  gets one line, "Early access needs a newer Darkbloom CLI.", and
+  **Open Updates**.
 - **Standing.** Each card says where the account stands in the CLI's words:
   - not joined, with **Join the waitlist**;
   - its place (`#<n> in line`), the day it joined and "Darkbloom reviews

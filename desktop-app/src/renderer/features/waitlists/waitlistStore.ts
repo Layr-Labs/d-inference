@@ -4,9 +4,10 @@ import { api } from '../../useBackend';
 
 // One read of `waitlists` shared by every hook on screen. Several cards on one page (Early access,
 // or a page and its compact card) ask once: hooks that mount while a read is in flight, or after
-// it answered on the same page, share it. A new page (every hook unmounted, then one mounted)
-// reads again, as do a new `resource_revision` or `account_revision`, the window becoming visible
-// and `refresh()`. The last answer stays on screen while the next read runs.
+// it answered on the same page, share it. Like `useResource`, a new page (every hook unmounted,
+// then one mounted) starts from loading and reads again; on the page, a new `resource_revision`
+// or account, the window becoming visible and `refresh()` read again with the last answer kept on
+// screen meanwhile.
 
 export interface WaitlistsRead {
   // The account (`Snapshot.account_revision`) the answer belongs to: another account's waitlists
@@ -108,12 +109,12 @@ function visible() {
   if (!document.hidden && latest) void read(latest.key, latest.account);
 }
 
-// A hook on screen. The first after none starts a new visit, so its page reads afresh.
+// A hook on screen. The first after none starts a new visit: its page starts from loading and
+// reads afresh. A join's refusal belongs to the page it was shown on; a join still running stays.
 export function mount() {
   if (mounted++ === 0) {
     visit++;
-    // A join's refusal belongs to the page it was shown on.
-    if (Object.keys(state.problems).length) publish({ problems: {} });
+    publish({ read: { loading: true }, problems: {} });
     document.addEventListener('visibilitychange', visible);
   }
   return () => {

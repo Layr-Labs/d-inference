@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useSyncExternalStore } from 'react';
 import type { WaitlistEntry } from '../../../shared/waitlists';
 import type { BackendState } from '../../useBackend';
 import {
@@ -47,7 +47,8 @@ export function useWaitlists(backend: BackendState) {
   const account = accountOf(backend);
   const key = readKey(account, backend.state?.resource_revision ?? '');
   const store = useSyncExternalStore(subscribe, waitlistsState);
-  useEffect(() => (supported ? mount() : undefined), [supported]);
+  // Before paint, so a new page never shows the last page's answer for a frame.
+  useLayoutEffect(() => (supported ? mount() : undefined), [supported]);
   useEffect(() => {
     if (supported) need(key, account);
   }, [supported, key, account]);

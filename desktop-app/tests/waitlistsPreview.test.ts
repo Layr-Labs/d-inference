@@ -26,7 +26,8 @@ afterEach(() => vi.useRealTimers());
 describe('preview waitlists', () => {
   it('offers the waitlists capability by default, keeping the ones the app assumed before', async () => {
     const capabilities = (await (await preview('?preview')).state()).capabilities;
-    expect(capabilities).toEqual(['autopilot', 'waitlist', 'waitlists']);
+    // Other features' previews add theirs to the same list.
+    expect(capabilities).toEqual(expect.arrayContaining(['autopilot', 'waitlist', 'waitlists']));
   });
 
   it('drops the capability for waitlists=unsupported', async () => {

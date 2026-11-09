@@ -507,7 +507,8 @@ mode, take the one the screen recommends (step 2):
    why is shorter, or left out, in a narrow window) and that mode's line
    ends with `· recommended for these Macs`; Enter selects it. Pick the
    recommended mode unless the human wants the other: it is the one that fits,
-   serves more requests at once through Darkbloom, or is faster on these Macs.
+   serves the longest context (each mode's line says its context), serves more
+   requests at once through Darkbloom, or is faster on these Macs.
    When the line is ``No recommendation for <model> on these two Macs: <why>.``, read the why
    to the human and keep the selected line unless they choose otherwise.
 3. If the model still has to reach a Mac, a second list offers `Download`,

@@ -396,10 +396,20 @@ for these Macs", and Enter takes it (`ClusterOnboardingModeAdvice.advise`). The
 leading Mac makes the recommendation from its plans, so both Macs' screens show
 the same words:
 
+- Each mode's line says the context it serves, from the plan that loads it
+  (`ClusterModelFeaturePolicy.servedProfile`, which the pair's limits and
+  refusals read too): "· context 262,144 tokens" for Gemma 4's tensor parallel,
+  "· context 65,536 tokens, prompts up to 32,768" for its pipeline. A narrow
+  window keeps "context 65,536".
 - Only modes whose own plan fits both Macs' free memory now count (while a
   model serves, its memory is freed first, so fitting now doesn't decide). One
   that fits alone is "the only one that fits these Macs now". Serving through
   Darkbloom, a mode Darkbloom serves publicly comes before one it doesn't.
+- Context comes before speed: when the modes left serve different contexts,
+  the one that serves the most is recommended, "the longest context here
+  (262,144 tokens; the other serves 65,536)", however fast the others are. A
+  mode that serves less is recommended only when it alone fits now. Modes that
+  serve the same context are ranked as below.
 - Among the rest, through Darkbloom, the mode that serves more requests at once
   wins, because Darkbloom turns away what a busy pair can't take; serving
   **Only me**, the mode clearly faster on this pair wins (measured, else the

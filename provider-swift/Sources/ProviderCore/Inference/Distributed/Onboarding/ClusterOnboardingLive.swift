@@ -850,7 +850,8 @@ final class OnboardingLive: @unchecked Sendable {
                          measuredTokensPerSecond: mode.servedDecodeTokensPerSecond,
                          earlierMeasuredTokensPerSecond: mode.earlierServedDecodeTokensPerSecond,
                          predictedTokensPerSecond: own.flatMap { $0.absolute ? $0.decodeTokensPerSecond : nil },
-                         concurrentRequests: mode.concurrentRequests, publicTraffic: mode.publicTraffic)
+                         concurrentRequests: mode.concurrentRequests, publicTraffic: mode.publicTraffic,
+                         contextTokens: mode.contextTokens)
         }
         return ClusterOnboardingModeAdvice.advise(options, throughDarkbloom: throughDarkbloom, serving: serving)
     }
@@ -860,10 +861,11 @@ final class OnboardingLive: @unchecked Sendable {
     static func startsAtLogin(now: Bool?, setUp: Bool?) -> Bool? { now ?? setUp }
 
     /// A planned mode as the screen shows it: each Mac's share (`modeSplit`; `serving`: a model serves now), the decode
-    /// rate this pair served it at, and the requests it serves at once.
+    /// rate this pair served it at, the requests it serves at once, and the context it serves.
     func screenMode(_ mode: ClusterSetupPlanSummary.Mode, serving: Bool) -> ClusterOnboardingMode {
         .init(mode: mode.mode, split: Self.modeSplit(mode.shares, here: hereShort, there: thereShort, serving: serving),
-              measuredTokensPerSecond: mode.servedDecodeTokensPerSecond, concurrentRequests: mode.concurrentRequests)
+              measuredTokensPerSecond: mode.servedDecodeTokensPerSecond, concurrentRequests: mode.concurrentRequests,
+              contextTokens: mode.contextTokens, promptTokens: mode.promptTokens)
     }
 
     /// `keeping`: the mode each model id keeps (`LiveContext.plan`); the service's re-plan after an update passes the

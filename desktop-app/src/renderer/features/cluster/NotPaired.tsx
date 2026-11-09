@@ -26,9 +26,12 @@ export function NotPaired({
   session: ClusterSessionControl | null;
 }) {
   const waitlist = useWaitlist(backend, 'cluster');
+  // A runtime that can't read the waitlists leaves the check to the setup, which makes it first.
+  const mayPair = waitlist.open || waitlist.standing === 'unsupported';
   const starting = session?.pending === 'start';
   return (
     <>
+      {waitlist.supported && <WaitlistCard feature="cluster" backend={backend} compact />}
       <section className={styles.hero} aria-labelledby="cluster-hero">
         <PairGlyph mood="invite" className={styles.heroGlyph} />
         <h2 id="cluster-hero">Two Macs. One model.</h2>
@@ -42,10 +45,10 @@ export function NotPaired({
         </ul>
         {session ? (
           <div className={styles.heroActions}>
-            {(waitlist.open || waitlist.standing === 'loading') && (
+            {(mayPair || waitlist.standing === 'loading') && (
               <Button
                 variant="primary"
-                disabled={!waitlist.open || !!session.pending || backend.busy}
+                disabled={!mayPair || !!session.pending || backend.busy}
                 onClick={() => void session.start('setup')}
               >
                 {starting ? <LoaderCircle className="spin" size={15} aria-hidden="true" /> : null}
@@ -62,19 +65,15 @@ export function NotPaired({
         ) : (
           <div className={styles.heroCommands}>
             <p>Run on each Mac in Terminal:</p>
-            {waitlist.open && <CopyCommand command="darkbloom cluster" />}
+            {mayPair && <CopyCommand command="darkbloom cluster" />}
             <CopyCommand
               command="darkbloom cluster local"
-              label={waitlist.open ? 'Own Macs only' : undefined}
+              label={mayPair ? 'Own Macs only' : undefined}
             />
           </div>
         )}
-        {!waitlist.open && waitlist.standing !== 'loading' && (
-          <p className={styles.heroNote}>
-            {waitlist.standing === 'login' || waitlist.standing === 'unavailable'
-              ? waitlist.error
-              : 'Serving on your own Macs only needs no approval.'}
-          </p>
+        {!mayPair && waitlist.standing !== 'loading' && (
+          <p className={styles.heroNote}>Serving on your own Macs only needs no approval.</p>
         )}
         {session?.error && (
           <p className={styles.heroError} role="alert">
@@ -82,7 +81,6 @@ export function NotPaired({
           </p>
         )}
       </section>
-      <WaitlistCard feature="cluster" backend={backend} />
     </>
   );
 }

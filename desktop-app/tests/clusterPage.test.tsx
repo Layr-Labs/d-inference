@@ -18,9 +18,10 @@ vi.mock('../src/renderer/useBackend', () => ({ api: bridge, isPreview: false }))
 
 import { Cluster } from '../src/renderer/features/cluster/Cluster';
 import { PairCard } from '../src/renderer/features/cluster/PairCard';
+import { resetWaitlists } from '../src/renderer/features/waitlists/waitlistStore';
 import { backendWith, pairedMac, snapshot } from './onboardingFixtures';
 
-const guided = ['account-signin', 'request-history', 'cluster', 'cluster_session'];
+const guided = ['account-signin', 'request-history', 'waitlists', 'cluster', 'cluster_session'];
 
 const serving: ClusterStatus = {
   schema: 1,
@@ -84,6 +85,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  resetWaitlists();
 });
 
 const paired = (patch: Partial<NonNullable<Snapshot['pair']>> = {}, capabilities = guided) =>
@@ -133,7 +135,9 @@ describe('a Mac in no pair', () => {
     ).toEqual(['Two Apple silicon Macs', 'A Thunderbolt cable', 'Darkbloom on both']);
     const setUp = await screen.findByRole('button', { name: /Set up a pair/ });
     await waitFor(() => expect(setUp).toBeEnabled());
-    expect(await screen.findByText('Approved.')).toBeVisible();
+    // Approved: no waitlist notice, the button says it.
+    expect(screen.queryByRole('region', { name: 'Clusters waitlist' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/needs no approval/)).not.toBeInTheDocument();
     fireEvent.click(setUp);
     expect(bridge.startClusterSession).toHaveBeenCalledWith({ kind: 'setup' });
   });
@@ -142,11 +146,29 @@ describe('a Mac in no pair', () => {
     waitlists = { data: [{ ...approved.data[0], status: 'waitlisted', position: 7 }] };
     bridge.startClusterSession.mockReturnValue(new Promise(() => {}));
     show(alone(), notPaired);
-    expect(await screen.findByText('#7 in line.')).toBeVisible();
+    const notice = await screen.findByRole('region', { name: 'Clusters waitlist' });
+    expect(notice).toHaveTextContent('You’re on the Clusters waitlist: #7 in line.');
     expect(screen.queryByRole('button', { name: /Set up a pair/ })).not.toBeInTheDocument();
     expect(screen.getByText('Serving on your own Macs only needs no approval.')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'Serve on my own Macs only' }));
     expect(bridge.startClusterSession).toHaveBeenCalledWith({ kind: 'local' });
+  });
+
+  it('offers to join from the page when the account isn’t on the waitlist', async () => {
+    waitlists = { data: [{ ...approved.data[0], status: 'none' }] };
+    show(alone(), notPaired);
+    const notice = await screen.findByRole('region', { name: 'Clusters waitlist' });
+    expect(within(notice).getByRole('button', { name: /Join the waitlist/ })).toBeVisible();
+    expect(screen.queryByRole('button', { name: /Set up a pair/ })).not.toBeInTheDocument();
+  });
+
+  it('leaves the waitlist check to the setup on a runtime that can’t read waitlists', async () => {
+    show(alone(['autopilot', 'cluster', 'cluster_session']), notPaired);
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Set up a pair/ })).toBeEnabled(),
+    );
+    expect(screen.queryByText(/needs a newer/)).not.toBeInTheDocument();
+    expect(bridge.read).not.toHaveBeenCalledWith('waitlists');
   });
 
   it('offers Set up a pair on a coordinator with no cluster waitlist', async () => {
@@ -167,7 +189,7 @@ describe('a Mac in no pair', () => {
   });
 
   it('points to Terminal when this runtime has no in-app setup', async () => {
-    show(alone(['autopilot', 'cluster']), notPaired);
+    show(alone(['autopilot', 'waitlists', 'cluster']), notPaired);
     expect(await screen.findByText('Run on each Mac in Terminal:')).toBeVisible();
     expect(screen.queryByRole('button', { name: /Set up a pair/ })).not.toBeInTheDocument();
     await screen.findByRole('button', { name: 'Copy darkbloom cluster' });
@@ -307,7 +329,7 @@ describe('a paired Mac', () => {
   });
 
   it('names the Terminal step when this runtime has no in-app setup', async () => {
-    show(paired({}, ['cluster']));
+    show(paired({}, ['waitlists', 'cluster']));
     expect(await screen.findByText('Change the model in Terminal:')).toBeVisible();
     expect(screen.getByRole('button', { name: 'Copy darkbloom cluster' })).toBeVisible();
   });

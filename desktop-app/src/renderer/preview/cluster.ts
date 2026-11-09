@@ -245,21 +245,21 @@ let autopilot: boolean | undefined;
 function withPair(snapshot: Snapshot): Snapshot {
   const current = snapshot.capabilities ?? olderRuntime;
   autopilot ??= current.includes('autopilot');
-  const others = current.filter(
-    (capability) => !['autopilot', 'cluster', 'cluster_session'].includes(capability),
+  const paired = !unsupported() && pair.state !== 'not_paired';
+  // The list as it is, in its order: a paired Mac's runtime offers no Autopilot, which serves
+  // one Mac, and gets it back where it was once the Mac leaves the pair.
+  const listed = current.filter(
+    (capability) =>
+      capability !== 'cluster' &&
+      capability !== 'cluster_session' &&
+      !(paired && capability === 'autopilot'),
   );
-  if (unsupported())
-    return { ...snapshot, capabilities: [...others, ...(autopilot ? ['autopilot'] : [])] };
-  const paired = pair.state !== 'not_paired';
+  const capabilities =
+    autopilot && !paired && !listed.includes('autopilot') ? ['autopilot', ...listed] : listed;
+  if (unsupported()) return { ...snapshot, capabilities };
   return {
     ...snapshot,
-    // A paired Mac's runtime offers no Autopilot, which serves one Mac.
-    capabilities: [
-      ...others,
-      ...(autopilot && !paired ? ['autopilot'] : []),
-      'cluster',
-      'cluster_session',
-    ],
+    capabilities: [...capabilities, 'cluster', 'cluster_session'],
     pair: snapshotPair(),
   };
 }

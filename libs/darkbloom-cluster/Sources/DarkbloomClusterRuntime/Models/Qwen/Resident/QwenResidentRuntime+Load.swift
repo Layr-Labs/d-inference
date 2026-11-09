@@ -337,7 +337,7 @@ extension QwenResidentRuntime {
                     log("darkbloom-prefix-v1 rank=\(collective.rank) budget_bytes=\(prefixBudget ?? 0)"
                         + " room_bytes=\(admitted.roomBytes)")
                     log("darkbloom-resident-context-v1 rank=\(collective.rank) model=\(admission.runtimeModelID)"
-                        + " limit=\(admission.memoryProfile.maximumContextTokens) admitted=\(admitted.contextTokens)"
+                        + " limit=\(admission.servedProfile.maximumContextTokens) admitted=\(admitted.contextTokens)"
                         + " charge_at_admitted=\(admitted.allowance.reservedBytes)"
                         + " transient_at_admitted=\(admitted.allowance.transientBytes)")
                     try checked()

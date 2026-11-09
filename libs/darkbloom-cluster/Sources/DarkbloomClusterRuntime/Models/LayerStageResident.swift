@@ -60,7 +60,7 @@ extension LayerStageResidentAdmission {
         guard value.promptTokenIDs.count <= p.maximumPromptTokens, value.outputCount <= p.maximumOutputTokens,
               value.promptTokenIDs.count <= p.maximumContextTokens - value.outputCount else {
             throw ProbeError("A request of \(value.promptTokenIDs.count + value.outputCount) context tokens is longer"
-                + " than this mode serves (\(p.maximumContextTokens)); only tensor parallel serves the model's native context")
+                + " than this mode serves (\(p.maximumContextTokens))")
         }
     }
 }

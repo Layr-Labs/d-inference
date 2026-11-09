@@ -3015,7 +3015,12 @@ answers `invalid_reasoning_effort` naming the field and the names ([direct
 mode](../provider/direct-mode.md#reasoning-effort)); the coordinator receives
 the closed `invalid_request` failure, which it shows as "invalid inference
 request". A model of no family above ignores any effort
-(`ReasoningEffortPolicy.validate`).
+(`ReasoningEffortPolicy.validate`). The same table (`ReasoningEffortPolicy.reasons`)
+says which models the local `/v1/models` lists as reasoning
+(`"supported_features": ["reasoning"]`, `LocalModelFeatures` in
+`provider-swift/Sources/ProviderCore/Server/LocalModelFeatures.swift`), by the
+type a model registers or a pair installs, so the list and the API never
+disagree ([the list](../provider/direct-mode.md#when-this-mac-cant-take-a-request-the-local-router)).
 
 Nemotron 3.5 Super reads both fields rather than letting `reasoning.effort`
 win, and refuses two that differ, even two names such as `high` and `max`,

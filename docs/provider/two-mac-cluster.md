@@ -1172,6 +1172,9 @@ pair's mode serves media (`["text", "image"]` on the GLM and MiMo image
 candidates' profiles) and `["text"]` otherwise (`LocalInputModalities`).
 `darkbloom start --opencode` and `--hermes` follow it for the pair's model,
 whatever the catalog says, so a Gemma 4 pair gets no image input in the tools.
+The list also says whether the pair's model reasons (`supported_features`:
+`["reasoning"]` for every model a pair serves today, by its installed
+`model_type`, before its slot is up too), which OpenCode follows the same way.
 GLM-5.3-Flash answers its output
 controls as one Mac does: hidden reasoning is withheld, with or without media,
 and with images or video a `response_format` JSON answer or a required or

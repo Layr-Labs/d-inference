@@ -435,11 +435,15 @@ They run once, at `start`:
    here (this Mac, or the pair it leads or relays to) gets image input exactly
    when its `this-mac` entry lists `image` among its `input_modalities`,
    catalog or not; a model served elsewhere, or one whose pair slot isn't up
-   yet, gets the catalog's, or the list's `image`. Reasoning comes from the
-   catalog only. Without the catalog (offline, or a model it doesn't list), a
+   yet, gets the catalog's, or the list's `image`. Reasoning follows the same
+   rule from `supported_features`: a model served here reasons in OpenCode
+   exactly when its entry lists `reasoning` (Qwen 3.8 27B does, though its
+   catalog row lacks it); Hermes' block has no reasoning setting. Without the
+   catalog (offline, or a model it doesn't list), a
    model the tool's file already lists keeps that entry's name, image input
-   (unless this Mac lists what the model takes, or the list gives it images),
-   reasoning and limits (`IntegrationModel.keeping`), so a re-run changes
+   and reasoning (unless this Mac lists what the model takes and whether it
+   reasons, or the list gives it images or reasoning), and limits
+   (`IntegrationModel.keeping`), so a re-run changes
    nothing and says the catalog wasn't reachable; a model new to the file gets
    its ID, and text input unless the endpoint lists images, and one line says
    to run the start again online for names and image support.

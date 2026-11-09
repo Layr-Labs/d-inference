@@ -42,6 +42,9 @@ struct IntegrationModel: Equatable, Sendable {
         /// The endpoint settles the model's image input, so an entry can't change it: the engine's word for a model
         /// served here, either way, or `image` listed for a model served elsewhere.
         var endpointSettlesImageInput = false
+        /// The same for reasoning: the engine's word for a model served here, either way, or `reasoning` listed for
+        /// a model served elsewhere.
+        var endpointSettlesReasoning = false
     }
 
     /// A model's entry in a tool's config, as the tool has it now; nil for what the entry doesn't hold.
@@ -56,9 +59,9 @@ struct IntegrationModel: Equatable, Sendable {
     }
 
     /// The model with what the tool's `entry` already says in place of its fallbacks, so a run without the catalog
-    /// never downgrades what a run with it wrote: the name, tools, image input (unless the endpoint settles it) and
-    /// reasoning, the context when the endpoint gives none, and the output while the context is the one it was set for
-    /// (unless the endpoint gives a cap).
+    /// never downgrades what a run with it wrote: the name, tools, image input and reasoning (each unless the endpoint
+    /// settles it), the context when the endpoint gives none, and the output while the context is the one it was set
+    /// for (unless the endpoint gives a cap).
     func keeping(_ entry: Entry?) -> IntegrationModel {
         guard let fallback, let entry else { return self }
         let context = contextLength ?? entry.contextLength
@@ -72,7 +75,7 @@ struct IntegrationModel: Equatable, Sendable {
             outputLimit: keptOutput ?? context.map { max(1, min(cap, $0 / 4)) },
             tools: entry.tools ?? tools,
             imageInput: fallback.endpointSettlesImageInput ? imageInput : entry.imageInput ?? imageInput,
-            reasoning: entry.reasoning ?? reasoning, fallback: fallback)
+            reasoning: fallback.endpointSettlesReasoning ? reasoning : entry.reasoning ?? reasoning, fallback: fallback)
     }
 
     /// `Qwen 3.8 27B (this Mac)`.
@@ -98,14 +101,18 @@ struct EndpointModel: Decodable, Equatable, Sendable {
     /// What a request may carry (`text`, `image`, `video`): this Mac's engine's for its models
     /// (`LocalInputModalities`), the coordinator's for the others.
     let inputModalities: [String]?
+    /// OpenRouter's feature names: `reasoning` or none for this Mac's models (`LocalModelFeatures`), the
+    /// coordinator's for the others.
+    let supportedFeatures: [String]?
 
     init(id: String, ownedBy: String? = nil, contextLength: Int? = nil, maxOutputLength: Int? = nil,
-         inputModalities: [String]? = nil) {
+         inputModalities: [String]? = nil, supportedFeatures: [String]? = nil) {
         self.id = id
         self.ownedBy = ownedBy
         self.contextLength = contextLength
         self.maxOutputLength = maxOutputLength
         self.inputModalities = inputModalities
+        self.supportedFeatures = supportedFeatures
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -115,6 +122,7 @@ struct EndpointModel: Decodable, Equatable, Sendable {
         case maxModelLen = "max_model_len"
         case maxOutputLength = "max_output_length"
         case inputModalities = "input_modalities"
+        case supportedFeatures = "supported_features"
     }
 
     init(from decoder: Decoder) throws {
@@ -125,10 +133,13 @@ struct EndpointModel: Decodable, Equatable, Sendable {
             ?? container.decodeIfPresent(Int.self, forKey: .maxModelLen)
         maxOutputLength = try container.decodeIfPresent(Int.self, forKey: .maxOutputLength)
         inputModalities = try? container.decodeIfPresent([String].self, forKey: .inputModalities)
+        supportedFeatures = try? container.decodeIfPresent([String].self, forKey: .supportedFeatures)
     }
 
     /// The endpoint says the model takes images.
     var takesImages: Bool { LocalInputModalities.takesImages(inputModalities) }
+    /// The endpoint says the model reasons.
+    var reasons: Bool { LocalModelFeatures.listsReasoning(supportedFeatures) }
 }
 
 /// Why the endpoint's models could not be read. No case carries the key.
@@ -196,8 +207,12 @@ enum IntegrationModels {
     ///   text only), and the engine adds one the catalog lacks (MiMo V2.6). For a model served elsewhere (your Macs,
     ///   the network), or one whose engine gives no word yet (a pair whose slot isn't up), the catalog's names, with
     ///   `image` the list adds.
+    /// - Reasoning: the same way, from `supported_features`. For a model served here, its engine's word, catalog or
+    ///   not: `reasoning` exactly when its type reasons (`LocalModelFeatures`), the models that take every reasoning
+    ///   effort, so Qwen 3.8 reasons though its catalog row lacks it, and a model whose effort would be ignored doesn't.
+    ///   For a model served elsewhere, or one with no word, the catalog's names, with the `reasoning` the list adds.
     /// - Other capabilities: the catalog's names. Without them, tools on (Darkbloom serves tool calls on its chat
-    ///   models) and no reasoning claim: reasoning comes from the catalog alone.
+    ///   models).
     /// - A model the catalog doesn't describe carries `fallback`: a tool's own entry for it keeps its values
     ///   (`keeping(_:entries:)`).
     static func resolve(_ listed: [EndpointModel], catalog: CatalogSnapshot?) -> [IntegrationModel] {
@@ -218,15 +233,18 @@ enum IntegrationModels {
             // The engine's word, for a model served here.
             let engineImageInput = location == .thisMac
                 ? entry.inputModalities.map { LocalInputModalities.takesImages($0) } : nil
+            let engineReasoning = location == .thisMac
+                ? entry.supportedFeatures.map { LocalModelFeatures.listsReasoning($0) } : nil
             return IntegrationModel(
                 id: entry.id, name: IntegrationModel.name(display, at: location), location: location,
                 contextLength: context, outputLimit: context.map { max(1, min(cap, $0 / 4)) },
                 tools: capabilities.isEmpty || !capabilities.isDisjoint(with: toolCapabilities),
                 imageInput: engineImageInput ?? (entry.takesImages || !capabilities.isDisjoint(with: imageCapabilities)),
-                reasoning: !capabilities.isDisjoint(with: reasoningCapabilities),
+                reasoning: engineReasoning ?? (entry.reasons || !capabilities.isDisjoint(with: reasoningCapabilities)),
                 fallback: details.model == nil
                     ? .init(endpointOutputCap: positive(entry.maxOutputLength),
-                            endpointSettlesImageInput: engineImageInput != nil || entry.takesImages)
+                            endpointSettlesImageInput: engineImageInput != nil || entry.takesImages,
+                            endpointSettlesReasoning: engineReasoning != nil || entry.reasons)
                     : nil)
         }
         return ordered(models)

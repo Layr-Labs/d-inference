@@ -89,7 +89,7 @@ export function Machines({
           {local && route === 'cooling' && <Cooling backend={backend} embedded />}
           {local && route === 'analysis' && <Stats backend={backend} embedded />}
           {local && route === 'settings' && <Settings backend={backend} embedded />}
-          {local && route === 'studio' && <Studio backend={backend} embedded />}
+          {local && route === 'studio' && <Studio backend={backend} navigate={navigate} embedded />}
         </div>
       </div>
     </div>

@@ -38,7 +38,7 @@ public enum ClusterServingScope: Sendable, Equatable {
     /// The local API listens on `bind` and needs its API key.
     case localOnly(bind: String)
     /// Both, me first: through Darkbloom as `publicServing`, and the pair's local API on the part that hosts the pair's
-    /// slot, on `bind` with the pair's key; Darkbloom pauses while the owner uses it.
+    /// slot, on `bind`, with that Mac's own key and the pair's; Darkbloom pauses while the owner uses it.
     case publicServingWithLocalAPI(bind: String)
 
     /// Every interface of the leading Mac (LAN or tailnet) unless the person chose an address (owner, 2026-10-15).
@@ -71,7 +71,8 @@ public enum ClusterServingScope: Sendable, Equatable {
     }
 
     /// Local only's address (`darkbloom cluster local`); nil for the other two, so what reads it for local only (the
-    /// leading part's `--no-coordinator`, the solo server, the relay) never sees Both.
+    /// leading part's `--no-coordinator`, the solo server) never sees Both. The relay serves Both too, so it reads
+    /// `answersOnEveryMac` instead.
     public var bind: String? {
         if case .localOnly(let bind) = self { return bind }
         return nil
@@ -98,6 +99,15 @@ public enum ClusterServingScope: Sendable, Equatable {
         var v4 = in_addr(), v6 = in6_addr()
         return inet_pton(AF_INET, text, &v4) == 1 || inet_pton(AF_INET6, text, &v6) == 1
     }
+
+    /// The local API listens on every address of the Mac that runs it (local only's default, and Both's): every other Mac
+    /// of the pair then answers on its own port too, passing each connection over the cable (`ClusterLocalRelay`). A
+    /// loopback or one-address API isn't reached over the cable, and no other Mac opens what the person kept closed.
+    public var answersOnEveryMac: Bool { Self.answersOnEveryMac(bind: localAPIBind) }
+
+    /// The same rule for a pair's local API on `bind` (nil: none), where only its address is known: a status summary,
+    /// or the discovery record of the API itself.
+    public static func answersOnEveryMac(bind: String?) -> Bool { bind == localOnlyDefaultBind }
 
     /// True when hosts other than this Mac can reach the API (any address that is not loopback).
     public var reachableFromNetwork: Bool {
@@ -1046,10 +1056,14 @@ public struct ClusterOnboardingReady: Codable, Sendable, Equatable {
     /// How the plan that runs splits the model, as the serving line marks it (`ClusterOnboardingDeployment.splitMarker`);
     /// nil when it is not known here, one Mac serves alone, or from an older build.
     public var split: String? = nil
+    /// Both, me first with the pair's API on every address (`ClusterServingScope.answersOnEveryMac`): every other Mac
+    /// answers on its own port too (`ClusterLocalRelay`), so each Mac's screen names its own API. Nil otherwise, and from
+    /// an older build.
+    public var relayed: Bool? = nil
     public init(servedBy: String, port: Int, deployment: String? = nil, notice: String? = nil, network: Bool? = nil,
-                offered: String? = nil, split: String? = nil) {
+                offered: String? = nil, split: String? = nil, relayed: Bool? = nil) {
         self.servedBy = servedBy; self.port = port; self.deployment = deployment; self.notice = notice; self.network = network
-        self.offered = offered; self.split = split
+        self.offered = offered; self.split = split; self.relayed = relayed
     }
 
     /// The screens' one line (2026-11-03: less is better), "Serving Qwen3.8 27B (pipeline) at http://localhost:8000",
@@ -1198,10 +1212,15 @@ public struct ClusterOnboardingReady: Codable, Sendable, Equatable {
     public static let offeredAPILine = "No local API: requests reach the pair through Darkbloom"
 
     /// The same for a pair offered with its local API beside Darkbloom (Both, me first): the Mac whose part runs rank 0
-    /// (`servedBy`) has it, with the pair's key.
+    /// (`servedBy`) has it, and, `relayed`, every other Mac answers on its own port too, so each screen names its own
+    /// Mac's API: its address once this Mac's port is up (`port`, its API's or its relay's; 0 before), never the key.
     public var bothAPILine: String {
-        "Local API: on \(servedBy), you first (Darkbloom pauses while you use it; `darkbloom local`"
-            + (servesHere ? "" : " there") + " shows its address and key)"
+        let pause = "you first (Darkbloom pauses while you use it; `darkbloom local`"
+        guard servesHere || relayed == true else { return "Local API: on \(servedBy), \(pause) there shows its address and key)" }
+        guard port > 0 else {
+            return "Local API: on \(ClusterOnboardingMacName.this), \(pause) shows its address and key once this Mac's port is up)"
+        }
+        return "Local API: http://127.0.0.1:\(port)/v1 on \(ClusterOnboardingMacName.this), \(pause) shows the key)"
     }
 
     /// Said instead of the test request when the pair is offered for pairing (and the answer of `t` then).

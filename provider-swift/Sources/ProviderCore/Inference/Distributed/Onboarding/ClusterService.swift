@@ -171,7 +171,8 @@ public final class ClusterService: @unchecked Sendable {
     // Derived control (ClusterServiceControl.swift).
     var control: ClusterControlNode?
     var controlResponder: ClusterSetupLinkExchange.Responder?
-    /// The port the cluster's API last used on this Mac (rank 0's here, or the relay's); kept while it is free on both.
+    /// The port the cluster's API last used on this Mac (rank 0's here, or the relay's): kept, while free, only when this
+    /// Mac's own port (`thisMacPort`) can't be read.
     private var apiPort: Int?
     /// The port the running part listens on: rank 0's API or the solo server's; nil for any other part.
     private var childPort: Int?
@@ -186,15 +187,67 @@ public final class ClusterService: @unchecked Sendable {
     /// re-planning (the memory is short for every split) until a re-plan finds another one or the service restarts.
     private var sameSplitReplans = 0
     static let memoryReplansWithSameSplit = 3
-    /// Local only, on the Mac that is not rank 0: its own port passed to rank 0's API (`ClusterLocalRelay`).
-    private var relay: ClusterLocalRelay?
+    /// The pair's API on every address (local only, or Both), on a Mac that is not rank 0: its own port passed to rank
+    /// 0's API (`ClusterLocalRelay`). Tests set it.
+    var relay: ClusterLocalRelay?
     /// Rank 0's API port as the other Mac's status last said it, and when it was asked (a thread of its own).
     private var relayTargetPort: Int?
+    /// What this Mac's relay waits on, as `status()` publishes it (`relayStatus`); tests set it.
+    var relayState = RelayState()
+    /// The last reason this Mac's own port couldn't be read (`thisMacPort`), said once.
+    private var portProblem: String?
+    static let relayRetrySeconds: Double = 10
+    /// How long the other Mac may go unheard over the cable (two missed lease renewals) before this Mac's relay answers
+    /// that it can't be reached (`relayAway`).
+    static let otherMacSilentSeconds: Double = 12
+    /// Failed asks in a row that make rank 0's Mac away while no lease from it was heard in this service's life
+    /// (`relayAway`).
+    static let askFailuresWithoutLease = 2
+
+    /// What this Mac's relay waits on: set by `relayTick` and `askRankZeroPort`.
+    struct RelayState: Equatable {
+        /// Rank 0's cable address while this Mac would relay the pair's API (`ClusterLocalRelay.rankZeroHost`); nil
+        /// otherwise.
+        var host: String?
+        /// Rank 0's last status said it answers on its own Mac only (`ClusterLocalRelay.rankZeroAnswersOnItsMacOnly`).
+        var waitsForOffer = false
+        /// A relay that couldn't listen on this Mac's port, which another program holds: for which target, on which port,
+        /// and when it is tried again (`relayRetrySeconds`), so this Mac's port is never read on every tick.
+        var held: Held?
+        /// Asks of rank 0's Mac that failed in a row (`askRankZeroPort`).
+        var askFailures = 0
+        /// Rank 0's Mac is away (`relayAway`): the relay answers each request a 503 that says so.
+        var away = false
+
+        struct Held: Equatable {
+            var target: ClusterLocalRelay.Target
+            var port: Int
+            var retryAt: Date
+        }
+    }
+
+    /// What `status()` says of this Mac's relay, only while this Mac would relay: the port another program holds, rank
+    /// 0 answering on its own Mac only, and rank 0's Mac away.
+    static func relayStatus(_ state: RelayState) -> (portHeld: Int?, waitsForOffer: Bool?, away: Bool?) {
+        guard state.host != nil else { return (nil, nil, nil) }
+        return (state.held?.port, state.waitsForOffer ? true : nil, state.away ? true : nil)
+    }
+
+    /// Whether rank 0's Mac is away for this Mac's relay: it hasn't answered over the cable (`otherAnsweredAt`, its
+    /// lease or answer, `ClusterControlNode`) for `otherMacSilentSeconds`. A failed ask of it says nothing then: the
+    /// exchange can be slow or busy while that Mac is there (its answer behind another command, a lost discovery, this
+    /// Mac's exchange lock busy), and the 503 tells the owner to stop the pair. Only before it has answered over the cable
+    /// in this service's life do the asks decide: `askFailuresWithoutLease` failed in a row. A connection rank 0 never
+    /// takes gets its 503 within `ClusterLocalRelay.connectSeconds` either way.
+    static func relayAway(askFailures: Int, otherAnsweredAt: Double?, now: Double) -> Bool {
+        guard let answered = otherAnsweredAt else { return askFailures >= askFailuresWithoutLease }
+        return now - answered >= otherMacSilentSeconds
+    }
     private var relayAsked = Date.distantPast
     private var relayAsking = false
     /// Seconds before the next ask: 10 while the other Mac answers, longer (to 120) while it does not, so the link's
-    /// one-at-a-time request lock is not held for the other commands.
-    private var relayAskInterval: Double = 10
+    /// one-at-a-time request lock is not held for the other commands. Tests read it.
+    var relayAskInterval: Double = 10
     /// When each listener last checked its cable port and its pairing (`listenerChange`).
     var responderCheck = Date.distantPast
     var controlCheck = Date.distantPast
@@ -627,21 +680,26 @@ public final class ClusterService: @unchecked Sendable {
                             : "planned \(model) again on the memory now: a new split is starting on both Macs" + (deployment.map { " (\($0))" } ?? ""))
     }
 
-    /// Local only, on the Mac whose part is not rank 0: the same port as rank 0's API (else 8000 or the next free one)
-    /// passes each connection over the cable to rank 0's API, so the cluster answers at the same address whichever Mac
-    /// the plan made rank 0, with the same key (`LocalEndpoint.loadOrCreateClusterToken`). Stopped whenever this Mac's part
-    /// is not running or is rank 0, before rank 0 here takes the port.
+    /// Local only or Both, me first, with the API on every address, on each Mac whose part is not rank 0: this Mac's own
+    /// port (`thisMacPort`, its saved `[local] port`) passes each connection over the cable to rank 0's API
+    /// (`ClusterLocalRelay.rankZeroHost`, `port(own:for:scope:isFree:)`), so the pair answers on every Mac, each at its own
+    /// address whichever Mac the plan made rank 0. Tools here use this Mac's own key, which the relay passes on as the
+    /// pair's (`ClusterLocalRelay.Keys`). This Mac's port is read only when a relay starts: a port another program holds
+    /// is said once and tried again every `relayRetrySeconds`. Stopped whenever this Mac's part is not running or is rank
+    /// 0, before rank 0 here takes the port.
     private func relayTick(say: @escaping @Sendable (String) -> Void) {
-        let record = try? store.readRecord()
+        let leadership = (try? store.readRecord())?.leadership
         let saved = context.savedConfiguration().configuration
-        let runsMember = lock.withLock { child?.isRunning == true && childSetup?.hasPrefix("solo:") != true }
+        let partRuns = lock.withLock { child?.isRunning == true && childSetup?.hasPrefix("solo:") != true }
         var wanted: ClusterLocalRelay.Target?
-        // Only when the API listens on every address (local only's default): with a loopback or one-address bind,
-        // rank 0's API is not reachable over the cable, and this Mac must not open what the person kept closed.
-        if let record, record.leadership?.serving == true, record.leadership?.scope.bind == "0.0.0.0",
-           let saved, saved.role != .leader, saved.peers.indices.contains(0), runsMember {
+        let host = leadership.flatMap { leadership in saved.flatMap { saved in
+            ClusterLocalRelay.rankZeroHost(serving: leadership.serving, scope: leadership.scope, memberID: saved.memberID,
+                                           roster: saved.peers.map { .init(id: $0.id, rank: $0.rank, host: $0.host) }, partRuns: partRuns)
+        } }
+        let away = updateRelayAway(host: host, now: Self.monotonicSeconds())
+        if let host {
             askRankZeroPort()
-            if let port = lock.withLock({ relayTargetPort }) { wanted = .init(host: saved.peers[0].host, port: port) }
+            if let port = lock.withLock({ relayTargetPort }) { wanted = .init(host: host, port: port) }
         }
         let current = lock.withLock { relay }
         if let current, current.target == wanted, !current.isStopped { return }
@@ -651,18 +709,117 @@ public final class ClusterService: @unchecked Sendable {
             LocalEndpoint.removeInfo(ifPID: getpid())
             say("stopped passing this Mac's port \(current.port) to the API on the other Mac")
         }
-        guard let wanted, let token = try? LocalEndpoint.loadOrCreateClusterToken() else { return }
-        let port = ClusterLocalServing.portIsFree(wanted.port) ? wanted.port : ClusterLocalServing.servingPort()
-        guard let started = ClusterLocalRelay(port: port, target: wanted) else { return }
-        lock.withLock { relay = started; apiPort = port }
+        guard let wanted, let scope = leadership?.scope,
+              let keys = try? ClusterLocalRelay.Keys(own: LocalEndpoint.loadOrCreateToken(), pair: LocalEndpoint.loadOrCreateClusterToken())
+        else { lock.withLock { relayState.held = nil }; return }
+        let due = lock.withLock { () -> Bool in
+            guard let held = relayState.held, held.target == wanted else { return true }
+            return Date().timeIntervalSince(held.retryAt) >= 0
+        }
+        guard due, let started = startRelay(to: wanted, scope: scope, keys: keys, say: say) else { return }
+        started.setAway(away)
+        lock.withLock { relay = started; apiPort = started.port }
         // The discovery file only when no other live server on this Mac owns it (`darkbloom start --local`).
         if LocalEndpoint.readLiveInfo().map({ $0.pid == getpid() }) ?? true {
-            try? LocalEndpoint.writeInfo(.init(host: "0.0.0.0", port: UInt16(port), apiKey: token,
-                version: ProviderCore.version, pid: getpid(), updatedAt: ISO8601DateFormatter().string(from: Date())))
+            try? LocalEndpoint.writeInfo(Self.relayDiscovery(port: started.port, keys: keys))
         }
-        say(port == wanted.port
-            ? "the API answers on this Mac's port \(port) too, the same port as on the other Mac (rank 0), passed over the cable"
-            : "port \(wanted.port) is taken on this Mac: the API answers here on port \(port), passed over the cable to port \(wanted.port) on the other Mac (rank 0)")
+        say("the pair's API answers on this Mac's own port \(started.port) too, passed over the cable to port \(wanted.port) on the other Mac (rank 0)")
+    }
+
+    /// Rank 0's Mac away or back for this Mac's relay (`relayAway`, from the cable's lease in `control` and the asks of
+    /// that Mac, `recordRankZeroAsk`): published (`relayState.away`), and told to the running relay with the words that
+    /// name the other Mac, so it answers a 503 at once while away. Once that Mac answers over the cable again after
+    /// failed asks, asks go back to every 10 s (from up to 120 s), so this Mac learns rank 0's port again within about
+    /// 10 s, without asking on every tick.
+    @discardableResult
+    func updateRelayAway(host: String?, now: Double) -> Bool {
+        let (away, words, running) = lock.withLock { () -> (Bool, ClusterLocalRelay.Refusals, ClusterLocalRelay?) in
+            relayState.host = host
+            let answered = control?.otherAnsweredAt
+            if host != nil, relayState.askFailures > 0, let answered, now - answered < Self.otherMacSilentSeconds {
+                relayAskInterval = 10
+            }
+            relayState.away = host != nil && Self.relayAway(askFailures: relayState.askFailures, otherAnsweredAt: answered, now: now)
+            return (relayState.away, .pair(otherMac: otherMacNameLocked(), cli: BuildEnvironment.current.cliName), relay)
+        }
+        running?.setRefusals(words)
+        running?.setAway(away)
+        return away
+    }
+
+    /// This Mac's relay to `wanted`, on this Mac's own port (`thisMacPort`, read only here, when a relay starts; else the
+    /// earlier rule). Nil when another program holds that port: said once per port, and tried again every
+    /// `relayRetrySeconds` (`relayState.held`).
+    func startRelay(to wanted: ClusterLocalRelay.Target, scope: ClusterServingScope, keys: ClusterLocalRelay.Keys,
+                    say: @Sendable (String) -> Void) -> ClusterLocalRelay? {
+        let port = ClusterLocalRelay.port(own: thisMacPort(say: say), for: wanted, scope: scope)
+        let words = lock.withLock { ClusterLocalRelay.Refusals.pair(otherMac: otherMacNameLocked(), cli: BuildEnvironment.current.cliName) }
+        guard let started = ClusterLocalRelay(port: port, target: wanted, keys: keys, refusals: words) else {
+            let first = lock.withLock { () -> Bool in
+                defer { relayState.held = .init(target: wanted, port: port, retryAt: Date().addingTimeInterval(Self.relayRetrySeconds)) }
+                return relayState.held.map { $0.target != wanted || $0.port != port } ?? true
+            }
+            if first {
+                say("this Mac's port \(port) is held by another program, so the pair's API doesn't answer on this Mac: free it, "
+                    + "or set another [local] port in \(settings.wizard.providerConfiguration.path), then `\(BuildEnvironment.current.cliName) restart`; "
+                    + "trying again every \(Int(Self.relayRetrySeconds)) s")
+            }
+            return nil
+        }
+        lock.withLock { relayState.held = nil }
+        return started
+    }
+
+    /// This Mac's own port for the pair's API or relay (`ownAPIPort`), saying one newly saved; nil when it can't be read
+    /// or chosen (the earlier rules then), said once per reason.
+    private func thisMacPort(say: @Sendable (String) -> Void) -> Int? {
+        let path = settings.wizard.providerConfiguration
+        do {
+            let choice = try Self.ownAPIPort(configPath: path)
+            lock.withLock { portProblem = nil }
+            if let note = choice.note { say(note) }
+            return Int(choice.port)
+        } catch {
+            let line = "this Mac's local API port can't be read from \(path.path) (\(error)): the pair's API or relay here takes a free port"
+            if lock.withLock({ () -> Bool in defer { portProblem = line }; return portProblem != line }) { say(line) }
+            return nil
+        }
+    }
+
+    /// The discovery record this Mac's relay writes for its tools (`darkbloom local`, `start --opencode`): its port on
+    /// every address, and this Mac's own key, which the relay passes on as the pair's.
+    public static func relayDiscovery(port: Int, keys: ClusterLocalRelay.Keys) -> LocalEndpoint.Info {
+        LocalEndpoint.Info(host: ClusterServingScope.localOnlyDefaultBind, port: UInt16(port), apiKey: keys.own,
+                           version: ProviderCore.version, pid: getpid(), updatedAt: ISO8601DateFormatter().string(from: Date()))
+    }
+
+    /// This Mac's one local API port, which the pair's API or relay on this Mac takes as every local API here does
+    /// (`LocalAPIPort.thisMac`, from the provider config at `configPath`): the saved `[local] port` as it is, else the
+    /// one this Mac's local API already uses, else a new choice, saved there. Throws without a provider config (the
+    /// service writes none), when the config can't be read, and when no port is free for a new choice.
+    static func ownAPIPort(configPath: URL, ownLivePort: () -> UInt16? = LocalAPIPort.ownLivePort,
+                           installedPort: () -> UInt16? = LocalAPIPort.installedJobPort,
+                           isFree: (UInt16) -> Bool = LocalAPIPort.isFreeOnThisMac) throws -> LocalAPIPort.Choice {
+        guard FileManager.default.fileExists(atPath: configPath.path) else {
+            throw CocoaError(.fileNoSuchFile, userInfo: [NSFilePathErrorKey: configPath.path])
+        }
+        return try LocalAPIPort.thisMac(configPath: configPath, fallbackConfig: ConfigManager.load(from: configPath),
+                                        ownLivePort: ownLivePort, installedPort: installedPort, isFree: isFree)
+    }
+
+    /// This Mac is rank 0 now: its relay gives the port back first.
+    private func handRelayPortBack() {
+        guard let passing = lock.withLock({ () -> ClusterLocalRelay? in defer { relay = nil }; return relay }) else { return }
+        passing.stop()
+        LocalEndpoint.removeInfo(ifPID: getpid())
+    }
+
+    /// Where the pair's API listens on every address of this Mac, for the other Macs' relays: its part's discovery
+    /// record (written once that part's API is bound). Nil while there is none, for a solo server, and for an API on
+    /// loopback or one address.
+    private func pairAPIPort() -> Int? {
+        let part = lock.withLock { child?.isRunning == true && childSetup?.hasPrefix("cluster:") == true ? child?.processIdentifier : nil }
+        return ClusterLocalRelay.pairAPIPort(part: part, record: LocalEndpoint.readLiveInfo().map { ($0.pid, $0.host, $0.port) })
     }
 
     /// Asks the other Mac (every 10 s, never on this loop's thread) where its rank 0 API listens.
@@ -675,40 +832,38 @@ public final class ClusterService: @unchecked Sendable {
         let context = self.context, pairingStore = self.pairingStore
         Thread.detachNewThread { [weak self] in
             defer { self?.lock.withLock { self?.relayAsking = false } }
-            guard let pairing = try? ClusterSetupLinkExchange.pairing(store: pairingStore), let selection = try? context.linkSelection(),
-                  let body = try? JSONEncoder().encode(ClusterServiceCommand(op: .status)),
-                  let reply = try? ClusterSetupLinkExchange.command(pairing: pairing, selection: selection, peerAddress: nil,
-                      body: body, seconds: 5).reply,
-                  let status = try? JSONDecoder().decode(ClusterServiceStatus.self, from: reply) else {
-                self?.lock.withLock { if let self { self.relayAskInterval = min(self.relayAskInterval * 2, 120) } }
-                return
-            }
-            let port = status.sessionLeader && status.session?.ready == true ? status.session?.port : nil
-            self?.lock.withLock { self?.relayTargetPort = port; self?.relayAskInterval = 10 }
+            let status: ClusterServiceStatus? = {
+                guard let pairing = try? ClusterSetupLinkExchange.pairing(store: pairingStore), let selection = try? context.linkSelection(),
+                      let body = try? JSONEncoder().encode(ClusterServiceCommand(op: .status)),
+                      let reply = try? ClusterSetupLinkExchange.command(pairing: pairing, selection: selection, peerAddress: nil,
+                          body: body, seconds: 5).reply else { return nil }
+                return try? JSONDecoder().decode(ClusterServiceStatus.self, from: reply)
+            }()
+            self?.recordRankZeroAsk(status)
         }
     }
 
-    /// The ports the other Mac has free (its status's `freePorts`), asked on a thread of its own and waited for at most
-    /// `seconds`; nil when it does not answer in time or its build does not say.
-    private func peerFreePorts(seconds: Double) -> [Int]? {
-        let context = self.context, pairingStore = self.pairingStore
-        let answered = ClusterOnboardingMailbox<[Int]>()
-        let done = DispatchSemaphore(value: 0)
-        Thread.detachNewThread {
-            defer { done.signal() }
-            guard let pairing = try? ClusterSetupLinkExchange.pairing(store: pairingStore), let selection = try? context.linkSelection(),
-                  let body = try? JSONEncoder().encode(ClusterServiceCommand(op: .status)),
-                  let reply = try? ClusterSetupLinkExchange.command(pairing: pairing, selection: selection, peerAddress: nil,
-                      body: body, seconds: seconds).reply,
-                  let ports = try? JSONDecoder().decode(ClusterServiceStatus.self, from: reply).freePorts else { return }
-            answered.post(ports)
+    /// What an ask of rank 0's Mac found (`askRankZeroPort`): its status, or nil when the ask failed (no answer within
+    /// 5 s, behind another command on that Mac or a lost discovery, or this Mac's exchange lock busy). A failed ask backs
+    /// the asks off, to 120 s, and is counted (`relayState.askFailures`, which `relayAway` reads); an answer gives rank
+    /// 0's port and resets both.
+    func recordRankZeroAsk(_ status: ClusterServiceStatus?) {
+        lock.withLock {
+            guard let status else {
+                relayAskInterval = min(relayAskInterval * 2, 120)
+                relayState.askFailures += 1
+                return
+            }
+            relayTargetPort = ClusterLocalRelay.rankZeroPort(in: status)
+            relayState.waitsForOffer = ClusterLocalRelay.rankZeroAnswersOnItsMacOnly(in: status)
+            relayAskInterval = 10
+            relayState.askFailures = 0
         }
-        guard done.wait(timeout: .now() + seconds) == .success else { return nil }
-        return answered.take().first
     }
 
     /// The ports this Mac reports free: those no program listens on, and those its own API, relay or solo server holds
-    /// (given back when the other Mac becomes rank 0 or the pair re-forms).
+    /// (given back when the other Mac becomes rank 0 or the pair re-forms). An older build's rank 0 reads them to take a
+    /// port free on both Macs; this build's takes its own.
     private func reportedFreePorts() -> [Int] {
         let own = lock.withLock { () -> Set<Int> in
             var ports = Set<Int>()
@@ -812,6 +967,7 @@ public final class ClusterService: @unchecked Sendable {
         case .status:
             var value = status()
             value.freePorts = reportedFreePorts()
+            value.pairAPIPort = pairAPIPort()
             return try encoder.encode(value)
         case .serve, .stop:
             if let sent = command.claim, let own = lock.withLock({ control?.claim }), own.supersedes(sent) {
@@ -922,15 +1078,23 @@ public final class ClusterService: @unchecked Sendable {
     /// How often a part that has not ended yet is sent SIGTERM again while it is waited for.
     static let stopResendSeconds: Double = 5
 
-    /// Degraded serving alone listens where `start --local` listens by default, on this Mac's loopback.
-    public static let soloPort = 8000
+    /// Degraded serving alone listens on this Mac's own saved port (`thisMacPort`), as every local API here does; only
+    /// when that can't be read, where `start --local` listened by default.
+    public static let defaultSoloPort = 8000
+
+    /// The port the solo server in `status` listens on (its published part's), for the screens that check it.
+    public static func soloPort(of status: ClusterServiceStatus?) -> Int {
+        guard status?.child.solo == true, let port = status?.child.port else { return defaultSoloPort }
+        return port
+    }
 
     /// What the solo port shows: THIS service's solo server (the published solo child, checked by its start time so a
     /// recycled process number never counts, or a process it started) holding the listening socket and answering its
     /// model list; that server still loading; or another program answering there (never taken for ours).
     public enum SoloReadiness: Equatable { case ready, loading, foreign }
 
-    static func soloReadiness(_ status: ClusterServiceStatus?, port: Int = soloPort) -> SoloReadiness {
+    static func soloReadiness(_ status: ClusterServiceStatus?, port given: Int? = nil) -> SoloReadiness {
+        let port = given ?? soloPort(of: status)
         guard let child = status?.child, child.running, child.solo == true, let pid = child.pid, let startedAt = child.startedAt,
               let now = ClusterProcessTable.startTime(of: pid), abs(now - startedAt) < 0.001 else { return .loading }
         let ours = ([pid] + ClusterProcessTable.descendants(of: pid)).contains { ClusterProcessTable.listeningTCPPorts(of: $0).contains(port) }
@@ -1010,7 +1174,7 @@ public final class ClusterService: @unchecked Sendable {
     /// `authorized`: whether a server answers its model list on the solo port with this Mac's local API token (only
     /// ever sent to this service's own solo server: see `soloReadiness`); otherwise whether anything answers HTTP there,
     /// asked without the token.
-    static func soloAnswers(port: Int = soloPort, authorized: Bool = true) -> Bool {
+    static func soloAnswers(port: Int = defaultSoloPort, authorized: Bool = true) -> Bool {
         var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/models")!)
         request.timeoutInterval = 3
         if authorized, let token = LocalEndpoint.readToken() { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
@@ -1114,6 +1278,7 @@ public final class ClusterService: @unchecked Sendable {
                     pid: child?.isRunning == true ? child?.processIdentifier : oldPart?.pid,
                     startedAt: child?.isRunning == true ? childStartedAt : oldPart?.startedAt, lastRunSeconds: lastRunSeconds,
                     solo: child?.isRunning == true ? childSetup?.hasPrefix("solo:") == true : oldPart?.solo,
+                    port: child?.isRunning == true ? childPort : nil,
                     notice: oldPart != nil ? "the previous run's part is still releasing; waiting before starting another"
                         : child?.isRunning == true && childSetup?.hasPrefix("solo:") != true ? Self.servingNotice(in: serviceFiles.rankLog, from: childLogOffset) : nil,
                     configurationSHA256: child?.isRunning == true && childSetup?.hasPrefix("cluster:") == true
@@ -1141,6 +1306,7 @@ public final class ClusterService: @unchecked Sendable {
             value.pairRunning = value.serving && pairVerdict.running
             value.pairNotRunning = value.serving ? ClusterPairWatch.line(pairVerdict, otherMac: otherMacNameLocked(),
                                                                          cli: BuildEnvironment.current.cliName) : nil
+            (value.relayPortHeld, value.relayWaitsForOffer, value.relayRankZeroAway) = Self.relayStatus(relayState)
             value.memberQuickEnds = memberQuickEnds
             value.approvalID = configuration?.nativeMember?.clusterApproval?.id ?? ""
             value.pairUpdate = ClusterPairUpdate.readProgress(from: ClusterServiceAgent.updateProgressPath(serviceDirectory: store.paths.directory))
@@ -2049,9 +2215,12 @@ public final class ClusterService: @unchecked Sendable {
         var memberRank: Int?
         var port: Int?
         if case .solo(let model) = want {
-            arguments = ClusterLocalServing.soloArguments(settings.soloArguments, scope: scope) + ["--model", model, "--port", String(Self.soloPort)]
+            // This Mac's own port, as every local API here takes it: a relay that held it gives it back first.
+            handRelayPortBack()
+            let soloPort = thisMacPort(say: say) ?? Self.defaultSoloPort
+            arguments = ClusterLocalServing.soloArguments(settings.soloArguments, scope: scope) + ["--model", model, "--port", String(soloPort)]
             what = "degraded: serving \(model) on this Mac alone"
-            port = Self.soloPort
+            port = soloPort
         } else {
             guard let configuration = saved.configuration else { return }
             // After an update a member's saved setup still pins the earlier build's worker: its part would refuse the
@@ -2088,9 +2257,10 @@ public final class ClusterService: @unchecked Sendable {
                 memberRank = configuration.localRank
                 // Registered with the coordinator as a cluster member: both Macs run the coordinator-formed pair's member; the
                 // leader's rank hosts the link listener and the pair's slot, the other rank dials it. With Both, me first,
-                // the part that runs rank 0 (the slot's host) also runs the pair's local API, on a port that is never 8000
-                // or a cable port; no other part chooses or takes a port.
+                // the part that runs rank 0 (the slot's host) also runs the pair's local API, on this Mac's own port
+                // (`leaderAPIPort`); no other part takes a port (the other Macs' relays take theirs).
                 if scope.addsLocalAPI, configuration.localRank == 0 {
+                    handRelayPortBack()
                     let apiPort = leaderAPIPort(scope: scope, say: say)
                     port = apiPort
                     arguments = ClusterLocalServing.memberArguments(settings.memberArguments, scope: scope,
@@ -2099,10 +2269,7 @@ public final class ClusterService: @unchecked Sendable {
                     arguments = settings.memberArguments
                 }
             } else if configuration.role == .leader {
-                // This Mac is rank 0 now: the relay gives its port back first.
-                if let passing = lock.withLock({ () -> ClusterLocalRelay? in defer { relay = nil }; return relay }) {
-                    passing.stop(); LocalEndpoint.removeInfo(ifPID: getpid())
-                }
+                handRelayPortBack()
                 let leaderPort = leaderAPIPort(scope: scope, say: say)
                 port = leaderPort
                 arguments = ClusterLocalServing.leaderArguments(settings.leaderArguments, scope: scope) + ["--port", String(leaderPort)]
@@ -2198,28 +2365,15 @@ public final class ClusterService: @unchecked Sendable {
         }
     }
 
-    /// The port rank 0's API takes on this Mac (another local server may hold 8000). Local only on every address (where
-    /// the other Mac relays it), one free on both Macs (`ClusterLocalServing.sharedPort`), asked of the other Mac for
-    /// at most 5 s; otherwise, or when it does not answer, one free here. Both, me first: the same, but never 8000 or a
-    /// pair port (`ClusterLocalServing.localAPIPort`), and never test-bound there. This service asks its one other Mac;
-    /// the pair API's rule takes the free ports of any number of Macs.
+    /// The port rank 0's API takes on this Mac, for every way the pair serves: this Mac's own (`thisMacPort`, its saved
+    /// `[local] port`, the same for every local API here), whatever the other Macs' are, so tools on this Mac keep its
+    /// address whichever Mac runs rank 0. Only when it can't be read or chosen, the earlier rule on this Mac alone
+    /// (`ClusterLocalServing.apiPort`). A port another program holds stays this Mac's: the part's bind fails and says so.
     private func leaderAPIPort(scope: ClusterServingScope, say: @Sendable (String) -> Void) -> Int {
-        let peerFree = scope.localAPIBind == "0.0.0.0" ? peerFreePorts(seconds: 5) : nil
         let previous = lock.withLock { apiPort }
-        if scope.addsLocalAPI {
-            let port = ClusterLocalServing.localAPIPort(localFree: ClusterLocalServing.localAPIFreePorts(),
-                                                        peersFree: peerFree.map { [$0] }, preferred: previous)
-            lock.withLock { apiPort = port }
-            if port != previous { say("the pair's local API listens on port \(port) (never 8000, which other local apps use)") }
-            return port
-        }
-        let port = ClusterLocalServing.sharedPort(localFree: ClusterLocalServing.freePorts(), peerFree: peerFree, preferred: previous)
+        let port = ClusterLocalServing.apiPort(own: thisMacPort(say: say), scope: scope, previous: previous)
         lock.withLock { apiPort = port }
-        if port != previous, port != ClusterLocalServing.servingPorts.lowerBound {
-            say(peerFree == nil ? "port 8000 is taken on this Mac: the API listens on port \(port)"
-                : peerFree!.contains(port) ? "port 8000 is not free on both Macs: the API listens on port \(port) on both"
-                : "no port from 8000 to 8020 is free on both Macs: the API listens on port \(port) on this Mac")
-        }
+        if port != previous { say("the pair's local API listens on this Mac's port \(port)") }
         return port
     }
 

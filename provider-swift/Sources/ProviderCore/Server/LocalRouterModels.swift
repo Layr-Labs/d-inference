@@ -2,12 +2,15 @@ import Foundation
 import NIOCore
 import NIOFoundationCompat
 
-/// Context and output limits of one model, in tokens, and the input it takes. nil: not known here.
+/// Context and output limits of one model, in tokens, the input it takes and whether it reasons. nil: not known here.
 public struct LocalModelLimits: Sendable, Equatable {
     public var contextLength: Int?
     public var maxOutputLength: Int?
     /// What a request may carry, as this Mac's engine serves the model (`LocalInputModalities`).
     public var inputModalities: [String]?
+    /// Whether the model reasons, by its type alone (`LocalModelFeatures`): `makeLocalInferenceApplication` sets it for
+    /// every model this Mac lists; nil when the type isn't known here.
+    public var reasoning: Bool?
 
     public init(contextLength: Int? = nil, maxOutputLength: Int? = nil, inputModalities: [String]? = nil) {
         self.contextLength = contextLength.flatMap { $0 > 0 ? $0 : nil }
@@ -29,7 +32,9 @@ public struct LocalModelLimits: Sendable, Equatable {
 /// `owned_by` says where the model runs: `this-mac`, `my-macs` (the owner's other Macs, free) or `darkbloom` (the
 /// network, billed; listed only with `my-macs-first`). `context_length` and `max_output_length` are present when
 /// known: this Mac's engine first, else the Darkbloom catalog (the coordinator's own `self` list has no limits).
-/// `input_modalities` is this Mac's engine's for its models, and the coordinator's as it lists them for the others.
+/// `input_modalities` is this Mac's engine's for its models, and the coordinator's as it lists them for the others;
+/// so is `supported_features`, where this Mac says only `reasoning` (`LocalModelFeatures`), and an empty list for a
+/// model that doesn't reason.
 struct LocalRouterModelEntry: Codable, Equatable, Sendable {
     var id: String
     var object = "model"
@@ -39,6 +44,7 @@ struct LocalRouterModelEntry: Codable, Equatable, Sendable {
     var contextLength: Int?
     var maxOutputLength: Int?
     var inputModalities: [String]?
+    var supportedFeatures: [String]?
 
     enum CodingKeys: String, CodingKey {
         case id, object, created, name
@@ -47,6 +53,7 @@ struct LocalRouterModelEntry: Codable, Equatable, Sendable {
         case maxModelLen = "max_model_len"
         case maxOutputLength = "max_output_length"
         case inputModalities = "input_modalities"
+        case supportedFeatures = "supported_features"
     }
 
     init(id: String, created: Int?, ownedBy: String, name: String? = nil, limits: LocalModelLimits = .init()) {
@@ -57,6 +64,7 @@ struct LocalRouterModelEntry: Codable, Equatable, Sendable {
         contextLength = limits.contextLength
         maxOutputLength = limits.maxOutputLength
         inputModalities = limits.inputModalities
+        supportedFeatures = limits.reasoning.map(LocalModelFeatures.list(reasons:))
     }
 
     init(from decoder: Decoder) throws {
@@ -71,6 +79,8 @@ struct LocalRouterModelEntry: Codable, Equatable, Sendable {
         maxOutputLength = (try? container.decodeIfPresent(Int.self, forKey: .maxOutputLength)).flatMap { $0 > 0 ? $0 : nil }
         inputModalities = (try? container.decodeIfPresent([String].self, forKey: .inputModalities))
             .flatMap { $0.isEmpty ? nil : $0 }
+        // Empty is a word: no feature.
+        supportedFeatures = try? container.decodeIfPresent([String].self, forKey: .supportedFeatures)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -85,6 +95,7 @@ struct LocalRouterModelEntry: Codable, Equatable, Sendable {
         try container.encodeIfPresent(contextLength, forKey: .maxModelLen)
         try container.encodeIfPresent(maxOutputLength, forKey: .maxOutputLength)
         try container.encodeIfPresent(inputModalities, forKey: .inputModalities)
+        try container.encodeIfPresent(supportedFeatures, forKey: .supportedFeatures)
     }
 
     mutating func fill(_ limits: LocalModelLimits?) {
@@ -92,6 +103,7 @@ struct LocalRouterModelEntry: Codable, Equatable, Sendable {
         if contextLength == nil { contextLength = limits.contextLength }
         if maxOutputLength == nil { maxOutputLength = limits.maxOutputLength }
         if inputModalities == nil { inputModalities = limits.inputModalities }
+        if supportedFeatures == nil { supportedFeatures = limits.reasoning.map(LocalModelFeatures.list(reasons:)) }
     }
 }
 

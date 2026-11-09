@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-09
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -2037,8 +2037,9 @@ carries `CBv2RequestTiming`, copied verbatim onto the wire and folded into
 A streamed request on the local API carries a `LocalPrefillProgress`
 (`provider-swift/Sources/ProviderCore/Server/LocalPrefillProgress.swift`, the task-local
 `LocalPrefillProgress.current` that `LocalChatUploadResponder` binds around the frames call). The
-bridge reports into it what the engine reports of the prompt: its tokens once the request is active
-(`accept(promptTokens:)`), all of them from `CBv2Request.onPrefillCompleted`, and the end at the
+bridge reports into it what the engine reports of the prompt: its tokens once the engine admits the
+request (`accept(promptTokens:)` after `holdHeadUntilAdmitted`; on a pair's API once its engine accepts it),
+all of them from `CBv2Request.onPrefillCompleted`, and the end at the
 first committed token (the pump's first-token branch) or when the pump ends without one. The engine
 publishes no count in between (`EngineLoopV2` keeps each row's `numComputedTokens` for its prefill
 lease only), so until the prompt is done the API's comments give only its size
@@ -2993,9 +2994,9 @@ as it is, or passes the request's body on unchanged.
 | The Qwen 3.5 template family (`qwen3_5`, `qwen3_5_moe`, `prism_hadamard_qwen35`: Qwen 3.5, 3.6 and 3.8, Bonsai 2) and the owned Qwen 3.8 Flash-Next build | Qwen 3.8's `low`, `medium` and `xhigh` (its default), and a thinking switch | While thinking: `minimal` and `low` render `low`, `medium` renders `medium`, `high`, `xhigh` and `max` render `xhigh`, as the coordinator's first-party pool sends `high`. Thinking off: the effort as sent, which the template ignores. The 3.5, 3.6 and Bonsai templates read only the switch | `ReasoningEffort.qwen38Level`, `ReasoningEffortPolicy.templateEffort`, `Qwen4SupportPolicy.ownsEffortTemplate` |
 | GLM-5.3-Flash | `low`, `high` and `max` (its default); thinking off closes `<think>` | `minimal` and `low` render `low`, `medium` and `high` render `high`, `xhigh` and `max` render `max`, as the platform sidecar maps them | `ReasoningEffort.glmLevel` (`GLM5NextPromptPolicy`) |
 | Nemotron 3.5 Super | `medium_effort`, and the template's default depth | `minimal`, `low` and `medium` set `medium_effort`; `high`, `xhigh` and `max` keep the default | `ReasoningEffort.nemotronSuperMediumEffort` (`NemotronSuperPromptContract.controls(body:)`) |
-| MiMo V2.6, DiffusionGemma | one depth, and a thinking switch | Every effort but `none` thinks | `ReasoningEffort.oneDepthThinking` (`MiMoV26TemplateFix`, `DiffusionGemmaReasoningControl`) |
-| Gemma 4, Nemotron 3.5 Lightning | a thinking switch | `none` switches thinking off; any other effort keeps the template's default (Gemma 4: off) | `MultiModelBatchSchedulerEngine.templateAdditionalContext` |
-| GPT-OSS | Harmony's `low`, `medium` and `high` | The effort as sent, except `high`, which renders `medium` | `GPTOSSHarmonyTemplateFix.effectiveReasoningEffort` |
+| MiMo V2.6, Gemma 4 (`gemma4`, `gemma4_text`, `gemma4_vision`), DiffusionGemma | one depth, and a thinking switch | Every effort but `none` thinks (Gemma 4's template defaults thinking off) | `ReasoningEffort.oneDepthThinking` (`MiMoV26TemplateFix`; `ReasoningEffortPolicy.effortSetsThinkingSwitch` in `templateAdditionalContext`; `DiffusionGemmaReasoningControl`) |
+| Nemotron 3.5 Lightning | a thinking switch | `none` switches thinking off; any other effort keeps the template's default (on) | `MultiModelBatchSchedulerEngine.templateAdditionalContext` |
+| GPT-OSS | Harmony's `low`, `medium` (its default) and `high`; no thinking switch | `none`, `minimal` and `low` render `low`, `medium` renders `medium`, `high`, `xhigh` and `max` render `high`. OpenRouter's traffic is capped at `medium` by the coordinator's service cap (darkbloom-platform#721, #703's rule), which must be live before any Mac runs this table (below) | `ReasoningEffort.harmonyLevel`, `ReasoningEffortPolicy.templateEffort` |
 | Flint | none: Flint decides whether to reason | Every effort is taken, with no effect | `FlintRequestPolicy` |
 
 An effort that is none of the names is refused on any model that reasons,
@@ -3014,7 +3015,12 @@ answers `invalid_reasoning_effort` naming the field and the names ([direct
 mode](../provider/direct-mode.md#reasoning-effort)); the coordinator receives
 the closed `invalid_request` failure, which it shows as "invalid inference
 request". A model of no family above ignores any effort
-(`ReasoningEffortPolicy.validate`).
+(`ReasoningEffortPolicy.validate`). The same table (`ReasoningEffortPolicy.reasons`)
+says which models the local `/v1/models` lists as reasoning
+(`"supported_features": ["reasoning"]`, `LocalModelFeatures` in
+`provider-swift/Sources/ProviderCore/Server/LocalModelFeatures.swift`), by the
+type a model registers or a pair installs, so the list and the API never
+disagree ([the list](../provider/direct-mode.md#when-this-mac-cant-take-a-request-the-local-router)).
 
 Nemotron 3.5 Super reads both fields rather than letting `reasoning.effort`
 win, and refuses two that differ, even two names such as `high` and `max`,
@@ -3026,10 +3032,35 @@ the names, never the values sent. Through the coordinator it is the same
 closed `invalid_request`. The same effort in both fields, in any spelling, is
 served.
 
-Gemma 4 and GPT-OSS keep the prompts they rendered before: the coordinator's
-prompt sidecar plans those prompts for cache-aware routing, so changing one
-needs the sidecar's matching change and a new normalization version.
-<!-- pending B-J2-1: Gemma 4 thinks for an effort other than none, and GPT-OSS renders each effort as its nearest Harmony level, once the platform's prompt sidecar renders them so. -->
+The coordinator maps every effort from a copy of these tables: darkbloom-platform's
+ingress refusal, first-party pool and prompt sidecar, which plans these prompts
+for cache-aware routing. `fixtures/prompt-contract/v1/reasoning_effort_vectors.json`
+is the agreement test, the provider's reading of 446 requests: every family and
+every type that reasons, every effort in both fields, other spellings, an effort
+that is none of the names, and both fields together. It also lists the sets
+these tables keep (the types that reason, the Qwen 3.5 template family's, the
+types whose effort sets a thinking switch, the concrete Qwen 3.8 builds), which
+each copy checks for equality, so a type added on one side only fails a test.
+`scripts/generate-reasoning-effort-vectors.py` restates these tables and writes
+it, `CachePromptParityTests.reasoningEffortVectors` runs every case through the
+production prompt pipeline, and the platform copies the file byte for byte and
+checks its readers against it
+([how it is kept in step](../developer/test.md#public-fixtures-and-private-qualification)).
+Gemma 4's thinking switch and GPT-OSS's Harmony levels change the prompt of
+the requests that name such an effort. The platform's production prompt vectors
+(`ProductionPromptParityTests`) carry one effort case per model,
+`reasoning_effort: "medium"`, so they pin Gemma 4's switch; GPT-OSS's levels are
+bound by the agreement test above. The platform keeps its normalization
+version, so while a provider and the sidecar render different levels, during a
+staggered rollout, those requests' cache receipts mismatch and their cache
+affinity is quarantined; serving continues.
+
+No Mac may run these levels before the coordinator's OpenRouter GPT-OSS cap
+(darkbloom-platform#721) is live: until then, OpenRouter's GPT-OSS `high` would
+render `high`, which #703 capped at `medium` to avoid upstream timeouts. So a
+provider release with them is tagged without being published to auto-update,
+snapshotted into #721, and published only once #721 is deployed, each step on
+the owner's go.
 
 ### Vision constraints
 
@@ -3864,7 +3895,7 @@ evidence, not a change to the normal final-row contract or the near-tie rule
 | `token_budget_exhausted: … shared KV budget has no headroom` | Two failed `GlobalKVCacheBudget` reservations; thrown before any stream exists (in-band to a nonthrowing caller) | `EngineV2Bridge+Submission.swift` |
 | `token_budget_exhausted: …` from engine admission | On one Mac, a request the engine's own admission can never hold (a paged slot's only memory gate, `EngineV2.requireRequestCanEverFit`); thrown before any stream exists, so a streamed local request gets 503 (in-band to a nonthrowing caller) | `EngineV2Bridge+Submission.swift` (`submitTokenized`) |
 | `PreContentDeadlineFailure.deadlineUnreachable` | First-content budget spent before submit or during prefill projection | `CoordinatorClientTypes.swift`, `EngineV2Bridge+Submission.swift`, `EngineV2Bridge+Admission.swift` |
-| Request cancelled by lease | No admission/prefill/decode progress within 120 s, or a step over 30 s. On the local API this comes after the response head, so a queued request that waits out the admission lease ends a streamed answer with an error event (as does a paged pool that stays full through its requeues) | `EngineLoopV2.swift`; `EngineV2Bridge+Events.swift` |
+| Request cancelled by lease | No admission/prefill/decode progress within 120 s, or a step over 30 s. On this Mac's API a streamed request's head waits for its admission (`holdHeadUntilAdmitted`), so a queued request that waits out the admission lease gets the memory 503 before any SSE header, as does one a paged pool keeps full through its requeues; one that isn't streamed gets the same words | `EngineLoopV2.swift`; `EngineV2Bridge+Events.swift`; `EngineV2Bridge+HeadHold.swift` |
 | `promptExceedsContext` (400) | The prompt alone fills the slot's window (its advertised context, else its model's); a larger output is cut, never refused | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift` (`submitTokenized`) |
 | `advertisedContextExceeded` (400) | Candidate output reservation is negative or overflows; with the output cut to the window, nothing larger reaches it on one Mac | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift` (`submitTokenized`); `provider-swift/Sources/ProviderCore/ProviderLoop+ErrorMapping.swift` (`sanitizedInferenceFailure`) |
 | `unsupportedReasoningEffort` (400; on the local API `invalid_reasoning_effort`) | A model that reasons received an effort that is none of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` ([reasoning effort](#reasoning-effort)) | `provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningEffort.swift` (`ReasoningEffortPolicy.validate`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`) |
@@ -3912,6 +3943,8 @@ these sources recursively (`provider-swift/Package.swift`, `package`).
 | Request identity | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Identity.swift` (`normalizedRequestId`, `mintEngineRequestId`) |
 | Admission and resizing | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Admission.swift` (`firstTokenDeadlineAdmission`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Resizing.swift` (`updateKVBytesCapacity`) |
 | Cancellation and completion | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Lifecycle.swift` (`cancel`, `shutdown`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Events.swift` (`runPump`, `finishAndEmit`) |
+| Me first: an owner's request waiting in the queue | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+OwnerWait.swift` (`watchOwnerWait`, `hasAdmitted(darkbloomRequest:)`, `MeFirstOwnerRequest`, `MeFirstDarkbloomRequest`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+QueueState.swift` (`queueState(of:)`, which a held head reads too); `provider-swift/Sources/ProviderCore/ProviderLoop+MeFirst.swift` (`giveWayToOwner`); `provider-swift/Sources/ProviderCore/Inference/Engine/InferenceCancellation.swift` (`claimOutput`, `giveWay`): Darkbloom work still queued gives way ([owner pause](owner-pause.md#when-the-owners-request-waits)) |
+| A streamed local request's head, held until admission | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+HeadHold.swift` (`holdHeadUntilAdmitted`, `recordHeadHoldRefusal`, `LocalHeadHold`): the memory 503 before any SSE header for a request the engine queued and couldn't admit |
 | Sampling translation | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Translation.swift` (`samplingParams`) |
 | Slot construction | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory.swift` and `EngineV2SlotFactory+AttentionPrefixCache.swift` |
 | Scheduler config, backend prep | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` (`productionSchedulerConfig`); `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BackendPreparation.swift` (`prepareProductionBackend`) |
@@ -7775,15 +7808,73 @@ flowchart LR
    `localAPI` with `localBind` and carried to the other Mac by the serve
    command). The cluster service gives `--local-endpoint --port --bind` to the
    coordinator-paired part of the plan's rank 0 only
-   (`ClusterLocalServing.memberArguments`), on a port from `servingPorts` free
-   on every Mac that says, never `ClusterLocalServing.neverChosenPorts`
-   (`localAPIPort`, probing only `localAPIPorts`). The part's start gives the
+   (`ClusterLocalServing.memberArguments`), on that Mac's own port
+   (`ClusterService.leaderAPIPort` → `ClusterLocalServing.apiPort(own:…)`):
+   `LocalAPIPort.thisMac` from the service's provider config
+   (`ClusterService.ownAPIPort`), the saved `[local] port` as it is, else the
+   port its local API already uses, else a new choice that is never
+   `LocalAPIPort.neverChosen` (8000, 47420–47423), saved. The same port serves Only me's
+   leader. Only when it can't be read or chosen does the earlier rule, on this
+   Mac alone, decide (`localAPIPort`, `sharedPort`). The part's start gives the
    endpoint to the member that hosts the slot
-   (`ClusterMemberPreparation.hostsPairSlot`) with the pair's key
-   (`LocalEndpoint.loadOrCreateClusterToken`, synced by the serve command) and
-   the local router. The part key marks the scope (`:local-api@`), so switching
-   between Darkbloom network and Both restarts only that part. An older record
-   or serve command has no `localAPI` and reads as the Darkbloom network.
+   (`ClusterMemberPreparation.hostsPairSlot`) with this Mac's own key
+   (`LocalEndpoint.loadOrCreateToken`, what its tools read) and the pair's
+   (`LocalInferenceHTTPConfig.pairToken`; `LocalEndpoint.loadOrCreateClusterToken`,
+   synced by the serve command), and the local router. The part key marks the
+   scope (`:local-api@`), so switching between Darkbloom network and Both, me
+   first restarts only that part. An older record or serve command has no
+   `localAPI` and reads as the Darkbloom network.
+9. Every other Mac answers locally too, as with Only me (`cluster local`): with
+   the API on every address (`ClusterServingScope.answersOnEveryMac`), the
+   cluster service of each Mac whose part isn't rank 0 runs `ClusterLocalRelay`
+   on its own port (`ClusterLocalRelay.rankZeroHost`, from the roster by rank,
+   not by counting Macs) to rank 0's cable address, at the port rank 0's service
+   reports (`ClusterServiceStatus.pairAPIPort`: from its part's discovery
+   record, once bound on every address, `ClusterLocalRelay.pairAPIPort`). An
+   older build's `cluster local`, which doesn't report it, is relayed at its
+   ready local session's port; Both, me first never is
+   (`ClusterLocalRelay.rankZeroPort`): while Darkbloom doesn't have the pair,
+   rank 0's session listens on loopback with its own key alone, so the member
+   relays nothing and its status says why
+   (`ClusterLocalRelay.rankZeroAnswersOnItsMacOnly`,
+   `ClusterServiceStatus.relayWaitsForOffer`). The relay's port is this Mac's
+   own (`ClusterLocalRelay.port(own:…)`, `LocalAPIPort.thisMac` read only when a
+   relay starts), so the Macs' ports may differ and each keeps its own whichever
+   Mac runs rank 0; one another program holds is said once, tried again every 10
+   s, and reported (`ClusterServiceStatus.relayPortHeld`). It writes this Mac's
+   discovery record with this Mac's own key (`ClusterService.relayDiscovery`).
+   The relay reads each request's head (`ClusterLocalRelay.relayedHead`):
+   `Authorization: Bearer` with this Mac's own key goes on with the pair's;
+   every other byte goes on as it came, a body by its Content-Length, so a
+   kept-alive connection's every request is read. A body framed otherwise
+   (chunked, an upgrade) makes that request the connection's last
+   (`Connection: close`), and a head it can't read passes unchanged. Answers are
+   never read: that direction is the same byte copy (`ClusterLocalRelay.pump`),
+   so the relay adds nothing per token. Rank 0's API sees each relayed request
+   come from the relaying Mac's cable address: another machine, so the router
+   never takes the paid hop for it (`LocalHTTPClient.isAnotherMachine`), and it
+   is the owner's use like any local request (item 6). A relay never closes a
+   connection it can't pass on: while rank 0's Mac is away
+   (`ClusterService.relayAway`: `otherMacSilentSeconds`, 12 s, without an answer
+   over the cable; a status request to it that fails while it answers there
+   doesn't count, and before any answer in the cluster service's life
+   `askFailuresWithoutLease`, two, failed in a row do) it answers each request
+   at once with a 503 in the local API's error shape, `code`
+   `pair_mac_unreachable`, in words that name the other Mac
+   (`ClusterLocalRelay.Refusals`), which the member's `status` and
+   `darkbloom local` repeat (`ClusterServiceStatus.relayRankZeroAway`), to a
+   caller with this Mac's key or the pair's, as the local API checks them
+   (`ClusterLocalRelay.Caller`): any other gets the API's own 401, and a CORS
+   preflight or a liveness check the 503 without names; otherwise it waits at
+   most 3 s for rank 0 to take a connection
+   (`ClusterLocalRelay.connect(_:within:)`) and answers a failed one the same
+   way, `pair_api_unavailable` when rank 0's Mac refuses the port. The request
+   is read first, so the answer isn't lost to a reset. It clears once that Mac
+   answers over the cable again, and asks of it go back to every 10 s then
+   (`ClusterService.updateRelayAway`). The solo server a pair falls back to
+   takes this Mac's own port too (`thisMacPort`, else 8000), after the relay
+   gives it back; the status names the running part's port
+   (`ClusterServiceStatus.Child.port`, `ClusterService.soloPort(of:)`).
 
 ## Cluster pair capability honesty
 

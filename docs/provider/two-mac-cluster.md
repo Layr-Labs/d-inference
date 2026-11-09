@@ -255,7 +255,7 @@ two rules, then the pair's card, as `darkbloom start` ends, and the shell:
 ```
 ────────────────────────────────────────────────
 ✓ Serving Qwen3.8-27B-4bit-mtp through Darkbloom on both Macs (pipeline)
-  API at http://localhost:8000 on this Mac
+  API at http://localhost:8001 on this Mac
   Test response in 0.61 s
 ────────────────────────────────────────────────
   Model:   Qwen3.8-27B-4bit-mtp · pipeline (Apple M3 Ultra 32 layers / Apple M5 Max 32 layers)
@@ -270,7 +270,7 @@ two rules, then the pair's card, as `darkbloom start` ends, and the shell:
 ```
 
 A pair served only on its local API (**Only me**, or a pair Darkbloom doesn't
-take) says `Local:   http://localhost:8000` instead of `Serves:`. The login line says `on both Macs` only when the cluster
+take) says `Local:   http://localhost:8001` instead of `Serves:`, on the leading Mac's own saved port. The login line says `on both Macs` only when the cluster
 service starts by itself at login on both Macs. Otherwise it names the Mac where
 it doesn't (`Starts by itself at login on this Mac, not on the other Mac.`). A
 Mac with an older Darkbloom doesn't report it, so the card says the other Mac
@@ -794,17 +794,37 @@ With **Both, me first**:
   the pair's local OpenAI-compatible API beside Darkbloom, on the same engine
   and lanes as Darkbloom's requests
   ([a pair's leader beside Darkbloom](./direct-mode.md#a-pairs-leader-beside-darkbloom)).
-  The other Macs are part of the pair and run no local API.
-- **Address and key:** it listens on every network of that Mac, as `darkbloom
-  cluster local` does, on the first port from 8001 to 8020 free on both Macs
-  (on that Mac alone when the other Mac doesn't say), never 8000, where other
-  local AI apps listen, or the pair's own ports 47420–47423. It always needs the
-  pair's key, the same as `darkbloom cluster local`'s; `darkbloom local` on that
-  Mac shows the address and the key. With the macOS firewall on, macOS may ask
-  once to let Darkbloom accept incoming connections.
-- **On the other Mac:** nothing passes the port on (no relay, unlike
-  `darkbloom cluster local`): tools there dial that Mac's LAN or tailnet
-  address.
+  Every other Mac answers on its own port too (below).
+- **Address and key:** it listens on every network of that Mac, as with **Only
+  me**, on that Mac's own port: its saved `[local] port`, which every local API
+  on that Mac takes ([your local API](./local-first.md#your-local-api)). A Mac
+  with no saved port keeps the one its local API already uses, else takes the
+  first free one from 8001, never 8000, where other local AI apps listen, or
+  the pair's own ports 47420–47423, and saves it; a Mac updated from 0.10.10
+  keeps 8000. It always needs a key: that Mac's own (`local_token`, which
+  `darkbloom local` there shows and its tools read), or the pair's
+  (`cluster_local_token`, the same on every Mac). With the macOS firewall on,
+  macOS may ask once to let Darkbloom accept incoming connections.
+- **On every other Mac:** its cluster service passes that Mac's own port, its
+  own saved `[local] port` (chosen the same way), to that API over the cable,
+  as with **Only me**, so each Mac of the pair answers at
+  `http://127.0.0.1:<its port>/v1`. The two Macs' ports may differ, and each
+  Mac keeps its own whichever Mac runs rank 0, so tools set up there keep
+  working. Tools there use that Mac's own key: `darkbloom local` there prints
+  the address and the key, and `darkbloom start --opencode` (or `--hermes`)
+  there sets them up for it. The port passes each request on with the pair's
+  key instead, and passes every other byte, and every answer, as it comes.
+  With the pair's API on loopback or one address (`--bind`), no other Mac
+  passes its port on, and tools there dial that Mac.
+- **A port another program holds** stays that Mac's: Darkbloom never moves a
+  saved port. The pair's API then can't listen there, or that Mac's port
+  passes nothing on, and `darkbloom status` there says which port, as
+  `darkbloom local` and `darkbloom start --opencode` there do. Free it, or set
+  another `[local] port` in that Mac's `provider.toml`, then run
+  `darkbloom restart`.
+- **When the Mac that runs the pair's API is away** (unplugged, asleep), each
+  other Mac's port answers a `503` that says so, at once, until it is back
+  ([if a Mac goes away](#if-a-mac-goes-away)).
 - **Requests the pair can't take** (a model it doesn't serve, a full queue) go
   on as that Mac's `[local] route` says, with that Mac's account key
   ([the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router)).
@@ -812,11 +832,13 @@ With **Both, me first**:
   and the pair's API uses it from its next request, with no restart; on the
   other Mac it says to run it on the leading Mac.
   Requests from other machines never use the paid network; they can use the
-  pair and your other Macs. That includes the pair's other Mac: its requests
-  reach the leading Mac from another machine, so with `my-macs-first` tools
-  there use the pair and your other Macs, never the paid network.
+  pair and your other Macs. That includes the pair's other Mac, its own port
+  for the pair's API too: its requests reach the leading Mac from another
+  machine, so with `my-macs-first` tools there use the pair and your other
+  Macs, never the paid network.
 - **Me first:** while one of your requests runs on it, or waits for a lane, the
   pair takes no new Darkbloom request, and Darkbloom's running requests finish.
+  A request on another Mac's port is yours too.
   It takes Darkbloom requests again 2 minutes after your last request ends
   (`[local] me_first_idle_minutes` on that Mac, 1 to 120); `[local] me_first =
   false` there keeps Darkbloom serving while you use it
@@ -829,9 +851,12 @@ With **Both, me first**:
 - **Not offered:** while Darkbloom doesn't have the pair (no approval, the
   coordinator away), it serves on the leader's local API as before
   ([above](#registered-with-the-coordinator-as-a-cluster-member)): on that Mac
-  only (`127.0.0.1`), on the same port, with that Mac's own key rather than the
-  pair's (`darkbloom local` there shows it). Tools on other machines, or set up
-  with the pair's key, reach the pair again once Darkbloom has it.
+  only (`127.0.0.1`), on the same port, with that Mac's own key alone
+  (`darkbloom local` there shows it, and tools set up there keep working). The
+  other Macs pass nothing on meanwhile, and their `status`, `darkbloom local`
+  and `darkbloom start --opencode` say so. Tools on
+  other machines, the other Macs' ports, and tools set up with the pair's key
+  reach the pair again once Darkbloom has it.
 
 `darkbloom status` and `darkbloom cluster status` say it. On the Mac that runs
 the pair's API:
@@ -841,7 +866,7 @@ Serves: through Darkbloom, and on its local API with you first
 ✓ Serving Qwen 3.8 27B through Darkbloom on both Macs (tensor parallel).
   Pair: you first — Darkbloom paused for 10 minutes (your last request 1 minute ago; back in about 1 minute if you stay idle)
 Local API: http://127.0.0.1:8001/v1 on this Mac, and port 8001 of its LAN or tailnet address (`darkbloom local` shows the key)
-Members: the other Mac (Apple M3 Ultra, 256 GB) is part of the pair; it runs no local API
+Members: the other Mac (Apple M3 Ultra, 256 GB) is part of the pair; its own port passes your requests to this API
 ```
 
 `Pair: Darkbloom and you, me first — open to Darkbloom (…)` while you aren't
@@ -856,14 +881,29 @@ line (nothing more crosses the cable, and nothing per request):
 ```text
 ✓ Serving Qwen 3.8 27B through Darkbloom on both Macs (tensor parallel).
   Pair: you first — Darkbloom paused for 10 minutes (your last request 1 minute ago; back in about 1 minute if you stay idle)
-Local API: on the other Mac (Apple M5 Ultra, 256 GB), which runs the pair's API; `darkbloom local` there shows its address and key
-Members: this Mac is part of the pair; it runs no local API
+Local API: http://127.0.0.1:8001/v1 on this Mac, and port 8001 of its LAN or tailnet address (`darkbloom local` shows the key)
+Members: the other Mac (Apple M5 Ultra, 256 GB) runs the pair's API; this Mac passes your requests to it, and Darkbloom pauses for them too
 ```
 
 `darkbloom cluster` on either Mac shows the line under its `✓ Serving` block
 too.
 
-<!-- pending LS-3: in Both, me first the other Mac runs the same relay as darkbloom cluster local, so its own address answers with the pair's key, and its status and darkbloom local print that address. -->
+Each Mac's own port can differ: here both Macs saved 8001. Until its port is
+passed on (the pair's API still starting), the other Mac says `Local API: not
+listening on this Mac yet; it starts once the pair's API on the other Mac (…)
+answers`. While Darkbloom doesn't have the pair, it says `Local API: none on
+this Mac while Darkbloom doesn't have the pair; meanwhile the pair answers only
+on the other Mac (…) (…)`, and with its port held by another program, ``Local
+API: port 8001 on this Mac is held by another program, so this Mac doesn't
+answer for the pair; free it, or set another `[local] port` in provider.toml,
+then `darkbloom restart` ``. With the pair's API on loopback or one address, it says
+where the API is instead (`Local API: on the other Mac (…), which runs the
+pair's API; …`). The leading Mac's `Members:` line says the other Mac runs no
+local API whenever its own API listens on this Mac only.
+
+The setup's ✓ card on each Mac prints that Mac's own address once its port is
+up (`Local API: http://127.0.0.1:8001/v1 on this Mac, you first (…)`), else
+says `darkbloom local` shows it once this Mac's port is up.
 
 No screen or status line quotes a speed, and none prints the key.
 
@@ -892,16 +932,21 @@ decodes with its speculative assistant under the default `mtp_mode`
    cluster to **Only me** and waits until it serves again. On the Mac that joins
    a waiting leader, it pairs like `darkbloom cluster`, says to continue on the
    leader with `darkbloom cluster local`, and then follows the start there.
-2. Read the API's place from the ready screen:
+2. Read the API's place from the ready screen. The port is the leading Mac's
+   own saved `[local] port`, as for **Both, me first** (8001 on a Mac that had
+   none, 8000 kept on a Mac updated from 0.10.10):
 
    ```
-   ✓ Serving Qwen3.8-27B-4bit-mtp (pipeline) at http://localhost:8000 and on the network (local only)
+   ✓ Serving Qwen3.8-27B-4bit-mtp (pipeline) at http://localhost:8001 and on the network (local only)
    ```
 
-3. Get the key: `darkbloom local` on either Mac prints the base URL, the
-   network URL and the API key: the other Mac relays its own port to the
-   leader's API (`ClusterLocalRelay`), unless the API is kept on the leader
-   (`--bind`, below). Every request needs the key.
+3. Get the key: `darkbloom local` on either Mac prints that Mac's base URL,
+   network URL and API key: its own `local_token`, which its tools read
+   (`darkbloom start --opencode` there sets them up). The other Mac relays its
+   own saved port to the leader's API (`ClusterLocalRelay`) and passes your requests
+   on with the pair's key (`cluster_local_token`, which works on both Macs
+   too), unless the API is kept on the leader (`--bind`, below). Every request
+   needs a key.
 
 The API listens on every network of the leading Mac (LAN or tailnet) by
 default. To keep it on that Mac alone, run
@@ -1163,6 +1208,9 @@ pair's mode serves media (`["text", "image"]` on the GLM and MiMo image
 candidates' profiles) and `["text"]` otherwise (`LocalInputModalities`).
 `darkbloom start --opencode` and `--hermes` follow it for the pair's model,
 whatever the catalog says, so a Gemma 4 pair gets no image input in the tools.
+The list also says whether the pair's model reasons (`supported_features`:
+`["reasoning"]` for every model a pair serves today, by its installed
+`model_type`, before its slot is up too), which OpenCode follows the same way.
 GLM-5.3-Flash answers its output
 controls as one Mac does: hidden reasoning is withheld, with or without media,
 and with images or video a `response_format` JSON answer or a required or
@@ -1199,6 +1247,30 @@ that joined took over leading, moves back to the Mac you set up on at its next
 plan: normally the re-plan after its update, which restarts both parts anyway.
 Manage the cluster on the Mac that leads; on the other
 Mac, `darkbloom cluster` shows the status and names the Mac to use.
+
+While the Mac that runs the pair's API is away, the other Mac's own port for it
+(with **Only me**, and with **Both, me first** on every address) is never a
+connection that just closes: it answers every request at once with a `503`
+(`code` `pair_mac_unreachable`), ``Your pair's other Mac (…) isn't reachable;
+this Mac relays to it. Requests resume when it's back, or run `darkbloom stop`,
+then `darkbloom start --solo`, to serve this Mac alone.`` Those words name the
+other Mac only to a request with this Mac's key or the pair's: any other gets
+the local API's own `401`, as that API would answer it, and a liveness check or
+a browser's preflight, which need no key, the `503` without names. That Mac is
+away once it hasn't answered over the cable for 12 s; a status request to it
+that fails while it answers there doesn't count (only before it has answered at
+all since this Mac's cluster service started do two failed in a row).
+`darkbloom status` and `darkbloom local` there say the same, after
+`Local API: http://127.0.0.1:<port>/v1 on this Mac answers 503 for now.`, and
+`darkbloom start --opencode` there says it at once. Relaying resumes by itself
+within seconds of that Mac answering over the cable again.
+`darkbloom start --solo` alone is refused while this Mac's part holds its
+serving lock (up to the 15 minutes in [going back to serving on one
+Mac](#going-back-to-serving-on-one-mac)), hence `darkbloom stop` first. A
+request on that port while the API on the other Mac doesn't listen (its part
+starting again) gets a `503` with `code` `pair_api_unavailable` the same way. A
+Mac that serves the model alone after the 10 minutes does so on its own saved
+port (`[local] port`), so its tools keep their address.
 
 ## How the split is chosen
 
@@ -1725,7 +1797,12 @@ on its own), `darkbloom start --solo` serves this Mac alone:
   <the pair's model>; `darkbloom cluster` changes its model.`` (``… the pair
   was asked to start with …, and isn't serving (above); …`` when it doesn't
   serve yet), and when it asked for a local API this Mac doesn't get from the
-  pair, ``No local API was added on this Mac: …``. The app's onboarding offers
+  pair (Darkbloom only, or the pair's API kept on the leading Mac),
+  ``No local API was added on this Mac: …``. On the other Mac with the pair's
+  API on every address, its relay gives it one, so the app never says that
+  there; while that relay can't answer once the start is over (the other Mac
+  away, Darkbloom not having the pair, its port held), it says `status`'s
+  `Local API:` line. The app's onboarding offers
   **Start serving** there, never Autopilot, which serves one Mac and is refused
   on a paired Mac before it downloads anything. It says the pair as this Mac's
   own files tell it ("This Mac serves in a pair with …" only when it serves;

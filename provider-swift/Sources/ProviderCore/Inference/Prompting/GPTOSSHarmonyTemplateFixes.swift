@@ -12,14 +12,6 @@ enum GPTOSSHarmonyTemplateFix {
         isHarmonyModelHint(context.modelId) || isHarmonyModelHint(context.modelType)
     }
 
-    static func effectiveReasoningEffort(
-        _ requested: String?,
-        context: ChatTemplateFixContext
-    ) -> String? {
-        guard applies(to: context), requested == "high" else { return requested }
-        return "medium"
-    }
-
     static func normalizeMessages(
         _ messages: [[String: any Sendable]]
     ) throws -> [[String: any Sendable]] {

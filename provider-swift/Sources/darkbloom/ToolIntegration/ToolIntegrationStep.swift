@@ -303,10 +303,25 @@ struct ToolIntegrationStep {
             + "`\(command(tools))` again once `\(cli) local` shows it."
     }
 
-    /// The line on a paired Mac whose pair has no local API on this Mac.
+    /// The line on a paired Mac whose pair serves only the Darkbloom network: no Mac of it has a local API.
     static func noPairAPI(_ tools: [IntegrationTool]) -> String {
-        "✗ This Mac has no local API for the pair, so \(notSetUp(tools)). `\(cli) cluster local` serves the pair on "
-            + "the leading Mac's own API; run this there."
+        "✗ This pair serves only the Darkbloom network, so \(names(tools)) \(tools.count == 1 ? "has" : "have") no "
+            + "local address to use and \(tools.count == 1 ? "wasn't" : "weren't") set up. In `\(cli) cluster`, Change "
+            + "how the pair serves to \"Both, me first\" or \"Only me\", then run `\(command(tools))` again."
+    }
+
+    /// The line on a Mac whose pair keeps its local API on the Mac that runs it, on `bind` only: no other Mac passes
+    /// its port on.
+    static func pairAPIElsewhere(_ tools: [IntegrationTool], bind: String) -> String {
+        "✗ The pair's local API listens on the Mac that runs it only (\(bind)), so \(notSetUp(tools)) on this Mac: run "
+            + "`\(command(tools))` on that Mac."
+    }
+
+    /// The line on a Mac of a pair that has no working address for the pair now, said at once: its `status` line's
+    /// words (`localAPI`, after "Local API: ").
+    static func noMemberAddress(_ tools: [IntegrationTool], localAPI: String) -> String {
+        "✗ \(notSetUp(tools)) on this Mac. Local API: \(localAPI)\(localAPI.hasSuffix(".") ? "" : ".") Run "
+            + "`\(command(tools))` again once this Mac answers."
     }
 
     /// The line beside a running local API without a key (`--no-auth`), which tools can't use.

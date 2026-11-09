@@ -69,6 +69,24 @@ struct ClusterPairSummary: Sendable, Equatable {
     var speculationNote: String?
     /// The pair serves Both, me first: its local API beside Darkbloom, as this Mac sees it; nil for any other way.
     var localAPI: ClusterPairLocalAPI?
+    /// Where the pair's local API listens on the Mac that runs it (`ClusterServingScope.localAPIBind`), local only or
+    /// Both; nil for the Darkbloom network.
+    var localAPIBind: String?
+    /// This Mac's relay to the pair's API on the Mac that runs rank 0 (`ClusterLocalRelay`), as its discovery record
+    /// says; nil while none runs.
+    var relaying: ClusterPairLocalAPI.Address?
+    /// Why this Mac's relay isn't up, as its cluster service says: its port, which another program holds
+    /// (`ClusterServiceStatus.relayPortHeld`), or rank 0 answering on its own Mac only while Darkbloom doesn't have the
+    /// pair (`relayWaitsForOffer`).
+    var relayPortHeld: Int?
+    var relayWaitsForOffer = false
+    /// Rank 0's Mac can't be reached now, so this Mac's relay answers each request a 503 that says so
+    /// (`ClusterServiceStatus.relayRankZeroAway`).
+    var relayRankZeroAway = false
+
+    /// The pair's API listens on every address, so every Mac that doesn't run it relays it on its own port
+    /// (`ClusterServingScope.answersOnEveryMac`).
+    var answersOnEveryMac: Bool { ClusterServingScope.answersOnEveryMac(bind: localAPIBind) }
 
     static let notPaired = ClusterPairSummary(paired: false, state: .notPaired)
 
@@ -337,7 +355,9 @@ struct ClusterPairSummary: Sendable, Equatable {
     /// The desktop app's Start on a paired Mac (`Start.appStartOptions`): after the pair's own lines, what the app asked
     /// for and the pair didn't take. After a start that serves (`code` 0) or doesn't serve yet (3), one line when it named
     /// another model than the pair's (`models`), and one when it asked for a local API (`localEndpoint`) that the pair
-    /// doesn't give this Mac. Nothing after another outcome: the pair's lines say it.
+    /// doesn't give this Mac, or that this Mac's relay can't give it now (`memberAPIDown`, in `status`'s words: the other
+    /// Mac away, Darkbloom not having the pair, its port held). Never "No local API was added" while the relay gives this
+    /// Mac one. Nothing after another outcome: the pair's lines say it.
     func appStartLines(named models: [String], localEndpoint: Bool, code: Int32) -> [String] {
         guard code == 0 || code == 3 else { return [] }
         var lines: [String] = []
@@ -347,17 +367,20 @@ struct ClusterPairSummary: Sendable, Equatable {
                 : "This Mac is in a pair: the pair was asked to start with \(name), and isn't serving (above)"
             lines.append(outcome + "; `\(Self.cli) cluster` changes its model.")
         }
-        if localEndpoint, !givesThisMacALocalAPI {
+        if localEndpoint, let down = memberAPIDown {
+            lines.append("Local API: " + down)
+        } else if localEndpoint, !givesThisMacALocalAPI {
             lines.append("No local API was added on this Mac: a pair's local API comes from how the pair serves "
                 + "(`\(Self.cli) cluster` on the leading Mac changes it).")
         }
         return lines
     }
 
-    /// The pair serves a local API on this Mac: Only me on both Macs (the other Mac relays its own port to the leader's),
-    /// Both, me first on the Mac that leads, whose part runs rank 0. The role says so before the pair runs too, as when
-    /// the app's Start reads it (`localAPI.runsRankZero` only once it runs). Through Darkbloom alone, on neither.
-    var givesThisMacALocalAPI: Bool { localOnly || (localAPI != nil && leads) }
+    /// The pair serves a local API on this Mac, with Only me or Both, me first: on the Mac that leads, whose part runs rank
+    /// 0, and with the pair's API on every address on every other Mac too, through its relay (`ClusterLocalRelay`). The
+    /// role says so before the pair runs too, as when the app's Start reads it (`localAPI.runsRankZero` only once it runs).
+    /// Through Darkbloom alone, on neither; with the API kept on the leading Mac (loopback or one address), on that Mac only.
+    var givesThisMacALocalAPI: Bool { (localOnly || localAPI != nil) && (leads || answersOnEveryMac) }
 
     /// `darkbloom stop`, `start --solo`, `restart` and `update` on a Mac whose pair doesn't run, before its leftover part
     /// stops: what they do, said while nothing has changed yet.

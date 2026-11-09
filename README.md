@@ -19,9 +19,7 @@ It asks how this Mac serves: **Only me**, **Darkbloom network** or
 models to serve and serves them in the background; with Only me or Both, me
 first, `--opencode` sets OpenCode up. Darkbloom network gives OpenCode no
 address on this Mac. Then, in OpenCode, `/models` → Darkbloom. Two Macs: run
-`darkbloom cluster` on each, then `darkbloom --opencode` on the leading Mac.
-
-<!-- pending LS-3: in a pair, start with opencode on either Mac. -->
+`darkbloom cluster` on each, then `darkbloom --opencode` on either Mac.
 
 The [quickstart](docs/provider/quickstart.md) walks through it, and
 [Use your Mac yourself, first](docs/provider/local-first.md) says what each

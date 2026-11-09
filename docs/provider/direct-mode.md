@@ -146,7 +146,14 @@ See [inference and logprob admission](../architecture/inference.md).
    provider stops taking Darkbloom requests from the moment one of your
    requests holds a model, and takes them again once none of your requests
    has run for `[local] me_first_idle_minutes` (2 minutes by default).
-   Darkbloom requests already running finish. Model lists, health checks,
+   Darkbloom requests the engine has started finish. While one of your
+   requests waits for the engine's memory or room, each Darkbloom request on
+   that model still waiting in the engine's queue ends with the typed
+   `capacity / 503 / draining` refusal, with no health strike against this
+   one (`ProviderLoop.giveWayToOwner`): the coordinator serves it on another
+   Mac, or answers its client with a retryable 429 if no other Mac has room.
+   Your request then waits only for requests the engine has started, at most
+   the engine's 120 s admission lease. Model lists, health checks,
    `/metrics`, the tokenizer utilities and requests refused before they hold
    a model do not count. This is on for every Mac that serves Both, me first,
    including the desktop app's "Alongside the network". To share the Mac
@@ -185,14 +192,16 @@ See [inference and logprob admission](../architecture/inference.md).
 | API key | `~/.darkbloom/local_token`, mode `0600`; `dk-local-` + base64url of 32 random bytes; created once, reused across restarts | `provider-swift/Sources/ProviderCore/Server/LocalEndpoint.swift` (`loadOrCreateToken`, `tokenPrefix`) |
 | Discovery record | `~/.darkbloom/local.json`, mode `0600`: `base_url`, `api_key`, `host`, `port`, `pid`, `version`, `updated_at`; removed on graceful shutdown | `LocalEndpoint.Info`, `writeInfo`, `removeInfo` |
 | Directory | `~/.darkbloom`; a dev build (`darkbloom-dev`) uses `~/.darkbloom-dev`. `DARKBLOOM_LOCAL_DIR` replaces it for both files | `LocalEndpoint.directory`, `BuildEnvironment.installDirectory` |
-| Key file for tools | A tool that reads the key from a file instead of keeping a copy (OpenCode's `{file:}`, Hermes' `key_cmd`) uses the file holding exactly the key of the server on that port: `local_token`, or `cluster_local_token` for a pair's API. Both files hold only the key and are replaced atomically, never partly written. A start without `--opencode` / `--hermes` says in one line when a tool set up for Darkbloom reads another file than `local_token` (or points at another address), and changes nothing. See the [config writers](../architecture/tool-integrations.md) | `LocalEndpoint.keyFile(forPort:)`, `LocalEndpoint.tokenPath()`, `provider-swift/Sources/ProviderCore/Service/AtomicFile.swift` (`AtomicFile.write`) |
+| Key file for tools | A tool that reads the key from a file instead of keeping a copy (OpenCode's `{file:}`, Hermes' `key_cmd`) uses the file holding exactly the key the discovery record names for that port: this Mac's own `local_token`, whatever serves here, a pair's API or its relay included (`cluster_local_token` only for a pair API an older build started). Both files hold only the key and are replaced atomically, never partly written. A start without `--opencode` / `--hermes` says in one line when a tool set up for Darkbloom reads another file than `local_token` (or points at another address), and changes nothing. See the [config writers](../architecture/tool-integrations.md) | `LocalEndpoint.keyFile(forPort:)`, `LocalEndpoint.tokenPath()`, `provider-swift/Sources/ProviderCore/Service/AtomicFile.swift` (`AtomicFile.write`) |
+| A pair's key | `~/.darkbloom/cluster_local_token`, the same on every Mac of a pair (the leading Mac sends it with each start). A pair's API (**Only me**, or **Both, me first**) takes it beside that Mac's own key: every other Mac's relay passes its requests on with it, in place of that Mac's own key | `LocalEndpoint.loadOrCreateClusterToken`, `LocalInferenceHTTPConfig.pairToken`, `ClusterLocalRelay.Keys` |
 | `--bind 0.0.0.0` | Advertised `base_url` uses `127.0.0.1`; other hosts use the machine's address, and `darkbloom local` prints its Bonjour URL on a `network:` line. [`darkbloom cluster local`](./two-mac-cluster.md#serving-locally-only) binds the cluster's API this way by default | `LocalEndpoint.Info.init`, `Local.networkURL` |
 | `--no-auth` | No token check; `api_key` is empty in the discovery record. The [local router](#when-this-mac-cant-take-a-request-the-local-router) then passes nothing on and never uses the account key | `LocalInferenceHTTPConfig.authToken == nil`; `LocalRouterConfig.localKeyRequired` |
 
 `LocalAuthResponder` (`provider-swift/Sources/ProviderCore/Server/LocalAuthResponder.swift`)
 is the outermost layer: `OPTIONS` preflights, `GET /health`, `GET /v1/health`
 and `GET /` pass without a token; everything else needs
-`Authorization: Bearer <token>`, compared in constant time; failures return
+`Authorization: Bearer <token>` (on a pair's API, this Mac's own key or the
+pair's), compared in constant time; failures return
 `401` with an OpenAI-style error envelope and `Access-Control-Allow-Origin: *`
 so browser clients can read it. There is no rate limiting and no TLS: keep the
 default loopback bind, or put a reverse proxy in front before exposing it.
@@ -370,7 +379,8 @@ coordinator's `self` list names this Mac's own builds by their aliases.
 | `owned_by` | `this-mac`, `my-macs` (your other Macs, free) or `darkbloom` (the network, billed). Before the router, this Mac's entries said `local` |
 | `context_length`, `max_model_len` | This Mac's engine for its resident models (a pair's leader: the context the pair's mode serves); else the Darkbloom catalog (`/v1/models/catalog`), by model or by the alias's build; omitted when unknown |
 | `max_output_length` | This Mac's loaded models: their context window too, as a request's prompt and output together may fill it ([each model's whole window](#each-models-whole-window-on-this-mac)). A pair's leader lists the output the pair's mode serves, which the pair holds every `max_tokens` to (it refuses a larger one, `output_too_long`), as its slot reports to the coordinator (`ProviderLoop.localModelLimits`). Else the catalog's; omitted when unknown |
-| `input_modalities` | What a request may carry, as this Mac's engine serves the model, loaded or not: `["text", "image"]` for a model it serves with vision (`is_vision`, which the coordinator routes images on), else `["text"]`. On a pair's leader, the media the pair takes in its mode: `["text", "image", "video"]` for GLM-5.3-Flash and Qwen 3.8 27B in tensor parallel, `["text", "image"]` on the GLM and MiMo image candidate profiles, `["text"]` for every other pair, and nothing until its slot is up. Your Macs' and the network's models keep the coordinator's, when its list has one. Reasoning isn't listed: the catalog says which models reason (`provider-swift/Sources/ProviderCore/Server/LocalInputModalities.swift`, `LocalInputModalities`) |
+| `input_modalities` | What a request may carry, as this Mac's engine serves the model, loaded or not: `["text", "image"]` for a model it serves with vision (`is_vision`, which the coordinator routes images on), else `["text"]`. On a pair's leader, the media the pair takes in its mode: `["text", "image", "video"]` for GLM-5.3-Flash and Qwen 3.8 27B in tensor parallel, `["text", "image"]` on the GLM and MiMo image candidate profiles, `["text"]` for every other pair, and nothing until its slot is up. Your Macs' and the network's models keep the coordinator's, when its list has one (`provider-swift/Sources/ProviderCore/Server/LocalInputModalities.swift`, `LocalInputModalities`) |
+| `supported_features` | For a model this Mac or its pair serves, loaded or not: `["reasoning"]` when the model reasons, `[]` when it doesn't, by the `model_type` it registers (a pair: its installed one). A model reasons when it takes every [reasoning effort](#reasoning-effort) and refuses one that is none of the names, the same table (`ReasoningEffortPolicy.reasons`): the Qwen 3.5 template family (Qwen 3.5, 3.6 and 3.8, Bonsai 2), Qwen4 Flash-Next, Gemma 4, DiffusionGemma, GPT-OSS, Nemotron 3.5 Lightning and Super, MiMo V2.6, GLM-5.3-Flash and Flint; a Qwen3-VL build (`qwen3_vl_moe`, instruct only) lists `[]`. Nothing else is listed here: tools, JSON output and the rest stay the catalog's. Your Macs' and the network's models keep the coordinator's, the catalog's capabilities in OpenRouter's names (`reasoning`, `tools`, `json_mode`, …) (`provider-swift/Sources/ProviderCore/Server/LocalModelFeatures.swift`, `LocalModelFeatures`) |
 | `name` | The coordinator's or the catalog's display name for your Macs' and the network's models |
 
 The coordinator's lists are cached for 30 s and the catalog for 5 minutes; a
@@ -393,18 +403,21 @@ memory decides: each request reserves room for its prompt and its output when
 it starts. The answer says which bound a request met
 ([refused request shapes](#refused-request-shapes)): the window (400
 `context_length_exceeded`, in words that name it) or this Mac's memory (503),
-both before any SSE header, streamed or not, except a request that first queued
-for memory and then waited out the 120 s admission lease or a full paged pool's
-requeues, which still ends a streamed answer with an error event; the router
-passes a 503 on when a route dials out.
+both before any SSE header, streamed or not. A streamed request's head waits
+until the engine admits it, so one the engine queued for memory and couldn't
+admit (the 120 s admission lease, or a full paged pool's requeues) gets the 503
+too. The router passes a 503 on when a route dials out.
 
 Each model's input is in the list too (`input_modalities`, above), and for a
 model served here (this Mac, or the pair it leads or relays to) the engine's
 word is the one the tools follow: `start --opencode` and `--hermes` offer images
 for it exactly when its engine takes them, whatever the catalog says. A Gemma 4
 pair, which serves text alone, gets none (an image would be refused with 400);
-MiMo V2.6 on one Mac gets them, though its catalog row lists text only. For your
-other Macs' and the network's models, the catalog decides.
+MiMo V2.6 on one Mac gets them, though its catalog row lists text only. So does
+whether it reasons (`supported_features`): `start --opencode` offers reasoning
+for a model served here exactly when the list says `reasoning`, so Qwen 3.8 27B
+gets it though its catalog row lacks it. For your other Macs' and the network's
+models, the catalog decides.
 
 <!-- pending R-FULL: GLM-5.3-Flash and Nemotron Super at their 1,048,576-token configs on one Mac; video and audio input for the models this Mac serves them for, in this list; a memory refusal that names how many tokens this Mac holds; the same for direct use through the network; OpenRouter is separate. -->
 
@@ -459,7 +472,7 @@ finishing the cancelled request
 A long prompt takes minutes before its first token: a 255K-token prompt took 9
 minutes on an M3 Ultra. While it is processed, a streamed request (chat
 completions or Responses) gets an SSE comment every 5 seconds, from the moment
-the engine accepts the request until its first token:
+the engine admits the request until its first token:
 
 ```text
 : prefill in progress, 254953 prompt tokens
@@ -483,10 +496,14 @@ Each streamed request has one timer, from its first frame to its first token,
 and nothing runs per token. A request that isn't streamed gets nothing until its
 answer, as HTTP has no interim bytes: give such a client a timeout of minutes
 for a long prompt (the OpenAI SDKs wait 10 minutes by default), or stream.
-Before the engine accepts a request, nothing is sent either, not even the
-headers: while the model loads for it, while it waits for a pair's lane, and
-while its prompt is tokenized. A client that limits how long it waits for
-headers must allow a cold model load.
+Before the engine admits a request (on a pair, accepts it), nothing is sent
+either, not even the headers: while the model loads for it, while it waits for
+a pair's lane, while its prompt is tokenized, and, on one Mac, while it waits
+in the engine's queue for memory or room. That queue wait lasts up to the
+engine's 120 s admission lease, so a streamed request can see no bytes for up
+to 120 s before its 503. One the engine admits at once gets its headers within
+a few milliseconds. A client that limits how long it waits for headers must
+allow a cold model load and, on a busy Mac, those 120 s.
 
 ### Reasoning effort
 
@@ -500,9 +517,11 @@ off where it can. So Hermes's `max` and an OpenAI client's `high` on Qwen 3.8
 [local router](#when-this-mac-cant-take-a-request-the-local-router) answer
 alike. Each family's levels are in
 [reasoning effort](../architecture/inference.md#reasoning-effort). A model
-that doesn't reason ignores the effort. Send the effort in one field:
-`reasoning.effort` wins over `reasoning_effort`, and Nemotron 3.5 Super, which
-reads both, refuses two that differ.
+that doesn't reason ignores the effort. `GET /v1/models` says which models
+reason: `"supported_features": ["reasoning"]` on exactly these, `[]` on the
+others ([the list](#when-this-mac-cant-take-a-request-the-local-router)). Send
+the effort in one field: `reasoning.effort` wins over `reasoning_effort`, and
+Nemotron 3.5 Super, which reads both, refuses two that differ.
 
 ```bash
 curl -s "$OPENAI_BASE_URL/chat/completions" \
@@ -518,7 +537,7 @@ envelope, the same on one Mac and on a [two-Mac cluster](./two-mac-cluster.md):
 | Request | Answer | Source |
 |---|---|---|
 | On one Mac, a prompt that fills the model's context window: the context it advertises (GLM-5.3-Flash and Nemotron Super: 262,144; MiMo V2.6, Qwen4, Flint, Bonsai 9B and Diffusion Gemma: their configs'), else its model's own (Gemma 4, Qwen 3.5, 3.6 and 3.8, GPT-OSS, Nemotron Lightning) | HTTP `400`, code `context_length_exceeded`, before the engine and before any SSE header: `The prompt fills this model's context window of <N> tokens, leaving no room for an answer. Shorten the prompt or start a new conversation.` A `max_tokens` beyond what a shorter prompt leaves is cut to it instead, on every model, and the answer ends with `finish_reason: length` if it gets there | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Translation.swift` (`outputTokens(requested:promptTokens:)`, `promptExceedsContextMessage`) |
-| On one Mac, a request its memory can't hold now: the shared KV reservation of a contiguous slot, the engine's own admission of a paged slot (the automatic backend; it refuses one that can never fit and queues the rest), or the whole Mac's request limit | HTTP `503` before any SSE header, streamed or not: `This Mac's memory can't hold this request right now. Lower max_tokens or shorten the prompt (or send less media), or retry when this Mac's other requests finish.` The local router passes it on when a route dials out. A request a paged slot queued and then couldn't admit (the 120 s admission lease, or the pool full through its requeues) fails later: a streamed answer, whose head is already sent, ends with an error event, and a non-streamed one gets 503 (after the lease, with the older `Provider capacity is temporarily unavailable.`) | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift` (`submitTokenized`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`) |
+| On one Mac, a request its memory can't hold now: the shared KV reservation of a contiguous slot, the engine's own admission of a paged slot (the automatic backend; it refuses one that can never fit and queues the rest), or the whole Mac's request limit | HTTP `503` before any SSE header, streamed or not: `This Mac's memory can't hold this request right now. Lower max_tokens or shorten the prompt (or send less media), or retry when this Mac's other requests finish.` The local router passes it on when a route dials out. A request the engine queued and then couldn't admit (the 120 s admission lease, or a paged pool full through its requeues) gets the same 503: a streamed one's head waits for its admission, and one that isn't streamed answers after the queue anyway. Only a request admitted and later preempted, and never admitted again, still ends a streamed answer with an error event, as does a Nemotron Super request that asks for logprobs, whose head doesn't wait (its entries are spliced as the stream is read) | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift` (`submitTokenized`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+HeadHold.swift` (`holdHeadUntilAdmitted`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`) |
 | A content part whose `type` is none of `text`, `input_text`, `output_text`, `image_url`, `input_image`, `video_url`, `input_audio` (for example `input_file`, `input_video`, `refusal`) | HTTP `400` before model acquisition or SSE headers: `Content part type "<type>" is not supported. Send text, image_url, video_url or input_audio parts.` The type is shown with at most 64 of its letters, digits and `_.-:/`. Models without native audio still refuse `input_audio` | `libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/OpenAIRequestValidation.swift` (`OpenAIRequestValidationError.unsupportedContentPart`) |
 | A reasoning effort that is none of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` (for example `turbo`), on a model that reasons | HTTP `400` before the prompt renders or any KV is reserved, code `invalid_reasoning_effort`, `param` the field it came in (`reasoning_effort`, `reasoning.effort`, or GLM-5.3-Flash's `chat_template_kwargs.reasoning_effort`): `reasoning_effort must be one of: none, minimal, low, medium, high, xhigh, max.` The request may hold its model first: a cold model loads, and with Both, me first it counts as your use of the Mac. Through the coordinator the same request gets HTTP `400` `invalid inference request` | `provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningEffort.swift` (`ReasoningEffortPolicy.validate`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`) |
 | On Nemotron 3.5 Super, `reasoning_effort` and `reasoning.effort` that differ, even two names (`high` and `max`). The same effort in both, in any spelling, is served | HTTP `400` at the same point, code `invalid_reasoning_effort`, `param` `reasoning_effort, reasoning.effort`: `reasoning_effort and reasoning.effort must be the same when both are sent, one of: none, minimal, low, medium, high, xhigh, max.` Through the coordinator, HTTP `400` `invalid inference request` | `provider-swift/Sources/ProviderCore/Inference/Prompting/NemotronSuperPromptContract.swift` (`controls(body:)`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`) |
@@ -686,8 +705,15 @@ copy of the stream (`provider-swift/Sources/ProviderCore/ProviderLoop+ClusterPai
 **Both, me first** for the pair
 ([Both, me first](./two-mac-cluster.md#both-me-first-the-pairs-own-api-beside-darkbloom)):
 the cluster service adds `--local-endpoint --port <port> --bind <address>` to
-that part's `darkbloom start --foreground --cluster-member`, with the pair's
-key. Every other member runs none. <!-- pending LS-3: every other member runs the relay darkbloom cluster local uses (ClusterLocalRelay), so tools on each Mac of the pair use their own Mac's address and the same key. -->
+that part's `darkbloom start --foreground --cluster-member`, which takes that
+Mac's own key and the pair's. The port is that Mac's own saved `[local] port`,
+as for every local API on it (`LocalAPIPort`, [above](#steps)). Every
+other member's part runs none. With the API on every address, each other Mac's
+cluster service passes that Mac's own port, its own `[local] port`, to it
+(`ClusterLocalRelay`, as for **Only me**), swapping that Mac's own key for the
+pair's, so tools on each Mac of the pair use their own Mac's address and key.
+While Darkbloom doesn't have the pair, the API answers on its Mac only, and the
+other Macs pass nothing on.
 
 | Case | Answer | Source |
 |---|---|---|
@@ -698,6 +724,8 @@ key. Every other member runs none. <!-- pending LS-3: every other member runs th
 | The pair's warm-up request is running | Waits until admission opens; `503` if the slot retires instead | `ProviderLoop.publishClusterPairSlot` |
 | A stop or an update drain | Waiting requests get `429` at once, as new ones do; running ones finish before the slot retires | `ProviderLoop.beginServingDrain` |
 | A lost rank | Waiting requests get `503`; running ones end with their terminal | `ProviderLoop.retireClusterPairSlot` |
+| A request on another Mac's port while this Mac can't be reached (unplugged, asleep) | `503` at once, `{"error":{"code":"pair_mac_unreachable","message":"Your pair's other Mac (…) isn't reachable; this Mac relays to it. Requests resume when it's back, or run `darkbloom stop`, then `darkbloom start --solo`, to serve this Mac alone.","type":"server_error"}}`, `Retry-After: 10`, to a request with that Mac's own key or the pair's. Any other gets this API's own `401`, as if it had reached it, and a liveness check or a CORS preflight, which need no key, the `503` with no names, chip or memory. Relaying resumes once this Mac answers over the cable again; this Mac is away after 12 s without an answer there. Never a connection that just closes | `ClusterLocalRelay.pass`, `ClusterLocalRelay.Refusals`, `ClusterLocalRelay.Caller`, `ClusterService.relayAway` |
+| A request on another Mac's port while this API doesn't listen (its part starting again) | `503` with `code` `pair_api_unavailable`, to the same callers the same way | `ClusterLocalRelay.connect(_:within:)` |
 
 A waiting request costs nothing: it is parked, not polled, until a local
 request releases a lane, a Darkbloom request ends (the capacity refresh that

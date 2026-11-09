@@ -611,8 +611,9 @@ answers it with 503, before any SSE header, streamed or not, and words that name
 this Mac's memory and what to change
 (`provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift`). A
 request that queued and then wasn't admitted (the 120 s admission lease, or a
-paged pool full through its requeues) fails after the response head instead: a
-streamed answer ends with an error event.
+paged pool full through its requeues) gets the same 503: a streamed request's
+head waits until the engine admits it
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+HeadHold.swift`).
 
 Loads and serving-set reserve raises must preserve each resident bridge's total
 `minimumServiceableGrantBytes`

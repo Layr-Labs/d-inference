@@ -213,7 +213,11 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
             case .advertisedContextExceeded?:
                 return Self.openAIErrorResponse(status: status, message: Self.advertisedContextExceededMessage,
                     code: "context_length_exceeded")
-            case .tokenBudgetExhausted?:
+            case .tokenBudgetExhausted?, .platformTerminal(cause: .admissionTimeout, _, _)?:
+                // Both are this Mac's memory: a memory refusal, or a request
+                // the engine queued and couldn't admit within its admission
+                // lease (not streamed: a streamed one is refused at its head,
+                // `EngineV2Bridge.holdHeadUntilAdmitted`).
                 return Self.openAIErrorResponse(status: status, message: Self.memoryRefusalMessage)
             default:
                 return Self.openAIErrorResponse(status: status, message: failure.message)

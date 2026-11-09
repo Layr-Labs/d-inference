@@ -1152,7 +1152,11 @@ extension ProviderLoop {
         }
         if nativeMiMoLoads[modelId] != nil
             || modelSlots[modelId].flatMap({ Self.nativeMiMoLoad(in: $0.modelContainer) }) != nil {
-            return await retireNativeMiMoOwner(modelID: modelId)
+            // Here, not in retireNativeMiMoOwner: a failed native load also
+            // retires through it, and must not reset its own refusal count.
+            let retired = await retireNativeMiMoOwner(modelID: modelId)
+            if retired { selectedModelRecovery.makeAllDue(now: .now) }
+            return retired
         }
         if isNemotronSuperSlot(modelId) {
             let retired = await retireNemotronSuperSlot(modelId)

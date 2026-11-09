@@ -629,7 +629,46 @@ Preview links (`?preview` plus):
 
 ## Local API and serving modes
 
-The local API page is documented with its implementation.
+This Mac > Studio is the local API page (`desktop-app/src/renderer/features/Studio.tsx`,
+`Studio`; its parts in `desktop-app/src/renderer/features/studio/`). From a runtime whose
+`Snapshot.capabilities` lists `local_serving`, it reads `Snapshot.local`, the `[local]` section
+of `provider.toml` (`desktop-app/src/shared/localServing.ts`, `LocalServing`), and says
+everything in the CLI's words (`desktop-app/src/renderer/features/studio/words.ts`), as
+[Use your Mac yourself, first](../provider/local-first.md) describes them:
+
+| Section | Shows | Sends |
+|---|---|---|
+| How this Mac serves (`ServingChoice`) | The start question's answers, **Only me**, **Darkbloom network** and **Both, me first** (Recommended), `mode` marked Saved. With none saved, Both, me first is preselected, as in the question | **Apply**: `{ action: 'start', models, local: true }`, `network: true` or `endpoint: true` (the CLI's `--local`, through `desktop start-local`, `--network` and `--local-endpoint`), each saved as `[local] mode` once the start goes ahead. `models` are the models serving now that the choice can serve (the network only catalog models, `servesNetwork`); with none, a list asks for one. The line beside Apply says that applying restarts serving (starts it, when stopped) and with which models |
+| Me first (`MeFirst`), with `mode` `both` | `me_first` as a switch and `me_first_idle_minutes`, whole minutes from 1 to 120. While `paused_until` is set: "Darkbloom is paused for you" and when it comes back, timed from `observed_at` in `MeFirstWords`' words | `{ action: 'local_settings', me_first, me_first_idle_minutes }`, waited for. A serving process reads both when it starts (`ProviderLoop.enableMeFirst` in `provider-swift/Sources/ProviderCore/ProviderLoop+MeFirst.swift`), so a save while serving offers **Restart serving** |
+| When this Mac can't take a request (`RequestRoute`) | Only this Mac, Only my Macs (free), My Macs first. The route checked is `route`, else `my-macs` with `route_key`, else `this-mac` (`LocalSettings.resolvedRoute`). Without `route_key`, the two that pass requests on are disabled and say they need the account API key | **Save**: `{ action: 'route', route }`. **Save key**: `{ action: 'route_key', key }` from a password field, trimmed and checked first with the rules of `LocalRouterAccountKeyFormat` (`provider-swift/Sources/ProviderCore/Server/LocalRouterAccountKey.swift`), then cleared as it is sent. The key is never shown, stored or read back; "Key saved" comes from `route_key`, and **Replace** asks for another |
+| Use it in your tools (`ToolSetup`) | **Set up OpenCode** and **Set up Hermes** while the local API runs with a key. Without the `tool_setup` capability, `darkbloom --opencode` and `darkbloom --hermes` to copy | `{ action: 'tool_setup', tool: 'opencode' }` or `'hermes'` |
+| Connection details, Make a request | Base URL, the key on Reveal only (`useEndpointKey`), **Listens on** from `port` and `bind` with whether only this Mac can reach it, and the curl example with a key placeholder | Nothing |
+
+- **Where no local API serves** (`mode` `network`, or none saved, and no `Snapshot.endpoint`),
+  only How this Mac serves shows.
+- **A paired Mac** (`Snapshot.pair`): a start there starts the pair, so the choices are
+  disabled and a line says the pair serves its own way, with a link to Clusters.
+- **An older runtime** (no `local_serving`, or no `Snapshot.local`) keeps the earlier Studio:
+  "Alongside the network" (`start` with `endpoint: true`) and "Local only" (`local: true`),
+  one model, and one line, "A newer Darkbloom CLI adds me first, request routing and tool
+  setup." (`LegacyServingMode`).
+
+`studioServing.test.tsx`, `studioRoute.test.tsx`, `studioTools.test.tsx`,
+`studioWords.test.ts` and `studio.test.tsx` (the key reveal, copy and example) cover the page;
+`localServingPreview.test.tsx` covers the preview.
+
+Preview links (`?preview` plus; then My Macs > This Mac > Studio):
+
+| Query | Shows |
+|---|---|
+| none, or `&local=both` | Both, me first saved, its local API on port 8001, no route and no account key saved |
+| `&local=only-me`, `&local=network` | That choice saved; the network has no local API |
+| `&local=paused` | Both, me first, with Darkbloom paused for you |
+| `&local=unsupported` | A runtime without `local_serving`, `tool_setup` and `update_rollback` |
+
+The preview simulates every action in the CLI's words
+(`desktop-app/src/renderer/preview/localServing.ts`): `route` with a route that passes requests
+on fails until a key is saved, and an entered key is checked for its shape and never kept.
 
 ## Updates presentation
 
@@ -639,6 +678,12 @@ the UI preserves an existing opt-out. Disabling asks for confirmation in both
 Updates and Settings. Updates saves through the revision-checked native settings
 action, and offers **Restart serving** to apply the setting to a running provider.
 It never restarts automatically from a toggle.
+
+From a runtime whose `Snapshot.capabilities` lists `update_rollback`, Updates offers
+**Return to the previous release** (`desktop-app/src/renderer/features/updates/Rollback.tsx`,
+`Rollback`). It asks first, as `darkbloom update --rollback` does, then sends
+`{ action: 'update_rollback' }`; the runtime's refusal, such as no release kept for rollback,
+shows in the operation feed. `updatesRollback.test.tsx` covers it.
 
 A mandatory update is shown only when the installed version is below the
 coordinator's published minimum. An available release alone is not mandatory.

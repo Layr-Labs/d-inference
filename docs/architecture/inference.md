@@ -5539,14 +5539,13 @@ it alone:
   A pipeline with lanes keeps its READY figure, as every lane owner of the
   stage modes does. A stage whose memory refuses a request while it runs ends
   that request alone, on both ranks
-  ([a pipeline stage's memory refusal](#a-pipeline-stages-memory-refusal-ends-that-request-alone)).
-  Tensor parallel's ranks end such a request alone too. 0.10.11 served the
-  memory plan's request in the pipeline (#1930): on pair-2 a 128K request had
-  failed the M5 Max stage's running-request memory check mid-prefill (594 MiB
-  compressed, so no file cache counted), and the stage's worker exited, so the
-  client got a 500 and the pair stopped serving for about a minute (journey 3,
-  D6). 0.10.11 ended such a refusal alone (#1932) and kept the cap until that
-  was proven on real pairs.
+  ([a pipeline stage's memory refusal](#a-pipeline-stages-memory-refusal-ends-that-request-alone)),
+  as tensor parallel's ranks do. 0.10.11 serves the memory plan's request in
+  the pipeline (#1930): on pair-2 a 128K request had failed the M5 Max stage's
+  running-request memory check mid-prefill (594 MiB compressed, so no file
+  cache counted), and the stage's worker exited, so the client got a 500 and
+  the pair stopped serving for about a minute (journey 3, D6). 0.10.12 ends
+  such a refusal alone, and the pipeline serves its whole profile again.
 
 The provider holds a request to what its mode serves
 (`ClusterModelFeaturePolicy.servedProfile`: a Gemma pipeline's whole profile)
@@ -5584,8 +5583,15 @@ GPT-OSS's) checks each running request against its rank's live memory gate, at
 most every 250 ms:
 kept prompt prefixes give way first, then the request's own prefix capture
 (`QwenResidentRequestExecution.checkRunning`; the gate is
-`QwenResidentRequestAllowance.requireContinuing`, GLM's `requireResources`).
-Before 0.10.11 a refusal that remained was thrown from the request's `check`,
+`QwenResidentRequestAllowance.requireContinuing`, GLM's `requireResources`,
+MiMo's and GPT-OSS's `requireLive`).
+Every running gate, in every mode, asks power and thermal state first (a
+refusal there is untyped and fails the worker), then judges memory only inside
+its typed block, so every memory refusal is a `QwenResidentMemoryRefusal`.
+None asks the load's entry check (`QwenDenseStageLoadResources.requireInitial`)
+first: its floor is one the gate asks on its own sample anyway, and its refusal
+is untyped, so it would end the worker before the typed check ran.
+Before 0.10.12 a refusal that remained was thrown from the request's `check`,
 which also runs inside every transfer. The refusing rank left the data plane
 mid-exchange and its worker exited (the worker coordinator's failure path), the
 other rank lost its input, the client got an untyped 500 and the pair stopped
@@ -5715,10 +5721,15 @@ lanes, MTP and assistant lanes, for every family that serves in it. Native
 errors, protocol violations, a peer that doesn't confirm within the progress
 limit, the deadline and power or thermal refusals fail the worker as before.
 
-**The dev memory fault.** Dev and DevNet builds can make a rank's live gate
-refuse the next request from its Nth check on (`ClusterMemoryFault`, the file
-`~/.darkbloom-dev/cluster-setup/memory-fault`, read and deleted when a request
-starts, never in a production install), through each gate's own throw; see
+**The dev memory fault.** A dev or DevNet install can make a rank's memory
+read as taken from the next request's Nth gate pass on (`ClusterMemoryFault`,
+the file `~/.darkbloom-dev/cluster-setup/memory-fault`, read and deleted when a
+request starts, never read in a production install). It changes only the
+sample the host memory gate judges (`QwenDenseStageLoadWatch.admits`): no free
+page and no file cache, as once another process has taken them. The policy
+refuses that sample with its own sentence, so the first check that judges it
+throws, as on a real Mac: a running gate's typed check, or a check outside it,
+which would end the worker on a real Mac too. See
 [the test guide](../developer/test.md#a-memory-refusal-on-a-real-pair-dev-memory-fault).
 
 **Builds.** A pair forms only between Macs on the same build

@@ -1182,13 +1182,15 @@ tokens and up to 32,768 output tokens (its catalog's output limit), within
 its own when both Macs' memory holds it at that moment. If it does not fit, it
 alone receives HTTP 503 before any streamed byte (on the local API, in one
 Mac's words: "This Mac's memory can't hold this request right now ..."), and
-other requests keep running. A pipeline Mac whose memory refuses a request
-while it runs ends that request alone: the client gets the same 503 (or, once
-a stream has started, an error chunk with `code` `request_exceeds_node_budget`
-and the same words), and the pair keeps serving. The pipeline modes of every
-other model with a native context (GLM-5.3-Flash, and the 27B where its policy
-allows them) keep the 32,768 + 32,768-token request. Their leader refuses a
-longer request itself, before either rank is asked. See
+other requests keep running. In every mode, a request one Mac's memory refuses
+while it runs ends alone: the client gets the same 503 (or, once a stream has
+started, an error chunk with `code` `request_exceeds_node_budget` and the same
+words), and the pair keeps serving. The pipeline modes of every other model
+with a native context (GLM-5.3-Flash, and the 27B where its policy allows
+them) keep the 32,768 + 32,768-token request. Their leader refuses a longer
+request itself, before either rank is asked: a pipeline is planned and proven
+at that request, and serving the whole context there waits for its own proof
+on real pairs. See
 [the 27B's native context](../architecture/inference.md#qwen27-tensor-parallel-native-context)
 and [Gemma 4's](../architecture/inference.md#gemma-4-native-context-on-a-pair).
 

@@ -147,7 +147,9 @@ struct GPTOSSResidentRequestAllowance {
         guard additionalNativeBytes >= 0, additionalHostBytes >= 0 else {
             throw ProbeError("Invalid additional resident allowance")
         }
-        try QwenResidentResourceEnvironment.require()
+        // Power and thermal only: the gate below asks at least the entry
+        // check's floor on its own sample, and the entry check would refuse untyped.
+        try QwenResidentResourceEnvironment.requirePower()
         let os = try QwenDenseStageLoadResources.observeOS()
         let native = QwenDenseStageLoadResources.observeNative()
         let free = max(QwenDenseStageLoadPolicy.minimumAdmissibleBytes,
@@ -157,7 +159,6 @@ struct GPTOSSResidentRequestAllowance {
             reservedBytes, additionalNativeBytes, QwenDenseStageLoadPolicy.allocatorHeadroomBytes])
         // A memory refusal is typed, so a running request's stop ends that request alone (D6).
         do {
-            try ClusterMemoryFault.current.refuseIfDue()
             guard try watch.admits(os, bytes: free) else { throw ProbeError("Resident GPT-OSS request was refused") }
             guard native.allocatorLimitBytes >= allocator else {
                 throw ProbeError("Resident GPT-OSS request exceeds the allocator limit")

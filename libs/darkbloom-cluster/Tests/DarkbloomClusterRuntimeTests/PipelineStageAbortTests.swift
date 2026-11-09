@@ -267,6 +267,56 @@ struct PipelineStageAbortTests {
         try Self.nextRequestExchanges(pair)
     }
 
+    /// A real refusal, no fault: this Mac's memory reads as taken
+    /// (`TakenMemory`). Rank 1's latch asks MiMo's own gate and stops at the
+    /// readiness it owes; then rank 0's asks GPT-OSS's own gate and stops at
+    /// the header it owes. Each time both ranks end that request alone, and the
+    /// next request's first exchange runs on the same collectives.
+    @Test(arguments: [false, true]) func aRealRefusalOfAMiMoOrGPTOSSStageEndsTheRequestOnBothRanks(keyed: Bool) throws {
+        let pair = try Self.pair(keyed: keyed)
+        let first = try Self.agreement(Self.request())
+        let (boundary, packet, expected) = try Self.boundary(first, sequence: 0)
+        var producer: QwenStageAborted?
+        let consumer = try pair.exchange(send: {
+            let transport = try QwenLayerStageGenerationTransport(agreement: first, collective: pair.first)
+            producer = Self.aborted { try transport.sendBoundary(boundary, packet: packet, check: {}) }
+            if let producer { try transport.exchangeAbortRetirement(producer, check: {}) }
+        }, receive: { peer -> QwenStageAborted? in
+            let mimo = QwenStageAbort(rank: 1, intervalNanoseconds: 0) {
+                try TakenMemory.whileTaken { try TakenMemory.mimo().requireLive() }
+            }
+            let transport = try QwenLayerStageGenerationTransport(agreement: first, collective: peer, abort: mimo)
+            let value = Self.aborted {
+                _ = try transport.receiveBoundary(expected: expected, consume: { _, _ in Issue.record("consumed") }, check: {})
+            }
+            if let value { try transport.exchangeAbortRetirement(value, check: {}) }
+            return value
+        })
+        #expect(producer?.abort == .init(reason: .memory, rank: 1) && consumer?.abort == .init(reason: .memory, rank: 1))
+        try Self.nextRequestExchanges(pair)
+
+        let second = try Self.agreement(Self.request())
+        let (_, _, header) = try Self.boundary(second, sequence: 0)
+        var stopping: QwenStageAborted?
+        let follower = try pair.exchange(send: {
+            let gptOSS = QwenStageAbort(rank: 0, intervalNanoseconds: 0) {
+                try TakenMemory.whileTaken { try TakenMemory.gptOSS().requireLive() }
+            }
+            let transport = try QwenLayerStageGenerationTransport(agreement: second, collective: pair.first, abort: gptOSS)
+            stopping = Self.aborted { try transport.stopIfLatched(owing: .boundaryHeader, check: {}) }
+            if let stopping { try transport.exchangeAbortRetirement(stopping, check: {}) }
+        }, receive: { peer -> QwenStageAborted? in
+            let transport = try QwenLayerStageGenerationTransport(agreement: second, collective: peer)
+            let value = Self.aborted {
+                _ = try transport.receiveBoundary(expected: header, consume: { _, _ in Issue.record("consumed") }, check: {})
+            }
+            if let value { try transport.exchangeAbortRetirement(value, check: {}) }
+            return value
+        })
+        #expect(stopping?.abort == .init(reason: .memory, rank: 0) && follower?.abort == .init(reason: .memory, rank: 0))
+        try Self.nextRequestExchanges(pair)
+    }
+
     /// Compact decode: rank 0 stops in the compact boundary frame it owes, and
     /// rank 1 in the compact token frame it owes.
     @Test(arguments: [false, true]) func compactDecodeStopsInTheFrameEachRankOwes(keyed: Bool) throws {

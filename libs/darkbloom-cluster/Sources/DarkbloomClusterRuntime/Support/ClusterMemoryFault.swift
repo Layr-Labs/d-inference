@@ -1,3 +1,4 @@
+import DarkbloomClusterProtocol
 import Foundation
 
 /// Dev and DevNet builds only: a one-shot fault that makes this rank's live
@@ -71,6 +72,11 @@ public final class ClusterMemoryFault: @unchecked Sendable {
             throw ProbeError("the dev memory fault refused this rank's live memory check \(due) of the request")
         }
     }
+}
+
+extension QwenTensorParallelStopRule.End {
+    /// The memory abort both ranks end the request with (D6), naming the refusing rank.
+    var abort: ClusterWorkerAbort? { memoryStopRank.map { ClusterWorkerAbort(reason: .memory, rank: $0) } }
 }
 
 /// The live memory gate the tensor-parallel families take for `bytes` more.

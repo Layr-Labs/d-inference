@@ -1,5 +1,3 @@
-import DarkbloomClusterProtocol
-
 /// How a tensor-parallel request ends, decided without MLX (model-free checks).
 ///
 /// The product's engine answers "not wanted" for the token that ends a request
@@ -77,7 +75,9 @@ enum QwenTensorParallelStopRule {
         /// Set when a rank's live memory check stopped the request and nothing
         /// else ended it (its stop token, its length, its owner's stop): both
         /// ranks end it alone, naming that rank (rank 0 when both stopped).
-        let abort: ClusterWorkerAbort?
+        /// `abort` is its worker abort. (This file builds without the protocol
+        /// module too, for TensorParallelPlanChecks.)
+        let memoryStopRank: Int?
     }
 
     static func readEnd(_ words: [Int32]) throws -> End {
@@ -87,8 +87,7 @@ enum QwenTensorParallelStopRule {
         }
         let memoryRank: Int? = words[3] == 1 ? 0 : words[4] == 1 ? 1 : nil
         let localStop = finish == .clientStop && words[2] == 0
-        return .init(rank0Count: Int(words[0]), rank0Finish: finish,
-            abort: localStop ? memoryRank.map { ClusterWorkerAbort(reason: .memory, rank: $0) } : nil)
+        return .init(rank0Count: Int(words[0]), rank0Finish: finish, memoryStopRank: localStop ? memoryRank : nil)
     }
 
     /// The finish and token count this rank reports, given rank 0's.

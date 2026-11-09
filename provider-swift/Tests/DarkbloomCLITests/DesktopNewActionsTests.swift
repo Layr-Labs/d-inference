@@ -1,0 +1,207 @@
+import ArgumentParser
+import Foundation
+import ProviderCore
+import Testing
+
+@testable import darkbloom
+
+/// The actions the app gained for clusters, Darkbloom Sandbox, waitlists and local serving: each validates before
+/// anything runs, and each argv parses as a real `darkbloom` command, with the API's `--config` exactly where the
+/// command takes it.
+struct DesktopNewActionsTests {
+  static let config = "/tmp/desktop-new-actions-fixture.toml"
+  static let model = "mlx-community/gpt-oss-20b-MXFP4-Q8"
+
+  static func action(_ name: String, _ fill: (inout DesktopAction) -> Void = { _ in }) -> DesktopAction {
+    var value = DesktopAction(id: UUID().uuidString, action: name)
+    fill(&value)
+    return value
+  }
+
+  struct Case: Sendable, CustomTestStringConvertible {
+    let action: DesktopAction
+    let argv: [String]
+    let forwardsConfig: Bool
+    var testDescription: String { argv.joined(separator: " ") }
+  }
+
+  static let cases: [Case] = [
+    Case(action: action("start") { $0.models = [model]; $0.network = true },
+         argv: ["start", "--model", model, "--network"], forwardsConfig: true),
+    Case(action: action("start") { $0.models = [model]; $0.endpoint = true },
+         argv: ["start", "--model", model, "--local-endpoint"], forwardsConfig: true),
+    Case(action: action("start") { $0.models = [model]; $0.solo = true },
+         argv: ["start", "--solo", "--model", model], forwardsConfig: true),
+    Case(action: action("start") { $0.models = [model, "mlx-community/Qwen3-8B-4bit"]; $0.solo = true; $0.endpoint = true },
+         argv: ["start", "--solo", "--model", model, "--model", "mlx-community/Qwen3-8B-4bit", "--local-endpoint"],
+         forwardsConfig: true),
+    Case(action: action("start") { $0.models = [model]; $0.solo = true; $0.network = true },
+         argv: ["start", "--solo", "--model", model, "--network"], forwardsConfig: true),
+    Case(action: action("start") { $0.models = [model]; $0.solo = true; $0.local = true },
+         argv: ["start", "--solo", "--model", model, "--local"], forwardsConfig: true),
+    Case(action: action("cluster_leave"), argv: ["cluster", "leave", "--yes"], forwardsConfig: false),
+    Case(action: action("sandbox_pause"), argv: ["sandbox", "pause"], forwardsConfig: false),
+    Case(action: action("sandbox_resume"), argv: ["sandbox", "resume"], forwardsConfig: false),
+    Case(action: action("sandbox_uninstall"), argv: ["sandbox", "uninstall", "--yes"], forwardsConfig: false),
+    Case(action: action("sandbox_setup"),
+         argv: ["sandbox", "setup", "--yes", "--no-browser", "--json-events"], forwardsConfig: false),
+    Case(action: action("sandbox_setup") {
+      $0.linux_slots = 3
+      $0.macos_slots = 0
+      $0.disks = ["/Volumes/FastSSD", "/Volumes/Other Disk"]
+      $0.wait_ready = true
+    }, argv: ["sandbox", "setup", "--yes", "--no-browser", "--json-events", "--linux-slots", "3", "--macos-slots", "0",
+              "--disk", "/Volumes/FastSSD", "--disk", "/Volumes/Other Disk", "--wait-ready"], forwardsConfig: false),
+    Case(action: action("route") { $0.route = "my-macs-first" }, argv: ["route", "my-macs-first"], forwardsConfig: true),
+    Case(action: action("route_key") { $0.key = "darkbloom-account-key-fixture-0123456789" },
+         argv: ["route", "key", "--stdin"], forwardsConfig: true),
+    Case(action: action("tool_setup") { $0.tool = "opencode" }, argv: ["start", "--opencode"], forwardsConfig: true),
+    Case(action: action("tool_setup") { $0.tool = "hermes" }, argv: ["start", "--hermes"], forwardsConfig: true),
+    Case(action: action("update_rollback"), argv: ["update", "--rollback", "--yes"], forwardsConfig: true),
+  ]
+
+  @Test(arguments: cases)
+  func argumentsParseAsTheCLIAndForwardConfigOnlyWhereAccepted(_ item: Case) throws {
+    try item.action.validate(paired: { true })
+    let argv = try DesktopBackend.arguments(for: item.action, configPath: Self.config, localActive: false)
+    _ = try Darkbloom.parseAsRoot(argv)
+    #expect(argv == item.argv + (item.forwardsConfig ? ["--config", Self.config] : []))
+    let withoutConfig = try DesktopBackend.arguments(for: item.action, configPath: nil, localActive: false)
+    _ = try Darkbloom.parseAsRoot(withoutConfig)
+    #expect(withoutConfig == item.argv)
+  }
+
+  @Test func theAccountKeyIsNeverAnArgument() throws {
+    let key = "darkbloom-account-key-fixture-0123456789"
+    let request = Self.action("route_key") { $0.key = key }
+    let argv = try DesktopBackend.arguments(for: request, configPath: Self.config, localActive: false)
+    #expect(!argv.joined(separator: " ").contains(key))
+    #expect(DesktopBackend.routeKeyInput(request) == Data((key + "\n").utf8))
+    #expect(DesktopBackend.routeKeyInput(Self.action("route") { $0.route = "this-mac" }) == nil)
+  }
+
+  struct Refusal: Sendable, CustomTestStringConvertible {
+    let action: DesktopAction
+    let message: String
+    var paired = true
+    var testDescription: String { "\(action.action): \(message)" }
+  }
+
+  static let refusals: [Refusal] = [
+    Refusal(action: action("start") { $0.models = [model]; $0.local = true; $0.network = true },
+            message: "Choose one way to serve: Only me, the Darkbloom network, or Both, me first."),
+    Refusal(action: action("start") { $0.models = [model]; $0.endpoint = true; $0.network = true },
+            message: "Choose one way to serve: Only me, the Darkbloom network, or Both, me first."),
+    Refusal(action: action("start") { $0.models = [model]; $0.local = true; $0.endpoint = true },
+            message: "Choose one way to serve: Only me, the Darkbloom network, or Both, me first."),
+    Refusal(action: action("start") { $0.models = [model]; $0.solo = true },
+            message: "This Mac isn't in a two-Mac cluster: Start serving serves it alone.", paired: false),
+    Refusal(action: action("start") { $0.models = []; $0.solo = true }, message: "Choose at least one model"),
+    Refusal(action: action("start") { $0.models = ["--force"]; $0.solo = true }, message: "Invalid model ID"),
+    Refusal(action: action("switch") { $0.models = [model]; $0.solo = true },
+            message: "Serving this Mac alone is a start, not a switch."),
+    Refusal(action: action("start") { $0.models = []; $0.network = true },
+            message: "Choose at least one model", paired: false),
+    Refusal(action: action("waitlist_join") { $0.feature = "Sandbox" }, message: "Invalid waitlist"),
+    Refusal(action: action("waitlist_join") { $0.feature = "-x" }, message: "Invalid waitlist"),
+    Refusal(action: action("waitlist_join") { $0.feature = "sandbox\n" }, message: "Invalid waitlist"),
+    Refusal(action: action("waitlist_join") { $0.feature = "sand box" }, message: "Invalid waitlist"),
+    Refusal(action: action("waitlist_join") { $0.feature = String(repeating: "a", count: 65) },
+            message: "Invalid waitlist"),
+    Refusal(action: action("waitlist_join"), message: "Invalid waitlist"),
+    Refusal(action: action("sandbox_setup") { $0.linux_slots = 17 },
+            message: "Linux jobs at a time must be from 0 to 16."),
+    Refusal(action: action("sandbox_setup") { $0.macos_slots = 3 },
+            message: "macOS jobs at a time must be from 0 to 2."),
+    Refusal(action: action("sandbox_setup") { $0.linux_slots = 0; $0.macos_slots = 0 },
+            message: "0 Linux and 0 macOS jobs leaves nothing to run."),
+    Refusal(action: action("sandbox_setup") { $0.disks = ["/a", "/b", "/c", "/d", "/e"] },
+            message: "Choose up to four different work disks."),
+    Refusal(action: action("sandbox_setup") { $0.disks = ["Volumes/FastSSD"] },
+            message: "A work disk must be an absolute path, such as /Volumes/FastSSD."),
+    Refusal(action: action("sandbox_setup") { $0.disks = ["/Volumes/../etc"] },
+            message: "A work disk must be an absolute path, such as /Volumes/FastSSD."),
+    Refusal(action: action("sandbox_setup") { $0.disks = ["/Volumes/Fast\nSSD"] },
+            message: "A work disk must be an absolute path, such as /Volumes/FastSSD."),
+    Refusal(action: action("route") { $0.route = "everywhere" }, message: "Invalid route"),
+    Refusal(action: action("route_key"), message: "Not saved: no key was given."),
+    Refusal(action: action("route_key") { $0.key = "with space" },
+            message: "Not saved: an API key has no spaces, line breaks or non-ASCII characters."),
+    Refusal(action: action("route_key") { $0.key = String(repeating: "k", count: 513) },
+            message: "Not saved: that is longer than any Darkbloom API key."),
+    Refusal(action: action("route_key") { $0.key = "dk-local-0123456789" },
+            message: "Not saved: that is this Mac's local API key; use an account API key from the Darkbloom console."),
+    Refusal(action: action("local_settings") { $0.me_first = true; $0.me_first_idle_minutes = 0 },
+            message: "Me first needs on or off, and 1 to 120 idle minutes."),
+    Refusal(action: action("local_settings") { $0.me_first = true; $0.me_first_idle_minutes = 121 },
+            message: "Me first needs on or off, and 1 to 120 idle minutes."),
+    Refusal(action: action("local_settings") { $0.me_first_idle_minutes = 5 },
+            message: "Me first needs on or off, and 1 to 120 idle minutes."),
+    Refusal(action: action("tool_setup") { $0.tool = "vim" }, message: "Unknown tool"),
+  ]
+
+  @Test(arguments: refusals)
+  func refusesBeforeAnythingRuns(_ item: Refusal) {
+    let error = #expect(throws: ValidationError.self) { try item.action.validate(paired: { item.paired }) }
+    #expect(error?.message == item.message)
+  }
+
+  @Test func aRefusedKeyIsNeverRepeated() {
+    for key in ["with space", "dk-local-0123456789", String(repeating: "k", count: 513), "tab\there"] {
+      do {
+        try Self.action("route_key") { $0.key = key }.validate()
+        Issue.record("accepted \(key.count) characters")
+      } catch {
+        #expect(!String(describing: error).contains(key))
+      }
+    }
+  }
+
+  @Test func waitlistNamesAreTheCatalogsIds() throws {
+    for name in ["sandbox", "cluster", "a", "0-feature-2", String(repeating: "a", count: 64)] {
+      try Self.action("waitlist_join") { $0.feature = name }.validate()
+    }
+  }
+
+  @Test func aSoloStartNamesItsModelsAndNeverAsksWhetherThePairWouldStart() {
+    let asked: () throws -> Bool = { throw ValidationError("asked about the pair") }
+    #expect(throws: Never.self) {
+      try Self.action("start") { $0.models = [Self.model]; $0.solo = true }.validate(
+        startsThePair: asked, paired: { true })
+    }
+    let error = #expect(throws: ValidationError.self) {
+      try Self.action("start") { $0.models = []; $0.solo = true }.validate(startsThePair: asked, paired: { true })
+    }
+    #expect(error?.message == "Choose at least one model")
+  }
+
+  @Test func localSettingsAcceptTheCLIRange() throws {
+    for minutes: UInt64 in [1, 2, 120] {
+      try Self.action("local_settings") { $0.me_first = false; $0.me_first_idle_minutes = minutes }.validate()
+    }
+  }
+
+  @Test func retainedRequestsKeepADigestInsteadOfTheKey() {
+    let key = "darkbloom-account-key-fixture-0123456789"
+    let request = Self.action("route_key") { $0.key = key }
+    let retained = request.retained(digest: DesktopBackend.requestDigest)
+    #expect(retained.key != key)
+    #expect(retained.key?.contains(key) == false)
+    #expect(retained == request.retained(digest: DesktopBackend.requestDigest))
+    var other = request
+    other.key = key + "x"
+    #expect(other.retained(digest: DesktopBackend.requestDigest) != retained)
+    let plain = Self.action("route") { $0.route = "this-mac" }
+    #expect(plain.retained(digest: DesktopBackend.requestDigest) == plain)
+  }
+
+  @Test func capabilitiesNameEveryNewFeatureButTheGuidedClusterSession() {
+    for paired in [false, true] {
+      let capabilities = DesktopBackend.snapshotCapabilities(paired: paired)
+      for name in ["cluster", "sandbox", "waitlists", "local_serving", "tool_setup", "update_rollback"] {
+        #expect(capabilities.contains(name))
+      }
+      #expect(!capabilities.contains("cluster_session"))
+    }
+  }
+}

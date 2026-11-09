@@ -5,9 +5,11 @@ import ProviderCore
 /// Runs one child process for a sandbox command and waits for it from its
 /// termination handler, never blocking a thread. While the child runs, Ctrl-C
 /// goes to the child alone (it shares the terminal's process group) and
-/// SIGTERM sent to this process is passed on, so the command can say how the
-/// child ended. The child starts with default signal handling: a handler, not
-/// `SIG_IGN`, is installed here, and exec resets handlers.
+/// SIGTERM sent to this process is passed on (as `forwardingTerminationAs`:
+/// SIGINT for the desktop app's setup, which has no terminal to send Ctrl-C),
+/// so the command can say how the child ended. The child starts with default
+/// signal handling: a handler, not `SIG_IGN`, is installed here, and exec
+/// resets handlers.
 enum SandboxChildProcess {
     struct Exit: Equatable, Sendable {
         let status: Int32
@@ -28,7 +30,8 @@ enum SandboxChildProcess {
 
     static func run(
         _ executable: URL, _ arguments: [String], currentDirectory: URL? = nil,
-        closeStandardInput: Bool = false, standardOutput: Output = .inherit, standardError: Output = .inherit
+        closeStandardInput: Bool = false, standardOutput: Output = .inherit, standardError: Output = .inherit,
+        forwardingTerminationAs forwarded: Int32 = SIGTERM
     ) async throws -> Exit {
         let process = Process()
         process.executableURL = executable
@@ -50,7 +53,7 @@ enum SandboxChildProcess {
         SignalHandlers.shared.retain()
         let child = ChildReference(process)
         let terminate = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global())
-        terminate.setEventHandler { child.terminate() }
+        terminate.setEventHandler { child.signal(forwarded) }
         terminate.resume()
         defer {
             terminate.cancel()
@@ -91,7 +94,8 @@ enum SandboxChildProcess {
 
     private static func read(_ handle: FileHandle, into output: Output) {
         var splitter = SandboxLineSplitter()
-        while let chunk = try? handle.readDrained(upToCount: 16 * 1024), !chunk.isEmpty {
+        // As soon as anything arrives, so an installer's approval event is shown while it waits (`readAvailable`).
+        while let chunk = try? handle.readAvailable(upToCount: 16 * 1024), !chunk.isEmpty {
             switch output {
             case .inherit: return
             case .tail(let tail): tail.append(chunk)
@@ -105,7 +109,7 @@ enum SandboxChildProcess {
     private final class ChildReference: @unchecked Sendable {
         private let process: Process
         init(_ process: Process) { self.process = process }
-        func terminate() { if process.isRunning { process.terminate() } }
+        func signal(_ number: Int32) { if process.isRunning { kill(process.processIdentifier, number) } }
     }
 
     /// No-op SIGINT and SIGTERM handlers while any child runs; the first run

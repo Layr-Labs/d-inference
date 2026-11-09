@@ -195,13 +195,12 @@ struct DesktopNewActionsTests {
     #expect(plain.retained(digest: DesktopBackend.requestDigest) == plain)
   }
 
-  @Test func capabilitiesNameEveryNewFeatureButTheGuidedClusterSession() {
+  @Test func capabilitiesNameEveryNewFeatureAndTheGuidedClusterSession() {
     for paired in [false, true] {
       let capabilities = DesktopBackend.snapshotCapabilities(paired: paired)
-      for name in ["cluster", "sandbox", "waitlists", "local_serving", "tool_setup", "update_rollback"] {
-        #expect(capabilities.contains(name))
+      for name in ["cluster", "cluster_session", "sandbox", "waitlists", "local_serving", "tool_setup", "update_rollback"] {
+        #expect(capabilities.contains(name), "\(name)")
       }
-      #expect(!capabilities.contains("cluster_session"))
     }
   }
 }

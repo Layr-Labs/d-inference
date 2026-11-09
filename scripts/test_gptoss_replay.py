@@ -168,7 +168,9 @@ class ReplayRunTests(unittest.TestCase):
         summary = json.loads((self.args.output / "cohorts.json").read_text())[0]
         self.assertFalse(summary["valid"])
         self.assertIsNone(summary["aggregate_end_to_end_tokens_per_second"])
-        self.assertTrue((self.args.output / "one.sse").exists())
+        # A failed case aborts the barrier, so a peer still waking from it can stop before it
+        # sends; the case that released the barrier always streams, and its raw stream is kept.
+        self.assertTrue(any((self.args.output / f"{name}.sse").exists() for name in ("one", "two")))
         self.assertFalse((self.args.output / "complete.json").exists())
 
     def test_request_file_failure_occurs_before_any_post(self):

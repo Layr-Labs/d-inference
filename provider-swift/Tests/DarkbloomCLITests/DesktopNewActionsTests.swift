@@ -30,7 +30,11 @@ struct DesktopNewActionsTests {
          argv: ["start", "--model", model, "--network"], forwardsConfig: true),
     Case(action: action("start") { $0.models = [model]; $0.endpoint = true },
          argv: ["start", "--model", model, "--local-endpoint"], forwardsConfig: true),
-    Case(action: action("start") { $0.models = []; $0.solo = true }, argv: ["start", "--solo"], forwardsConfig: true),
+    Case(action: action("start") { $0.models = [model]; $0.solo = true },
+         argv: ["start", "--solo", "--model", model], forwardsConfig: true),
+    Case(action: action("start") { $0.models = [model, "mlx-community/Qwen3-8B-4bit"]; $0.solo = true; $0.endpoint = true },
+         argv: ["start", "--solo", "--model", model, "--model", "mlx-community/Qwen3-8B-4bit", "--local-endpoint"],
+         forwardsConfig: true),
     Case(action: action("start") { $0.models = [model]; $0.solo = true; $0.network = true },
          argv: ["start", "--solo", "--model", model, "--network"], forwardsConfig: true),
     Case(action: action("start") { $0.models = [model]; $0.solo = true; $0.local = true },
@@ -70,8 +74,10 @@ struct DesktopNewActionsTests {
             message: "Choose one way to serve: Only me, the Darkbloom network, or Both, me first."),
     Refusal(action: action("start") { $0.models = [model]; $0.local = true; $0.endpoint = true },
             message: "Choose one way to serve: Only me, the Darkbloom network, or Both, me first."),
-    Refusal(action: action("start") { $0.models = []; $0.solo = true },
+    Refusal(action: action("start") { $0.models = [model]; $0.solo = true },
             message: "This Mac isn't in a two-Mac cluster: Start serving serves it alone.", paired: false),
+    Refusal(action: action("start") { $0.models = []; $0.solo = true }, message: "Choose at least one model"),
+    Refusal(action: action("start") { $0.models = ["--force"]; $0.solo = true }, message: "Invalid model ID"),
     Refusal(action: action("switch") { $0.models = [model]; $0.solo = true },
             message: "Serving this Mac alone is a start, not a switch."),
     Refusal(action: action("start") { $0.models = []; $0.network = true },
@@ -105,11 +111,16 @@ struct DesktopNewActionsTests {
     }
   }
 
-  @Test func soloStartsWithoutModelsOnlyOnAPairedMac() throws {
-    try Self.action("start") { $0.models = []; $0.solo = true }.validate(paired: { true })
-    // A solo start never asks whether the pair would start.
-    try Self.action("start") { $0.models = []; $0.solo = true }.validate(
-      startsThePair: { throw ValidationError("asked about the pair") }, paired: { true })
+  @Test func aSoloStartNamesItsModelsAndNeverAsksWhetherThePairWouldStart() {
+    let asked: () throws -> Bool = { throw ValidationError("asked about the pair") }
+    #expect(throws: Never.self) {
+      try Self.action("start") { $0.models = [Self.model]; $0.solo = true }.validate(
+        startsThePair: asked, paired: { true })
+    }
+    let error = #expect(throws: ValidationError.self) {
+      try Self.action("start") { $0.models = []; $0.solo = true }.validate(startsThePair: asked, paired: { true })
+    }
+    #expect(error?.message == "Choose at least one model")
   }
 
   @Test func localSettingsAcceptTheCLIRange() throws {

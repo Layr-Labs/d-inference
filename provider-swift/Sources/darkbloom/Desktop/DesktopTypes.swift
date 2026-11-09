@@ -85,10 +85,10 @@ struct DesktopAction: Codable, Sendable, Equatable {
     try validateServingChoice(paired: paired)
     if ["start", "switch", "autopilot", "autopilot_pin", "autopilot_unpin"].contains(action) {
       let models = self.models ?? []
-      // `start --solo` serves this Mac alone: with no models, the ones `start` chooses without a terminal.
-      let soloStart = action == "start" && solo == true
-      let pairStart = try models.isEmpty && action == "start" && local != true && !soloStart && startsThePair()
-      guard !models.isEmpty || pairStart || soloStart, models.count <= 32, Set(models).count == models.count
+      // Only a plain start may name no models, where it starts the pair. `start --solo` names them, as every start
+      // without a terminal must (`Start.requireModelsNamedWithoutTerminal`).
+      let pairStart = try models.isEmpty && action == "start" && local != true && solo != true && startsThePair()
+      guard !models.isEmpty || pairStart, models.count <= 32, Set(models).count == models.count
       else { throw ValidationError("Choose at least one model") }
       try models.forEach(Self.validateModel)
     }

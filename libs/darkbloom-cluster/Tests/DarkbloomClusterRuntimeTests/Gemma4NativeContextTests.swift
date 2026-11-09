@@ -96,6 +96,28 @@ struct Gemma4NativeContextTests {
             estimatedReclaimableBytes: (free + inactive + speculative) * page, pressureLevel: 1, swapUsedBytes: 0)
     }
 
+    /// Every gate of a rank takes its terms from one charge (`budget`): a
+    /// reservation or lane at its own context, prompt and chunk is charged as
+    /// LOAD's terms derive them, with its prompt's capture when the rank keeps
+    /// prefixes, and none when the request's own cache is off (or the share
+    /// probe asks), whatever the rank keeps.
+    @Test func aRequestIsChargedTheRanksTermsAtItsOwnContext() throws {
+        for keeps in [true, false] {
+            let charge = try Self.charge(keepsPrefixes: keeps)
+            for (context, prompt, chunk) in [(8_320, 100, 64), (131_072, 131_071, 512), (262_144, 40_000, 512)] {
+                func derived(capture: Bool) throws -> Gemma4TensorParallelRequestBudget {
+                    try .derive(contextTokens: context, chunkTokens: chunk, promptTokens: prompt, keepsPrefixes: capture,
+                        allocationBound: Self.bound)
+                }
+                #expect(try charge.budget(contextTokens: context, chunkTokens: chunk, promptTokens: prompt)
+                    == derived(capture: keeps))
+                #expect(try charge.budget(contextTokens: context, chunkTokens: chunk, promptTokens: prompt,
+                    keepsPrefixes: false) == derived(capture: false))
+            }
+            #expect(try charge.budget(contextTokens: 262_144, chunkTokens: 512, keepsPrefixes: false).prefixCaptureBytes == 0)
+        }
+    }
+
     /// LOAD quotes the memory plan's request, as the planner does; READY's
     /// capacity, a ceiling and never a grant, covers one request at the
     /// native context. A profile within its memory plan is LOAD's alone.

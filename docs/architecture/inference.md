@@ -2659,17 +2659,19 @@ remain separate from this automatic intent and validated loading path.
 
 The catalog `Qwen3.5-9B`, `qwen3.5-35b-a3b` and `qwen3.6-35b-a3b-vl-mtp-mxfp8`
 builds (`EngineV2SamplingDefaults.qwen35CardModelTypes`, each bound to its
-`model_type`) ship no `generation_config.json`; omitted knobs take their model
-cards' thinking-mode sampling values
-(`EngineV2SamplingDefaults.qwen35CardDefaults`: `temperature 1.0`, `top_p 0.95`,
-`top_k 20`). Greedy decoding made them repeat themselves until `max_tokens`
-(#1530). The cards' `presence_penalty 1.5` is not a default: these builds' MTP
-heads keep the prompt history, and the engine neither drafts nor checkpoints a
-row with a penalty ([prefix caching](prefix-cache.md#invariants)). A default
-penalty would turn off MTP and the resident and SSD prefix cache for every
-request that omits it, coordinator requests included: they carry the registry's
-`temperature`, `top_p` and `top_k`, never a penalty. A request's own
-`presence_penalty` still applies.
+`model_type`) take their model cards' thinking-mode sampling values for omitted
+knobs (`EngineV2SamplingDefaults.qwen35CardDefaults`: `temperature 1.0`,
+`top_p 0.95`, `top_k 20`). The 9B ships no `generation_config.json`; the 35B
+builds' files declare the same three values; none of these builds is admitted
+to artifact defaults, so no file is read for them. Greedy decoding made them
+repeat themselves until `max_tokens` (#1530). The cards' `presence_penalty 1.5`
+is not a default: these builds' MTP heads keep the prompt history, and the
+engine neither drafts nor checkpoints a row with a penalty
+([prefix caching](prefix-cache.md#invariants)). A default penalty would turn
+off MTP and the resident and SSD prefix cache for every request that omits it,
+coordinator requests included: the coordinator adds only the registry's
+`temperature`, `top_p` and `top_k`, and no penalty unless the registry sets
+one. A request's own `presence_penalty` still applies.
 
 Other model identities keep the legacy defaults in the table byte-for-byte. `do_sample: false` or an absent/unreadable file is legacy. The
 sampler is not part of prompt or cache identity, so prefix-cache and SSD

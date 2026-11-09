@@ -82,8 +82,10 @@ struct EngineV2SamplingDefaultsTests {
         #expect(!EngineV2SamplingDefaults.honorsArtifactDefaults(modelId: "flint", modelType: "unknown"))
     }
 
-    /// The catalog Qwen 3.5/3.6 builds have no generation_config.json: omitted
-    /// knobs take the model cards' thinking-mode values, explicit ones win.
+    /// The catalog Qwen 3.5/3.6 builds' omitted knobs take the model cards'
+    /// thinking-mode values without reading a file (the 9B ships no
+    /// generation_config.json; the 35B builds' files declare the same three
+    /// values); explicit ones win.
     @Test func qwen35CatalogBuildsUseTheirModelCardDefaults() throws {
         for (id, type) in EngineV2SamplingDefaults.qwen35CardModelTypes {
             #expect(EngineV2SamplingDefaults.resolve(modelId: id, modelType: type, modelDirectory: nil)
@@ -109,8 +111,9 @@ struct EngineV2SamplingDefaultsTests {
     /// never speculates a row with a repetition, frequency or presence penalty
     /// (`EngineLoopV2.mtpBasicEligible`, `mtpTakeHistoryState`). A default
     /// penalty turns off MTP and the prefix cache for every request that omits
-    /// it, coordinator bodies included: they carry the registry's temperature,
-    /// top_p and top_k, never a penalty.
+    /// it, coordinator bodies included: the coordinator adds only the
+    /// registry's temperature, top_p and top_k, and no penalty unless the
+    /// registry sets one.
     @Test func qwen35CardDefaultsLeaveDefaultRequestsSpeculativeAndCacheable() throws {
         let coordinatorBody =
             #"{"model":"m","messages":[{"role":"user","content":"hi"}],"temperature":1,"top_p":0.95,"top_k":20}"#

@@ -22,10 +22,11 @@
 //   and owned Bonsai 9B listings, native Flint and the exact GLM-5.3-Flash
 //   identities (catalog `glm-5.3-flash` and the local qualification download)
 //   honor their artifact defaults.
-//   The catalog Qwen 3.5/3.6 builds ship no `generation_config.json`; they
-//   take their model cards' thinking-mode sampling values
-//   (`qwen35CardDefaults`) instead of the greedy decoding that looped to
-//   `max_tokens`.
+//   The catalog Qwen 3.5/3.6 builds take their model cards' thinking-mode
+//   sampling values (`qwen35CardDefaults`) instead of the greedy decoding
+//   that looped to `max_tokens`. The 9B ships no `generation_config.json`;
+//   the 35B builds' files declare the same three values; none of these
+//   builds is admitted here, so no file is read for them.
 //   Every other model keeps the legacy defaults byte-for-byte.
 // * `do_sample: false` in the file means greedy (legacy), matching HF
 //   semantics; an absent or unreadable file is legacy.

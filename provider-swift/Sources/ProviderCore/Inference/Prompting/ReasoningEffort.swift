@@ -59,12 +59,21 @@ enum ReasoningEffort: String, CaseIterable, Sendable {
 /// every row against that rule.
 ///
 /// The other families take every effort too. Flint decides for itself whether
-/// to reason and reads no effort (`FlintRequestPolicy`). Gemma 4 and Nemotron
-/// 3.5 Lightning have only a thinking switch: `none` turns it off, and any
-/// other effort reaches the template as sent, which keeps its default. GPT-OSS
-/// gets each as sent, except `high`, which renders `medium`
-/// (`GPTOSSHarmonyTemplateFix`). The coordinator's prompt sidecar plans Gemma
-/// 4's and GPT-OSS's prompts, so they change only together with it.
+/// to reason and reads no effort (`FlintRequestPolicy`). Nemotron 3.5
+/// Lightning has only a thinking switch: `none` turns it off, and any other
+/// effort reaches the template as sent, which keeps its default (on).
+///
+/// The coordinator maps every effort from a copy of these tables, in its
+/// ingress refusal, its first-party pool and its prompt sidecar, which plans
+/// these prompts for cache-aware routing.
+/// `fixtures/prompt-contract/v1/reasoning_effort_vectors.json` is the
+/// contract between the two. `scripts/generate-reasoning-effort-vectors.py`
+/// restates these tables and writes it, and
+/// `CachePromptParityTests.reasoningEffortVectors` runs every case through
+/// the production prompt pipeline; darkbloom-platform copies the file byte
+/// for byte and tests its copies against it. So a change to a table, or a
+/// model type that starts or stops reasoning, changes the script and the file
+/// in the same commit, and the platform takes that commit's file.
 extension ReasoningEffort {
     /// Qwen 3.8's template renders `low`, `medium` and `xhigh` (its default)
     /// and raises for any other effort while thinking. The Qwen 3.5 template
@@ -105,12 +114,25 @@ extension ReasoningEffort {
         }
     }
 
-    /// MiMo V2.6 and DiffusionGemma reason at one depth, so an effort only
-    /// switches thinking: on for every effort but `none`.
+    /// MiMo V2.6, Gemma 4 and DiffusionGemma reason at one depth, so an effort
+    /// only switches thinking: on for every effort but `none`. (Gemma 4's
+    /// template defaults thinking off.)
     var oneDepthThinking: Bool {
         switch self {
         case .none: false
         case .minimal, .low, .medium, .high, .xhigh, .max: true
+        }
+    }
+
+    /// GPT-OSS's Harmony levels are `low`, `medium` (its default) and `high`.
+    /// Harmony can't switch its reasoning off, so `none` gets `low`. The
+    /// coordinator caps OpenRouter's traffic at `medium` (#703); a direct
+    /// caller's `high` renders `high`.
+    var harmonyLevel: ReasoningEffort {
+        switch self {
+        case .none, .minimal, .low: .low
+        case .medium: .medium
+        case .high, .xhigh, .max: .high
         }
     }
 }
@@ -139,17 +161,34 @@ public enum ReasoningEffortField: String, Sendable {
 /// GLM-5.3, Flint and Nemotron 3.5 Super read the effort in their own prompt
 /// policies, through their tables above.
 enum ReasoningEffortPolicy {
+    // The sets below are listed in `reasoning_effort_vectors.json`, and each
+    // copy that keeps one checks it for equality
+    // (`CachePromptParityTests.reasoningEffortVectors`), so a type added or
+    // dropped on one side only fails a test on the other.
+
     /// Model types whose templates reason: an effort none of the seven names
     /// is refused for them. Any other model ignores the effort.
     /// `qwen3_vl_moe` is left out: it holds instruct-only Qwen3-VL builds.
-    private static let reasoningModelTypes: Set<String> = [
+    static let reasoningModelTypes: Set<String> = [
         "qwen3_5", "qwen3_5_moe", "prism_hadamard_qwen35", "qwen4_exp", "qwen4_exp_text",
         "gemma4", "gemma4_text", "gemma4_vision", "diffusion_gemma", "gpt_oss",
         "nemotron_h", "nemotron_h_omni", "mimo_v2", "glm5_next", "glm5_next_text", "glm5_next_mtp", "flint",
     ]
 
     /// The Qwen 3.5 template family's model types.
-    private static let qwen35TemplateTypes: Set<String> = ["qwen3_5", "qwen3_5_moe", "prism_hadamard_qwen35"]
+    static let qwen35TemplateTypes: Set<String> = ["qwen3_5", "qwen3_5_moe", "prism_hadamard_qwen35"]
+
+    /// Model types whose template has a thinking switch and no effort level,
+    /// so an effort sets the switch (`ReasoningEffort.oneDepthThinking`): Gemma
+    /// 4 and DiffusionGemma.
+    static let effortSwitchTypes: Set<String> = ["gemma4", "gemma4_text", "gemma4_vision", "diffusion_gemma"]
+
+    /// Whether an effort sets a model's thinking switch, Gemma 4's and
+    /// DiffusionGemma's, in the template context `templateAdditionalContext`
+    /// builds.
+    static func effortSetsThinkingSwitch(modelType: String?) -> Bool {
+        normalized(modelType).map(effortSwitchTypes.contains) == true
+    }
 
     /// Whether a model's template gets Qwen 3.8's levels
     /// (`ReasoningEffort.qwen38Level`): the Qwen 3.5 template family, and the
@@ -184,18 +223,21 @@ enum ReasoningEffortPolicy {
 
     /// The `reasoning_effort` a template receives for `effort`: while
     /// thinking, Qwen 3.8's level for it where the model takes those levels;
-    /// otherwise the effort as sent (a Qwen template ignores it with thinking
-    /// off), except that GPT-OSS's Harmony policy renders `high` as `medium`.
+    /// GPT-OSS's Harmony level, thinking or not; otherwise the effort as sent
+    /// (a Qwen template ignores it with thinking off). A value that is none of
+    /// the names is passed as sent: `validate` refuses it for a model that
+    /// reasons.
     static func templateEffort(
         _ effort: String, modelID: String, modelType: String?, thinking: Bool?
     ) -> String {
-        if thinking != false, takesQwen38Levels(modelID: modelID, modelType: modelType),
-            let named = ReasoningEffort(clientValue: effort)
-        {
+        guard let named = ReasoningEffort(clientValue: effort) else { return effort }
+        if thinking != false, takesQwen38Levels(modelID: modelID, modelType: modelType) {
             return named.qwen38Level.rawValue
         }
-        let context = ChatTemplateFixContext(modelId: modelID, modelType: modelType)
-        return GPTOSSHarmonyTemplateFix.effectiveReasoningEffort(effort, context: context) ?? effort
+        if GPTOSSHarmonyTemplateFix.applies(to: ChatTemplateFixContext(modelId: modelID, modelType: modelType)) {
+            return named.harmonyLevel.rawValue
+        }
+        return effort
     }
 
     private static func normalized(_ modelType: String?) -> String? {

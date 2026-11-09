@@ -130,9 +130,11 @@ extension MultiModelBatchSchedulerEngine {
             context["enable_thinking"] = explicit
         } else if ChatTemplateControls(reasoningEffort: effort).effortDisablesThinking {
             context["enable_thinking"] = false
-        } else if modelType == "diffusion_gemma",
-            let thinking = DiffusionGemmaReasoningControl.enabled(for: effort)
+        } else if ReasoningEffortPolicy.effortSetsThinkingSwitch(modelType: modelType),
+            let thinking = effort.flatMap(ReasoningEffort.init(clientValue:))?.oneDepthThinking
         {
+            // Gemma 4 and DiffusionGemma have a thinking switch and no effort
+            // level: every effort but `none` turns it on.
             context["enable_thinking"] = thinking
         } else if hasMedia && controls.enableThinking == nil && effort == nil {
             // Qwen templates default thinking on. Grounded media defaults off

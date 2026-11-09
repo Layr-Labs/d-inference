@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-09
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -2993,9 +2993,9 @@ as it is, or passes the request's body on unchanged.
 | The Qwen 3.5 template family (`qwen3_5`, `qwen3_5_moe`, `prism_hadamard_qwen35`: Qwen 3.5, 3.6 and 3.8, Bonsai 2) and the owned Qwen 3.8 Flash-Next build | Qwen 3.8's `low`, `medium` and `xhigh` (its default), and a thinking switch | While thinking: `minimal` and `low` render `low`, `medium` renders `medium`, `high`, `xhigh` and `max` render `xhigh`, as the coordinator's first-party pool sends `high`. Thinking off: the effort as sent, which the template ignores. The 3.5, 3.6 and Bonsai templates read only the switch | `ReasoningEffort.qwen38Level`, `ReasoningEffortPolicy.templateEffort`, `Qwen4SupportPolicy.ownsEffortTemplate` |
 | GLM-5.3-Flash | `low`, `high` and `max` (its default); thinking off closes `<think>` | `minimal` and `low` render `low`, `medium` and `high` render `high`, `xhigh` and `max` render `max`, as the platform sidecar maps them | `ReasoningEffort.glmLevel` (`GLM5NextPromptPolicy`) |
 | Nemotron 3.5 Super | `medium_effort`, and the template's default depth | `minimal`, `low` and `medium` set `medium_effort`; `high`, `xhigh` and `max` keep the default | `ReasoningEffort.nemotronSuperMediumEffort` (`NemotronSuperPromptContract.controls(body:)`) |
-| MiMo V2.6, DiffusionGemma | one depth, and a thinking switch | Every effort but `none` thinks | `ReasoningEffort.oneDepthThinking` (`MiMoV26TemplateFix`, `DiffusionGemmaReasoningControl`) |
-| Gemma 4, Nemotron 3.5 Lightning | a thinking switch | `none` switches thinking off; any other effort keeps the template's default (Gemma 4: off) | `MultiModelBatchSchedulerEngine.templateAdditionalContext` |
-| GPT-OSS | Harmony's `low`, `medium` and `high` | The effort as sent, except `high`, which renders `medium` | `GPTOSSHarmonyTemplateFix.effectiveReasoningEffort` |
+| MiMo V2.6, Gemma 4 (`gemma4`, `gemma4_text`, `gemma4_vision`), DiffusionGemma | one depth, and a thinking switch | Every effort but `none` thinks (Gemma 4's template defaults thinking off) | `ReasoningEffort.oneDepthThinking` (`MiMoV26TemplateFix`; `ReasoningEffortPolicy.effortSetsThinkingSwitch` in `templateAdditionalContext`; `DiffusionGemmaReasoningControl`) |
+| Nemotron 3.5 Lightning | a thinking switch | `none` switches thinking off; any other effort keeps the template's default (on) | `MultiModelBatchSchedulerEngine.templateAdditionalContext` |
+| GPT-OSS | Harmony's `low`, `medium` (its default) and `high`; no thinking switch | `none`, `minimal` and `low` render `low`, `medium` renders `medium`, `high`, `xhigh` and `max` render `high`. OpenRouter's traffic is capped at `medium` by the coordinator's service cap (darkbloom-platform#721, #703's rule), which must be live before any Mac runs this table (below) | `ReasoningEffort.harmonyLevel`, `ReasoningEffortPolicy.templateEffort` |
 | Flint | none: Flint decides whether to reason | Every effort is taken, with no effect | `FlintRequestPolicy` |
 
 An effort that is none of the names is refused on any model that reasons,
@@ -3026,10 +3026,35 @@ the names, never the values sent. Through the coordinator it is the same
 closed `invalid_request`. The same effort in both fields, in any spelling, is
 served.
 
-Gemma 4 and GPT-OSS keep the prompts they rendered before: the coordinator's
-prompt sidecar plans those prompts for cache-aware routing, so changing one
-needs the sidecar's matching change and a new normalization version.
-<!-- pending B-J2-1: Gemma 4 thinks for an effort other than none, and GPT-OSS renders each effort as its nearest Harmony level, once the platform's prompt sidecar renders them so. -->
+The coordinator maps every effort from a copy of these tables: darkbloom-platform's
+ingress refusal, first-party pool and prompt sidecar, which plans these prompts
+for cache-aware routing. `fixtures/prompt-contract/v1/reasoning_effort_vectors.json`
+is the agreement test, the provider's reading of 446 requests: every family and
+every type that reasons, every effort in both fields, other spellings, an effort
+that is none of the names, and both fields together. It also lists the sets
+these tables keep (the types that reason, the Qwen 3.5 template family's, the
+types whose effort sets a thinking switch, the concrete Qwen 3.8 builds), which
+each copy checks for equality, so a type added on one side only fails a test.
+`scripts/generate-reasoning-effort-vectors.py` restates these tables and writes
+it, `CachePromptParityTests.reasoningEffortVectors` runs every case through the
+production prompt pipeline, and the platform copies the file byte for byte and
+checks its readers against it
+([how it is kept in step](../developer/test.md#public-fixtures-and-private-qualification)).
+Gemma 4's thinking switch and GPT-OSS's Harmony levels change the prompt of
+the requests that name such an effort. The platform's production prompt vectors
+(`ProductionPromptParityTests`) carry one effort case per model,
+`reasoning_effort: "medium"`, so they pin Gemma 4's switch; GPT-OSS's levels are
+bound by the agreement test above. The platform keeps its normalization
+version, so while a provider and the sidecar render different levels, during a
+staggered rollout, those requests' cache receipts mismatch and their cache
+affinity is quarantined; serving continues.
+
+No Mac may run these levels before the coordinator's OpenRouter GPT-OSS cap
+(darkbloom-platform#721) is live: until then, OpenRouter's GPT-OSS `high` would
+render `high`, which #703 capped at `medium` to avoid upstream timeouts. So a
+provider release with them is tagged without being published to auto-update,
+snapshotted into #721, and published only once #721 is deployed, each step on
+the owner's go.
 
 ### Vision constraints
 

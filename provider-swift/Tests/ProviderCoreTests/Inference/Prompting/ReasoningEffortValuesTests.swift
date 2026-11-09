@@ -45,8 +45,9 @@ struct ReasoningEffortValuesTests {
     /// the seven efforts, and each follows one rule: the effort's own level
     /// where the family has it, else the next one up, and the family's highest
     /// past them all, so `minimal` gets its lowest and `max` its highest.
-    /// `none` switches thinking off where the family can. The families without
-    /// a table take every name too. The tests below render each row.
+    /// `none` switches thinking off where the family can, and gets the lowest
+    /// level where it can't (GPT-OSS). The families without a table take every
+    /// name too. The tests below render each row.
     @Test func everyFamilyTableCoversEveryEffort() throws {
         #expect(ReasoningEffort.allCases.map(\.rawValue) == Self.efforts)
         // The level `effort` selects among a family's `levels`, lowest first.
@@ -54,7 +55,6 @@ struct ReasoningEffortValuesTests {
             let rank = { (name: String) in Self.efforts.firstIndex(of: name)! }
             return levels.first { rank($0) >= rank(effort) } ?? levels[levels.count - 1]
         }
-        let harmony = ChatTemplateFixContext(modelId: "gpt-oss-20b", modelType: "gpt_oss")
         for name in Self.efforts {
             let effort = try #require(ReasoningEffort(rawValue: name))
             let thinks = name != "none"
@@ -63,11 +63,12 @@ struct ReasoningEffortValuesTests {
             // Super's depths: `medium_effort`, then its default, ranked as `high`.
             #expect(effort.nemotronSuperMediumEffort == (thinks ? rule(name, ["medium", "high"]) == "medium" : nil),
                     "Super, \(name)")
-            #expect(effort.oneDepthThinking == thinks, "MiMo and DiffusionGemma, \(name)")
+            #expect(effort.oneDepthThinking == thinks, "MiMo, DiffusionGemma and Gemma 4, \(name)")
             #expect(FlintRequestPolicy.acceptsEffort(name), "Flint, \(name)")
-            #expect(ReasoningEffort.switchesThinkingOff(name) == !thinks, "Gemma 4 and Lightning, \(name)")
-            #expect(GPTOSSHarmonyTemplateFix.effectiveReasoningEffort(name, context: harmony)
-                == (name == "high" ? "medium" : name), "GPT-OSS, \(name)")
+            #expect(ReasoningEffort.switchesThinkingOff(name) == !thinks, "Lightning, \(name)")
+            #expect(effort.harmonyLevel.rawValue == rule(name, ["low", "medium", "high"]), "GPT-OSS, \(name)")
+            #expect(ReasoningEffortPolicy.templateEffort(name, modelID: "gpt-oss-20b", modelType: "gpt_oss", thinking: nil)
+                == rule(name, ["low", "medium", "high"]), "GPT-OSS rendered, \(name)")
         }
     }
 
@@ -94,12 +95,12 @@ struct ReasoningEffortValuesTests {
         }
     }
 
-    /// Families whose template has a thinking switch and reads no effort level:
-    /// every effort is taken, and `none` switches thinking off. GPT-OSS cannot
-    /// switch Harmony's reasoning off; its levels are its Harmony policy's.
+    /// Every effort is taken, and only `none` sets `enable_thinking` false:
+    /// Nemotron 3.5 Lightning's template has a thinking switch and reads no
+    /// effort level; GPT-OSS can't switch Harmony's reasoning off, and renders
+    /// its levels (`gptOSSRendersTheNearestHarmonyLevel`).
     @Test(arguments: [
-        ("gemma-4-26b-qat-4bit", "gemma4"), (EngineV2SupportedModels.nemotron35LightningModelID, "nemotron_h"),
-        ("gpt-oss-20b", "gpt_oss"),
+        (EngineV2SupportedModels.nemotron35LightningModelID, "nemotron_h"), ("gpt-oss-20b", "gpt_oss"),
     ])
     func thinkingSwitchFamiliesTakeEveryEffort(model: String, type: String) throws {
         for effort in Self.efforts {
@@ -110,14 +111,37 @@ struct ReasoningEffortValuesTests {
         }
     }
 
-    /// DiffusionGemma and MiMo have a thinking switch and no effort level: every
-    /// effort but `none` reasons.
-    @Test(arguments: [("native-diffusion", "diffusion_gemma"), ("mimo-v2.6-flash-mopd", "mimo_v2")])
+    /// Gemma 4, DiffusionGemma and MiMo have a thinking switch and no effort
+    /// level: every effort but `none` reasons. Gemma 4's template defaults
+    /// thinking off, so an effort turns it on, as the coordinator's prompt
+    /// sidecar plans it.
+    @Test(arguments: [
+        ("gemma-4-26b-qat-4bit", "gemma4"), ("gemma-4-26b-text", "gemma4_text"), ("gemma-4-vision", "gemma4_vision"),
+        ("native-diffusion", "diffusion_gemma"), ("mimo-v2.6-flash-mopd", "mimo_v2"),
+    ])
     func binaryThinkingFamiliesReasonForEveryEffortButNone(model: String, type: String) throws {
         for effort in Self.efforts {
             for spelling in Spelling.allCases {
                 let context = try Self.context(model: model, type: type, effort: effort, spelling)
                 #expect(context["enable_thinking"] as? Bool == (effort != "none"), "\(type) \(effort) \(spelling)")
+            }
+        }
+    }
+
+    /// GPT-OSS renders each effort at the nearest of Harmony's levels (`low`,
+    /// `medium`, `high`), the higher one between two; Harmony can't switch its
+    /// reasoning off, so `none` renders `low`. A direct caller's `high` renders
+    /// `high`; the coordinator caps OpenRouter's traffic at `medium`. The model
+    /// type identifies GPT-OSS behind any catalog ID.
+    @Test func gptOSSRendersTheNearestHarmonyLevel() throws {
+        let levels = ["none": "low", "minimal": "low", "low": "low", "medium": "medium", "high": "high",
+                      "xhigh": "high", "max": "high"]
+        for model in ["gpt-oss-20b", "opaque-alias"] {
+            for spelling in Spelling.allCases {
+                for (effort, level) in levels {
+                    let context = try Self.context(model: model, type: "gpt_oss", effort: effort, spelling)
+                    #expect(context["reasoning_effort"] as? String == level, "\(model) \(effort) \(spelling)")
+                }
             }
         }
     }

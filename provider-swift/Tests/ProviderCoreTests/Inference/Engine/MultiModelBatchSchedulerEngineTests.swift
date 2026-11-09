@@ -260,30 +260,27 @@ func templateContextComposesReasoningControls() {
     #expect(context?["reasoning_effort"] as? String == "high")
 }
 
-@Test("GPT-OSS high reasoning effort is downgraded to medium")
-func templateContextDowngradesGPTOSSHighReasoningEffort() {
+@Test("GPT-OSS renders each effort at its nearest Harmony level")
+func templateContextRendersGPTOSSHarmonyLevels() {
     let request = OpenAIChatCompletionRequest(
         model: "openai/gpt-oss-20b",
         messages: [.init(role: .user, content: .text("hi"))])
-
-    let high = MultiModelBatchSchedulerEngine.templateAdditionalContext(
-        for: request, controls: .init(reasoningEffort: "high"))
-    let medium = MultiModelBatchSchedulerEngine.templateAdditionalContext(
-        for: request, controls: .init(reasoningEffort: "medium"))
-    let low = MultiModelBatchSchedulerEngine.templateAdditionalContext(
-        for: request, controls: .init(reasoningEffort: "low"))
     let opaqueAlias = OpenAIChatCompletionRequest(
         model: "opaque-alias",
         messages: [.init(role: .user, content: .text("hi"))])
-    let identifiedByModelType = MultiModelBatchSchedulerEngine.templateAdditionalContext(
-        for: opaqueAlias,
-        controls: .init(reasoningEffort: "high"),
-        modelType: "gpt_oss")
-
-    #expect(high?["reasoning_effort"] as? String == "medium")
-    #expect(medium?["reasoning_effort"] as? String == "medium")
-    #expect(low?["reasoning_effort"] as? String == "low")
-    #expect(identifiedByModelType?["reasoning_effort"] as? String == "medium")
+    func rendered(_ request: OpenAIChatCompletionRequest, _ effort: String, modelType: String? = nil) -> String? {
+        MultiModelBatchSchedulerEngine.templateAdditionalContext(
+            for: request, controls: .init(reasoningEffort: effort), modelType: modelType)?["reasoning_effort"] as? String
+    }
+    let levels = ["none": "low", "minimal": "low", "low": "low", "medium": "medium", "high": "high",
+                  "xhigh": "high", "max": "high", "High": "high", "OFF": "low"]
+    for (effort, level) in levels {
+        #expect(rendered(request, effort) == level, "\(effort)")
+        #expect(rendered(opaqueAlias, effort, modelType: "gpt_oss") == level, "\(effort), by model type")
+    }
+    // A value that is none of the names reaches no Harmony level (the request
+    // is refused before rendering, `ReasoningEffortPolicy.validate`).
+    #expect(rendered(request, "turbo") == "turbo")
 }
 
 @Test("nested reasoning.enabled wins over raw-body template controls")

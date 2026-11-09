@@ -555,11 +555,11 @@ here (its other Mac gone). It first says so in one line, in words for what it do
   Mac (`ClusterPairCommands.openScreen`), whose title names this Mac's part:
   "Darkbloom cluster · Leading Mac" or "Darkbloom cluster · Joining Mac".
   Nothing starts there before a choice, so its line says what the screen does
-  (`ClusterPairSummary.screenLine`): on the leading Mac of a stopped pair,
-  `This Mac is in a two-Mac cluster with the other Mac (…), which is stopped.
-  Press Enter to start it with Qwen 3.8 27B (last used), or choose another
-  model.` (`Choose its model to start it.` before a model was chosen);
-  otherwise `…: opening the pair's screen.`
+  (`ClusterPairSummary.screenLine`): on the leading Mac of a stopped pair
+  whose other Mac answers, `This Mac is in a two-Mac cluster with the other Mac
+  (…), which is stopped. Press Enter to start it with Qwen 3.8 27B (last used),
+  or choose another model.` (`Choose its model to start it.` before a model was
+  chosen); otherwise `…: opening the pair's screen.`
   In a color terminal each finished step folds to one line, and the run's whole
   flow goes to `~/.darkbloom/cluster-setup/screens/` ("Full log: …" at the end);
   see [Two Macs as one provider](two-mac-cluster.md).

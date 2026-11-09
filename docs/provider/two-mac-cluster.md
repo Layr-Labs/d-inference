@@ -348,14 +348,17 @@ and shows the result.
 After setup, `darkbloom cluster` works like `darkbloom start`; on a paired Mac,
 `darkbloom start` opens the same screen, and `darkbloom stop`, `restart` and
 `status` act on both Macs. In a terminal, `darkbloom start`'s first line says
-what that screen does: on the leader of a stopped pair, ``This Mac is in a two-Mac cluster with the other Mac
-(…), which is stopped. Press Enter to start it with Qwen 3.8 27B (last used), or
-choose another model.``; otherwise ``…: opening the pair's screen.`` The screen
+what that screen does: on the leader of a stopped pair whose other Mac answers,
+``This Mac is in a two-Mac cluster with the other Mac (…), which is stopped.
+Press Enter to start it with Qwen 3.8 27B (last used), or choose another
+model.``; otherwise ``…: opening the pair's screen.`` (with the other Mac
+silent the screen first offers Try again, Start over or Quit). The screen
 opens with both Macs and the cable ("This Mac
 (Studio A) leads · the other Mac (Apple M3 Ultra, 256 GB) follows · cable
 ready"; the other Mac by its hardware name, since no computer name crosses the
-cable), then the pair's status: the outcome block (`✓ Serving …` or `✗ Not
-serving: <reason>`), or "Stopped; last model …".
+cable; "This Mac (Studio A) · the other Mac (…) isn't answering" when it
+doesn't answer), then the pair's status: the outcome block (`✓ Serving …` or
+`✗ Not serving: <reason>`), or "Stopped; last model …".
 
 On the leader, the pair's model list follows, like `darkbloom start`'s picker:
 
@@ -1821,7 +1824,8 @@ on its own), `darkbloom start --solo` serves this Mac alone:
   on a paired Mac before it downloads anything. It says the pair as this Mac's
   own files tell it ("This Mac serves in a pair with …" only when it serves;
   "… which is stopped", "… that isn't running here", or, on the Mac that
-  follows, "started with …"). A pair with no model yet gets no **Start
+  follows, "started with …", where the summary says Start serving "Makes sure
+  the pair serves …" rather than that it starts it). A pair with no model yet gets no **Start
   serving**: the page says to choose its model with `darkbloom cluster` in
   Terminal on the leading Mac first, and so does the CLI (``No model was chosen for the pair yet: choose one with `darkbloom cluster` in a terminal on <the leading Mac>.``).
 - A pair that is merely stopped gives one line: ``This Mac is in a two-Mac

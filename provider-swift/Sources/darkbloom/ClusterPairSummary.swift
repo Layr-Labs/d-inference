@@ -204,9 +204,10 @@ struct ClusterPairSummary: Sendable, Equatable {
     /// The line `darkbloom start` says in a terminal before the pair's screen, in words for what that screen does: on the
     /// leading Mac of a stopped pair, Enter starts the model last used (before one is chosen, the choice); otherwise the
     /// screen shows the pair as it is, and the Mac that follows starts nothing there. Never "starting": nothing starts
-    /// before a choice (journey 2a on pair-2, J2-d).
+    /// before a choice (journey 2a on pair-2, J2-d). Enter is named only while the other Mac answers: otherwise the
+    /// screen first offers Try again, Start over or Quit (#1908's review).
     var screenLine: String {
-        guard role == .leader, !started else { return actingLine("opening the pair's screen") }
+        guard role == .leader, !started, otherMacReachable else { return actingLine("opening the pair's screen") }
         let stopped = "This Mac is in a two-Mac cluster with \(otherMac), which is stopped."
         guard let model else { return stopped + " Choose its model to start it." }
         return stopped + " Press Enter to start it with \(model) (last used), or choose another model."

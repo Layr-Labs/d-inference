@@ -267,9 +267,17 @@ A single-Mac `start` decides how this Mac serves (`StartServingResolver`,
    It is saved in `[local] mode`, as the question's answer is
    (`LocalFirstOptions.savesModeFlag`), so the background service, `restart`
    and `update` serve it from now on; `--local --here` (one terminal session)
-   and the `--foreground` service save no mode, and neither does a flag beside
-   `--solo` on a Mac in a pair, whose `[local] mode` holds the pair's answer:
-   there the flag is for that start only.
+   and the `--foreground` service save no mode. A plain `start --local` on one
+   Mac saves it.
+   **Beside `--solo`, every flag is for that start only**
+   (`LocalFirstOptions.solo`): on a Mac in a pair `[local]` holds the pair's
+   settings, so a solo start saves no mode, no `--choose` answer (and asks no
+   route: the pair's serves), and refuses `--route`, `--me-first-idle`,
+   `--no-me-first`, and `--me-first` over a saved `me_first = false`, when one
+   would change the pair's value, before anything starts or is saved (exit 64,
+   ``… would change [local] route, which your pair reads too. …``,
+   `StartServingResolver.soloSettingsRefusal`). Only a new or named port is
+   saved: this Mac's one port, the pair's API's too.
 2. `--choose` (a terminal only): the question again.
 3. The saved choice, `[local] mode`, with or without a terminal, Only me
    included: every choice serves in the background.

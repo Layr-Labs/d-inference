@@ -960,6 +960,25 @@ struct ClusterPairControlTests {
         #expect(pairActionCalls(soloStderr).isEmpty, "--solo")
     }
 
+    /// #1931's review: beside --solo, a flag that would change a [local] key the pair reads is refused before the pair is
+    /// touched, as `--choose` without a terminal is: this Mac's leftover part keeps running, and nothing is saved.
+    @Test("`darkbloom start --solo --route …` is refused before this Mac's part of the pair is touched")
+    func startSoloWithAPairSettingIsRefusedBeforeThePairIsTouched() async {
+        let result = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent, \.standardErrorContent]) {
+            try await exitWithPair(stalePair(), actions: pairActions()) { sandbox in
+                try await Start.$releaseForTesting.withValue({ FileHandle.standardError.write(Data("released\n".utf8)); return true }) {
+                    try await runCLICommand(Start.self, ["start", "--solo", "--route", "this-mac", "--model", "acme/Alpha-4bit",
+                                                         "--config", sandbox.config.path])
+                }
+            }
+        }
+        let stderr = text(result?.standardErrorContent), stdout = text(result?.standardOutputContent)
+        #expect(stderr.contains("`--route` would change [local] route, which your pair reads too."), "\(stderr)")
+        #expect(!stderr.contains("released"), "this Mac's part keeps running")
+        #expect(pairActionCalls(stderr).isEmpty)
+        #expect(!stdout.contains("Terms of Service"), "nothing started")
+    }
+
     @Test("a leftover part that doesn't stop: nothing starts beside it, and the one step that always works is named")
     func startSoloWhenTheLeftoverWontStop() async {
         let result = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent]) {

@@ -386,8 +386,12 @@ struct Start: AsyncParsableCommand {
                 // cleared): the refusals of how this Mac would serve alone, such as `--choose` without a terminal.
                 // `resolveServing` makes the same ones again below.
                 if pair.paired {
-                    let step = try localFirstOptions.modeStep(saved: try savedLocalSettings(configPath: configOptions.config),
-                                                              terminal: ClusterPairCommands.isTerminal())
+                    let saved = try savedLocalSettings(configPath: configOptions.config)
+                    let step = try localFirstOptions.modeStep(saved: saved, terminal: ClusterPairCommands.isTerminal())
+                    // A flag that would change a [local] key the pair reads is refused before the pair is touched too.
+                    if let refusal = StartServingResolver.soloSettingsRefusal(localFirstOptions, saved: saved ?? LocalSettings()) {
+                        throw ValidationError(refusal)
+                    }
                     // Likewise a start that would ask for its models (checked again after `resolveServing`, where a Mac
                     // that isn't paired meets it).
                     if case .decided(let mode, _) = step { try requireModelsNamedWithoutTerminal(mode: mode) }

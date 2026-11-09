@@ -762,6 +762,7 @@ func checkpointTensors(_ directory: URL) throws -> [Tensor] {
             }
         }
         checkStopRule()
+        checkSealedEndAgreement()
         checkDecodeSubmission()
         print(failures == 0 ? "PASS" : "FAILED: \(failures)")
         exit(failures == 0 ? 0 : 1)
@@ -807,6 +808,76 @@ func checkStopRule() {
         check(R.Finish(code: finish.code) == finish, "finish code round trip \(finish)")
     }
     check(R.Finish(code: 0) == nil && R.Finish(code: 9) == nil, "unknown finish codes are refused")
+}
+
+// D6 over the link real pairs use: the end-of-request agreement
+// (`QwenTensorParallelStopRule.endWords`/`readEnd`) crosses a keyed session's
+// sealed all-sum as the product group carries an integer agreement
+// (`QwenTensorParallelGroup.allSum`: as float32, exact below 2^24). Each
+// rank's partial is sealed under its direction key and opened by its peer
+// (`QwenTensorParallelSealCodec`); each rank sums the two in rank order. Both
+// ranks read the same end, a memory stop names the refusing rank, and a
+// tampered partial is refused, so neither rank reads another end.
+func checkSealedEndAgreement() {
+    typealias R = QwenTensorParallelStopRule
+    struct Side { let count: Int; let finish: R.Finish; let client: Bool; let memory: Bool }
+    var counter: UInt64 = 100
+    /// One sealed all-sum of both ranks' words: what each rank reads, or nil where a partial was refused.
+    func sealedSum(_ words: [[Int32]], tamper: Int? = nil) -> [[Int32]?] {
+        let (codec0, codec1) = QwenTensorParallelSealCodec.pair(scope: Data("d6-end-agreement".utf8))
+        let codecs = [codec0, codec1]
+        counter += 1
+        let partials = words.map { $0.map(Float.init) }
+        let bytes = partials[0].count * 4
+        let frames: [[UInt8]] = (0...1).map { rank in
+            var frame = [UInt8](repeating: 0, count: bytes + QwenTensorParallelSealCodec.frameOverhead)
+            let status = partials[rank].withUnsafeBytes { p in
+                frame.withUnsafeMutableBytes { f in codecs[rank].seal(p.baseAddress!, bytes, f.baseAddress!, counter) }
+            }
+            check(status == 0, "end agreement: rank \(rank) seals its partial")
+            if tamper == rank { frame[1] ^= 1 }
+            return frame
+        }
+        return (0...1).map { rank -> [Int32]? in
+            var opened = [Float](repeating: 0, count: partials[0].count)
+            let status = frames[1 - rank].withUnsafeBytes { f in
+                opened.withUnsafeMutableBytes { o in codecs[rank].open(f.baseAddress!, bytes, o.baseAddress!, counter, 1 - rank) }
+            }
+            guard status == 0 else { return nil }
+            let mine = partials[rank], peer = opened
+            return (0..<mine.count).map { Int32(rank == 0 ? mine[$0] + peer[$0] : peer[$0] + mine[$0]) }
+        }
+    }
+    func agree(_ zero: Side, memory1: Bool) -> [R.End?] {
+        let words = [R.endWords(rank: 0, count: zero.count, finish: zero.finish, clientStopped: zero.client,
+                                stoppedForMemory: zero.memory),
+                     R.endWords(rank: 1, count: 0, finish: .clientStop, clientStopped: false, stoppedForMemory: memory1)]
+        return sealedSum(words).map { read in read.flatMap { try? R.readEnd($0) } }
+    }
+    let cases: [(Side, Bool, Int?, String)] = [
+        (Side(count: 7, finish: .clientStop, client: false, memory: false), true, 1, "rank 1's memory stop"),
+        (Side(count: 7, finish: .clientStop, client: false, memory: true), false, 0, "rank 0's memory stop"),
+        (Side(count: 7, finish: .clientStop, client: false, memory: true), true, 0, "both: rank 0 is named"),
+        (Side(count: 0, finish: .clientStop, client: false, memory: false), true, 1, "a stop before any token"),
+        (Side(count: 7, finish: .clientStop, client: true, memory: false), true, nil, "the owner's stop wins"),
+        (Side(count: 7, finish: .eos, client: false, memory: false), true, nil, "a stop token wins"),
+        (Side(count: 16_777_215, finish: .length, client: false, memory: true), false, nil, "the length wins, at 2^24 - 1 tokens"),
+        (Side(count: 7, finish: .clientStop, client: false, memory: false), false, nil, "a cancel is not an abort"),
+    ]
+    for (zero, memory1, named, label) in cases {
+        let ends = agree(zero, memory1: memory1)
+        check(ends[0] != nil && ends[0] == ends[1], "end agreement, \(label): both ranks read one end (\(ends))")
+        check(ends[0]?.memoryStopRank == named, "end agreement, \(label): names rank \(String(describing: named))")
+        check(ends[0]?.rank0Count == zero.count && ends[0]?.rank0Finish == zero.finish, "end agreement, \(label): rank 0's count and finish")
+    }
+    // A tampered partial opens on neither side of it: the rank that received it reads no end.
+    let words = [R.endWords(rank: 0, count: 5, finish: .clientStop, clientStopped: false, stoppedForMemory: false),
+                 R.endWords(rank: 1, count: 0, finish: .clientStop, clientStopped: false, stoppedForMemory: true)]
+    for rank in 0...1 {
+        let read = sealedSum(words, tamper: rank)
+        check(read[1 - rank] == nil && read[rank] != nil, "end agreement: rank \(rank)'s tampered partial is refused by its peer")
+    }
+    print("sealed end agreement: \(cases.count) ends read alike on both ranks, tampering refused")
 }
 
 // A decode forward's GPU submissions (`QwenTensorParallelLaunch.decodeLayerStride`).

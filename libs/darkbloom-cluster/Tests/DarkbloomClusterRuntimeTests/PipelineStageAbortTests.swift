@@ -1,4 +1,6 @@
+import CryptoKit
 import DarkbloomClusterProtocol
+import DarkbloomClusterSecurity
 import Foundation
 import MLX
 import Testing
@@ -7,7 +9,11 @@ import Testing
 /// D6: a stage whose memory gate refuses the running request stops in the
 /// slot it owes its peer (a marker of that message's own record), the peer
 /// confirms once, both retire it, and the same collectives serve the next
-/// request. Real two-rank local sockets; no model.
+/// request. Real two-rank local sockets; no model. Each two-rank case also
+/// runs keyed, as a real pair's data plane is (S16): there every transfer, a
+/// marker and its confirmation too, is an authenticated, encrypted record of
+/// its own type and label, so a marker on another record than its slot's
+/// fails authentication instead of stopping the request.
 @Suite("A pipeline stage's memory refusal ends that request alone", .serialized)
 struct PipelineStageAbortTests {
     private final class Counter: @unchecked Sendable {
@@ -67,6 +73,26 @@ struct PipelineStageAbortTests {
             producerStageFingerprint: source.stageFingerprints[0], frame: expected.frame,
             tokenIDsSHA256: expected.tokenIDsSHA256, payloadSHA256: sha256(bytes), array: array)
         return (value, try .init(expected: expected, payloadSHA256: sha256(bytes)), expected)
+    }
+
+    /// Two real local-socket collectives, keyed as a pair's data plane is
+    /// when `keyed` (`Collective.establishDataPlane`, pinned credentials).
+    private static func pair(keyed: Bool) throws -> ResidualStreamCollectiveFixture {
+        let pair = try ResidualStreamCollectiveFixture()
+        guard keyed else { return pair }
+        let keys = [P256.Signing.PrivateKey(), P256.Signing.PrivateKey()], epoch = UUID()
+        let credentials = try (0...1).map { rank in
+            try ClusterDataPlaneCredential.issue(identity: keys[rank], epoch: epoch, rank: rank,
+                peerPin: .init(identityPublicKey: keys[1 - rank].publicKey.x963Representation))
+        }
+        let scope = Data(repeating: 0xd6, count: 32)
+        _ = try pair.exchange(send: {
+            _ = try pair.first.establishDataPlane(credential: credentials[0], scopeSHA256: scope, check: {})
+        }, receive: { peer in
+            try peer.establishDataPlane(credential: credentials[1], scopeSHA256: scope, check: {})
+        })
+        #expect(pair.first.workerDataPlane != nil && pair.last.workerDataPlane != nil, "the fixture's data plane is keyed")
+        return pair
     }
 
     private static func aborted(_ body: () throws -> Void) -> QwenStageAborted? {
@@ -161,10 +187,10 @@ struct PipelineStageAbortTests {
     /// answers the header with the marker instead of `boundaryReady`, so rank 0
     /// never sends the payload; both report rank 1's abort, retire it together,
     /// and the next request's first exchange runs on the same collectives.
-    @Test func rankOneStopsAtTheReadinessItOwesAndTheWireServesTheNextRequest() throws {
+    @Test(arguments: [false, true]) func rankOneStopsAtTheReadinessItOwesAndTheWireServesTheNextRequest(keyed: Bool) throws {
         let agreement = try Self.agreement(Self.request())
         let (boundary, packet, expected) = try Self.boundary(agreement, sequence: 0)
-        let pair = try ResidualStreamCollectiveFixture()
+        let pair = try Self.pair(keyed: keyed)
         var producer: QwenStageAborted?
         let consumer = try pair.exchange(send: {
             let transport = try QwenLayerStageGenerationTransport(agreement: agreement, collective: pair.first)
@@ -189,10 +215,10 @@ struct PipelineStageAbortTests {
 
     /// Rank 0's gate refuses at a frame's start: it runs no forward and sends
     /// the marker where rank 1 waits for the header.
-    @Test func rankZeroStopsAtTheHeaderItOwesWithoutAForward() throws {
+    @Test(arguments: [false, true]) func rankZeroStopsAtTheHeaderItOwesWithoutAForward(keyed: Bool) throws {
         let agreement = try Self.agreement(Self.request())
         let (_, _, expected) = try Self.boundary(agreement, sequence: 0)
-        let pair = try ResidualStreamCollectiveFixture()
+        let pair = try Self.pair(keyed: keyed)
         var producer: QwenStageAborted?
         let consumer = try pair.exchange(send: {
             let transport = try QwenLayerStageGenerationTransport(agreement: agreement, collective: pair.first,
@@ -215,10 +241,10 @@ struct PipelineStageAbortTests {
     /// Rank 1's gate refuses once the payload has arrived: it skips its
     /// forward and sends the marker where rank 0 waits for `boundaryConsumed`.
     /// A latch that is clear is never a marker: the request runs as before.
-    @Test func rankOneStopsInsteadOfConsumingThePayload() throws {
+    @Test(arguments: [false, true]) func rankOneStopsInsteadOfConsumingThePayload(keyed: Bool) throws {
         let agreement = try Self.agreement(Self.request())
         let (boundary, packet, expected) = try Self.boundary(agreement, sequence: 0)
-        let pair = try ResidualStreamCollectiveFixture()
+        let pair = try Self.pair(keyed: keyed)
         var producer: QwenStageAborted?
         let consumed = try pair.exchange(send: {
             let transport = try QwenLayerStageGenerationTransport(agreement: agreement, collective: pair.first)
@@ -243,11 +269,11 @@ struct PipelineStageAbortTests {
 
     /// Compact decode: rank 0 stops in the compact boundary frame it owes, and
     /// rank 1 in the compact token frame it owes.
-    @Test func compactDecodeStopsInTheFrameEachRankOwes() throws {
+    @Test(arguments: [false, true]) func compactDecodeStopsInTheFrameEachRankOwes(keyed: Bool) throws {
         for stopping in 0...1 {
             let agreement = try Self.agreement(Self.request(), compact: true)
             let (boundary, packet, expected) = try Self.boundary(agreement, sequence: 1)
-            let pair = try ResidualStreamCollectiveFixture()
+            let pair = try Self.pair(keyed: keyed)
             var producer: QwenStageAborted?
             let consumer = try pair.exchange(send: {
                 let transport = try QwenLayerStageGenerationTransport(agreement: agreement, collective: pair.first,
@@ -276,6 +302,78 @@ struct PipelineStageAbortTests {
             #expect(consumer?.abort == .init(reason: .memory, rank: stopping) && consumer?.local == (stopping == 1))
             try Self.nextRequestExchanges(pair)
         }
+    }
+
+    /// The other slots a rank owes, each with its stop: rank 1's token, rank
+    /// 0's `tokenAccepted`, rank 1's `decisionAccepted`, rank 0's compact
+    /// decision, rank 1's alone-route prompt digests (stopped before a frame,
+    /// `QwenPhaseSplitGeneration.prefillAlone`) and an MTP round's control
+    /// frame (`sendControlFrame`, MiMo's and Qwen's rounds). The peer is in the
+    /// receive for that slot; both report the stopping rank's abort, retire
+    /// it, and the next request's first exchange runs on the same collectives.
+    enum OwedSlot: String, CaseIterable, Sendable { case token, tokenAccepted, decisionAccepted, compactDecision, alonePrompt, roundFrame }
+
+    @Test(arguments: OwedSlot.allCases, [false, true])
+    func eachOwedSlotCarriesTheStop(slot: OwedSlot, keyed: Bool) throws {
+        let agreement = try Self.agreement(Self.request(), compact: slot == .compactDecision)
+        let boundary = String(repeating: "5", count: 64), chain = agreement.initialTokenChainSHA256
+        let token = try QwenLayerStageGenerationTokenPacket(agreement: agreement, boundaryFingerprint: boundary,
+            previousTokenChainSHA256: chain, ordinal: 0, committedTokens: 2, tokenID: 9)
+        let decision = try QwenLayerStageGenerationDecisionPacket(agreement: agreement, token: token, continueRequested: true)
+        #expect(decision.content.decision == .proceed)
+        let stopping = slot == .tokenAccepted || slot == .compactDecision ? 0 : 1
+        let pair = try Self.pair(keyed: keyed)
+        var zero: QwenStageAborted?
+        let one = try pair.exchange(send: {
+            let transport = try QwenLayerStageGenerationTransport(agreement: agreement, collective: pair.first,
+                abort: stopping == 0 ? Self.latch(rank: 0, refusingAt: 1) : nil)
+            zero = Self.aborted {
+                switch slot {
+                case .token:
+                    _ = try transport.receiveToken(boundaryFingerprint: boundary, previousChain: chain, ordinal: 0,
+                        committedTokens: 2, check: {})
+                case .tokenAccepted:
+                    let value = try transport.receiveToken(boundaryFingerprint: boundary, previousChain: chain, ordinal: 0,
+                        committedTokens: 2, check: {})
+                    try transport.acknowledgeToken(value, check: {})
+                case .decisionAccepted:
+                    try transport.sendDecision(decision, check: {})
+                case .compactDecision:
+                    try transport.sendCompactDecision(decision, check: {})
+                case .alonePrompt:
+                    _ = try transport.receiveAlonePrompt(firstFrame: 0, check: {})
+                case .roundFrame:
+                    _ = try transport.receiveControlFrame(frameBytes: MiMoMTPRoundPacket.frameBytes, type: .tokenRelay,
+                        label: "mimo-round", check: {})
+                }
+            }
+            if let zero { try transport.exchangeAbortRetirement(zero, check: {}) }
+        }, receive: { peer -> QwenStageAborted? in
+            let transport = try QwenLayerStageGenerationTransport(agreement: agreement, collective: peer,
+                abort: stopping == 1 ? Self.latch(rank: 1, refusingAt: 1) : nil)
+            let value = Self.aborted {
+                switch slot {
+                case .token, .tokenAccepted:
+                    try transport.sendToken(token, check: {})
+                case .decisionAccepted:
+                    let packet = try transport.receiveDecision(token: token, check: {})
+                    try transport.acknowledgeDecision(packet, check: {})
+                case .compactDecision:
+                    _ = try transport.receiveCompactDecision(token: token, check: {})
+                case .alonePrompt:
+                    try transport.stopIfLatched(owing: .frame(frameBytes: QwenAlonePromptPacket.frameBytes, .tokenRelay,
+                        "alone-prompt"), check: {})
+                case .roundFrame:
+                    try transport.sendControlFrame(Data("{}".utf8), frameBytes: MiMoMTPRoundPacket.frameBytes,
+                        type: .tokenRelay, label: "mimo-round", stopPoint: true, check: {})
+                }
+            }
+            if let value { try transport.exchangeAbortRetirement(value, check: {}) }
+            return value
+        })
+        #expect(zero?.abort == .init(reason: .memory, rank: stopping) && zero?.local == (stopping == 0), "\(slot), keyed \(keyed)")
+        #expect(one?.abort == .init(reason: .memory, rank: stopping) && one?.local == (stopping == 1), "\(slot), keyed \(keyed)")
+        try Self.nextRequestExchanges(pair)
     }
 
     /// Batch lanes (wire v3): a lane leaves for memory with its own
@@ -323,7 +421,7 @@ struct PipelineStageAbortTests {
 
     /// Rank 0 replaces only a decision to go on: a decision that ends the
     /// request is sent as it is, and the request ends as it would have.
-    @Test func onlyADecisionToGoOnIsReplaced() throws {
+    @Test(arguments: [false, true]) func onlyADecisionToGoOnIsReplaced(keyed: Bool) throws {
         for (outputs, continuing) in [(3, true), (1, true), (3, false)] {
             let agreement = try Self.agreement(Self.request(outputs: outputs))
             let boundary = String(repeating: "5", count: 64), chain = agreement.initialTokenChainSHA256
@@ -332,7 +430,7 @@ struct PipelineStageAbortTests {
             let decision = try QwenLayerStageGenerationDecisionPacket(agreement: agreement, token: token,
                 continueRequested: continuing)
             let replaced = decision.content.decision == .proceed
-            let pair = try ResidualStreamCollectiveFixture()
+            let pair = try Self.pair(keyed: keyed)
             var producer: QwenStageAborted?
             let consumer = try pair.exchange(send: {
                 let transport = try QwenLayerStageGenerationTransport(agreement: agreement, collective: pair.first,

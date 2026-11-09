@@ -5534,8 +5534,10 @@ it alone:
   mid-prefill (594 MiB compressed, so no file cache counted). The stage's
   worker exited, so the client got a 500 and the pair stopped serving for
   about a minute (journey 3, D6). Such a refusal now ends that request alone
-  ([a pipeline stage's memory refusal](#a-pipeline-stages-memory-refusal-ends-that-request-alone)).
-  Tensor parallel's ranks end such a request alone too. Each stage charges the whole
+  ([a pipeline stage's memory refusal](#a-pipeline-stages-memory-refusal-ends-that-request-alone)),
+  as tensor parallel's ranks do. 0.10.11 keeps the pipeline at the memory
+  plan's request all the same; serving the whole profile again waits for the
+  abort's proof on real pairs. Each stage charges the whole
   model's ledger (`Gemma4StateBudget`) at the request's context: 2.0 GB, plus
   one prompt frame's 2.2 GB on a stage with a full-attention layer, at the
   standard request.

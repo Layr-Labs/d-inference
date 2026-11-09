@@ -453,14 +453,58 @@ They run once, at `start`:
    No line or file holds the key, and no start screen shows it
    (`Start.localServerBanner`). The `--local` banner's `Your requests:` line
    and the tool block come from one Keychain read, of whether an account key
-   is saved. A model of this Mac's that isn't loaded yet has no context in
-   `/v1/models`, so one line says to run the start again once it is loaded, to
-   pick up its limits.
+   is saved.
+4. **Before it writes, it waits for this Mac's models** (`ModelLoadWait`,
+   `provider-swift/Sources/darkbloom/ToolIntegration/ModelLoadWait.swift`):
+   while the local API's own process (its daemon state, by the pid in
+   `local.json`) still loads a model this Mac lists for its start
+   (`startupPreloadPendingModels`), `/v1/models` gives none of that model's own
+   limits. On a terminal one live line is drawn in place
+   (`⠙ Loading Gemma 4 26B before setting up OpenCode… 42s`); without one, a
+   line as it starts (`Waiting up to 10m for Gemma 4 26B to load before setting
+   up OpenCode.`) and one as it ends (`Gemma 4 26B loaded after 42s.`). Then
+   `/v1/models` is read again and the tools get the limits this Mac gives. A
+   provider that names nothing loaded and nothing to load is asked once more a
+   second later (it may not have said yet); Only me's server loads before it
+   listens, so it isn't waited for. Nothing is written, and the start exits 1,
+   when the model is still loading after `ModelLoadWait.defaultTimeout` (10
+   minutes; ``✗ Gemma 4 26B is still loading after 10m, so OpenCode wasn't set
+   up. Run `darkbloom --opencode` again once `darkbloom status` shows it
+   loaded.``), when it didn't load (``… didn't load, so OpenCode wasn't set up:
+   `darkbloom status` says why.``), or on Ctrl-C, which the wait alone takes
+   (``Stopped waiting for Gemma 4 26B to load, so OpenCode wasn't set up;
+   nothing was written. …``). It asks for Ctrl-C at every look before anything
+   else, and once more as it ends, so one pressed as the model finishes loading
+   writes nothing either (``Stopped before setting up OpenCode; nothing was
+   written. Run `darkbloom --opencode` again.``). A model that isn't loading
+   (unloaded when idle, or one that loads on a request) isn't waited for: it
+   gets the catalog's limits, and one line says to run `darkbloom --opencode`
+   again once `darkbloom status` shows it loaded. Which models those are, the
+   process says (its `warmModels`), also when a route that dials out lists the
+   catalog's limits for them; without its word, `/v1/models` does (a model it
+   lists without a context). Single-Mac only for now: a pair's local API (its
+   leader's part, a relay or `cluster local`) can't tell, so it isn't waited
+   for.
 
 A tool it can't set up prints `✗` and why, writes nothing and ends with
 `Darkbloom keeps serving.`; the start then exits 1 (a background start keeps
 running; `--local` keeps serving in the terminal). They are not single-Mac
 options: on a paired Mac they apply to the pair's local API.
+
+A start without `--opencode` or `--hermes` that serves a local API (Only me, or
+Both, me first) reads the tools' configs and changes none: when Darkbloom's
+provider in OpenCode's or Hermes' config points at another address than this
+start's local API, or reads another key file than `local_token` (one that
+doesn't hold the same key), one line says so and names the command
+(`ToolAddress`, `provider-swift/Sources/darkbloom/ToolIntegration/ToolAddress.swift`):
+``OpenCode points at http://127.0.0.1:8001/v1, not this Mac's local API
+(http://127.0.0.1:8002/v1): `darkbloom --opencode` points it there.`` Two
+addresses are the same with the same scheme, host and port in any case (the
+scheme's own port when none is given) and path (one `/` at its end aside);
+`localhost`, `127.0.0.1` and `::1` are one host, and so is this Mac's `.local`
+name for an API on every address (`ToolAddress.sameAddress`). Single-Mac only
+for now: a paired Mac's `start` starts the pair and says nothing about the
+tools.
 
 On a Mac in a two-Mac cluster (one that holds a pairing; a cluster service left
 without one is a leftover, which `darkbloom cluster status` names), `start` starts the pair, as `darkbloom cluster` does

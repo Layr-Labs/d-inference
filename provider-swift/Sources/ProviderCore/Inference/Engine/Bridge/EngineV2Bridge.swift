@@ -327,8 +327,13 @@ public actor EngineV2Bridge {
     /// second constant to keep in sync.
     var pumpTasks: [String: Task<Void, Never>] = [:]
     /// How often a request watched while it has no first token looks whether it still waits in the engine's queue
-    /// (`queueState(of:)`): the owner's request under me first (`EngineV2Bridge+OwnerWait.swift`).
+    /// (`EngineV2Bridge+QueueState.swift`): the owner's request under me first (`EngineV2Bridge+OwnerWait.swift`), and
+    /// a streamed local request whose head is held (`EngineV2Bridge+HeadHold.swift`), whose looks start 1 ms apart and
+    /// grow to this.
     var queuePollInterval: Duration = .milliseconds(250)
+    /// Streamed local requests whose response head waits for the engine to admit them, each still waiting or refused
+    /// for this Mac's memory (`EngineV2Bridge+HeadHold.swift`).
+    var heldHeads: [String: HeldHead] = [:]
 
     /// Upper bound on a caller-supplied request-id we will use verbatim.
     /// Coordinator/provider ids are short (`req-<uuid-prefix>` or a

@@ -428,7 +428,8 @@ extension EngineV2Bridge {
 
     /// The refusal of a prompt that leaves no room in the model window, in the
     /// words a client sees: the window, never request content. A pair refuses
-    /// with the same words (`DistributedRequestRefusal.contextLengthExceeded`).
+    /// in the same words (`DistributedRequestRefusal.contextLengthExceeded`,
+    /// which keeps its own copy; `PairContextWindowTests` holds them equal).
     static func promptExceedsContextMessage(contextTokens: Int) -> String {
         "The prompt fills this model's context window of \(contextTokens) tokens, leaving no room for an answer. "
             + "Shorten the prompt or start a new conversation."

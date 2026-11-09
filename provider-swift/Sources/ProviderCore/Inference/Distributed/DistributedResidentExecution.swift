@@ -337,11 +337,10 @@ public enum DistributedRequestRefusal: String, Sendable, Equatable, CaseIterable
         switch self {
         case .emptyPrompt: return "The prompt is empty."
         case .contextLengthExceeded:
-            guard let context = profile?.served.contextTokens else {
-                return "The prompt fills this model's context window, leaving no room for an answer."
-                    + " Shorten the prompt or start a new conversation."
-            }
-            return EngineV2Bridge.promptExceedsContextMessage(contextTokens: context)
+            // One Mac's words (`EngineV2Bridge.promptExceedsContextMessage`), kept here: the cluster checks
+            // compile this file without the bridge.
+            return "The prompt fills this model's context window\(limit(profile?.served.contextTokens)), leaving no room"
+                + " for an answer. Shorten the prompt or start a new conversation."
         case .promptTooLong:
             return "The prompt is longer than this model's limit\(limit(profile?.served.promptTokens)) on this cluster."
         case .invalidMaxTokens: return "max_tokens must be at least 1."

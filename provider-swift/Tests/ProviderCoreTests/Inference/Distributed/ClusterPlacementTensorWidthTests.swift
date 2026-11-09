@@ -312,7 +312,7 @@ final class ClusterPlacementTensorWidthTests {
 
     /// The row's identity on the constructed two-layer layout, equal shares only. Each lane after the first adds
     /// `laneBytes`, which the layout states as the native plan tool writes it; nil states none.
-    private func gemmaFixture(laneBytes: Int?, row: LaneRow = gemma)
+    private func laneChargeFixture(laneBytes: Int?, row: LaneRow = gemma)
         throws -> (ClusterPairDescription, ClusterRuntimeCapability, ClusterModelLayout) {
         let (pair, _, qwenLayout, _) = try fixture()
         let model = row.model
@@ -344,16 +344,16 @@ final class ClusterPlacementTensorWidthTests {
             arithmeticPolicyID: row.adapter.arithmeticPolicyID, arithmeticPolicySHA256: hash("5"),
             supportedGenerationModes: [.pipeline, .tensorParallel])
         let capHash = ClusterConfigurationCodec.sha256(try ClusterRuntimeCapabilityCodec.encode(cap))
-        let gemmaPair = ClusterPairDescription(schema: pair.schema, clusterID: pair.clusterID, publicModelID: "fixture-gemma",
+        let lanePair = ClusterPairDescription(schema: pair.schema, clusterID: pair.clusterID, publicModelID: "fixture-gemma",
             capabilitySHA256: capHash, chunkTokens: pair.chunkTokens, requestTimeoutSeconds: pair.requestTimeoutSeconds,
             coordinatorPort: pair.coordinatorPort, members: pair.members, tokenizerFiles: pair.tokenizerFiles,
             linkControl: pair.linkControl)
-        return (gemmaPair, cap, layout)
+        return (lanePair, cap, layout)
     }
 
-    private func decideGemma(_ home: URL, free: Int, peerFree: Int? = nil,
-                             laneBytes: Int? = 2 * 1_073_741_824, row: LaneRow = gemma) throws -> ClusterSetupPlanning.PlacementDecision {
-        let (pair, cap, layout) = try gemmaFixture(laneBytes: laneBytes, row: row)
+    private func decideLaneCharged(_ home: URL, free: Int, peerFree: Int? = nil, laneBytes: Int? = 2 * 1_073_741_824,
+                                   row: LaneRow = gemma) throws -> ClusterSetupPlanning.PlacementDecision {
+        let (pair, cap, layout) = try laneChargeFixture(laneBytes: laneBytes, row: row)
         return try ClusterPlacementFlow.decide(description: pair, capability: cap, localMemberID: "a",
             localProfile: profile(free: free), peerProfile: profile(free: peerFree ?? free), layout: layout, leader: "a",
             link: try #require(ClusterLinkProbeHistory.costs(homeDirectory: home, members: ["a", "b"])),
@@ -362,8 +362,8 @@ final class ClusterPlacementTensorWidthTests {
 
     /// What both Macs saved and what the setup screen then says the pair serves at once (`ClusterSetupPlanning.loads`,
     /// the number the slot's `max_concurrency` and both owners read): equal, or the test fails.
-    private func gemmaLanes(_ decision: ClusterSetupPlanning.PlacementDecision, row: LaneRow = gemma) throws -> (saved: Int?, screen: Int?) {
-        let (pair, cap, _) = try gemmaFixture(laneBytes: nil, row: row)
+    private func savedLanes(_ decision: ClusterSetupPlanning.PlacementDecision, row: LaneRow = gemma) throws -> (saved: Int?, screen: Int?) {
+        let (pair, cap, _) = try laneChargeFixture(laneBytes: nil, row: row)
         let setup = try #require(decision.setup)
         let saved = try ["a", "b"].map { member in
             try ClusterConfigurationCodec.decode(try #require(setup.configurations[member]), capability: cap,
@@ -382,15 +382,15 @@ final class ClusterPlacementTensorWidthTests {
     /// that number; where only one request fits it saves none and says one.
     @Test func aGemmaTensorParallelPlacementSavesTheWidestWidthItsLaneChargeAdmitsNow() throws {
         let home = try home(), lane = 2 * gib
-        let alone = try #require(try decideGemma(home, free: 200 * gib, laneBytes: nil).result.chosen)
+        let alone = try #require(try decideLaneCharged(home, free: 200 * gib, laneBytes: nil).result.chosen)
         #expect(alone.mode == .tensorParallel)
         let single = alone.ranks.map(\.needBytes).max()!
         func need(_ lanes: Int) -> Int { single + (lanes - 1) * lane }
         for (free, expected) in [(200 * gib, 8), ((need(6) + need(8)) / 2, 6), ((need(4) + need(6)) / 2, 4),
                                  ((need(2) + need(4)) / 2, 2), ((need(1) + need(2)) / 2, nil)] as [(Int, Int?)] {
-            let decided = try decideGemma(home, free: free)
+            let decided = try decideLaneCharged(home, free: free)
             let chosen = try #require(decided.result.chosen)
-            let lanes = try gemmaLanes(decided)
+            let lanes = try savedLanes(decided)
             #expect(lanes.saved == expected && lanes.screen == (expected ?? 1), "\(free / gib) GiB free")
             #expect(chosen.mode == .tensorParallel && chosen.admitted(requireNow: true))
             // Priced at its width: every lane after the first adds its charge, and each Mac admits it now.
@@ -400,9 +400,9 @@ final class ClusterPlacementTensorWidthTests {
             #expect(chosen.ranks.map(\.device) == alone.ranks.map(\.device) && chosen.tensorShares == alone.tensorShares)
         }
         // Both Macs must admit it: the smaller Mac decides.
-        #expect(try gemmaLanes(try decideGemma(home, free: 200 * gib, peerFree: (need(4) + need(6)) / 2)).saved == 4)
+        #expect(try savedLanes(try decideLaneCharged(home, free: 200 * gib, peerFree: (need(4) + need(6)) / 2)).saved == 4)
         // A layout that states no lane charge prices no width: the setup saves none and serves one request at a time.
-        let unpriced = try gemmaLanes(try decideGemma(home, free: 200 * gib, laneBytes: nil))
+        let unpriced = try savedLanes(try decideLaneCharged(home, free: 200 * gib, laneBytes: nil))
         #expect(unpriced.saved == nil && unpriced.screen == 1)
     }
 
@@ -411,23 +411,23 @@ final class ClusterPlacementTensorWidthTests {
     /// screen says that number; where only one request fits it saves none and says one, as every family does.
     @Test func aGLMTensorParallelPlacementSavesTheWidestWidthItsLaneChargeAdmitsNow() throws {
         let home = try home(), lane = 2 * gib, row = Self.glm
-        let alone = try #require(try decideGemma(home, free: 200 * gib, laneBytes: nil, row: row).result.chosen)
+        let alone = try #require(try decideLaneCharged(home, free: 200 * gib, laneBytes: nil, row: row).result.chosen)
         #expect(alone.mode == .tensorParallel)
         let single = alone.ranks.map(\.needBytes).max()!
         func need(_ lanes: Int) -> Int { single + (lanes - 1) * lane }
         for (free, expected) in [(200 * gib, 8), ((need(6) + need(8)) / 2, 6), ((need(4) + need(6)) / 2, 4),
                                  ((need(2) + need(4)) / 2, 2), ((need(1) + need(2)) / 2, nil)] as [(Int, Int?)] {
-            let decided = try decideGemma(home, free: free, laneBytes: lane, row: row)
+            let decided = try decideLaneCharged(home, free: free, laneBytes: lane, row: row)
             let chosen = try #require(decided.result.chosen)
-            let lanes = try gemmaLanes(decided, row: row)
+            let lanes = try savedLanes(decided, row: row)
             #expect(lanes.saved == expected && lanes.screen == (expected ?? 1), "\(free / gib) GiB free")
             #expect(chosen.mode == .tensorParallel && chosen.admitted(requireNow: true))
             #expect(chosen.ranks.map(\.needBytes).max() == need(expected ?? 1), "\(free / gib) GiB free")
             #expect(chosen.ranks.map(\.device) == alone.ranks.map(\.device) && chosen.tensorShares == alone.tensorShares)
         }
-        #expect(try gemmaLanes(try decideGemma(home, free: 200 * gib, peerFree: (need(2) + need(4)) / 2, laneBytes: lane, row: row),
+        #expect(try savedLanes(try decideLaneCharged(home, free: 200 * gib, peerFree: (need(2) + need(4)) / 2, laneBytes: lane, row: row),
             row: row).saved == 2)
-        let unpriced = try gemmaLanes(try decideGemma(home, free: 200 * gib, laneBytes: nil, row: row), row: row)
+        let unpriced = try savedLanes(try decideLaneCharged(home, free: 200 * gib, laneBytes: nil, row: row), row: row)
         #expect(unpriced.saved == nil && unpriced.screen == 1)
     }
 }

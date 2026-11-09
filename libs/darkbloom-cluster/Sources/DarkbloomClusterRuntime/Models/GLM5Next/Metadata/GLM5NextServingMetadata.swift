@@ -314,7 +314,7 @@ struct GLM5NextPlacementFamily: ClusterPlacementFamily {
                                    configuration: GLM5NextTextConfiguration,
                                    modes: [ClusterGenerationMode],
                                    speculativeHead: ClusterTensorParallelSpeculativeHead?,
-                                   laneBytes: Int? = nil) -> ClusterTensorParallelFamilyPlan? {
+                                   laneBytes: Int) -> ClusterTensorParallelFamilyPlan? {
         guard modes.contains(.tensorParallel),
               (try? GLM5NextTensorShard(rank: 0, size: 2).localConfiguration(configuration)) != nil else { return nil }
         return ClusterTensorParallelFamilyPlan(plan: GLM5NextTensorParallelResidentRuntime.planName, ranks: [2],

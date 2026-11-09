@@ -22,7 +22,9 @@ struct DistributedInstalledCancellationTests {
         }
         #expect(Plan.defaultBatchLanes == 1)
         // Both serve the width their placement saved, and one request at a time without one.
-        #expect(Plan.tensorParallelLaneAdapters[.glm5NextLayerStage] == Plan.defaultBatchLanes)
-        #expect(Plan.tensorParallelLaneAdapters[.gemma4LayerStage] == Plan.defaultBatchLanes)
+        #expect(Plan.tensorParallelLaneAdapters == tensorParallelLanes)
+        for adapter in tensorParallelLanes {
+            #expect(Plan.defaultBatchLanes(adapter: adapter, mode: .tensorParallel, hasPrivateImages: false) == Plan.defaultBatchLanes)
+        }
     }
 }

@@ -86,18 +86,28 @@ struct GLM5NextTensorParallelRequestCharge {
 
     /// History columns a request of `contextTokens` may hold: its prompt and
     /// outputs, and one verification window's proposals past its last output.
-    func historyTokens(contextTokens: Int) -> Int { contextTokens + speculativeDepth + 1 }
+    func historyTokens(contextTokens: Int) -> Int {
+        Self.historyTokens(contextTokens: contextTokens, speculativeDepth: speculativeDepth)
+    }
+
+    static func historyTokens(contextTokens: Int, speculativeDepth: Int) -> Int { contextTokens + speculativeDepth + 1 }
 
     /// Bytes of the pages a request of `contextTokens` holds at most on a
     /// rank: every DSA layer's history and, when it speculates, the NextN
     /// history, each at `historyTokens` (as `GLM5NextTensorParallelResidentRuntime.historyPages`
     /// reserves them). Zero when the histories are contiguous.
     func pagedHistoryBytes(contextTokens: Int) throws -> Int {
+        try Self.pagedHistoryBytes(configuration: descriptor.configuration.textConfig, contextTokens: contextTokens,
+            speculativeDepth: speculativeDepth, pagedHistory: pagedHistory)
+    }
+
+    /// `pagedHistoryBytes` of a geometry, depth and page, before any rank exists (`laneBytes`).
+    static func pagedHistoryBytes(configuration c: GLM5NextTextConfiguration, contextTokens: Int, speculativeDepth: Int,
+                                  pagedHistory: PagedHistory?) throws -> Int {
         guard let pagedHistory else { return 0 }
-        let c = descriptor.configuration.textConfig
         let histories = c.layerTypes.filter { $0 == .deepseekSparseAttention }.count + (speculativeDepth > 0 ? 1 : 0)
-        return try QwenLongPrefillCheckedBytes.product([histories,
-            pagedHistory.pages(tokens: historyTokens(contextTokens: contextTokens)), pagedHistory.pageBytes])
+        let tokens = historyTokens(contextTokens: contextTokens, speculativeDepth: speculativeDepth)
+        return try QwenLongPrefillCheckedBytes.product([histories, pagedHistory.pages(tokens: tokens), pagedHistory.pageBytes])
     }
 
     func bytes(contextTokens context: Int) throws -> Int {
@@ -148,12 +158,12 @@ struct GLM5NextTensorParallelRequestCharge {
     static func laneBytes(configuration c: GLM5NextTextConfiguration, contextTokens: Int, speculativeDepth: Int,
                           pagedHistory: PagedHistory?, allocationBound: (Int) throws -> Int) throws -> Int {
         typealias Bytes = QwenLongPrefillCheckedBytes
-        let history = contextTokens + speculativeDepth + 1
         let state = try GLM5NextTensorParallelResidentRuntime.laneStateBytes(configuration: c, contextTokens: contextTokens,
-            speculative: speculativeDepth > 0, historyTokens: history, pagedHistories: pagedHistory != nil,
-            allocationBound: allocationBound)
-        let histories = c.layerTypes.filter { $0 == .deepseekSparseAttention }.count + (speculativeDepth > 0 ? 1 : 0)
-        let pages = try pagedHistory.map { try Bytes.product([histories, $0.pages(tokens: history), $0.pageBytes]) } ?? 0
+            speculative: speculativeDepth > 0,
+            historyTokens: historyTokens(contextTokens: contextTokens, speculativeDepth: speculativeDepth),
+            pagedHistories: pagedHistory != nil, allocationBound: allocationBound)
+        let pages = try pagedHistoryBytes(configuration: c, contextTokens: contextTokens, speculativeDepth: speculativeDepth,
+            pagedHistory: pagedHistory)
         return try Bytes.sum([state, Bytes.product([pages, 3]),
             GLM5NextTensorParallelResidentRuntime.prefillFrontierBytes(configuration: c)])
     }

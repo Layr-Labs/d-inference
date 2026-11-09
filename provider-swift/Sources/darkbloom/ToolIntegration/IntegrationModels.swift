@@ -7,6 +7,9 @@ struct IntegrationModel: Equatable, Sendable {
     /// `Comparable` gives them.
     enum Location: Comparable, CaseIterable, Sendable {
         case thisMac
+        /// The pair this Mac is part of, of two Macs or more: the local API is the pair's, and its models are the
+        /// pair's (`IntegrationEndpoint.servesThePair`).
+        case yourPair
         case yourMacs
         /// Other Darkbloom machines: the local router lists them only when the owner opted into "My Macs first".
         case network
@@ -14,8 +17,18 @@ struct IntegrationModel: Equatable, Sendable {
         var label: String {
             switch self {
             case .thisMac: "this Mac"
+            case .yourPair: "your pair"
             case .yourMacs: "your Macs"
             case .network: "Darkbloom network, billed"
+            }
+        }
+
+        /// The endpoint's own process serves the model, on this Mac or on the pair whose API it is, so what its engine
+        /// lists for the model (`input_modalities`) holds. Said by name, not by the tools' order.
+        var servedHere: Bool {
+            switch self {
+            case .thisMac, .yourPair: true
+            case .yourMacs, .network: false
             }
         }
     }
@@ -81,7 +94,8 @@ struct IntegrationModel: Equatable, Sendable {
     /// `Qwen 3.8 27B (this Mac)`.
     static func name(_ display: String, at location: Location) -> String { "\(display) (\(location.label))" }
 
-    /// A tool's name for a model without where it runs: `Qwen 3.8 27B (this Mac)` gives `Qwen 3.8 27B`.
+    /// A tool's name for a model without where it runs: `Qwen 3.8 27B (this Mac)` gives `Qwen 3.8 27B`. Any place's
+    /// label comes off, so a run again, offline too, gives a model the same name while it runs in the same place.
     static func displayName(in name: String) -> String {
         for location in Location.allCases where name.hasSuffix(" (\(location.label))") {
             let display = name.dropLast(location.label.count + 3)
@@ -197,7 +211,8 @@ enum IntegrationModels {
     }
 
     /// The tools' list: every chat model the endpoint lists, named and limited from the catalog when it is
-    /// reachable (`catalog` nil offline), ordered this Mac, your Macs, the network, then by name.
+    /// reachable (`catalog` nil offline), ordered this Mac (or your pair), your Macs, the network, then by name. The
+    /// endpoint's own models run `here`: on this Mac, or on the pair whose API it is.
     ///
     /// - Context: the endpoint's (what this engine admits now), else the catalog's maximum, else unknown.
     /// - Output cap: `min(max output, context / 4)`, the max output being the endpoint's, else the catalog's, else
@@ -215,10 +230,12 @@ enum IntegrationModels {
     ///   models).
     /// - A model the catalog doesn't describe carries `fallback`: a tool's own entry for it keeps its values
     ///   (`keeping(_:entries:)`).
-    static func resolve(_ listed: [EndpointModel], catalog: CatalogSnapshot?) -> [IntegrationModel] {
+    static func resolve(_ listed: [EndpointModel], catalog: CatalogSnapshot?,
+                        here: IntegrationModel.Location = .thisMac) -> [IntegrationModel] {
         var nearest: [String: (entry: EndpointModel, location: IntegrationModel.Location)] = [:]
         for entry in listed {
-            let location = location(ownedBy: entry.ownedBy)
+            let owner = location(ownedBy: entry.ownedBy)
+            let location = owner == .thisMac ? here : owner
             if let kept = nearest[entry.id], kept.location <= location { continue }
             nearest[entry.id] = (entry, location)
         }
@@ -231,9 +248,9 @@ enum IntegrationModels {
             let capabilities = Set((details.model?.capabilities ?? []).map { $0.lowercased() })
             let display = details.name.flatMap { $0.isEmpty ? nil : $0 } ?? entry.id
             // The engine's word, for a model served here.
-            let engineImageInput = location == .thisMac
+            let engineImageInput = location.servedHere
                 ? entry.inputModalities.map { LocalInputModalities.takesImages($0) } : nil
-            let engineReasoning = location == .thisMac
+            let engineReasoning = location.servedHere
                 ? entry.supportedFeatures.map { LocalModelFeatures.listsReasoning($0) } : nil
             return IntegrationModel(
                 id: entry.id, name: IntegrationModel.name(display, at: location), location: location,
@@ -250,7 +267,7 @@ enum IntegrationModels {
         return ordered(models)
     }
 
-    /// The tools' order: this Mac, your Macs, the network, then by name.
+    /// The tools' order: this Mac, your pair, your Macs, the network, then by name.
     static func ordered(_ models: [IntegrationModel]) -> [IntegrationModel] {
         models.sorted { ($0.location, $0.name.lowercased(), $0.id) < ($1.location, $1.name.lowercased(), $1.id) }
     }

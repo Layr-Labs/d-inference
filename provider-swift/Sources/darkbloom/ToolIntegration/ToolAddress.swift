@@ -19,15 +19,32 @@ enum ToolAddress {
         case key(String)
     }
 
+    /// Why a tool's config can't be read, as the clause after "can't read <file>: ".
+    struct Unreadable: Error, Equatable, Sendable {
+        let reason: String
+    }
+
     /// Darkbloom's provider block in `tool`'s config, as it points now; nil when the tool isn't set up for Darkbloom
     /// (no config, or no block in it) or its config can't be read.
     static func pointer(of tool: IntegrationTool, environment: ToolIntegrationEnvironment,
                         provider: IntegrationProvider) -> ToolPointer? {
-        guard let bytes = try? Data(contentsOf: tool.configFile(in: environment), options: .mappedIfSafe),
-              bytes.count <= ToolConfigWriter.maximumFileBytes else { return nil }
+        try? readPointer(of: tool, environment: environment, provider: provider)
+    }
+
+    /// `pointer(of:environment:provider:)`, saying why a config that exists can't be read (`darkbloom doctor`).
+    static func readPointer(of tool: IntegrationTool, environment: ToolIntegrationEnvironment,
+                            provider: IntegrationProvider) throws(Unreadable) -> ToolPointer? {
+        let file = tool.configFile(in: environment)
+        guard FileManager.default.fileExists(atPath: file.path) else { return nil }
+        guard let bytes = try? Data(contentsOf: file, options: .mappedIfSafe) else {
+            throw Unreadable(reason: "it can't be read")
+        }
+        guard bytes.count <= ToolConfigWriter.maximumFileBytes else {
+            throw Unreadable(reason: "it is larger than 4 MiB")
+        }
         switch tool {
-        case .opencode: return OpenCodeConfigPlan.pointer(in: bytes, provider: provider, home: environment.home)
-        case .hermes: return HermesConfigPlan.pointer(in: bytes, provider: provider)
+        case .opencode: return try OpenCodeConfigPlan.readPointer(in: bytes, provider: provider, home: environment.home)
+        case .hermes: return try HermesConfigPlan.readPointer(in: bytes, provider: provider)
         }
     }
 
@@ -65,12 +82,19 @@ enum ToolAddress {
                        thisMac: Set<String> = loopbackNames) -> [(tool: IntegrationTool, miss: Miss)] {
         IntegrationTool.allCases.compactMap { tool in
             guard let pointer = pointer(of: tool, environment: environment, provider: provider) else { return nil }
-            if let url = pointer.baseURL, !sameAddress(url, baseURL, thisMac: thisMac) { return (tool, .address(url)) }
-            if let keyFile, let theirs = pointer.keyFile, !sameKey(theirs, keyFile) {
-                return (tool, .key(theirs.standardizedFileURL.path))
-            }
-            return nil
+            return miss(pointer, baseURL: baseURL, keyFile: keyFile, thisMac: thisMac).map { (tool, $0) }
         }
+    }
+
+    /// How one tool's `pointer` misses the local API at `baseURL` that takes the key in `keyFile` (nil: any file
+    /// does); nil when it reaches it. `start`'s notice and `darkbloom doctor` both judge a tool here.
+    static func miss(_ pointer: ToolPointer, baseURL: String, keyFile: URL?,
+                     thisMac: Set<String> = loopbackNames) -> Miss? {
+        if let url = pointer.baseURL, !sameAddress(url, baseURL, thisMac: thisMac) { return .address(url) }
+        if let keyFile, let theirs = pointer.keyFile, !sameKey(theirs, keyFile) {
+            return .key(theirs.standardizedFileURL.path)
+        }
+        return nil
     }
 
     /// The one line for `misses`, or nil when there are none: what the tools point at, and the command that points

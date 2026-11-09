@@ -31,6 +31,7 @@ on:
       - 'scripts/verify-nemotron-prompt-parity.sh'
       - 'scripts/prepare-prompt-fixtures.py'
       - 'scripts/verified_download_cache.py'
+      - 'scripts/fixture_redirects.py'
       - 'scripts/test-prepare-prompt-fixtures.py'
       - 'scripts/run-provider-tests.sh'
       - 'provider-swift/Tests/ProviderCoreTests/Qwen4StandaloneAdmissionTests.swift'

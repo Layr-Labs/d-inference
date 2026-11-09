@@ -93,6 +93,7 @@ class ComponentPathsTests(unittest.TestCase):
             "scripts/run-provider-tests.sh": {"provider"},
             "scripts/provider-ci-cold-retry.sh": {"provider", "cluster"},
             "scripts/verified_download_cache.py": {"provider"},
+            "scripts/fixture_redirects.py": {"provider"},
             "scripts/provider-test-shards.py": {"provider"},
             "scripts/cluster-test-plan.py": {"provider", "cluster"},
             "scripts/swift_test_lock_retry.py": {"provider", "cluster"},

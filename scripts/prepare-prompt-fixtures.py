@@ -21,6 +21,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from fixture_redirects import OriginRedirect, origin
 from verified_download_cache import restore_file, store_file
 
 MAX_MANIFEST_BYTES = 1 << 20
@@ -153,11 +154,9 @@ def https_url(value):
     return parsed
 
 
-class SameOriginRedirect(urllib.request.HTTPRedirectHandler):
+class SameOriginRedirect(OriginRedirect):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        old, new = urllib.parse.urlsplit(req.full_url), https_url(newurl)
-        if (old.scheme, old.netloc) != (new.scheme, new.netloc):
-            raise ValueError("cross-origin artifact redirect")
+        https_url(newurl)
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
@@ -182,8 +181,8 @@ def download_once(opener, url, output, artifact, deadline):
             raise TransientTransfer("artifact request returned an HTTP server error")
         if response.status != 200:
             raise ValueError("artifact request did not return HTTP 200")
-        original, final = https_url(url), https_url(response.url)
-        if (original.scheme, original.netloc) != (final.scheme, final.netloc):
+        https_url(response.url)
+        if origin(url) != origin(response.url):
             raise ValueError("cross-origin artifact response")
         length = response.headers.get("Content-Length")
         if length is not None and int(length) != artifact["size_bytes"]:

@@ -224,15 +224,38 @@ Then, in OpenCode, `/models` → Darkbloom. Hermes uses Darkbloom as its main
 model.
 
 - **Starts Darkbloom only if needed.** If this Mac's local API already runs,
-  nothing restarts: `Darkbloom already serves on 127.0.0.1:8001; setting up
-  OpenCode for it.` Otherwise `start` runs as usual, and the tools are set up
-  once the local API answers: a background start waits up to 30 seconds for it,
-  and **Only me**, which listens once its models are loaded, up to
-  `[backend] startup_preload_timeout_secs` (120) more.
+  nothing restarts: `Darkbloom already serves at http://127.0.0.1:8001/v1;
+  setting up OpenCode for it.` (the address the tools use, also for a pair's
+  API that listens on every address). Otherwise `start` runs as usual, and the
+  tools are set up once the local API answers: a background start waits up to
+  30 seconds for it, and **Only me**, which listens once its models are loaded,
+  up to `[backend] startup_preload_timeout_secs` (120) more.
 - **What it changes:** one `darkbloom` provider in OpenCode's
   `~/.config/opencode/opencode.jsonc` (or your existing `opencode.json`), and
   in Hermes' `~/.hermes/config.yaml`, where it also becomes the main model, as
   Ollama and oMLX do. Everything else in those files stays as it was.
+- **Your default model:** OpenCode's stays when its `opencode.json` or
+  `opencode.jsonc` in `~/.config/opencode` sets one (OpenCode 2 doesn't read
+  OpenCode 1's `config.json`). Nothing is written for it, and the start names
+  it: `Your default stays exo/llama-3.3-70b; pick Darkbloom with /models.`
+  Without one, OpenCode starts on the model you last picked with `/models`,
+  which it remembers (in `~/.local/state/opencode/model.json`); then nothing is
+  written either: `Pick Darkbloom once with /models; OpenCode remembers it.`
+  Only when OpenCode has neither does Darkbloom's first model become the
+  default for new sessions, on a line of its own that says how to go back: `New
+  OpenCode sessions now use Darkbloom's Qwen 3.8 27B. To go back, remove
+  "model" from ~/.config/opencode/opencode.jsonc or run the Undo below.`
+  (`/models` isn't a way back from it: a config's `model` comes first at every
+  launch.) In a project whose own `opencode.json` sets a model, or with
+  `OPENCODE_CONFIG` naming a file that does, OpenCode uses that one
+  ([OpenCode's config order](../architecture/tool-integrations.md#opencodes-config-order)).
+  Hermes always makes Darkbloom its main model and names the one before: `New
+  Hermes chats now use Darkbloom's Qwen 3.8 27B (before: gpt-6-astra via
+  opencodex). Switch back: hermes model`.
+- **Where each model runs** is in its name: `Qwen 3.8 27B (this Mac)`, `(your
+  pair)` on a Mac whose local API is its pair's (the leading Mac's, or a
+  member's relay to it), whatever the pair's size, `(your Macs)`, or
+  `(Darkbloom network, billed)`.
 - **Your key stays out of them.** The tools read it from Darkbloom's own key
   file, and `darkbloom --opencode` never prints it.
 - **Undo in one line:** every change is backed up first, and the start prints
@@ -242,13 +265,14 @@ model.
   ✓ OpenCode can use Darkbloom: 3 models.
     Changed: ~/.config/opencode/opencode.jsonc (added the "darkbloom" provider; nothing else changed)
     Backup:  ~/.darkbloom/integrations/backups/opencode/opencode.jsonc.20261106T221500Z
-    Use it:  in OpenCode, /models → Darkbloom. Your default model is unchanged.
+    Your default stays exo/llama-3.3-70b; pick Darkbloom with /models.
     Undo:    cp '<backup>' '<file>'
   ```
 
-  When your OpenCode config sets no default model, Darkbloom's first model
-  becomes the default for new sessions, and the `Use it:` line names it
-  instead (`new sessions use darkbloom/<model>`).
+  When Darkbloom's model became the default, the `Changed:` line says `added
+  the "darkbloom" provider and the default model`, and the line before `Undo:`
+  is `New OpenCode sessions now use Darkbloom's <model>. To go back, remove
+  "model" from <file> or run the Undo below.`
 - **It waits for your model.** While this Mac still loads the models it started
   with, the start waits before it writes anything, on one live line
   (`⠙ Loading Gemma 4 26B before setting up OpenCode… 42s`; without a terminal,
@@ -335,6 +359,28 @@ Other lines you may see:
 - ``Serving: Darkbloom and you, me first — the local API isn't up: port 8001 is in use (`darkbloom start --port 8002`)``
 
 `darkbloom local` adds the same choice under the address.
+
+`darkbloom doctor` checks the whole setup, and its report opens with it:
+
+```text
+LOCAL API   (how this Mac serves you and your tools)
+  [INFO] mode — Both, me first — Darkbloom pauses while you use this Mac, back after 2 idle minutes (serving now)
+  [PASS] address — http://127.0.0.1:8001/v1 — up on port 8001
+  [PASS] key file — ~/.darkbloom/local_token (`darkbloom local` shows the key)
+  [PASS] OpenCode — points here (~/.config/opencode/opencode.jsonc)
+  [WARN] Hermes — points at http://127.0.0.1:8000/v1, not this Mac's local API (http://127.0.0.1:8001/v1) (~/.hermes/config.yaml)
+         ↳ fix: `darkbloom --hermes`
+```
+
+Each problem names the command that fixes it, and no line shows the key. A
+local API that stops answering is started again the way it serves now: Only me
+in a terminal with Ctrl-C there, then `darkbloom start --local --here`; the
+background service with `darkbloom restart`, which serves your saved choice.
+With **Only me**, also while it loads its models, `doctor` skips the Darkbloom
+network's checks (account, trust, App Attest, the coordinator) and says
+`darkbloom network — not needed (Only me)`. A paired Mac serving alone
+(`start --solo`) is described by what it serves, not by its pair
+([every line](./cli-reference.md#the-local-api-section)).
 
 ## If you used `--local-endpoint` before
 

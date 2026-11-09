@@ -567,7 +567,84 @@ Clusters are documented with their implementation.
 
 ## Sandboxes
 
-Sandboxes are documented with their implementation.
+Sandboxes sets up and manages [Darkbloom Sandbox](../provider/sandboxes.md), the
+add-on that runs approved GitHub Actions jobs in Linux and macOS VMs on this
+Mac, through the same commands as
+[`darkbloom sandbox`](../provider/cli-reference.md#darkbloom-sandbox) and in
+their words (`desktop-app/src/renderer/features/sandboxes/`, contract in
+`desktop-app/src/shared/sandbox.ts`). The page reads `sandbox` with
+`useResource` on the snapshot's `resource_revision`, and again when a
+`sandbox_*` operation ends (`Sandboxes.tsx`, `useRereadAfterActions`).
+
+- **Older runtime.** Without the `sandbox` capability the page says
+  "Darkbloom Sandbox needs a newer Darkbloom CLI." with a link to Updates, and
+  reads nothing.
+- **Not set up** (`installed: false` or `not_installed`). Two lines on what it
+  is, what this Mac needs (Apple silicon and macOS 27 marked from the snapshot
+  and `system()`; the desktop session and network are checked by setup) and
+  what loses jobs (Wi-Fi, battery, sleep on the power adapter). Below macOS 27
+  it offers **Open Software Update** instead of setup. Setup is offered when
+  `useWaitlist(backend, 'sandbox')` is open (approved, or a coordinator without
+  that waitlist); otherwise `WaitlistCard`, **Link account** for `login`, or the
+  reason with **Try again**. A runtime without the `waitlists` capability leaves
+  the waitlist to the CLI's own check (`NotInstalled.tsx`, `SetupGate`).
+- **Setup form** (`SetupForm.tsx`, `setup.ts`, `setupRequest`). Jobs at a time
+  Automatic (no slot options) or chosen (Linux 0–16, macOS 0–2, never both 0),
+  one optional work disk as an absolute path, and **Wait until images are
+  downloaded**. It sends only what was chosen.
+- **Setup running** (`SetupProgress.tsx`), from the newest `sandbox_setup`
+  operation (`latestSetup`): the installer's eight stages in the CLI's words,
+  marked from `sandbox_setup.stage` or `step`; the approval card while it waits
+  (code, **Copy code**, **Open approval page** through `openApproval` with
+  `verification_uri_complete`, else `verification_uri`; **Copy link**); the
+  waitlist note; the `background` sentence that the app can close; **Cancel**
+  when the operation is `cancellable`; the operation's `lines` under Details.
+- **Setup ended without success.** What the exit status means (`setupOutcome`):
+  `2` this Mac can't host it as it is, with the failed stage's message; `3` not
+  enrolled; `4` a job is running, so nothing changed; a stop, with whether an
+  enrollment goes on; otherwise the CLI's last line. The status is
+  `sandbox_setup.exit_status` when the runtime reports it, else the CLI's own
+  advice line (`exitStatus`). The result stays until dismissed
+  (`darkbloom.sandbox.dismissed-setup` in local storage).
+- **Installed** (`SandboxStatusCard.tsx`, `status.ts`). The headline, level and
+  line follow `SandboxStatusView` (`headline`, `explanation`): the add-on's
+  `detail` except while jobs can run, where the line says what the state means
+  for inference; an unknown state shows as its words. Free slots are meters
+  only while the agent reports (`ready`, `running`, `paused`, `updating`);
+  images show their state and download; work disks show only with an external
+  drive or more than one disk, with free GiB, slots and `detail` when not
+  online. A status the API could not read (`error`) shows **Status
+  unavailable** with **Try again** and **Repair**.
+
+| Control | Shown | Sends |
+|---|---|---|
+| **Set up** | not set up, waitlist open | `{ action: 'sandbox_setup', linux_slots?, macos_slots?, disks?, wait_ready? }` |
+| **Continue setup** | `waiting_for_approval`, `waitlisted`, `enrolling` | `{ action: 'sandbox_setup' }` |
+| **Repair** | `stopped`, `error`, status unavailable | `{ action: 'sandbox_setup' }` |
+| **Pause** (asks) | other installed states | `{ action: 'sandbox_pause' }` |
+| **Resume** | `paused` | `{ action: 'sandbox_resume' }` |
+| **Change jobs at a time** | `ready`, `running`, `paused`, `downloading_images`, `updating` with slots; **Apply** disabled while a job runs | `{ action: 'sandbox_setup', linux_slots, macos_slots }` |
+| **Logs** | installed | reads `sandbox-logs` while shown and on **Refresh** |
+| **Uninstall** (asks; running jobs end unpaid) | installed | `{ action: 'sandbox_uninstall' }` |
+| **Open console** | installed with `console_url` | `openApproval(console_url)`: the main process opens only https Darkbloom hosts (`approvalURL`) |
+
+Preview links (`?preview` plus):
+
+| Query | Shows |
+|---|---|
+| none, `&sandbox=ready` | Installed and ready: free slots, images, console |
+| `&sandbox=running`, `paused`, `downloading_images`, `stopped`, `error` | That state |
+| `&sandbox=waiting_for_approval`, `waitlisted`, `enrolling` | Installed, not yet enrolled |
+| `&sandbox=disks` | Ready, with an external work disk and one offline |
+| `&sandbox=not_installed&waitlist-sandbox=approved` | Setup; it walks the stages with an approval code (approved after 9 s) and reaches ready |
+| `&sandbox=not_installed` | The waitlist instead of setup (the preview account is waitlisted) |
+| `&sandbox-setup=waitlisted`, `cannot_host`, `not_enrolled`, `job_running` | Setup waits on the waitlist in the background, or ends with exit status 2, 3 or 4 (`job_running` with an installed state) |
+| `&sandbox=unsupported` | A runtime without the `sandbox` capability |
+
+`sandboxStatus.test.ts`, `sandboxSetup.test.ts`, `sandboxes.test.tsx`,
+`sandboxPreview.test.ts`, `sandboxApp.test.tsx` and `sandboxSecurity.test.ts`
+cover the status words, the setup model and form, the page's states and
+controls, the preview and the approval link allowlist.
 
 ## Early access
 

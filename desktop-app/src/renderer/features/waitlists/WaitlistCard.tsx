@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef } from 'react';
 import {
   ArrowRight,
   Ban,
@@ -15,7 +15,8 @@ import {
 } from 'lucide-react';
 import type { WaitlistEntry } from '../../../shared/waitlists';
 import { Button } from '../../components/UI';
-import { api, type BackendState } from '../../useBackend';
+import { useClipboard } from '../../components/useClipboard';
+import type { BackendState } from '../../useBackend';
 import { useWaitlist, type Waitlist } from './useWaitlist';
 import { NeedsNewerCLI, WaitlistProblem } from './WaitlistProblem';
 import {
@@ -222,24 +223,18 @@ function JoinButton({
 
 // A waitlist's start command, to run in Terminal; copying avoids mistyping it.
 function Command({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
+  const { copied, copy } = useClipboard();
+  const done = copied === text;
   return (
     <span className={styles.command}>
       <code title={text}>{text}</code>
       <button
         type="button"
         className="icon-button"
-        aria-label={copied ? `Copied ${text}` : `Copy ${text}`}
-        onClick={async () => {
-          try {
-            await api?.copy(text);
-            setCopied(true);
-          } catch {
-            setCopied(false);
-          }
-        }}
+        aria-label={done ? `Copied ${text}` : `Copy ${text}`}
+        onClick={() => void copy(text)}
       >
-        {copied ? <Check size={14} /> : <Copy size={14} />}
+        {done ? <Check size={14} /> : <Copy size={14} />}
       </button>
     </span>
   );

@@ -4,6 +4,7 @@ import type { Operation } from '../../../shared/contracts';
 import type { BackendState } from '../../useBackend';
 import { api } from '../../useBackend';
 import { Button } from '../../components/UI';
+import { useClipboard } from '../../components/useClipboard';
 import {
   outputLines,
   pendingApproval,
@@ -147,16 +148,8 @@ function Approval({
   codeFilled: boolean;
   background: boolean;
 }) {
-  const [copied, setCopied] = useState('');
+  const { copied, copy } = useClipboard();
   const [failed, setFailed] = useState(false);
-  const copy = async (text: string) => {
-    try {
-      await api?.copy(text);
-      setCopied(text);
-    } catch {
-      setCopied('');
-    }
-  };
   const open = async () => {
     try {
       await api?.openApproval(url);

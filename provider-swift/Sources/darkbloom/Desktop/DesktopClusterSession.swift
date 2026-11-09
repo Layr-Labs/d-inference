@@ -179,10 +179,7 @@ final class DesktopClusterSessions: @unchecked Sendable {
     child.standardInput = input
     child.standardOutput = output
     child.standardError = errors
-    var environment = ProcessInfo.processInfo.environment
-    environment["DARKBLOOM_NO_UPDATE_CHECK"] = "1"
-    environment["NO_COLOR"] = "1"
-    child.environment = environment
+    child.environment = DesktopWorker.childEnvironment
     child.terminationHandler = { [weak self] process in
       let signal = process.terminationReason == .uncaughtSignal
       self?.ended(id, status: (process.terminationStatus, signal))
@@ -469,8 +466,7 @@ extension DesktopBackend {
     guard !operations.contains(where: { $0.state == "running" }) else {
       throw HTTPError(.conflict, message: "An operation is already running. Wait for it to finish.")
     }
-    let cli = try executable ?? FanServiceManager().currentExecutableURL()
-    return try clusterSessions.start(start, executable: cli, configPath: configPath)
+    return try clusterSessions.start(start, executable: DesktopWorker.childExecutable(executable), configPath: configPath)
   }
 }
 

@@ -10,9 +10,11 @@ import Foundation
 public struct SlotRequestLimits: Codable, Sendable, Equatable {
     /// A longer prompt is refused (`prompt_too_long`).
     public var maxPromptTokens: Int
-    /// A larger `max_tokens` is refused (`output_too_long`).
+    /// A larger `max_tokens` is cut to it before the engine, which refuses one
+    /// (`output_too_long`), as one Mac cuts to its window.
     public var maxOutputTokens: Int
-    /// Prompt plus `max_tokens` above this is refused (`context_too_long`).
+    /// A `max_tokens` past what the prompt leaves of this is cut to fit; a
+    /// prompt that leaves nothing is refused (`context_length_exceeded`).
     public var maxContextTokens: Int
     /// The longest prompt plus `max_tokens` that every member's memory gate
     /// admits now (the minimum over the ranks), re-derived while idle. A

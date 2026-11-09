@@ -308,6 +308,9 @@ public enum DistributedEngineError: Error, Sendable, Equatable {
 /// it may be returned to the client as is.
 public enum DistributedRequestRefusal: String, Sendable, Equatable, CaseIterable {
     case emptyPrompt = "empty_prompt"
+    /// The prompt fills the context the pair serves: no output fits after it.
+    /// One Mac's code and words for the same bound (`promptExceedsContext`).
+    case contextLengthExceeded = "context_length_exceeded"
     case promptTooLong = "prompt_too_long"
     case invalidMaxTokens = "invalid_max_tokens"
     case outputTooLong = "output_too_long"
@@ -325,7 +328,7 @@ public enum DistributedRequestRefusal: String, Sendable, Equatable, CaseIterable
     /// The prompt or output does not fit the model's limits on the pair:
     /// the coordinator classifies these as exceeding context.
     public var exceedsContext: Bool {
-        [.promptTooLong, .outputTooLong, .contextTooLong].contains(self)
+        [.contextLengthExceeded, .promptTooLong, .outputTooLong, .contextTooLong].contains(self)
     }
 
     /// The client-facing text. With the profile it names the model's limits.
@@ -333,6 +336,12 @@ public enum DistributedRequestRefusal: String, Sendable, Equatable, CaseIterable
         func limit(_ value: Int?) -> String { value.map { " of \($0) tokens" } ?? "" }
         switch self {
         case .emptyPrompt: return "The prompt is empty."
+        case .contextLengthExceeded:
+            guard let context = profile?.served.contextTokens else {
+                return "The prompt fills this model's context window, leaving no room for an answer."
+                    + " Shorten the prompt or start a new conversation."
+            }
+            return EngineV2Bridge.promptExceedsContextMessage(contextTokens: context)
         case .promptTooLong:
             return "The prompt is longer than this model's limit\(limit(profile?.served.promptTokens)) on this cluster."
         case .invalidMaxTokens: return "max_tokens must be at least 1."
@@ -396,6 +405,7 @@ extension DistributedResidentExecutionProfile {
         if p.topLogprobs > 0, !supportsLogprobs { return .logprobCaptureUnsupported }
         if request.priority != 0 { return .priorityUnsupported }
         if request.promptTokens.isEmpty { return .emptyPrompt }
+        if request.promptTokens.count >= served.contextTokens { return .contextLengthExceeded }
         if request.promptTokens.count > served.promptTokens { return .promptTooLong }
         if request.maxTokens <= 0 { return .invalidMaxTokens }
         if request.maxTokens > served.outputTokens { return .outputTooLong }

@@ -52,7 +52,7 @@ public actor DistributedLocalServer {
         generation = .init(session: session, responseLimit: queue.responseLimit); binding = .init(session)
         self.queue = queue
         self.config = config
-        defaultMaxTokens = min(DistributedEngineFactory.defaultOutputTokens, session.profile.maxOutputTokens)
+        defaultMaxTokens = min(DistributedEngineFactory.defaultOutputTokens, session.profile.served.outputTokens)
         self.firstTokenBudgetPolicy = firstTokenBudgetPolicy
         tokenizerLoader = { TokenizerHandle(try await LocalTokenizerLoader().load(from: $0)) }
         discovery = publishDiscovery ? .local : nil
@@ -71,7 +71,7 @@ public actor DistributedLocalServer {
         generation = .init(session: session, responseLimit: queue.responseLimit); binding = .init(session)
         self.queue = queue
         self.config = config
-        defaultMaxTokens = min(DistributedEngineFactory.defaultOutputTokens, session.profile.maxOutputTokens)
+        defaultMaxTokens = min(DistributedEngineFactory.defaultOutputTokens, session.profile.served.outputTokens)
         self.firstTokenBudgetPolicy = firstTokenBudgetPolicy
         self.tokenizerLoader = tokenizerLoader; self.discovery = discovery
         self.observability = observability

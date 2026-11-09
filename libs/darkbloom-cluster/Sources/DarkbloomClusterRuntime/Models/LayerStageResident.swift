@@ -17,6 +17,8 @@ protocol LayerStageResidentAdmission {
     var profile: QwenLayerStageGenerationProfile { get }
     /// The request every LOAD gate of the stage modes charges (default: the profile).
     var memoryProfile: QwenLayerStageGenerationProfile { get }
+    /// The requests the stage modes admit (default: the memory plan's).
+    var servedProfile: QwenLayerStageGenerationProfile { get }
     var arithmeticContract: String { get }
     var arithmeticSHA256: String { get }
     /// What both ranks compare before either stage is read. Rank, local path
@@ -41,12 +43,17 @@ extension LayerStageResidentAdmission {
     /// (`QwenResidentAdmission.memoryProfile`).
     var memoryProfile: QwenLayerStageGenerationProfile { profile }
 
-    /// The layer-stage modes size LOAD for `memoryProfile`, never more: a
-    /// longer request is not served by them (their READY's serving context
-    /// says so too). Every request within the profile passes when the two are
-    /// one profile.
-    func requireWithinMemoryProfile(_ value: ClusterWorkerReservation) throws {
-        let p = memoryProfile
+    /// The layer-stage modes size LOAD for `memoryProfile` and, by default,
+    /// serve no longer request. A family whose stages charge a longer request
+    /// at its own context when a rank reserves it serves its whole profile
+    /// (Gemma 4: `Gemma4ResidentAdmission.servedProfile`).
+    var servedProfile: QwenLayerStageGenerationProfile { memoryProfile }
+
+    /// A longer request than `servedProfile` is not served by the layer-stage
+    /// modes (their READY's serving context says so too). Every request within
+    /// the profile passes when the two are one profile.
+    func requireWithinServedProfile(_ value: ClusterWorkerReservation) throws {
+        let p = servedProfile
         guard value.promptTokenIDs.count <= p.maximumPromptTokens, value.outputCount <= p.maximumOutputTokens,
               value.promptTokenIDs.count <= p.maximumContextTokens - value.outputCount else {
             throw ProbeError("A request of \(value.promptTokenIDs.count + value.outputCount) context tokens is longer"

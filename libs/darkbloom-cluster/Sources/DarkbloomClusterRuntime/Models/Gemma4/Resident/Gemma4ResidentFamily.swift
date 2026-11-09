@@ -9,6 +9,12 @@ extension Gemma4ResidentAdmission: LayerStageResidentAdmission {
     var runtimeModelID: String { specification.model.rawValue }
     var supportedGenerationModes: [ClusterGenerationMode] { Gemma4ResidentAdapterDefinition.supportedGenerationModes }
 
+    /// The pipeline serves the model's native context as tensor parallel
+    /// does: LOAD sizes the memory plan's request, and each stage charges a
+    /// longer one at its own context when it is reserved (the whole model's
+    /// ledger, `Gemma4StateBudget`), admitted by that rank's live gate.
+    var servedProfile: QwenLayerStageGenerationProfile { profile }
+
     /// Rank, local path and local uptime are intentionally absent. The explicit
     /// allocator and prefill policies must agree before either stage is loaded.
     func loadAgreementFingerprint() throws -> String {
@@ -19,7 +25,8 @@ extension Gemma4ResidentAdmission: LayerStageResidentAdmission {
             plan.fingerprint, profile.fingerprint, arithmeticSHA256, jaccl.fingerprint,
             configuration.allocatorPolicy.rawValue,
         ] + identity.peers.flatMap { [$0.id, $0.buildSHA256] }
-            + QwenResidentPrefillSelection.loadAgreementFields(configuration.prefillSchedule)))
+            + QwenResidentPrefillSelection.loadAgreementFields(configuration.prefillSchedule)
+            + (memoryProfile == profile ? [] : ["memory=" + memoryProfile.fingerprint])))
     }
 
     func request(_ value: ClusterWorkerReservation, id: UUID, now: UInt64) throws -> QwenLayerStageGenerationRequest {

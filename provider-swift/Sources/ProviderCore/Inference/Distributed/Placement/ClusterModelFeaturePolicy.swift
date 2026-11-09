@@ -44,13 +44,16 @@ enum ClusterModelFeaturePolicy {
     /// The requests a cluster serving `mode` takes within the capability's
     /// profile, as its resident runtime admits them: the whole profile in
     /// tensor parallel, which charges a request beyond the memory plan at its
-    /// own context when a rank reserves it; the memory plan's request
-    /// (`ClusterWorkerProfile.memoryScope`) in every other mode, whose LOAD
-    /// gates size it and whose ranks refuse a longer reservation
-    /// (`requireWithinMemoryProfile`, GLM's pipeline admission). The same for
-    /// every profile within the standard request.
+    /// own context when a rank reserves it, and in a Gemma 4 pipeline, whose
+    /// stages do the same (`Gemma4ResidentAdmission.servedProfile`); the
+    /// memory plan's request (`ClusterWorkerProfile.memoryScope`) in every
+    /// other mode, whose LOAD gates size it and whose ranks refuse a longer
+    /// reservation (`requireWithinServedProfile`, GLM's pipeline admission).
+    /// The same for every profile within the standard request.
     static func servedProfile(_ capability: ClusterRuntimeCapability, mode: ClusterGenerationMode) -> ClusterWorkerProfile {
-        mode == .tensorParallel ? capability.profile : capability.profile.memoryScope
+        let wholeProfile = mode == .tensorParallel
+            || (mode == .pipeline && capability.adapterID == ClusterRuntimeAdapter.gemma4LayerStage.rawValue)
+        return wholeProfile ? capability.profile : capability.profile.memoryScope
     }
 
     /// What the plan says when its two sharded families keep different

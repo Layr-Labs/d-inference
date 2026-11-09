@@ -109,6 +109,13 @@ extension EngineV2Bridge {
             continuation.yield(.error(message))
             continuation.finish()
             return stream
+        } catch MultiModelBatchSchedulerEngineError.distributedRequestRefused(let refusal, let message) {
+            // A pair's refusal finalized its lookup too; it keeps its marker
+            // and its words (the rule and the model's limits) in-band.
+            let (stream, continuation) = AsyncStream<GenerationEvent>.makeStream()
+            continuation.yield(.error(EngineV2Translation.distributedRefusalPrefix + refusal.rawValue + ": " + message))
+            continuation.finish()
+            return stream
         } catch {
             // Unknown admission failures remain bounded for nonthrowing callers.
             let (stream, continuation) = AsyncStream<GenerationEvent>.makeStream()
@@ -1066,28 +1073,31 @@ extension EngineV2Bridge {
             }
             if let failure = error as? PreContentDeadlineFailure { throw failure }
             if error is CancellationError { throw CancellationError() }
-            // A refused distributed admission has no native terminal for the
-            // HTTP writer to report. Throw the mapped error before response
-            // headers instead of returning a stream that can only abort.
-            let distributedProfile = (ownedEngine as? DistributedCBv2Engine)?.profile
-            if distributed != nil, httpResponse != nil, !retirementTransfer.isClaimed {
-                throw MultiModelBatchSchedulerEngineError.fromSchedulerMessage(
-                    EngineV2Translation.admissionErrorMessage(for: error, distributedProfile: distributedProfile))
-            }
             // Admission failure. The message keeps the canonical
             // `token_budget_exhausted:` prefix contract so
             // `fromSchedulerMessage` classifies it as a retryable capacity
             // error (429/503) exactly as the legacy engine's rejections.
+            let distributedProfile = (ownedEngine as? DistributedCBv2Engine)?.profile
             let message = EngineV2Translation.admissionErrorMessage(for: error, distributedProfile: distributedProfile)
-            // A request this Mac's engine can't hold (a paged slot's only memory
-            // gate: one that can never fit its grant) is refused before any
-            // stream exists, as the shared KV gate's is, so a streamed local
-            // request gets 503, not a 200 stream that fails at once.
-            // Nonthrowing callers still get the message in-band.
-            if distributed == nil, !retirementTransfer.isClaimed,
-               case .tokenBudgetExhausted = MultiModelBatchSchedulerEngineError.fromSchedulerMessage(message) {
+            let typed = MultiModelBatchSchedulerEngineError.fromSchedulerMessage(message)
+            // Refused before any stream exists, so a streamed local request
+            // gets its status, not a 200 stream that fails at once: a request
+            // the memory can't hold (this Mac's engine: a paged slot's only
+            // memory gate, one that can never fit its grant; a pair: both
+            // Macs' memory now) gets the 503, and a pair's refusal of this
+            // request (its limits) its typed 400. A refused admission on the
+            // pair's own API has no native terminal for its HTTP writer to
+            // report, so any refusal there is thrown too. Nonthrowing callers
+            // still get the message in-band.
+            let refusedBeforeStream: Bool
+            switch typed {
+            case .tokenBudgetExhausted: refusedBeforeStream = true
+            case .distributedRequestRefused: refusedBeforeStream = distributed != nil
+            default: refusedBeforeStream = distributed != nil && httpResponse != nil
+            }
+            if refusedBeforeStream, !retirementTransfer.isClaimed {
                 continuation.finish()
-                throw MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(message)
+                throw typed
             }
             continuation.yield(.error(message))
             continuation.finish()

@@ -407,7 +407,10 @@ extension EngineV2Bridge {
     ///   coordinator sizes a request by its own estimate of the prompt, so one it
     ///   sends may pass the window once tokenized here, and is served within it.
     ///   Only a prompt that leaves no room is refused (`promptExceedsContext`);
-    /// - on a pair `requested` is kept as asked: it refuses by its own limits.
+    /// - on a pair (`pairServedLimits`) `requested` is cut the same way, to the
+    ///   output limit and the context its mode serves; a prompt that leaves no
+    ///   room is refused by the pair's engine, in one Mac's words
+    ///   (`DistributedRequestRefusal.contextLengthExceeded`).
     /// Resolving the result again for the same prompt gives the same value, so
     /// the text path can name it on the request before the bridge resolves it.
     nonisolated func outputTokens(requested: Int?, promptTokens: Int) -> Int {
@@ -415,12 +418,17 @@ extension EngineV2Bridge {
             return EngineV2Translation.defaultOutputTokens(defaultMaxTokens, promptTokens: promptTokens,
                 contextLimit: defaultOutputContextLimit)
         }
+        if let pair = pairServedLimits {
+            guard promptTokens < pair.contextTokens else { return requested }
+            return min(requested, pair.outputTokens, pair.contextTokens - promptTokens)
+        }
         guard let window = modelWindowTokens, promptTokens < window else { return requested }
         return min(requested, window - promptTokens)
     }
 
     /// The refusal of a prompt that leaves no room in the model window, in the
-    /// words a client sees: the window, never request content.
+    /// words a client sees: the window, never request content. A pair refuses
+    /// with the same words (`DistributedRequestRefusal.contextLengthExceeded`).
     static func promptExceedsContextMessage(contextTokens: Int) -> String {
         "The prompt fills this model's context window of \(contextTokens) tokens, leaving no room for an answer. "
             + "Shorten the prompt or start a new conversation."

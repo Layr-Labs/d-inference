@@ -55,7 +55,7 @@ public enum DistributedEngineFactory {
         // Product parity: the artifact's sampling defaults for the families
         // the product honours them for (legacy greedy defaults otherwise);
         // an omitted `max_tokens` is the cluster default (32,768, at most the
-        // profile's output limit), cut to the context left after the prompt.
+        // output limit the mode serves), cut to the context it serves after the prompt.
         let samplingDefaults = EngineV2SamplingDefaults.resolve(
             modelId: modelID, modelType: modelType, modelDirectory: modelDirectory)
         var draftMiMoImageConfiguration: Data?
@@ -134,8 +134,8 @@ public enum DistributedEngineFactory {
             // GPT-OSS, only the Harmony final message can end a request.
             stopStringScope: ModelEOSPolicy.stopStringScope(modelId: modelID, modelType: modelType),
             samplingDefaults: samplingDefaults,
-            defaultMaxTokens: min(defaultOutputTokens, profile.maxOutputTokens),
-            defaultMaxTokensContextLimit: profile.maxContextTokens,
+            defaultMaxTokens: min(defaultOutputTokens, profile.served.outputTokens),
+            defaultMaxTokensContextLimit: profile.served.contextTokens,
             // As many requests at once as the pair batches (its lanes); the
             // owner's own admission still bounds and refuses beyond them.
             maxConcurrentRequests: max(1, owner.concurrentRequests), residentPrefixCacheEvidence: residentPrefixEvidence,

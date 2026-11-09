@@ -74,6 +74,90 @@ struct Gemma4NativeContextTests {
         #expect(throws: (any Error).self) { _ = try charge(ClusterWorkerLimits.wireContextTokens + 1) }
     }
 
+    private static let gib = QwenDenseStageLoadPolicy.gib
+    private static let now: UInt64 = 1_100
+
+    /// A rank's charge as its LOAD builds it: the native profile, and the
+    /// memory plan LOAD quotes.
+    private static func charge(keepsPrefixes: Bool = true) throws -> Gemma4TensorParallelRequestCharge {
+        let spec = try Gemma4RegisteredSpecification.registered(.twentySixBQAT4Bit)
+        return try .init(profile: Gemma4ResidentAdapterDefinition.profile(specification: spec),
+            memory: Gemma4ResidentAdapterDefinition.memoryProfile(specification: spec), keepsPrefixes: keepsPrefixes,
+            allocationBound: bound)
+    }
+
+    /// A consistent observation of a 256 GiB Mac with `freeBytes` free, nothing else counted.
+    private static func observation(freeBytes: Int) -> QwenDenseStageLoadOSObservation {
+        let page = 16_384, free = freeBytes / page, inactive = 1_000, speculative = 500
+        return QwenDenseStageLoadOSObservation(startedNanoseconds: 900, completedNanoseconds: 1_000,
+            timestampUTC: "2026-11-08T00:00:00Z", physicalMemoryBytes: 256 * gib, pageSizeBytes: page,
+            kernelFreePages: free + speculative, freePages: free, inactivePages: inactive,
+            speculativePages: speculative, actualFreeBytes: free * page,
+            estimatedReclaimableBytes: (free + inactive + speculative) * page, pressureLevel: 1, swapUsedBytes: 0)
+    }
+
+    /// LOAD quotes the memory plan's request, as the planner does; READY's
+    /// capacity, a ceiling and never a grant, covers one request at the
+    /// native context. A profile within its memory plan is LOAD's alone.
+    @Test func loadQuotesTheMemoryPlanAndReadyCoversTheNativeRequest() throws {
+        for keeps in [true, false] {
+            let charge = try Self.charge(keepsPrefixes: keeps)
+            let standard = try Gemma4TensorParallelRequestBudget.derive(contextTokens: 65_536, chunkTokens: 512,
+                promptTokens: 32_768, keepsPrefixes: keeps, allocationBound: Self.bound)
+            let native = try Gemma4TensorParallelRequestBudget.derive(contextTokens: 262_144, chunkTokens: 512,
+                promptTokens: 262_143, keepsPrefixes: keeps, allocationBound: Self.bound)
+            #expect(try charge.memoryPlan == standard)
+            #expect(try charge.requestBytes(contextTokens: 262_144) == native.requestBytes)
+            #expect(try charge.capacityBytes == native.requestBytes && native.requestBytes > standard.requestBytes)
+            #expect(throws: (any Error).self) { _ = try charge.requestBytes(contextTokens: 262_145) }
+            #expect(throws: (any Error).self) { _ = try charge.requestBytes(contextTokens: 1) }
+        }
+        let spec = try Gemma4RegisteredSpecification.registered(.twentySixBQAT4Bit)
+        let native = try Gemma4ResidentAdapterDefinition.profile(specification: spec)
+        let memory = try Gemma4ResidentAdapterDefinition.memoryProfile(specification: spec)
+        let within = try Gemma4TensorParallelRequestCharge(profile: memory, memory: memory, keepsPrefixes: true,
+            allocationBound: Self.bound)
+        #expect(try within.capacityBytes == within.memoryPlan.requestBytes)
+        #expect(try within.servingContextTokens(reclaimableBytes: 0, on: Self.observation(freeBytes: 200 * Self.gib),
+            now: Self.now) == nil)
+        // A memory plan longer than its profile, or another row's, is refused.
+        #expect(throws: (any Error).self) {
+            _ = try Gemma4TensorParallelRequestCharge(profile: memory, memory: native, keepsPrefixes: true,
+                allocationBound: Self.bound)
+        }
+        let other = try Gemma4ResidentAdapterDefinition.memoryProfile(specification: .registered(.twentySixB))
+        #expect(throws: (any Error).self) {
+            _ = try Gemma4TensorParallelRequestCharge(profile: native, memory: other, keepsPrefixes: true,
+                allocationBound: Self.bound)
+        }
+    }
+
+    /// READY and each keep-warm answer report the longest context the
+    /// reservation gate admits now: the request at its own context, the
+    /// rank's reserve beside it and the loading headroom fit. Kept prefix
+    /// entries count as room, since they give way to a reservation. With no
+    /// room for one chunk and one output token, that smallest request is
+    /// reported, so the pair refuses every longer one before either rank.
+    @Test func theServingContextIsTheLongestTheGateAdmitsNow() throws {
+        let charge = try Self.charge()
+        let beside = try charge.memoryPlan.rankBytes
+            + QwenDenseStageLoadPolicy.loadingHeadroomBytes(physicalMemoryBytes: 256 * Self.gib)
+        func total(_ context: Int) throws -> Int { try charge.requestBytes(contextTokens: context) + beside }
+        func serving(_ os: QwenDenseStageLoadOSObservation, reclaimable: Int = 0) throws -> Int? {
+            try charge.servingContextTokens(reclaimableBytes: reclaimable, on: os, now: Self.now)
+        }
+        let roomy = Self.observation(freeBytes: try total(262_144) + Self.gib)
+        #expect(try charge.admits(contextTokens: 262_144, reclaimableBytes: 0, on: roomy, now: Self.now))
+        #expect(try serving(roomy) == 262_144)
+        let tight = Self.observation(freeBytes: (try total(65_536) + total(262_144)) / 2)
+        let longest = try #require(try serving(tight))
+        #expect(longest > 65_536 && longest < 262_144)
+        #expect(try charge.admits(contextTokens: longest, reclaimableBytes: 0, on: tight, now: Self.now))
+        #expect(!(try charge.admits(contextTokens: longest + 1, reclaimableBytes: 0, on: tight, now: Self.now)))
+        #expect(try #require(try serving(tight, reclaimable: Self.gib)) > longest)
+        #expect(try serving(Self.observation(freeBytes: 2 * Self.gib)) == 513)
+    }
+
     /// The pipeline's one-chunk lookahead prefill keeps its one frame for a
     /// prompt past 32,768 tokens as for any other: its allowance does not grow
     /// with the prompt, and its window counts every frame.

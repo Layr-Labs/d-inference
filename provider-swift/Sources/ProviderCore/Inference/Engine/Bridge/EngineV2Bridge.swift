@@ -142,9 +142,15 @@ public actor EngineV2Bridge {
     /// context, else its model's own (from its config), the smaller when it has
     /// both. A `max_tokens` past what the prompt leaves is cut to fit
     /// (`outputTokens(requested:promptTokens:)`), and only a prompt that leaves
-    /// no room is refused, naming the window. Nil on a pair, whose engine
-    /// refuses by its own limits, and on a slot that knows no window.
+    /// no room is refused, naming the window. Nil on a pair, which cuts to the
+    /// limits its mode serves (`pairServedLimits`), and on a slot that knows
+    /// no window.
     nonisolated let modelWindowTokens: Int?
+    /// A cluster pair's output limit and context, as its mode serves them
+    /// (`DistributedResidentExecutionProfile.served`): a `max_tokens` past
+    /// either is cut to fit, as on one Mac; only a prompt that leaves no room
+    /// is refused, by the pair's engine, naming the context. Nil on one Mac.
+    nonisolated let pairServedLimits: (outputTokens: Int, contextTokens: Int)?
     let maxConcurrentRequests: Int
     nonisolated let performanceProfile: ServingPerformanceProfile?
     nonisolated let deadlineProfile: DeadlinePerformanceProfile?
@@ -478,6 +484,9 @@ public actor EngineV2Bridge {
             ?? defaultMaxTokensContextLimit
         self.modelWindowTokens = engine is DistributedCBv2Engine
             ? nil : defaultOutputContextLimit.flatMap { $0 > 0 ? $0 : nil }
+        self.pairServedLimits = (engine as? DistributedCBv2Engine).map {
+            ($0.profile.served.outputTokens, $0.profile.served.contextTokens)
+        }
         self.clampedKVBackendFallbackReason =
             Self.heartbeatFallbackReason(kvBackendFallbackReason)
         self.stopTokenIds = EngineV2Translation.stopTokenIds(

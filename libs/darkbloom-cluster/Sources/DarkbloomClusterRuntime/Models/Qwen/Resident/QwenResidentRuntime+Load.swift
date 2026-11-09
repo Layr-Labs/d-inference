@@ -292,11 +292,12 @@ extension QwenResidentRuntime {
                             + " active_added=\(head.receipt.activeBytesAdded) load_ns=\(head.receipt.loadNanoseconds)")
                     }
                     // Each loaded stage's shared KV storage (Qwen 3.5 stages; other
-                    // families keep their per-request contiguous storage).
+                    // families keep their per-request contiguous storage), bounded by
+                    // the longest request served (a ceiling, not an allocation).
                     for value in [loaded.loaded] + (producerStage.map { [$0.loaded] } ?? []) {
                         try CBv2StageKVHost.install(on: value, kind: kvKind, lanes: batch.lanes,
-                            maximumTokensPerRequest: admission.memoryProfile.maximumContextTokens,
-                            maximumChunkTokens: admission.memoryProfile.maximumChunkTokens, quantization: kvQuantization)
+                            maximumTokensPerRequest: admission.servedProfile.maximumContextTokens,
+                            maximumChunkTokens: admission.servedProfile.maximumChunkTokens, quantization: kvQuantization)
                     }
                     if batch.batching, loaded.loaded.kvHost.host == nil {
                         throw ProbeError("Batch lanes need a stage KV host; this model's stages keep per-request storage")
@@ -351,8 +352,26 @@ extension QwenResidentRuntime {
                         disagreementMessage: "Resident peers did not load matching verified stage commitments", scope: .session(.loadedReady, "resident-loaded"), check: checked)
                     try checked()
                     activeLoaded = Memory.activeMemory
-                    return try QwenLongPrefillCheckedBytes.sum([maximum.reservedBytes, prefill?.reservedBytes ?? 0,
+                    let planned = try QwenLongPrefillCheckedBytes.sum([maximum.reservedBytes, prefill?.reservedBytes ?? 0,
                         split?.reservedBytes ?? 0])
+                    // A family that serves longer requests than the memory plan
+                    // (`servedProfile`) charges each at its own context when it is
+                    // reserved: READY's capacity, a ceiling and never a grant, covers
+                    // its longest.
+                    let served = admission.servedProfile
+                    guard served.maximumContextTokens > admission.memoryProfile.maximumContextTokens else { return planned }
+                    let longest = try loaded.requestAllowance(plan: admission.plan, rank: collective.rank,
+                        maximumTokens: served.maximumContextTokens, chunkSize: served.maximumChunkTokens,
+                        decode: .init(mode: mode, rank: collective.rank, speculativeTerms: speculativeTerms),
+                        bound: QwenResidentResourceEnvironment.allocationBound)
+                    let longestPrefill = try QwenResidentPrefillSelection.allowance(
+                        QwenResidentPrefillSelection.policy(configuration.prefillSchedule), rank: collective.rank,
+                        promptCount: served.maximumPromptTokens, chunkSize: served.maximumChunkTokens,
+                        hiddenSize: admission.profile.hiddenSize,
+                        elementBytes: qwenStageWireElementBytes(admission.profile.activationDType),
+                        bound: QwenResidentResourceEnvironment.allocationBound)
+                    return max(planned, try QwenLongPrefillCheckedBytes.sum([longest.reservedBytes,
+                        longestPrefill?.reservedBytes ?? 0]))
                 } catch {
                     // Prefer a recorded native fault over a secondary Swift
                     // validation/shape error before leaving this error scope.

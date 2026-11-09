@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-09
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -1251,26 +1251,46 @@ Mac, `darkbloom cluster` shows the status and names the Mac to use.
 While the Mac that runs the pair's API is away, the other Mac's own port for it
 (with **Only me**, and with **Both, me first** on every address) is never a
 connection that just closes: it answers every request at once with a `503`
-(`code` `pair_mac_unreachable`), ``Your pair's other Mac (…) isn't reachable;
-this Mac relays to it. Requests resume when it's back, or run `darkbloom stop`,
-then `darkbloom start --solo`, to serve this Mac alone.`` Those words name the
-other Mac only to a request with this Mac's key or the pair's: any other gets
-the local API's own `401`, as that API would answer it, and a liveness check or
-a browser's preflight, which need no key, the `503` without names. That Mac is
-away once it hasn't answered over the cable for 12 s; a status request to it
-that fails while it answers there doesn't count (only before it has answered at
-all since this Mac's cluster service started do two failed in a row).
-`darkbloom status` and `darkbloom local` there say the same, after
+(`code` `pair_mac_unreachable`, `Retry-After: 10`), ``Your pair's other Mac (…)
+isn't reachable; this Mac relays to it. Requests resume when it's back, or run
+`darkbloom stop`, then `darkbloom start --solo`, to serve this Mac alone
+(`darkbloom start --solo` by itself is refused while this Mac's part of the
+pair holds its serving lock: up to 15 minutes after the other Mac last answered
+over the cable).`` `darkbloom start --solo` by itself is refused that long
+because the pair still runs here ([going back to serving on one
+Mac](#going-back-to-serving-on-one-mac)); `darkbloom stop` ends it at once.
+Those words name the other Mac only to a request with this Mac's key or the
+pair's. A request with another key in the local key format (`dk-local-` and 43
+characters), such as the other Mac's own, which works through this Mac while
+that Mac is there but which this Mac can't judge, gets the same `503` without
+the name; any other gets the local API's own `401`, as that API would answer
+it, and a liveness check or a browser's preflight, which need no key, the `503`
+without names or commands. That Mac is away once it hasn't answered over the
+cable for 12 s; a status request to it that fails while it answers there
+doesn't count (only before it has answered at all since this Mac's cluster
+service started do two failed in a row). In those first 12 s a request gets
+the same `503` within 3 s, the longest this Mac waits for that Mac to take the
+connection. `darkbloom status` and `darkbloom local` there say the same, after
 `Local API: http://127.0.0.1:<port>/v1 on this Mac answers 503 for now.`, and
 `darkbloom start --opencode` there says it at once. Relaying resumes by itself
 within seconds of that Mac answering over the cable again.
-`darkbloom start --solo` alone is refused while this Mac's part holds its
-serving lock (up to the 15 minutes in [going back to serving on one
-Mac](#going-back-to-serving-on-one-mac)), hence `darkbloom stop` first. A
-request on that port while the API on the other Mac doesn't listen (its part
-starting again) gets a `503` with `code` `pair_api_unavailable` the same way. A
-Mac that serves the model alone after the 10 minutes does so on its own saved
-port (`[local] port`), so its tools keep their address.
+
+When only that Mac's part stops or starts again (a stop, a restart, an update,
+a crash) while that Mac stays on the cable, that Mac is never away: every
+request gets a `503` with `code` `pair_api_unavailable` and `Retry-After: 10`
+at once, from the first one on, to the same callers the same way. The pair's API
+there answers it while its pair doesn't serve (stopping, starting, its warm-up
+request), ``The pair's API takes no requests right now: the pair is starting
+or stopping. Requests resume when it serves, or run …`` with the same commands,
+and never holds a request until the pair serves; once nothing listens there,
+this Mac's port answers ``The pair's API on your pair's other Mac (…) isn't
+answering yet; this Mac relays to it. Requests resume when it answers, or run
+…``. This Mac's port stays up meanwhile, and `darkbloom status`, `darkbloom
+local` and `darkbloom doctor` there say `Local API: http://127.0.0.1:<port>/v1
+on this Mac answers 503 for now.` with those words. Requests pass again as soon
+as that API listens. A Mac that serves the model alone after the 10 minutes
+does so on its own saved port (`[local] port`), so its tools keep their
+address.
 
 ## How the split is chosen
 

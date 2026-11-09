@@ -7755,8 +7755,10 @@ device lock is taken
 
 ```mermaid
 flowchart LR
-  L["Local request"] --> S{"Slot live?"}
-  S -- "no" --> N["503"]
+  L["Local request"] --> G{"The pair takes requests?<br/>(admission open, not draining)"}
+  G -- "no" --> N["503 pair_api_unavailable<br/>at once"]
+  G -- "yes" --> S{"Slot live?"}
+  S -- "no" --> N
   S -- "yes" --> F{"Admission open,<br/>a lane free,<br/>nobody waiting?"}
   F -- "yes" --> B["The slot's bridge"]
   F -- "no" --> Q["FIFO queue<br/>(parked)"]
@@ -7786,7 +7788,18 @@ flowchart LR
    `cluster local`.
 4. Local admission opens only once the warmup canary passed
    (`clusterPairAdmissionOpenSlotID`, set in `publishClusterPairSlot`) and
-   closes when retirement starts (`retireClusterPairSlot`).
+   closes when retirement starts (`retireClusterPairSlot`). The API's gate
+   follows it (`LocalResponseTracker.setPairServes`, read by
+   `LocalPairGateResponder` behind the key check and inside the router): while
+   it is closed (no slot yet, the canary, retiring), a POST gets the pair's
+   typed `503` at once (`ClusterPairAPIRefusal`: `pair_api_unavailable`,
+   `Retry-After: 10`, `ClusterLocalRelay.pairNotServing`'s words), from a flag
+   read without waiting for the loop actor, so nothing holds a request while the
+   part starts or the pair forms. A drain refuses at the door the same way
+   (`LocalDisconnectResponder.refusal`: the `503` with either key, the `401`
+   without), waiting requests too (`clusterPairNotServing`); a refusal raised
+   past the gate (`DistributedRequestQueue.unavailableMessage`, also
+   `cluster local`'s) is mapped to the same `503` (`CORSResponder`).
 5. A Darkbloom request never waits for this queue; its path through the pair
    is unchanged.
 6. The owner-pause hook `noteClusterPairLocalUse` brackets each local request
@@ -7860,16 +7873,26 @@ flowchart LR
    doesn't count, and before any answer in the cluster service's life
    `askFailuresWithoutLease`, two, failed in a row do) it answers each request
    at once with a 503 in the local API's error shape, `code`
-   `pair_mac_unreachable`, in words that name the other Mac
-   (`ClusterLocalRelay.Refusals`), which the member's `status` and
-   `darkbloom local` repeat (`ClusterServiceStatus.relayRankZeroAway`), to a
-   caller with this Mac's key or the pair's, as the local API checks them
-   (`ClusterLocalRelay.Caller`): any other gets the API's own 401, and a CORS
-   preflight or a liveness check the 503 without names; otherwise it waits at
-   most 3 s for rank 0 to take a connection
+   `pair_mac_unreachable`, in words that name the other Mac and say what to do
+   (`ClusterLocalRelay.Refusals`, `servingAlone`: `stop`, then `start --solo`,
+   which by itself is refused while this Mac's part holds its serving lock, up
+   to `ClusterPairWatch.giveUpSeconds` after the other Mac last answered), which
+   the member's `status` and `darkbloom local` repeat
+   (`ClusterServiceStatus.relayRankZeroAway`), to a caller with this Mac's key or
+   the pair's, as the local API checks them (`ClusterLocalRelay.Caller`): another
+   key in the local key format (`LocalEndpoint.isToken`, such as rank 0's own)
+   gets the same words without the name, any other the API's own 401, and a
+   CORS preflight or a liveness check the 503 without names or commands;
+   otherwise it waits at most 3 s for rank 0 to take a connection
    (`ClusterLocalRelay.connect(_:within:)`) and answers a failed one the same
-   way, `pair_api_unavailable` when rank 0's Mac refuses the port. The request
-   is read first, so the answer isn't lost to a reset. It clears once that Mac
+   way, `pair_api_unavailable` when rank 0's Mac refuses the port. While rank
+   0's status says its pair's API is down for now (its part starts again:
+   `ClusterLocalRelay.rankZeroAPIDown`), the relay keeps its port and its last
+   target instead of stopping (`ClusterService.recordRankZeroAsk`), and the
+   member's `status`, `darkbloom local` and `doctor` say it answers 503 for now
+   (`ClusterServiceStatus.relayRankZeroAPIDown`,
+   `ClusterPairSummary.memberAPIRestarting`). The request is read first, so the
+   answer isn't lost to a reset. It clears once that Mac
    answers over the cable again, and asks of it go back to every 10 s then
    (`ClusterService.updateRelayAway`). The solo server a pair falls back to
    takes this Mac's own port too (`thisMacPort`, else 8000), after the relay

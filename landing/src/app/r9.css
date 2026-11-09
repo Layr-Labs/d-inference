@@ -790,8 +790,9 @@
      over black; on phones it leaves before the film has visibly shrunk. */
   .hero-copy { opacity: clamp(0, calc(1 - var(--hero-exit) * 6), 1); }
 
-  /* iOS zooms the page into any focused field under 16px. */
-  .prompt-form input { font-size: 16px; }
+  /* iOS zooms the page into any focused field under 16px. As specific as the
+     panel's 11.862px rule above, which a bare `.prompt-form input` loses to. */
+  .network-sticky .prompt-form input { font-size: 16px; }
 
   /* Older mobile rules in globals.css transition the shell's transform over
      820ms, which lags the scroll-scrubbed intro scale and the dive math. */
@@ -842,6 +843,10 @@
   .network-sticky .prompt-list button:nth-child(1),
   .network-sticky .prompt-list button:nth-child(2),
   .network-sticky .prompt-list button:nth-child(3) { width: auto; }
+
+  /* Once a question is asked, its answer takes the suggestions' room: on a
+     small phone their rows left the history 0–9px tall. */
+  .network-sticky .chat-zone:has(.chat-exchange) .prompt-list { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

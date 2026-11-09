@@ -237,18 +237,25 @@ model.
 - **Your default model:** OpenCode's stays when its `opencode.json` or
   `opencode.jsonc` in `~/.config/opencode` sets one (OpenCode 2 doesn't read
   OpenCode 1's `config.json`). Nothing is written for it, and the start names
-  it: `Your default stays exo/llama-3.3-70b; pick Darkbloom with /models.` When
-  neither does, Darkbloom's first model becomes the default for new sessions,
-  on a line of its own: `New OpenCode sessions now use Darkbloom's Qwen 3.8
-  27B. Switch back with /models.` In a project whose own `opencode.json` sets a
-  model, or with `OPENCODE_CONFIG` naming a file that does, OpenCode uses that
-  one ([OpenCode's config order](../architecture/tool-integrations.md#opencodes-config-order)).
+  it: `Your default stays exo/llama-3.3-70b; pick Darkbloom with /models.`
+  Without one, OpenCode starts on the model you last picked with `/models`,
+  which it remembers (in `~/.local/state/opencode/model.json`); then nothing is
+  written either: `Pick Darkbloom once with /models; OpenCode remembers it.`
+  Only when OpenCode has neither does Darkbloom's first model become the
+  default for new sessions, on a line of its own that says how to go back: `New
+  OpenCode sessions now use Darkbloom's Qwen 3.8 27B. To go back, remove
+  "model" from ~/.config/opencode/opencode.jsonc or run the Undo below.`
+  (`/models` isn't a way back from it: a config's `model` comes first at every
+  launch.) In a project whose own `opencode.json` sets a model, or with
+  `OPENCODE_CONFIG` naming a file that does, OpenCode uses that one
+  ([OpenCode's config order](../architecture/tool-integrations.md#opencodes-config-order)).
   Hermes always makes Darkbloom its main model and names the one before: `New
   Hermes chats now use Darkbloom's Qwen 3.8 27B (before: gpt-6-astra via
   opencodex). Switch back: hermes model`.
 - **Where each model runs** is in its name: `Qwen 3.8 27B (this Mac)`, `(your
-  pair)` on the Mac that serves a pair's API, whatever its size, `(your Macs)`,
-  or `(Darkbloom network, billed)`.
+  pair)` on a Mac whose local API is its pair's (the leading Mac's, or a
+  member's relay to it), whatever the pair's size, `(your Macs)`, or
+  `(Darkbloom network, billed)`.
 - **Your key stays out of them.** The tools read it from Darkbloom's own key
   file, and `darkbloom --opencode` never prints it.
 - **Undo in one line:** every change is backed up first, and the start prints
@@ -264,8 +271,8 @@ model.
 
   When Darkbloom's model became the default, the `Changed:` line says `added
   the "darkbloom" provider and the default model`, and the line before `Undo:`
-  is `New OpenCode sessions now use Darkbloom's <model>. Switch back with
-  /models.`
+  is `New OpenCode sessions now use Darkbloom's <model>. To go back, remove
+  "model" from <file> or run the Undo below.`
 - **It waits for your model.** While this Mac still loads the models it started
   with, the start waits before it writes anything, on one live line
   (`⠙ Loading Gemma 4 26B before setting up OpenCode… 42s`; without a terminal,

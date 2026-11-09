@@ -451,16 +451,22 @@ They run once, at `start`:
    its ID, and text input unless the endpoint lists images, and one line says
    to run the start again online for names and image support.
    Each model's name says where it runs: `(this Mac)`, `(your pair)` when the
-   local API is this Mac's running part of a pair (its pid is the part's,
-   `IntegrationEndpoint.servesThePair`), `(your Macs)` or `(Darkbloom network,
-   billed)`.
+   local API is this Mac's part of a running pair (its pid is the part's, or the
+   cluster service's for a member's relay; `IntegrationEndpoint.servesThePair`),
+   `(your Macs)` or `(Darkbloom network, billed)`.
    The result block names the file changed, the backup, the default model on a
    line of its own and a one-line undo. OpenCode's default is set only when
-   neither of its global files (`opencode.json`, `opencode.jsonc`;
+   OpenCode has none: neither of its global files (`opencode.json`,
+   `opencode.jsonc`;
    [OpenCode's config order](../architecture/tool-integrations.md#opencodes-config-order))
-   sets one: ``New OpenCode sessions now use
-   Darkbloom's Qwen 3.8 27B. Switch back with /models.``; else ``Your default
-   stays exo/llama-3.3-70b; pick Darkbloom with /models.`` Hermes' main model
+   sets one, and its TUI remembers no `/models` pick (`model.json` in
+   `$XDG_STATE_HOME/opencode`, else `~/.local/state/opencode`;
+   `OpenCodeConfigPlan.rememberedPick`). Then: ``New OpenCode sessions now use
+   Darkbloom's Qwen 3.8 27B. To go back, remove "model" from
+   ~/.config/opencode/opencode.jsonc or run the Undo below.``; with a config
+   default, ``Your default stays exo/llama-3.3-70b; pick Darkbloom with
+   /models.``; with a remembered pick, ``Pick Darkbloom once with /models;
+   OpenCode remembers it.`` Hermes' main model
    is always Darkbloom's, and the line names the one before: ``New Hermes chats
    now use Darkbloom's Qwen 3.8 27B (before: gpt-6-astra via opencodex). Switch
    back: hermes model``. Then `Requests:` (where your requests go) and

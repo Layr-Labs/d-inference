@@ -40,8 +40,10 @@ flowchart LR
    whatever that server bound, and takes the key file from `LocalEndpoint.keyFile(forPort:)`
    (`provider-swift/Sources/ProviderCore/Server/LocalEndpoint.swift`): the file that holds exactly the key the server
    on that port requires, `local_token` or a pair's `cluster_local_token`. The endpoint serves the pair
-   (`servesThePair`) when `local.json`'s pid is this Mac's running part of a pair
-   (`ClusterPairSummary.runningPartPID()`), as `status` decides whose API it is.
+   (`servesThePair`) when `local.json`'s pid is one of this Mac's running pair's processes
+   (`ClusterPairSummary.runningPairProcesses()`): its part's, as `status` decides whose API it is, or, while the part
+   runs, the cluster service's own, whose relay answers a member's local API for the pair (`ClusterService.relayTick`
+   writes `local.json` with the service's pid).
 2. **Models.** `IntegrationModels.fetch` asks the endpoint's `GET /v1/models` with that key; `resolve` names each
    chat model from the catalog (`display_name`, with where it runs: this Mac, or your pair when the endpoint serves
    it, whatever its size; your Macs; the network), takes its
@@ -94,12 +96,16 @@ flowchart LR
    `providers.<id>` value, or appends it in the file's indentation and trailing-comma style. The block has the base
    URL, `apiKey: "{file:<key file>}"` (under `~` in the home directory), `compatibility.maxTokensField: "max_tokens"`
    (OpenCode otherwise sends `max_completion_tokens`, which the engine ignores) and each model's name, `limit` and
-   `capabilities`. The top-level `model` is set only when no global config file sets one, so Darkbloom never sets a
-   default over the owner's: Darkbloom edits the global file OpenCode loads last, where a `model` would win over the
-   other one's ([OpenCode's config order](#opencodes-config-order)). The edited file's own `model` wins over the other
-   file's (`OpenCodeConfigPlan.otherGlobalDefault`, merged by `GlobalDefault.merged`): a name stays and is named
-   (`ToolConfigSummary.keptDefault`); `""`, `null`, two `model` keys or a file that can't be read stays without a
-   name.
+   `capabilities`. The top-level `model` is set only when OpenCode has no default: no global config file sets one,
+   and its TUI remembers no model picked with `/models` (`OpenCodeConfigPlan.rememberedPick`). So Darkbloom never
+   sets a default over the owner's: Darkbloom edits the global file OpenCode loads last, where a `model` would win
+   over the other one's, and at every launch over the remembered pick ([OpenCode's config order](#opencodes-config-order)).
+   The edited file's own `model` wins over the other file's (`OpenCodeConfigPlan.otherGlobalDefault`, merged by
+   `GlobalDefault.merged`): a name stays and is named (`ToolConfigSummary.keptDefault`); `""`, `null`, two `model`
+   keys or a file that can't be read stays without a name. A remembered pick stays too
+   (`ToolConfigSummary.rememberedPick`), and the start says to pick Darkbloom once with `/models`. When Darkbloom
+   sets `model`, the start says how to go back for good: remove `model`, or run the undo (`/models` lasts only until
+   OpenCode quits).
 4. **Hermes.** `HermesConfigPlan.plan` splices two top-level sections of `config.yaml` by lines: `providers.<id>`
    (`api`, `key_cmd: "/bin/cat <key file>"`, `transport`, `default_model`, `extra_body.max_tokens` and each model's
    `context_length` / `supports_vision`) and `model` (`provider: "custom:<id>"` and `default`; the previous endpoint's
@@ -135,6 +141,7 @@ keeps it in one place too: `OpenCodeConfigPlan.globalFileNames`.
 | The default model is the `model` of the last config loaded that sets one | [`provider.ts`](https://github.com/anomalyco/opencode/blob/dc2ffcf8bf26f9e669b6aa22b95f50e12be15e06/packages/core/src/config/plugin/provider.ts) (`Config.latest(loaded.entries, "model")`) | `GlobalDefault.merged` |
 | Saves to the last of the two files that exists, else to a new `opencode.jsonc` | [`config.ts`](https://github.com/anomalyco/opencode/blob/dc2ffcf8bf26f9e669b6aa22b95f50e12be15e06/packages/core/src/config.ts) (`update`) | `configFile` edits the same file: the global one loaded last |
 | Loads remote (`.well-known/opencode`) and integration configs before the global files, and `OPENCODE_CONFIG`'s file, a project's `opencode.json`, `opencode.jsonc` and `.opencode` folder, `OPENCODE_CONFIG_CONTENT` and the managed files after them | [`config.ts`](https://github.com/anomalyco/opencode/blob/dc2ffcf8bf26f9e669b6aa22b95f50e12be15e06/packages/core/src/config.ts) (`load`) | Reads only the global files: a `model` loaded after them wins over Darkbloom's too, and Darkbloom's wins over a remote or integration one |
+| A new TUI session starts on `--model`, else the config's `model`, else the first valid model you picked with `/models` (`recent`, which `/models` adds to and OpenCode keeps in `model.json` in its state folder, `$XDG_STATE_HOME/opencode`, else `~/.local/state/opencode`), else the first model listed | [`local.tsx`](https://github.com/anomalyco/opencode/blob/dc2ffcf8bf26f9e669b6aa22b95f50e12be15e06/packages/tui/src/context/local.tsx) (`fallbackModel`; `path.join(paths.state, "model.json")`), [`model-preference.ts`](https://github.com/anomalyco/opencode/blob/dc2ffcf8bf26f9e669b6aa22b95f50e12be15e06/packages/tui/src/model-preference.ts) (`addRecent`, `decodeModelPreference`), [`dialog-model.tsx`](https://github.com/anomalyco/opencode/blob/dc2ffcf8bf26f9e669b6aa22b95f50e12be15e06/packages/tui/src/component/dialog-model.tsx), [`global-roots.ts`](https://github.com/anomalyco/opencode/blob/dc2ffcf8bf26f9e669b6aa22b95f50e12be15e06/packages/util/src/global-roots.ts); test "uses the last configured model and variant ahead of recents" in [`local-selection.test.tsx`](https://github.com/anomalyco/opencode/blob/dc2ffcf8bf26f9e669b6aa22b95f50e12be15e06/packages/tui/test/context/local-selection.test.tsx) | `rememberedPick` reads that file: a pick there stays the default, and no `model` is written over it |
 | With `OPENCODE_CONFIG_DIR` set, reads that folder as its global one | [`global.ts`](https://github.com/anomalyco/opencode/blob/dc2ffcf8bf26f9e669b6aa22b95f50e12be15e06/packages/util/src/global.ts) | Not followed: `configFile` reads `$XDG_CONFIG_HOME/opencode`, else `~/.config/opencode` |
 
 ## Invariants
@@ -144,8 +151,9 @@ keeps it in one place too: `OpenCodeConfigPlan.globalFileNames`.
 2. Bytes outside the owned value or lines are unchanged: other providers, a V1 `provider` map, the owner's default
    model in OpenCode, every other Hermes section and the owner's comments. Comments inside a replaced value or on a
    replaced line are counted (`ToolConfigSummary.droppedComments`); the backup keeps them.
-3. OpenCode's default is never set over one the owner set in a global file: `model` is written only when none sets
-   one (`OpenCodeConfigPlan.plan`, `GlobalDefault.merged`), and the start names the one that stays. Hermes is the
+3. OpenCode's default is never set over one the owner set in a global file or by a `/models` pick OpenCode remembers:
+   `model` is written only when there is neither (`OpenCodeConfigPlan.plan`, `GlobalDefault.merged`,
+   `rememberedPick`), and the start names the one that stays. Hermes is the
    exception: its main model is always Darkbloom's, as `ollama launch` and `omlx launch` make theirs, and the start
    names the one it replaced (`ToolConfigSummary.replacedDefault`).
 4. The `darkbloom` block is Darkbloom's whole: a run that changes it rewrites all of it, so a key the owner added

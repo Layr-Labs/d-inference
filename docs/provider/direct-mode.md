@@ -386,8 +386,9 @@ coordinator that can't be reached leaves this Mac's models alone in the list
 and is asked again after 10 s. With `this-mac`, the list never leaves the Mac.
 Integrations (OpenCode, Hermes) read this list and name each model with where
 it runs: `this-mac` is `(this Mac)`, or `(your pair)` on a pair's API (the
-pair's model, whatever the pair's size); `my-macs` is `(your Macs)`, and
-`darkbloom` is `(Darkbloom network, billed)`.
+leading Mac's, or a member's relay to it; the pair's model, whatever the pair's
+size); `my-macs` is `(your Macs)`, and `darkbloom` is `(Darkbloom network,
+billed)`.
 
 ### Each model's whole window, on this Mac
 

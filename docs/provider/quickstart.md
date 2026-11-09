@@ -128,10 +128,12 @@ listens: it listens once its models are loaded, so the start waits up to
 opencode
 ```
 
-In OpenCode, `/models` → **Darkbloom**, then pick a model. If your OpenCode
-config sets no default model, Darkbloom's first model becomes the default for
-new sessions; otherwise yours stays. The start says which on a line of its
-own (`New OpenCode sessions now use Darkbloom's …` or `Your default stays …`).
+In OpenCode, `/models` → **Darkbloom**, then pick a model; OpenCode remembers
+the pick. If neither your OpenCode config sets a default model nor OpenCode
+remembers one you picked, Darkbloom's first model becomes the default for new
+sessions; otherwise yours stays. The start says which on a line of its own
+(`New OpenCode sessions now use Darkbloom's …`, `Your default stays …` or
+`Pick Darkbloom once with /models; OpenCode remembers it.`).
 With `--hermes`, Darkbloom is Hermes' main model: run `hermes`. Any other OpenAI
 client: `darkbloom local` prints the address, the key and a `curl` to try
 ([the local API](./direct-mode.md)).

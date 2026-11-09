@@ -93,6 +93,14 @@ struct DesktopClusterSandboxResourcesTests {
     let value = await DesktopBackend.readClusterStatus(executable: missing, configPath: nil)
     #expect(value.field("state").text == "unknown")
     #expect(value.field("error").text?.contains("couldn't run") == true)
+    #expect(value.field("error").text?.hasPrefix("`\(BuildEnvironment.current.cliName) cluster status` couldn't run: ") == true)
+  }
+
+  @Test func sandboxStatusThatCannotRunIsUnknown() async throws {
+    let missing = FileManager.default.temporaryDirectory.appendingPathComponent("missing-\(UUID().uuidString)")
+    let value = await DesktopBackend.readSandboxStatus(executable: missing)
+    #expect(value.field("schema") == .int(1) && value.field("state").text == "unknown")
+    #expect(value.field("error").text?.hasPrefix("`\(BuildEnvironment.current.cliName) sandbox status` couldn't run: ") == true)
   }
 
   @Test func sandboxStatusIsTheAddOnDocumentWhateverItsExitWithSecondsForTheUpdateCheck() async throws {

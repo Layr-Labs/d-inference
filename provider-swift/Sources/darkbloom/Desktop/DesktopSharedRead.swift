@@ -47,46 +47,35 @@ extension DesktopBackend {
       break
     }
   }
-}
 
-/// Command output as the app shows it.
-enum DesktopText {
-  /// One line: ANSI escape sequences, other control and format characters, and line separators removed (a tab is a
-  /// space), only what a carriage return redraws last kept, trailing spaces trimmed, and at most `limit` characters.
-  static func line(_ raw: String, limit: Int = 1000) -> String {
-    var text = raw
-    if text.contains("\r") {
-      text = text.split(separator: "\r", omittingEmptySubsequences: true).last.map(String.init) ?? ""
+  /// A status command's document (`cluster status --json`, `sandbox status --json`), read by this build's own child:
+  /// `parse` makes the resource from what the child printed (`runReportingErrors`). A child that didn't answer within
+  /// `timeout`, or couldn't run, is `unavailable`, with why in the words of `command`.
+  static func readStatus(
+    _ command: String, arguments: [String], executable: URL?, timeout: TimeInterval,
+    parse: ((status: Int32, output: String, errors: String)) -> JSONValue, unavailable: (String) -> JSONValue
+  ) async -> JSONValue {
+    let name = "`\(BuildEnvironment.current.cliName) \(command)`"
+    do {
+      return parse(try await DesktopWorker(executable: executable).runReportingErrors(arguments, timeout: timeout))
+    } catch DesktopWorker.RunError.timedOut {
+      return unavailable("\(name) didn't answer within \(Int(timeout)) s.")
+    } catch {
+      return unavailable("\(name) couldn't run: \(DesktopText.line(String(describing: error)))")
     }
-    for pattern in [
-      #"\x{1B}\[[0-?]*[ -/]*[@-~]"#,  // CSI: colors, cursor moves, erases
-      #"\x{1B}\][^\x{07}\x{1B}]*(?:\x{07}|\x{1B}\\)?"#,  // OSC: titles, hyperlinks
-      #"\x{1B}[@-Z\\-_]"#,  // other two-character escapes
-      #"\x{9B}[0-?]*[ -/]*[@-~]"#,  // 8-bit CSI
-    ] {
-      text = text.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
-    }
-    var scalars = String.UnicodeScalarView()
-    for scalar in text.unicodeScalars {
-      if scalar == "\t" {
-        scalars.append(" ")
-        continue
-      }
-      switch scalar.properties.generalCategory {
-      case .control, .format, .lineSeparator, .paragraphSeparator: continue
-      default: scalars.append(scalar)
-      }
-    }
-    var cleaned = String(scalars)
-    while cleaned.last?.isWhitespace == true { cleaned.removeLast() }
-    return cleaned.count > limit ? String(cleaned.prefix(limit - 1)) + "…" : cleaned
   }
 
-  /// The last `count` lines of `text` that have something to show, each as `line` makes it.
-  static func lastLines(_ text: String, count: Int, limit: Int = 1000) -> [String] {
-    Array(
-      text.split(whereSeparator: { $0 == "\n" || $0 == "\r\n" }).lazy.map { line(String($0), limit: limit) }
-        .filter { !$0.isEmpty }
-        .suffix(count))
+  /// Why `command --json` printed no document the API keeps: its last line on standard error, else its exit status.
+  static func noStatusReason(_ command: String, errors: String, exitCode: Int32) -> String {
+    DesktopText.lastLines(errors, count: 1).first
+      ?? "`\(BuildEnvironment.current.cliName) \(command) --json` printed no status (exit \(exitCode))."
+  }
+
+  /// `text` as one JSON object; nil for anything else.
+  static func jsonObject(_ text: String) -> JSONValue? {
+    guard let data = text.data(using: .utf8), let value = try? JSONDecoder().decode(JSONValue.self, from: data),
+      case .object = value
+    else { return nil }
+    return value
   }
 }

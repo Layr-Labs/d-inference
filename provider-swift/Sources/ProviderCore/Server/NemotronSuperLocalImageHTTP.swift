@@ -194,7 +194,8 @@ private struct SuperHTTPEngine: MLXServerEngine {
 /// Outward errors never serialize foreign descriptions, which may contain
 /// prompt, media or tool data. Each refusal names its cause through its
 /// closed failure code: a request control or prompt fault is
-/// `invalid_request` on both routes; media this route does not serve is
+/// `invalid_request` on both routes (rendered text that names a media
+/// placeholder included); media this route does not serve is
 /// `unsupported_media`; media above a limit is `media_too_large`; only
 /// corrupt media is `invalid_media`.
 enum SuperHTTPErrors {
@@ -212,8 +213,8 @@ enum SuperHTTPErrors {
             case .unsupportedMedia(let refusal):
                 return MediaIngest.MediaError.unsupportedMedia(refusal.message)
             case .placeholderText:
-                return MultiModelBatchSchedulerEngineError.multimodalRejected(
-                    "text that names <image> or <video> cannot accompany inline media")
+                // Literal `<image>` text is a request fault on the text route too.
+                return invalidRequest
             case .contextExceeded:
                 return MultiModelBatchSchedulerEngineError.promptExceedsContext(
                     "the prompt with its image or video features does not fit this model's context window")
@@ -253,19 +254,19 @@ enum SuperHTTPErrors {
             return MultiModelBatchSchedulerEngineError.requestRejected(
                 "inline video decoder fault (\(failure)); retry on another provider")
         }
-        if error as? NemotronSuperVideoDecode.Failure == .decodeAllowanceSpent {
-            return MultiModelBatchSchedulerEngineError.requestRejected(
-                "inline video decoder outlasted its decode allowance; retry on another provider")
-        }
         if let failure = error as? NemotronSuperVideoDecode.Failure {
             switch failure {
+            case .decodeAllowanceSpent:
+                // This machine's wall time, not the movie's fault: another provider may decode it.
+                return MultiModelBatchSchedulerEngineError.requestRejected(
+                    "inline video decoder outlasted its decode allowance; retry on another provider")
             case .unsupportedRepresentation:
                 return MediaIngest.MediaError.unsupportedMedia(
                     "a video must be H.264 or HEVC in SDR, unmirrored, with one frame size")
             case .limit:
                 return MediaIngest.MediaError.mediaTooLarge(
                     "the video exceeds a frame size, frame count or decoded-pixel limit")
-            case .invalidVideo, .inconsistentFrames, .decodeAllowanceSpent:
+            case .invalidVideo, .inconsistentFrames:
                 return MultiModelBatchSchedulerEngineError.multimodalRejected("the inline video could not be read")
             }
         }

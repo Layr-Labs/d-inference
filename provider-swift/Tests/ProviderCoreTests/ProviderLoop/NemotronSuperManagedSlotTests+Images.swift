@@ -60,6 +60,9 @@ extension NemotronSuperManagedSlotTests {
         let invalid = try await Self.send(image(["not", " json"], ["response_format": ["type": "json_object"]]),
                                           to: loop, recorder: recorder, consumer: consumer)
         #expect(SuperSSE(invalid.sse).content.isEmpty, "\(invalid.terminal)")
+        // The model broke the format, not the request: 422, retryable elsewhere.
+        #expect(Self.failure(invalid.terminal)?.statusCode == 422, "\(invalid.terminal)")
+        #expect(Self.failure(invalid.terminal)?.code == .generationFailure, "\(invalid.terminal)")
         let weather: [String: Any] = ["type": "function", "function": ["name": "get_weather",
             "parameters": ["type": "object", "properties": ["city": ["type": "string"]], "required": ["city"]]]]
         let call = ["<tool_call>", "\n<function=get_weather>", "\n<parameter=city>", "\nParis",
@@ -69,6 +72,20 @@ extension NemotronSuperManagedSlotTests {
         #expect(SuperSSE(tool.sse).toolCalls.map(\.name) == ["get_weather"], "\(tool.terminal)")
         #expect(SuperSSE(tool.sse).toolCalls.map(\.arguments) == [#"{"city":"Paris"}"#])
         #expect(script.prompt.contains("<name>get_weather</name>") && script.prompt.contains("<image>"))
+        // Media in a tool result, which `native_media_tools` advertises.
+        script.set(["Sunny."])
+        let call: [String: Any] = ["id": "call-1", "type": "function",
+                                   "function": ["name": "get_weather", "arguments": #"{"city":"Paris"}"#]]
+        let result = try await Self.send(try JSONSerialization.data(withJSONObject: [
+            "model": Self.modelID, "stream": true, "temperature": 0, "max_tokens": 1,
+            "chat_template_kwargs": ["enable_thinking": false], "tools": [weather],
+            "messages": [["role": "user", "content": "What does the weather camera show?"],
+                         ["role": "assistant", "content": NSNull(), "tool_calls": [call]],
+                         ["role": "tool", "tool_call_id": "call-1",
+                          "content": [["type": "image_url", "image_url": ["url": Self.tinyPNG]]]]]]),
+            to: loop, recorder: recorder, consumer: consumer)
+        #expect(SuperSSE(result.sse).content == "Sunny.", "\(result.terminal)")
+        #expect(script.prompt.contains("<tool_response>\n<image>"))
         // Refusals name their cause: media the route does not serve, and a
         // control the text route refuses too.
         let tiff = try await Self.send(image(["x"], [:], uri: "data:image/tiff;base64,AAAA"),

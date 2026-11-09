@@ -827,10 +827,10 @@ refusal names its cause by its failure code (`SuperHTTPErrors.map`):
 
 | Cause | Failure code |
 |---|---|
-| A request control, tool or prompt fault, or a prompt with its visual tokens beyond the context | `invalid_request` |
+| A request control, tool or prompt fault, a prompt with its visual tokens beyond the context, or rendered text (message, tool declaration, response-format instruction) that names `<image>` or `<video>` | `invalid_request` |
 | A media label or source the route does not take, audio, a content part that is not text, image or video, more than 16 images, images with a video, a second video, an image encoding or geometry the decoder does not serve, a video codec, frame layout or frame geometry it does not serve | `unsupported_media` (`MediaIngest.MediaError.unsupportedMedia`) |
 | An image above the byte, pixel or resize-workspace limit, a body above the owner's bound, a video above a frame, frame-count or decoded-pixel limit | `media_too_large` |
-| Corrupt or truncated media, or text that names `<image>` or `<video>` | `invalid_media` |
+| Corrupt or truncated media | `invalid_media` |
 
 SDK installation now holds resident plus bounded staging reservations across
 sequential exclusive construction epochs. Completed fences release temporary

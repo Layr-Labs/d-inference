@@ -85,7 +85,7 @@ byte and resize-workspace limits below apply before any raster exists.
 | Property | Behaviour | Source |
 |---|---|---|
 | Frames | Frame 0. A GIF is decoded at its canvas size | `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperImageIORaster.swift` (`NemotronSuperImageIORaster.decode`) |
-| Orientation | WebP: the first `EXIF` and `XMP ` chunks, read with the same rules as PNG and JPEG (Pillow's WebP plugin keeps both). GIF and BMP carry none | `NemotronSuperImageIORaster.swift` (`NemotronSuperImageIOContainer.webPMetadata`) |
+| Orientation | WebP: as libwebp's demuxer, which Pillow reads through (`ParseVP8XChunks`), only an extended-format file (first chunk `VP8X`) carries metadata, and only under its `VP8X` flag (`EXIF` 0x08, `XMP` 0x04); the first `EXIF` and `XMP ` chunks are then read with the same rules as PNG and JPEG. GIF and BMP carry none | `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperImageIOContainer.swift` (`webPMetadata`) |
 | Samples | 8-bit gray, gray with alpha, RGB, RGBA in either 32-bit byte order and an 8-bit RGB palette are read without drawing. Gray replicates, a palette expands, and alpha is dropped, as Pillow's `convert("RGB")` does. Any other RGB layout is drawn once into an 8-bit context in the image's own colour space, which converts no colour; any other layout fails with `unsupportedEncoding` | `NemotronSuperImageIORaster.swift` (`directLayout`, `write`) |
 | Premultiplied alpha | Samples are divided by their alpha, rounded. A pixel with alpha 0 reads as black, where Pillow keeps the stored colour | `NemotronSuperImageIORaster.swift` (`unpremultiply`) |
 

@@ -61,6 +61,7 @@ struct NemotronSuperImageFormatHTTPTests {
         let imageIO: [(String, Data)] = [
             ("webp", try NemotronSuperImageFixtures.data("webp-rgb8-lossless.webp")),
             ("webp", try NemotronSuperImageFixtures.data("webp-exif6.webp")),
+            ("webp", try NemotronSuperImageFixtures.data("webp-rgba8-lossy.webp")),
             ("gif", try NemotronSuperImageIOFormatTests.gif(NemotronSuperImageIOFormatTests.raster("png-palette8.png"))),
             ("bmp", NemotronSuperImageIOFormatTests.bmp(rgb)),
         ]

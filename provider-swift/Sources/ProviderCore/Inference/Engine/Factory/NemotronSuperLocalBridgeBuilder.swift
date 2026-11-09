@@ -168,8 +168,7 @@ enum NemotronSuperLocalBridgeBuilder {
         func localImagePrompt(plan: NemotronSuperRequestPlan, body: Data, templateBytes: Data,
                               featureCounts: [Int]) throws -> [Int] {
             _ = try mediaInstallation()
-            guard plan.request.model == modelID, !featureCounts.isEmpty,
-                featureCounts.allSatisfy({ $0 > 0 && $0 <= contextLength })
+            guard !featureCounts.isEmpty, featureCounts.allSatisfy({ $0 > 0 && $0 <= contextLength })
             else { throw NemotronSuperLocalImageBinding.Failure.invalidInput }
             var imageCount = 0
             for message in plan.request.messages {
@@ -189,8 +188,8 @@ enum NemotronSuperLocalBridgeBuilder {
         }
 
         /// A prompt beyond the context is the request's own fault, not
-        /// capacity; text that names a media placeholder leaves the slots
-        /// ambiguous. Both are named refusals of the media route.
+        /// capacity; rendered text that names a media placeholder leaves the
+        /// slots ambiguous. Both are request faults of the media route.
         private static func mediaPromptRefusals<Prompt>(_ render: () throws -> Prompt) throws -> Prompt {
             do {
                 return try render()
@@ -240,7 +239,7 @@ enum NemotronSuperLocalBridgeBuilder {
             // The lock covers only the admission check; rendering reads
             // immutable state, so text admission never waits on it.
             _ = try mediaInstallation()
-            guard plan.request.model == modelID, !labels.isEmpty, labels.count <= contextLength
+            guard !labels.isEmpty, labels.count <= contextLength
             else { throw NemotronSuperLocalImageBinding.Failure.invalidInput }
             return try Self.mediaPromptRefusals {
                 try plan.videoPrompt(body: body, templateBytes: templateBytes, tokenizer: tokenizer.inner,

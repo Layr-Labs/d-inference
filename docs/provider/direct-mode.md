@@ -634,11 +634,11 @@ frame-timestamp label.
 | A request beyond the owner's concurrency while others are in flight (text or image) | 429 once the service has decoded the request, before its prompt is planned or rendered and before any response starts; the owner serves one request unless `DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT` raises it, and one image at a time |
 | Image input while speculation is installed | Served target-only: no speculation for that request, while text keeps speculating |
 | Image whose media reservation does not fit the shared budget | 503 before decoding; nothing stays reserved |
-| Visual tokens or an image or video prompt beyond the context | 400 `Invalid inference request.` before decoding; nothing stays reserved |
+| Visual tokens or an image or video prompt beyond the context, or text, a tool declaration or a response format that names `<image>` or `<video>` | 400 `Invalid inference request.` before decoding; nothing stays reserved |
 | A media request body above `localInferenceMaxUploadBytes` | 413 from the chat route; the owner's own 40 MiB bound (`NemotronSuperServingPolicy.maximumEncodedBodyBytes`) is above it |
 | A second video, a video with images, another container, a codec other than H.264 or HEVC, an image label or encoding outside the image format reference, an extreme aspect ratio, audio, more than 16 images | 400 `Media input is not supported.` (failure code `unsupported_media`; the coordinator answers 415) |
 | An image above its byte, pixel or resize limit, frames of more than 8,847,360 pixels (`4096 * 2160`, in any shape), more decoded pixels than `NemotronSuperVideoDecode.maximumDecodedPixels` | 400 `Media input is too large.` (failure code `media_too_large`; the coordinator answers 413) |
-| An undecodable movie, a corrupt image, text that names `<image>` or `<video>` | 400 `Invalid media input.` (failure code `invalid_media`) |
+| An undecodable movie or a corrupt image | 400 `Invalid media input.` (failure code `invalid_media`) |
 
 Image and video requests take the text route's request plan, so they serve the
 same tools, tool choice, response format and settings, and refuse the same

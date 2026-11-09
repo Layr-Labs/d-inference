@@ -20,8 +20,12 @@ actor NemotronSuperLocalImageBinding {
         /// A media part of a kind, source or arrangement this route does
         /// not serve.
         case unsupportedMedia(MediaRefusal)
-        /// Text or a tool declaration names `<image>` or `<video>`, so the
-        /// prompt's media slots do not match the request's media.
+        /// The rendered prompt's media slots do not match the request's
+        /// media: message text names `<image>` or `<video>` (the video prompt
+        /// checks message text first), or a tool declaration, response-format
+        /// instruction or other rendered text names `<image>` and adds or
+        /// moves a slot. A request fault, as literal `<image>` is on the text
+        /// route.
         case placeholderText
         /// The prompt with its visual tokens does not fit the context.
         case contextExceeded
@@ -133,7 +137,6 @@ actor NemotronSuperLocalImageBinding {
             // Before JSON/base64/header expansion, using the real shared ledger.
             guard await gate.reserve(requestId: ingressID, mediaDecodeBytes: headerBytes, kvTokens: 0)
             else { throw Failure.capacity }
-            guard plan.request.model == owner.modelID else { throw Failure.wrongModel }
             let parsed = try Self.encodedBody(plan)
             guard parsed.request.logprobs != true || logprobs != nil else { throw Failure.unsupportedCapability }
             if let video = parsed.video {

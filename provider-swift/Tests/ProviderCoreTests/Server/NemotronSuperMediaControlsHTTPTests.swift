@@ -22,6 +22,8 @@ struct NemotronSuperMediaControlsHTTPTests {
         "parameters": ["type": "object", "properties": ["city": ["type": "string"]], "required": ["city"]]]] }
     private static let call = ["Use tool.", "</think>", "<tool_call>", "\n<function=get_weather>",
                                "\n<parameter=city>", "\nParis", "\n</parameter>", "\n</function>", "\n</tool_call>"]
+    private static let twoCalls = call + ["\n<tool_call>", "\n<function=get_weather>", "\n<parameter=city>",
+                                          "\nRome", "\n</parameter>", "\n</function>", "\n</tool_call>"]
     private static var schema: [String: Any] { ["type": "json_schema", "json_schema": ["name": "r",
         "schema": ["type": "object", "properties": ["ok": ["type": "boolean"]], "required": ["ok"]]]] }
 
@@ -71,6 +73,20 @@ struct NemotronSuperMediaControlsHTTPTests {
                 "messages": [["role": "system", "content": "Be brief."],
                              ["role": "user", "content": [["type": "text", "text": "Describe it."], part]]]]
             value.merge(extra) { _, new in new }
+            return ByteBuffer(bytes: try JSONSerialization.data(withJSONObject: value))
+        }
+        /// A tool result that carries the media: the assistant's call, then
+        /// the tool's answer as a content part.
+        @Sendable func toolResultBody(_ media: Media, _ pieces: [String]) throws -> ByteBuffer {
+            script.set(pieces)
+            let part: [String: Any] = ["type": media.part, media.part: ["url": media.uri]]
+            let call: [String: Any] = ["id": "call-1", "type": "function",
+                                       "function": ["name": "get_weather", "arguments": #"{"city":"Paris"}"#]]
+            let value: [String: Any] = ["model": NemotronSuperLocalBinding.modelID, "stream": false,
+                "temperature": 0, "max_tokens": pieces.count, "tools": [Self.weather],
+                "messages": [["role": "user", "content": "What does the weather camera show?"],
+                             ["role": "assistant", "content": NSNull(), "tool_calls": [call]],
+                             ["role": "tool", "tool_call_id": "call-1", "content": [part]]]]
             return ByteBuffer(bytes: try JSONSerialization.data(withJSONObject: value))
         }
         let baseline = await budget.outstandingReservedBytes()
@@ -133,6 +149,26 @@ struct NemotronSuperMediaControlsHTTPTests {
                 let answered = try SuperJSON(try await send(body(media,
                     ["Use tool?", "</think>", "{\"city\"", ": \"Paris\"}"], stream: false, jsonTools)))
                 #expect(answered.content == #"{"city": "Paris"}"#, "\(name)")
+                // The prompt order: the tools block in the first system turn,
+                // the format's system turn, then the user's media slot.
+                let tools = try #require(script.prompt.range(of: "<name>get_weather</name>"), "\(name)")
+                let format = try #require(script.prompt.range(of: "You must respond with a single valid JSON object."),
+                                          "\(name)")
+                let slot = try #require(script.prompt.range(of: "<image>"), "\(name)")
+                #expect(tools.upperBound <= format.lowerBound && format.upperBound <= slot.lowerBound, "\(name)")
+                // `tool_choice: none`: no declaration reaches the prompt, and the answer is text.
+                let none = try SuperJSON(try await send(body(media, ["</think>", "Sunny."], stream: false,
+                    ["tools": [Self.weather], "tool_choice": "none"])))
+                #expect(none.content == "Sunny." && none.toolCalls.isEmpty, "\(name)")
+                #expect(!script.prompt.contains("<name>get_weather</name>")
+                    && script.prompt.contains("Do not call any tool."), "\(name)")
+                // `parallel_tool_calls: false` with two calls: the model broke the contract (422).
+                _ = try await send(body(media, Self.twoCalls, stream: false,
+                    ["tools": [Self.weather], "parallel_tool_calls": false]), status: .unprocessableContent)
+                // Media in a tool result, which `native_media_tools` advertises.
+                let result = try SuperJSON(try await send(toolResultBody(media, ["</think>", "Sunny."])))
+                #expect(result.content == "Sunny.", "\(name)")
+                #expect(script.prompt.contains("<tool_response>\n<image>"), "\(name): \(script.prompt)")
                 #expect(await budget.outstandingReservedBytes() == baseline, "\(name)")
             }
             // A control the text route refuses is refused with media as a
@@ -173,7 +209,7 @@ struct NemotronSuperMediaControlsHTTPTests {
             (NemotronSuperImageDecode.Failure.invalidRaster, .invalidMedia),
             (NemotronSuperImagePreprocessing.Failure.invalidPixels, .invalidMedia),
             (MediaIngest.MediaError.base64DecodeFailed, .invalidMedia),
-            (Binding.Failure.placeholderText, .invalidMedia),
+            (Binding.Failure.placeholderText, .invalidRequest),
             (Binding.Failure.contextExceeded, .invalidRequest),
             (Binding.Failure.unsupportedCapability, .invalidRequest),
             (Binding.Failure.wrongModel, .invalidRequest),

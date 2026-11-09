@@ -60,7 +60,10 @@ struct NemotronSuperImageIOFormatTests {
         #expect(raw.width == reference.unorientedWidth && raw.height == reference.unorientedHeight)
     }
 
-    @Test func webPMetadataReadsTheFirstChunksAndRefusesOverruns() throws {
+    /// As libwebp's demuxer (`ParseVP8XChunks`), which Pillow reads through:
+    /// metadata only in the extended format (`VP8X` first) and only under its
+    /// flag, the first chunk of each kind.
+    @Test func webPMetadataFollowsTheVP8XFlags() throws {
         func riff(_ chunks: [(String, [UInt8])], declared: Int? = nil) -> Data {
             var body = Array("WEBP".utf8)
             for (tag, payload) in chunks {
@@ -68,16 +71,23 @@ struct NemotronSuperImageIOFormatTests {
             }
             return Data(Array("RIFF".utf8) + Self.le32(declared ?? body.count) + body)
         }
-        let metadata = try NemotronSuperImageIOContainer.webPMetadata(riff([
-            ("VP8X", [UInt8](repeating: 0, count: 10)), ("EXIF", [1, 2, 3]), ("XMP ", [4, 5]),
-            ("EXIF", [9]), ("XMP ", [9]),
-        ]))
-        #expect(metadata.exif == Data([1, 2, 3]) && metadata.xmp == Data([4, 5]))
-        let none = try NemotronSuperImageIOContainer.webPMetadata(riff([("VP8L", [0, 0])]))
-        #expect(none.exif == nil && none.xmp == nil)
+        func vp8x(_ flags: UInt8) -> (String, [UInt8]) { ("VP8X", [flags] + [UInt8](repeating: 0, count: 9)) }
+        let metadata: [(String, [UInt8])] = [("VP8 ", [0, 0]), ("EXIF", [1, 2, 3]), ("XMP ", [4, 5]),
+                                             ("EXIF", [9]), ("XMP ", [9])]
+        let both = try NemotronSuperImageIOContainer.webPMetadata(riff([vp8x(0x0c)] + metadata))
+        #expect(both.exif == Data([1, 2, 3]) && both.xmp == Data([4, 5]))
+        let exifOnly = try NemotronSuperImageIOContainer.webPMetadata(riff([vp8x(0x08)] + metadata))
+        #expect(exifOnly.exif == Data([1, 2, 3]) && exifOnly.xmp == nil)
+        let xmpOnly = try NemotronSuperImageIOContainer.webPMetadata(riff([vp8x(0x04)] + metadata))
+        #expect(xmpOnly.exif == nil && xmpOnly.xmp == Data([4, 5]))
+        // Unflagged chunks, and any chunk of a simple-format (VP8/VP8L-first) file, are ignored.
+        let unflagged = try NemotronSuperImageIOContainer.webPMetadata(riff([vp8x(0x10)] + metadata))
+        #expect(unflagged.exif == nil && unflagged.xmp == nil)
+        let simple = try NemotronSuperImageIOContainer.webPMetadata(riff([("VP8L", [0, 0]), ("EXIF", [1])]))
+        #expect(simple.exif == nil && simple.xmp == nil)
         // A chunk past the RIFF payload (its header fits, its 4 bytes do
         // not), or a file shorter than RIFF's header.
-        let overrun = riff([("EXIF", [1, 2, 3, 4])], declared: 14)
+        let overrun = riff([vp8x(0x08), ("EXIF", [1, 2, 3, 4])], declared: 32)
         #expect(throws: Decode.Failure.invalidHeader) { try NemotronSuperImageIOContainer.webPMetadata(overrun) }
         #expect(throws: Decode.Failure.invalidHeader) {
             try NemotronSuperImageIOContainer.webPMetadata(Data("RIFF".utf8))
@@ -158,6 +168,49 @@ struct NemotronSuperImageIOFormatTests {
         #expect(throws: Decode.Failure.invalidRaster) { try NemotronSuperImageIORaster.write(image, into: &writer) }
     }
 
+    /// Hostile GIF headers are refused before a raster exists, or decode at
+    /// the size the header declares; only frame 0 of a many-frame GIF counts.
+    @Test func hostileGIFHeadersAreBoundedByTheHeader() throws {
+        let palette = try Self.raster("png-palette8.png")
+        // A 65,535 x 65,535 logical screen around a small frame.
+        let huge = try Self.gif(palette, screen: (65_535, 65_535))
+        #expect(throws: Decode.Failure.self) { try Decode.decode(huge, orientation: .applyEXIF) }
+        // A frame larger than its screen: refused, or decoded at the header's size.
+        let overflowing = try Self.gif(palette, screen: (4, 4))
+        if let quote = try? Decode.inspect(overflowing, orientation: .applyEXIF),
+           let raster = try? Decode.decode(overflowing, orientation: .applyEXIF) {
+            #expect(raster.width == quote.width && raster.height == quote.height)
+            #expect(raster.rgb.count == 3 * quote.width * quote.height)
+        }
+        // Many frames: frame 0 alone is decoded.
+        let many = try Self.gif(palette, frames: 64)
+        #expect(try Decode.decode(many, orientation: .applyEXIF).rgb == palette.rgb)
+    }
+
+    /// Alpha is dropped. A transparent GIF entry reads as black where ImageIO
+    /// premultiplies, else as its palette colour; every opaque pixel is exact.
+    /// A lossy WebP with an alpha plane decodes at its size.
+    @Test func transparentGIFAndLossyWebPWithAlphaDecode() throws {
+        let palette = try Self.raster("png-palette8.png")
+        let decoded = try Decode.decode(try Self.gif(palette, transparentFirstColour: true), orientation: .applyEXIF)
+        let transparent = Array(palette.rgb[0 ..< 3])
+        for pixel in 0 ..< palette.width * palette.height {
+            let source = Array(palette.rgb[3 * pixel ..< 3 * pixel + 3])
+            let served = Array(decoded.rgb[3 * pixel ..< 3 * pixel + 3])
+            if source == transparent {
+                #expect(served == [0, 0, 0] || served == source, "pixel \(pixel)")
+            } else {
+                #expect(served == source, "pixel \(pixel)")
+            }
+        }
+        // `webp-rgba8-lossy.webp` is `png-rgba8.png` through `cwebp -q 80 -alpha_q 100`.
+        let webp = try NemotronSuperImageFixtures.data("webp-rgba8-lossy.webp")
+        let reference = try Self.raster("png-rgba8.png")
+        let lossy = try Decode.decode(webp, orientation: .applyEXIF)
+        #expect(lossy.width == reference.width && lossy.height == reference.height)
+        #expect(lossy.rgb.count == reference.rgb.count)
+    }
+
     // MARK: - Encoders and images
 
     private static func write(_ image: CGImage) throws -> [UInt8] {
@@ -200,9 +253,12 @@ struct NemotronSuperImageIOFormatTests {
     }
 
     /// A GIF89a of `raster`, which has at most 256 colours: a global table and
-    /// one frame of 8-bit LZW codes with a clear code every 128 pixels, so
-    /// the codes stay 9 bits wide and need no dictionary.
-    static func gif(_ raster: NemotronSuperImageDecode.Raster) throws -> Data {
+    /// `frames` copies of one frame of 8-bit LZW codes with a clear code every
+    /// 128 pixels, so the codes stay 9 bits wide and need no dictionary.
+    /// `screen` overrides the logical screen size; `transparent` marks the
+    /// palette entry of the first pixel transparent in every frame.
+    static func gif(_ raster: NemotronSuperImageDecode.Raster, screen: (width: Int, height: Int)? = nil,
+                    frames: Int = 1, transparentFirstColour: Bool = false) throws -> Data {
         var table: [[UInt8]] = [], index: [[UInt8]: Int] = [:], indices: [Int] = []
         for pixel in 0 ..< raster.width * raster.height {
             let colour = Array(raster.rgb[3 * pixel ..< 3 * pixel + 3])
@@ -229,8 +285,11 @@ struct NemotronSuperImageIOFormatTests {
             let block = bits[start ..< min(start + 255, bits.count)]
             blocks += [UInt8(block.count)] + block
         }
-        let screen = le16(raster.width) + le16(raster.height) + [0xf7, 0, 0]
-        let descriptor = [0x2c] + le16(0) + le16(0) + le16(raster.width) + le16(raster.height) + [0]
-        return Data(Array("GIF89a".utf8) + screen + colours + descriptor + [8] + blocks + [0, 0x3b])
+        let control: [UInt8] = transparentFirstColour ? [0x21, 0xf9, 4, 0x01, 0, 0, UInt8(indices[0]), 0] : []
+        let frame = control + [0x2c] + le16(0) + le16(0) + le16(raster.width) + le16(raster.height) + [0, 8]
+            + blocks + [0]
+        let size = screen ?? (raster.width, raster.height)
+        let header = Array("GIF89a".utf8) + le16(size.width) + le16(size.height) + [0xf7, 0, 0]
+        return Data(header + colours + Array([[UInt8]](repeating: frame, count: frames).joined()) + [0x3b])
     }
 }

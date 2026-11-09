@@ -711,15 +711,18 @@ button {
   50% { box-shadow: 0 0 0 5px rgba(20, 86, 255, 0); opacity: 1; }
 }
 
-/* The story exit dives INTO the grid: --grid-zoom (exponential ramp in JS)
-   magnifies the world around a different Mac than the intro used while a
-   synchronized pan carries that cell to the viewport center. Every other
-   tile fades away before the sharp blue portal seals the frame. */
+/* The story exit dives INTO the grid: an exponential zoom ramp magnifies the
+   world around a different Mac than the intro used while a synchronized pan
+   carries that cell to the viewport center. Every other tile fades away
+   before the sharp blue portal seals the frame. HomeExperience writes the
+   world's transform and opacity inline on every scroll frame, never as custom
+   properties, which would inherit into and restyle every tile; the values
+   here are only the resting state before it runs. */
 .grid-world {
   contain: layout style;
-  opacity: var(--grid-world-opacity, 1);
+  opacity: 1;
   position: absolute;
-  transform: translate3d(var(--grid-pan-x, 0), var(--grid-pan-y, 0), 0) scale(var(--grid-zoom, 1));
+  transform: translate3d(0, 0, 0) scale(1);
   transform-origin: 0 0;
   will-change: opacity, transform;
   z-index: 3;

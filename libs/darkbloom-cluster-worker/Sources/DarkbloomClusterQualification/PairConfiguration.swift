@@ -165,9 +165,10 @@ public struct PairConfiguration: Sendable {
     /// token's logprob and this many alternatives (`ClusterWorkerSampling.topLogprobs`,
     /// 1...20), and each wave's are compared with the requests' alone, bit for
     /// bit. Tensor parallel only: its runtimes send them, and a pipeline
-    /// worker refuses such a request. As in the product, a request that asks
-    /// for them decodes one token per step, without speculative rounds, so a
-    /// run with them and one without cover both decode paths.
+    /// worker refuses such a request. A request that asks for them may decode
+    /// differently from one that does not (`ClusterWorkerSampling.admitsSpeculativeVerification`:
+    /// Qwen drops its assistant, as the product does; GLM replays its rounds'
+    /// draws), so a run with them and one without cover both decode paths.
     public var batchLogprobs: Int?
     /// The prompt-prefix SSD tier of each side's worker: that Mac's own root
     /// directory and key file (a file only its user can read). Nil: no tier.

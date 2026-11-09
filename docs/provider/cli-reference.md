@@ -3674,10 +3674,11 @@ alone bit for bit (`logprobsMatchSolo`, `firstLogprobDifferenceIndex`,
 `allLogprobsMatchSolo`); a cancelled lane is compared as far as it got. A lane
 whose logprobs differ fails the run even when its tokens match.
 
-A request that asks for logprobs decodes one token per step, without speculative
-rounds, as in the product. To qualify both decode paths, run once without the
-option (rounds, token parity) and once with it (one token per step, token and
-logprob parity).
+A request that asks for logprobs may take another decode path than one that
+doesn't: Qwen tensor parallel decodes it without its assistant, one token per
+step, as the product does, and GLM checks its rounds' proposals by replaying the
+draws. To qualify both paths, run once without the option (token parity) and
+once with it (token and logprob parity).
 
 Sources: `libs/darkbloom-cluster-worker/Sources/DarkbloomClusterQualification/PairDriver.swift`
 (`runBatchWave`, `compareLogprobs`), `PairConfiguration.swift` (`batchLogprobs`,

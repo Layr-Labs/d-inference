@@ -6855,9 +6855,10 @@ IEEE-754 bit patterns and compares them bit for bit (`compareLogprobs`); a
 cancelled or deadline-ended lane is compared as far as it got. A lane whose
 logprobs differ fails a tensor-parallel run even when every token matches.
 Pipeline workers send no logprobs and refuse such a request, so the option is
-tensor-parallel only. As in the product, a request that captures logprobs
-decodes one token per step (`ClusterWorkerSampling.admitsSpeculativeVerification`),
-so a qualification pairs a run without the option (rounds) with one with it.
+tensor-parallel only. A request that captures logprobs may decode differently
+(`ClusterWorkerSampling.admitsSpeculativeVerification`: Qwen tensor parallel
+drops its assistant, as the product does; GLM replays its rounds' draws), so a
+qualification pairs a run without the option with one with it.
 Sources: `libs/darkbloom-cluster-worker/Sources/DarkbloomClusterQualification/PairDriver.swift`
 and `PairConfiguration.swift`; [lane parity](../provider/cli-reference.md#pair-batch-lane-parity).
 

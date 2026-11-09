@@ -78,8 +78,8 @@ import Foundation
                request alone, then each wave starts the first N together; tensor parallel fails on a token that
                differs from the request alone)]
               [--batch-logprobs 1...20 (tensor parallel: every batch request asks for each token's logprob and this
-               many alternatives, and a wave's must equal the requests' alone bit for bit; such a request decodes one
-               token per step, without speculative rounds)]
+               many alternatives, and a wave's must equal the requests' alone bit for bit; a request that asks may
+               decode differently, so run the waves once without it too)]
               [--batch-trace yes|no (qualification: content-free decode-width and credit counts)]
               [--batch-logit-directory /ABS (qualification: bounded private rows on rank 1's Mac;
                   plain Qwen pipeline lanes 2...8 and --evidence none; off unless explicitly named)]

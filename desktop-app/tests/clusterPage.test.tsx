@@ -284,7 +284,7 @@ describe('a paired Mac', () => {
     expect(backend.act).toHaveBeenLastCalledWith({ action: 'restart' }, true);
   });
 
-  it('asks before serving this Mac alone, and says the pair stops serving', async () => {
+  it('asks before serving this Mac alone, stops the pair, then serves with this Mac’s model', async () => {
     const backend = show(paired());
     fireEvent.click(await screen.findByRole('button', { name: /Serve this Mac alone/ }));
     let dialog = screen.getByRole('dialog', { name: 'Serve this Mac alone?' });
@@ -293,8 +293,45 @@ describe('a paired Mac', () => {
     expect(backend.act).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: /Serve this Mac alone/ }));
     dialog = screen.getByRole('dialog', { name: 'Serve this Mac alone?' });
+    // Only a downloaded model this Mac can serve is offered, the first one chosen.
+    expect(within(dialog).getAllByRole('checkbox')).toHaveLength(1);
+    expect(within(dialog).getByRole('checkbox', { name: 'GPT-OSS 20B' })).toBeChecked();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Serve this Mac alone' }));
-    expect(backend.act).toHaveBeenCalledWith({ action: 'start', models: [], solo: true }, true);
+    // `start --solo` is refused while the pair runs here, and needs its models without a terminal.
+    await waitFor(() =>
+      expect(backend.act).toHaveBeenLastCalledWith(
+        { action: 'start', models: ['gpt-oss-20b'], solo: true },
+        true,
+      ),
+    );
+    expect(backend.act).toHaveBeenNthCalledWith(1, { action: 'stop' }, true);
+  });
+
+  it('serves this Mac alone the way it saved, without stopping a stopped pair', async () => {
+    const state = {
+      ...paired({ state: 'stopped' }),
+      local: {
+        mode: 'both',
+        me_first: true,
+        me_first_idle_minutes: 2,
+        route: 'this-mac',
+        route_key: false,
+        port: 8001,
+        bind: '127.0.0.1',
+      },
+    } as Snapshot;
+    const backend = show(state, { ...serving, state: 'stopped', reason: null, next: null });
+    fireEvent.click(await screen.findByRole('button', { name: /Serve this Mac alone/ }));
+    const dialog = screen.getByRole('dialog', { name: 'Serve this Mac alone?' });
+    expect(dialog).toHaveTextContent('The pair stays stopped.');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Serve this Mac alone' }));
+    await waitFor(() =>
+      expect(backend.act).toHaveBeenCalledWith(
+        { action: 'start', models: ['gpt-oss-20b'], solo: true, endpoint: true },
+        true,
+      ),
+    );
+    expect(backend.act).not.toHaveBeenCalledWith({ action: 'stop' }, true);
   });
 
   it('asks before leaving, in the CLI’s words', async () => {

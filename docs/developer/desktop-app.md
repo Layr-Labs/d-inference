@@ -605,7 +605,7 @@ it, with `darkbloom cluster`'s own steps and words
   | **Restart serving** | serving, not serving | `{ action: 'restart' }` |
   | **Change model or how it serves** | the Mac that leads (on the Mac that follows: "The other Mac leads: choose the model there.") | session `setup` |
   | **Check the pairing** | a pairing record that can't be read | session `setup` |
-  | **Serve this Mac alone** | every paired state, after a confirm that says the pair stops serving | `{ action: 'start', models: [], solo: true }` |
+  | **Serve this Mac alone** | every paired state, after a confirm that says the pair stops serving and picks this Mac's downloaded models (catalog models unless Only me is saved) | `{ action: 'stop' }` unless the pair is stopped (the CLI refuses `--solo` while the pair runs here), then `{ action: 'start', models, solo: true }` with the saved mode's flag (`local`, `endpoint` or `network`) (`PairStatus.serveAlone`) |
   | **Leave the pair** | a readable pairing, after a confirm in `darkbloom cluster leave`'s words | `{ action: 'cluster_leave' }` |
 
   On a paired Mac, start, stop and restart act on the pair. Each waits for its

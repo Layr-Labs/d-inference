@@ -272,7 +272,8 @@ export interface Leader {
 export type Action =
   // `local`: Only me (`--local`); `endpoint`: Both, me first (`--local-endpoint`); `network`:
   // the Darkbloom network with no local API (`--network`). Each is saved as `[local] mode`, which
-  // later starts follow. `solo`: on a paired Mac, `start --solo` serves this Mac alone.
+  // later starts follow. `solo`: on a paired Mac, `start --solo` serves this Mac alone with
+  // `models` (which it needs without a terminal); refused while the pair runs here.
   | {
       action: 'start' | 'switch';
       models: string[];

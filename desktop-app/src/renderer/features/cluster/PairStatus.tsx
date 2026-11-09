@@ -1,7 +1,8 @@
 import { LoaderCircle, LogOut, Monitor, RotateCw, Square, Play, ArrowRight } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
-import type { Action } from '../../../shared/contracts';
+import type { Action, NativeModel } from '../../../shared/contracts';
 import type { ClusterStatus } from '../../../shared/cluster';
+import type { ServingMode } from '../../../shared/localServing';
 import type { BackendState } from '../../useBackend';
 import { Button, Modal } from '../../components/UI';
 import { PairGlyph, type PairMood } from './PairGlyph';
@@ -99,6 +100,21 @@ function Fact({ label, children }: { label: string; children: ReactNode }) {
 
 type Confirm = 'alone' | 'leave' | null;
 
+// Serving this Mac alone (`start --solo`) without a terminal names its models and keeps the way
+// this Mac serves (the saved `[local] mode`); a network way takes catalog models only.
+const servingFlag = (mode: ServingMode | null | undefined) =>
+  mode === 'local'
+    ? { local: true }
+    : mode === 'both'
+      ? { endpoint: true }
+      : mode === 'network'
+        ? { network: true }
+        : {};
+const aloneCandidates = (models: NativeModel[], mode: ServingMode | null | undefined) =>
+  models.filter(
+    (model) => model.downloaded && model.eligible && (mode === 'local' || model.network !== false),
+  );
+
 // A paired Mac: both Macs, the model and how it serves, the state with the runtime's own reason
 // and next step, and what can be done from here. Start, Stop and Restart serving act on the pair;
 // the model is chosen on the Mac that leads.
@@ -118,6 +134,9 @@ export function PairStatus({
 }) {
   const [pending, setPending] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<Confirm>(null);
+  const mode = backend.state?.local?.mode;
+  const candidates = aloneCandidates(backend.state?.models ?? [], mode);
+  const [alone, setAlone] = useState<string[]>([]);
   const actions = pairActions(status);
   const way = servingWay(status);
   const name = modelName(status);
@@ -128,6 +147,18 @@ export function PairStatus({
     setPending(label);
     try {
       await backend.act(action, true);
+    } finally {
+      await refresh();
+      setPending(null);
+    }
+  };
+  // The CLI refuses to serve this Mac alone while the pair runs here, so a pair that isn't
+  // stopped is stopped first (on both Macs while the other Mac answers).
+  const serveAlone = async (models: string[]) => {
+    setPending('Serve this Mac alone');
+    try {
+      if (status.state !== 'stopped' && !(await backend.act({ action: 'stop' }, true))) return;
+      await backend.act({ action: 'start', models, solo: true, ...servingFlag(mode) }, true);
     } finally {
       await refresh();
       setPending(null);
@@ -275,7 +306,14 @@ export function PairStatus({
       {(actions.alone || actions.leave) && (
         <section className={styles.more} aria-label="This Mac">
           {actions.alone && (
-            <Button variant="quiet" disabled={busy} onClick={() => setConfirm('alone')}>
+            <Button
+              variant="quiet"
+              disabled={busy}
+              onClick={() => {
+                setAlone(candidates.slice(0, 1).map((model) => model.id));
+                setConfirm('alone');
+              }}
+            >
               {pending === 'Serve this Mac alone' ? null : <Monitor size={14} aria-hidden="true" />}
               {label('Serve this Mac alone')}
             </Button>
@@ -295,13 +333,37 @@ export function PairStatus({
             {status.state === 'stopped' ? 'The pair stays stopped.' : 'The pair stops serving.'}{' '}
             <Rich text="`darkbloom start` starts the pair again." />
           </p>
+          {candidates.length ? (
+            <fieldset className={styles.aloneModels}>
+              <legend>Serve with</legend>
+              {candidates.map((model) => (
+                <label key={model.id}>
+                  <input
+                    type="checkbox"
+                    checked={alone.includes(model.id)}
+                    onChange={() =>
+                      setAlone((chosen) =>
+                        chosen.includes(model.id)
+                          ? chosen.filter((id) => id !== model.id)
+                          : [...chosen, model.id],
+                      )
+                    }
+                  />
+                  {model.display_name}
+                </label>
+              ))}
+            </fieldset>
+          ) : (
+            <p>No model on this Mac can serve alone yet. Download one in Models.</p>
+          )}
           <div className="dialog-actions">
             <Button onClick={() => setConfirm(null)}>Cancel</Button>
             <Button
               variant="primary"
+              disabled={!alone.length}
               onClick={() => {
                 setConfirm(null);
-                void run('Serve this Mac alone', { action: 'start', models: [], solo: true });
+                void serveAlone(alone);
               }}
             >
               Serve this Mac alone

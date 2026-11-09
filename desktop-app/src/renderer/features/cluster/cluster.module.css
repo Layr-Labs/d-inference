@@ -1403,3 +1403,25 @@
     animation: none !important;
   }
 }
+
+/* Serve this Mac alone: the models it serves with. */
+.aloneModels {
+  display: grid;
+  gap: 8px;
+  margin: 4px 0 16px;
+  padding: 0;
+  border: 0;
+}
+
+.aloneModels legend {
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.aloneModels label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}

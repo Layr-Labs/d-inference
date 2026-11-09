@@ -85,7 +85,9 @@ extension QwenDenseStageLoadOSObservation {
     /// its free pages and its file cache: no free page (under the kernel's
     /// floor, `minimumTrulyFreeBytes`), no file cache, and every one of
     /// those pages anonymous memory in use. The counters stay consistent, so
-    /// the policy judges it, and every requirement is refused.
+    /// the policy judges it, and every requirement is refused. With no file
+    /// cache, the gate never tries its reclaim on it, which would touch real
+    /// pages and judge a fresh sample of the kernel's counters instead.
     var withMemoryTaken: Self {
         let ceiling = physicalMemoryBytes / max(1, pageSizeBytes)
         return .init(startedNanoseconds: startedNanoseconds, completedNanoseconds: completedNanoseconds,

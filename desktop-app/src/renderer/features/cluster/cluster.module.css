@@ -1,0 +1,1382 @@
+/* Clusters: two Macs, one model. Tokens from theme.css; no colour of its own. */
+
+.page {
+  container: cluster / inline-size;
+}
+
+.page code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9em;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(var(--contrast-rgb), 0.065);
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.unsupported {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.failure {
+  color: var(--text-secondary);
+}
+
+/* ---------- The illustration ---------- */
+
+.glyph {
+  --glyph-cable: var(--accent-brand);
+  --glyph-bg: var(--panel-bg);
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.glyph[data-mood='stopped'] {
+  --glyph-cable: var(--border-default);
+}
+
+.glyph[data-mood='away'] {
+  --glyph-cable: var(--warning);
+}
+
+.glyph[data-mood='failed'] {
+  --glyph-cable: var(--negative);
+}
+
+.glyphMac > rect {
+  fill: color-mix(in srgb, var(--raised-bg) 72%, var(--glyph-bg));
+  stroke: color-mix(in srgb, var(--text-tertiary) 75%, transparent);
+  stroke-width: 1.5;
+}
+
+.glyphMac > path,
+.glyphMac > circle {
+  fill: none;
+  stroke: color-mix(in srgb, var(--text-tertiary) 75%, transparent);
+  stroke-width: 1.4;
+  stroke-linecap: round;
+}
+
+.glyphMac > .glyphTop {
+  stroke: rgba(var(--contrast-rgb), 0.14);
+}
+
+.glyphMac > .glyphLed {
+  stroke: none;
+  fill: rgba(var(--contrast-rgb), 0.22);
+  transition: fill 0.3s;
+}
+
+.glyphLed[data-led='on'] {
+  fill: var(--positive);
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--positive) 80%, transparent));
+}
+
+.glyphLed[data-led='wait'] {
+  fill: var(--warning);
+}
+
+.glyphLed[data-led='fail'] {
+  fill: var(--negative);
+}
+
+.glyphMac[data-dim] {
+  opacity: 0.4;
+}
+
+.glyphCable {
+  fill: none;
+  stroke: var(--glyph-cable);
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  transition: stroke 0.3s;
+}
+
+.glyph[data-mood='away'] .glyphCable {
+  stroke-dasharray: 3 6;
+}
+
+.glyph[data-mood='starting'] .glyphCable {
+  stroke-dasharray: 7 6;
+  animation: cable-flow 1.1s linear infinite;
+}
+
+.glyphPlug,
+.glyphBadge {
+  fill: var(--glyph-bg);
+  stroke: var(--glyph-cable);
+  stroke-width: 1.4;
+  transition: stroke 0.3s;
+}
+
+.glyphBolt {
+  fill: var(--glyph-cable);
+  transition: fill 0.3s;
+}
+
+.glyphPulse {
+  fill: var(--glyph-cable);
+  filter: drop-shadow(0 0 4px var(--glyph-cable));
+}
+
+@keyframes cable-flow {
+  to {
+    stroke-dashoffset: -26;
+  }
+}
+
+/* ---------- Not paired ---------- */
+
+.hero {
+  display: grid;
+  justify-items: center;
+  gap: 16px;
+  padding: 44px 32px 38px;
+  border-radius: 16px;
+  text-align: center;
+  background:
+    radial-gradient(
+      110% 80% at 50% 0%,
+      color-mix(in srgb, var(--blue) 13%, transparent),
+      transparent 62%
+    ),
+    var(--panel-bg);
+  overflow: hidden;
+}
+
+.heroGlyph {
+  width: min(300px, 82%);
+  margin-bottom: 4px;
+}
+
+.hero h2 {
+  font-size: 28px;
+  font-weight: 500;
+  letter-spacing: -0.8px;
+}
+
+.needs {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.needs li {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(var(--contrast-rgb), 0.02);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.needs svg {
+  color: var(--accent-brand);
+}
+
+.heroActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.heroCommands {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.heroCommands > p {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.heroNote {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.heroError {
+  font-size: 12px;
+  color: var(--negative);
+}
+
+/* ---------- A command to copy ---------- */
+
+.command {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  padding: 3px 3px 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: rgba(var(--contrast-rgb), 0.03);
+  font-size: 12px;
+}
+
+.page .command code {
+  padding: 0;
+  background: none;
+}
+
+.commandBare {
+  display: inline-flex;
+}
+
+.commandLabel {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.copy {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  border-radius: 5px;
+  color: var(--muted);
+  transition:
+    background var(--hover-duration),
+    color var(--hover-duration);
+}
+
+.copy:hover {
+  background: var(--raised-bg);
+  color: var(--text-primary);
+}
+
+/* ---------- The guided setup ---------- */
+
+.wizard {
+  max-width: 780px;
+  margin: 0 auto;
+}
+
+.wizard .glyph {
+  --glyph-bg: var(--brand-ink);
+}
+
+.wizardHead {
+  display: grid;
+  grid-template-columns: 116px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 22px;
+  margin-bottom: 30px;
+}
+
+.wizardGlyph {
+  width: 116px;
+}
+
+.wizardTitle {
+  min-width: 0;
+}
+
+.wizardTitle h1 {
+  font-size: 28px;
+  letter-spacing: -0.8px;
+}
+
+.wizardTitle p {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.meter {
+  display: flex;
+  gap: 5px;
+}
+
+.meter i {
+  width: 18px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--raised-bg);
+  transition: background 0.3s;
+}
+
+.meter i[data-on] {
+  background: var(--accent-brand);
+}
+
+.intro {
+  display: grid;
+  gap: 6px;
+  margin: -6px 0 24px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.intro .line {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.timeline {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.step {
+  position: relative;
+  padding-left: 32px;
+}
+
+/* The thread from one step's dot to the next. */
+.step::before {
+  content: '';
+  position: absolute;
+  top: 31px;
+  bottom: 0;
+  left: 8px;
+  width: 1px;
+  background: var(--line);
+}
+
+.step:last-child::before {
+  display: none;
+}
+
+.stepDot {
+  position: absolute;
+  top: 12px;
+  left: 0;
+  display: grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  border: 1px solid var(--border-default);
+  border-radius: 50%;
+  background: var(--brand-ink);
+  color: var(--brand-ink);
+}
+
+.stepDot[data-state='done'] {
+  border-color: var(--positive);
+  background: var(--positive);
+}
+
+.stepDot[data-state='failed'] {
+  border-color: var(--negative);
+  background: var(--negative);
+}
+
+.stepDot[data-state='current'] {
+  border-color: var(--accent-brand);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent-brand) 16%, transparent);
+}
+
+.stepDot[data-state='current']::after {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent-brand);
+  animation: beat 1.6s ease-in-out infinite;
+}
+
+@keyframes beat {
+  50% {
+    transform: scale(0.55);
+    opacity: 0.55;
+  }
+}
+
+.folded summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 41px;
+  padding: 10px 0;
+  list-style: none;
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color var(--hover-duration);
+}
+
+.folded summary::-webkit-details-marker {
+  display: none;
+}
+
+.folded summary:hover {
+  color: var(--text-primary);
+}
+
+.chevron {
+  color: var(--muted);
+  transition: transform 0.15s;
+}
+
+.folded[open] .chevron {
+  transform: rotate(90deg);
+}
+
+.stepTitle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 41px;
+  padding: 10px 0 6px;
+  font-size: 16px;
+  font-weight: 500;
+}
+
+.stepBody {
+  display: grid;
+  gap: 9px;
+  padding: 2px 0 20px;
+}
+
+.line {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+  animation: rise 0.2s ease-out;
+}
+
+.line[data-tone='done'] {
+  color: var(--text-primary);
+}
+
+.line[data-tone='failed'] {
+  color: var(--negative);
+}
+
+.line[data-indent] {
+  padding-left: 22px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.line strong {
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.mark {
+  display: inline-grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+
+.mark[data-tone='done'] {
+  color: var(--positive);
+}
+
+.mark[data-tone='failed'] {
+  color: var(--negative);
+}
+
+/* "Run `darkbloom cluster` on the other Mac.": the one thing to do now. */
+.instruction {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 14px 13px 16px;
+  border: 1px solid color-mix(in srgb, var(--blue) 32%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--blue) 8%, transparent);
+  font-size: 14px;
+  color: var(--text-primary);
+  animation: rise 0.2s ease-out;
+}
+
+.instruction > svg {
+  color: var(--accent-brand);
+}
+
+.instruction > p {
+  flex: 1;
+  line-height: 1.5;
+}
+
+.terminal {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 14px 13px 16px;
+  border: 1px solid var(--warning-line);
+  border-radius: 10px;
+  background: var(--warning-wash);
+  color: var(--warning);
+  font-size: 13px;
+}
+
+.terminal > p {
+  flex: 1;
+  line-height: 1.5;
+  color: var(--text-primary);
+}
+
+/* The pairing code: big enough to compare with the other Mac's screen at a glance. */
+.pairingCode {
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  padding: 16px 20px 18px;
+  border: 1px solid color-mix(in srgb, var(--blue) 34%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--blue) 8%, transparent);
+}
+
+.pairingCode > span {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.pairingCode > strong {
+  display: flex;
+  gap: 0.45em;
+  font-size: 50px;
+  font-weight: 500;
+  line-height: 1.1;
+  letter-spacing: 0.1em;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+  user-select: all;
+}
+
+.codeLine {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+}
+
+.codeLine .pairingCode > strong {
+  font-size: 30px;
+}
+
+.codeLine > p {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.facts {
+  display: grid;
+  margin: 2px 0 0;
+  padding: 2px 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.facts > div {
+  display: grid;
+  grid-template-columns: minmax(90px, 140px) minmax(0, 1fr);
+  gap: 12px;
+  padding: 9px 0;
+  font-size: 12px;
+}
+
+.facts > div + div {
+  border-top: 1px solid var(--line);
+}
+
+.facts dt {
+  color: var(--muted);
+}
+
+.facts dd {
+  margin: 0;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+/* Live work: one row per Mac, each with its own spinner. */
+.live {
+  display: grid;
+  gap: 9px;
+  margin: 2px 0 0;
+  padding: 12px 14px;
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(var(--contrast-rgb), 0.025);
+}
+
+.live li {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px 10px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.live li > svg,
+.progressLabel > svg {
+  color: var(--accent-brand);
+}
+
+.live li > .bar {
+  grid-column: 2;
+}
+
+.progress {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(var(--contrast-rgb), 0.025);
+}
+
+.progressLabel {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+
+.bar {
+  display: block;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--raised-bg);
+}
+
+.bar > i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent-brand);
+  transition: width 0.4s ease;
+}
+
+.figures {
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.waiting {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.waiting > svg {
+  color: var(--accent-brand);
+}
+
+/* The open question. */
+.question {
+  display: grid;
+  gap: 12px;
+  margin-top: 6px;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel-bg);
+  animation: rise 0.22s ease-out;
+}
+
+.question[data-code] {
+  text-align: center;
+}
+
+.questionTitle {
+  font-size: 17px;
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: -0.2px;
+}
+
+.questionNote {
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+}
+
+.questionNote strong,
+.questionTitle strong {
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.choiceBlock {
+  display: grid;
+  gap: 10px;
+}
+
+.choices {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.choicesInline {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.choice {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 12px;
+  width: 100%;
+  padding: 13px 16px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: rgba(var(--contrast-rgb), 0.02);
+  text-align: left;
+  transition:
+    border-color var(--hover-duration),
+    background var(--hover-duration),
+    box-shadow var(--hover-duration);
+}
+
+.choicesInline .choice {
+  display: flex;
+  justify-content: center;
+  min-width: 128px;
+  padding: 12px 22px;
+  text-align: center;
+}
+
+.choice:not(:disabled):hover {
+  border-color: rgba(var(--contrast-rgb), 0.24);
+  background: rgba(var(--contrast-rgb), 0.04);
+}
+
+/* The list's cursor: the default before the list has focus, then wherever focus is. */
+.choice[data-active] {
+  border-color: color-mix(in srgb, var(--accent-brand) 55%, transparent);
+  background: color-mix(in srgb, var(--blue) 7%, transparent);
+}
+
+.choice:focus-visible {
+  outline: none;
+  border-color: var(--accent-brand);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-brand) 22%, transparent);
+}
+
+.choiceTitle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.choiceDetail {
+  display: grid;
+  gap: 3px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.choiceFacts {
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.choiceEnter {
+  grid-row: 1 / span 2;
+  grid-column: 2;
+  align-self: center;
+  color: var(--accent-brand);
+  opacity: 0;
+  transition: opacity var(--hover-duration);
+}
+
+.choice[data-active] .choiceEnter {
+  opacity: 1;
+}
+
+.keysHint {
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.question[data-code] .keysHint {
+  text-align: center;
+}
+
+.keyButtons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tagMode,
+.tagMark,
+.tagWarning,
+.tagRole {
+  display: inline-flex;
+  align-items: center;
+  min-height: 19px;
+  padding: 0 7px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+.tagMode {
+  color: var(--accent-brand);
+  background: var(--blue-wash);
+}
+
+.tagMark {
+  color: var(--positive);
+  background: color-mix(in srgb, var(--positive) 12%, transparent);
+}
+
+.tagWarning {
+  color: var(--warning);
+  background: var(--warning-wash);
+  border: 1px solid var(--warning-line);
+}
+
+.tagRole {
+  color: var(--text-secondary);
+  background: var(--raised-bg);
+}
+
+/* ✓ or ✗ with what serves, or why nothing does. */
+.outcome {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: start;
+  gap: 14px;
+  padding: 18px 20px;
+  border: 1px solid color-mix(in srgb, var(--positive) 32%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--positive) 7%, transparent);
+  animation: rise 0.25s ease-out;
+}
+
+.outcome[data-ok='false'] {
+  border-color: color-mix(in srgb, var(--negative) 34%, transparent);
+  background: color-mix(in srgb, var(--negative) 7%, transparent);
+}
+
+.outcomeMark {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--positive);
+  color: var(--brand-ink);
+}
+
+.outcome[data-ok='false'] .outcomeMark {
+  background: var(--negative);
+}
+
+.outcome strong {
+  display: block;
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.45;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.outcome p {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.wizardFoot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 26px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+
+/* ---------- A paired Mac ---------- */
+
+.pair {
+  margin-bottom: 18px;
+  overflow: hidden;
+  border-radius: 16px;
+  background: var(--panel-bg);
+}
+
+.macs {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(150px, 280px) minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
+  padding: 26px 28px 22px;
+  background: radial-gradient(
+    90% 120% at 50% 0%,
+    color-mix(in srgb, var(--blue) 10%, transparent),
+    transparent 65%
+  );
+}
+
+.macCard {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.macs > .macCard:last-child {
+  justify-items: end;
+  text-align: right;
+}
+
+.macLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.macCard > strong {
+  font-size: 16px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.macCard[data-away] > strong {
+  color: var(--muted);
+}
+
+.macFacts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+
+.answers {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.answers > i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--positive);
+}
+
+.answers[data-answers='false'] > i {
+  background: var(--warning);
+}
+
+.pairGlyph {
+  justify-self: center;
+  max-width: 280px;
+}
+
+.pairBody {
+  display: grid;
+  gap: 16px;
+  padding: 20px 28px 26px;
+  border-top: 1px solid var(--line);
+}
+
+.stateRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 16px;
+}
+
+.statePill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: var(--raised-bg);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.statePill > i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.statePill[data-tone='ready'] {
+  color: var(--positive);
+  background: color-mix(in srgb, var(--positive) 12%, transparent);
+}
+
+.statePill[data-tone='ready'] > i {
+  background: var(--positive);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--positive) 20%, transparent);
+}
+
+.statePill[data-tone='pending'] {
+  color: var(--warning);
+  background: var(--warning-wash);
+}
+
+.statePill[data-tone='pending'] > i {
+  background: var(--warning);
+}
+
+.statePill[data-tone='failed'] {
+  color: var(--negative);
+  background: color-mix(in srgb, var(--negative) 12%, transparent);
+}
+
+.statePill[data-tone='failed'] > i {
+  background: var(--negative);
+}
+
+.modelName {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  font-size: 22px;
+  font-weight: 500;
+  letter-spacing: -0.4px;
+}
+
+.split {
+  display: grid;
+  gap: 8px;
+}
+
+.splitBar {
+  display: flex;
+  gap: 3px;
+  height: 8px;
+}
+
+.splitBar > i {
+  min-width: 6px;
+  border-radius: 4px;
+  background: var(--accent-brand);
+}
+
+.splitBar > i[data-part='1'],
+.splitLegend i[data-part='1'] {
+  background: var(--purple);
+}
+
+.splitLegend {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.splitLegend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.splitLegend i {
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  background: var(--accent-brand);
+}
+
+.splitLegend b {
+  font-weight: 500;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.splitText {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.why {
+  display: grid;
+  gap: 6px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(var(--contrast-rgb), 0.02);
+  font-size: 12.5px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.why[data-tone='failed'] {
+  border-color: color-mix(in srgb, var(--negative) 30%, transparent);
+  background: color-mix(in srgb, var(--negative) 6%, transparent);
+}
+
+.why[data-tone='pending'] {
+  border-color: var(--warning-line);
+  background: var(--warning-wash);
+}
+
+.reason {
+  color: var(--text-primary);
+}
+
+.next {
+  color: var(--text-secondary);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.terminalHint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.reading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 30px 28px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.reading > svg {
+  color: var(--accent-brand);
+}
+
+.reading > strong {
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.pairFacts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 40px;
+  margin: 0 0 16px;
+  padding: 0 4px;
+}
+
+.pairFacts > div {
+  display: grid;
+  gap: 5px;
+}
+
+.pairFacts dt {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.pairFacts dd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.lines {
+  margin: 0 0 22px;
+  padding: 0 4px;
+}
+
+.lines summary {
+  width: fit-content;
+  font-size: 11px;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color var(--hover-duration);
+}
+
+.lines summary:hover {
+  color: var(--text-primary);
+}
+
+.lines ul {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0 0;
+  padding: 12px 14px;
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.more {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+
+/* This Mac's overview, on a Mac in a pair. */
+.pairCard {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  margin: 0 0 30px;
+  padding: 12px 18px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.pairCard .glyph {
+  --glyph-bg: var(--brand-ink);
+}
+
+.pairCardGlyph {
+  width: 92px;
+}
+
+.pairCard strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.pairCard div > span {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+@container cluster (max-width: 640px) {
+  .macs {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    padding: 22px 20px 18px;
+  }
+
+  .pairGlyph {
+    grid-row: 1;
+    grid-column: 1 / -1;
+    max-width: 220px;
+  }
+
+  .pairBody {
+    padding: 18px 20px 22px;
+  }
+
+  .wizardHead {
+    grid-template-columns: 84px minmax(0, 1fr) auto;
+    gap: 14px;
+  }
+
+  .wizardGlyph {
+    width: 84px;
+  }
+
+  .meter {
+    grid-row: 2;
+    grid-column: 2;
+  }
+
+  .hero {
+    padding: 34px 20px 30px;
+  }
+
+  .pairingCode > strong {
+    font-size: 40px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .line,
+  .instruction,
+  .question,
+  .outcome,
+  .glyph *,
+  .stepDot::after {
+    animation: none !important;
+  }
+}

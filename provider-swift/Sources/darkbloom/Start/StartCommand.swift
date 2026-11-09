@@ -172,7 +172,7 @@ struct Start: AsyncParsableCommand {
                 throw ValidationError("--always-on installs the service that runs --supervise; use one of them.")
             }
             // The pair's local API beside Darkbloom (Both, me first): the cluster service passes --local-endpoint, its
-            // port and its address to the part it runs; the API always needs the pair's key.
+            // port and its address to the part it runs; the API always needs a key (this Mac's own, or the pair's).
             if localEndpoint {
                 guard !noAuth else {
                     throw ValidationError("The pair's local API always needs its key: --cluster-member --local-endpoint doesn't take --no-auth.")
@@ -422,8 +422,11 @@ struct Start: AsyncParsableCommand {
                 Self.clearSoloChoice()
                 let code = await ClusterPairCommands.start(pair, actions: ClusterPairActions.live(config: configOptions.config),
                                                            config: configOptions.config)
-                // What the app's Start asked for and the pair doesn't take: another model, a local API here.
-                for line in pair.appStartLines(named: model, localEndpoint: localEndpoint, code: code) { print(line) }
+                // What the app's Start asked for and the pair doesn't take: another model, a local API here. Read again now
+                // the start is over, so this Mac's relay is as its cluster service says after it.
+                for line in ClusterPairSummary.local().appStartLines(named: model, localEndpoint: localEndpoint, code: code) {
+                    print(line)
+                }
                 if code != 0 { throw ExitCode(code) }
                 try await setUpToolsBesidePair()
                 return

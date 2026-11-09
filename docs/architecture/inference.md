@@ -7879,15 +7879,73 @@ flowchart LR
    `localAPI` with `localBind` and carried to the other Mac by the serve
    command). The cluster service gives `--local-endpoint --port --bind` to the
    coordinator-paired part of the plan's rank 0 only
-   (`ClusterLocalServing.memberArguments`), on a port from `servingPorts` free
-   on every Mac that says, never `ClusterLocalServing.neverChosenPorts`
-   (`localAPIPort`, probing only `localAPIPorts`). The part's start gives the
+   (`ClusterLocalServing.memberArguments`), on that Mac's own port
+   (`ClusterService.leaderAPIPort` → `ClusterLocalServing.apiPort(own:…)`):
+   `LocalAPIPort.thisMac` from the service's provider config
+   (`ClusterService.ownAPIPort`), the saved `[local] port` as it is, else the
+   port its local API already uses, else a new choice that is never
+   `LocalAPIPort.neverChosen` (8000, 47420–47423), saved. The same port serves Only me's
+   leader. Only when it can't be read or chosen does the earlier rule, on this
+   Mac alone, decide (`localAPIPort`, `sharedPort`). The part's start gives the
    endpoint to the member that hosts the slot
-   (`ClusterMemberPreparation.hostsPairSlot`) with the pair's key
-   (`LocalEndpoint.loadOrCreateClusterToken`, synced by the serve command) and
-   the local router. The part key marks the scope (`:local-api@`), so switching
-   between Darkbloom network and Both restarts only that part. An older record
-   or serve command has no `localAPI` and reads as the Darkbloom network.
+   (`ClusterMemberPreparation.hostsPairSlot`) with this Mac's own key
+   (`LocalEndpoint.loadOrCreateToken`, what its tools read) and the pair's
+   (`LocalInferenceHTTPConfig.pairToken`; `LocalEndpoint.loadOrCreateClusterToken`,
+   synced by the serve command), and the local router. The part key marks the
+   scope (`:local-api@`), so switching between Darkbloom network and Both, me
+   first restarts only that part. An older record or serve command has no
+   `localAPI` and reads as the Darkbloom network.
+9. Every other Mac answers locally too, as with Only me (`cluster local`): with
+   the API on every address (`ClusterServingScope.answersOnEveryMac`), the
+   cluster service of each Mac whose part isn't rank 0 runs `ClusterLocalRelay`
+   on its own port (`ClusterLocalRelay.rankZeroHost`, from the roster by rank,
+   not by counting Macs) to rank 0's cable address, at the port rank 0's service
+   reports (`ClusterServiceStatus.pairAPIPort`: from its part's discovery
+   record, once bound on every address, `ClusterLocalRelay.pairAPIPort`). An
+   older build's `cluster local`, which doesn't report it, is relayed at its
+   ready local session's port; Both, me first never is
+   (`ClusterLocalRelay.rankZeroPort`): while Darkbloom doesn't have the pair,
+   rank 0's session listens on loopback with its own key alone, so the member
+   relays nothing and its status says why
+   (`ClusterLocalRelay.rankZeroAnswersOnItsMacOnly`,
+   `ClusterServiceStatus.relayWaitsForOffer`). The relay's port is this Mac's
+   own (`ClusterLocalRelay.port(own:…)`, `LocalAPIPort.thisMac` read only when a
+   relay starts), so the Macs' ports may differ and each keeps its own whichever
+   Mac runs rank 0; one another program holds is said once, tried again every 10
+   s, and reported (`ClusterServiceStatus.relayPortHeld`). It writes this Mac's
+   discovery record with this Mac's own key (`ClusterService.relayDiscovery`).
+   The relay reads each request's head (`ClusterLocalRelay.relayedHead`):
+   `Authorization: Bearer` with this Mac's own key goes on with the pair's;
+   every other byte goes on as it came, a body by its Content-Length, so a
+   kept-alive connection's every request is read. A body framed otherwise
+   (chunked, an upgrade) makes that request the connection's last
+   (`Connection: close`), and a head it can't read passes unchanged. Answers are
+   never read: that direction is the same byte copy (`ClusterLocalRelay.pump`),
+   so the relay adds nothing per token. Rank 0's API sees each relayed request
+   come from the relaying Mac's cable address: another machine, so the router
+   never takes the paid hop for it (`LocalHTTPClient.isAnotherMachine`), and it
+   is the owner's use like any local request (item 6). A relay never closes a
+   connection it can't pass on: while rank 0's Mac is away
+   (`ClusterService.relayAway`: `otherMacSilentSeconds`, 12 s, without an answer
+   over the cable; a status request to it that fails while it answers there
+   doesn't count, and before any answer in the cluster service's life
+   `askFailuresWithoutLease`, two, failed in a row do) it answers each request
+   at once with a 503 in the local API's error shape, `code`
+   `pair_mac_unreachable`, in words that name the other Mac
+   (`ClusterLocalRelay.Refusals`), which the member's `status` and
+   `darkbloom local` repeat (`ClusterServiceStatus.relayRankZeroAway`), to a
+   caller with this Mac's key or the pair's, as the local API checks them
+   (`ClusterLocalRelay.Caller`): any other gets the API's own 401, and a CORS
+   preflight or a liveness check the 503 without names; otherwise it waits at
+   most 3 s for rank 0 to take a connection
+   (`ClusterLocalRelay.connect(_:within:)`) and answers a failed one the same
+   way, `pair_api_unavailable` when rank 0's Mac refuses the port. The request
+   is read first, so the answer isn't lost to a reset. It clears once that Mac
+   answers over the cable again, and asks of it go back to every 10 s then
+   (`ClusterService.updateRelayAway`). The solo server a pair falls back to
+   takes this Mac's own port too (`thisMacPort`, else 8000), after the relay
+   gives it back; the status names the running part's port
+   (`ClusterServiceStatus.Child.port`, `ClusterService.soloPort(of:)`).
 
 ## Cluster pair capability honesty
 

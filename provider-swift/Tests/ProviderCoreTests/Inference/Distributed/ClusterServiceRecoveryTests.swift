@@ -173,6 +173,53 @@ struct ClusterServiceRecoveryTests {
         }
         completed = true
     }
+    /// The solo server a pair falls back to (this Mac alone, after the other Mac's absence grace) listens on this Mac's
+    /// own saved port (`LocalAPIPort.thisMac`), as every local API here does, so this Mac's tools keep their address;
+    /// never 8000 unless that is the saved one. The service's status names the port for the screens that check it.
+    @Test func theSoloServerTakesThisMacsSavedPort() throws {
+        let home = try NativePairMemberFixture.privateRoot()
+        let helper = home.appendingPathComponent("service-part-fixture")
+        try NativePairMemberFixture.helper().write(to: helper, options: .withoutOverwriting)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helper.path)
+        let directory = home.appendingPathComponent("part", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        let provider = home.appendingPathComponent("provider.toml")
+        try "[provider]\nname = \"fixture\"\n\n[local]\nport = 8017\n".write(to: provider, atomically: true, encoding: .utf8)
+        let wizard = ClusterSetupOperations.LiveSettings(providerConfiguration: provider, darkbloomExecutable: helper,
+            sessionArguments: [], pair: nil, dryRun: true, version: "fixture")
+        let service = ClusterService(settings: .init(wizard: wizard, leaderArguments: [], followerArguments: [],
+            soloArguments: ["--service-part-fixture", directory.path, "replacement"]), paths: try ClusterUserPaths(homeDirectory: home),
+            supervisionIntervalSeconds: serviceSupervisionInterval, powerAssertionReason: "Cluster solo port test " + UUID().uuidString)
+        var leadership = ClusterOnboardingLeadership(role: "leader", leaderPin: "fixture-local",
+            peerPin: "fixture-peer", peerName: "fixture peer", since: "fixture")
+        leadership.serving = true; leadership.modelName = "fixture-model"
+        _ = try service.store.updateRecord { $0.leadership = leadership }
+        let local = "mac-aaaaaaaaaaaa", peer = "mac-bbbbbbbbbbbb"
+        // A real control node already past the other Mac's absence grace, on a Mac that holds the model alone.
+        let node = ClusterControlNode(localID: local,
+            members: [.init(memberID: local, name: "fixture", memoryBytes: 1, gpuCores: 1, holdsModelAlone: true)],
+            claim: .init(term: 1, leaderID: local, members: [local, peer], reason: "fixture"),
+            rankOrder: [local, peer], now: ClusterService.monotonicSeconds() - 2, ttl: 1, soloGrace: 0)
+        service.lock.withLock { service.control = node }
+        let run = ServiceRecoveryRun(service: service)
+        var completed = false
+        defer {
+            try? Data().write(to: directory.appendingPathComponent("release-replacement"))
+            run.requestStop()
+            #expect(run.join(seconds: 12), "owned service must finish; retain \(home.path) on failure")
+            if completed { try? FileManager.default.removeItem(at: home) }
+        }
+        run.start()
+        try #require(waitForRecovery { readyPIDs(in: directory, role: "replacement").count == 1 }, "\(run.log)")
+        let pid = try #require(readyPIDs(in: directory, role: "replacement").first)
+        let arguments = try String(contentsOf: directory.appendingPathComponent("replacement-\(pid).args"), encoding: .utf8)
+            .components(separatedBy: "\n")
+        #expect(zip(arguments, arguments.dropFirst()).contains { $0 == "--port" && $1 == "8017" }, "\(arguments)")
+        let statusFile = service.store.paths.directory.appendingPathComponent("service-status.json")
+        #expect(waitForRecovery { readRecoveryStatus(statusFile)?.child.port == 8017 }, "the status names the solo server's port")
+        completed = true
+    }
+
     @Test func plannedStopWaitsForOwnedServiceChildBeforePeerAndRetainsFailureIntent() throws {
         for outcome in ["success", "missing-peer", "timeout"] {
             let home = try NativePairMemberFixture.privateRoot()

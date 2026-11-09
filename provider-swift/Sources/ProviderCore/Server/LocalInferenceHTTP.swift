@@ -26,15 +26,20 @@ public struct LocalInferenceHTTPConfig: Sendable {
     public let port: UInt16
     /// Bearer token required on every inference route (nil = open / `--no-auth`).
     public let authToken: String?
+    /// A pair's API only: the pair's key (`LocalEndpoint.loadOrCreateClusterToken`), taken beside `authToken`, which is
+    /// this Mac's own. Every other Mac of the pair passes its requests on with it (`ClusterLocalRelay`), and tools set
+    /// up with it before keep working. Nil everywhere else.
+    public let pairToken: String?
     /// Where a request goes when this Mac can't take it (`LocalRouter`); nil serves this Mac's engine only, with
     /// the endpoint's behaviour before the router.
     public let router: LocalRouterConfig?
 
     public init(host: String = "127.0.0.1", port: UInt16 = BuildEnvironment.current.defaultLocalPort, authToken: String? = nil,
-                router: LocalRouterConfig? = nil) {
+                pairToken: String? = nil, router: LocalRouterConfig? = nil) {
         self.host = host
         self.port = port
         self.authToken = authToken
+        self.pairToken = pairToken
         self.router = router
     }
 }
@@ -215,7 +220,7 @@ func makeLocalInferenceApplication(
     let routedResponder = LocalRouterResponder(inner: corsResponder, router: localRouter)
     // Auth rejects unauthenticated requests before body/model handling. The
     // outer disconnect layer only binds lifetime; it does not inspect content.
-    let authedResponder = LocalAuthResponder(inner: routedResponder, token: config.authToken)
+    let authedResponder = LocalAuthResponder(inner: routedResponder, token: config.authToken, pairToken: config.pairToken)
 
     return Application(
         responder: LocalDisconnectResponder(

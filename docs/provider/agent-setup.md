@@ -180,14 +180,17 @@ page with these names ([dev build identity](../operations/provider-release.md#de
   `/usr/local/bin` is writable, links `/usr/local/bin/darkbloom-dev`.
   `darkbloom-dev login` prints DevNet's own URL. A test request needs an API
   key from the same DevNet account.
-- **The pair's local API port,** in both apps: for **Only me**
-  (`darkbloom cluster local`), 8000, unless another program (or the other app's
-  pair) holds it on either Mac; then the lowest port up to 8020 that is free on
-  both. For **Both, me first**, the first port from 8001 to 8020 that is free on
-  both, never 8000. The card says which. The ports the two Macs of a pair use
-  on the cable are the DevNet app's own, so the two apps' pairs never answer
-  each other. `8001` is only the DevNet app's default for single-Mac local
-  serving. <!-- pending LS-3: one port per Mac, from 8001, for both pair choices (LocalAPIPort.thisMac). -->
+- **The pair's local API port,** in both apps and for both pair choices
+  (**Only me** and **Both, me first**): each Mac's own `[local] port`, the one
+  its single-Mac local API takes (`LocalAPIPort.thisMac`). The Mac that runs
+  the pair's API listens on its port, and the other Mac's port passes requests
+  to it, so the two can differ. A Mac with no saved port keeps the port its
+  local API already uses, else takes the first free one from 8001, never 8000,
+  and saves it; a Mac updated from 0.10.10 keeps 8000. `darkbloom local` on
+  each Mac says which, and so does the setup's card once the port is up. Each
+  app keeps its own `provider.toml`, so the two apps' ports are separate. The
+  ports the two Macs of a pair use on the cable are the DevNet app's own, so
+  the two apps' pairs never answer each other.
 - **The DevNet app names `darkbloom-dev`** in its screens, commands and hints,
   and the Local Network lines name “Darkbloom Dev”, but tell the human to turn
   on the row macOS lists, “Darkbloom”: both apps share one bundle ID. Type

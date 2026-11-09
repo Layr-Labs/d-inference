@@ -57,7 +57,9 @@ final class QwenGenerationLookaheadProducer {
         }
         guard original == nil, prepared == nil else { throw ProbeError("Generation retained the sent boundary wrapper") }
         try window.completeSend(sent.1)
-        if expected.frame.sequence + 1 < request.prefillFrameCount {
+        // A rank that must stop prepares nothing more: it stops at the next
+        // frame's header once this boundary's consumption is answered (D6).
+        if expected.frame.sequence + 1 < request.prefillFrameCount, try !transport.stopLatched() {
             try prepare(sequence: expected.frame.sequence + 1, session: session, check: check)
         }
         try transport.finishBoundaryConsumed(sent.0, check: check)

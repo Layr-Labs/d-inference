@@ -176,6 +176,11 @@ final class GLM5NextTensorParallelLaneLoop<Native: GLM5NextTensorParallelLaneNat
     private(set) var step = 0
     private var order = 0
     private var slots: [Int: Record] = [:]
+    /// D6, rank 0: lanes a rank's live memory check stopped, with that rank.
+    /// Each runs no more units and leaves alone once it owes the owner no answer.
+    private var memoryStopped: [UUID: ClusterWorkerAbort] = [:]
+    /// D6, rank 1: the lane its memory check stopped, named in every report until it leaves.
+    private var memoryReported: UUID?
 
     init(native: Native, lanes: Int, book: ClusterBatchLaneBook<GLM5NextTensorParallelLaneReservation>,
          host: QwenBatchServingHost, joinWaitNanoseconds: UInt64 = 30_000_000_000,
@@ -193,15 +198,25 @@ final class GLM5NextTensorParallelLaneLoop<Native: GLM5NextTensorParallelLaneNat
 
     /// Runs until rank 0 has no lane left. Throws on any failure that is not
     /// one lane's (collective, agreement, native, protocol): the caller then
-    /// ends every lane and the pair.
-    func run(check: () throws -> Void) throws {
+    /// ends every lane and the pair. `memoryRefused` is this rank's live
+    /// memory check, asked at each step's start (true: it refused): a refusal
+    /// stops the newest running lane alone on both ranks (D6), and no new one
+    /// is asked while a stopped lane has yet to leave.
+    func run(memoryRefused: () throws -> Bool = { false }, check: () throws -> Void) throws {
         guard (1...Wire.maximumLanes).contains(lanes) else { throw ProbeError("GLM lane loop lane count") }
         if native.rank == 0 {
             var peerWanted = Set<Int>()
-            while try !autoreleasepool(invoking: { try lead(peerWanted: &peerWanted, check: check) }) {}
+            while try !autoreleasepool(invoking: {
+                try lead(peerWanted: &peerWanted, memoryRefused: memoryRefused, check: check)
+            }) {}
         } else {
-            while try !autoreleasepool(invoking: { try follow(check: check) }) {}
+            while try !autoreleasepool(invoking: { try follow(memoryRefused: memoryRefused, check: check) }) {}
         }
+    }
+
+    /// The newest lane this rank runs that no cancel or deadline ends already.
+    private func newestRunning(at time: UInt64) -> Record? {
+        slots.values.filter { !book.isCancelled($0.id) && !overdue($0, at: time) }.max { $0.order < $1.order }
     }
 
     // MARK: Rank 0
@@ -211,6 +226,14 @@ final class GLM5NextTensorParallelLaneLoop<Native: GLM5NextTensorParallelLaneNat
         if book.isCancelled(lane.id) || overdue(lane, at: now()) || peerWants {
             return (.cancelled, lane.answered)
         }
+        if let finished = finish(lane) { return finished }
+        // A rank's memory stopped it (D6): it leaves alone once it owes the owner no answer.
+        if let abort = memoryStopped[lane.id], !lane.awaiting { return (Wire.Leave(aborted: abort), lane.answered) }
+        return nil
+    }
+
+    /// How the lane's request ends now, from its tokens and its owner's answers, or nil.
+    private func finish(_ lane: Record) -> (Wire.Leave, Int)? {
         let kept: Int, wanted: Bool
         if let stopped = lane.stoppedAt {
             kept = stopped; wanted = false
@@ -230,9 +253,14 @@ final class GLM5NextTensorParallelLaneLoop<Native: GLM5NextTensorParallelLaneNat
     }
 
     /// One step on rank 0; true when the loop ends.
-    private func lead(peerWanted: inout Set<Int>, check: () throws -> Void) throws -> Bool {
+    private func lead(peerWanted: inout Set<Int>, memoryRefused: () throws -> Bool,
+                      check: () throws -> Void) throws -> Bool {
         try host.serviceControl()
         try check()
+        if memoryStopped.isEmpty, try memoryRefused(), let newest = newestRunning(at: now()) {
+            // This rank's memory refused (D6): the newest running lane alone stops.
+            memoryStopped[newest.id] = ClusterWorkerAbort(reason: .memory, rank: 0)
+        }
         // Leaves are decided, announced and run in the same step.
         var leaving: [Int: (Record, Wire.Leave, Int)] = [:]
         for (slot, lane) in slots {
@@ -250,12 +278,12 @@ final class GLM5NextTensorParallelLaneLoop<Native: GLM5NextTensorParallelLaneNat
         let decoding = slots.keys.sorted().filter {
             let lane = slots[$0]!
             return lane.native != nil && lane.prefilled && !lane.ended && lane.stoppedAt == nil
-                && lane.tokens.count - lane.answered <= backlog
+                && memoryStopped[lane.id] == nil && lane.tokens.count - lane.answered <= backlog
         }
         // A frame in progress goes on, unless a shorter prompt's whole rest
         // fits one slice (it runs between the frame's slices); else the
         // shortest remaining prompt starts a frame.
-        let waiting = slots.values.filter { $0.native != nil && !$0.prefilled }
+        let waiting = slots.values.filter { $0.native != nil && !$0.prefilled && memoryStopped[$0.id] == nil }
         let inProgress = waiting.first { native.prefillInProgress($0.native!) }
         let next = waiting.min { a, b in
             if native.prefillShortestFirst {
@@ -307,6 +335,12 @@ final class GLM5NextTensorParallelLaneLoop<Native: GLM5NextTensorParallelLaneNat
             }
         }
         peerWanted = Set((0..<lanes).filter { report.leaveWanted[$0] })
+        for slot in 0..<lanes where report.memoryWanted[slot] {
+            // Rank 1's memory stopped the lane it holds there (D6).
+            guard leaving[slot] == nil, !joining.contains(slot), let lane = slots[slot],
+                  memoryStopped[lane.id] == nil else { continue }
+            memoryStopped[lane.id] = ClusterWorkerAbort(reason: .memory, rank: 1)
+        }
         if plan.stop { return true }
 
         for slot in leaving.keys.sorted() {
@@ -373,7 +407,8 @@ final class GLM5NextTensorParallelLaneLoop<Native: GLM5NextTensorParallelLaneNat
                 lane.awaiting = false; lane.answered += 1; lane.lastAnswer = answer
                 if !answer { lane.stoppedAt = lane.answered; return }
             }
-            guard lane.stoppedAt == nil, lane.published < lane.tokens.count else { return }
+            // A lane a rank's memory stopped publishes no more (D6).
+            guard lane.stoppedAt == nil, memoryStopped[lane.id] == nil, lane.published < lane.tokens.count else { return }
             let logprobs = try lane.native.flatMap { try native.takeLogprobs($0, ordinal: lane.published) }
             try host.publishToken(requestID: lane.id, ordinal: lane.published, tokenID: lane.tokens[lane.published],
                 committedTokens: lane.request.promptTokenIDs.count + lane.published, logprobs: logprobs)
@@ -384,14 +419,20 @@ final class GLM5NextTensorParallelLaneLoop<Native: GLM5NextTensorParallelLaneNat
     // MARK: Rank 1
 
     /// One step on rank 1; true when the loop ends.
-    private func follow(check: () throws -> Void) throws -> Bool {
+    private func follow(memoryRefused: () throws -> Bool, check: () throws -> Void) throws -> Bool {
         try host.serviceControl()
         try check()
         let time = now()
+        if memoryReported == nil, try memoryRefused() {
+            // This rank's memory refused (D6): rank 0 ends its newest running lane alone.
+            memoryReported = newestRunning(at: time)?.id
+        }
+        let wanted = (0..<lanes).map { slot in
+            slots[slot].map { book.isCancelled($0.id) || overdue($0, at: time) } ?? false
+        }
         let report = Wire.Report(step: step, lanes: lanes, prefixEnabled: native.prefixEnabled,
-            leaveWanted: (0..<lanes).map { slot in
-                slots[slot].map { book.isCancelled($0.id) || overdue($0, at: time) } ?? false
-            },
+            leaveWanted: wanted,
+            memoryWanted: (0..<lanes).map { slot in !wanted[slot] && (slots[slot].map { $0.id == memoryReported } ?? false) },
             tokens: (0..<lanes).map { slots[$0]?.tokens.count })
         let plan = try Wire.read(native.exchange(Wire.words(report), check: check), lanes: lanes, step: step).plan
         guard plan.prefixEnabled == native.prefixEnabled, plan.depth == native.depth else {
@@ -509,9 +550,14 @@ final class GLM5NextTensorParallelLaneLoop<Native: GLM5NextTensorParallelLaneNat
             }
             if let telemetry, !telemetry.isEmpty { try host.publishTelemetry(requestID: lane.id, telemetry: telemetry) }
             try host.publishFinished(requestID: lane.id, reason: finish)
+        } else if let abort = reason.abort {
+            // Both ranks ended it alone for a rank's memory (D6).
+            try host.publishAborted(requestID: lane.id, abort: abort)
         } else {
             try host.publishLeft(requestID: lane.id)
         }
+        memoryStopped[lane.id] = nil
+        if memoryReported == lane.id { memoryReported = nil }
         book.finish(lane.id)
     }
 }

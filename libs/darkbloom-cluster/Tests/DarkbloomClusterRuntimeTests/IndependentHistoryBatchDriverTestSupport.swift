@@ -53,6 +53,8 @@ final class HistoryBatchTestPair<Reservation: HistoryBatchTestReservation>: @unc
     private var flags = Set<String>(), clock: UInt64 = 1
     private var errors: [String] = []
     private(set) var maxDecodeWidth = 0
+    /// Each rank's live memory check at a step boundary (D6): true when it refuses.
+    var memoryRefused: [() -> Bool] = [{ false }, { false }]
     init(width: Int) throws {
         self.width = width
         executors = (0...1).map { HistoryBatchTestExecutor<Reservation>(pair: self, rank: $0) }
@@ -85,7 +87,7 @@ final class HistoryBatchTestPair<Reservation: HistoryBatchTestReservation>: @unc
                 do {
                     let driver = try IndependentHistoryBatchDriver(rank: rank, capacity: self.width, vocabulary: 64,
                         book: self.books[rank], executor: self.executors[rank], now: self.now)
-                    try driver.serve(host: self.hosts[rank], check: {})
+                    try driver.serve(host: self.hosts[rank], memoryRefused: self.memoryRefused[rank], check: {})
                 } catch {
                     self.lock.withLock { self.errors.append(String(describing: error)) }
                     self.headers.fail(error); self.replies.fail(error); self.payloads.fail(error)
@@ -214,6 +216,7 @@ final class HistoryBatchTestHost<Reservation: HistoryBatchTestReservation>: Qwen
     unowned let pair: HistoryBatchTestPair<Reservation>
     let rank: Int
     var tokens: [UUID: [Int]] = [:], finished: [UUID: ClusterWorkerFinishReason] = [:], left = Set<UUID>()
+    var aborted: [UUID: ClusterWorkerAbort] = [:]
     var onControl: () throws -> Void = {}, onToken: (UUID, Int) throws -> Void = { _, _ in }
     var answer: (UUID) -> Bool? = { _ in true }
     init(pair: HistoryBatchTestPair<Reservation>, rank: Int) { self.pair = pair; self.rank = rank }
@@ -236,6 +239,9 @@ final class HistoryBatchTestHost<Reservation: HistoryBatchTestReservation>: Qwen
         try checkRetired(requestID); finished[requestID] = reason
     }
     func publishLeft(requestID: UUID) throws { try checkRetired(requestID); left.insert(requestID) }
+    func publishAborted(requestID: UUID, abort: ClusterWorkerAbort) throws {
+        try checkRetired(requestID); aborted[requestID] = abort
+    }
     func publishPromptCache(requestID: UUID, reusedTokens: Int, storedFrontiers: [Int]) throws {
         throw ProbeError("GPT-OSS batch unexpectedly published prefix state")
     }

@@ -132,7 +132,9 @@ public final class DistributedPipeExecutionOwner: DistributedDeadlineExecutionOw
                 requestedContextTokens: request.promptTokens.count + request.maxTokens,
                 servingContextTokens: pair.servingContextTokens, reason: reason.rawValue)
         }
-        return DistributedPipeRequestLease(identity: identity, requestID: request.id, native: native, route: route)
+        return DistributedPipeRequestLease(identity: identity, requestID: request.id, native: native, route: route,
+            requestedContextTokens: request.promptTokens.count + request.maxTokens,
+            servingContextTokens: { [pair] in pair.servingContextTokens })
     }
     public func shutdown() async { await pair.shutdown() }
     /// The pair's batch lanes (continuous batching on the pair).
@@ -153,13 +155,19 @@ private final class DistributedPipeRequestLease: DistributedResidentRequestLease
     private let native: ClusterWorkerRequest
     private let consumerStop = ConsumerStop()
     let route: DistributedRequestRouteNote?
+    /// For an aborted request's capacity refusal (`DistributedMemoryAbort`).
+    private let requestedContextTokens: Int
+    private let servingContextTokens: @Sendable () -> Int
     var reservedBytes: Int { native.reservedBytes }
     var bytesInUse: Int { native.bytesInUse }
     init(identity: DistributedResidentIdentity, requestID: CBv2RequestID, native: ClusterWorkerRequest,
-         route: DistributedRequestRouteNote? = nil) {
+         route: DistributedRequestRouteNote? = nil, requestedContextTokens: Int,
+         servingContextTokens: @escaping @Sendable () -> Int) {
         self.identity = identity; self.requestID = requestID; self.native = native; self.route = route
+        self.requestedContextTokens = requestedContextTokens; self.servingContextTokens = servingContextTokens
     }
     func start(emit: @escaping @Sendable (DistributedResidentEvent) -> Bool) throws {
+        let requested = requestedContextTokens, serving = servingContextTokens
         try native.start { [consumerStop] event in
             switch event {
             case .token(let token, let logprobs):
@@ -173,6 +181,11 @@ private final class DistributedPipeRequestLease: DistributedResidentRequestLease
                 if reason == .clientStop, !consumerStop.requested { return emit(.finished(.cancelled)) }
                 return emit(.finished(reason == .length ? .length : .stop))
             case .failed(let message): return emit(.finished(.error(message)))
+            case .aborted(let abort):
+                // Both ranks ended it alone for one rank's memory: the pair's
+                // capacity refusal, after the tokens the client already has.
+                return emit(.finished(.error(DistributedMemoryAbort.message(requestedContextTokens: requested,
+                    servingContextTokens: serving(), rank: abort.rank))))
             case .promptCache(let reused, let stored): return emit(.promptCache(reused: reused, stored: stored))
             case .telemetry(let rank0, let rank1): return emit(.telemetry(.init(rank0: rank0, rank1: rank1)))
             }

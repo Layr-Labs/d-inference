@@ -209,20 +209,24 @@ extension GLM5NextTensorParallelResidentRuntime {
                     try autoreleasepool {
                         try MLX.withError { nativeError in
                             var lastResourceCheck: UInt64 = 0
-                            func checked() throws {
-                                try nativeError.check(); try control.check()
+                            func checked() throws { try nativeError.check(); try control.check(); try nativeError.check() }
+                            // As one request: the running lanes need the memory they
+                            // were admitted with. Kept prefixes give way first; a memory
+                            // refusal then stops one lane alone (D6), any other refusal
+                            // fails the batch.
+                            func memoryRefused() throws -> Bool {
                                 let now = DispatchTime.now().uptimeNanoseconds
-                                if now - lastResourceCheck >= 250_000_000 {
-                                    // As one request: the running lanes need the
-                                    // memory they were admitted with.
-                                    try prefix.yieldingMemory { try Self.requireLiveMemory(bytes: 0) }
-                                    lastResourceCheck = DispatchTime.now().uptimeNanoseconds
+                                guard now - lastResourceCheck >= 250_000_000 else { return false }
+                                defer { lastResourceCheck = DispatchTime.now().uptimeNanoseconds }
+                                do { try prefix.yieldingMemory { try Self.requireLiveMemory(bytes: 0) }; return false }
+                                catch let refusal as QwenResidentMemoryRefusal {
+                                    log("darkbloom-tp-batch-v1 rank=\(collective.rank) family=glm memory-refused: \(refusal.message)")
+                                    return true
                                 }
-                                try nativeError.check()
                             }
                             let loop = GLM5NextTensorParallelLaneLoop(native: GLM5NextTensorParallelLaneRank(runtime: self,
                                 stage: stage), lanes: lanes.lanes, book: laneBook, host: host)
-                            try loop.run(check: checked)
+                            try loop.run(memoryRefused: memoryRefused, check: checked)
                         }
                     }
                 }
@@ -502,7 +506,8 @@ final class GLM5NextTensorParallelLaneRank: GLM5NextTensorParallelLaneNative {
         log("darkbloom-tensor-parallel-request-v1 rank=\(rank) request=\(lane.request.requestID.uuidString.lowercased())"
             + " lane=1 prompt=\(lane.request.promptTokenIDs.count) reused=\(lane.opened.start)"
             + " stored=\(lane.stored.map(String.init).joined(separator: "_")) prefix_entries=\(runtime.prefix.count) prefix_bytes=\(runtime.prefix.bytesInUse)"
-            + " output=\(kept) finish=\(leave.finish?.rawValue ?? "cancelled") sampled=\(lane.sampler == nil ? 0 : 1)"
+            + " output=\(kept) finish=\(leave.finish?.rawValue ?? (leave.abort != nil ? "aborted" : "cancelled"))"
+            + " sampled=\(lane.sampler == nil ? 0 : 1)"
             + " mtp_rounds=\(speculation?.rounds ?? 0) mtp_accepted=\(speculation?.acceptedTokens ?? 0)"
             + " mtp_proposed=\(speculation?.proposedTokens ?? 0)" + Runtime.proposalFields(speculation, sampler: lane.sampler)
             + " media_frames=\(lane.opened.media?.media.frames.count ?? 0) media_tokens=\(lane.opened.media?.featureCount ?? 0)")

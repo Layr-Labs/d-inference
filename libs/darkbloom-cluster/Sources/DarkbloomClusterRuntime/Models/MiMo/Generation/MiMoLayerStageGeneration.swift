@@ -45,6 +45,7 @@ func runMiMoLayerStageGenerationRequest(loaded: LoadedMiMoLayerStage, plan: MiMo
     agreement unplannedAgreement: QwenLayerStageGenerationAgreement, collective: Collective, recordsSteps: Bool = false,
     prefixCache requestedPrefixCache: QwenStagePrefixCache? = nil, independentHistory: Bool = false, speculative: MiMoSpeculativeDecode? = nil,
     producerStage: LoadedMiMoLayerStage? = nil, handoffFault: QwenPhaseSplitFault? = nil,
+    abort: QwenStageAbort? = nil,
     onCommittedToken: (Int) throws -> Bool, check: () throws -> Void
 ) throws -> (result: QwenLayerStageGenerationResult, evidence: MiMoRequestEvidence) {
     guard !independentHistory || (unplannedAgreement.request.mimoImages == nil
@@ -80,7 +81,7 @@ func runMiMoLayerStageGenerationRequest(loaded: LoadedMiMoLayerStage, plan: MiMo
             defer { prefixCache?.endCapture() }
             let control = QwenLayerStageGenerationControl(agreement: agreement)
             let transport: QwenLayerStageGenerationTransport
-            do { transport = try QwenLayerStageGenerationTransport(agreement: agreement, collective: collective) }
+            do { transport = try QwenLayerStageGenerationTransport(agreement: agreement, collective: collective, abort: abort) }
             catch { try? planned.session.cancel(); throw error }
             var decoder: MiMoMTPDecoder?
             defer { decoder?.release() }
@@ -109,6 +110,13 @@ func runMiMoLayerStageGenerationRequest(loaded: LoadedMiMoLayerStage, plan: MiMo
                       split.map({ control.selectedTokenCount < $0.terms.handoffSelectedTokens }) ?? true {
                     try autoreleasepool {
                         try checked()
+                        if collective.rank == 0, !(speculative != nil && control.selectedTokenCount > 0) {
+                            // Rank 0 owes the next frame's boundary: a stop goes
+                            // there before its forward runs (D6).
+                            let next = try agreement.request.frame(sequence: control.completedFrames)
+                            try transport.stopIfLatched(owing: agreement.compactDecode && next.phase == .decode
+                                ? .compactBoundary : .boundaryHeader, check: checked)
+                        }
                         if let speculative, control.selectedTokenCount > 0 {
                             // The prompt and the first token ran as frames; decode runs as rounds.
                             guard producer == nil || producer!.isComplete else {
@@ -117,12 +125,12 @@ func runMiMoLayerStageGenerationRequest(loaded: LoadedMiMoLayerStage, plan: MiMo
                             let outcome: MiMoMTPGeneration.Outcome
                             if collective.rank == 0 {
                                 outcome = try MiMoMTPGeneration.runProducer(session: owned, control: control,
-                                    terms: speculative.terms, collective: collective,
+                                    terms: speculative.terms, collective: collective, transport: transport,
                                     onCommittedToken: onCommittedToken, check: checked)
                             } else {
                                 try decoder!.begin(firstToken: selectedTokens[0])
                                 outcome = try MiMoMTPGeneration.runConsumer(session: owned, decoder: decoder!,
-                                    control: control, collective: collective, check: checked)
+                                    control: control, collective: collective, transport: transport, check: checked)
                             }
                             selectedTokens += outcome.selected
                             finalDecision = outcome.finalDecision
@@ -221,7 +229,24 @@ func runMiMoLayerStageGenerationRequest(loaded: LoadedMiMoLayerStage, plan: MiMo
                 var primary: Error = error
                 do { try nativeError.check() } catch { primary = error }
                 session?.prefixCapture?.discard()
-                control.cancel(); transport.retire()
+                control.cancel()
+                decoder?.release(); decoder = nil
+                if let stopped = primary as? QwenStageAborted {
+                    // D6: both ranks stopped at the same message, so no record
+                    // is owed or in flight. Free this request's state, then
+                    // confirm both retirements; nothing of it is stored.
+                    do {
+                        try session?.cancel()
+                        Stream.gpu.synchronize(); Memory.clearCache()
+                        try nativeError.check()
+                        try transport.exchangeAbortRetirement(stopped, check: checked)
+                    } catch {
+                        transport.retire()
+                        throw ProbeError("Generation stop (\(stopped)) could not retire both ranks (\(error))")
+                    }
+                    throw stopped
+                }
+                transport.retire()
                 do { try session?.cancel() }
                 catch { throw ProbeError("Generation failed (\(primary)); local retirement also failed (\(error))") }
                 throw primary

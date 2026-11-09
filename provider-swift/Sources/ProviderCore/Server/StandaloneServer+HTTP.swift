@@ -240,10 +240,7 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
 
     /// This Mac's answer to a request its memory can't hold now: each request
     /// reserves its prompt and its output when it starts.
-    static var memoryRefusalMessage: String {
-        "This Mac's memory can't hold this request right now. Lower max_tokens or shorten the prompt "
-            + "(or send less media), or retry when this Mac's other requests finish."
-    }
+    static var memoryRefusalMessage: String { LocalMemoryRefusal.message }
 
     /// Headers returned on a `OPTIONS` preflight. Matches the
     /// `defaultHeaders()` helper from the deleted
@@ -287,6 +284,14 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
             body: .init(byteBuffer: ByteBuffer(bytes: data))
         )
     }
+}
+
+/// The local API's words for a request this Mac's memory, or a pair's, can't
+/// hold now: the memory 503's message, and a pair's typed stream error's
+/// (`DistributedHTTPEventStream.memoryFailureFrame`).
+enum LocalMemoryRefusal {
+    static let message = "This Mac's memory can't hold this request right now. Lower max_tokens or shorten the prompt "
+        + "(or send less media), or retry when this Mac's other requests finish."
 }
 
 /// OpenAI-style `{"error": {...}}` envelope used by ``CORSResponder``

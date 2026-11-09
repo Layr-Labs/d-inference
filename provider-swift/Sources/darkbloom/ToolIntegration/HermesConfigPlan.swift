@@ -62,6 +62,12 @@ enum HermesConfigPlan {
         }
     }
 
+    /// Where the provider's block in a config's `bytes` points: its `api`, and the file its `key_cmd` reads
+    /// (`/bin/cat <file>`, as `plan` writes it); nil when the file has no such block or can't be read.
+    static func pointer(in bytes: Data, provider: IntegrationProvider) -> ToolPointer? {
+        (try? HermesEdit(text: String(decoding: bytes, as: UTF8.self), provider: provider))?.pointer()
+    }
+
     private static func floorReason(_ models: [IntegrationModel]) -> String {
         guard let largest = models.compactMap(\.contextLength).max() else {
             return """
@@ -229,7 +235,6 @@ private struct HermesEdit {
         indent: String, endpoint: IntegrationEndpoint, models: [IntegrationModel], main: String
     ) -> [String] {
         let (one, two, three) = (indent + unit, indent + unit + unit, indent + unit + unit + unit)
-        let keyCommand = "/bin/cat " + ToolIntegration.shellQuoted(endpoint.keyFile.path, onlyIfNeeded: true)
         // Hermes sends no output cap to a custom endpoint, and Darkbloom's default is 4096 tokens; the cap must suit
         // every model Hermes can switch to on this provider.
         let maxTokens = models.map { $0.outputLimit ?? min(IntegrationModels.defaultOutputCap, ($0.contextLength ?? 0) / 4) }
@@ -239,7 +244,7 @@ private struct HermesEdit {
             one + "name: " + Self.quoted(provider.name),
             one + "api: " + Self.quoted(endpoint.baseURL),
             one + "transport: " + Self.quoted("chat_completions"),
-            one + "key_cmd: " + Self.quoted(keyCommand),
+            one + "key_cmd: " + Self.quoted(Self.keyCommand(reading: endpoint.keyFile)),
             one + "default_model: " + Self.quoted(main),
             one + "extra_body:",
             two + "max_tokens: \(maxTokens)",
@@ -256,14 +261,9 @@ private struct HermesEdit {
     /// What Darkbloom's provider block says of each model now, by model ID: its context and vision, with the block's
     /// output cap. A block it can't read holds nothing.
     func modelEntries() -> [String: IntegrationModel.Entry] {
-        guard let providers, providers.value.isEmpty,
-              let mine = (try? children(of: providers))?.first(where: { $0.key == provider.id }),
-              let fields = try? children(of: mine) else { return [:] }
-        func value(_ key: String, in entries: [YAMLEntry]) -> String? {
-            entries.first { $0.key == key }.flatMap { Self.scalar($0.value) }
-        }
+        guard let fields = providerFields() else { return [:] }
         let cap = fields.first { $0.key == "extra_body" }.flatMap { try? children(of: $0) }
-            .flatMap { value("max_tokens", in: $0) }.flatMap { Int($0) }
+            .flatMap { Self.value("max_tokens", in: $0) }.flatMap { Int($0) }
         guard let models = fields.first(where: { $0.key == "models" }), let listed = try? children(of: models) else {
             return [:]
         }
@@ -271,11 +271,51 @@ private struct HermesEdit {
         for model in listed {
             let values = (try? children(of: model)) ?? []
             entries[model.key] = IntegrationModel.Entry(
-                contextLength: value("context_length", in: values).flatMap { Int($0) }, outputLimit: cap,
-                imageInput: value("supports_vision", in: values)?.lowercased() == "true")
+                contextLength: Self.value("context_length", in: values).flatMap { Int($0) }, outputLimit: cap,
+                imageInput: Self.value("supports_vision", in: values)?.lowercased() == "true")
         }
         return entries
     }
+
+    /// Where Darkbloom's provider block points (`HermesConfigPlan.pointer`); nil without one it can read.
+    func pointer() -> ToolPointer? {
+        guard let fields = providerFields() else { return nil }
+        return ToolPointer(baseURL: Self.value("api", in: fields),
+                           keyFile: Self.value("key_cmd", in: fields).flatMap(Self.keyFile(readBy:)))
+    }
+
+    /// The fields of Darkbloom's provider block; nil without one it can read.
+    private func providerFields() -> [YAMLEntry]? {
+        guard let providers, providers.value.isEmpty,
+              let mine = (try? children(of: providers))?.first(where: { $0.key == provider.id }) else { return nil }
+        return try? children(of: mine)
+    }
+
+    /// `key`'s scalar value among `entries`.
+    private static func value(_ key: String, in entries: [YAMLEntry]) -> String? {
+        entries.first { $0.key == key }.flatMap { scalar($0.value) }
+    }
+
+    // MARK: - The key command
+
+    /// The `key_cmd` Hermes runs for Darkbloom's key: `/bin/cat` and the key file's path as one shell word.
+    static func keyCommand(reading keyFile: URL) -> String {
+        keyReader + ToolIntegration.shellQuoted(keyFile.path, onlyIfNeeded: true)
+    }
+
+    /// The key file a `keyCommand` reads; nil for any other command, or a path that isn't absolute.
+    static func keyFile(readBy command: String) -> URL? {
+        guard command.hasPrefix(keyReader) else { return nil }
+        var path = String(command.dropFirst(keyReader.count))
+        // `ToolIntegration.shellQuoted`'s single quotes, each quote inside as '\''.
+        if path.hasPrefix("'") {
+            guard path.count >= 2, path.hasSuffix("'") else { return nil }
+            path = String(path.dropFirst().dropLast()).replacingOccurrences(of: "'\\''", with: "'")
+        }
+        return path.hasPrefix("/") ? URL(fileURLWithPath: path) : nil
+    }
+
+    private static let keyReader = "/bin/cat "
 
     // MARK: - Result
 

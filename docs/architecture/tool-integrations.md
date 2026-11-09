@@ -24,6 +24,9 @@ flowchart LR
   L["local.json<br/>(live port)"] --> E["IntegrationEndpoint.live<br/>base URL + key file"]
   K["local_token /<br/>cluster_local_token"] --> E
   E --> M["IntegrationModels.fetch<br/>GET /v1/models"]
+  S["the API process's<br/>daemon state"] --> X["ModelLoadWait<br/>(one live line)"]
+  M --> X
+  X -->|"loaded: read again"| M
   C["catalog<br/>(names, limits)"] --> R["IntegrationModels.resolve"]
   M --> R
   R --> P{"planner"}
@@ -59,6 +62,25 @@ flowchart LR
    (65,536 for a 262,144-token window whose catalog row says 32,768). A pair's leader lists the pair's own context and
    output instead (what its mode serves; it refuses a larger `max_tokens`), so a GLM pair's output stays 65,536.
    <!-- pending R-FULL: the writers give each model its full output length (the cap is a quarter of the context); only the Mac's memory bounds a request; OpenRouter is separate. -->
+   Before the models are resolved, `ModelLoadWait.run` waits while the local API's own process still loads a model
+   this Mac lists for its start: this Mac's `/v1/models` gives a model's own limits (its window, above) only once it
+   is loaded, and the router may fill the catalog's in until then (on one Mac its `input_modalities` are listed loaded
+   or not). `ModelLoads.reported` believes only the daemon state that process wrote (its pid is `local.json`'s):
+   `startupPreloadPendingModels` and `warmModels`; the coordinator-less server (Only me) writes none of them and loads
+   before it listens. Where that state can't tell (there is none, it is another process's or another schema's, or the
+   API is a pair's, whose process preloads nothing or writes no state), nothing is waited for, as before the wait;
+   only a state that keeps naming a model as pending holds the start, for at most the deadline. An answer naming
+   nothing loaded and nothing to load is asked again `settleSeconds` (1 s) later, for a provider whose API answered
+   before it said what it loads. Then the list is read again. The wait draws one `LiveLine` on a terminal (else a
+   start and an end line), takes SIGINT only while it runs (`InterruptWatch`) and ends after `defaultTimeout`
+   (600 s); a timeout, a model that didn't load, or Ctrl-C writes nothing (`ToolIntegrationStep.waitForModels`).
+   Ctrl-C is asked for right after each look, before "nothing loading" can end the wait, and once more as the wait
+   returns, before the list is read again. The wait's `.ready` carries what the process has loaded by its own word
+   (`warmModels`; none from Only me's server or without a state of its own), and the "run again" line names this
+   Mac's models it hasn't (`ToolIntegrationStep.notLoaded`); without that word, those `/v1/models` lists without a
+   context. The word counts because a route that dials out lists the catalog's limits for a model that isn't loaded.
+   The wait is single-Mac for now: a pair's API can't tell (above), and a pair start without a terminal waits for the
+   pair to serve instead (`ClusterPairCommands`).
 3. **OpenCode.** `OpenCodeConfigPlan.plan` reads the file into byte ranges with `JSONCDocument` and replaces only the
    `providers.<id>` value, or appends it in the file's indentation and trailing-comma style. The block has the base
    URL, `apiKey: "{file:<key file>}"` (under `~` in the home directory), `compatibility.maxTokensField: "max_tokens"`
@@ -76,6 +98,15 @@ flowchart LR
    them (so oMLX's `omlx launch hermes`, and Hermes up to v0.17), are part of that key.
 5. **Write.** `ToolConfigWriter.apply` makes the planned edit (invariants below) and returns the file, the backup
    and the exact undo command.
+6. **Follow the address.** A start without a tool flag that serves a local API reads each tool's provider block back
+   (`OpenCodeConfigPlan.pointer`, `HermesConfigPlan.pointer`: the base URL, and the file `{file:}` or
+   `key_cmd: /bin/cat <file>` reads) and compares it with that API: its base URL and `LocalEndpoint.tokenPath()`, or
+   another file holding the same key. `ToolAddress.notice` says in one line which tools miss it and names
+   `darkbloom --opencode` / `--hermes`; it never writes (`Start.noteToolsPointingElsewhere`). Addresses compare by
+   `ToolAddress.sameAddress`: scheme, host and port in any case (the scheme's own port when none is given) and the
+   path without one `/` at its end; `localhost`, `127.0.0.1` and `::1` are one host, and so is this Mac's Bonjour name
+   (`Local.localHostName()`, with `.local`) for an API on every address (`ToolAddress.thisMacsNames`). Single-Mac
+   only: a paired Mac's start starts the pair and doesn't compare.
 
 ## Invariants
 
@@ -112,6 +143,7 @@ flowchart LR
 | The endpoint lists no chat models | `.refused` (kind `.models`) for both tools |
 | A dangling symlink, a folder or a file over 4 MiB (`maximumFileBytes = 4 << 20`) | `.refused` (kind `.file`) |
 | Another Darkbloom run holds the lock for `lockTimeout = 10` s | `ToolConfigWriterError` |
+| A model is still loading after `ModelLoadWait.defaultTimeout`, didn't load, or Ctrl-C stops the wait | Nothing is written; one line names the next step |
 
 ## Hermes versions and limits
 
@@ -131,6 +163,8 @@ flowchart LR
 | OpenCode | `provider-swift/Sources/darkbloom/ToolIntegration/OpenCodeConfigPlan.swift`, `provider-swift/Sources/darkbloom/ToolIntegration/JSONCDocument.swift` |
 | Hermes | `provider-swift/Sources/darkbloom/ToolIntegration/HermesConfigPlan.swift` (`HermesConfigPlan.plan`, `previousEndpointKeys`), `provider-swift/Sources/darkbloom/ToolIntegration/HermesVersion.swift` (`HermesVersion.keyCommandWarning`) |
 | Plans and refusals | `provider-swift/Sources/darkbloom/ToolIntegration/ToolConfigPlan.swift` |
+| The wait for this Mac's models | `provider-swift/Sources/darkbloom/ToolIntegration/ModelLoadWait.swift` (`ModelLoadWait`, `ModelLoads`, `LiveLine`, `InterruptWatch`) |
+| Where a tool points, after a start without a tool flag | `provider-swift/Sources/darkbloom/ToolIntegration/ToolAddress.swift` (`ToolAddress.notice`), `provider-swift/Sources/darkbloom/Start/StartCommand+Tools.swift` (`Start.noteToolsPointingElsewhere`) |
 | Safe edits | `provider-swift/Sources/darkbloom/ToolIntegration/ToolConfigWriter.swift` (`ToolConfigWriter.apply`) |
 | Tests | `provider-swift/Tests/DarkbloomCLITests/ToolIntegration/`, `scripts/integrations/opencode-smoke.sh` |
 

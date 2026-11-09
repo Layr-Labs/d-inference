@@ -1,18 +1,6 @@
 /* Darkbloom Sandbox. Panels, cells and type follow This Mac's overview (overview.module.css);
    the approval card follows the account link panel. */
 
-.srOnly {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  margin: -1px;
-  padding: 0;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
-  white-space: nowrap;
-  border: 0;
-}
-
 .note {
   display: flex;
   flex-wrap: wrap;

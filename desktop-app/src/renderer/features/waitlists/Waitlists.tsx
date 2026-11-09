@@ -4,7 +4,7 @@ import type { BackendState } from '../../useBackend';
 import { Header, Notice } from '../../components/UI';
 import { WaitlistCard, WaitlistCardSkeleton } from './WaitlistCard';
 import { NeedsNewerCLI, WaitlistProblem } from './WaitlistProblem';
-import { useWaitlists } from './useWaitlist';
+import { problemKind, useWaitlists } from './useWaitlist';
 import { featurePages, printableLines } from './words';
 import styles from './waitlists.module.css';
 
@@ -56,13 +56,7 @@ export function Waitlists({
     body = (
       <WaitlistProblem
         backend={backend}
-        kind={
-          list.data?.code === 'login'
-            ? 'login'
-            : list.data?.code === 'none' || (list.data && !list.data.error)
-              ? 'none'
-              : 'unavailable'
-        }
+        kind={problemKind(list.data)}
         error={list.data?.error ?? list.error}
         retry={list.refresh}
         onSettings={() => navigate('settings')}

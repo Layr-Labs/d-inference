@@ -1,13 +1,14 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { ArrowUpRight } from 'lucide-react';
 import type { Operation, Route } from '../../../shared/contracts';
 import type { SandboxStatus } from '../../../shared/sandbox';
 import type { BackendState } from '../../useBackend';
 import { api } from '../../useBackend';
+import { supports } from '../../capabilities';
 import { Button, Header } from '../../components/UI';
+import { useDismissedOperation } from '../../components/operations/useOperationDismissal';
 import { useResource } from '../../data/useResource';
 import { WaitlistCard } from '../waitlists/WaitlistCard';
-import { supportsWaitlists } from '../waitlists/useWaitlist';
 import { NotInstalled } from './NotInstalled';
 import { SandboxStatusCard } from './SandboxStatusCard';
 import { SetupProgress } from './SetupProgress';
@@ -28,7 +29,7 @@ export function Sandboxes({
   backend: BackendState;
   navigate: (route: Route) => void;
 }) {
-  if (!backend.state?.capabilities?.includes('sandbox'))
+  if (!supports(backend.state, 'sandbox'))
     return (
       <>
         <Header title={title} description={description} />
@@ -50,7 +51,8 @@ function SandboxPage({ backend }: { backend: BackendState }) {
   const state = backend.state!;
   const sandbox = useResource<SandboxStatus>('sandbox', { refreshKey: state.resource_revision });
   useRereadAfterActions(state.operations, sandbox.refresh);
-  const { dismissed, dismiss } = useDismissedSetup();
+  // An ended setup stays on the page until it is dismissed, also across launches.
+  const { dismissed, dismiss } = useDismissedOperation('darkbloom.sandbox.dismissed-setup');
   const setup = latestSetup(state.operations);
   const status = sandbox.data;
   const installed = isInstalled(status);
@@ -75,7 +77,7 @@ function SandboxPage({ backend }: { backend: BackendState }) {
       running && enrolling.includes(status.state) ? null : (
         <>
           <SandboxStatusCard status={status} backend={backend} refresh={sandbox.refresh} />
-          {status.state === 'waitlisted' && supportsWaitlists(backend) && (
+          {status.state === 'waitlisted' && supports(state, 'waitlists') && (
             <WaitlistCard feature="sandbox" backend={backend} compact />
           )}
         </>
@@ -145,26 +147,4 @@ function justSetUp(operations: Operation[]) {
     latest.state === 'succeeded' &&
     Date.now() / 1000 - (latest.finished_at ?? 0) < 30
   );
-}
-
-const dismissedKey = 'darkbloom.sandbox.dismissed-setup';
-
-// An ended setup stays on the page until it is dismissed, also across launches.
-function useDismissedSetup() {
-  const [dismissed, setDismissed] = useState(() => {
-    try {
-      return localStorage.getItem(dismissedKey) ?? '';
-    } catch {
-      return '';
-    }
-  });
-  const dismiss = useCallback((id: string) => {
-    try {
-      localStorage.setItem(dismissedKey, id);
-    } catch {
-      // This window still remembers it when storage is unavailable.
-    }
-    setDismissed(id);
-  }, []);
-  return { dismissed, dismiss };
 }

@@ -96,7 +96,7 @@ export function ChatList({
                       {live && (
                         <>
                           <PixelLoader size={10} />
-                          <span className={styles.srOnly}>, answering</span>
+                          <span className="sr-only">, answering</span>
                         </>
                       )}
                     </button>

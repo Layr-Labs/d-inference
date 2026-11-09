@@ -3,6 +3,7 @@ import { useState } from 'react';
 import type { Route } from '../../../shared/contracts';
 import type { ClusterStatus } from '../../../shared/cluster';
 import type { BackendState } from '../../useBackend';
+import { supports } from '../../capabilities';
 import { Button, Header, Notice } from '../../components/UI';
 import { useResource } from '../../data/useResource';
 import { NotPaired } from './NotPaired';
@@ -23,9 +24,8 @@ export function Cluster({
   navigate: (route: Route) => void;
 }) {
   const state = backend.state!;
-  const capabilities = state.capabilities ?? [];
-  const supported = capabilities.includes('cluster');
-  const guided = supported && capabilities.includes('cluster_session');
+  const supported = supports(state, 'cluster');
+  const guided = supported && supports(state, 'cluster_session');
   const status = useResource<ClusterStatus>('cluster', {
     enabled: supported,
     refreshKey: state.resource_revision,

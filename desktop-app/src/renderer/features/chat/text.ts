@@ -2,6 +2,7 @@
 // and a little inline styling in replies (no Markdown dependency), titles, date groups, the
 // launch line, and how a model is named.
 import type { ChatModel } from '../../../shared/chat';
+import { effectiveRoute, type LocalServing } from '../../../shared/localServing';
 
 // A run of a reply: prose, or a fenced code block. `start` is the offset of its first character
 // in the reply, so streamed text can settle by its distance from the end.
@@ -179,14 +180,11 @@ export function launchIndex(storage: Pick<Storage, 'getItem' | 'setItem'> | unde
   return index % taglines.length;
 }
 
-// Whether this Mac's local API keeps every request here: its saved route, else the CLI's default
-// (`this-mac`, or `my-macs` once an account key is saved). Unknown on a runtime that doesn't say.
-export function staysOnThisMac(
-  local: { route?: string | null; route_key?: boolean } | null | undefined,
-) {
-  if (!local) return false;
-  return (local.route ?? (local.route_key ? 'my-macs' : 'this-mac')) === 'this-mac';
-}
+// Whether this Mac's local API keeps every request here: the route that applies is `this-mac`.
+// Unknown on a runtime that doesn't say.
+export const staysOnThisMac = (
+  local: Partial<Pick<LocalServing, 'route' | 'route_key'>> | null | undefined,
+) => !!local && effectiveRoute(local) === 'this-mac';
 
 export const launchTagline = (index: number, private_: boolean) =>
   private_ ? taglines[index % taglines.length] : anywhereTaglines[index % anywhereTaglines.length];

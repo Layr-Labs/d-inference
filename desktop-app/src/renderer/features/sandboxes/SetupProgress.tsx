@@ -4,6 +4,7 @@ import type { Operation } from '../../../shared/contracts';
 import type { BackendState } from '../../useBackend';
 import { api } from '../../useBackend';
 import { Button } from '../../components/UI';
+import { useClipboard } from '../../components/useClipboard';
 import {
   outputLines,
   pendingApproval,
@@ -76,7 +77,7 @@ export function SetupProgress({
       </header>
       {!running && outcome?.detail && <p className={styles.outcome}>{outcome.detail}</p>}
       {/* The stage and the approval are announced as they change, not each percent. */}
-      <p className={styles.srOnly} aria-live="polite">
+      <p className="sr-only" aria-live="polite">
         {approval ? 'Approve this Mac in your browser.' : current?.title.replace(/ \d+%$/, '')}
       </p>
       {(steps.length > 0 || approval || (running && progress.waitlisted)) && (
@@ -113,7 +114,7 @@ function Steps({ steps }: { steps: SetupStep[] }) {
         >
           <StepMark state={step.state} />
           <span>
-            <span className={styles.srOnly}>{stateWords[step.state]}: </span>
+            <span className="sr-only">{stateWords[step.state]}: </span>
             {step.title}
           </span>
           {step.progress !== undefined && (
@@ -147,16 +148,8 @@ function Approval({
   codeFilled: boolean;
   background: boolean;
 }) {
-  const [copied, setCopied] = useState('');
+  const { copied, copy } = useClipboard();
   const [failed, setFailed] = useState(false);
-  const copy = async (text: string) => {
-    try {
-      await api?.copy(text);
-      setCopied(text);
-    } catch {
-      setCopied('');
-    }
-  };
   const open = async () => {
     try {
       await api?.openApproval(url);

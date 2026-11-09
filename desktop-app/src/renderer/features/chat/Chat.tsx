@@ -9,7 +9,7 @@ import {
   type ReactNode,
 } from 'react';
 import { Gauge, PanelLeft, SquarePen } from 'lucide-react';
-import type { Route } from '../../../shared/contracts';
+import type { Route, Snapshot } from '../../../shared/contracts';
 import { isReasoningEffort, type ChatModels, type ReasoningEffort } from '../../../shared/chat';
 import { api, type BackendState } from '../../useBackend';
 import { useReducedMotion } from '../../useReducedMotion';
@@ -58,37 +58,11 @@ function useNarrow() {
 
 const notAnswering = 'This Mac’s local API didn’t answer.';
 
-// Chat with the models this Mac serves on its local API, as the iPhone app chats: the mark and
-// the launch line when empty, then the conversation, typography first.
-export function Chat({
-  backend,
-  navigate,
-  store = chatStore(),
-}: {
-  backend: BackendState;
-  navigate: (route: Route) => void;
-  store?: ChatStore;
-}) {
-  const state = useChatState(store);
-  const reduced = useReducedMotion();
-  const narrow = useNarrow();
-  const storage = windowStorage();
-  const field = useRef<HTMLTextAreaElement>(null);
-  const listID = `chats${useId().replace(/[^\w-]/g, '')}`;
+// The models this Mac's local API lists, read again whenever it starts, stops or changes what it
+// serves, and on `load()`; an earlier read that answers late is dropped.
+function useChatModels(endpoint: Snapshot['endpoint']) {
   const [models, setModels] = useState<ChatModels | undefined>(lastModels);
   const [loading, setLoading] = useState(true);
-  const [chosen, setChosen] = useState(() => readPref(storage, 'model'));
-  const [effort, setEffort] = useState<ReasoningEffort | null>(() => {
-    const saved = readPref(storage, 'effort');
-    return isReasoningEffort(saved) ? saved : null;
-  });
-  const [speed, setSpeed] = useState(() => readPref(storage, 'speed') === '1');
-  // The list stays beside the chat on a wide window (remembered), and lies over it when narrow.
-  const [listOpen, setListOpen] = useState(() => readPref(storage, 'list') !== '0');
-  const [overlay, setOverlay] = useState(false);
-  const open = narrow ? overlay : listOpen;
-
-  const endpoint = backend.state?.endpoint;
   const endpointKey = endpoint
     ? [endpoint.base_url, endpoint.authenticated, ...endpoint.models].join(' ')
     : '';
@@ -109,10 +83,40 @@ export function Chat({
     setModels(result);
     setLoading(false);
   }, []);
-  // Again whenever this Mac's local API starts, stops or changes what it serves.
   useEffect(() => {
     void load();
   }, [load, endpointKey]);
+  return { models, loading, load };
+}
+
+// Chat with the models this Mac serves on its local API, as the iPhone app chats: the mark and
+// the launch line when empty, then the conversation, typography first.
+export function Chat({
+  backend,
+  navigate,
+  store = chatStore(),
+}: {
+  backend: BackendState;
+  navigate: (route: Route) => void;
+  store?: ChatStore;
+}) {
+  const state = useChatState(store);
+  const reduced = useReducedMotion();
+  const narrow = useNarrow();
+  const storage = windowStorage();
+  const field = useRef<HTMLTextAreaElement>(null);
+  const listID = `chats${useId().replace(/[^\w-]/g, '')}`;
+  const { models, loading, load } = useChatModels(backend.state?.endpoint);
+  const [chosen, setChosen] = useState(() => readPref(storage, 'model'));
+  const [effort, setEffort] = useState<ReasoningEffort | null>(() => {
+    const saved = readPref(storage, 'effort');
+    return isReasoningEffort(saved) ? saved : null;
+  });
+  const [speed, setSpeed] = useState(() => readPref(storage, 'speed') === '1');
+  // The list stays beside the chat on a wide window (remembered), and lies over it when narrow.
+  const [listOpen, setListOpen] = useState(() => readPref(storage, 'list') !== '0');
+  const [overlay, setOverlay] = useState(false);
+  const open = narrow ? overlay : listOpen;
 
   const available = useMemo(() => models?.models ?? [], [models]);
   const conversation = state.conversations.find((item) => item.id === state.current);
@@ -229,7 +233,7 @@ export function Chat({
 
   return (
     <div className={styles.chat} data-list={open ? 'open' : 'closed'}>
-      <h1 className={styles.srOnly}>Chat</h1>
+      <h1 className="sr-only">Chat</h1>
       <ChatList
         id={listID}
         conversations={state.conversations}

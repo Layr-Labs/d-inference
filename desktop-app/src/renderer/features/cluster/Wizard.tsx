@@ -201,7 +201,7 @@ function StepDot({ state }: { state: 'done' | 'failed' | 'current' }) {
         {state === 'failed' && <X size={11} strokeWidth={2.4} />}
       </span>
       {state !== 'current' && (
-        <span className={styles.srOnly}>{state === 'failed' ? 'Failed: ' : 'Done: '}</span>
+        <span className="sr-only">{state === 'failed' ? 'Failed: ' : 'Done: '}</span>
       )}
     </>
   );

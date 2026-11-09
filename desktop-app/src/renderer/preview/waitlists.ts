@@ -1,4 +1,5 @@
 import type { WaitlistEntry, Waitlists } from '../../shared/waitlists';
+import { day } from '../features/waitlists/words';
 import { previewOperation, previewParam, recordOperation, type FeaturePreview } from './types';
 
 // Development preview of feature waitlists. `&waitlist-cluster=`, `&waitlist-sandbox=` and
@@ -84,18 +85,15 @@ function list(): Waitlists {
   }
 }
 
-const day = (iso: string) =>
-  new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
-
 // What `darkbloom waitlist <name>` prints after a join, as the operation's message.
 function joined(entry: WaitlistEntry) {
   switch (entry.status) {
     case 'waitlisted':
-      return `You’re on the ${entry.title} waitlist: #${entry.position} in line (joined ${day(entry.requested_at!)}).`;
+      return `You’re on the ${entry.title} waitlist: #${entry.position} in line (joined ${day(entry.requested_at)}).`;
     case 'approved':
-      return `Your account is approved for ${entry.title} since ${day(entry.decided_at!)}.`;
+      return `Your account is approved for ${entry.title} since ${day(entry.decided_at)}.`;
     default:
-      return `Darkbloom revoked your account’s access to ${entry.title} on ${day(entry.decided_at!)}.`;
+      return `Darkbloom revoked your account’s access to ${entry.title} on ${day(entry.decided_at)}.`;
   }
 }
 

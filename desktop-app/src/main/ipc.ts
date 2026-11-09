@@ -73,18 +73,16 @@ export function registerIPC(options: {
   const clusterSession = new ClusterSessionRelay(backend, (session) =>
     window.send('cluster:session', session),
   );
-  window.webContents?.on('did-start-navigation', (details) => {
-    if (details.isMainFrame && !details.isSameDocument) {
-      hardware.reset();
-      chat.reset();
-      clusterSession.reset();
-    }
-  });
-  window.webContents?.on('render-process-gone', () => {
+  // A reloaded or crashed renderer can't release its streams or stop its answers.
+  const resetRelays = () => {
     hardware.reset();
     chat.reset();
     clusterSession.reset();
+  };
+  window.webContents?.on('did-start-navigation', (details) => {
+    if (details.isMainFrame && !details.isSameDocument) resetRelays();
   });
+  window.webContents?.on('render-process-gone', resetRelays);
   handle('hardware:watch', () => {
     if (!smokeTest) hardware.acquire();
   });

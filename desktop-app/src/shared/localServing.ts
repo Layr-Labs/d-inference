@@ -5,6 +5,13 @@
 // `[local] mode`: `local` (Only me), `network` (Darkbloom network, no local API) or `both` (Both,
 // me first: a local API beside Darkbloom).
 export type ServingMode = 'local' | 'network' | 'both';
+// How a `start` asks for each way to serve (`--local`, `--network`, `--local-endpoint`). The start
+// saves it as `[local] mode` once it goes ahead, and later starts serve it.
+export const startFlags: Record<ServingMode, { local?: true; network?: true; endpoint?: true }> = {
+  local: { local: true },
+  network: { network: true },
+  both: { endpoint: true },
+};
 // `[local] route`: where your requests go when this Mac's local API can't take them.
 export type RequestRoute = 'this-mac' | 'my-macs' | 'my-macs-first';
 // `darkbloom --opencode` / `--hermes`.
@@ -30,6 +37,12 @@ export interface LocalServing {
   // Darkbloom is paused for you right now (Both, me first), until about this time (Unix s).
   paused_until?: number | null;
 }
+
+// The route that applies: the saved one, else only my Macs once an account key is saved, else
+// this Mac only (`LocalSettings.resolvedRoute`).
+export const effectiveRoute = (
+  local: Partial<Pick<LocalServing, 'route' | 'route_key'>>,
+): RequestRoute => local.route ?? (local.route_key ? 'my-macs' : 'this-mac');
 
 export type LocalServingAction =
   // `darkbloom route this-mac|my-macs|my-macs-first`: saves `[local] route`.

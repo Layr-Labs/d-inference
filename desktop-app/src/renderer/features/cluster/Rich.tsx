@@ -1,6 +1,5 @@
 import { Check, Copy } from 'lucide-react';
-import { useEffect, useState } from 'react';
-import { api } from '../../useBackend';
+import { useClipboard } from '../../components/useClipboard';
 import styles from './cluster.module.css';
 
 // The CLI's sentences as they are, with each `command` in <code>.
@@ -50,12 +49,8 @@ export function CopyCommand({
   label?: string;
   bare?: boolean;
 }) {
-  const [copied, setCopied] = useState(false);
-  useEffect(() => {
-    if (!copied) return;
-    const timer = setTimeout(() => setCopied(false), 1600);
-    return () => clearTimeout(timer);
-  }, [copied]);
+  const { copied, copy } = useClipboard(1600);
+  const done = copied === command;
   return (
     <span className={bare ? styles.commandBare : styles.command}>
       {label && <span className={styles.commandLabel}>{label}</span>}
@@ -63,16 +58,11 @@ export function CopyCommand({
       <button
         type="button"
         className={styles.copy}
-        aria-label={copied ? `Copied ${command}` : `Copy ${command}`}
-        title={copied ? 'Copied' : 'Copy'}
-        onClick={() =>
-          void api
-            ?.copy(command)
-            .then(() => setCopied(true))
-            .catch(() => setCopied(false))
-        }
+        aria-label={done ? `Copied ${command}` : `Copy ${command}`}
+        title={done ? 'Copied' : 'Copy'}
+        onClick={() => void copy(command)}
       >
-        {copied ? <Check size={13} /> : <Copy size={13} />}
+        {done ? <Check size={13} /> : <Copy size={13} />}
       </button>
     </span>
   );

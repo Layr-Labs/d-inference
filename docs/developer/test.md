@@ -2636,14 +2636,14 @@ record declares tensor parallel's rounds, and the status then reports the head
 as decoding. `InstalledBatchLanesCheck.swift` launches a real child
 with the fixed owner arguments and checks its exact environment, supported
 lane widths, out-of-range rejection, malformed-override parity even with an
-eight-lane family default, admission/owner/native parity, unsupported
+eight-lane saved width, admission/owner/native parity, unsupported
 mode and image gates, and both member ranks. No model, GPU or real service is
-started. The checks preserve the singleton and GLM tensor-parallel defaults
+started. The checks preserve the singleton default
 and the serial-prefill Gemma 4 pipeline's default lanes
 (`DistributedInstalledPlan.gemma4PipelineBatchLanes`), which reach the rank,
 while a Gemma setup saved with the one-chunk lookahead keeps one lane, and a
-Gemma 4 tensor-parallel setup's saved width (2, 4, 6 or 8) reaches its owner
-and its rank;
+Gemma 4 or GLM tensor-parallel setup's saved width (2, 4, 6 or 8) reaches its
+owner and its rank, while one saved without a width serves one request at a time;
 `DistributedInstalledLanesTests` covers the same rules for every adapter and
 schedule. Actual multi-lane output, encrypted transport and retirement still require
 qualification on both Macs. The same real-child checks pass canonical local

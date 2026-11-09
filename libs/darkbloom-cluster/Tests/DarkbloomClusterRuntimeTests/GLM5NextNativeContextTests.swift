@@ -210,4 +210,50 @@ struct GLM5NextNativeContextTests {
         // profile's longest is READY's capacity.
         #expect(charges[2] < charges[5])
     }
+
+    /// What each lane after the first adds to a saved width (`GLM5NextTensorParallelRequestCharge.laneBytes`): the lane's
+    /// state, its pages three times (the pages, and twice them for the page pool's growth copy) and a sliced frame's held
+    /// arrays; contiguous histories have no pages. LOAD reserves one request's whole charge and that for each lane after
+    /// the first (`reservedBytes`), at the rank's own geometry, the figure the placement family states.
+    @Test func aSavedWidthIsReservedAtLoadAsThePlanPricesIt() throws {
+        let c = try GLM5NextMetadataTestFixture(layers: 8).configuration.textConfig
+        let identity: (Int) throws -> Int = { $0 }
+        let depth = GLM5NextTensorParallelResidentRuntime.mtpDepth, history = 256 + depth + 1
+        let paged = GLM5NextTensorParallelRequestCharge.PagedHistory(configuration: c,
+            pageTokens: GLM5NextTensorParallelResidentRuntime.dsaPageTokens)
+        let lane = try GLM5NextTensorParallelRequestCharge.laneBytes(configuration: c, contextTokens: 256,
+            speculativeDepth: depth, pagedHistory: paged, allocationBound: identity)
+        let state = try GLM5NextTensorParallelResidentRuntime.laneStateBytes(configuration: c, contextTokens: 256,
+            speculative: true, historyTokens: history, pagedHistories: true, allocationBound: identity)
+        let dsa = c.layerTypes.filter { $0 == .deepseekSparseAttention }.count
+        let pages = (dsa + 1) * paged.pages(tokens: history) * paged.pageBytes
+        let frontier = try GLM5NextTensorParallelResidentRuntime.prefillFrontierBytes(configuration: c)
+        #expect(lane == state + 3 * pages + frontier && pages > 0 && frontier > 0)
+        let contiguous = try GLM5NextTensorParallelRequestCharge.laneBytes(configuration: c, contextTokens: 256,
+            speculativeDepth: depth, pagedHistory: nil, allocationBound: identity)
+        #expect(contiguous == (try GLM5NextTensorParallelResidentRuntime.laneStateBytes(configuration: c, contextTokens: 256,
+            speculative: true, historyTokens: history, allocationBound: identity)) + frontier)
+
+        let fixture = try GLM5NextResidentRuntimeTests.Fixture()
+        let inventory = fixture.artifact.metadata.inventory
+        let envelopes = try (0...1).map {
+            try GLM5NextResidentRuntimeTests.Fixture.resources(descriptor: fixture.descriptor, inventory: inventory, rank: $0)
+        }
+        // A rank's own charge, its pages at FP32 rows as LOAD prices them before the pool exists.
+        var priced = try GLM5NextTensorParallelRequestCharge(descriptor: fixture.descriptor, envelopes: envelopes,
+            fixedBytes: 1000, speculativeDepth: depth, maximumBufferBytes: Int.max, allocationBound: identity)
+        let geometry = fixture.descriptor.configuration.textConfig
+        priced.pagedHistory = .init(configuration: geometry, pageTokens: GLM5NextTensorParallelResidentRuntime.dsaPageTokens)
+        let charge = priced, context = fixture.descriptor.memoryProfile.maximumContextTokens
+        let perLane = try charge.laneBytes(contextTokens: context)
+        #expect(perLane == (try GLM5NextTensorParallelRequestCharge.laneBytes(configuration: geometry, contextTokens: context,
+            speculativeDepth: depth, pagedHistory: charge.pagedHistory, allocationBound: identity)))
+        for lanes in 1...QwenBatchWire.maximumLanes {
+            #expect(try charge.reservedBytes(contextTokens: context, lanes: lanes)
+                == charge.bytes(contextTokens: context) + (lanes - 1) * perLane, "\(lanes) lanes")
+        }
+        for lanes in [0, QwenBatchWire.maximumLanes + 1] {
+            #expect(throws: ProbeError.self) { _ = try charge.reservedBytes(contextTokens: context, lanes: lanes) }
+        }
+    }
 }

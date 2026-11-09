@@ -429,9 +429,13 @@ public final class GLM5NextTensorParallelResidentRuntime {
                 probe = measured
                 log(QwenTensorParallelLinkProbe.line(measured, rank: collective.rank))
                 phases.mark("probe")
-                // The live gate admits this rank's shard and the whole request charge before any read.
+                // The live gate admits this rank's shard and the whole request charge before any read, and for a
+                // saved width (`lanes`) each further lane's charge beside it (`GLM5NextTensorParallelRequestCharge.reservedBytes`):
+                // the figure its placement priced (`ClusterTensorParallelFamilyPlan.laneBytes`).
+                let laneReserve = try requestCharge.reservedBytes(contextTokens: descriptor.memoryProfile.maximumContextTokens,
+                    lanes: lanes.lanes)
                 try requireLiveMemory(bytes: try QwenLongPrefillCheckedBytes.sum([shardBytes, mtpBytes, visionBytes,
-                    requestReserve, bufferCacheBytes]))
+                    laneReserve, bufferCacheBytes]))
                 phases.mark("gate")
                 // `prepared` (the product): the owner parsed the metadata on the
                 // metadata thread and checks every file's SHA-256 in `prepare`, in
@@ -533,7 +537,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
                     + " mtp_depth=\(Self.mtpDepth) mtp_policy=\(decodePolicy.depth.rawValue)"
                     + " mtp_load_lanes=\(decodePolicy.depth == .load ? decodePolicy.loadLanes : 0)"
                     + " width_invariant=\(decodePolicy.widthInvariant ? 1 : 0)"
-                    + " mtp_bytes=\(mtpBytes) prefix_budget=\(prefixBudget) lanes=\(lanes.lanes)"
+                    + " mtp_bytes=\(mtpBytes) prefix_budget=\(prefixBudget) lanes=\(lanes.lanes) reserved=\(laneReserve)"
                     + " vision_bytes=\(visionBytes) media=\(mediaContract)"
                     + " paged_kv=\(pagedKV ? Self.dsaPageTokens : 0)"
                     + " page_bytes=\(loaded?.dsaPagePool?.pageBytes ?? 0) frame_timing=\(frameTiming)")

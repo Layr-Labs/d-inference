@@ -132,6 +132,49 @@ struct GLM5NextTensorParallelRequestCharge {
         return try Bytes.sum(terms)
     }
 
+    /// What each lane after the first adds to a saved width's reservation at
+    /// `contextTokens` (the memory plan's request): an upper bound on what the
+    /// lane gate (`reserveLane`) asks of the k-th lane held at once beside the
+    /// others, for every k up to the width, beyond one request's charge:
+    /// - the lane's named state (`GLM5NextTensorParallelResidentRuntime.laneStateBytes`);
+    /// - with paged histories, its pages, and twice them again for the page
+    ///   pool's growth: the slabs grow by at least half and are copied
+    ///   (`GLM5NextDSAPagePool.growthBytes`), so while a lane's pages are added
+    ///   the old and the new slabs coexist;
+    /// - a sliced prompt frame's held arrays (`prefillFrontierBytes`), which the
+    ///   gate charges once beside running lanes (here once a lane, so never short).
+    /// The placement family states it (`ClusterTensorParallelFamilyPlan.laneBytes`)
+    /// with pages at FP32 rows, as LOAD prices them before the pool exists.
+    static func laneBytes(configuration c: GLM5NextTextConfiguration, contextTokens: Int, speculativeDepth: Int,
+                          pagedHistory: PagedHistory?, allocationBound: (Int) throws -> Int) throws -> Int {
+        typealias Bytes = QwenLongPrefillCheckedBytes
+        let history = contextTokens + speculativeDepth + 1
+        let state = try GLM5NextTensorParallelResidentRuntime.laneStateBytes(configuration: c, contextTokens: contextTokens,
+            speculative: speculativeDepth > 0, historyTokens: history, pagedHistories: pagedHistory != nil,
+            allocationBound: allocationBound)
+        let histories = c.layerTypes.filter { $0 == .deepseekSparseAttention }.count + (speculativeDepth > 0 ? 1 : 0)
+        let pages = try pagedHistory.map { try Bytes.product([histories, $0.pages(tokens: history), $0.pageBytes]) } ?? 0
+        return try Bytes.sum([state, Bytes.product([pages, 3]),
+            GLM5NextTensorParallelResidentRuntime.prefillFrontierBytes(configuration: c)])
+    }
+
+    /// `laneBytes` at this rank's own geometry: its histories (paged or not) and depth.
+    func laneBytes(contextTokens: Int) throws -> Int {
+        try Self.laneBytes(configuration: descriptor.configuration.textConfig, contextTokens: contextTokens,
+            speculativeDepth: speculativeDepth, pagedHistory: pagedHistory, allocationBound: allocationBound)
+    }
+
+    /// What a rank's LOAD gate reserves beside its shard for `lanes` requests at
+    /// once at `contextTokens`: one request's whole charge and `laneBytes` for
+    /// each lane after the first.
+    func reservedBytes(contextTokens: Int, lanes: Int) throws -> Int {
+        guard (1...QwenBatchWire.maximumLanes).contains(lanes) else {
+            throw ProbeError("GLM tensor-parallel lanes are 1...\(QwenBatchWire.maximumLanes)")
+        }
+        return try QwenLongPrefillCheckedBytes.sum([bytes(contextTokens: contextTokens),
+            QwenLongPrefillCheckedBytes.product([lanes == 1 ? 0 : laneBytes(contextTokens: contextTokens), lanes - 1])])
+    }
+
     /// The DSA indexer's FP32 prefill scores of one bulk frame (both
     /// micro-batches, `bulkPrefillChunkTokens` rows) over a context's pools
     /// (`index_kpool` tokens each), beyond those at `referenceContextTokens`,

@@ -335,12 +335,12 @@ struct DistributedInstalledPlan: Sendable {
     ///   (`ClusterPlacementTensorWidth`); that saved width or an explicit
     ///   local diagnostic selects the native 2...8 lane owner.
     /// - Other tensor parallel (`tensorParallelLaneAdapters`): GLM
-    ///   (`GLM5NextTensorParallelResidentRuntime`'s lane loop) at
-    ///   `tensorParallelBatchLanes`; Gemma 4 (`Gemma4TensorParallelResidentRuntime`'s
-    ///   batch driver) at the width guided placement saved, the widest both
-    ///   Macs admit now under its lane charge (`ClusterPlacementTensorWidth`),
-    ///   and one for a setup saved without a width. Each lane keeps its request's
-    ///   own arithmetic, so a request's tokens are those it gets alone. A
+    ///   (`GLM5NextTensorParallelResidentRuntime`'s lane loop) and Gemma 4
+    ///   (`Gemma4TensorParallelResidentRuntime`'s batch driver) at the width
+    ///   guided placement saved, the widest both Macs admit now under the
+    ///   family's lane charge (`ClusterPlacementTensorWidth`), and one for a
+    ///   setup saved without a width. Each lane keeps its request's own
+    ///   arithmetic, so a request's tokens are those it gets alone. A GLM
     ///   lane carrying images or video runs the same tensor-parallel media
     ///   path as a request alone (`GLM5NextTensorParallelMedia`), so the
     ///   capability's image candidate does not change the lanes.
@@ -389,18 +389,12 @@ struct DistributedInstalledPlan: Sendable {
     /// lane, so the width adds no load-time allocation. Four is one of the
     /// priced pipeline widths (2, 4 and 8), kept until the pair measures more.
     static let gemma4PipelineBatchLanes = 4
-    /// Concurrent requests GLM tensor parallel serves by default: the
-    /// protocol's lane cap (`ClusterWorkerLaneSession`, `ClusterWorkerPair`).
-    /// Its lanes run one request's unit after another (each bitwise alone), so
-    /// more lanes cost no request its own tokens; the host's memory gate
-    /// admits each lane (a lane it cannot hold is refused alone, retryably).
-    static let tensorParallelBatchLanes = 8
     /// The adapters whose tensor-parallel workers serve batch lanes, and how
-    /// many without a saved width. Gemma 4 serves the width its setup saved
+    /// many without a saved width. Each serves the width its setup saved
     /// (`ClusterPlacementTensorWidth`, which its LOAD reserves), and one
     /// request at a time without one, unless the owner's switch names 2...8.
     static let tensorParallelLaneAdapters: [ClusterRuntimeAdapter: Int] = [
-        .glm5NextLayerStage: tensorParallelBatchLanes,
+        .glm5NextLayerStage: defaultBatchLanes,
         .gemma4LayerStage: defaultBatchLanes,
     ]
 

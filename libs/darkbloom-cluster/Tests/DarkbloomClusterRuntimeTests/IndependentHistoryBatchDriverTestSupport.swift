@@ -54,7 +54,7 @@ final class HistoryBatchTestPair<Reservation: HistoryBatchTestReservation>: @unc
     private var errors: [String] = []
     private(set) var maxDecodeWidth = 0
     /// Each rank's live memory check at a step boundary (D6): true when it refuses.
-    var memoryRefused: [() -> Bool] = [{ false }, { false }]
+    var memoryRefused: [() throws -> Bool] = [{ false }, { false }]
     init(width: Int) throws {
         self.width = width
         executors = (0...1).map { HistoryBatchTestExecutor<Reservation>(pair: self, rank: $0) }

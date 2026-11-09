@@ -5579,7 +5579,14 @@ GPT-OSS's) checks each running request against its rank's live memory gate, at
 most every 250 ms:
 kept prompt prefixes give way first, then the request's own prefix capture
 (`QwenResidentRequestExecution.checkRunning`; the gate is
-`QwenResidentRequestAllowance.requireContinuing`, GLM's `requireResources`).
+`QwenResidentRequestAllowance.requireContinuing`, GLM's `requireResources`,
+MiMo's and GPT-OSS's `requireLive`).
+Every running gate, in every mode, asks power and thermal state first (a
+refusal there is untyped and fails the worker), then judges memory only inside
+its typed block, so every memory refusal is a `QwenResidentMemoryRefusal`.
+None asks the load's entry check (`QwenDenseStageLoadResources.requireInitial`)
+first: its floor is one the gate asks on its own sample anyway, and its refusal
+is untyped, so it would end the worker before the typed check ran.
 Before 0.10.11 a refusal that remained was thrown from the request's `check`,
 which also runs inside every transfer. The refusing rank left the data plane
 mid-exchange and its worker exited (the worker coordinator's failure path), the
@@ -5710,10 +5717,15 @@ lanes, MTP and assistant lanes, for every family that serves in it. Native
 errors, protocol violations, a peer that doesn't confirm within the progress
 limit, the deadline and power or thermal refusals fail the worker as before.
 
-**The dev memory fault.** Dev and DevNet builds can make a rank's live gate
-refuse the next request from its Nth check on (`ClusterMemoryFault`, the file
-`~/.darkbloom-dev/cluster-setup/memory-fault`, read and deleted when a request
-starts, never in a production install), through each gate's own throw; see
+**The dev memory fault.** A dev or DevNet install can make a rank's memory
+read as taken from the next request's Nth gate pass on (`ClusterMemoryFault`,
+the file `~/.darkbloom-dev/cluster-setup/memory-fault`, read and deleted when a
+request starts, never read in a production install). It changes only the
+sample the host memory gate judges (`QwenDenseStageLoadWatch.admits`): no free
+page and no file cache, as once another process has taken them. The policy
+refuses that sample with its own sentence, so the first check that judges it
+throws, as on a real Mac: a running gate's typed check, or a check outside it,
+which would end the worker on a real Mac too. See
 [the test guide](../developer/test.md#a-memory-refusal-on-a-real-pair-dev-memory-fault).
 
 **Builds.** A pair forms only between Macs on the same build

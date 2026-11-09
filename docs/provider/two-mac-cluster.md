@@ -1185,10 +1185,12 @@ Mac's words: "This Mac's memory can't hold this request right now ..."), and
 other requests keep running. The pipeline modes of every model with a native
 context (GLM-5.3-Flash, Gemma 4 26B, and the 27B where its policy allows them)
 keep the 32,768 + 32,768-token request. Their leader refuses a longer request
-itself, before either rank is asked. A Mac whose memory refuses a request while
-it runs, in either mode, ends that request alone: the client gets the same 503
-(or, once a stream has started, an error chunk with `code`
-`request_exceeds_node_budget` and the same words), and the pair keeps serving. See
+itself, before either rank is asked: a pipeline is planned and proven at that
+request, and serving the whole context there waits for its own proof on real
+pairs. In every mode, a request one Mac's memory refuses while it runs ends
+alone: the client gets the same 503 (or, once a stream has started, an error
+chunk with `code` `request_exceeds_node_budget` and the same words), and the
+pair keeps serving. See
 [the 27B's native context](../architecture/inference.md#qwen27-tensor-parallel-native-context)
 and [Gemma 4's](../architecture/inference.md#gemma-4-native-context-on-a-pair).
 

@@ -106,7 +106,13 @@ private final class AdmissionCompletion: @unchecked Sendable {
         let pair = try ClusterWorkerPair(workers: endpoints, startupDeadline: DispatchTime.now().uptimeNanoseconds + 3_000_000_000)
         let lease = try pair.reserve(requestID: UUID(), reservation: reservation(output: 3, until: end))
         let seen = AbortRecorder()
-        try lease.start { event in seen.record(event); return true }
+        // The provider's engine cancels a lease on every failure, this one too:
+        // that cancel crosses the abort and must change nothing.
+        try lease.start { event in
+            seen.record(event)
+            if case .aborted = event { lease.cancel(reason: .callerCancelled) }
+            return true
+        }
         await lease.waitUntilRetired(); lease.releaseResources()
         try requirePartial(seen.events == ["token 9", "aborted memory 1"], "The consumer saw \(seen.events)")
         try requirePartial(pair.readiness != nil && pair.admissionState.isValid, "An aborted request ended the pair")

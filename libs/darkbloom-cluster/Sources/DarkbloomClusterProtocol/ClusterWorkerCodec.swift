@@ -115,6 +115,7 @@ public enum ClusterWorkerCodec {
         case .requestTelemetry(let t):
             value["kind"] = "requestTelemetry"; value["telemetry"] = telemetry(t)
         case .finished(let reason): value["kind"] = "finished"; value["reason"] = reason.rawValue
+        case .aborted(let abort): value["kind"] = "aborted"; value["reason"] = abort.reason.rawValue; value["rank"] = abort.rank
         case .failed(let reason): value["kind"] = "failed"; value["reason"] = reason.rawValue
         case .retired(let outcome): value["kind"] = "retired"; value["outcome"] = outcome.rawValue
         case .unavailable(let reason): value["kind"] = "unavailable"; value["reason"] = reason.rawValue
@@ -158,6 +159,7 @@ public enum ClusterWorkerCodec {
         case "promptCache": event = .promptCache(reusedTokens: try r.int("reusedTokens"), storedFrontiers: try r.ints("storedFrontiers"))
         case "requestTelemetry": event = .requestTelemetry(try telemetry(r.object("telemetry")))
         case "finished": event = .finished(try r.enumeration("reason"))
+        case "aborted": event = .aborted(.init(reason: try r.enumeration("reason"), rank: try r.int("rank")))
         case "failed": event = .failed(try r.enumeration("reason"))
         case "retired": event = .retired(try r.enumeration("outcome"))
         case "unavailable": event = .unavailable(try r.enumeration("reason"))

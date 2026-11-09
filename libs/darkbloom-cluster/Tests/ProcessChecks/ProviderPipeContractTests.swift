@@ -98,7 +98,12 @@ private struct Failure: Error {}
         for attempt in 0..<2 {
             let lease = try owner.reserve(request, identity: ready.identity, profileID: profile.id, capacityLimit: 1800)
             let events = Received()
-            try lease.start { events.accept($0) }
+            // As the engine does on every failure: the lease is cancelled at its terminal.
+            try lease.start { event in
+                let more = events.accept(event)
+                if case .finished(.error) = event { lease.cancel() }
+                return more
+            }
             Task { await lease.waitUntilRetired(); events.retire() }
             let limit = ContinuousClock.now.advanced(by: .seconds(5))
             while !events.isRetired && ContinuousClock.now < limit { try await Task.sleep(for: .milliseconds(10)) }

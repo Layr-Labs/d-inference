@@ -237,12 +237,28 @@ final class WorkerCoordinator: @unchecked Sendable {
                     // Publication and the owner's answer apart: a runtime may read
                     // the answer after submitting its next step (the token credit
                     // still holds: the session refuses a token before the answer).
-                    let reason = try runtime.start(id, tokens: ClusterCommittedTokenChannel(
-                        publishToken: { ordinal, token, frontier, logprobs in
-                            try self.publish(.committedToken(ordinal: ordinal, tokenID: token, committedTokens: frontier,
-                                logprobs: logprobs), requestID: id)
-                        },
-                        answer: { try self.nextDecision() == .proceed }))
+                    let reason: ClusterWorkerFinishReason
+                    do {
+                        reason = try runtime.start(id, tokens: ClusterCommittedTokenChannel(
+                            publishToken: { ordinal, token, frontier, logprobs in
+                                try self.publish(.committedToken(ordinal: ordinal, tokenID: token, committedTokens: frontier,
+                                    logprobs: logprobs), requestID: id)
+                            },
+                            answer: { try self.nextDecision() == .proceed }))
+                    } catch let ended as ClusterResidentRequestAbort where runtime.readiness != nil {
+                        // D6: both ranks ended this request alone (a rank's memory
+                        // refused it while it ran) and retired it. The worker keeps
+                        // its model and serves the next request: no forced exit.
+                        FileHandle.standardError.write(Data(("darkbloom-cluster-worker: request aborted on both ranks"
+                            + " (rank \(ended.abort.rank)'s \(ended.abort.reason.rawValue)); the session keeps serving:"
+                            + " \(ended.message.prefix(400))\n").utf8))
+                        try publish(.aborted(ended.abort), requestID: id)
+                        try publish(.retired(.aborted), requestID: id)
+                        condition.lock(); keepWarmArmed = true; retiredAt = DispatchTime.now().uptimeNanoseconds
+                        lastActivity = DispatchTime.now().uptimeNanoseconds
+                        condition.unlock()
+                        continue
+                    }
                     // The native facade returns only after bilateral retirement
                     // and after its request/autorelease scope has ended.
                     let cache = runtime.lastPromptCache
@@ -711,6 +727,16 @@ final class WorkerCoordinator: @unchecked Sendable {
         try publishLocked(.retired(.clean), requestID: id, now: now)
     }
 
+    /// D6: both ranks ended a started lane alone for a rank's memory, and its
+    /// native state retired. A lane its owner cancelled meanwhile retires as
+    /// any lane that left after its cancel.
+    fileprivate func publishLaneAborted(_ id: UUID, abort: ClusterWorkerAbort) throws {
+        condition.lock(); defer { condition.unlock() }
+        if laneSession?.isCancelled(id) == true { try leaveLaneLocked(id); return }
+        try publishLocked(.aborted(abort), requestID: id)
+        try publishLocked(.retired(.aborted), requestID: id)
+    }
+
     /// A started lane left the loop without finishing.
     fileprivate func publishLaneLeft(_ id: UUID) throws {
         condition.lock(); defer { condition.unlock() }
@@ -776,4 +802,7 @@ private final class LaneHost: QwenBatchServingHost {
     func pollDecision(_ requestID: UUID) throws -> Bool? { try coordinator.pollLaneDecision(requestID) }
     func awaitDecision(_ requestID: UUID) throws -> Bool { try coordinator.awaitLaneDecision(requestID) }
     func publishLeft(requestID: UUID) throws { try coordinator.publishLaneLeft(requestID) }
+    func publishAborted(requestID: UUID, abort: ClusterWorkerAbort) throws {
+        try coordinator.publishLaneAborted(requestID, abort: abort)
+    }
 }

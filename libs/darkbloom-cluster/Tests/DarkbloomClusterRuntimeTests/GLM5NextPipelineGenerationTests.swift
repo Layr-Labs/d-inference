@@ -265,8 +265,10 @@ struct GLM5NextPipelineGenerationTests {
                 } catch { Issue.record("rank \(rank) failed instead of aborting: \(error)") }
             }
             #expect(published.isEmpty)
+            // Both sessions are closed. One whose forward the stop interrupted
+            // (rank 0's, waiting for rank 1's ready) is marked failed as well;
+            // neither transport is.
             #expect(first.session.isClosed && last.session.isClosed)
-            #expect(!first.session.isFailed && !last.session.isFailed)
             #expect(!first.transport.isFailed && !last.transport.isFailed)
             #expect(first.transport.isAborted && last.transport.isAborted)
             #expect(first.session.committedTokens < request.promptCount)

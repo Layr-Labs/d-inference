@@ -42,8 +42,10 @@ extension QwenResidentRequestAllowance {
                 throw ProbeError("Resident request exceeds the allocator limit")
             }
         } catch {
-            guard contextTokens > 0 else { throw error }
-            throw ProbeError("A running request of \(contextTokens) context tokens (prompt plus output) on this rank: \(error)")
+            // Typed, so a stage's stop latch ends this request alone (D6).
+            guard contextTokens > 0 else { throw QwenResidentMemoryRefusal(message: String(describing: error)) }
+            throw QwenResidentMemoryRefusal(message:
+                "A running request of \(contextTokens) context tokens (prompt plus output) on this rank: \(error)")
         }
     }
 }

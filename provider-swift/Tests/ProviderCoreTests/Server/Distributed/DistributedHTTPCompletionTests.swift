@@ -206,7 +206,8 @@ struct DistributedHTTPCompletionTests {
                     let error = try #require(try jsonObject(data)["error"] as? [String: Any])
                     #expect(error["message"] as? String == words)
                 }
-                #expect(lease.releaseCount == 1 && lease.cancelCount == 0)
+                // Released once the pair retired it, as every request is.
+                #expect(try await httpDeliveryEventually { lease.releaseCount == 1 })
             }
             let request = try fixture.request(stream: true)
             let client = Task { try await URLSession.shared.data(for: request) }

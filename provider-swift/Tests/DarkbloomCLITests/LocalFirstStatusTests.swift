@@ -235,21 +235,22 @@ struct LocalFirstStatusTests {
             "Serving: Darkbloom and you, me first — the local API isn't up: it couldn't listen on 100.64.0.9:8001 (Can't "
                 + "assign requested address); `darkbloom restart --solo` tries again",
         ])
-        // The pair's API: a restart of the pair takes a free port.
+        // The pair's API takes this Mac's saved port as it is, as every local API here does: free it, or save another.
         #expect(line(.pair, free: 8002) == [
-            "Serving: Darkbloom and you, me first — the local API isn't up: port 8001 is in use (`darkbloom restart` "
-                + "starts the pair's API on a free port)",
+            "Serving: Darkbloom and you, me first — the local API isn't up: port 8001 is in use (free it, or set "
+                + "`[local] port = 8002` in provider.toml, then `darkbloom restart`)",
         ])
         #expect(line(.pair, free: nil) == [
-            "Serving: Darkbloom and you, me first — the local API isn't up: port 8001 is in use (free it, then "
-                + "`darkbloom restart`)",
+            "Serving: Darkbloom and you, me first — the local API isn't up: port 8001 is in use (free it, or set another "
+                + "`[local] port` in provider.toml, then `darkbloom restart`)",
         ])
         #expect(line(.pair, free: 8002, failure: F.addressGone) == [
             "Serving: Darkbloom and you, me first — the local API isn't up: it couldn't listen on 100.64.0.9:8001 (Can't "
                 + "assign requested address); `darkbloom restart` tries again",
         ])
         #expect(Local.notUpLine(F.portInUse, nextFree: 8002, server: .pair)
-            == "The local API isn't up: port 8001 is in use (`darkbloom restart` starts the pair's API on a free port).")
+            == "The local API isn't up: port 8001 is in use (free it, or set `[local] port = 8002` in provider.toml, then "
+                + "`darkbloom restart`).")
         #expect(Local.notUpLine(F.portInUse, nextFree: 8002, server: .singleMac(paired: true))
             == "The local API isn't up: port 8001 is in use (`darkbloom start --solo --port 8002`).")
 

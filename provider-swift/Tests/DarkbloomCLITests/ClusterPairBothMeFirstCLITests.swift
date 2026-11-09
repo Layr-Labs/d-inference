@@ -44,9 +44,10 @@ struct ClusterPairBothMeFirstCLITests {
         let leader = Start.clusterMemberLocalEndpoint(requested: true, hostsPairSlot: true, bind: "0.0.0.0", port: 8001,
             local: LocalSettings(route: .thisMac), settingsFile: Self.configFile,
             coordinatorURL: "wss://example.invalid/ws/provider",
-            loadToken: { "dk-cluster-fixture" }, say: { said.append($0) })
+            loadToken: { "dk-own-fixture" }, loadPairToken: { "dk-cluster-fixture" }, say: { said.append($0) })
         #expect(leader?.host == "0.0.0.0" && leader?.port == 8001)
-        #expect(leader?.authToken == "dk-cluster-fixture", "always the pair's key, as `cluster local`")
+        #expect(leader?.authToken == "dk-own-fixture", "this Mac's own key, which its tools read")
+        #expect(leader?.pairToken == "dk-cluster-fixture", "and the pair's, which every other Mac's relay passes on")
         #expect(leader?.router != nil, "the local router rides along: this Mac's engine is the pair")
         #expect(leader?.router?.takesCoordinatorWork == true, "Both: the pair takes Darkbloom work beside the API")
         #expect(said.isEmpty)
@@ -55,19 +56,20 @@ struct ClusterPairBothMeFirstCLITests {
         var loads = 0
         let other = Start.clusterMemberLocalEndpoint(requested: true, hostsPairSlot: false, bind: "0.0.0.0", port: 8001,
             local: nil, settingsFile: Self.configFile, coordinatorURL: nil,
-            loadToken: { loads += 1; return "dk" }, say: { said.append($0) })
+            loadToken: { loads += 1; return "dk" }, loadPairToken: { loads += 1; return "dk" }, say: { said.append($0) })
         #expect(other == nil && loads == 0 && said.count == 1)
 
         // Today's member, without --local-endpoint: nothing at all.
         let today = Start.clusterMemberLocalEndpoint(requested: false, hostsPairSlot: true, bind: "127.0.0.1", port: 8000,
             local: nil, settingsFile: Self.configFile, coordinatorURL: nil,
-            loadToken: { loads += 1; return "dk" }, say: { said.append($0) })
+            loadToken: { loads += 1; return "dk" }, loadPairToken: { loads += 1; return "dk" }, say: { said.append($0) })
         #expect(today == nil && loads == 0 && said.count == 1)
 
         // A key that can't be read: Darkbloom keeps serving, and the API never opens without its key.
         let keyless = Start.clusterMemberLocalEndpoint(requested: true, hostsPairSlot: true, bind: "0.0.0.0", port: 8001,
             local: nil, settingsFile: Self.configFile, coordinatorURL: nil,
-            loadToken: { throw CocoaError(.fileWriteNoPermission) }, say: { said.append($0) })
+            loadToken: { throw CocoaError(.fileWriteNoPermission) }, loadPairToken: { "dk-cluster-fixture" },
+            say: { said.append($0) })
         #expect(keyless == nil && said.count == 2)
     }
 
@@ -130,12 +132,15 @@ struct ClusterPairBothMeFirstCLITests {
                                       state: started ? .serving : .stopped)
         pair.lines = started ? ["Serving Qwen 3.8 27B through Darkbloom on both Macs (tensor parallel)."] : ["Stopped; last model Qwen 3.8 27B."]
         pair.localAPI = ClusterPairLocalAPI(runsRankZero: true, listening: listening, meFirst: meFirst)
+        pair.localAPIBind = listening?.host ?? "0.0.0.0"
         return pair
     }
 
-    /// The Mac that follows: its part doesn't run rank 0, so the pair's API and its pause are on the other Mac.
+    /// The Mac that follows: its part doesn't run rank 0, so the pair's API and its pause are on the other Mac. Here that
+    /// API is kept on the leading Mac (loopback), so this Mac says where to look; on every address it names its own
+    /// relay instead (`ClusterPairMemberRelayCLITests`, and `aMemberSaysThePause`).
     private func member() -> ClusterPairSummary {
-        var pair = leader()
+        var pair = leader(listening: .init(host: "127.0.0.1", port: 8001))
         pair.role = .member
         pair.localAPI = ClusterPairLocalAPI(runsRankZero: false, listening: nil, meFirst: nil)
         return pair
@@ -147,7 +152,7 @@ struct ClusterPairBothMeFirstCLITests {
             "Pair: you first — Darkbloom paused for 10 minutes (your last request 1 minute ago; back in about 1 minute if you "
                 + "stay idle)",
             "Local API: http://127.0.0.1:8001/v1 on this Mac, and port 8001 of its LAN or tailnet address (`\(ClusterPairSummary.cli) local` shows the key)",
-            "Members: the other Mac (Apple M3 Ultra, 256 GB) is part of the pair; it runs no local API",
+            "Members: the other Mac (Apple M3 Ultra, 256 GB) is part of the pair; its own port passes your requests to this API",
         ])
         let open = leader(listening: ClusterPairLocalAPI.Address(host: "127.0.0.1", port: 8002), meFirst: F.open).localAPILines(now: F.now)
         #expect(open == [
@@ -165,12 +170,14 @@ struct ClusterPairBothMeFirstCLITests {
             == "Pair: Darkbloom and you, shared — Darkbloom keeps serving while you use the pair (me first is off)")
         #expect(leader(listening: nil, meFirst: nil).localAPILines(now: F.now) == [
             "Local API: not listening yet; it starts with this Mac's part of the pair",
-            "Members: the other Mac (Apple M3 Ultra, 256 GB) is part of the pair; it runs no local API",
+            "Members: the other Mac (Apple M3 Ultra, 256 GB) is part of the pair; its own port passes your requests to this API",
         ])
         // A stopped pair says how it serves, and nothing about an API that doesn't run.
         #expect(leader(started: false).localAPILines(now: F.now).isEmpty)
     }
 
+    /// The pair's API kept on its own Mac (here no bind is saved): no other Mac relays it, so a member says where it is.
+    /// On every address, a member names its own relay (`ClusterPairMemberRelayCLITests`).
     @Test func aMemberSaysItIsPartOfThePairAndWhereTheAPIIs() {
         // An older leading Mac's status, which doesn't say whether the pair is paused: where to look.
         #expect(member().localAPILines(now: F.now) == [
@@ -195,6 +202,16 @@ struct ClusterPairBothMeFirstCLITests {
             + "`\(ClusterPairSummary.cli) local` there shows its address and key"), "\(lines)")
         #expect(!lines.joined(separator: "\n").contains("whether Darkbloom is paused"), "\(lines)")
         #expect(lines.filter { $0.contains("Pair: ") }.count == 1, "\(lines)")
+        // With the pair's API on every address, this Mac names its own relay's address under the same pause.
+        var relaying = member()
+        relaying.lines = Self.pausedStatus
+        relaying.localAPIBind = "0.0.0.0"
+        relaying.relaying = .init(host: "0.0.0.0", port: 8003)
+        let relayed = relaying.clusterStatusLines
+        #expect(relayed.contains("  " + Self.pausedStatus[1]), "\(relayed)")
+        #expect(relayed.contains("Local API: http://127.0.0.1:8003/v1 on this Mac, and port 8003 of its LAN or tailnet address "
+            + "(`\(ClusterPairSummary.cli) local` shows the key)"), "\(relayed)")
+        #expect(relayed.filter { $0.contains("Pair: ") }.count == 1, "\(relayed)")
     }
 
     /// The Mac whose part runs rank 0 and leads reads its own status: the pause is said once, there.
@@ -204,7 +221,7 @@ struct ClusterPairBothMeFirstCLITests {
         pair.lines = Self.pausedStatus
         #expect(pair.localAPILines(now: F.now) == [
             "Local API: http://127.0.0.1:8001/v1 on this Mac, and port 8001 of its LAN or tailnet address (`\(ClusterPairSummary.cli) local` shows the key)",
-            "Members: the other Mac (Apple M3 Ultra, 256 GB) is part of the pair; it runs no local API",
+            "Members: the other Mac (Apple M3 Ultra, 256 GB) is part of the pair; its own port passes your requests to this API",
         ])
         let lines = pair.clusterStatusLines
         #expect(lines.filter { $0.contains("Pair: ") } == ["  " + Self.pausedStatus[1]], "\(lines)")
@@ -252,9 +269,12 @@ struct ClusterPairBothMeFirstCLITests {
                 ClusterPairLocalAPI.Address(host: "127.0.0.1", port: 8001), ClusterPairLocalAPI.Address(host: "100.64.0.9", port: 8020), nil]
             for listening in addresses {
                 for rankZero in [true, false] {
-                    var pair = leader(listening: listening, meFirst: snapshot)
-                    pair.localAPI?.runsRankZero = rankZero
-                    lines += pair.localAPILines(now: F.now) + pair.clusterStatusLines + [pair.statusLine, pair.pairSentence]
+                    for relaying in [nil, ClusterPairLocalAPI.Address(host: "0.0.0.0", port: 8001)] {
+                        var pair = leader(listening: listening, meFirst: snapshot)
+                        pair.localAPI?.runsRankZero = rankZero
+                        pair.relaying = rankZero ? nil : relaying
+                        lines += pair.localAPILines(now: F.now) + pair.clusterStatusLines + [pair.statusLine, pair.pairSentence]
+                    }
                 }
             }
         }

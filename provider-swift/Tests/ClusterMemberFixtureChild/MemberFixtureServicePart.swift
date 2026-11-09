@@ -43,6 +43,9 @@ func memberFixtureServicePart(arguments: [String]) throws {
     termination.resume()
     defer { termination.cancel() }
     guard registered.wait(timeout: .now() + 2) == .success else { throw MemberFixtureError.invalid }
+    // The arguments the service started this part with (its `--port`, for one), one a line, written before `ready`.
+    try Data(arguments.joined(separator: "\n").utf8).write(to: directory.appendingPathComponent("\(role)-\(pid).args"),
+                                                          options: .withoutOverwriting)
     // The heartbeat file the service told this part to beat into (written before `ready`, so a test sees both).
     if let health = ProcessInfo.processInfo.environment["DARKBLOOM_CLUSTER_MEMBER_HEALTH_FILE"] {
         try Data(health.utf8).write(to: directory.appendingPathComponent("\(role)-\(pid).health"), options: .withoutOverwriting)

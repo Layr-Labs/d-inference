@@ -255,7 +255,8 @@ struct RouteChoiceCommandTests {
         #expect(both.router?.settingsFile == file)
         let pair = Start.clusterMemberLocalEndpoint(requested: true, hostsPairSlot: true, bind: "0.0.0.0", port: 8001,
                                                     local: nil, settingsFile: file, coordinatorURL: nil,
-                                                    loadToken: { "dk-local-fixture" }, say: { _ in })
+                                                    loadToken: { "dk-local-fixture" }, loadPairToken: { "dk-local-pair-fixture" },
+                                                    say: { _ in })
         #expect(pair?.router?.settingsFile == file)
         // `cluster local` loads `[local]` and the coordinator from that file itself, and has today's defaults without it.
         let saved = try makeTempConfig(

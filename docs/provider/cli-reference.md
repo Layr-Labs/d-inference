@@ -240,7 +240,7 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `--port <n>` | `UInt16?` | `[local] port`, else the port this Mac's local API already uses, else the first free port from `8001`; saved the first time | This Mac's local API port, for every local API it serves; a port named here is used and saved ([below](#how-this-mac-serves-one-question)) |
 | `--bind <addr>` | `String?` | `[local] bind`, else `127.0.0.1` | Local server bind address |
 | `--no-auth` | flag | `false` | Disable the local bearer-token check |
-| `--cluster-member` | flag | `false` | Register a control-only cluster member from the saved setup, in the foreground ([coordinator-paired member](../reference/configuration.md#coordinator-paired-member)). With `--local-endpoint --port <p> --bind <address>`, which the cluster service passes for Both, me first, the member that hosts the pair's slot also serves the pair's local API with the pair's key; any other member runs none. Refused with `--no-auth`, `--always-on` or `--supervise` |
+| `--cluster-member` | flag | `false` | Register a control-only cluster member from the saved setup, in the foreground ([coordinator-paired member](../reference/configuration.md#coordinator-paired-member)). With `--local-endpoint --port <p> --bind <address>`, which the cluster service passes for Both, me first, the member that hosts the pair's slot also serves the pair's local API, which takes this Mac's own key and the pair's; any other member runs none (its cluster service passes its own port to that API). Refused with `--no-auth`, `--always-on` or `--supervise` |
 | `--always-on` | flag | `false` | With `--cluster-member`: install the member as the provider LaunchAgent run by the supervisor ([always-on members](./cluster-always-on.md)) |
 | `--supervise` | flag, **hidden** | `false` | With `--cluster-member`: run the supervisor in this process; launchd passes it for `--always-on` |
 | `--distributed` | flag | `false` | With `--local`: serve the saved cluster setup as its rank 0 and register with the coordinator as a control-only member; the cluster service starts it |
@@ -358,9 +358,10 @@ saving. Every choice then serves in the background, with the same model picker
   first keeps serving Darkbloom, and `status` and `local` say why its local API
   isn't up ([`darkbloom status`](#darkbloom-status)). On a Mac in a two-Mac
   cluster, where `start` takes `--port` only with `--solo`, these lines name
-  `darkbloom start --solo --port <n>` for single-Mac serving, and
-  `darkbloom restart` for the pair's own API, whose port the pair picks
-  (`LocalFirstWords.LocalAPIServer`).
+  `darkbloom start --solo --port <n>` for single-Mac serving. The pair's own
+  API takes this Mac's saved port too, never moved, so its lines say to free
+  it or set another `[local] port` in `provider.toml`, then run
+  `darkbloom restart` (`LocalFirstWords.LocalAPIServer`).
 - **Refused at parse (exit 64), before anything runs:** two different modes
   (`--local`, `--network`, `--me-first`/`--local-endpoint`), for example ``
   `--local` and `--me-first` choose different ways to serve. Use one: --local
@@ -414,13 +415,27 @@ They run once, at `start`:
    setting up OpenCode for it.`, then the tools (`Start.runningLocalAPI`). One
    without a key (`--no-auth`) is named instead, and nothing starts (exit 1):
    ``✗ Darkbloom's local API on :8001 has no key (--no-auth); tools need one:
-   start it without --no-auth.``
+   start it without --no-auth.`` This Mac's relay to a pair's API while it
+   answers `503` (the pair's other Mac away) is named too, in `status`'s words,
+   and nothing is set up (exit 1): ``✗ OpenCode wasn't set up on this Mac. Local
+   API: http://127.0.0.1:8003/v1 on this Mac answers 503 for now. … Run
+   `darkbloom --opencode` again once this Mac answers.``
 2. **Otherwise `start` runs as above**, then: `--local` and Only me set the tools
    up beside the server once it is bound; a background start waits up to 30 s
    for its own local API (`Start.waitForLocalAPI`), and says at once when its
-   `local.json` names a key that no key file holds; a paired Mac sets them up
-   for a local API on this Mac after the pair starts, else says that
-   `darkbloom cluster local` serves one. A start that would serve no local API
+   `local.json` names a key that no key file holds; a paired Mac waits up to
+   30 s too, for its local API for the pair (its part's on the Mac that runs
+   it, its relay on every other Mac), and sets the tools up for it with this
+   Mac's own key (`Start.setUpToolsBesidePair`). It says at once when the pair
+   serves only the Darkbloom network (``✗ This pair serves only the Darkbloom
+   network, so OpenCode has no local address to use …``) and, once the wait
+   ends, when the pair's API stays on the other Mac (`--bind` loopback or one
+   address). Where this Mac relays the pair's API and its port can't answer
+   now, it says why at once, in `status`'s words
+   (`ToolIntegrationStep.noMemberAddress`): Darkbloom doesn't have the pair
+   yet, another program holds the port, or the other Mac is away. On a Mac that
+   relays, `Requests: the pair, on its API on the other
+   Mac; never the paid Darkbloom network`. A start that would serve no local API
    (Darkbloom network: no terminal and no saved choice, or the answer 2) is
    refused before anything starts or is saved (exit 64), naming `--me-first`
    and `--local`.
@@ -571,7 +586,14 @@ take (`ClusterPairSummary.appStartLines`):
 
 - another model: ``This Mac serves in a pair: the pair serves <the pair's model>; `darkbloom cluster` changes its model.`` (exit 0), or ``This Mac is in a pair: the pair was asked to start with <the pair's model>, and isn't serving (above); `darkbloom cluster` changes its model.`` (exit 3);
 - a local API (`--local-endpoint`) on a Mac the pair gives none (through
-  Darkbloom only, or the Mac that follows in Both, me first): ``No local API was added on this Mac: a pair's local API comes from how the pair serves (`darkbloom cluster` on the leading Mac changes it).``
+  Darkbloom only, or the Mac that follows when the pair's API is kept on the
+  leading Mac, loopback or one address): ``No local API was added on this Mac: a pair's local API comes from how the pair serves (`darkbloom cluster` on the leading Mac changes it).``
+  With **Only me** or **Both, me first** on every address the Mac that follows
+  has one, its relay (`ClusterPairSummary.givesThisMacALocalAPI`), so that line
+  is never said there. When its relay can't answer, as read once the start is
+  over, the line is `status`'s instead (`ClusterPairSummary.memberAPIDown`): ``Local API: http://127.0.0.1:<port>/v1 on this Mac answers 503 for now. Your pair's other Mac (…) isn't reachable; …``
+  while the other Mac is away, ``Local API: none on this Mac while Darkbloom doesn't have the pair; …``
+  before Darkbloom has the pair, or the line for a port another program holds.
 
 The app's Autopilot enroll and its model refresh (`autopilot`,
 `autopilot_models`) are refused on a paired Mac before any download, in one
@@ -933,7 +955,7 @@ this Mac serves, read from its state and `local.json` (`Status.servingLines`,
 | State | Line |
 |---|---|
 | Darkbloom network | `Serving: Darkbloom network only — this Mac has no local API` |
-| Both, its local API couldn't listen (`DaemonState.localAPIFailure`) | ``Serving: Darkbloom and you, me first — the local API isn't up: port 8001 is in use (`darkbloom start --port 8002`)``; with no port free, ``(free it, or name another with `darkbloom start --port <n>`)``; for another failure, ``it couldn't listen on 100.64.0.9:8001 (Can't assign requested address); `darkbloom restart` tries again``. On a Mac in a two-Mac cluster: ``(`darkbloom start --solo --port 8002`)`` and `` `darkbloom restart --solo` tries again`` for single-Mac serving; for the pair's API, written by the cluster's part, ``(`darkbloom restart` starts the pair's API on a free port)``, or ``(free it, then `darkbloom restart`)`` with no port free (`LocalFirstWords.whyNotUp`) |
+| Both, its local API couldn't listen (`DaemonState.localAPIFailure`) | ``Serving: Darkbloom and you, me first — the local API isn't up: port 8001 is in use (`darkbloom start --port 8002`)``; with no port free, ``(free it, or name another with `darkbloom start --port <n>`)``; for another failure, ``it couldn't listen on 100.64.0.9:8001 (Can't assign requested address); `darkbloom restart` tries again``. On a Mac in a two-Mac cluster: ``(`darkbloom start --solo --port 8002`)`` and `` `darkbloom restart --solo` tries again`` for single-Mac serving; for the pair's API, written by the cluster's part, ``(free it, or set `[local] port = 8002` in provider.toml, then `darkbloom restart`)``, or ``(free it, or set another `[local] port` in provider.toml, then `darkbloom restart`)`` with no port free (`LocalFirstWords.whyNotUp`) |
 | Both, me first, open | `Serving: Darkbloom and you, me first — open to Darkbloom (none of your requests in the last 2 minutes)` |
 | Both, me first, paused | `Serving: you first — Darkbloom paused for 10 minutes (your last request 1 minute ago; back in about 1 minute if you stay idle)`; while your requests run, `(your request is running; back 2 minutes after it ends)`; then, only while some finish, `         2 Darkbloom requests are finishing`. Times are said from now (`MeFirstWords`): `under a minute`, `1 hour 5 minutes`, `back in under a minute`, `back any moment now`; never a clock time, which another Mac or an SSH session would read in a zone it doesn't see |
 | Both, me first off | `Serving: Darkbloom and you, shared — Darkbloom keeps serving while you use this Mac (me first is off)` |
@@ -1019,7 +1041,17 @@ you first) and `start --local` (only you, on this Mac). When the running
 provider's local API couldn't listen (`DaemonState.localAPIFailure`), it says
 why instead: ``The local API isn't up: port 8001 is in use (`darkbloom start
 --port 8002`).`` (`Local.notUpLine`), with the commands `status` names on a Mac
-in a two-Mac cluster.
+in a two-Mac cluster. On a Mac whose port relays a pair's API and has no working
+address now, it prints the `Local API:` line `status` gives there instead
+(`ClusterPairSummary.memberAPIDown`): Darkbloom doesn't have the pair yet, or
+another program holds its port; never the pair's key. With the relay up while
+the pair's other Mac can't be reached, the endpoint's lines are followed by that
+`Local API: … answers 503 for now. …` line. While that port is still starting,
+it says so in `status`'s words, ``Local API: not listening on this Mac yet; it
+starts once the pair's API on the other Mac (…) answers.``, then the pair's key
+as before, under ``The pair's API key (the same on both Macs, and taken on this
+Mac's port once it listens):`` (`ClusterPairSummary.memberAPIStarting`), never
+`No local server running.`
 A server bound to `0.0.0.0` or `::` also prints a `network:` line with this
 Mac's Bonjour (`.local`) URL (`Local.networkURL`). When the running provider
 serves that endpoint, two lines follow `pid:`: `serving:` (how it serves, in
@@ -1274,12 +1306,40 @@ A pair that serves Both, me first says `Serves: through Darkbloom, and on its lo
   part runs rank 0 says it from its own part (`ClusterPairSummary.localAPILines`);
 - before `Next:`, on the Mac whose part runs rank 0, `Local API: http://127.0.0.1:<port>/v1 on this Mac` (with `, and
   port <port> of its LAN or tailnet address` on every interface), never the key (`darkbloom local` shows it), or
-  `Local API: not listening yet` while the part starts, then `Members: the other Mac (…) is part of the pair; it runs
-  no local API`.
-On the other Mac: ``Local API: on the other Mac (…), which runs the pair's API; `darkbloom local` there shows its
-address and key`` (with ``, and `darkbloom status` there whether Darkbloom is paused for you`` when the status didn't
-say it) and `Members: this Mac is part of the pair; it runs no local API`. `--json` is unchanged (`serves` stays
-`darkbloom`; the `Pair:` lines are in `lines`).
+  `Local API: not listening yet` while the part starts, then `Members: the other Mac (…) is part of the pair; its own
+  port passes your requests to this API` while this Mac's API listens on every interface (before it listens, the
+  scope decides); otherwise `…; it runs no local API`, as while Darkbloom doesn't have the pair, when that API
+  answers on this Mac only.
+On the other Mac, with the pair's API on every interface, its own relay (`ClusterPairSummary.relaying`, the
+discovery record its cluster service wrote) on that Mac's own saved port: `Local API: http://127.0.0.1:<port>/v1 on
+this Mac, and port <port> of its LAN or tailnet address`, and `Members: the other Mac (…) runs the pair's API; this
+Mac passes your requests to it, and Darkbloom pauses for them too`. Until it runs, from its cluster service's status:
+- ``Local API: none on this Mac while Darkbloom doesn't have the pair; meanwhile the pair answers only on the other
+  Mac (…) (`darkbloom local` there shows its address and key)`` (`ClusterServiceStatus.relayWaitsForOffer`);
+- ``Local API: port 8001 on this Mac is held by another program, so this Mac doesn't answer for the pair; free it, or
+  set another `[local] port` in provider.toml, then `darkbloom restart` `` (`relayPortHeld`);
+
+  each with `Members: the other Mac (…) runs the pair's API; this Mac is part of the pair`; otherwise
+  `Local API: not listening on this Mac yet; …` with the `Members:` line above. While it runs and the other Mac can't
+  be reached (`ClusterServiceStatus.relayRankZeroAway`: 12 s without an answer over the cable; before any answer since
+  this Mac's cluster service started, two failed status requests in a row), it answers every request a `503`, in words
+  that name the other Mac only to a request with this Mac's key or the pair's (any other gets the local API's own
+  `401`, and a liveness check or a CORS preflight the `503` without names: `ClusterLocalRelay.Caller`). The line says
+  so in the `503`'s words (`ClusterLocalRelay.Refusals`): ``Local API: http://127.0.0.1:8003/v1 on this Mac answers 503 for now. Your pair's
+  other Mac (…) isn't reachable; this Mac relays to it. Requests resume when it's back, or run `darkbloom stop`, then
+  `darkbloom start --solo`, to serve this Mac alone.``, with the same `Members:` line. `darkbloom local` there prints
+  the same `Local API:` line (`ClusterPairSummary.memberAPIDown`), and `start --opencode` says it at once
+  (`ToolIntegrationStep.noMemberAddress`), also beside the running relay.
+With the API on loopback or one address: ``Local API: on the other Mac (…), which runs the pair's API; `darkbloom
+local` there shows its address and key`` (with ``, and `darkbloom status` there whether Darkbloom is paused for you``
+when the status didn't say it) and `Members: this Mac is part of the pair; it runs no local API`. `--json` is unchanged
+(`serves` stays `darkbloom`; the `Pair:` lines are in `lines`).
+
+A pair that serves Only me (`darkbloom cluster local`) on every address gets no `Local API:` line in `status` on a Mac
+that relays it (`darkbloom local` there shows that Mac's own address), except when its port can't answer now. Then it
+gets the line above, in the same words (`ClusterPairSummary.memberAPIDown`): ``Local API: http://127.0.0.1:8003/v1 on
+this Mac answers 503 for now. …`` while the other Mac can't be reached, or the line for a port another program holds.
+`darkbloom local`, `start --opencode` and the app's Start say the same there.
 
 While single-Mac serving runs on either Mac of a started pair, the pair can't start there and it doesn't stop by
 itself. Both Macs read `not_serving` (exit 3), never "keep trying by themselves":
@@ -3368,7 +3428,10 @@ darkbloom local [--json]
 ```
 
 `darkbloom local` reads `~/.darkbloom/local.json`, but only advertises it if the
-recorded server process is still alive.
+recorded server process is still alive. On a Mac of a pair whose local API runs
+on another Mac, that record is this Mac's relay's (written by its cluster
+service): its own address and its own key. Without it, or with the pair's other
+Mac away, it says why, as `darkbloom status` does.
 
 ## `darkbloom route`
 

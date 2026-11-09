@@ -95,7 +95,9 @@ extension ClusterLocalRelay {
         /// rank 0's API takes on that Mac, or a wrong one. This Mac can't tell which.
         case otherKey
         /// No key, where the local API takes none: a CORS preflight (`OPTIONS`), or a liveness check (`GET` or `HEAD` of
-        /// `/`, `/health` or `/v1/health`). A relay without keys knows no caller's, so every caller is this.
+        /// `/`, `/health` or `/v1/health`). The key is read first, so one of these that carries another key in the local
+        /// key format is `otherKey`, whose words name no Mac either. A relay without keys knows no caller's, so every
+        /// caller is this.
         case open
         /// Any other, which the local API answers 401.
         case unknown

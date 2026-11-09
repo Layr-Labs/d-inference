@@ -1303,6 +1303,72 @@ import Foundation
                 && planned.result.tensorParallel?.evidence == .measured)
     }
 
+    /// Gemma 4's pipeline through the guided step, as the setup's pipeline question plans it (the person chose the
+    /// pipeline): the plain pipeline saves the widest of 8, 4 and 2 requests at once that both Macs admit now, each
+    /// lane after the first charged its whole state at the planned request on every rank, and prefills serially (lanes
+    /// read prompts one chunk at a time). Where only one request fits, the plan chosen for one request stands: no
+    /// width, and the one-chunk lookahead. Both Macs must admit the width: the smaller decides.
+    static func gemmaPipelineWidths(description base: [String: Any]) throws {
+        func saved(_ decided: (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?),
+                   _ record: (layout: ClusterModelLayout, capability: ClusterRuntimeCapability, description: ClusterPairDescription))
+            throws -> [ClusterConfiguration] {
+            try decided.setup.map { setup in try setup.configurations.keys.sorted().map {
+                try ClusterConfigurationCodec.decode(setup.configurations[$0]!, capability: record.capability,
+                    capabilitySHA256: record.description.capabilitySHA256)
+            } } ?? []
+        }
+        // Two M5 Ultra 256 GB with the pair's measured link: eight lanes, serial, the plan saying what that costs.
+        let ultras = try indexedUltras(), golden = try gemma(features: gemmaFeatures, description: base)
+        let alone = try aloneSpeed(golden.layout, prefill: 7_000, decode: 90)
+        let wide = try ClusterPlacementFlow.decide(description: golden.description, capability: golden.capability,
+            localMemberID: "mac-one", localProfile: ultras.local, peerProfile: ultras.peer, layout: golden.layout,
+            measurements: [alone], link: ultras.link, chosenMode: .pipeline, environment: [:], benchDebugBuild: false)
+        let ultraSaved = try saved(wide, golden)
+        require("Gemma pipeline width: 2x M5 Ultra 256 GB save eight requests at once with serial prefill, both Macs alike, and the plan says what serial prefill costs a long prompt alone",
+            wide.result.chosen?.mode == .pipeline && wide.result.chosen?.prefillSchedule == .serial && ultraSaved.count == 2
+                && ultraSaved.allSatisfy { $0.batchLanes == 8 && $0.selectedPrefillSchedule == .serial && $0.selectedGenerationMode == .pipeline }
+                && wide.lines.contains("  8 independent histories, charged at the quoted request bound on both Macs. Stage-rate predictions remain single-request estimates; no batch speed is inferred from the lane count.")
+                && wide.lines.contains { $0.hasPrefix("  Lanes read each prompt one chunk at a time (serial prefill)") })
+
+        // One cut only, and a whole-model charge of 4 GiB a request at the planned request, so the width alone moves each
+        // rank's need: by 4 GiB a lane after the first, on both ranks.
+        let lane = 4 * gib
+        let charged = try gemma(features: gemmaFeatures, description: base) { object in
+            object["admittedCuts"] = [15]; object["requestChargeEveryRankBytes"] = lane
+            object["requestChargeEveryRankBytesPerToken"] = nil
+        }
+        func macs(_ free: Int, _ peerFree: Int) throws -> [ClusterPlacementDevice] {
+            [try device("mac-one", physicalGiB: 256, freeGiB: free / gib, prefill: 7_000, decode: 90),
+             try device("mac-two", physicalGiB: 256, freeGiB: peerFree / gib, prefill: 7_000, decode: 90)]
+        }
+        func decide(free: Int, peerFree: Int? = nil) throws -> (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?) {
+            let pair = try macs(free, peerFree ?? free)
+            return try ClusterPlacementFlow.decide(description: charged.description, capability: charged.capability,
+                localMemberID: "mac-one", localProfile: pair[0].profile, peerProfile: pair[1].profile, layout: charged.layout,
+                chosenMode: .pipeline, environment: [:], benchDebugBuild: false)
+        }
+        // One request with serial prefill on these Macs, as the planner prices it: the largest rank's need.
+        var serial = ClusterPlacementPolicy(); serial.modes = [.pipeline]; serial.schedules = [.serial]
+        guard let one = try ClusterPlacementPlanner.plan(devices: macs(200 * gib, 200 * gib), layout: charged.layout,
+                                                         policy: serial).chosen?.ranks.map(\.needBytes).max() else {
+            return require("Gemma pipeline width: one serial request is placed on two 256 GB Macs", false)
+        }
+        func need(_ lanes: Int) -> Int { one + (lanes - 1) * lane }
+        // Free memory half a lane above each width's need, and below the next width's.
+        for (free, expected) in [(200 * gib, 8), (need(4) + lane / 2, 4), (need(2) + lane / 2, 2), (need(1) + lane / 2, nil)] as [(Int, Int?)] {
+            let decided = try decide(free: free), configurations = try saved(decided, charged)
+            let schedule: ClusterPrefillSchedule = expected == nil ? .oneChunkLookahead : .serial
+            let largest = decided.result.chosen?.ranks.map(\.needBytes).max()
+            require("Gemma pipeline width: \(free / gib) GiB free on both Macs saves \(expected.map(String.init) ?? "no width") with \(schedule.rawValue), each lane after the first charged 4 GiB on every rank",
+                decided.result.chosen?.mode == .pipeline && decided.result.chosen?.prefillSchedule == schedule
+                    && (expected.map { largest == need($0) } ?? true) && configurations.count == 2
+                    && configurations.allSatisfy { $0.batchLanes == expected && $0.selectedPrefillSchedule == schedule })
+        }
+        let smaller = try saved(try decide(free: 200 * gib, peerFree: need(4) + lane / 2), charged)
+        require("Gemma pipeline width: both Macs must admit it, so the Mac with less free memory decides (four lanes)",
+            smaller.count == 2 && smaller.allSatisfy { $0.batchLanes == 4 && $0.selectedPrefillSchedule == .serial })
+    }
+
     /// Feature parity's record and refusals: per-mode features cross the capability codec canonically and a record
     /// without them keeps its bytes; a fastest-plan family whose record declares none holds tensor parallel back;
     /// where only tensor parallel fits and it drops a feature, the plan refuses and saves nothing (owner, 2026-11-01),
@@ -1500,6 +1566,7 @@ import Foundation
         try ownerPilot(description: descriptionObject)
         try mimoFastestPlanLines(description: descriptionObject)
         try gemmaEvidenceLines(description: descriptionObject)
+        try gemmaPipelineWidths(description: descriptionObject)
         try featureParity(description: descriptionObject)
         try benchCap(layout: layout, description: description, capability: capability, slowTwo: slowTwo)
         try forcedMode(layout: layout, description: description, capability: capability, slowTwo: slowTwo)

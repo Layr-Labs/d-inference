@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useSyncExternalStore } from 'react';
 import type { WaitlistEntry } from '../../../shared/waitlists';
+import { supports } from '../../capabilities';
 import type { BackendState } from '../../useBackend';
 import {
   join as joinWaitlist,
@@ -28,10 +29,6 @@ export type WaitlistStanding =
 
 const loading: WaitlistsRead = { loading: true };
 
-// The runtime reads `waitlists` and runs `waitlist_join` only with this capability.
-export const supportsWaitlists = (backend: BackendState) =>
-  !!backend.state?.capabilities?.includes('waitlists');
-
 // Whose answer a read is: `darkbloom waitlist` asks with this Mac's link token, so linking or
 // unlinking changes it even when `account_revision` (which follows a signed-in account first)
 // stays the same.
@@ -40,10 +37,11 @@ const accountOf = (backend: BackendState) =>
 
 // Every waitlist the coordinator offers, in its order, for this Mac's account. One read serves
 // every hook on screen (`waitlistStore.ts`). Nothing is read without the capability, and nothing
-// is known before the runtime's first snapshot.
+// is known before the runtime's first snapshot. The runtime reads `waitlists` and runs
+// `waitlist_join` only with the `waitlists` capability.
 export function useWaitlists(backend: BackendState) {
   const known = !!backend.state;
-  const supported = supportsWaitlists(backend);
+  const supported = supports(backend.state, 'waitlists');
   const account = accountOf(backend);
   const key = readKey(account, backend.state?.resource_revision ?? '');
   const store = useSyncExternalStore(subscribe, waitlistsState);

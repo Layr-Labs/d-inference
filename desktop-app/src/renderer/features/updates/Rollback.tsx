@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Undo2 } from 'lucide-react';
 import type { BackendState } from '../../useBackend';
+import { supports } from '../../capabilities';
 import { Button, Modal } from '../../components/UI';
 import { runtimeVersion } from './version';
 import styles from './updates.module.css';
@@ -11,7 +12,7 @@ import styles from './updates.module.css';
 export function Rollback({ backend }: { backend: BackendState }) {
   const [confirm, setConfirm] = useState(false);
   const state = backend.state!;
-  if (!state.capabilities?.includes('update_rollback')) return null;
+  if (!supports(state, 'update_rollback')) return null;
   const installed = runtimeVersion(state);
   return (
     <>

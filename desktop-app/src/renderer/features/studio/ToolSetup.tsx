@@ -2,9 +2,10 @@ import { useId } from 'react';
 import { Check, Copy, Wrench } from 'lucide-react';
 import type { LocalTool } from '../../../shared/localServing';
 import type { BackendState } from '../../useBackend';
+import { supports } from '../../capabilities';
 import { Button } from '../../components/UI';
 import type { Copier } from './useCopy';
-import { supports, toolCommand, toolName } from './words';
+import { toolCommand, toolName } from './words';
 import styles from './studio.module.css';
 
 const tools: LocalTool[] = ['opencode', 'hermes'];

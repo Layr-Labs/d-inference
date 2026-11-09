@@ -4,10 +4,10 @@ import type { Operation, Route } from '../../../shared/contracts';
 import type { SandboxStatus } from '../../../shared/sandbox';
 import type { BackendState } from '../../useBackend';
 import { api } from '../../useBackend';
+import { supports } from '../../capabilities';
 import { Button, Header } from '../../components/UI';
 import { useResource } from '../../data/useResource';
 import { WaitlistCard } from '../waitlists/WaitlistCard';
-import { supportsWaitlists } from '../waitlists/useWaitlist';
 import { NotInstalled } from './NotInstalled';
 import { SandboxStatusCard } from './SandboxStatusCard';
 import { SetupProgress } from './SetupProgress';
@@ -28,7 +28,7 @@ export function Sandboxes({
   backend: BackendState;
   navigate: (route: Route) => void;
 }) {
-  if (!backend.state?.capabilities?.includes('sandbox'))
+  if (!supports(backend.state, 'sandbox'))
     return (
       <>
         <Header title={title} description={description} />
@@ -75,7 +75,7 @@ function SandboxPage({ backend }: { backend: BackendState }) {
       running && enrolling.includes(status.state) ? null : (
         <>
           <SandboxStatusCard status={status} backend={backend} refresh={sandbox.refresh} />
-          {status.state === 'waitlisted' && supportsWaitlists(backend) && (
+          {status.state === 'waitlisted' && supports(state, 'waitlists') && (
             <WaitlistCard feature="sandbox" backend={backend} compact />
           )}
         </>

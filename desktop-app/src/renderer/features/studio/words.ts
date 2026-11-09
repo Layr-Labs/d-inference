@@ -1,15 +1,11 @@
 import type { Snapshot } from '../../../shared/contracts';
 import type { LocalServing, RequestRoute, ServingMode } from '../../../shared/localServing';
+import { supports } from '../../capabilities';
 import { servableModels } from '../../models/selection';
 
 // Studio's words are the CLI's own (`ServingQuestion`, `LocalFirstWords`, `MeFirstWords`,
 // `RouteChoiceFlow`, `LocalRouterAccountKeyFormat` in provider-swift/Sources), so the app and
 // `darkbloom start`, `status` and `route` say the same thing.
-
-export type StudioCapability = 'local_serving' | 'tool_setup' | 'update_rollback';
-
-export const supports = (state: Snapshot, capability: StudioCapability) =>
-  !!state.capabilities?.includes(capability);
 
 // `Snapshot.local`, only from a runtime that offers local-first serving.
 export const localServing = (state: Snapshot): LocalServing | undefined =>

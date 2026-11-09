@@ -1,9 +1,0 @@
-### Provider CI: per-job macOS sizes for Darkbloom Sandboxes
-
-- Each macOS CI lane can ask the Darkbloom plane for a size, `<vCPUs>x<GiB>`. The route job checks each size against this grammar and fails on a bad value before it sends a request.
-- Sizes are sent only when the repository variable `DARKBLOOM_JOB_SHAPES` is exactly `on`. While it is off, the route request is byte for byte the request without sizes, and every job keeps the runner it has today.
-- Each size comes from the job's sampled memory: the smallest signed size that holds 1.25 times its used memory (app + wired + compressed) without making the job more than 5% slower. While sizes are on, the 7 blocking test jobs ask for 4x16 (provider shard 1, cluster runtime shard 1, both Cluster Focused Checks shards), 4x24 (provider shard 2, cluster runtime shard 3) or 12x32 (cluster runtime shard 2, 29.3 GiB). Build cluster test products and Cluster Release Build Checks ask for 8x16 and Build provider test products for 12x32, on the `required` lanes `build-cluster`, `build-provider` and `cluster-release-checks`. A run that tests every component then asks for 10 macOS jobs. While sizes are off, the `required` jobs use `blacksmith-12vcpu-macos-27` without asking.
-- The 2 Cluster GPU Tests shards are not routed. Shard 2 uses 42 GiB, which no signed size holds, so both shards run on `blacksmith-12vcpu-macos-27`.
-- A sized lane uses a grant only when its labels end in the qualified label, such as `darkbloom-macos-arm64-4x24`. Otherwise it keeps `blacksmith-12vcpu-macos-27`.
-- For each lane, the route job's log and summary show the size asked, the runner, and the decision with its reason, such as `shape_not_signed`, `unavailable`, `unsupported_runner_class`, `image_not_available` or `lane_not_enabled`.
-- The `DARKBLOOM_MACOS_LANES` cap still keeps the critical-path test lanes first. The `required` lanes come after them.

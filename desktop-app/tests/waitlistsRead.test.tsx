@@ -8,6 +8,7 @@ import { WaitlistCard } from '../src/renderer/features/waitlists/WaitlistCard';
 import { Waitlists } from '../src/renderer/features/waitlists/Waitlists';
 import { resetWaitlists } from '../src/renderer/features/waitlists/waitlistStore';
 import { cluster, deferred, list, sandbox, waitlistBackend } from './waitlistsFixtures';
+import { backendWith } from './onboardingFixtures';
 
 const api = vi.hoisted(() => ({ read: vi.fn(), act: vi.fn(), copy: vi.fn() }));
 vi.mock('../src/renderer/useBackend', () => ({ isPreview: false, api }));
@@ -200,6 +201,12 @@ describe('where the account stands', () => {
     const result = await standing(async () => answer, 'sandbox');
     expect(result).toMatchObject({ standing: 'waitlisted', entry: sandbox });
     expect((await standing(async () => answer)).standing).toBe('no_waitlist');
+  });
+
+  it('knows nothing before the runtime’s first snapshot, and reads nothing', () => {
+    const { result } = renderHook(() => useWaitlist(backendWith(undefined), 'cluster'));
+    expect(result.current).toMatchObject({ standing: 'loading', open: false });
+    expect(api.read).not.toHaveBeenCalled();
   });
 
   it('reads nothing on a runtime without waitlists', async () => {

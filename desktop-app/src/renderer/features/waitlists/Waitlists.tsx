@@ -20,8 +20,7 @@ export function Waitlists({
   const list = useWaitlists(backend);
   const entries = list.data?.data ?? [];
   let body: ReactNode;
-  if (!list.supported) body = <NeedsNewerCLI onUpdates={() => navigate('updates')} />;
-  else if (list.loading)
+  if (list.loading)
     body = (
       <ul className={styles.list} aria-label="Loading waitlists" aria-busy="true">
         {[0, 1].map((index) => (
@@ -31,6 +30,7 @@ export function Waitlists({
         ))}
       </ul>
     );
+  else if (!list.supported) body = <NeedsNewerCLI onUpdates={() => navigate('updates')} />;
   else if (entries.length)
     body = (
       <>

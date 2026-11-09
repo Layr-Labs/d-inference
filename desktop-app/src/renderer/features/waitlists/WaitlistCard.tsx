@@ -67,6 +67,7 @@ export function WaitlistCard({
         error={waitlist.error}
         retry={waitlist.refresh}
         compact={compact}
+        label="Waitlist"
       />
     );
   if (!entry || (compact && entry.status === 'approved')) return null;

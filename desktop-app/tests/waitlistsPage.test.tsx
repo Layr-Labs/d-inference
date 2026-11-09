@@ -127,15 +127,15 @@ describe('when the list is unavailable', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open link page' }));
     expect(api.openExternal).toHaveBeenCalledWith('link');
 
-    // Once linked, the account changes and its waitlists are read.
-    api.read.mockResolvedValue(list(cluster));
-    view.rerender(
-      <Waitlists
-        backend={waitlistBackend({ linked: true, account_revision: 'account-2' })}
-        navigate={navigate}
-      />,
-    );
-    expect(await screen.findByRole('article', { name: 'Clusters' })).toBeVisible();
+    // Once linked, the answer is read again, even when the signed-in account stays the same,
+    // and the unlinked answer isn't shown meanwhile.
+    const linkedAnswer = deferred<unknown>();
+    api.read.mockReturnValue(linkedAnswer.promise);
+    view.rerender(<Waitlists backend={waitlistBackend({ linked: true })} navigate={navigate} />);
+    expect(screen.getByRole('list', { name: 'Loading waitlists' })).toBeVisible();
+    expect(screen.queryByRole('region', { name: 'Waitlists' })).not.toBeInTheDocument();
+    await act(async () => linkedAnswer.resolve(list(cluster)));
+    expect(screen.getByRole('article', { name: 'Clusters' })).toBeVisible();
   });
 
   it('shows the code of a link that is already running, with Cancel', async () => {

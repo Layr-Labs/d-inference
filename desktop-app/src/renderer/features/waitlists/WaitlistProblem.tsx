@@ -23,6 +23,7 @@ export function WaitlistProblem({
   error,
   retry,
   compact = false,
+  label = compact ? 'Waitlist' : 'Waitlists',
   onSettings,
 }: {
   backend: BackendState;
@@ -30,6 +31,8 @@ export function WaitlistProblem({
   error?: string;
   retry: () => Promise<void>;
   compact?: boolean;
+  // The region's name: the list on Early access, or one waitlist's card.
+  label?: string;
   // Opens This Mac's Settings, where a link the coordinator refuses is undone.
   onSettings?: () => void;
 }) {
@@ -53,10 +56,7 @@ export function WaitlistProblem({
         : undefined;
   const Icon = kind === 'login' ? Link2 : kind === 'none' ? Ticket : CircleAlert;
   return (
-    <section
-      className={compact ? styles.compact : styles.panel}
-      aria-label={compact ? 'Waitlist' : 'Waitlists'}
-    >
+    <section className={compact ? styles.compact : styles.panel} aria-label={label}>
       <span className={styles.icon} data-tone={kind === 'unavailable' ? 'warning' : 'muted'}>
         <Icon size={17} />
       </span>

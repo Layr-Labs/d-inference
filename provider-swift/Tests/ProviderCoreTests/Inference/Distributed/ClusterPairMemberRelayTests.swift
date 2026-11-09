@@ -140,6 +140,14 @@ private enum RelaySockets {
     }
 }
 
+/// Set once, read from any thread: tells a stand-in API's accept loop to end.
+private final class HeldHeadStop: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    func set() { lock.withLock { value = true } }
+    var isSet: Bool { lock.withLock { value } }
+}
+
 private struct RelayCheckFailure: Error, CustomStringConvertible {
     let description: String
     init(_ description: String) { self.description = description }
@@ -801,6 +809,51 @@ struct ClusterPairMemberRelayTests {
         shutdown(pipelined, SHUT_WR)
         #expect(RelaySockets.read(pipelined) == RecordingAPI.reply + RecordingAPI.reply)
         #expect(api.received.last == swapped(second) + swapped(second))
+    }
+
+    /// Rank 0's API sends nothing until it takes a streamed request (on a pair, a lane and its prompt; on one Mac, also
+    /// the engine's admission, its held head), then its head and each event as they come; or, when it can't take it, a
+    /// 503 before any head. The relay holds nothing back and adds nothing: while rank 0 holds its head the client gets
+    /// no byte from the relay, the head and the first event reach the client before rank 0 sends anything more, and the
+    /// 503 reaches the client exactly as rank 0 sent it, never the relay's own.
+    @Test func aHeldHeadItsFirstEventAndA503BeforeAnyHeadPassAsRankZeroSendsThem() throws {
+        let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\n\r\n"
+        let first = #"data: {"choices":[{"delta":{"content":"one"}}]}"# + "\n\n", last = "data: [DONE]\n\n"
+        let refusalBody = #"{"error":{"message":"the pair can't take this request right now","type":"server_error"}}"#
+        let refusal = "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\n"
+            + "Content-Length: \(refusalBody.utf8.count)\r\n\r\n\(refusalBody)"
+        let release = DispatchSemaphore(value: 0), more = DispatchSemaphore(value: 0), stopped = HeldHeadStop()
+        let (listener, port) = try RelaySockets.listen()
+        defer { stopped.set(); RelaySockets.wake(port) }
+        // Rank 0's stand-in: a request for "busy" gets the 503 before any head; any other streams, its head held.
+        RelaySockets.acceptLoop(listener, stopped: { stopped.isSet }) { connection in
+            defer { close(connection) }
+            let request = RelaySockets.read(connection, until: { $0.hasSuffix("}]}") })
+            if request.contains(#""model":"busy""#) { return RelaySockets.write(connection, refusal) }
+            guard release.wait(timeout: .now() + 30) == .success else { return }
+            RelaySockets.write(connection, head + first)
+            guard more.wait(timeout: .now() + 30) == .success else { return }
+            RelaySockets.write(connection, last)
+        }
+        let relay = try RelaySockets.relay(to: port, keys: relayKeys)
+        defer { relay.stop() }
+        func request(_ model: String) -> String {
+            let body = #"{"model":"\#(model)","stream":true,"messages":[{"role":"user","content":"hi"}]}"#
+            return "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer \(ownKey)\r\n"
+                + "Content-Type: application/json\r\nContent-Length: \(body.utf8.count)\r\n\r\n\(body)"
+        }
+        let client = try RelaySockets.connect(relay.port, readTimeout: 1)
+        defer { close(client) }
+        RelaySockets.write(client, request("m"))
+        #expect(RelaySockets.read(client, until: { !$0.isEmpty }).isEmpty, "the relay sent something before rank 0's head")
+        var wait = timeval(tv_sec: 10, tv_usec: 0)
+        _ = setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &wait, socklen_t(MemoryLayout<timeval>.size))
+        release.signal()
+        let soFar = RelaySockets.read(client, until: { $0.utf8.count >= (head + first).utf8.count })
+        #expect(soFar == head + first, "rank 0's head and first event, before it sends anything more")
+        more.signal()
+        #expect(RelaySockets.read(client) == last)
+        #expect(try RelaySockets.exchange(relay.port, request("busy")) == refusal)
     }
 
     /// A body is read to its length and no further, however the client's writes fall: here the body's end comes in the

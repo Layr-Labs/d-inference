@@ -1,4 +1,3 @@
-import DarkbloomClusterProtocol
 import Foundation
 
 /// Dev and DevNet installs only: a one-shot fault that makes this rank's
@@ -101,32 +100,5 @@ extension QwenDenseStageLoadOSObservation {
             inactiveFileBackedPages: inactiveFileBackedPages.map { _ in 0 },
             inactiveAnonymousPages: inactiveAnonymousPages.map { $0 + (inactiveFileBackedPages ?? 0) },
             compressionPages: compressionPages, swapoutPages: swapoutPages, liveCompressionPages: liveCompressionPages)
-    }
-}
-
-extension QwenTensorParallelStopRule.End {
-    /// The memory abort both ranks end the request with (D6), naming the refusing rank.
-    var abort: ClusterWorkerAbort? { memoryStopRank.map { ClusterWorkerAbort(reason: .memory, rank: $0) } }
-}
-
-/// The live memory gate the tensor-parallel families take for `bytes` more.
-/// Power and thermal refusals stay untyped (they fail the worker); every
-/// memory refusal is typed, so a running request's stop ends that request
-/// alone. The gate asks at least the entry check's floor on its own sample,
-/// so the entry check is not asked first: it would refuse untyped.
-enum ClusterLiveMemory {
-    static func requireTensorParallel(bytes: Int, family: String) throws {
-        try QwenResidentResourceEnvironment.requirePower()
-        let watch = QwenDenseStageLoadWatch("\(family) tensor-parallel")
-        let os = try QwenDenseStageLoadResources.observeOS()
-        let free = max(QwenDenseStageLoadPolicy.minimumAdmissibleBytes,
-            try QwenLongPrefillCheckedBytes.sum([bytes, QwenDenseStageLoadPolicy.loadingHeadroomBytes]))
-        do {
-            guard try watch.admits(os, bytes: free) else {
-                throw ProbeError("\(family) tensor parallel needs \(bytes) bytes the memory gate does not admit now")
-            }
-        } catch {
-            throw QwenResidentMemoryRefusal(message: String(describing: error))
-        }
     }
 }

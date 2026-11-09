@@ -163,28 +163,12 @@ struct MiMoResidentRequestAllowance {
     }
 
     /// `additionalNativeBytes`: what the request may add beyond its state
-    /// (its prompt-prefix capture), charged in both checks. Power and thermal
-    /// refusals stay untyped (they fail the worker); every memory refusal is
-    /// typed, so a running request's stop latch or its lane ends that request
-    /// alone (D6). The gate asks at least the entry check's floor on its own
-    /// sample, so the entry check is not asked first: it would refuse untyped.
+    /// (its prompt-prefix capture), charged in both checks. Every memory
+    /// refusal is typed, so a running request's stop latch or its lane ends
+    /// that request alone (D6; `ClusterLiveMemory.requireStageRequest`).
     func requireLive(additionalNativeBytes: Int = 0, additionalHostBytes: Int = 0) throws {
-        try QwenResidentResourceEnvironment.requirePower()
         guard additionalNativeBytes >= 0, additionalHostBytes >= 0 else { throw ProbeError("Resident MiMo request charge is negative") }
-        let os = try QwenDenseStageLoadResources.observeOS()
-        let native = QwenDenseStageLoadResources.observeNative()
-        let free = max(QwenDenseStageLoadPolicy.minimumAdmissibleBytes,
-            try QwenLongPrefillCheckedBytes.sum([reservedBytes, additionalNativeBytes, additionalHostBytes,
-                QwenDenseStageLoadPolicy.loadingHeadroomBytes]))
-        let allocator = try QwenLongPrefillCheckedBytes.sum([native.activeBytes, native.cacheBytes, reservedBytes,
-            additionalNativeBytes, QwenDenseStageLoadPolicy.allocatorHeadroomBytes])
-        do {
-            guard try watch.admits(os, bytes: free) else { throw ProbeError("Resident MiMo request was refused") }
-            guard native.allocatorLimitBytes >= allocator else {
-                throw ProbeError("Resident MiMo request exceeds the allocator limit")
-            }
-        } catch {
-            throw QwenResidentMemoryRefusal(message: String(describing: error))
-        }
+        try ClusterLiveMemory.requireStageRequest(watch, reservedBytes: reservedBytes,
+            additionalNativeBytes: additionalNativeBytes, additionalHostBytes: additionalHostBytes, family: "MiMo")
     }
 }

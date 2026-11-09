@@ -5533,11 +5533,12 @@ it alone:
   request then failed the M5 Max stage's running-request memory check
   mid-prefill (594 MiB compressed, so no file cache counted). The stage's
   worker exited, so the client got a 500 and the pair stopped serving for
-  about a minute (journey 3, D6). Such a refusal now ends that request alone
+  about a minute (journey 3, D6); 0.10.11 serves the memory plan's request in
+  the pipeline. From 0.10.12 such a refusal ends that request alone
   ([a pipeline stage's memory refusal](#a-pipeline-stages-memory-refusal-ends-that-request-alone)),
-  as tensor parallel's ranks do. 0.10.11 keeps the pipeline at the memory
-  plan's request all the same; serving the whole profile again waits for the
-  abort's proof on real pairs. Each stage charges the whole
+  as tensor parallel's ranks do; the pipeline still serves the memory plan's
+  request until serving the whole context there is proven on real pairs. Each
+  stage charges the whole
   model's ledger (`Gemma4StateBudget`) at the request's context: 2.0 GB, plus
   one prompt frame's 2.2 GB on a stage with a full-attention layer, at the
   standard request.
@@ -5587,7 +5588,7 @@ its typed block, so every memory refusal is a `QwenResidentMemoryRefusal`.
 None asks the load's entry check (`QwenDenseStageLoadResources.requireInitial`)
 first: its floor is one the gate asks on its own sample anyway, and its refusal
 is untyped, so it would end the worker before the typed check ran.
-Before 0.10.11 a refusal that remained was thrown from the request's `check`,
+Before 0.10.12 a refusal that remained was thrown from the request's `check`,
 which also runs inside every transfer. The refusing rank left the data plane
 mid-exchange and its worker exited (the worker coordinator's failure path), the
 other rank lost its input, the client got an untyped 500 and the pair stopped

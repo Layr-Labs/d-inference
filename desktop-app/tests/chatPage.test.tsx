@@ -252,8 +252,11 @@ it('lets streamed text settle from faint to full ink, and not with motion reduce
   expect(opacity[0]).toBe(1);
   expect([...opacity].sort((a, b) => b - a)).toEqual(opacity);
   emit({ stream: 's1', type: 'done', finish_reason: 'stop' });
-  await flush();
-  expect(document.querySelector(`.${styles.settle}`)).toBeInTheDocument();
+  // The same faint glyphs stay and fade up to full ink: none is replaced.
+  const settling = [...document.querySelectorAll<HTMLElement>(`.${styles.ink}`)];
+  expect(settling).toHaveLength(28);
+  settling.forEach((glyph, index) => expect(glyph).toBe(glyphs[index]));
+  expect(document.querySelector(`.${styles.settle}`)).toContainElement(settling[0]);
   await waitFor(() => expect(document.querySelector(`.${styles.ink}`)).not.toBeInTheDocument());
 
   cleanup();
@@ -399,4 +402,13 @@ it('lets new messages settle in once, not again when you come back to the page',
   } finally {
     clock.mockRestore();
   }
+});
+
+it('says so when an answer ends with nothing written', async () => {
+  await mount();
+  await screen.findByRole('button', { name: 'Model: GPT-OSS 20B' });
+  await send('Hello');
+  emit({ stream: 's1', type: 'done', finish_reason: 'stop' });
+  expect(await screen.findByText('No answer.')).toBeVisible();
+  expect(screen.queryByRole('button', { name: 'Copy' })).not.toBeInTheDocument();
 });

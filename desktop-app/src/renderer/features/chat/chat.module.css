@@ -646,6 +646,10 @@
   margin-top: 3px;
   color: var(--warning);
 }
+.empty {
+  font-size: 13px;
+  color: var(--text-tertiary);
+}
 .footer {
   display: grid;
   gap: 6px;

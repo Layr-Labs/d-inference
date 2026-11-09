@@ -150,18 +150,19 @@ const Answer = memo(function Answer({
   const thinking = streaming && !message.content;
   // Before the first token: the model is reading the prompt.
   const reading = thinking && !message.reasoning;
-  // Once the answer is done its newest glyphs still reach full ink, over 0.6 s.
+  // Once the answer is done its newest glyphs still reach full ink, over 0.6 s. Decided while
+  // rendering, so the same faint glyphs stay on screen and fade up rather than being replaced.
   const [settling, setSettling] = useState(false);
-  const wasStreaming = useRef(streaming);
+  const [wasStreaming, setWasStreaming] = useState(streaming);
+  if (wasStreaming !== streaming) {
+    setWasStreaming(streaming);
+    setSettling(wasStreaming && !streaming && !reduced);
+  }
   useEffect(() => {
-    if (wasStreaming.current && !streaming && !reduced) {
-      setSettling(true);
-      const timer = setTimeout(() => setSettling(false), 650);
-      wasStreaming.current = streaming;
-      return () => clearTimeout(timer);
-    }
-    wasStreaming.current = streaming;
-  }, [streaming, reduced]);
+    if (!settling) return;
+    const timer = setTimeout(() => setSettling(false), 650);
+    return () => clearTimeout(timer);
+  }, [settling]);
   const ink: Ink | undefined =
     (streaming || settling) && !reduced
       ? { end: message.content.length, glyphs: 28, settling: !streaming }
@@ -189,6 +190,11 @@ const Answer = memo(function Answer({
           <span>{message.error}</span>
         </p>
       )}
+      {!streaming &&
+        !message.content &&
+        !message.reasoning &&
+        !message.error &&
+        message.finish !== 'cancelled' && <p className={styles.empty}>No answer.</p>}
       {!streaming && <Actions message={message} name={name} />}
     </article>
   );

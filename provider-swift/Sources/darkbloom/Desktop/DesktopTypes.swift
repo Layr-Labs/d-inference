@@ -58,25 +58,41 @@ struct DesktopAction: Codable, Sendable, Equatable {
   var enabled: Bool?
   var speed: Int?
   var temperature: Int?
+  // `start`: the Darkbloom network with no local API (`--network`); on a paired Mac, this Mac alone (`--solo`).
+  var network: Bool?
+  var solo: Bool?
+  // `waitlist_join`.
+  var feature: String?
+  // `sandbox_setup`.
+  var linux_slots: Int?
+  var macos_slots: Int?
+  var disks: [String]?
+  var wait_ready: Bool?
+  // `route`, `route_key` (the account API key: never kept, logged or passed as an argument), `local_settings`.
+  var route: String?
+  var key: String?
+  var me_first: Bool?
+  var me_first_idle_minutes: UInt64?
+  // `tool_setup`.
+  var tool: String?
 
-  /// `startsThePair`: asked only for a `start` that names no models, whether it starts this Mac's pair, which serves its
-  /// own model (`DesktopBackend.startsThePair`: the app's Start on a paired Mac). Every other start names its models.
-  func validate(startsThePair: () throws -> Bool = { false }) throws {
+  /// `startsThePair`: asked only for a `start` that names no models and doesn't serve this Mac alone, whether it starts
+  /// this Mac's pair, which serves its own model (`DesktopBackend.startsThePair`: the app's Start on a paired Mac).
+  /// `paired`: asked only for a `start` with `solo`, whether this Mac holds a pairing (`ClusterPairSummary.paired`).
+  func validate(startsThePair: () throws -> Bool = { false }, paired: () -> Bool = { false }) throws {
     guard UUID(uuidString: id) != nil else { throw ValidationError("Invalid request ID") }
-    let known = [
-      "start", "switch", "stop", "restart", "download", "remove", "settings", "link", "unlink",
-      "update", "diagnose", "cancel", "cooling", "account-signin", "account-signout",
-      "autopilot", "autopilot_pin", "autopilot_unpin", "autopilot_pause", "autopilot_resume",
-      "autopilot_disable", "autopilot_models",
-    ]
-    guard known.contains(action) else { throw ValidationError("Unknown action") }
+    guard Self.knownActions.contains(action) else { throw ValidationError("Unknown action") }
+    try validateServingChoice(paired: paired)
     if ["start", "switch", "autopilot", "autopilot_pin", "autopilot_unpin"].contains(action) {
       let models = self.models ?? []
-      let pairStart = try models.isEmpty && action == "start" && local != true && startsThePair()
-      guard !models.isEmpty || pairStart, models.count <= 32, Set(models).count == models.count
+      // `start --solo` serves this Mac alone: with no models, the ones `start` chooses without a terminal.
+      let soloStart = action == "start" && solo == true
+      let pairStart = try models.isEmpty && action == "start" && local != true && !soloStart && startsThePair()
+      guard !models.isEmpty || pairStart || soloStart, models.count <= 32, Set(models).count == models.count
       else { throw ValidationError("Choose at least one model") }
       try models.forEach(Self.validateModel)
     }
+    try validateFeatureFields()
     if action == "autopilot" {
       guard local != true, let pinned, Set(pinned).isSubset(of: Set(models ?? [])),
         Set(pinned).count == pinned.count

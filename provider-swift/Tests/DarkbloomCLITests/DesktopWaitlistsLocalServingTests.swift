@@ -54,6 +54,33 @@ struct DesktopWaitlistsLocalServingTests {
     #expect(value.field("error").text == error)
   }
 
+  @Test func joiningSaysWhereTheAccountStandsAsTheCommandDoes() async {
+    let lists = FeatureWaitlists(data: [Self.place("cluster", .none), Self.place("sandbox", .none)])
+    let access = Self.access(list: .success(lists)) { feature in
+      feature == "sandbox" ? .success(Self.place("sandbox", .waitlisted, position: 3)) : .failure(.notOffered)
+    }
+    // The plural names the waitlist, as `darkbloom waitlist sandboxes` does.
+    let (code, lines) = await DesktopBackend.joinWaitlist("sandboxes", access: access)
+    #expect(code == 0)
+    #expect(lines.first?.hasPrefix("You're on the Darkbloom Sandbox waitlist: #3 in line (joined ") == true)
+    #expect(lines.last == "  Check again: darkbloom waitlist sandboxes")
+  }
+
+  @Test func aJoinThatFailsFailsAsTheCommandDoes() async {
+    let lists = FeatureWaitlists(data: [Self.place("cluster", .none)])
+    let unknown = await DesktopBackend.joinWaitlist("sandbox", access: Self.access(list: .success(lists)))
+    #expect(unknown.code == 1)
+    #expect(unknown.lines.first == "Unknown waitlist 'sandbox'. The only waitlist is cluster (Clusters).")
+    let revoked = await DesktopBackend.joinWaitlist(
+      "cluster", access: Self.access(list: .success(lists)) { _ in .success(Self.place("cluster", .revoked)) })
+    #expect(revoked.code == 1)
+    #expect(revoked.lines.first == "Darkbloom revoked your account's access to Clusters.")
+    let offline = await DesktopBackend.joinWaitlist(
+      "cluster", access: Self.access(list: .failure(.unavailable("no answer within 10 seconds"))))
+    #expect(offline.code == 1)
+    #expect(offline.lines == ["Could not reach the waitlists at https://coordinator.example: no answer within 10 seconds"])
+  }
+
   @Test func localServingResolvesLocalAsTheCLIDoes() {
     let none = DesktopBackend.localServing(nil, keySaved: false, meFirst: nil)
     #expect(none == .dict([
@@ -83,5 +110,41 @@ struct DesktopWaitlistsLocalServingTests {
     #expect(DesktopBackend.pausedUntil(running) == .null)
     #expect(DesktopBackend.pausedUntil(MeFirstSnapshot(idleMs: 120_000, paused: false)) == .null)
     #expect(DesktopBackend.pausedUntil(nil) == .null)
+  }
+
+  @Test func localSettingsSaveMeFirstWithTheCLIsWriterAndKeepOtherKeys() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("desktop-local-settings-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory.appendingPathComponent("desktop"),
+                                            withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let config = directory.appendingPathComponent("provider.toml")
+    try """
+      [provider]
+      name = "Local settings fixture"
+
+      [local]
+      mode = "both"
+      port = 8007
+      future_key = "kept"
+      """.write(to: config, atomically: true, encoding: .utf8)
+    try await DesktopStorage.$directoryForTesting.withValue(directory.appendingPathComponent("desktop")) {
+      let backend = DesktopBackend(configPath: config.path, executable: URL(fileURLWithPath: "/usr/bin/false"))
+      let id = UUID().uuidString
+      _ = try await backend.submit(
+        DesktopAction(id: id, action: "local_settings", me_first: false, me_first_idle_minutes: 30))
+      var operation: DesktopOperation?
+      for _ in 0..<500 {
+        operation = await backend.operations.first { $0.id == id && $0.state != "running" }
+        if operation != nil { break }
+        try await Task.sleep(for: .milliseconds(10))
+      }
+      #expect(operation?.state == "succeeded")
+      #expect(operation?.message.hasPrefix("Saved.") == true)
+      let text = try String(contentsOf: config, encoding: .utf8)
+      let local = try ConfigManager.load(from: config).local
+      #expect(local == LocalSettings(mode: .both, meFirst: false, meFirstIdleMinutes: 30, port: 8007))
+      #expect(text.contains("future_key"))
+    }
   }
 }

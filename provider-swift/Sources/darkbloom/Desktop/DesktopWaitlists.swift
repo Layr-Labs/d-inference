@@ -53,4 +53,37 @@ extension DesktopBackend {
     }.joined(separator: " ")
     return .dict(["data": .array([]), "error": .string(error), "code": .string(code)])
   }
+
+  /// `waitlist_join`: what `darkbloom waitlist <feature>` does (`FeatureWaitlistCommand.join`), in process: the
+  /// waitlist the name names, the join, and the lines that say where the account stands. Fails as the command does: a
+  /// problem, an unknown name, or a revoked account.
+  static func joinWaitlist(_ feature: String, access: FeatureWaitlistAccess) async -> (code: Int32, lines: [String]) {
+    let lines = DesktopLines()
+    let command = FeatureWaitlistCommand(
+      access: access,
+      view: FeatureWaitlistView(cli: BuildEnvironment.current.cliName, coordinator: access.coordinator),
+      json: false, say: { lines.append($0) }, warn: { lines.append($0) })
+    do {
+      try await command.join(feature)
+      return (0, lines.all)
+    } catch let exit as ExitCode {
+      return (exit.rawValue, lines.all)
+    } catch {
+      return (1, lines.all + [DesktopText.line(String(describing: error))])
+    }
+  }
+
+  func executeWaitlistJoin(_ request: DesktopAction) async {
+    let (code, lines) = await Self.joinWaitlist(
+      request.feature ?? "", access: FeatureWaitlistAccess.live(configPath: configPath))
+    complete(request.id, code: code, message: lines.joined(separator: "\n"))
+  }
+}
+
+/// Lines an in-process command says, in order, from any thread.
+final class DesktopLines: @unchecked Sendable {
+  private let lock = NSLock()
+  private var lines: [String] = []
+  func append(_ line: String) { lock.withLock { lines.append(line) } }
+  var all: [String] { lock.withLock { lines } }
 }

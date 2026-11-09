@@ -4,7 +4,11 @@ import Foundation
 import ProviderCore
 
 enum DesktopStorage {
+  /// Tests keep their operations journal out of this Mac's desktop directory, without the process-wide environment.
+  @TaskLocal static var directoryForTesting: URL?
+
   static var directory: URL {
+    if let directoryForTesting { return directoryForTesting }
     if let path = ProcessInfo.processInfo.environment["DARKBLOOM_DESKTOP_DIR"] {
       return URL(fileURLWithPath: path)
     }

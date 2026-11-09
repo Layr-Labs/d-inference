@@ -54,12 +54,16 @@ struct FeatureWaitlistCommand {
     let access: FeatureWaitlistAccess
     let view: FeatureWaitlistView
     let json: Bool
+    /// Where its lines go: standard output, and standard error for a problem. The desktop app's `waitlist_join` keeps
+    /// them for its operation (`DesktopBackend.joinWaitlist`).
+    var say: @Sendable (String) -> Void = { print($0) }
+    var warn: @Sendable (String) -> Void = { printError($0) }
 
     /// Every waitlist and where the account stands on it.
     func list() async throws {
         let waitlists = try answer(await access.waitlists(), title: nil)
         guard json else {
-            view.list(waitlists.data).forEach { print($0) }
+            view.list(waitlists.data).forEach(say)
             return
         }
         try printDocument(waitlists)
@@ -75,7 +79,7 @@ struct FeatureWaitlistCommand {
         if json {
             try printDocument(place)
         } else {
-            view.lines(place, name: name.lowercased()).forEach { print($0) }
+            view.lines(place, name: name.lowercased()).forEach(say)
         }
         if place.status == .revoked { throw ExitCode.failure }
     }
@@ -85,7 +89,7 @@ struct FeatureWaitlistCommand {
     private func waitlist(named name: String) async throws -> FeatureWaitlistPlace {
         let waitlists = try answer(await access.waitlists(), title: nil)
         guard let waitlist = waitlists.named(name) else {
-            view.unknown(name, among: waitlists.data).forEach { printError($0) }
+            view.unknown(name, among: waitlists.data).forEach(warn)
             throw ExitCode.failure
         }
         return waitlist
@@ -98,7 +102,7 @@ struct FeatureWaitlistCommand {
         case .success(let answer):
             return answer
         case .failure(let problem):
-            view.problem(problem, title: title).forEach { printError($0) }
+            view.problem(problem, title: title).forEach(warn)
             throw ExitCode.failure
         }
     }
@@ -109,7 +113,7 @@ struct FeatureWaitlistCommand {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
-        print(FeatureWaitlistView.escapingUnprintable(json: String(decoding: try encoder.encode(document), as: UTF8.self)))
+        say(FeatureWaitlistView.escapingUnprintable(json: String(decoding: try encoder.encode(document), as: UTF8.self)))
     }
 }
 

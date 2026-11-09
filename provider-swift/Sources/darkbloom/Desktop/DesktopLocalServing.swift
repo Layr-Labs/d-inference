@@ -49,4 +49,22 @@ extension DesktopBackend {
     accountKeyRead = (now, saved)
     return saved
   }
+
+  /// `local_settings`: saves `[local] me_first` and `me_first_idle_minutes` with the CLI's own `[local]` writer
+  /// (`setLocalSettings`: under the config lock, other keys kept), as `start --me-first`, `--no-me-first` and
+  /// `--me-first-idle` save them. A running provider reads them when it starts (`ProviderLoopConfig.meFirstIdle`), so
+  /// they apply from its next start.
+  func executeLocalSettings(_ request: DesktopAction) throws {
+    let meFirst = request.me_first!
+    let minutes = request.me_first_idle_minutes!
+    let saved = try setLocalSettings(configPath: configPath) { settings in
+      settings.meFirst = meFirst
+      settings.meFirstIdleMinutes = minutes
+    }
+    let head = saved.changed ? "Saved." : "Already saved."
+    let running = DaemonStateFile.read()?.processIdentity?.isCurrent() == true
+    complete(
+      request.id, code: 0,
+      message: running ? "\(head) Restart serving to use it now." : head)
+  }
 }

@@ -64,7 +64,11 @@ actor DesktopBackend {
   }
 
   func submit(_ request: DesktopAction) throws -> DesktopOperation {
-    try request.validate(startsThePair: { try Self.startsThePair(ClusterPairSummary.local()) })
+    // Read only for a start that may start the pair (no models) or serve this Mac alone (`solo`).
+    let pair = request.action == "start" && ((request.models ?? []).isEmpty || request.solo == true)
+      ? ClusterPairSummary.local() : nil
+    try request.validate(
+      startsThePair: { try pair.map(Self.startsThePair) ?? false }, paired: { pair?.paired ?? false })
     if let original = requests[request.id] {
       guard original == request, let operation = operations.first(where: { $0.id == request.id })
       else { throw ValidationError("Request ID was already used") }
@@ -137,6 +141,10 @@ actor DesktopBackend {
           message: "Settings saved. Restart the provider to apply runtime changes.")
       } else if ["account-signin", "account-signout"].contains(request.action) {
         try await executeAccountAction(request)
+      } else if request.action == "waitlist_join" {
+        await executeWaitlistJoin(request)
+      } else if request.action == "local_settings" {
+        try executeLocalSettings(request)
       } else if request.action == "link" {
         guard AuthTokenStore.load() == nil else {
           throw ValidationError("This Mac is already linked")
@@ -179,7 +187,7 @@ actor DesktopBackend {
               Task { await self?.setProgress(request.id, output: output) }
             })
         complete(request.id, code: code, message: output)
-        if request.action == "update", code == 0,
+        if ["update", "update_rollback"].contains(request.action), code == 0,
           Self.shouldRestartForReplacedExecutable(
             startup: before, current: Self.currentExecutableStamp(), hasRunningOperation: false)
         {
@@ -227,10 +235,12 @@ actor DesktopBackend {
     if let arguments = autopilotArguments(for: request, config: config) { return arguments }
     switch request.action {
     case "start":
-      // Never `--solo`: on a paired Mac this `start` starts the pair (`Start.appStartOptions`) and local mode refuses
-      // (`Desktop.StartLocal.pairRefusal`), so the app never serves a paired Mac alone.
+      // `--solo` only when asked (`solo`): otherwise, on a paired Mac this `start` starts the pair
+      // (`Start.appStartOptions`) and local mode refuses (`Desktop.StartLocal.pairRefusal`). Alone, the mode is a flag of
+      // `start --solo` itself, Only me (`--local`) included.
+      if request.solo == true { return ["start", "--solo"] + models + servingFlag(request, local: "--local") + config }
       guard request.local != true else { return ["desktop", "start-local"] + models + config }
-      return ["start"] + models + (request.endpoint == true ? ["--local-endpoint"] : []) + config
+      return ["start"] + models + servingFlag(request, local: nil) + config
     case "switch":
       return localActive() ? ["desktop", "start-local"] + models + config : ["switch"] + models
     case "stop": return localActive() ? ["desktop", "stop-local"] + config : ["stop"]
@@ -245,8 +255,23 @@ actor DesktopBackend {
         "desktop", "configure-cooling", "--enabled", request.enabled == true ? "true" : "false",
         "--speed", String(request.speed ?? 70), "--temperature", String(request.temperature ?? 50),
       ]
+    case "cluster_leave": return ["cluster", "leave", "--yes"]
+    case "sandbox_pause": return ["sandbox", "pause"]
+    case "sandbox_resume": return ["sandbox", "resume"]
+    case "sandbox_uninstall": return ["sandbox", "uninstall", "--yes"]
+    case "route": return ["route", request.route!] + config
+    case "tool_setup": return ["start", "--\(request.tool!)"] + config
+    case "update_rollback": return ["update", "--rollback", "--yes"] + config
     default: throw ValidationError("Unsupported action")
     }
+  }
+
+  /// The mode flag a start passes, saved in `[local] mode` (`LocalFirstOptions.savesModeFlag`): Both, me first
+  /// (`endpoint`, `--local-endpoint`), the Darkbloom network (`network`, `--network`), or Only me where `start` takes it.
+  static func servingFlag(_ request: DesktopAction, local: String?) -> [String] {
+    if request.local == true, let local { return [local] }
+    if request.endpoint == true { return ["--local-endpoint"] }
+    return request.network == true ? ["--network"] : []
   }
 
   func setLink(_ id: String, _ value: JSONValue) {

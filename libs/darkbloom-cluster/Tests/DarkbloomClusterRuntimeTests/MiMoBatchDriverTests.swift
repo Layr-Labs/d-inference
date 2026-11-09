@@ -51,10 +51,12 @@ struct MiMoBatchDriverTests {
             let pair = try BatchPair(width: 3)
             let older = try pair.request(length: 6, chunk: 3, output: 24), newer = try pair.request(length: 5, chunk: 3, output: 24)
             try pair.reserve(older); try pair.reserve(newer)
+            // Once both lanes hold tokens, MiMo's own gate on a Mac whose memory is taken (a real refusal, no fault).
             pair.memoryRefused[refusing] = {
                 let sessions = pair.executors[refusing].sessions
                 let both = sessions.count == 2 && sessions.values.allSatisfy { $0.committedTokens > $0.request.promptCount + 2 }
-                guard both, !pair.flag("refused") else { return false }
+                guard both, !pair.flag("refused"), try TakenMemory.refusesLane({ try TakenMemory.mimo().requireLive() })
+                else { return false }
                 pair.set("refused"); return true
             }
             try pair.run()

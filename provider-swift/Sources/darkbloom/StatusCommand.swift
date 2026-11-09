@@ -71,6 +71,7 @@ struct Status: AsyncParsableCommand {
         }
 
         print(bootSecurityStatusLine(BootSecuritySnapshot.live()))
+        print(Self.fanControlLine(Fan.Status.report()))
 
         if let scheduleConfig = config.schedule,
            let schedule = Schedule.from(config: scheduleConfig) {

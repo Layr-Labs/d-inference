@@ -202,7 +202,9 @@ extension ClusterPairSummary {
         // A part offered for a model the coordinator's catalog does not list: the coordinator never pairs it.
         if let refusal = ClusterLocalServing.pairRefusal(notice: own?.child.notice) { return (.notServing, refusal) }
         // A part registered with the coordinator as a pair member, before its pair line: the coordinator may still pair it.
-        if own?.child.notice == ClusterLocalServing.offeredNotice { return (.loading, nil) }
+        // Only rank 0's part writes that line, so on the Mac that follows this view can't tell a serving pair from a
+        // loading one (journey 3, D1: "loading" for as long as the pair served); the leading Mac's answer says which.
+        if own?.child.notice == ClusterLocalServing.offeredNotice { return (own?.sessionLeader == false ? .unknown : .loading, nil) }
         if let session = own?.session, session.observed {
             guard session.ready else { return (.loading, nil) }
             return localOnly ? (.serving, nil) : (.notServing, ClusterOnboardingReady.notOfferedReason(nil))

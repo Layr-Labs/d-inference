@@ -2735,7 +2735,13 @@ pair in one `Cluster:` line (`ClusterPairSummary.statusLine`). `darkbloom status
 `darkbloom cluster status` gives the same pair block with `--json` and exit
 statuses for scripts. `darkbloom doctor` prints the same `Cluster:` line under
 its `Daemon:` line, which reads `Daemon: single-Mac serving off (this Mac serves in its two-Mac cluster)`
-when no provider runs (`Doctor.daemonLine`).
+when no provider runs (`Doctor.daemonLine`). Doctor's line reads the pair as
+`status` does (`Doctor.clusterLine`): on the Mac that follows, the leading Mac's
+answer, waited for up to 10 s. That Mac's own view can't tell a serving pair
+from a loading one, since only the leading Mac's part writes the pair's state,
+so `status --solo` says `started` there rather than `loading`. While the other
+Mac isn't answering, the line names no roles: ``Cluster: this Mac is paired ·
+the other Mac (…) isn't answering · …``.
 
 Output includes:
 

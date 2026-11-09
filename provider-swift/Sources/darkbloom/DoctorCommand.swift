@@ -74,7 +74,7 @@ struct Doctor: AsyncParsableCommand {
         print("Coordinator: \(coordinatorURL)")
         print("Model CDN: \(ModelDownloader.resolveCDNURL())")
         print(Self.daemonLine(running: daemonRunning, paired: pair.paired, unsure: pair.pairingUnreadable))
-        if pair.paired { print(pair.statusLine) }
+        if let line = await Self.clusterLine(config: configOptions.config) { print(line) }
 
         // §16.5: did this box serve the KV backend it was configured for,
         // and is the snapshot that answer comes from still being refreshed?

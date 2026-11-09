@@ -481,7 +481,7 @@ struct ClusterPairSummary: Sendable, Equatable {
 
     // MARK: - darkbloom status and doctor (no network)
 
-    /// One line for `darkbloom status --solo` and `darkbloom doctor`, from what this Mac knows by itself.
+    /// One line for `darkbloom status --solo` (this Mac's own view) and `darkbloom doctor` (status's read, `Doctor.clusterLine`).
     var statusLine: String {
         guard paired else { return "Cluster: not in a cluster" }
         if pairingUnreadable {

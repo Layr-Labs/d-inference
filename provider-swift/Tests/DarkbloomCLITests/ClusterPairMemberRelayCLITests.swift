@@ -176,6 +176,21 @@ struct ClusterPairMemberRelayCLITests {
         }
     }
 
+    /// Only a Mac that relays the pair's API on every address says its port answers 503 for now: with the pair's API kept
+    /// on the leading Mac (loopback or one address), `status`, `darkbloom local` and `doctor` have no such line, whatever
+    /// this Mac's cluster service last said of a relay, with Both, me first and with Only me.
+    @Test func aPairKeptOnItsLeadingMacGivesAMemberNo503Line() {
+        for bind in ["127.0.0.1", "192.168.1.5"] {
+            for onlyMe in [false, true] {
+                var kept = member(bind: bind)
+                if onlyMe { kept = Self.onlyMe(kept) }
+                kept.relayRankZeroAway = true
+                kept.relayRankZeroAPIDown = true
+                #expect(kept.memberAPIUnavailable == nil, "\(bind), Only me \(onlyMe)")
+            }
+        }
+    }
+
     /// The Mac that runs the pair's API says the other Mac answers on its own port too, once the API is on every address:
     /// from where it listens, so an API on this Mac only (Both while Darkbloom doesn't have the pair) says it runs none.
     @Test func theLeadersStatusSaysTheOtherMacAnswersToo() {

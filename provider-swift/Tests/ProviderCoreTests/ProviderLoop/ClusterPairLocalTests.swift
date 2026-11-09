@@ -288,9 +288,13 @@ struct ClusterPairLocalTests {
     /// While the pair does not serve (before its slot, after it retired), a
     /// local request is refused for now: 503, never the member guard's
     /// untyped error (a 500). Another model is not this pair's: 404. A refused
-    /// request never counts as the owner's use.
+    /// request never counts as the owner's use. The API's gate
+    /// (`LocalPairGateResponder`) opens with admission and closes again when
+    /// the slot retires, so a request after a retirement is refused there,
+    /// without waiting for the loop.
     @Test func aLocalRequestWhileThePairIsNotServingIs503() async throws {
         let loop = try await pairLeaderLoop()
+        let gate = await loop.localResponseTracker
         func refusal(_ model: String = clusterPairFixtureModel) async -> Error? {
             do { _ = try await loop.acquireModelForLocal(model); return nil } catch { return error }
         }
@@ -301,9 +305,11 @@ struct ClusterPairLocalTests {
 
         let owner = ScriptedPairOwner()
         let id = try await loop.publishClusterPairSlot(clusterPairSpecification(owner), owner: owner)
+        #expect(!gate.pairRefuses, "the gate opens with admission")
         let served = try await loop.acquireModelForLocal(clusterPairFixtureModel)
         await served.releaseToken.fire()
         #expect(await loop.retireClusterPairSlot(id, reason: "test"))
+        #expect(gate.pairRefuses, "and closes when the slot retires")
         let late = try #require(await refusal())
         #expect(late is MultiModelBatchSchedulerEngineError && localStatus(late) == 503, "\(late)")
         #expect(await loop.clusterPairLocalCounts == (0, 0, 0))

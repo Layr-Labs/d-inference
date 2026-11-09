@@ -298,11 +298,16 @@ public enum ClusterPlacementFlow {
         // ranked. A developer's forced mode is placed anyway, and the plan says what it drops.
         let (parity, parityRefusal) = ClusterModeParity.apply(to: &policy, capability: capability, layout: layout,
             forced: developerForced != nil) { try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: $0, link: link) }
-        // A singleton tensor placement saves the widest width its owner's quotes admit on both Macs now. One call
-        // initializes a constant `result`, so the sizing's plans stay off this frame, which a deep planner stack shares.
+        // A singleton tensor placement saves the widest width its owner's quotes admit on both Macs now, and a plain
+        // pipeline of a family whose pipeline lanes are qualified the widest its lanes' state admits on both Macs now.
+        // Each sizing's plans stay in its own frame: this frame, which a deep planner stack shares, holds just the one
+        // plan it keeps.
         var batchLanes = batchScope?.lanes
-        let result = try ClusterPlacementTensorWidth.plan(devices: devices, layout: layout, policy: policy, link: link,
+        var result = try ClusterPlacementTensorWidth.plan(devices: devices, layout: layout, policy: policy, link: link,
             quotes: tensorWidthQuotes, lanes: &batchLanes)
+        try ClusterPlacementPipelineWidth.size(&result, devices: devices, layout: layout, policy: policy, link: link,
+            maximumLanes: ClusterPlacementPipelineWidth.qualifiedLanes(adapter: ClusterRuntimeAdapter(rawValue: capability.adapterID),
+                hasPrivateImages: capability.hasPrivateImages), lanes: &batchLanes)
         var lines = (developerForced.map(ClusterForcedModeSetting.lines) ?? [])
             + (benchCap.map(ClusterPlannerBenchCap.lines(capBytes:)) ?? []) + (benchChip.map(ClusterBenchChip.lines(chipName:)) ?? [])
             + servedLines
@@ -341,6 +346,7 @@ public enum ClusterPlacementFlow {
         lines += gpuLimitLines(result, profiles: [local.id: localProfile, peer.id: peerProfile])
         if let batchLanes {
             lines += ["Concurrent request memory", "  \(batchLanes) independent histories, charged at the quoted request bound on both Macs. Stage-rate predictions remain single-request estimates; no batch speed is inferred from the lane count."]
+            if batchScope == nil, result.chosen?.mode == .pipeline { lines.append(ClusterPlacementPipelineWidth.serialPrefillLine) }
         }
         if records.restrictsShapes {
             lines.append("Diverged placements")

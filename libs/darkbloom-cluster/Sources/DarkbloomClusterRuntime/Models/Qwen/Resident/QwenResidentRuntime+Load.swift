@@ -332,6 +332,25 @@ extension QwenResidentRuntime {
                         rank: collective.rank, mode: mode, speculativeTerms: speculativeTerms)
                     try admitted.allowance.requireLive(additionalNativeBytes: admitted.extraNativeBytes,
                         additionalHostBytes: admitted.extraHostBytes)
+                    // A width of lanes (the setup's saved width) is admitted whole: every lane at the memory plan's
+                    // request, charged as the lane book charges them all held at once, beside the stage. That is the
+                    // figure its placement priced (`ClusterPlacementPolicy.pipelineLanes`). Each lane is still gated
+                    // live when it is reserved.
+                    if batch.batching {
+                        let reserved = try QwenBatchLaneBook.chargeBytes(lanes: batch.lanes, allowance: maximum)
+                        let context = admission.memoryProfile.maximumContextTokens
+                        do {
+                            try maximum.requireLive(additionalNativeBytes: QwenLongPrefillCheckedBytes.sum([
+                                reserved - maximum.reservedBytes, prefill?.extraNativeBytes ?? 0, split?.extraNativeBytes ?? 0]),
+                                additionalHostBytes: QwenLongPrefillCheckedBytes.sum([prefill?.extraHostBytes ?? 0,
+                                    split?.extraHostBytes ?? 0]))
+                        } catch {
+                            throw ProbeError("Resident load refused: \(batch.lanes) requests at once, each of \(context) context "
+                                + "tokens, do not fit on rank \(collective.rank) now (\(error))")
+                        }
+                        log("darkbloom-resident-lanes-v1 rank=\(collective.rank) lanes=\(batch.lanes) context=\(context)"
+                            + " reserved=\(reserved)")
+                    }
                     servingContext = admitted.contextTokens
                     prefixBudget = QwenStagePrefixCache.budget(roomBytes: admitted.roomBytes)
                     log("darkbloom-prefix-v1 rank=\(collective.rank) budget_bytes=\(prefixBudget ?? 0)"

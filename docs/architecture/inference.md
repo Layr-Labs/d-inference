@@ -552,7 +552,8 @@ The flow says which keys a wait acts on (`ClusterOnboardingConsole.key(milliseco
 q leaves the start's waits, and a copy or the pairing's last confirmation takes
 none, so the app offers a key only where the flow honours it; a terminal reads
 any key as before. A cancel, or the input's end, answers every later list with
-nothing and every wait that takes q with q. The desktop API's session runs it
+nothing and every wait that takes q with q, and a start not begun yet stops before
+its first change (`ClusterOnboardingAppConsole.guarding`, at `adopt`). The desktop API's session runs it
 ([cluster setup session](../reference/desktop-control.md#cluster-setup-session)).
 
 A DevNet build is installed as `Darkbloom Dev.app`, and its CLI is

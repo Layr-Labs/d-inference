@@ -255,6 +255,19 @@ public final class ClusterOnboardingAppConsole: ClusterOnboardingConsole, @unche
         }
     }
 
+    /// `operations` as the app runs them: once the app cancelled (or its input closed), a start that hasn't changed the
+    /// pair yet stops before its first change (`adopt`). Work that takes no key (planning, a copy) runs on after a
+    /// cancel, and a terminal's q would only stop the start at its wait, after both Macs were set up again.
+    public func guarding(_ operations: ClusterOnboardingOperations) -> ClusterOnboardingOperations {
+        var guarded = operations
+        let adopt = operations.adopt
+        guarded.adopt = { [self] index in closed ? .failure(.init([Self.cancelledStartLine])) : adopt(index) }
+        return guarded
+    }
+
+    /// Said where a cancelled start stops (`guarding`).
+    public static let cancelledStartLine = "Cancelled: nothing started."
+
     /// The input ended, the app cancelled, or the events can no longer be written.
     public var closed: Bool {
         condition.lock()

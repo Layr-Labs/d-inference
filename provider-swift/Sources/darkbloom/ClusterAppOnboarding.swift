@@ -19,7 +19,8 @@ extension Cluster.Setup {
         do {
             try await requireNewPairApproval(request: request, gate: appWaitlistGate(console: console, access: .live(configPath: config)))
             let settings = try onboardingSettings(config: config, modelDir: modelDir, worker: worker, request: request)
-            let operations = forApp(withServingChoice(try ClusterOnboardingOperations.live(settings), config: config, request: request))
+            let operations = forApp(withServingChoice(try ClusterOnboardingOperations.live(settings), config: config, request: request),
+                                    console: console)
             let instance = try ClusterConsoleInstanceLock.acquire()
             code = await Task.detached { ClusterOnboardingDriver.run(operations, console: console, request: request) }.value
             withExtendedLifetime(instance) {}
@@ -56,9 +57,9 @@ extension Cluster.Setup {
     /// The live operations as the app's console runs them. Local Network's prompt names Darkbloom: the desktop API runs
     /// this setup, never a terminal app. "Log in on this Mac" reads the login this Mac has now: `darkbloom login` would
     /// wait for a code no app screen shows, so the app's own sign-in (or `darkbloom login` in Terminal) logs this Mac in
-    /// and the choice then goes on.
-    static func forApp(_ live: ClusterOnboardingOperations) -> ClusterOnboardingOperations {
-        var operations = live
+    /// and the choice then goes on. A start the app cancelled stops before its first change (`guarding`).
+    static func forApp(_ live: ClusterOnboardingOperations, console: ClusterOnboardingAppConsole) -> ClusterOnboardingOperations {
+        var operations = console.guarding(live)
         operations.commandApp = { ClusterOnboardingCommand.app }
         operations.login = { AuthTokenStore.load() != nil }
         return operations

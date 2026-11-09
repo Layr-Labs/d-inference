@@ -341,7 +341,8 @@ A cancel answers as q and escape do in Terminal: the list asked now, and every
 later one, returns nothing, and every wait that takes `q` gets it, so the setup
 ends at its next question or wait in its own words (``Cancelled: nothing paired.``,
 ``Nothing changed.``, …). Work that takes no key, such as a copy, runs to its end
-first. The child's input ending is a cancel too.
+first, and a start then stops before its first change with ``Cancelled: nothing started.``
+(`ClusterOnboardingAppConsole.guarding`). The child's input ending is a cancel too.
 
 ## Account session and refresh
 

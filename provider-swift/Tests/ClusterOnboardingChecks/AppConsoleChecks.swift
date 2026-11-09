@@ -17,6 +17,7 @@ extension OnboardingChecks {
         appSudoNeedsTheTerminal()
         appLocalNetworkWaitOffersCancel()
         appLocalNamesTheModel()
+        appCancelDuringACopyStartsNothing()
     }
 
     static let appNeedsTerminal = "Run `darkbloom cluster` in a Terminal window on this Mac."
@@ -53,7 +54,8 @@ extension OnboardingChecks {
             }
             Thread.detachNewThread { [self] in
                 let console = ClusterOnboardingAppConsole(input: source, output: writer, needsTerminal: OnboardingChecks.appNeedsTerminal)
-                let code = ClusterOnboardingDriver.run(operations, console: console, request: request)
+                // As `darkbloom cluster --app-console` runs them (`Cluster.Setup.forApp`).
+                let code = ClusterOnboardingDriver.run(console.guarding(operations), console: console, request: request)
                 console.finish(code)
                 Darwin.close(writer)
                 lock.withLock { exitCode = code }
@@ -354,5 +356,21 @@ extension OnboardingChecks {
         expect(run.of("result").last?["ok"] as? Bool == true, "app local: the outcome block")
         expect(recorder.all == ["ensureService", "reachMembers", "planModels", "recheckFit 0", "adopt 0", "setScope local 0.0.0.0", "serve", "waitReady", "testRequest"],
                "app local: the terminal's operations: \(recorder.all)")
+    }
+
+    /// A cancel while a copy runs (no key stops it) lets the copy finish, then stops before the start changes the pair.
+    static func appCancelDuringACopyStartsNothing() {
+        let recorder = Recorder()
+        let run = AppRun(operations(recorder, resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB"), pairEvents: [], pairResult: .failed([]),
+            choices: copyChoices, provisionReportPause: 1_000_000))
+        run.choose(run.question("choose"), 0)
+        run.choose(run.question("choose", count: 2), 0)
+        let deadline = Date().addingTimeInterval(10)
+        while run.of("progress").isEmpty, Date() < deadline { usleep(10_000) }
+        run.cancel()
+        expect(run.finish() == 1, "app copy cancel: exit 1")
+        expect(run.said.last == "  " + ClusterOnboardingAppConsole.cancelledStartLine, "app copy cancel: said: \(run.said.suffix(3))")
+        expect(recorder.all == ["ensureService", "reachMembers", "planModels", "provision 0 copy", "recheckFit 0"],
+               "app copy cancel: copied, nothing adopted or started: \(recorder.all)")
     }
 }

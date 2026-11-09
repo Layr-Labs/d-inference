@@ -196,9 +196,7 @@ struct DesktopSandboxSetupTests {
                                             withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: directory) }
     let script = directory.appendingPathComponent("fake-darkbloom")
-    try "#!/bin/sh\necho \"Error: Unknown option '--json-events'\" >&2\nexit 64\n"
-      .write(to: script, atomically: true, encoding: .utf8)
-    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
+    try DesktopWorkerTests.writeScript("echo \"Error: Unknown option '--json-events'\" >&2\nexit 64", to: script)
     try await DesktopStorage.$directoryForTesting.withValue(directory.appendingPathComponent("desktop")) {
       let backend = DesktopBackend(configPath: directory.appendingPathComponent("provider.toml").path, executable: script)
       let id = UUID().uuidString
@@ -219,8 +217,7 @@ struct DesktopSandboxSetupTests {
     defer { try? FileManager.default.removeItem(at: directory) }
     let script = directory.appendingPathComponent("fake-darkbloom")
     let line = SandboxSetupEvents.line("A job is running on this Mac, so the installer changed nothing.")
-    try "#!/bin/sh\nprintf '%s\\n' '\(line)'\nexit 4\n".write(to: script, atomically: true, encoding: .utf8)
-    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
+    try DesktopWorkerTests.writeScript("printf '%s\\n' '\(line)'\nexit 4", to: script)
     try await DesktopStorage.$directoryForTesting.withValue(directory.appendingPathComponent("desktop")) {
       let backend = DesktopBackend(configPath: directory.appendingPathComponent("provider.toml").path, executable: script)
       let id = UUID().uuidString

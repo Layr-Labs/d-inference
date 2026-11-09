@@ -14,8 +14,7 @@ struct DesktopClusterSandboxResourcesTests {
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     let runs = directory.appendingPathComponent("runs")
     let script = directory.appendingPathComponent("fake-darkbloom")
-    try "#!/bin/sh\necho \"$1 $2\" >> '\(runs.path)'\n\(body)\n".write(to: script, atomically: true, encoding: .utf8)
-    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
+    try DesktopWorkerTests.writeScript("echo \"$1 $2\" >> '\(runs.path)'\n\(body)", to: script)
     return (directory, script, runs)
   }
 

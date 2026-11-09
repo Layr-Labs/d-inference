@@ -47,7 +47,7 @@ public enum AbsentProviderRecovery {
                          now: Double, bootTime: Double) -> WatchdogDecision {
         WatchdogPolicy.decide(
             autoRestartEnabled: snapshot.autoRestart,
-            providerLoaded: snapshot.loaded,
+            providerLoaded: snapshot.loaded || snapshot.eligible,
             providerRunning: snapshot.running,
             downSince: WatchdogPolicy.effectiveDownSince(state.downSince, bootTime: bootTime),
             now: now)

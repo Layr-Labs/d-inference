@@ -59,8 +59,27 @@ struct Watchdog: AsyncParsableCommand {
         // and update together at the cluster's slot, S18); a watchdog that
         // updated one member alone would leave the pair on mixed code.
         let pairServes = ClusterService.pairServesHere()
-        let autoUpdate = Self.updates(autoUpdate: settings.autoUpdate, jobIsClusterMember: LaunchAgent.installedJobIsClusterMember(),
+        let jobIsClusterMember = LaunchAgent.installedJobIsClusterMember()
+        let autoUpdate = Self.updates(autoUpdate: settings.autoUpdate, jobIsClusterMember: jobIsClusterMember,
                                       pairServes: pairServes)
+        // A single-Mac job launchd lost while it was enabled (booted out, not stopped) comes back after the same
+        // grace, under the lifecycle lease stop and update hold; its launchctl calls are bounded
+        // (`AbsentProviderRecovery`). Never for a cluster member's job, or while the pair runs here: the pair's
+        // own supervision owns those, as in the loaded path below.
+        if !pairServes && !jobIsClusterMember {
+            do {
+                let outcome = try AbsentProviderRecovery.handleTick(
+                    updater: SelfUpdater(coordinatorBaseURL: settings.coordinatorURL),
+                    autoRestart: { Self.settings(configPath: configPath).autoRestart })
+                if outcome == .unknown {
+                    Self.log("absent provider bootstrap outcome unknown; guard retained, issuance not recorded")
+                }
+                if outcome != .loaded { return }
+            } catch {
+                Self.log("absent provider recovery deferred: \(error)")
+                return
+            }
+        }
         let liveness = WatchdogProbe.probeProvider(now: now)
         let daemonState = DaemonStateFile.read()
         let providerActive = WatchdogProbe.providerActive(
@@ -83,7 +102,7 @@ struct Watchdog: AsyncParsableCommand {
 
         // A single-Mac provider job left loaded on a Mac whose pair is started is not revived: it would take the serving
         // lock the pair's part needs the moment that part lets it go (`ClusterService.pairServesHere`).
-        let pairOwnsServing = Self.pairOwnsServing(providerActive: providerActive, jobIsClusterMember: LaunchAgent.installedJobIsClusterMember(),
+        let pairOwnsServing = Self.pairOwnsServing(providerActive: providerActive, jobIsClusterMember: jobIsClusterMember,
                                                    pairServes: pairServes)
         let decision = WatchdogPolicy.decide(
             autoRestartEnabled: settings.autoRestart,

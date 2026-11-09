@@ -2878,6 +2878,21 @@ Resolution happens before submit so a bad parser name never orphans a request.
 
 `.kimiK2` and `.minimaxM2` exist but are selectable only explicitly.
 
+Every parsed call's arguments are read by the declared parameter types
+(`ToolCallProcessor`, `ToolArgumentNormalization.normalize`): textual values,
+such as Qwen XML parameters, become numbers, booleans, objects or arrays where
+the schema allows exactly one reading, and a string parameter keeps its text,
+`null` included. A parameter the client declares nullable
+(`"type": ["integer", "null"]`, or `anyOf` with a `null` branch) reaches the SDK
+as `"nullable": true` beside one type (`ToolSchemaNormalization`). The SDK adds
+null to that node's types, so a model's `null` (also `none` or `nil`) becomes
+JSON null, and its `ToolSchemaValidator` lets null through that node's type
+check while `enum`, `const` and combinators still apply; the provider's own
+validator already accepts null there (`ToolConstraintValidation`). Sources:
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/ToolArgumentNormalization.swift`
+(`declaredTypes`),
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/ToolSchemaValidator.swift`.
+
 Required/named `tool_choice` on a Qwen 3.5-family checkpoint accepts its
 inferred `.qwen35` parser or `.xmlFunction`. The coordinator routes those
 requests only to builds listed in `tool_constraint_models`, which

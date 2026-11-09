@@ -23,10 +23,25 @@ enum ToolChoiceEnforcementPolicy {
     /// withheld until they validate, and the pinned template renders media in
     /// tool results.
     static func advertisesNativeMediaTools(for model: ModelInfo) -> Bool {
-        let family = model.modelType == "diffusion_gemma"
-            || NemotronSuperServingPolicy.isServingIdentity(modelID: model.id, modelType: model.modelType)
+        let family = model.modelType == "diffusion_gemma" || servesMediaWithTextControls(model)
         return family && model.isVision == true
             && model.templateRenderOK == true && advertisesCapability(for: model)
+    }
+
+    /// Per-model wire capability (`native_media_controls`): a JSON response
+    /// format and non-empty tools are served together with image or video
+    /// input. Only the managed Super owner, whose media route takes the text
+    /// route's request plan, with the same vision and template checks as
+    /// `advertisesNativeMediaTools`.
+    static func advertisesNativeMediaControls(for model: ModelInfo) -> Bool {
+        servesMediaWithTextControls(model) && model.isVision == true
+            && model.templateRenderOK == true && advertisesCapability(for: model)
+    }
+
+    /// The managed Super serving identity: its media route renders from the
+    /// same request plan as text (`NemotronSuperRequestPlan`).
+    private static func servesMediaWithTextControls(_ model: ModelInfo) -> Bool {
+        NemotronSuperServingPolicy.isServingIdentity(modelID: model.id, modelType: model.modelType)
     }
 
     /// Bonsai media uses the same withheld/schema-validated native tool frames

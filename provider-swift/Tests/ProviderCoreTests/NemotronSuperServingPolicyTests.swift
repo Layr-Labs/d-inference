@@ -870,19 +870,28 @@ struct NemotronSuperServingPolicyTests {
         #expect(!ToolChoiceEnforcementPolicy.advertisesCapability(for: info(Self.superID, "qwen3")))
     }
 
-    /// Forced tool choice with media, and media in tool results, are
-    /// advertised (`native_media_tools`) for the registry id with vision and
-    /// a template that renders: the media route renders from the same plan
-    /// as text. Another id, or a build without either, is not.
+    /// Forced tool choice with media, and media in tool results
+    /// (`native_media_tools`), and JSON output and tools with media
+    /// (`native_media_controls`) are advertised for the registry id with
+    /// vision and a template that renders: the media route renders from the
+    /// same plan as text. Another id, or a build without either, is not.
     @Test func nativeMediaToolsAreAdvertisedForTheServingIdentityOnly() {
         func info(_ id: String, vision: Bool? = true, renders: Bool? = true) -> ModelInfo {
             ModelInfo(id: id, modelType: "nemotron_h_omni", sizeBytes: 1, estimatedMemoryGb: 1,
                       isVision: vision, templateRenderOK: renders)
         }
-        #expect(ToolChoiceEnforcementPolicy.advertisesNativeMediaTools(for: info(Self.superID)))
-        #expect(!ToolChoiceEnforcementPolicy.advertisesNativeMediaTools(for: info(Self.hfID)))
-        #expect(!ToolChoiceEnforcementPolicy.advertisesNativeMediaTools(for: info(Self.superID, vision: nil)))
-        #expect(!ToolChoiceEnforcementPolicy.advertisesNativeMediaTools(for: info(Self.superID, renders: false)))
+        for advertises in [ToolChoiceEnforcementPolicy.advertisesNativeMediaTools,
+                           ToolChoiceEnforcementPolicy.advertisesNativeMediaControls] {
+            #expect(advertises(info(Self.superID)))
+            #expect(!advertises(info(Self.hfID)))
+            #expect(!advertises(info(Self.superID, vision: nil)))
+            #expect(!advertises(info(Self.superID, renders: false)))
+        }
+        // Media controls are Super's alone: another native media family keeps only its tools.
+        let gemma = ModelInfo(id: "native", modelType: "diffusion_gemma", sizeBytes: 1, estimatedMemoryGb: 1,
+                              isVision: true, templateRenderOK: true)
+        #expect(ToolChoiceEnforcementPolicy.advertisesNativeMediaTools(for: gemma))
+        #expect(!ToolChoiceEnforcementPolicy.advertisesNativeMediaControls(for: gemma))
     }
 
     /// The scanner's Super branch with the pinned `config.json` and index and
@@ -902,7 +911,8 @@ struct NemotronSuperServingPolicyTests {
         let info = try #require(ModelScanner.parseModelInfo(snapshotDir: directory, modelName: Self.superID))
         let footprint = NemotronSuperServingPolicy.discoveryFootprint(sizeBytes: info.sizeBytes)
         #expect(info.modelType == "nemotron_h_omni" && info.quantization == "nvfp4")
-        #expect(info.isVision == true && info.templateRenderOK == true && info.nativeMediaTools == true)
+        #expect(info.isVision == true && info.templateRenderOK == true && info.nativeMediaTools == true
+            && info.nativeMediaControls == true)
         #expect(info.estimatedMemoryGb == footprint.estimatedMemoryGb)
         #expect(EngineV2SupportedModels.isSupported(model: info))
         // Any other id of the same bytes keeps the ordinary text-only scan.

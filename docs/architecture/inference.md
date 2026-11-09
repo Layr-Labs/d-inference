@@ -821,7 +821,10 @@ function), `parallel_tool_calls` and `min_p: 0` are served with media, and
 every control the text route refuses is refused with media in the same way
 (`invalid_request`). Super therefore advertises `native_media_tools`
 (`ToolChoiceEnforcementPolicy.advertisesNativeMediaTools`), and the coordinator
-routes forced tool choice with media, and media in tool results, to it.
+routes forced tool choice with media, and media in tool results, to it. It also
+advertises `native_media_controls` (`advertisesNativeMediaControls`): during
+rollout the coordinator sends a Super request with image or video and a JSON
+response format or tools only to a Mac that advertises it.
 `NemotronSuperLocalImageBinding.encodedBody` keeps only the media rules. Each
 refusal names its cause by its failure code (`SuperHTTPErrors.map`):
 

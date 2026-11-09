@@ -82,6 +82,7 @@ public struct ClusterMemberPreparation: Sendable {
         var model = scanned
         model.isVision = nil
         model.nativeMediaTools = nil
+        model.nativeMediaControls = nil
         return model
     }
 

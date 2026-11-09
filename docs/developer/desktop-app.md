@@ -1066,7 +1066,7 @@ menu bar item stays available. Passing `--hidden` also starts hidden.
 | `desktop-app/src/main/backend.ts` | runtime discovery, signature checks and the native API client |
 | `desktop-app/src/main/installProgress.ts` | installer output: bounded line reader, plain-language steps, sanitized failure reason |
 | `desktop-app/src/main/hardware.ts` | `HardwareWatch`: the reference-counted hardware SSE client, hardware event parser and size guard |
-| `desktop-app/src/main/sse.ts` | server-sent event framing (`splitFrames`, `frameData`) shared by the state and hardware streams |
+| `desktop-app/src/main/sse.ts` | server-sent event framing (`splitFrames`, `frameData`, `eventPayload`) and the wait before a stream opens again (`sleep`), shared by the state, hardware and cluster setup streams |
 
 `Backend.verifyRuntime` checks the runtime's code signature in packaged builds before
 running `desktop ensure` or `update`.

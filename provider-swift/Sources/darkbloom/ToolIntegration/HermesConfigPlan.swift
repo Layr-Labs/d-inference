@@ -65,7 +65,18 @@ enum HermesConfigPlan {
     /// Where the provider's block in a config's `bytes` points: its `api`, and the file its `key_cmd` reads
     /// (`/bin/cat <file>`, as `plan` writes it); nil when the file has no such block or can't be read.
     static func pointer(in bytes: Data, provider: IntegrationProvider) -> ToolPointer? {
-        (try? HermesEdit(text: String(decoding: bytes, as: UTF8.self), provider: provider))?.pointer()
+        try? readPointer(in: bytes, provider: provider)
+    }
+
+    /// `pointer(in:provider:)`, saying why a file can't be read. Only `api` and `key_cmd` are read, so a key written
+    /// into the block is never kept.
+    static func readPointer(in bytes: Data,
+                            provider: IntegrationProvider) throws(ToolAddress.Unreadable) -> ToolPointer? {
+        do {
+            return try HermesEdit(text: String(decoding: bytes, as: UTF8.self), provider: provider).pointer()
+        } catch {
+            throw ToolAddress.Unreadable(reason: error.reason)
+        }
     }
 
     private static func floorReason(_ models: [IntegrationModel]) -> String {

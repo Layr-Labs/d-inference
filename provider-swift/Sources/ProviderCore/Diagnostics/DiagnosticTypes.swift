@@ -17,10 +17,12 @@ public enum DiagnosticLevel: String, Sendable, Equatable, Codable {
     }
 }
 
-/// The sections of a diagnostic report, ordered by causal reading order
-/// (hardware → security → attestation key → trust → traffic → runtime →
-/// connectivity → version → billing). Operators read top-to-bottom.
+/// The sections of a diagnostic report: first how this Mac serves its owner (the
+/// local API), then causal reading order (hardware → security → attestation key →
+/// trust → traffic → runtime → connectivity → version → billing). Operators read
+/// top-to-bottom.
 public enum DiagnosticSection: Int, Sendable, Equatable, CaseIterable {
+    case localAPI
     case hardware
     case security
     case attestationKey
@@ -35,6 +37,7 @@ public enum DiagnosticSection: Int, Sendable, Equatable, CaseIterable {
 
     public var title: String {
         switch self {
+        case .localAPI: return "LOCAL API   (how this Mac serves you and your tools)"
         case .hardware: return "HARDWARE & GPU"
         case .security: return "SECURITY POSTURE"
         case .attestationKey: return "ATTESTATION KEY (Secure Enclave)"

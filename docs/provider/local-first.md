@@ -336,6 +336,28 @@ Other lines you may see:
 
 `darkbloom local` adds the same choice under the address.
 
+`darkbloom doctor` checks the whole setup, and its report opens with it:
+
+```text
+LOCAL API   (how this Mac serves you and your tools)
+  [INFO] mode — Both, me first — Darkbloom pauses while you use this Mac, back after 2 idle minutes (serving now)
+  [PASS] address — http://127.0.0.1:8001/v1 — up on port 8001
+  [PASS] key file — ~/.darkbloom/local_token (`darkbloom local` shows the key)
+  [PASS] OpenCode — points here (~/.config/opencode/opencode.jsonc)
+  [WARN] Hermes — points at http://127.0.0.1:8000/v1, not this Mac's local API (http://127.0.0.1:8001/v1) (~/.hermes/config.yaml)
+         ↳ fix: `darkbloom --hermes`
+```
+
+Each problem names the command that fixes it, and no line shows the key. A
+local API that stops answering is started again the way it serves now: Only me
+in a terminal with Ctrl-C there, then `darkbloom start --local --here`; the
+background service with `darkbloom restart`, which serves your saved choice.
+With **Only me**, also while it loads its models, `doctor` skips the Darkbloom
+network's checks (account, trust, App Attest, the coordinator) and says
+`darkbloom network — not needed (Only me)`. A paired Mac serving alone
+(`start --solo`) is described by what it serves, not by its pair
+([every line](./cli-reference.md#the-local-api-section)).
+
 ## If you used `--local-endpoint` before
 
 A Mac started with `--local-endpoint` serves **Both, me first**: Darkbloom

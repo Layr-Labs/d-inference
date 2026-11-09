@@ -115,7 +115,10 @@ flowchart LR
    `ToolAddress.sameAddress`: scheme, host and port in any case (the scheme's own port when none is given) and the
    path without one `/` at its end; `localhost`, `127.0.0.1` and `::1` are one host, and so is this Mac's Bonjour name
    (`Local.localHostName()`, with `.local`) for an API on every address (`ToolAddress.thisMacsNames`). Single-Mac
-   only: a paired Mac's start starts the pair and doesn't compare.
+   only: a paired Mac's start starts the pair and doesn't compare. `darkbloom doctor` reads the same blocks the same
+   way (`ToolAddress.readPointer`, the form that also says why a config that is there can't be read: not valid, or
+   larger than 4 MiB) and judges each tool with the same check (`ToolAddress.miss`), so the two never disagree about
+   one file (`DoctorToolSetup`, `DoctorLocalAPI`).
 
 ## Invariants
 
@@ -175,6 +178,7 @@ flowchart LR
 | Plans and refusals | `provider-swift/Sources/darkbloom/ToolIntegration/ToolConfigPlan.swift` |
 | The wait for this Mac's models | `provider-swift/Sources/darkbloom/ToolIntegration/ModelLoadWait.swift` (`ModelLoadWait`, `ModelLoads`, `LiveLine`, `InterruptWatch`) |
 | Where a tool points, after a start without a tool flag | `provider-swift/Sources/darkbloom/ToolIntegration/ToolAddress.swift` (`ToolAddress.notice`), `provider-swift/Sources/darkbloom/Start/StartCommand+Tools.swift` (`Start.noteToolsPointingElsewhere`) |
+| Where a tool points, in `darkbloom doctor` | `provider-swift/Sources/darkbloom/ToolIntegration/ToolAddress.swift` (`ToolAddress.readPointer`, `ToolAddress.miss`), `provider-swift/Sources/darkbloom/Diagnostics/DoctorToolSetup.swift`, `provider-swift/Sources/darkbloom/Diagnostics/DoctorLocalAPI.swift` |
 | Safe edits | `provider-swift/Sources/darkbloom/ToolIntegration/ToolConfigWriter.swift` (`ToolConfigWriter.apply`) |
 | Tests | `provider-swift/Tests/DarkbloomCLITests/ToolIntegration/`, `scripts/integrations/opencode-smoke.sh` |
 

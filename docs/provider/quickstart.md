@@ -218,7 +218,7 @@ not prove that the provider is serving or earning. See [attestation](./attestati
 ```bash
 darkbloom status            # how this Mac serves, live daemon state, trust level
 darkbloom local             # the local API's address and key (Only me or Both, me first)
-darkbloom doctor            # for the Darkbloom network: ✓ daemon connected, ✓ trust level, ✓ account link
+darkbloom doctor            # the local API and your tools first; with the network also ✓ trust level, ✓ account link
 darkbloom logs --last 1h    # unified logs, subsystem dev.darkbloom.provider
 ```
 

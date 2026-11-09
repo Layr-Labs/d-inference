@@ -173,8 +173,9 @@ public struct DaemonState: Codable, Sendable, Equatable {
         public var reasoningTokens: UInt64?
         /// Served requests that ended early on a coordinator cancel or a
         /// dropped connection after output had been delivered; included in
-        /// `requestsServed`, and the coordinator may not pay for them. Nil on
-        /// older runtimes.
+        /// `requestsServed`. The coordinator pays for the tokens sent when the
+        /// requester left mid-answer, and nothing when another Mac answered
+        /// first or the connection dropped. Nil on older runtimes.
         public var cancellationsPartialComplete: UInt64?
         public init(requestsServed: UInt64 = 0, tokensGenerated: UInt64 = 0, usageGaps: UInt64 = 0, promptTokensProcessed: UInt64? = nil, cachedInputTokens: UInt64? = nil, reasoningTokens: UInt64? = nil, cancellationsPartialComplete: UInt64? = nil) {
             self.requestsServed = requestsServed

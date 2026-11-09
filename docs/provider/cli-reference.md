@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-09
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -2755,10 +2755,15 @@ Output includes:
 - `Requests served since the daemon started (… ago)`: coordinator requests
   this daemon finished since it started, with output tokens only. The count
   restarts at zero when the daemon restarts or a scheduled availability window
-  opens. It includes requests that ended early on a coordinator cancel or a
-  dropped connection after output had been delivered (the next line counts
-  them when there are any; the coordinator may not pay for them) and free
-  [self-route](./self-route.md) requests to your own machine. Paid jobs are on
+  opens. It includes free [self-route](./self-route.md) requests to your own
+  machine and requests that ended early on a coordinator cancel or a dropped
+  connection after output had been delivered; the next two lines count those
+  when there are any. The coordinator pays for the tokens such a request sent
+  when its requester left mid-answer
+  ([billing: settlement anomalies](https://github.com/Layr-Labs/darkbloom-platform/blob/3ee0560639291045b288801bd594154dd1d3230e/docs/architecture/billing.md#settlement-anomalies)),
+  and nothing when another Mac answered first
+  ([`CancelDispatch`](https://github.com/Layr-Labs/darkbloom-platform/blob/3ee0560639291045b288801bd594154dd1d3230e/coordinator/internal/inference/cancellation/cancel_operations.go))
+  or the connection dropped; the daemon cannot tell these apart. Paid jobs are on
   the console's Earnings page; the console's machine card adds these counters
   up across restarts
   ([coordinator/registry/heartbeat.go](https://github.com/Layr-Labs/darkbloom-platform/blob/10b8b4fabad60e20961b1b74a8672be41c5a0a2d/coordinator/registry/heartbeat.go),

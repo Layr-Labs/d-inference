@@ -3,9 +3,11 @@ import ProviderCore
 extension Status {
     /// The served counts are this daemon process's own completions, not the
     /// coordinator's paid jobs. They restart at zero with the daemon, count
-    /// output tokens only, and include requests that ended early on a
-    /// coordinator cancel or a dropped connection, which the coordinator may
-    /// not pay for, and free requests routed to the owner's own machine. The
+    /// output tokens only, and include free requests routed to the owner's own
+    /// machine and requests that ended early after output went out. The
+    /// coordinator pays for the tokens an early-ended request sent when its
+    /// requester left mid-answer, and nothing when another Mac answered first
+    /// or the connection dropped; the daemon cannot tell these apart. The
     /// console's Earnings page is the record of paid work.
     static func servedRequestLines(state: DaemonState, now: Double) -> [String] {
         let stats = state.stats
@@ -16,8 +18,8 @@ extension Status {
         ]
         guard stats.requestsServed > 0 else { return lines }
         if let endedEarly = stats.cancellationsPartialComplete, endedEarly > 0 {
-            lines.append("  \(endedEarly) of them ended early on a coordinator cancel or a dropped connection "
-                + "and may be unpaid.")
+            lines.append("  \(endedEarly) of them ended early: paid for the tokens sent if the requester left mid-answer,")
+            lines.append("  unpaid if another Mac answered first or the connection dropped.")
         }
         lines.append("  Paid jobs are listed under Earnings in the console; requests to your own machine are free.")
         return lines

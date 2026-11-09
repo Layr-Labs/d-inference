@@ -219,6 +219,15 @@ export class Backend extends EventEmitter {
       redirect: 'error',
     });
   }
+  // The guided cluster setup's stream: the whole session on every change.
+  async openClusterSessionEvents(signal: AbortSignal) {
+    if (!this.connection) throw new Error('Runtime is not connected');
+    return fetch(`http://127.0.0.1:${this.connection.port}/control/v1/cluster/session/events`, {
+      headers: { Authorization: `Bearer ${this.connection.token}` },
+      signal,
+      redirect: 'error',
+    });
+  }
   async watch() {
     while (!this.stopped) {
       try {

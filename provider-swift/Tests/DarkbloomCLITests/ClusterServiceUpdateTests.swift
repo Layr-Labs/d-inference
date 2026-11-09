@@ -52,7 +52,7 @@ struct ClusterServiceUpdateTests {
     /// `installed` is the binary the supervisor restarts into, start-checked within `startCheckSeconds`.
     private func configuration(directory: URL, script: String = "", service: String = "/bin/sh",
                                installed: String = "/installed/darkbloom", startCheckSeconds: Double = 5,
-                               autoUpdate: Bool, clusterID: String,
+                               guardSeconds: Double = 600, autoUpdate: Bool, clusterID: String,
                                recovery: ClusterCandidateRecovery? = nil, reexecs: Recorder,
                                follow: @escaping @Sendable (@escaping @Sendable (String) -> Void,
                                                             @escaping @Sendable (String) async throws -> Void) async
@@ -63,8 +63,8 @@ struct ClusterServiceUpdateTests {
         -> ClusterMemberSupervisor.Configuration {
         var limits = ClusterMemberLivenessGuard.Limits()
         limits.intervalSeconds = 0.2
-        limits.startGraceSeconds = 600
-        limits.downSeconds = 600
+        limits.startGraceSeconds = guardSeconds
+        limits.downSeconds = guardSeconds
         return .init(executable: service, childArguments: ["-c", script], environment: ["PATH": "/usr/bin:/bin"],
             statePath: ClusterServiceAgent.supervisorStatePath(serviceDirectory: directory),
             healthPath: ClusterServiceAgent.healthPath(serviceDirectory: directory),
@@ -406,6 +406,95 @@ struct ClusterServiceUpdateTests {
         #expect(await waitUntil(seconds: 10) { (state(directory)?.runs ?? 0) >= 4 }, "the service starts again under this supervisor")
         #expect(reexecs.all.isEmpty, "a restored binary that cannot start is not restarted into")
         #expect(try install.liveRelease() == "1.0.0")
+        supervisor.requestStop()
+        #expect(await run.value == 0)
+    }
+
+    /// Release 2.0.0's cluster service as a shell: it beats as the release's service does (when `beats`) and, as the real
+    /// one does (`Cluster.Service.run`), stops in order and exits 0 when SIGTERM asks it to.
+    private static func candidateService(beats: Bool) -> String {
+        "trap 'exit 0' TERM; while :; do "
+            + (beats ? #"printf '{"pid":%d,"version":"2.0.0","phase":"serving","writtenAt":%s}' $$ "$(date +%s)" "#
+                + #"> "$DARKBLOOM_CLUSTER_MEMBER_HEALTH_FILE"; "# : "")
+            + "sleep 0.2; done"
+    }
+
+    private func recoveryState(_ install: CandidateInstall) throws -> UpdateRecoveryState {
+        try UpdateRecoveryStore(installRoot: install.installRoot, verifyCodeSignatures: false).loadState()
+    }
+
+    /// A clean stop of the candidate's cluster service that its supervisor did not ask for: `darkbloom cluster`
+    /// replacing a service started from a terminal (`ClusterService.stopDetached`), Ctrl-C there, or a `kill`. The
+    /// service stops in order and exits 0, and the supervisor starts it again. Each was counted as a failed start, and
+    /// the third quarantined a release nothing was wrong with.
+    @Test func aCleanStopTheSupervisorDidNotAskForIsNotAFailedStart() async throws {
+        let install = try CandidateInstall()
+        defer { install.cleanUp() }
+        let directory = try temporaryDirectory("cluster-update-clean-stop")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let reexecs = Recorder()
+        let supervisor = ClusterMemberSupervisor(configuration: configuration(directory: directory,
+            script: Self.candidateService(beats: true), installed: install.binary, autoUpdate: false,
+            clusterID: "pair-far-from-its-slot", recovery: ClusterCandidateRecovery(updater: install.updater),
+            reexecs: reexecs) { _, _, _ in .upToDate })
+        let run = Task { await supervisor.run() }
+        let healthPath = ClusterServiceAgent.healthPath(serviceDirectory: directory)
+        for stop in 1...3 {
+            // Once it beats, its SIGTERM trap is set: the stop is the clean one.
+            #expect(await waitUntil(seconds: 10) {
+                guard let current = state(directory)?.current, state(directory)?.runs == stop else { return false }
+                return ClusterSupervisionFiles.read(ClusterMemberHealth.self, from: healthPath)?.pid == current.pid
+            }, "run \(stop) beats")
+            let pid = try #require(state(directory)?.current?.pid)
+            kill(pid, SIGTERM)
+            #expect(await waitUntil(seconds: 10) { state(directory)?.lastRun?.pid == pid }, "run \(stop) stopped")
+        }
+        #expect(await waitUntil(seconds: 10) { (state(directory)?.runs ?? 0) >= 4 }, "started again after each stop")
+        let recovery = try recoveryState(install)
+        #expect(recovery.candidate?.release.version == "2.0.0" && recovery.candidate?.failureCount == 0)
+        #expect(recovery.quarantine == nil && reexecs.all.isEmpty)
+        #expect(try install.liveRelease() == "2.0.0")
+        supervisor.requestStop()
+        #expect(await run.value == 0)
+    }
+
+    /// A crash of the candidate's cluster service is still a failed start: the third restores the predecessor.
+    @Test func aCrashOfTheCandidateServiceIsStillAFailedStart() async throws {
+        let install = try CandidateInstall()
+        defer { install.cleanUp() }
+        let directory = try temporaryDirectory("cluster-update-crash")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let reexecs = Recorder()
+        let supervisor = ClusterMemberSupervisor(configuration: configuration(directory: directory, script: "kill -KILL $$",
+            installed: install.binary, autoUpdate: false, clusterID: "pair-far-from-its-slot",
+            recovery: ClusterCandidateRecovery(updater: install.updater), reexecs: reexecs) { _, _, _ in .upToDate })
+        let run = Task { await supervisor.run() }
+        #expect(await waitUntil(seconds: 20) { !reexecs.all.isEmpty }, "three crashes roll the candidate back")
+        let recovery = try recoveryState(install)
+        #expect(recovery.quarantine?.version == "2.0.0" && recovery.quarantine?.failureCount == 3)
+        #expect(try install.liveRelease() == "1.0.0")
+        supervisor.requestStop()
+        #expect(await run.value == 0)
+    }
+
+    /// A service that never beats is stopped by its supervisor's liveness guard; it stops in order (exit 0), and that is
+    /// still a failed start, as a start that never reaches its first heartbeat is on a single Mac.
+    @Test func aServiceTheLivenessGuardStopsIsStillAFailedStart() async throws {
+        let install = try CandidateInstall()
+        defer { install.cleanUp() }
+        let directory = try temporaryDirectory("cluster-update-guard")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let reexecs = Recorder()
+        let supervisor = ClusterMemberSupervisor(configuration: configuration(directory: directory,
+            script: Self.candidateService(beats: false), installed: install.binary, guardSeconds: 1, autoUpdate: false,
+            clusterID: "pair-far-from-its-slot", recovery: ClusterCandidateRecovery(updater: install.updater),
+            reexecs: reexecs) { _, _, _ in .upToDate })
+        let run = Task { await supervisor.run() }
+        #expect(await waitUntil(seconds: 40) { !reexecs.all.isEmpty }, "three stops by the guard roll the candidate back")
+        #expect(state(directory)?.lastRun?.end?.hasPrefix("recycled by the liveness guard") == true,
+                "\(String(describing: state(directory)?.lastRun))")
+        let recovery = try recoveryState(install)
+        #expect(recovery.quarantine?.version == "2.0.0" && recovery.quarantine?.failureCount == 3)
         supervisor.requestStop()
         #expect(await run.value == 0)
     }

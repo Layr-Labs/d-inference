@@ -379,6 +379,133 @@ struct WatchdogRecoveryIntegrationTests {
         #expect(try context.fixture.liveBinaryContents() == "2.0.0-darkbloom")
     }
 
+    // MARK: - A restart the owner asks for
+
+    /// The update's process (pid 4242) served the new release from 100 s; at 520 s the owner's `darkbloom restart`
+    /// (or `start`, or `stop` and then `start`, or a reboot) replaced it with pid 4343.
+    private static let replacedProcess = ProcessIdentity(pid: 4242, startTimeMicros: 100_000_000)
+    private static let restartedProcess = ProcessIdentity(pid: 4343, startTimeMicros: 520_000_000)
+
+    /// The watchdog after that restart: launchd runs pid 4343 (none once `crashed`), and only that pid lives.
+    private func watchdogAfterRequestedRestart(_ context: InstalledContext, crashed: Bool = false,
+                                               candidateStartupTimeoutSeconds: Double = 300) -> WatchdogRecoveryService {
+        let restarted = Self.restartedProcess
+        return makeService(updater: context.updater, restarts: context.restarts,
+                           candidateStartupTimeoutSeconds: candidateStartupTimeoutSeconds,
+                           launchSnapshot: { ProviderLaunchSnapshot(label: "io.darkbloom.provider", runs: 2,
+                                                                    process: crashed ? nil : restarted) },
+                           processAlive: { !crashed && $0 == restarted.pid })
+    }
+
+    /// The daemon state the replaced process left: the re-armed watchdog's first check reads it.
+    private static let replacedProcessState = DaemonState(pid: replacedProcess.pid, processIdentity: replacedProcess,
+                                                          version: "2.0.0", writtenAt: 519, startedAt: 100)
+
+    /// One watchdog tick while launchd runs the provider, as `Watchdog.runTick` takes it: the health observation, then
+    /// the failed-start path when that finds the candidate inactive.
+    private func healthyTick(_ watchdog: WatchdogRecoveryService, daemonState: DaemonState?, now: Double) async
+        -> WatchdogRecoveryService.HealthOutcome {
+        let health = watchdog.observeHealthyProvider(providerRunning: true, daemonState: daemonState, now: now)
+        if case .inactiveCandidate = health {
+            _ = await watchdog.recoverDownProvider(autoUpdateEnabled: false, providerProcessAlive: true, now: now)
+        }
+        return health
+    }
+
+    private func setFailedStarts(_ count: Int, _ context: InstalledContext) throws {
+        let store = recoveryStore(context.fixture)
+        var state = try store.loadState()
+        state.candidate?.failureCount = count
+        try store.writeState(state)
+    }
+
+    /// `darkbloom restart` 7 minutes after an update, before the release is promoted: the command stops the watchdog,
+    /// replaces the provider and starts the watchdog again, whose first check runs at once and still reads the daemon
+    /// state of the process it replaced. Timed from the update's launch, that was a start without a heartbeat: a failed
+    /// start, and with two before it a rollback that quarantined a release nothing was wrong with (0.10.11 on 4ae0976c,
+    /// 085f602d and a9e55a63; every release since 0.9.16 on 662f2d50). The new process's window runs from its own start.
+    @Test("a restart the owner asks for before promotion is not a failed start, with two failed starts before it")
+    func requestedRestartIsNotAFailedStart() async throws {
+        let context = try await installedCandidate()
+        defer { context.fixture.cleanup() }
+        defer { Task { await context.mock.shutdown() } }
+        try setFailedStarts(2, context)
+        let restartsBefore = context.restarts.value
+        let watchdog = watchdogAfterRequestedRestart(context)
+
+        #expect(await healthyTick(watchdog, daemonState: Self.replacedProcessState, now: 521) == .stabilizing(since: nil))
+        var outcomes: [WatchdogRecoveryService.HealthOutcome] = []
+        for now in stride(from: 560.0, through: 760, by: 60) {
+            let heartbeat = DaemonState(pid: Self.restartedProcess.pid, processIdentity: Self.restartedProcess,
+                                        version: "2.0.0", writtenAt: now - 1, startedAt: 520)
+            outcomes.append(await healthyTick(watchdog, daemonState: heartbeat, now: now))
+        }
+        #expect(outcomes == [.stabilizing(since: 560), .stabilizing(since: 560), .stabilizing(since: 560),
+                             .promoted(version: "2.0.0")], "promoted 180 s after the new process's first heartbeat")
+        let state = try recoveryStore(context.fixture).loadState()
+        #expect(state.candidate == nil && state.current?.version == "2.0.0" && state.quarantine == nil)
+        #expect(context.restarts.value == restartsBefore, "the restarted provider was never killed")
+        #expect(try context.fixture.liveBinaryContents() == "2.0.0-darkbloom")
+    }
+
+    /// The protection stays: a restarted process that sends no heartbeat of the new release within its startup window is
+    /// a failed start, timed from its own start as the update's launch is.
+    @Test("a restarted candidate that never sends its first heartbeat is a failed start, timed from its own start")
+    func requestedRestartWithoutAHeartbeatIsAFailedStart() async throws {
+        let context = try await installedCandidate()
+        defer { context.fixture.cleanup() }
+        defer { Task { await context.mock.shutdown() } }
+        let watchdog = watchdogAfterRequestedRestart(context)
+
+        for now in [521.0, 580, 700, 819] {
+            #expect(watchdog.observeHealthyProvider(providerRunning: true, daemonState: Self.replacedProcessState, now: now)
+                == .stabilizing(since: nil), "inside the restarted process's own 300 s at \(now)")
+        }
+        #expect(try recoveryStore(context.fixture).loadState().candidate?.failureCount == 0)
+        let health = watchdog.observeHealthyProvider(providerRunning: true, daemonState: Self.replacedProcessState, now: 821)
+        guard case .inactiveCandidate = health else {
+            Issue.record("expected an inactive candidate 301 s after the restart, got \(health)")
+            return
+        }
+        let outcome = await watchdog.recoverDownProvider(autoUpdateEnabled: false, providerProcessAlive: true, now: 821)
+        #expect(outcome == .restartIssued(updatedTo: nil, rolledBackTo: nil))
+        #expect(try recoveryStore(context.fixture).loadState().candidate?.failureCount == 1)
+    }
+
+    /// The down path's startup grace for a live candidate (a long preload) is timed from that process's start too.
+    @Test("a live restarted candidate inside its own startup window defers the down path — no failed start")
+    func requestedRestartDefersTheDownPathInsideItsOwnWindow() async throws {
+        // startup_preload_timeout_secs = 420: the window is 600 s.
+        let window = WatchdogRecoveryService.candidateStartupTimeout(preloadTimeoutSecs: 420)
+        let context = try await installedCandidate(candidateStartupTimeoutSeconds: window)
+        defer { context.fixture.cleanup() }
+        defer { Task { await context.mock.shutdown() } }
+        let restartsBefore = context.restarts.value
+        let watchdog = watchdogAfterRequestedRestart(context, candidateStartupTimeoutSeconds: window)
+
+        let outcome = await watchdog.recoverDownProvider(autoUpdateEnabled: false, providerProcessAlive: true, now: 900)
+        #expect(outcome == .retryBackoff(until: 1_120, reason: "candidate still within startup window"))
+        #expect(try recoveryStore(context.fixture).loadState().candidate?.failureCount == 0)
+        #expect(context.restarts.value == restartsBefore)
+    }
+
+    /// A crash is still a failed start after a restart the owner asked for, and the third one rolls the release back.
+    @Test("a crash after a restart the owner asked for is still a failed start; the third rolls the release back")
+    func crashAfterARequestedRestartStillCounts() async throws {
+        let context = try await installedCandidate()
+        defer { context.fixture.cleanup() }
+        defer { Task { await context.mock.shutdown() } }
+        try setFailedStarts(2, context)
+        let watchdog = watchdogAfterRequestedRestart(context, crashed: true)
+
+        let outcome = await watchdog.recoverDownProvider(autoUpdateEnabled: false, providerProcessAlive: false, now: 900)
+        #expect(outcome == .restartIssued(updatedTo: nil, rolledBackTo: "1.0.0"))
+        let state = try recoveryStore(context.fixture).loadState()
+        #expect(state.candidate == nil && state.current?.version == "1.0.0")
+        #expect(state.quarantine?.version == "2.0.0" && state.quarantine?.failureCount == 3)
+        #expect(try context.fixture.liveBinaryContents() == "1.0.0-darkbloom")
+    }
+
     @Test("process death after atomic app exchange is recovered")
     func crashBetweenRenameAndMetadata() throws {
         enum InjectedCrash: Error { case afterExchange }
@@ -1669,6 +1796,7 @@ struct WatchdogRecoveryIntegrationTests {
         candidateStartupTimeoutSeconds: Double = 300,
         isPastTickDeadline: @escaping @Sendable () -> Bool = { false },
         launchSnapshot: @escaping @Sendable () -> ProviderLaunchSnapshot? = { nil },
+        processAlive: @escaping @Sendable (Int32) -> Bool = { _ in true },
         log: @escaping @Sendable (String) -> Void = { _ in }
     ) -> WatchdogRecoveryService {
         WatchdogRecoveryService(
@@ -1681,7 +1809,7 @@ struct WatchdogRecoveryIntegrationTests {
                 // Injected: tests must never shell out to the real
                 // `launchctl print` for the host's provider job.
                 launchSnapshot: launchSnapshot,
-                processAlive: { _ in true },
+                processAlive: processAlive,
                 isPastTickDeadline: isPastTickDeadline,
                 log: log
             ),

@@ -1161,7 +1161,7 @@ installed artifact, not from a per-model table:
 
 Cluster workers accept up to 32,768 output tokens and 32,768 prompt tokens,
 within a 65,536-token combined ceiling, except for a model served at its native
-context (Qwen3.8 27B in tensor parallel, and Gemma 4 26B in both modes, below).
+context (Qwen3.8 27B and Gemma 4 26B in tensor parallel, below).
 Each model's declared context and both ranks' live memory admission may reduce
 that budget. Omitting `max_tokens` on the local API uses the full allowance,
 clamped to the model and remaining context; an explicit `max_tokens: 32768`
@@ -1174,18 +1174,20 @@ Either arrives before any streamed byte.
 Qwen3.8 27B on a tensor-parallel pair accepts its native context, as a single
 Mac serving it does: prompts up to 262,143 tokens and up to 65,536 output tokens
 (the catalog's output limit, which the coordinator also gives a request that
-omits `max_tokens`), within 262,144 combined. Gemma 4 26B accepts its native
-context on a pair in tensor parallel and in the pipeline: prompts up to 262,143
-tokens and up to 32,768 output tokens (its catalog's output limit), within
-262,144 combined. Each pair is still loaded and planned for the 32,768 +
+omits `max_tokens`), within 262,144 combined. Gemma 4 26B on a tensor-parallel
+pair accepts its native context too: prompts up to 262,143 tokens and up to
+32,768 output tokens (its catalog's output limit), within 262,144 combined.
+Each pair is still loaded and planned for the 32,768 +
 32,768-token request, at any number of lanes. A longer request is admitted on
 its own when both Macs' memory holds it at that moment. If it does not fit, it
 alone receives HTTP 503 before any streamed byte (on the local API, in one
 Mac's words: "This Mac's memory can't hold this request right now ..."), and
-other requests keep running. The pipeline modes of every other model with a
-native context (GLM-5.3-Flash, and the 27B where its policy allows them) keep
-the 32,768 + 32,768-token request. Their leader refuses a longer request itself,
-before either rank is asked. See
+other requests keep running. The pipeline modes of every model with a native
+context (GLM-5.3-Flash, Gemma 4 26B, and the 27B where its policy allows them)
+keep the 32,768 + 32,768-token request. Their leader refuses a longer request
+itself, before either rank is asked: a pipeline stage whose memory check refuses
+a running request ends its worker, and the pair stops serving for about a
+minute, where tensor parallel ends that one request. See
 [the 27B's native context](../architecture/inference.md#qwen27-tensor-parallel-native-context)
 and [Gemma 4's](../architecture/inference.md#gemma-4-native-context-on-a-pair).
 

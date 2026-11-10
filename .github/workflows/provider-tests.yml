@@ -1097,7 +1097,8 @@ jobs:
   # The CI plans run on dev too, not only in master's Release Integrity: the
   # cluster plan's audit against the sources and this workflow, the provider
   # shard plan, the component classifier, the tested-change lookup, the route,
-  # the workflow pins, the test products hand-off and the resource sampler.
+  # the workflow pins (the release pipeline's too, since its qualification
+  # shards are routed), the test products hand-off and the resource sampler.
   # Python only; no build and no test result, so they run beside the test
   # jobs, on every run, and the Provider Tests gate requires them.
   ci-plan-checks:
@@ -1122,6 +1123,7 @@ jobs:
           python3 scripts/test-ci-component-paths.py
           python3 scripts/test-ci-tested-tree.py
           python3 scripts/test-darkbloom-route.py
+          python3 scripts/test-provider-release-pipeline.py
           python3 scripts/test-provider-ci-workflow.py
           python3 scripts/test-ci-test-products.py
           python3 scripts/test-ci-resource-sampler.py

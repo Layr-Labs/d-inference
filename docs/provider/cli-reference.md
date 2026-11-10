@@ -2804,12 +2804,24 @@ Output includes:
 - `Requests served since the daemon started (… ago)`: coordinator requests
   this daemon finished since it started, with output tokens only. The count
   restarts at zero when the daemon restarts or a scheduled availability window
-  opens. It includes requests that ended early on a coordinator cancel or a
-  dropped connection after output had been delivered (the next line counts
-  them when there are any; the coordinator may not pay for them) and free
-  [self-route](./self-route.md) requests to your own machine. Paid jobs are on
-  the console's Earnings page; the console's machine card adds these counters
-  up across restarts
+  opens. It includes free [self-route](./self-route.md) requests to your own
+  machine and requests that ended early: a coordinator cancel, a dropped
+  connection or an [add-on hold](../architecture/addon-hold.md)'s drain bound
+  stopped them after this Mac had sent output. When there are any, the next two
+  lines count them and say which are paid. The coordinator pays for such a
+  request's prompt and the output it sent when its requester left after the
+  answer had started streaming to it and this Mac reported the usage within
+  30 s
+  ([billing: settlement anomalies](https://github.com/Layr-Labs/darkbloom-platform/blob/3ee0560639291045b288801bd594154dd1d3230e/docs/architecture/billing.md#settlement-anomalies)),
+  and when an add-on hold stopped it. It pays nothing when another Mac answered
+  first, when this Mac's first output reached the coordinator after the
+  request's first-content deadline
+  ([`CancelDispatch`, `CancelDispatchForFirstContentTimeout`](https://github.com/Layr-Labs/darkbloom-platform/blob/3ee0560639291045b288801bd594154dd1d3230e/coordinator/internal/inference/cancellation/cancel_operations.go)),
+  or when this Mac lost its connection. The coordinator's `cancel` carries no
+  cause, so the daemon cannot tell which case a cancel was. A request whose
+  requester left just as its answer finished counts too, and is paid for the
+  whole answer. Paid jobs are on the console's Earnings page; the console's
+  machine card adds these counters up across restarts
   ([coordinator/registry/heartbeat.go](https://github.com/Layr-Labs/darkbloom-platform/blob/10b8b4fabad60e20961b1b74a8672be41c5a0a2d/coordinator/registry/heartbeat.go),
   `cumulativeDelta`)
   (`provider-swift/Sources/darkbloom/StatusCommand+ServedRequests.swift`).

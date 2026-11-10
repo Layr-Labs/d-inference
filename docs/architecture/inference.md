@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-10
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -2229,7 +2229,7 @@ This removes the previous doubling of projected processing time; an EWMA is a
 point estimate and does not guarantee the next request's speed. Actual elapsed
 deadline expiry, queue/cache projection and physical admission still apply.
 
-Three estimator corrections shape those inputs;
+Four estimator corrections shape those inputs;
 `DARKBLOOM_TTFT_ADMISSION_FIXES=0` restores the previous estimators
 (`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`).
 
@@ -2288,6 +2288,32 @@ that floor, because the anchor comes from a short calibration cell
 `ModelCalibrationPolicy.startup`) that never certifies longer work; bucket
 evidence expires after 120 seconds. The published isolated rate is unchanged.
 A late older cold sample no longer restarts the combined prefill EWMA.
+
+A refusal admits nothing, so it measures nothing: those idle rules are the
+only way expired evidence that refuses is replaced, and with no anchor, with an
+anchor that is itself slow, or off nominal posture they keep it for 30 minutes.
+Ordinary engines therefore count consecutive `deadline_unreachable` refusals
+that the isolated prefill rate alone explains
+(`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`,
+`DeadlineRefusalStreak`;
+`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Admission.swift`,
+`EngineV2Bridge.recordDeadlineRefusal`): the Mac was idle, the engine's bounded
+projection priced only this request's own prompt, and the policy carried no
+reviewed calibration and no native-media rate. A refusal beside other work or
+from a fail-closed (unbounded) projection, physical capacity included, never
+counts, and any engine admission ends the streak. After three, evidence older
+than the 120-second freshness window stops blocking the next request that
+finds the Mac idle. The bridge builds no projection policy for that request,
+so it is submitted the way a request with no measured rate is. Absolute
+expiry still applies, the decision profile reports
+`projection = not_attempted` with `projection_reason = unmeasured_prefill`,
+and the request's isolated prefill replaces the expired aggregate and its
+prompt-size bucket. Fresh evidence refuses as measured however many requests
+it refuses. An admission that ends a full streak starts a 120-second retry
+interval, so a loaded model on a Mac that really is too slow admits one such
+request per interval, even when that request ends before its prompt
+completes. That request can miss its first-content deadline where it would
+have been refused at once.
 
 An independent reviewed deadline profile carries
 `deadline_calibration`: prompt/context bands, actual cold/reused prefix

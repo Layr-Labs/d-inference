@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-11-10
+> Last updated: 2026-11-08
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -575,14 +575,9 @@ fresh install takes the latest.
 ### 6. Sign, Stage And Register Exact Bytes
 
 After `build-provider` and `qualify-sdk` succeed, `build-and-release` consumes
-the source-bound unsigned artifact on `blacksmith-12vcpu-macos-27`. It takes
-the artifact by the ID and digest that `build-provider` uploaded, not by name.
-It does not wait for an environment approval. `qualify-sdk` passes only when
-all five `qualify-sdk-shard` jobs pass and together executed the full provider
-suite. The shards are the only release jobs that can run on a Darkbloom
-Sandbox (lane `release-qualify`); they get no secret and produce no signed
-input ([release qualification on Darkbloom](../developer/build.md#release-qualification-on-darkbloom)).
-Every other release job runs on Blacksmith.
+the source-bound unsigned artifact on `blacksmith-12vcpu-macos-27`. It does not
+wait for an environment approval. `qualify-sdk` passes only when all five
+`qualify-sdk-shard` jobs pass and together executed the full provider suite.
 Release SDK selection is SDK 27.2 / Apple Swift 6.4.2 (Xcode 27.2), with `SDKROOT` covering
 compilation and linking; the final recorded SDK must match. Before the
 handoff, the release lane runs `scripts/check-provider-weak-imports.py` on every

@@ -175,14 +175,10 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertNotIn('version:', WARM.split('uses: ./.github/actions/provider-release-build', 1)[1].split('\n      - ', 1)[0])
 
     def test_parallel_lanes_use_sdk27_without_signing_secrets(self):
-        # Only the qualification shards read the route; the build always runs
-        # on Blacksmith and waits for the route only to be re-run with it.
-        runners = {'build-provider': 'blacksmith-12vcpu-macos-27',
-                   'qualify-sdk-shard': "${{ fromJSON(needs.route.outputs.routes)['release-qualify'] }}"}
         for name, lane in [('build-provider', 'release'), ('qualify-sdk-shard', 'qualification')]:
             content = job(RELEASE, name)
-            self.assertRegex(content, r'(?m)^    needs: \[resolve-env, route\]$')
-            self.assertIn('    runs-on: ' + runners[name] + '\n', content)
+            self.assertRegex(content, r'(?m)^    needs: resolve-env$')
+            self.assertIn('runs-on: blacksmith-12vcpu-macos-27', content)
             self.assertIn('lane: ' + lane, content)
             self.assertIn('contents: read', content)
             self.assertNotIn('secrets.', content)
@@ -288,14 +284,7 @@ class ReleasePipelineTests(unittest.TestCase):
         build = job(RELEASE, 'build-provider');sign = job(RELEASE, 'build-and-release')
         self.assertIn('provider-signing-validation.py stage', build)
         self.assertIn('unsigned-provider-${GITHUB_SHA}-${GITHUB_RUN_ATTEMPT}', build)
-        # Signing takes build-provider's upload by ID and digest, never by name.
-        self.assertIn('EXPECTED_ARTIFACT_ID: ${{ needs.build-provider.outputs.artifact_id }}', sign)
-        self.assertIn('EXPECTED_ARTIFACT_DIGEST: ${{ needs.build-provider.outputs.artifact_digest }}', sign)
-        self.assertIn('--artifact-id "$EXPECTED_ARTIFACT_ID" --artifact-digest "$EXPECTED_ARTIFACT_DIGEST" \\\n'
-                      '              --run-id "$GITHUB_RUN_ID"', sign)
-        self.assertNotIn('gh run download', sign)
-        self.assertIn('artifact_id: ${{ steps.unsigned_retention.outputs.artifact-id }}', build)
-        self.assertIn('artifact_digest: ${{ steps.unsigned_retention.outputs.artifact-digest }}', build)
+        self.assertIn('gh run download "$GITHUB_RUN_ID"', sign)
         self.assertIn('EXPECTED_SOURCE: ${{ needs.resolve-env.outputs.source_sha }}', sign)
         self.assertIn('--source-sha "$EXPECTED_SOURCE" --version "$VERSION"', sign)
         self.assertLess(sign.index('provider-signing-validation.py unpack'),

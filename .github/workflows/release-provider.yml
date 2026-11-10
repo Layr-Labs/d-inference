@@ -70,16 +70,6 @@ name: Provider Release Lane (reusable)
 # (job build-and-release, CLUSTER_RUNTIME_SEND). Every lane computes, shows and
 # retains them either way. Set one only after that environment's coordinator
 # accepts the block (docs/operations/provider-release.md).
-#
-# Runners: only the five qualify-sdk-shard jobs can run on a Darkbloom Sandbox
-# (lane release-qualify, job route, .github/workflows/darkbloom-route.yml).
-# They test an unsigned build and get no secret, no OIDC token, no write
-# permission and no signing keychain. Their results are only the shard counts
-# that job qualify-sdk audits on Blacksmith; signing takes the unsigned build
-# of job build-provider by artifact ID and digest. Every other job keeps a
-# literal Blacksmith runner. A caller's run calls this workflow at most once
-# (release-swift.yml runs one environment lane per trigger), so job route is
-# the run attempt's only route request.
 
 on:
   workflow_call:
@@ -148,6 +138,7 @@ jobs:
       release_tag: ${{ steps.pick.outputs.release_tag || (github.ref_type == 'tag' && github.ref_name) || '' }}
       build_run_id: ${{ steps.pick.outputs.build_run_id || github.run_id }}
       build_run_attempt: ${{ steps.pick.outputs.build_run_attempt || github.run_attempt }}
+      unsigned_artifact: ${{ steps.pick.outputs.unsigned_artifact }}
       unsigned_artifact_id: ${{ steps.pick.outputs.unsigned_artifact_id }}
       unsigned_artifact_digest: ${{ steps.pick.outputs.unsigned_artifact_digest }}
       build_sdk_version: ${{ steps.pick.outputs.build_sdk_version }}
@@ -193,23 +184,9 @@ jobs:
           RELEASE_VALIDATION_ONLY: ${{ inputs.validation_only || false }}
         run: ./scripts/resolve-provider-release.sh
 
-  # Asks the Darkbloom plane for the qualification shards' Macs after the
-  # source gate passed; a resumed run asks for none. The plane can never fail
-  # this job: a lane it does not grant keeps blacksmith-12vcpu-macos-27.
-  route:
-    needs: resolve-env
-    uses: ./.github/workflows/darkbloom-route.yml
-    permissions: {}
-    with:
-      lanes: |
-        release-qualify macos_arm64 blacksmith-12vcpu-macos-27 ${{ needs.resolve-env.outputs.resume != 'true' && 5 || 0 }}
-
   build-provider:
     name: Build optimized SDK 27 provider
-    # Always on Blacksmith. It waits for job route only so that a watchdog
-    # rescue of a stranded shard, which re-runs job route and the jobs that
-    # need it, re-runs this build too (.github/workflows/darkbloom-watchdog.yml).
-    needs: [resolve-env, route]
+    needs: resolve-env
     if: needs.resolve-env.outputs.resume != 'true'
     runs-on: blacksmith-12vcpu-macos-27
     timeout-minutes: 60
@@ -217,8 +194,6 @@ jobs:
       contents: read
     outputs:
       artifact_name: ${{ steps.input.outputs.artifact_name }}
-      artifact_id: ${{ steps.unsigned_retention.outputs.artifact-id }}
-      artifact_digest: ${{ steps.unsigned_retention.outputs.artifact-digest }}
       build_sdk_version: ${{ steps.build.outputs.build-sdk-version }}
       mlx_sha_short: ${{ steps.build.outputs.mlx-sha-short }}
     env:
@@ -268,7 +243,6 @@ jobs:
           fi
           echo "artifact_name=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
       - name: Transfer only unsigned products and resources
-        id: unsigned_retention
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: ${{ steps.input.outputs.artifact_name }}
@@ -284,14 +258,11 @@ jobs:
   # last shard every unassigned suite, the isolated processes and the audio
   # gate. Job qualify-sdk is the one qualification result that signing and
   # recovery (scripts/provider_release_resume/identity.py) read.
-  # The shards run where job route chose: a Darkbloom Sandbox when the plane
-  # grants lane release-qualify, else blacksmith-12vcpu-macos-27. They keep
-  # the release toolchain (SDK 27.2, Swift 6.4.2) on either runner.
   qualify-sdk-shard:
     name: Qualify provider with SDK 27 (shard ${{ matrix.shard }})
-    needs: [resolve-env, route]
+    needs: resolve-env
     if: needs.resolve-env.outputs.resume != 'true'
-    runs-on: ${{ fromJSON(needs.route.outputs.routes)['release-qualify'] }}
+    runs-on: blacksmith-12vcpu-macos-27
     timeout-minutes: 60
     permissions:
       contents: read
@@ -474,8 +445,7 @@ jobs:
       - name: Fetch and verify this run's unsigned build
         env:
           GH_TOKEN: ${{ github.token }}
-          EXPECTED_ARTIFACT_ID: ${{ needs.build-provider.outputs.artifact_id }}
-          EXPECTED_ARTIFACT_DIGEST: ${{ needs.build-provider.outputs.artifact_digest }}
+          EXPECTED_ARTIFACT: ${{ needs.resolve-env.outputs.unsigned_artifact || needs.build-provider.outputs.artifact_name }}
           EXPECTED_SOURCE: ${{ needs.resolve-env.outputs.source_sha }}
           BUILD_SDK_VERSION: ${{ needs.resolve-env.outputs.build_sdk_version || needs.build-provider.outputs.build_sdk_version }}
         run: |
@@ -484,12 +454,8 @@ jobs:
           if [ -n "$RELEASE_RESUME_RUN_ID" ]; then
             python3 scripts/provider-release-resume.py download --output "$RUNNER_TEMP/unsigned-download"
           else
-            # By the ID and digest that build-provider uploaded, never by name:
-            # another job of this run (a qualification shard on a Darkbloom
-            # Sandbox) can replace an artifact of a name, not its ID and digest.
-            python3 scripts/provider-release-publication.py download \
-              --artifact-id "$EXPECTED_ARTIFACT_ID" --artifact-digest "$EXPECTED_ARTIFACT_DIGEST" \
-              --run-id "$GITHUB_RUN_ID" --directory "$RUNNER_TEMP/unsigned-download"
+            gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+              --name "$EXPECTED_ARTIFACT" --dir "$RUNNER_TEMP/unsigned-download"
           fi
           python3 scripts/provider-signing-validation.py unpack \
             --archive "$RUNNER_TEMP/unsigned-download/unsigned-provider.tar.gz" \

@@ -170,11 +170,8 @@ serving provider or changes its credentials.
 
 ## SDK 27 Release Builds And Caches
 
-Release compilation uses `blacksmith-12vcpu-macos-27`. SDK qualification runs
-on five other Macs: a Darkbloom Sandbox for each shard when the plane grants
-lane `release-qualify`, otherwise `blacksmith-12vcpu-macos-27`
-([Release qualification on Darkbloom](#release-qualification-on-darkbloom)).
-Both keep the `release` toolchain. Signed validation's older-OS smoke uses
+Release compilation and SDK qualification use separate
+`blacksmith-12vcpu-macos-27` runners. Signed validation's older-OS smoke uses
 `blacksmith-12vcpu-macos-26`: it runs the signed app and compiles nothing.
 `scripts/prepare-provider-release-toolchain.sh` selects the toolchain after
 checkout. It tries the image's Xcode first, then each installed
@@ -499,7 +496,6 @@ shard the lane its matrix entry names, `matrix.lane`.
 | `docs-impact.yml` | `commit-signatures`, `docs-impact` | `blacksmith-4vcpu-ubuntu-2404` |
 | `landing.yml`, `desktop.yml`, `nightly-linear-package.yml` | `check`, `frontend`, `test` | `blacksmith-4vcpu-ubuntu-2404` |
 | `provider-release-cache.yml` | `warm`, pull requests only | `blacksmith-12vcpu-macos-27` |
-| `release-provider.yml` (called by `release-dev-branch.yml` and `release-swift.yml`) | `qualify-sdk-shard`, shards 1 to 5 on one lane, `release-qualify` | `blacksmith-12vcpu-macos-27` |
 
 `.github/workflows/darkbloom-watchdog.yml` is darkbloom-sandbox's GitHub-side
 watchdog (`public/darkbloom-actions/.github/workflows/watchdog.yml` at
@@ -517,12 +513,9 @@ waits at the payer's concurrency or resource limit looks stranded to it. Set
 (`Select Runners`, here `plan / route / Select Runners`) and the jobs that
 need it; the new route keeps every fallback. A run is rescued once; stranded
 again, it is only cancelled. Its token has `actions: write` and
-`checks: write` on this repository and nothing else. Only CI, the other
-routed workflows and the release's qualification shards carry Darkbloom
-labels. A release run is rescued only while a shard waits, which is always
-before signing starts
-([Release qualification on Darkbloom](#release-qualification-on-darkbloom)).
-`DARKBLOOM_WATCHDOG=off` turns it off.
+`checks: write` on this repository and nothing else. Only CI and the other
+routed workflows carry Darkbloom labels, so release and signing runs are never
+touched. `DARKBLOOM_WATCHDOG=off` turns it off.
 
 Routing is off unless the repository variable `DARKBLOOM_ROUTING` is exactly
 `on`. The repository variable `DARKBLOOM_MACOS_LANES`, when set to a number
@@ -566,10 +559,13 @@ which pushed branches it admits. Other branches get `branch_not_admitted` and
 keep their fallback, so a push saves caches on Darkbloom only from an admitted
 branch and only in routed lanes ([CI Caching](#ci-caching)).
 Release, signing, publication, model registration, review automation and
-`master` or dispatched cache warming keep literal Blacksmith labels. The one
-exception is the release's unsigned SDK qualification
-([Release qualification on Darkbloom](#release-qualification-on-darkbloom)).
-In CI, every macOS job but Cluster GPU Tests shard 2 reads its lane of the plan's one
+`master` or dispatched cache warming keep literal Blacksmith labels. The
+release's SDK qualification shards cannot be routed where they are: the plane
+refuses a routable job inside a reusable workflow call that passes secrets, and
+`release-dev-branch.yml` and `release-swift.yml` call `release-provider.yml`
+with `secrets: inherit`. The route checks refuse such a call to a routed
+workflow. In CI,
+every macOS job but Cluster GPU Tests shard 2 reads its lane of the plan's one
 route request (the plane routes a run attempt once); the plan's own bookkeeping
 (the tree lookup, the component choice), the CI plan checks and the
 `Provider Tests` gate run on `ubuntu-24.04`. Cluster GPU Tests shard 2 runs on
@@ -586,46 +582,6 @@ Darkbloom Linux sandboxes are ARM64; the Blacksmith Linux fallback is x64. The
 decision is fixed for the run: **Re-run failed jobs** reuses it, so turn routing
 off and use **Re-run all jobs** to move a run back to Blacksmith. See the
 [routing checks](test.md#focused-tooling-checks).
-
-### Release Qualification On Darkbloom
-
-In `release-provider.yml`, only the five `qualify-sdk-shard` jobs can run on a
-Darkbloom Sandbox. The workflow's job `route` asks for lane `release-qualify`
-(profile `macos_arm64`, count 5, no size) after the source gate
-(`resolve-env`), on every event the release runs on. A resumed release runs no
-shard and asks for nothing. A run of `release-dev-branch.yml` or
-`release-swift.yml` calls the workflow at most once: `release-swift.yml` runs
-one environment lane per trigger. So this is the run attempt's only route
-request. Until the sandbox approval lists `release-qualify`, the plane answers
-`lane_not_enabled` and the shards keep `blacksmith-12vcpu-macos-27`.
-
-A shard tests an unsigned build. It gets no secret, no OIDC token, only
-`contents: read`, and no signing keychain. The composite action
-`.github/actions/provider-release-build` reads no secret. Signing takes no
-artifact from a shard, and no shard step saves a cache that release builds
-restore:
-
-- `qualify-sdk` on Blacksmith is the only job that needs the shards. It reads
-  only their shard counts and suite lists.
-- `build-and-release` takes the unsigned build of `build-provider` by artifact
-  ID and digest (`scripts/provider-release-publication.py download`), never by
-  name, because another job of the run can replace an artifact of a name.
-- Only the release lane saves the Metal library cache that release builds
-  restore. A qualification lane only restores it.
-
-Risk: every job of a run gets the run's Actions cache token, and that token
-can write any cache key in the branch's scope. A compromised sandbox host could
-write a key that a later release build restores. The routed CI push jobs on
-`dev` and `master` already hold the same token. Release builds do not check
-restored caches against a trusted writer.
-
-`build-provider` runs on Blacksmith, but it needs job `route`. The watchdog
-re-runs job `route` and the jobs that need it, so a rescue of a stranded
-shard re-runs the build too. Signing needs every shard, so a rescue always
-comes before signing starts. To move a release back to Blacksmith, turn routing
-off and use **Re-run all jobs** only when its signing job did not pass: a new
-signing attempt makes new signed bytes, which the coordinator refuses. The
-route checks (`scripts/test-darkbloom-route.py`) pin all of this.
 
 ### Job sizes
 

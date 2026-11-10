@@ -104,12 +104,12 @@ struct ProviderLoopCalibrationTests {
         let secondTask = await bridges[1].scheduledCalibrationTask()
         let running = try #require(firstTask ?? secondTask)
         let successor = firstTask == nil ? bridges[0] : bridges[1]
-        var foreground: Task<IdleCalibrationForegroundLease, Never>?
+        var foreground: Task<IdleCalibrationForegroundLease?, Never>?
         if draining {
             await fixture.loop.beginServingDrain(owner: .lifecycle)
         } else {
             let budget = await fixture.loop.kvBudget.serviceBudget
-            foreground = Task { await budget.idleCalibration.beginForeground() }
+            foreground = Task { await budget.idleCalibration.admittedLease() }
             let until = ContinuousClock.now + .seconds(5)
             while !running.isCancelled && ContinuousClock.now < until {
                 try await Task.sleep(for: .milliseconds(1))
@@ -117,7 +117,7 @@ struct ProviderLoopCalibrationTests {
             #expect(running.isCancelled)
         }
         for gate in gates { gate.release() }
-        let lease = await foreground?.value
+        let lease = await foreground?.value ?? nil
         await running.value
         #expect(!(await successor.hasScheduledCalibration()))
         lease?.finish()

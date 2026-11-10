@@ -259,8 +259,23 @@ extension EngineV2Bridge {
         }
         // Foreground work on any model preempts the shared idle calibration.
         // The original deadline keeps running while native retirement completes.
-        let foreground = modelCalibration.requests[id] == nil
-            ? await serviceBudget?.idleCalibration.beginForeground() : nil
+        // The wait ends with this request's cancellation, and at its bound with
+        // a capacity refusal: a probe whose engine stopped stepping never retires.
+        var foreground: IdleCalibrationForegroundLease?
+        if modelCalibration.requests[id] == nil, let serviceBudget {
+            switch await serviceBudget.idleCalibration.admitForeground() {
+            case .admitted(let lease):
+                foreground = lease
+            case .cancelled:
+                usageSignal?.finalizeLookup(failure: .policy, fallbackTier: prefixCacheFallbackTier)
+                continuation.finish()
+                throw CancellationError()
+            case .retirementOverdue:
+                usageSignal?.finalizeLookup(failure: .capacity, fallbackTier: prefixCacheFallbackTier)
+                continuation.finish()
+                throw MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(Self.idleCalibrationRetirementOverdue)
+            }
+        }
         defer { foreground?.finish() }
         // Waiting for a probe is an actor suspension: revalidate request and
         // engine ownership before creating any service/KV reservations.

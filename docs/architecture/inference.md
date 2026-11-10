@@ -2070,9 +2070,9 @@ bytes ([conversion](../reference/ssd-kv-cache.md#complete-checkpoint-payload),
 It reads a head's consecutive native rows from the source in batches of up to
 256 KiB (`CBv2NativeCheckpointRowCodec.exportBatchBytes`), so a read's fixed
 cost is paid per batch: under GLM-5.3-Flash's native profile each read
-revalidates the publication's native binding, about 25 µs, which one read per
-row made the larger part of a 63 s end-of-stream wait after a 200k-token
-prompt on an M5 Ultra. Each batch is coded on up to four cores
+revalidates the publication's native binding. With one read per row, a
+200k-token prompt's stream on an M5 Ultra stayed open 63 s after its last
+token, about 28 µs per coded row, of which coding took about 3 µs. Each batch is coded on up to four cores
 (`exportCodingWorkers`, a quarter of the active ones), one prepared encoder
 per core, and the encoder rotates eight lanes at a time with the scalar
 butterflies' additions in the same order, so the bytes and the first refused

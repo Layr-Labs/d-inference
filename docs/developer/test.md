@@ -3453,7 +3453,11 @@ which ends at once) with a control node whose other member was last heard past
 its time-to-live, inside a one-hour absence grace. The part's first restart must
 wait at least 30 s and the status must say the other Mac's answer ends the wait
 (`restartWaitsForOtherMac`); once the other Mac's answer is applied to the node,
-the part must start again within 3 s. The suite also checks the restart waits
+the part must start again within 3 s. With no grace and the model held alone,
+the leader serves alone: once its solo server (`solo:`), which also ends at
+once, has ended, the status must say it starts again within the ordinary 6 s,
+without the flag, though the other Mac is still away. The suite also checks the
+restart waits
 (`ClusterControlPartChoice.restartBackoff`: 6, 12, 24, then 30 s while the
 other Mac answers; 30 s doubling to 10 min while it doesn't), the modes that
 count as the other Mac away, and the leader's status line

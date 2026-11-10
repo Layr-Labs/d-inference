@@ -130,6 +130,7 @@ struct CoordinatorIntegrationTests {
             firstContentBudgetMs: 60_000,
             cacheReceiptNonce: "nonce-int-1",
             cacheScope: "authenticated-account-route",
+            visionCacheScope: String(repeating: "a", count: 64),
             serviceReservationID: serviceReservationID
         )
 
@@ -156,12 +157,13 @@ struct CoordinatorIntegrationTests {
             for await event in events {
                 switch event {
                 case .inferenceRequest(
-                    let rid, let ciphertext, let senderKey, let nonce, let scope, _, _, _, _,
+                    let rid, let ciphertext, let senderKey, let nonce, let scope, let visionScope, _, _, _, _,
                     let firstContentDeadline, _, _, let reservationID, _
                 ):
                     #expect(rid == requestId)
                     #expect(nonce == "nonce-int-1")
                     #expect(scope == "authenticated-account-route")
+                    #expect(visionScope == String(repeating: "a", count: 64))
                     #expect(reservationID == serviceReservationID)
                     reservationLifetime = ServiceReservationLifetime(id: reservationID) { id in
                         send.send(.serviceReservationReleased(serviceReservationID: id))

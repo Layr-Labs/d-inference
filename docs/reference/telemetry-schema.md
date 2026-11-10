@@ -1,6 +1,6 @@
 # Telemetry event schema
 
-> Last updated: 2026-10-27
+> Last updated: 2026-10-29
 
 The shape of a telemetry *event* as it exists in three mirrors (Go, Swift,
 TypeScript), the closed enums it carries, and the tests that keep the mirrors
@@ -217,3 +217,21 @@ tests do not execute them or establish their live retention/configuration.
 - [telemetry-inventory.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/telemetry-inventory.md) — every datum, producer, sink, cadence, retention
 - [`../architecture/telemetry.md`](../architecture/telemetry.md) — mechanism, invariants, failure modes, Datadog metric names
 - [`protocol-messages.md`](protocol-messages.md) — the heartbeat fields the coordinator turns into metrics
+
+## Image feature work in terminal profiles
+
+These optional fields belong to `InferenceProfile` on terminal inference frames,
+separately from the event/capacity TypeScript mirror. Both are bounded numeric
+counts; omission means unknown or an unsupported adapter.
+
+| Wire key | Swift property | Range and meaning | Source |
+|---|---|---|---|
+| `vision_feature_cache_hits` | `visionFeatureCacheHits` | `0...1024`; successfully hydrated still-image occurrences during this preparation | `provider-swift/Sources/ProviderCore/Protocol/InferenceProfile.swift` — `InferenceProfile`; `provider-swift/Sources/ProviderCore/Inference/Vision/GemmaVisionFeatureCache.swift` — `gemmaImageFeatures` |
+| `vision_encoder_images` | `visionEncoderImages` | `0...1024`; still-image tower/projector executions attempted during this preparation | Same symbols |
+
+A hit confers no cached prompt/KV tokens or discount. Neither field contains
+scope, content, paths or image hashes. The optional keys extend profile schema
+`1`; coordinate the Go wire, stored-profile decoder and shared fixture together.
+The provider fixture `inference_complete_full.profile` carries hits `2` and
+encoder images `0` in
+`provider-swift/Tests/ProviderCoreTests/Fixtures/Protocol/profiler_wire_fixture.json`.

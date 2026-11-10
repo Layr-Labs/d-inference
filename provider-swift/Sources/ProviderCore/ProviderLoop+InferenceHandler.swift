@@ -189,6 +189,7 @@ extension ProviderLoop {
         senderPublicKey: Data?,
         cacheReceiptNonce: String?,
         authenticatedCacheScope: String?,
+        authenticatedVisionCacheScope: String? = nil,
         prefixCacheProtocol: Int? = nil,
         cacheReceiptBoundaryMode: String? = nil,
         cacheRepeatedPrefixTokens: Int? = nil,
@@ -962,6 +963,7 @@ extension ProviderLoop {
                 defaultMaxTokens: Self.schedulerDefaultMaxTokens,
                 templateControls: templateControls,
                 cacheScope: cacheScope,
+                visionCacheScope: authenticatedVisionCacheScope,
                 cacheEnabled: remoteCache.cacheEnabled,
                 donationDemand: remoteCache.donationDemand,
                 engineV2Logprobs: logprobsSpec.map {

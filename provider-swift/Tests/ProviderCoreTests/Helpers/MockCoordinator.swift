@@ -411,6 +411,7 @@ public final class MockCoordinator: @unchecked Sendable {
         firstContentBudgetMs: Int64? = nil,
         cacheReceiptNonce: String? = nil,
         cacheScope: String? = nil,
+        visionCacheScope: String? = nil,
         consumerKeyPair: NodeKeyPair? = nil,
         serviceReservationID: String? = nil
     ) async throws {
@@ -430,6 +431,7 @@ public final class MockCoordinator: @unchecked Sendable {
             firstContentBudgetMs: firstContentBudgetMs,
             cacheReceiptNonce: cacheReceiptNonce,
             cacheScope: cacheScope,
+            visionCacheScope: visionCacheScope,
             serviceReservationID: serviceReservationID
         ))
         try await sendCoordinatorMessage(msg)

@@ -66,6 +66,8 @@ public final class RequestProfileBuilder: @unchecked Sendable {
     /// Counts / bytes. Last write wins.
     public enum CountField: Int, CaseIterable, Sendable {
         case promptTokens
+        case visionFeatureCacheHits
+        case visionEncoderImages
         case framesEmitted
         case bytesEmitted
         case runningAtAdmit
@@ -435,6 +437,8 @@ public final class RequestProfileBuilder: @unchecked Sendable {
         p.sleptUs = sleptUs
 
         p.promptTokens = snapshot.count(.promptTokens)
+        p.visionFeatureCacheHits = snapshot.count(.visionFeatureCacheHits)
+        p.visionEncoderImages = snapshot.count(.visionEncoderImages)
         p.framesEmitted = snapshot.count(.framesEmitted)
         p.bytesEmitted = snapshot.count(.bytesEmitted)
         p.runningAtAdmit = snapshot.count(.runningAtAdmit)

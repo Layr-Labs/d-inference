@@ -1404,114 +1404,6 @@ import Testing
 /// Every `InferenceProfile` field set to the top of the coordinator's
 /// accepted range (`_us` ≤ 3.6e9, `_ns` ≤ 3.6e12, counts ≤ 1e9, bytes ≤ 2^48)
 /// so the size-cap tests exercise the widest encoding, not a toy one.
-private func fullInferenceProfile() -> InferenceProfile {
-    let maxUs: Int64 = 3_600_000_000
-    let maxNs: Int64 = 3_600_000_000_000
-    let maxCount: Int64 = 1_000_000_000
-    let maxBytes: Int64 = 1 << 48
-    var p = InferenceProfile(schema: 1, wallMs: 1_788_307_200_123)
-    p.dequeuedUs = maxUs
-    p.decryptedUs = maxUs
-    p.parsedUs = maxUs
-    p.admissionUs = maxUs
-    p.acceptedSentUs = maxUs
-    p.loadWaitStartUs = maxUs
-    p.loadWaitEndUs = maxUs
-    p.taskSpawnedUs = maxUs
-    p.promptPrepStartUs = maxUs
-    p.promptPrepEndUs = maxUs
-    p.engineSubmitUs = maxUs
-    p.engineAdmittedUs = maxUs
-    p.firstDeltaUs = maxUs
-    p.firstFrameUs = maxUs
-    p.lastDeltaUs = maxUs
-    p.terminalBuiltUs = maxUs
-    p.terminalSentUs = maxUs
-    p.cancelReceivedUs = maxUs
-    p.cancelAbortedUs = maxUs
-    p.totalUs = maxUs
-    p.toolConstraintUs = maxUs
-    p.visionPrepUs = maxUs
-    p.ssdStageUs = maxUs
-    p.kvReserveUs = maxUs
-    p.flushUs = maxUs
-    p.seSignUs = maxUs
-    p.sleptUs = maxUs
-    p.promptTokens = maxCount
-    p.framesEmitted = maxCount
-    p.bytesEmitted = maxBytes
-    p.usageRecovered = true
-    p.loadCold = true
-    p.loadParked = true
-    p.runningAtAdmit = maxCount
-    p.waitingAtAdmit = maxCount
-    p.queuedPrefillTokensAtAdmit = maxCount
-    p.kvBytesInUseAtAdmit = maxBytes
-    p.kvBytesCapacity = maxBytes
-    p.stepsAtSubmit = maxCount
-    p.stepsAtFinish = maxCount
-    p.projectedPrefillTokens = maxCount
-    p.projectedDecodeTokens = maxCount
-    p.projectedServiceUs = maxUs
-    p.budgetRemainingAtAdmitUs = maxUs
-    p.mtpActive = true
-    p.partialPrefillCap = maxCount
-    p.mlxActiveBytesAtFinish = maxBytes
-    p.mlxPeakBytes = maxBytes
-    p.lowPowerMode = true
-    p.tokensAfterCancel = maxCount
-    p.deadlineMode = .projected
-    p.thermalState = .critical
-    p.cancelStage = .postTerminal
-    var e = EngineProfile()
-    e.admittedNs = maxNs
-    e.kvAllocatedNs = maxNs
-    e.prefillFirstLaunchNs = maxNs
-    e.promptComputedNs = maxNs
-    e.firstTokenNs = maxNs
-    e.finishedNs = maxNs
-    e.readmissions = maxCount
-    e.preemptions = maxCount
-    e.capacityRequeues = maxCount
-    e.prefillChunks = maxCount
-    e.packedPrefillChunks = maxCount
-    e.visionChunks = maxCount
-    e.soloStripeChunks = maxCount
-    e.prefillChunkTokensMax = maxCount
-    e.decodeSteps = maxCount
-    e.chainedDecodeSteps = maxCount
-    e.batchRowsSum = maxCount
-    e.batchRowsMin = maxCount
-    e.batchRowsMax = maxCount
-    e.stepLatencyNsSum = maxNs
-    e.stepLatencyNsMax = maxNs
-    e.mtpRounds = maxCount
-    e.mtpProposed = maxCount
-    e.mtpAccepted = maxCount
-    e.pausedNs = maxNs
-    e.pauseCount = maxCount
-    e.detokDelayFirstNs = maxNs
-    e.prefixLookupNs = maxNs
-    e.prefixAdoptionNs = maxNs
-    e.finishReason = .stopSequence
-    p.engine = e
-    var d = DeadlineDecisionProfile()
-    d.verdict = .expiredBeforeSubmit
-    d.continuation = .cancelled
-    d.projection = .notAttempted
-    d.projectionReason = .unsupportedScheduler
-    d.unboundedReason = .invalidProjectionTransition
-    d.observedUs = maxUs
-    d.remainingUs = maxUs
-    d.submitRemainingUs = maxUs
-    d.projectedServiceUs = maxUs
-    d.projectedPrefillTokens = maxCount
-    d.projectedDecodeTokens = maxCount
-    d.prefillTps = 999_999_999.1234567
-    d.decodeTps = 999_999_999.1234567
-    p.deadlineDecision = d
-    return p
-}
 
 private func fullSlotTelemetry() -> SlotTelemetry {
     SlotTelemetry(
@@ -1872,8 +1764,8 @@ private func keyPaths(_ object: [String: Any], prefix: String = "") -> Set<Strin
     assertNoStrings(try #require(profile.deadlineDecision), label: "DeadlineDecisionProfile")
     assertNoStrings(fullSlotTelemetry(), label: "SlotTelemetry")
     assertNoStrings(fullCapacityTelemetry(), label: "CapacityTelemetry")
-    // 2 anchors + 20 offsets + 7 durations + 23 counts/flags + 3 enums + engine + deadline decision.
-    #expect(Mirror(reflecting: profile).children.count == 57)
+    // 2 anchors + 20 offsets + 7 durations + 25 counts/flags + 3 enums + engine + deadline decision.
+    #expect(Mirror(reflecting: profile).children.count == 59)
     #expect(Mirror(reflecting: try #require(profile.engine)).children.count == 30)
 }
 
@@ -1917,6 +1809,8 @@ private func keyPaths(_ object: [String: Any], prefix: String = "") -> Set<Strin
     guard case .inferenceComplete(let c) = completeFull else { throw TestFailure.unexpectedMessage }
     let fullProfile = try #require(c.profile)
     #expect(fullProfile.schema == 1)
+    #expect(fullProfile.visionFeatureCacheHits == 2)
+    #expect(fullProfile.visionEncoderImages == 0)
     #expect(fullProfile.wallMs == 1_788_307_200_123)
     #expect(fullProfile.engineAdmittedUs == 41_200)
     #expect(fullProfile.deadlineMode == .projected)

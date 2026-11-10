@@ -32,6 +32,7 @@ extension GlobalKVCacheBudget {
         guard weightBytes > 0, !reservationExists(requestID) else { return nil }
         let (chargedBytes, overflow) = weightBytes.addingReportingOverflow(minimumKVBytes)
         guard !overflow else { return nil }
+        visionFeatureCacheBudget.trim() // Optional host features yield before a model load/re-slice.
         let owner = processLedger.createOwner()
         do {
             let accepted = try processLedger.replaceCharge(

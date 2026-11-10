@@ -269,6 +269,7 @@ public enum MediaIngest {
         tools: [ToolSpec]? = nil,
         preserveTemplateFields: Bool = false,
         modelType: String? = nil,
+        imageIdentity: VisionImageIdentityCapture? = nil,
         maxImagePixels: Int = Self.maxImagePixels,
         maxRequestImagePixels: Int = Self.maxRequestImagePixels,
         maxImagesPerRequest: Int = Self.maxImagesPerRequest,
@@ -289,7 +290,8 @@ public enum MediaIngest {
         var videoCount = 0
         for message in request.messages {
             let (text, images, videos) = try await parts(
-                from: message.content, totalPixels: &totalPixels,
+                from: message.content,
+                imageIdentity: message.role == .user ? imageIdentity : nil, totalPixels: &totalPixels,
                 totalVideoPixels: &totalVideoPixels,
                 imageCount: &imageCount, videoCount: &videoCount,
                 maxImagePixels: maxImagePixels,
@@ -351,6 +353,7 @@ public enum MediaIngest {
     /// rather than being silently ignored.
     private static func parts(
         from content: OpenAIMessageContent,
+        imageIdentity: VisionImageIdentityCapture? = nil,
         totalPixels: inout Int,
         totalVideoPixels: inout Int,
         imageCount: inout Int,
@@ -430,6 +433,7 @@ public enum MediaIngest {
                                     + "\(maxRequestImagePixels) px")
                         }
                     }
+                    imageIdentity?.record(data)
                     images.append(image)
                 case .videoURL(let uri):
                     // Per-request video caps: count + summed per-frame pixels.

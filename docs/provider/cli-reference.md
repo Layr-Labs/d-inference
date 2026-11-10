@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-09
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -4070,3 +4070,14 @@ Source: `provider-swift/Sources/darkbloom/ClusterServiceCommand.swift`
 for the bounds and process custody rules.
 
 Qwen3.8 27B automatic cluster capacity changes keep the current tensor split and native request execution path. Widening occurs only when the complete reservation fits that split; otherwise the current capacity remains available. No additional command or user setting is required. Implementation: `DistributedAutomaticBatchPlanner` and `ClusterPlacementFlow` in `provider-swift/Sources/ProviderCore/Inference/Distributed/`.
+
+## Image feature cache qualification control
+
+Set `DARKBLOOM_VISION_FEATURE_CACHE=1` in a foreground provider's environment
+(`darkbloom start --foreground`) before loading a model to opt into
+[Gemma feature-cache qualification](../architecture/image-feature-cache.md). It
+is not in the [LaunchAgent environment passthrough](#launchagent-environment-passthrough),
+so the installed background provider never reads it. Use `0` and reload/restart
+to disable. Existing local requests without trusted vision scope remain uncached.
+See [configuration](../reference/configuration.md#image-feature-cache) for the
+fixed bounds; this setting does not configure prefix caches.

@@ -17,6 +17,7 @@ public actor GlobalKVCacheBudget {
         public var systemAvailable: UInt64
     }
 
+    nonisolated let visionFeatureCacheBudget: VisionFeatureCacheBudget
     nonisolated let processLedger: ProcessMemoryLedger
     nonisolated let physicalMemoryBytes: UInt64
     nonisolated let loadReserveBytes: UInt64
@@ -156,6 +157,7 @@ public actor GlobalKVCacheBudget {
             configReserveBytes: configReserveBytes,
             prepareUsage: { _ = Self.allocatorReady }, snapshot: snapshot)
         self.processLedger = ledger
+        self.visionFeatureCacheBudget = VisionFeatureCacheBudget(ledger: ledger)
         let idleSweep = Self.idleCacheSweepEnabled(environment: environment)
         self.signalsEngineRefusals = Self.busyEnginesKeepReclaimableMemory(environment: environment)
         self.flushCache = clearCache
@@ -213,9 +215,11 @@ public actor GlobalKVCacheBudget {
         self.configReserveBytes = configReserveBytes
         self.loadReserveBytes = UnifiedMemoryCap.loadReserveBytes(
             physicalBytes: total, configReserveBytes: configReserveBytes, capFraction: capFraction)
-        self.processLedger = Self.makeLedger(
+        let ledger = Self.makeLedger(
             total: total, capFraction: capFraction, activationReserveBytes: activationReserveBytes,
             configReserveBytes: configReserveBytes, snapshot: memorySnapshot)
+        self.processLedger = ledger
+        self.visionFeatureCacheBudget = VisionFeatureCacheBudget(ledger: ledger)
         self.sustainedRejectionAuditThreshold = sustainedRejectionAuditThreshold
         self.rejectionStreakContinuityWindow = rejectionStreakContinuityWindow
         self.clockNow = clockNow
@@ -348,6 +352,7 @@ public actor GlobalKVCacheBudget {
     }
 
     private func commit(requestID: String, bytes: UInt64) -> Bool {
+        if bytes > processLedger.snapshot().remainingBytes { visionFeatureCacheBudget.trim() }
         let owner = processLedger.createOwner()
         do {
             let accepted = try processLedger.replaceCharge(

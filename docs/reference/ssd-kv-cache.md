@@ -1,6 +1,6 @@
 # SSD KV cache reference
 
-> Last updated: 2026-11-06
+> Last updated: 2026-11-09
 
 Exact on-disk format, paths, identity binding, environment knobs, size and
 eviction rules, and per-family reuse capability of the provider's encrypted SSD
@@ -664,3 +664,11 @@ and `MiMoV26MTPHistoryStorage` in
 The Qwen27 TP batch prefix cache is resident memory only. It does not read,
 write or reinterpret an encrypted SSD checkpoint. Its keys, bounded storage
 and bilateral lifetime are described in the [prefix architecture](../architecture/prefix-cache.md#cluster-sliding-prefix-adoption).
+
+## Image feature cache boundary
+
+The [image feature cache](../architecture/image-feature-cache.md) is RAM-only.
+It writes no SSD entries, encryption records or prefix receipts and reuses no KV.
+`VisionFeatureCache` stores CPU tensor bytes under its own authenticated scope;
+its hits do not contribute to SSD hit counts or cached-token discounts.
+Source: `provider-swift/Sources/ProviderCore/Inference/Vision/VisionFeatureCache.swift`.

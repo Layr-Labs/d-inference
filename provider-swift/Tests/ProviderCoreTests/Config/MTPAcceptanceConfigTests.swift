@@ -11,7 +11,7 @@ import Testing
 
 @Suite("MTP acceptance config")
 struct MTPAcceptanceConfigTests {
-    @Test("absent keys decode to nil and an empty table, and resolve to typical")
+    @Test("absent keys decode to nil and an empty table; Gemma QAT resolves to exact")
     func absentKeys() {
         let config = ConfigManager.parse(
             """
@@ -27,7 +27,7 @@ struct MTPAcceptanceConfigTests {
             global: config.backend.mtpAcceptance,
             byModel: config.backend.mtpAcceptanceByModel,
             modelID: "gemma-4-26b-qat-4bit")
-        #expect(resolved.acceptance == .typical(delta: CBv2MTPAcceptance.defaultTypicalDelta))
+        #expect(resolved.acceptance == .exact)
         #expect(resolved.unrecognized == nil)
     }
 
@@ -89,6 +89,27 @@ struct MTPAcceptanceConfigTests {
             global: nil, byModel: ["Qwen3.5-9B": "typical"], modelID: "Qwen3.5-9B").acceptance == typical)
         #expect(MTPAcceptancePolicy.resolve(
             global: "typical", byModel: [:], modelID: "Qwen3.5-9B").acceptance == typical)
+    }
+
+    @Test("Gemma 4 26B QAT defaults to exact; every other model keeps its built-in rule; settings still win")
+    func gemmaQATDefaultsToExact() {
+        let typical = CBv2MTPAcceptance.typical(delta: CBv2MTPAcceptance.defaultTypicalDelta)
+        #expect(MTPAcceptancePolicy.resolve(
+            global: nil, byModel: [:], modelID: "gemma-4-26b-qat-4bit").acceptance == .exact)
+        // Only the QAT build: its 8-bit siblings, and every other drafting model, stay typical.
+        for id in [
+            "gemma-4-26b", "gemma-4-26b-8bit", "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+            "EigenLabs/Qwen3.8-27B-4bit-mtp", "nvidia-nemotron-3.5-lightning", "glm-5.3-flash",
+        ] {
+            #expect(MTPAcceptancePolicy.resolve(global: nil, byModel: [:], modelID: id).acceptance == typical, "\(id)")
+        }
+        #expect(MTPAcceptancePolicy.resolve(global: nil, byModel: [:], modelID: "Qwen3.5-9B").acceptance == .exact)
+        // The precedence is unchanged: a per-model or global value still wins.
+        #expect(MTPAcceptancePolicy.resolve(
+            global: nil, byModel: ["gemma-4-26b-qat-4bit": "typical"],
+            modelID: "gemma-4-26b-qat-4bit").acceptance == typical)
+        #expect(MTPAcceptancePolicy.resolve(
+            global: "typical", byModel: [:], modelID: "gemma-4-26b-qat-4bit").acceptance == typical)
     }
 
     @Test("an unknown value resolves to exact and is reported")

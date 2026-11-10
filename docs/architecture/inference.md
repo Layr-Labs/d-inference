@@ -5522,7 +5522,7 @@ it alone:
   and every keep-warm answer while no request or lane is held, carry the
   longest context the reservation gate admits now (`servingContextTokens`,
   `refreshServingContext`; kept prefix entries count as room). The paged
-  host's bound is the profile's; pages grow with each request.
+  host's bound is the profile's (`hostBound`); pages grow with each request.
 - Pipeline: the memory plan's request, as for every family. The adapter says
   whether its stages serve the whole profile
   (`ClusterRuntimeAdapter.pipelineServesWholeProfile`, false for every
@@ -5538,7 +5538,14 @@ it alone:
   Tensor parallel's ranks end such a request alone too. Each stage charges the whole
   model's ledger (`Gemma4StateBudget`) at the request's context: 2.0 GB, plus
   one prompt frame's 2.2 GB on a stage with a full-attention layer, at the
-  standard request.
+  standard request. READY's capacity is the memory plan's planned bytes
+  (`QwenResidentRuntime.stageRequestCapacity` charges no longer request), and
+  each stage's KV host is bounded by the memory plan's request, 65,536 tokens
+  in 512-token chunks (`stageKVHostBound`). `load` takes a stage's READY
+  capacity and host bound from these functions, and a tensor-parallel rank's
+  from `capacityBytes` and `hostBound`, so the tests pin them per stage and
+  per rank (`ResidentAdmissionGemma4Tests.eachStageHoldsAndCoversTheLongestRequestItServes`,
+  `Gemma4NativeContextTests.aRankHoldsAndCoversTheLongestRequestItServes`).
 
 The provider holds a request to what its mode serves
 (`ClusterModelFeaturePolicy.servedProfile`: tensor parallel's whole profile, a
@@ -5568,6 +5575,9 @@ Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Gemma4/R
 `libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapability.swift`
 (`pipelineServesWholeProfile`),
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Resident/QwenResidentRuntime+Load.swift`
+(`stageKVHostBound`, `stageRequestCapacity`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Gemma4/Resident/Gemma4ResidentFamily.swift`
+(`Gemma4ResidentLoadedStage.requestAllowance`)
 and `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`.
 
 ## A pipeline stage's memory refusal ends that request alone

@@ -56,7 +56,19 @@ extension Gemma4ResidentLoadedStage: LayerStageResidentStage {
     func requestAllowance(plan: QwenLayerStagePlan, rank: Int, maximumTokens: Int, chunkSize: Int,
                           decode: LayerStageDecodeShape,
                           bound: (Int) throws -> Int) throws -> QwenResidentRequestAllowance {
-        guard plan.stages.count == 2, (0...1).contains(rank), loaded.plan.fingerprint == plan.fingerprint else {
+        guard loaded.plan.fingerprint == plan.fingerprint else {
+            throw ProbeError("Resident request allowance requires this stage's admitted two-stage Plan")
+        }
+        return try Self.requestAllowance(specification: specification, plan: plan, rank: rank,
+            maximumTokens: maximumTokens, chunkSize: chunkSize, decode: decode, bound: bound)
+    }
+
+    /// The same for rank `rank`'s stage of `plan`, from the registered row
+    /// alone: pure arithmetic, no loaded stage.
+    static func requestAllowance(specification: Gemma4RegisteredSpecification, plan: QwenLayerStagePlan, rank: Int,
+                                 maximumTokens: Int, chunkSize: Int, decode: LayerStageDecodeShape,
+                                 bound: (Int) throws -> Int) throws -> QwenResidentRequestAllowance {
+        guard plan.stages.count == 2, (0...1).contains(rank) else {
             throw ProbeError("Resident request allowance requires this stage's admitted two-stage Plan")
         }
         let budget = try Gemma4StateBudget.estimate(maximumTokens: maximumTokens, chunkSize: chunkSize)

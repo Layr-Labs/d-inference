@@ -170,9 +170,8 @@ public struct PairConfiguration: Sendable {
     /// Qwen drops its assistant, as the product does; GLM replays its rounds'
     /// draws), so a run with them and one without cover both decode paths.
     public var batchLogprobs: Int?
-    /// A wave whose tokens differ from its requests' alone fails the run in every mode, not only in tensor
-    /// parallel (`--batch-require-parity`): the pass rule for lanes at 1, 2, 4 and 8, each request's tokens equal to
-    /// its solo run's, whatever the option. It needs the requests run alone first (`batchSolo`).
+    /// When true (`--batch-require-parity`), a wave whose tokens differ from its requests' solo runs fails the run
+    /// in every mode; tensor parallel always does. Needs `batchSolo` and at least one wave.
     public var batchRequireParity = false
     /// The prompt-prefix SSD tier of each side's worker: that Mac's own root
     /// directory and key file (a file only its user can read). Nil: no tier.
@@ -366,8 +365,8 @@ public struct PairConfiguration: Sendable {
         try require(batchLogprobs.map { (1...ClusterWorkerSampling.maximumTopLogprobs).contains($0)
                 && generationMode == Self.tensorParallelMode && !batchRequests.isEmpty } ?? true,
             "batch logprobs are 1...\(ClusterWorkerSampling.maximumTopLogprobs) alternatives of tensor-parallel batch requests")
-        try require(!batchRequireParity || (!batchRequests.isEmpty && batchSolo),
-            "batch parity compares batch requests with their runs alone (--batch-solo yes)")
+        try require(!batchRequireParity || (!batchRequests.isEmpty && batchSolo && !batchWaves.isEmpty),
+            "batch parity compares the waves of batch requests with their runs alone (--batch-solo yes, a --batch-wave)")
         try require([Self.jacclTransport, Self.localSocketTransport].contains(workerTransport), "unknown worker transport")
         try require(workerTransport == Self.jacclTransport || coordinator.hasPrefix("127.0.0.1:"),
             "local-socket-test runs both ranks on this Mac and needs a 127.0.0.1 coordinator")

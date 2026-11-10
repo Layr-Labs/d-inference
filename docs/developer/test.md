@@ -61,11 +61,13 @@ Its timeout row uses conservative estimates until hardware rates are measured.
 
 `QualificationChecks/run.sh` also drives the pair driver's batch phase end to
 end through two fake workers (`PairCheckFakeWorker`) that serve batch lanes in
-tensor parallel and send logprobs when a request asks: each request alone, then
-a wave of two (`PairDriverTests`). A wave's tokens are compared with the
-requests' alone; with `--batch-logprobs` each token's logprob bit patterns are
-recorded and compared too, a lane that drifts by one ulp with its tokens
-unchanged fails the run, and a cancelled lane matches as far as it got
+tensor parallel or the pipeline and send logprobs when a request asks: each
+request alone, then a wave of two (`PairDriverTests`). A wave's tokens are
+compared with the requests' alone; with `--batch-logprobs` each token's logprob
+bit patterns are recorded and compared too, a lane that drifts by one ulp with
+its tokens unchanged fails the run, and a cancelled lane matches as far as it
+got. A pipeline wave whose tokens drift fails only a run with
+`--batch-require-parity yes`
 ([lane parity](../provider/cli-reference.md#pair-batch-lane-parity)). CI runs
 this runner in shard 2 of Cluster Focused Checks (step `Run cluster
 qualification checks`). These fakes establish the driver's comparison, not any

@@ -1103,6 +1103,8 @@ final class PairDriverTests: XCTestCase {
         try configuration.validate()
         var unpaired = configuration; unpaired.batchSolo = false
         XCTAssertThrowsError(try unpaired.validate(), "no solo run to compare with")
+        var waveless = configuration; waveless.batchWaves = []
+        XCTAssertThrowsError(try waveless.validate(), "no wave to compare")
         var alone = try sides.configuration(recording: false); alone.batchRequireParity = true
         XCTAssertThrowsError(try alone.validate(), "no batch request to compare")
         let report = PairDriver(configuration: configuration).run()

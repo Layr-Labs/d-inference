@@ -222,7 +222,9 @@ import Foundation
             // The token rank 0 sends at `ordinal`: from the `tokenDriftFromReservation`-th reservation on, one
             // higher, as a lane whose arithmetic drifted from its request's alone.
             func sentToken(_ request: Held, ordinal: Int) -> Int {
-                tokens(request.reservation)[ordinal] + (behavior.tokenDriftFromReservation.map { request.number >= $0 } == true ? 1 : 0)
+                var token = tokens(request.reservation)[ordinal]
+                if let from = behavior.tokenDriftFromReservation, request.number >= from { token += 1 }
+                return token
             }
             // A token's logprob and its alternatives, when its request asks for them: the same at each ordinal for
             // every request, so a request in a wave sends what it sends alone; from the

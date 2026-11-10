@@ -179,8 +179,11 @@ runs:
         test -z "$(git -C "$MLX_SRC" status --porcelain=v1 --untracked-files=all)"
         test -s "$RUNNER_TEMP/metallib/mlx.metallib"
         echo "metallib=$RUNNER_TEMP/metallib/mlx.metallib" >> "$GITHUB_OUTPUT"
+    # Release builds restore this cache into signed bytes, so only the release
+    # lane saves it. A qualification lane can run on a Darkbloom Sandbox
+    # (release-qualify.yml) and only restores it.
     - name: Save source-matched metallib cache
-      if: steps.metallib-cache.outputs.cache-hit != 'true'
+      if: inputs.lane == 'release' && steps.metallib-cache.outputs.cache-hit != 'true'
       uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57
       with:
         path: ${{ runner.temp }}/metallib-cache

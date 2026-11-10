@@ -1,8 +1,9 @@
 name: Release Provider Bundle (Swift)
 
 # CLI-only Swift release entry point. This workflow owns the triggers and routes
-# each one to at most one environment lane; the whole resolve -> build ->
-# qualify -> sign -> stage -> publish chain lives in the reusable
+# each one to at most one environment lane; the qualification lives in the
+# reusable .github/workflows/release-qualify.yml, and the resolve -> build ->
+# sign -> stage -> publish chain in the reusable
 # .github/workflows/release-provider.yml, called once per environment.
 #
 # Triggers:
@@ -22,7 +23,9 @@ name: Release Provider Bundle (Swift)
 #
 # A plain matrix cannot carry each environment's artifact id and digest across
 # the dependent build/sign/stage/publish jobs, so each lane is a separate call
-# of the reusable workflow. The reusable workflow signs dev, staging and prod
+# of the reusable workflow. Before it, job qualify calls release-qualify.yml
+# (the SDK qualification shards and their gate) once for the run's lane, with
+# read-only permissions and no secrets. The reusable workflow signs dev, staging and prod
 # with the real Developer ID; resolve-provider-release.sh refuses prod on any
 # non-tag trigger, so a master push can never reach the prod signing identity.
 # The STAGING_* secrets and the staging coordinator do not exist yet (DBLM-771),
@@ -51,6 +54,7 @@ on:
       - '.gitmodules'
       - '.github/workflows/release-swift.yml'
       - '.github/workflows/release-provider.yml'
+      - '.github/workflows/release-qualify.yml'
       - '.github/actions/provider-release-build/**'
       - 'scripts/check-release-version.sh'
       - 'scripts/resolve-provider-release.sh'
@@ -123,11 +127,38 @@ permissions:
   actions: read     # download the unsigned artifact from this run
 
 jobs:
+  # SDK 27 qualification of the run's one lane (release-qualify.yml), before
+  # that lane's release starts. It runs exactly when one of the lanes below
+  # runs, except on a resume, which signs a retained, already qualified build.
+  # It gets no secrets and only read permissions, so its shards may run on a
+  # Darkbloom Sandbox; this is the run's one route request.
+  qualify:
+    if: >-
+      ${{ !inputs.resume_run_id &&
+          ((github.event_name == 'workflow_dispatch' && inputs.validation_only) ||
+           (vars.STAGING_ENABLED == 'true' &&
+            ((github.event_name == 'push' && github.ref_type == 'branch') ||
+             (github.event_name == 'workflow_dispatch' && inputs.environment == 'staging' &&
+              !inputs.validation_only))) ||
+           (github.ref_type == 'tag' ||
+            (github.event_name == 'workflow_dispatch' && inputs.environment == 'prod' &&
+             !inputs.validation_only))) }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/release-qualify.yml
+    with:
+      environment: >-
+        ${{ (github.event_name == 'workflow_dispatch' && inputs.validation_only && 'dev') ||
+            ((github.ref_type == 'tag' || inputs.environment == 'prod') && 'prod') || 'staging' }}
+
+  # Each lane starts only after `qualify` passed, or on a resume, where
+  # `qualify` is skipped.
   # Manual signed dev validation build only. It never publishes, so no master
   # path publishes a dev release; resolve-provider-release.sh refuses a dev
   # publication too. A validation build keeps its own per-run group.
   dev:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_only }}
+    needs: qualify
+    if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.validation_only && (needs.qualify.result == 'success' || (inputs.resume_run_id && needs.qualify.result == 'skipped')) }}
     concurrency:
       group: ${{ format('release-swift-{0}', github.run_id) }}
       cancel-in-progress: false
@@ -147,11 +178,13 @@ jobs:
   # publishes nothing, so provider pushes never burn a build that would
   # hard-fail at staging publication for want of credentials.
   staging:
+    needs: qualify
     if: >-
-      ${{ vars.STAGING_ENABLED == 'true' &&
+      ${{ !cancelled() && vars.STAGING_ENABLED == 'true' &&
           ((github.event_name == 'push' && github.ref_type == 'branch') ||
            (github.event_name == 'workflow_dispatch' && inputs.environment == 'staging' &&
-            !inputs.validation_only)) }}
+            !inputs.validation_only)) &&
+          (needs.qualify.result == 'success' || (inputs.resume_run_id && needs.qualify.result == 'skipped')) }}
     # One staging publication at a time across master pushes and manual releases.
     concurrency:
       group: release-staging
@@ -170,10 +203,12 @@ jobs:
   # never selects prod, so the prod signing identity is tag-gated. A validation
   # dispatch runs the dev lane instead of the chosen environment.
   prod:
+    needs: qualify
     if: >-
-      ${{ github.ref_type == 'tag' ||
+      ${{ !cancelled() && (github.ref_type == 'tag' ||
           (github.event_name == 'workflow_dispatch' && inputs.environment == 'prod' &&
-           !inputs.validation_only) }}
+           !inputs.validation_only)) &&
+          (needs.qualify.result == 'success' || (inputs.resume_run_id && needs.qualify.result == 'skipped')) }}
     concurrency:
       group: ${{ format('release-swift-{0}', github.run_id) }}
       cancel-in-progress: false

@@ -8,8 +8,9 @@ by the lane's size when it sends one), and must never fail because of the
 plane. Sizes are sent only while the job-size switch is exactly `on`; otherwise
 the request is byte for byte the request without sizes. The workflow checks pin
 every routed job, its fallback, size, timeout and read-only permissions, and
-keep release paths on literal runners. Requires Bash, Python, jq, curl and
-openssl.
+keep release paths on literal runners: only the release's SDK qualification
+shards are routed, in a call that passes no secrets. Requires Bash, Python, jq,
+curl and openssl.
 """
 
 import http.server
@@ -44,6 +45,14 @@ FALLBACKS = {"release-integrity": LINUX_FALLBACK, "test-provider": MACOS_FALLBAC
 GRANTED = {"release-integrity": LINUX, "test-provider": MACOS,
            "warm": MACOS, "docs": LINUX_FALLBACK}
 PULL_REQUEST_WARM = "${{ github.event_name == 'pull_request' && 2 || 0 }}"
+# The release's SDK qualification (release-qualify.yml). Each release caller
+# calls it from one job, `qualify`, with no secrets, before its credentialed
+# release-provider.yml call. Its five shards ask on one lane, except in a tag
+# (prod) run: recovery of a failed tag run takes its retained unsigned artifact
+# by name (scripts/provider_release_resume/identity.py).
+RELEASE_QUALIFY = "release-qualify.yml"
+RELEASE_QUALIFY_COUNT = "${{ github.ref_type != 'tag' && 5 || 0 }}"
+RELEASE_CALLERS = ("release-dev-branch.yml", "release-swift.yml")
 # Every routed job: (profile, fallback label, count expression or None for 1)
 # of each lane it reads.
 ROUTED = {
@@ -55,7 +64,13 @@ ROUTED = {
     "desktop.yml": {"frontend": ("linux_arm64", LINUX_FALLBACK, None)},
     "nightly-linear-package.yml": {"test": ("linux_arm64", LINUX_FALLBACK, None)},
     "provider-release-cache.yml": {"warm": ("macos_arm64", MACOS_FALLBACK, PULL_REQUEST_WARM)},
+    RELEASE_QUALIFY: {"qualify-sdk-shard": ("macos_arm64", MACOS_FALLBACK, RELEASE_QUALIFY_COUNT)},
 }
+# A routed job whose lane is not its job name.
+LANE_NAME = {"qualify-sdk-shard": "release-qualify"}
+# Routed jobs whose lanes ask by event rather than by their job's `if`: PR
+# warming only, and release qualification except in tag runs.
+EVENT_COUNTED = {"warm", "qualify-sdk-shard"}
 # CI: the callers run provider-plan.yml, whose route job is the run's only
 # route request (the plane routes a run attempt once), with the caller's own
 # Linux lanes. Every macOS job (provider-tests.yml) reads `inputs.routes`; CI
@@ -232,7 +247,7 @@ def job_lanes(name, job):
         return list(dict.fromkeys(matrix_lanes(job)))
     if name in SHARDED:
         return [f"{name}-{shard}" for shard in matrix_shards(job) if shard != LITERAL_SHARD.get(name)]
-    return [name]
+    return [LANE_NAME.get(name, name)]
 
 
 def requested_lanes(workflow, routed):
@@ -740,6 +755,26 @@ class RouteStepTests(unittest.TestCase):
         row = next(line for line in summary.splitlines() if line.startswith("| `release-integrity`"))
         self.assertEqual(row.count("|"), 7)
 
+    def test_release_qualification_lane_falls_back_until_the_approval_lists_it(self):
+        # The release asks for its five shards on one lane. Until the sandbox
+        # approval lists lane release-qualify, the plane answers
+        # lane_not_enabled and every shard keeps Blacksmith. A tag run asks
+        # for nothing.
+        route = jobs((WORKFLOWS / RELEASE_QUALIFY).read_text())["route"]
+        text = "\n".join(lane_lines(route)) + "\n"
+        refused = reply(**{"release-qualify": {"target": "fallback", "reason": "lane_not_enabled"}})
+        with self.plane((200, refused, 0)) as plane:
+            result, routes, summary = self.route(plane.url, lanes=evaluate_counts(text, "1"))
+            tag, tag_routes, tag_summary = self.route(plane.url, lanes=evaluate_counts(text, "0"))
+        self.assertRoutes(result, routes, {"release-qualify": MACOS_FALLBACK})
+        request, = plane.requests
+        self.assertEqual(json.loads(request["body"])["lanes"],
+                         [{"lane": "release-qualify", "profile": "macos_arm64", "count": 5}])
+        self.assertIn(f"| `release-qualify` | macos_arm64 | 5 | - | `{MACOS_FALLBACK}` "
+                      "| fallback: plane: lane_not_enabled |", summary)
+        self.assertRoutes(tag, tag_routes, {"release-qualify": MACOS_FALLBACK})
+        self.assertIn("No lane has jobs to run. No request was sent.", tag_summary)
+
 
 class RouteWorkflowTests(unittest.TestCase):
     def setUp(self):
@@ -800,11 +835,11 @@ class RouteWorkflowTests(unittest.TestCase):
                         self.assertTrue(matrix_shards(job))
                         lane = f"format('{name}-{{0}}', matrix.shard)"
                     else:
-                        lane = f"'{name}'"
+                        lane = f"'{LANE_NAME.get(name, name)}'"
                     self.assertEqual(job_field(job, "runs-on"), RUNS_ON.get(
                         name, f"${{{{ fromJSON(needs.route.outputs.routes)[{lane}] }}}}"))
                     condition = job_field(job, "if")
-                    if name != "warm":
+                    if name not in EVENT_COUNTED:
                         # A lane is requested exactly when its job runs, once per
                         # matrix entry that reads it. `!cancelled()` cannot be
                         # evaluated in the route job and is true there.
@@ -981,12 +1016,52 @@ class RouteWorkflowTests(unittest.TestCase):
                     with self.subTest(caller=filename, job=name):
                         self.assertIn(called.group(1), UNROUTED)
         self.assertIn("release-provider.yml", called_with_secrets)
-        # Unrouted jobs inside routed workflows keep literal runners as well.
+        # Unrouted jobs inside routed workflows keep literal runners as well;
+        # the release qualification gate keeps Blacksmith.
         for filename, routed in ROUTED.items():
             for name, job in jobs(self.texts[filename]).items():
                 if name not in routed and not job_field(job, "uses"):
                     with self.subTest(workflow=filename, job=name):
-                        self.assertRegex(job_field(job, "runs-on"), r"^(blacksmith-[a-z0-9-]+|ubuntu-24\.04)$")
+                        literal = r"^blacksmith-[a-z0-9-]+$" if filename == RELEASE_QUALIFY else \
+                            r"^(blacksmith-[a-z0-9-]+|ubuntu-24\.04)$"
+                        self.assertRegex(job_field(job, "runs-on"), literal)
+                        self.assertNotIn("needs.route", job)
+
+    def test_release_qualification_is_routed_only_through_a_secret_free_call(self):
+        # The plane admits a routable job inside a reusable call only when the
+        # calling job passes no secrets and has read-only permissions
+        # (darkbloom-sandbox crates/policy/src/first_party/workflow.rs,
+        # validate_caller). Each release caller has one such call, so each
+        # run sends one route request.
+        for filename in RELEASE_CALLERS:
+            callers = {name: job for name, job in jobs(self.texts[filename]).items()
+                       if job_field(job, "uses") == f"./.github/workflows/{RELEASE_QUALIFY}"}
+            with self.subTest(caller=filename):
+                self.assertEqual(list(callers), ["qualify"])
+                job = callers["qualify"]
+                self.assertNotRegex(job, r"(?m)^    secrets:")
+                self.assertNotRegex(re.sub(r"(?m)^\s*#.*$", "", job), r"(?i)secrets")
+                self.assertEqual(permissions(job, 4), {"contents": "read"})
+                for name, other in jobs(self.texts[filename]).items():
+                    if job_field(other, "uses") == "./.github/workflows/release-provider.yml":
+                        self.assertEqual(needs(other), ["qualify"], name)
+        # Every caller of a routed reusable workflow passes no secrets and
+        # grants only read permissions.
+        for filename, text in self.texts.items():
+            for name, job in jobs(text).items():
+                called = re.fullmatch(r"\./\.github/workflows/(\S+\.yml)", job_field(job, "uses") or "")
+                if called and called.group(1) in ROUTED:
+                    with self.subTest(caller=filename, job=name):
+                        self.assertNotRegex(job, r"(?m)^    secrets:")
+                        granted = permissions(job, 4) or permissions(text.split("\njobs:\n", 1)[0], 0)
+                        self.assertIsInstance(granted, dict)
+                        self.assertTrue(set(granted.values()) <= {"read", "none"}, granted)
+        # The qualification workflow reads no secret anywhere, and its route
+        # job is its only route request.
+        text = self.texts[RELEASE_QUALIFY]
+        self.assertNotRegex(re.sub(r"(?m)^\s*#.*$", "", text), r"(?i)(?<![A-Za-z0-9_.])secrets(?![A-Za-z0-9_])")
+        self.assertEqual(text.count("uses: ./.github/workflows/darkbloom-route.yml"), 1)
+        self.assertEqual(permissions(text.split("\njobs:\n", 1)[0], 0), {"contents": "read"})
 
     def test_watchdog_rescues_only_this_repositorys_routed_runs(self):
         text = self.texts[WATCHDOG]
@@ -1003,8 +1078,9 @@ class RouteWorkflowTests(unittest.TestCase):
         self.assertIn("REPOSITORY: ${{ github.repository }}", body)
         for forbidden in ("uses:", "secrets.", "checkout", "id-token", "contents:"):
             self.assertNotIn(forbidden, body)
-        # It acts only on runs with a queued Darkbloom-labelled job, and the
-        # release, signing and credentialed workflows never carry one.
+        # It acts only on runs with a queued Darkbloom-labelled job. The
+        # signing and credentialed workflows never carry one; a release run
+        # carries one only on a qualification shard, before its release call.
         self.assertIn('index("self-hosted") != null and any(.[]; startswith("darkbloom-"))', body)
         for filename in UNROUTED:
             for runner in re.findall(r"(?m)^\s+runs-on: (.+)$", self.texts[filename]):

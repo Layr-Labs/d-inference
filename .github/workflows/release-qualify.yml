@@ -1,0 +1,114 @@
+name: Provider Release Qualification (reusable)
+
+# SDK 27 qualification of one provider release: the provider suite, in five
+# shards, on the release toolchain, and the one gate that audits them. The
+# callers (release-dev-branch.yml, release-swift.yml) call this from one job,
+# `qualify`, with read-only permissions and no secrets, and call the
+# credentialed release-provider.yml only after it passes (skipped on a resume).
+#
+# Runners: the shards ask the Darkbloom plane for lane release-qualify and keep
+# blacksmith-12vcpu-macos-27 when it is not granted. The plane admits a
+# routable job only in a call that passes no secrets
+# (docs/developer/build.md#release-qualification-on-darkbloom). A tag run
+# (prod) asks for no Darkbloom Mac: recovery of a failed tag run takes its
+# retained unsigned artifact by name (scripts/provider_release_resume/identity.py).
+# The gate stays on Blacksmith. Nothing here is signed: release-provider.yml
+# builds the signed bytes on Blacksmith and signs them by artifact ID and digest.
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: The caller's release environment (dev, staging or prod); names the shard artifacts
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  # Release bytes build, qualify and sign with Xcode 27.2 only
+  # (scripts/prepare-provider-release-toolchain.sh), as in release-provider.yml.
+  DARKBLOOM_PROVIDER_TOOLCHAIN: release
+  MLX_METALLIB_DEPLOYMENT_TARGET: '26.2'
+
+jobs:
+  # The run attempt's one route request: each caller run has one `qualify` job.
+  route:
+    uses: ./.github/workflows/darkbloom-route.yml
+    permissions: {}
+    with:
+      lanes: |
+        release-qualify macos_arm64 blacksmith-12vcpu-macos-27 ${{ github.ref_type != 'tag' && 5 || 0 }}
+
+  # SDK 27 qualification runs the provider suite in shards on separate Macs,
+  # with the shard plan ci.yml uses (scripts/provider-test-shards.py): each
+  # shard builds the tests and runs its suites serially; shard 1 also runs the
+  # MLX-free targets in one parallel process, shard 2 Prompt Parity, and the
+  # last shard every unassigned suite, the isolated processes and the audio
+  # gate. Job qualify-sdk is the one qualification result that the callers'
+  # release lanes and recovery (scripts/provider_release_resume/identity.py) read.
+  qualify-sdk-shard:
+    name: Qualify provider with SDK 27 (shard ${{ matrix.shard }})
+    needs: route
+    runs-on: ${{ fromJSON(needs.route.outputs.routes)['release-qualify'] }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      # Every shard finishes and keeps its diagnostics when another one fails.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5]
+    env:
+      # The test suite pins production names and defaults. Package.swift
+      # defaults to dev on the dev branch, so name prod here, as ci.yml does.
+      DARKBLOOM_RELEASE_ENVIRONMENT: prod
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.10'
+      - uses: ./.github/actions/provider-release-build
+        with:
+          lane: qualification
+          environment: ${{ inputs.environment }}
+          shard: ${{ matrix.shard }}/${{ strategy.job-total }}
+
+  qualify-sdk:
+    name: Qualify provider with SDK 27
+    # Runs only when every shard passed.
+    needs: qualify-sdk-shard
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Download the shard counts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: provider-sdk-qualification-${{ inputs.environment }}-${{ github.sha }}-shard-*
+          path: ${{ runner.temp }}/provider-sdk-shards
+      - name: Check that the shards executed the full SDK 27 suite
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          lists=("$RUNNER_TEMP"/provider-sdk-shards/*/provider-tests.txt)
+          if [ "${#lists[@]}" -eq 0 ]; then
+            echo "::error::No shard suite list in $RUNNER_TEMP/provider-sdk-shards"
+            exit 1
+          fi
+          # Every shard built the same suite from the same source. Compare the
+          # test identifiers (lines without spaces) in sorted order.
+          for list in "${lists[@]}"; do
+            diff <(grep -v '[[:space:]]' "${lists[0]}" | sort -u) <(grep -v '[[:space:]]' "$list" | sort -u)
+          done
+          python3 scripts/provider-test-shards.py audit "${lists[0]}" "$RUNNER_TEMP/provider-sdk-shards"

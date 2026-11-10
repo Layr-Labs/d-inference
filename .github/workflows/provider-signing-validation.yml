@@ -28,6 +28,9 @@ jobs:
       cli_name: ${{ steps.identity.outputs.CLI_NAME }}
       enclave_name: ${{ steps.identity.outputs.ENCLAVE_NAME }}
       release_environment: ${{ steps.identity.outputs.DARKBLOOM_RELEASE_ENVIRONMENT }}
+      # The signing job downloads exactly this upload: its ID, checked against its digest.
+      input_artifact_id: ${{ steps.signing_input.outputs.artifact-id }}
+      input_artifact_digest: ${{ steps.signing_input.outputs.artifact-digest }}
     steps:
       - name: Checkout reviewed workflow tooling
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -102,6 +105,7 @@ jobs:
             --output "$RUNNER_TEMP/unsigned-stage" --version "$EXPECTED_VERSION"
           tar czf "$RUNNER_TEMP/unsigned-validation.tar.gz" -C "$RUNNER_TEMP/unsigned-stage" .
       - name: Retain unsigned input for the separate signing job
+        id: signing_input
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: provider-signing-input
@@ -140,12 +144,18 @@ jobs:
       - name: Read this run's unsigned artifact
         env:
           GH_TOKEN: ${{ github.token }}
+          INPUT_ARTIFACT_ID: ${{ needs.build.outputs.input_artifact_id }}
+          INPUT_ARTIFACT_DIGEST: ${{ needs.build.outputs.input_artifact_digest }}
           EXPECTED_SOURCE: ${{ inputs.source_sha }}
           EXPECTED_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
-            --name provider-signing-input --dir "$RUNNER_TEMP/incoming"
+          # Exactly the build job's upload: its ID, and its zip's SHA-256
+          # checked against its digest before anything is extracted. Never by
+          # name: any job of the run can replace an artifact of a name.
+          python3 tooling/scripts/provider-release-publication.py download \
+            --artifact-id "$INPUT_ARTIFACT_ID" --artifact-digest "$INPUT_ARTIFACT_DIGEST" \
+            --run-id "$GITHUB_RUN_ID" --directory "$RUNNER_TEMP/incoming"
           python3 tooling/scripts/provider-signing-validation.py unpack \
             --archive "$RUNNER_TEMP/incoming/unsigned-validation.tar.gz" \
             --output "$RUNNER_TEMP/signing-stage" \

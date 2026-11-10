@@ -77,6 +77,20 @@ struct MTPAcceptanceConfigTests {
         #expect(other.acceptance == .typical(delta: CBv2MTPAcceptance.defaultTypicalDelta))
     }
 
+    @Test("Qwen3.5-9B defaults to exact; the 35B Qwen builds keep typical; settings still win")
+    func qwen35NineBDefaultsToExact() {
+        let typical = CBv2MTPAcceptance.typical(delta: CBv2MTPAcceptance.defaultTypicalDelta)
+        #expect(MTPAcceptancePolicy.resolve(global: nil, byModel: [:], modelID: "Qwen3.5-9B").acceptance == .exact)
+        for id in ["qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8", "mlx-community/Qwen3.5-9B-4bit"] {
+            #expect(MTPAcceptancePolicy.resolve(global: nil, byModel: [:], modelID: id).acceptance == typical, "\(id)")
+        }
+        // The precedence is unchanged: a per-model or global value still wins.
+        #expect(MTPAcceptancePolicy.resolve(
+            global: nil, byModel: ["Qwen3.5-9B": "typical"], modelID: "Qwen3.5-9B").acceptance == typical)
+        #expect(MTPAcceptancePolicy.resolve(
+            global: "typical", byModel: [:], modelID: "Qwen3.5-9B").acceptance == typical)
+    }
+
     @Test("an unknown value resolves to exact and is reported")
     func unknownValue() {
         let resolved = MTPAcceptancePolicy.resolve(

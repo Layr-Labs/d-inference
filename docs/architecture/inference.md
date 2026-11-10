@@ -2513,10 +2513,14 @@ verification remains available as a diagnostic oracle; drafter-required modes
 retain priority (`provider-swift/Sources/ProviderCore/Inference/MTP/EngineV2MTPAssistant.swift`,
 `providerMTPVerificationPolicy`).
 When neither a global nor a per-model acceptance value is configured, serving
-defaults to typical acceptance for eligible sampled target-prefix rows:
-a draft is kept when the sampler-filtered target row gives it probability above
-`min(1, 0.2 * exp(-H))`, `H` the row's entropy in nats; the first rejected
-position and the bonus position still commit the keyed target sample. Output
+defaults to typical acceptance for eligible sampled target-prefix rows, except
+on the owned Bonsai 9B candidate and the catalog `Qwen3.5-9B`, whose built-in
+rule is exact (`MTPAcceptancePolicy.builtInIsExact`; the 9B looped under
+typical acceptance in the 0.10.12 gate, see the Qwen 3.5/3.6 defaults below).
+Under typical acceptance a draft is kept when the sampler-filtered target row
+gives it probability above `min(1, 0.2 * exp(-H))`, `H` the row's entropy in
+nats; the first rejected position and the bonus position still commit the keyed
+target sample. Output
 is approximate, not distribution-exact for the target. Greedy rows keep the exact
 walk. Explicit `"exact"` opts out; invalid values warn and safely resolve to
 exact, including an invalid per-model override rather than falling back to the
@@ -2627,7 +2631,7 @@ encrypted store).
 | `top_p` | `topP` | artifact default, else `1.0` |
 | `top_k` | `topK` | artifact default, else `0` |
 | `repetition_penalty` | `repetitionPenalty` | artifact default, else `1.0` |
-| `frequency_penalty` / `presence_penalty` | `frequencyPenalty` / `presencePenalty` | `0`; `presence_penalty` takes a model-card default (catalog Qwen 3.5/3.6) |
+| `frequency_penalty` / `presence_penalty` | `frequencyPenalty` / `presencePenalty` | `0`; `presence_penalty` takes a model-card default on the catalog 35B Qwen 3.5/3.6 builds (`Qwen3.5-9B` has none) |
 | `seed` | `seed`; also keys a stable engine request id | nil |
 | `logit_bias` | `logitBias` — string keys parsed to non-negative `Int`; invalid keys dropped and counted | `[:]` |
 | `logprobs` + `top_logprobs` | `topLogprobs = logprobs ? min(20, max(1, top_logprobs ?? 0)) : 0` | `0` |
@@ -2651,14 +2655,7 @@ recommends). The exact `prism-ml/Ternary-Bonsai-2-9B-mlx-2bit` and
 `EigenLabs/Ternary-Bonsai-2-9B-MLX-2bit` identities also require `model_type == prism_hadamard_qwen35` and honors its pinned artifact
 defaults (`temperature 1.0`, `top_p 0.95`, `top_k 20`, `do_sample true`). Its
 qualification requests explicitly supply `presence_penalty: 1.5`; that value
-is absent from the artifact and is not injected as a default. The catalog
-`Qwen3.5-9B`, `qwen3.5-35b-a3b` and `qwen3.6-35b-a3b-vl-mtp-mxfp8` builds
-(`EngineV2SamplingDefaults.qwen35CardModelTypes`, each bound to its `model_type`)
-ship no `generation_config.json`; omitted knobs take their model cards'
-thinking-mode values
-(`EngineV2SamplingDefaults.qwen35CardDefaults`: `temperature 1.0`, `top_p 0.95`,
-`top_k 20`, `presence_penalty 1.5`). Greedy decoding with no presence penalty
-made them repeat themselves until `max_tokens` (#1530). This request
+is absent from the artifact and is not injected as a default. This request
 policy enables native channels, nested reasoning and forced-media framing.
 These exact 9B identities separately default to paged attention and encrypted SSD
 prefix caching. Explicit operator selections, kill switches, native capability
@@ -2687,6 +2684,35 @@ head's artifact contract and unchanged base precision are documented in
 F16 and affine 4-bit/group-64 heads, preserving the original path for rollback.
 Actual model, cache and speed qualification
 remain separate from this automatic intent and validated loading path.
+
+The catalog `Qwen3.5-9B`, `qwen3.5-35b-a3b` and `qwen3.6-35b-a3b-vl-mtp-mxfp8`
+builds (`EngineV2SamplingDefaults.qwen35CardModelTypes`, each bound to its
+`model_type`) take their model cards' thinking-mode values for omitted knobs:
+`temperature 1.0`, `top_p 0.95`, `top_k 20`. Greedy decoding made them repeat
+themselves until `max_tokens` (#1530). The cards' `presence_penalty 1.5` is a
+per-build default, set by the 0.10.12 gate on the signed 0.10.11 (temperature 1
+/ 0.95 / 20; #1652's four loopers and five tool transcripts at 32,768 tokens and
+nineteen everyday prompts at 8,192, three seeds each; the Studio M3 Ultra for
+the 9B, an M5 Ultra for the 35B):
+
+| Build | Omitted `presence_penalty` | Built-in MTP acceptance | The gate without the penalty |
+|---|---|---|---|
+| `qwen3.5-35b-a3b`, `qwen3.6-35b-a3b-vl-mtp-mxfp8` (`qwen35CardDefaults`) | 1.5 | typical | `qwen3.5-35b-a3b` ran away under typical acceptance (5 of 19 everyday prompts, 8 of 12 loopers to 32,768, MTP running at concurrency 1) and under exact (2 of 12 loopers); the 3.6 build shares its architecture |
+| `Qwen3.5-9B` (`qwen35NineBCardDefaults`) | none | **exact** (`MTPAcceptancePolicy.builtInIsExact`) | ran away on 13 of 31 draws under typical acceptance and on 0 of 31 under exact, MTP running; the penalty-free body cached 8,192 tokens on the second send, the penalty body none |
+
+A row with a penalty neither speculates nor, on these builds, stages a prefix
+checkpoint ([prefix caching](prefix-cache.md#invariants), invariant 9), so the
+35B builds' requests that omit the penalty stay without MTP and without cache
+donation, the cost the gate accepted for loop safety. A request's own
+`presence_penalty` always wins: `0` on a 35B build speculates under typical
+acceptance and donates checkpoints (the configuration that looped in the gate,
+now the caller's choice); a nonzero value on the 9B turns its MTP and cache
+donation off for that request. The coordinator forwards a build's registry
+runtime defaults for the fields a request omits
+([`requestRuntimeDefaultKeys`](https://github.com/Layr-Labs/darkbloom-platform/blob/c69380d91fd3f9e4ef3ff1e3775690d80adbbe57/coordinator/api/inference/request/model_runtime_defaults.go));
+on 2026-11-10 the registry set `temperature`, `top_p` and `top_k` for these
+builds and no `presence_penalty`, so the provider default above decides it.
+
 Other model identities keep the legacy defaults in the table byte-for-byte. `do_sample: false` or an absent/unreadable file is legacy. The
 sampler is not part of prompt or cache identity, so prefix-cache and SSD
 checkpoint identity do not change.

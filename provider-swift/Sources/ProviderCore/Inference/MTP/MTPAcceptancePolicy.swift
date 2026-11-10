@@ -6,9 +6,10 @@ import MLXLMCommon
 ///
 /// Precedence: `[backend] mtp_acceptance_by_model` for the exact model id,
 /// then `[backend] mtp_acceptance`, then the built-in rule (exact for the
-/// private Bonsai 9B candidate, typical for existing profiles). A value that
-/// names no known rule is reported and resolves to `exact`, so a typo can
-/// never install a lossy rule. The typical threshold is the engine constant
+/// private Bonsai 9B candidate and the catalog Qwen3.5-9B, typical for
+/// existing profiles). A value that names no known rule is reported and
+/// resolves to `exact`, so a typo can never install a lossy rule. The
+/// typical threshold is the engine constant
 /// `CBv2MTPAcceptance.defaultTypicalDelta`; it is not a production key.
 /// Serving reads no environment variable for this rule; the benchmark
 /// harness alone honours `DARKBLOOM_MTP_ACCEPTANCE`.
@@ -35,7 +36,7 @@ public enum MTPAcceptancePolicy {
         let raw = byModel[modelID] ?? global
         guard let raw else {
             return Resolution(
-                acceptance: Bonsai9BModelPolicy.matchesModelID(modelID) ? .exact
+                acceptance: builtInIsExact(modelID: modelID) ? .exact
                     : .typical(delta: CBv2MTPAcceptance.defaultTypicalDelta),
                 unrecognized: nil)
         }
@@ -43,6 +44,15 @@ public enum MTPAcceptancePolicy {
             return Resolution(acceptance: .exact, unrecognized: raw)
         }
         return Resolution(acceptance: parsed, unrecognized: nil)
+    }
+
+    /// The built-in rule is exact for the owned Bonsai 9B candidate and for
+    /// the catalog Qwen3.5-9B: with no default presence penalty its rows
+    /// speculate, and at temperature 1 typical acceptance made them loop to
+    /// `max_tokens` where exact acceptance did not.
+    static func builtInIsExact(modelID: String) -> Bool {
+        Bonsai9BModelPolicy.matchesModelID(modelID)
+            || modelID == EngineV2SamplingDefaults.qwen35NineBModelID
     }
 
     /// Benchmark-only override: `DARKBLOOM_MTP_ACCEPTANCE=exact|typical[:<delta>]`.

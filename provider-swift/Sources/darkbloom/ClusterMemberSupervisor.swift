@@ -184,8 +184,8 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
                 continue
             case .updateDrainedWithoutInstall:
                 continue
-            case .ended(let end, let runSeconds, let detail):
-                if let restored = recordCandidateEnd(detail: detail) {
+            case .ended(let end, let runSeconds, let detail, let recycled):
+                if let restored = recordCandidateEnd(end, recycled: recycled, detail: detail) {
                     if let failure = await startCheckFailure(restored) {
                         log("cluster update: the restored v\(restored) failed its start check (\(failure)), so the supervisor "
                             + "does not restart into it; starting the cluster service again from this supervisor")
@@ -307,7 +307,8 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
 
     private enum RunOutcome {
         case stopped
-        case ended(ClusterMemberRunEnd, runSeconds: Double, detail: String)
+        /// `recycled`: the supervisor's liveness guard asked the member to stop.
+        case ended(ClusterMemberRunEnd, runSeconds: Double, detail: String, recycled: Bool)
         /// A release is installed: the supervisor restarts into it. `version`: the release the pair's cycle installed,
         /// which passes the start check first; nil on the member route, whose job the watchdog recovers.
         case updateInstalled(version: String?)
@@ -335,7 +336,7 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
             return .stopped
         } catch {
             log("could not start the member: \(error)")
-            return .ended(.failure(exitCode: -1), runSeconds: 0, detail: "spawn failed: \(error)")
+            return .ended(.failure(exitCode: -1), runSeconds: 0, detail: "spawn failed: \(error)", recycled: false)
         }
         let pid = process.processIdentifier
         state.runs += 1
@@ -434,7 +435,7 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
         state.lastRun = .init(pid: pid, startedAt: started, endedAt: ended, exitCode: exitCode, signal: signal, end: detail)
         state.current = nil
         if end == .operatorStop { return .stopped }
-        return .ended(end, runSeconds: ended - started, detail: detail)
+        return .ended(end, runSeconds: ended - started, detail: detail, recycled: recycleReason != nil)
     }
 
     /// The guard's last resort: a member that ignored SIGTERM for the whole
@@ -688,11 +689,17 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
     /// A service heartbeat (every 2 s) older than this does not count toward promotion.
     static let candidateHeartbeatSeconds: Double = 30
 
-    /// A candidate's service that ended without being asked to is a failed start; returns the verified predecessor the
-    /// third restored, which the supervisor then starts again from.
-    private func recordCandidateEnd(detail: String) -> String? {
-        guard candidate != nil, let recovery = configuration.pairUpdate?.recovery else { return nil }
+    /// A candidate's service that ended without being asked to by this supervisor is a failed start, unless it stopped
+    /// cleanly when asked to from outside (`ClusterCandidateRecovery.endIsFailedStart`); returns the verified predecessor
+    /// the third restored, which the supervisor then starts again from.
+    private func recordCandidateEnd(_ end: ClusterMemberRunEnd, recycled: Bool, detail: String) -> String? {
+        guard let pending = candidate, let recovery = configuration.pairUpdate?.recovery else { return nil }
         candidate = nil
+        guard ClusterCandidateRecovery.endIsFailedStart(end, recycled: recycled) else {
+            log("cluster update: v\(pending)'s cluster service stopped cleanly when asked to from outside this supervisor "
+                + "(\(detail)); not a failed start")
+            return nil
+        }
         switch recovery.recordFailedStart(now: Date().timeIntervalSince1970, log: { log("cluster update: \($0)") }) {
         case .counted(let version, let failures):
             log("cluster update: v\(version) failed start \(failures)/\(UpdateRecoveryState.rollbackThreshold) (\(detail))")

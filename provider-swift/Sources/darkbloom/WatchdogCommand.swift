@@ -157,6 +157,9 @@ struct Watchdog: AsyncParsableCommand {
                 noteCrashLoopChain: { count, version in
                     resolvedChain.set(count: count, version: version)
                 },
+                providerRunMarker: {
+                    ProviderRunMarker(directory: DaemonStateFile.path().deletingLastPathComponent()).read()
+                },
                 log: { Self.log($0) }
             ),
             candidateStartupTimeoutSeconds: settings.candidateStartupTimeoutSeconds
@@ -226,9 +229,9 @@ struct Watchdog: AsyncParsableCommand {
                 now: now
             )
             switch health {
-            case .inactiveCandidate(let attemptStartedAt):
+            case .inactiveCandidate(let launchedAt):
                 Self.log(
-                    "new version has no fresh heartbeat \(Int(now - attemptStartedAt))s after launch — treating it as a failed start")
+                    "new version has no fresh heartbeat \(Int(now - launchedAt))s after launch — treating it as a failed start")
                 // The candidate is already past its startup window here (that is
                 // exactly what .inactiveCandidate means), so the process-alive
                 // grace below is a no-op; passed for call-site consistency.

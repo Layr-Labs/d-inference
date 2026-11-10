@@ -1,6 +1,6 @@
 # Provider troubleshooting
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-10
 
 Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
 check names, service lifecycle, coordinator connection, updates, models, the
@@ -136,6 +136,7 @@ tail -50 ~/.darkbloom/provider.log ~/.darkbloom/watchdog.log
 | Models unload after a while, daemon stays up | `backend.idle_timeout_mins` elapsed (default in the [`provider.toml` table](./cli-reference.md#providertoml-keys-read-by-the-cli)); reload is lazy on the next request (`provider-swift/Sources/ProviderCore/ProviderLoop+IdleTimeout.swift`) | Expected. `idle_timeout_mins = 0` disables unloading |
 | Provider offline after logout / at the login window | GUI LaunchAgents run only inside a logged-in session | Enable automatic login; see `console session` above |
 | Daemon restarts every few minutes, then `kv backend crash-loop guard` appears | `crashLoopTripThreshold` restarts inside the watchdog window (`provider-swift/Sources/ProviderCore/Service/WatchdogDecision.swift`; value in [runtime constants](./cli-reference.md#runtime-constants)) | See [KV-backend guard](#kv-backend-crash-loop-guard) |
+| `watchdog.log` says `warning: v<version> restarted <n> times before its promotion` | Something restarts the provider more often than every 10 minutes, so the new release is never promoted (`WatchdogRecoveryService.observeHealthyProvider`) | Find what restarts it (a script, a cron job or a login item: `crontab -l`, `launchctl list`, the login items in System Settings) and stop it, or make it restart less often ([`darkbloom update`](./cli-reference.md#darkbloom-update)) |
 | `darkbloom restart` prints `Provider is not running. Start it with darkbloom start.` | Plist not installed | `darkbloom start` |
 | `stop`, `restart` or `start` says `Drain did not complete: 0 unfinished request(s), coordinator acknowledgement false`, or `The drained provider is still shutting down` | On a provider without the bounded drain: the coordinator connection was down (nothing could acknowledge the drain), or a model's native retirement never finished at shutdown. Current providers finish both: a drain without a session needs no acknowledgement, and shutdown waits 15 seconds per unload (`ProviderLoop.performLifecycleDrain`, `ProviderLoop.unloadAllModelsForShutdown`) | On such a provider, `--force`; it interrupts only unfinished work, of which there is none in the first case |
 | Console shows the provider offline while `darkbloom status` prints `Daemon: running` and a `Not serving:` line | A `stop`, `restart`, `start` or `update` drain timed out, was interrupted (Ctrl+C), or drained without a relaunch. The old process stays alive and refuses new work (`provider-swift/Sources/darkbloom/StatusCommand+LifecycleDrain.swift`, `Status.lifecycleDrainLine`); the command also turned automatic restart off (`provider-swift/Sources/darkbloom/ServiceDrain.swift`, `ServiceDrain.prepare`) | `darkbloom restart` to serve again or `darkbloom stop` to stay stopped, each with a new drain deadline; add `--force` to interrupt unfinished work |

@@ -1,6 +1,6 @@
 # The local API: an OpenAI-compatible server on your Mac
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-10
 
 Your Mac's models as an OpenAI-compatible HTTP server for your own tools,
 served two ways: **Only me** (`darkbloom start --local`: no coordinator, no
@@ -554,7 +554,7 @@ envelope, the same on one Mac and on a [two-Mac cluster](./two-mac-cluster.md):
 | GLM-5.3-Flash with images or video and `response_format` `json_object`/`json_schema` or a required or named `tool_choice` | HTTP `400` `Invalid inference request.` (failure code `invalid_request`) before any media decode: only the text path withholds and validates such an answer or call. Hidden reasoning (`reasoning.exclude: true`, `include_reasoning: false`, `thinking.display: "omitted"`) is served with media too, its reasoning withheld | `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift` (`prepareCompletion`); `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextPromptPolicy.swift` (`withholdsOutput`, `withholdsReasoning`) |
 | An image or video the model's processor refuses: for Qwen 3.5 and 3.8 a side below `patch_size × merge_size` (32 pixels) or an aspect ratio above 200:1, which it does not upscale; a video without a decodable track; more images or videos than the processor takes | HTTP `400` `Invalid media input.` (failure code `invalid_media`), before the vision tower or any native reservation, never the retryable `503` | `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionPrefill.swift` (`clientFault(for:)`) |
 | A video whose reader fails on GLM 5.3, MiMo V2.6, Qwen4 or Nemotron Super after its metadata checks passed, or whose audio track's reader fails on MiMo V2.6 | The provider decodes the track once more with a new reader. If that succeeds, the request is served. If it fails again with a decoder, hardware or interruption code, HTTP `503` (failure code `capacity`, error reason `media_memory_unavailable`), which a coordinator retries on another provider; any other second failure is HTTP `400` `Invalid media input.` (failure code `invalid_media`). Each failed pass logs a WARN `engine_health` event, `video_reader_failed` or `audio_reader_failed`, with the reader status and error codes only | `libs/mlx-swift-lm/Libraries/MLXLMCommon/VideoReaderFailure.swift` (`VideoReaderRetry`); `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionPrefill.swift` (`clientFault(for:)`); `provider-swift/Sources/ProviderCore/Inference/Vision/MiMo/MiMoV26EncodedMediaIngress.swift` (`outwardFailure`); `provider-swift/Sources/ProviderCore/Server/NemotronSuperLocalImageHTTP.swift` (`SuperHTTPErrors.map`) |
-| A Nemotron Super video whose decoding outlasts its decode allowance (5 s, then 2 ms a frame and 4 ns a coded pixel, at most 120 s of wall time waiting on the decoder), as on a slow or loaded Mac | HTTP `503` (failure code `capacity`, error reason `media_memory_unavailable`), which a coordinator retries on another provider. The video's own limits (coded frame size, frame grid, source frames, control markers, decoded pixels) stay HTTP `400` `Invalid media input.` (failure code `invalid_media`) | `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperVideoDecode.swift` (`decodeAllowance`); `provider-swift/Sources/ProviderCore/Server/NemotronSuperLocalImageHTTP.swift` (`SuperHTTPErrors.map`) |
+| A Nemotron Super video whose decoding outlasts its decode allowance (5 s, then 2 ms a frame and 4 ns a coded pixel, at most 120 s of wall time waiting on the decoder), as on a slow or loaded Mac | HTTP `503` (failure code `capacity`, error reason `media_memory_unavailable`), which a coordinator retries on another provider. The video's own limits (coded frame size, frame grid, source frames, control markers, decoded pixels) are HTTP `400` `Media input is too large.` (failure code `media_too_large`; the coordinator answers 413) | `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperVideoDecode.swift` (`decodeAllowance`); `provider-swift/Sources/ProviderCore/Server/NemotronSuperLocalImageHTTP.swift` (`SuperHTTPErrors.map`) |
 
 ## Responses continuation and retention
 
@@ -640,8 +640,9 @@ request-cancellation scope. Its default is absent; only the qualification
 runner installs it as a hook, and it does not advertise a new model. When installed it serves
 every chat request for the Super model ID: text on the owner's text binding with
 its own tokenizer, and bounded inline images on the owner's image binding:
-`data:image/png;base64,` or `data:image/jpeg;base64,` URIs whose content, not the
-label, selects PNG or JPEG (see the
+inline base64 URIs under any image media type (`data:image/png;base64,`,
+`data:image/jpg;base64,` and the like, in any case) whose content, not the
+label, selects PNG, JPEG, WebP, GIF (frame 0) or BMP (see the
 [image format reference](../reference/nemotron-super-image-formats.md)), or one
 `data:video/mp4;base64,` or `data:video/quicktime;base64,` video as the only
 media of the request ([managed slot](../architecture/inference.md#managed-nemotron-super-slot)).
@@ -654,19 +655,22 @@ frame-timestamp label.
 | `enable_thinking` absent or `true` | Template default; `reasoning_content` streams until `</think>` |
 | `enable_thinking: false` | All output is `content`, including literal markers |
 | `chat_template_kwargs.force_nonempty_content` | Unterminated reasoning becomes `content`: moved in a complete response; a stream sends it as reasoning, then repeats it as `content` at the end |
-| `tools`, `tool_choice` (text) | `<tool_call>` frames become validated `tool_calls`; violations return 422, or end a stream with an error event |
-| `response_format` `json_object`/`json_schema` (text) | Content is withheld and validated; invalid JSON returns 422, or ends a stream with an error event. With `tools`, calls return as `tool_calls` and only an answer without calls must be JSON |
+| `tools`, `tool_choice`, `parallel_tool_calls` (text, image or video) | `<tool_call>` frames become validated `tool_calls`; violations return 422, or end a stream with an error event |
+| `response_format` `json_object`/`json_schema` (text, image or video) | Content is withheld and validated; invalid JSON returns 422, or ends a stream with an error event. With `tools`, calls return as `tool_calls` and only an answer without calls must be JSON |
 | `logprobs: true`, `top_logprobs` 0 to 20 (text, image or video) | `choices[0].logprobs.content`, streamed and complete: one entry per generated token in generation order, covering reasoning, answer and tool-call tokens (as vLLM and SGLang return them), each with at least one alternative. Joined, the entry tokens spell the reasoning, the `</think>` marker and then the answer, not the answer alone. Reasoning chunks carry their tokens' entries, and a response that ends while reasoning still carries them. A complete response carries the stream's entries. Tool-call tokens lack entries only in the rare case that nothing follows the call. The request does not speculate; others keep speculating ([logprob rows](../architecture/inference.md#nemotron-super-logprobs)) |
-| Contradictory controls, `top_logprobs` outside 0 to 20, `logit_bias`, `min_p`, `n > 1` | 400 before generation |
+| Contradictory controls, `top_logprobs` outside 0 to 20, `logit_bias`, `min_p` other than 0, `n > 1`, `prompt_cache_key` (text, image or video) | 400 `Invalid inference request.` before generation |
 | A request beyond the owner's concurrency while others are in flight (text or image) | 429 once the service has decoded the request, before its prompt is planned or rendered and before any response starts; the owner serves one request unless `DARKBLOOM_NEMOTRON_SUPER_MAX_CONCURRENT` raises it, and one image at a time |
 | Image input while speculation is installed | Served target-only: no speculation for that request, while text keeps speculating |
 | Image whose media reservation does not fit the shared budget | 503 before decoding; nothing stays reserved |
-| Visual tokens or an image or video prompt beyond the context | 400 before decoding; nothing stays reserved |
+| Visual tokens or an image or video prompt beyond the context, or text, a tool declaration or a response format that names `<image>` or `<video>` | 400 `Invalid inference request.` before decoding; nothing stays reserved |
 | A media request body above `localInferenceMaxUploadBytes` | 413 from the chat route; the owner's own 40 MiB bound (`NemotronSuperServingPolicy.maximumEncodedBodyBytes`) is above it |
-| A second video, a video with images, another container, a codec other than H.264 or HEVC, an undecodable movie, frames of more than 8,847,360 pixels (`4096 * 2160`, in any shape), more decoded pixels than `NemotronSuperVideoDecode.maximumDecodedPixels` or an extreme aspect ratio | 400 before any frame decodes |
+| A second video, a video with images, another container, a codec other than H.264 or HEVC, an image label or encoding outside the image format reference, an extreme aspect ratio, audio, more than 16 images | 400 `Media input is not supported.` (failure code `unsupported_media`; the coordinator answers 415) |
+| An image above its byte, pixel or resize limit, frames of more than 8,847,360 pixels (`4096 * 2160`, in any shape), more decoded pixels than `NemotronSuperVideoDecode.maximumDecodedPixels` | 400 `Media input is too large.` (failure code `media_too_large`; the coordinator answers 413) |
+| An undecodable movie or a corrupt image | 400 `Invalid media input.` (failure code `invalid_media`) |
 
-Image and video requests still refuse `tools` and `response_format`; formats outside the
-image format reference are refused. The host calls the hook's `drain()` before the
+Image and video requests take the text route's request plan, so they serve the
+same tools, tool choice, response format and settings, and refuse the same
+controls. The host calls the hook's `drain()` before the
 owner's `closeAfterDrain()`. This is not full image support or full-checkpoint
 serving qualification.
 

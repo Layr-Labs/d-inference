@@ -708,10 +708,12 @@ owner, holds its own media reservations (its prompt's KV pages are charged
 like text's, by the engine's process-memory owner), and cancels/drains
 through terminal retirement. Synthetic tests exercise image cancellation, reuse
 and close. It does not manufacture a shared native lease; the managed slot's
-chat route is its only production caller. The CPU `NemotronSuperImageDecode` sniffs PNG or JPEG content and
+chat route is its only production caller. The CPU `NemotronSuperImageDecode` sniffs PNG, JPEG, WebP, GIF or BMP content and
 reproduces the reference loader's RGB8 conversion: PNG of every colour type and
 bit depth is decoded in-process and matches Pillow exactly, while JPEG samples
-come from ImageIO within test-enforced bounds. Container limits are checked
+come from ImageIO within test-enforced bounds. WebP, GIF (frame 0) and BMP
+come from ImageIO (`NemotronSuperImageIORaster`), read without colour
+management with alpha dropped. Container limits are checked
 before any raster buffer exists, and the SDK resize is bitwise equal to CPU
 PyTorch on the golden fixtures; see the
 [image format reference](../reference/nemotron-super-image-formats.md).
@@ -719,12 +721,13 @@ Its quote alone is not admission. The exact-owner `runEncoded` boundary charges
 ingress before JSON/base64/header inspection and media before decode. The media
 charge adds the SDK's shape-derived tower and projector working-memory bound for
 the largest image, which preparation evaluates one at a time; the global
-activation reserve is unchanged. It only accepts `data:image/png;base64,` and
-`data:image/jpeg;base64,` URIs, whose content selects the format, and uses the
-owned tokenizer. Native input arrays are constructed in a separate retained,
+activation reserve is unchanged. It only accepts inline base64 URIs under an
+image media type, `data:image/<subtype>[;attribute=value]...;base64,` in any
+case (`isInlineBase64Image`; `image/jpg` included), whose content selects the
+format, and uses the owned tokenizer. Native input arrays are constructed in a separate retained,
 fenced epoch before tower preparation. Synthetic RGB tests cover generation,
 cancellation, busy rejection and release after task completion; loopback HTTP
-tests serve PNG and JPEG variants through the tiny synthetic owner. Actual
+tests serve PNG, JPEG, WebP, GIF and BMP variants through the tiny synthetic owner. Actual
 tokenizer parity, RADIO peak workspace and full-checkpoint image qualification
 remain required.
 
@@ -764,8 +767,8 @@ image's charge. As for images, a body over
 `NemotronSuperServingPolicy.maximumEncodedBodyBytes` (40 MiB, which holds one
 part at the shared 25 MiB inline-media cap as base64 and every body the
 provider's transports deliver) returns `media_too_large`, a video prompt over
-the context returns the invalid-media 400, and a charge the shared budget
-cannot hold returns the media-memory 503. The owner lock covers
+the context returns `invalid_request` (400, `promptExceedsContext`), and a
+charge the shared budget cannot hold returns the media-memory 503. The owner lock covers
 only the admission check while the video prompt is decoded and rendered.
 `NemotronSuperVideoDecode.Frames` decodes the movie in order as the batch needs
 frames: AVFoundation decodes every frame up to the last sampled one to BGRA,
@@ -804,11 +807,43 @@ batch's last tubelet, since a token scores only against the same position of
 the previous tubelet; the host scores then select the kept rows, the same rows
 EVS selects over the whole video. Each tubelet's kept rows are substituted
 at its `<image>` run as a causal span with `mediaKind` `video`. A tubelet whose
-rows were all pruned keeps its label and wrappers and has no span. Invalid,
-oversized or undecodable videos map to the invalid-media 400; a spent decode
-allowance maps to the retryable 503. AVFoundation's
+rows were all pruned keeps its label and wrappers and has no span. A codec or
+frame layout the route does not serve maps to `unsupported_media`, a video
+above a frame, frame-count or decoded-pixel limit to `media_too_large`, and an
+unreadable movie to `invalid_media`; a spent decode allowance maps to the
+retryable 503. AVFoundation's
 BGRA conversion differs from FFmpeg's at chroma edges, so frames are close to,
 not equal to, the reference loader's.
+
+Image and video requests take the same request plan as text
+(`NemotronSuperRequestPlan`): the prompt renders the plan's messages, with the
+tool-choice and response-format instructions, its declared tools and its
+controls (`imagePromptTokens`, `videoPrompt`), the bridge runs the plan's
+`bridgeRequest`, and `NemotronSuperLocalOutput` withholds and validates tool
+calls and JSON answers as for text. So `response_format` (`json_object`,
+`json_schema`), `tools`, `tool_choice` (auto, none, required, a named
+function), `parallel_tool_calls` and `min_p: 0` are served with media, and
+every control the text route refuses is refused with media in the same way
+(`invalid_request`). Super therefore advertises `native_media_tools`
+(`ToolChoiceEnforcementPolicy.advertisesNativeMediaTools`), and the coordinator
+routes forced tool choice with media, and media in tool results, to it. It also
+advertises `native_media_controls` (`advertisesNativeMediaControls`): a
+coordinator with platform
+[#729](https://github.com/Layr-Labs/darkbloom-platform/pull/729) (on platform
+`dev`, not yet in production) sends a Super request with image or video and a
+JSON response format or tools only to a Mac that advertises it
+([`BuildNeedsNativeMediaControls`](https://github.com/Layr-Labs/darkbloom-platform/blob/820c2755a85b9a9e7b033ea488d2f8d53a0d57a6/coordinator/registry/native_media_tools.go)).
+Without #729 such requests reach any Super Mac, and a Mac without this build
+refuses them.
+`NemotronSuperLocalImageBinding.encodedBody` keeps only the media rules. Each
+refusal names its cause by its failure code (`SuperHTTPErrors.map`):
+
+| Cause | Failure code |
+|---|---|
+| A request control, tool or prompt fault, a prompt with its visual tokens beyond the context, or rendered text (message, tool declaration, response-format instruction) that names `<image>` or `<video>` | `invalid_request` |
+| A media label or source the route does not take, audio, a content part that is not text, image or video, more than 16 images, images with a video, a second video, an image encoding or geometry the decoder does not serve, a video codec, frame layout or frame geometry it does not serve | `unsupported_media` (`MediaIngest.MediaError.unsupportedMedia`) |
+| An image above the byte, pixel or resize-workspace limit, a body above the owner's bound, a video above a frame, frame-count or decoded-pixel limit | `media_too_large` |
+| Corrupt or truncated media | `invalid_media` |
 
 SDK installation now holds resident plus bounded staging reservations across
 sequential exclusive construction epochs. Completed fences release temporary

@@ -247,6 +247,9 @@ public actor EngineV2Bridge {
     /// Immutable request-envelope limit for this loaded candidate. Listing and
     /// admission share it; prefix hits never permit a larger prompt/output sum.
     nonisolated let advertisedContextTokens: Int?
+    /// Non-nil when this slot prefills the next turn's known prefix after a
+    /// reply (`EngineV2Factory.turnContinuationKey`).
+    nonisolated let turnContinuationCells: TurnContinuationCells?
 
     // MARK: - Per-request bookkeeping
 
@@ -464,6 +467,7 @@ public actor EngineV2Bridge {
             !ProcessInfo.processInfo.isLowPowerModeEnabled && ProcessInfo.processInfo.thermalState == .nominal
         },
         admissionFixes: Bool? = nil,
+        turnContinuationCells: TurnContinuationCells? = nil,
         glm5NextNativeOwner: GLM5NextNativeOperationOwner? = nil,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil
     ) {
@@ -474,6 +478,7 @@ public actor EngineV2Bridge {
         self.clusterQwenMediaHostBudget = clusterQwenMediaHostBudget
         self.ownedEngine = engine
         self.glm5NextNativeOwner = glm5NextNativeOwner
+        self.turnContinuationCells = turnContinuationCells
         self.modelId = modelId
         self.calibrationPosturePermitsWork = calibrationPosturePermitsWork
         self.admissionFixes = admissionFixes ?? DeadlineAdmissionFixes.enabled

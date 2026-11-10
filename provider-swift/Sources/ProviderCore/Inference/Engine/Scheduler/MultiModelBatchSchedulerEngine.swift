@@ -1086,6 +1086,38 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // so its reasoning must already be a separate typed channel, as on the
         // native families.
         let withholdsGLMOutput = GLM5NextPromptPolicy.withholdsOutput(prepared, modelType: modelType)
+        // After a plain text reply the slot may prefill the next turn's known
+        // prefix (`EngineV2Factory.turnContinuationKey`). A request whose answer
+        // is constrained, validated or withheld is left alone.
+        var turnContinuation: TurnContinuationSource?
+        if let bridge = engineV2Bridge, bridge.turnContinuationCells != nil, cacheEnabled,
+            measurementPurpose == .serving, releaseBox.nativeConsumerLease == nil,
+            request.responseFormat == nil, prepared.responseFormat == nil,
+            prepared.glmResponseFormat == nil, jsonAnswer == nil, !withholdsGLMOutput
+        {
+            let source = request
+            let renderTokenizer = tokenizer.inner
+            let allowsSchemaMetadata = allowInternalToolSchemaMetadata
+            turnContinuation = TurnContinuationSource(
+                promptTokens: promptTokens,
+                stream: request.stream == true,
+                reasoningParser: request.reasoningParser ?? ProviderLoop.inferReasoningParser(for: modelType),
+                render: { reply, probe in
+                    var next = source
+                    next.messages.append(OpenAIChatMessage(role: .assistant, content: .text(reply)))
+                    next.messages.append(OpenAIChatMessage(role: .user, content: .text(probe)))
+                    let nextPrepared = try ToolChoicePromptPolicy.prepare(
+                        next, modelType: modelType, allowInternalSchemaMetadata: allowsSchemaMetadata,
+                        glm5PairPostValidation: glm5PairPostValidation)
+                    return try ProviderPromptContractPipeline.tokenize(
+                        prepared: nextPrepared, request: next, tokenizer: renderTokenizer,
+                        modelType: modelType, templateControls: templateControls)
+                },
+                submit: { source, shared in
+                    await bridge.continueTurn(
+                        after: requestId, source: source, shared: shared, cacheScope: requestCacheScope)
+                })
+        }
         return try await makeDeadlineCheckedEventStream(
             upstream: upstream,
             cancelUpstream: cancelUpstream,
@@ -1117,7 +1149,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 .init(modelId: modelId, modelType: modelType)),
             answerStopFilter: answerStopFilter,
             answerFormat: jsonAnswer?.format,
-            withholdReasoning: withholdsReasoning
+            withholdReasoning: withholdsReasoning,
+            turnContinuation: turnContinuation
         )
     }
 
@@ -1487,7 +1520,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         absorbStrayThinkClose: Bool = false,
         answerStopFilter: FlintAnswerStopFilter? = nil,
         answerFormat: JSONAnswerFormat? = nil,
-        withholdReasoning: Bool = false
+        withholdReasoning: Bool = false,
+        turnContinuation: TurnContinuationSource? = nil
     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         do {
             try checkFirstContentDeadline()
@@ -1515,7 +1549,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 absorbStrayThinkClose: absorbStrayThinkClose,
                 answerStopFilter: answerStopFilter,
                 answerFormat: answerFormat,
-                withholdReasoning: withholdReasoning)
+                withholdReasoning: withholdReasoning,
+                turnContinuation: turnContinuation)
             try checkFirstContentDeadline()
             return stream
         } catch {
@@ -1551,7 +1586,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         absorbStrayThinkClose: Bool = false,
         answerStopFilter: FlintAnswerStopFilter? = nil,
         answerFormat: JSONAnswerFormat? = nil,
-        withholdReasoning: Bool = false
+        withholdReasoning: Bool = false,
+        turnContinuation: TurnContinuationSource? = nil
     ) throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         // One forwarding implementation preserves all parser/event bytes. The
         // native path changes only task ownership and cancellation handoff.
@@ -1564,6 +1600,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 var firstTokenAt: Date?
                 var lastTokenAt: Date?
                 var stopReason: String = "stop"
+                // The engine said "stop" itself; a stream that ends without a
+                // reason keeps the default above and is not a finished reply.
+                var engineReportedStop = false
                 var failed: String?
                 var observedEngineTerminal = false
                 var mediaParserFailure: Error?
@@ -1596,15 +1635,31 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 // Qwen answer was compiled with.
                 var formatOutput = (answerFormat ?? prepared.responseFormat).map(JSONAnswerOutput.init)
                 var glmAnswer = prepared.glmResponseFormat.map(GLM5NextResponseFormatOutput.init)
+                // The reply as the client receives it, kept only when a turn
+                // continuation may follow this request.
+                var replyCapture = turnContinuation.map {
+                    TurnReplyCapture(stream: $0.stream, reasoningParser: $0.reasoningParser)
+                }
                 /// A GLM JSON answer leaves only after it validates; its
                 /// reasoning and every other event stream unchanged.
                 func emit(_ routed: MLXServerGenerationEvent) {
                     formatOutput?.observe(routed)
                     if glmAnswer == nil {
+                        replyCapture?.observe(routed)
                         continuation.yield(routed)
                     } else if let visible = glmAnswer?.withholding(routed) {
                         continuation.yield(visible)
                     }
+                }
+                /// After the terminal frame and the release: a reply that ended
+                /// on its own, with no tool call and no matched stop sequence,
+                /// starts the idle prefill of the next turn's known prefix.
+                func continueTurn(hasToolCalls: Bool) {
+                    guard let turnContinuation, engineReportedStop, stopReason == "stop", !hasToolCalls,
+                        answerStops?.matchedSequence == nil, usageSignal.matchedStopSequence == nil,
+                        let reply = replyCapture?.finish()
+                    else { return }
+                    turnContinuation.start(reply: reply)
                 }
                 startedAt = Date()
 
@@ -1629,6 +1684,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 // output. Real content and usage continue through the normal
                 // event handling below.
                 if let reasoningPrefix, !router.usesNativeChannels {
+                    replyCapture?.observe(.content(reasoningPrefix))
                     continuation.yield(.content(reasoningPrefix))
                 }
 
@@ -1705,6 +1761,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         // which MLXOpenAIService emits as finish_reason —
                         // max_tokens truncations now reach clients as "length".
                         if let reason { stopReason = reason }
+                        engineReportedStop = reason == "stop"
                     case .error(let message):
                         observedEngineTerminal = true
                         failed = message
@@ -1833,6 +1890,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         stopReason: stopReason, matchedAnswerStop: answerStops?.matchedSequence,
                         usageSignal: usageSignal)
                     await releaseBox.fire()
+                    continueTurn(hasToolCalls: !router.completedToolCalls.isEmpty)
                     continuation.finish()
                     return
                 }
@@ -1894,6 +1952,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     stopReason: stopReason, matchedAnswerStop: answerStops?.matchedSequence,
                     usageSignal: usageSignal)
                 await releaseBox.fire()
+                continueTurn(hasToolCalls: !toolCalls.isEmpty)
                 continuation.finish()
         }
         if let lease = releaseBox.nativeConsumerLease {
@@ -1974,13 +2033,15 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         recordsWithheldOutput: Bool = false,
         usageSignal: EngineV2RequestUsageSignal = EngineV2RequestUsageSignal(),
         answerStopFilter: FlintAnswerStopFilter? = nil,
-        answerFormat: JSONAnswerFormat? = nil
+        answerFormat: JSONAnswerFormat? = nil,
+        turnContinuation: TurnContinuationSource? = nil
     ) throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         try makeEventStream(upstream: upstream, cancelUpstream: cancelUpstream,
             toolHandler: toolHandler, prepared: prepared, releaseBox: releaseBox,
             usageSignal: usageSignal, reasoningPrefix: reasoningPrefix,
             nativeReasoningPrefix: nativeReasoningPrefix, recordsWithheldOutput: recordsWithheldOutput,
-            answerStopFilter: answerStopFilter, answerFormat: answerFormat)
+            answerStopFilter: answerStopFilter, answerFormat: answerFormat,
+            turnContinuation: turnContinuation)
     }
     #endif
 

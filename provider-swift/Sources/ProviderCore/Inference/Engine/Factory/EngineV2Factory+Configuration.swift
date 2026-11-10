@@ -207,6 +207,10 @@ extension EngineV2Factory {
     /// `OPEN;CLOSE[|CLOSE…]`, each a comma-separated token id list. Unset, the
     /// slot reads the rule from its chat template (`TemplateBoundaryRule`).
     public static let canonicalBoundariesKey = "DARKBLOOM_CBV2_CANONICAL_BOUNDARIES"
+    /// Opt-in (`1`), and only with the grid: after a text reply ends, the slot
+    /// prefills the next turn's known prefix while the Mac is idle
+    /// (`TurnContinuationSource`). Unset, nothing runs after a reply.
+    public static let turnContinuationKey = "DARKBLOOM_CBV2_TURN_CONTINUATION"
     /// The paged attention query block; a grid cell is a whole number of them.
     static let canonicalPrefillGridQuantumTokens = 128
 

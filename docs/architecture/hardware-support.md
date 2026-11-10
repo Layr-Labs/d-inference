@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-10
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -802,6 +802,12 @@ While any such session runs, the periodic proactive MLX pool sweep waits:
 its flush is device work that cancels the session, so a warmup cell longer
 than the tick could never finish. A sweep signalled just before a session
 started checks again when it runs. On-pressure reclaims still run.
+
+A [turn continuation](inference.md#turn-continuation), off by default, is one
+more excluded cell (`ModelCalibrationPolicy.Cell.continuation`). It uses the
+same session, idle gate and foreground lease, is admitted through the same KV
+and service budgets, and checks the posture before it starts. It publishes no
+observations or work totals.
 
 ### Serving width by chip
 

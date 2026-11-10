@@ -15,6 +15,8 @@ enum ModelCalibrationPolicy {
         var warmup = false
         /// Draw with the artifact's default sampling instead of greedy.
         var sampled = false
+        /// A turn continuation: prefill only, cancelled by any arrival.
+        var continuation = false
     }
 
     /// How a cell's rows retired, worst first. Measured cells accept a row the

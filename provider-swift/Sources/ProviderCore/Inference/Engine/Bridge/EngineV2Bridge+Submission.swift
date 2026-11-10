@@ -976,6 +976,15 @@ extension EngineV2Bridge {
                     let submitted = try native.submitWithRetirement(engineRequest)
                     events = submitted.events
                     nativeRetirement = submitted.retirement
+                } else if modelCalibration.requests[id]?.continuation == true {
+                    // Prefill only, at the lowest priority. The engine admits it
+                    // only while it holds no other stream and cancels it on any
+                    // arrival; a refusal here unwinds like a cancelled submit.
+                    guard distributed == nil, let autoregressive = engine as? EngineV2,
+                        autoregressive.nativeShutdownExecutionContractID == nil,
+                        let submitted = try autoregressive.submitContinuation(engineRequest)
+                    else { throw CancellationError() }
+                    events = submitted
                 } else if let autoregressive = engine as? EngineV2,
                     autoregressive.nativeShutdownExecutionContractID != nil || modelCalibration.requests[id] != nil {
                     let submitted = try autoregressive.submitWithRetirement(engineRequest)

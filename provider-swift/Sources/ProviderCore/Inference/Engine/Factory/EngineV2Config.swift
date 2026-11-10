@@ -253,6 +253,8 @@ public enum EngineV2Factory {
                     ?? build.glm5NextMaximumContextTokens
                     ?? Qwen4SupportPolicy.contextLimit(
                         modelID: modelId, environment: runtimePolicyEnvironment),
+                turnContinuationCells: runtimePolicyEnvironment[EngineV2Factory.turnContinuationKey] == "1"
+                    ? build.turnContinuationCells : nil,
                 glm5NextNativeOwner: glmOwner,
                 emitTelemetry: emitTelemetry
             )

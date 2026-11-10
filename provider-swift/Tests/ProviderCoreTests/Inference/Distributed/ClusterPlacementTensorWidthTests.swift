@@ -165,6 +165,31 @@ final class ClusterPlacementTensorWidthTests {
         #expect(try savedLanes(try decide(home, free: 200 * gib, widths: [2, 4])) == 4)
     }
 
+    /// The planning runs on a stack of its own (`ClusterPlanningStack`), so a caller lends `decide` little of its stack,
+    /// even for a tensor-parallel width, the deepest the planner goes. On 2026-11-10 a debug build's `decide` used 387 KiB
+    /// of this suite's 512 KiB test thread here, and a merge that grew `decide`'s frame by 23 KiB ran the test above out of
+    /// stack (SIGBUS).
+    @Test func decideLendsItsCallerLittleStack() throws {
+        let home = try home()
+        let (pair, cap, layout, request) = try fixture()
+        let local = try profile(free: 200 * gib), peer = try profile(free: 200 * gib)
+        let singleton = try quote(request, lanes: 1)
+        let widths = try ClusterPlacementBatchScope.tensorParallelWidths.map { try quote(request, lanes: $0) }
+        let link = try #require(ClusterLinkProbeHistory.costs(homeDirectory: home, members: ["a", "b"]))
+        var lanes: Int?
+        let used = stackUsed {
+            let decided = try? ClusterPlacementFlow.decide(description: pair, capability: cap, localMemberID: "a",
+                localProfile: local, peerProfile: peer, layout: layout, tensorAssistantQuote: singleton,
+                tensorWidthQuotes: widths, leader: "a", link: link, environment: [:], benchDebugBuild: false)
+            lanes = decided?.setup.flatMap { setup in
+                try? ClusterConfigurationCodec.decode(setup.configurations["a"]!, capability: cap,
+                    capabilitySHA256: pair.capabilitySHA256).batchLanes
+            }
+        }
+        #expect(lanes == 8, "the widest width was planned")
+        #expect(used < planningCallerStackBudget, "decide used \(used) bytes of its caller's stack")
+    }
+
     @Test func anAssistedOwnerIsSizedAtItsOwnQuote() throws {
         let home = try home()
         let assistant = try ClusterPlacementTensorAssistantQuote(policy: .init(depth: 3, inventorySHA256: hash("8"),

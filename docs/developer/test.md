@@ -2746,12 +2746,11 @@ with the fixed owner arguments and checks its exact environment, supported
 lane widths, out-of-range rejection, malformed-override parity even with an
 eight-lane saved width, admission/owner/native parity, unsupported
 mode and image gates, and both member ranks. No model, GPU or real service is
-started. The checks preserve the singleton default
-and the serial-prefill Gemma 4 pipeline's default lanes
-(`DistributedInstalledPlan.gemma4PipelineBatchLanes`), which reach the rank,
-while a Gemma setup saved with the one-chunk lookahead keeps one lane, and a
-Gemma 4 or GLM tensor-parallel setup's saved width (2, 4, 6 or 8) reaches its
-owner and its rank, while one saved without a width serves one request at a time;
+started. The checks preserve the singleton default: a Gemma 4 pipeline saved
+without a width serves one lane under either schedule and names none to its
+rank, while a width saved with serial prefill reaches the rank, and a Gemma 4
+or GLM tensor-parallel setup's saved width (2, 4, 6 or 8) reaches its owner
+and its rank, while one saved without a width serves one request at a time;
 `DistributedInstalledLanesTests` covers the same rules for every adapter and
 schedule. Actual multi-lane output, encrypted transport and retirement still require
 qualification on both Macs. The same real-child checks pass canonical local
@@ -3338,6 +3337,21 @@ metadata helper against native owner budgets at every admitted share and width.
 It proves metadata accounting without reading or qualifying weight payloads.
 Full-artifact TP batching, RDMA, media, warm-prefix and throughput checks remain
 separate hardware gates.
+
+### Pipeline width checks
+
+A Gemma 4 pipeline's width ([Gemma pipeline lanes](../architecture/inference.md#gemma-pipeline-lanes))
+is checked from the planner to LOAD, on constructed Macs and metadata only:
+
+| Check | Run | What it proves |
+|---|---|---|
+| `PipelineWidthChecks.swift` | `libs/darkbloom-cluster/Tests/PlacementChecks/run.sh` | On Gemma 4's golden layout, `ClusterPlacementPolicy.pipelineLanes` adds each further lane's whole request state at the planned request to every rank's need, and nothing else, whatever request the speed is predicted for. One request plans byte for byte as before. A width is refused beside any other mode, beside the one-chunk lookahead, or for a family that admits requests only on arrival (GLM's pipeline) |
+| `PlacementSetupCheck.gemmaPipelineWidths` | `provider-swift/Tests/ClusterPlacementChecks/run.sh` | Through the guided step's own decision, two M5 Ultra 256 GB keep the one-chunk lookahead and save no width on both Macs, and so does every free memory level the sizing is checked at. The sizing itself (`ClusterPlacementPipelineWidth.size`) at a cap of eight saves 8, 4 or 2 with serial prefill as free memory falls, or, where one request fits, no width and the lookahead. The Mac with less free memory decides |
+| `ClusterPlacementPipelineWidthTests` | `ProviderCoreTests` | The same on a constructed layout: a guided Gemma 4 pipeline keeps the lookahead at every memory level, and the setup screen's number (`ClusterSetupPlanning.loads`) is one, as `DistributedInstalledPlan.batchLanes` is. The sizing at a cap of eight, as above. A Qwen 3.5 9B pipeline saves no width |
+| `QwenBatchLaneBookTests.testLoadChargesASavedWidthAsTheBookChargesItsLanes` | `DarkbloomClusterRuntimeTests` | LOAD's charge for a width is what the lane book charges that many lanes held at once |
+
+None of them is a hardware result. Output agreement, memory and a lone long
+prompt's time to its first token on the real pair are separate checks.
 
 ### Qwen27 TP warm-prefix checks
 

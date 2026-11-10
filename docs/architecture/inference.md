@@ -5688,10 +5688,13 @@ batches failed whole on a refusal, so the worker exited either way. Now:
   (`QwenTensorParallelStopRule.reconcile`), and both end cleanly. Two finishes
   that differ would fail the request on the owner, and the pair with it.
   (MiMo reads a round's stops before it commits, so its stop is never late.)
-  An aborted request's state retires normally, its prompt capture is
-  withdrawn, and nothing goes to the SSD tier. The check runs after each
-  committed token, as before; a prompt's chunks run on the reservation's
-  charge.
+  An aborted request's state retires normally and nothing of it goes to the
+  SSD tier. Gemma withdraws the prompt's capture. GLM stores a prompt's kept
+  boundary when the prefill frame that reaches it finishes, so the rank that
+  didn't refuse keeps that entry until it is evicted (the refusing rank's gate
+  dropped all of its own), and a restore needs both ranks. The check runs
+  after each committed token, as before; a prompt's chunks run on the
+  reservation's charge.
 - **Batches** (Qwen 3.8 27B in every width, its one-request singleton and its
   assistant lanes, and Gemma 4's lanes: `QwenTensorParallelBatchDriver`): the
   memory check leaves `check` for `memoryRefused`, polled at a step boundary

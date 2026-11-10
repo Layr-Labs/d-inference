@@ -720,12 +720,17 @@ final class FakePair: @unchecked Sendable {
 
     func isPrepared(_ id: UUID) -> Bool { lock.withLock { prepared.contains(id) } }
 
-    func memoryRefused(rank: Int) -> Bool {
-        lock.withLock {
-            guard let refusal = memoryRefusal, refusal.rank == rank, tick >= refusal.tick, memoryRefusals == 0 else { return false }
-            memoryRefusals += 1
-            return true
+    /// Once due, the check is GLM's own tensor-parallel gate on a Mac whose
+    /// memory is taken (a real refusal, no fault), read as the lanes read it.
+    func memoryRefused(rank: Int) throws -> Bool {
+        let due = lock.withLock {
+            guard let refusal = memoryRefusal, refusal.rank == rank, tick >= refusal.tick else { return false }
+            return memoryRefusals == 0
         }
+        guard due, try TakenMemory.refusesLane({ try GLM5NextTensorParallelResidentRuntime.requireLiveMemory(bytes: 0) })
+        else { return false }
+        lock.withLock { memoryRefusals += 1 }
+        return true
     }
 
     var now: UInt64 { lock.withLock { clock } }
@@ -806,7 +811,7 @@ final class FakePair: @unchecked Sendable {
                 let loop = GLM5NextTensorParallelLaneLoop(native: natives[rank], lanes: lanes, book: books[rank],
                     host: hosts[rank], joinWaitNanoseconds: 10_000_000_000, deadlineMarginNanoseconds: 0,
                     now: { [self] in now })
-                do { try loop.run(memoryRefused: { [self] in memoryRefused(rank: rank) }, check: {}) } catch {
+                do { try loop.run(memoryRefused: { [self] in try memoryRefused(rank: rank) }, check: {}) } catch {
                     failures.lock.withLock { failures.errors[rank] = error }; link.fail("rank \(rank): \(error)")
                 }
             }

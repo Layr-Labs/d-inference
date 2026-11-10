@@ -708,7 +708,6 @@ public final class GLM5NextResidentRuntime {
         // Each refusal below is memory's, typed so a running request's stop
         // latch ends that request alone (D6).
         do {
-            try ClusterMemoryFault.current.refuseIfDue()
             _ = try memoryWatch.admits(os, bytes: GLM5NextStageLoadResources.sum([remaining, hostBytes,
                     QwenDenseStageLoadPolicy.loadingHeadroomBytes(physicalMemoryBytes: os.physicalMemoryBytes)]),
                 now: DispatchTime.now().uptimeNanoseconds)

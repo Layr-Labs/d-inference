@@ -5624,13 +5624,21 @@ and `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+
 
 ## A pipeline stage's memory refusal ends that request alone
 
-A layer-stage pipeline (the Qwen and Gemma 4 stages, GLM's and MiMo V2.6's)
-checks each running request against its rank's live memory gate, at most
-every 250 ms:
+A layer-stage pipeline (the Qwen and Gemma 4 stages, GLM's, MiMo V2.6's and
+GPT-OSS's) checks each running request against its rank's live memory gate, at
+most every 250 ms:
 kept prompt prefixes give way first, then the request's own prefix capture
 (`QwenResidentRequestExecution.checkRunning`; the gate is
-`QwenResidentRequestAllowance.requireContinuing`, GLM's `requireResources`).
-Before 0.10.11 a refusal that remained was thrown from the request's `check`,
+`QwenResidentRequestAllowance.requireContinuing`, GLM's `requireResources`,
+MiMo's and GPT-OSS's `requireLive`, which share one gate,
+`ClusterLiveMemory.requireStageRequest`).
+Every running gate, in every mode, asks power and thermal state first (a
+refusal there is untyped and fails the worker), then judges memory only inside
+its typed block, so every memory refusal is a `QwenResidentMemoryRefusal`.
+None asks the load's entry check (`QwenDenseStageLoadResources.requireInitial`)
+first: its floor is one the gate asks on its own sample anyway, and its refusal
+is untyped, so it would end the worker before the typed check ran.
+Before 0.10.12 a refusal that remained was thrown from the request's `check`,
 which also runs inside every transfer. The refusing rank left the data plane
 mid-exchange and its worker exited (the worker coordinator's failure path), the
 other rank lost its input, the client got an untyped 500 and the pair stopped
@@ -5724,8 +5732,23 @@ batches failed whole on a refusal, so the worker exited either way. Now:
   and each rank's memory stop (`QwenTensorParallelStopRule.endWords`,
   `readEnd`; MiMo's one extra exchange). A local stop with a memory stop is an
   abort naming that rank on both ranks; a stop token, the length or the owner's
-  stop end the request as before. The request's state retires normally, its
-  prompt capture is withdrawn, and nothing goes to the SSD tier. The check runs
+  stop end the request as before. Gemma's and GLM's steps (and GLM's MTP
+  rounds) are built one ahead, so rank 1's flag rides the step after the one
+  already built. When rank 0 ends the request in that step, at its stop token
+  or its length, rank 1's stop came too late to change what the client gets:
+  rank 1 reports rank 0's finish with the tokens it committed
+  (`QwenTensorParallelStopRule.reconcile`), and both end cleanly. Two finishes
+  that differ would fail the request on the owner, and the pair with it.
+  Rank 1 likewise reports rank 0's client stop, with rank 0's tokens, when its
+  pages could not grow as the owner stopped the request (within a step or two,
+  so rank 0 heard the owner first). (MiMo reads a round's stops before it
+  commits, and its plain decode reads each step before it builds the next, so
+  its stop is never late.)
+  An aborted request's state retires normally and nothing of it goes to the
+  SSD tier. Gemma withdraws the prompt's capture. GLM stores a prompt's kept
+  boundary when the prefill frame that reaches it finishes, so the rank that
+  didn't refuse keeps that entry until it is evicted (the refusing rank's gate
+  dropped all of its own), and a restore needs both ranks. The check runs
   after each committed token, as before; a prompt's chunks run on the
   reservation's charge.
 - **Batches** (Qwen 3.8 27B in every width, its one-request singleton and its
@@ -5748,10 +5771,15 @@ lanes, MTP and assistant lanes, for every family that serves in it. Native
 errors, protocol violations, a peer that doesn't confirm within the progress
 limit, the deadline and power or thermal refusals fail the worker as before.
 
-**The dev memory fault.** Dev and DevNet builds can make a rank's live gate
-refuse the next request from its Nth check on (`ClusterMemoryFault`, the file
-`~/.darkbloom-dev/cluster-setup/memory-fault`, read and deleted when a request
-starts, never in a production install), through each gate's own throw; see
+**The dev memory fault.** A dev or DevNet install can make a rank's memory
+read as taken from the next request's Nth gate pass on (`ClusterMemoryFault`,
+the file `~/.darkbloom-dev/cluster-setup/memory-fault`, read and deleted when a
+request starts, never read in a production install). It changes only the
+sample the host memory gate judges (`QwenDenseStageLoadWatch.admits`): no free
+page and no file cache, as once another process has taken them. The policy
+refuses that sample with its own sentence, so the first check that judges it
+throws, as on a real Mac: a running gate's typed check, or a check outside it,
+which would end the worker on a real Mac too. See
 [the test guide](../developer/test.md#a-memory-refusal-on-a-real-pair-dev-memory-fault).
 
 **Builds.** A pair forms only between Macs on the same build

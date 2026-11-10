@@ -398,9 +398,9 @@ the same words:
 
 - Each mode's line says the context it serves, from the plan that loads it
   (`ClusterModelFeaturePolicy.servedProfile`, which the pair's limits and
-  refusals read too): "· context 262,144 tokens" for Gemma 4's tensor parallel,
-  "· context 65,536 tokens, prompts up to 32,768" for its pipeline. A narrow
-  window keeps "context 65,536".
+  refusals read too): "· context 262,144 tokens" for Qwen 3.8 27B's tensor
+  parallel and for both of Gemma 4's modes, "· context 65,536 tokens, prompts up
+  to 32,768" for Qwen's pipeline. A narrow window keeps "context 65,536".
 - Only modes whose own plan fits both Macs' free memory now count (while a
   model serves, its memory is freed first, so fitting now doesn't decide). One
   that fits alone is "the only one that fits these Macs now". Serving through

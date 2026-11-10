@@ -563,8 +563,9 @@ public struct ClusterOnboardingMode: Codable, Sendable, Equatable {
     }
 
     /// The context it serves, and its longest prompt when that is shorter (journey 3's second delta: Gemma 4's
-    /// pipeline serves 65,536 tokens with prompts up to 32,768, tensor parallel 262,144, and the question said
-    /// neither): "context 65,536 tokens, prompts up to 32,768"; nil when not known.
+    /// pipeline served 65,536 tokens with prompts up to 32,768 in 0.10.11, tensor parallel 262,144, and the question
+    /// said neither): "context 65,536 tokens, prompts up to 32,768" for a pipeline that serves the memory plan's
+    /// request; nil when not known.
     var contextWords: String? {
         guard let context = contextTokens else { return nil }
         let prompts = promptTokens.flatMap { $0 < context - 1 ? ", prompts up to " + Self.grouped($0) : nil } ?? ""

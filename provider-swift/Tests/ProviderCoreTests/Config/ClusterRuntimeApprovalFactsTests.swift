@@ -526,12 +526,11 @@ struct ClusterRuntimeApprovalFactsTests {
         #expect(try qualifications(nine, publicModels: [otherArtifact]).isEmpty)
     }
 
-    /// #1930 (D6): a Gemma 4 pipeline serves the memory plan's request, as every family's pipeline does, so its parity
-    /// qualifications carry prompts up to 32,768 tokens: a coordinator sends a longer Gemma prompt to tensor parallel or
-    /// one Mac instead of to the pipeline pair. Tensor parallel's carry the whole profile. #1930's review found no test
-    /// that pins this: with the provider's served profile back at the whole profile for a Gemma pipeline, these facts
-    /// passed.
-    @Test func aGemmaPipelinesQualificationsCarryItsMemoryPlansPromptLimit() throws {
+    /// A Gemma 4 pipeline serves its whole profile (#1933, which lifts #1930's memory-plan cap now that a stage's memory
+    /// refusal ends only that request), so its parity qualifications carry the whole profile, as tensor parallel's do:
+    /// prompts up to 262,143 tokens and 32,768 output tokens. #1930's review found no test that pinned the
+    /// qualifications' limits; this one pins them for both modes.
+    @Test func aGemmaPipelinesQualificationsCarryTheWholeProfile() throws {
         let f = try Fixture()
         let gemma = try f.model("gemma-qat", fixture: "registered-gemma4-26b-qat-4bit")
         let facts = try ClusterRuntimeApprovalFacts.compute(installation: f.installation, models: [.init(directory: gemma)],
@@ -542,7 +541,7 @@ struct ClusterRuntimeApprovalFactsTests {
         #expect(qualifications.map(\.mode) == [.pipeline, .pipeline, .tensorParallel, .tensorParallel])
         for q in qualifications {
             let limits = (q.requestEnvelope.maxPromptTokens, q.requestEnvelope.maxOutputTokens)
-            #expect(limits == (q.mode == .pipeline ? (32_768, 32_768) : (262_143, 32_768)), "\(q.mode) schedule \(q.schedule)")
+            #expect(limits == (262_143, 32_768), "\(q.mode) schedule \(q.schedule)")
         }
     }
 

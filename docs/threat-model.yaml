@@ -1966,8 +1966,8 @@ threats:
           another holder refuses the rollback without signalling it.
         status: implemented
       - description: >
-          Only an unclean end counts toward the rollback threshold, so a restart
-          the owner asks for never rolls a working release back. The watchdog
+          A restart or clean stop the owner asks for does not count toward the
+          rollback threshold, so it never rolls a working release back. The watchdog
           times a candidate's startup window from the later of its launch and
           the start of the process launchd runs: a `darkbloom restart`, `start`,
           `stop` then `start`, login or reboot gives the new process the whole

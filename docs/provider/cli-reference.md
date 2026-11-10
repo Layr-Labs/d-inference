@@ -1690,7 +1690,8 @@ sends no heartbeat of the release within its startup window,
 of the release's launch and the start of the process launchd runs
 (`WatchdogRecoveryService.startupWindowStart`), so a restart you ask for
 (`darkbloom restart`, `start`, `stop` then `start`), a login or a reboot gives
-the new process the whole window and is never a failed start. Three failed
+the new process the whole window: the restart itself is never a failed start,
+but the new process still is one if it sends no heartbeat within it. Three failed
 starts restore the kept release and quarantine the new one
 (`UpdateRecoveryState.rollbackThreshold`). On a `darkbloom cluster` Mac its
 cluster service supervisor counts them instead

@@ -68,7 +68,7 @@ public struct ClusterCandidateRecovery: Sendable {
     /// a crash (a signal), an exit with an error, and a stop the supervisor's liveness guard asked for (`recycled`: the
     /// service stopped beating) are, as a crash and a start that sends no heartbeat are on a single Mac. A clean stop
     /// (exit 0) is not: the service exits 0 only once asked to stop (SIGTERM or SIGINT), as when `darkbloom cluster`
-    /// replaces a service started from a terminal (`ClusterService.stopDetached`), on Ctrl-C there, or on a `kill`.
+    /// replaces a service started from a terminal (`ClusterService.stopDetached`), or on a `kill`.
     public static func endIsFailedStart(_ end: ClusterMemberRunEnd, recycled: Bool) -> Bool {
         recycled || end != .failure(exitCode: 0)
     }

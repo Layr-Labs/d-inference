@@ -693,10 +693,10 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
     /// cleanly when asked to from outside (`ClusterCandidateRecovery.endIsFailedStart`); returns the verified predecessor
     /// the third restored, which the supervisor then starts again from.
     private func recordCandidateEnd(_ end: ClusterMemberRunEnd, recycled: Bool, detail: String) -> String? {
-        guard let version = candidate, let recovery = configuration.pairUpdate?.recovery else { return nil }
+        guard let pending = candidate, let recovery = configuration.pairUpdate?.recovery else { return nil }
         candidate = nil
         guard ClusterCandidateRecovery.endIsFailedStart(end, recycled: recycled) else {
-            log("cluster update: v\(version)'s cluster service stopped cleanly when asked to from outside this supervisor "
+            log("cluster update: v\(pending)'s cluster service stopped cleanly when asked to from outside this supervisor "
                 + "(\(detail)); not a failed start")
             return nil
         }

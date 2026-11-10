@@ -422,8 +422,8 @@ struct WatchdogRecoveryIntegrationTests {
     /// `darkbloom restart` 7 minutes after an update, before the release is promoted: the command stops the watchdog,
     /// replaces the provider and starts the watchdog again, whose first check runs at once and still reads the daemon
     /// state of the process it replaced. Timed from the update's launch, that was a start without a heartbeat: a failed
-    /// start, and with two before it a rollback that quarantined a release nothing was wrong with (0.10.11 on 4ae0976c,
-    /// 085f602d and a9e55a63; every release since 0.9.16 on 662f2d50). The new process's window runs from its own start.
+    /// start, and with two before it a rollback that quarantined a release nothing was wrong with (0.10.11). The new
+    /// process's window runs from its own start.
     @Test("a restart the owner asks for before promotion is not a failed start, with two failed starts before it")
     func requestedRestartIsNotAFailedStart() async throws {
         let context = try await installedCandidate()

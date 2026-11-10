@@ -1182,9 +1182,10 @@ The same suite covers a restart the owner asks for before promotion
 (`requestedRestartIsNotAFailedStart`,
 `requestedRestartWithoutAHeartbeatIsAFailedStart`,
 `requestedRestartDefersTheDownPathInsideItsOwnWindow`,
-`crashAfterARequestedRestartStillCounts`): with two failed starts recorded, the
-launch snapshot names a provider process started 7 minutes after the update and
-only that process lives, while the daemon state is still the replaced process's.
+`crashAfterARequestedRestartStillCounts`): the launch snapshot names a provider
+process started 7 minutes after the update (two of the tests start with two
+failed starts recorded) and only that process lives, while the daemon state is
+still the replaced process's.
 The re-armed watchdog's first check must not count a failed start; the new
 process is promoted 180 s after its first heartbeat, is a failed start only 300 s
 after its own start without one, keeps the down path's grace for a long preload

@@ -134,7 +134,9 @@ public struct WatchdogRecoveryService: Sendable {
     /// that process. A restart the owner asks for (`darkbloom restart`, `start`, `stop` then `start`), a login or a
     /// reboot replaces the attempt's process, and the re-armed watchdog's first check still reads the replaced process's
     /// daemon state: the new process gets the whole window from its own start, so only a crash, or a process that sends
-    /// no heartbeat within its own window, is a failed start.
+    /// no heartbeat within its own window, is a failed start. Sound only while the provider job is `KeepAlive = false`
+    /// (`LaunchAgent`): launchd never relaunches a crashed provider itself, so a new process comes from the watchdog,
+    /// which counts the failed start first, or from the owner.
     static func startupWindowStart(attemptStartedAt: Double, runningProcess: ProcessIdentity?) -> Double {
         guard let runningProcess else { return attemptStartedAt }
         return max(attemptStartedAt, Double(runningProcess.startTimeMicros) / 1_000_000)

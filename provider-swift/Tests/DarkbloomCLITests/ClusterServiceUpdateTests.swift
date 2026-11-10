@@ -434,9 +434,9 @@ struct ClusterServiceUpdateTests {
     }
 
     /// A clean stop of the candidate's cluster service that its supervisor did not ask for: `darkbloom cluster`
-    /// replacing a service started from a terminal (`ClusterService.stopDetached`), Ctrl-C there, or a `kill`. The
-    /// service stops in order and exits 0, and the supervisor starts it again. Each was counted as a failed start, and
-    /// the third quarantined a release nothing was wrong with.
+    /// replacing a service started from a terminal (`ClusterService.stopDetached`), or a `kill`. The service stops in
+    /// order and exits 0, and the supervisor starts it again. Each was counted as a failed start, and the third
+    /// quarantined a release nothing was wrong with.
     @Test func aCleanStopTheSupervisorDidNotAskForIsNotAFailedStart() async throws {
         let install = try CandidateInstall()
         defer { install.cleanUp() }

@@ -39,9 +39,10 @@
 //
 // FAIL-LOUD CONTRACT (v0.7.5): every throw out of `prepare` lands in the
 // scheduler engine's catch → ERROR `engine_v2_vision_refusal` telemetry +
-// a retriable 503 (`.requestRejected`) so the coordinator's pre-content
-// failover reroutes the request invisibly. There is NO legacy fallback for
-// media on a v2-bridged slot (the pre-release `engine_v2_vision_fallback` WARN
+// a retriable 503 (`constructionRefusal(for:mediaKind:)`: `.requestRejected`,
+// or `.mediaMemoryUnavailable` for a transient reader fault) so the
+// coordinator's pre-content failover reroutes the request invisibly. There is
+// NO legacy fallback for media on a v2-bridged slot (the pre-release `engine_v2_vision_fallback` WARN
 // is gone with it). Deterministic input faults (`MediaError` — malformed/
 // oversized media, or an intentionally unsupported family/media pairing) keep
 // their 4xx mapping and are not refusals.
@@ -967,6 +968,21 @@ public enum EngineV2VisionPrefill {
             // Processor configuration or internal agreement, not the media.
             return nil
         }
+    }
+
+    /// The retryable 503 for a media preparation throw that `clientFault(for:)`
+    /// leaves to this provider. A reader that failed twice with a transient
+    /// decoder fault is `mediaMemoryUnavailable`: this machine's media decode,
+    /// not its text/KV capacity. Any other throw is the construction refusal.
+    static func constructionRefusal(for error: Error, mediaKind: EngineV2MediaKind)
+        -> MultiModelBatchSchedulerEngineError
+    {
+        if (error as? VideoReaderFailure)?.isTransient == true { return .mediaMemoryUnavailable }
+        return .requestRejected(
+            "engine_v2 media prefill construction failed "
+                + "(media=\(mediaKind.rawValue)): "
+                + refusalDetail(for: error)
+                + " — request not started; retry on another provider")
     }
 }
 

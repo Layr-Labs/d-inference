@@ -550,7 +550,8 @@ struct GLM5NextMediaRoutingTests {
     }
 
     /// An unavailable decoder on both passes is the machine's fault: a
-    /// retryable 503 that the coordinator sends to another provider.
+    /// retryable 503 with error reason `media_memory_unavailable`, which the
+    /// coordinator sends to another provider without a capacity strike.
     @Test func aTransientDecoderFaultOnBothPassesIsARetryableRefusal() async throws {
         let decoderUnavailable = NSError(
             domain: AVFoundationErrorDomain, code: AVError.Code.decoderTemporarilyUnavailable.rawValue)
@@ -558,7 +559,8 @@ struct GLM5NextMediaRoutingTests {
         let telemetry = TelemetryCapture()
         let run = try await readinessMP4(under: fault, telemetry: telemetry)
         #expect(run.submitted == 0)
-        #expect(run.failure?.code == .capacity && run.failure?.statusCode == 503,
+        #expect(run.failure?.code == .capacity && run.failure?.statusCode == 503
+                    && run.failure?.errorReason == .mediaMemoryUnavailable,
                 "\(String(describing: run.failure)); \(telemetry.readerFailures)")
         #expect(telemetry.readerFailures.map { $0.retrying } == [true, false])
         #expect(telemetry.refusalErrors.count == 1

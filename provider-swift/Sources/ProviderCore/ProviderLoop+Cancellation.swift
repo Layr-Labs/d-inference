@@ -17,8 +17,11 @@ import os
 extension ProviderLoop {
     // MARK: - Cancellation
 
+    /// `localCause` says why this Mac cancels a request itself; a coordinator
+    /// cancel's cause is its reason (`routeCoordinatorCancel`).
     internal func handleCancellation(
         requestId: String, receivedFromCoordinator: Bool = true,
+        localCause: InferenceEarlyEndCause = .stoppedOnThisMac,
         afterNativeCancellationAssociationErasureForTesting: (@Sendable () async -> Void)? = nil
     ) async {
         logger.info("Cancelling request: \(requestId)")
@@ -85,7 +88,9 @@ extension ProviderLoop {
             }
         }
 
-        await cancellationRegistry.cancel(requestId: requestId)
+        let reason = coordinatorCancelReasons.removeValue(forKey: requestId)
+        await cancellationRegistry.cancel(
+            requestId: requestId, cause: receivedFromCoordinator ? .coordinatorCancel(reason) : localCause)
 
         // The earlier bridge/registry calls suspend this actor. Read the
         // CURRENT association and retain the CURRENT actual native Task now,
@@ -123,10 +128,12 @@ extension ProviderLoop {
         }
     }
 
+    /// `cause`: the connection dropped, or this Mac stops (a forced drain or
+    /// a shutdown whose drain timed out).
     internal func cancelAllInflight(cause: InferenceEarlyEndCause = .stoppedOnThisMac) async {
         let requestIds = Array(inflightTasks.keys)
         for requestId in requestIds {
-            await handleCancellation(requestId: requestId, receivedFromCoordinator: false)
+            await handleCancellation(requestId: requestId, receivedFromCoordinator: false, localCause: cause)
         }
         // A native task can have registered during one of those actor hops.
         // Retain its exact handle before clearing maps; legacy behavior stays.

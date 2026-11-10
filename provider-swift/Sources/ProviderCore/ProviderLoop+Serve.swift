@@ -358,7 +358,7 @@ extension ProviderLoop {
                     logger.warning(.coordinatorDisconnected)
                     // Cancel all in-flight requests on disconnect -- the coordinator
                     // will not route responses for a dead connection.
-                    await cancelAllInflight()
+                    await cancelAllInflight(cause: .connectionLost)
 
                 case .inferenceRequest(
                     let requestId, let ciphertext, let senderPublicKey,
@@ -452,8 +452,8 @@ extension ProviderLoop {
                 case .codeAttestationResumeChallenge(let challenge):
                     handleCodeChallenge(challenge, send: send)
                     continue
-                case .cancel(let requestId, _):
-                    routeCoordinatorCancel(requestId)
+                case .cancel(let requestId, let reason):
+                    routeCoordinatorCancel(requestId, reason: reason)
                     continue
                 case .connected, .disconnected:
                     noteCoordinatorConnection(connected: event.isConnected)

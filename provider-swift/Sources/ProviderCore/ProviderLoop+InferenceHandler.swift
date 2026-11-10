@@ -1572,8 +1572,11 @@ extension ProviderLoop {
                 usageRecovered = true
             }
 
-            if cancelledMidStream {
-                providerStats.incrementCancellationsPartialComplete()
+            // A cancel that landed after the engine finished the answer on its
+            // own ended nothing early: the answer is whole.
+            let endedEarly = cancelledMidStream && !v2UsageSignal.answerFinished
+            if endedEarly {
+                providerStats.recordEndedEarly(token.endCause ?? .coordinatorCancel(nil))
             }
 
             // Update stats
@@ -1640,7 +1643,7 @@ extension ProviderLoop {
                 send: send)
 
             log.info(
-                "[\(requestId)] Complete\(cancelledMidStream ? " (cancelled mid-stream, partial settle)" : ""): "
+                "[\(requestId)] Complete\(endedEarly ? " (cancelled mid-stream, partial settle)" : ""): "
                 + "\(promptTokens) prompt + \(completionTokens) completion tokens")
         }
 

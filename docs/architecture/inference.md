@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-10
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -1981,6 +1981,19 @@ The sink check occurs when the enqueue closure runs, not when its caller
 submits the frame. `SendHandle` and `ChunkSender` persist across reconnects,
 so an old request's frame processed after a replacement sink binds still
 passes this check; it does not enforce request-to-session identity.
+
+A coordinator request stopped after it sent output settles with the usage it
+delivered (`StreamedGenerationUsage.cancelledTerminal`) and is counted for
+`darkbloom status` under what stopped it (`EndedEarlyCounts`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/InferenceEarlyEnd.swift`).
+The first cancel of the request's `InferenceCancellationToken` names the cause:
+the coordinator's `cancel` with its optional `reason` and `paid`
+(`routeCoordinatorCancel`), a dropped connection (`cancelAllInflight`), or this
+Mac's own stop (`handleCancellation` with `localCause`). A cancel that lands
+after the engine finished the answer with `stop` or `length` ended nothing
+early: the bridge records that finish on the request's
+`EngineV2RequestUsageSignal` (`answerFinished`) before it yields the terminal
+events, and the frames loop then counts the request as served whole.
 
 Decoded text keeps a character the tokenizer writes as `<0xHH>` tokens wherever it
 falls. swift-transformers' `ByteFallbackDecoder` releases those tokens only when a

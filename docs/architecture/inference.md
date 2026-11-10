@@ -2373,6 +2373,22 @@ See `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/Deadline/Engine
 `provider-swift/Sources/ProviderCore/Inference/Performance/Profiles/ServingMTPConfiguration.swift`
 and `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/DeadlineAdmission/CalibratedFirstContentV2.swift`.
 
+A two-Mac pair projects a request's first token itself
+(`DistributedPipeExecutionOwner.projectFirstToken`): its whole prompt at the
+bridge's prefill rate, which for a pair is the pair's own, measured end to end
+from both ranks' reservation to the first committed token
+(`DistributedCBv2Engine.timing`), so it carries the transfer and control costs
+a rank's own compute would leave out. The ranks prefill one prompt at a time,
+so the engine adds the prompt of every request holding a lane that has not
+given its first token (`DistributedCBv2Engine.behindPendingPrefill`). A burst
+of long prompts therefore takes only the lanes whose first token meets its
+deadline, and the rest are refused `deadline_unreachable` at once, for the
+coordinator to place elsewhere. Other lanes' decode steps between prompt
+chunks are not charged. Without a measured rate nothing is projected and the
+request is admitted. Until 0.10.12 the owner projected nothing (unbounded), so
+once a pair's bridge had measured its prefill (0.10.11), every request carrying
+a first-content budget was refused, a lone one too.
+
 `WedgeMonitor.suspectStallSeconds =
 10` flags a stalled slot
 (`provider-swift/Sources/ProviderCore/Inference/Engine/WedgeMonitor.swift`):

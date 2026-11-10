@@ -1,9 +1,9 @@
 ### Qwen3.5-9B speculates and caches again, with exact MTP acceptance; the 35B Qwen builds keep their penalty
 
-- Since 0.10.5 the catalog `Qwen3.5-9B`, `qwen3.5-35b-a3b` and `qwen3.6-35b-a3b-vl-mtp-mxfp8` builds have given a request that omits `presence_penalty` the model cards' 1.5. The engine drafts no row with a penalty, and these builds' MTP heads keep the prompt history, so such a row also stages no resident or SSD prefix checkpoint.
+- Since 0.10.5 the catalog `Qwen3.5-9B`, `qwen3.5-35b-a3b` and `qwen3.6-35b-a3b-vl-mtp-mxfp8` builds have given a request that omits `presence_penalty` the model cards' 1.5. The engine drafts no row with a penalty, and these builds' MTP heads keep the prompt history, so through 0.10.11 such a row also staged no resident or SSD prefix checkpoint.
 - The 0.10.12 gate on the signed 0.10.11 decided each build. It ran temperature 1, `top_p` 0.95 and `top_k` 20 over #1652's four loopers and five tool transcripts at 32,768 tokens and nineteen everyday prompts at 8,192, three seeds each.
   - **`qwen3.5-35b-a3b`:** without the penalty it ran away under typical MTP acceptance (8 of 12 loopers to 32,768, 5 of 19 everyday prompts) and under exact (2 of 12 loopers).
   - **`Qwen3.5-9B`:** it ran away on 13 of 31 draws under typical acceptance and on none of 31 under exact.
 - **`Qwen3.5-9B`** now has no default presence penalty, and its built-in MTP acceptance is exact. Its requests speculate and stage prefix checkpoints: in the gate the penalty-free body cached 8,192 tokens on its second send, where the penalty body cached none. A `[backend] mtp_acceptance_by_model` or `mtp_acceptance` value still takes precedence.
-- **`qwen3.5-35b-a3b` and `qwen3.6-35b-a3b-vl-mtp-mxfp8`** (one architecture) keep the 1.5, so their requests that omit it still run without MTP and without cache donation.
-- A request's own `presence_penalty` always wins: `0` on a 35B build speculates under typical acceptance and donates checkpoints, and any nonzero value on the 9B turns its MTP and cache donation off for that request.
+- **`qwen3.5-35b-a3b` and `qwen3.6-35b-a3b-vl-mtp-mxfp8`** (one architecture) keep the 1.5, so their requests that omit it still run without MTP; they now save prefix checkpoints (see the entry on Qwen 3.5/3.6 requests that cannot speculate).
+- A request's own `presence_penalty` always wins: `0` on a 35B build speculates under typical acceptance and donates checkpoints, and any nonzero value on the 9B turns MTP off for that request, which still saves prefix checkpoints.

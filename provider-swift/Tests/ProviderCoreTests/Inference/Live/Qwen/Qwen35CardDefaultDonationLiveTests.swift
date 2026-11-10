@@ -5,8 +5,9 @@ import ProviderCoreFoundation
 import Testing
 @testable import ProviderCore
 
-/// The Qwen 3.5/3.6 builds' default request (temperature 1, top-p 0.95, top-k 20 and the
-/// card's presence penalty 1.5, here with a seed) cannot speculate. On real weights with the
+/// A Qwen 3.5/3.6 request with the card's values (temperature 1, top-p 0.95, top-k 20 and the
+/// presence penalty 1.5: the 35B builds' default; sent explicitly here, with a seed) cannot
+/// speculate. On real weights with the
 /// production paged assembly, the inline MTP head and the encrypted complete-checkpoint store,
 /// such a request must donate its prompt's checkpoints, answer exactly as with the cache off,
 /// and let the same request, its next turn, and a speculating request restore them and answer
@@ -59,6 +60,9 @@ struct Qwen35CardDefaultDonationLiveTests {
         var hit: Int
         var ttft: Duration
         var peakBytes: Int
+        /// From the last streamed chunk to the terminal: what a client waits after the answer,
+        /// including a donor's synchronous checkpoint publication.
+        var tail: Duration
     }
 
     static func card(_ fixture: Qwen35CheckpointRetentionFixture, _ shape: Shape, presencePenalty: Float = 1.5)
@@ -84,11 +88,14 @@ struct Qwen35CardDefaultDonationLiveTests {
             usageSignal: signal)
         var output = Output()
         var first: ContinuousClock.Instant?
+        var last: ContinuousClock.Instant?
+        var terminal: ContinuousClock.Instant?
         var failure: String?
         for await event in stream {
             switch event {
             case .chunk(let text):
                 if first == nil && !text.isEmpty { first = .now }
+                if !text.isEmpty { last = .now }
                 output.text += text
             case .logprobs(let entries):
                 for entry in entries {
@@ -96,6 +103,7 @@ struct Qwen35CardDefaultDonationLiveTests {
                     output.logprobBits += entry.topLogprobs.map(\.logprob.bitPattern)
                 }
             case .info(_, let completion, _, let reason):
+                terminal = .now
                 output.finish = reason
                 output.completionTokens = completion
             case .error(let message): failure = message
@@ -105,15 +113,17 @@ struct Qwen35CardDefaultDonationLiveTests {
         try #require(failure == nil, "request \(id) failed: \(failure ?? "")")
         try await requireQwen35CheckpointIdle(bridge)
         let run = Run(output: output, hit: signal.prefixCacheHitTokens ?? 0,
-                      ttft: (first ?? .now) - started, peakBytes: MLX.Memory.peakMemory)
-        print("[qwen35-card-donation] id=\(id) hit=\(run.hit) ttft=\(run.ttft) peakBytes=\(run.peakBytes) "
+                      ttft: (first ?? .now) - started, peakBytes: MLX.Memory.peakMemory,
+                      tail: (terminal ?? .now) - (last ?? started))
+        print("[qwen35-card-donation] id=\(id) prompt=\(tokens.count) hit=\(run.hit) ttft=\(run.ttft) tail=\(run.tail) "
+            + "peakBytes=\(run.peakBytes) "
             + "completion=\(output.completionTokens) finish=\(output.finish ?? "nil") "
             + "logprobs=\(output.logprobBits.count)")
         return run
     }
 
     @Test("card-default requests donate, and every restorer answers as its cold run",
-          .timeLimit(.minutes(30)), .enabled(if: enabled), arguments: Target.selected)
+          .timeLimit(.minutes(45)), .enabled(if: enabled), arguments: Target.selected)
     func cardDefaultRequestsDonateAndRestoreExactly(_ target: Target) async throws {
         let fixture = try await Qwen35CheckpointRetentionFixture(
             modelID: target.modelID, memoryBudgetBytes: target.memoryBudgetBytes)
@@ -165,6 +175,9 @@ struct Qwen35CardDefaultDonationLiveTests {
                     .forEach { try FileManager.default.removeItem(at: $0) }
             }
 
+            try await Self.extensionTurns(fixture)
+            try await Self.longPrompt(fixture)
+
             // A speculating request (penalty 0) restores a card request's checkpoint. A fixed
             // depth makes its output deterministic run to run, under either acceptance rule.
             let store = try fixture.makeStore()
@@ -198,6 +211,178 @@ struct Qwen35CardDefaultDonationLiveTests {
                 await warmBridge.shutdown()
                 await warmStore.closeAndWait()
             }
+            await fixture.close()
+        } catch {
+            await fixture.close()
+            throw error
+        }
+    }
+
+    /// Empties the fixture's cache root between independent sections.
+    static func clearStore(_ fixture: Qwen35CheckpointRetentionFixture) throws {
+        try FileManager.default.contentsOfDirectory(at: fixture.root, includingPropertiesForKeys: nil)
+            .forEach { try FileManager.default.removeItem(at: $0) }
+    }
+
+    static func records(count: Int, from start: Int) -> [String] {
+        (start ..< start + count).map { n in
+            "Record \(n): station \(n % 17) reported a routine inspection. The reservoir gauge was checked, the "
+                + "inlet valve was serviced, and the next maintenance review remains proposed rather than approved."
+        }
+    }
+
+    /// The multi-turn agent case: a card request that restored a checkpoint extends the head's
+    /// history over its own prompt and donates the deeper chunk end; the turn after it restores
+    /// that donation and answers exactly as its cold run.
+    static func extensionTurns(_ fixture: Qwen35CheckpointRetentionFixture) async throws {
+        typealias F = Qwen35CheckpointRetentionFixture
+        let request = Self.card(fixture, .card)
+        let donorTokens = fixture.prompts.donor
+        let stripe = F.stripeTokens
+        let opening = fixture.prompts.records.joined(separator: "\n") + "\n" + F.releaseQuestion + F.instruction
+        func turns(_ added: Int) throws -> (second: [Int], third: [Int]) {
+            let more = Self.records(count: added, from: 1_000).joined(separator: "\n") + "\n"
+                + F.backupQuestion + F.instruction
+            let second: [[String: String]] = [
+                ["role": "user", "content": opening], ["role": "assistant", "content": F.releaseMarker],
+                ["role": "user", "content": more],
+            ]
+            let third = second + [
+                ["role": "assistant", "content": F.backupMarker],
+                ["role": "user", "content": "Repeat both markers, the release marker first."],
+            ]
+            return (try fixture.tokenize(second), try fixture.tokenize(third))
+        }
+        // The second turn grows past the next chunk end by a margin.
+        var added = 60
+        var (second, third) = try turns(added)
+        while second.count < donorTokens.count + stripe + 512 {
+            added += 20
+            (second, third) = try turns(added)
+        }
+
+        let coldBridge = try fixture.makeBridge(store: nil)
+        let coldSecond = try await Self.run(coldBridge, tokens: second, request: request, id: "cold-second")
+        let coldThird = try await Self.run(coldBridge, tokens: third, request: request, id: "cold-third")
+        await coldBridge.shutdown()
+
+        try Self.clearStore(fixture)
+        let firstStore = try fixture.makeStore()
+        let firstBridge = try fixture.makeBridge(store: firstStore)
+        _ = try await Self.run(firstBridge, tokens: donorTokens, request: request, id: "ext-first")
+        await firstStore.waitForWritesForTesting()
+        let firstDeepest = try fixture.positions(scope: "tenant-card", prefixOf: donorTokens).positions.max() ?? 0
+        try #require(firstDeepest > 0 && firstDeepest <= F.sharedPrefix(donorTokens, second))
+        await firstBridge.shutdown()
+        await firstStore.closeAndWait()
+
+        let secondStore = try fixture.makeStore()
+        let secondBridge = try fixture.makeBridge(store: secondStore)
+        let warmSecond = try await Self.run(secondBridge, tokens: second, request: request, id: "ext-second")
+        #expect(warmSecond.hit == firstDeepest, "the second turn restores the first turn's deepest")
+        #expect(warmSecond.output == coldSecond.output, "the restored second turn answers as its cold run")
+        await secondStore.waitForWritesForTesting()
+        let secondDeepest = try fixture.positions(scope: "tenant-card", prefixOf: second).positions.max() ?? 0
+        #expect(secondDeepest > firstDeepest, "the restored card request donates deeper: \(secondDeepest)")
+        try #require(secondDeepest <= F.sharedPrefix(second, third))
+        await secondBridge.shutdown()
+        await secondStore.closeAndWait()
+
+        let thirdStore = try fixture.makeStore()
+        let thirdBridge = try fixture.makeBridge(store: thirdStore)
+        let warmThird = try await Self.run(thirdBridge, tokens: third, request: request, id: "ext-third")
+        #expect(warmThird.hit == secondDeepest, "the third turn restores the second turn's own donation")
+        #expect(warmThird.output == coldThird.output, "a restore of a restored request's donation is exact")
+        print("[qwen35-card-donation] extension second=\(second.count) third=\(third.count) "
+            + "firstDeepest=\(firstDeepest) secondDeepest=\(secondDeepest) thirdHit=\(warmThird.hit) "
+            + "secondTail=\(warmSecond.tail) coldSecondTail=\(coldSecond.tail) "
+            + "thirdTTFT=\(warmThird.ttft) coldThirdTTFT=\(coldThird.ttft)")
+        await thirdBridge.shutdown()
+        await thirdStore.closeAndWait()
+        try Self.clearStore(fixture)
+    }
+
+    /// A production-length agent prompt (about 32K tokens, under production's complete-checkpoint
+    /// stage caps): cold, donor and warm answer alike. Prints the donor's peak MLX memory, its
+    /// tail and the donated tensor bytes.
+    static func longPrompt(_ fixture: Qwen35CheckpointRetentionFixture) async throws {
+        typealias F = Qwen35CheckpointRetentionFixture
+        let target = Int(ProcessInfo.processInfo.environment["DARKBLOOM_LIVE_MLX_QWEN35_CARD_LONG_TOKENS"] ?? "")
+            ?? 32_000
+        let request = Self.card(fixture, .card)
+        func tokenize(_ added: Int) throws -> [Int] {
+            try fixture.tokenize([["role": "user", "content":
+                (fixture.prompts.records + Self.records(count: added, from: fixture.prompts.records.count))
+                    .joined(separator: "\n") + "\n" + F.releaseQuestion + F.instruction]])
+        }
+        let perRecord = max(1, fixture.prompts.donor.count / fixture.prompts.records.count)
+        var added = max(0, (target - fixture.prompts.donor.count) / perRecord)
+        var tokens = try tokenize(added)
+        while tokens.count < target {
+            added += 20
+            tokens = try tokenize(added)
+        }
+        func productionStore() throws -> SSDHybridCheckpointStore {
+            try fixture.makeStore(
+                maxReadBytes: SSDPrefixCachePolicy.completeCheckpointMaxStageBytes(environment: [:]),
+                maxStageMillis: SSDPrefixCachePolicy.completeCheckpointMaxStageMillis(environment: [:]))
+        }
+
+        let coldBridge = try fixture.makeBridge(store: nil)
+        let cold = try await Self.run(coldBridge, tokens: tokens, request: request, id: "long-cold")
+        await coldBridge.shutdown()
+
+        try Self.clearStore(fixture)
+        let store = try productionStore()
+        let donorBridge = try fixture.makeBridge(store: store)
+        let donor = try await Self.run(donorBridge, tokens: tokens, request: request, id: "long-donor")
+        await store.waitForWritesForTesting()
+        let kept = try fixture.positions(scope: "tenant-card", prefixOf: tokens)
+        #expect(donor.output == cold.output, "a long card donor answers as its cold run")
+        #expect((kept.positions.max() ?? 0) >= tokens.count / F.stripeTokens * F.stripeTokens - F.stripeTokens,
+                "a long card request donates near its prompt end: \(kept.positions)")
+        await donorBridge.shutdown()
+        await store.closeAndWait()
+
+        let warmStore = try productionStore()
+        let warmBridge = try fixture.makeBridge(store: warmStore)
+        let warm = try await Self.run(warmBridge, tokens: tokens, request: request, id: "long-warm")
+        #expect(warm.hit == kept.positions.max() ?? 0, "the long prompt restores its deepest donation")
+        #expect(warm.output == cold.output, "a restored long card request answers as its cold run")
+        print("[qwen35-card-donation] long prompt=\(tokens.count) positions=\(kept.positions) "
+            + "tensorBytes=\(kept.bytes) donorPeak=\(donor.peakBytes) coldPeak=\(cold.peakBytes) "
+            + "donorTail=\(donor.tail) coldTail=\(cold.tail) warmTTFT=\(warm.ttft) coldTTFT=\(cold.ttft)")
+        await warmBridge.shutdown()
+        await warmStore.closeAndWait()
+        try Self.clearStore(fixture)
+    }
+
+    /// Informational (P1-info): a card request decoding beside another card request's ~8K
+    /// prompt, with the cache on (the prompt's steps become MTP steps) and off. Prints whether
+    /// the decoder's output is the same; it does not fail on a difference.
+    @Test("a card decode beside a card prompt, cache on and off (informational)",
+          .timeLimit(.minutes(15)), .enabled(if: enabled), arguments: Target.selected)
+    func decodeBesideCardPromptInfo(_ target: Target) async throws {
+        let fixture = try await Qwen35CheckpointRetentionFixture(
+            modelID: target.modelID, memoryBudgetBytes: target.memoryBudgetBytes)
+        do {
+            let request = Self.card(fixture, .cardLogprobs)
+            let short = try fixture.tokenize([["role": "user", "content":
+                "Write a long, detailed essay about the history of harbours, one paragraph per century."]])
+            func together(_ store: SSDHybridCheckpointStore?) async throws -> Output {
+                let bridge = try fixture.makeBridge(store: store, maxConcurrentRequests: 2)
+                async let decoding = Self.run(bridge, tokens: short, request: request, id: "beside-decoding")
+                try await Task.sleep(for: .milliseconds(300))
+                _ = try await Self.run(bridge, tokens: fixture.prompts.donor, request: request, id: "beside-prompt")
+                let output = try await decoding.output
+                await bridge.shutdown()
+                return output
+            }
+            let off = try await together(nil)
+            try Self.clearStore(fixture)
+            let on = try await together(try fixture.makeStore())
+            print("[qwen35-card-donation] P1-info sameDecoder=\(on == off) "
+                + "textEqual=\(on.text == off.text) logprobsEqual=\(on.logprobBits == off.logprobBits)")
             await fixture.close()
         } catch {
             await fixture.close()

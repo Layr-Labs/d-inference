@@ -219,11 +219,12 @@ struct Qwen35CardDefaultDonationTests {
     }
 
     static func serve(
-        _ bridge: EngineV2Bridge, _ request: ChatCompletionRequest, id: String
+        _ bridge: EngineV2Bridge, _ request: ChatCompletionRequest, id: String,
+        tokens: [Int] = prompt
     ) async throws -> Served {
         let signal = EngineV2RequestUsageSignal()
         let stream = await bridge.submitTokenized(
-            promptTokens: prompt, request: request, requestId: id, cacheScope: "tenant-a",
+            promptTokens: tokens, request: request, requestId: id, cacheScope: "tenant-a",
             usageSignal: signal)
         var served = Served()
         var failure: String?
@@ -309,6 +310,64 @@ struct Qwen35CardDefaultDonationTests {
             #expect(warm == cold, "a restored request answers exactly as its cold run")
             try await Self.idle(warmBridge)
             await warmBridge.shutdown()
+            await fixture.close()
+        } catch {
+            await fixture.close()
+            throw error
+        }
+    }
+
+    /// A conversation's next turns: the first turn's prompt grown past the next chunk end.
+    static let secondTurn: [Int] = prompt + (0 ..< 1_100).map { 1 + ($0 * 11) % 61 }
+    static let thirdTurn: [Int] = secondTurn + (0 ..< 700).map { 1 + ($0 * 13) % 61 }
+
+    /// A card request that restored a checkpoint extends the head's history over its own
+    /// prompt and donates the deeper chunk end; the next turn restores that donation and
+    /// answers exactly as its cold run. This is the multi-turn agent case: each turn is a
+    /// restored card row whose donation the next turn uses.
+    @Test("a restored card request donates deeper, and a later restore of that donation is exact",
+          .timeLimit(.minutes(5)), arguments: Build.allCases)
+    func restoredCardRequestExtendsItsDonation(_ build: Build) async throws {
+        let fixture = try Fixture(build)
+        do {
+            let request = Self.request(build, .none)
+
+            let (coldBridge, _) = try fixture.makeBridge(store: nil)
+            let cold = try await Self.serve(coldBridge, request, id: "cold-third", tokens: Self.thirdTurn)
+            #expect(cold.finish == "length" && cold.hit == 0)
+            try await Self.idle(coldBridge)
+            await coldBridge.shutdown()
+
+            let firstStore = try fixture.makeStore()
+            let (firstBridge, _) = try fixture.makeBridge(store: firstStore)
+            _ = try await Self.serve(firstBridge, request, id: "first")
+            try await Self.idle(firstBridge)
+            await firstStore.waitForWritesForTesting()
+            #expect(firstStore.stats().filesWritten == 2, "the first turn donates 1,024 and 2,048")
+            await firstBridge.shutdown()
+            await firstStore.closeAndWait()
+
+            let secondStore = try fixture.makeStore()
+            let (secondBridge, secondEngine) = try fixture.makeBridge(store: secondStore)
+            let second = try await Self.serve(
+                secondBridge, request, id: "second", tokens: Self.secondTurn)
+            #expect(second.hit == 2 * Self.stripe, "the second turn restores the first turn's 2,048")
+            #expect(Self.drafted(secondEngine) == 0, "the restored card request never drafts")
+            try await Self.idle(secondBridge)
+            await secondStore.waitForWritesForTesting()
+            #expect(secondStore.stats().filesWritten >= 1,
+                    "the restored card request donates the chunk end above its restore point")
+            await secondBridge.shutdown()
+            await secondStore.closeAndWait()
+
+            let thirdStore = try fixture.makeStore()
+            let (thirdBridge, _) = try fixture.makeBridge(store: thirdStore)
+            var third = try await Self.serve(thirdBridge, request, id: "third", tokens: Self.thirdTurn)
+            #expect(third.hit == 3 * Self.stripe, "the third turn restores the second turn's 3,072")
+            third.hit = 0
+            #expect(third == cold, "a restore of a restored request's donation is exact")
+            try await Self.idle(thirdBridge)
+            await thirdBridge.shutdown()
             await fixture.close()
         } catch {
             await fixture.close()

@@ -199,7 +199,12 @@ final class Qwen35CheckpointRetentionFixture: @unchecked Sendable {
         throw FixtureFailure.promptTooShort
     }
 
-    func makeStore() throws -> SSDHybridCheckpointStore {
+    /// The stage caps default to the general ones; pass
+    /// `SSDPrefixCachePolicy.completeCheckpointMaxStage*` for production's.
+    func makeStore(
+        maxReadBytes: Int = SSDPrefixCachePolicy.maxStageBytes(environment: [:]),
+        maxStageMillis: Int = SSDPrefixCachePolicy.maxStageMillis(environment: [:])
+    ) throws -> SSDHybridCheckpointStore {
         let layout = CBv2CompleteCheckpointManifest.pagedLayout
         let name = SSDHybridCheckpointStoreFactory.namespace(
             modelId: modelID, identity: identity, backendLayout: layout)
@@ -216,8 +221,7 @@ final class Qwen35CheckpointRetentionFixture: @unchecked Sendable {
         let store = SSDHybridCheckpointStore(config: .init(
             modelId: modelID, identity: identity, backendLayout: layout,
             root: modelRoot, dedicatedRoot: root, epochStore: epoch,
-            maxReadBytes: SSDPrefixCachePolicy.maxStageBytes(environment: [:]),
-            maxStageMillis: SSDPrefixCachePolicy.maxStageMillis(environment: [:]),
+            maxReadBytes: maxReadBytes, maxStageMillis: maxStageMillis,
             minEffectiveTokens: SSDPrefixCachePolicy.minEffectiveTokens(environment: [:]),
             ttlSeconds: SSDPrefixCachePolicy.ttlSeconds(environment: [:]), strictFsync: false,
             nowSeconds: { Int64(Date().timeIntervalSince1970) }, diskBudgetBytes: { 8 << 30 },

@@ -34,9 +34,9 @@
 //   sampler is not part of prompt or cache identity, so prefix-cache and
 //   SSD checkpoint identity are unchanged. It still decides whether a row
 //   speculates: the engine drafts no row with a repetition, frequency or
-//   presence penalty (`EngineLoopV2.mtpBasicEligible`), and on a slot whose
-//   MTP head keeps the prompt history such a row stages no resident or SSD
-//   checkpoint either.
+//   presence penalty (`EngineLoopV2.mtpBasicEligible`). On an opted-in
+//   history-keeping MTP head such a row still stages the resident and SSD
+//   checkpoints a speculating row stages (prefix-cache invariant 9).
 
 import Foundation
 import MLXLMCommon
@@ -78,7 +78,7 @@ public struct EngineV2SamplingDefaults: Sendable, Equatable {
     /// Qwen3.5-9B's: the same values without the penalty. Without it the 9B
     /// looped only under typical MTP acceptance, and its built-in rule is exact
     /// (`MTPAcceptancePolicy`); a penalty would keep its rows from speculating
-    /// and from staging prefix checkpoints.
+    /// (they would still stage prefix checkpoints).
     static let qwen35NineBCardDefaults = EngineV2SamplingDefaults(
         temperature: 1.0, topP: 0.95, topK: 20)
     static let qwen35NineBModelID = "Qwen3.5-9B"

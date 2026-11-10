@@ -2642,8 +2642,7 @@ started. The checks preserve the singleton and GLM tensor-parallel defaults:
 a Gemma 4 pipeline saved without a width serves one lane under either
 schedule and names none to its rank, while the width its placement saved
 reaches the rank;
-`DistributedInstalledLanesTests` covers the same rules for every adapter and
-schedule. Actual multi-lane output, encrypted transport and retirement still require
+`DistributedInstalledLanesTests` covers the same rules for every adapter. Actual multi-lane output, encrypted transport and retirement still require
 qualification on both Macs. The same real-child checks pass canonical local
 `MLX_METAL_FAST_SYNCH=0|1` choices through the owner and final native launch,
 reject free-text spellings from forwarding, preserve unrelated native guards,

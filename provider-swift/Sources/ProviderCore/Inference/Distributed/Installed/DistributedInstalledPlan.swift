@@ -363,14 +363,13 @@ struct DistributedInstalledPlan: Sendable {
 
     /// Concurrent requests a lane-serving pair batches by default. Both
     /// owners serve them (`ClusterOwnerLeaseState.lanes`), and the leader's
-    /// session, bridge and local API admit as many; more requests wait in the
-    /// API's queue. The default stays one while the repaired joining and
-    /// cancellation paths undergo
-    /// model-specific multi-lane qualification. Earlier pair measurements
-    /// (Qwen 3.5 35B A3B, 2026-10-19) preceded those repairs and do not
-    /// qualify the current loop. A Qwen TP width is saved at placement
-    /// instead, priced by the owner's LOAD quote; a default here would be held
-    /// to no quote.
+    /// session, bridge and local API admit as many; more requests wait in
+    /// the API's queue. The default stays one while the repaired joining
+    /// and cancellation paths undergo model-specific multi-lane
+    /// qualification. Earlier pair measurements (Qwen 3.5 35B A3B,
+    /// 2026-10-19) preceded those repairs and do not qualify the current
+    /// loop. A Qwen TP width is saved at placement instead, priced by the
+    /// owner's LOAD quote; a default here would be held to no quote.
     static let defaultBatchLanes = 1
     /// Concurrent requests GLM tensor parallel serves by default: the
     /// protocol's lane cap (`ClusterWorkerLaneSession`, `ClusterWorkerPair`).

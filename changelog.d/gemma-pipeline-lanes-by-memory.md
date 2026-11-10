@@ -9,7 +9,8 @@
 - To serve several requests, the pipeline reads each prompt one chunk at a time. A long prompt alone therefore starts
   its answer later than before. Where only one request fits, the pair keeps the faster start and serves one request at
   a time, as before.
-- A pipeline set up without a saved number of requests (typed by hand) now serves one request at a time. Before, one
-  set up to read prompts a chunk at a time served four, which nothing had checked its memory for.
+- A pipeline set up without a saved number of requests now serves one request at a time. Before, one set up to read
+  prompts a chunk at a time served four, which nothing had checked its memory for. A pair set up before this version is
+  planned again by itself after the update, as after every Darkbloom update, and saves its number then.
 - Each request still gets exactly the tokens it gets alone. A request cancelled or refused for memory ends alone, and
   the others keep running.

@@ -52,7 +52,7 @@ struct DistributedInstalledLanesTests {
     }
 
     /// A Gemma pipeline serves the width its placement saved (`ClusterPlacementPipelineWidth`). Saved without one, it
-    /// serves one request at a time under either schedule, as every family does (review C1, P3).
+    /// serves one request at a time under either schedule, as every family does.
     @Test func gemmaPipelineWithoutASavedWidthServesOneLane() {
         #expect(Plan.defaultBatchLanes(adapter: .gemma4LayerStage, mode: .pipeline, hasPrivateImages: false) == Plan.defaultBatchLanes)
         #expect(Plan.defaultBatchLanes == 1)

@@ -218,7 +218,7 @@ extension InstalledSessionCheck {
             ownerEnvironment: try observed(sized.plan.localOwnerConfiguration(ownerEnvironment: [:])))
         try require(sized.plan.batchLanes([:]) == 4 && sized.plan.lanesRetireAlone([:]) && sizedNative[key] == "4",
             "a Gemma pipeline's saved width did not reach its rank")
-        // A saved one-chunk lookahead keeps its schedule: lanes prefill serially, so it keeps one lane.
+        // A saved one-chunk lookahead also serves one lane without a saved width, and keeps its schedule.
         let lookahead = try InstalledFixture.make(root: f.root.appendingPathComponent("lane-gemma-lookahead"),
             probe: f.probe, owner: probe, worker: f.worker,
             registered: ("registered_gemma4_26b_qat_4bit", "registered_gemma4_26b_qat_4bit_greedy_generation_v1", "fixture/gemma"),

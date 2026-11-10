@@ -1,6 +1,6 @@
 # Publish new weights for an existing model
 
-> Last updated: 2026-10-15
+> Last updated: 2026-11-10
 
 Use this runbook to change an existing model's weights while keeping its model
 ID, pricing and aliases. The [revision architecture](../architecture/model-revisions.md)
@@ -168,6 +168,47 @@ version with identical bytes.
    model has no cache routing: `artifact_allowlist.stale_models` in
    `GET /v1/cache/status` counts it and the coordinator log names the exact
    tuple ([stale entries](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/cache-routing-rollout.md#stale-entries-after-a-model-revision)).
+
+## Re-quantize and upload from CI
+
+The **Model Requant Upload** workflow (`.github/workflows/model-requant-upload.yml`)
+uploads a re-quantized revision of an existing model with the repository's R2
+credentials, without anyone handling them. It rebuilds the revision on the runner
+with `scripts/models/requant.py`. That script re-quantizes the language-model
+linears from the pinned bf16 source and copies every other byte of the current
+revision: vision tower, MTP head, norms and tokenizer files. The workflow then
+compares the result byte for byte with the canonical manifest of the candidate
+that was built and qualified locally. It never registers or promotes.
+
+1. **Locally.**
+   - Build the candidate with the same script and recipe, using numpy 2.5.4, the
+     version the workflow pins.
+   - Qualify it: load, quality and speed.
+   - Hash it with `darkbloom-publish hash … --id <model> --version <new version>`.
+     The resulting `manifest.json` is the workflow's `manifest_json` input, and its
+     aggregate is the new cache-routing tuple's.
+2. **Dispatch in mode `check`** (the default). It reads one known object in
+   `darkbloom-models` with `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` /
+   `R2_ENDPOINT`. A failure means those credentials cannot reach the model
+   bucket. Stop there: release-bucket credentials are not model-bucket
+   credentials.
+3. **Dispatch in mode `build`.** It rebuilds and verifies with no write. The
+   output depends only on the template revision, the pinned source, the recipe and
+   numpy, so a difference in any file stops the run.
+4. **Dispatch in mode `upload`** with `confirm_version` set to the version. It
+   makes the conditional reservation (`publish-model-revision.py`'s rule, so an
+   existing revision with other bytes is refused), uploads the files, then the
+   manifest last.
+5. **Promote separately**, on its own approval: **Register Model** with
+   `publish_revision_only=true` and `promote=true`.
+
+Inputs are validated before any credential is in scope:
+- the template must be a `models.darkbloom.ai` revision of the same model ID;
+- the source must be pinned to a 40-character Hugging Face commit;
+- the recipe must be `g32`, `mixed46`, `router8` or `router8+mixed46`;
+- the manifest's ID, version and canonical `r2_prefix` must match.
+
+Tests: `python3 -m unittest scripts/models/test_model_requant_upload.py`.
 
 ## Verification
 

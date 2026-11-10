@@ -3695,6 +3695,34 @@ line before anything is uploaded.
 Internal command used by the launchd crash-recovery watchdog. Not intended for
 manual use.
 
+If the provider job is absent (launchd booted it out; `darkbloom stop` disables
+it instead), recovery requires `provider.auto_restart`, an installed matching
+`RunAtLoad` plist, an explicit enabled launchd override and no live provider
+identity. After the normal grace period, the watchdog bootstraps that plist under
+the lifecycle lease shared with stop and update. It never enables a disabled job,
+so a deliberate stop stays stopped. It never does this for a cluster member's
+job, or while the pair runs on this Mac (`ClusterService.pairServesHere`): the
+pair's own supervision owns those. The watchdog checks both when its tick
+starts (`Watchdog.recoversAbsentJob`), and every sample of the job under the
+lease checks them again, the last one just before the bootstrap. Pending
+candidates use the existing failed-attempt threshold, verified rollback and
+refused-rollback retry backoff after grace. A confirmed attempt is charged once;
+an expired refusal backoff permits one retry of the intact candidate. Rollback
+errors reload durable state before recording the refusal, preserving a rollback
+that committed before cleanup failed. This path downloads no update.
+
+Its launchctl probes and its bootstrap each have a three-second bound. A
+missing-service diagnostic must name the complete provider label; an error about
+a different service does not authorize recovery. A successful registration
+records the version-scoped restart count; it does not prove provider health. An
+uncertain bootstrap result keeps any staged crash-loop protection without
+recording a restart, and the next tick looks at launchd again. A candidate's
+launch intent is saved before the bootstrap; an uncertain result keeps that
+intent without charging a failure. On a loaded tick, run or process evidence can
+confirm the pending attempt under the lease; a registration with zero runs alone
+cannot. See `provider-swift/Sources/ProviderCore/Service/AbsentProviderRecovery.swift`
+and `provider-swift/Sources/darkbloom/WatchdogCommand.swift`.
+
 ## Native pair batch diagnostics
 
 The developer helper `darkbloom-cluster-pair-check run` accepts

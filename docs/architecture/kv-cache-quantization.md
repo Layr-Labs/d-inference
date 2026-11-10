@@ -5,9 +5,9 @@
 The provider defaults to native attention execution and independently requests
 `balanced` storage for eligible encrypted checkpoints, the two-Mac cluster's
 SSD prompt-prefix records included. On one Mac, Nemotron 3.5 Lightning requests
-native (`PagedKVQuantizationPolicy.nativeCheckpointModelTypes`); a pair's owners
-resolve without a model type, and Lightning's records stay native by family
-(`QwenStagePrefixDiskFamily`). Explicit live packed
+native (`PagedKVQuantizationPolicy.nativeCheckpointModelTypes`, resolved with the
+slot's model type in `EngineV2SlotFactory`), as its checkpoints were beside its MTP
+head; a pair's record precision is unchanged. Explicit live packed
 execution remains available. This page explains the numerical and ownership
 contracts, not completed model qualification or a release. The
 [CLI reference](../provider/cli-reference.md#providertoml-keys-read-by-the-cli)

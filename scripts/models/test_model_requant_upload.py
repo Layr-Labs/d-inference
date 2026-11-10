@@ -29,8 +29,6 @@ PUBLISHED_MANIFEST = HERE / "testdata/Qwen3.5-9B-2026-09-03-r1.manifest.json"
 HAVE_NUMPY = importlib.util.find_spec("numpy") is not None
 # A fixture endpoint shaped like R2's (a 32-hex account): its digits must never reach a log.
 ENDPOINT = "https://a1279c773e049f2d5b8a6c0e4f1d3b2a.r2.cloudflarestorage.com"
-SECRETS = {"R2_ACCESS_KEY_ID": "AWS_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY": "AWS_SECRET_ACCESS_KEY",
-           "R2_ENDPOINT": "R2_ENDPOINT"}
 
 
 def load(name, path):
@@ -71,7 +69,8 @@ def run_inputs(manifest, **over):
         mp.write_text(json.dumps(manifest))
         args = {"--model-id": manifest.get("model_id", "Qwen3.5-9B"), "--version": manifest.get("version", "v"),
                 "--template-url": "https://models.darkbloom.ai/" + up.slug_prefix("Qwen3.5-9B", "2026-09-03-r1"),
-                "--source-url": SRC, "--recipe": "g32", "--manifest": str(mp), "--mode": "build", "--confirm-version": ""}
+                "--source-url": SRC, "--recipe": "g32", "--manifest": str(mp), "--mode": "build", "--confirm-version": "",
+                "--keys": "prod"}
         args.update(over)
         out = Path(d) / "github_output"
         cmd = [sys.executable, str(UPLOAD), "inputs"] + [x for kv in args.items() for x in kv]
@@ -101,6 +100,10 @@ class Inputs(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.github_output, "template_manifest_key=v2/Qwen3.5-9B--3e3c04992a0d/2026-09-03-r1/manifest.json\n")
 
+    def test_both_key_sets(self):
+        for keys in ("prod", "legacy"):
+            self.assertEqual(run_inputs(self.m, **{"--keys": keys}).returncode, 0, keys)
+
     def test_upload_needs_the_version_repeated(self):
         self.assertNotEqual(run_inputs(self.m, **{"--mode": "upload"}).returncode, 0)
         self.assertEqual(run_inputs(self.m, **{"--mode": "upload", "--confirm-version": "2026-11-12-g32-r1"}).returncode, 0)
@@ -118,6 +121,8 @@ class Inputs(unittest.TestCase):
             {"--template-url": template + "/extra"},
             {"--template-url": template.replace("https://", "http://")},
             {"--recipe": "8bit"},
+            {"--keys": "both"},
+            {"--keys": "PROD"},
             {"--version": "2026-11-12-g32-r2"},
             {"--model-id": "qwen3.5-35b-a3b"},
         ]
@@ -241,35 +246,57 @@ def parse_step(lines):
     return step
 
 
-def workflow_steps():
-    lines = WORKFLOW.read_text().splitlines()
-    start = lines.index("    steps:") + 1
-    blocks = []
-    for line in lines[start:]:
-        if line.startswith("      - "):
-            blocks.append(["        " + line[len("      - "):]])
-        elif blocks and (not line.strip() or line.startswith("        ")):
-            blocks[-1].append(line)
-        elif line.strip():
-            break
-    return [parse_step(block) for block in blocks]
+def workflow_jobs():
+    """{job id: {"fields": {key: value}, "steps": [step, ...]}}, in file order, without a YAML dependency."""
+    body = WORKFLOW.read_text().split("\njobs:\n", 1)[1]
+    heads = list(re.finditer(r"^  ([A-Za-z0-9_-]+):\n", body, re.MULTILINE))
+    out = {}
+    for i, head in enumerate(heads):
+        lines = body[head.end():heads[i + 1].start() if i + 1 < len(heads) else len(body)].splitlines()
+        fields = dict(re.match(r"^    ([a-z-]+):(?: (.*))?$", line).groups() for line in lines
+                      if re.match(r"^    [a-z-]+:", line))
+        blocks = []
+        for line in lines[lines.index("    steps:") + 1:]:
+            if line.startswith("      - "):
+                blocks.append(["        " + line[len("      - "):]])
+            elif blocks and (not line.strip() or line.startswith("        ")):
+                blocks[-1].append(line)
+            elif line.strip():
+                break
+        out[head.group(1)] = {"fields": fields, "steps": [parse_step(block) for block in blocks]}
+    return out
 
 
 def uses_secrets(step):
     return any("secrets." in v for v in step["env"].values())
 
 
+def secret_names(step):
+    return {name for v in step["env"].values() for name in re.findall(r"secrets\.([A-Z0-9_]+)", v)}
+
+
+# A fake aws or python3: logs the call (aws with the key id it got), and an aws call made with $FAKE_BAD_KEY fails
+# with $FAKE_STDERR, as a connection or permission error would.
 FAKE_TOOL = """#!/bin/sh
-echo "$(basename "$0") $*" >> "$FAKE_LOG"
-[ -z "${FAKE_STDERR:-}" ] || printf '%s\\n' "$FAKE_STDERR" >&2
+echo "$(basename "$0") key=${AWS_ACCESS_KEY_ID:-} $*" >> "$FAKE_LOG"
+if [ -n "${FAKE_BAD_KEY:-}" ] && [ "${AWS_ACCESS_KEY_ID:-}" = "$FAKE_BAD_KEY" ]; then
+  [ -z "${FAKE_STDERR:-}" ] || printf '%s\\n' "$FAKE_STDERR" >&2
+  exit 255
+fi
 [ -z "${FAKE_STDOUT:-}" ] || printf '%s\\n' "$FAKE_STDOUT"
-exit "${FAKE_RC:-0}"
+exit 0
 """
+PROD = {"PROD_R2_ACCESS_KEY_ID": "prod-key-id", "PROD_R2_SECRET_ACCESS_KEY": "prod-secret", "PROD_R2_ENDPOINT": ENDPOINT}
+LEGACY = {"LEGACY_R2_ACCESS_KEY_ID": "legacy-key-id", "LEGACY_R2_SECRET_ACCESS_KEY": "legacy-secret",
+          "LEGACY_R2_ENDPOINT": ENDPOINT}
+CHOSEN = {"AWS_ACCESS_KEY_ID": "chosen-key-id", "AWS_SECRET_ACCESS_KEY": "chosen-secret", "R2_ENDPOINT": ENDPOINT}
+ALL_R2 = {"PROD_R2_ACCESS_KEY_ID", "PROD_R2_SECRET_ACCESS_KEY", "PROD_R2_ENDPOINT",
+          "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_ENDPOINT"}
 
 
 class WorkflowSteps(unittest.TestCase):
     def setUp(self):
-        self.steps = workflow_steps()
+        self.jobs = workflow_jobs()
         self.text = WORKFLOW.read_text()
         scratch = tempfile.TemporaryDirectory()
         self.addCleanup(scratch.cleanup)
@@ -279,77 +306,159 @@ class WorkflowSteps(unittest.TestCase):
             (self.d / "bin" / tool).write_text(FAKE_TOOL)
             (self.d / "bin" / tool).chmod(0o755)
         self.log = self.d / "calls.log"
+        self.output = self.d / "github_output"
 
-    def named(self, fragment):
-        found = [s for s in self.steps if fragment in (s.get("name") or "")]
+    def steps(self, job="requant-upload"):
+        return self.jobs[job]["steps"]
+
+    def named(self, fragment, job="requant-upload"):
+        found = [s for s in self.steps(job) if fragment in (s.get("name") or "")]
         self.assertEqual(len(found), 1, fragment)
         return found[0]
 
     def run_step(self, step, **env):
         self.log.unlink(missing_ok=True)
+        self.output.unlink(missing_ok=True)
         base = {"PATH": f"{self.d / 'bin'}:/usr/bin:/bin", "HOME": str(self.d), "RUNNER_TEMP": str(self.d),
-                "FAKE_LOG": str(self.log), "MODEL_ID": "Qwen3.5-9B", "VERSION": "2026-11-12-g32-r1",
-                "KEY": "v2/Qwen3.5-9B--3e3c04992a0d/2026-09-03-r1/manifest.json",
-                "AWS_ACCESS_KEY_ID": "fixture-key-id", "AWS_SECRET_ACCESS_KEY": "fixture-secret", "R2_ENDPOINT": ENDPOINT}
+                "GITHUB_OUTPUT": str(self.output), "FAKE_LOG": str(self.log), "MODE": "check", "KEYS": "prod",
+                "MODEL_ID": "Qwen3.5-9B", "VERSION": "2026-11-12-g32-r1",
+                "KEY": "v2/Qwen3.5-9B--3e3c04992a0d/2026-09-03-r1/manifest.json"}
         base.update(env)
         result = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", step["run"]],
                                 cwd=self.d, env=base, capture_output=True, text=True, timeout=60)
         result.calls = self.log.read_text().splitlines() if self.log.exists() else []
+        result.outputs = dict(line.split("=", 1) for line in self.output.read_text().splitlines()) \
+            if self.output.exists() else {}
         return result
 
+    def test_secrets_only_in_the_prod_job_after_a_secret_free_preflight(self):
+        self.assertEqual(list(self.jobs), ["preflight", "requant-upload"])
+        pre, main = self.jobs["preflight"], self.jobs["requant-upload"]
+        self.assertNotIn("environment", pre["fields"])
+        self.assertFalse(any(uses_secrets(s) for s in pre["steps"]))
+        # The prod environment: its required reviewer approves each run, its branch policy admits master; its
+        # secrets (PROD_R2_*) are visible only to a job that names it.
+        self.assertEqual(main["fields"].get("environment"), "prod")
+        self.assertEqual(main["fields"].get("needs"), "preflight")
+        names = [s.get("name") or s.get("uses") for s in pre["steps"]]
+        for fragment in ("Refuse a run", "actions/checkout@", "Validate inputs", "Install tools by hash", "Self-test"):
+            self.assertTrue(any(fragment in n for n in names), fragment)
+        self.assertNotIn("${{ secrets", self.text.split("\njobs:\n")[0])
+
     def test_runs_only_from_master(self):
-        guard = self.steps[0]
-        refs = [k for k, v in guard["env"].items() if v == "${{ github.ref }}"]
-        self.assertEqual(len(refs), 1, "the first step reads github.ref")
-        checkout = next(i for i, s in enumerate(self.steps) if (s.get("uses") or "").startswith("actions/checkout@"))
-        self.assertLess(0, checkout)
-        self.assertFalse(uses_secrets(guard))
-        self.assertNotIn("if", guard)
-        for ref in ("refs/heads/dev", "refs/heads/master-copy", "refs/heads/x/master", "refs/tags/v0.10.12",
-                    "refs/pull/1975/merge", ""):
-            r = self.run_step(guard, **{refs[0]: ref})
-            self.assertNotEqual(r.returncode, 0, ref)
-            self.assertIn("::error::", r.stdout, ref)
-        self.assertEqual(self.run_step(guard, **{refs[0]: "refs/heads/master"}).returncode, 0)
+        for job in self.jobs:
+            guard = self.steps(job)[0]
+            refs = [k for k, v in guard["env"].items() if v == "${{ github.ref }}"]
+            self.assertEqual(len(refs), 1, f"{job}: the first step reads github.ref")
+            self.assertFalse(uses_secrets(guard))
+            self.assertNotIn("if", guard)
+            for ref in ("refs/heads/dev", "refs/heads/master-copy", "refs/heads/x/master", "refs/tags/v0.10.12",
+                        "refs/heads/v0.10.12", "refs/pull/1975/merge", ""):
+                r = self.run_step(guard, **{refs[0]: ref})
+                self.assertNotEqual(r.returncode, 0, ref)
+                self.assertIn("::error::", r.stdout, ref)
+            self.assertEqual(self.run_step(guard, **{refs[0]: "refs/heads/master"}).returncode, 0)
 
-    def test_credentialed_steps_fail_closed_on_any_empty_secret(self):
-        credentialed = [s for s in self.steps if uses_secrets(s)]
-        self.assertEqual([s["name"].split(" ")[0] for s in credentialed], ["Check", "Reserve"])
-        for step in credentialed:
-            self.assertEqual({v for v in step["env"].values() if "secrets." in v},
-                             {f"${{{{ secrets.{name} }}}}" for name in SECRETS})
-            ok = self.run_step(step, FAKE_STDOUT="2685")
-            self.assertEqual(ok.returncode, 0, ok.stdout + ok.stderr)
-            self.assertEqual(len(ok.calls), 1, ok.calls)
-            for secret, variable in SECRETS.items():
-                with self.subTest(step=step["name"], empty=secret):
-                    r = self.run_step(step, **{variable: ""})
-                    self.assertNotEqual(r.returncode, 0)
-                    self.assertIn("::error::", r.stdout)
-                    self.assertIn(secret, r.stdout)
-                    self.assertEqual(r.calls, [], "nothing runs with an empty secret")
+    def test_only_the_check_and_the_upload_hold_keys(self):
+        held = [s["name"].split(" ")[0] for s in self.steps() if uses_secrets(s)]
+        self.assertEqual(held, ["Check", "Reserve"])
+        self.assertEqual(secret_names(self.named("Check")), ALL_R2)
+        self.assertEqual(secret_names(self.named("Reserve")), ALL_R2)
 
-    def test_the_read_check_prints_no_part_of_the_endpoint(self):
-        check = self.named("Check read access")
+    def test_check_tests_both_key_sets_and_prints_only_pass_or_fail(self):
+        check = self.named("Check")
+        self.assertEqual(check.get("id"), "check")
+        printed = re.compile(r"keys (prod \(PROD_R2_\*\)|legacy \(R2_\*\)): (pass|fail|fail \(not set\))")
+
+        def only_verdicts(r):
+            for line in r.stdout.splitlines():
+                self.assertTrue(printed.fullmatch(line) or line.startswith("::error::"), line)
+            self.assertEqual(r.stderr, "")
+
+        both = self.run_step(check, **PROD, **LEGACY)
+        self.assertEqual(both.returncode, 0, both.stdout + both.stderr)
+        self.assertEqual(both.outputs, {"prod": "pass", "legacy": "pass"})
+        self.assertEqual(sorted(c.split()[1] for c in both.calls), ["key=legacy-key-id", "key=prod-key-id"])
+        self.assertTrue(all("head-object --bucket darkbloom-models" in c for c in both.calls), both.calls)
+        only_verdicts(both)
+
+        # PROD_R2_* not set (the prod environment had no secrets on 11-10): reported, nothing run with it.
+        legacy_only = self.run_step(check, **LEGACY)
+        self.assertEqual(legacy_only.returncode, 0)
+        self.assertEqual(legacy_only.outputs, {"prod": "fail", "legacy": "pass"})
+        self.assertIn("keys prod (PROD_R2_*): fail (not set)", legacy_only.stdout)
+        self.assertEqual([c.split()[1] for c in legacy_only.calls], ["key=legacy-key-id"])
+        only_verdicts(legacy_only)
+        for name in PROD:  # any one missing part of a set fails that set without running anything with it
+            partial = self.run_step(check, **{**PROD, name: ""}, **LEGACY)
+            self.assertEqual(partial.outputs["prod"], "fail", name)
+            self.assertEqual([c.split()[1] for c in partial.calls], ["key=legacy-key-id"], name)
+
+        # A failing set prints no part of aws's error, which names the endpoint.
         leaked = {run[i:i + 3] for run in re.findall(r"\d{3,}", ENDPOINT) for i in range(len(run) - 2)}
-        r = self.run_step(check, FAKE_RC="255", FAKE_STDERR=(
-            f'\nCould not connect to the endpoint URL: "{ENDPOINT}/darkbloom-models/v2/x/manifest.json"\n'))
-        self.assertNotEqual(r.returncode, 0)
-        self.assertIn("::error::", r.stdout)
+        broken = self.run_step(check, **PROD, **LEGACY, FAKE_BAD_KEY="legacy-key-id", FAKE_STDERR=(
+            f'Could not connect to the endpoint URL: "{ENDPOINT}/darkbloom-models/x" (403)'))
+        self.assertEqual(broken.returncode, 0)
+        self.assertEqual(broken.outputs, {"prod": "pass", "legacy": "fail"})
         for fragment in leaked:
-            self.assertNotIn(fragment, r.stdout + r.stderr, fragment)
-        denied = self.run_step(check, FAKE_RC="254",
-                               FAKE_STDERR="An error occurred (403) when calling the HeadObject operation: Forbidden")
-        self.assertNotEqual(denied.returncode, 0)
-        self.assertIn("(403)", denied.stdout)
+            self.assertNotIn(fragment, broken.stdout + broken.stderr, fragment)
+        only_verdicts(broken)
+
+        neither = self.run_step(check, **PROD, FAKE_BAD_KEY="prod-key-id")
+        self.assertNotEqual(neither.returncode, 0)
+        self.assertIn("::error::", neither.stdout)
+        self.assertEqual(neither.outputs, {"prod": "fail", "legacy": "fail"})
+
+        # upload: the chosen set must pass here, before an hour of rebuilding.
+        self.assertNotEqual(self.run_step(check, **LEGACY, MODE="upload", KEYS="prod").returncode, 0)
+        self.assertEqual(self.run_step(check, **LEGACY, MODE="upload", KEYS="legacy").returncode, 0)
+        self.assertEqual(self.run_step(check, **PROD, **LEGACY, MODE="upload", KEYS="prod").returncode, 0)
+
+    def test_upload_holds_only_the_chosen_set_and_needs_this_runs_check(self):
+        upload = self.named("Reserve")
+        for var, (prod, legacy) in {"AWS_ACCESS_KEY_ID": ("PROD_R2_ACCESS_KEY_ID", "R2_ACCESS_KEY_ID"),
+                                    "AWS_SECRET_ACCESS_KEY": ("PROD_R2_SECRET_ACCESS_KEY", "R2_SECRET_ACCESS_KEY"),
+                                    "R2_ENDPOINT": ("PROD_R2_ENDPOINT", "R2_ENDPOINT")}.items():
+            self.assertEqual(upload["env"][var], f"${{{{ inputs.keys == 'prod' && secrets.{prod} || '' }}}}"
+                                                 f"${{{{ inputs.keys == 'legacy' && secrets.{legacy} || '' }}}}")
+        self.assertEqual(upload["env"]["PROD_CHECK"], "${{ steps.check.outputs.prod }}")
+        self.assertEqual(upload["env"]["LEGACY_CHECK"], "${{ steps.check.outputs.legacy }}")
+        ok = self.run_step(upload, **CHOSEN, KEYS="prod", PROD_CHECK="pass", LEGACY_CHECK="fail", MODE="upload")
+        self.assertEqual(ok.returncode, 0, ok.stdout + ok.stderr)
+        self.assertEqual(len(ok.calls), 1)
+        self.assertTrue(ok.calls[0].startswith("python3 "), ok.calls)
+        legacy = self.run_step(upload, **CHOSEN, KEYS="legacy", PROD_CHECK="fail", LEGACY_CHECK="pass", MODE="upload")
+        self.assertEqual(legacy.returncode, 0, legacy.stdout + legacy.stderr)
+        refused = [dict(KEYS="prod", PROD_CHECK="fail", LEGACY_CHECK="pass"),
+                   dict(KEYS="legacy", PROD_CHECK="pass", LEGACY_CHECK="fail"),
+                   dict(KEYS="prod", LEGACY_CHECK="pass"),
+                   dict(KEYS="both", PROD_CHECK="pass", LEGACY_CHECK="pass")]
+        for case in refused:
+            r = self.run_step(upload, **CHOSEN, **case, MODE="upload")
+            self.assertNotEqual(r.returncode, 0, case)
+            self.assertIn("::error::", r.stdout, case)
+            self.assertEqual(r.calls, [], case)
+        for var in CHOSEN:
+            r = self.run_step(upload, **{**CHOSEN, var: ""}, KEYS="prod", PROD_CHECK="pass", MODE="upload")
+            self.assertNotEqual(r.returncode, 0, var)
+            self.assertIn("::error::", r.stdout)
+            self.assertEqual(r.calls, [], var)
+
+    def test_keys_input(self):
+        m = re.search(r"\n      keys:\n((?:        .*\n)+)", self.text.split("\njobs:\n", 1)[0])
+        self.assertIsNotNone(m, "a keys input")
+        for line in ("default: prod", "type: choice", "options: [prod, legacy]"):
+            self.assertIn(line, m.group(1))
+        self.assertIn("  KEYS: ${{ inputs.keys }}\n", self.text)
+        self.assertIn('--keys "$KEYS"', self.named("Validate inputs", "preflight")["run"])
 
     def test_tools_are_pinned_by_hash(self):
-        installs = [s for s in self.steps if re.search(r"\bpip\b", s.get("run", ""))]
-        self.assertEqual(len(installs), 1)
-        script = installs[0]["run"]
-        for flag in ("--require-hashes", "--only-binary :all:", "-r scripts/models/requirements-requant-upload.txt"):
-            self.assertIn(flag, script)
-        self.assertEqual(len(re.findall(r"\bpip\b.*\binstall\b", self.text)), 1)
+        for job in self.jobs:
+            installs = [s for s in self.steps(job) if re.search(r"\bpip\b", s.get("run", ""))]
+            self.assertEqual(len(installs), 1, job)
+            for flag in ("--require-hashes", "--only-binary :all:", "-r scripts/models/requirements-requant-upload.txt"):
+                self.assertIn(flag, installs[0]["run"])
+        self.assertEqual(len(re.findall(r"\bpip\b.*\binstall\b", self.text)), len(self.jobs))
         logical = re.sub(r"\s*\\\n\s*", " ", REQUIREMENTS.read_text())
         pins = {}
         for line in logical.splitlines():
@@ -365,29 +474,31 @@ class WorkflowSteps(unittest.TestCase):
                                      "pyyaml", "rsa", "six", "urllib3", "numpy"})
 
     def test_selftest_runs_in_every_mode_before_any_secret(self):
-        install = next(i for i, s in enumerate(self.steps) if re.search(r"\bpip\b", s.get("run", "")))
-        selftest = self.steps[install + 1]
-        self.assertIn("python3 scripts/models/requant.py selftest", selftest.get("run", ""))
-        self.assertIn("sha256sum scripts/models/requant.py", selftest["run"])
-        self.assertNotIn("if", selftest)
-        first_secret = next(i for i, s in enumerate(self.steps) if uses_secrets(s))
-        self.assertLess(install + 1, first_secret)
+        for job in self.jobs:
+            steps = self.steps(job)
+            install = next(i for i, s in enumerate(steps) if re.search(r"\bpip\b", s.get("run", "")))
+            selftest = steps[install + 1]
+            self.assertIn("python3 scripts/models/requant.py selftest", selftest.get("run", ""), job)
+            self.assertIn("sha256sum scripts/models/requant.py", selftest["run"])
+            self.assertNotIn("if", selftest)
+            first_secret = next((i for i, s in enumerate(steps) if uses_secrets(s)), len(steps))
+            self.assertLess(install + 1, first_secret)
 
     def test_scripts_see_inputs_only_through_env(self):
         self.assertIn("default: check", self.text)
         self.assertIn("permissions:\n  contents: read", self.text)
-        self.assertIn("persist-credentials: false", self.text)
-        for step in self.steps:
-            self.assertNotIn("${{", step.get("run", ""), step.get("name"))
+        self.assertEqual(self.text.count("persist-credentials: false"), len(self.jobs))
+        for job in self.jobs:
+            for step in self.steps(job):
+                self.assertNotIn("${{", step.get("run", ""), step.get("name"))
+                for line in step.get("run", "").splitlines():  # promotion appears only as a printed hint
+                    if "promot" in line:
+                        self.assertTrue(line.lstrip().startswith("echo "), line)
         rebuild = self.named("Rebuild")
         self.assertFalse(uses_secrets(rebuild))
         build = re.search(r"requant\.py build(?:[^\n]*\\\n)*[^\n]*", rebuild["run"]).group(0)
         self.assertNotIn("|", build, "the rebuild's progress streams")
         self.assertNotIn("publish-revision", self.text)
-        for step in self.steps:  # promotion appears only as a printed hint
-            for line in step.get("run", "").splitlines():
-                if "promot" in line:
-                    self.assertTrue(line.lstrip().startswith("echo "), line)
 
 
 # ---- the range reader -----------------------------------------------------------------------------------------------

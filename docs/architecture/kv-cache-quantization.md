@@ -1,10 +1,13 @@
 # KV execution and checkpoint quantization
 
-> Last updated: 2026-10-26
+> Last updated: 2026-11-10
 
 The provider defaults to native attention execution and independently requests
 `balanced` storage for eligible encrypted checkpoints, the two-Mac cluster's
-SSD prompt-prefix records included. Explicit live packed
+SSD prompt-prefix records included. On one Mac, Nemotron 3.5 Lightning requests
+native (`PagedKVQuantizationPolicy.nativeCheckpointModelTypes`); a pair's owners
+resolve without a model type, and Lightning's records stay native by family
+(`QwenStagePrefixDiskFamily`). Explicit live packed
 execution remains available. This page explains the numerical and ownership
 contracts, not completed model qualification or a release. The
 [CLI reference](../provider/cli-reference.md#providertoml-keys-read-by-the-cli)

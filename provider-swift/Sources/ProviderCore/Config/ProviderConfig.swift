@@ -65,9 +65,11 @@ public struct ProviderSettings: Sendable, Equatable, Codable {
 }
 /// Operator policy for multi-token prediction.
 ///
-/// `auto` enables embedded Qwen-family, Nemotron Lightning and native MiMo heads, plus the separately published
+/// `auto` enables embedded Qwen-family and native MiMo heads, plus the separately published
 /// assistants for exact `gemma-4-26b-qat-4bit` and Bonsai 9B targets. Other Gemma artifacts
-/// and Qwen checkpoints without an embedded declaration require explicit `on`.
+/// and Qwen checkpoints without an embedded declaration require explicit `on`, and so does
+/// Nemotron Lightning's embedded head: it speculates for one request only and charges head
+/// state per context token, so its plain decode serves more requests per Mac, faster.
 /// Model IDs are exact catalog identities; model types retain the funnel's
 /// case/whitespace normalization.
 ///
@@ -84,7 +86,7 @@ public enum MTPMode: String, Sendable, Equatable, Codable {
     /// genuine artifact eligibility. This set only selects automatic intent;
     /// it cannot create an assistant or bypass native head/owner validation.
     static let automaticEmbeddedModelTypes: Set<String> = [
-        "qwen3_5", "qwen3_5_moe", "qwen4_exp", "qwen4_exp_text", "nemotron_h", "mimo_v2",
+        "qwen3_5", "qwen3_5_moe", "qwen4_exp", "qwen4_exp_text", "mimo_v2",
     ]
 
     static func isAutomaticExternalTarget(modelType: String?, modelID: String?) -> Bool {

@@ -153,14 +153,16 @@ struct Qwen35CardDefaultDonationTests {
         }
 
         /// The production assembly the slot factory builds for these IDs: native paged KV,
-        /// native checkpoints, the provider's MTP policy and the card's sampling defaults.
+        /// native checkpoints, the provider's MTP policy and the card's sampling defaults. The
+        /// grant clears the bridge's 1 GiB load floor (`UnifiedMemoryCap.minimumLoadKVBytes`);
+        /// paged storage allocates only what the requests use.
         func makeBridge(store: SSDHybridCheckpointStore?) throws -> EngineV2Bridge {
             var environment = ["DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE": String(Qwen35CardDefaultDonationTests.stripe)]
             if store == nil { environment["DARKBLOOM_PREFIX_CACHE"] = "0" }
             let tokenizer = IDTokenizer()
             let build = try EngineV2Factory.makeProductionBuild(
                 model: model, modelID: self.build.rawValue, tokenizer: tokenizer,
-                kvBytesCapacity: 1 << 30, maxConcurrentRequests: 1,
+                kvBytesCapacity: 4 << 30, maxConcurrentRequests: 1,
                 completePrefixCache: store, mtpDrafter: assistant,
                 mtpConfig: .init(
                     enabled: true, maxDraftTokens: CBv2MTPConfig.testedMaxDraftTokens,

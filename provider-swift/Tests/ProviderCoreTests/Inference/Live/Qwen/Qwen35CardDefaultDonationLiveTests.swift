@@ -26,6 +26,10 @@ struct Qwen35CardDefaultDonationLiveTests {
         var modelID: String {
             self == .dense ? Qwen35CheckpointRetentionFixture.modelID : Qwen35CheckpointRetentionFixture.moeModelID
         }
+        /// The MoE build's slot budget, as `Qwen35CheckpointRetentionLiveTests` gives it.
+        var memoryBudgetBytes: Int {
+            self == .dense ? Qwen35CheckpointRetentionFixture.denseBudgetBytes : 64 << 30
+        }
     }
 
     /// The card's request, alone or with what a client adds to it.
@@ -105,7 +109,8 @@ struct Qwen35CardDefaultDonationLiveTests {
     @Test("card-default requests donate, and every restorer answers as its cold run",
           .timeLimit(.minutes(30)), .enabled(if: enabled), arguments: Target.allCases)
     func cardDefaultRequestsDonateAndRestoreExactly(_ target: Target) async throws {
-        let fixture = try await Qwen35CheckpointRetentionFixture(modelID: target.modelID)
+        let fixture = try await Qwen35CheckpointRetentionFixture(
+            modelID: target.modelID, memoryBudgetBytes: target.memoryBudgetBytes)
         do {
             try #require(fixture.mtpActive, "the artifact must load its embedded MTP head")
             let donorTokens = fixture.prompts.donor

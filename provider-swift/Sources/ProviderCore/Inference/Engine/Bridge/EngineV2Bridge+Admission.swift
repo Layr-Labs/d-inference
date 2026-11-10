@@ -108,6 +108,14 @@ extension EngineV2Bridge {
         let calibration = requestID.flatMap {
             calibratedDeadlinePolicy(requestID: $0, promptTokens: promptTokens, promptWork: promptWork)
         }
+        if admissionFixes, !supportsPrefillRecoveryRetirement, calibration == nil, !nativeMedia,
+            deadlineRefusalStreak.estimateExpired(), isolatedPrefillEvidenceExpired(),
+            macIdle(except: requestID) {
+            // Refusals measure nothing, so expired evidence that keeps refusing
+            // an idle Mac is treated like none: absolute expiry only, and this
+            // request's isolated prefill replaces it.
+            return nil
+        }
         guard prefillRate != nil || calibration != nil || nativeMedia else { return nil }
         // The decode EWMA is a per-request rate: charge one measured step per
         // projected batch step, not every row's tokens.
@@ -132,6 +140,22 @@ extension EngineV2Bridge {
     private func macIdle(except requestID: String?) -> Bool {
         guard active.isEmpty, pendingSubmissionIDs.allSatisfy({ $0 == requestID }) else { return false }
         return serviceBudget?.isIdle(except: requestID.map { serviceOwnerPrefix + ":" + $0 }) ?? true
+    }
+
+    /// Count a refusal toward `deadlineRefusalStreak` only when the isolated
+    /// prefill rate alone explains it: an ordinary engine on an idle Mac
+    /// priced nothing but this request's own prompt. Queue or decode work,
+    /// a reviewed calibration, native media and every fail-closed (unbounded)
+    /// projection are refusals a new prefill measurement would not change.
+    func recordDeadlineRefusal(
+        requestID: String, policy: CBv2FirstTokenDeadlineAdmission, work: CBv2FirstTokenProjectedWork
+    ) {
+        guard admissionFixes, !supportsPrefillRecoveryRetirement,
+            policy.calibration == nil, policy.nativeTargetPrefill == nil,
+            case .bounded(let projected, _) = work, projected.decodeTokens == 0,
+            macIdle(except: requestID)
+        else { return }
+        deadlineRefusalStreak.refused()
     }
 
     /// Move post-commit cancellation cleanup out of the cancelling task. The

@@ -1066,6 +1066,31 @@ final class DistributedAutomaticBatchPlannerTests {
         #expect(localCluster.option.plan == nil && localCluster.option.blocker != nil)
     }
 
+    /// The guided step plans on a stack of its own (`ClusterPlanningStack`), so the onboarding's and the service's
+    /// planning threads (512 KiB each) lend it little of theirs. On 2026-11-10 a debug build's guided step used 692 KiB
+    /// planning tensor parallel for the 27B, which is why the tests above ran it on a 16 MiB thread.
+    @Test func theGuidedStepLendsItsCallerLittleStack() throws {
+        let home = try home(); record(home)
+        let artifact = try #require(ClusterPublicModels.declared.first {
+            $0.runtimeModelID == ClusterQwenTensorAssistantPolicy.runtimeModelID }).artifactSHA256
+        let (pair, cap, layout, _) = try fixture(artifact: artifact)
+        let data = try ClusterRuntimeCapabilityCodec.encode(cap), digest = ClusterConfigurationCodec.sha256(data)
+        let model = ClusterSetupLocalModel(folder: "Qwen3.8-27B-4bit-mtp-fixture", modelID: "EigenLabs/Qwen3.8-27B-4bit-mtp",
+            version: "fixture", artifactSHA256: artifact, totalBytes: 16_320_415_757)
+        let link = try #require(ClusterLinkProbeHistory.costs(homeDirectory: home, members: ["a", "b"]))
+        let local = try profile(), peer = try profile()
+        let reading = ClusterSetupPlanning.ModelReading(model: model, layout: .success(layout),
+            capability: .success((cap, data, digest)), tokenizerFiles: pair.tokenizerFiles,
+            tensorAssistantQuote: .success(try assistantQuote(1, artifact: artifact, assistant: false)))
+        var decided: [ClusterSetupPlanning.Decision] = []
+        let used = stackUsed {
+            decided = ClusterSetupPlanning.decide(readings: [reading], description: pair, localMemberID: "a",
+                localProfile: local, peerProfile: peer, peerModels: [model], measurements: [], link: link)
+        }
+        #expect(decided.first?.option.plan != nil, "not offered: \(decided.first?.option.blocker ?? "")")
+        #expect(used < planningCallerStackBudget, "the guided step used \(used) bytes of its caller's stack")
+    }
+
     /// The guided setup's plan for Qwen3.8 27B on two unequal Macs, whose layout offers unequal tensor-parallel shares:
     /// a local cluster gives the faster Mac the larger share of every layer, while a cluster served through the
     /// coordinator is planned with equal shares, the only split its members' registration can name

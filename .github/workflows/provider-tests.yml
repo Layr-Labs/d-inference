@@ -768,13 +768,11 @@ jobs:
     # ones and the benchmarks (scripts/cluster-test-plan.py). They run and
     # report whenever the cluster jobs run; a failure does not fail the
     # workflow. Shards 1 and 3 each run one half of the real-geometry rows
-    # check and read a lane of their own (provider-plan.yml). Shard 2 uses
-    # 42 GiB, more than any signed Darkbloom size, so it runs on Blacksmith
-    # without asking the route.
+    # check. Each shard reads a lane of its own (provider-plan.yml).
     name: Cluster GPU Tests (non-blocking, shard ${{ matrix.shard }})
     needs: build-cluster
     if: ${{ inputs.cluster == 'true' }}
-    runs-on: ${{ matrix.shard == 2 && 'blacksmith-12vcpu-macos-27' || fromJSON(inputs.routes)[format('test-cluster-gpu-{0}', matrix.shard)] }}
+    runs-on: ${{ fromJSON(inputs.routes)[format('test-cluster-gpu-{0}', matrix.shard)] }}
     timeout-minutes: 60
     strategy:
       fail-fast: false

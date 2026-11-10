@@ -1026,8 +1026,9 @@ final class EndpointBox: @unchecked Sendable {
     /// values every rank is given (the pair driver's own values), under budgets
     /// derived from the setup; GPT-OSS and Gemma 4 included.
     static func adaptersOnTheInstalledPath(_ f:InstalledFixture) throws {
-        // A serial-prefill Gemma pipeline saved without a width names no lanes.
-        let gemma=["MLX_GATHER_QMM_EXPERT_SLICES":"trust","MLX_GEMMA4_FUSED_WEIGHTED_UNSORT":"1"]
+        // A serial-prefill Gemma pipeline also names its default lanes.
+        let gemma=["MLX_GATHER_QMM_EXPERT_SLICES":"trust","MLX_GEMMA4_FUSED_WEIGHTED_UNSORT":"1",
+            DistributedInstalledPlan.batchLanesSwitch:String(DistributedInstalledPlan.gemma4PipelineBatchLanes)]
         let cases:[(String,ClusterRuntimeAdapter,String,[String:String],String?)]=[
             ("a35",.qwen35RoutedExperts,"registered_qwen35_35b_a3b",["MLX_GATHER_QMM_EXPERT_SLICES":"trust"],"phase_split_v1"),
             ("a36",.qwen35RoutedExperts,"registered_qwen36_35b_a3b",["MLX_GATHER_QMM_EXPERT_SLICES":"trust"],"phase_split_v1"),

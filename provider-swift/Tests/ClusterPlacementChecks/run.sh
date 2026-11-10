@@ -46,7 +46,6 @@ xcrun swiftc -j 4 "${task_flags[@]}" -D DARKBLOOM_CLUSTER_FIXTURE_ARTIFACTS -par
   "$task_provider/Sources/ProviderCore/Diagnostics/GLM5NextGPULimitEligibility.swift" \
   "$task_provider/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementFlow.swift" \
   "$task_provider/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementTensorWidth.swift" \
-  "$task_provider/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementPipelineWidth.swift" \
   "$task_provider/Sources/ProviderCore/Inference/Distributed/Placement/ClusterForcedModeSetting.swift" \
   "$task_provider/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlannerBenchCap.swift" \
   "$task_provider/Sources/ProviderCore/Inference/Distributed/Installed/ClusterBenchChip.swift" \

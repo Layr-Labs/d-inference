@@ -87,20 +87,4 @@ final class QwenBatchLaneBookTests: XCTestCase {
         try book.start(a)
         XCTAssertEqual(try XCTUnwrap(book.takeStarted()).0, a)
     }
-
-    /// LOAD admits a saved width with what the book charges that many lanes of the memory plan's request held at
-    /// once (`chargeBytes`): the newest lane's whole allowance, each other lane its state.
-    func testLoadChargesASavedWidthAsTheBookChargesItsLanes() throws {
-        for lanes in 1...QwenBatchWire.maximumLanes {
-            let book = QwenBatchLaneBook(), ids = (0..<lanes).map { _ in UUID() }
-            for id in ids { try book.reserve(id, reservation(id, stateBytes: 1_000), lanes: lanes) }
-            let allowance = try XCTUnwrap(book.allowances().first)
-            XCTAssertEqual(try QwenBatchLaneBook.reservedBytes(lanes: lanes, allowance: allowance),
-                allowance.reservedBytes + (try book.stateBytes(excluding: ids.last)), "\(lanes) lanes")
-        }
-        let one = QwenResidentRequestAllowance(stateBytes: 1_000, fusionBytes: 0, reservedBytes: 1_032)
-        for lanes in [0, QwenBatchWire.maximumLanes + 1] {
-            XCTAssertThrowsError(try QwenBatchLaneBook.reservedBytes(lanes: lanes, allowance: one), "\(lanes) lanes")
-        }
-    }
 }

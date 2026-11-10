@@ -1209,18 +1209,15 @@ full-artifact memory fit, numerical parity or throughput; those require
 paired hardware qualification. The restore mechanism is described in
 [inference](inference.md#gemma-paged-prefix-restoration).
 
-A Gemma 4 pipeline's width (the one its setup saved with serial prefill; one
-lane without one, as a guided setup saves it,
+A serial-prefill Gemma 4 pipeline's default width
+(`DistributedInstalledPlan.gemma4PipelineBatchLanes`,
 [Gemma pipeline lanes](inference.md#gemma-pipeline-lanes)) adds no load-time
 allocation: the paged pool's capacity is a ceiling, and pages are reserved per
-request (`CBv2StageKVHost`). LOAD admits the width whole against live memory:
-every lane at the memory plan's request, as the lane book charges lanes held at
-once (`QwenBatchLaneBook.reservedBytes`). A Mac that cannot hold it now refuses
-the load. Each lane is then charged its whole request state on every rank and
-admitted against live memory again when it is reserved
-(`QwenResidentRuntime.reserveLane`); a lane the host cannot hold is refused
-alone, retryably. The measured activation floor still applies: prompt frames
-run one per step and decode rows add only M=1 work.
+request (`CBv2StageKVHost`). Each lane is charged its whole request state on
+every rank and admitted against live memory (`QwenResidentRuntime.reserveLane`);
+a lane the host cannot hold is refused alone, retryably. The measured
+activation floor still applies: prompt frames run one per step and decode rows
+add only M=1 work.
 
 ## Bonsai packed projection arithmetic
 

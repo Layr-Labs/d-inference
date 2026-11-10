@@ -99,7 +99,7 @@ import DarkbloomClusterProtocol
     @Test func anUnpricedTensorParallelWidthServesAndSaysOneRequestAtATime() {
         #expect(!ClusterPlacementTensorBatchQuote.runtimeModelIDs.contains("registered_gemma4_26b"))
         #expect(DistributedInstalledPlan.defaultBatchLanes(adapter: .gemma4LayerStage, mode: .tensorParallel,
-            hasPrivateImages: false, runtimeModelID: "registered_gemma4_26b") == 1)
+            hasPrivateImages: false, runtimeModelID: "registered_gemma4_26b", prefillSchedule: .serial) == 1)
         let advice = ClusterOnboardingModeAdvice.advise([
             .init(mode: ClusterGenerationMode.tensorParallel.rawValue, planned: true, fitsNow: true,
                   predictedTokensPerSecond: 50, concurrentRequests: 1),

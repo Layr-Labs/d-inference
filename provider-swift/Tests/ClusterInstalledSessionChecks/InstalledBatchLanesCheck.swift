@@ -216,24 +216,15 @@ extension InstalledSessionCheck {
             registered: ("registered_gemma4_26b_qat_4bit", "registered_gemma4_26b_qat_4bit_greedy_generation_v1", "fixture/gemma"),
             adapter: .gemma4LayerStage)
         let gemmaPrepared = try gemma.prepare()
-        // A serial-prefill Gemma pipeline saved without a width (as every guided setup is saved) serves one request at
-        // a time, as every family does: its LOAD checks the width, which nothing priced.
+        // A serial-prefill Gemma pipeline, coordinator-registered or not, serves its four default lanes.
         try require(gemmaPrepared.plan.configuration.selectedPrefillSchedule == .serial
-            && gemmaPrepared.plan.batchLanes([:]) == 1 && !gemmaPrepared.plan.lanesRetireAlone([:]),
-            "Gemma serial pipeline without a saved width serves lanes")
+            && gemmaPrepared.plan.batchLanes([:]) == DistributedInstalledPlan.gemma4PipelineBatchLanes
+            && gemmaPrepared.plan.lanesRetireAlone([:]), "Gemma serial pipeline default lanes differ")
         let gemmaDefault = gemmaPrepared.plan.nativeEnvironment(matrix: gemmaPrepared.matrixURL,
             ownerEnvironment: try observed(gemmaPrepared.plan.localOwnerConfiguration(ownerEnvironment: [:])))
-        try require(gemmaDefault[key] == nil, "a Gemma pipeline without a saved width named lanes to its rank")
-        // A width saved with serial prefill reaches the rank.
-        let sized = try InstalledFixture.make(root: f.root.appendingPathComponent("lane-gemma-sized"),
-            probe: f.probe, owner: probe, worker: f.worker,
-            registered: ("registered_gemma4_26b_qat_4bit", "registered_gemma4_26b_qat_4bit_greedy_generation_v1", "fixture/gemma"),
-            adapter: .gemma4LayerStage, batchLanes: 4).prepare()
-        let sizedNative = sized.plan.nativeEnvironment(matrix: sized.matrixURL,
-            ownerEnvironment: try observed(sized.plan.localOwnerConfiguration(ownerEnvironment: [:])))
-        try require(sized.plan.batchLanes([:]) == 4 && sized.plan.lanesRetireAlone([:]) && sizedNative[key] == "4",
-            "a Gemma pipeline's saved width did not reach its rank")
-        // A saved one-chunk lookahead also serves one lane without a saved width, and keeps its schedule.
+        try require(gemmaDefault[key] == String(DistributedInstalledPlan.gemma4PipelineBatchLanes),
+            "Gemma default lanes did not reach the rank")
+        // A saved one-chunk lookahead keeps its schedule: lanes prefill serially, so it keeps one lane.
         let lookahead = try InstalledFixture.make(root: f.root.appendingPathComponent("lane-gemma-lookahead"),
             probe: f.probe, owner: probe, worker: f.worker,
             registered: ("registered_gemma4_26b_qat_4bit", "registered_gemma4_26b_qat_4bit_greedy_generation_v1", "fixture/gemma"),

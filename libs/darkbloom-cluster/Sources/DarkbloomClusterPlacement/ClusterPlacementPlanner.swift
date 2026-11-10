@@ -59,12 +59,6 @@ public struct ClusterPlacementPolicy: Sendable {
     /// context (`ClusterModelLayout.requestChargeEveryRankBytes` is at the
     /// layout's planned request). Nil uses the layout's.
     public var requestChargeEveryRankBytes: Int?
-    /// Concurrent requests a pair's plain pipeline candidate is priced for: each rank holds every lane's whole state
-    /// at the largest request (`largestContextTokens`, else the layout's planned one) and one prompt frame at that
-    /// context, as its LOAD admits a saved width (lanes read prompts one frame at a time). Only the reference request's
-    /// speed is predicted. Nil or 1, the default: one request, priced at the reference request as before. Needs the
-    /// plain pipeline alone, serial prefill, and a family whose ranks charge each request at LOAD.
-    public var pipelineLanes: Int?
     /// A validated concurrent scope or explicit singleton assistant quote
     /// sets this complete native TP LOAD floor. Nil preserves existing families.
     public internal(set) var tensorParallelBatchQuote: ClusterPlacementTensorBatchQuote?
@@ -412,7 +406,6 @@ public enum ClusterPlacementPlanner {
             }
         }
         try requireLanePricing(policy, layout: layout)
-        try requirePipelineLanes(policy, layout: layout, modes: policy.modes, schedules: policy.schedules)
         if policy.tensorParallelBatchQuote?.assistant != nil {
             // A forced or chosen tensor parallel is the one family this quote prices (`ClusterForcedMode`).
             guard devices.count == 2, policy.modes == [.tensorParallel], policy.schedules == [.serial],
@@ -704,20 +697,6 @@ public enum ClusterPlacementPlanner {
         }
     }
 
-    /// A width priced by `ClusterPlacementPolicy.pipelineLanes` is 2 through the protocol's lane cap, on the plain
-    /// pipeline alone with serial prefill (what a saved width serves), of a family whose ranks charge each request at
-    /// LOAD (not one that admits requests only on arrival).
-    static func requirePipelineLanes(_ policy: ClusterPlacementPolicy, layout: ClusterModelLayout,
-                                     modes: [ClusterGenerationMode]?, schedules: [ClusterPrefillSchedule]?) throws {
-        guard let lanes = policy.pipelineLanes, lanes != 1 else { return }
-        guard (2...ClusterServingFeatures.maximumLaneWidth).contains(lanes), modes == [.pipeline], schedules == [.serial],
-              layout.generationModes.contains(.pipeline), layout.prefillSchedules.contains(.serial),
-              layout.requestsOnArrival == nil else {
-            throw ClusterPlacementError("A pipeline width needs the plain pipeline alone with serial prefill, a family whose "
-                + "ranks charge each request at load, and 2...\(ClusterServingFeatures.maximumLaneWidth) lanes")
-        }
-    }
-
     /// One explicit placement, evaluated as the planner evaluates its own
     /// candidates: `devices` in rank order, `cuts` ascending. Nothing is
     /// checked against the layout's cut lists, so a caller can ask about any
@@ -751,7 +730,6 @@ public enum ClusterPlacementPlanner {
             }
         }
         try requireLanePricing(policy, layout: layout)
-        try requirePipelineLanes(policy, layout: layout, modes: [mode], schedules: [prefillSchedule])
         let context = Context(devices: devices, layout: layout, prompt: policy.promptTokens ?? layout.maximumPromptTokens,
             outputs: policy.outputTokens ?? layout.maximumOutputTokens, modes: [mode], schedules: [prefillSchedule],
             link: link, policy: policy, tensorParallelForAssessment: true)
@@ -800,9 +778,6 @@ public enum ClusterPlacementPlanner {
         // adapter's reservation scope even after short served requests.
         var memoryPrompt: Int { layout.reservesFullRequestScope == true ? layout.maximumPromptTokens : prompt }
         var memoryContext: Int { layout.reservesFullRequestScope == true ? layout.maximumContextTokens : prompt + outputs }
-        /// The request a saved pipeline width is priced at (`ClusterPlacementPolicy.pipelineLanes`): a request
-        /// scope's context, else the layout's planned request.
-        var largestContext: Int { policy.largestContextTokens ?? layout.maximumContextTokens }
 
 
         /// Whether a mode can be placed on `ranges` ranks here at all.
@@ -924,20 +899,14 @@ public enum ClusterPlacementPlanner {
                 held += holding.bytes
                 largest = max(largest, holding.largestTensorBytes)
             }
-            // A pair's saved pipeline width (`ClusterPlacementPolicy.pipelineLanes`) is priced at the largest request,
-            // whatever request the speed is predicted for: that is what its LOAD admits for every lane.
-            let lanes = mode == .pipeline && count > 1 ? max(1, policy.pipelineLanes ?? 1) : 1
-            let context = lanes > 1 ? largestContext : memoryContext
+            let context = memoryContext
             let ownState = loads.reduce(0) { $0 + $1.stateBytes(tokens: context) }
             // One prefill frame's attention transient at the full context, on
-            // the rank's largest layer: layers run one after another, and lanes
-            // read their prompts one frame at a time.
-            let frame = min(layout.maximumChunkTokens, lanes > 1 ? layout.maximumPromptTokens : memoryPrompt)
-            let transient = loads.map { $0.transientBytes(chunk: frame, context: context) }.max() ?? 0
+            // the rank's largest layer: layers run one after another.
+            let transient = loads.map { $0.transientBytes(chunk: min(layout.maximumChunkTokens, memoryPrompt), context: context) }.max() ?? 0
             // A requested context beyond the layout's planned request brings its own
             // charge (`policy.requestChargeEveryRankBytes`); otherwise the layout's at this context.
-            // Every lane holds its whole state.
-            let state = lanes * max(policy.requestChargeEveryRankBytes ?? layout.requestChargeEveryRankBytes(context: context), ownState)
+            let state = max(policy.requestChargeEveryRankBytes ?? layout.requestChargeEveryRankBytes(context: context), ownState)
             let work = loads.reduce(0) { $0 + $1.requestWorkBytes }
             var extra = 0
             // A producer keeps the next chunk's residual beside the current one.

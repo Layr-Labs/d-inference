@@ -740,6 +740,10 @@ extension EngineV2Bridge {
         defer {
             if active[id]?.prefillReceipt !== prefillReceipt { prefillReceipt.end() }
         }
+        // Seeded sampling reuses a stable engine ID, which stays fenced until
+        // publication, so only unseeded requests take the early terminal.
+        cbv2Request.terminalPrecedesCheckpointPublication =
+            terminalBeforeCheckpointPublication && cbv2Request.sampling.seed == nil
         let engineRequest = cbv2Request
         pendingEngineIDs.insert(cbv2Id)
         idMap[id] = cbv2Id
@@ -977,7 +981,9 @@ extension EngineV2Bridge {
                     events = submitted.events
                     nativeRetirement = submitted.retirement
                 } else if let autoregressive = engine as? EngineV2,
-                    autoregressive.nativeShutdownExecutionContractID != nil || modelCalibration.requests[id] != nil {
+                    autoregressive.nativeShutdownExecutionContractID != nil || modelCalibration.requests[id] != nil
+                        || engineRequest.terminalPrecedesCheckpointPublication {
+                    // An early terminal leaves rows owned: release capacity at retirement.
                     let submitted = try autoregressive.submitWithRetirement(engineRequest)
                     events = submitted.events
                     nativeRetirement = submitted.retirement
@@ -1150,6 +1156,7 @@ extension EngineV2Bridge {
             readyReceiptRegistered: readyReceiptRegistered,
             profile: profile,
             nativeRetirement: nativeRetirement,
+            terminalPrecedesPublication: engineRequest.terminalPrecedesCheckpointPublication,
             httpResponse: distributed == nil ? nil : httpResponse,
             prefillProgress: prefillProgress
         )

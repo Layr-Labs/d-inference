@@ -384,6 +384,9 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_PREFIX_CACHE_SSD_INCREMENTAL_CHECKPOINTS`: eligible complete
     /// checkpoints are written as deltas by default; the rollback to complete
     /// files must reach the job.
+    /// `DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION`: a donor's
+    /// terminal follows its complete-checkpoint write by default; the opt-in
+    /// to answer first must reach the job to apply to an installed provider.
     /// `DARKBLOOM_TTFT_GDN_BLOCKED`: the SDK keeps a four-row Qwen GDN prompt
     /// kernel wherever its parity probe finds it bit-exact, which says nothing
     /// about speed; the stock-kernel rollback must reach the job. Spelled out
@@ -425,6 +428,7 @@ public enum LaunchAgent: Sendable {
         GLM5NextWiredResidency.environmentFlag,
         PrefixCachePolicy.mimoCompletePrefixEnvironmentFlag,
         SSDPrefixCachePolicy.incrementalCheckpointsFlag,
+        SSDPrefixCachePolicy.terminalBeforePublicationFlag,
         "DARKBLOOM_TTFT_GDN_BLOCKED",
         EngineV2SlotFactory.mimoRectangularVerifyEnvironmentKey,
         PromptTokenCachePolicy.environmentKey,

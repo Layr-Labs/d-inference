@@ -222,6 +222,26 @@ struct GLM5NextCoordinatorServingTests {
             committedBytes: .max, admissibleBytes: bridgeAdmissible) == .committed)
     }
 
+    /// A GLM heartbeat reports what the slot gate above charges: the requests
+    /// the bridge holds, gate reservations included. The engine's reserved
+    /// bytes also keep the paged pool's retained segments, which it reuses for
+    /// the next request. On 11-10 idle production GLM slots reported 241,719 of
+    /// 257,599 tokens with no request held, and the coordinator turned about
+    /// 90 % of their requests away.
+    @Test func glmHeartbeatReportsTheRequestsItsGateHolds() {
+        let retainedPool = 37_300_000_000, request = 9_400_000_000, gateHeld = 1_200_000_000
+        #expect(EngineV2Bridge.heartbeatCommittedBytes(heldBytes: 0, engineReservedBytes: retainedPool,
+            tracksNativeShutdown: true, glm5NextHeldBytes: 0) == 0)
+        #expect(EngineV2Bridge.heartbeatCommittedBytes(heldBytes: request, engineReservedBytes: retainedPool,
+            tracksNativeShutdown: true, glm5NextHeldBytes: request + gateHeld) == request + gateHeld)
+        // Other native engines keep their ledger until real retirement, and an
+        // ordinary engine reports its held requests.
+        #expect(EngineV2Bridge.heartbeatCommittedBytes(heldBytes: request, engineReservedBytes: retainedPool,
+            tracksNativeShutdown: true, glm5NextHeldBytes: nil) == retainedPool)
+        #expect(EngineV2Bridge.heartbeatCommittedBytes(heldBytes: request, engineReservedBytes: retainedPool,
+            tracksNativeShutdown: false, glm5NextHeldBytes: nil) == request)
+    }
+
     /// A slot refusal is thrown before any stream as the typed capacity error:
     /// 503 `capacity`/`token_budget_exhausted` on the local and coordinator
     /// paths, and the same typed case when a nonthrowing caller carries its

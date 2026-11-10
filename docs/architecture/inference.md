@@ -2308,12 +2308,13 @@ so it is submitted the way a request with no measured rate is. Absolute
 expiry still applies, the decision profile reports
 `projection = not_attempted` with `projection_reason = unmeasured_prefill`,
 and the request's isolated prefill replaces the expired aggregate and its
-prompt-size bucket. Fresh evidence refuses as measured however many requests
-it refuses. An admission that ends a full streak starts a 120-second retry
-interval, so a loaded model on a Mac that really is too slow admits one such
-request per interval, even when that request ends before its prompt
-completes. That request can miss its first-content deadline where it would
-have been refused at once.
+prompt-size bucket. Fresh evidence, a fresh prompt-size bucket for this
+prompt included, refuses as measured however many requests it refuses. An
+admission that ends a full streak starts a 120-second retry interval, so a
+loaded model on a Mac that really is too slow admits one such request per
+interval, even when that request ends before its prompt completes. That
+request can miss its first-content deadline where it would have been refused
+at once.
 
 An independent reviewed deadline profile carries
 `deadline_calibration`: prompt/context bands, actual cold/reused prefix

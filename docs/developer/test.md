@@ -2441,8 +2441,34 @@ Each passes the relay's inbound decode, the request plan, the pinned template
 and the output parser, and a compliant response validates streamed and
 complete. CPU only; it does not load a model or measure answer quality.
 
+## GPT-OSS checkpoint and replay tools
+
+Run the bounded CPU fixtures without MLX, real checkpoint payloads or a server.
+They need Python 3.11 or later (`hashlib.file_digest`,
+`unittest.TestCase.enterContext`); macOS's `/usr/bin/python3` 3.9 fails them:
+
+```bash
+python3 -m unittest discover -s scripts -p 'test_gptoss_*.py' -v
+```
+
+The tests cover byte-exact expert row mapping, packed nibble order, BF16
+preservation, inventory/offset validation, independent output readback, source
+hash refusals, sampled affine reconstruction and immutable input files. Replay
+tests reject ineffective cache hits, incomplete streams, early fixed-work stops
+and missing paged/cache-ready telemetry. They also pin the local-only network
+rule: any endpoint but a bare `http://` loopback URL is refused before any
+request, and the replay's own opener neither uses an environment HTTP proxy nor
+follows a redirect (answered in memory, with no socket). They do not execute
+GPU kernels or qualify a full model. Follow
+[artifact preparation](gptoss-checkpoint.md) for the separate source
+verification, full conversion and matched serving experiments.
+
+CI runs the same command on every run in the `ci-plan-checks` job (Check the CI
+plans) of `provider-tests.yml`, on the `ubuntu-24.04` runner's Python 3.12.
+
 ## Related
 
+- [GPT-OSS artifact preparation and replay](gptoss-checkpoint.md)
 - [Build](build.md)
 - [Serving-performance qualification](serving-performance-qualification.md)
 - [Historical references](historical-references.md)

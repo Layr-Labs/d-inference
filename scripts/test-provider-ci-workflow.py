@@ -324,6 +324,11 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertEqual(run_command(fixtures).splitlines(), ["python3 scripts/test-prepare-prompt-fixtures.py",
                                                               "python3 scripts/test-prepare-mimo-prompt-fixtures.py",
                                                               "python3 scripts/test-prepare-mimo-image-http-fixtures.py"])
+        # So do the GPT-OSS tools' CPU tests (Python 3.11+); the log names the Python that ran them.
+        gptoss = steps["Test the GPT-OSS checkpoint and replay tools offline"]
+        self.assertEqual(field(gptoss, "if"), "${{ !cancelled() }}")
+        self.assertEqual(run_command(gptoss).splitlines(),
+                         ["python3 --version", "python3 -m unittest discover -s scripts -p 'test_gptoss_*.py' -v"])
         # The record names its change through the lookup's own code, and only
         # a run that tested something records.
         steps = {field(step, "name", indent=6): step for step in step_blocks(self.jobs["provider-test-gate"])}

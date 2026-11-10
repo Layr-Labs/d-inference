@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-10
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -864,9 +864,17 @@ serving Mac, so the same request can project differently on other hardware:
   (`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`,
   `IsolatedPrefillAdmissionRate.anchorFloorFraction`). Native engines keep
   their recovery probe instead.
+- Three consecutive refusals an ordinary engine made on an idle Mac from its
+  isolated prefill rate alone expire evidence older than 120 seconds
+  (`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`,
+  `DeadlineRefusalStreak`). The next request of at most 1,024 prompt tokens
+  that finds the Mac idle is submitted without a time projection and
+  remeasures the rate on that Mac, at that power and thermal state. A longer
+  prompt is still refused. A refusal for physical capacity never counts.
 
-The anchor and floor shape admission only. The published isolated rate,
-capacity wire fields and the external platform's memory contract are unchanged.
+The anchor, floor and refusal streak shape admission only. The published
+isolated rate, capacity wire fields and the external platform's memory
+contract are unchanged.
 
 ### Cross-repository agreement
 

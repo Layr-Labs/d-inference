@@ -102,11 +102,23 @@ extension EngineV2Bridge {
                 macIdle: macIdle(except: requestID),
                 nominalPosture: calibrationPosturePermitsWork())
         }
-        if promptTokens > 0, let shapeRate = performanceMeasurements.freshIsolatedPrefillRate(promptTokens: promptTokens) {
-            prefillRate = prefillRate.map { min($0, shapeRate) } ?? shapeRate
-        }
+        let shapeRate = promptTokens > 0
+            ? performanceMeasurements.freshIsolatedPrefillRate(promptTokens: promptTokens) : nil
+        if let shapeRate { prefillRate = prefillRate.map { min($0, shapeRate) } ?? shapeRate }
         let calibration = requestID.flatMap {
             calibratedDeadlinePolicy(requestID: $0, promptTokens: promptTokens, promptWork: promptWork)
+        }
+        if admissionFixes, !supportsPrefillRecoveryRetirement, calibration == nil, !nativeMedia,
+            promptTokens <= PrefillEvidenceRecovery.maximumPromptTokens,
+            deadlineRefusalStreak.expiresStaleEvidence(), isolatedPrefillEvidenceExpired(),
+            shapeRate == nil, macIdle(except: requestID) {
+            // Refusals measure nothing, so expired evidence that keeps refusing
+            // an idle Mac is treated like none: absolute expiry only, and this
+            // request's isolated prefill replaces it. A fresh prompt-size
+            // bucket is a current measurement and still refuses. As for the
+            // native recovery probe, only a small prompt runs unprojected: a
+            // long one could hold a slow Mac until its deadline.
+            return nil
         }
         guard prefillRate != nil || calibration != nil || nativeMedia else { return nil }
         // The decode EWMA is a per-request rate: charge one measured step per
@@ -132,6 +144,22 @@ extension EngineV2Bridge {
     private func macIdle(except requestID: String?) -> Bool {
         guard active.isEmpty, pendingSubmissionIDs.allSatisfy({ $0 == requestID }) else { return false }
         return serviceBudget?.isIdle(except: requestID.map { serviceOwnerPrefix + ":" + $0 }) ?? true
+    }
+
+    /// Count a refusal toward `deadlineRefusalStreak` only when the isolated
+    /// prefill rate alone explains it: an ordinary engine on an idle Mac
+    /// priced nothing but this request's own prompt. Queue or decode work,
+    /// a reviewed calibration, native media and every fail-closed (unbounded)
+    /// projection are refusals a new prefill measurement would not change.
+    func recordDeadlineRefusal(
+        requestID: String, policy: CBv2FirstTokenDeadlineAdmission, work: CBv2FirstTokenProjectedWork
+    ) {
+        guard admissionFixes, !supportsPrefillRecoveryRetirement,
+            policy.calibration == nil, policy.nativeTargetPrefill == nil,
+            case .bounded(let projected, _) = work, projected.decodeTokens == 0,
+            macIdle(except: requestID)
+        else { return }
+        deadlineRefusalStreak.recordRefusal()
     }
 
     /// Move post-commit cancellation cleanup out of the cancelling task. The

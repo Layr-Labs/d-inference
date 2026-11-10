@@ -1,6 +1,6 @@
 # Prediction decision telemetry
 
-> Last updated: 2026-10-22
+> Last updated: 2026-11-10
 
 Optional attempt records compare what the coordinator selected with what the
 provider decided. They explain decisions; they do not establish whether a
@@ -18,7 +18,7 @@ terminal messages. Sources: [coordinator/protocol/profile_deadline.go](https://g
 | `verdict` | `accepted`, `deadline_unreachable`, `expired_before_submit`, `cancelled`, `other`. `cancelled` without a returned verdict does not prove the engine never accepted. |
 | `continuation` | `expired`, `cancelled`, `other`, or absent. Annotates a returned verdict when the bridge's immediate continuation is stopped; it does not replace the verdict. |
 | `projection` | `bounded`, `unbounded`, `not_attempted`, `other`, or absent. Unbounded is distinct from a measured large duration. |
-| `projection_reason` | No service-time prediction: `no_deadline`, `mode_off`, `unsupported_scheduler`, `multimodal`, `unmeasured_prefill`, `other`, or absent. Includes guarded native-media bootstrap; it does not describe an engine projection failure. |
+| `projection_reason` | No service-time prediction: `no_deadline`, `mode_off`, `unsupported_scheduler`, `multimodal`, `unmeasured_prefill`, `other`, or absent. Includes guarded native-media bootstrap; it does not describe an engine projection failure. `unmeasured_prefill` also covers a measured rate the provider set aside as expired: idle expiry, or a full refusal streak over stale evidence ([deadlines](../architecture/inference.md#deadlines)). |
 | `unbounded_reason` | Optional closed engine cause for `projection=unbounded`, listed below. Missing means the engine supplied no cause; it is never reconstructed from occupancy or remaining time. Unknown future values fold to `other`. |
 | `observed_us` | Offset from the provider profile anchor when the bridge receives a verdict or observes pre-submit expiry. **Not the engine's atomic refusal time.** |
 | `remaining_us` | Remaining deadline at that provider observation, clamped at zero. |

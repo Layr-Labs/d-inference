@@ -294,6 +294,66 @@ On M5 Ultra, Qwen3.5-9B peak MLX memory at 32,768 prompt tokens fell from
   advertised capacity do not change. A lower live transient shows up only
   through `liveKVHeadroomBytes`, which reads real MLX `active + cache`.
 
+### Gemma 4 dispatch qualification
+
+The [Gemma 4 native dispatch change](inference.md#gemma-4-native-dispatch)
+fuses the dense GeGLU product and sets no command-buffer limit of its own; the
+decode limits in force are the
+[operation-count policy](inference.md#gemma-decode-command-buffers). The
+provider's OS reserve, activation floor, LOAD quotation, KV grants, admission
+and memory-pressure safeguards remain unchanged.
+
+The linked endpoint screen, whose candidate also carried an earlier scoped
+command-buffer limit (`operations: 100`, `megabytes: 512`), measured repeat RSS of about 16.269 GiB for the
+candidate and 16.266 GiB for the baseline. The first candidate leg's lifetime
+physical-footprint peak included a cold prewarm and reached 20.06 GiB, versus
+17.54 GiB in the later warmed candidate leg. This is not a matched warm peak-memory
+comparison, and the endpoint did not expose MLX allocator peak. These results
+do not qualify lower reserves, higher admission limits, other chipsets or
+clustered execution.
+
+### Gemma 4 compiled feed-forward qualification
+
+The [compiled feed-forward path](inference.md#gemma-4-compiled-feed-forward-dispatch)
+retains live parameter arrays and child-module identities for eligible traces.
+Its weak owner reference avoids retaining the decoder; replaced or unsupported
+children retire an old trace, and trace destruction occurs outside the holder
+lock to preserve MLX evaluation-lock ordering. Source:
+`libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4CompiledFeedforward.swift`
+(`Gemma4CompiledFeedforwardCache`).
+
+The linked incremental endpoint comparison measured first-leg process lifetime
+physical-footprint maxima of about 20.05 GiB for the prior dispatch path and
+20.07 GiB with compiled feed-forward; later warmed legs measured 17.53 and
+17.56 GiB respectively. These include loading and prewarm, are not isolated
+feed-forward or MLX allocator peaks, and establish no memory reduction. Provider
+reserves, activation floors, LOAD quotations, KV grants and admission limits
+remain unchanged; the bounded decode result does not qualify increasing them.
+
+### Gemma 4 row-mapped NAX qualification
+
+The [row-mapped prefill route](inference.md#gemma-4-row-mapped-nax-prefill) keeps
+original activations, assignment maps and live expert arrays as graph inputs.
+It avoids the expanded sorted token tensor for the two gate/up products while
+retaining separate output arrays and the existing down/reduction graph. The
+helper adds no persistent parameter identity cache or copied expert bank.
+The guarded route is enabled by default; the
+[exact `0` rollback](../reference/configuration.md#gemma-4-row-mapped-nax)
+restores the original graph without changing hardware or admission eligibility.
+Sources: `libs/mlx-swift-lm/Libraries/MLXLMCommon/Gemma4RowMappedNAX.swift`
+(`tryPair`) and
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/Gemma4RowMappedNAXKernel.swift` (`pair`).
+
+Native checks cover live parameters, dropped wrappers, asynchronous evaluation,
+subset outputs and fixed full-model KV/frontier parity. They do not establish a
+lower peak allocation or a general workload memory bound. The endpoint reports
+process residency/footprint rather than MLX allocator peak, and lifetime peaks
+include loading and earlier requests. The bounded cold-TTFT result therefore
+does not qualify reducing reserves, activation floors or LOAD quotations, or
+increasing KV grants and admission limits. Those policies remain unchanged.
+Devices without NAX support retain the existing path; other devices and
+clustering require separate qualification.
+
 ### Load gate (`ModelLoadAdmission`)
 
 GLM sparse KV sizing uses the native asymmetric FP32 payload: each storage

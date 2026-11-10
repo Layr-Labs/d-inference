@@ -4,4 +4,4 @@
 - Such a request now records the head's prompt history and saves the same checkpoints a speculating request saves. That covers the card's penalty (still the 35B builds' default), any other penalty, a `stop` string, logprobs, `logit_bias` and a token constraint. The penalty and its sampling are unchanged, and the request still never speculates.
 - The same holds on Qwen3.8-27B (the same embedded head) and on Nemotron 3.5 Super: a request with a `stop` string, logprobs, a penalty, `logit_bias` or a token constraint now saves prefix checkpoints too. Its prompt runs the prefill a speculating request's prompt runs, and its answer is unchanged.
 - A request that cannot speculate and restores one of these checkpoints answers exactly as without the cache, tokens and logprobs alike. A speculating request restores the same history its own prompt would record.
-- From the SDK pin `libs/mlx-swift-lm` at `ef028fbe` (Layr-Labs/mlx-swift-lm#398, which carries #397).
+- From the SDK pin `libs/mlx-swift-lm` at `505e6bd8`, which contains Layr-Labs/mlx-swift-lm#398 (it carries #397).

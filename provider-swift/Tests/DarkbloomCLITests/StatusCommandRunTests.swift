@@ -100,11 +100,9 @@ struct StatusCommandRunTests {
 
     /// `Requests served` is this daemon session's own count, not the
     /// coordinator's paid jobs: it resets with the daemon, counts output
-    /// tokens only, and includes requests that ended early. The early-end line
-    /// says which of those the coordinator pays for: the tokens sent when the
-    /// requester left mid-answer, nothing when another Mac answered first or
-    /// the connection dropped. The early-end count is patched into the state
-    /// file under the key the daemon writes.
+    /// tokens only, and includes requests that ended early, with a note on
+    /// which of those the coordinator pays for. The early-end count is patched
+    /// into the state file under the key the daemon writes.
     @Test("status scopes requests served to the daemon session and separates those that ended early")
     func servedRequestsAreScopedToTheSession() async throws {
         let result = try await #require(
@@ -139,8 +137,8 @@ struct StatusCommandRunTests {
 
         let served = try #require(outputSection(output, from: "== SERVED", to: "== END"))
         #expect(served.contains("\nRequests served since the daemon started (1h1m ago): 78  |  output tokens: 84000\n"
-            + "  5 of them ended early: paid for the tokens sent if the requester left mid-answer,\n"
-            + "  unpaid if another Mac answered first or the connection dropped.\n"
+            + "  5 of them ended early: paid for the work done if the requester left mid-answer,\n"
+            + "  unpaid if another Mac answered first, this Mac started too late or lost its connection.\n"
             + "  Paid jobs are listed under Earnings in the console; requests to your own machine are free.\n"))
     }
 

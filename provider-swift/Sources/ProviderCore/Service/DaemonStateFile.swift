@@ -171,11 +171,11 @@ public struct DaemonState: Codable, Sendable, Equatable {
         public var promptTokensProcessed: UInt64?
         public var cachedInputTokens: UInt64?
         public var reasoningTokens: UInt64?
-        /// Served requests that ended early on a coordinator cancel or a
-        /// dropped connection after output had been delivered; included in
-        /// `requestsServed`. The coordinator pays for the tokens sent when the
-        /// requester left mid-answer, and nothing when another Mac answered
-        /// first or the connection dropped. Nil on older runtimes.
+        /// Served requests that ended early: a coordinator cancel, a dropped
+        /// connection or the provider's own cancel (forced stop, shutdown,
+        /// add-on hold) stopped them after output had gone out. Included in
+        /// `requestsServed`; `darkbloom status` says which of them the
+        /// coordinator pays for. Nil on older runtimes.
         public var cancellationsPartialComplete: UInt64?
         public init(requestsServed: UInt64 = 0, tokensGenerated: UInt64 = 0, usageGaps: UInt64 = 0, promptTokensProcessed: UInt64? = nil, cachedInputTokens: UInt64? = nil, reasoningTokens: UInt64? = nil, cancellationsPartialComplete: UInt64? = nil) {
             self.requestsServed = requestsServed

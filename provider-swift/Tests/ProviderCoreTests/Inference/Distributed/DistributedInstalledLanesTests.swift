@@ -51,10 +51,12 @@ struct DistributedInstalledLanesTests {
         }
     }
 
-    @Test func gemmaSerialPipelineServesFourLanesAndLookaheadKeepsOne() {
-        #expect(Plan.gemma4PipelineBatchLanes == 4)
+    /// A Gemma pipeline serves the width its placement saved (`ClusterPlacementPipelineWidth`). Saved without one, it
+    /// serves one request at a time under either schedule, as every family does (review C1, P3).
+    @Test func gemmaPipelineWithoutASavedWidthServesOneLane() {
         #expect(Plan.defaultBatchLanes(adapter: .gemma4LayerStage, mode: .pipeline, hasPrivateImages: false,
-                                       prefillSchedule: .serial) == 4)
+                                       prefillSchedule: .serial) == Plan.defaultBatchLanes)
+        #expect(Plan.defaultBatchLanes == 1)
         // Lanes prefill serially: a saved lookahead keeps its schedule and one lane.
         #expect(Plan.defaultBatchLanes(adapter: .gemma4LayerStage, mode: .pipeline, hasPrivateImages: false,
                                        prefillSchedule: .oneChunkLookahead) == Plan.defaultBatchLanes)
@@ -75,9 +77,8 @@ struct DistributedInstalledLanesTests {
                                                prefillSchedule: schedule) == Plan.defaultBatchLanes)
             }
         }
-        // A cancelled Gemma lane retires alone, as every pipeline lane adapter's does.
-        #expect(Plan.lanesRetireAlone(adapter: .gemma4LayerStage, mode: .pipeline, hasPrivateImages: false,
-                                      lanes: Plan.gemma4PipelineBatchLanes))
+        // A cancelled lane of a saved Gemma width retires alone, as every pipeline lane adapter's does.
+        #expect(Plan.lanesRetireAlone(adapter: .gemma4LayerStage, mode: .pipeline, hasPrivateImages: false, lanes: 4))
     }
 
     @Test func otherModesAndFamiliesKeepTheirLanes() {

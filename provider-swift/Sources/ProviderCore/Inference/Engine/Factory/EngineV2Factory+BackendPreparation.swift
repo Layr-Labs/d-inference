@@ -152,6 +152,8 @@ extension EngineV2Factory {
 
     /// Resolve the backend before constructing a reusable prefix cache. Policy
     /// vetoes may override explicit paged intent; construction failures may not.
+    /// `pagedHybridPrefixCache`, when set, is the bank a paged backend hosts in
+    /// place of `hybridPrefixCache`; contiguous storage never reads it.
     static func prepareProductionBackend(
         model: any LanguageModel,
         modelID: String? = nil,
@@ -168,6 +170,7 @@ extension EngineV2Factory {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         residentPrefixCache: CBv2PagedPrefixCacheConfig? = nil,
         hybridPrefixCache: CBv2HybridPrefixCacheConfig? = nil,
+        pagedHybridPrefixCache: CBv2HybridPrefixCacheConfig? = nil,
         nativeKVLayerIndices: Set<Int> = [],
         pagedPreflightOverride: (([CBv2LayerKind]) throws -> Void)? = nil,
         schedulerPolicy: ((inout CBv2SchedulerConfig) -> Void)? = nil
@@ -375,15 +378,15 @@ extension EngineV2Factory {
         /// grant. Paged storage hosts one only when the config opts in.
         func hostedHybridCache(paged: Bool) throws -> CBv2HybridPrefixCacheConfig? {
             guard modelCapabilities.supportsRecurrentCheckpointReuse,
-                let hybridPrefixCache, hybridPrefixCache.maximumBytes > 0,
-                !hybridPrefixCache.modelID.isEmpty, !hybridPrefixCache.promptContractID.isEmpty,
-                !hybridPrefixCache.buildID.isEmpty,
-                !paged || hybridPrefixCache.permitsPagedStorage
+                let config = paged ? (pagedHybridPrefixCache ?? hybridPrefixCache) : hybridPrefixCache,
+                config.maximumBytes > 0,
+                !config.modelID.isEmpty, !config.promptContractID.isEmpty, !config.buildID.isEmpty,
+                !paged || config.permitsPagedStorage
             else { return nil }
-            guard hybridPrefixCache.maximumBytes < cappedCapacity else {
+            guard config.maximumBytes < cappedCapacity else {
                 throw EngineV2ProductionError.noKVHeadroom
             }
-            return hybridPrefixCache
+            return config
         }
         func contiguousPreparation() throws -> ProductionBackendPreparation {
             try EngineV2KVQuantizationPolicy.requireResolvedBackend(

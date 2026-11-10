@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-10
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -332,7 +332,26 @@ previous resident implementation, not SSD performance.
 | Tier | Lookup and ownership | Gate |
 |---|---|---|
 | Paged resident blocks | Tenant-scoped chained page hashes; generation-validated page handles; shared rows retain physical pages until release | Paged backend and `supportsPrefixReuse`; configured by `PrefixCachePolicy.residentConfig` |
-| Recurrent checkpoint bank | Exact token radix index per `cacheSalt`; immutable recurrent checkpoints plus full-attention KV; each adopter receives independent mutable state | Eligible dense or MoE Qwen on native-precision contiguous KV, or either Nemotron Super owner on its segmented paged KV (`CBv2HybridPrefixCacheConfig.permitsPagedStorage`); `supportsRecurrentCheckpointReuse`, owning full-attention rows, and a valid slot cache budget |
+| Recurrent checkpoint bank | Exact token radix index per `cacheSalt`; immutable recurrent checkpoints plus full-attention KV; each adopter receives independent mutable state | Eligible dense or MoE Qwen on native-precision contiguous KV, or, on segmented paged KV (`CBv2HybridPrefixCacheConfig.permitsPagedStorage`), either Nemotron Super owner or an artifact listed in `PagedRecurrentBankPolicy.qualified`; `supportsRecurrentCheckpointReuse`, owning full-attention rows, and a valid slot cache budget |
+
+Paged storage hosts the bank only for a config that carries the permit. A
+Nemotron Super owner builds its own. For every other model the slot factory
+asks `PagedRecurrentBankPolicy`, which lists exact artifacts (model ID and
+`model_type` together) whose banked restore was measured on paged storage;
+today that is `Qwen3.5-9B` alone, and a sibling artifact needs its own run. The
+paged config goes to the backend beside the contiguous one
+(`prepareProductionBackend(pagedHybridPrefixCache:)`), so contiguous hosting
+and its budget do not change.
+
+The bank and the complete SSD checkpoints are alternatives, because the engine
+answers a lookup from a durable store whenever it has one
+(`EngineV2.resolvePrefixLookup`). A paged slot whose backend carved a bank
+therefore builds no SSD store (`prepareCompletePrefixCache`): it serves the
+resident tier, writes no checkpoint to disk, restores nothing after a restart,
+and its SSD status reads `disabled` / `config_disabled`. Without the memory
+opt-in the same slot keeps its SSD checkpoints. If the engine cannot host the
+bank the backend carved, the slot logs a warning and serves without a prefix
+tier until the opt-in is removed.
 
 The recurrent bank captures at every 256-token-aligned prompt range end,
 whatever chunk produced it: dense Qwen's solo prefill stripe is normally 4,096
@@ -384,7 +403,10 @@ state to disk (`HybridPrefixCache.swift` / `resizeReservation`,
 [`../reference/configuration.md#resident-recurrent-prefix-cache`](../reference/configuration.md#resident-recurrent-prefix-cache).
 The bank budget is `DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES` when set. Otherwise a
 model policy may pass its own default (the pinned Nemotron Super owner sizes
-its bank from the KV grant and the machine, see [inference.md](inference.md)),
+its bank from the KV grant and the machine, see [inference.md](inference.md);
+a paged bank from `PagedRecurrentBankPolicy` takes a quarter of the grant in
+256 MiB steps, at most the size its artifact was measured with, and is not
+built under 1 GiB),
 and every other model gets the lesser of 1 GiB and an eighth of the grant
 (`PrefixCachePolicy.hybridConfig`).
 
@@ -975,6 +997,7 @@ rules applied to these signals.
 |---|---|---|
 | `disabled` / `unsupported_backend` on an attention-only slot | Resolved contiguous; complete recurrent restore has a separate gate | `EngineV2SlotFactory.swift` |
 | `disabled` / `unsupported_layout` | Neither an exact attention layout nor an eligible complete recurrent codec | `EngineV2SlotFactory.swift` |
+| `disabled` / `config_disabled` on a paged `Qwen3.5-9B` slot with the memory opt-in | The slot serves the resident recurrent bank in place of its SSD checkpoints | `EngineV2SlotFactory+CompletePrefixCache.swift`, `PagedRecurrentBankPolicy.swift` |
 | `disabled` / `weight_hash_unavailable` or `runtime_identity_unavailable` | No verified weight hash or no `PromptContractIdentity` for the model directory | `SSDPrefixCacheFactory.swift` |
 | `pending` / `scan_pending`, `error` / `scan_failed` | Startup disk scan not finished or failed | `SSDPrefixCache.swift` |
 | SSD repeat served cold | Prefix shorter than one block; staging reservation refused; donation below the effective-token floor; TTL expiry; box-wide LRU eviction | `SSDPrefixCache.swift` (`donate`), `SSDBlockIndex.swift` |

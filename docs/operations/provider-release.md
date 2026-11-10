@@ -507,25 +507,12 @@ starts `.github/workflows/release-dev-branch.yml`. A master push and a release
 tag run `release-swift.yml`. No workflow dispatches a build of another branch,
 and the dev-branch lane has no `workflow_dispatch`.
 
-`release-dev-branch.yml` is only a caller. Its `dev` job checks
+`release-dev-branch.yml` is only a caller. Its one job checks
 `github.ref == 'refs/heads/dev'` and calls the reusable `release-provider.yml`
 with `environment: dev` and `secrets: inherit`. The reusable workflow runs the
 same chain as every release lane: the source gate, the build, the SDK
 qualification, Developer ID signing, notarization and stapling, R2 staging and
-registration on the dev coordinator.
-
-Its `route` job, which gets no secret and no token permission, asks the
-Darkbloom plane for a sandbox for each SDK qualification shard
-(`qualify-sdk-1` to `qualify-sdk-5`,
-[CI runner routing](../developer/build.md#ci-runner-routing)). A granted shard
-runs on a Darkbloom Sandbox; any other shard, and every shard when the route
-job fails, runs on `blacksmith-12vcpu-macos-27`. The shards read no secret,
-hold a read-only token and make no bytes that are signed, so a sandbox can at
-most fail or pass a shard. Only this lane routes: `release-provider.yml` reads
-the routes only when its environment is dev. The source gate, the optimized
-build whose bytes are signed, signing, the older-macOS check, staging and
-publication always run on Blacksmith, as does every job of a staging or prod
-release. A dev-branch build therefore has the same
+registration on the dev coordinator. A dev-branch build therefore has the same
 signature as a master build and passes the same checks: the fan-helper
 requirement of `scripts/install.sh` and the self-updater's
 `DarkbloomCodeSignature` production requirement. The push trigger uses the

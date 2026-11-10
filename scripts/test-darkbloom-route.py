@@ -149,14 +149,9 @@ WATCHDOG = "darkbloom-watchdog.yml"
 # dev. One GitHub-hosted job that routes nothing and tests nothing.
 HOURLY = "ci-dev-hourly.yml"
 # Credentialed, release, review or publication workflows keep literal runners.
-UNROUTED = ("release-swift.yml", "release-desktop.yml", "provider-signing-validation.yml", "register-model.yml",
+UNROUTED = ("release-swift.yml", "release-provider.yml", "release-dev-branch.yml",
+            "release-desktop.yml", "provider-signing-validation.yml", "register-model.yml",
             "threat-model-review.yml", "bedrock-smoke.yml", "claude.yml", "codex.yml")
-# The dev-branch release routes one job of the reusable release workflow: the
-# SDK qualification shards, which read no secret and make no bytes that are
-# signed. Staging and prod, and every other release job, keep Blacksmith.
-RELEASE_CALLER, RELEASE, RELEASE_ROUTED = "release-dev-branch.yml", "release-provider.yml", "qualify-sdk-shard"
-RELEASE_RUNS_ON = ("${{ inputs.environment == 'dev' && fromJSON(inputs.routes || '{}')"
-                   "[format('qualify-sdk-{0}', matrix.shard)] || 'blacksmith-12vcpu-macos-27' }}")
 # The plane grants a lane whole, so each shard of these jobs reads a lane of its
 # own, `<job>-<shard>`, and gets a free sandbox even when the others fall back.
 SHARDED = {"test-provider", "test-cluster-gpu"}
@@ -649,6 +644,15 @@ class RouteStepTests(unittest.TestCase):
                          [{"lane": "test", "profile": "macos_arm64", "count": 1}])
         self.assertIn("| `build` | macos_arm64 | 1 | - | `blacksmith-12vcpu-macos-27` | "
                       "fallback: needs its size, and job sizes are off (DARKBLOOM_JOB_SHAPES) |", summary)
+        # While sizes are on it asks with its size, as any sized lane does.
+        offer = reply(test={"target": "darkbloom", "runs_on": sized("4x24")},
+                      build={"target": "darkbloom", "runs_on": sized("12x32")})
+        with self.plane((200, offer, 0)) as plane:
+            result, routes, _ = self.route(plane.url, lanes=HELD_LANES, JOB_SHAPES="on")
+        self.assertRoutes(result, routes, {"test": sized("4x24"), "build": sized("12x32")})
+        self.assertEqual(json.loads(plane.requests[0]["body"])["lanes"],
+                         [{"lane": "test", "profile": "macos_arm64", "count": 1, "shape": "4x24"},
+                          {"lane": "build", "profile": "macos_arm64", "count": 1, "shape": "12x32"}])
 
         # On: every lane asks for its size and takes only its sized labels. The
         # plane's fallback reasons reach the summary with the size asked.
@@ -750,7 +754,7 @@ class RouteWorkflowTests(unittest.TestCase):
     def test_every_workflow_is_classified(self):
         self.assertEqual(set(self.texts), set(ROUTED) | set(UNROUTED) | set(CALLERS) |
                          {"darkbloom-route.yml", "component-changes.yml", PLAN, "provider-tests.yml", WATCHDOG,
-                          HOURLY, RELEASE_CALLER, RELEASE})
+                          HOURLY})
 
     def test_router_is_isolated_and_defaults_to_the_sandbox_plane(self):
         text = self.texts["darkbloom-route.yml"]
@@ -955,47 +959,6 @@ class RouteWorkflowTests(unittest.TestCase):
         self.assertEqual(list(PLAN_LANES)[6:], ["build-cluster", "build-provider", "cluster-release-checks",
                                                 "test-cluster-gpu-1", "test-cluster-gpu-3"])
 
-    def test_dev_release_routes_only_its_qualification_shards(self):
-        caller, release = jobs(self.texts[RELEASE_CALLER]), jobs(self.texts[RELEASE])
-        self.assertEqual(set(caller), {"route", "dev"})
-        route, dev = caller["route"], caller["dev"]
-        self.assertIn("    uses: ./.github/workflows/darkbloom-route.yml\n", route)
-        self.assertEqual(job_field(route, "permissions"), "{}")
-        self.assertNotIn("secrets", route)
-        # One lane per shard, so a shard falls back alone.
-        shards = matrix_shards(release[RELEASE_ROUTED])
-        self.assertTrue(shards)
-        self.assertEqual(route_lanes(route), {f"qualify-sdk-{shard}": ("macos_arm64", MACOS_FALLBACK, None, None, None)
-                                              for shard in shards})
-        # A failed route job leaves the release on Blacksmith; it never stops it.
-        self.assertEqual(needs(dev), ["route"])
-        self.assertEqual(job_field(dev, "if"), "${{ !cancelled() && github.ref == 'refs/heads/dev' }}")
-        self.assertIn("      routes: ${{ needs.route.outputs.routes }}\n", dev)
-        # Only the dev environment reads the routes, and only for the shards:
-        # they hold a read-only token and no secret. Every other release job,
-        # and every job of staging and prod, keeps a literal Blacksmith runner.
-        self.assertNotIn("uses: ./.github/workflows/darkbloom-route.yml", self.texts[RELEASE])
-        self.assertNotIn("routes:", self.texts["release-swift.yml"])
-        for name, job in release.items():
-            with self.subTest(job=name):
-                if name != RELEASE_ROUTED:
-                    self.assertRegex(job_field(job, "runs-on"), r"^blacksmith-[a-z0-9-]+$")
-                    self.assertNotIn("inputs.routes", job)
-                    continue
-                self.assertEqual(job_field(job, "runs-on"), RELEASE_RUNS_ON)
-                self.assertEqual(permissions(job, 4), {"contents": "read"})
-                self.assertNotIn("secrets.", job)
-                self.assertNotRegex(job, r"(?m)^    (environment|services|container|secrets):")
-                self.assertNotIn("upload-artifact", job)
-                self.assertLessEqual(int(job_field(job, "timeout-minutes")), 60)
-        # The router accepts the caller's lanes; with routing off every shard keeps Blacksmith.
-        with tempfile.TemporaryDirectory() as work:
-            result, routes, _ = run_route_step(
-                route_step(), Path(work), LANES="\n".join(lane_lines(route)) + "\n", ROUTING="", PLANE_URL="",
-                EVENT_NAME="push", HEAD_REPOSITORY="", REPOSITORY="Layr-Labs/d-inference", RUN_ID="1", RUN_ATTEMPT="1")
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(routes, [{f"qualify-sdk-{shard}": MACOS_FALLBACK for shard in shards}])
-
     def test_release_and_credentialed_workflows_keep_literal_runners(self):
         for filename in UNROUTED:
             text = self.texts[filename]
@@ -1032,9 +995,8 @@ class RouteWorkflowTests(unittest.TestCase):
         self.assertIn("REPOSITORY: ${{ github.repository }}", body)
         for forbidden in ("uses:", "secrets.", "checkout", "id-token", "contents:"):
             self.assertNotIn(forbidden, body)
-        # It acts only on runs with a queued Darkbloom-labelled job. The
-        # signing and credentialed workflows never carry one; in a dev-branch
-        # release only the qualification shards can, and signing waits for them.
+        # It acts only on runs with a queued Darkbloom-labelled job, and the
+        # release, signing and credentialed workflows never carry one.
         self.assertIn('index("self-hosted") != null and any(.[]; startswith("darkbloom-"))', body)
         for filename in UNROUTED:
             for runner in re.findall(r"(?m)^\s+runs-on: (.+)$", self.texts[filename]):

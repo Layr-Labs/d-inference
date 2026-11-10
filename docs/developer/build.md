@@ -493,7 +493,6 @@ shard the lane its matrix entry names, `matrix.lane`.
 | `docs-impact.yml` | `commit-signatures`, `docs-impact` | `blacksmith-4vcpu-ubuntu-2404` |
 | `landing.yml`, `desktop.yml`, `nightly-linear-package.yml` | `check`, `frontend`, `test` | `blacksmith-4vcpu-ubuntu-2404` |
 | `provider-release-cache.yml` | `warm`, pull requests only | `blacksmith-12vcpu-macos-27` |
-| `release-dev-branch.yml` (routes read by `release-provider.yml`, environment dev only) | `qualify-sdk-shard` (lanes `qualify-sdk-1` to `qualify-sdk-5`, one per shard) | `blacksmith-12vcpu-macos-27` |
 
 `.github/workflows/darkbloom-watchdog.yml` is darkbloom-sandbox's GitHub-side
 watchdog (`public/darkbloom-actions/.github/workflows/watchdog.yml` at
@@ -511,11 +510,9 @@ waits at the payer's concurrency or resource limit looks stranded to it. Set
 (`Select Runners`, here `plan / route / Select Runners`) and the jobs that
 need it; the new route keeps every fallback. A run is rescued once; stranded
 again, it is only cancelled. Its token has `actions: write` and
-`checks: write` on this repository and nothing else. Only routed jobs carry
-Darkbloom labels. In a release only the dev-branch lane's SDK qualification
-shards can: signing waits for them, so a rescue never interrupts or repeats a
-signing job, and staging and prod release runs are never touched.
-`DARKBLOOM_WATCHDOG=off` turns it off.
+`checks: write` on this repository and nothing else. Only CI and the other
+routed workflows carry Darkbloom labels, so release and signing runs are never
+touched. `DARKBLOOM_WATCHDOG=off` turns it off.
 
 Routing is off unless the repository variable `DARKBLOOM_ROUTING` is exactly
 `on`. The repository variable `DARKBLOOM_MACOS_LANES`, when set to a number
@@ -558,14 +555,9 @@ names only the repository, run and lanes, and the plane's approval decides
 which pushed branches it admits. Other branches get `branch_not_admitted` and
 keep their fallback, so a push saves caches on Darkbloom only from an admitted
 branch and only in routed lanes ([CI Caching](#ci-caching)).
-Signing, publication, model registration, review automation and
-`master` or dispatched cache warming keep literal Blacksmith labels. So does
-every release job but one: the dev-branch release (`release-dev-branch.yml`)
-asks for a lane for each SDK qualification shard, and `release-provider.yml`
-reads those routes only when its environment is dev. The shards read no
-secret, hold a read-only token and make no bytes that are signed. The source
-gate, the build whose bytes are signed, signing, staging and publication stay
-on Blacksmith, as does every job of a staging or prod release. In CI,
+Release, signing, publication, model registration, review automation and
+`master` or dispatched cache warming keep literal Blacksmith labels: every job
+of a release run shares that run's artifacts with the job that signs. In CI,
 every macOS job but Cluster GPU Tests shard 2 reads its lane of the plan's one route
 request (the plane routes a run attempt once); the plan's own bookkeeping (the
 tree lookup, the component choice), the CI plan checks and the `Provider Tests`

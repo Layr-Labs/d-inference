@@ -178,13 +178,7 @@ class ReleasePipelineTests(unittest.TestCase):
         for name, lane in [('build-provider', 'release'), ('qualify-sdk-shard', 'qualification')]:
             content = job(RELEASE, name)
             self.assertRegex(content, r'(?m)^    needs: resolve-env$')
-            # The build whose bytes are signed runs on Blacksmith alone. The
-            # qualification shards run there too, unless the dev lane's route
-            # moves one to a Darkbloom Sandbox (scripts/test-darkbloom-route.py).
-            runner = ('blacksmith-12vcpu-macos-27' if name == 'build-provider' else
-                      "${{ inputs.environment == 'dev' && fromJSON(inputs.routes || '{}')"
-                      "[format('qualify-sdk-{0}', matrix.shard)] || 'blacksmith-12vcpu-macos-27' }}")
-            self.assertIn(f'\n    runs-on: {runner}\n', content)
+            self.assertIn('runs-on: blacksmith-12vcpu-macos-27', content)
             self.assertIn('lane: ' + lane, content)
             self.assertIn('contents: read', content)
             self.assertNotIn('secrets.', content)

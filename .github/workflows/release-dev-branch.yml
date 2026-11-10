@@ -8,23 +8,18 @@ name: Release Dev-Branch Provider
 # release tag run release-swift.yml; a dev push runs this file. No workflow
 # dispatches a build of another branch.
 #
-# This file is only a caller. Its `dev` job calls the reusable
+# This file is only a caller. Its one job calls the reusable
 # release-provider.yml with environment dev, the same chain that every release
 # lane runs: the source gate, the build, the SDK qualification, Developer ID
 # signing, notarization and stapling, R2 staging and registration. There is no
-# second build or signing path here. Its `route` job asks Darkbloom for a
-# sandbox for each SDK qualification shard, the only jobs of the chain that
-# neither read a secret nor make bytes that are signed; every other job, and a
-# shard the plane does not grant, runs on Blacksmith. The reusable workflow
-# comes from the pushed
+# second build or signing path here. The reusable workflow comes from the pushed
 # commit; its source gate (job resolve-env) runs master's copy of
 # scripts/provider-release-resume.py verify-source, and the pushed commit's
 # scripts/resolve-provider-release.sh stamps the version
 # <base>-dev.branch.<run number>.
 #
-# Secrets: `secrets: inherit` on the `dev` call is the only secret reference in
-# this file; the route job gets no secret and no token permission. For
-# environment dev the reusable workflow reads the Apple signing and
+# Secrets: `secrets: inherit` on the call is the only secret reference in this
+# file. For environment dev the reusable workflow reads the Apple signing and
 # notarization secrets (APPLE_CERTIFICATE_P12, APPLE_CERTIFICATE_PASSWORD,
 # PROVISIONING_PROFILE_BASE64, APPLE_ID, APPLE_APP_PASSWORD) in its signing job
 # and only DEV_* secrets for staging and publication. It reads a PROD_*,
@@ -107,26 +102,8 @@ permissions:
   contents: read
 
 jobs:
-  # One lane per shard of release-provider.yml's qualify-sdk-shard: the plane
-  # grants a lane whole, so each shard takes a free sandbox or falls back
-  # alone.
-  route:
-    if: github.ref == 'refs/heads/dev'
-    uses: ./.github/workflows/darkbloom-route.yml
-    permissions: {}
-    with:
-      lanes: |
-        qualify-sdk-1 macos_arm64 blacksmith-12vcpu-macos-27
-        qualify-sdk-2 macos_arm64 blacksmith-12vcpu-macos-27
-        qualify-sdk-3 macos_arm64 blacksmith-12vcpu-macos-27
-        qualify-sdk-4 macos_arm64 blacksmith-12vcpu-macos-27
-        qualify-sdk-5 macos_arm64 blacksmith-12vcpu-macos-27
-
   dev:
-    # A failed route job must not stop a release: without routes every shard
-    # keeps Blacksmith.
-    needs: route
-    if: ${{ !cancelled() && github.ref == 'refs/heads/dev' }}
+    if: github.ref == 'refs/heads/dev'
     # The reusable workflow declares contents: write (gh release create, prod
     # only) and actions: read (download this run's artifacts); a caller must
     # grant at least what it declares.
@@ -136,5 +113,4 @@ jobs:
     uses: ./.github/workflows/release-provider.yml
     with:
       environment: dev
-      routes: ${{ needs.route.outputs.routes }}
     secrets: inherit

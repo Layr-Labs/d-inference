@@ -1118,12 +1118,7 @@ Release SDK qualification uses SDK 27.2 / Swift 6.4.2 (Xcode 27.2, the
 [`release` toolchain](build.md#sdk-27-release-builds-and-caches)) and runs independently of
 optimized compilation. The `qualify-sdk-shard` jobs run the provider suite in
 five shards on separate Macs, with the shard plan of CI
-(`scripts/provider-test-shards.py`). In a dev-branch release each shard asks
-the [route](build.md#ci-runner-routing) for a Darkbloom Sandbox and falls back
-alone to Blacksmith; staging and prod shards always run on Blacksmith. A
-Darkbloom Sandbox and a Blacksmith runner use separate Actions cache stores,
-so a shard on a sandbox neither restores the Blacksmith caches nor saves an
-entry that the optimized build, which always runs on Blacksmith, can restore. Shard 2 also runs Prompt Parity, and the
+(`scripts/provider-test-shards.py`). Shard 2 also runs Prompt Parity, and the
 last shard runs the isolated processes and the audio gate. The `qualify-sdk`
 job runs after every shard passes. It audits the executed counts of each shard
 against the full suite list. Signing requires `qualify-sdk` and optimized
@@ -2107,12 +2102,8 @@ order, and a `required` lane, which keeps its fallback without asking while
 sizes are off (on a lane table of the test's own: CI's table has none).
 It also pins each routed job's lanes (one per provider or cluster shard,
 matching the job's matrix), size, fallback, timeout and read-only permissions.
-It keeps Cluster GPU Tests shard 2 and the credentialed workflows on literal
-Blacksmith runners. For the release it pins the one routed job: the dev-branch
-caller asks for one lane per SDK qualification shard, `release-provider.yml`
-reads the routes only when its environment is dev, the shards hold a read-only
-token and no secret, every other release job keeps a literal Blacksmith label,
-and `release-swift.yml` passes no routes. No check contacts the real plane.
+It keeps Cluster GPU Tests shard 2 and the release and credentialed workflows
+on literal Blacksmith runners. No check contacts the real plane.
 
 Docs-impact tests retain provider, protocol, privacy, native capacity, cache,
 release/model publication and fixture mappings. Historical links need exact

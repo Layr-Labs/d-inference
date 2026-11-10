@@ -102,18 +102,19 @@ extension EngineV2Bridge {
                 macIdle: macIdle(except: requestID),
                 nominalPosture: calibrationPosturePermitsWork())
         }
-        if promptTokens > 0, let shapeRate = performanceMeasurements.freshIsolatedPrefillRate(promptTokens: promptTokens) {
-            prefillRate = prefillRate.map { min($0, shapeRate) } ?? shapeRate
-        }
+        let shapeRate = promptTokens > 0
+            ? performanceMeasurements.freshIsolatedPrefillRate(promptTokens: promptTokens) : nil
+        if let shapeRate { prefillRate = prefillRate.map { min($0, shapeRate) } ?? shapeRate }
         let calibration = requestID.flatMap {
             calibratedDeadlinePolicy(requestID: $0, promptTokens: promptTokens, promptWork: promptWork)
         }
         if admissionFixes, !supportsPrefillRecoveryRetirement, calibration == nil, !nativeMedia,
             deadlineRefusalStreak.expiresStaleEvidence(), isolatedPrefillEvidenceExpired(),
-            macIdle(except: requestID) {
+            shapeRate == nil, macIdle(except: requestID) {
             // Refusals measure nothing, so expired evidence that keeps refusing
             // an idle Mac is treated like none: absolute expiry only, and this
-            // request's isolated prefill replaces it.
+            // request's isolated prefill replaces it. A fresh prompt-size
+            // bucket is a current measurement and still refuses.
             return nil
         }
         guard prefillRate != nil || calibration != nil || nativeMedia else { return nil }

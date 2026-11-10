@@ -6,8 +6,8 @@ import Testing
 
 /// The width a pipeline placement saves, through the guided step's own decision (`ClusterPlacementFlow.decide`) with
 /// constructed profiles, and the number the setup screen then says the pair serves at once
-/// (`ClusterSetupPlanning.loads`, the number both owners, the slot's `max_concurrency` and the local API read). CPU
-/// metadata only; none is a hardware result.
+/// (`ClusterSetupPlanning.loads`, the number both owners, the slot's `max_concurrency` and the local API read); and
+/// the pipeline sizing itself (`ClusterPlacementPipelineWidth.size`). CPU metadata only; none is a hardware result.
 struct ClusterPlacementPipelineWidthTests {
     private let gib = 1_073_741_824
     /// What the constructed layout charges every rank for one request at its planned request.
@@ -32,8 +32,7 @@ struct ClusterPlacementPipelineWidthTests {
     }
 
     /// A registered row's identity on a constructed two-layer pipeline layout with one cut, both prefill schedules and
-    /// a whole-model charge of `lane` a request: Gemma 4 26B by default, whose pipeline lanes are sized at placement,
-    /// or the Qwen 3.5 9B, whose are not.
+    /// a whole-model charge of `lane` a request: Gemma 4 26B by default, or the Qwen 3.5 9B.
     private typealias Row = (model: String, profile: String, adapter: ClusterRuntimeAdapter)
     private static let gemma: Row = ("registered_gemma4_26b_qat_4bit", "registered_gemma4_26b_qat_4bit_greedy_generation_v1",
                                      .gemma4LayerStage)
@@ -95,38 +94,65 @@ struct ClusterPlacementPipelineWidthTests {
         return (saved[0].batchLanes, saved[0].selectedPrefillSchedule, screen)
     }
 
-    /// One request with serial prefill, as the planner prices it: the largest rank's need.
-    private func single() throws -> Int {
-        let (_, _, layout) = try fixture()
-        let devices = try ["a", "b"].map { label in
-            ClusterPlacementDevice(label: label, profile: try profile(free: 200 * gib), speed: .init(source: .measured,
+    /// Two constructed Macs that admit `free` and `peerFree` now, with measured single-Mac speeds.
+    private func macs(free: Int, peerFree: Int? = nil) throws -> [ClusterPlacementDevice] {
+        try [("a", free), ("b", peerFree ?? free)].map { label, free in
+            ClusterPlacementDevice(label: label, profile: try profile(free: free), speed: .init(source: .measured,
                 absolute: true, rested: .init(prefillTokensPerSecond: 1_000, decodeTokensPerSecond: 50), sustained: nil,
                 explanation: "fixture"))
         }
+    }
+
+    /// One request with serial prefill, as the planner prices it: the largest rank's need.
+    private func single() throws -> Int {
+        let (_, _, layout) = try fixture()
         var serial = ClusterPlacementPolicy(); serial.modes = [.pipeline]; serial.schedules = [.serial]; serial.leader = "a"
-        return try #require(try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: serial).chosen)
+        return try #require(try ClusterPlacementPlanner.plan(devices: macs(free: 200 * gib), layout: layout, policy: serial).chosen)
             .ranks.map(\.needBytes).max()!
     }
 
-    /// A Gemma 4 pipeline saves the widest of 8, 4 and 2 lanes both Macs admit now, each lane after the first adding its
-    /// whole state at the planned request to every rank's need, with serial prefill, and the setup screen says that
-    /// number; where only one request fits it saves none, keeps the one-chunk lookahead and says one.
-    @Test func aGemmaPipelinePlacementSavesTheWidestWidthBothMacsAdmitNow() throws {
+    /// A guided Gemma 4 pipeline keeps the plan chosen for one request in 0.10.12 (owner, 2026-11-10): the one-chunk
+    /// lookahead, no width, one request at a time, however many lanes both Macs could hold, and the setup screen says
+    /// one. Lanes need serial prefill, which made a lone prompt's first token about 1.9 times later on the M5 Ultra pair.
+    @Test func aGuidedGemmaPipelineKeepsTheLookaheadWithOneLane() throws {
+        #expect(ClusterPlacementPipelineWidth.qualifiedLanes(adapter: .gemma4LayerStage, hasPrivateImages: false) == 1)
         let one = try single()
-        func need(_ lanes: Int) -> Int { one + (lanes - 1) * lane }
-        for (free, expected) in [(200 * gib, 8), (need(4) + lane / 2, 4), (need(2) + lane / 2, 2),
-                                 (need(1) + lane / 2, nil)] as [(Int, Int?)] {
+        for free in [200 * gib, one + 7 * lane + lane / 2, one + 3 * lane + lane / 2, one + lane / 2] {
             let decided = try decide(free: free)
             let chosen = try #require(decided.result.chosen)
             let saved = try lanes(decided)
-            #expect(saved.saved == expected && saved.screen == (expected ?? 1), "\(free / gib) GiB free")
-            #expect(saved.schedule == (expected == nil ? .oneChunkLookahead : .serial), "\(free / gib) GiB free")
-            #expect(chosen.mode == .pipeline && chosen.prefillSchedule == saved.schedule && chosen.ranks.first?.device == "a")
-            #expect(chosen.ranks.allSatisfy { $0.fit == .now && $0.needBytes <= $0.admissibleNowBytes })
-            if let expected { #expect(chosen.ranks.map(\.needBytes).max() == need(expected), "\(free / gib) GiB free") }
+            #expect(saved.saved == nil && saved.schedule == .oneChunkLookahead && saved.screen == 1, "\(free / gib) GiB free")
+            #expect(chosen.mode == .pipeline && chosen.prefillSchedule == .oneChunkLookahead && chosen.ranks.first?.device == "a")
+            #expect(!decided.lines.contains("Concurrent request memory"), "\(free / gib) GiB free")
         }
-        // Both Macs must admit it: the smaller Mac decides.
-        #expect(try lanes(try decide(free: 200 * gib, peerFree: need(4) + lane / 2)).saved == 4)
+    }
+
+    /// The sizing a guided setup no longer runs (`ClusterPlacementPipelineWidth.size`), at a cap of eight, what a family
+    /// that `qualifiedLanes` lists would get: the widest of 8, 4 and 2 lanes both Macs admit now, each lane after the
+    /// first adding its whole state at the planned request to every rank's need, with serial prefill and the same
+    /// leader. Where only one request fits, the plan chosen for one request stands. The smaller Mac decides.
+    @Test func thePipelineSizingSavesTheWidestSerialWidthBothMacsAdmitAtACapOfEight() throws {
+        let one = try single(), (_, _, layout) = try fixture()
+        func need(_ lanes: Int) -> Int { one + (lanes - 1) * lane }
+        func sized(free: Int, peerFree: Int? = nil) throws -> (lanes: Int?, plan: ClusterPlacementCandidate) {
+            let devices = try macs(free: free, peerFree: peerFree)
+            var policy = ClusterPlacementPolicy(); policy.modes = [.pipeline]; policy.leader = "a"
+            var result = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: policy)
+            var lanes: Int?
+            try ClusterPlacementPipelineWidth.size(&result, devices: devices, layout: layout, policy: policy, link: .unmeasured,
+                maximumLanes: 8, lanes: &lanes)
+            return (lanes, try #require(result.chosen))
+        }
+        for (free, expected) in [(200 * gib, 8), (need(4) + lane / 2, 4), (need(2) + lane / 2, 2),
+                                 (need(1) + lane / 2, nil)] as [(Int, Int?)] {
+            let width = try sized(free: free)
+            #expect(width.lanes == expected, "\(free / gib) GiB free")
+            #expect(width.plan.mode == .pipeline && width.plan.ranks.first?.device == "a")
+            #expect(width.plan.prefillSchedule == (expected == nil ? .oneChunkLookahead : .serial), "\(free / gib) GiB free")
+            #expect(width.plan.ranks.allSatisfy { $0.fit == .now && $0.needBytes <= $0.admissibleNowBytes })
+            if let expected { #expect(width.plan.ranks.map(\.needBytes).max() == need(expected), "\(free / gib) GiB free") }
+        }
+        #expect(try sized(free: 200 * gib, peerFree: need(4) + lane / 2).lanes == 4)
     }
 
     /// A family whose pipeline lanes are not qualified on real Macs saves no width: its plan, its schedule and its

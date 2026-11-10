@@ -39,6 +39,10 @@ struct WedgeMonitor {
     /// slow prefill (idle prefill p90 only crosses 10s at ~20–32k tokens).
     static let suspectStallSeconds: Double = 10
 
+    /// How long the engine may hold queued work, run nothing and take no step
+    /// before the slot reads crashed.
+    static let suspectQueueStallSeconds: Double = 30
+
     // MARK: - Cumulative counters (per load epoch; reset on (re)load)
 
     /// Requests handed to the engine — i.e. that reach the streaming bridge and

@@ -261,18 +261,22 @@ extension EngineV2Bridge {
         // The original deadline keeps running while native retirement completes.
         // The wait ends with this request's cancellation, and at its bound with
         // a capacity refusal: a probe whose engine stopped stepping never retires.
+        // Either way the cancellation and deadline checks below run first, so
+        // their verdicts and diagnostics are the ones a completed wait records.
         var foreground: IdleCalibrationForegroundLease?
         if modelCalibration.requests[id] == nil, let serviceBudget {
             switch await serviceBudget.idleCalibration.admitForeground() {
             case .admitted(let lease):
                 foreground = lease
             case .cancelled:
-                usageSignal?.finalizeLookup(failure: .policy, fallbackTier: prefixCacheFallbackTier)
                 continuation.finish()
+                try checkBeforeServiceAdmission(firstContentDeadline, profile: profile, usageSignal: usageSignal)
+                usageSignal?.finalizeLookup(failure: .policy, fallbackTier: prefixCacheFallbackTier)
                 throw CancellationError()
             case .retirementOverdue:
-                usageSignal?.finalizeLookup(failure: .capacity, fallbackTier: prefixCacheFallbackTier)
                 continuation.finish()
+                try checkBeforeServiceAdmission(firstContentDeadline, profile: profile, usageSignal: usageSignal)
+                usageSignal?.finalizeLookup(failure: .capacity, fallbackTier: prefixCacheFallbackTier)
                 throw MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(Self.idleCalibrationRetirementOverdue)
             }
         }

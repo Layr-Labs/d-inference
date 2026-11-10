@@ -1670,6 +1670,10 @@ public enum CoordinatorMessage: Sendable, Equatable {
         /// Nil means an older coordinator (or no granted scope); 0 is a real
         /// value, so it is NOT normalised away like `firstContentBudgetMs`.
         public var cacheRepeatedPrefixTokens: Int?
+        /// Coordinator admission for one speculative first-sight checkpoint of
+        /// this prompt (its token count), sent only with a session-narrowed
+        /// `cacheScope`. Nil (absent, or not positive) means no admission.
+        public var cacheFirstSightTokens: Int?
         public var toolSchemaMetadataProtocol: Int?
         /// Opaque coordinator reservation identity, independent of requestId.
         /// Nil preserves compatibility with coordinators without service leases.
@@ -1684,6 +1688,7 @@ public enum CoordinatorMessage: Sendable, Equatable {
             prefixCacheProtocol: Int? = nil,
             cacheReceiptBoundaryMode: String? = nil,
             cacheRepeatedPrefixTokens: Int? = nil,
+            cacheFirstSightTokens: Int? = nil,
             toolSchemaMetadataProtocol: Int? = nil,
             serviceReservationID: String? = nil,
             promptWork: PromptWork? = nil
@@ -1696,6 +1701,7 @@ public enum CoordinatorMessage: Sendable, Equatable {
             self.prefixCacheProtocol = prefixCacheProtocol
             self.cacheReceiptBoundaryMode = cacheReceiptBoundaryMode
             self.cacheRepeatedPrefixTokens = cacheRepeatedPrefixTokens.map { max(0, $0) }
+            self.cacheFirstSightTokens = cacheFirstSightTokens.flatMap { $0 > 0 ? $0 : nil }
             self.toolSchemaMetadataProtocol = toolSchemaMetadataProtocol
             self.serviceReservationID = serviceReservationID
             self.promptWork = promptWork
@@ -1886,6 +1892,7 @@ extension CoordinatorMessage: Codable {
         case prefixCacheProtocol = "prefix_cache_protocol"
         case cacheReceiptBoundaryMode = "cache_receipt_boundary_mode"
         case cacheRepeatedPrefixTokens = "cache_repeated_prefix_tokens"
+        case cacheFirstSightTokens = "cache_first_sight_tokens"
         case toolSchemaMetadataProtocol = "tool_schema_metadata_protocol"
         case nonce, timestamp
         case codeChallenge = "code_challenge"
@@ -1935,6 +1942,7 @@ extension CoordinatorMessage: Codable {
             try container.encodeIfPresent(r.prefixCacheProtocol, forKey: .prefixCacheProtocol)
             try container.encodeIfPresent(r.cacheReceiptBoundaryMode, forKey: .cacheReceiptBoundaryMode)
             try container.encodeIfPresent(r.cacheRepeatedPrefixTokens, forKey: .cacheRepeatedPrefixTokens)
+            try container.encodeIfPresent(r.cacheFirstSightTokens, forKey: .cacheFirstSightTokens)
             try container.encodeIfPresent(
                 r.toolSchemaMetadataProtocol,
                 forKey: .toolSchemaMetadataProtocol)
@@ -2050,6 +2058,8 @@ extension CoordinatorMessage: Codable {
                     String.self, forKey: .cacheReceiptBoundaryMode),
                 cacheRepeatedPrefixTokens: try container.decodeIfPresent(
                     Int.self, forKey: .cacheRepeatedPrefixTokens),
+                cacheFirstSightTokens: try container.decodeIfPresent(
+                    Int.self, forKey: .cacheFirstSightTokens),
                 toolSchemaMetadataProtocol: try container.decodeIfPresent(
                     Int.self, forKey: .toolSchemaMetadataProtocol),
                 serviceReservationID: try container.decodeIfPresent(

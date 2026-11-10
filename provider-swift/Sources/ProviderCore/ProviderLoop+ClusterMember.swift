@@ -45,7 +45,7 @@ extension ProviderLoop {
         case .runtimeOutdated:
             memberConnectionID = nil
             latchMemberControlStop(Self.memberStopReasonRuntimeOutdated)
-        case .inferenceRequest(let id, _, _, _, _, _, _, _, _, _, _, _, let serviceReservationID, _):
+        case .inferenceRequest(let id, _, _, _, _, _, _, _, _, _, _, _, _, let serviceReservationID, _):
             // A leader serving its pair slot handles the request like any
             // provider; the handler checks the requested model. Every other
             // member refuses it with the retryable no-model answer.

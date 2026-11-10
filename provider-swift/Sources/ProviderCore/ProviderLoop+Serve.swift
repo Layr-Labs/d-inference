@@ -364,6 +364,7 @@ extension ProviderLoop {
                     let requestId, let ciphertext, let senderPublicKey,
                     let cacheReceiptNonce, let cacheScope, let prefixCacheProtocol,
                     let cacheReceiptBoundaryMode, let cacheRepeatedPrefixTokens,
+                    let cacheFirstSightTokens,
                     let toolSchemaMetadataProtocol, let firstContentDeadline,
                     let receivedAt,
                     let profile, let serviceReservationID, let promptWork
@@ -378,6 +379,7 @@ extension ProviderLoop {
                             prefixCacheProtocol: prefixCacheProtocol,
                             cacheReceiptBoundaryMode: cacheReceiptBoundaryMode,
                             cacheRepeatedPrefixTokens: cacheRepeatedPrefixTokens,
+                            cacheFirstSightTokens: cacheFirstSightTokens,
                             toolSchemaMetadataProtocol: toolSchemaMetadataProtocol,
                             firstContentDeadline: firstContentDeadline,
                             receivedAt: receivedAt,
@@ -459,7 +461,7 @@ extension ProviderLoop {
                     noteCoordinatorConnection(connected: event.isConnected)
                     clearConnectionAuthorization()
                     cancelAppAttestShadow()
-                case .inferenceRequest(let requestId, _, _, _, _, _, _, _, _, _, _, _, _, _):
+                case .inferenceRequest(let requestId, _, _, _, _, _, _, _, _, _, _, _, _, _, _):
                     // Here, not in the work reader: on arrival, in order with
                     // the trust statuses `ServingReadiness` compares it to.
                     noteCoordinatorRequest()

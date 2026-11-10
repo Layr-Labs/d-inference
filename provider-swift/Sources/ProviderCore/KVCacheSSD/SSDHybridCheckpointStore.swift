@@ -53,6 +53,9 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
     /// Test-only: runs after a fresh checkpoint file is published and before
     /// it is indexed, to reproduce a maintenance removal in that window.
     var afterPublishBeforeIndexForTesting: (@Sendable () -> Void)?
+    /// Test-only: runs before each streamed chunk of a fresh write, to hold
+    /// a writer mid-file while another donation arrives.
+    var beforeWriteChunkForTesting: (@Sendable (Int) -> Void)?
     #endif
     let statsBox = SSDHybridCheckpointStatsBox()
     let stageCost: SSDCheckpointStageCost
@@ -65,11 +68,22 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
     var stageReservations: [CBv2RequestID: SSDCheckpointStageReservation] = [:]
     var reading: [CBv2RequestID: SSDCheckpointFileCoordinator.Access] = [:]
     var writing: Set<Data> = []
+    /// Speculative first-sight jobs queued or in flight on their own lane
+    /// (`SSDHybridCheckpointStore+Write`); never counted in `writing`.
+    var speculativeWriting: Set<Data> = []
+    /// Speculative jobs that a proven donation of the same checkpoint found
+    /// queued, with that donation's repeat flag: they are written as proven.
+    var promotedSpeculative: [Data: Bool] = [:]
     var readyReceipts: [CBv2RequestID: ReadyReceipt] = [:]
     var authenticatedReceipts: [CBv2RequestID: (epoch: String?, files: [Data: SSDAuthenticatedFileIdentity])] = [:]
     /// What each stage restored (leaf, root); deltas need the engine to consume it.
     var restoredCheckpoints: [CBv2RequestID: (files: [SSDHybridCheckpointEnvelope.Parent], consumed: Bool)] = [:]
     var pipeline: BoundedSingleConsumerPipeline<WriteJob>!
+    /// The speculative lane, with the same no-drop gate: a proven or novel
+    /// write never queues behind a speculative one. Its `.background` task
+    /// priority is the only throttle; a thread `setiopolicy_np` is refused on
+    /// the dispatch workqueue threads that run it.
+    var speculativePipeline: BoundedSingleConsumerPipeline<WriteJob>!
 
     // Pauses the real durable writer at the rename/duplicate-validation boundary.
     // Invoked outside store.lock, while the exact-file commit lease is held.
@@ -92,7 +106,8 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
 
     init(config: Config, kekKey: SymmetricKey, kvBudget: GlobalKVCacheBudget?,
          diskBudget: SSDDiskBudget = .shared, maxWriteBytesPerDay: Int, usesEphemeralKey: Bool = true,
-         writeBudget: SSDWriteBudget? = nil,
+         writeBudget: SSDWriteBudget? = nil, speculativeWriteBudget: SSDWriteBudget? = nil,
+         requiresSpeculativeLedger: Bool = false,
          donationRecorder: any PrefixCacheDonationRecording = PrefixCacheDonationTelemetry.shared,
          writeNowSeconds: @escaping @Sendable () -> Double = { Date().timeIntervalSince1970 }) {
         self.config = config
@@ -105,7 +120,9 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
         self.donationRecorder = donationRecorder
         self.rateLimiter = SSDWriteRateLimiter(capBytesPerDay: maxWriteBytesPerDay,
             repeatReserveFraction: SSDCheckpointDemand.repeatReserveFraction,
-            writeBudget: writeBudget, nowSeconds: writeNowSeconds)
+            speculativeHeadroomFraction: requiresSpeculativeLedger && speculativeWriteBudget == nil
+                ? 0 : SSDPrefixCachePolicy.speculativeHeadroomFraction(ttlSeconds: config.ttlSeconds),
+            writeBudget: writeBudget, speculativeBudget: speculativeWriteBudget, nowSeconds: writeNowSeconds)
         self.writeDemand = SSDCheckpointDemand(ttlSeconds: config.ttlSeconds)
         self.stageCost = SSDCheckpointStageCost(
             priorOverheadMilliseconds: SSDCheckpointStageCost.priorOverheadMilliseconds(
@@ -116,6 +133,14 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
         // next. The gate alone bounds the queue.
         self.pipeline = BoundedSingleConsumerPipeline(
             capacity: SSDPrefixCachePolicy.writeQueueMaxJobs,
+            onDropped: { [weak self] job in self?.settle(job, positions: []) ?? job.finish([]) },
+            consume: { [weak self] job in
+                guard let self else { job.finish([]); return }
+                await self.write(job)
+            })
+        self.speculativePipeline = BoundedSingleConsumerPipeline(
+            capacity: SSDPrefixCachePolicy.speculativeWriteQueueMaxJobs,
+            priority: .background,
             onDropped: { [weak self] job in self?.settle(job, positions: []) ?? job.finish([]) },
             consume: { [weak self] job in
                 guard let self else { job.finish([]); return }
@@ -232,6 +257,7 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
         donationDemandHints.removeAll()
         for access in retiring.reads { access.cancel() }
         pipeline.shutdown()
+        speculativePipeline.shutdown()
         for stage in retiring.stages { stage.close() }
         diskBudget.deregister(self)
     }
@@ -239,10 +265,14 @@ public final class SSDHybridCheckpointStore: CBv2NativeCompletePrefixCache, CBv2
     public func closeAndWait() async {
         close()
         await pipeline.waitUntilDrained()
+        await speculativePipeline.waitUntilDrained()
         await activity.waitUntilDrained()
     }
 
-    func waitForWritesForTesting() async { await pipeline.waitUntilDrained() }
+    func waitForWritesForTesting() async {
+        await pipeline.waitUntilDrained()
+        await speculativePipeline.waitUntilDrained()
+    }
 
     public func stats() -> SSDHybridCheckpointStats {
         var result = statsBox.snapshot()

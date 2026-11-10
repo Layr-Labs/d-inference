@@ -103,6 +103,7 @@ final class BoundedSingleConsumerPipeline<Payload: Sendable>: @unchecked Sendabl
     ///     consumer Task, one payload at a time.
     init(
         capacity: Int,
+        priority: TaskPriority? = nil,
         onDropped: (@Sendable (Payload) -> Void)? = nil,
         consume: @escaping @Sendable (Payload) async -> Void
     ) {
@@ -115,7 +116,7 @@ final class BoundedSingleConsumerPipeline<Payload: Sendable>: @unchecked Sendabl
         let state = State()
         self.continuation = continuation
         self.state = state
-        self.consumer = Task {
+        self.consumer = Task(priority: priority) {
             for await payload in stream {
                 // Honor shutdown before consuming. `shutdown()` calls
                 // `finish()` + `cancel()`, but `finish()` still delivers

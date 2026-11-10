@@ -1241,7 +1241,9 @@ state and the assistant's history stay exact
 ([checkpoint precision](kv-cache-quantization.md#native-execution-with-quantized-checkpoints)). The
 slot then advertises a durable capability (`prefix_cache_v2_models`), its
 checkpoints survive restarts within the store's TTL, and the coordinator's
-repeat hint gates their writes as for every other model. A durable checkpoint
+repeat hint (and any speculative first-sight admission,
+`RemotePrefixCacheContext.donationDemand`) gates their writes as for every
+other model. A durable checkpoint
 outlives the process, so its identity rests on this load: every shard was
 staged against its pinned SHA-256, and the prompt contract hashes the prompt
 files the load read. A load whose post-load artifact hash differs from the

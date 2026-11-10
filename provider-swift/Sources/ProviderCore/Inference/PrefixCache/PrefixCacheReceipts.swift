@@ -171,11 +171,16 @@ struct RemotePrefixCacheContext: Sendable, Equatable {
     /// count, never an identifier). Nil when the coordinator predates the
     /// `cache_repeated_prefix_tokens` field; 0 means novel fleet-wide.
     let repeatedPrefixTokens: Int?
+    /// Coordinator admission for one speculative first-sight checkpoint (a
+    /// token count); 0 when absent. Meaningful only with a repeat hint.
+    let firstSightTokens: Int
 
-    init(cacheScope: String?, cacheReceiptNonce: String?, repeatedPrefixTokens: Int? = nil) {
+    init(cacheScope: String?, cacheReceiptNonce: String?, repeatedPrefixTokens: Int? = nil,
+         firstSightTokens: Int? = nil) {
         self.scope = Self.nonEmpty(cacheScope)
         self.receiptNonce = Self.nonEmpty(cacheReceiptNonce)
         self.repeatedPrefixTokens = repeatedPrefixTokens.map { max(0, $0) }
+        self.firstSightTokens = max(0, firstSightTokens ?? 0)
     }
 
     var cacheEnabled: Bool { scope != nil }
@@ -186,7 +191,8 @@ struct RemotePrefixCacheContext: Sendable, Equatable {
     /// captured checkpoint (`SSDCheckpointDemand.admitsWrite`).
     var donationDemand: SSDCheckpointDonationDemand? {
         guard cacheEnabled, let repeatedPrefixTokens else { return nil }
-        return SSDCheckpointDonationDemand(repeatedPrefixTokens: repeatedPrefixTokens)
+        return SSDCheckpointDonationDemand(
+            repeatedPrefixTokens: repeatedPrefixTokens, firstSightTokens: firstSightTokens)
     }
 
     private static func nonEmpty(_ value: String?) -> String? {

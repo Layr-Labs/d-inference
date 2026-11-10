@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-10
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -201,7 +201,11 @@ compilation and SDK qualification on separate `blacksmith-12vcpu-macos-27`
 runners with no signing/publication secrets. PR caches remain PR-scoped and do
 not seed `master`. Only pull-request runs can use Darkbloom Sandboxes, under
 [CI runner routing](../developer/build.md#ci-runner-routing); `master` and
-dispatched runs always use these Blacksmith runners.
+dispatched runs always use these Blacksmith runners. A pull-request run on a
+Darkbloom Sandbox that the plane gave no Darkbloom cache skips every cache step
+of `.github/actions/provider-release-build`, so it builds cold
+([CI caching](../developer/build.md#ci-caching)). The release workflows never
+skip them.
 
 The qualification lane prepares the bounded MiMo HTTP image fixtures before
 the full provider suite, including on cache hits. Keep that preparation as a

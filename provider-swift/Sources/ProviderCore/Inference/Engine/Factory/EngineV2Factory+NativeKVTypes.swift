@@ -1,3 +1,4 @@
+import Foundation
 import MLX
 import MLXLMCommon
 
@@ -44,15 +45,34 @@ extension EngineV2Factory {
 
     /// Observe the same loaded target and cache entry point used by serving.
     /// The native helper owns and releases its short request-local state.
+    ///
+    /// The probe is a forward, so each loaded target is probed once, before its
+    /// first engine serves it. Later constructions over it (the MTP assistant
+    /// upgrade's replacement, recovery) may run while an engine serves it on
+    /// another thread, and must not run a forward: a stateful compiled trace,
+    /// such as Gemma 4's compiled feed-forward on a thread whose compile cache
+    /// is cold, swaps the module's live parameters for primitive-less
+    /// placeholders while it traces, and a graph another thread builds
+    /// meanwhile fails its eval ("Attempting to eval an array without a
+    /// primitive"). Native KV types belong to the loaded weights, so they reuse
+    /// the first observation.
     static func probeNativeKVTypes(
         model: any LanguageModel, adapter: ProductionModelAdapter
     ) throws -> CBv2NativeKVTypeProbe.Result {
+        if let observed = NativeKVTypeObservations.shared.result(
+            model: model, layerKinds: adapter.layerKinds)
+        {
+            return observed
+        }
         let caches = try adapter.newCaches { index, kind in
             CBv2LayerCache(layerIndex: index, kind: kind)
         }
-        return try CBv2NativeKVTypeProbe.run(
+        let observed = try CBv2NativeKVTypeProbe.run(
             model: CBv2SteppableLanguageModelAdapter(model),
             layerKinds: adapter.layerKinds, caches: caches)
+        NativeKVTypeObservations.shared.record(
+            observed, model: model, layerKinds: adapter.layerKinds)
+        return observed
     }
 
     /// Metadata-only inspection before an engine owns this loaded target.
@@ -66,5 +86,39 @@ extension EngineV2Factory {
                 String(describing: type(of: model)))
         }
         return try probeNativeKVTypes(model: model, adapter: adapter)
+    }
+}
+
+/// Native KV types observed per loaded target. Entries hold the target weakly
+/// and match it by identity, so a reloaded target is a new module and is
+/// probed again.
+final class NativeKVTypeObservations: @unchecked Sendable {
+    static let shared = NativeKVTypeObservations()
+
+    private struct Entry {
+        weak var model: AnyObject?
+        let layerKinds: [CBv2LayerKind]
+        let result: CBv2NativeKVTypeProbe.Result
+    }
+
+    private let lock = NSLock()
+    private var entries: [Entry] = []
+
+    func result(
+        model: any LanguageModel, layerKinds: [CBv2LayerKind]
+    ) -> CBv2NativeKVTypeProbe.Result? {
+        lock.withLock {
+            entries.first { $0.model === model && $0.layerKinds == layerKinds }?.result
+        }
+    }
+
+    func record(
+        _ result: CBv2NativeKVTypeProbe.Result, model: any LanguageModel,
+        layerKinds: [CBv2LayerKind]
+    ) {
+        lock.withLock {
+            entries.removeAll { $0.model == nil || $0.model === model }
+            entries.append(Entry(model: model, layerKinds: layerKinds, result: result))
+        }
     }
 }

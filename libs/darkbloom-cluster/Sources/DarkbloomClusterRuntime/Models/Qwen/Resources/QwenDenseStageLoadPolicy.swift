@@ -412,3 +412,16 @@ enum QwenDenseStageLoadPolicy {
         }
     }
 }
+
+extension QwenDenseStageLoadPolicy {
+    /// The lanes a tensor-parallel rank's LOAD reserves on this sample (`GLM5NextTensorParallelResidentRuntime`), for
+    /// `bytes(lanes)` beside the loading headroom: its saved width (`lanes`) when the gate admits it, else nil, a
+    /// refused load.
+    static func lanesAdmitted(saved lanes: Int, on os: QwenDenseStageLoadOSObservation, purpose: String, now: UInt64,
+                              bytes: (_ lanes: Int) throws -> Int) throws -> Int? {
+        let physical = os.physicalMemoryBytes
+        let required = max(minimumAdmissibleBytes(physicalMemoryBytes: physical),
+            try QwenLongPrefillCheckedBytes.sum([bytes(lanes), loadingHeadroomBytes(physicalMemoryBytes: physical)]))
+        return try decide(os, requiredBytes: required, purpose: purpose, now: now).admitted ? lanes : nil
+    }
+}

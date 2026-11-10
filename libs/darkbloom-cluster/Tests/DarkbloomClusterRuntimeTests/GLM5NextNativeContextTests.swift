@@ -1,5 +1,6 @@
 import DarkbloomClusterProtocol
 import Foundation
+import MLX
 import MLXLLM
 import Testing
 @testable import DarkbloomClusterRuntime
@@ -255,5 +256,29 @@ struct GLM5NextNativeContextTests {
         for lanes in [0, QwenBatchWire.maximumLanes + 1] {
             #expect(throws: ProbeError.self) { _ = try charge.reservedBytes(contextTokens: context, lanes: lanes) }
         }
+    }
+
+    /// The registered GLM row's placement family states its lane charge (#1939): a lost `laneBytes:` would leave every
+    /// new GLM pair at one lane with every other check green. Read from the registered `config.json` the worker's
+    /// capability checks keep (its pinned SHA-256), at the memory plan's request and MLX's own allocation bounds, as the
+    /// layout command runs it; the real model's charge is 9,700,905,472 bytes before allocator rounding, 9,707,589,940
+    /// on the M5 Ultra pair's load lines.
+    @Test func theRegisteredRowStatesItsLaneCharge() throws {
+        var root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        while root.lastPathComponent != "libs", root.path != "/" { root.deleteLastPathComponent() }
+        let configuration = try Data(contentsOf: root.appendingPathComponent(
+            "darkbloom-cluster-worker/Tests/CapabilityChecks/Fixtures/registered-glm53-flash.configuration.json"))
+        #expect(sha256(configuration) == GLM5NextArtifactPin.configurationSHA256)
+        let family = try GLM5NextPlacementFamily(configuration: configuration)
+        let lane = try #require(family.tensorParallelPlan?.laneBytes)
+        let policy = try #require(Memory.allocationFootprintPolicy())
+        let expected = try GLM5NextPlacementFamily.tensorParallelLaneBytes(configuration: family.configuration,
+            profile: family.profile, allocationBound: { bytes in
+                guard let bound = policy.upperBound(byteCount: bytes) else { throw ProbeError("GLM buffer bound overflow") }
+                return bound
+            })
+        #expect(lane == expected)
+        #expect((9_600_000_000...10_000_000_000).contains(lane), "\(lane)")
+        #expect(family.profile.maximumContextTokens == 65_536)
     }
 }

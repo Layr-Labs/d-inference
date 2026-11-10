@@ -23,6 +23,7 @@ func checkGLMTensorParallel(golden: URL, _ checks: PlacementChecks) throws {
     try checkGLMNextN(layout, priced: priced, golden: golden, checks)
     try checkGLMTensorParallelFirst(priced, golden: golden, checks)
     try checkGLMLaneWidths(priced, golden: golden, checks)
+    try checkGLMLoadWidth(checks)
     try checkGLMPipelineHop(layout, golden: golden, checks)
     try checkGLMFirstOfferSplit(layout, golden: golden, checks)
 }
@@ -302,6 +303,36 @@ private func checkGLMLaneWidths(_ priced: ClusterModelLayout, golden: URL, _ che
 
 /// The plan's terms, and every tensor a text stage loads counted once,
 /// divided or replicated; the NextN layer and the vision tower in no rank.
+/// GLM's LOAD reserves its saved width as a ceiling (review P2-3). On 2026-11-10 Mac A had 38.68 GiB of other
+/// programs' memory in use and its gate admitted 200.19 GiB, short of the 211.10 GiB an 8-lane LOAD asks for, so the
+/// pair did not load at all although one lane needs 143.8 GiB. LOAD reserves the widest width its sample admits,
+/// there six lanes (193.03 GiB), and the other lanes are admitted one by one as they come; with room for all eight
+/// it reserves eight, and without room for one lane it is refused as before.
+private func checkGLMLoadWidth(_ checks: PlacementChecks) throws {
+    // That night's figures (L1's load line and the 8-lane refusal): the shard, the NextN head, the vision tower, the
+    // freed-buffer cache, one request at the memory plan's context and each further lane's charge.
+    func bytes(_ lanes: Int) -> Int {
+        88_697_159_452 + 4_183_320_576 + 1_127_254_016 + 4_294_967_296 + 56_124_572_169 + (lanes - 1) * 9_707_589_940
+    }
+    func lanes(_ mac: SyntheticMac) throws -> Int? {
+        try QwenDenseStageLoadPolicy.lanesAdmitted(saved: 8, on: mac.observation, purpose: "GLM tensor-parallel",
+            now: SyntheticMac.now, bytes: bytes)
+    }
+    // Mac A's sample: 178.90 GiB free, 21.30 GiB of file cache, 7.72 GiB compressed, 9.40 GiB wired, the rest
+    // (38.68 GiB) other programs'.
+    let macA = SyntheticMac(physicalGiB: 256, freeGiB: 178.898, inactiveCacheGiB: 21.298, wiredGiB: 9.398, compressorGiB: 7.724)
+    let refusal = try QwenDenseStageLoadPolicy.decide(macA.observation, requiredBytes: bytes(8) + 4 * gib,
+        purpose: "GLM tensor-parallel", now: SyntheticMac.now)
+    checks.require("GLM LOAD width: that night's sample refuses eight lanes, 211.10 GiB against Mac A's 200.19 GiB admissible",
+        !refusal.admitted && refusal.requiredBytes == 226_675_370_385
+            && abs(Double(refusal.admissibleBytes) / Double(gib) - 200.19) < 0.05)
+    let loaded = try lanes(macA)
+    checks.require("GLM LOAD width: that sample loads at six lanes, the widest it admits, rather than not at all (\(String(describing: loaded)))",
+        loaded == 6)
+    checks.require("GLM LOAD width: an idle 256 GB Mac reserves all eight lanes, and an idle 128 GB Mac, which one lane does not fit, is refused",
+        try lanes(.idle(256)) == 8 && lanes(.idle(128)) == nil)
+}
+
 private func checkGLMCoverage(_ layout: ClusterModelLayout, _ checks: PlacementChecks) throws {
     guard let tp = layout.tensorParallel else {
         checks.require("glm tp: the layout carries the family's tensor-parallel plan", false)

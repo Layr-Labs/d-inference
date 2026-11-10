@@ -40,8 +40,7 @@ struct NemotronSuperLocalImageBindingTests {
     }
 
     @Test func encodedBodyRefusesRemoteMediaAndTakesTheTextRoutesControls() throws {
-        for uri in ["https://example.invalid/image.png", "file:///tmp/image.png",
-                    "data:image/tiff;base64,AA==", "data:image/jpg;base64,AA==", "data:image/png,abc",
+        for uri in ["https://example.invalid/image.png", "file:///tmp/image.png", "data:image/png,abc",
                     "data:image/jpeg,abc"] {
             let data = try body(image: uri)
             #expect(throws: NemotronSuperLocalImageBinding.Failure.unsupportedMedia(.imageSource)) {
@@ -73,6 +72,31 @@ struct NemotronSuperLocalImageBindingTests {
         #expect(jpegLabel.images == [Data([1, 2, 3])])
         #expect(throws: NemotronSuperImageDecode.Failure.unsupportedEncoding) {
             try NemotronSuperLocalImageBinding.encodedPlan(jpegLabel.images, contextLength: 64)
+        }
+    }
+
+    /// The decoder takes the format from the bytes, so an image part is
+    /// admitted under any `image/` media type, in any case (RFC 2045):
+    /// clients send `data:image/jpg`, which production refused as a 400. Only
+    /// the source is gated: an inline base64 `data:` URI whose media type is
+    /// an image.
+    @Test func encodedBodyTakesAnyImageLabelAndTheFormatFromTheBytes() throws {
+        let jpeg = try NemotronSuperImageFixtures.data("jpeg-420.jpeg")
+        for type in ["image/jpg", "image/JPEG", "Image/Jpg", "image/pjpeg", "image/x-png", "image/tiff",
+                     "image/jpeg;name=photo.jpg"] {
+            let parsed = try parse(body(image: "data:\(type);base64," + jpeg.base64EncodedString()))
+            #expect(parsed.images == [jpeg], "\(type)")
+            let plan = try NemotronSuperLocalImageBinding.encodedPlan(parsed.images, contextLength: 1024)
+            #expect(plan.images.map(\.quote.format) == [.jpeg], "\(type)")
+        }
+        for uri in ["data:image/;base64,AA==", "data:image;base64,AA==", "data:;base64,AA==",
+                    "data:application/octet-stream;base64,AA==", "data:video/mp4;base64,AA==",
+                    "data:text/plain;base64,AA==", "data:image/png;base64;x=y,AA==", "data:image/png;x;base64,AA==",
+                    "data:image/png ;base64,AA==", "data:image/p/ng;base64,AA==", " data:image/png;base64,AA==",
+                    "DATA:image/png;base64,AA==", "data:image/png;BASE64,AA==", "data:image/png;base64",
+                    "data:image/png;n=" + String(repeating: "x", count: 256) + ";base64,AA=="] {
+            #expect(throws: NemotronSuperLocalImageBinding.Failure.unsupportedMedia(.imageSource),
+                    "\(uri.prefix(48))") { try parse(body(image: uri)) }
         }
     }
 

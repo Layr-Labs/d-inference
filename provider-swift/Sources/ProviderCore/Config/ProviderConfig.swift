@@ -281,7 +281,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     public var mtpDrafterPath: String?
     /// MTP draft acceptance rule for sampled requests (`mtp_acceptance`
     /// under `[backend]`): `"exact"` or `"typical"`. nil (default, key
-    /// absent) means "not set" and resolves to the built-in `typical`.
+    /// absent) means "not set" and resolves to the built-in rule (typical,
+    /// except exact for the Bonsai 9B candidate, Qwen3.5-9B and Gemma QAT).
     /// Optional on purpose: `TOMLEncoder` writes every non-optional key, and
     /// a written default would shadow every lower-precedence source for the
     /// life of the file. `typical` keeps a draft when the target's filtered

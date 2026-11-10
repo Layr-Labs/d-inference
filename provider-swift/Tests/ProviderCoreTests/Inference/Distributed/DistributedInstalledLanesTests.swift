@@ -7,16 +7,22 @@ import Testing
 struct DistributedInstalledLanesTests {
     typealias Plan = DistributedInstalledPlan
 
-    @Test func glmTensorParallelServesEightLanes() {
-        #expect(Plan.defaultBatchLanes(adapter: .glm5NextLayerStage, mode: .tensorParallel, hasPrivateImages: false) == 8)
+    /// GLM tensor parallel serves the width its placement saved for both Macs' memory (`ClusterPlacementTensorWidth`),
+    /// and one request at a time without one, as every other tensor-parallel family does.
+    @Test func glmTensorParallelServesItsSavedWidth() {
+        #expect(Plan.defaultBatchLanes(adapter: .glm5NextLayerStage, mode: .tensorParallel, hasPrivateImages: false) == 1)
         // Its image candidate is not served in this mode; the lanes are text.
-        #expect(Plan.defaultBatchLanes(adapter: .glm5NextLayerStage, mode: .tensorParallel, hasPrivateImages: true) == 8)
-        #expect(Plan.tensorParallelBatchLanes == 8)
+        #expect(Plan.defaultBatchLanes(adapter: .glm5NextLayerStage, mode: .tensorParallel, hasPrivateImages: true) == 1)
+        #expect(Plan.tensorParallelLaneAdapters.contains(.glm5NextLayerStage))
+        for lanes in 2...8 {
+            #expect(Plan.lanesRetireAlone(adapter: .glm5NextLayerStage, mode: .tensorParallel, hasPrivateImages: false, lanes: lanes))
+        }
+        #expect(ClusterRuntimeAdapter.glm5NextLayerStage.savesTensorParallelWidth(runtimeModelID: ClusterGLMImageCandidate.runtimeModelID))
     }
 
     @Test func gemmaTensorParallelServesExplicitLanesWithSingletonDefault() {
         #expect(Plan.defaultBatchLanes(adapter: .gemma4LayerStage, mode: .tensorParallel, hasPrivateImages: false) == 1)
-        #expect(Plan.tensorParallelLaneAdapters[.gemma4LayerStage] == Plan.defaultBatchLanes)
+        #expect(Plan.tensorParallelLaneAdapters.contains(.gemma4LayerStage))
         for lanes in 2...8 {
             #expect(Plan.lanesRetireAlone(adapter: .gemma4LayerStage, mode: .tensorParallel, hasPrivateImages: false, lanes: lanes))
         }
@@ -25,7 +31,7 @@ struct DistributedInstalledLanesTests {
 
     @Test func mimoTensorParallelServesOneRequestAtATime() {
         #expect(Plan.defaultBatchLanes(adapter: .mimoV26LayerStage, mode: .tensorParallel, hasPrivateImages: false) == nil)
-        #expect(Plan.tensorParallelLaneAdapters[.mimoV26LayerStage] == nil)
+        #expect(!Plan.tensorParallelLaneAdapters.contains(.mimoV26LayerStage))
         for lanes in 1...8 {
             #expect(!Plan.lanesRetireAlone(adapter: .mimoV26LayerStage, mode: .tensorParallel, hasPrivateImages: false, lanes: lanes))
         }
@@ -87,8 +93,8 @@ struct DistributedInstalledLanesTests {
         for adapter in Plan.laneAdapters {
             #expect(Plan.defaultBatchLanes(adapter: adapter, mode: .pipeline, hasPrivateImages: false) == Plan.defaultBatchLanes)
             #expect(Plan.defaultBatchLanes(adapter: adapter, mode: .pipeline, hasPrivateImages: true) == nil)
-            #expect(Plan.defaultBatchLanes(adapter: adapter, mode: .tensorParallel, hasPrivateImages: false)
-                == Plan.tensorParallelLaneAdapters[adapter])
+            let tensorParallel: Int? = Plan.tensorParallelLaneAdapters.contains(adapter) ? Plan.defaultBatchLanes : nil
+            #expect(Plan.defaultBatchLanes(adapter: adapter, mode: .tensorParallel, hasPrivateImages: false) == tensorParallel)
         }
         for mode in ClusterGenerationMode.allCases where mode != .pipeline && mode != .tensorParallel {
             for adapter in ClusterRuntimeAdapter.allCases {

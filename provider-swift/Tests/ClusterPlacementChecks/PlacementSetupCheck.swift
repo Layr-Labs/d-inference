@@ -618,8 +618,8 @@ import Foundation
     /// tensor-parallel plan as the family states it (every rank holds it whole; 2 GiB standing in for its request
     /// bytes, which the family computes with MLX), and the recorded M5 Ultra profile with its measured index on both
     /// Macs. A new pair plans tensor parallel on equal shares before any load measured the link, and so does every
-    /// plan after the first load's keyed probe; both setups save tensor parallel with no shares, which the
-    /// provider serves with eight lanes (`DistributedInstalledPlan.tensorParallelBatchLanes`).
+    /// plan after the first load's keyed probe; both setups save tensor parallel with no shares, and the widest width
+    /// both Macs admit now under GLM's lane charge (`ClusterPlacementTensorWidth`), which the provider serves.
     static func glmTensorParallelPair() throws {
         let golden = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
@@ -672,17 +672,41 @@ import Foundation
             pointToPointSmallMicroseconds: 167, pointToPointLargeBytes: 4 << 20, pointToPointLargeMicroseconds: 2_622,
             allSumSmallBytes: 20_480, allSumSmallMicroseconds: 38, allSumLargeBytes: 10_485_760, allSumLargeMicroseconds: 1_296),
             measuredUTC: "2026-10-25T09:00:00Z")!
+        // As the plan tool now states it, each lane after the first adds GLM's lane charge at the memory plan's request
+        // (`ClusterTensorParallelFamilyPlan.laneBytes`); 9 GiB stands in here for the one it computes from the
+        // allocator's bounds. A layout without one (an earlier plan tool's) prices no width.
+        let lane = 9 * gib
+        var charged: ClusterModelLayout?
+        if var object = try JSONSerialization.jsonObject(with: layout.encoded()) as? [String: Any],
+           var tensor = object["tensorParallel"] as? [String: Any], var family = tensor["family"] as? [String: Any] {
+            family["laneBytes"] = lane; tensor["family"] = family; object["tensorParallel"] = tensor
+            charged = try? ClusterModelLayout.decode(JSONSerialization.data(withJSONObject: object))
+        }
+        require("glm pair: a layout that states GLM's lane charge is read", charged != nil)
         for (name, link) in [("a new pair, before any load measured the link", ClusterLinkCosts.unmeasured),
                              ("after the first load's keyed probe", measured)] {
-            let decided = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "ultra-a",
-                localProfile: m5, peerProfile: m5, layout: layout, link: link, environment: [:], benchDebugBuild: false)
-            let chosen = decided.result.chosen
-            let saved = try decided.setup.map { setup in try setup.configurations.values.map {
-                try ClusterConfigurationCodec.decode($0, capability: capability, capabilitySHA256: description.capabilitySHA256) } } ?? []
+            func decide(_ layout: ClusterModelLayout) throws
+                -> (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?, saved: [ClusterConfiguration]) {
+                let decided = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "ultra-a",
+                    localProfile: m5, peerProfile: m5, layout: layout, link: link, environment: [:], benchDebugBuild: false)
+                let saved = try decided.setup.map { setup in try setup.configurations.values.map {
+                    try ClusterConfigurationCodec.decode($0, capability: capability, capabilitySHA256: description.capabilitySHA256) } } ?? []
+                return (decided.lines, decided.result, decided.setup, saved)
+            }
+            let plain = try decide(layout), chosen = plain.result.chosen
             require("glm pair, 2x M5 Ultra 256 GB, \(name): tensor parallel 1:1 with the NextN layer on both ranks, both setups saved so",
                 chosen?.mode == .tensorParallel && chosen?.tensorShares == nil && chosen?.ranks.count == 2
-                    && chosen?.ranks.allSatisfy({ $0.fit == .now }) == true && saved.count == 2
-                    && saved.allSatisfy { $0.selectedGenerationMode == .tensorParallel && $0.tensorShares == nil && $0.batchLanes == nil })
+                    && chosen?.ranks.allSatisfy({ $0.fit == .now }) == true && plain.saved.count == 2
+                    && plain.saved.allSatisfy { $0.selectedGenerationMode == .tensorParallel && $0.tensorShares == nil && $0.batchLanes == nil })
+            // The widest of 8, 6, 4 and 2 whose lane charges both Macs admit now beside one request's need.
+            let one = chosen?.ranks.map(\.needBytes).max() ?? .max
+            let fits = [8, 6, 4, 2].first { one + ($0 - 1) * lane <= m5.memory.admissibleNowBytes }
+            guard let charged else { continue }
+            let sized = try decide(charged), wide = sized.result.chosen
+            require("glm pair, 2x M5 Ultra 256 GB, \(name): with GLM's lane charge both setups save \(fits.map(String.init) ?? "no width") requests at once (8 on these Macs), each lane after the first adding it to every rank's need",
+                fits == 8 && wide?.mode == .tensorParallel && wide?.tensorShares == nil && sized.saved.count == 2
+                    && sized.saved.allSatisfy { $0.selectedGenerationMode == .tensorParallel && $0.batchLanes == fits }
+                    && wide?.ranks.map(\.needBytes).max() == one + 7 * lane)
         }
         // Feature parity is the fastest-plan families' rule (`ClusterModeParity`): a GLM record declaring a tensor-parallel
         // gap (a hypothetical one: no prompt prefix) plans exactly what production does, line for line.

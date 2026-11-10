@@ -277,6 +277,50 @@ struct StatusCommandRunTests {
         #expect(!output.contains("Traffic:"))
     }
 
+    /// An older `legacy` or `none` report stays visible as dated history,
+    /// right before the trust line, and never as `Authorization:`
+    /// (`ProviderAuthorizationReadiness.lastReportedStatus`). Received just
+    /// now, the same report is the current authorization instead.
+    @Test("status shows an aged legacy or none report as dated history before the trust line")
+    func agedReportIsDatedHistory() async throws {
+        let result = try await #require(
+            processExitsWith: .success, observing: [\.standardOutputContent]
+        ) {
+            let sandbox = try CLICommandSandbox.enter(autoRestart: false)
+            defer { sandbox.remove() }
+            let arguments = ["status", "--config", sandbox.config.path]
+            let aged: [(label: String, report: ProviderAuthorizationStatus)] = [
+                ("LEGACY", DoctorCommandRunTests.legacyReport), ("DENIED", DoctorCommandRunTests.deniedReport),
+            ]
+            for (label, report) in aged {
+                sandbox.writeState(try DoctorCommandRunTests.reportedState(
+                    report, receivedAt: Date().timeIntervalSince1970 - DoctorCommandRunTests.agedReceiptSeconds))
+                print("== AGED \(label)")
+                try await runCLICommand(Status.self, arguments)
+            }
+            sandbox.writeState(try DoctorCommandRunTests.reportedState(
+                DoctorCommandRunTests.legacyReport, receivedAt: Date().timeIntervalSince1970))
+            print("== FRESH")
+            try await runCLICommand(Status.self, arguments)
+            print("== END")
+        }
+        let output = decodedText(result.standardOutputContent)
+
+        let legacy = try #require(outputSection(output, from: "== AGED LEGACY", to: "== AGED DENIED"))
+        #expect(legacy.contains("\nLast reported authorization: \(DoctorCommandRunTests.legacyHistory)\n"
+            + "Trust: self_signed / online\n"))
+        #expect(!legacy.contains("\nAuthorization: "))
+
+        let denied = try #require(outputSection(output, from: "== AGED DENIED", to: "== FRESH"))
+        #expect(denied.contains("\nLast reported authorization: \(DoctorCommandRunTests.deniedHistory)\n"
+            + "Trust: self_signed / online\n"))
+        #expect(!denied.contains("\nAuthorization: "))
+
+        let fresh = try #require(outputSection(output, from: "== FRESH", to: "== END"))
+        #expect(fresh.contains("\nAuthorization: Serving through legacy verification; keep the Darkbloom MDM profile.\n"))
+        #expect(!fresh.contains("Last reported authorization"))
+    }
+
     /// A renewal received 15 s ago with an unexpired lease must not turn
     /// status into legacy trust or offer removal without fresh readiness.
     @Test("status keeps reporting App Attest while the lease is unexpired and a renewal is late")

@@ -109,7 +109,7 @@ extension EngineV2Bridge {
             calibratedDeadlinePolicy(requestID: $0, promptTokens: promptTokens, promptWork: promptWork)
         }
         if admissionFixes, !supportsPrefillRecoveryRetirement, calibration == nil, !nativeMedia,
-            deadlineRefusalStreak.estimateExpired(), isolatedPrefillEvidenceExpired(),
+            deadlineRefusalStreak.expiresStaleEvidence(), isolatedPrefillEvidenceExpired(),
             macIdle(except: requestID) {
             // Refusals measure nothing, so expired evidence that keeps refusing
             // an idle Mac is treated like none: absolute expiry only, and this
@@ -155,7 +155,7 @@ extension EngineV2Bridge {
             case .bounded(let projected, _) = work, projected.decodeTokens == 0,
             macIdle(except: requestID)
         else { return }
-        deadlineRefusalStreak.refused()
+        deadlineRefusalStreak.recordRefusal()
     }
 
     /// Move post-commit cancellation cleanup out of the cancelling task. The

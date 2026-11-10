@@ -652,19 +652,19 @@ struct AdmissionRateEstimatorTests {
         #expect(Streak.retryInterval == EnginePerformanceMeasurements.freshness)
         let start = ContinuousClock.now
         var streak = Streak()
-        streak.refused()
-        streak.refused()
-        #expect(!streak.estimateExpired(at: start))
+        streak.recordRefusal()
+        streak.recordRefusal()
+        #expect(!streak.expiresStaleEvidence(at: start))
         // An admission that ends a partial streak starts no retry interval.
-        streak.admitted(at: start)
-        for _ in 0..<3 { streak.refused() }
-        #expect(streak.estimateExpired(at: start))
-        streak.admitted(at: start)
+        streak.recordAdmission(at: start)
+        for _ in 0..<3 { streak.recordRefusal() }
+        #expect(streak.expiresStaleEvidence(at: start))
+        streak.recordAdmission(at: start)
         #expect(streak.refusals == 0)
-        for _ in 0..<5 { streak.refused() }
+        for _ in 0..<5 { streak.recordRefusal() }
         #expect(streak.refusals == 3)
-        #expect(!streak.estimateExpired(at: start + Streak.retryInterval - .seconds(1)))
-        #expect(streak.estimateExpired(at: start + Streak.retryInterval))
+        #expect(!streak.expiresStaleEvidence(at: start + Streak.retryInterval - .seconds(1)))
+        #expect(streak.expiresStaleEvidence(at: start + Streak.retryInterval))
     }
 }
 

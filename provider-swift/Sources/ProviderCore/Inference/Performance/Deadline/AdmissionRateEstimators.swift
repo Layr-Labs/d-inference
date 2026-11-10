@@ -137,17 +137,17 @@ struct DeadlineRefusalStreak {
     private(set) var refusals = 0
     private var retryAfter: ContinuousClock.Instant?
 
-    mutating func refused() {
+    mutating func recordRefusal() {
         refusals = min(refusals + 1, Self.threshold)
     }
 
-    func estimateExpired(at now: ContinuousClock.Instant = .now) -> Bool {
+    func expiresStaleEvidence(at now: ContinuousClock.Instant = .now) -> Bool {
         refusals >= Self.threshold && (retryAfter.map { now >= $0 } ?? true)
     }
 
     /// Any engine admission ends the streak. One that ends a full streak
     /// starts the retry interval whether or not it goes on to measure.
-    mutating func admitted(at now: ContinuousClock.Instant = .now) {
+    mutating func recordAdmission(at now: ContinuousClock.Instant = .now) {
         if refusals >= Self.threshold { retryAfter = now.advanced(by: Self.retryInterval) }
         refusals = 0
     }

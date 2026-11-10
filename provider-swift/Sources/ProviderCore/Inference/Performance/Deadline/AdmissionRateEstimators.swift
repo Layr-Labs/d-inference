@@ -113,3 +113,42 @@ enum IsolatedPrefillAdmissionRate {
         return max(observed, anchor * anchorFloorFraction)
     }
 }
+
+/// Consecutive `deadline_unreachable` refusals an ordinary engine made on an
+/// idle Mac from its isolated prefill rate alone, with nothing admitted in
+/// between. A refusal measures nothing, so expired evidence that refuses is
+/// never replaced: with no calibration anchor, with an anchor that is itself
+/// slow, or off nominal posture, `IsolatedPrefillAdmissionRate` keeps it for
+/// thirty minutes.
+///
+/// After `threshold` such refusals the caller stops projecting from evidence
+/// older than `EnginePerformanceMeasurements.freshness` for the next request
+/// that finds the Mac idle. That request is submitted like one with no
+/// measured rate (its absolute deadline still applies) and its isolated
+/// prefill replaces the expired estimate. Fresh evidence always refuses as
+/// measured. A Mac that really is too slow may end that request before it
+/// measures anything; `retryInterval` holds it to one such admission per
+/// interval.
+struct DeadlineRefusalStreak {
+    /// One refusal can be one long prompt and two a client's retry of it.
+    static let threshold = 3
+    static let retryInterval = EnginePerformanceMeasurements.freshness
+
+    private(set) var refusals = 0
+    private var retryAfter: ContinuousClock.Instant?
+
+    mutating func refused() {
+        refusals = min(refusals + 1, Self.threshold)
+    }
+
+    func estimateExpired(at now: ContinuousClock.Instant = .now) -> Bool {
+        refusals >= Self.threshold && (retryAfter.map { now >= $0 } ?? true)
+    }
+
+    /// Any engine admission ends the streak. One that ends a full streak
+    /// starts the retry interval whether or not it goes on to measure.
+    mutating func admitted(at now: ContinuousClock.Instant = .now) {
+        if refusals >= Self.threshold { retryAfter = now.advanced(by: Self.retryInterval) }
+        refusals = 0
+    }
+}

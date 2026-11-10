@@ -644,6 +644,28 @@ struct AdmissionRateEstimatorTests {
         #expect(engine.ordinarySubmissionCount == 0)
         await bridge.shutdown()
     }
+
+    @Test("a streak fills at three refusals, ends at any admission and reopens only after the retry interval")
+    func refusalStreakCounting() {
+        typealias Streak = DeadlineRefusalStreak
+        #expect(Streak.threshold == 3)
+        #expect(Streak.retryInterval == EnginePerformanceMeasurements.freshness)
+        let start = ContinuousClock.now
+        var streak = Streak()
+        streak.refused()
+        streak.refused()
+        #expect(!streak.estimateExpired(at: start))
+        // An admission that ends a partial streak starts no retry interval.
+        streak.admitted(at: start)
+        for _ in 0..<3 { streak.refused() }
+        #expect(streak.estimateExpired(at: start))
+        streak.admitted(at: start)
+        #expect(streak.refusals == 0)
+        for _ in 0..<5 { streak.refused() }
+        #expect(streak.refusals == 3)
+        #expect(!streak.estimateExpired(at: start + Streak.retryInterval - .seconds(1)))
+        #expect(streak.estimateExpired(at: start + Streak.retryInterval))
+    }
 }
 
 private extension EngineV2Bridge {

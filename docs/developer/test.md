@@ -2891,6 +2891,21 @@ cd provider-swift
 swift test --filter DistributedAutomaticBatchPlannerTests
 ```
 
+### Planning stack checks
+
+`ClusterPlacementTensorWidthTests.decideLendsItsCallerLittleStack` and
+`DistributedAutomaticBatchPlannerTests.theGuidedStepLendsItsCallerLittleStack`
+measure how much of its caller's stack each planning entry point uses:
+`ClusterPlacementFlow.decide` planning the 27B's widest tensor-parallel width,
+and the guided step (`ClusterSetupPlanning.decide`) planning its tensor
+parallel. `stackUsed` runs the call on a thread whose 16 MiB stack it fills with
+a pattern first, and the lowest byte that changed gives the depth, so a planner
+that grows too deep fails the check instead of killing the test process with
+SIGBUS. The budget is 128 KiB of a caller's 512 KiB
+(`planningCallerStackBudget`). Planning runs on its own stack
+([planning stack](../architecture/inference.md#planning-stack)); before it did,
+a debug build's checks measured 414 and 694 KiB.
+
 `DistributedLocalServerBatchReplacementTests` exercises the real host, bridge and loopback listener with fabricated model-free sessions. It covers widths two/four/eight, owner ACK before preparation, preserved pending response and listener, disconnect during loading, original queue expiry, failed-start release before fresh rollback, changed request-contract refusal, unresolved cleanup, stop during deferred factory preparation, and rejection of an unexpected actual lane count. A blocked read-only planner
 also reproduces a short burst draining before its proposal returns: the next
 real burst consumes the retained intent without a second planning call. Tests

@@ -6218,6 +6218,22 @@ The GLM finite-calibration adapter samples each Mac locally and reuses `GLM5Next
 
 The installed run command recomputes the decision from both snapshots, binds it to the unchanged local template, and then invokes the existing signed quotation/owner path with the chosen cut. Local and peer quotes must still agree, and current-device/load/reserve/start checks retain authority. Public endpoint activation, automated calibration scheduling and a MiMo adapter for this exact-quote seam are separate integrations.
 
+### Planning stack
+
+Both planning entry points run on a thread of their own with a 16 MiB stack
+while their caller waits (`ClusterPlanningStack`): `ClusterPlacementFlow.decide`
+(the plan command, the automatic replacement's planner and every plan of the
+guided step) and the guided step itself (`ClusterSetupPlanning.decide`). Their
+callers run on 512 KiB stacks: the onboarding's and the cluster service's
+planning threads, the automatic replacement's task, `darkbloom cluster plan`'s
+task and every Swift Testing test. A debug build's planner frames are large. On
+2026-11-10 `decide` used 387 KiB of a test's stack planning a tensor-parallel
+width, of which its own frame was 99 KiB, and the guided step used 692 KiB. A
+test whose own frames left 20 KiB died of SIGBUS once a merge grew `decide`'s
+frame by 23 KiB. A release build used about 120 and 220 KiB. The planning thread
+inherits no task-local value, so it binds again the one planning reads
+(`ClusterPublicModels.declarationOverride`, which only tests set).
+
 ## Pipeline decode command buffers
 
 The pipeline stages of the Qwen catalog (dense, routed-expert and Prism rows),

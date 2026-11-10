@@ -2597,8 +2597,8 @@ embedded Nemotron head above), a request the assistant cannot draft for still
 records its prompt history when its prompt can be cached
 ([prefix-cache invariant 9](prefix-cache.md#invariants)). That covers a token
 constraint, logprobs, `logit_bias`, a penalty or a `stop` string, so it
-includes the catalog Qwen 3.5/3.6 builds' default request, whose card presence
-penalty keeps it from speculating. Its prompt chunks run the MTP step's
+includes a Qwen 3.5/3.6 request with the card presence penalty (the 35B
+builds' default), which keeps it from speculating. Its prompt chunks run the MTP step's
 hidden-returning prefill, the forward a speculating prompt runs, followed by
 the same sampler call, and its checkpoints equal a speculating request's. It
 never drafts, verifies or seeds a carry, and `beginMTPPlan` releases its

@@ -8,12 +8,14 @@ import Testing
 
 @testable import ProviderCore
 
-/// The Qwen 3.5/3.6 builds' provider defaults (`EngineV2SamplingDefaults.qwen35CardDefaults`,
-/// with its presence penalty of 1.5) keep a request that sends no sampling field from
-/// speculating. On the production paged assembly, with the inline MTP assistant and the
-/// encrypted complete-checkpoint store, such a request must still donate its prompt's
-/// checkpoints, answer exactly as it does with the cache off, and let the next identical
-/// request restore them and answer exactly as its cold run. Synthetic weights, no model load.
+/// A Qwen 3.5/3.6 request with the model card's presence penalty (1.5) cannot speculate: on
+/// `qwen3.5-35b-a3b` that is the provider's default for a request that sends no sampling field
+/// (`EngineV2SamplingDefaults.qwen35CardDefaults`); on `Qwen3.5-9B` the request sends it, since
+/// the 9B's default may carry no penalty. On the production paged assembly, with the inline MTP
+/// assistant and the encrypted complete-checkpoint store, such a request must still donate its
+/// prompt's checkpoints, answer exactly as it does with the cache off, and let the next
+/// identical request restore them and answer exactly as its cold run. Synthetic weights, no
+/// model load.
 @Suite("Qwen 3.5 card-default requests donate SSD checkpoints", .serialized)
 struct Qwen35CardDefaultDonationTests {
     enum Build: String, CaseIterable, CustomTestStringConvertible {
@@ -205,11 +207,13 @@ struct Qwen35CardDefaultDonationTests {
         var hit = 0
     }
 
-    /// A request that sends no sampling field: the provider's card defaults apply.
+    /// A request with the card's presence penalty. The 35B build's request sends no sampling
+    /// field (the provider's card default supplies the penalty); the 9B's sends the card's 1.5.
     static func request(_ build: Build, _ extra: Extra) -> ChatCompletionRequest {
         ChatCompletionRequest(
             model: build.rawValue, messages: [ChatMessage(role: "user", content: "pre-tokenized")],
-            max_tokens: maxTokens, stop: extra == .stop ? .single("<never-matches>") : nil,
+            max_tokens: maxTokens, presence_penalty: build == .dense ? 1.5 : nil,
+            stop: extra == .stop ? .single("<never-matches>") : nil,
             seed: 77, logprobs: extra == .logprobs ? true : nil,
             top_logprobs: extra == .logprobs ? 5 : nil)
     }
@@ -259,7 +263,7 @@ struct Qwen35CardDefaultDonationTests {
         }
     }
 
-    @Test("a card-default request donates, and the next one restores it exactly",
+    @Test("a card-penalty request donates, and the next one restores it exactly",
           .timeLimit(.minutes(5)), arguments: Build.allCases, Extra.allCases)
     func cardDefaultRequestDonatesAndRestoresExactly(_ build: Build, _ extra: Extra) async throws {
         let fixture = try Fixture(build)
@@ -268,9 +272,13 @@ struct Qwen35CardDefaultDonationTests {
 
             let (coldBridge, coldEngine) = try fixture.makeBridge(store: nil)
             let defaults = await coldBridge.samplingDefaults
-            #expect(defaults == EngineV2SamplingDefaults.qwen35CardDefaults,
-                    "the provider keeps the card's presence penalty")
-            #expect(defaults.presencePenalty == 1.5)
+            #expect(defaults.temperature == 1 && defaults.topP == 0.95 && defaults.topK == 20,
+                    "the card's sampling defaults apply")
+            if build == .moe {
+                #expect(defaults == EngineV2SamplingDefaults.qwen35CardDefaults,
+                        "the 35B build keeps the card's presence penalty by default")
+                #expect(defaults.presencePenalty == 1.5)
+            }
             let cold = try await Self.serve(coldBridge, request, id: "cold")
             #expect(cold.finish == "length")
             #expect(cold.hit == 0)

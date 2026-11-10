@@ -464,6 +464,9 @@ enum EngineV2SlotFactory {
             guard let preparedBackend else {
                 preconditionFailure("production backend preparation missing")
             }
+            let templateBoundaryRule = TemplateBoundaryRule.rule(
+                for: preparedBackend.schedulerConfig, tokenizer: tokenizer.inner,
+                modelType: modelType, modelID: modelId, logInfo: logInfo)
             makeEngine = {
                 try EngineV2Factory.assembleProductionBuild(
                     model: servingModel,
@@ -477,7 +480,8 @@ enum EngineV2SlotFactory {
                     preparedBackend: preparedBackend,
                     kvBudget: kvBudget,
                     constructionPurpose: constructionPurpose,
-                    checkpointPartition: assemblyOverrides.checkpointPartition)
+                    checkpointPartition: assemblyOverrides.checkpointPartition,
+                    templateBoundaryRule: templateBoundaryRule)
             }
         }
 

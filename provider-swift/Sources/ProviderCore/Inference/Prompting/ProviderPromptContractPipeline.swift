@@ -34,10 +34,13 @@ enum ProviderPromptContractPipeline {
         FlintRequestPolicy.withholdsReasoning(request, controls: controls, modelType: modelType)
             || GLM5NextPromptPolicy.withholdsReasoning(controls, modelType: modelType)
     }
+    /// `addGenerationPrompt` false is for load-time template probes only: it
+    /// renders the same prompt without the assistant header at its end.
     static func tokenizeProviderBody(
         _ body: Data,
         tokenizer: any MLXLMCommon.Tokenizer,
-        modelType: String?
+        modelType: String?,
+        addGenerationPrompt: Bool = true
     ) throws -> [Int] {
         if MiMoV26TemplateFix.applies(to: .init(modelType: modelType)) {
             try MiMoV26TemplateFix.validateRawControls(body)
@@ -46,6 +49,15 @@ enum ProviderPromptContractPipeline {
         let templateControls = ProviderLoop.extractChatTemplateControls(from: body).resolvingPromptDate()
         let request = try templateControls.rawMiMoTools.restoring(decodedRequest, modelType: modelType)
         let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: modelType)
+        guard addGenerationPrompt else {
+            let input = try normalizedInput(prepared: prepared, request: request,
+                modelType: modelType, templateControls: templateControls)
+            var context = input.additionalContext ?? [:]
+            // swift-transformers applies additional context after its own default.
+            context["add_generation_prompt"] = false
+            return try tokenizer.applyChatTemplate(messages: input.messages,
+                tools: input.tools, additionalContext: context)
+        }
         return try tokenize(
             prepared: prepared,
             request: request,

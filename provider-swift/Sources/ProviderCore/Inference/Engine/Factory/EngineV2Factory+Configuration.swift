@@ -191,7 +191,57 @@ extension EngineV2Factory {
             config.soloPrefillStripeTokens = nil
             config.mixedStepPrefillTokenCap = min(config.mixedStepPrefillTokenCap ?? limit, limit)
         }
+        if let grid = canonicalPrefillGridTokens(scheduler: config, environment: environment) {
+            config.canonicalPrefillGridTokens = grid
+            config.canonicalBoundaryRule = canonicalBoundaryRule(environment: environment)
+        }
         return config
+    }
+
+    /// Opt-in. Every text prompt chunk ends at a multiple of this many tokens
+    /// (`CBv2SchedulerConfig.canonicalPrefillGridTokens`), so a prompt that
+    /// extends an earlier one is cut into the same chunks. Unset keeps today's
+    /// chunking.
+    public static let canonicalPrefillGridKey = "DARKBLOOM_CBV2_CANONICAL_PREFILL_GRID"
+    /// Optional with the grid: the message-boundary rule as
+    /// `OPEN;CLOSE[|CLOSE…]`, each a comma-separated token id list. Unset, the
+    /// slot reads the rule from its chat template (`TemplateBoundaryRule`).
+    public static let canonicalBoundariesKey = "DARKBLOOM_CBV2_CANONICAL_BOUNDARIES"
+    /// The paged attention query block; a grid cell is a whole number of them.
+    static let canonicalPrefillGridQuantumTokens = 128
+
+    /// A prompt row waits for a step that holds its whole cell, so the grid
+    /// must fit beside decode rows: at most the plain chunk, half the step
+    /// budget, and a positive mixed-step cap. Any other value keeps today's
+    /// chunking.
+    static func canonicalPrefillGridTokens(
+        scheduler: CBv2SchedulerConfig, environment: [String: String]
+    ) -> Int? {
+        guard let raw = environment[canonicalPrefillGridKey],
+            let grid = Int(raw.trimmingCharacters(in: .whitespaces)), grid > 0,
+            grid.isMultiple(of: canonicalPrefillGridQuantumTokens),
+            grid <= scheduler.prefillChunkSize,
+            grid <= scheduler.maxBatchedTokensPerStep / 2
+        else { return nil }
+        if let cap = scheduler.mixedStepPrefillTokenCap, cap > 0, grid > cap { return nil }
+        return grid
+    }
+
+    /// A malformed value gives no rule, never a partial one.
+    static func canonicalBoundaryRule(environment: [String: String]) -> CBv2CanonicalBoundaryRule? {
+        guard let raw = environment[canonicalBoundariesKey] else { return nil }
+        func tokenIDs(_ text: Substring) -> [Int]? {
+            let ids = text.split(separator: ",", omittingEmptySubsequences: false).map {
+                Int($0.trimmingCharacters(in: .whitespaces))
+            }
+            guard ids.allSatisfy({ ($0 ?? -1) >= 0 }) else { return nil }
+            return ids.compactMap { $0 }
+        }
+        let parts = raw.split(separator: ";", omittingEmptySubsequences: false)
+        guard parts.count == 2, let open = tokenIDs(parts[0]) else { return nil }
+        let closes = parts[1].split(separator: "|", omittingEmptySubsequences: false).map(tokenIDs)
+        guard closes.allSatisfy({ $0 != nil }) else { return nil }
+        return CBv2CanonicalBoundaryRule(open: open, close: closes.compactMap { $0 })
     }
 
     /// The single source of GLM step geometry; the paged backend's query bound,
@@ -229,6 +279,9 @@ extension EngineV2Factory {
         scheduler.maxBatchedTokensPerStep = min(context, glm5NextMaximumStepTokens, narrowed)
         scheduler.soloPrefillStripeTokens = nil
         scheduler.soloPrefillStripeMediaCeiling = nil
+        // The grid was checked against the chunk and step replaced above.
+        scheduler.canonicalPrefillGridTokens = nil
+        scheduler.canonicalBoundaryRule = nil
         return scheduler
     }
 

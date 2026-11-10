@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-10
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -3871,6 +3871,7 @@ must support the checkpoint contract described in
 | `DARKBLOOM_MLX_MEMORY_RESERVE_GB` | `provider-swift/Sources/ProviderCore/Inference/Memory/MLXMemoryGuard.swift` |
 | `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` (`maxPartialPrefillsKey`) |
 | `DARKBLOOM_CBV2_PREFILL_CHUNK`, `DARKBLOOM_CBV2_STEP_TOKENS` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` (`prefillChunkKey`, `stepTokenBudgetKey`) |
+| `DARKBLOOM_CBV2_CANONICAL_PREFILL_GRID`, `DARKBLOOM_CBV2_CANONICAL_BOUNDARIES` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` (`canonicalPrefillGridKey`, `canonicalBoundariesKey`) |
 | `DARKBLOOM_PREFILL_DEADLINE_MODE` | `provider-swift/Sources/ProviderCore/Inference/Engine/PrefillDeadlineMode.swift` (`environmentKey`) |
 | `DARKBLOOM_TTFT_ADMISSION_FIXES` | `provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift` (`DeadlineAdmissionFixes.environmentKey`) |
 | `DARKBLOOM_TTFT_IDLE_CACHE_SWEEP` | `provider-swift/Sources/ProviderCore/Inference/Memory/GlobalKVCacheBudget.swift` (`idleCacheSweepEnvironmentKey`) |

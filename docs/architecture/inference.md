@@ -2302,19 +2302,23 @@ projection priced only this request's own prompt, and the policy carried no
 reviewed calibration and no native-media rate. A refusal beside other work or
 from a fail-closed (unbounded) projection, physical capacity included, never
 counts, and any engine admission ends the streak. After three, evidence older
-than the 120-second freshness window stops blocking the next request that
-finds the Mac idle. The bridge builds no projection policy for that request,
-so it is submitted the way a request with no measured rate is. Absolute
-expiry still applies, the decision profile reports
-`projection = not_attempted` with `projection_reason = unmeasured_prefill`,
-and the request's isolated prefill replaces the expired aggregate and its
-prompt-size bucket. Fresh evidence, a fresh prompt-size bucket for this
-prompt included, refuses as measured however many requests it refuses. An
-admission that ends a full streak starts a 120-second retry interval, so a
-loaded model on a Mac that really is too slow admits one such request per
-interval, even when that request ends before its prompt completes. That
-request can miss its first-content deadline where it would have been refused
-at once.
+than the 120-second freshness window stops blocking the next request of at
+most 1,024 prompt tokens that finds the Mac idle
+(`provider-swift/Sources/ProviderCore/Inference/Performance/PrefillEvidenceRecovery.swift`,
+`PrefillEvidenceRecovery.maximumPromptTokens`, the native recovery probe's
+limit). The bridge builds no projection policy for that request, so it is
+submitted the way a request with no measured rate is. Absolute expiry still
+applies, the decision profile reports `projection = not_attempted` with
+`projection_reason = unmeasured_prefill`, and the request's isolated prefill
+replaces the expired aggregate and its prompt-size bucket. A longer prompt is
+still refused from the expired evidence and leaves the streak full:
+unprojected, it could hold a slow Mac until its deadline. Fresh evidence, a
+fresh prompt-size bucket for this prompt included, refuses as measured
+however many requests it refuses. An admission that ends a full streak starts
+a 120-second retry interval, so a loaded model on a Mac that really is too
+slow admits one such small request per interval, even when that request ends
+before its prompt completes. That request can miss its first-content deadline
+where it would have been refused at once.
 
 An independent reviewed deadline profile carries
 `deadline_calibration`: prompt/context bands, actual cold/reused prefix

@@ -867,9 +867,10 @@ serving Mac, so the same request can project differently on other hardware:
 - Three consecutive refusals an ordinary engine made on an idle Mac from its
   isolated prefill rate alone expire evidence older than 120 seconds
   (`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`,
-  `DeadlineRefusalStreak`). The next request that finds the Mac idle is
-  submitted without a time projection and remeasures the rate on that Mac, at
-  that power and thermal state. A refusal for physical capacity never counts.
+  `DeadlineRefusalStreak`). The next request of at most 1,024 prompt tokens
+  that finds the Mac idle is submitted without a time projection and
+  remeasures the rate on that Mac, at that power and thermal state. A longer
+  prompt is still refused. A refusal for physical capacity never counts.
 
 The anchor, floor and refusal streak shape admission only. The published
 isolated rate, capacity wire fields and the external platform's memory

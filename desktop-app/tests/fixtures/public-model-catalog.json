@@ -1,0 +1,91 @@
+{
+  "models": [
+    {
+      "id": "gpt-oss-20b",
+      "name": "GPT-OSS 20B",
+      "display_name": "GPT-OSS 20B",
+      "active": true,
+      "status": "active",
+      "supported_features": null,
+      "max_context_length": 131072,
+      "max_output_length": 32768,
+      "input_modalities": ["text"]
+    },
+    {
+      "id": "Qwen3.5-9B",
+      "name": "Qwen 3.5 9B",
+      "display_name": "Qwen 3.5 9B",
+      "active": true,
+      "status": "active",
+      "supported_features": ["tools"],
+      "max_context_length": 262144,
+      "max_output_length": 65536,
+      "input_modalities": ["text", "image"]
+    },
+    {
+      "id": "gemma-4-26b",
+      "name": "Gemma 4 26B",
+      "display_name": "Gemma 4 26B",
+      "active": true,
+      "status": "active",
+      "supported_features": null,
+      "max_context_length": 131072,
+      "max_output_length": 32768,
+      "input_modalities": ["text"]
+    },
+    {
+      "id": "gemma-4-26b-qat-4bit",
+      "name": "Gemma 4 26B",
+      "display_name": "Gemma 4 26B",
+      "active": true,
+      "status": "beta",
+      "supported_features": ["json_mode", "reasoning", "tools"],
+      "max_context_length": 131072,
+      "max_output_length": 32768,
+      "input_modalities": ["text", "image", "video"]
+    },
+    {
+      "id": "gemma-4-26b-8bit",
+      "name": "Gemma 4 26B 8-bit (rollback)",
+      "display_name": "Gemma 4 26B 8-bit (rollback)",
+      "active": true,
+      "status": "beta",
+      "supported_features": null,
+      "max_context_length": 131072,
+      "max_output_length": 32768,
+      "input_modalities": ["text", "image", "video"]
+    },
+    {
+      "id": "glm-5.3-flash",
+      "name": "Z.ai: GLM-5.3-Flash",
+      "display_name": "Z.ai: GLM-5.3-Flash",
+      "active": true,
+      "status": "beta",
+      "supported_features": ["logprobs", "reasoning", "tools"],
+      "max_context_length": 262144,
+      "max_output_length": 65536,
+      "input_modalities": ["text", "image", "video"]
+    },
+    {
+      "id": "mimo-v2.6-flash-mopd",
+      "name": "Xiaomi: MiMo-V2.6-Flash",
+      "display_name": "Xiaomi: MiMo-V2.6-Flash",
+      "active": true,
+      "status": "active",
+      "supported_features": ["reasoning", "tools"],
+      "max_context_length": 1048576,
+      "max_output_length": 131072,
+      "input_modalities": ["text"]
+    }
+  ],
+  "aliases": [
+    {
+      "desired_build": "gemma-4-26b-qat-4bit",
+      "display_name": "Gemma 4 26B",
+      "id": "gemma-4-26b",
+      "previous_build": "gemma-4-26b",
+      "primary_build": "gemma-4-26b-qat-4bit",
+      "retired_builds": ["gemma-4-26b-8bit"]
+    }
+  ]
+}

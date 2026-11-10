@@ -6,10 +6,16 @@ import {
   type ChatModel,
   type ChatModels,
 } from '../../shared/chat';
-import { previewParam, type FeaturePreview } from './types';
+import { effectiveRoute, type RequestRoute } from '../../shared/localServing';
+import { networkChatModels, readPublic, type NetworkChatModel } from '../previewNetwork';
+import { previewParam, type FeaturePreview, type PreviewStore } from './types';
 
 // Development preview of chat: a simulated local API that streams canned answers, with
-// reasoning and a code block, at about the pace a Mac writes them. Development data only.
+// reasoning and a code block, at about the pace a Mac writes them. It lists models as the local
+// API does for the route that applies (Studio, or `&route=`): this Mac's, then your other Macs'
+// once requests may go to them, then, with My Macs first, the Darkbloom network's, read from the
+// production catalog when the dev server reaches it. Development data only, apart from the
+// network's list.
 //
 // `&chat=no_endpoint`: this Mac runs no local API. `&chat=unavailable`: the local API doesn't
 // answer. `&chat=fail`: it refuses each answer as a busy Mac does (503, in its own words).
@@ -57,6 +63,85 @@ export const previewChatModels = (): ChatModel[] => [
   },
 ];
 
+// The network's models when the dev server can't read the catalog: some that the production
+// catalog listed on 2026-11-09, in its own format.
+export const previewNetworkModels = (): NetworkChatModel[] =>
+  networkChatModels({
+    models: [
+      {
+        id: 'gemma-4-26b-qat-4bit',
+        display_name: 'Gemma 4 26B',
+        supported_features: ['json_mode', 'reasoning', 'tools'],
+        max_context_length: 131_072,
+        max_output_length: 32_768,
+        input_modalities: ['text', 'image', 'video'],
+      },
+      {
+        id: 'EigenLabs/Qwen3.8-27B-4bit-mtp',
+        display_name: 'Qwen 3.8 27B',
+        supported_features: ['tools'],
+        max_context_length: 262_144,
+        max_output_length: 65_536,
+        input_modalities: ['text', 'image'],
+      },
+      {
+        id: 'glm-5.3-flash',
+        display_name: 'Z.ai: GLM-5.3-Flash',
+        supported_features: ['logprobs', 'reasoning', 'tools'],
+        max_context_length: 262_144,
+        max_output_length: 65_536,
+        input_modalities: ['text', 'image', 'video'],
+      },
+      {
+        id: 'mimo-v2.6-flash-mopd',
+        display_name: 'Xiaomi: MiMo-V2.6-Flash',
+        supported_features: ['reasoning', 'tools'],
+        max_context_length: 1_048_576,
+        max_output_length: 131_072,
+        input_modalities: ['text'],
+      },
+    ],
+    aliases: [
+      {
+        id: 'gemma-4-26b',
+        display_name: 'Gemma 4 26B',
+        desired_build: 'gemma-4-26b-qat-4bit',
+        primary_build: 'gemma-4-26b-qat-4bit',
+      },
+    ],
+  });
+
+// The network's models, from the production catalog and the builds Macs serve now; the
+// fallback above when either read fails.
+async function networkModels() {
+  const [catalog, capacity] = await Promise.all([
+    readPublic('/v1/models/catalog?include_aliases=1'),
+    readPublic('/v1/models/capacity'),
+  ]);
+  try {
+    if (catalog !== undefined) return networkChatModels(catalog, capacity);
+  } catch {}
+  return previewNetworkModels();
+}
+
+// The local API's list for a route (LocalRouter.swift): this Mac's models, your other Macs' with
+// `my-macs` and `my-macs-first`, and the network's with `my-macs-first` only. Each model is listed
+// once, and a network alias of a build this Mac serves is left out (LocalRouterModels.swift).
+export function routeModels(route: RequestRoute, network: NetworkChatModel[] = []): ChatModel[] {
+  const own = previewChatModels();
+  const here = own.filter((model) => model.owned_by === 'this-mac');
+  const listed = route === 'this-mac' ? here : own;
+  if (route !== 'my-macs-first') return listed;
+  const seen = new Set(listed.map((model) => model.id));
+  const local = new Set(here.map((model) => model.id));
+  for (const { model, builds } of network) {
+    if (seen.has(model.id) || builds.some((build) => local.has(build))) continue;
+    seen.add(model.id);
+    listed.push(model);
+  }
+  return listed;
+}
+
 const answers = () => [
   {
     reasoning:
@@ -84,10 +169,12 @@ let made:
       timers: Map<string, ReturnType<typeof setTimeout>>;
       usage: Map<string, number>;
       asked: number;
+      // The models the last list named, so an answer from any of them reasons as it says.
+      listed: ChatModel[];
     }
   | undefined;
 const state = () =>
-  (made ??= { listeners: new Set(), timers: new Map(), usage: new Map(), asked: 0 });
+  (made ??= { listeners: new Set(), timers: new Map(), usage: new Map(), asked: 0, listed: [] });
 
 const publish = (event: ChatEvent) => state().listeners.forEach((listener) => listener(event));
 
@@ -99,7 +186,8 @@ function end(stream: string, event: ChatEvent) {
   publish(event);
 }
 
-export const previewChatAPI: ChatAPI = {
+// The chat API over the preview's state, whose `[local]` route decides the list.
+export const previewChatAPI = (store: PreviewStore): ChatAPI => ({
   async chatModels(): Promise<ChatModels> {
     if (mode() === 'no_endpoint')
       return { models: [], code: 'no_endpoint', error: 'This Mac’s local API isn’t running.' };
@@ -111,16 +199,19 @@ export const previewChatAPI: ChatAPI = {
         code: 'unavailable',
         error: 'This Mac’s local API didn’t answer.',
       };
-    return { base_url, models: previewChatModels() };
+    const route = effectiveRoute(store.get().local ?? {});
+    const models = routeModels(route, route === 'my-macs-first' ? await networkModels() : []);
+    state().listed = models;
+    return { base_url, models };
   },
   async chatSend(value) {
     const request = validateChatRequest(value);
-    const { timers, usage } = state();
+    const { timers, usage, listed } = state();
     if (mode() === 'no_endpoint') throw new Error('This Mac’s local API isn’t running.');
     if (timers.size >= 2)
       throw new Error('Two answers are already streaming. Wait for one to finish.');
     const stream = crypto.randomUUID();
-    const model = previewChatModels().find((item) => item.id === request.model);
+    const model = [...listed, ...previewChatModels()].find((item) => item.id === request.model);
     const canned = answers();
     const answer = canned[state().asked++ % canned.length];
     const reasoning = !model?.reasoning
@@ -187,4 +278,4 @@ export const previewChatAPI: ChatAPI = {
       listeners.delete(callback);
     };
   },
-};
+});

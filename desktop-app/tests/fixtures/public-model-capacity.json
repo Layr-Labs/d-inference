@@ -1,0 +1,40 @@
+{
+  "models": [
+    {
+      "id": "gemma-4-26b-qat-4bit",
+      "ready": true,
+      "can_accept": true,
+      "routable_providers": 560
+    },
+    {
+      "id": "gemma-4-26b-8bit",
+      "ready": true,
+      "can_accept": true,
+      "routable_providers": 10
+    },
+    {
+      "id": "mimo-v2.6-flash-mopd",
+      "ready": true,
+      "can_accept": true,
+      "routable_providers": 17
+    },
+    {
+      "id": "glm-5.3-flash",
+      "ready": true,
+      "can_accept": true,
+      "routable_providers": 4
+    },
+    {
+      "id": "gemma-4-26b",
+      "ready": true,
+      "can_accept": true,
+      "routable_providers": 1
+    },
+    {
+      "id": "gpt-oss-20b",
+      "ready": true,
+      "can_accept": true,
+      "routable_providers": 405
+    }
+  ]
+}

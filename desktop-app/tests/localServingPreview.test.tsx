@@ -110,6 +110,33 @@ it('pauses Darkbloom for you with &local=paused, and offers nothing with &local=
   ).toEqual(['autopilot']);
 });
 
+it.each([
+  ['&route=this-mac', 'this-mac', false],
+  ['&route=my-macs', 'my-macs', true],
+  ['&route=my-macs-first', 'my-macs-first', true],
+  ['&route=everywhere', null, false],
+])(
+  'starts with the route %s names saved, and a key with one that passes requests on',
+  async (query, route, route_key) => {
+    const next = (await previewWith(query)).snapshot!(base());
+    expect(next.local).toMatchObject({ route, route_key });
+  },
+);
+
+it('rolls back to the release before the installed one', async () => {
+  const preview = await previewWith('');
+  for (const [version, before] of [
+    ['0.10.11', 'v0.10.10'],
+    ['0.11.0', 'the previous release'],
+  ]) {
+    const store = storeOf(preview.snapshot!({ ...base(), version }));
+    const done = await act(store, { action: 'update_rollback' }, preview);
+    expect(done?.message).toBe(
+      `Rolled back: v${version} -> ${before}.\nv${version} is quarantined on this Mac: automatic updates skip it, and the next newer release installs normally.`,
+    );
+  }
+});
+
 it('refuses a route that passes requests on until a key is saved, and never keeps the key', async () => {
   const preview = await previewWith('');
   const store = storeOf(preview.snapshot!(base()));

@@ -1,5 +1,5 @@
 import type { Snapshot } from '../../shared/contracts';
-import type { LocalServing, ServingMode } from '../../shared/localServing';
+import type { LocalServing, RequestRoute, ServingMode } from '../../shared/localServing';
 import { keyRefusal, routeChoices } from '../features/studio/words';
 import { previewOperation, previewParam, recordOperation, type FeaturePreview } from './types';
 
@@ -8,7 +8,11 @@ import { previewOperation, previewParam, recordOperation, type FeaturePreview } 
 // `network` or `both` (the default) is the saved choice; `&local=paused` is Both, me first with
 // Darkbloom paused for you; `&local=unsupported` is a runtime without any of it. No account key is
 // saved until one is entered, and an entered key is checked for its shape only and never kept.
+// `&route=this-mac`, `my-macs` or `my-macs-first` starts with that route saved, and an account key
+// with the two that pass requests on; without it, neither is saved.
 const scenario = previewParam('local');
+const routes: RequestRoute[] = ['this-mac', 'my-macs', 'my-macs-first'];
+const savedRoute = routes.find((route) => route === previewParam('route')) ?? null;
 const modes: Record<string, ServingMode> = {
   'only-me': 'local',
   network: 'network',
@@ -27,6 +31,14 @@ const endpointFor = (mode: ServingMode, models: string[]): Snapshot['endpoint'] 
 
 const settle = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// The release a simulated rollback returns to: the one before `version`, by its patch number.
+const releaseBefore = (version: string) => {
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
+  return match && Number(match[3]) > 0
+    ? `v${match[1]}.${match[2]}.${Number(match[3]) - 1}`
+    : 'the previous release';
+};
+
 export const localServingPreview: FeaturePreview = {
   snapshot(snapshot) {
     if (scenario === 'unsupported')
@@ -40,8 +52,8 @@ export const localServingPreview: FeaturePreview = {
       mode,
       me_first: true,
       me_first_idle_minutes: 2,
-      route: null,
-      route_key: false,
+      route: savedRoute,
+      route_key: savedRoute !== null && savedRoute !== 'this-mac',
       port,
       bind: '127.0.0.1',
       paused_until: scenario === 'paused' ? snapshot.observed_at + 100 : null,
@@ -154,7 +166,7 @@ export const localServingPreview: FeaturePreview = {
       case 'update_rollback': {
         await settle(1500);
         return done(
-          `Rolled back: v${state.version} -> v0.9.15.\nv${state.version} is quarantined on this Mac: automatic updates skip it, and the next newer release installs normally.`,
+          `Rolled back: v${state.version} -> ${releaseBefore(state.version)}.\nv${state.version} is quarantined on this Mac: automatic updates skip it, and the next newer release installs normally.`,
         );
       }
       default:

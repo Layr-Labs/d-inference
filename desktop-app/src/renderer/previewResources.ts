@@ -1,8 +1,17 @@
 import type { Resource } from '../shared/contracts';
 
-// Development preview only: resources the preview API serves unchanged. The network and
-// rankings are replaced by production's public statistics when the dev server reaches them
-// (previewNetwork.ts).
+// The latest release when the dev server can't read production's: v0.10.11, published
+// 2026-11-09.
+const release = {
+  version: '0.10.11',
+  published_at: '2026-11-09T20:46:47Z',
+  notes:
+    'v0.10.11 - Your Mac first, faster pairs\n\nA Mac with a local API pauses Darkbloom while you use it and takes Darkbloom requests again 2 minutes after your last one.\n- Qwen 3.8 27B pairs decode with their speculative assistant.\n- Qwen and Gemma 4 tensor-parallel decode and prefill are faster.',
+};
+
+// Development preview only: resources the preview API serves unchanged. The network, the
+// rankings and the latest release are replaced by production's public data when the dev server
+// reaches it (previewNetwork.ts).
 export function previewResources(): Partial<Record<Resource, unknown>> {
   return {
     network: {
@@ -48,11 +57,7 @@ export function previewResources(): Partial<Record<Resource, unknown>> {
         { name: 'Right fan', rpm: 2510, max_rpm: 5200 },
       ],
     },
-    release: {
-      version: '0.9.16',
-      published_at: new Date().toISOString(),
-      notes: 'Improved provider reliability and model management.',
-    },
+    release,
     leaderboard: {
       metric: 'earnings',
       window: '24h',
@@ -64,32 +69,9 @@ export function previewResources(): Partial<Record<Resource, unknown>> {
         { rank: 5, name: 'xaden', earnings_micro_usd: '7421000', tokens: '1281500000' },
       ],
     },
-    'release-history': {
-      minimum_provider_version: '0.9.15',
-      observed_at: new Date().toISOString(),
-      history: [
-        {
-          version: '0.9.16',
-          published_at: '2026-10-02T12:00:00Z',
-          active: true,
-          notes:
-            'Improved provider reliability and model management.\n- Recover more reliably after a dropped connection.\n- Keep model downloads separate from models in memory.',
-        },
-        {
-          version: '0.9.15',
-          published_at: '2026-09-28T12:00:00Z',
-          active: true,
-          notes:
-            'Clearer activity and earnings.\n- Track requests by model.\n- Separate inference earnings from base rewards.',
-        },
-        {
-          version: '0.9.14',
-          published_at: '2026-09-20T12:00:00Z',
-          active: false,
-          notes: 'Earlier provider release. Upgrade to a supported version to receive requests.',
-        },
-      ],
-    },
+    // As the runtime relays it: the latest release alone. The minimum version is the account's
+    // (`cloud`).
+    'release-history': { history: [{ ...release, active: true }] },
     'endpoint-key': { key: 'preview-key-not-a-credential' },
   };
 }

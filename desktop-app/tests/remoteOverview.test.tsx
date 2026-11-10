@@ -90,7 +90,7 @@ it('flags a silent or offline Mac and a provider below the minimum version', asy
   const now = backend.state!.observed_at;
   const { rerender } = render(
     <RemoteOverview
-      machine={{ ...machine, observed_at: now - 3 * 3600, version: '0.9.14' }}
+      machine={{ ...machine, observed_at: now - 3 * 3600, version: '0.9.4' }}
       backend={backend}
     />,
   );

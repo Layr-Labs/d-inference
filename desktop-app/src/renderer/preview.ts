@@ -1,4 +1,5 @@
-import type { Action, DesktopAPI, Snapshot, Resource } from '../shared/contracts';
+import type { ChatAPI } from '../shared/chat';
+import type { Action, DesktopAPI, ReleaseData, Snapshot, Resource } from '../shared/contracts';
 import { externalLinks } from '../shared/externalLinks';
 import { previewInsights } from './previewInsights';
 import { publicOrFixture } from './previewNetwork';
@@ -30,6 +31,22 @@ const store = {
   },
 };
 const cloud = previewCloud(now);
+// These Macs run the latest release, as Macs that update themselves do, once the dev server reads
+// it (previewNetwork.ts); until then, and without it, the fixture's. The first subscriber starts
+// the read, and chat is made on first use, so a production build leaves both out.
+let following = false;
+function followRelease() {
+  if (following) return;
+  following = true;
+  void publicOrFixture('release', undefined).then((release) => {
+    const version = (release as ReleaseData | undefined)?.version;
+    if (!version) return;
+    for (const machine of cloud.machines) machine.version = version;
+    store.set({ ...snapshot, version, machine: { ...snapshot.machine, version } });
+  });
+}
+let chatAPI: ChatAPI | undefined;
+const chat = () => (chatAPI ??= previewChatAPI(store));
 export const previewAPI: DesktopAPI = {
   async read<T>(resource: Resource) {
     snapshot.observed_at = Date.now() / 1000;
@@ -106,6 +123,7 @@ export const previewAPI: DesktopAPI = {
   },
   async applyUpdate() {},
   onState(callback) {
+    followRelease();
     listeners.add(callback);
     const stopAutopilot = simulateAutopilot(store);
     const timer = setInterval(() => {
@@ -136,7 +154,10 @@ export const previewAPI: DesktopAPI = {
   onHardware(callback) {
     return previewHardwareStream(callback, () => snapshot.state === 'running');
   },
-  ...previewChatAPI,
+  chatModels: () => chat().chatModels(),
+  chatSend: (request) => chat().chatSend(request),
+  chatCancel: (stream) => chat().chatCancel(stream),
+  onChat: (callback) => chat().onChat(callback),
   clusterSession: () => previewClusterSession.current(),
   startClusterSession: (start) => previewClusterSession.start(start, store),
   answerClusterSession: (answer) => previewClusterSession.answer(answer),

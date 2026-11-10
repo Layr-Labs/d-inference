@@ -301,8 +301,9 @@ struct DistributedInstalledPlan: Sendable {
     }
 
     /// True when the pair's workers retire a cancelled started lane alone (a
-    /// cancel or a deadline ends that request, not the pair): Qwen-family
-    /// pipeline lanes and Qwen/GLM tensor parallel. Bound to both owners' plan.
+    /// cancel or a deadline ends that request, not the pair): the pipeline's
+    /// lane adapters and every tensor-parallel family that serves lanes
+    /// (`servesTensorParallelLanes`). Bound to both owners' plan.
     func lanesRetireAlone(_ environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
         guard let lanes = batchLanes(environment), lanes > 1,
               let adapter = ClusterRuntimeAdapter(rawValue: capability.adapterID) else { return false }
@@ -315,8 +316,7 @@ struct DistributedInstalledPlan: Sendable {
         guard (2...8).contains(lanes) else { return false }
         switch mode {
         case .tensorParallel:
-            return tensorParallelLaneAdapters[adapter] != nil
-                || (servesQwenTensorLanes(adapter: adapter, runtimeModelID: runtimeModelID) && !hasPrivateImages)
+            return servesTensorParallelLanes(adapter: adapter, hasPrivateImages: hasPrivateImages, runtimeModelID: runtimeModelID)
         case .pipeline: return !hasPrivateImages && laneAdapters.contains(adapter)
         default: return false
         }
@@ -335,12 +335,12 @@ struct DistributedInstalledPlan: Sendable {
     ///   (`ClusterPlacementTensorWidth`); that saved width or an explicit
     ///   local diagnostic selects the native 2...8 lane owner.
     /// - Other tensor parallel (`tensorParallelLaneAdapters`): GLM
-    ///   (`GLM5NextTensorParallelResidentRuntime`'s lane loop) at
-    ///   `tensorParallelBatchLanes`; Gemma 4 (`Gemma4TensorParallelResidentRuntime`'s
-    ///   batch driver) at the width guided placement saved, the widest both
-    ///   Macs admit now under its lane charge (`ClusterPlacementTensorWidth`),
-    ///   and one for a setup saved without a width. Each lane keeps its request's
-    ///   own arithmetic, so a request's tokens are those it gets alone. A
+    ///   (`GLM5NextTensorParallelResidentRuntime`'s lane loop) and Gemma 4
+    ///   (`Gemma4TensorParallelResidentRuntime`'s batch driver) at the width
+    ///   guided placement saved, the widest both Macs admit now under the
+    ///   family's lane charge (`ClusterPlacementTensorWidth`), and one for a
+    ///   setup saved without a width. Each lane keeps its request's own
+    ///   arithmetic, so a request's tokens are those it gets alone. A GLM
     ///   lane carrying images or video runs the same tensor-parallel media
     ///   path as a request alone (`GLM5NextTensorParallelMedia`), so the
     ///   capability's image candidate does not change the lanes.
@@ -354,11 +354,19 @@ struct DistributedInstalledPlan: Sendable {
         case .pipeline where !hasPrivateImages && adapter == .gemma4LayerStage && prefillSchedule == .serial:
             gemma4PipelineBatchLanes
         case .pipeline where !hasPrivateImages && laneAdapters.contains(adapter): defaultBatchLanes
-        case .tensorParallel where tensorParallelLaneAdapters[adapter] != nil: tensorParallelLaneAdapters[adapter]
-        case .tensorParallel where servesQwenTensorLanes(adapter: adapter, runtimeModelID: runtimeModelID) && !hasPrivateImages:
+        case .tensorParallel where servesTensorParallelLanes(adapter: adapter, hasPrivateImages: hasPrivateImages,
+                                                             runtimeModelID: runtimeModelID):
             defaultBatchLanes
         default: nil
         }
+    }
+
+    /// Whether a tensor-parallel pair of `adapter` serves batch lanes: GLM and Gemma 4 (`tensorParallelLaneAdapters`),
+    /// and a Qwen TP row without private images. Each serves one request at a time unless its setup saved a width.
+    static func servesTensorParallelLanes(adapter: ClusterRuntimeAdapter, hasPrivateImages: Bool,
+                                          runtimeModelID: String?) -> Bool {
+        tensorParallelLaneAdapters.contains(adapter)
+            || (servesQwenTensorLanes(adapter: adapter, runtimeModelID: runtimeModelID) && !hasPrivateImages)
     }
 
     /// A Qwen TP row under its registered adapter, whose owner serves
@@ -389,20 +397,11 @@ struct DistributedInstalledPlan: Sendable {
     /// lane, so the width adds no load-time allocation. Four is one of the
     /// priced pipeline widths (2, 4 and 8), kept until the pair measures more.
     static let gemma4PipelineBatchLanes = 4
-    /// Concurrent requests GLM tensor parallel serves by default: the
-    /// protocol's lane cap (`ClusterWorkerLaneSession`, `ClusterWorkerPair`).
-    /// Its lanes run one request's unit after another (each bitwise alone), so
-    /// more lanes cost no request its own tokens; the host's memory gate
-    /// admits each lane (a lane it cannot hold is refused alone, retryably).
-    static let tensorParallelBatchLanes = 8
-    /// The adapters whose tensor-parallel workers serve batch lanes, and how
-    /// many without a saved width. Gemma 4 serves the width its setup saved
+    /// The adapters besides the Qwen TP rows whose tensor-parallel workers
+    /// serve batch lanes. Each serves the width its setup saved
     /// (`ClusterPlacementTensorWidth`, which its LOAD reserves), and one
     /// request at a time without one, unless the owner's switch names 2...8.
-    static let tensorParallelLaneAdapters: [ClusterRuntimeAdapter: Int] = [
-        .glm5NextLayerStage: tensorParallelBatchLanes,
-        .gemma4LayerStage: defaultBatchLanes,
-    ]
+    static let tensorParallelLaneAdapters: Set<ClusterRuntimeAdapter> = [.glm5NextLayerStage, .gemma4LayerStage]
 
     /// The adapters whose workers serve batch lanes (Qwen CBv2 or GPT-OSS independent histories).
     static let laneAdapters: Set<ClusterRuntimeAdapter> = [.qwen35Dense, .qwen35RoutedExperts, .qwen35PrismHadamard,

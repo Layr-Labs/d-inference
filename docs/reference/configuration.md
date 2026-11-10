@@ -871,7 +871,7 @@ solo serving is unchanged and the whole surface stays default-off.
 
 | Field | Meaning and bounds | Source |
 |---|---|---|
-| `batchLanes` | Optional integer 2, 4 or 8, or 6 for a tensor-parallel width (a Qwen TP row or Gemma 4 in `tensor_parallel_v1`); omitted in existing setups. Registered text batch adapters in plain pipeline, and those tensor-parallel rows, accept it with serial prefill only. It is a requested width, never a capacity grant. The guided setup writes it into both Macs' setups for a Qwen TP or Gemma 4 tensor-parallel placement ([lane widths](../architecture/inference.md#tensor-parallel-lane-widths)), and a setup saved for coordinator pairing keeps it beside its approval. | `provider-swift/Sources/ProviderCore/Config/ClusterConfiguration.swift` (`validate`), `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementTensorWidth.swift` (`plan`) |
+| `batchLanes` | Optional integer 2, 4 or 8, or 6 for a tensor-parallel width (a Qwen TP row, Gemma 4 or GLM in `tensor_parallel_v1`); omitted in existing setups. Registered text batch adapters in plain pipeline, and those tensor-parallel rows, accept it with serial prefill only. It is a requested width, never a capacity grant. The guided setup writes it into both Macs' setups for a Qwen TP, Gemma 4 or GLM tensor-parallel placement ([lane widths](../architecture/inference.md#tensor-parallel-lane-widths)), and a setup saved for coordinator pairing keeps it beside its approval. | `provider-swift/Sources/ProviderCore/Config/ClusterConfiguration.swift` (`validate`), `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementTensorWidth.swift` (`plan`) |
 | `DARKBLOOM_CLUSTER_BATCH_LANES` | An explicit diagnostic setting retains precedence; absent settings use the persisted width, then the existing family default. Malformed explicit values fail closed to one lane. | `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPlan.swift` (`batchLanes`) |
 
 The normal cluster API can persist a wider setup after queued demand, conservative
@@ -1775,7 +1775,8 @@ registered headers and requires the native allocator metadata bound. Saved
 `batchLanes` may select 2, 4, 6 or 8 in a Qwen TP row's `tensor_parallel_v1`; omission
 keeps one. The guided setup reads the quote at each of these widths
 ([saved width](../architecture/inference.md#qwen-tensor-parallel-saved-width)).
-GLM defaults remain unchanged.
+Gemma 4 and GLM save theirs from their lane charges instead
+([lane widths](../architecture/inference.md#tensor-parallel-lane-widths)).
 Source: `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementTensorBatchQuote.swift`.
 
 ### Qwen27 saved mode compatibility

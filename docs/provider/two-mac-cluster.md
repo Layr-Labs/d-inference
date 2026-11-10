@@ -1054,8 +1054,8 @@ Macs have stopped their parts and given back their memory, so the memory the
 running model held does not turn tensor parallel into a pipeline. Every load records the
 encrypted link's cost for later predictions; plans use the median of the
 pair's last eight measurements from the last 30 days. GLM-5.3-Flash on two M5
-Ultra 256 GB runs tensor parallel on equal shares with eight concurrent
-requests; the plan counts its NextN (MTP) layer on both Macs and its
+Ultra 256 GB runs tensor parallel on equal shares with up to eight concurrent
+requests, as many as both Macs' memory holds; the plan counts its NextN (MTP) layer on both Macs and its
 speculative decoding ([GLM tensor parallel](../architecture/inference.md#exact-quote-placement)).
 GLM-5.3-Flash has both a pipeline and a tensor-parallel adapter; its private
 image candidate is pipeline-only.
@@ -1065,7 +1065,7 @@ Models that run tensor parallel, and when:
 | Model | Tensor parallel chosen | Notes |
 |---|---|---|
 | Qwen3.5 9B, Qwen3.8 27B, Qwen3.5/3.6 35B A3B | wherever it fits | Qwen3.8 27B keeps images, video and logprobs only in tensor parallel |
-| GLM-5.3-Flash | wherever it fits | Eight concurrent requests by default |
+| GLM-5.3-Flash | wherever it fits | As many requests at once as both Macs' memory holds beside the model, up to 8 (sized when the pair is set up and reserved when it loads, as far as each Mac's memory then allows; requests beyond that are taken as memory allows); where only one fits, one at a time. A pair set up before Darkbloom 0.10.12 is sized when it is planned again, which the update does by itself |
 | Gemma 4 26B (QAT 4-bit, 8-bit) | only where the plan predicts it faster from its own measured speed on both Macs (it keeps every feature of the pipeline, prompt-prefix and SSD reuse included) | Text only; logprobs in tensor parallel only; QAT 4-bit serves 2 requests at once where both Macs' memory holds them beside the model (sized when the pair is set up and reserved when it loads), the 8-bit model one at a time; where only one fits, one at a time, and a request cancelled during its prompt keeps that one lane until the prompt is read (about a minute for a 16K-token prompt) |
 | MiMo V2.6 Flash | only where it keeps every feature of the mode it would replace (it keeps the speculative pipeline's rounds, not the plain pipeline's batch lanes) and the plan predicts it faster from its own measured speed on both Macs | Text only; speculative decoding; logprobs in tensor parallel only; one request at a time; see [MiMo V2.6 Flash on the pair](#mimo-v26-flash-on-the-pair) |
 

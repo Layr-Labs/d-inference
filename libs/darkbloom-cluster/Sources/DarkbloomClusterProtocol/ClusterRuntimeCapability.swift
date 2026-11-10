@@ -100,10 +100,10 @@ public enum ClusterRuntimeAdapter: String, Sendable, CaseIterable {
 
     /// Whether a tensor-parallel setup of `runtimeModelID` saves a width (`ClusterConfiguration.batchLanes`): its
     /// owner serves request-owned lanes at a width priced at placement and reserved at LOAD. The Qwen rows price
-    /// theirs with native quotes (`servesQwenTensorLanes`); Gemma 4 with its lane charge.
+    /// theirs with native quotes (`servesQwenTensorLanes`); Gemma 4 and GLM with their lane charges.
     public func savesTensorParallelWidth(runtimeModelID: String) -> Bool {
         servesQwenTensorLanes(runtimeModelID: runtimeModelID)
-            || (self == .gemma4LayerStage && Self.registering(runtimeModelID: runtimeModelID) == self)
+            || ([.gemma4LayerStage, .glm5NextLayerStage].contains(self) && Self.registering(runtimeModelID: runtimeModelID) == self)
     }
 
     /// Whether this adapter's layer stages serve its rows' whole profile in the pipeline. None does: every

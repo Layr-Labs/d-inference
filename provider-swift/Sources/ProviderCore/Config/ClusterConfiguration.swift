@@ -30,8 +30,8 @@ public struct ClusterConfiguration: Codable, Sendable, Equatable {
     /// saved before this field keeps its bytes. Passed to both workers
     /// (`--tensor-shares`), which bind it into their load agreement.
     public private(set) var tensorShares: [Int]?
-    /// A locally planned pipeline width, or a tensor-parallel one for a row whose owner saves one (Qwen TP rows and
-    /// Gemma 4: `ClusterRuntimeAdapter.savesTensorParallelWidth`). Omission keeps the existing
+    /// A locally planned pipeline width, or a tensor-parallel one for a row whose owner saves one (Qwen TP rows,
+    /// Gemma 4 and GLM: `ClusterRuntimeAdapter.savesTensorParallelWidth`). Omission keeps the existing
     /// family default and old configuration bytes; it is never inferred from
     /// a remote memory advertisement. Both installed owners use the same
     /// pinned value, and still run their own native memory/admission gates.

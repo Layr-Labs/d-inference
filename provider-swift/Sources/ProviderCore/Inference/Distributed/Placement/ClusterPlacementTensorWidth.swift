@@ -8,14 +8,16 @@ import DarkbloomClusterProtocol
 /// (`ClusterPlacementCandidate.admitted`), and never wider than the family has qualified on real Macs
 /// (`qualifiedLanes`). Two families of owners are sized:
 /// - a request-owned Qwen TP row, at each width its owner quotes natively (`tensorWidthQuotes`);
-/// - a family whose layout states a lane charge (`ClusterTensorParallelFamilyPlan.laneBytes`, Gemma 4), at 8, 6, 4 and
-///   2 lanes, each lane after the first adding that charge, as its LOAD reserves the width.
+/// - a family whose layout states a lane charge (`ClusterTensorParallelFamilyPlan.laneBytes`, Gemma 4 and GLM), at 8,
+///   6, 4 and 2 lanes, each lane after the first adding that charge, as its LOAD reserves the width.
 ///
 /// When no wider width fits, the setup saves none and serves one request at a time.
 enum ClusterPlacementTensorWidth {
     /// The widest width a tensor-parallel setup of this model saves: what the family has qualified on real Macs (one
     /// for a family whose owner saves no width). The Qwen TP rows keep the eight they saved before (the M5 Ultra pair
-    /// serves the 27B at eight). Gemma 4 takes its row's `gemmaQualifiedLanes`, and none for a row not listed.
+    /// serves the 27B at eight). GLM takes eight, which it served on every pair before (the M5 Ultra pair gave each of
+    /// its lanes its solo tokens at 2, 4, 6 and 8, 2026-11-10). Gemma 4 takes its row's `gemmaQualifiedLanes`, and
+    /// none for a row not listed.
     static func qualifiedLanes(adapter: ClusterRuntimeAdapter?, runtimeModelID: String) -> Int {
         guard let adapter, adapter.savesTensorParallelWidth(runtimeModelID: runtimeModelID) else { return 1 }
         guard adapter == .gemma4LayerStage else { return ClusterServingFeatures.maximumLaneWidth }

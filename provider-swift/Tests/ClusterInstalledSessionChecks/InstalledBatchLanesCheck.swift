@@ -162,8 +162,8 @@ extension InstalledSessionCheck {
             probe: f.probe, owner: probe, worker: f.worker, generationMode: ClusterGenerationMode.tensorParallel.rawValue,
             advertisedModes: [.pipeline, .tensorParallel], batchLanes: 2)
         try require(try nine.prepare().plan.batchLanes([:]) == 2, "A saved Qwen9 TP width did not reach its plan")
-        // A default greater than one exposes the nil/absent mismatch which
-        // the current Qwen singleton default would otherwise hide.
+        // GLM tensor parallel serves the width its placement saved (both Macs' memory, `ClusterPlacementTensorWidth`)
+        // on its owner, its actual owner child and the rank, and one request at a time without one.
         let glm = try InstalledFixture.make(root: f.root.appendingPathComponent("lane-glm-default"),
             probe: f.probe, owner: probe, worker: f.worker,
             generationMode: ClusterGenerationMode.tensorParallel.rawValue,
@@ -171,15 +171,30 @@ extension InstalledSessionCheck {
             registered: (ClusterGLMImageCandidate.runtimeModelID, ClusterGLMImageCandidate.textProfileID, "fixture/glm-text"),
             adapter: .glm5NextLayerStage)
         let glmPrepared = try glm.prepare()
-        try require(glmPrepared.plan.batchLanes([:]) == 8, "GLM tensor-parallel default changed")
+        try require(glmPrepared.plan.batchLanes([:]) == 1 && !glmPrepared.plan.lanesRetireAlone([:]),
+            "GLM tensor parallel served lanes without a saved width")
         let glmChild = try observed(glmPrepared.plan.localOwnerConfiguration(ownerEnvironment: [:]))
         let glmNative = glmPrepared.plan.nativeEnvironment(matrix: glmPrepared.matrixURL, ownerEnvironment: glmChild)
         for sync in [DistributedInstalledPlan.fastSynchronizationSwitch, DistributedInstalledPlan.eagerFenceCommitSwitch] {
             try require(glmChild[sync] == nil && glmNative[sync] == nil, "Diagnostic forwarding changed a GLM default")
         }
-        try require(try observed(glmPrepared.plan.localOwnerConfiguration(ownerEnvironment: [:]))[key] == "8",
-            "GLM default did not reach its owner")
         try malformedOverrideKeepsOneLane(glmPrepared.plan, matrix: glmPrepared.matrixURL)
+        for width in [2, 4, 6, 8] {
+            let sized = try InstalledFixture.make(root: f.root.appendingPathComponent("lane-glm-tp-\(width)"),
+                probe: f.probe, owner: probe, worker: f.worker,
+                generationMode: ClusterGenerationMode.tensorParallel.rawValue,
+                advertisedModes: [.pipeline, .tensorParallel],
+                registered: (ClusterGLMImageCandidate.runtimeModelID, ClusterGLMImageCandidate.textProfileID, "fixture/glm-text"),
+                adapter: .glm5NextLayerStage, batchLanes: width)
+            let sizedPrepared = try sized.prepare(), sizedPlan = sizedPrepared.plan
+            let child = try observed(sizedPlan.localOwnerConfiguration(ownerEnvironment: [:]))
+            let native = sizedPlan.nativeEnvironment(matrix: sizedPrepared.matrixURL, ownerEnvironment: child)
+            try require(sizedPlan.batchLanes([:]) == width && sizedPlan.batchLanes(child) == width
+                && native[key] == String(width) && sizedPlan.lanesRetireAlone([:]),
+                "GLM tensor parallel did not serve its saved width \(width)")
+            // A width wider than one exposes the nil/absent mismatch a singleton default would hide.
+            if width == 8 { try malformedOverrideKeepsOneLane(sizedPlan, matrix: sizedPrepared.matrixURL) }
+        }
         let gpt = try InstalledFixture.make(root: f.root.appendingPathComponent("lane-gptoss"),
             probe: f.probe, owner: probe, worker: f.worker,
             registered: ("registered_gpt_oss_20b", "registered_gpt_oss_20b_greedy_generation_v1", "fixture/gptoss"),
@@ -378,7 +393,7 @@ extension InstalledSessionCheck {
             }
         }
         try require(DistributedInstalledPlan.defaultBatchLanes(adapter: .glm5NextLayerStage, mode: .tensorParallel,
-            hasPrivateImages: false) == 8, "GLM tensor-parallel default changed")
+            hasPrivateImages: false) == 1, "GLM tensor parallel serves lanes by default without a saved width")
 
         // The coordinator-member installation also carries the locally resolved
         // scalar; both rank constructors use the same actual owner launcher.

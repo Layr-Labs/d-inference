@@ -49,10 +49,12 @@ public struct ClusterTensorParallelFamilyPlan: Codable, Equatable, Sendable {
     public let shareUnits: Int?
     /// Optional complete native request reservation; nil preserves existing families.
     public let requestAllowance: ClusterTensorParallelRequestAllowance?
-    /// What each concurrent request beyond the first adds to that reservation, at the request it quotes: the charge
-    /// the family's owner admits every lane with and reserves at LOAD for each lane of a saved width. The planner
-    /// prices a width with it (`ClusterPlacementPolicy.tensorParallelLanes`). Nil: no width is priced this way (one
-    /// request at a time, or a family whose own native quote prices its widths), and nil encodes nothing.
+    /// What each concurrent request beyond the first adds to a rank's reservation at the memory plan's request: what
+    /// the family's owner reserves at LOAD for each lane of a saved width after the first (Gemma 4: one request's whole
+    /// charge, as it admits every lane; GLM: a lane's state, its pages and its page pool's growth). It is added on top
+    /// of what the rank is priced for one request (its allowance, or the layout's state where the family states none).
+    /// The planner prices a width with it (`ClusterPlacementPolicy.tensorParallelLanes`). Nil: no width is priced this
+    /// way (one request at a time, or a family whose own native quote prices its widths), and nil encodes nothing.
     public let laneBytes: Int?
     /// Allocator-bounded weights outside the text layout, charged whole to
     /// every TP rank. Nil preserves existing layout bytes and behavior.
@@ -241,10 +243,11 @@ public struct ClusterTensorParallelLayout: Codable, Equatable, Sendable {
         }
         try f.requestAllowance?.validate(layout: layout, partialBytesPerToken: f.partialBytesPerToken)
         if let lane = f.laneBytes {
-            // A lane is one more request beside the reservation it extends: never more than that reservation's
-            // request part, and never without one.
-            guard let allowance = f.requestAllowance, (1...allowance.requestBytesExcludingCollectives).contains(lane) else {
-                throw ClusterPlacementError("Model layout's tensor-parallel lane charge needs its request allowance, within it")
+            // A lane is one more request beside the one the rank is priced for: positive and bounded, and never more
+            // than the request part of a family's own allowance where it states one (Gemma 4's whole request).
+            guard (1...ClusterWorkerLimits.capacityBytes).contains(lane),
+                  f.requestAllowance.map({ lane <= $0.requestBytesExcludingCollectives }) ?? true else {
+                throw ClusterPlacementError("Model layout's tensor-parallel lane charge is outside its bounds or its request allowance")
             }
         }
         try f.speculativeHead?.validate(layout: layout)

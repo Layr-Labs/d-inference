@@ -105,9 +105,9 @@ import DarkbloomClusterProtocol
             }
         }
         // A tensor-parallel width is saved for a row whose owner serves request-owned lanes at a priced width: Gemma 4
-        // (priced by its lane charge) keeps 2, 4, 6 or 8 under tensor_parallel_v1 with serial prefill; GLM keeps its
-        // own eight and MiMo serves one, so neither saves one.
-        for (adapter, saves) in [(ClusterRuntimeAdapter.gemma4LayerStage, true), (.glm5NextLayerStage, false), (.mimoV26LayerStage, false)] {
+        // and GLM (each priced by its lane charge) keep 2, 4, 6 or 8 under tensor_parallel_v1 with serial prefill;
+        // MiMo serves one, so it saves none.
+        for (adapter, saves) in [(ClusterRuntimeAdapter.gemma4LayerStage, true), (.glm5NextLayerStage, true), (.mimoV26LayerStage, false)] {
             let otherProfile = ClusterWorkerProfile(id: adapter.profileID, vocabularySize: profile.vocabularySize,
                 maximumPromptTokens: profile.maximumPromptTokens, maximumOutputTokens: profile.maximumOutputTokens,
                 maximumChunkTokens: profile.maximumChunkTokens, maximumContextTokens: profile.maximumContextTokens)

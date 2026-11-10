@@ -1116,27 +1116,32 @@ public enum ClusterPlacementPlanner {
             // collective buffers. Keep the larger complete reservation, then
             // add loading headroom once; adding both quotes double counts KV.
             // A width priced by lane charges (no native quote) adds each lane
-            // after the first to the family's reservation, as its LOAD does.
+            // after the first on top of what one request is priced at, as its
+            // LOAD does: the family's allowance, or the layout's state where it
+            // states none (GLM).
             let laneGrowth = quote == nil ? tp.family.laneGrowthBytes(lanes: policy.tensorParallelLanes) : 0
-            let nativeFloor = rankReserved ?? ((quote?.allowance ?? tp.family.requestAllowance)?.reservedBytes ?? 0) + laneGrowth
+            let nativeFloor = rankReserved ?? (quote?.allowance ?? tp.family.requestAllowance)?.reservedBytes ?? 0
             let requestComponents = max(state + work + extra + transient + (layout.allowanceEveryRankBytes ?? 0), nativeFloor)
+                + laneGrowth
             let requestNeed = max(memory.minimumAdmissibleBytes, requestComponents + memory.loadingHeadroomBytes)
             // Qwen27 batch LOAD reserves its complete future request while
             // reading the shard. Those bytes coexist with the two whole host
             // tensors and aligned read scratch; they are not alternate peaks.
             // A width priced by lane charges reserves its whole width the same
-            // way (Gemma 4's shard gate). One request without a batch quote
-            // keeps the load peak it had: its shard gate holds the allowance
-            // too, so it stays short by the two whole tensors and the read
-            // scratch, as before widths, and one-request plans are unchanged.
-            let batchLoadReservation = rankReserved ?? quote?.allowance.reservedBytes ?? (laneGrowth > 0 ? nativeFloor : 0)
+            // way (Gemma 4's shard gate): the family's allowance (none for GLM,
+            // whose request need decides) and every further lane. One request
+            // without a batch quote keeps the load peak it had: its shard gate
+            // holds the allowance too, so it stays short by the two whole
+            // tensors and the read scratch, as before widths, and one-request
+            // plans are unchanged.
+            let batchLoadReservation = rankReserved ?? quote?.allowance.reservedBytes ?? (laneGrowth > 0 ? nativeFloor + laneGrowth : 0)
             let loadPeak = load.need + batchLoadReservation
             // Native shard LOAD keeps the whole future head constructor/read
             // charge live, not merely its final replicated parameter arrays.
             let assistantTransient = (assistant?.loadBytes ?? 0) - (assistant?.residentBytes ?? 0)
             let allocatorHeld = load.held + batchLoadReservation + assistantTransient
             let need = max(loadPeak, load.held + requestNeed)
-            let gpu = load.held + max(state + work + extra + transient, nativeFloor)
+            let gpu = load.held + max(state + work + extra + transient, nativeFloor) + laneGrowth
             return .init(rank: rank, device: device.label,
                 firstLayer: pipelined ? own.layers.lowerBound : 0, endLayer: pipelined ? own.layers.upperBound : layout.layerCount,
                 weightsBytes: load.held, loadNeedBytes: loadPeak, requestNeedBytes: requestNeed, needBytes: need,

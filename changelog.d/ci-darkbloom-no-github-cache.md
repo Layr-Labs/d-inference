@@ -1,0 +1,5 @@
+### CI: a Darkbloom Sandbox without the Darkbloom cache uses no Actions cache
+
+- On a Darkbloom Sandbox that the plane gave no Darkbloom cache, `actions/cache` read and wrote GitHub's own Actions cache through the gateway. A `master` push on 2026-11-05 (job 127018716621) saved `.git`, a 1.69 GiB Swift build, the SwiftPM repositories and a Metal library to the `refs/heads/master` scope; `dev` pushes on 2026-11-07 and 2026-11-09 saved `.git` to `refs/heads/dev`.
+- Each routed job that uses a cache now first runs `Choose this job's Actions cache`. On a runner named `darkbloom-*` without `DARKBLOOM_CACHE_URL` it sets `CI_ACTIONS_CACHE=off`, and every `actions/cache` step and `actions/setup-node` cache then skips. Darkbloom jobs with the plane's cache, Blacksmith and GitHub-hosted jobs, and the Blacksmith-only release workflows keep their caches.
+- A restored `.git` is now discarded, before any git command reads it, if it is not a directory, holds a symbolic link or any hook but git's samples (also in `.git/modules`), or has a config that sets `core.fsmonitor` or `core.hooksPath` or includes another file. This holds on every runner.

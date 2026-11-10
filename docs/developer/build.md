@@ -1,6 +1,6 @@
 # Build The Provider And Landing
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-10
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. Backend, sidecar, console and admin builds
@@ -570,8 +570,10 @@ attempt 1), the class of the Blacksmith 12-vCPU fallback; it is not a fixed
 default. While sizes are off, the build jobs and Cluster Release Build Checks
 get this size too ([Job sizes](#job-sizes)).
 
-Jobs on Darkbloom Sandboxes use GitHub's Actions cache, not Blacksmith's
-colocated cache, so their first runs start without cached build products.
+A job on a Darkbloom Sandbox uses the plane's Darkbloom cache, which keeps
+each host's own entries, when the plane enables it for the job. Without it, the
+job uses no Actions cache at all ([CI Caching](#ci-caching)). Either way, its
+first runs on a host start without cached build products.
 Darkbloom Linux sandboxes are ARM64; the Blacksmith Linux fallback is x64. The
 decision is fixed for the run: **Re-run failed jobs** reuses it, so turn routing
 off and use **Re-run all jobs** to move a run back to Blacksmith. See the
@@ -660,6 +662,29 @@ then `master`'s. Blacksmith runners keep their own colocated cache, so an entry
 saved there never reaches a Darkbloom Sandbox, and the reverse: a push warms
 the caches of the runners it ran on.
 
+Every cache step is skipped on a Darkbloom Sandbox that the plane gave no
+Darkbloom cache. When the plane enables the cache, the guest sets
+`DARKBLOOM_CACHE_URL` (the cache server on the guest's loopback) and its
+preload sends the job's `actions/cache` calls there. Without it, the guest
+sets nothing, and `actions/cache` would read and write GitHub's own Actions
+cache through the gateway: a `master` push on 2026-11-05 (job 127018716621)
+saved `.git`, a 1.69 GiB Swift build, the SwiftPM repositories and a Metal
+library to GitHub's `refs/heads/master` scope from a Darkbloom host. So the
+first step of every routed job that uses a cache, `Choose this job's Actions
+cache`, sets `CI_ACTIONS_CACHE=off` when the runner's name starts with
+`darkbloom-` (the plane names each runner `darkbloom-<id>`) and
+`DARKBLOOM_CACHE_URL` is empty. Every `actions/cache`, `actions/cache/restore`
+and `actions/cache/save` step starts its condition with
+`env.CI_ACTIONS_CACHE != 'off'`, and `actions/setup-node` gets `cache: ''`.
+Blacksmith and GitHub-hosted runners never set the flag and keep their caches;
+so do the release workflows, which run only on Blacksmith and do not run the
+step. The routed jobs are those of `provider-tests.yml`, Release Integrity and
+Docs Lint in `ci-master.yml`, the pull-request warm of
+`provider-release-cache.yml`, and the `desktop.yml` and `landing.yml` checks,
+with the composite actions `provider-ci-build` and `provider-release-build`;
+`scripts/test-provider-ci-workflow.py` checks that every cache step anywhere
+under `.github` is gated and that each routed job sets the flag first.
+
 The fixture caches hold downloads pinned by SHA-256, so their keys hash the
 pins, not the run or the branch. The scripts use a restored entry only if its
 bytes still have the pinned digest, and download any other; a restore never
@@ -702,8 +727,13 @@ build per lane and UTC day; other runners key the build by commit.
 Every checkout uses the same five steps, after the fixed-path step in the jobs
 of the test products ([Build Once](#build-once)). The job computes the UTC day
 (`date -u +%F`) and restores `.git`. A step that cannot fail then deletes the
-restored `.git` unless `git rev-parse --verify HEAD` and
-`git fsck --connectivity-only` accept it. One ordinary `actions/checkout`
+restored `.git` if it could run anything at checkout: if it is not a directory,
+holds a symbolic link, holds any hook but git's `*.sample` files (in `.git` or
+in a submodule's `.git/modules` directory), or has a config that sets
+`core.fsmonitor` or `core.hooksPath` or includes another file. It reads these
+with `find` and `git config --file`, which run nothing, before any git command
+reads the `.git`. It then deletes the `.git` unless `git rev-parse --verify HEAD`
+and `git fsck --connectivity-only` accept it. One ordinary `actions/checkout`
 follows: it fetches only the objects `.git` lacks and reuses the submodule
 repositories under `.git/modules`, and its failure fails the job. No step uses
 `continue-on-error` (only the report-only upload of the resource samples
@@ -730,7 +760,7 @@ uses both settings.
 ```mermaid
 flowchart LR
   W[UTC day] --> R["Restore .git<br/>(today, else newest)"]
-  R --> V{"git fsck<br/>accepts .git?"}
+  R --> V{"no hook, no hook or monitor config,<br/>and git fsck accepts .git?"}
   V -- no --> D[Delete .git] --> K
   V -- yes --> K[actions/checkout]
   K --> G{"master or dev push,<br/>no exact hit?"}

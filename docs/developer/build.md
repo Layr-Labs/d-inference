@@ -378,16 +378,16 @@ again; the next failure opens a new one.
 
 A full run takes about 13 minutes and 110 macOS job-minutes: about 31 for the
 build jobs, Cluster Release Build Checks and Cluster GPU Tests, and about 79
-for the 9 blocking test shards. Every macOS job but Cluster GPU Tests is
-routed, and falls back to Blacksmith when the plane grants no Mac.
+for the 9 blocking test shards. Every macOS job but Cluster GPU Tests shard 2
+is routed, and falls back to Blacksmith when the plane grants no Mac.
 
 ### Build Once
 
 Each lane builds its debug test products once, on a large runner, and its
 test jobs run them with `swift test --skip-build`. No test job compiles the
-provider or the cluster packages. Every job below but `test-cluster-gpu` reads
-its runner from the route ([CI Runner Routing](#ci-runner-routing)). Its
-fallback is `blacksmith-12vcpu-macos-27`. While job sizes are off, every job
+provider or the cluster packages. Every job below reads its runner from the
+route ([CI Runner Routing](#ci-runner-routing)), except shard 2 of
+`test-cluster-gpu`. Its fallback is `blacksmith-12vcpu-macos-27`. While job sizes are off, every job
 asks without a size ([Job sizes](#job-sizes)).
 
 | Job | Runner | Needs | Does |
@@ -397,7 +397,7 @@ asks without a size ([Job sizes](#job-sizes)).
 | `cluster-release-checks` (Cluster Release Build Checks) | routed | - | Compiles the release build of the worker capability and prefill schedule checks, and runs them |
 | `test-provider`, shards 1 and 2 | routed | `build-provider` | The provider selections, Prompt Parity, the native gates, the audit and coverage |
 | `test-cluster`, shards 1 to 5 | routed | `build-cluster` | The blocking cluster selections |
-| `test-cluster-gpu`, shards 1 to 3 | `blacksmith-12vcpu-macos-27`, not routed | `build-cluster` | The non-blocking cluster GPU selections |
+| `test-cluster-gpu`, shards 1 to 3 | shards 1 and 3 routed; shard 2 `blacksmith-12vcpu-macos-27`, not routed | `build-cluster` | The non-blocking cluster GPU selections |
 | `test-cluster-focused`, shards 1 and 2 | routed | - | The focused runner scripts and the pairing, diagnostics and placement flow runners (shard 1); the stage metadata, provisioning, onboarding and console runners (shard 2) |
 
 The cluster lane builds in a job of its own, so the cluster tests start as soon
@@ -490,7 +490,7 @@ shard the lane its matrix entry names, `matrix.lane`.
 
 | Workflow | Routed jobs | Fallback |
 |---|---|---|
-| `provider-tests.yml` (lanes requested by `provider-plan.yml`) | `test-provider` (lanes `test-provider-1` and `test-provider-2`, one per shard), `test-cluster` (lanes `test-cluster-1` for shard 1, `test-cluster-2` for shards 2 and 3, and `test-cluster-3` for shards 4 and 5), `test-cluster-focused` (one lane, `test-cluster-focused`, requested for both shards), `build-cluster`, `build-provider`, `cluster-release-checks` | `blacksmith-12vcpu-macos-27` |
+| `provider-tests.yml` (lanes requested by `provider-plan.yml`) | `test-provider` (lanes `test-provider-1` and `test-provider-2`, one per shard), `test-cluster` (lanes `test-cluster-1` for shard 1, `test-cluster-2` for shards 2 and 3, and `test-cluster-3` for shards 4 and 5), `test-cluster-focused` (one lane, `test-cluster-focused`, requested for both shards), `build-cluster`, `build-provider`, `cluster-release-checks`, `test-cluster-gpu` (lanes `test-cluster-gpu-1` and `test-cluster-gpu-3`, one per shard; shard 2 is not routed) | `blacksmith-12vcpu-macos-27` |
 | `ci-master.yml` (lanes requested by `provider-plan.yml`) | `release-integrity`, `docs` | `blacksmith-4vcpu-ubuntu-2404` |
 | `docs-impact.yml` | `commit-signatures`, `docs-impact` | `blacksmith-4vcpu-ubuntu-2404` |
 | `landing.yml`, `desktop.yml`, `nightly-linear-package.yml` | `check`, `frontend`, `test` | `blacksmith-4vcpu-ubuntu-2404` |
@@ -559,11 +559,11 @@ keep their fallback, so a push saves caches on Darkbloom only from an admitted
 branch and only in routed lanes ([CI Caching](#ci-caching)).
 Release, signing, publication, model registration, review automation and
 `master` or dispatched cache warming keep literal Blacksmith labels. In CI,
-every macOS job but Cluster GPU Tests reads its lane of the plan's one route
-request (the plane routes a run attempt once); the plan's own bookkeeping (the
-tree lookup, the component choice), the CI plan checks and the `Provider Tests`
-gate run on `ubuntu-24.04`. Cluster GPU Tests run on `blacksmith-12vcpu-macos-27` and are
-not routed ([Job sizes](#job-sizes)). A lane without a size gets the
+every macOS job but Cluster GPU Tests shard 2 reads its lane of the plan's one
+route request (the plane routes a run attempt once); the plan's own bookkeeping
+(the tree lookup, the component choice), the CI plan checks and the
+`Provider Tests` gate run on `ubuntu-24.04`. Cluster GPU Tests shard 2 runs on
+`blacksmith-12vcpu-macos-27` and is not routed ([Job sizes](#job-sizes)). A lane without a size gets the
 approval's pinned image size for its profile (one for macOS, one for Linux).
 The macOS one measured 12 vCPU / 32 GiB on 2026-11-05 (run 42105290034,
 attempt 1), the class of the Blacksmith 12-vCPU fallback; it is not a fixed
@@ -623,12 +623,15 @@ and memory pressure stayed normal.
 | `build-cluster` | 1 | 8x16 | 10.91; a cold build takes 5 to 10% longer on 8 vCPUs | asks without a size |
 | `build-provider` | 1 | 12x32 | 17.50; 8x24 is not signed, and a cold build takes 20% longer on 8 vCPUs | asks without a size |
 | `cluster-release-checks` | 1 | 8x16 | 9.65 with a reused build; a cold release compile (run 42041608780: 11.33 GiB, 11.4 busy vCPUs at p95 of 12) takes 26% longer on 4 vCPUs and 5.5% on 8 | asks without a size |
+| `test-cluster-gpu-1` (GPU shard 1) | 1 | 4x24 | 14.33 in run 42737118357, on Blacksmith with 48 GiB; at most 2.6 busy vCPUs | asks without a size |
+| `test-cluster-gpu-3` (GPU shard 3) | 1 | 4x24 | 14.72 in run 42737118357, on Blacksmith with 48 GiB | asks without a size |
 
-A run that tests every component asks for 12 macOS jobs, while sizes are on
-or off. The three Cluster GPU Tests shards are not routed: they run on `blacksmith-12vcpu-macos-27` (12 vCPU, 48 GiB). Shard 2 uses
-41.99 GiB, which no signed size holds, and one lane carries one size for every
-shard (shard 1 used 17.40 GiB when it ran the whole real-geometry rows check;
-shards 1 and 3 each run half of it now).
+A run that tests every component asks for 14 macOS jobs, while sizes are on
+or off. Cluster GPU Tests shard 2 is not routed: it runs on
+`blacksmith-12vcpu-macos-27` (12 vCPU, 48 GiB). It uses 41.99 GiB (41.63 in
+run 42737118357, 34.26 of it in the one process of `paged-verify-bench`), which
+no signed size holds. Shards 1 and 3, which each run half of the real-geometry
+rows check, have a lane each and fall back alone.
 
 A lane sent with a size uses a grant only when the grant's labels are its
 profile's labels with the last one qualified by the size, such as

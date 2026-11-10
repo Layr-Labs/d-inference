@@ -95,8 +95,9 @@ def built(component):
 # come first, critical path first. Two shards share each of the lanes
 # test-cluster-2 (runtime shards 2 and 3), test-cluster-3 (runtime shards 4
 # and 5) and test-cluster-focused, lanes the approval names. Then the build
-# jobs and the release build checks. No lane is `required`: while sizes are
-# off, every lane asks without a size.
+# jobs and the release build checks, then the non-blocking GPU shards 1 and
+# 3. No lane is `required`: while sizes are off, every lane asks without a
+# size.
 PLAN_LANES = {
     "test-cluster-2": (requested("cluster", 2), "12x32", False),
     "test-cluster-3": (requested("cluster", 2), "4x24", False),
@@ -107,7 +108,11 @@ PLAN_LANES = {
     "build-cluster": (built("cluster"), "8x16", False),
     "build-provider": (built("provider"), "12x32", False),
     "cluster-release-checks": (requested("cluster"), "8x16", False),
+    "test-cluster-gpu-1": (requested("cluster"), "4x24", False),
+    "test-cluster-gpu-3": (requested("cluster"), "4x24", False),
 }
+# The lanes of the blocking test jobs, which the cap keeps first.
+BLOCKING_TESTS = [lane for lane in PLAN_LANES if lane.startswith("test-") and "-gpu-" not in lane]
 # The request CI sends while sizes are off, with every lane's jobs running: byte
 # for byte the request of the lane table without sizes.
 UNSIZED_PLAN_REQUEST = [{"lane": "test-cluster-2", "profile": "macos_arm64", "count": 2},
@@ -118,10 +123,13 @@ UNSIZED_PLAN_REQUEST = [{"lane": "test-cluster-2", "profile": "macos_arm64", "co
                         {"lane": "test-provider-1", "profile": "macos_arm64", "count": 1},
                         {"lane": "build-cluster", "profile": "macos_arm64", "count": 1},
                         {"lane": "build-provider", "profile": "macos_arm64", "count": 1},
-                        {"lane": "cluster-release-checks", "profile": "macos_arm64", "count": 1}]
-# Cluster GPU Tests are not routed: shard 2 uses more memory than any signed
-# size, and one lane would carry one size for every shard.
-UNROUTED_MACOS = {("provider-tests.yml", "test-cluster-gpu")}
+                        {"lane": "cluster-release-checks", "profile": "macos_arm64", "count": 1},
+                        {"lane": "test-cluster-gpu-1", "profile": "macos_arm64", "count": 1},
+                        {"lane": "test-cluster-gpu-3", "profile": "macos_arm64", "count": 1}]
+# A shard that keeps a literal runner in a job whose other shards each read a
+# lane of their own: Cluster GPU Tests shard 2 uses more memory than any
+# signed size.
+LITERAL_SHARD = {"test-cluster-gpu": "2"}
 MASTER_LINUX_LANES = (f"release-integrity linux_arm64 {LINUX_FALLBACK}", f"docs linux_arm64 {LINUX_FALLBACK}")
 # (workflow, job): the expression its runs-on reads.
 CI_ROUTED = {
@@ -129,6 +137,7 @@ CI_ROUTED = {
     ("provider-tests.yml", "test-cluster-focused"): "inputs.routes",
     ("provider-tests.yml", "build-cluster"): "inputs.routes", ("provider-tests.yml", "build-provider"): "inputs.routes",
     ("provider-tests.yml", "cluster-release-checks"): "inputs.routes",
+    ("provider-tests.yml", "test-cluster-gpu"): "inputs.routes",
     ("ci-master.yml", "release-integrity"): "needs.plan.outputs.routes",
     ("ci-master.yml", "docs"): "needs.plan.outputs.routes",
 }
@@ -144,7 +153,7 @@ UNROUTED = ("release-swift.yml", "release-provider.yml", "release-dev-branch.yml
             "threat-model-review.yml", "bedrock-smoke.yml", "claude.yml", "codex.yml")
 # The plane grants a lane whole, so each shard of these jobs reads a lane of its
 # own, `<job>-<shard>`, and gets a free sandbox even when the others fall back.
-SHARDED = {"test-provider"}
+SHARDED = {"test-provider", "test-cluster-gpu"}
 # These jobs' matrix names each shard's lane (`include: - {shard: N, lane: L}`);
 # a lane that several shards read is requested for all of them.
 LANE_MATRIX = {"test-cluster"}
@@ -221,7 +230,9 @@ def job_lanes(name, job):
     shard's matrix lane when LANE_MATRIX, else its own."""
     if name in LANE_MATRIX:
         return list(dict.fromkeys(matrix_lanes(job)))
-    return [f"{name}-{shard}" for shard in matrix_shards(job)] if name in SHARDED else [name]
+    if name in SHARDED:
+        return [f"{name}-{shard}" for shard in matrix_shards(job) if shard != LITERAL_SHARD.get(name)]
+    return [name]
 
 
 def requested_lanes(workflow, routed):
@@ -675,25 +686,27 @@ class RouteStepTests(unittest.TestCase):
 
     def test_macos_cap_keeps_the_test_lanes_first_with_sizes_on_or_off(self):
         lanes = plan_lanes_text()
-        tests = [lane for lane in PLAN_LANES if lane.startswith("test-")]
-        cases = (("on", "", list(PLAN_LANES)), ("on", "12", list(PLAN_LANES)),
+        every, tests = list(PLAN_LANES), BLOCKING_TESTS
+        cases = (("on", "", every), ("on", "14", every),
+                 # The non-blocking GPU shards are the first to keep their fallback.
+                 ("on", "13", every[:-1]), ("on", "12", every[:-2]),
                  ("on", "11", [*tests, "build-cluster", "build-provider"]),
                  ("on", "10", [*tests, "build-cluster"]), ("on", "9", tests),
                  # A lane that does not fit is passed over; a later, smaller one can still fit.
                  ("on", "3", ["test-cluster-2", "test-provider-2"]),
-                 ("", "", list(PLAN_LANES)), ("", "11", [*tests, "build-cluster", "build-provider"]),
+                 ("", "", every), ("", "12", every[:-2]), ("", "11", [*tests, "build-cluster", "build-provider"]),
                  ("", "9", tests))
         self.assert_cap_cases(lanes, cases, held=())
 
     def test_a_required_lane_keeps_its_fallback_while_sizes_are_off(self):
         # No CI lane is `required`; the build lanes are marked so here.
         builds = [lane for lane in PLAN_LANES if not lane.startswith("test-")]
-        tests = [lane for lane in PLAN_LANES if lane.startswith("test-")]
+        tests = BLOCKING_TESTS
         lanes = "".join(line.rstrip() + (" required" if line.split()[0] in builds else "") + "\n"
                         for line in plan_lanes_text().splitlines() if line)
         cases = (("on", "", list(PLAN_LANES)), ("on", "11", [*tests, "build-cluster", "build-provider"]),
                  # Held lanes take no place under the cap.
-                 ("", "", tests), ("", "9", tests))
+                 ("", "", [lane for lane in PLAN_LANES if lane not in builds]), ("", "9", tests))
         self.assert_cap_cases(lanes, cases, held=builds)
 
     def assert_cap_cases(self, lanes, cases, held):
@@ -883,7 +896,11 @@ class RouteWorkflowTests(unittest.TestCase):
                 else:
                     lane = f"'{name}'"
                 read |= set(job_lanes(name, job))
-                self.assertEqual(job_field(job, "runs-on"), f"${{{{ fromJSON({source})[{lane}] }}}}")
+                routed = f"fromJSON({source})[{lane}]"
+                if name in LITERAL_SHARD:
+                    self.assertIn(LITERAL_SHARD[name], matrix_shards(job))
+                    routed = f"matrix.shard == {LITERAL_SHARD[name]} && '{MACOS_FALLBACK}' || {routed}"
+                self.assertEqual(job_field(job, "runs-on"), f"${{{{ {routed} }}}}")
                 # A lane is requested exactly when its job runs; a shared lane
                 # for every job of its matrix that reads it.
                 if filename == "provider-tests.yml":
@@ -916,10 +933,7 @@ class RouteWorkflowTests(unittest.TestCase):
                 if runner and "fromJSON(" not in runner:
                     with self.subTest(workflow=filename, job=name):
                         # Only bookkeeping without tests stays GitHub-hosted;
-                        # every macOS job but the unrouted ones reads its lane.
-                        if (filename, name) in UNROUTED_MACOS:
-                            self.assertEqual(runner, MACOS_FALLBACK)
-                            continue
+                        # every macOS job reads its lane.
                         self.assertEqual(runner, "ubuntu-24.04")
                         self.assertIn(name, ("tested", "components", "ci-plan-checks", "provider-test-gate",
                                              "hourly-failures"))
@@ -927,15 +941,18 @@ class RouteWorkflowTests(unittest.TestCase):
     def test_ci_sizes_every_routed_macos_job_and_asks_for_the_test_lanes_first(self):
         sizes = {size for _, size, _ in PLAN_LANES.values()}
         self.assertLessEqual(sizes, VALID_SIZES)
-        # 12 macOS jobs ask, with sizes on or off: the 9 blocking test jobs,
-        # then the 2 build jobs and the release build checks. No lane is
-        # `required`, so none keeps Blacksmith while sizes are off.
-        tests = [lane for lane in PLAN_LANES if lane.startswith("test-")]
+        # 14 macOS jobs ask, with sizes on or off: the 9 blocking test jobs,
+        # then the 2 build jobs and the release build checks, then GPU shards
+        # 1 and 3. No lane is `required`, so none keeps Blacksmith while sizes
+        # are off.
+        tests = BLOCKING_TESTS
         self.assertFalse(any(required for _, _, required in PLAN_LANES.values()))
-        self.assertEqual(sum(lane_jobs(count) for count, _, _ in PLAN_LANES.values()), 12)
+        self.assertEqual(sum(lane_jobs(count) for count, _, _ in PLAN_LANES.values()), 14)
         self.assertEqual(sum(lane_jobs(PLAN_LANES[lane][0]) for lane in tests), 9)
-        # The cap keeps lanes in table order: every test lane comes before the build lanes.
+        # The cap keeps lanes in table order: the blocking test lanes, the
+        # build lanes, then the non-blocking GPU shards.
         self.assertEqual(list(PLAN_LANES)[:len(tests)], tests)
+        self.assertEqual(list(PLAN_LANES)[-2:], ["test-cluster-gpu-1", "test-cluster-gpu-3"])
 
     def test_release_and_credentialed_workflows_keep_literal_runners(self):
         for filename in UNROUTED:

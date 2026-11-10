@@ -1124,8 +1124,10 @@ public enum ClusterPlacementPlanner {
             // Qwen27 batch LOAD reserves its complete future request while
             // reading the shard. Those bytes coexist with the two whole host
             // tensors and aligned read scratch; they are not alternate peaks.
-            // A missing batch quote preserves all existing family behavior.
-            let batchLoadReservation = rankReserved ?? quote?.allowance.reservedBytes ?? 0
+            // A width priced by lane charges reserves its whole width the same
+            // way (Gemma 4's shard gate). One request without a batch quote
+            // keeps the load peak it had.
+            let batchLoadReservation = rankReserved ?? quote?.allowance.reservedBytes ?? (laneGrowth > 0 ? nativeFloor : 0)
             let loadPeak = load.need + batchLoadReservation
             // Native shard LOAD keeps the whole future head constructor/read
             // charge live, not merely its final replicated parameter arrays.

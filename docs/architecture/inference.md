@@ -7648,7 +7648,10 @@ Two pricing sources size it:
   the layout beside the allowance, so a metadata-only layout carries neither.
 - **The planner.** With `ClusterPlacementPolicy.tensorParallelLanes`, each
   rank's native reservation grows by the lane charge for every lane after the
-  first. The placement is the one chosen for one request, its leader and split
+  first. LOAD holds that whole reservation while it reads the shard, so it is
+  in the rank's load peak too, beside two whole tensors and the read scratch,
+  as a Qwen TP batch quote's is. One lane keeps the load peak it had. The
+  placement is the one chosen for one request, its leader and split
   unchanged. `ClusterPlacementTensorWidth` tries 8, 6, 4 and 2 and saves the
   first that both Macs admit now (`ClusterPlacementCandidate.admitted`). When
   none fits, the setup saves no width and serves one request at a time.
@@ -7658,9 +7661,13 @@ Two pricing sources size it:
   M5 Ultra pair before it ships.
 - **LOAD.** Both ranks reserve what the planner priced:
   `Gemma4TensorParallelRequestBudget.reservedBytes(lanes:)`, the allowance and
-  one more request's charge for each lane after the first. Each lane is still
-  admitted against live memory, and a lane the host cannot hold is refused
-  alone.
+  one more request's charge for each lane after the first. The shard gate
+  asks for it before every tensor, beside the rest of the shard, two whole
+  tensors, the read scratch and the loading headroom. A load peak without it
+  is about 0.75 GB a rank short, so on 24-48 GB Macs about one memory-bound
+  pair in seven would be planned at a width that LOAD then refuses. Each lane
+  is still admitted against live memory, and a lane the host cannot hold is
+  refused alone.
 - **One number.** The setup screen (`ClusterSetupPlanning.loads`), both owners'
   lanes, the slot's `max_concurrency` and the leader's local API all read
   `DistributedInstalledPlan.batchLanes`, which returns the saved width.

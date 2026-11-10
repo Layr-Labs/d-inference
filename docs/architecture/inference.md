@@ -2314,10 +2314,16 @@ request has no client. It samples one greedy token, which is discarded, and it
 reads and writes the prefix tiers under the cache scope of the request it
 follows. `EngineV2.submitContinuation` admits it only while the engine has no
 other stream. Any arriving request cancels it, and it stops by itself after
-`turnContinuationMaximumSeconds` (60 s). A continuation that is cancelled or
-runs out of time publishes the positions it finished to the resident bank
-only. The complete-checkpoint store takes nothing from a cancelled request,
-so a slot with only that store loses the work.
+`turnContinuationMaximumSeconds` (60 s). Its own prefix-store transfers do not
+cancel it: the store's restore and checkpoint write still count as device work
+on the service budget and still invalidate idle evidence, but the session is
+started with `toleratesPrefixStoreTransfers` and
+`IdleCalibrationCoordinator.cancel(prefixStoreTransfer:)` leaves it running.
+Every other device activity ends it, as it ends a calibration session. A
+continuation that is cancelled or runs out of time publishes the positions it
+finished to the resident bank only. The complete-checkpoint store takes
+nothing from a cancelled request, so a slot with only that store loses the
+work.
 
 It is a warm-up cell, so calibration takes no measurement from it, and it is
 left out of the prefix-cache savings counter and the reuse telemetry. Its one
@@ -2329,7 +2335,8 @@ prefilled every token and stopped by itself.
 and nothing bounds that wait except the time the engine takes to cancel a
 row. The two renders run off the request path at utility priority. Idle GPU
 time is spent after each reply that has a cell to fill, whether or not a
-follow-up arrives. These costs have not been measured on the provider path.
+follow-up arrives. These costs have not been measured on a shipped
+configuration.
 
 The key is a `DARKBLOOM_CBV2_*` key: it enters the complete-checkpoint
 numerics fingerprint and disqualifies reviewed serving and deadline profiles.

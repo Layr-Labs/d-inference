@@ -920,6 +920,12 @@ checkpoint ownership remain authoritative. Nested scopes release independently;
 ending a transfer never makes a previously captured calibration guard valid
 again (`SSDPrefixCache`, `SSDHybridCheckpointStore`,
 `provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/WholeMacUnboundedActivity.swift`).
+The store's scopes begin as prefix-store transfers
+(`beginUnboundedActivity(prefixStoreTransfer: true)`). Beginning one cancels an
+idle calibration session. It does not cancel a
+[turn continuation](inference.md#turn-continuation) session, because that
+session's own hidden request makes these transfers; the activity still counts
+against the idle gate and still invalidates calibration evidence.
 A provider-staged complete-checkpoint import is the exception: it creates its
 destinations already available from host bytes and evaluates or fences none of
 them, so staging never waits for MLX-Swift's process-wide `evalLock`, which the

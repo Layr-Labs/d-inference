@@ -113,4 +113,40 @@ struct IdleCalibrationCoordinatorTests {
         #expect(coordinator.cancellationSource == "request")
         foreground.finish()
     }
+
+    @Test("a prefix-store transfer ends a session unless the session tolerates it")
+    func prefixStoreTransfersEndOnlySessionsThatDoNotTolerateThem() async throws {
+        let budget = WholeMacServiceBudget()
+        let coordinator = budget.idleCalibration
+        let probe: @Sendable () async -> Void = {
+            while !Task.isCancelled { try? await Task.sleep(for: .milliseconds(1)) }
+        }
+        // A turn continuation: its own restore and checkpoint write do not end it.
+        let tolerant = try #require(coordinator.startIfIdle(
+            isIdle: { budget.isIdle }, toleratesPrefixStoreTransfers: true, operation: probe))
+        let transfer = budget.beginUnboundedActivity(prefixStoreTransfer: true)
+        #expect(!tolerant.isCancelled && coordinator.hasSession && coordinator.cancellationSource == nil)
+        // The transfer is still device work to everything else on the Mac.
+        #expect(!budget.isIdle)
+        transfer.finish()
+        #expect(budget.isIdle)
+        // Any other device work ends it, and so would an arrival.
+        let loading = budget.beginUnboundedActivity()
+        await tolerant.value
+        #expect(coordinator.cancellationSource == "device work" && !coordinator.hasSession)
+        loading.finish()
+
+        let arrival = try #require(coordinator.startIfIdle(
+            isIdle: { budget.isIdle }, toleratesPrefixStoreTransfers: true, operation: probe))
+        let lease = await coordinator.beginForeground()
+        #expect(arrival.isCancelled && coordinator.cancellationSource == "request")
+        lease.finish()
+
+        // Calibration and shape warmup measure rates: a transfer ends them.
+        let measuring = try #require(coordinator.startIfIdle(isIdle: { budget.isIdle }, operation: probe))
+        let later = budget.beginUnboundedActivity(prefixStoreTransfer: true)
+        await measuring.value
+        #expect(coordinator.cancellationSource == "device work" && !coordinator.hasSession)
+        later.finish()
+    }
 }

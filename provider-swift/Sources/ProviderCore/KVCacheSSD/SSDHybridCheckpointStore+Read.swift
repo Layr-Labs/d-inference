@@ -81,7 +81,7 @@ extension SSDHybridCheckpointStore {
         reserveReadScratch: @Sendable () throws -> CBv2CompleteCheckpointIOLease,
         makeImportPlan: @Sendable (CBv2CompleteCheckpointManifest) throws -> SSDCheckpointImportPlan
     ) async -> SSDPrefixCacheStageResult {
-        let deviceActivity = kvBudget?.serviceBudget.beginUnboundedActivity()
+        let deviceActivity = kvBudget?.serviceBudget.beginUnboundedActivity(prefixStoreTransfer: true)
         defer { deviceActivity?.finish() }
         let budget = SSDCheckpointReadBudget(
             maximumBytes: config.maxReadBytes, maximumMillis: config.maxStageMillis,

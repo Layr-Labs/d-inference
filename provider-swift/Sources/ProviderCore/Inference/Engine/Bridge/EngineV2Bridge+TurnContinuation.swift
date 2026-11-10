@@ -5,10 +5,12 @@ import MLXLMCommon
 extension EngineV2Bridge {
     private static let turnContinuationLogger = Logger(label: "darkbloom.TurnContinuation")
 
-    /// The idle work one reply may start. A continuation that runs out of time
-    /// or is cancelled keeps the canonical positions it finished in the
-    /// resident bank only: the complete-checkpoint store takes nothing from a
-    /// cancelled request.
+    /// The idle work one reply may start. A continuation that completes
+    /// publishes the canonical positions it prefilled the way a served request
+    /// does, to the complete-checkpoint store when the engine has one. One
+    /// that runs out of time or is cancelled keeps the positions it finished
+    /// in the resident bank only: the store takes nothing from a cancelled
+    /// request.
     static let turnContinuationMaximumSeconds = 60.0
 
     private enum TurnContinuationOutcome: String {
@@ -48,7 +50,12 @@ extension EngineV2Bridge {
             pendingSubmissionIDs.isEmpty, calibrationPosturePermitsWork(),
             let serviceBudget else { return }
         let sourceTokens = source.count
-        let task = serviceBudget.idleCalibration.startIfIdle(isIdle: { serviceBudget.isIdle }) { [weak self] in
+        // The hidden request stages from the prefix store and writes to it.
+        // Those transfers are device work, which ends an idle session; this
+        // one must outlive its own. Any arrival still ends it.
+        let task = serviceBudget.idleCalibration.startIfIdle(
+            isIdle: { serviceBudget.isIdle }, toleratesPrefixStoreTransfers: true
+        ) { [weak self] in
             await self?.runTurnContinuation(tokens: tokens, sourceTokens: sourceTokens, cacheScope: cacheScope)
         }
         guard let task else { return }
@@ -81,9 +88,13 @@ extension EngineV2Bridge {
         let elapsed = ContinuousClock.now - started
         let elapsedMs = Int(elapsed.components.seconds) * 1000
             + Int(elapsed.components.attoseconds / 1_000_000_000_000_000)
-        // Counts and timing only; never a token or any text.
+        // What first cancelled this session, when anything did: "request" or
+        // "device work". The time limit and an admission refusal leave it out.
+        let cancelledBy = outcome == .ended ? serviceBudget?.idleCalibration.cancellationSource : nil
+        let cancellation = cancelledBy.map { ", session cancelled by \($0)" } ?? ""
+        // Counts, timing and that label only; never a token or any text.
         Self.turnContinuationLogger.info(
-            "Turn continuation \(modelId): \(outcome.rawValue), \(tokens.count) tokens after a \(sourceTokens)-token prompt in \(elapsedMs) ms")
+            "Turn continuation \(modelId): \(outcome.rawValue), \(tokens.count) tokens after a \(sourceTokens)-token prompt in \(elapsedMs) ms\(cancellation)")
     }
 
     private func runTurnContinuationRequest(

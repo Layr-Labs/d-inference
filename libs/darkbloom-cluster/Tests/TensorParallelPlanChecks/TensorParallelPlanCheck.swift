@@ -812,7 +812,18 @@ func checkStopRule() {
     }
     let pages = R.reconcile(rank: 1, localFinish: .length, localCount: 9, localStopped: true, rank0Finish: .eos, rank0Count: 10)
     check(pages.finish == .eos && pages.count == 9, "pages that ran out too late report rank 0's EOS: \(pages)")
-    // Rank 0 never holds fewer tokens than a rank that stopped: that differs, and is kept as it is.
+    // Pages that ran out as the owner stopped the request (no step carried
+    // rank 0's flag, or rank 0 read rank 1's length stop after its owner's
+    // answer): rank 1 reports rank 0's client stop, its owner's then, with
+    // rank 0's count where rank 0 holds fewer.
+    for (count, kept) in [(8, 8), (9, 9)] {
+        let crossed = R.reconcile(rank: 1, localFinish: .length, localCount: 9, localStopped: true,
+                                  rank0Finish: .clientStop, rank0Count: count)
+        check(crossed.finish == .clientStop && crossed.count == kept,
+              "pages that ran out as the owner stopped report rank 0's client stop: \(crossed)")
+    }
+    // Rank 0 at its stop token or its length never holds fewer tokens than a
+    // rank that stopped: that differs, and is kept as it is.
     let diverged = R.reconcile(rank: 1, localFinish: .clientStop, localCount: 9, localStopped: true, rank0Finish: .eos, rank0Count: 8)
     check(diverged.finish == .clientStop && diverged.count == 9, "a rank 0 behind a stopped rank 1 is not adopted: \(diverged)")
     // Rank 0 never changes its outcome.

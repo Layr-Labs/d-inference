@@ -1185,12 +1185,15 @@ Mac's words: "This Mac's memory can't hold this request right now ..."), and
 other requests keep running. In every mode, a request one Mac's memory refuses
 while it runs ends alone: the client gets the same 503 (or, once a stream has
 started, an error chunk with `code` `request_exceeds_node_budget` and the same
-words), and the pair keeps serving. In Gemma 4's pipeline with lanes (its
-default), a very long request needs about twice its memory on each Mac to run
-to its end, because each check while it runs asks for its whole share again:
-about 34 GB a Mac at 262,144 tokens and 20 GB at 131,072, where it is admitted
-with about 19 GB and 12 GB. On a Mac with less, it is admitted and then refused
-that way partway through its prompt; tensor parallel serves it without that.
+words), and the pair keeps serving. Gemma 4's pipeline serves one request at a
+time with the one-chunk lookahead, its default. With lanes (a setup that
+prefills serially), a very long request needs about twice its memory on each
+Mac, plus about 8 GB, to run to its end: each check while it runs asks for its
+whole share again, and the prompt prefix cache's copies of its prompt come on
+top. That is about 24 GB a Mac at 131,072 tokens and 38 GB at 262,144, where it
+is admitted with about 12 GB and 19 GB. On a Mac with less free memory, it is
+admitted and then refused that way partway through its prompt, a 503 for that
+request alone; one request at a time and tensor parallel serve it without that.
 The pipeline modes of every other model
 with a native context (GLM-5.3-Flash, and the 27B where its policy allows
 them) keep the 32,768 + 32,768-token request. Their leader refuses a longer

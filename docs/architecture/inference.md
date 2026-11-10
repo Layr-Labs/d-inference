@@ -5537,25 +5537,38 @@ it alone:
   READY's capacity covers the longest request, and each stage's serving
   context is searched up to 262,144; the pair serves the smaller of its two
   stages' contexts. A pipeline with lanes keeps its READY figure, as every
-  lane owner of the stage modes does. With lanes (the Gemma pipeline's
-  default four) a long request needs about twice its charge: the lanes'
-  running check (`QwenResidentRuntime+Batch.swift`, `memoryRefused`) asks on
-  every pass for the first lane's whole charge, the others' state and the
-  loading headroom, with no credit for what the lanes already allocated (the
-  one-request path's `requireContinuing` gives it), where the lane's
-  reservation asked the charge and the headroom once. A stage's charge is
-  4.2 GB at 65,536 tokens, 7.8 GB at 131,072 and 15.0 GB at 262,144, so a lane
-  is admitted with about 8.5, 12.1 and 19.3 GB admissible on a Mac with
-  96 GiB or more (a 4.3 GB headroom; 2.9 GB at 64 GiB) and runs to its end
-  with about 12.6, 19.9 and 34.4 GB. In between, it is refused mid-prefill
-  with the memory 503, never a crash, and the serving context the pair
-  advertises (the reservation's) overstates what a lane survives. The
-  M5 Ultras (256 GB) never meet it; Macs of 64 to 128 GB with other work
-  running can, for the longest requests. Tensor parallel's lanes and a
-  pipeline with one lane don't re-ask the charge. The growth credit waits
-  for a lane's prompt capture to be charged: it is not in the charge today,
-  and the over-ask is what covers it. A stage whose memory refuses a request
-  while it runs ends that request alone, on both ranks
+  lane owner of the stage modes does. A Gemma pipeline that keeps the
+  one-chunk lookahead (the default) serves one request at a time: its
+  prompt capture is charged and capped, and its running check asks only for
+  what the request still needs (`requireContinuing`). One whose setup
+  prefills serially serves four lanes, and a long lane needs more than its
+  reservation asked. The lanes' running check
+  (`QwenResidentRuntime+Batch.swift`, `memoryRefused`) asks on every pass for
+  the first lane's whole charge, the others' state and the loading headroom,
+  with no credit for what the lanes already allocated (tensor parallel's
+  lanes give it). With the request prefix cache on, a lane's prompt capture
+  is outside its charge: at most the cache's 32 frontiers per prompt, as on
+  the one-request path, each with its own copy of every sliding-window
+  layer's window (about 0.1 GB a stage), and one copy of the full-attention
+  rows. Before that cap a lane kept every 512-token frontier: on the
+  M5 Ultras (2026-11-10, four lanes) a 73,128-token lane grew 17.5 GB and a
+  127,205-token lane 30.4 GB against charges of 4.6 and 7.6 GB. Capped, a
+  lane grows at most about its charge plus 3 to 4 GB. It runs to its end
+  with about twice its charge, plus the headroom, plus 4 GB admissible:
+  about 24 GB at 131,072 tokens and 38 GB at 262,144 on a Mac of 96 GiB or
+  more, where it is admitted with 12.1 and 19.3 GB (a stage's charge is
+  7.8 and 15.0 GB; the headroom 4.3 GB, 2.9 GB at 64 GiB, 2.2 GB at 48 GiB).
+  Those figures are the measured footprint less the frontiers the cap
+  drops, not yet measured with it. In between, the lane gets the memory 503
+  partway through its prompt, for that request alone and never a worker's
+  end: the check refuses while the lane's charge and the headroom are still
+  admissible. With about 20 GB of a Mac held by macOS, the provider and the
+  stage's weights, an idle Mac of 64 GB or more runs a 262,144-token lane to
+  its end. A 48 GB Mac refuses a lane past about 190,000 tokens and a 36 GB
+  Mac past about 85,000, as does any Mac whose other work holds the
+  difference: the serving context the pair advertises prices only the
+  reservation. The M5 Ultras (256 GB) don't meet it. A stage whose memory
+  refuses a request while it runs ends that request alone, on both ranks
   ([a pipeline stage's memory refusal](#a-pipeline-stages-memory-refusal-ends-that-request-alone)),
   as tensor parallel's ranks do. 0.10.11 serves the memory plan's request in
   the pipeline: in `dev` before it, a 128K request on pair-2 had failed the M5

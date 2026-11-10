@@ -3,7 +3,7 @@
 
   upload-model-revision.py inputs --model-id ID --version V --template-url URL --source-url URL --recipe R
                                   --manifest FILE [--mode check|build|upload] [--confirm-version V]
-                                  [--keys prod|legacy]
+                                  [--keys legacy|prod]
   upload-model-revision.py verify --manifest FILE --directory DIR
   upload-model-revision.py upload --manifest FILE --directory DIR --endpoint URL [--bucket darkbloom-models]
 
@@ -22,7 +22,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 RECIPES = {"g32", "mixed46", "router8", "router8+mixed46"}
-KEY_SETS = {"prod", "legacy"}  # the prod environment's PROD_R2_*, or the repo's R2_* (release-provider's fallback)
+KEY_SETS = {"legacy", "prod"}  # the repo's R2_* (the default; what releases use), or the prod environment's PROD_R2_*
 CDN = "https://models.darkbloom.ai/"
 TEMPLATE_URL = re.compile(r"https://models\.darkbloom\.ai/(v2/[A-Za-z0-9._-]+--[0-9a-f]{12}/[A-Za-z0-9._-]+)/?")
 SHA256_HEX = re.compile(r"[0-9a-f]{64}")
@@ -246,7 +246,7 @@ def main():
         p.add_argument(k, required=True)
     p.add_argument("--mode", default="check")
     p.add_argument("--confirm-version", default="")
-    p.add_argument("--keys", default="prod")
+    p.add_argument("--keys", default="legacy")
     for name in ("verify", "upload"):
         q = sub.add_parser(name)
         q.add_argument("--manifest", required=True)

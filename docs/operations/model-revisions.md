@@ -185,7 +185,7 @@ Dispatch it from `master` only:
 ```bash
 gh workflow run model-requant-upload.yml --ref master -f mode=check \
   -f model_id=… -f version=… -f recipe=… -f template_url=… -f source_url=… \
-  -f manifest_json="$(cat manifest.json)" [-f keys=prod|legacy]
+  -f manifest_json="$(cat manifest.json)" [-f keys=legacy|prod]
 ```
 
 A run on any other ref stops at its first step, so the bytes are always checked
@@ -196,21 +196,23 @@ It runs two jobs:
 - **`preflight`** holds no secret. It runs the ref guard, validates the inputs,
   installs the hash-pinned tools and runs the quantizer's selftest.
 - **`requant-upload`** runs in the **`prod` environment**, with three modes.
-  - **Approval:** every run waits for a `prod` deployment approval from that
-    environment's required reviewer, the same gate as the provider release,
-    after `preflight` passes. No step with a key starts before the approval.
+  - **Approval:** every run waits for Gajesh2007's approval of the `prod`
+    environment, after `preflight` passes. He is its required reviewer, and
+    admins can't bypass it. It is the same gate as the provider release, and no
+    step with a key starts before the approval.
   - **Branch policy:** the environment's policy admits `master`.
   - **Keys:** only a job in that environment can see its `PROD_R2_*`
     secrets.
 
 Two R2 key sets are tested:
-- **`prod`**: the `prod` environment's `PROD_R2_ACCESS_KEY_ID`,
-  `PROD_R2_SECRET_ACCESS_KEY` and `PROD_R2_ENDPOINT`.
 - **`legacy`**: the repository's `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and
-  `R2_ENDPOINT`, which `release-provider.yml` falls back to when `PROD_R2_*` is
-  empty.
+  `R2_ENDPOINT`. `release-provider.yml` falls back to these when `PROD_R2_*` is
+  empty, and the 0.10.11 production release used them for every key.
+- **`prod`**: `PROD_R2_ACCESS_KEY_ID`, `PROD_R2_SECRET_ACCESS_KEY` and
+  `PROD_R2_ENDPOINT`. They were absent from the `prod` environment on
+  2026-11-10.
 
-`upload` uses the set named by the `keys` input (default `prod`).
+`upload` uses the set named by the `keys` input (default `legacy`).
 
 1. **Locally.**
    - Install the tools the workflow installs, by hash. numpy 2.5.4 needs
@@ -229,11 +231,16 @@ Two R2 key sets are tested:
 2. **Dispatch in mode `check`** (the default) and approve it. It runs the
    selftest on the runner, then tests both key sets with a read-only
    `head-object` of the template's `manifest.json` in `darkbloom-models`.
-   - **What it prints:** only `keys prod (PROD_R2_*): pass|fail` and
-     `keys legacy (R2_*): pass|fail`, plus `fail (not set)` for a set with an
-     empty part. A set with an empty part runs nothing.
-   - **When it fails:** if neither set passes, or, in `upload` mode, if the
-     `keys` set did not pass.
+   - **What it prints:** only one verdict per set, for example
+     `keys legacy (R2_*): pass` or `keys prod (PROD_R2_*): absent`:
+     - `pass` or `fail`;
+     - `absent` when every part of the set is empty. That is not a failure of
+       the run;
+     - `fail (incomplete)` when only some parts are empty.
+
+     An absent or incomplete set runs nothing.
+   - **When it fails:** if no set passes, or, in `upload` mode, if the `keys`
+     set did not pass.
    - **Why:** release-bucket credentials are not necessarily model-bucket
      credentials.
 3. **Dispatch in mode `build`** for the first model. It rebuilds and verifies

@@ -6,16 +6,21 @@ name: Model Requant Upload
 # (manifest last). It never registers or promotes: promotion stays `Register Model` with
 # publish_revision_only=true and promote=true, on the owner's go.
 #
+# Approval: each run waits for Gajesh2007's approval of the `prod` environment (its required
+# reviewer; admins can't bypass) before any step that holds a key starts. That is the same gate as
+# the provider release; this workflow adds no other.
+#
 # Two jobs. `preflight` holds no secret: the ref guard, the inputs, the hash-pinned tools and the
-# quantizer's selftest. `requant-upload` runs in the `prod` environment, so each run waits for that
-# environment's required reviewer (the same gate as the provider release) after preflight passes,
-# its branch policy applies, and its PROD_R2_* secrets are visible. Three modes (default `check`):
+# quantizer's selftest. `requant-upload` runs in the `prod` environment, after preflight passes, so
+# the approval above applies, the environment's branch policy (master) applies, and the
+# environment's secrets are visible. Three modes (default `check`):
 #   check   test both R2 key sets with a read-only head-object of a known darkbloom-models object:
-#           `prod` (the prod environment's PROD_R2_*) and `legacy` (the repo's R2_* from 04-04,
-#           release-provider.yml's fallback). Prints only pass/fail per set
+#           `legacy` (the repo's R2_* from 04-04, which the 0.10.11 production release used for every
+#           key) and `prod` (PROD_R2_*, absent from the prod environment on 2026-11-10). Prints only
+#           pass, fail or absent per set; an absent set is not a failure of the run
 #   build   check + rebuild + verify against the manifest; no write
-#   upload  build + the conditional revision reservation + upload with the `keys` set, which must
-#           have passed this run's check; needs confirm_version = version
+#   upload  build + the conditional revision reservation + upload with the `keys` set (default
+#           legacy), which must have passed this run's check; needs confirm_version = version
 #
 # Dispatch from master only (`gh workflow run model-requant-upload.yml --ref master ...`): a run on
 # any other ref stops at its first step, so the bytes are checked by the reviewed code. One run at a
@@ -56,11 +61,11 @@ on:
         description: The canonical manifest (darkbloom-publish hash) of the locally built and tested candidate
         required: true
       keys:
-        description: For upload, the R2 key set, which must pass this run's check (prod = PROD_R2_*, legacy = R2_*)
+        description: For upload, the R2 key set, which must pass this run's check (legacy = the repo's R2_*, prod = PROD_R2_*)
         required: true
-        default: prod
+        default: legacy
         type: choice
-        options: [prod, legacy]
+        options: [legacy, prod]
       confirm_version:
         description: For upload only, the version again
         required: false
@@ -179,33 +184,33 @@ jobs:
           KEY: ${{ steps.inputs.outputs.template_manifest_key }}
         run: |
           set -euo pipefail
-          # One set: every part present, then a head-object of the template's manifest.json. Only pass or
-          # fail is printed: aws's error text can name the endpoint.
+          # One set: absent (every part empty), incomplete (some empty), or a head-object of the
+          # template's manifest.json. Only the verdict is printed: aws's error text can name the endpoint.
           probe() {
             local label=$1 id=$2 secret=$3 endpoint=$4
-            if [ -z "$id" ] || [ -z "$secret" ] || [ -z "$endpoint" ]; then
-              echo "keys $label: fail (not set)"
-              return 1
-            fi
-            if AWS_ACCESS_KEY_ID="$id" AWS_SECRET_ACCESS_KEY="$secret" aws s3api head-object \
+            if [ -z "$id$secret$endpoint" ]; then
+              echo "keys $label: absent"
+              verdict=absent
+            elif [ -z "$id" ] || [ -z "$secret" ] || [ -z "$endpoint" ]; then
+              echo "keys $label: fail (incomplete)"
+              verdict=fail
+            elif AWS_ACCESS_KEY_ID="$id" AWS_SECRET_ACCESS_KEY="$secret" aws s3api head-object \
                  --bucket darkbloom-models --key "$KEY" --endpoint-url "$endpoint" --region auto > /dev/null 2>&1; then
               echo "keys $label: pass"
-              return 0
+              verdict=pass
+            else
+              echo "keys $label: fail"
+              verdict=fail
             fi
-            echo "keys $label: fail"
-            return 1
           }
-          prod=fail
-          legacy=fail
-          if probe "prod (PROD_R2_*)" "${PROD_R2_ACCESS_KEY_ID:-}" "${PROD_R2_SECRET_ACCESS_KEY:-}" "${PROD_R2_ENDPOINT:-}"; then
-            prod=pass
-          fi
-          if probe "legacy (R2_*)" "${LEGACY_R2_ACCESS_KEY_ID:-}" "${LEGACY_R2_SECRET_ACCESS_KEY:-}" "${LEGACY_R2_ENDPOINT:-}"; then
-            legacy=pass
-          fi
+          verdict=fail
+          probe "prod (PROD_R2_*)" "${PROD_R2_ACCESS_KEY_ID:-}" "${PROD_R2_SECRET_ACCESS_KEY:-}" "${PROD_R2_ENDPOINT:-}"
+          prod=$verdict
+          probe "legacy (R2_*)" "${LEGACY_R2_ACCESS_KEY_ID:-}" "${LEGACY_R2_SECRET_ACCESS_KEY:-}" "${LEGACY_R2_ENDPOINT:-}"
+          legacy=$verdict
           { echo "prod=$prod"; echo "legacy=$legacy"; } >> "$GITHUB_OUTPUT"
           if [ "$prod" != pass ] && [ "$legacy" != pass ]; then
-            echo "::error::Neither R2 key set can read darkbloom-models."
+            echo "::error::No R2 key set can read darkbloom-models."
             exit 1
           fi
           if [ "$MODE" = upload ]; then
@@ -215,7 +220,7 @@ jobs:
               *) chosen=fail ;;
             esac
             if [ "$chosen" != pass ]; then
-              echo "::error::The keys=$KEYS set did not pass this check, so this run cannot upload."
+              echo "::error::The keys=$KEYS set is $chosen in this check, so this run cannot upload."
               exit 1
             fi
           fi

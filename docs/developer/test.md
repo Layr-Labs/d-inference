@@ -1118,7 +1118,12 @@ Release SDK qualification uses SDK 27.2 / Swift 6.4.2 (Xcode 27.2, the
 [`release` toolchain](build.md#sdk-27-release-builds-and-caches)) and runs independently of
 optimized compilation. The `qualify-sdk-shard` jobs run the provider suite in
 five shards on separate Macs, with the shard plan of CI
-(`scripts/provider-test-shards.py`). Shard 2 also runs Prompt Parity, and the
+(`scripts/provider-test-shards.py`). In a dev-branch release each shard asks
+the [route](build.md#ci-runner-routing) for a Darkbloom Sandbox and falls back
+alone to Blacksmith; staging and prod shards always run on Blacksmith. A
+Darkbloom Sandbox and a Blacksmith runner use separate Actions cache stores,
+so a shard on a sandbox neither restores the Blacksmith caches nor saves an
+entry that the optimized build, which always runs on Blacksmith, can restore. Shard 2 also runs Prompt Parity, and the
 last shard runs the isolated processes and the audio gate. The `qualify-sdk`
 job runs after every shard passes. It audits the executed counts of each shard
 against the full suite list. Signing requires `qualify-sdk` and optimized
@@ -1472,7 +1477,7 @@ shared build recipe. The
 selected. A provider-only change runs 3 Macs (the provider build and the 2
 provider shards). A cluster change adds 12 Macs (the cluster build, the release
 build checks, 5 runtime shards, 2 focused shards and 3 GPU shards). Every
-Mac job but the 3 GPU shards is routed; the GPU shards run on Blacksmith
+Mac job but GPU shard 2 is routed; GPU shard 2 runs on Blacksmith
 ([job sizes](build.md#job-sizes)). A change whose tree a successful run of the
 same workflow already tested runs no test job at all
 (`scripts/ci-tested-tree.py`).
@@ -2096,12 +2101,18 @@ and openssl. It covers the default-off switch, fork pull requests, exact label
 grants, HTTP errors, the single retry, timeouts, untrusted or plain-HTTP planes
 and hostile reply text. It covers [job sizes](build.md#job-sizes) both ways:
 while `DARKBLOOM_JOB_SHAPES` is not exactly `on`, CI's request is byte for byte
-the request without sizes; while it is on, each lane sends its size and takes
-only the labels of that size. It also covers bad sizes and the macOS cap order.
+the lane table without its sizes; while it is on, each lane sends its size and
+takes only the labels of that size. It also covers bad sizes, the macOS cap
+order, and a `required` lane, which keeps its fallback without asking while
+sizes are off (on a lane table of the test's own: CI's table has none).
 It also pins each routed job's lanes (one per provider or cluster shard,
-matching the job's matrix), size, fallback, timeout and read-only permissions,
-and keeps release workflows and Cluster GPU Tests on literal Blacksmith
-runners. No check contacts the real plane.
+matching the job's matrix), size, fallback, timeout and read-only permissions.
+It keeps Cluster GPU Tests shard 2 and the credentialed workflows on literal
+Blacksmith runners. For the release it pins the one routed job: the dev-branch
+caller asks for one lane per SDK qualification shard, `release-provider.yml`
+reads the routes only when its environment is dev, the shards hold a read-only
+token and no secret, every other release job keeps a literal Blacksmith label,
+and `release-swift.yml` passes no routes. No check contacts the real plane.
 
 Docs-impact tests retain provider, protocol, privacy, native capacity, cache,
 release/model publication and fixture mappings. Historical links need exact

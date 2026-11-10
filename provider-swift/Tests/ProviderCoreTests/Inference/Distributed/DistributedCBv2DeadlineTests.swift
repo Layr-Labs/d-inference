@@ -207,4 +207,43 @@ struct DistributedCBv2DeadlineTests {
         #expect(distributedTerminal(await distributedCollect(second))?.0 == .length)
         await engine.shutdown()
     }
+
+    /// A pair runs its lanes' prompts one after another, so a request's first token waits for every prompt already
+    /// holding a lane that has not given its first token (C1, 2026-11-10: of eight 8K-token prompts sent at once, the
+    /// last gave its first token at 63.7 s, against 7.7 s alone). A burst takes only the lanes whose first token still
+    /// meets its deadline, and the rest are refused at once; a prompt that has given its first token delays no other.
+    @Test func aBurstOfLongPromptsTakesOnlyTheLanesWhoseFirstTokenMeetsItsDeadline() async throws {
+        let owner = DistributedTestOwner()
+        owner.lanes = 8
+        // Each 8,000-token prompt alone: 8 s at the pair's 1,000 tokens a second.
+        owner.projection = .bounded(work: .init(prefillTokens: 8_000, decodeTokens: 0, scheduledSteps: 16, mixedSteps: 0),
+                                    serviceDuration: .seconds(8))
+        let clock = DistributedTestClock()
+        let engine = try distributedTestEngine(owner, clock: clock.clock)
+        // An admitted request's stream, kept: a stream nobody holds cancels its request.
+        func admitted(_ id: UInt64) async throws -> AsyncStream<CBv2Event>? {
+            let request = CBv2Request(id: .init(id), promptTokens: Array(repeating: 1, count: 8_000),
+                                      sampling: .init(temperature: 0), maxTokens: 2)
+            let admission = CBv2FirstTokenDeadlineAdmission(deadline: clock.now.advanced(by: .seconds(30)),
+                conservativePrefillTokensPerSecond: 1_000, conservativeDecodeTokensPerSecond: 100)
+            let result = try await engine.submit(request, firstTokenDeadline: admission)
+            if case .admitted(let stream, _, _, _) = result { return stream }
+            guard case .deadlineUnreachable = result else { Issue.record("request \(id): \(result)"); return nil }
+            return nil
+        }
+        var streams: [AsyncStream<CBv2Event>?] = []
+        for id in 1...8 { streams.append(try await admitted(UInt64(id))) }
+        // First tokens at 8, 16 and 24 s meet the 30 s deadline; the fourth would come at 32 s.
+        #expect(streams.map { $0 != nil } == [true, true, true, false, false, false, false, false])
+        #expect(owner.reserveCount == 3)
+        // The first prompt has given its first token: the next request waits for the other two only.
+        #expect(owner.lease(0).send(.token(4)))
+        streams.append(try await admitted(9))
+        streams.append(try await admitted(10))
+        #expect(streams.suffix(2).map { $0 != nil } == [true, false])
+        #expect(owner.reserveCount == 4)
+        for index in 0..<owner.reserveCount { owner.lease(index).acknowledge() }
+        withExtendedLifetime(streams) {}
+        await engine.shutdown()
+    }
 }

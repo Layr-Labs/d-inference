@@ -205,6 +205,26 @@ private func checkGemmaLaneWidths(_ priced: ClusterModelLayout, unpriced: Cluste
     let smallWidest = widest(small)
     checks.require("Gemma TP width: two idle 256 GB Macs hold eight lanes now, two idle 24 GB Macs \(smallWidest)",
         widest(big) == 8 && smallWidest < 8)
+    // LOAD reserves the whole width while it reads the shard (the shard gate's resident charge,
+    // `Gemma4TensorParallelResidentRuntime`): before its first tensor it asks for the one-lane load (the shard, two
+    // whole tensors, read scratch and headroom) plus that reservation. A planned width sits within one step of what
+    // a small Mac admits, so on two 24, 32, 36 or 48 GB Macs, with up to 8 GiB more in use, LOAD must admit it.
+    var refused: [String] = []
+    for size in [24.0, 32, 36, 48] {
+        for used in stride(from: 0.0, through: 8, by: 0.25) {
+            var mac = SyntheticMac.idle(size); mac.freeGiB -= used
+            let macs = try [mac.device("a"), mac.device("b")]
+            let width = widest(macs)
+            guard width > 1 else { continue }
+            let reserved = try budget.reservedBytes(lanes: width)
+            let alone = try ranks(macs, lanes: nil)
+            if alone.count != 2 || !zip(alone, macs).allSatisfy({ $1.profile.memory.admits($0.loadNeedBytes + reserved) }) {
+                refused.append("\(Int(size)) GB, \(used) GiB in use: \(width) lanes")
+            }
+        }
+    }
+    checks.require("Gemma TP width: on two 24-48 GB Macs LOAD admits every planned width, its reservation counted in the load peak"
+        + (refused.isEmpty ? "" : " (LOAD refuses \(refused.count): \(refused.joined(separator: "; ")))"), refused.isEmpty)
     var unpricedWidth = forced; unpricedWidth.tensorParallelLanes = 4
     checks.require("Gemma TP width: a layout that states no lane charge (metadata only) prices no width",
         (try? ClusterPlacementPlanner.plan(devices: big, layout: unpriced, policy: unpricedWidth)) == nil

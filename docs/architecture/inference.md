@@ -2373,6 +2373,22 @@ See `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/Deadline/Engine
 `provider-swift/Sources/ProviderCore/Inference/Performance/Profiles/ServingMTPConfiguration.swift`
 and `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/DeadlineAdmission/CalibratedFirstContentV2.swift`.
 
+A two-Mac pair projects a request's first token itself
+(`DistributedPipeExecutionOwner.projectFirstToken`): its whole prompt at the
+bridge's prefill rate, which for a pair is the pair's own, measured end to end
+from both ranks' reservation to the first committed token
+(`DistributedCBv2Engine.timing`), so it carries the transfer and control costs
+a rank's own compute would leave out. The ranks prefill one prompt at a time,
+so the engine adds the prompt of every request holding a lane that has not
+given its first token (`DistributedCBv2Engine.behindPendingPrefill`). A burst
+of long prompts therefore takes only the lanes whose first token meets its
+deadline, and the rest are refused `deadline_unreachable` at once, for the
+coordinator to place elsewhere. Other lanes' decode steps between prompt
+chunks are not charged. Without a measured rate nothing is projected and the
+request is admitted. Until 0.10.12 the owner projected nothing (unbounded), so
+once a pair's bridge had measured its prefill (0.10.11), every request carrying
+a first-content budget was refused, a lone one too.
+
 `WedgeMonitor.suspectStallSeconds =
 10` flags a stalled slot
 (`provider-swift/Sources/ProviderCore/Inference/Engine/WedgeMonitor.swift`):
@@ -7638,7 +7654,7 @@ and GLM). Two pricing sources size it:
 | Family | How a width is priced | Source |
 |---|---|---|
 | Qwen TP rows | The owner's complete native quote at 2, 4, 6 and 8 lanes ([saved width](#qwen-tensor-parallel-saved-width)) | `tensor-batch-scope` |
-| Gemma 4 | The family's allowance (one request and the rank's reserve), plus its lane charge for every lane after the first | The layout's `ClusterTensorParallelFamilyPlan.laneBytes` |
+| Gemma 4 (QAT 4-bit) | The family's allowance (one request and the rank's reserve), plus its lane charge for every lane after the first | The layout's `ClusterTensorParallelFamilyPlan.laneBytes` |
 | GLM | One request as the plan prices it from the layout's state (the family states no allowance), plus its lane charge for every lane after the first | The layout's `ClusterTensorParallelFamilyPlan.laneBytes` |
 
 - **The lane charge.** For Gemma 4, a lane after the first costs one request's
@@ -7657,19 +7673,34 @@ and GLM). Two pricing sources size it:
 - **The planner.** With `ClusterPlacementPolicy.tensorParallelLanes`, each
   rank's request need grows by the lane charge for every lane after the
   first, on top of what one request is priced at (the family's allowance, or
-  the layout's state where it states none). The placement is the one chosen
-  for one request, its leader and split unchanged. `ClusterPlacementTensorWidth`
-  tries 8, 6, 4 and 2 and saves the first that both Macs admit now
+  the layout's state where it states none). LOAD holds that whole reservation
+  while it reads the shard, so it is in the rank's load peak too, beside two
+  whole tensors and the read scratch, as a Qwen TP batch quote's is. One lane
+  keeps the load peak it had. The placement is the one chosen for one request,
+  its leader and split unchanged. `ClusterPlacementTensorWidth` tries 8, 6, 4
+  and 2 and saves the first that both Macs admit now
   (`ClusterPlacementCandidate.admitted`). When none fits, the setup saves no
   width and serves one request at a time.
 - **The cap.** A saved width is never wider than the family has qualified on
   real Macs (`ClusterPlacementTensorWidth.qualifiedLanes`). The Qwen TP rows
-  keep the eight they saved before. Gemma 4 and GLM (which served eight lanes
-  on every pair before) take eight, to be confirmed on the M5 Ultra pair before
-  they ship.
+  keep the eight they saved before. GLM takes eight, which it served on every
+  pair before; C1 gave each of its lanes its solo tokens at 2, 4, 6 and 8 on
+  the M5 Ultra pair (2026-11-10). Gemma 4 takes
+  `ClusterPlacementTensorWidth.gemmaTensorParallelLanes`, 2, for the QAT 4-bit
+  row the M5 Ultra pair qualified (C1). There every lane gave its request's solo
+  tokens and logprobs at 2, 4 and 8, but a request was served fastest at 2:
+  95.5 tok/s in all and 77 a request, against 96.2 and 48.5 at 4, and 60.8 and
+  14.5 at 8, where the last of eight 8K-token prompts sent at once waited 63.7 s
+  for its first token (7.7 s alone). The owner chooses between 2 and 4. The
+  8-bit rows run the same lanes on 8-bit kernels, which neither the pair nor
+  the synthetic lane checks ran at these widths, so they save no width.
 - **LOAD.** Both ranks reserve what the planner priced. Gemma 4:
   `Gemma4TensorParallelRequestBudget.reservedBytes(lanes:)`, the allowance and
-  one more request's charge for each lane after the first. GLM:
+  one more request's charge for each lane after the first. Its shard gate asks
+  for it before every tensor, beside the rest of the shard, two whole tensors,
+  the read scratch and the loading headroom; a load peak without it is about
+  0.75 GB a rank short, so on 24-48 GB Macs about one memory-bound pair in
+  seven would be planned at a width that LOAD then refuses. GLM:
   `GLM5NextTensorParallelRequestCharge.reservedBytes(contextTokens:lanes:)`,
   one request's charge at the memory plan's context and one lane charge for
   each lane after the first; the load line reports it as `reserved=`. Each

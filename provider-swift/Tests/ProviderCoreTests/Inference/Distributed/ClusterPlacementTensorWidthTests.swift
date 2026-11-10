@@ -307,12 +307,16 @@ final class ClusterPlacementTensorWidthTests {
     private typealias LaneRow = (model: String, profile: String, adapter: ClusterRuntimeAdapter, allowance: Bool)
     private static let gemma: LaneRow = ("registered_gemma4_26b_qat_4bit", "registered_gemma4_26b_qat_4bit_greedy_generation_v1",
                                          .gemma4LayerStage, true)
+    private static let gemma8Bit: LaneRow = ("registered_gemma4_26b_8bit", "registered_gemma4_26b_8bit_greedy_generation_v1",
+                                             .gemma4LayerStage, true)
     private static let glm: LaneRow = (ClusterGLMImageCandidate.runtimeModelID, ClusterGLMImageCandidate.textProfileID,
                                        .glm5NextLayerStage, false)
 
     /// The row's identity on the constructed two-layer layout, equal shares only. Each lane after the first adds
-    /// `laneBytes`, which the layout states as the native plan tool writes it; nil states none.
-    private func laneChargeFixture(laneBytes: Int?, row: LaneRow = gemma)
+    /// `laneBytes`, which the layout states as the native plan tool writes it; nil states none. `fastest`: as the real
+    /// Gemma layout and worker record are, the family is placed in tensor parallel only where it is faster
+    /// (`ClusterTensorParallelChoice.fastest`), and both modes declare the same serving features (`ClusterModeParity`).
+    private func laneChargeFixture(laneBytes: Int?, row: LaneRow = gemma, fastest: Bool = false)
         throws -> (ClusterPairDescription, ClusterRuntimeCapability, ClusterModelLayout) {
         let (pair, _, qwenLayout, _) = try fixture()
         let model = row.model
@@ -320,7 +324,8 @@ final class ClusterPlacementTensorWidthTests {
             requestBytesExcludingCollectives: 3 * gib, maximumCollectivePayloadBytes: 512 * 4096,
             maximumCollectiveFrameBytes: 512 * 4096 + 1024, allocationBound: { (($0 + 16383) / 16384) * 16384 })
         let tensor = ClusterTensorParallelLayout(family: .init(plan: "fixture-heads", ranks: [2], reductionsPerLayer: 1,
-            reductionsPerStep: 0, partialBytesPerToken: 4096, stateDividesByHeads: true, requestAllowance: row.allowance ? allowance : nil),
+            reductionsPerStep: 0, partialBytesPerToken: 4096, stateDividesByHeads: true, requestAllowance: row.allowance ? allowance : nil,
+            choice: fastest ? .fastest : nil),
             layerDividedBytes: [2 * gib, 2 * gib], layerReplicatedBytes: [0, 0],
             ingressDividedBytes: 0, ingressReplicatedBytes: gib / 2, egressDividedBytes: gib / 2, egressReplicatedBytes: 0)
         var tensorObject = try JSONSerialization.jsonObject(with: JSONEncoder().encode(tensor)) as! [String: Any]
@@ -342,7 +347,10 @@ final class ClusterPlacementTensorWidthTests {
                 .init(rank: 0, sourceLayerStart: 0, sourceLayerEnd: 1, stagePlanSHA256: hash("1"), constructionConfigurationSHA256: hash("2")),
                 .init(rank: 1, sourceLayerStart: 1, sourceLayerEnd: 2, stagePlanSHA256: hash("3"), constructionConfigurationSHA256: hash("4"))])],
             arithmeticPolicyID: row.adapter.arithmeticPolicyID, arithmeticPolicySHA256: hash("5"),
-            supportedGenerationModes: [.pipeline, .tensorParallel])
+            supportedGenerationModes: [.pipeline, .tensorParallel], modeFeatures: fastest ? [
+                .pipeline: .init(promptPrefixReuse: true, ssdPrefixTier: true, speculativeRounds: false, maximumLanes: 8, logprobs: false),
+                .tensorParallel: .init(promptPrefixReuse: true, ssdPrefixTier: true, speculativeRounds: false, maximumLanes: 8, logprobs: true),
+            ] : nil)
         let capHash = ClusterConfigurationCodec.sha256(try ClusterRuntimeCapabilityCodec.encode(cap))
         let lanePair = ClusterPairDescription(schema: pair.schema, clusterID: pair.clusterID, publicModelID: "fixture-gemma",
             capabilitySHA256: capHash, chunkTokens: pair.chunkTokens, requestTimeoutSeconds: pair.requestTimeoutSeconds,
@@ -352,19 +360,20 @@ final class ClusterPlacementTensorWidthTests {
     }
 
     private func decideLaneCharged(_ home: URL, free: Int, peerFree: Int? = nil, laneBytes: Int? = 2 * 1_073_741_824,
-                                   row: LaneRow = gemma) throws -> ClusterSetupPlanning.PlacementDecision {
-        let (pair, cap, layout) = try laneChargeFixture(laneBytes: laneBytes, row: row)
+                                   row: LaneRow = gemma, fastest: Bool = false,
+                                   incumbentMode: ClusterGenerationMode? = nil) throws -> ClusterSetupPlanning.PlacementDecision {
+        let (pair, cap, layout) = try laneChargeFixture(laneBytes: laneBytes, row: row, fastest: fastest)
         return try ClusterPlacementFlow.decide(description: pair, capability: cap, localMemberID: "a",
             localProfile: profile(free: free), peerProfile: profile(free: peerFree ?? free), layout: layout, leader: "a",
             link: try #require(ClusterLinkProbeHistory.costs(homeDirectory: home, members: ["a", "b"])),
-            environment: [:], benchDebugBuild: false)
+            incumbentMode: incumbentMode, environment: [:], benchDebugBuild: false)
     }
 
     /// What both Macs saved and what the setup screen then says the pair serves at once (`ClusterSetupPlanning.loads`,
     /// the number the slot's `max_concurrency` and both owners read): equal, or the test fails.
-    private func savedAndScreenLanes(_ decision: ClusterSetupPlanning.PlacementDecision, row: LaneRow = gemma)
-        throws -> (saved: Int?, screen: Int?) {
-        let (pair, cap, _) = try laneChargeFixture(laneBytes: nil, row: row)
+    private func savedAndScreenLanes(_ decision: ClusterSetupPlanning.PlacementDecision, row: LaneRow = gemma,
+                                     fastest: Bool = false) throws -> (saved: Int?, screen: Int?) {
+        let (pair, cap, _) = try laneChargeFixture(laneBytes: nil, row: row, fastest: fastest)
         let setup = try #require(decision.setup)
         let saved = try ["a", "b"].map { member in
             try ClusterConfigurationCodec.decode(try #require(setup.configurations[member]), capability: cap,
@@ -378,38 +387,98 @@ final class ClusterPlacementTensorWidthTests {
         return (saved[0].batchLanes, screen)
     }
 
-    /// Gemma 4 tensor parallel saves the widest of 8, 6, 4 and 2 lanes both Macs admit now, each lane after the first
-    /// adding the family's lane charge to every rank's need (as its LOAD reserves the width), and the setup screen says
-    /// that number; where only one request fits it saves none and says one.
+    /// The width `ClusterPlacementTensorWidth` sizes Gemma's placement at with a cap of eight, on two Macs that each
+    /// admit `free` now, and that plan.
+    private func widestLaneCharged(_ home: URL, free: Int) throws -> (lanes: Int?, plan: ClusterPlacementCandidate) {
+        let (_, _, layout) = try laneChargeFixture(laneBytes: 2 * gib)
+        let devices = try ["a", "b"].map { ClusterPlacementDevice(label: $0, profile: try profile(free: free), speed: .assumedEqual) }
+        var policy = ClusterPlacementPolicy()
+        policy.modes = [.tensorParallel]
+        var lanes: Int?
+        let result = try ClusterPlacementTensorWidth.plan(devices: devices, layout: layout, policy: policy,
+            link: try #require(ClusterLinkProbeHistory.costs(homeDirectory: home, members: ["a", "b"])), quotes: [],
+            maximumLanes: 8, lanes: &lanes)
+        return (lanes, try #require(result.chosen))
+    }
+
+    /// Gemma 4 tensor parallel saves the widest width both Macs admit now, up to the width the M5 Ultra pair qualified
+    /// for its row (`ClusterPlacementTensorWidth.qualifiedLanes`), and the setup screen says that number; where only one
+    /// request fits it saves none and says one. A width is priced as its LOAD reserves it: each lane after the first adds
+    /// the family's lane charge to every rank's request need, and the whole reservation (the allowance and those
+    /// charges) is held while the shard is read, so it is in the load peak too.
     @Test func aGemmaTensorParallelPlacementSavesTheWidestWidthItsLaneChargeAdmitsNow() throws {
         let home = try home(), lane = 2 * gib
+        #expect(ClusterPlacementTensorWidth.qualifiedLanes(adapter: .gemma4LayerStage, runtimeModelID: Self.gemma.model) == 2)
         let alone = try #require(try decideLaneCharged(home, free: 200 * gib, laneBytes: nil).result.chosen)
         #expect(alone.mode == .tensorParallel)
-        let single = alone.ranks.map(\.needBytes).max()!
-        func need(_ lanes: Int) -> Int { single + (lanes - 1) * lane }
+        let (_, _, layout) = try laneChargeFixture(laneBytes: lane)
+        let allowance = try #require(layout.tensorParallel?.family.requestAllowance).reservedBytes
+        func need(_ lanes: Int) -> Int {
+            alone.ranks.map { rank in
+                lanes == 1 ? rank.needBytes
+                    : max(rank.needBytes + (lanes - 1) * lane, rank.loadNeedBytes + allowance + (lanes - 1) * lane)
+            }.max()!
+        }
+        #expect(need(2) > need(1) + lane, "the load peak holds the whole reservation")
+        // Up to eight, every width both Macs admit, and nothing between it and the next wider one.
         for (free, expected) in [(200 * gib, 8), ((need(6) + need(8)) / 2, 6), ((need(4) + need(6)) / 2, 4),
                                  ((need(2) + need(4)) / 2, 2), ((need(1) + need(2)) / 2, nil)] as [(Int, Int?)] {
+            let sized = try widestLaneCharged(home, free: free)
+            #expect(sized.lanes == expected, "\(free / gib) GiB free")
+            #expect(sized.plan.mode == .tensorParallel && sized.plan.admitted(requireNow: true))
+            #expect(sized.plan.ranks.map(\.needBytes).max() == need(expected ?? 1), "\(free / gib) GiB free")
+            #expect(sized.plan.ranks.allSatisfy { $0.needBytes <= $0.admissibleNowBytes })
+        }
+        // The setup saves at most the qualified width.
+        for (free, expected) in [(200 * gib, 2), ((need(2) + need(4)) / 2, 2), ((need(1) + need(2)) / 2, nil)] as [(Int, Int?)] {
             let decided = try decideLaneCharged(home, free: free)
             let chosen = try #require(decided.result.chosen)
             let lanes = try savedAndScreenLanes(decided)
             #expect(lanes.saved == expected && lanes.screen == (expected ?? 1), "\(free / gib) GiB free")
             #expect(chosen.mode == .tensorParallel && chosen.admitted(requireNow: true))
-            // Priced at its width: every lane after the first adds its charge, and each Mac admits it now.
             #expect(chosen.ranks.map(\.needBytes).max() == need(expected ?? 1), "\(free / gib) GiB free")
-            #expect(chosen.ranks.allSatisfy { $0.needBytes <= $0.admissibleNowBytes })
             // The singleton's placement: leader and split unchanged.
             #expect(chosen.ranks.map(\.device) == alone.ranks.map(\.device) && chosen.tensorShares == alone.tensorShares)
         }
         // Both Macs must admit it: the smaller Mac decides.
-        #expect(try savedAndScreenLanes(try decideLaneCharged(home, free: 200 * gib, peerFree: (need(4) + need(6)) / 2)).saved == 4)
+        #expect(try savedAndScreenLanes(try decideLaneCharged(home, free: 200 * gib, peerFree: (need(1) + need(2)) / 2)).saved == nil)
         // A layout that states no lane charge prices no width: the setup saves none and serves one request at a time.
         let unpriced = try savedAndScreenLanes(try decideLaneCharged(home, free: 200 * gib, laneBytes: nil))
         #expect(unpriced.saved == nil && unpriced.screen == 1)
     }
 
+    /// Only the row the pair qualified saves a width: the 8-bit rows run the same lanes on kernels nothing qualified at
+    /// these widths, so they serve one request at a time.
+    @Test func aGemmaRowThePairDidNotQualifySavesNoWidth() throws {
+        let home = try home(), row = Self.gemma8Bit
+        #expect(ClusterPlacementTensorWidth.qualifiedLanes(adapter: .gemma4LayerStage, runtimeModelID: row.model) == 1)
+        let decided = try decideLaneCharged(home, free: 200 * gib, row: row)
+        #expect(decided.result.chosen?.mode == .tensorParallel)
+        let lanes = try savedAndScreenLanes(decided, row: row)
+        #expect(lanes.saved == nil && lanes.screen == 1)
+    }
+
+    /// A sized plan keeps the reasons its mode was chosen for one request. After an update the pair keeps the mode it
+    /// served (`ClusterServedModes.hold`), here tensor parallel ahead of a pipeline its share steps were not measured
+    /// against; the width is priced in tensor parallel alone, where nothing is held, so only the singleton's plan
+    /// carries why.
+    @Test func aSizedPlanKeepsTheSingletonsReasons() throws {
+        let home = try home()
+        let alone = try decideLaneCharged(home, free: 200 * gib, laneBytes: nil, fastest: true, incumbentMode: .tensorParallel)
+        let sized = try decideLaneCharged(home, free: 200 * gib, fastest: true, incumbentMode: .tensorParallel)
+        #expect(alone.result.chosen?.mode == .tensorParallel && sized.result.chosen?.mode == .tensorParallel)
+        #expect(try savedAndScreenLanes(sized, fastest: true).saved == 2)
+        let kept = try #require(alone.result.keptModeReason)
+        #expect(kept.hasPrefix("kept after the update"), "\(kept)")
+        #expect(sized.result.keptModeReason == kept && sized.result.modesReason == alone.result.modesReason)
+        let reason = try #require(ClusterPlacementExplanation.deploymentReason(sized.result))
+        #expect(reason == ClusterPlacementExplanation.deploymentReason(alone.result), "\(reason)")
+    }
+
     /// GLM tensor parallel, whose family states a lane charge and no allowance, saves the widest of 8, 6, 4 and 2 lanes
     /// both Macs admit now: each lane after the first adds its charge to every rank's need for one request. The setup
-    /// screen says that number; where only one request fits it saves none and says one, as every family does.
+    /// screen says that number; where only one request fits it saves none and says one, as every family does. Its load
+    /// peak (without the transients its every-rank charge already holds) never decides a width.
     @Test func aGLMTensorParallelPlacementSavesTheWidestWidthItsLaneChargeAdmitsNow() throws {
         let home = try home(), lane = 2 * gib, row = Self.glm
         let alone = try #require(try decideLaneCharged(home, free: 200 * gib, laneBytes: nil, row: row).result.chosen)

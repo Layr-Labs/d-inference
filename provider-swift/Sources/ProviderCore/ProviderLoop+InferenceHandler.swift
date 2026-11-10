@@ -256,8 +256,9 @@ extension ProviderLoop {
         }
         var receiptTransferredToTask = false
         defer {
-            if !receiptTransferredToTask { acceptedLifecycleRequests.remove(requestId) }
             if !receiptTransferredToTask {
+                acceptedLifecycleRequests.remove(requestId)
+                coordinatorCancelledAt.removeValue(forKey: requestId)
                 serviceReservation?.finishPipeline()
                 lookupReceiptFinalizer.finalize(failure: .policy)
                 inflightProfiles.removeValue(forKey: requestId)

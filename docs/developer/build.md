@@ -623,7 +623,7 @@ and memory pressure stayed normal.
 | `build-provider` | 1 | 12x32 | 17.50; 8x24 is not signed, and a cold build takes 20% longer on 8 vCPUs | asks without a size |
 | `cluster-release-checks` | 1 | 8x16 | 9.65 with a reused build; a cold release compile (run 42041608780: 11.33 GiB, 11.4 busy vCPUs at p95 of 12) takes 26% longer on 4 vCPUs and 5.5% on 8 | asks without a size |
 | `test-cluster-gpu-1` (GPU shard 1) | 1 | 4x24 | 14.33 in run 42737118357, on Blacksmith with 48 GiB; at most 2.6 busy vCPUs | asks without a size |
-| `test-cluster-gpu-2` (GPU shard 2) | 1 | 4x24 | 17.24 outside `paged-verify-bench` in run 42917194201, on Blacksmith with 48 GiB, during `glm53-depth-invariance-widths` (one process of 10.48) | asks without a size |
+| `test-cluster-gpu-2` (GPU shard 2) | 1 | 4x24 | 17.42 in run 42924487818, on Darkbloom with 32 GiB, during `glm53-depth-invariance-widths` (one process of 10.23); 40.99 before the bench's cache bound (run 42917194201) | asks without a size |
 | `test-cluster-gpu-3` (GPU shard 3) | 1 | 4x24 | 14.72 in run 42737118357, on Blacksmith with 48 GiB | asks without a size |
 
 A run that tests every component asks for 15 macOS jobs, while sizes are on
@@ -635,7 +635,9 @@ tokens (0.5 GiB of KV), but MLX's freed-buffer cache kept every prompt chunk's
 attention temporaries: they grow with the history, so the cache reuses none
 of them, and its default limit is MLX's memory limit. The bench now bounds
 the cache as a ready Qwen tensor-parallel rank does (1 GiB,
-`QwenTensorParallelLaunch.freedBufferCacheBytes`).
+`QwenTensorParallelLaunch.freedBufferCacheBytes`). In run 42924487818 its
+process peaked at 3.75 GiB (2.78 GiB active, at most 1.05 GiB cached) and the
+shard at 17.42 GiB used.
 
 A lane sent with a size uses a grant only when the grant's labels are its
 profile's labels with the last one qualified by the size, such as

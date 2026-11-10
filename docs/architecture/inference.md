@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-10
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -2419,6 +2419,19 @@ regrowing survivor KV grants under the reslice/load gate. Network capacity quote
 refresh at staging changes and reject snapshots from older staging generations.
 Reservations follow the load generation, so delayed cleanup cannot release a
 new candidate's budget.
+
+The replacement runs no forward on the retained target while the original
+engine serves it. Backend construction needs the target's native KV types, which
+a short prefill/decode probe observes; that probe runs once per loaded target,
+before its first engine, and later constructions over the same target (this
+replacement, liveness recovery) reuse the observation. A forward from the
+preparing thread would race the serving engine: a stateful compiled trace, such
+as Gemma 4's compiled feed-forward on a thread whose compile cache is cold,
+swaps the module's live parameters for primitive-less placeholders while it
+traces, and a graph the engine builds meanwhile fails its next eval with
+`Attempting to eval an array without a primitive`
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+NativeKVTypes.swift`,
+`probeNativeKVTypes`, `NativeKVTypeObservations`).
 
 Once preparation succeeds, network providers keep serving during a random delay
 from `UpdateJitter.delay`, using the existing

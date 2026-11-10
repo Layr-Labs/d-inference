@@ -717,7 +717,8 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn("    name: Cluster Focused Checks (shard ${{ matrix.shard }})\n", focused)
         self.assertIn("    name: Cluster Release Build Checks\n", release)
         # Both shards read the lane the approval names, requested for 2 jobs.
-        # The release build checks read a lane of their own.
+        # The release build checks ask with their size while job sizes are on,
+        # and without one while they are off.
         self.assertIn("    runs-on: ${{ fromJSON(inputs.routes)['test-cluster-focused'] }}\n", focused)
         self.assertIn("      matrix:\n        shard: [1, 2]\n", focused)
         self.assertRegex(self.jobs["route"], re.escape(
@@ -807,10 +808,10 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn('--jobs "$task_jobs"', support)
 
     def test_each_lane_builds_once_and_its_test_jobs_run_its_products(self):
-        # Each lane builds once, on a large runner (its build job reads a lane
-        # of its own), and uploads its products only when its
-        # tests run; a push of a tested tree builds the components it changed
-        # only to refresh the caches (David, 2026-11-05).
+        # Each lane builds once, on a large runner (its lane asks with its size
+        # while job sizes are on, without one otherwise), and uploads its
+        # products only when its tests run; a push of a tested tree builds the
+        # components it changed only to refresh the caches (David, 2026-11-05).
         self.assertNotIn("refresh-caches", self.jobs)
         for job_id, lane in BUILD_JOBS.items():
             with self.subTest(job=job_id):

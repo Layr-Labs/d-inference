@@ -2096,14 +2096,13 @@ and openssl. It covers the default-off switch, fork pull requests, exact label
 grants, HTTP errors, the single retry, timeouts, untrusted or plain-HTTP planes
 and hostile reply text. It covers [job sizes](build.md#job-sizes) both ways:
 while `DARKBLOOM_JOB_SHAPES` is not exactly `on`, CI's request is byte for byte
-the lane table without its sizes; while it is on, each lane sends its size and
-takes only the labels of that size. It also covers bad sizes, the macOS cap
-order, and a `required` lane, which keeps its fallback without asking while
-sizes are off (on a lane table of the test's own: CI's table has none).
+the request without sizes; while it is on, each lane sends its size and takes
+only the labels of that size. It also covers bad sizes, the macOS cap order and
+a `required` lane, which keeps its fallback without asking while sizes are off.
 It also pins each routed job's lanes (one per provider or cluster shard,
-matching the job's matrix), size, fallback, timeout and read-only permissions.
-It keeps Cluster GPU Tests shard 2 and the release and credentialed workflows
-on literal Blacksmith runners. No check contacts the real plane.
+matching the job's matrix), size, fallback, timeout and read-only permissions,
+and keeps release workflows and Cluster GPU Tests shard 2 on literal Blacksmith
+runners. No check contacts the real plane.
 
 Docs-impact tests retain provider, protocol, privacy, native capacity, cache,
 release/model publication and fixture mappings. Historical links need exact

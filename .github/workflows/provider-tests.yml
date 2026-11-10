@@ -52,8 +52,10 @@ jobs:
     # cluster lane builds in a job of its own, so the cluster tests start as
     # soon as their products are up. A push whose tree a pull request run
     # already tested runs no test job; the build job then builds only the
-    # components the push changed, to refresh the branch's caches. Each build
-    # job reads its own lane of the route (provider-plan.yml).
+    # components the push changed, to refresh the branch's caches. The build
+    # jobs need a large Mac: while job sizes are on, their lanes ask with
+    # their size; while sizes are off, they ask without one and get the
+    # approval's pinned macOS size (provider-plan.yml).
     name: Build cluster test products
     if: ${{ inputs.cluster == 'true' || (github.event_name == 'push' && inputs.skip == 'true' && inputs.changed_cluster == 'true') }}
     runs-on: ${{ fromJSON(inputs.routes)['build-cluster'] }}
@@ -857,7 +859,8 @@ jobs:
     # their own: no test job waits for them. The build is reused across runs:
     # SwiftPM rebuilds what changed, and source timestamps are restored only
     # for files whose contents match the cached build's
-    # (scripts/provider-release-cache.py). It reads its own lane of the route
+    # (scripts/provider-release-cache.py). Its lane asks as the build jobs'
+    # lanes do: with its size while job sizes are on, without one otherwise
     # (provider-plan.yml).
     name: Cluster Release Build Checks
     if: ${{ inputs.cluster == 'true' }}

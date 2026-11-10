@@ -160,10 +160,13 @@ jobs:
   # cold build is 5 to 10% slower. The sampled memory of each job is in
   # docs/developer/build.md (Job sizes).
   #
-  # While sizes are off, every lane asks without a size and gets the size the
-  # approval pins. The lanes are in the order the DARKBLOOM_MACOS_LANES cap
-  # keeps them: the critical-path test shards first, then the build jobs and
-  # Cluster Release Build Checks, then the non-blocking GPU shards.
+  # While sizes are off, every lane asks without a size and gets the
+  # approval's pinned macOS size (12 vCPU / 32 GiB on 2026-11-05, the class of
+  # the Blacksmith fallback). If the approval pins a smaller size, the build
+  # jobs and Cluster Release Build Checks get that size too. The lanes are in
+  # the order the DARKBLOOM_MACOS_LANES cap keeps them: the critical-path test
+  # shards first, then the build jobs and Cluster Release Build Checks, then
+  # the non-blocking GPU shards.
   route:
     needs: [tested, components]
     if: ${{ !cancelled() }}

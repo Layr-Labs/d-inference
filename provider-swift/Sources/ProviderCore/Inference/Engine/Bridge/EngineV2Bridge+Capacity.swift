@@ -52,6 +52,8 @@ extension EngineV2Bridge {
         // incrementing it, which is exactly the flatline term
         // `wedgeSuspected` requires.
         wedgeMonitor.sampleSteps(snapshot.stepsExecuted, now: now)
+        wedgeMonitor.sampleQueue(waiting: snapshot.waitingRequests, running: snapshot.activeRequests,
+            steps: snapshot.stepsExecuted, now: now)
         emitStepWedgeTransitionIfNeeded(now: now)
 
         // Worst-case potential is bridge bookkeeping (the snapshot has no

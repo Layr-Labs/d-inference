@@ -41,12 +41,20 @@ extension EngineV2Bridge {
     /// Confirmed-wedge verdict for the recovery driver. True when the
     /// oldest STILL-HANGING admit (admitted, zero first tokens, not
     /// terminated) has stalled ≥ 120s while the engine's step counter has
-    /// been frozen ≥ 120s. Samples the live step counter first so the
-    /// verdict never depends on heartbeat cadence. Never fires while a
-    /// recovery is already in flight for this bridge.
+    /// been frozen ≥ 120s, or when an engine with a step counter has held
+    /// queued work with nothing running and no step for 120s. Samples the
+    /// live engine first so the verdict never depends on heartbeat cadence.
+    /// Never fires while a recovery is already in flight for this bridge.
     func confirmedWedgeForRecovery(now: ContinuousClock.Instant = .now) -> Bool {
         guard !recoveryReloading, ownedEngine != nil else { return false }
-        wedgeMonitor.sampleSteps(capacitySnapshot().stepsExecuted, now: now)
+        let snapshot = capacitySnapshot()
+        wedgeMonitor.sampleSteps(snapshot.stepsExecuted, now: now)
+        wedgeMonitor.sampleQueue(waiting: snapshot.waitingRequests, running: snapshot.activeRequests,
+            steps: snapshot.stepsExecuted, now: now)
+        if !(ownedEngine is DistributedCBv2Engine),
+            wedgeMonitor.queueStallSeconds(now: now) >= Self.recoveryStallSeconds {
+            return true
+        }
         return wedgeMonitor.consecutiveAdmitsWithoutFirstToken >= 1
             && wedgeMonitor.dryStreakSeconds(now: now) >= Self.recoveryStallSeconds
             && wedgeMonitor.secondsSinceLastStep(now: now) >= Self.recoveryStallSeconds

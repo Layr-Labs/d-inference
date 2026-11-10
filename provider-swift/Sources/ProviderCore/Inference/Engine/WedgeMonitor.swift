@@ -84,6 +84,15 @@ struct WedgeMonitor {
     private var sawStepSample = false
     private(set) var lastStepAdvanceAt: ContinuousClock.Instant?
 
+    // MARK: - Queue stall
+
+    /// First sample of the current stretch in which the engine's queue held
+    /// work, nothing ran and the step counter did not move; nil otherwise. A
+    /// request stuck there never registers as an admit, so the admit streak
+    /// above cannot see it, and the slot otherwise reads idle.
+    private(set) var queueStalledSince: ContinuousClock.Instant?
+    private var queueStalledAtSteps = 0
+
     // MARK: - Recording (called from the bridge lifecycle)
 
     /// A request was handed to the engine (preamble path). Call once per request.
@@ -142,6 +151,25 @@ struct WedgeMonitor {
         sawStepSample = true
     }
 
+    /// Sample the engine's queue with its step counter. Waiting work with
+    /// nothing running and an unchanged counter extends the stall; a step, a
+    /// running row or an empty queue ends it.
+    mutating func sampleQueue(waiting: Int, running: Int, steps: Int, now: ContinuousClock.Instant) {
+        guard waiting > 0, running == 0 else {
+            queueStalledSince = nil
+            return
+        }
+        if queueStalledSince == nil || steps != queueStalledAtSteps {
+            queueStalledSince = now
+            queueStalledAtSteps = steps
+        }
+    }
+
+    /// Seconds the current queue stall has lasted; 0 if there is none.
+    func queueStallSeconds(now: ContinuousClock.Instant) -> Double {
+        queueStalledSince.map { Self.seconds(now - $0) } ?? 0
+    }
+
     /// Reset on (re)load: a fresh engine starts at `stepsExecuted == 0` and a
     /// reload clears any wedge, so the per-load counters start clean.
     mutating func reset() { self = WedgeMonitor() }
@@ -196,8 +224,9 @@ struct WedgeMonitor {
     static let pastAllowanceGraceSeconds: Double = 40
 
     /// The slot-state verdict. An engine with a step counter keeps
-    /// `wedgeSuspected`. A two-Mac pair's engine has none (its ranks send
-    /// nothing while they prefill, and they prefill one prompt at a time), so
+    /// `wedgeSuspected`, and also reads crashed once its queue has stalled for
+    /// `suspectQueueStallSeconds`. A two-Mac pair's engine has none (its ranks
+    /// send nothing while they prefill, and they prefill one prompt at a time), so
     /// the flatline term would read every long prefill behind three admits as a
     /// wedge. It is marked crashed only when a hanging admit is still without a
     /// first token `pastAllowanceGraceSeconds` after its own first-token
@@ -208,7 +237,9 @@ struct WedgeMonitor {
     func marksCrashed(
         now: ContinuousClock.Instant, engineReportsSteps: Bool, isActive: (String) -> Bool = { _ in true }
     ) -> Bool {
-        guard !engineReportsSteps else { return wedgeSuspected(now: now) }
+        guard !engineReportsSteps else {
+            return wedgeSuspected(now: now) || queueStallSeconds(now: now) >= Self.suspectQueueStallSeconds
+        }
         return hangingFirstTokenDeadlines.contains { id, deadline in
             isActive(id) && Self.seconds(now - deadline) >= Self.pastAllowanceGraceSeconds
         }

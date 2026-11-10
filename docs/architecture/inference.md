@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-10
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -2387,7 +2387,20 @@ That allowance is the one the pair's engine arms (its first-token deadline, or
 its request deadline when the coordinator sent no budget), tracked by request
 id: it leaves with its own request's first token or end, and an entry whose
 request left the bridge never counts. The `step_wedge` telemetry still reports
-the plain rule. A hung pair is ended
+the plain rule.
+
+A single-Mac slot also reads `crashed` when its queue stalls: the engine holds
+waiting requests, runs none and its step counter stands still for
+`WedgeMonitor.suspectQueueStallSeconds` (30 s; `sampleQueue`, sampled on every
+heartbeat). A request stuck there never registers as an admit, so the rule
+above cannot see it, and the slot otherwise read `idle` while the coordinator
+kept routing to it. Held for `EngineV2Bridge.recoveryStallSeconds` (120 s) the
+stall is a confirmed wedge (`confirmedWedgeForRecovery`): the recovery driver
+rebuilds an ordinary engine and retires a native MiMo slot. A step, a running
+row or an empty queue restarts the measurement. A pair's engine has no step
+counter and is left out.
+
+A hung pair is ended
 first by the engine's first-token and request deadlines, which fail the request
 and cancel its lease, and by the cluster's fencing of a rank that does not
 retire a cancelled lane within 30 s, which withdraws the pair's capacity.

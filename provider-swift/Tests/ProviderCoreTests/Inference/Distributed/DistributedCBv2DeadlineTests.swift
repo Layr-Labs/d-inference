@@ -209,9 +209,10 @@ struct DistributedCBv2DeadlineTests {
     }
 
     /// A pair runs its lanes' prompts one after another, so a request's first token waits for every prompt already
-    /// holding a lane that has not given its first token (C1, 2026-11-10: of eight 8K-token prompts sent at once, the
-    /// last gave its first token at 63.7 s, against 7.7 s alone). A burst takes only the lanes whose first token still
-    /// meets its deadline, and the rest are refused at once; a prompt that has given its first token delays no other.
+    /// holding a lane that has not given its first token (the M5 Ultra pair, 2026-11-10: of eight 8K-token prompts
+    /// sent at once, the last gave its first token at 63.7 s, against 7.7 s alone). A burst takes only the lanes whose
+    /// first token still meets its deadline, and the rest are refused at once; a prompt that has given its first token
+    /// delays no other, and a lane that has been reserved holds no prompt as waiting.
     @Test func aBurstOfLongPromptsTakesOnlyTheLanesWhoseFirstTokenMeetsItsDeadline() async throws {
         let owner = DistributedTestOwner()
         owner.lanes = 8
@@ -235,7 +236,7 @@ struct DistributedCBv2DeadlineTests {
         for id in 1...8 { streams.append(try await admitted(UInt64(id))) }
         // First tokens at 8, 16 and 24 s meet the 30 s deadline; the fourth would come at 32 s.
         #expect(streams.map { $0 != nil } == [true, true, true, false, false, false, false, false])
-        #expect(owner.reserveCount == 3)
+        #expect(owner.reserveCount == 3 && engine.onQueue { engine.admittingPromptTokens } == 0)
         // The first prompt has given its first token: the next request waits for the other two only.
         #expect(owner.lease(0).send(.token(4)))
         streams.append(try await admitted(9))

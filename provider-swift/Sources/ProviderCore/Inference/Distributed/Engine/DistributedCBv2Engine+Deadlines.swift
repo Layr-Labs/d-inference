@@ -30,9 +30,9 @@ extension DistributedCBv2Engine {
     }
 
     /// The owner's projection of a request's own first token, behind every prompt already holding a lane. A pair runs
-    /// its lanes' prompts one after another, so a request's first token waits for all of them (C1, 2026-11-10: of eight
-    /// 8K-token prompts sent at once, the last gave its first token at 63.7 s, against 7.7 s alone). The caller's
-    /// prefill rate prices them (`projectionRespectingCallerRates`).
+    /// its lanes' prompts one after another, so a request's first token waits for all of them (the M5 Ultra pair,
+    /// 2026-11-10: of eight 8K-token prompts sent at once, the last gave its first token at 63.7 s, against 7.7 s
+    /// alone). The caller's prefill rate prices them (`projectionRespectingCallerRates`).
     func behindPendingPrefill(_ projection: CBv2FirstTokenProjectedWork) -> CBv2FirstTokenProjectedWork {
         let pending = pendingPrefillTokens
         guard case .bounded(let work, let duration) = projection, pending > 0 else { return projection }

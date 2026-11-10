@@ -2384,8 +2384,11 @@ given its first token (`DistributedCBv2Engine.behindPendingPrefill`). A burst
 of long prompts therefore takes only the lanes whose first token meets its
 deadline, and the rest are refused `deadline_unreachable` at once, for the
 coordinator to place elsewhere. Other lanes' decode steps between prompt
-chunks are not charged. Without a measured rate nothing is projected and the
-request is admitted. Until 0.10.12 the owner projected nothing (unbounded), so
+chunks are not charged, and a request's images or video are priced as text
+tokens at that rate, the vision tower's time aside. Without a measured rate the
+bridge builds no deadline admission, so the request is admitted unprojected; an
+admission without a prefill rate is refused. Until 0.10.12 the owner projected
+nothing (unbounded), so
 once a pair's bridge had measured its prefill (0.10.11), every request carrying
 a first-content budget was refused, a lone one too.
 
@@ -7671,29 +7674,31 @@ and GLM). Two pricing sources size it:
   the charge into the layout (beside Gemma's allowance), so a metadata-only
   layout carries none.
 - **The planner.** With `ClusterPlacementPolicy.tensorParallelLanes`, each
-  rank's request need grows by the lane charge for every lane after the
-  first, on top of what one request is priced at (the family's allowance, or
-  the layout's state where it states none). LOAD holds that whole reservation
+  rank's request need grows by the lane charge for every lane after the first,
+  on top of what one request is priced at (the family's allowance, or the
+  layout's state where it states none). LOAD holds that whole reservation
   while it reads the shard, so it is in the rank's load peak too, beside two
   whole tensors and the read scratch, as a Qwen TP batch quote's is. One lane
-  keeps the load peak it had. The placement is the one chosen for one request,
-  its leader and split unchanged. `ClusterPlacementTensorWidth` tries 8, 6, 4
-  and 2 and saves the first that both Macs admit now
+  keeps the load peak it had, so a one-request plan is unchanged; Gemma's
+  shard gate holds the allowance too, so it stays that 0.75 GB short, as
+  before widths. The placement is the one chosen for one request, its leader
+  and split unchanged. `ClusterPlacementTensorWidth` tries 8, 6, 4 and 2 and
+  saves the first that both Macs admit now
   (`ClusterPlacementCandidate.admitted`). When none fits, the setup saves no
   width and serves one request at a time.
 - **The cap.** A saved width is never wider than the family has qualified on
   real Macs (`ClusterPlacementTensorWidth.qualifiedLanes`). The Qwen TP rows
   keep the eight they saved before. GLM takes eight, which it served on every
-  pair before; C1 gave each of its lanes its solo tokens at 2, 4, 6 and 8 on
-  the M5 Ultra pair (2026-11-10). Gemma 4 takes
-  `ClusterPlacementTensorWidth.gemmaTensorParallelLanes`, 2, for the QAT 4-bit
-  row the M5 Ultra pair qualified (C1). There every lane gave its request's solo
-  tokens and logprobs at 2, 4 and 8, but a request was served fastest at 2:
-  95.5 tok/s in all and 77 a request, against 96.2 and 48.5 at 4, and 60.8 and
-  14.5 at 8, where the last of eight 8K-token prompts sent at once waited 63.7 s
-  for its first token (7.7 s alone). The owner chooses between 2 and 4. The
-  8-bit rows run the same lanes on 8-bit kernels, which neither the pair nor
-  the synthetic lane checks ran at these widths, so they save no width.
+  pair before; the M5 Ultra pair gave each of its lanes its solo tokens at 2,
+  4, 6 and 8 (2026-11-10). Gemma 4 takes 2
+  (`ClusterPlacementTensorWidth.gemmaQualifiedLanes`), for the QAT 4-bit row
+  that pair qualified. There every lane gave its request's solo tokens and
+  logprobs at 2, 4 and 8, but a request was served fastest at 2: 95.5 tok/s in
+  all and 77 a request, against 96.2 and 48.5 at 4, and 60.8 and 14.5 at 8,
+  where the last of eight 8K-token prompts sent at once waited 63.7 s for its
+  first token (7.7 s alone). The 8-bit rows run the same lanes on 8-bit
+  kernels, which neither the pair nor the synthetic lane checks ran at these
+  widths, so they save no width.
 - **LOAD.** Both ranks reserve what the planner priced. Gemma 4:
   `Gemma4TensorParallelRequestBudget.reservedBytes(lanes:)`, the allowance and
   one more request's charge for each lane after the first. Its shard gate asks

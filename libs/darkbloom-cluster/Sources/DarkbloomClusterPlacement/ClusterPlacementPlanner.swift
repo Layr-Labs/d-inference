@@ -1128,9 +1128,12 @@ public enum ClusterPlacementPlanner {
             // reading the shard. Those bytes coexist with the two whole host
             // tensors and aligned read scratch; they are not alternate peaks.
             // A width priced by lane charges reserves its whole width the same
-            // way (Gemma 4's shard gate): what one request is priced at and
-            // every further lane. One request without a batch quote keeps the
-            // load peak it had.
+            // way (Gemma 4's shard gate): the family's allowance (none for GLM,
+            // whose request need decides) and every further lane. One request
+            // without a batch quote keeps the load peak it had: its shard gate
+            // holds the allowance too, so it stays short by the two whole
+            // tensors and the read scratch, as before widths, and one-request
+            // plans are unchanged.
             let batchLoadReservation = rankReserved ?? quote?.allowance.reservedBytes ?? (laneGrowth > 0 ? nativeFloor + laneGrowth : 0)
             let loadPeak = load.need + batchLoadReservation
             // Native shard LOAD keeps the whole future head constructor/read

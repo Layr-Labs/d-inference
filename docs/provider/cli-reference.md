@@ -2780,6 +2780,16 @@ Output includes:
   it, and the registration timeout.
 - Detected hardware (chip, RAM, GPU cores).
 - `Inference memory` is the nominal hardware budget, **not** live free RAM.
+- `Fan control (experimental)`, after the local boot checks: the
+  [fan helper](./fan-control.md)'s mode; `helper not answering`; `installed,
+  helper not running` after `fan disable`; `unsupported on this Mac` or
+  `unavailable (…)`; or, on supported hardware without the helper,
+  `off, macOS automatic` with the hottest GPU sensor and
+  `sudo darkbloom fan enable`. It reads the same report as `darkbloom fan status`
+  (`provider-swift/Sources/darkbloom/StatusCommand+FanControl.swift`,
+  `Status.fanControlLine`), so `status` also runs `launchctl print` on the
+  helper's job (5 s timeout) and a read-only SMC read, plus the helper's ≤ 2 s
+  status query when it is loaded.
 - Schedule state (active/inactive).
 - Live daemon PID, uptime, trust verdict, and last model-load error with how
   long ago it was recorded (`Recorded … ago`); the readiness lines above it are

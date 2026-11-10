@@ -66,6 +66,7 @@ struct StatusCommandRunTests {
         #expect(none.contains("\nCoordinator: https://coordinator.invalid\n"))
         #expect(none.contains("\nAuto-restart: off (auto_restart = false)\n"))
         #expect(none.contains("\nLocal boot checks: "))
+        #expect(none.contains("\nFan control (experimental): "))
         #expect(none.contains("\nSchedule: always available\n"))
         #expect(none.contains("\nEnabled model filter: none\n"))
         #expect(none.contains("\nServing concurrency: "))

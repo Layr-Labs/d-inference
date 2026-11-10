@@ -1569,6 +1569,13 @@ throws `MultiModelBatchSchedulerEngineError.tokenBudgetExhausted`
 answers 503 with the fixed capacity message before response headers
 (`CORSResponder`), and the coordinator receives a pre-stream `inference_error`
 503 with `failure_code` `capacity` and `error_reason` `token_budget_exhausted`.
+The gate charges each request once, at its prompt plus `max_tokens` beside its
+fixed bytes (`EngineV2Bridge.glm5NextCommittedBytes`). A request is in `active`
+from the engine's acceptance but keeps its gate reservation until
+`submitTokenized` returns, which a streamed local request does once the engine
+starts it, so the larger of its two figures counts. Counting it twice left a
+256 GB M5 Ultra two 57k/16k requests instead of three (M5U window 3, 11-10). The
+engine ledger and the process-memory owner still refuse what does not fit.
 The heartbeat's `active_token_budget_used` reports what that gate charges, the
 held requests and gate reservations (`EngineV2Bridge.heartbeatCommittedBytes`).
 The engine's reserved bytes also keep the paged pool's retained segments after

@@ -170,6 +170,10 @@ public struct PairConfiguration: Sendable {
     /// Qwen drops its assistant, as the product does; GLM replays its rounds'
     /// draws), so a run with them and one without cover both decode paths.
     public var batchLogprobs: Int?
+    /// A wave whose tokens differ from its requests' alone fails the run in every mode, not only in tensor
+    /// parallel (`--batch-require-parity`): the pass rule for lanes at 1, 2, 4 and 8, each request's tokens equal to
+    /// its solo run's, whatever the option.
+    public var batchRequireParity = false
     /// The prompt-prefix SSD tier of each side's worker: that Mac's own root
     /// directory and key file (a file only its user can read). Nil: no tier.
     /// The driver reads the key on that side (`prefixSSDKeyScript`) and sends

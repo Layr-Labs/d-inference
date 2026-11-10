@@ -26,6 +26,8 @@ import Foundation
         var pipelineOnly = false
         /// From this reservation of the run on (counting from 1), every logprob rank 0 sends is one ulp lower.
         var logprobDriftFromReservation: Int?
+        /// From this reservation of the run on (counting from 1), every token rank 0 sends is one higher.
+        var tokenDriftFromReservation: Int?
 
         init() {}
         init(from decoder: Decoder) throws {
@@ -37,10 +39,11 @@ import Foundation
             firstToken = try values.decodeIfPresent(Int.self, forKey: .firstToken) ?? 100
             pipelineOnly = try values.decodeIfPresent(Bool.self, forKey: .pipelineOnly) ?? false
             logprobDriftFromReservation = try values.decodeIfPresent(Int.self, forKey: .logprobDriftFromReservation)
+            tokenDriftFromReservation = try values.decodeIfPresent(Int.self, forKey: .tokenDriftFromReservation)
         }
         enum CodingKeys: String, CodingKey {
             case mode, clockSkewNanoseconds, evidenceTokenDelta, evidenceDeltaRanks, firstToken, pipelineOnly
-            case logprobDriftFromReservation
+            case logprobDriftFromReservation, tokenDriftFromReservation
         }
     }
 
@@ -216,6 +219,11 @@ import Foundation
             func tokens(_ request: ClusterWorkerReservation) -> [Int] {
                 (0..<request.outputCount).map { behavior.firstToken + $0 }
             }
+            // The token rank 0 sends at `ordinal`: from the `tokenDriftFromReservation`-th reservation on, one
+            // higher, as a lane whose arithmetic drifted from its request's alone.
+            func sentToken(_ request: Held, ordinal: Int) -> Int {
+                tokens(request.reservation)[ordinal] + (behavior.tokenDriftFromReservation.map { request.number >= $0 } == true ? 1 : 0)
+            }
             // A token's logprob and its alternatives, when its request asks for them: the same at each ordinal for
             // every request, so a request in a wave sends what it sends alone; from the
             // `logprobDriftFromReservation`-th reservation on, one ulp lower, as a lane whose arithmetic drifted from
@@ -293,7 +301,7 @@ import Foundation
                             try record(request.reservation, id!)
                             try emit(.finished(.length), id); try emit(.retired(.clean), id); held[id!] = nil
                         } else {
-                            let token = tokens(request.reservation)[0]
+                            let token = sentToken(request, ordinal: 0)
                             try emit(.committedToken(ordinal: 0, tokenID: token, committedTokens: request.reservation.promptTokenIDs.count,
                                 logprobs: logprobs(request, ordinal: 0, token: token)), id)
                             held[id!]!.selected = 1
@@ -305,7 +313,7 @@ import Foundation
                             try emit(.finished(selected == request.reservation.outputCount ? .length : .clientStop), id)
                             try emit(.retired(.clean), id); held[id!] = nil
                         } else {
-                            let token = tokens(request.reservation)[selected]
+                            let token = sentToken(request, ordinal: selected)
                             try emit(.committedToken(ordinal: selected, tokenID: token,
                                 committedTokens: request.reservation.promptTokenIDs.count + selected,
                                 logprobs: logprobs(request, ordinal: selected, token: token)), id)

@@ -13,7 +13,7 @@ private final class Sides {
 
     init(modes: [String], skews: [Int64] = [0, 0], evidenceTokenDelta: Int = 0, evidenceDeltaRanks: [Int] = [1],
          alterWorker: Bool = false, alterMetallib: Bool = false, removeProgressGuard: Bool = false,
-         pipelineOnly: Bool = false, logprobDriftFromReservation: Int? = nil) throws {
+         pipelineOnly: Bool = false, logprobDriftFromReservation: Int? = nil, tokenDriftFromReservation: Int? = nil) throws {
         let files = FileManager.default
         root = files.temporaryDirectory.appendingPathComponent("pair-check-\(UUID().uuidString.lowercased())")
         let fake = try Self.fakeWorker()
@@ -37,6 +37,7 @@ private final class Sides {
                                            "evidenceTokenDelta": evidenceTokenDelta, "evidenceDeltaRanks": evidenceDeltaRanks,
                                            "pipelineOnly": pipelineOnly]
             behavior["logprobDriftFromReservation"] = logprobDriftFromReservation
+            behavior["tokenDriftFromReservation"] = tokenDriftFromReservation
             try JSONSerialization.data(withJSONObject: behavior).write(to: side.appendingPathComponent("behavior.json"))
             for name in ["config.json", "manifest.json"] { try Data("{}".utf8).write(to: model.appendingPathComponent(name)) }
             sides.append(.init(modelDirectory: model.path, workerPath: worker.path,
@@ -1057,6 +1058,52 @@ final class PairDriverTests: XCTestCase {
         configuration.batchLogprobs = nil
         XCTAssertNil(configuration.batchSampling(greedy))
         XCTAssertEqual(configuration.batchSampling(sampled), sampled.sampling?.wire)
+    }
+
+    // MARK: - Lane parity as a pass rule in every mode (`--batch-require-parity`)
+
+    /// A pipeline on two lanes, the same two batch requests alone and in a wave of two.
+    private func pipelineBatch(_ sides: Sides) throws -> PairConfiguration {
+        var configuration = try tensorParallelBatch(sides)
+        configuration.generationMode = PairConfiguration.pipelineMode
+        try configuration.validate()
+        return configuration
+    }
+
+    /// From the wave's reservations on, the fake's rank 0 sends each token one higher, as a lane whose arithmetic
+    /// drifted from its request's alone. A pipeline's lane parity is a measurement unless the run requires it
+    /// (`batchRequireParity`): then a wave whose tokens differ fails the run, as a tensor-parallel wave always does.
+    func testAPipelineWaveWhoseTokensDifferFromItsRequestsAloneFailsOnlyARunThatRequiresParity() throws {
+        for required in [false, true] {
+            let sides = try Sides(modes: ["ok", "ok"], tokenDriftFromReservation: 4)
+            var configuration = try pipelineBatch(sides)
+            configuration.batchRequireParity = required
+            try configuration.validate()
+            let report = PairDriver(configuration: configuration).run()
+            let wave = try XCTUnwrap(report.timing.batch?.waves.first, "required \(required)")
+            XCTAssertEqual(wave.allMatchSolo, false, "required \(required)")
+            XCTAssertTrue(wave.requests.allSatisfy { $0.matchesSolo == false && $0.firstDifferenceIndex == 0 })
+            if required {
+                XCTAssertEqual(report.outcome, "failed")
+                XCTAssertTrue(report.failure?.contains("batch wave of 2: tokens differ from the requests run alone") == true,
+                              report.failure ?? "")
+            } else {
+                XCTAssertEqual(report.outcome, "completed", report.failure ?? "")
+            }
+            assertEndedByItself(report, sides, configuration)
+        }
+    }
+
+    /// A wave whose tokens match its requests' alone passes a run that requires parity, in a pipeline too.
+    func testAPipelineWaveThatMatchesItsRequestsAlonePassesARunThatRequiresParity() throws {
+        let sides = try Sides(modes: ["ok", "ok"])
+        var configuration = try pipelineBatch(sides)
+        configuration.batchRequireParity = true
+        try configuration.validate()
+        let report = PairDriver(configuration: configuration).run()
+        XCTAssertEqual(report.outcome, "completed", report.failure ?? "")
+        XCTAssertEqual(report.timing.batch?.waves.first?.allMatchSolo, true)
+        assertEndedByItself(report, sides, configuration)
     }
 }
 

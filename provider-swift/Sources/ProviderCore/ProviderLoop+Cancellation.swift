@@ -27,6 +27,10 @@ extension ProviderLoop {
         if receivedFromCoordinator && (hadInflightTask || hadModelReservation) {
             stats.incrementCancellationsReceived()
         }
+        if receivedFromCoordinator, acceptedLifecycleRequests.contains(requestId),
+            coordinatorCancelledAt[requestId] == nil {
+            coordinatorCancelledAt[requestId] = .now
+        }
         // Profiler: stamp cancel receipt and derive the lifecycle stage from
         // the stamps present right now (one lock). The stage counters count
         // COORDINATOR cancels only — a disconnect-driven cancel-all is not
@@ -156,6 +160,7 @@ extension ProviderLoop {
 
     internal func finishInflightRequest(requestId: String) async {
         acceptedLifecycleRequests.remove(requestId)
+        coordinatorCancelledAt.removeValue(forKey: requestId)
         let completedTask = inflightTasks.removeValue(forKey: requestId)
         let hadRegisteredTask = completedTask != nil
         let modelId = requestToModel.removeValue(forKey: requestId)

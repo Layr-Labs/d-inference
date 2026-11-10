@@ -2480,7 +2480,11 @@ The command disarms the watchdog and disables login/reboot startup before
 requesting the drain. If setup fails before the mailbox request is published,
 it restores the prior launchd/watchdog recovery state and retains its history. A normal drain timeout returns non-success and leaves the
 process draining with automatic restart disabled. Repeat `stop` or `restart`
-with a new deadline, or explicitly pass `--force`. Interrupting the CLI does not
+with a new deadline, or explicitly pass `--force`. A request its coordinator
+already cancelled (its client left, or its first token was late) counts for at
+most 30 s after that cancel (`ProviderLoop.orphanedRequestGrace`): its answer has
+nobody to go to, so a task that never ends no longer holds the drain. Memory and
+eviction still count it until its task ends. Interrupting the CLI does not
 cancel accepted inference or reopen admission. A running provider without the
 drain control protocol requires an upgrade or an explicit forced interruption.
 After the drain, shutdown waits up to 15 seconds for each model's unload; a

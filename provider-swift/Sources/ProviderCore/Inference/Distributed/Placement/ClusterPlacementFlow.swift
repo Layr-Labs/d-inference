@@ -54,6 +54,7 @@ public enum ClusterPlacementFlow {
     /// so a check can run the whole decision without a child process.
     /// `coordinator`: the setup will serve through the coordinator, whose member registration carries no
     /// tensor-parallel shares (`NativePairMemberRoster`), so it is planned with equal shares only.
+    /// It plans on a stack of its own (`ClusterPlanningStack`): its caller's stack holds only the wait.
     public static func decide(description: ClusterPairDescription, capability: ClusterRuntimeCapability,
                               localMemberID: String, localProfile: ClusterDeviceProfile, peerProfile: ClusterDeviceProfile,
                               layout: ClusterModelLayout, measurements: [ClusterSpeedMeasurement] = [],
@@ -74,6 +75,35 @@ public enum ClusterPlacementFlow {
                               assumeUnmeasuredLink: Bool = true,
                               environment: [String: String] = ProcessInfo.processInfo.environment,
                               benchDebugBuild: Bool = ClusterPlannerBenchCap.isDebugBuild) throws
+        -> (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?) {
+        try ClusterPlanningStack.run {
+            try decideOnPlanningStack(description: description, capability: capability, localMemberID: localMemberID,
+                localProfile: localProfile, peerProfile: peerProfile, layout: layout, measurements: measurements,
+                promptTokens: promptTokens, outputTokens: outputTokens, requestScope: requestScope, batchScope: batchScope,
+                tensorAssistantQuote: tensorAssistantQuote, tensorWideningQuote: tensorWideningQuote,
+                tensorWidthQuotes: tensorWidthQuotes, regime: regime, leader: leader, served: served, link: link,
+                shareProbes: shareProbes, incumbentMode: incumbentMode, chosenMode: chosenMode,
+                incumbentTensorShares: incumbentTensorShares, coordinator: coordinator,
+                assumeUnmeasuredLink: assumeUnmeasuredLink, environment: environment, benchDebugBuild: benchDebugBuild)
+        }
+    }
+
+    /// `decide`'s planning, on the planning stack.
+    private static func decideOnPlanningStack(description: ClusterPairDescription, capability: ClusterRuntimeCapability,
+                                              localMemberID: String, localProfile: ClusterDeviceProfile,
+                                              peerProfile: ClusterDeviceProfile, layout: ClusterModelLayout,
+                                              measurements: [ClusterSpeedMeasurement], promptTokens: Int?,
+                                              outputTokens: Int?, requestScope: ClusterPlacementRequestScope?,
+                                              batchScope: ClusterPlacementBatchScope?,
+                                              tensorAssistantQuote: ClusterPlacementTensorBatchQuote?,
+                                              tensorWideningQuote: ClusterPlacementTensorBatchQuote?,
+                                              tensorWidthQuotes: [ClusterPlacementTensorBatchQuote],
+                                              regime: ClusterPlacementPolicy.Regime, leader: String?,
+                                              served: [ClusterServedSpeedRecords.Entry], link: ClusterLinkCosts,
+                                              shareProbes: [String: [ClusterShareRate]],
+                                              incumbentMode: ClusterGenerationMode?, chosenMode: ClusterForcedMode?,
+                                              incumbentTensorShares: [Int]?, coordinator: Bool, assumeUnmeasuredLink: Bool,
+                                              environment: [String: String], benchDebugBuild: Bool) throws
         -> (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?) {
         // Developer bench only (`ClusterPlannerBenchCap`): a debug build may be told to plan as if each Mac could
         // give less memory than it detected; a release build refuses. The load gates never see this.

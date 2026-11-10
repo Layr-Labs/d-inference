@@ -1,8 +1,9 @@
 import Foundation
 
-/// How much of its caller's stack a planning entry point may use: 64 KiB of the 512 KiB a planning thread or a test's
-/// task runs on.
-let planningCallerStackBudget = 64 * 1024
+/// How much of its caller's stack a planning entry point may use, the check's own call included: a quarter of the
+/// 512 KiB a planning thread or a test's task runs on. In a debug build `decide`'s check used 72 KiB with the planning on
+/// its own stack, against 390 KiB without (2026-11-10).
+let planningCallerStackBudget = 128 * 1024
 
 /// The stack `body` uses, on a thread of its own whose 16 MiB stack is filled with a pattern beforehand: the lowest byte
 /// `body` changed gives its depth. That stack never runs out, so a planner that grows too deep fails a check instead of

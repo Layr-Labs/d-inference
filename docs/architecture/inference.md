@@ -5693,7 +5693,11 @@ batches failed whole on a refusal, so the worker exited either way. Now:
   rank 1 reports rank 0's finish with the tokens it committed
   (`QwenTensorParallelStopRule.reconcile`), and both end cleanly. Two finishes
   that differ would fail the request on the owner, and the pair with it.
-  (MiMo reads a round's stops before it commits, so its stop is never late.)
+  Rank 1 likewise reports rank 0's client stop, with rank 0's tokens, when its
+  pages could not grow as the owner stopped the request (within a step or two,
+  so rank 0 heard the owner first). (MiMo reads a round's stops before it
+  commits, and its plain decode reads each step before it builds the next, so
+  its stop is never late.)
   An aborted request's state retires normally and nothing of it goes to the
   SSD tier. Gemma withdraws the prompt's capture. GLM stores a prompt's kept
   boundary when the prefill frame that reaches it finishes, so the rank that

@@ -28,6 +28,7 @@ jobs:
     with:
       lanes: |
         frontend linux_arm64 blacksmith-4vcpu-ubuntu-2404
+        desktop-package macos_arm64 blacksmith-12vcpu-macos-27 ${{ github.event_name == 'workflow_dispatch' && 1 || 0 }}
 
   frontend:
     needs: route
@@ -44,9 +45,11 @@ jobs:
         working-directory: desktop-app
       - run: npm run lint && npm test && npm run build
         working-directory: desktop-app
-  review-package:
+  desktop-package:
     if: github.event_name == 'workflow_dispatch'
-    runs-on: blacksmith-12vcpu-macos-27
+    needs: route
+    runs-on: ${{ fromJSON(needs.route.outputs.routes)['desktop-package'] }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020

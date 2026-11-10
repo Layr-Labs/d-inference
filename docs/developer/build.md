@@ -499,6 +499,7 @@ shard the lane its matrix entry names, `matrix.lane`.
 | `ci-master.yml` (lanes requested by `provider-plan.yml`) | `release-integrity`, `docs` | `blacksmith-4vcpu-ubuntu-2404` |
 | `docs-impact.yml` | `commit-signatures`, `docs-impact` | `blacksmith-4vcpu-ubuntu-2404` |
 | `landing.yml`, `desktop.yml`, `nightly-linear-package.yml` | `check`, `frontend`, `test` | `blacksmith-4vcpu-ubuntu-2404` |
+| `desktop.yml` | `desktop-package`, manual dispatch only | `blacksmith-12vcpu-macos-27` |
 | `provider-release-cache.yml` | `warm`, pull requests only | `blacksmith-12vcpu-macos-27` |
 | `release-qualify.yml` (job `qualify` of `release-dev-branch.yml` and `release-swift.yml`) | `qualify-sdk-shard`, shards 1 to 5 on one lane, `release-qualify`; not in tag runs | `blacksmith-12vcpu-macos-27` |
 

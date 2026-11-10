@@ -6,6 +6,18 @@ import Foundation
 import MLXLMCommon
 import MLXLMServer
 
+/// One continuation: the prompt of its hidden request, and how much of that
+/// prompt the prefix tiers must restore before the request may run.
+struct TurnContinuationPlan: Sendable, Equatable {
+    let tokens: [Int]
+    /// The last position the turn that just ended left in the complete-
+    /// checkpoint store when it wrote there. A hidden request that restores
+    /// less would prefill that turn's own prompt again, so it is refused.
+    /// 0 asks for nothing: the turn's prompt was shorter than one cell, or the
+    /// resident bank holds its state.
+    let restoreFloor: Int
+}
+
 /// The canonical positions a slot's prefix tiers keep, read once at load.
 ///
 /// A follow-up prompt reuses state only at one of these positions, so the
@@ -29,13 +41,13 @@ public struct TurnContinuationCells: Sendable, Equatable {
         return index
     }
 
-    /// The prompt of the continuation request, or nil when the turn that just
-    /// ended already left state at the last canonical position of `shared`.
+    /// The continuation of one turn, or nil when the turn that just ended
+    /// already left state at the last canonical position of `shared`.
     ///
     /// - Parameters:
     ///   - source: the prompt of the turn that just ended.
     ///   - shared: the tokens the next turn's prompt is known to start with.
-    func continuationTokens(source: [Int], shared: [Int]) -> [Int]? {
+    func plan(source: [Int], shared: [Int]) -> TurnContinuationPlan? {
         let known = shared.count
         let common = Self.commonPrefixLength(source, shared)
         // The next prompt extends this one. A prediction that leaves it more
@@ -46,13 +58,13 @@ public struct TurnContinuationCells: Sendable, Equatable {
             let cut = max(boundaries.last ?? 0, known / gridTokens * gridTokens)
             let have = max(boundaries.last { $0 <= common } ?? 0, common / gridTokens * gridTokens)
             guard cut > have, cut > 1 else { return nil }
-            return Array(shared.prefix(cut))
+            return TurnContinuationPlan(tokens: Array(shared.prefix(cut)), restoreFloor: 0)
         }
         guard known > 0 else { return nil }
         let cut = (known - 1) / gridTokens * gridTokens
         let have = min(max(0, source.count - 1) / gridTokens * gridTokens, common / gridTokens * gridTokens)
         guard cut > have else { return nil }
-        return Array(shared.prefix(cut + 1))
+        return TurnContinuationPlan(tokens: Array(shared.prefix(cut + 1)), restoreFloor: have)
     }
 }
 

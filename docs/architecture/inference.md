@@ -2285,8 +2285,8 @@ each time with the reply appended as an assistant message and a different
 one-letter user message. The tokens the two renders share, less the last one,
 are the tokens any next turn starts with. The reply is rebuilt from the
 stream's events as the `content` a client receives, without its reasoning
-(`TurnReplyCapture`). `TurnContinuationCells.continuationTokens` then cuts
-that prefix at the last position the slot's tiers keep:
+(`TurnReplyCapture`). `TurnContinuationCells.plan` then cuts that prefix at
+the last position the slot's tiers keep:
 
 - With the resident bank: the last message boundary the slot's rule finds or
   the last grid multiple, whichever is later. A slot without a boundary rule
@@ -2298,6 +2298,31 @@ When that position is one the turn that just ended already reached, nothing
 new is left to keep and no request is submitted. Without both the resident
 bank and a boundary rule, that is every reply that does not cross a grid
 multiple.
+
+**What it must find restored.** On the complete-checkpoint store a
+continuation only extends what its turn left there. The plan carries the last
+grid multiple that turn's own request should have written
+(`TurnContinuationPlan.restoreFloor`): the last grid multiple below the end of
+its prompt, counted over the tokens the prompt shares with the prediction.
+Before the hidden request is submitted, `EngineV2Bridge.submitTokenized`
+compares that floor with what the prefix tiers restore for it, which is the
+longer of the store's staged checkpoint and the resident tier's match. When
+they restore less, the request is refused before any prefill, a staged
+checkpoint is given back unconsumed, and the outcome is `skipped`. Without
+this check the hidden request would compute the turn's own prompt again from
+its first token and write it, and a request that arrives meanwhile waits for
+that write.
+
+Three cases follow from the rule:
+
+- When neither the turn's own request nor an earlier one left a checkpoint
+  at that grid multiple, no continuation starts, whatever kept the request
+  from writing.
+- The store keeps no position below its minimum
+  (`DARKBLOOM_PREFIX_CACHE_SSD_MIN_EFFECTIVE_TOKENS`, 1,024 by default), so a
+  turn whose last grid multiple is below it finds nothing there.
+- The floor is 0 when the turn's prompt fits inside the first grid cell, and
+  on a slot with the resident bank, whose plan asks nothing of the store.
 
 The prediction is never a correctness input. The engine reuses state only
 where a later prompt's tokens match, so a wrong prediction costs idle work and
@@ -2329,14 +2354,18 @@ It is a warm-up cell, so calibration takes no measurement from it, and it is
 left out of the prefix-cache savings counter and the reuse telemetry. Its one
 log line carries the model ID, the outcome, two token counts and a duration,
 and no token IDs or text. The outcome is `completed` only when the engine
-prefilled every token and stopped by itself.
+prefilled every token and stopped by itself. A refused request logs `skipped`
+with the tokens the tiers restored and the floor.
 
 **Costs.** A request that arrives during a continuation waits for it to stop,
 and nothing bounds that wait except the time the engine takes to cancel a
-row. The two renders run off the request path at utility priority. Idle GPU
-time is spent after each reply that has a cell to fill, whether or not a
-follow-up arrives. These costs have not been measured on a shipped
-configuration.
+row. On the complete-checkpoint store the wait also covers a checkpoint write
+the hidden request has already started: cancelling the request does not stop
+the write. A refused continuation that found an older, shorter checkpoint has
+read it once before giving it back. The two renders run off the request path
+at utility priority. Idle GPU time is spent after each reply that has a cell
+to fill, whether or not a follow-up arrives. These costs have not been
+measured on a reviewed serving profile.
 
 The key is a `DARKBLOOM_CBV2_*` key: it enters the complete-checkpoint
 numerics fingerprint and disqualifies reviewed serving and deadline profiles.

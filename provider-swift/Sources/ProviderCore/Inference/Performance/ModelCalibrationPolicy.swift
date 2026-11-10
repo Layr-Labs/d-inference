@@ -17,6 +17,9 @@ enum ModelCalibrationPolicy {
         var sampled = false
         /// A turn continuation: prefill only, cancelled by any arrival.
         var continuation = false
+        /// A continuation runs only when the prefix tiers restore at least
+        /// this many tokens of its prompt; 0 asks for nothing.
+        var restoreFloor = 0
     }
 
     /// How a cell's rows retired, worst first. Measured cells accept a row the
@@ -147,6 +150,10 @@ struct ModelCalibrationState {
     var task: Task<Void, Never>?
     var requests: [String: ModelCalibrationPolicy.Cell] = [:]
     var pendingObservations: [String: [EngineRateObservation]] = [:]
+    /// Continuations refused before submission because the prefix tiers
+    /// restored less than their floor, with the tokens they did restore. The
+    /// session that owns the request takes its entry when the request ends.
+    var unrestoredContinuations: [String: Int] = [:]
     var bootstrapCompleted = false
     /// Widest served width a finished pass covered; nil until one finishes.
     /// Only preemption leaves a pass unfinished; a timeout or refusal finishes it.

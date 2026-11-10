@@ -28,30 +28,30 @@ struct TurnContinuationCellsTests {
         let cells = TurnContinuationCells(gridTokens: 8, boundaryRule: Self.rule, residentBank: true)
         // The reply, the token that closes it, and the next message's first token.
         let shared = Self.prompt + [7, 7, 7, 102, 1]
-        #expect(cells.continuationTokens(source: Self.prompt, shared: shared) == Self.prompt + [7, 7, 7, 102])
+        #expect(cells.plan(source: Self.prompt, shared: shared)?.tokens == Self.prompt + [7, 7, 7, 102])
     }
 
     @Test func theBankShapeTakesAGridMultiplePastTheLastBoundary() {
         let cells = TurnContinuationCells(gridTokens: 8, boundaryRule: Self.rule, residentBank: true)
         let shared = Self.prompt + [7, 7, 7, 102] + Array(repeating: 1, count: 8)
         #expect(shared.count == 17)
-        #expect(cells.continuationTokens(source: Self.prompt, shared: shared) == Array(shared.prefix(16)))
+        #expect(cells.plan(source: Self.prompt, shared: shared)?.tokens == Array(shared.prefix(16)))
     }
 
     @Test func theBankShapeWithoutARuleEndsOnAGridMultiple() {
         let cells = TurnContinuationCells(gridTokens: 4, boundaryRule: nil, residentBank: true)
         let source = Array(0 ..< 6)
-        #expect(cells.continuationTokens(source: source, shared: Array(0 ..< 11)) == Array(0 ..< 8))
+        #expect(cells.plan(source: source, shared: Array(0 ..< 11))?.tokens == Array(0 ..< 8))
         // No grid multiple past the one this turn already reached.
-        #expect(cells.continuationTokens(source: source, shared: Array(0 ..< 7)) == nil)
+        #expect(cells.plan(source: source, shared: Array(0 ..< 7))?.tokens == nil)
     }
 
     @Test func theBankShapeIsSkippedWhenTheTurnAlreadyEndedOnTheLastPosition() {
         let cells = TurnContinuationCells(gridTokens: 8, boundaryRule: Self.rule, residentBank: true)
         // The reply is not closed inside the known prefix.
-        #expect(cells.continuationTokens(source: Self.prompt, shared: Self.prompt + [7, 7]) == nil)
-        #expect(cells.continuationTokens(source: Self.prompt, shared: Self.prompt) == nil)
-        #expect(cells.continuationTokens(source: Self.prompt, shared: []) == nil)
+        #expect(cells.plan(source: Self.prompt, shared: Self.prompt + [7, 7])?.tokens == nil)
+        #expect(cells.plan(source: Self.prompt, shared: Self.prompt)?.tokens == nil)
+        #expect(cells.plan(source: Self.prompt, shared: [])?.tokens == nil)
     }
 
     // MARK: A slot with the durable tier only
@@ -59,25 +59,45 @@ struct TurnContinuationCellsTests {
     @Test func theDurableShapeEndsOneTokenPastTheLastGridMultiple() {
         let cells = TurnContinuationCells(gridTokens: 4, boundaryRule: nil, residentBank: false)
         let source = Array(0 ..< 6)
-        #expect(cells.continuationTokens(source: source, shared: Array(0 ..< 11)) == Array(0 ..< 9))
-        #expect(cells.continuationTokens(source: source, shared: Array(0 ..< 9)) == Array(0 ..< 9))
+        #expect(cells.plan(source: source, shared: Array(0 ..< 11))?.tokens == Array(0 ..< 9))
+        #expect(cells.plan(source: source, shared: Array(0 ..< 9))?.tokens == Array(0 ..< 9))
     }
 
     @Test func theDurableShapeIsSkippedUntilTheReplyCrossesAGridMultiple() {
         let cells = TurnContinuationCells(gridTokens: 4, boundaryRule: nil, residentBank: false)
         let source = Array(0 ..< 6)
         // The tier keeps multiples below a prompt's last token: 4 is kept, 8 is not reached.
-        #expect(cells.continuationTokens(source: source, shared: Array(0 ..< 8)) == nil)
-        #expect(cells.continuationTokens(source: source, shared: Array(0 ..< 6)) == nil)
-        #expect(cells.continuationTokens(source: source, shared: []) == nil)
+        #expect(cells.plan(source: source, shared: Array(0 ..< 8))?.tokens == nil)
+        #expect(cells.plan(source: source, shared: Array(0 ..< 6))?.tokens == nil)
+        #expect(cells.plan(source: source, shared: [])?.tokens == nil)
     }
 
     @Test func theDurableShapeIgnoresMessageBoundaries() {
         let cells = TurnContinuationCells(gridTokens: 8, boundaryRule: Self.rule, residentBank: false)
         // A closed reply that stays inside the first cell leaves nothing to keep.
-        #expect(cells.continuationTokens(source: Self.prompt, shared: Self.prompt + [7, 102, 1]) == nil)
+        #expect(cells.plan(source: Self.prompt, shared: Self.prompt + [7, 102, 1])?.tokens == nil)
         let long = Self.prompt + [7, 7, 7, 102] + Array(repeating: 1, count: 8)
-        #expect(cells.continuationTokens(source: Self.prompt, shared: long) == Array(long.prefix(17)))
+        #expect(cells.plan(source: Self.prompt, shared: long)?.tokens == Array(long.prefix(17)))
+    }
+
+    // MARK: What the hidden request must find restored
+
+    @Test func theDurableShapeAsksForTheLastPositionTheTurnLeft() {
+        let cells = TurnContinuationCells(gridTokens: 4, boundaryRule: nil, residentBank: false)
+        let shared = Array(0 ..< 11)
+        // A 6-token prompt left position 4, and so did a 5-token one.
+        #expect(cells.plan(source: Array(0 ..< 6), shared: shared)?.restoreFloor == 4)
+        #expect(cells.plan(source: Array(0 ..< 5), shared: shared)?.restoreFloor == 4)
+        // A prompt inside the first cell left nothing, so nothing is asked.
+        #expect(cells.plan(source: Array(0 ..< 4), shared: shared)?.restoreFloor == 0)
+        // A re-rendered tail: only the tokens both prompts share count.
+        let tail = Array(0 ..< 10) + Array(repeating: 99, count: 10)
+        #expect(cells.plan(source: Array(0 ..< 12), shared: tail)?.restoreFloor == 8)
+    }
+
+    @Test func theBankShapeAsksNothingOfTheDurableTier() {
+        let cells = TurnContinuationCells(gridTokens: 4, boundaryRule: nil, residentBank: true)
+        #expect(cells.plan(source: Array(0 ..< 6), shared: Array(0 ..< 11))?.restoreFloor == 0)
     }
 
     // MARK: Predictions that are not a follow-up of the turn
@@ -88,17 +108,17 @@ struct TurnContinuationCellsTests {
         // The template re-rendered the last two tokens of the prompt.
         let tail = Array(0 ..< 10) + Array(repeating: 99, count: 10)
         let bank = TurnContinuationCells(gridTokens: 4, boundaryRule: nil, residentBank: true)
-        #expect(bank.continuationTokens(source: source, shared: early) == nil)
-        #expect(bank.continuationTokens(source: source, shared: tail) == tail)
+        #expect(bank.plan(source: source, shared: early)?.tokens == nil)
+        #expect(bank.plan(source: source, shared: tail)?.tokens == tail)
         let durable = TurnContinuationCells(gridTokens: 4, boundaryRule: nil, residentBank: false)
-        #expect(durable.continuationTokens(source: source, shared: early) == nil)
-        #expect(durable.continuationTokens(source: source, shared: tail) == Array(tail.prefix(17)))
+        #expect(durable.plan(source: source, shared: early)?.tokens == nil)
+        #expect(durable.plan(source: source, shared: tail)?.tokens == Array(tail.prefix(17)))
     }
 
     @Test func aSlotWithoutAGridHasNoContinuation() {
         for bank in [true, false] {
             let cells = TurnContinuationCells(gridTokens: 0, boundaryRule: Self.rule, residentBank: bank)
-            #expect(cells.continuationTokens(source: Self.prompt, shared: Self.prompt + [7, 7, 7, 102, 1]) == nil)
+            #expect(cells.plan(source: Self.prompt, shared: Self.prompt + [7, 7, 7, 102, 1])?.tokens == nil)
         }
     }
 }

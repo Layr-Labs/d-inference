@@ -16,6 +16,9 @@ extension EngineV2Bridge {
     private enum TurnContinuationOutcome: String {
         /// The engine prefilled every token and stopped by itself.
         case completed
+        /// The prefix tiers restored less than the turn before it left there,
+        /// so the request was refused before any prefill.
+        case skipped
         /// Refused at admission, cancelled by an arrival or the time limit, or
         /// failed.
         case ended
@@ -30,6 +33,12 @@ extension EngineV2Bridge {
     /// discarded, and it reads and writes the prefix tiers under the scope of
     /// the request it follows and no other.
     ///
+    /// On the complete-checkpoint store it only extends what that request
+    /// left there. When the store and the resident tier both restore less
+    /// than that request's last position, the hidden request is refused
+    /// before any prefill: it would compute and write the turn's own prompt
+    /// again, and a request that arrives meanwhile waits for that write.
+    ///
     /// - Parameters:
     ///   - sourceRequestID: the request whose reply just ended.
     ///   - source: the prompt that request ran.
@@ -39,7 +48,7 @@ extension EngineV2Bridge {
         after sourceRequestID: String, source: [Int], shared: [Int], cacheScope: String
     ) async {
         guard let cells = turnContinuationCells,
-            let tokens = cells.continuationTokens(source: source, shared: shared) else { return }
+            let plan = cells.plan(source: source, shared: shared) else { return }
         // The client's stream ends before the request retires on this actor.
         let sourceID = Self.normalizedRequestId(sourceRequestID)
         await pumpTasks[sourceID]?.value
@@ -56,17 +65,21 @@ extension EngineV2Bridge {
         let task = serviceBudget.idleCalibration.startIfIdle(
             isIdle: { serviceBudget.isIdle }, toleratesPrefixStoreTransfers: true
         ) { [weak self] in
-            await self?.runTurnContinuation(tokens: tokens, sourceTokens: sourceTokens, cacheScope: cacheScope)
+            await self?.runTurnContinuation(plan, sourceTokens: sourceTokens, cacheScope: cacheScope)
         }
         guard let task else { return }
         modelCalibration.task = task
     }
 
-    private func runTurnContinuation(tokens: [Int], sourceTokens: Int, cacheScope: String) async {
+    private func runTurnContinuation(
+        _ plan: TurnContinuationPlan, sourceTokens: Int, cacheScope: String
+    ) async {
         modelCalibration.interrupted = false
+        let tokens = plan.tokens
         let id = "continuation-" + UUID().uuidString
         modelCalibration.requests[id] = ModelCalibrationPolicy.Cell(
-            promptTokens: tokens.count, outputTokens: 1, width: 1, warmup: true, continuation: true)
+            promptTokens: tokens.count, outputTokens: 1, width: 1, warmup: true, continuation: true,
+            restoreFloor: plan.restoreFloor)
         let timer = Task { [weak self] in
             do {
                 try await Task.sleep(nanoseconds: UInt64(Self.turnContinuationMaximumSeconds * 1_000_000_000))
@@ -76,12 +89,14 @@ extension EngineV2Bridge {
         let started = ContinuousClock.now
         // An arrival cancels this session and then waits for it. No event
         // reaches the loop below during prefill, so the handler cancels.
-        let outcome = await withTaskCancellationHandler {
+        var outcome = await withTaskCancellationHandler {
             await runTurnContinuationRequest(id, tokens: tokens, cacheScope: cacheScope)
         } onCancel: {
             Task { await self.interruptModelCalibration([id]) }
         }
         timer.cancel()
+        let restored = modelCalibration.unrestoredContinuations.removeValue(forKey: id)
+        if restored != nil { outcome = .skipped }
         modelCalibration.requests.removeValue(forKey: id)
         modelCalibration.pendingObservations.removeValue(forKey: id)
         modelCalibration.task = nil
@@ -92,9 +107,10 @@ extension EngineV2Bridge {
         // "device work". The time limit and an admission refusal leave it out.
         let cancelledBy = outcome == .ended ? serviceBudget?.idleCalibration.cancellationSource : nil
         let cancellation = cancelledBy.map { ", session cancelled by \($0)" } ?? ""
+        let shortfall = restored.map { ", prefix tiers restored \($0) of \(plan.restoreFloor) tokens" } ?? ""
         // Counts, timing and that label only; never a token or any text.
         Self.turnContinuationLogger.info(
-            "Turn continuation \(modelId): \(outcome.rawValue), \(tokens.count) tokens after a \(sourceTokens)-token prompt in \(elapsedMs) ms\(cancellation)")
+            "Turn continuation \(modelId): \(outcome.rawValue), \(tokens.count) tokens after a \(sourceTokens)-token prompt in \(elapsedMs) ms\(cancellation)\(shortfall)")
     }
 
     private func runTurnContinuationRequest(

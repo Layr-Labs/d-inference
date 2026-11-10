@@ -807,7 +807,9 @@ A [turn continuation](inference.md#turn-continuation), off by default, is one
 more excluded cell (`ModelCalibrationPolicy.Cell.continuation`). It uses the
 same session, idle gate and foreground lease, is admitted through the same KV
 and service budgets, and checks the posture before it starts. It publishes no
-observations or work totals. One rule differs: a prefix-store transfer (a
+observations or work totals. Its cell can carry a restore floor
+(`Cell.restoreFloor`): the bridge refuses the hidden request before submission
+when the prefix tiers restore fewer tokens than that. One rule differs: a prefix-store transfer (a
 restore or a checkpoint write, the hidden request's own included) does not
 cancel a continuation session, where it cancels a calibration session. The
 transfer still counts as device work for the idle gate and the evidence.

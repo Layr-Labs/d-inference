@@ -506,6 +506,7 @@ extension EngineV2Bridge {
         // backstop. Media stages only with a trusted feature identity and a
         // model-native planner; the AR media and native block layouts stay distinct.
         var ssdStaged = false
+        var ssdStagedTokens = 0
         var ssdReuseAttempted = false
         cbv2Request.prefixCacheReceiptID = prefixCacheReceiptID
         if !imageCacheEnabled {
@@ -525,6 +526,7 @@ extension EngineV2Bridge {
             }
             profile?.markDuration(.ssdStage, start: stageStart)
             ssdStaged = stageResult.staged
+            ssdStagedTokens = stageResult.stagedTokens
             ssdReuseAttempted = stageResult.staged
             usageSignal?.record(stageResult: stageResult)
             if case .skippedCapacity = stageResult.disposition {
@@ -540,6 +542,7 @@ extension EngineV2Bridge {
             }
             profile?.markDuration(.ssdStage, start: stageStart)
             ssdStaged = stageResult.staged
+            ssdStagedTokens = stageResult.stagedTokens
             ssdReuseAttempted = stageResult.staged
             usageSignal?.record(stageResult: stageResult)
             if case .skippedCapacity = stageResult.disposition {
@@ -558,6 +561,7 @@ extension EngineV2Bridge {
                 cacheScope: imageBoundCacheScope)
             profile?.markDuration(.ssdStage, start: stageStart)
             ssdStaged = stageResult.staged
+            ssdStagedTokens = stageResult.stagedTokens
             ssdReuseAttempted = stageResult.staged
             usageSignal?.record(stageResult: stageResult)
             if case .skippedCapacity = stageResult.disposition {
@@ -575,6 +579,27 @@ extension EngineV2Bridge {
             ssdStaged: ssdStaged,
             readyReceiptRegistered: readyReceiptRegistered,
             usageSignal: usageSignal)
+
+        // A turn continuation extends what its turn left in the complete-
+        // checkpoint store. One whose tiers restore less would prefill that
+        // turn's own prompt again and write it, and the next request waits
+        // for that write. It is refused here the way a request cancelled
+        // before submission is: nothing reaches the engine.
+        if let cell = modelCalibration.requests[id], cell.continuation {
+            let restored = max(ssdStagedTokens, residentPrefixCandidate?.matchedTokens ?? 0)
+            if restored < cell.restoreFloor {
+                modelCalibration.unrestoredContinuations[id] = restored
+                await releasePreSubmitResources(
+                    requestID: id,
+                    sharedKVReserved: false,
+                    prefixCacheReceiptID: prefixCacheReceiptID,
+                    ssdStaged: ssdStaged,
+                    readyReceiptRegistered: readyReceiptRegistered,
+                    usageSignal: usageSignal,
+                    failure: .policy)
+                throw CancellationError()
+            }
+        }
 
         // Reserve worst-case contiguous request memory atomically across all
         // resident models. Release on rejection, retirement, or pump terminal.

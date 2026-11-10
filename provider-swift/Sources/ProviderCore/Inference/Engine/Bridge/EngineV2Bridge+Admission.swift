@@ -109,12 +109,15 @@ extension EngineV2Bridge {
             calibratedDeadlinePolicy(requestID: $0, promptTokens: promptTokens, promptWork: promptWork)
         }
         if admissionFixes, !supportsPrefillRecoveryRetirement, calibration == nil, !nativeMedia,
+            promptTokens <= PrefillEvidenceRecovery.maximumPromptTokens,
             deadlineRefusalStreak.expiresStaleEvidence(), isolatedPrefillEvidenceExpired(),
             shapeRate == nil, macIdle(except: requestID) {
             // Refusals measure nothing, so expired evidence that keeps refusing
             // an idle Mac is treated like none: absolute expiry only, and this
             // request's isolated prefill replaces it. A fresh prompt-size
-            // bucket is a current measurement and still refuses.
+            // bucket is a current measurement and still refuses. As for the
+            // native recovery probe, only a small prompt runs unprojected: a
+            // long one could hold a slow Mac until its deadline.
             return nil
         }
         guard prefillRate != nil || calibration != nil || nativeMedia else { return nil }

@@ -123,12 +123,15 @@ enum IsolatedPrefillAdmissionRate {
 ///
 /// After `threshold` such refusals the caller stops projecting from evidence
 /// older than `EnginePerformanceMeasurements.freshness` for the next request
+/// of at most `PrefillEvidenceRecovery.maximumPromptTokens` prompt tokens
 /// that finds the Mac idle. That request is submitted like one with no
 /// measured rate (its absolute deadline still applies) and its isolated
-/// prefill replaces the expired estimate. Fresh evidence always refuses as
-/// measured. A Mac that really is too slow may end that request before it
-/// measures anything; `retryInterval` holds it to one such admission per
-/// interval.
+/// prefill replaces the expired estimate. A longer prompt is still refused
+/// from the expired evidence and leaves the streak full: unprojected, it
+/// could hold a slow Mac until its deadline. Fresh evidence always refuses
+/// as measured. A Mac that really is too slow may end the admitted request
+/// before it measures anything; `retryInterval` holds it to one such
+/// admission per interval.
 struct DeadlineRefusalStreak {
     /// One refusal can be one long prompt and two a client's retry of it.
     static let threshold = 3

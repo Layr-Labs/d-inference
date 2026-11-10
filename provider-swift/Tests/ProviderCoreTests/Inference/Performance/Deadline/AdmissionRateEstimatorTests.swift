@@ -620,6 +620,23 @@ struct AdmissionRateEstimatorTests {
         await bridge.shutdown()
     }
 
+    @Test("a fresh prompt-size bucket keeps refusing after a streak over a stale aggregate")
+    func freshBucketKeepsRefusingAfterStreak() async throws {
+        let (bridge, engine) = await slowBridge()
+        // A wide calibration cell refreshes its prompt-size bucket and leaves
+        // the aggregate, which stays expired, alone.
+        await bridge.applyRateObservation(
+            EngineRateObservation(phase: "isolated_prefill", tps: 50, prompt: 3_000, context: 3_000,
+                cache: "cold", overlap: .init(contended: false, peakRequests: 2), at: .now,
+                postureEpoch: nil, aggregate: false),
+            requestID: "wide-cell", calibration: true)
+        #expect(await bridge.isolatedPrefillEvidenceExpired())
+        await refuse(bridge, "slow-1", "slow-2", "slow-3", "slow-4", "slow-5")
+        #expect(engine.deadlineAdmissions.count == 5)
+        #expect(engine.ordinarySubmissionCount == 0)
+        await bridge.shutdown()
+    }
+
     @Test("with the kill switch off, refusals never expire the estimate")
     func killSwitchKeepsRefusingAfterStreak() async throws {
         let (bridge, engine) = await slowBridge(fixes: false)

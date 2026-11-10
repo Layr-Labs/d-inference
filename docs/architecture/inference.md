@@ -246,10 +246,11 @@ Existing per-request
 admission and LOAD safeguards remain authoritative. GLM, private-image and
 coordinator-installed native-member sessions do not use this
 automatic policy. A Gemma 4 pipeline, coordinator-installed or local, starts at
-the width its placement saved, or at its installed default width when it was
-saved serial without one ([Gemma pipeline lanes](#gemma-pipeline-lanes)). On a
-local pair this policy can still widen it. Explicit diagnostic mode or lane
-settings retain their choice.
+the width its setup saved with serial prefill, else at one lane: a guided
+setup keeps the one-chunk lookahead and saves none
+([Gemma pipeline lanes](#gemma-pipeline-lanes)). On a local pair this policy
+can still widen it. Explicit diagnostic mode or lane settings retain their
+choice.
 
 A stage's resident prefix tier takes half the room that LOAD measures beside
 its quote, in 256 MiB steps, up to a ceiling of a thirty-second of the Mac's
@@ -6647,18 +6648,58 @@ qualification; those checks remain required.
 
 ### Gemma pipeline lanes
 
-Guided placement saves a Gemma 4 pipeline's width (`batchLanes`), so a pair
-that serves the pipeline serves several requests at once from its first load,
-coordinator-registered pairs included. Before, the planner gave every layer
-split the one-chunk lookahead where the model has it. Lanes need serial
-prefill, so every guided Gemma pipeline served one request at a time.
+A Gemma 4 pipeline serves several requests at once (lanes) only with serial
+prefill, since lanes read prompts one frame at a time. Guided placement keeps
+the one-chunk lookahead and serves one request at a time (owner, 2026-11-10):
+`darkbloom cluster` and `darkbloom cluster plan` keep the placement chosen for
+one request (`ClusterPlacementFlow.decide`), which for a layer split takes the
+lookahead where the model has it (`ClusterPrefillSchedule.planned`), and save
+no width. On the M5 Ultra pair (2026-11-10), serial prefill gave every lane its
+request's solo tokens at 1, 2, 4 and 8 lanes, and 8 lanes served 182.3
+tokens/s in all against 48.2 at one. But a lone prompt's first token came 1.84
+to 1.94 times later at 8K to 64K tokens than with the lookahead.
 
-1. The placement is chosen for one request, as before: its mode, its leader
-   and, for a layer split, the one-chunk lookahead (`ClusterPlacementFlow.decide`).
+A Gemma pipeline serves a width (`batchLanes`) only where its setup chooses
+serial prefill and saves one:
+
+- both Macs' setups saved with `serial_v1` and a width of 2, 4 or 8
+  (`ClusterConfiguration.validate`), until the pair is planned again;
+- a local pair's [automatic replacement](#automatic-local-cluster-batching)
+  under queued requests, which plans its width with serial prefill
+  (`ClusterPlacementBatchScope`).
+
+LOAD admits a saved width whole (`QwenResidentRuntime`'s load). Every lane at
+the memory plan's request is charged as the lane book charges lanes held at
+once: the newest lane's whole allowance, and each other lane its state
+(`QwenBatchLaneBook.reservedBytes`).
+
+- A Mac that cannot hold that now refuses the load: "Resident load refused: N
+  requests at once, each of C context tokens, do not fit on rank R now".
+- Each lane is still admitted against live memory when it is reserved.
+- Each rank logs `darkbloom-resident-lanes-v1 rank=… lanes=… context=…
+  reserved=…`.
+- The check is the runtime's, not Gemma's alone: every pipeline stage the Qwen
+  resident runtime serves with lanes is admitted this way, a Qwen 3.5 row's
+  width saved by an automatic replacement included. That width was priced at
+  the same request (`ClusterPlacementBatchScope`).
+
+A Gemma setup saved without a width serves one request at a time under either
+schedule, as every pipeline lane adapter does
+(`DistributedInstalledPlan.defaultBatchLanes`): nothing priced a width for it.
+Until 0.10.12 a serial one defaulted to four lanes. A saved width or the
+owner's `DARKBLOOM_CLUSTER_BATCH_LANES` overrides the default.
+
+Guided placement sizes the plain pipeline only for a family listed in
+`ClusterPlacementPipelineWidth.qualifiedLanesByFamily`, up to its entry. No
+family is listed; listing Gemma 4 (`.gemma4LayerStage: 8`) sizes its guided
+setups again:
+
+1. The placement is chosen for one request: its mode, its leader and, for a
+   layer split, the one-chunk lookahead.
 2. When that is the plain pipeline, `ClusterPlacementPipelineWidth.size`
-   plans it again at 8, 4 and 2 lanes in turn. Each plan keeps the same
-   leader, uses serial prefill, and takes the cut that serves fastest at that
-   width.
+   plans it again at 8, 4 and 2 lanes in turn, up to the family's entry. Each
+   plan keeps the same leader, uses serial prefill, and takes the cut that
+   serves fastest at that width.
    - Each lane is priced at the standard request, whatever request the speed
      is predicted for (`ClusterPlacementPolicy.pipelineLanes`).
    - Every rank holds each lane's whole state: the layout's whole-model
@@ -6671,54 +6712,25 @@ prefill, so every guided Gemma pipeline served one request at a time.
      prefill.
 3. When no wider width fits, the placement chosen for one request stands: no
    width, the one-chunk lookahead, and one request at a time.
-4. LOAD admits the saved width whole (`QwenResidentRuntime`'s load). Every lane
-   at the memory plan's request is charged as the lane book charges lanes held
-   at once: the newest lane's whole allowance, and each other lane its state
-   (`QwenBatchLaneBook.reservedBytes`).
-   - A Mac that cannot hold that now refuses the load: "Resident load
-     refused: N requests at once, each of C context tokens, do not fit on
-     rank R now".
-   - Each lane is still admitted against live memory when it is reserved.
-   - Each rank logs `darkbloom-resident-lanes-v1 rank=… lanes=… context=…
-     reserved=…`.
-   - The check is the runtime's, not Gemma's alone: every pipeline stage the
-     Qwen resident runtime serves with lanes is admitted this way, a Qwen 3.5
-     row's width saved by an automatic replacement included. That width was
-     priced at the same request (`ClusterPlacementBatchScope`).
 
-The width never exceeds what the family has qualified on real Macs
-(`ClusterPlacementPipelineWidth.qualifiedLanes`). That is eight for Gemma 4,
-provisional until the M5 Ultra pair qualifies it, and one for every other
-pipeline lane adapter, which keeps its default. Pipeline widths are 2, 4 and 8
-(`ClusterPlacementBatchScope.pipelineWidths`), so a pair that fits six but
-not eight saves four.
-
-A Gemma setup saved without a width (typed by hand, or one only a single
-request fits) serves one request at a time under either schedule, as every
-pipeline lane adapter does (`DistributedInstalledPlan.defaultBatchLanes`):
-nothing priced a width for it. Until 0.10.12 a serial one defaulted to four
-lanes. A saved width or the owner's `DARKBLOOM_CLUSTER_BATCH_LANES` overrides
-the default.
+Pipeline widths are 2, 4 and 8 (`ClusterPlacementBatchScope.pipelineWidths`),
+so a pair that fits six but not eight saves four.
 
 | Property | Basis |
 |---|---|
 | A lane costs no request its own tokens | Decode rows keep their one-request arithmetic ([batch decode](#gemma-ordinary-batch-decode-arithmetic)); each prompt frame runs alone on its request's own chunk grid (`QwenBatchSettings`) |
 | Memory | LOAD admits the width whole at the memory plan's request, then each lane is admitted against live memory. Nothing is allocated at load for the width, and the activation floor is unchanged ([Gemma paged cluster lanes](hardware-support.md#gemma-paged-cluster-lanes)) |
 | Cancellation | A cancelled lane retires alone (`DistributedInstalledPlan.lanesRetireAlone`) |
-| One-chunk lookahead | Lanes prefill serially: a saved width saves `serial_v1`, and a setup saved with `one_chunk_lookahead_v1` keeps its schedule and one lane (`ClusterConfiguration`). With serial prefill, a long prompt alone starts its answer later than with the lookahead |
+| One-chunk lookahead | Lanes prefill serially: a width is saved only with `serial_v1`, and a setup saved with `one_chunk_lookahead_v1` keeps its schedule and one lane (`ClusterConfiguration`). With serial prefill, a long prompt alone starts its answer later than with the lookahead |
 
 Both owners derive the width from the same saved setup and bind it into the
 load agreement (`Gemma4BatchArithmeticAgreement`).
 
 A pair saved for coordinator pairing keeps its width for the life of the setup,
 as a [Qwen TP width](#qwen-tensor-parallel-saved-width) does: no approval
-digest names a width. The approval does name the prefill schedule. Gemma 4 is
-declared for both schedules (`ClusterPublicModels`), so a pair whose re-plan
-moves it from the lookahead to serial prefill takes the serial approval.
-
-The width is not yet qualified on the real pair. Multi-lane joining,
-cancellation, output agreement and a lone long prompt's time to its first token
-are the M5 Ultra pair's checks.
+digest names a width. The approval does name the prefill schedule. The re-plan
+after an update plans the pair as guided placement does, so a pair approved
+with the one-chunk lookahead keeps the lookahead, one lane and its approval.
 
 Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementPipelineWidth.swift`,
 `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementPlanner.swift` (`requirement`),

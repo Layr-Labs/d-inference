@@ -15,12 +15,22 @@ import DarkbloomClusterProtocol
 enum ClusterPlacementTensorWidth {
     /// The widest width a tensor-parallel setup of this model saves: what the family has qualified on real Macs (one
     /// for a family whose owner saves no width). The Qwen TP rows keep the eight they saved before (the M5 Ultra pair
-    /// serves the 27B at eight). Gemma 4 takes eight, to be confirmed on the M5 Ultra pair before it ships, and lowered
-    /// if that pair qualifies less.
+    /// serves the 27B at eight). Gemma 4 takes `gemmaTensorParallelLanes` for the row the pair qualified, and none for
+    /// the others.
     static func qualifiedLanes(adapter: ClusterRuntimeAdapter?, runtimeModelID: String) -> Int {
         guard let adapter, adapter.savesTensorParallelWidth(runtimeModelID: runtimeModelID) else { return 1 }
-        return ClusterServingFeatures.maximumLaneWidth
+        guard adapter == .gemma4LayerStage else { return ClusterServingFeatures.maximumLaneWidth }
+        return runtimeModelID == gemmaQualifiedRuntimeModelID ? gemmaTensorParallelLanes : 1
     }
+
+    /// Gemma 4 tensor parallel's cap. The M5 Ultra pair gave every lane its solo tokens and logprobs at 2, 4 and 8
+    /// (C1, 2026-11-10), but served a request fastest at 2: 95.5 tok/s in all and 77 a request, against 96.2 and 48.5 at
+    /// 4 and 60.8 and 14.5 at 8, where the last of eight 8K prompts sent at once waited 63.7 s for its first token
+    /// (7.7 s alone). The owner chooses between 2 and 4.
+    static let gemmaTensorParallelLanes = 2
+    /// The Gemma 4 row that pair qualified, QAT 4-bit. The 8-bit rows run the same lanes on 8-bit kernels, which
+    /// neither the pair nor the synthetic lane checks (4-bit) ran, so they serve one request at a time.
+    static let gemmaQualifiedRuntimeModelID = "registered_gemma4_26b_qat_4bit"
 
     /// The plan `ClusterPlacementFlow.decide` keeps: `ClusterPlacementPlanner.plan`'s, or the widest admitted width's
     /// (`widest`). `maximumLanes` caps the width (`qualifiedLanes`); a width already set (`lanes`, a batch scope's)

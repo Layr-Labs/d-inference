@@ -7638,7 +7638,7 @@ Two pricing sources size it:
 | Family | How a width is priced | Source |
 |---|---|---|
 | Qwen TP rows | The owner's complete native quote at 2, 4, 6 and 8 lanes ([saved width](#qwen-tensor-parallel-saved-width)) | `tensor-batch-scope` |
-| Gemma 4 | The family's allowance (one request and the rank's reserve), plus its lane charge for every lane after the first | The layout's `ClusterTensorParallelFamilyPlan.laneBytes` |
+| Gemma 4 (QAT 4-bit) | The family's allowance (one request and the rank's reserve), plus its lane charge for every lane after the first | The layout's `ClusterTensorParallelFamilyPlan.laneBytes` |
 
 - **The lane charge.** A lane after the first costs one request's whole
   charge at the memory plan's request
@@ -7657,8 +7657,15 @@ Two pricing sources size it:
   none fits, the setup saves no width and serves one request at a time.
 - **The cap.** A saved width is never wider than the family has qualified on
   real Macs (`ClusterPlacementTensorWidth.qualifiedLanes`). The Qwen TP rows
-  keep the eight they saved before. Gemma 4 takes eight, to be confirmed on the
-  M5 Ultra pair before it ships.
+  keep the eight they saved before. Gemma 4 takes
+  `ClusterPlacementTensorWidth.gemmaTensorParallelLanes`, 2, for the QAT 4-bit
+  row the M5 Ultra pair qualified (C1, 2026-11-10). There every lane gave its
+  request's solo tokens and logprobs at 2, 4 and 8, but a request was served
+  fastest at 2: 95.5 tok/s in all and 77 a request, against 96.2 and 48.5 at 4,
+  and 60.8 and 14.5 at 8, where the last of eight 8K-token prompts sent at once
+  waited 63.7 s for its first token (7.7 s alone). The owner chooses between 2
+  and 4. The 8-bit rows run the same lanes on 8-bit kernels, which neither the
+  pair nor the synthetic lane checks ran at these widths, so they save no width.
 - **LOAD.** Both ranks reserve what the planner priced:
   `Gemma4TensorParallelRequestBudget.reservedBytes(lanes:)`, the allowance and
   one more request's charge for each lane after the first. The shard gate

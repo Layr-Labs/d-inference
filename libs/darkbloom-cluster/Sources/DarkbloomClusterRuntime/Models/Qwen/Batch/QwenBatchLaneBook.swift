@@ -37,10 +37,18 @@ public protocol QwenBatchServingHost: AnyObject {
     /// worker answers the owner's cancel of it with `retired(cancelled)`,
     /// now or when that cancel arrives; the other lanes go on.
     func publishLeft(requestID: UUID) throws
+    /// Both ranks: both ended a started request alone because a rank's memory
+    /// refused it while it ran (D6), and its native state retired; on rank 0
+    /// only once the owner answered its last token. The worker publishes
+    /// `aborted` then `retired(aborted)`; the other lanes go on.
+    func publishAborted(requestID: UUID, abort: ClusterWorkerAbort) throws
 }
 
 extension QwenBatchServingHost {
     public func publishTelemetry(requestID: UUID, telemetry: ClusterWorkerRequestTelemetry) throws {}
+    public func publishAborted(requestID: UUID, abort: ClusterWorkerAbort) throws {
+        throw ProbeError("This batch host does not end a lane alone for memory")
+    }
     public func publishToken(requestID: UUID, ordinal: Int, tokenID: Int, committedTokens: Int,
                              logprobs: ClusterWorkerTokenLogprobs?) throws {
         guard logprobs == nil else { throw ProbeError("This batch host does not carry token logprobs") }

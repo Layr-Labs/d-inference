@@ -37,13 +37,16 @@ extension QwenResidentRequestAllowance {
         let allocator = try QwenLongPrefillCheckedBytes.sum([Memory.activeMemory, Memory.cacheMemory,
             remainingNative, QwenDenseStageLoadPolicy.allocatorHeadroomBytes])
         do {
+            try ClusterMemoryFault.current.refuseIfDue()
             guard try watch.admits(os, bytes: remaining, floor: QwenDenseStageLoadPolicy.minimumTrulyFreeBytes),
                   Memory.memoryLimit >= allocator else {
                 throw ProbeError("Resident request exceeds the allocator limit")
             }
         } catch {
-            guard contextTokens > 0 else { throw error }
-            throw ProbeError("A running request of \(contextTokens) context tokens (prompt plus output) on this rank: \(error)")
+            // Typed, so a stage's stop latch ends this request alone (D6).
+            guard contextTokens > 0 else { throw QwenResidentMemoryRefusal(message: String(describing: error)) }
+            throw QwenResidentMemoryRefusal(message:
+                "A running request of \(contextTokens) context tokens (prompt plus output) on this rank: \(error)")
         }
     }
 }

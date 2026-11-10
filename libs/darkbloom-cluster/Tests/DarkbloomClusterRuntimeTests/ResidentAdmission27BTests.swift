@@ -451,6 +451,10 @@ struct ResidentAdmission27BTests {
         // The catalog's output limit: production's 18,774-token prompts asking for 65,536 (11-06) are admitted.
         #expect(try large.request(reservation(prompt: 18_774, output: 65_536), id: UUID(), now: Self.now).maximumTokens == 84_310)
         #expect(throws: (any Error).self) { _ = try large.request(reservation(prompt: 16, output: 65_537), id: UUID(), now: Self.now) }
+        // Its layer stages serve the memory plan's request: a longer one is tensor parallel's.
+        #expect(large.servedProfile == large.memoryProfile)
+        try large.requireWithinServedProfile(reservation(prompt: 32_768, output: 32_768))
+        #expect(throws: (any Error).self) { try large.requireWithinServedProfile(reservation(prompt: 65_537, output: 128)) }
         #expect(throws: (any Error).self) { _ = try small.request(.init(profileID: small.profile.identifier,
             promptTokenIDs: Array(repeating: 1000, count: 32_769), stopTokenIDs: [], outputCount: 1, chunkSize: 512,
             deadlineUptimeNanoseconds: Self.now + 1_000_000, capacityLimitBytes: 1, sampling: nil, prefixCache: nil), id: UUID(), now: Self.now) }

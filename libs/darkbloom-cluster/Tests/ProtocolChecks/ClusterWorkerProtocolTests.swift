@@ -64,7 +64,122 @@ struct ClusterWorkerProtocolTests {
         try tensorAssistantReadiness()
         try prefixCache()
         try retiming()
-        print("{\"passed\":true,\"groups\":20,\"modelExecution\":false,\"localPipeIO\":true}")
+        try abortedWhileRunning()
+        try laneAbortedWhileRunning()
+        print("{\"passed\":true,\"groups\":22,\"modelExecution\":false,\"localPipeIO\":true}")
+    }
+
+    /// D6: a started request a rank's memory gate refused while it ran ends
+    /// on both ranks alone (`aborted`, then `retired(aborted)`), and the worker
+    /// stays available for the next request, unlike after `failed`. Only a
+    /// started request can abort, once, before its finish; rank 0 never while
+    /// it owes the owner's answer to a published token.
+    static func abortedWhileRunning() throws {
+        let memory = ClusterWorkerAbort(reason: .memory, rank: 1)
+        for frame in [ClusterWorkerEventFrame(membershipEpoch: epoch, sequence: 4, requestID: requestID, event: .aborted(memory)),
+                      ClusterWorkerEventFrame(membershipEpoch: epoch, sequence: 5, requestID: requestID, event: .retired(.aborted))] {
+            let data = try ClusterWorkerCodec.encode(frame)
+            try check(try ClusterWorkerCodec.decodeEvent(data) == frame, "An abort did not round-trip")
+        }
+        let wire = String(decoding: try ClusterWorkerCodec.encode(ClusterWorkerEventFrame(membershipEpoch: epoch, sequence: 4,
+            requestID: requestID, event: .aborted(memory))), as: UTF8.self)
+        try check(wire.contains("\"kind\":\"aborted\"") && wire.contains("\"reason\":\"memory\"") && wire.contains("\"rank\":1"),
+            "The abort's wire fields differ: \(wire)")
+        try refuses { _ = try ClusterWorkerCodec.encode(ClusterWorkerEventFrame(membershipEpoch: epoch, sequence: 4,
+            requestID: requestID, event: .aborted(.init(reason: .memory, rank: 2)))) }
+        try refuses { _ = try ClusterWorkerCodec.encode(ClusterWorkerEventFrame(membershipEpoch: epoch, sequence: 4,
+            requestID: nil, event: .aborted(memory))) }
+
+        // Rank 0 after a published and answered token; rank 1 at any point after start.
+        var first = try Conversation(); try first.start(reservation(output: 3))
+        try first.event(.committedToken(ordinal: 0, tokenID: 12, committedTokens: 3))
+        try first.command(.tokenDecision(ordinal: 0, decision: .proceed))
+        try first.event(.aborted(memory))
+        try check(first.session.activeRequestID == requestID && first.session.lastLocalRetirementRequestID == nil,
+            "An abort is not the local retirement")
+        try first.event(.retired(.aborted))
+        try check(first.session.lastLocalRetirementRequestID == requestID && first.session.activeRequestID == nil,
+            "Aborted retirement was not recorded")
+        try check(first.session.locallyAvailable && !first.session.protocolFailed, "An abort ended the worker's readiness")
+        first.id = UUID(); try first.start()
+        try first.event(.committedToken(ordinal: 0, tokenID: 9, committedTokens: 3))
+        try first.command(.tokenDecision(ordinal: 0, decision: .proceed))
+        try first.event(.committedToken(ordinal: 1, tokenID: 10, committedTokens: 4))
+        try first.command(.tokenDecision(ordinal: 1, decision: .proceed))
+        try first.event(.finished(.length)); try first.event(.retired(.clean))
+        try first.command(.shutdown); try first.event(.shutdownComplete)
+
+        var second = try Conversation(rank: 1); try second.start()
+        try second.event(.aborted(.init(reason: .memory, rank: 0))); try second.event(.retired(.aborted))
+        try check(second.session.locallyAvailable, "Rank 1's abort ended its readiness")
+        second.id = UUID(); try second.start(); try second.event(.finished(.length)); try second.event(.retired(.clean))
+
+        for action in 0..<7 {
+            var c = try Conversation()
+            switch action {
+            case 0: // Not started yet: a reservation is given back, never aborted.
+                try c.command(.reserve(reservation())); try c.event(.admitted(reservedBytes: 800))
+                try refuses { try c.event(.aborted(memory)) }
+            case 1: // Rank 0 owes the owner's answer to its token.
+                try c.start(); try c.event(.committedToken(ordinal: 0, tokenID: 9, committedTokens: 3))
+                try refuses { try c.event(.aborted(memory)) }
+            case 2: // After its finish.
+                try c.start(); try c.event(.committedToken(ordinal: 0, tokenID: 9, committedTokens: 3))
+                try c.command(.tokenDecision(ordinal: 0, decision: .cleanStop)); try c.event(.finished(.clientStop))
+                try refuses { try c.event(.aborted(memory)) }
+            case 3: // An aborted retirement needs the abort.
+                try c.start(); try refuses { try c.event(.retired(.aborted)) }
+            case 4: // Twice.
+                try c.start(); try c.event(.aborted(memory)); try refuses { try c.event(.aborted(memory)) }
+            case 5: // An abort is not a clean finish.
+                try c.start(); try c.event(.aborted(memory)); try refuses { try c.event(.retired(.clean)) }
+            default: // Nor a token after it.
+                try c.start(); try c.event(.aborted(memory))
+                try refuses { try c.event(.committedToken(ordinal: 0, tokenID: 9, committedTokens: 3)) }
+            }
+            try check(c.session.protocolFailed, "Abort refusal \(action) did not poison the transcript")
+        }
+    }
+
+    /// The same per lane: one lane aborts, the other runs on, and the freed
+    /// lane takes the next reservation.
+    static func laneAbortedWhileRunning() throws {
+        let a = UUID(uuidString: "cccccccc-1111-2222-3333-dddddddddddd")!
+        let b = UUID(uuidString: "dddddddd-1111-2222-3333-eeeeeeeeeeee")!
+        let c = UUID(uuidString: "eeeeeeee-1111-2222-3333-ffffffffffff")!
+        var session = try ClusterWorkerLaneSession(identity: identity, rank: 0, profile: profile,
+            executionPlanSHA256: ready.executionPlanSHA256, lanes: 2)
+        var commands: UInt64 = 0, events: UInt64 = 0
+        func command(_ value: ClusterWorkerCommand, _ id: UUID?) throws {
+            try session.accept(.init(membershipEpoch: epoch, sequence: commands, requestID: id, command: value), now: 10)
+            commands += 1
+        }
+        func event(_ value: ClusterWorkerEvent, _ id: UUID?) throws {
+            try session.accept(.init(membershipEpoch: epoch, sequence: events, requestID: id, event: value), now: 10)
+            events += 1
+        }
+        try event(.ready(ready), nil)
+        for id in [a, b] {
+            try command(.reserve(reservation(output: 3)), id); try event(.admitted(reservedBytes: 800), id)
+            try command(.start, id)
+        }
+        try event(.committedToken(ordinal: 0, tokenID: 7, committedTokens: 3), a)
+        // Lane a owes its decision: it cannot abort before the answer.
+        var owed = session
+        try refuses { try owed.accept(.init(membershipEpoch: epoch, sequence: events, requestID: a,
+            event: .aborted(.init(reason: .memory, rank: 0))), now: 10) }
+        try command(.tokenDecision(ordinal: 0, decision: .proceed), a)
+        try event(.aborted(.init(reason: .memory, rank: 0)), a)
+        try event(.committedToken(ordinal: 0, tokenID: 8, committedTokens: 3), b)
+        try event(.retired(.aborted), a)
+        try check(!session.holds(a) && session.holds(b) && session.locallyAvailable && !session.protocolFailed,
+            "A lane's abort ended more than that lane")
+        try command(.reserve(reservation(output: 3)), c); try event(.admitted(reservedBytes: 800), c)
+        try command(.tokenDecision(ordinal: 0, decision: .cleanStop), b)
+        try event(.finished(.clientStop), b); try event(.retired(.clean), b)
+        try command(.cancel(.callerCancelled), c); try event(.retired(.cancelled), c)
+        try command(.shutdown, nil); try event(.shutdownComplete, nil)
+        try check(session.isShutdown, "Lane session did not shut down after a lane's abort")
     }
 
     /// The request's prefix partition: the product request's cache switch and

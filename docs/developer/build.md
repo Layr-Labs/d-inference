@@ -398,7 +398,7 @@ fallback is `blacksmith-12vcpu-macos-27`. While job sizes are off, a
 | `test-provider`, shards 1 and 2 | routed | `build-provider` | The provider selections, Prompt Parity, the native gates, the audit and coverage |
 | `test-cluster`, shards 1 to 5 | routed | `build-cluster` | The blocking cluster selections |
 | `test-cluster-gpu`, shards 1 to 3 | `blacksmith-12vcpu-macos-27`, not routed | `build-cluster` | The non-blocking cluster GPU selections |
-| `test-cluster-focused`, shards 1 and 2 | routed | - | The focused runner scripts and the pairing runner (shard 1); the stage metadata, provisioning, onboarding and console runners (shard 2) |
+| `test-cluster-focused`, shards 1 and 2 | routed | - | The focused runner scripts and the pairing, diagnostics and placement flow runners (shard 1); the stage metadata, provisioning, onboarding and console runners (shard 2) |
 
 The cluster lane builds in a job of its own, so the cluster tests start as soon
 as their products are up; GitHub starts a job only when every job it needs is

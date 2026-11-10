@@ -1,6 +1,6 @@
 # Use your Mac yourself, first
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-09
 
 How your Mac serves is one choice: **Only me**, **Darkbloom network** or
 **Both, me first**. This page says what each one runs, costs and earns, how to
@@ -405,8 +405,11 @@ each Mac answers at its own address, on its own saved port, with its own key.
   pair's API, so `darkbloom local` and `--opencode` work there too, unless the
   API is kept on the leading Mac with `--bind`.
 - **Both, me first:** the leading Mac runs the pair's API, and Darkbloom pauses
-  for the whole pair while you use it. While it is paused, both Macs lose their
-  base reward, counted in 5-minute periods; one Mac alone keeps it
+  for the whole pair while you use it. While it is paused, the pair keeps its
+  base reward on the coordinator that ships with 0.10.11
+  ([darkbloom-platform#709](https://github.com/Layr-Labs/darkbloom-platform/pull/709)
+  onwards), as one Mac alone does; on coordinators before #709, both Macs lose
+  it, counted in 5-minute periods
   ([a pair's leader beside Darkbloom](./direct-mode.md#a-pairs-leader-beside-darkbloom)).
   The pair's API answers on your local network (LAN or tailnet), always with
   a key. Unless it is kept on the leading Mac with `--bind`, the other Mac

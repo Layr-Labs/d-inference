@@ -1,3 +1,4 @@
+import DarkbloomClusterProtocol
 import Foundation
 
 /// Native prefill policy. The ordinary resident facade defaults to serial.
@@ -33,7 +34,8 @@ struct QwenGenerationPrefillWindow {
     var complete: Bool { !failed && nextSequence == frameCount && preparing == nil && prepared == nil && pending == nil }
 
     init(promptCount: Int, chunkSize: Int) throws {
-        guard (1...32_768).contains(promptCount), (1...512).contains(chunkSize) else {
+        // Any prompt the wire carries: the request is held to its profile.
+        guard (1...ClusterWorkerLimits.wirePromptTokens).contains(promptCount), (1...512).contains(chunkSize) else {
             throw ProbeError("Invalid bounded prefill window geometry")
         }
         self.promptCount = promptCount; self.chunkSize = chunkSize

@@ -654,16 +654,10 @@ public final class GLM5NextTensorParallelResidentRuntime {
         return try Bytes.sum([history, work, windows])
     }
 
-    /// The host memory gate's decision for `bytes` more, as the resident families take it.
+    /// The host memory gate's decision for `bytes` more, as the resident
+    /// families take it; a memory refusal is typed (`ClusterLiveMemory`).
     static func requireLiveMemory(bytes: Int) throws {
-        try QwenResidentResourceEnvironment.require()
-        let watch = QwenDenseStageLoadWatch("GLM tensor-parallel")
-        let os = try QwenDenseStageLoadResources.observeOS()
-        let free = max(QwenDenseStageLoadPolicy.minimumAdmissibleBytes,
-            try QwenLongPrefillCheckedBytes.sum([bytes, QwenDenseStageLoadPolicy.loadingHeadroomBytes]))
-        guard try watch.admits(os, bytes: free) else {
-            throw ProbeError("GLM tensor parallel needs \(bytes) bytes the memory gate does not admit now")
-        }
+        try ClusterLiveMemory.requireTensorParallel(bytes: bytes, family: "GLM")
     }
 
     private init(configuration: QwenResidentLoadConfiguration, descriptor: GLM5NextResidentDescriptor,
@@ -1300,12 +1294,17 @@ public final class GLM5NextTensorParallelResidentRuntime {
         let sampler = request.sampler
         let prompt = request.promptTokenIDs
         var lastCheck: UInt64 = 0
+        // This rank's stop was its live memory check's refusal (D6).
+        var stoppedForMemory = false
         func localStop() -> Bool {
             if (try? control.check(deadline: reserved.deadline)) == nil { return true }
             let now = DispatchTime.now().uptimeNanoseconds
             if now - lastCheck >= 250_000_000 {
                 lastCheck = now
-                if (try? prefix.yieldingMemory({ try Self.requireLiveMemory(bytes: 0) })) == nil { return true }
+                do { try prefix.yieldingMemory({ try Self.requireLiveMemory(bytes: 0) }) } catch {
+                    stoppedForMemory = error is QwenResidentMemoryRefusal
+                    return true
+                }
             }
             return false
         }
@@ -1493,12 +1492,20 @@ public final class GLM5NextTensorParallelResidentRuntime {
         }
         if clientStopped || (stopKeep > 0 && stopKeep < QwenTensorParallelStopRule.lengthStopBase) { finish = .clientStop }
         let localFinish: QwenTensorParallelStopRule.Finish = finish == .eos ? .eos : finish == .length ? .length : .clientStop
-        let agreedEnd = try group.exchangeIntegers(rank == 0 ? [Int32(tokens.count), localFinish.code] : [0, 0])
-        guard agreedEnd.count == 2, let rank0Finish = QwenTensorParallelStopRule.Finish(code: agreedEnd[1]) else {
-            throw ProbeError("GLM tensor-parallel ranks did not agree how the request ended")
+        let localStopped = stopKeep > 0 && stopKeep < QwenTensorParallelStopRule.lengthStopBase && !clientStopped
+        let agreedEnd = try QwenTensorParallelStopRule.readEnd(group.exchangeIntegers(QwenTensorParallelStopRule.endWords(
+            rank: rank, count: tokens.count, finish: localFinish, clientStopped: clientStopped,
+            stoppedForMemory: localStopped && stoppedForMemory)))
+        if let abort = agreedEnd.abort {
+            // Both ranks ended it alone for a rank's memory (D6): nothing of it
+            // goes to the SSD tier; its pages go back with the request.
+            log("darkbloom-tensor-parallel-request-v1 rank=\(rank) request=\(request.requestID.uuidString.lowercased())"
+                + " prompt=\(prompt.count) output=\(tokens.count) finish=aborted stopped_rank=\(abort.rank) reason=memory")
+            return .aborted(requestID: request.requestID, abort: abort,
+                message: "GLM tensor parallel: rank \(abort.rank)'s memory refused the request while it ran", rank: rank)
         }
         let ended = QwenTensorParallelStopRule.reconcile(rank: rank, localFinish: localFinish, localCount: tokens.count,
-            localStopped: stopKeep > 0 && !clientStopped, rank0Finish: rank0Finish, rank0Count: Int(agreedEnd[0]))
+            localStopped: stopKeep > 0 && !clientStopped, rank0Finish: agreedEnd.rank0Finish, rank0Count: agreedEnd.rank0Count)
         tokens = Array(tokens.prefix(ended.count))
         switch ended.finish {
         case .eos: finish = .eos

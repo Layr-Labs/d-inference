@@ -37,6 +37,9 @@ struct Gemma4TensorParallelRequestLoop {
     let exchange: ([Int32]) throws -> [Int32]
     /// This rank wants to stop now (checked after each committed token).
     let localStop: () -> Bool
+    /// Its stop was its live memory check's refusal (D6): the end agreement
+    /// then makes the request a memory abort on both ranks.
+    var stoppedForMemory: () -> Bool = { false }
 
     struct Outcome {
         var tokens: [Int]
@@ -44,6 +47,8 @@ struct Gemma4TensorParallelRequestLoop {
         /// The owner answered a token with stop.
         var clientStopped: Bool
         var pagesRefused: Bool
+        /// Both ranks ended the request alone for a rank's memory (D6).
+        var abort: ClusterWorkerAbort? = nil
     }
 
     /// One built step: its logits, its agreement (`Gemma4TensorParallelChoice.build`)
@@ -178,12 +183,15 @@ struct Gemma4TensorParallelRequestLoop {
         }
         if clientStopped || (stopKeep > 0 && stopKeep < QwenTensorParallelStopRule.lengthStopBase) { finish = .clientStop }
         let localFinish: QwenTensorParallelStopRule.Finish = finish == .eos ? .eos : finish == .length ? .length : .clientStop
-        let agreedEnd = try exchange(rank == 0 ? [Int32(tokens.count), localFinish.code] : [0, 0])
-        guard agreedEnd.count == 2, let rank0Finish = QwenTensorParallelStopRule.Finish(code: agreedEnd[1]) else {
-            throw ProbeError("Gemma tensor-parallel ranks did not agree how the request ended")
+        let localStopped = stopKeep > 0 && stopKeep < QwenTensorParallelStopRule.lengthStopBase && !clientStopped
+        let agreedEnd = try QwenTensorParallelStopRule.readEnd(exchange(QwenTensorParallelStopRule.endWords(rank: rank,
+            count: tokens.count, finish: localFinish, clientStopped: clientStopped,
+            stoppedForMemory: localStopped && stoppedForMemory())))
+        if let abort = agreedEnd.abort {
+            return .init(tokens: tokens, finish: .clientStop, clientStopped: false, pagesRefused: pagesRefused, abort: abort)
         }
         let ended = QwenTensorParallelStopRule.reconcile(rank: rank, localFinish: localFinish, localCount: tokens.count,
-            localStopped: stopKeep > 0 && !clientStopped, rank0Finish: rank0Finish, rank0Count: Int(agreedEnd[0]))
+            localStopped: stopKeep > 0 && !clientStopped, rank0Finish: agreedEnd.rank0Finish, rank0Count: agreedEnd.rank0Count)
         tokens = Array(tokens.prefix(ended.count))
         switch ended.finish {
         case .eos: finish = .eos

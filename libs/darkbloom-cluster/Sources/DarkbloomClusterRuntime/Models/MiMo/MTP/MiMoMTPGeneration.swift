@@ -216,29 +216,17 @@ enum MiMoMTPGeneration {
         .request(type, requestID: agreement.request.requestID, agreementFingerprint: agreement.fingerprint, label)
     }
 
-    private static func sendFrame(_ body: Data, frameBytes: Int, collective: Collective,
-                                  scope: CollectiveRecordScope, check: () throws -> Void) throws {
-        let frame = try QwenControlFrame.encode(body, frameBytes: frameBytes)
-        _ = try collective.sendCompleted(MLXArray(Array(frame)), to: 1 - collective.rank, maximumBytes: frameBytes,
-            scope: scope, check: check)
-    }
-
-    private static func receiveFrame(frameBytes: Int, collective: Collective, scope: CollectiveRecordScope,
-                                     check: () throws -> Void) throws -> Data {
-        let data = try collective.receiveCompleted(shape: [frameBytes], dtype: .uint8, from: 1 - collective.rank,
-            maximumBytes: frameBytes, scope: scope, check: check).asData().data
-        try check()
-        return try QwenControlFrame.decode(data, frameBytes: frameBytes)
-    }
-
     /// Rank 0: run each window rank 1 asks for, check what it keeps, publish.
     /// Every round encodes as a decode step does (`MiMoLayerStageSession.decodeCommandBuffers`).
+    ///
+    /// `transport` carries the round's fixed frames, so either rank's stop
+    /// (D6) stands in the frame it owes, as Qwen's rounds do.
     static func runProducer(session: MiMoLayerStageSession, control: QwenLayerStageGenerationControl,
-                            terms: MiMoMTPTerms, collective: Collective,
+                            terms: MiMoMTPTerms, collective: Collective, transport: QwenLayerStageGenerationTransport,
                             onCommittedToken: (Int) throws -> Bool, check: () throws -> Void) throws -> Outcome {
         try GPU.withCommandBufferLimits(MiMoLayerStageSession.decodeCommandBuffers) {
             try producerRounds(session: session, control: control, terms: terms, collective: collective,
-                               onCommittedToken: onCommittedToken, check: check)
+                               transport: transport, onCommittedToken: onCommittedToken, check: check)
         }
     }
 
@@ -247,14 +235,17 @@ enum MiMoMTPGeneration {
     /// step does (`MiMoLayerStageSession.decodeCommandBuffers`).
     static func runConsumer(session: MiMoLayerStageSession, decoder: MiMoMTPDecoder,
                             control: QwenLayerStageGenerationControl, collective: Collective,
+                            transport: QwenLayerStageGenerationTransport,
                             check: () throws -> Void) throws -> Outcome {
         try GPU.withCommandBufferLimits(MiMoLayerStageSession.decodeCommandBuffers) {
-            try consumerRounds(session: session, decoder: decoder, control: control, collective: collective, check: check)
+            try consumerRounds(session: session, decoder: decoder, control: control, collective: collective,
+                               transport: transport, check: check)
         }
     }
 
     private static func producerRounds(session: MiMoLayerStageSession, control: QwenLayerStageGenerationControl,
                                        terms: MiMoMTPTerms, collective: Collective,
+                                       transport: QwenLayerStageGenerationTransport,
                                        onCommittedToken: (Int) throws -> Bool, check: () throws -> Void) throws -> Outcome {
         let agreement = control.agreement
         guard collective.rank == 0 else { throw ProbeError("Only rank 0 runs the producer side of a speculative round") }
@@ -265,8 +256,8 @@ enum MiMoMTPGeneration {
                 try check()
                 guard let last = control.lastTokenID else { throw ProbeError("Speculative decode lacks an agreed token") }
                 let round = try MiMoMTPRoundPacket.decode(
-                    receiveFrame(frameBytes: MiMoMTPRoundPacket.frameBytes, collective: collective,
-                        scope: scope(agreement, .tokenRelay, "mimo-round"), check: check),
+                    transport.receiveControlFrame(frameBytes: MiMoMTPRoundPacket.frameBytes,
+                        type: .tokenRelay, label: "mimo-round", check: check),
                     agreement: agreement, terms: terms, firstOrdinal: control.selectedTokenCount,
                     previousTokenChainSHA256: control.tokenChainSHA256, lastTokenID: last)
                 guard round.content.committedTokens == session.committedTokens else {
@@ -277,8 +268,8 @@ enum MiMoMTPGeneration {
                 _ = try collective.sendCompleted(residual, to: 1, maximumBytes: residual.nbytes,
                     scope: scope(agreement, .residualPayload, "mimo-window|" + round.fingerprint), check: check)
                 let result = try MiMoMTPRoundResultPacket.decode(
-                    receiveFrame(frameBytes: MiMoMTPRoundResultPacket.frameBytes, collective: collective,
-                        scope: scope(agreement, .tokenRelay, "mimo-result"), check: check),
+                    transport.receiveControlFrame(frameBytes: MiMoMTPRoundResultPacket.frameBytes,
+                        type: .tokenRelay, label: "mimo-result", check: check),
                     agreement: agreement, round: round)
                 let kept = result.content.tokenIDs.count
                 guard result.content.payloadSHA256 == Array(rows.prefix(kept)) else {
@@ -307,8 +298,9 @@ enum MiMoMTPGeneration {
                 let decision = try MiMoMTPRoundDecisionPacket(agreement: agreement, result: result, acceptedCount: accepted,
                     selectedTokenCount: control.selectedTokenCount, tokenChainSHA256: control.tokenChainSHA256,
                     decision: published.content.decision)
-                try sendFrame(try decision.encoded(), frameBytes: MiMoMTPRoundDecisionPacket.frameBytes,
-                    collective: collective, scope: scope(agreement, .relayDecision, "mimo-decision"), check: check)
+                try transport.sendControlFrame(try decision.encoded(), frameBytes: MiMoMTPRoundDecisionPacket.frameBytes,
+                    type: .relayDecision, label: "mimo-decision", stopPoint: published.content.decision == .proceed,
+                    check: check)
                 if control.phase == .retiring { finalDecision = published }
             }
         }
@@ -318,6 +310,7 @@ enum MiMoMTPGeneration {
 
     private static func consumerRounds(session: MiMoLayerStageSession, decoder: MiMoMTPDecoder,
                                        control: QwenLayerStageGenerationControl, collective: Collective,
+                                       transport: QwenLayerStageGenerationTransport,
                                        check: () throws -> Void) throws -> Outcome {
         let agreement = control.agreement, request = agreement.request
         guard collective.rank == 1 else { throw ProbeError("Only rank 1 runs the consumer side of a speculative round") }
@@ -329,6 +322,9 @@ enum MiMoMTPGeneration {
             try autoreleasepool {
                 try check()
                 guard let last = control.lastTokenID else { throw ProbeError("Speculative decode lacks an agreed token") }
+                // Rank 1 owes the next round: a stop goes there before it drafts (D6).
+                try transport.stopIfLatched(owing: .frame(frameBytes: MiMoMTPRoundPacket.frameBytes, .tokenRelay,
+                    "mimo-round"), check: check)
                 let remaining = request.outputCount - control.selectedTokenCount
                 let drafts = try decoder.draft(lastToken: last, remaining: remaining, check: check)
                 let round = try MiMoMTPRoundPacket(agreement: agreement, terms: decoder.terms,
@@ -337,13 +333,16 @@ enum MiMoMTPGeneration {
                 guard round.content.committedTokens == session.committedTokens else {
                     throw ProbeError("Speculative round frontier differs from this stage's")
                 }
-                try sendFrame(try round.encoded(), frameBytes: MiMoMTPRoundPacket.frameBytes, collective: collective,
-                    scope: scope(agreement, .tokenRelay, "mimo-round"), check: check)
+                try transport.sendControlFrame(try round.encoded(), frameBytes: MiMoMTPRoundPacket.frameBytes,
+                    type: .tokenRelay, label: "mimo-round", stopPoint: true, check: check)
                 let window = round.window, width = window.count
                 let waited = DispatchTime.now().uptimeNanoseconds
                 let residual = try collective.receiveCompleted(shape: [1, width, request.profile.hiddenSize],
                     dtype: .bfloat16, from: 0, maximumBytes: width * request.profile.hiddenSize * 2,
                     scope: scope(agreement, .residualPayload, "mimo-window|" + round.fingerprint), check: check)
+                // Rank 1 owes the round's result next: a stop goes there before it verifies.
+                try transport.stopIfLatched(owing: .frame(frameBytes: MiMoMTPRoundResultPacket.frameBytes, .tokenRelay,
+                    "mimo-result"), check: check)
                 let verifying = DispatchTime.now().uptimeNanoseconds
                 let rows = try MiMoWindowRows.rowSHA256(residual)
                 let opened = try session.openWindow(window, offset: session.committedTokens, residual: residual, check: check)
@@ -384,12 +383,12 @@ enum MiMoMTPGeneration {
                 statistics.record(drafts: drafts.count, acceptedDrafts: kept.acceptedDrafts, emitted: kept.tokens.count)
                 let result = try MiMoMTPRoundResultPacket(agreement: agreement, round: round, tokenIDs: kept.tokens,
                     payloadSHA256: Array(rows.prefix(kept.tokens.count)))
-                try sendFrame(try result.encoded(), frameBytes: MiMoMTPRoundResultPacket.frameBytes,
-                    collective: collective, scope: scope(agreement, .tokenRelay, "mimo-result"), check: check)
+                try transport.sendControlFrame(try result.encoded(), frameBytes: MiMoMTPRoundResultPacket.frameBytes,
+                    type: .tokenRelay, label: "mimo-result", stopPoint: true, check: check)
                 let settled = DispatchTime.now().uptimeNanoseconds
                 let verdict = try MiMoMTPRoundDecisionPacket.decode(
-                    receiveFrame(frameBytes: MiMoMTPRoundDecisionPacket.frameBytes, collective: collective,
-                        scope: scope(agreement, .relayDecision, "mimo-decision"), check: check),
+                    transport.receiveControlFrame(frameBytes: MiMoMTPRoundDecisionPacket.frameBytes,
+                        type: .relayDecision, label: "mimo-decision", check: check),
                     agreement: agreement, result: result).content
                 var lastDecision: QwenLayerStageGenerationDecisionPacket?
                 for index in 0..<verdict.acceptedCount {

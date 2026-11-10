@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-09
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -1367,6 +1367,49 @@ run each implementation's checks in its owner repo.
 The [immutable platform test guide](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/developer/test.md)
 is historical context, not the current backend source authority.
 
+### A memory refusal on a real pair (dev memory fault)
+
+Dev and DevNet builds can make one rank's live memory check refuse the next
+request, so a real pair can prove that such a refusal ends that request alone,
+in every mode (D6). Both workers keep running, the client gets the memory 503
+(or, once a stream has started, an error chunk with `code`
+`request_exceeds_node_budget`), and the pair serves the next request at once.
+
+- **Where.** The file `cluster-setup/memory-fault` in the dev install's home,
+  `~/.darkbloom-dev/cluster-setup/memory-fault`, on the Mac whose rank should
+  refuse. Rank 0 is the Mac that leads (`darkbloom-dev cluster status` names
+  it), rank 1 the other. Only a worker of a dev or DevNet app (installed in
+  `~/.darkbloom-dev`) reads it; a production install never does
+  (`ClusterMemoryFault.permitted`, pinned by
+  `TensorParallelMemoryAbortTests.theMemoryFaultIsInertInAProductionInstallAndOneShotInADevOne`).
+- **What.** One integer N ≥ 1: the rank's live memory gate refuses from that
+  request's Nth check on, for the rest of the request. A check runs at most
+  every 250 ms while the request runs: a pipeline stage checks at its first
+  frame and then before each message it owes its peer; a tensor-parallel rank
+  checks after each token it commits; a batch checks at its step boundaries. So
+  `1` refuses at the first check (a pipeline's first prompt frame, a tensor
+  pair's first token), and `40` about 10 s into the request.
+- **When.** The worker reads the file when the next request starts on that Mac
+  and deletes it, so it fires once; a running pair needs no restart. The
+  request's end disarms it.
+- **How.** The fault throws inside each live gate, where a real refusal is
+  thrown (`ClusterMemoryFault.refuseIfDue`), so everything after it is a real
+  refusal's path. The worker logs `darkbloom-memory-fault-v1 … armed_check=N`,
+  then `darkbloom-stage-abort-v1` (pipeline), `finish=aborted … reason=memory`
+  (tensor parallel) or `memory-refused` (a batch).
+
+On the refusing rank's Mac, for example to refuse at the third check:
+
+```bash
+mkdir -p ~/.darkbloom-dev/cluster-setup
+printf '3\n' > ~/.darkbloom-dev/cluster-setup/memory-fault
+```
+
+Then send one request long enough to reach that check. The file is gone once
+the request starts; the answer is the 503 or the typed error chunk; both
+workers' processes are the same before and after; and the next request is
+served.
+
 ### Two-Mac Cluster Checks
 
 The coordinator-wire vectors
@@ -1401,8 +1444,10 @@ release build of the cluster runtime. Shard 2 of `test-cluster-focused`
 `libs/darkbloom-cluster/Tests/NemotronStageChecks/run.sh`,
 `provider-swift/Tests/ClusterModelProvisioningChecks/run.sh provisioning`,
 the onboarding checks and `provider-swift/Tests/ClusterConsoleChecks/run.sh`.
-Shard 1 runs every other runner under `libs/darkbloom-cluster/Tests` and
-`provider-swift/Tests/ClusterPairingChecks/run.sh`. Each runner compiles only its own small source
+Shard 1 runs every other runner under `libs/darkbloom-cluster/Tests`,
+`provider-swift/Tests/ClusterPairingChecks/run.sh`,
+`provider-swift/Tests/ClusterDiagnosticsChecks/run.sh` and
+`provider-swift/Tests/ClusterPlacementChecks/run-flow.sh`. Each runner compiles only its own small source
 closure. The provisioning runner runs the
 provisioning checks only. Its download cache-policy check
 reads how many written pages stay in the file cache, which the host's kernel

@@ -52,6 +52,8 @@ public struct PairDriver: Sendable {
             case .finished(let reason):
                 finish = reason.rawValue; concluded = DispatchTime.now().uptimeNanoseconds; done.signal(); return false
             case .failed(let message): failure = message; done.signal(); return false
+            case .aborted(let abort):
+                failure = "aborted on both ranks: rank \(abort.rank)'s \(abort.reason.rawValue)"; done.signal(); return false
             case .promptCache(let tokens, let frontiers): reused = tokens; stored = frontiers; return true
             case .telemetry: return true
             }

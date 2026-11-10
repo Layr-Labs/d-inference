@@ -267,8 +267,8 @@ struct DistributedInstalledPlan: Sendable {
         "DARKBLOOM_CLUSTER_LOAD_DIGESTS": ["1", "tensors"],
     ]
 
-    /// The pair's batch lanes: the adapter's default in the selected mode and
-    /// prefill schedule (`defaultBatchLanes(adapter:mode:hasPrivateImages:runtimeModelID:prefillSchedule:)`),
+    /// The pair's batch lanes: the adapter's default in the selected mode
+    /// (`defaultBatchLanes(adapter:mode:hasPrivateImages:runtimeModelID:)`),
     /// unless the setup saved a priced width or the owner's
     /// environment names 1...8 (1 serves one request at a time). A malformed
     /// override explicitly keeps one lane, so a sanitized child cannot restore
@@ -288,8 +288,7 @@ struct DistributedInstalledPlan: Sendable {
                            environment: [String: String]) -> Int? {
         guard let adapter = ClusterRuntimeAdapter(rawValue: capability.adapterID),
               let lanes = defaultBatchLanes(adapter: adapter, mode: configuration.selectedGenerationMode,
-                  hasPrivateImages: capability.hasPrivateImages, runtimeModelID: capability.runtimeModelID,
-                  prefillSchedule: configuration.selectedPrefillSchedule) else {
+                  hasPrivateImages: capability.hasPrivateImages, runtimeModelID: capability.runtimeModelID) else {
             return nil
         }
         // The assistant quote admits exactly this capacity. A diagnostic
@@ -346,8 +345,7 @@ struct DistributedInstalledPlan: Sendable {
     ///   time and refuses a lane count above one at load, so no saved width or
     ///   switch reaches its ranks.
     static func defaultBatchLanes(adapter: ClusterRuntimeAdapter, mode: ClusterGenerationMode,
-                                  hasPrivateImages: Bool, runtimeModelID: String? = nil,
-                                  prefillSchedule: ClusterPrefillSchedule? = nil) -> Int? {
+                                  hasPrivateImages: Bool, runtimeModelID: String? = nil) -> Int? {
         switch mode {
         case .pipeline where !hasPrivateImages && laneAdapters.contains(adapter): defaultBatchLanes
         case .tensorParallel where tensorParallelLaneAdapters[adapter] != nil: tensorParallelLaneAdapters[adapter]

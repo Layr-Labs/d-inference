@@ -54,29 +54,15 @@ struct DistributedInstalledLanesTests {
     /// A Gemma pipeline serves the width its placement saved (`ClusterPlacementPipelineWidth`). Saved without one, it
     /// serves one request at a time under either schedule, as every family does (review C1, P3).
     @Test func gemmaPipelineWithoutASavedWidthServesOneLane() {
-        #expect(Plan.defaultBatchLanes(adapter: .gemma4LayerStage, mode: .pipeline, hasPrivateImages: false,
-                                       prefillSchedule: .serial) == Plan.defaultBatchLanes)
-        #expect(Plan.defaultBatchLanes == 1)
-        // Lanes prefill serially: a saved lookahead keeps its schedule and one lane.
-        #expect(Plan.defaultBatchLanes(adapter: .gemma4LayerStage, mode: .pipeline, hasPrivateImages: false,
-                                       prefillSchedule: .oneChunkLookahead) == Plan.defaultBatchLanes)
         #expect(Plan.defaultBatchLanes(adapter: .gemma4LayerStage, mode: .pipeline, hasPrivateImages: false) == Plan.defaultBatchLanes)
-        #expect(Plan.defaultBatchLanes(adapter: .gemma4LayerStage, mode: .pipeline, hasPrivateImages: true,
-                                       prefillSchedule: .serial) == nil)
+        #expect(Plan.defaultBatchLanes == 1)
+        #expect(Plan.defaultBatchLanes(adapter: .gemma4LayerStage, mode: .pipeline, hasPrivateImages: true) == nil)
         // Gemma 4 tensor parallel's own lanes are its batch driver's (checked above).
         for mode in ClusterGenerationMode.allCases where mode != .pipeline && mode != .tensorParallel {
-            #expect(Plan.defaultBatchLanes(adapter: .gemma4LayerStage, mode: mode, hasPrivateImages: false,
-                                           prefillSchedule: .serial) == nil)
+            #expect(Plan.defaultBatchLanes(adapter: .gemma4LayerStage, mode: mode, hasPrivateImages: false) == nil)
         }
-        #expect(Plan.defaultBatchLanes(adapter: .gemma4LayerStage, mode: .tensorParallel, hasPrivateImages: false,
-                                       prefillSchedule: .serial) == Plan.defaultBatchLanes)
-        // Every other lane adapter keeps its singleton default under either schedule.
-        for adapter in Plan.laneAdapters where adapter != .gemma4LayerStage {
-            for schedule in ClusterPrefillSchedule.allCases {
-                #expect(Plan.defaultBatchLanes(adapter: adapter, mode: .pipeline, hasPrivateImages: false,
-                                               prefillSchedule: schedule) == Plan.defaultBatchLanes)
-            }
-        }
+        #expect(Plan.defaultBatchLanes(adapter: .gemma4LayerStage, mode: .tensorParallel, hasPrivateImages: false)
+            == Plan.defaultBatchLanes)
         // A cancelled lane of a saved Gemma width retires alone, as every pipeline lane adapter's does.
         #expect(Plan.lanesRetireAlone(adapter: .gemma4LayerStage, mode: .pipeline, hasPrivateImages: false, lanes: 4))
     }

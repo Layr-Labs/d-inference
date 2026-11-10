@@ -77,6 +77,27 @@ struct OrphanedRequestDrainTests {
         #expect(!(await loop.hasInflightWork))
     }
 
+    @Test("a cancel that did not come from the coordinator keeps the drain waiting")
+    func localCancelHoldsTheDrain() async throws {
+        let sandbox = try ModelLoadingSandbox()
+        defer { sandbox.remove() }
+        let loop = try await ModelLoadingFixtures.makeLoop(sandbox: sandbox)
+        await loop.skipCapacityRebuildForTesting()
+        await loop.setOrphanedRequestGraceForTesting(.milliseconds(100))
+        let gate = OrphanTaskGate()
+        await loop.startOrphanTestRequest("local", model: Self.model, gate: gate)
+        // As a disconnect's cancel-all does: the client did not leave.
+        await loop.handleCancellation(requestId: "local", receivedFromCoordinator: false)
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(await loop.lifecycleRemaining == 1, "only a coordinator cancel says nobody waits for the answer")
+        gate.open()
+        let until = ContinuousClock.now + .seconds(5)
+        while await loop.lifecycleRemaining > 0, ContinuousClock.now < until {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(await loop.lifecycleRemaining == 0)
+    }
+
     @Test("a request nobody cancelled keeps the drain waiting")
     func uncancelledRequestHoldsTheDrain() async throws {
         let sandbox = try ModelLoadingSandbox()

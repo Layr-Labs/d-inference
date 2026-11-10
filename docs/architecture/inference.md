@@ -827,9 +827,14 @@ every control the text route refuses is refused with media in the same way
 (`invalid_request`). Super therefore advertises `native_media_tools`
 (`ToolChoiceEnforcementPolicy.advertisesNativeMediaTools`), and the coordinator
 routes forced tool choice with media, and media in tool results, to it. It also
-advertises `native_media_controls` (`advertisesNativeMediaControls`): during
-rollout the coordinator sends a Super request with image or video and a JSON
-response format or tools only to a Mac that advertises it.
+advertises `native_media_controls` (`advertisesNativeMediaControls`): a
+coordinator with platform
+[#729](https://github.com/Layr-Labs/darkbloom-platform/pull/729) (on platform
+`dev`, not yet in production) sends a Super request with image or video and a
+JSON response format or tools only to a Mac that advertises it
+([`BuildNeedsNativeMediaControls`](https://github.com/Layr-Labs/darkbloom-platform/blob/820c2755a85b9a9e7b033ea488d2f8d53a0d57a6/coordinator/registry/native_media_tools.go)).
+Without #729 such requests reach any Super Mac, and a Mac without this build
+refuses them.
 `NemotronSuperLocalImageBinding.encodedBody` keeps only the media rules. Each
 refusal names its cause by its failure code (`SuperHTTPErrors.map`):
 

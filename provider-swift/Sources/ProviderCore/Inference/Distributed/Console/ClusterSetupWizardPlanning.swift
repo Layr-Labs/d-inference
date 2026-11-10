@@ -153,7 +153,8 @@ enum ClusterSetupPlanning {
     /// plan: the installed session is started from rank 0, over the pinned
     /// route only this Mac holds. `coordinator`: the setup will serve through
     /// the coordinator, so tensor parallel is planned with equal shares only
-    /// (`ClusterPlacementFlow.decide`).
+    /// (`ClusterPlacementFlow.decide`). It plans on a stack of its own
+    /// (`ClusterPlanningStack`): its caller's stack holds only the wait.
     static func decide(readings: [ModelReading], description: ClusterPairDescription, localMemberID: String,
                        localProfile: ClusterDeviceProfile, peerProfile: ClusterDeviceProfile, peerModels: [ClusterSetupLocalModel],
                        measurements: [ClusterSpeedMeasurement], leader: String?? = .none,
@@ -161,6 +162,23 @@ enum ClusterSetupPlanning {
                        shareProbes: ClusterShareProbeHistory? = nil, now: Double = Date().timeIntervalSince1970,
                        peerMayReceive: Bool = false, keeping: [String: ClusterGenerationMode] = [:],
                        coordinator: Bool = false, chosenModes: [String: ClusterForcedMode] = [:]) -> [Decision] {
+        ClusterPlanningStack.run {
+            decideOnPlanningStack(readings: readings, description: description, localMemberID: localMemberID,
+                localProfile: localProfile, peerProfile: peerProfile, peerModels: peerModels, measurements: measurements,
+                leader: leader, served: served, link: link, shareProbes: shareProbes, now: now, peerMayReceive: peerMayReceive,
+                keeping: keeping, coordinator: coordinator, chosenModes: chosenModes)
+        }
+    }
+
+    /// `decide`'s planning, on the planning stack.
+    private static func decideOnPlanningStack(readings: [ModelReading], description: ClusterPairDescription,
+                                              localMemberID: String, localProfile: ClusterDeviceProfile,
+                                              peerProfile: ClusterDeviceProfile, peerModels: [ClusterSetupLocalModel],
+                                              measurements: [ClusterSpeedMeasurement], leader: String??,
+                                              served: [ClusterServedSpeedRecords.Entry], link: ClusterLinkCosts,
+                                              shareProbes: ClusterShareProbeHistory?, now: Double, peerMayReceive: Bool,
+                                              keeping: [String: ClusterGenerationMode], coordinator: Bool,
+                                              chosenModes: [String: ClusterForcedMode]) -> [Decision] {
         // The wizard's own steps lead from this Mac; the onboarding and the service's re-plans pass the Mac the cluster
         // was set up on (`ClusterControlDerivation.planLeader`). A `nil` leader leaves rank 0 to the planner.
         let sessionLeader: String? = leader ?? localMemberID

@@ -376,10 +376,10 @@ one. It is the only CI job with `issues: write`. Cluster GPU Tests never fail
 their jobs, so they never report there. Close the issue when `dev` passes
 again; the next failure opens a new one.
 
-A full run takes about 13 minutes and 110 macOS job-minutes: about 31 on
-Blacksmith (the build jobs, Cluster Release Build Checks and Cluster GPU Tests)
-and about 79 on routed Macs (the 9 blocking test shards, which fall back to
-Blacksmith when the plane grants no Mac).
+A full run takes about 13 minutes and 110 macOS job-minutes: about 31 for the
+build jobs, Cluster Release Build Checks and Cluster GPU Tests, and about 79
+for the 9 blocking test shards. Every macOS job but Cluster GPU Tests is
+routed, and falls back to Blacksmith when the plane grants no Mac.
 
 ### Build Once
 
@@ -387,14 +387,14 @@ Each lane builds its debug test products once, on a large runner, and its
 test jobs run them with `swift test --skip-build`. No test job compiles the
 provider or the cluster packages. Every job below but `test-cluster-gpu` reads
 its runner from the route ([CI Runner Routing](#ci-runner-routing)). Its
-fallback is `blacksmith-12vcpu-macos-27`. While job sizes are off, a
-`required` job keeps its fallback without asking ([Job sizes](#job-sizes)).
+fallback is `blacksmith-12vcpu-macos-27`. While job sizes are off, every job
+asks without a size ([Job sizes](#job-sizes)).
 
 | Job | Runner | Needs | Does |
 |---|---|---|---|
-| `build-cluster` (Build cluster test products) | routed, `required` | - | Builds the cluster lane (`.github/actions/provider-ci-build`), uploads `cluster-test-products` |
-| `build-provider` (Build provider test products) | routed, `required` | - | Builds the provider lane, uploads `provider-test-products` |
-| `cluster-release-checks` (Cluster Release Build Checks) | routed, `required` | - | Compiles the release build of the worker capability and prefill schedule checks, and runs them |
+| `build-cluster` (Build cluster test products) | routed | - | Builds the cluster lane (`.github/actions/provider-ci-build`), uploads `cluster-test-products` |
+| `build-provider` (Build provider test products) | routed | - | Builds the provider lane, uploads `provider-test-products` |
+| `cluster-release-checks` (Cluster Release Build Checks) | routed | - | Compiles the release build of the worker capability and prefill schedule checks, and runs them |
 | `test-provider`, shards 1 and 2 | routed | `build-provider` | The provider selections, Prompt Parity, the native gates, the audit and coverage |
 | `test-cluster`, shards 1 to 5 | routed | `build-cluster` | The blocking cluster selections |
 | `test-cluster-gpu`, shards 1 to 3 | `blacksmith-12vcpu-macos-27`, not routed | `build-cluster` | The non-blocking cluster GPU selections |
@@ -566,9 +566,9 @@ gate run on `ubuntu-24.04`. Cluster GPU Tests run on `blacksmith-12vcpu-macos-27
 not routed ([Job sizes](#job-sizes)). A lane without a size gets the
 approval's pinned image size for its profile (one for macOS, one for Linux).
 The macOS one measured 12 vCPU / 32 GiB on 2026-11-05 (run 42105290034,
-attempt 1); it is not a fixed default. The build jobs and Cluster Release
-Build Checks ran on Blacksmith before sizes, so they ask only with their size
-([Job sizes](#job-sizes)).
+attempt 1), the class of the Blacksmith 12-vCPU fallback; it is not a fixed
+default. While sizes are off, the build jobs and Cluster Release Build Checks
+get this size too ([Job sizes](#job-sizes)).
 
 Jobs on Darkbloom Sandboxes use GitHub's Actions cache, not Blacksmith's
 colocated cache, so their first runs start without cached build products.
@@ -586,14 +586,18 @@ repository variable `DARKBLOOM_JOB_SHAPES` is exactly `on`. While it is off:
 
 - The request has no size. It is byte for byte the request of a lane table
   without sizes.
-- The 9 blocking test jobs ask without a size, as before sizes. Their runners
-  do not change.
+- Every lane asks without a size and gets the approval's pinned macOS size
+  ([CI Runner Routing](#ci-runner-routing)): the 9 blocking test jobs, the
+  build jobs and Cluster Release Build Checks.
+- Risk: the build jobs need a large Mac. If the approval pins a smaller macOS
+  size, they get that smaller size, and a cold build takes longer.
 - A lane marked `required` keeps its fallback without asking. It takes no
-  place under the `DARKBLOOM_MACOS_LANES` cap.
+  place under the `DARKBLOOM_MACOS_LANES` cap. No CI lane is marked
+  `required` now.
 
 The lane table in the `route` job of `provider-plan.yml` is the one place that
 names each job's lane and size. The lanes are in cap order: the critical-path
-test shards first, then the `required` jobs.
+test shards first, then the build jobs and Cluster Release Build Checks.
 
 Each size is the smallest signed size (4x16, 4x24, 8x16, 12x32) that holds the
 job's used memory times 1.25, on which the job takes at most 5% longer than on
@@ -616,13 +620,12 @@ and memory pressure stayed normal.
 | `test-provider-2` | 1 | 4x24 | 16.17 in one sample, about 9 otherwise | asks without a size |
 | `test-cluster-1` | 1 | 4x16 | 11.97 | asks without a size |
 | `test-provider-1` | 1 | 4x16 | 11.03 | asks without a size |
-| `build-cluster` | 1 | 8x16 | 10.91; a cold build takes 5 to 10% longer on 8 vCPUs | Blacksmith, not asked |
-| `build-provider` | 1 | 12x32 | 17.50; 8x24 is not signed, and a cold build takes 20% longer on 8 vCPUs | Blacksmith, not asked |
-| `cluster-release-checks` | 1 | 8x16 | 9.65 with a reused build; a cold release compile (run 42041608780: 11.33 GiB, 11.4 busy vCPUs at p95 of 12) takes 26% longer on 4 vCPUs and 5.5% on 8 | Blacksmith, not asked |
+| `build-cluster` | 1 | 8x16 | 10.91; a cold build takes 5 to 10% longer on 8 vCPUs | asks without a size |
+| `build-provider` | 1 | 12x32 | 17.50; 8x24 is not signed, and a cold build takes 20% longer on 8 vCPUs | asks without a size |
+| `cluster-release-checks` | 1 | 8x16 | 9.65 with a reused build; a cold release compile (run 42041608780: 11.33 GiB, 11.4 busy vCPUs at p95 of 12) takes 26% longer on 4 vCPUs and 5.5% on 8 | asks without a size |
 
-A run that tests every component asks for 12 macOS jobs while sizes are on,
-and 9 while they are off. The three Cluster GPU Tests shards are not routed:
-they run on `blacksmith-12vcpu-macos-27` (12 vCPU, 48 GiB). Shard 2 uses
+A run that tests every component asks for 12 macOS jobs, while sizes are on
+or off. The three Cluster GPU Tests shards are not routed: they run on `blacksmith-12vcpu-macos-27` (12 vCPU, 48 GiB). Shard 2 uses
 41.99 GiB, which no signed size holds, and one lane carries one size for every
 shard (shard 1 used 17.40 GiB when it ran the whole real-geometry rows check;
 shards 1 and 3 each run half of it now).

@@ -324,10 +324,11 @@ struct DistributedInstalledPlan: Sendable {
     /// The lanes a pair of `adapter` serves by default in `mode`, or nil when
     /// its workers serve one request at a time there.
     /// - Pipeline: the lane adapters (`laneAdapters`), text only, at
-    ///   `defaultBatchLanes`, under either schedule. Gemma 4 serves the width
-    ///   its placement saved (`ClusterPlacementPipelineWidth`), which LOAD
-    ///   checks whole; without one, nothing priced a width, so it serves one
-    ///   request at a time as every family does.
+    ///   `defaultBatchLanes`, under either schedule. A Gemma 4 setup saved
+    ///   with serial prefill and a width serves that width, which LOAD checks
+    ///   whole. Without one, as every guided pipeline setup is saved
+    ///   (`ClusterPlacementPipelineWidth` sizes no family yet), nothing priced
+    ///   a width, so it serves one request at a time as every family does.
     /// - Qwen tensor parallel (every registered TP row, dense or routed
     ///   experts): one for a setup saved without a width. Guided placement
     ///   saves the widest width both Macs admit now under its LOAD quote

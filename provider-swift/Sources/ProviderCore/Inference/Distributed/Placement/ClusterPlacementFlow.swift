@@ -299,9 +299,9 @@ public enum ClusterPlacementFlow {
         let (parity, parityRefusal) = ClusterModeParity.apply(to: &policy, capability: capability, layout: layout,
             forced: developerForced != nil) { try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: $0, link: link) }
         // A singleton tensor placement saves the widest width its owner's quotes admit on both Macs now, and a plain
-        // pipeline of a family whose pipeline lanes are qualified the widest its lanes' state admits on both Macs now.
-        // Each sizing's plans stay in its own frame: this frame, which a deep planner stack shares, holds just the one
-        // plan it keeps.
+        // pipeline of a family whose guided pipeline lanes are qualified (`ClusterPlacementPipelineWidth`, none yet)
+        // the widest its lanes' state admits on both Macs now. Each sizing's plans stay in its own frame: this frame,
+        // which a deep planner stack shares, holds just the one plan it keeps.
         var batchLanes = batchScope?.lanes
         var result = try ClusterPlacementTensorWidth.plan(devices: devices, layout: layout, policy: policy, link: link,
             quotes: tensorWidthQuotes, lanes: &batchLanes)

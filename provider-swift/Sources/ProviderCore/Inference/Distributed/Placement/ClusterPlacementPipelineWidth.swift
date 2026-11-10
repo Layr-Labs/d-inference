@@ -1,20 +1,27 @@
 import DarkbloomClusterPlacement
 import DarkbloomClusterProtocol
 
-/// The width a pipeline placement saves (`ClusterConfiguration.batchLanes`), so a pair whose pipeline serves lanes
-/// serves several requests at once from its first load, and a pair saved for coordinator pairing, which never widens
-/// afterwards, serves them at all. The widest of 8, 4 and 2 (the pipeline's widths) at which the plain pipeline, led by
-/// the chosen placement's leader, fits both Macs now with every lane's whole state at the standard request
-/// (`ClusterPlacementPolicy.pipelineLanes`, what its LOAD admits), up to what the family has qualified on real Macs
-/// (`qualifiedLanes`). Lanes read prompts one frame at a time, so a sized placement prefills serially; its cut is the
-/// one that serves fastest there. When no wider width fits, the placement chosen for one request stands: one request
-/// at a time, with the one-chunk lookahead where the model has it.
+/// The width a guided pipeline placement saves (`ClusterConfiguration.batchLanes`) for a family whose guided pipeline
+/// lanes are listed in `qualifiedLanesByFamily`, so the pair serves several requests at once from its first load, and a
+/// pair saved for coordinator pairing, which never widens afterwards, serves them at all. The widest of 8, 4 and 2 (the
+/// pipeline's widths) at which the plain pipeline, led by the chosen placement's leader, fits both Macs now with every
+/// lane's whole state at the standard request (`ClusterPlacementPolicy.pipelineLanes`, what its LOAD admits), up to
+/// that family's entry. Lanes read prompts one frame at a time, so a sized placement prefills serially; its cut is the
+/// one that serves fastest there. For a family not listed, or when no wider width fits, the placement chosen for one
+/// request stands: one request at a time, with the one-chunk lookahead where the model has it.
 enum ClusterPlacementPipelineWidth {
-    /// The widest pipeline width a setup of this model saves: what the family has qualified on real Macs, and one for
-    /// a family whose pipeline lanes are not qualified yet (its owner's default then applies, as before). Gemma 4 takes
-    /// eight, to be confirmed on the M5 Ultra pair before it ships, and lowered if that pair qualifies less.
+    /// The widest pipeline width a guided setup of each family saves. None yet. Gemma 4's lanes gave every request
+    /// its solo tokens at 2, 4 and 8 on the M5 Ultra pair, but lanes prefill serially, and there a lone prompt's first
+    /// token came 1.84 to 1.94 times later at 8K to 64K tokens than with the lookahead. So its guided pipeline keeps
+    /// the lookahead and one lane (owner, 2026-11-10). A setup saved with serial prefill and a width still serves that
+    /// width, which LOAD admits whole. Listing a family here, such as `.gemma4LayerStage: 8`, sizes its guided setups.
+    static let qualifiedLanesByFamily: [ClusterRuntimeAdapter: Int] = [:]
+
+    /// The widest pipeline width a guided setup of this model saves: its family's `qualifiedLanesByFamily` entry, and
+    /// one for a family not listed or a pipeline with private images (its owner's default then applies, as before).
     static func qualifiedLanes(adapter: ClusterRuntimeAdapter?, hasPrivateImages: Bool) -> Int {
-        adapter == .gemma4LayerStage && !hasPrivateImages ? ClusterServingFeatures.maximumLaneWidth : 1
+        guard let adapter, !hasPrivateImages else { return 1 }
+        return qualifiedLanesByFamily[adapter] ?? 1
     }
 
     /// Replaces `result` with its widest admitted width's plan and sets `lanes`, when its chosen placement is a plain

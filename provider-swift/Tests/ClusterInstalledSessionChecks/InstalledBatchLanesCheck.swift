@@ -201,7 +201,7 @@ extension InstalledSessionCheck {
             registered: ("registered_gemma4_26b_qat_4bit", "registered_gemma4_26b_qat_4bit_greedy_generation_v1", "fixture/gemma"),
             adapter: .gemma4LayerStage)
         let gemmaPrepared = try gemma.prepare()
-        // A serial-prefill Gemma pipeline saved without a width (one its placement did not size) serves one request at
+        // A serial-prefill Gemma pipeline saved without a width (as every guided setup is saved) serves one request at
         // a time, as every family does: its LOAD checks the width, which nothing priced.
         try require(gemmaPrepared.plan.configuration.selectedPrefillSchedule == .serial
             && gemmaPrepared.plan.batchLanes([:]) == 1 && !gemmaPrepared.plan.lanesRetireAlone([:]),
@@ -209,7 +209,7 @@ extension InstalledSessionCheck {
         let gemmaDefault = gemmaPrepared.plan.nativeEnvironment(matrix: gemmaPrepared.matrixURL,
             ownerEnvironment: try observed(gemmaPrepared.plan.localOwnerConfiguration(ownerEnvironment: [:])))
         try require(gemmaDefault[key] == nil, "a Gemma pipeline without a saved width named lanes to its rank")
-        // The width its placement saved reaches the rank.
+        // A width saved with serial prefill reaches the rank.
         let sized = try InstalledFixture.make(root: f.root.appendingPathComponent("lane-gemma-sized"),
             probe: f.probe, owner: probe, worker: f.worker,
             registered: ("registered_gemma4_26b_qat_4bit", "registered_gemma4_26b_qat_4bit_greedy_generation_v1", "fixture/gemma"),

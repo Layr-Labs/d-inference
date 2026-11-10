@@ -72,6 +72,7 @@ def run_inputs(manifest, **over):
                 "--source-url": SRC, "--recipe": "g32", "--manifest": str(mp), "--mode": "build", "--confirm-version": "",
                 "--keys": "prod"}
         args.update(over)
+        args = {k: v for k, v in args.items() if v is not None}
         out = Path(d) / "github_output"
         cmd = [sys.executable, str(UPLOAD), "inputs"] + [x for kv in args.items() for x in kv]
         result = subprocess.run(cmd, capture_output=True, text=True, env={**os.environ, "GITHUB_OUTPUT": str(out)})
@@ -103,6 +104,9 @@ class Inputs(unittest.TestCase):
     def test_both_key_sets(self):
         for keys in ("prod", "legacy"):
             self.assertEqual(run_inputs(self.m, **{"--keys": keys}).returncode, 0, keys)
+        default = run_inputs(self.m, **{"--keys": None})  # without --keys: the repo's R2_*
+        self.assertEqual(default.returncode, 0, default.stderr)
+        self.assertIn("keys legacy", default.stdout)
 
     def test_upload_needs_the_version_repeated(self):
         self.assertNotEqual(run_inputs(self.m, **{"--mode": "upload"}).returncode, 0)
@@ -368,7 +372,7 @@ class WorkflowSteps(unittest.TestCase):
     def test_check_tests_both_key_sets_and_prints_only_pass_or_fail(self):
         check = self.named("Check")
         self.assertEqual(check.get("id"), "check")
-        printed = re.compile(r"keys (prod \(PROD_R2_\*\)|legacy \(R2_\*\)): (pass|fail|fail \(not set\))")
+        printed = re.compile(r"keys (prod \(PROD_R2_\*\)|legacy \(R2_\*\)): (pass|fail|fail \(incomplete\)|absent)")
 
         def only_verdicts(r):
             for line in r.stdout.splitlines():
@@ -382,17 +386,24 @@ class WorkflowSteps(unittest.TestCase):
         self.assertTrue(all("head-object --bucket darkbloom-models" in c for c in both.calls), both.calls)
         only_verdicts(both)
 
-        # PROD_R2_* not set (the prod environment had no secrets on 11-10): reported, nothing run with it.
+        # PROD_R2_* absent (the prod environment had no secrets on 11-10): reported as absent, not a failure of the
+        # run, and nothing runs with it.
         legacy_only = self.run_step(check, **LEGACY)
         self.assertEqual(legacy_only.returncode, 0)
-        self.assertEqual(legacy_only.outputs, {"prod": "fail", "legacy": "pass"})
-        self.assertIn("keys prod (PROD_R2_*): fail (not set)", legacy_only.stdout)
+        self.assertEqual(legacy_only.outputs, {"prod": "absent", "legacy": "pass"})
+        self.assertIn("keys prod (PROD_R2_*): absent", legacy_only.stdout)
+        self.assertNotIn("::error::", legacy_only.stdout)
         self.assertEqual([c.split()[1] for c in legacy_only.calls], ["key=legacy-key-id"])
         only_verdicts(legacy_only)
-        for name in PROD:  # any one missing part of a set fails that set without running anything with it
+        for name in PROD:  # a set with some parts missing is incomplete: it fails, and nothing runs with it
             partial = self.run_step(check, **{**PROD, name: ""}, **LEGACY)
             self.assertEqual(partial.outputs["prod"], "fail", name)
+            self.assertIn("keys prod (PROD_R2_*): fail (incomplete)", partial.stdout)
             self.assertEqual([c.split()[1] for c in partial.calls], ["key=legacy-key-id"], name)
+        nothing = self.run_step(check)
+        self.assertNotEqual(nothing.returncode, 0)
+        self.assertEqual(nothing.outputs, {"prod": "absent", "legacy": "absent"})
+        self.assertEqual(nothing.calls, [])
 
         # A failing set prints no part of aws's error, which names the endpoint.
         leaked = {run[i:i + 3] for run in re.findall(r"\d{3,}", ENDPOINT) for i in range(len(run) - 2)}
@@ -407,7 +418,7 @@ class WorkflowSteps(unittest.TestCase):
         neither = self.run_step(check, **PROD, FAKE_BAD_KEY="prod-key-id")
         self.assertNotEqual(neither.returncode, 0)
         self.assertIn("::error::", neither.stdout)
-        self.assertEqual(neither.outputs, {"prod": "fail", "legacy": "fail"})
+        self.assertEqual(neither.outputs, {"prod": "fail", "legacy": "absent"})
 
         # upload: the chosen set must pass here, before an hour of rebuilding.
         self.assertNotEqual(self.run_step(check, **LEGACY, MODE="upload", KEYS="prod").returncode, 0)
@@ -432,6 +443,7 @@ class WorkflowSteps(unittest.TestCase):
         refused = [dict(KEYS="prod", PROD_CHECK="fail", LEGACY_CHECK="pass"),
                    dict(KEYS="legacy", PROD_CHECK="pass", LEGACY_CHECK="fail"),
                    dict(KEYS="prod", LEGACY_CHECK="pass"),
+                   dict(KEYS="prod", PROD_CHECK="absent", LEGACY_CHECK="pass"),
                    dict(KEYS="both", PROD_CHECK="pass", LEGACY_CHECK="pass")]
         for case in refused:
             r = self.run_step(upload, **CHOSEN, **case, MODE="upload")
@@ -447,10 +459,15 @@ class WorkflowSteps(unittest.TestCase):
     def test_keys_input(self):
         m = re.search(r"\n      keys:\n((?:        .*\n)+)", self.text.split("\njobs:\n", 1)[0])
         self.assertIsNotNone(m, "a keys input")
-        for line in ("default: prod", "type: choice", "options: [prod, legacy]"):
+        for line in ("default: legacy", "type: choice", "options: [legacy, prod]"):
             self.assertIn(line, m.group(1))
         self.assertIn("  KEYS: ${{ inputs.keys }}\n", self.text)
         self.assertIn('--keys "$KEYS"', self.named("Validate inputs", "preflight")["run"])
+
+    def test_the_header_says_who_approves(self):
+        header = self.text.split("\npermissions:", 1)[0]
+        self.assertIn("waits for Gajesh2007's approval of the `prod` environment", " ".join(
+            line.lstrip("# ").strip() for line in header.splitlines()))
 
     def test_tools_are_pinned_by_hash(self):
         for job in self.jobs:

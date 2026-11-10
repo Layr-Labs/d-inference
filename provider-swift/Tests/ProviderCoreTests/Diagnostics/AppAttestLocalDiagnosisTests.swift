@@ -64,6 +64,23 @@ struct AppAttestLocalDiagnosisTests {
         #expect(check(d, "app attest key") == nil, "unavailable App Attest has no key state to report")
     }
 
+    /// Report 6024: the provider already ran in the GUI session, so "log in via
+    /// Screen Sharing and restart" could not help. After a self-update the
+    /// cause is a stale LaunchServices record of `Darkbloom.app`.
+    @Test func isSupportedFalseInsideGuiSessionPointsAtLaunchServicesNotScreenSharing() {
+        let d = AppAttestLocalDiagnosis.evaluate(status(session: .gui, reason: .isSupportedFalse, key: nil),
+                                                 daemonRunning: true, macOSMajorVersion: 27, now: 100)
+        #expect(check(d, "launch session")?.level == .pass)
+        let support = check(d, "app attest support")
+        #expect(support?.level == .fail)
+        #expect(support?.message.contains("already runs in the logged-in GUI session") == true)
+        #expect(support?.message.contains("self-update") == true)
+        #expect(support?.fix?.contains("Screen Sharing") == false, "a restart from Screen Sharing cannot change this")
+        for advice in ["lsregister", "-f", BuildEnvironment.current.appBundleName, "csrutil status", "Full Security"] {
+            #expect(support?.fix?.contains(advice) == true, "missing advice: \(advice)")
+        }
+    }
+
     @Test func otherAvailabilityReasonsFailWithoutGuiAdvice() {
         let d = AppAttestLocalDiagnosis.evaluate(status(reason: .notAppBundle, key: nil),
                                                  daemonRunning: true, macOSMajorVersion: 27, now: 100)

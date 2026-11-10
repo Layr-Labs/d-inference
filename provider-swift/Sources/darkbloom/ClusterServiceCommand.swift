@@ -13,13 +13,13 @@ extension Cluster {
     /// and updates the pair together with the other Mac's supervisor.
     struct Service: AsyncParsableCommand {
         static let configuration = CommandConfiguration(commandName: "service",
-            abstract: "Run this Mac's cluster service (started by `darkbloom cluster`).", shouldDisplay: false)
+            abstract: "Run this Mac's cluster service (started by `\(ClusterPairSummary.cli) cluster`).", shouldDisplay: false)
         @OptionGroup var configOptions: ConfigOptions
         @Option(help: "Absolute path of this Mac's cluster worker, when it is not the installed one (Darkbloom.app/Contents/Helpers).")
         var worker: String?
         @Flag(help: "Run the supervisor that keeps the service running (what the login agent runs).")
         var supervise = false
-        @Flag(help: "Install the service as this Mac's login agent (what `darkbloom cluster` does) and exit.")
+        @Flag(help: "Install the service as this Mac's login agent (what `\(ClusterPairSummary.cli) cluster` does) and exit.")
         var install = false
 
         func validate() throws {
@@ -80,11 +80,17 @@ extension Cluster {
 
         /// The supervisor updates the pair as the single-Mac updater updates one Mac: the same `auto_update` and
         /// `DARKBLOOM_NO_UPDATE_CHECK` gate and the same coordinator (`Watchdog.settings`), at the update slot of the
-        /// pairing's cluster ID, which both Macs share (`ClusterPairUpdateCycle`).
+        /// pairing's cluster ID, which both Macs share (`ClusterPairUpdateCycle`). `runCycle` runs one cycle in the
+        /// environment built for it; a test stands in for it.
         static func supervisorConfiguration(
             executable: String, serviceOptions: [String], configPath: String?, environment: [String: String],
             serviceDirectory: URL, reexecArguments: [String],
-            clusterID: @escaping @Sendable () -> String? = { try? ClusterSetupLinkExchange.pairing()?.clusterID }
+            clusterID: @escaping @Sendable () -> String? = { try? ClusterSetupLinkExchange.pairing()?.clusterID },
+            runCycle: @escaping @Sendable (_ environment: ClusterPairUpdateCycle.Environment, _ request: String?,
+                                           _ restart: @escaping @Sendable (String) async throws -> Void) async
+                -> AutoUpdateController.Outcome = { environment, request, restart in
+                    await ClusterPairUpdateCycle(environment: environment).run(request: request, restart: restart)
+                }
         ) -> ClusterMemberSupervisor.Configuration {
             let settings = Watchdog.settings(configPath: configPath, environment: environment)
             let coordinatorURL = settings.coordinatorURL
@@ -102,13 +108,13 @@ extension Cluster {
                 recycleGraceSeconds: Double(ClusterServiceAgentPlan.partStopGraceSeconds),
                 reexecArguments: reexecArguments,
                 logName: "cluster service supervisor",
-                restartHint: "`darkbloom cluster` is run again (or `darkbloom cluster stop`)",
+                restartHint: "`\(ClusterPairSummary.cli) cluster` is run again (or `\(ClusterPairSummary.cli) cluster stop`)",
                 pairUpdate: .init(
                     clusterID: clusterID,
                     run: { request, log, restart in
                         let environment = ClusterPairUpdateCycle.Environment.live(
-                            serviceDirectory: serviceDirectory, coordinatorURL: coordinatorURL, log: log)
-                        return await ClusterPairUpdateCycle(environment: environment).run(request: request, restart: restart)
+                            serviceDirectory: serviceDirectory, coordinatorURL: coordinatorURL, automatic: request == nil, log: log)
+                        return await runCycle(environment, request, restart)
                     },
                     requestPath: ClusterServiceAgent.updateRequestPath(serviceDirectory: serviceDirectory),
                     progressPath: ClusterServiceAgent.updateProgressPath(serviceDirectory: serviceDirectory),
@@ -126,50 +132,217 @@ extension Cluster {
         }
     }
 
-    /// `darkbloom cluster stop`: stops this Mac's cluster service and keeps it
-    /// stopped across restarts of this Mac (its login agent is removed). On the
-    /// leader the cluster stops serving first (the members stop their parts).
-    /// `darkbloom cluster` starts it again.
+    /// `darkbloom cluster stop`: the same as `darkbloom stop` on a Mac in a cluster. The pair stops on both Macs and
+    /// stays stopped; both cluster services stay up, idle. `--service` also stops this Mac's cluster service and keeps
+    /// it stopped across restarts (its login agent is removed): the leader stops the cluster's serving first (the
+    /// members stop their parts), and a member of a started cluster asks the leader to (`pairStop`). `--local-only`
+    /// stops only this Mac's service, without asking the other Mac. `darkbloom cluster` starts it again.
     struct Stop: AsyncParsableCommand {
         static let configuration = CommandConfiguration(commandName: "stop",
-            abstract: "Stop this Mac's cluster service and keep it from starting at login (`darkbloom cluster` starts it again).")
+            abstract: "Stop the cluster on both Macs, the same as `\(ClusterPairSummary.cli) stop` (`\(ClusterPairSummary.cli) start` starts it again).",
+            discussion: "On either Mac: the leading Mac stops both Macs' parts, as Stop in `\(ClusterPairSummary.cli) cluster` does. Both Macs "
+                + "stay stopped after a restart, and their cluster services stay up, idle, so `\(ClusterPairSummary.cli) start` on either Mac "
+                + "starts the pair again. --service also stops this Mac's cluster service and keeps it from starting at login.")
         @OptionGroup var configOptions: ConfigOptions
         @Option(help: "Absolute path of this Mac's cluster worker, when it is not installed beside darkbloom.")
         var worker: String?
         @Flag(name: .customLong("local-only"),
-              help: "Stop only this Mac, without asking the other Mac (when it is gone for good). Run `darkbloom cluster stop` there too if it comes back.")
+              help: "Stop only this Mac's cluster service, without asking the other Mac (when it is gone for good). Run `\(ClusterPairSummary.cli) cluster stop --service` there too if it comes back.")
         var localOnly = false
+        @Flag(help: "Also stop this Mac's cluster service and keep it from starting at login (`\(ClusterPairSummary.cli) cluster` starts it again).")
+        var service = false
 
         func validate() throws {
             for path in [configOptions.config, worker].compactMap({ $0 }) where !path.hasPrefix("/") {
-                throw ValidationError("darkbloom cluster stop takes absolute paths.")
+                throw ValidationError("\(ClusterPairSummary.cli) cluster stop takes absolute paths.")
             }
+        }
+
+        /// What `cluster stop` does: the pair stop `darkbloom stop` does, or the stop that also turns this Mac's cluster
+        /// service off (`--service`, `--local-only`, or a Mac in no cluster, whose leftover service it removes).
+        enum Mode: Equatable { case pair, refuse, serviceOff }
+
+        static func mode(_ pair: ClusterPairSummary, localOnly: Bool, service: Bool) -> Mode {
+            guard pair.paired, !localOnly, !service else { return .serviceOff }
+            return pair.pairingUnreadable ? .refuse : .pair
+        }
+
+        /// `cluster stop` while this Mac's pairing record can't be read: nothing changes, and why.
+        static func refusal(_ pair: ClusterPairSummary) -> [String] {
+            [pair.pairSentence, "`\(ClusterPairSummary.cli) cluster stop` can't tell which pair to stop, so nothing was stopped.",
+             "To stop this Mac's cluster service anyway: `\(ClusterPairSummary.cli) cluster stop --service`. " + ClusterPairSummary.checkPairingLine]
         }
 
         mutating func run() async throws {
             Darkbloom.ensureLogging()
-            let config = configOptions.config, worker = worker, localOnly = localOnly
+            let pair = ClusterPairSummary.local()
+            switch Self.mode(pair, localOnly: localOnly, service: service) {
+            case .pair:
+                let actions = ClusterPairActions.live(config: configOptions.config, worker: worker)
+                let teardown = ClusterPairCommands.teardownWait, progressAfter = ClusterPairCommands.progressDelay
+                let code = await Task.detached {
+                    ClusterPairCommands.stop(pair, actions: actions, teardown: teardown, progressAfter: progressAfter)
+                }.value
+                if code != 0 { throw ExitCode(code) }
+                return
+            case .refuse:
+                for line in Self.refusal(pair) { print(line) }
+                throw ExitCode.failure
+            case .serviceOff:
+                break
+            }
+            for line in try await Self.turnServiceOff(config: configOptions.config, worker: worker, localOnly: localOnly).lines {
+                print(line)
+            }
+        }
+
+        /// This Mac's cluster service off and out of login (`--service`, `--local-only`): the pair stops first, from
+        /// either Mac, unless `localOnly` (the other Mac is gone). Returns the lines to print and what the other Mac was
+        /// asked; a member's note that it asked the leading Mac is printed as it goes. `leaving`: this Mac is leaving its
+        /// pair (`finishStop`).
+        static func turnServiceOff(config: String?, worker: String?, localOnly: Bool, leaving: Bool = false) async throws
+            -> ServiceOff {
+            if let service = serviceForTesting { return try await service.turnOff(localOnly, leaving) }
+            let progressAfter = ClusterPairCommands.progressDelay
             let executable = URL(fileURLWithPath: Start.currentExecutablePath())
-            let lines: [String] = try await Task.detached {
+            return try await Task.detached {
                 var stopped: Result<[String], ClusterOnboardingFailure>?
+                var forwarded = false
                 // The leader stops serving first, so its members stop their parts too
                 // (unless asked to stop only this Mac: the other one is gone).
-                if !localOnly, let settings = try? Cluster.Setup.serviceSettings(config: config, modelDir: nil, worker: worker),
-                   let operations = try? ClusterOnboardingOperations.live(.init(service: settings,
-                       serviceArguments: ClusterServiceAgentPlan.childArguments(
-                           serviceOptions: ClusterServiceAgentPlan.serviceOptions(config: config, worker: worker)))) {
+                if !localOnly, let operations = try? ClusterOnboardingOperations.live(.clusterService(config: config, worker: worker)) {
                     let resume = operations.resume()
-                    // A previous bounded failure already saved serving=false;
-                    // retry must still finish its drain/peer acknowledgement.
-                    if resume.role == .leader {
-                        stopped = operations.stop()
+                    switch Self.pairStop(role: resume.role, serving: resume.serving) {
+                    case .stopHere: break
+                    case .leaderStopsBoth: stopped = Self.stopBothMacs(operations, progressAfter: progressAfter)
+                    case .askLeader:
+                        // The menu's Stop, sent to the leading Mac: both Macs stop, instead of the leader waiting
+                        // for this one and then serving alone or nothing.
+                        print(ClusterPairSummary.memberStopNote(
+                            leader: ClusterOnboardingMacName.other(named: resume.leaderName ?? resume.peerName)))
+                        fflush(stdout)
+                        forwarded = true
+                        stopped = Self.stopBothMacs(operations, progressAfter: progressAfter)
                     }
                 }
-                return try Self.finishStop(stopped, localOnly: localOnly) {
+                return try Self.finishStop(stopped, localOnly: localOnly, forwarded: forwarded, leaving: leaving) {
                     try ClusterService.removeFromLogin(executable: executable)
                 }
             }.value
-            for line in lines { print(line) }
+        }
+
+        /// The stop before this Mac unpairs (`darkbloom cluster leave`, `darkbloom uninstall`): the pair stops together
+        /// and this Mac's cluster service goes off, as `--service` does; when that fails (the pair can't stop together,
+        /// as when the other Mac doesn't answer), only this Mac's part stops, as `--local-only` does. Skipped when this
+        /// Mac has no cluster service.
+        ///
+        /// It returns only after `turnServiceOff`'s last step, `ClusterService.removeFromLogin`, stopped this Mac's
+        /// cluster service: it waits for launchd's job to exit, and for a service started outside launchd that its pid
+        /// file names, and throws when one doesn't end. So a caller that unpairs after it doesn't unpair a Mac whose part
+        /// still runs; the one service it can't wait for is one started outside launchd without a readable pid file.
+        /// These are the steps `darkbloom uninstall` took before they were shared (`cluster stop --service`, then
+        /// `--local-only`); `leaving` only leaves out the lines that say how to serve the pair again or stop the other
+        /// Mac's service, whose place the caller's last lines take.
+        static func beforeUnpairing(executable: URL, say: (String) -> Void) async throws -> BeforeUnpairing {
+            try await beforeUnpairing(hasService: hasService(executable: executable), say: say) { localOnly in
+                try await turnServiceOff(config: nil, worker: nil, localOnly: localOnly, leaving: true)
+            }
+        }
+
+        /// `beforeUnpairing` with this Mac's service and its stop given (`turnOff(localOnly)`).
+        static func beforeUnpairing(hasService: Bool, say: (String) -> Void,
+                                    turnOff: (_ localOnly: Bool) async throws -> ServiceOff) async throws -> BeforeUnpairing {
+            guard hasService else { return .noService }
+            do {
+                let off = try await turnOff(false)
+                for line in off.lines { say(line) }
+                return .stopped(off.otherMac)
+            } catch {
+                for line in try await turnOff(true).lines { say(line) }
+                return .stoppedAlone("\(error)")
+            }
+        }
+
+        /// What the stop before unpairing did.
+        enum BeforeUnpairing: Equatable, Sendable {
+            /// This Mac has no cluster service: nothing stopped, and the other Mac wasn't asked anything.
+            case noService
+            /// This Mac's part and cluster service stopped, and what the other Mac was asked.
+            case stopped(OtherMac)
+            /// The pair couldn't stop together (why), so only this Mac's part stopped: the other Mac wasn't asked to stop.
+            case stoppedAlone(String)
+
+            /// As `darkbloom uninstall` reports its step: the other Mac's silence said, the rest as before the step was
+            /// shared.
+            var outcome: ProviderUninstall.Outcome {
+                switch self {
+                case .noService: return .skipped("no cluster service on this Mac")
+                case .stopped(.unanswered): return .done("the other Mac did not answer, so it was not asked to stop")
+                case .stopped: return .done()
+                case .stoppedAlone(let why): return .done("the other Mac was not asked to stop (\(why))")
+                }
+            }
+        }
+
+        /// What turning this Mac's cluster service off asked of the other Mac.
+        enum OtherMac: Equatable, Sendable {
+            /// The pair's stop reached it: it stopped serving the pair with this Mac.
+            case stopped
+            /// It didn't answer over the cable, so it wasn't asked to stop: the sentence that says so, with why.
+            case unanswered(String)
+            /// It wasn't asked to stop: this Mac stopped alone (`--local-only`), or follows a pair that isn't serving.
+            case notAsked
+        }
+
+        /// What turning this Mac's cluster service off did: the lines to say, and what the other Mac was asked.
+        struct ServiceOff: Equatable, Sendable {
+            var lines: [String]
+            var otherMac: OtherMac
+        }
+
+        /// Tests stand in for this Mac's cluster service: whether it has one, and what turning it off does, given
+        /// `localOnly` and `leaving`. Nothing of this Mac's own cluster is read or stopped while one is bound.
+        @TaskLocal static var serviceForTesting: ServiceForTesting?
+
+        struct ServiceForTesting: Sendable {
+            var installed: Bool
+            var turnOff: @Sendable (_ localOnly: Bool, _ leaving: Bool) async throws -> ServiceOff
+        }
+
+        /// Whether this Mac has a cluster service to stop: this build's login agent installed, this executable's job
+        /// loaded, or a service running.
+        static func hasService(executable: URL) -> Bool {
+            if let service = serviceForTesting { return service.installed }
+            let current = ClusterServiceAgentPlan.label(executablePath: ClusterService.resolvedExecutable(executable))
+            return !ClusterServiceAgent.installedLabels().isEmpty || ClusterServiceAgent.isLoaded(label: current)
+                || ClusterService.running()
+        }
+
+        /// The pair stop `--service` asks for first, saying what it waits for when it runs long.
+        private static func stopBothMacs(_ operations: ClusterOnboardingOperations, progressAfter: Double)
+            -> Result<[String], ClusterOnboardingFailure> {
+            ClusterPairCommands.saying(ClusterPairCommands.stopWaitLine, after: progressAfter, say: ClusterPairCommands.printLine,
+                                       operations.stop)
+        }
+
+        /// Who stops the cluster's serving when `cluster stop` runs here.
+        enum PairStop: Equatable {
+            /// Nothing serves that this Mac's stop would break: only this Mac's service stops.
+            case stopHere
+            /// This Mac leads: it stops both Macs.
+            case leaderStopsBoth
+            /// This Mac follows a started cluster: the leading Mac is asked to stop both Macs.
+            case askLeader
+        }
+
+        static func pairStop(role: ClusterOnboardingRole?, serving: Bool) -> PairStop {
+            switch role {
+            // Even when not serving: a previous bounded failure already saved serving=false;
+            // retry must still finish its drain/peer acknowledgement.
+            case .leader: return .leaderStopsBoth
+            case .member: return serving ? .askLeader : .stopHere
+            case nil: return .stopHere
+            }
         }
 
         /// A pair stop that could not finish: the pair's own reason lines, as a
@@ -181,23 +354,44 @@ extension Cluster {
 
         /// Keep the supervisor and its custody intact when the pair could not
         /// drain or the member did not acknowledge the saved stop request.
+        /// `leaving`: this Mac is leaving its pair, so the command that leaves says what to do next on each Mac; the
+        /// lines here only say what stopped (no "serve again" from the pair's stop, no "start it again", no "stop the
+        /// other Mac's service too"). `stopped` nil: the other Mac wasn't asked (`localOnly`, or a pair not serving).
         static func finishStop(_ stopped: Result<[String], ClusterOnboardingFailure>?, localOnly: Bool = false,
-                               removeFromLogin: () throws -> [String]) throws -> [String] {
+                               forwarded: Bool = false, leaving: Bool = false,
+                               removeFromLogin: () throws -> [String]) throws -> ServiceOff {
             var lines: [String] = []
+            var otherMac = OtherMac.notAsked
             if let stopped {
                 switch stopped {
-                case .success(let said): lines = said
-                case .failure(let failure): throw Failure(lines: failure.lines)
+                case .success(let said):
+                    // The pair's stop ends "Run `darkbloom cluster` to serve again.": not for a Mac leaving the pair.
+                    if !leaving { lines = said }
+                    otherMac = .stopped
+                case .failure(let failure) where !forwarded && failure.otherMacUnanswered != nil:
+                    // R5-1: this Mac stopped serving and the other Mac did not answer (its service already off, or
+                    // out of reach): this Mac's service still stops, and each Mac's state is said.
+                    let unanswered = failure.otherMacUnanswered!
+                    lines = ["This Mac stopped serving.",
+                             unanswered + ", so it was not asked to stop (its cluster service may already be off)."]
+                    otherMac = .unanswered(unanswered)
+                case .failure(let failure):
+                    throw Failure(lines: failure.lines + (forwarded ? ClusterPairSummary.memberStopFailureLines(failure.lines) : []))
                 }
             }
             let removed = try removeFromLogin()
             lines.append(removed.isEmpty
                 ? "This Mac's cluster service is stopped (it was not set to start at login)."
-                : "This Mac's cluster service is stopped and will not start at login. Run `darkbloom cluster` to start it again.")
-            if localOnly {
-                lines.append("The other Mac was not asked to stop. If it comes back, run `darkbloom cluster stop` there too.")
+                : "This Mac's cluster service is stopped and will not start at login."
+                    + (leaving ? "" : " Run `\(ClusterPairSummary.cli) cluster` to start it again."))
+            if case .unanswered = otherMac, !leaving {
+                lines.append("If the other Mac's cluster service is still on, run `\(ClusterPairSummary.cli) cluster stop --service` there too.")
             }
-            return lines
+            if localOnly {
+                lines.append("The other Mac was not asked to stop."
+                    + (leaving ? "" : " If it comes back, run `\(ClusterPairSummary.cli) cluster stop --service` there too."))
+            }
+            return ServiceOff(lines: lines, otherMac: otherMac)
         }
     }
 }

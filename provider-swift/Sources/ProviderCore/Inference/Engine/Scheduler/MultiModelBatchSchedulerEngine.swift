@@ -292,9 +292,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         let registry = await (registryProvider?() ?? [:])
         return registry.keys.sorted().map { id in
             let entry = registry[id]
+            let bridge = entry?.engineV2Bridge
             return MLXServerModel(
                 id: id,
-                contextLength: entry?.engineV2Bridge?.advertisedContextTokens
+                contextLength: bridge?.advertisedContextTokens ?? bridge?.modelWindowTokens
                     ?? Qwen4SupportPolicy.contextLimit(
                         modelID: id, modelType: entry?.modelType))
         }
@@ -357,9 +358,14 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // first-token or request budget: those start when the queue lets go.
         let origin = acquired.queueExitedAt.map { exited in distributedRequestOrigin.map { max($0, exited) } ?? exited }
             ?? distributedRequestOrigin
-        return try await prepareAcquiredCompletion(
-            request: request, templateControls: templateControls, requestUsage: requestUsage,
-            distributedRequestOrigin: origin, acquired: acquired)
+        // Preparation, on this task or the lease's child task, decodes media.
+        return try await VideoReaderFailureReport.reporting(to: (engineV2Vision ?? .production).emitTelemetry) {
+            try await MeFirstOwnerRequest.$makeRoom.withValue(acquired.makeRoomForOwner) {
+                try await prepareAcquiredCompletion(
+                    request: request, templateControls: templateControls, requestUsage: requestUsage,
+                    distributedRequestOrigin: origin, acquired: acquired)
+            }
+        }
     }
 
     /// Keep registry/acquisition snapshots out of the parent preparation frame.
@@ -505,8 +511,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 nativeMiMoThinkingEnabled = try MiMoV26TemplateFix.effectiveThinkingEnabled(
                     request: request, controls: templateControls)
             } else { nativeMiMoThinkingEnabled = true }
-            try DiffusionGemmaReasoningControl.validate(
-                request: request, controls: templateControls, modelType: modelType)
+            try ReasoningEffortPolicy.validate(request, controls: templateControls, modelType: modelType)
             prepared = try ToolChoicePromptPolicy.prepare(
                 request,
                 modelType: modelType,
@@ -970,6 +975,13 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 throw MultiModelBatchSchedulerEngineError.generationFailed(
                     "internal error: model '\(modelId)' has no serving engine (no v2 bridge)")
             }
+            // The output the bridge resolves for this prompt (an omitted
+            // max_tokens is its default cut to the window; a slot held to its
+            // model window cuts one that would pass it), named on the request so
+            // the token constraint is sized for the engine request's budget: the
+            // engine refuses a constraint whose budget differs
+            // (tokenConstraintBudgetMismatch).
+            request.maxTokens = bridge.outputTokens(requested: request.maxTokens, promptTokens: promptTokens.count)
             let toolConstraintStart = SuspendingClock.now
             tokenConstraint = try ToolConstraintFactory.make(
                 prepared: prepared,
@@ -977,9 +989,6 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 tokenizer: tokenizer,
                 modelContext: ChatTemplateFixContext(
                     modelId: request.model, modelType: modelType),
-                // The bridge resolves an omitted max_tokens with its own
-                // default, and the engine refuses a constraint whose budget
-                // differs from the request's (tokenConstraintBudgetMismatch).
                 defaultMaxTokens: bridge.defaultMaxTokens,
                 stopTokenIDs: bridge.stopTokenIds,
                 nativePromptTokens: promptTokens)

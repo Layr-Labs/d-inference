@@ -13,9 +13,10 @@ import MLX
 /// the median in microseconds. Shares are equal (500 per mille).
 ///
 /// It never fails or holds up a load: memory the gate does not admit, a load
-/// deadline too close, or any error gives no probe, and the timed rounds
-/// stop at the budget. Only a throwaway request that cannot be retired fails
-/// the load, since its native work may still be running.
+/// deadline too close, or any error gives no probe; the rounds keep the
+/// Qwen probe's budget and limit (`QwenTensorParallelShareProbe.rounds`).
+/// Only a throwaway request that cannot be retired fails the load, since its
+/// native work may still be running.
 enum Gemma4TensorParallelShareProbe {
     typealias Limits = QwenTensorParallelShareProbe
 
@@ -37,8 +38,8 @@ enum Gemma4TensorParallelShareProbe {
         } catch { return skipped("memory") }
         var session: Gemma4TensorParallelPagedSession?
         do {
-            let times = try reduction.locally { () throws -> [UInt64] in
-                try MLX.withError { error -> [UInt64] in
+            let rounds = try reduction.locally { () throws -> Limits.Rounds in
+                try MLX.withError { error -> Limits.Rounds in
                     func checked() throws { try error.check(); try check() }
                     let host = try model.pagedHost(lanes: 1, maximumTokens: shape.prompt + shape.outputs,
                         chunkTokens: shape.prompt)
@@ -49,22 +50,19 @@ enum Gemma4TensorParallelShareProbe {
                     // Any token will do: the outputs are not a tensor-parallel result.
                     _ = try value.prefill(prompt, range: 0..<shape.prompt, check: checked) { $0 }
                     var token = 1
-                    var times: [UInt64] = []
-                    for index in 0..<(Limits.warmupRounds + Limits.timedRounds) {
-                        if index >= Limits.warmupRounds, clock() - started >= Limits.budgetNanoseconds { break }
+                    let phase = try Limits.rounds(started: started, clock: clock) {
                         token = (token * 37 + 11) % profile.vocabularySize
-                        let roundStarted = clock()
                         _ = try GPU.withCommandBufferLimits(Gemma4TensorParallelModel.decodeCommandBuffers) {
                             try value.decode(token, check: checked) { $0 }
                         }
-                        if index >= Limits.warmupRounds { times.append(clock() - roundStarted) }
                     }
                     try value.retire()
                     guard host.isDrained else { throw ProbeError("Gemma tensor-parallel share probe kept its pages") }
-                    return times
+                    return phase
                 }
             }
-            guard times.count >= Limits.minimumRounds else { return skipped("budget") }
+            let times = rounds.times
+            guard times.count >= Limits.minimumRounds else { return skipped(rounds.reason) }
             let probe = ClusterWorkerShareProbe(sharePerMille: share,
                 plainStepMicroseconds: max(1, Int(times.sorted()[times.count / 2] / 1000)), rounds: times.count)
             return probe.valid ? probe : skipped("bounds")

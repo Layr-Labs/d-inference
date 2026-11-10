@@ -40,6 +40,8 @@ import Darwin
         soloStartsWithoutTheEndedPartsBackoff()
         // F14 (round 6b, 2026-10-14): failing first on 33da00709.
         soloAdmissionChecksTheRuntimeRequirements()
+        // 0.10.8 "online, no traffic" (2026-11-04): whether the pair runs comes from the other Mac's answers.
+        pairWatchRebootAndGiveUp()
         print("control checks: \(passed) passed, \(failures.count) failed")
         for failure in failures { print("FAIL " + failure) }
         exit(failures.isEmpty ? 0 : 1)
@@ -780,6 +782,15 @@ import Darwin
         expect(P.mayStart(key: "solo:m", endedKey: "cluster:abc", backoffElapsed: false), "another part: at once")
         expect(!P.mayStart(key: "cluster:abc", endedKey: "cluster:abc", backoffElapsed: false), "the part that ended: after its backoff")
         expect(P.mayStart(key: "cluster:abc", endedKey: "cluster:abc", backoffElapsed: true), "backoff elapsed")
+        // 0.10.9 DevNet f1: the leader's part ended every 38 s while the other Mac's single-Mac provider held its part back.
+        let held = "a single-Mac Darkbloom provider (process 68099) is serving there"
+        expect(P.waitsForOtherMac(key: "cluster:abc", otherMacHeldBack: held, leads: true) == held, "held back there: this Mac's part waits")
+        expect(P.waitsForOtherMac(key: "cluster:abc:local-only@127.0.0.1", otherMacHeldBack: held, leads: true) == held, "local only: waits too")
+        expect(P.waitsForOtherMac(key: "solo:m", otherMacHeldBack: held, leads: true) == nil, "serving alone never waits for the other Mac")
+        expect(P.waitsForOtherMac(key: "cluster:abc", otherMacHeldBack: nil, leads: true) == nil, "nothing held back: it starts")
+        // A reason read while this Mac led stays in memory after control moves to the other Mac: as a member, its part
+        // follows the leader's lease, never that reason (it would never start, and the leader's part would end every 38 s).
+        expect(P.waitsForOtherMac(key: "cluster:abc", otherMacHeldBack: held, leads: false) == nil, "no longer leading: never waits")
         expect(!P.mayStart(key: "solo:m", endedKey: "solo:m", backoffElapsed: false), "a crashing solo server backs off too")
         expect(P.mayStart(key: "cluster:abc", endedKey: nil, backoffElapsed: false), "nothing ended: at once")
     }
@@ -832,5 +843,45 @@ import Darwin
         expect(back == own, "the refusal survives the wire")
         let older = try? JSONDecoder().decode(ClusterControlMember.self, from: Data(#"{"memberID":"mac-1","name":"x","memoryBytes":1,"gpuCores":1}"#.utf8))
         expect(older?.aloneRefusal == nil, "a fact from an older build decodes")
+    }
+
+    /// Both Macs' watches over the real lease exchange: B reboots for 6 minutes (the pair keeps running on both), then B
+    /// is gone for good (A gives its part up after 15 minutes, and takes it back when B answers again).
+    static func pairWatchRebootAndGiveUp() {
+        var bus = pair(aloneA: false, aloneB: false)
+        var watches = [A: ClusterPairWatch(), B: ClusterPairWatch()]
+        func tick(_ t: Double) -> [String: ClusterPairWatch.Verdict] {
+            bus.step(t)
+            var verdicts = [String: ClusterPairWatch.Verdict]()
+            for id in [A, B] where bus.up.contains(id) {
+                verdicts[id] = watches[id]!.tick(now: t, intent: true, otherAnsweredAt: bus.nodes[id]!.otherAnsweredAt,
+                                                 serving: bus.reachable(A, B))
+            }
+            return verdicts
+        }
+        var t = 0.0
+        while t <= 1_800 { let v = tick(t); expect(v[A] == .running && v[B] == .running, "both serve at \(t): \(v)"); t += 5 }
+        bus.up.remove(B)
+        let back = t + 360
+        while t < back { let v = tick(t); expect(v[A] == .running, "A keeps the pair through B's reboot at \(t): \(v)"); t += 5 }
+        bus.up.insert(B)
+        watches[B] = ClusterPairWatch()  // B's service starts again
+        for _ in 0..<12 { let v = tick(t); expect(v[A] == .running && v[B] == .running, "both again at \(t): \(v)"); t += 5 }
+        bus.up.remove(B)
+        let gone = t
+        var gaveUpAt: Double?
+        while t < gone + 1_200 {
+            let v = tick(t)
+            if gaveUpAt == nil, v[A]?.givesUpPart == true { gaveUpAt = t }
+            t += 5
+        }
+        expect(gaveUpAt.map { $0 - gone >= 870 && $0 - gone <= 905 } == true,
+               "A gives its part up about 15 minutes after B's last answer: \(String(describing: gaveUpAt.map { $0 - gone }))")
+        expect(ClusterPairWatch.part(.cluster, verdict: .otherMacSilent(seconds: 900), localOnly: false, singleMacJob: true) == .none,
+               "a given-up part stops")
+        bus.up.insert(B)
+        var resumed = false
+        for _ in 0..<12 { if tick(t)[A] == .running { resumed = true }; t += 5 }
+        expect(resumed, "A takes its part back once B answers again")
     }
 }

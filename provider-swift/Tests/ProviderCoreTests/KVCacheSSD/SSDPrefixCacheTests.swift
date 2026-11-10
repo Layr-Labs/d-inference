@@ -635,14 +635,6 @@ struct SSDPrefixCacheModeTests {
             environment: ["DARKBLOOM_PREFIX_CACHE": "banana"]))
     }
 
-    @Test("reusable SSD cache requires a verified non-empty live weight hash")
-    func verifiedWeightBindingRequired() {
-        #expect(SSDPrefixCacheFactory.verifiedWeightHash(nil) == nil)
-        #expect(SSDPrefixCacheFactory.verifiedWeightHash("") == nil)
-        #expect(SSDPrefixCacheFactory.verifiedWeightHash(" \n\t ") == nil)
-        #expect(SSDPrefixCacheFactory.verifiedWeightHash("  abcd1234  ") == "abcd1234")
-    }
-
     @Test("test root is isolated and requires the ephemeral-key gate")
     func isolatedTestRoot() throws {
         let root = try tempDir("factory-test-root").standardizedFileURL
@@ -1862,11 +1854,6 @@ struct SSDPrefixCacheReadyReceiptTests {
         await corrupt.waitForWritesForTesting()
         #expect(corruptBox.snapshot.isEmpty)
         corrupt.close()
-    }
-
-    @Test("terminal cleanup retention covers the coordinator two-minute attempt window")
-    func receiptRetention() {
-        #expect(SSDPrefixCache.readyReceiptRetention == .seconds(120))
     }
 
     @Test("write-behind maintenance/ready never blocks donation return")

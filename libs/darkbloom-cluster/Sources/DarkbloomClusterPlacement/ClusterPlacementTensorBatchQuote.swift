@@ -108,7 +108,7 @@ public struct ClusterPlacementTensorBatchQuote: Codable, Equatable, Sendable {
         guard lanes == 1,
               policy.modes == nil || policy.modes == [.tensorParallel],
               policy.schedules == nil || policy.schedules == [.serial],
-              policy.forcedMode == nil, !policy.handOffModes else {
+              policy.forcedMode == nil || policy.forcedMode == .tensorParallel, !policy.handOffModes else {
             throw ClusterPlacementError("Singleton tensor placement requires its complete serial tensor quote")
         }
         try request.applyCovering(to: &policy, layout: layout)

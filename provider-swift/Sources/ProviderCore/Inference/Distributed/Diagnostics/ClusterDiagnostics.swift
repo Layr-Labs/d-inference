@@ -61,7 +61,8 @@ public enum ClusterDiagnostics {
                 deviceJournal: journal, checks: [.init(name: "savedConfiguration", outcome: .notRun,
                     detail: "No saved cluster reference; ordinary solo behavior is unchanged.")],
                 localLink: localLink, configuredLinkDevice: nil,
-                observability: ClusterObservabilitySnapshot.read(homeDirectory: saved.paths.homeDirectory))
+                observability: ClusterObservabilitySnapshot.read(installDirectory: saved.paths.installDirectory,
+                                                             install: saved.paths.environment.rawValue))
         }
         checks.append(.init(name: "savedConfiguration", outcome: .passed,
             detail: "Canonical configuration/capability pins and selected policy verified; this is not readiness."))
@@ -101,7 +102,8 @@ public enum ClusterDiagnostics {
                 : "Native ranks are started with the runtime's own bootstrap exchange on the configured link address. The owner-authenticated exchange is not available in this build, so nothing vouches for the peer that answers on that address. Each rank is started with a \(DistributedInstalledPlan.collectiveProgressLimitMilliseconds) ms collective progress limit."))
         return .init(operation: operation, configurationState: .verified, saved: binding, live: live,
             deviceJournal: journal, checks: checks, localLink: localLink, configuredLinkDevice: saved.linkDevice,
-            observability: ClusterObservabilitySnapshot.read(homeDirectory: saved.paths.homeDirectory))
+            observability: ClusterObservabilitySnapshot.read(installDirectory: saved.paths.installDirectory,
+                                                             install: saved.paths.environment.rawValue))
     }
 
     private static func bounded(_ error: Error) -> String { ClusterDiagnosticsReport.boundedDetail(error) }

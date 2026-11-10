@@ -25,11 +25,13 @@ final class DistributedAutomaticBatchPlannerTests {
         return result
     }
 
+    /// `gpuCores` tells other hardware apart: Macs of the same hardware are planned at the same index
+    /// (`ClusterHardwarePrior.sameHardwareIndex`), so a faster index alone is a faster Mac only on other hardware.
     private func profile(free: Int = 200 * 1_073_741_824, decodeIndex: Double = 25_000,
-                         osBuild: String = "CHECK") throws -> ClusterDeviceProfile {
+                         osBuild: String = "CHECK", gpuCores: Int = 40) throws -> ClusterDeviceProfile {
         let physical = 256 * gib
         var p = try ClusterDeviceProfile(chip: "Constructed planner fixture", performanceCores: 8, efficiencyCores: 4,
-            gpuCores: 40, osVersion: "27.0", osBuild: osBuild, physicalMemoryBytes: physical,
+            gpuCores: gpuCores, osVersion: "27.0", osBuild: osBuild, physicalMemoryBytes: physical,
             gpuRecommendedWorkingSetBytes: 192 * gib, gpuMaximumBufferBytes: 128 * gib,
             allocatorLimitBytes: 230 * gib,
             memory: .init(gatePolicy: "fixture", sampledUTC: "2026-10-23T00:00:00Z", judged: true, unjudgedReason: nil,
@@ -120,7 +122,7 @@ final class DistributedAutomaticBatchPlannerTests {
         }
         let json: [String: Any] = ["schema": ClusterServedSpeedFile.schemaName, "updatedAt": Date().timeIntervalSince1970,
             "records": try JSONSerialization.jsonObject(with: JSONEncoder().encode(records))]
-        let file = ClusterServedSpeedFile.defaultFile(homeDirectory: home)
+        let file = ClusterServedSpeedFile.defaultFile(installDirectory: BuildEnvironment.current.installDirectory(home: home))
         try JSONSerialization.data(withJSONObject: json).write(to: file)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
     }
@@ -380,7 +382,7 @@ final class DistributedAutomaticBatchPlannerTests {
             let home = try home()
             record(home, members: kind == "foreign" ? ["a", "other"] : ["a", "b"],
                 now: Date().timeIntervalSince1970 - (kind == "stale" ? ClusterLinkProbeHistory.maximumAgeSeconds + 1 : 0))
-            let file = ClusterLinkProbeHistory.defaultFile(homeDirectory: home)
+            let file = ClusterLinkProbeHistory.defaultFile(installDirectory: BuildEnvironment.current.installDirectory(home: home))
             if kind == "malformed" { try Data("{}".utf8).write(to: file) }
             if kind == "public" { try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path) }
             let result = try decide(home)
@@ -568,7 +570,7 @@ final class DistributedAutomaticBatchPlannerTests {
             #expect(ClusterLinkProbeHistory.record(probe(fixed), members: index % 2 == 0 ? ["a", "b"] : ["b", "a"],
                 homeDirectory: home, now: now - Double(loads.count - index) * 600))
         }
-        let file = ClusterLinkProbeHistory.defaultFile(homeDirectory: home)
+        let file = ClusterLinkProbeHistory.defaultFile(installDirectory: BuildEnvironment.current.installDirectory(home: home))
         let saved = try #require(ClusterLinkProbeHistory.read(file))
         #expect(saved.measurements(members: ["a", "b"], now: now).map(\.probe.allSumSmallMicroseconds) == Array(loads.suffix(8).reversed()))
         let costs = try #require(ClusterLinkProbeHistory.costs(homeDirectory: home, members: ["b", "a"], now: now))
@@ -588,7 +590,7 @@ final class DistributedAutomaticBatchPlannerTests {
     /// Each Mac's own share steps, as its last load timed them alone and the
     /// serving leader kept them (`ClusterShareProbeHistory`, in this home), are
     /// what a replacement balances the tensor-parallel split by: the device
-    /// index alone gives the faster-indexed "a" two thirds; "a" measured 9 ms at
+    /// index alone gives the faster-indexed "a" (other hardware: more GPU cores) two thirds; "a" measured 9 ms at
     /// 2/3 and "b" 4 ms at 1/3 move the plan to 1:1. Another model's probes and
     /// an unrelated member's change nothing.
     @Test func testRecordedShareProbesBalanceTheTensorSplit() throws {
@@ -600,7 +602,7 @@ final class DistributedAutomaticBatchPlannerTests {
         let layout = try ClusterModelLayout.decode(JSONSerialization.data(withJSONObject: object))
         func shares() throws -> [Int] {
             let decided = try DistributedAutomaticBatchPlanner.decide(description: pair, capability: cap, localMemberID: "a",
-                localProfile: profile(decodeIndex: 50_000), peerProfile: profile(), layout: layout, scope: scope, homeDirectory: home)
+                localProfile: profile(decodeIndex: 50_000, gpuCores: 80), peerProfile: profile(), layout: layout, scope: scope, homeDirectory: home)
             #expect(decided.result.chosen?.mode == .tensorParallel && decided.setup != nil)
             return decided.result.chosen?.tensorShares ?? [1, 1]
         }
@@ -623,12 +625,12 @@ final class DistributedAutomaticBatchPlannerTests {
         let probe = ClusterWorkerLinkProbe(transport: "jaccl", keyed: true, pointToPointSmallBytes: 64, pointToPointSmallMicroseconds: 167,
             pointToPointLargeBytes: 4_194_304, pointToPointLargeMicroseconds: 2_622, allSumSmallBytes: 20_480,
             allSumSmallMicroseconds: 38, allSumLargeBytes: 10_485_760, allSumLargeMicroseconds: 1_296)
-        let directory = home.appendingPathComponent(".darkbloom/cluster", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let file = ClusterLinkProbeHistory.defaultFile(installDirectory: BuildEnvironment.current.installDirectory(home: home))
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
         let measuredAt = now - 3_600
         let old: [String: Any] = ["schema": "darkbloom_cluster_link_probes_v1", "pairs": ["a|b": ["measuredAt": measuredAt,
             "probe": try JSONSerialization.jsonObject(with: JSONEncoder().encode(probe))]]]
-        let file = ClusterLinkProbeHistory.defaultFile(homeDirectory: home)
         try JSONSerialization.data(withJSONObject: old).write(to: file)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
         let utc = ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: measuredAt))
@@ -769,23 +771,69 @@ final class DistributedAutomaticBatchPlannerTests {
     }
 
     /// Which plans ask for Qwen's speculative assistant (`discoveryMode`): under the default `auto`, a cluster that
-    /// serves locally only, as before, and never one served through the coordinator, whose setup may not carry it;
-    /// an explicit `on` in either case; never `off`.
-    @Test func aClusterServedThroughTheCoordinatorAsksForTheAssistantOnlyUnderAnExplicitOn() throws {
+    /// serves locally only, as before, and one served through the coordinator only when this build declares the
+    /// assistant public for the artifact (`declared`); an explicit `on` in either case; never `off`.
+    @Test func aClusterServedThroughTheCoordinatorAsksForTheAssistantUnderAutoOnlyWhenDeclared() throws {
         let artifact = try inlineAssistantArtifact()
-        func asks(_ configured: MTPMode, coordinator: Bool) throws -> Bool {
+        func asks(_ configured: MTPMode, coordinator: Bool, declared: Bool = false) throws -> Bool {
             try ClusterPlacementTensorAssistantSelection.automaticCandidate(
-                mode: ClusterPlacementTensorAssistantSelection.discoveryMode(configured, coordinator: coordinator),
+                mode: ClusterPlacementTensorAssistantSelection.discoveryMode(configured, coordinator: coordinator, declared: declared),
                 runtimeModelID: ClusterQwenTensorAssistantPolicy.runtimeModelID, modelDirectory: artifact.directory,
                 publicModelID: artifact.modelID, artifactSHA256: artifact.aggregate,
                 manifestSHA256: ClusterConfigurationCodec.sha256(artifact.manifest), environment: [:])
         }
         #expect(try asks(.auto, coordinator: false))
         #expect(try !asks(.auto, coordinator: true))
+        #expect(try asks(.auto, coordinator: true, declared: true))
         #expect(try asks(.on, coordinator: false) && asks(.on, coordinator: true))
-        #expect(try !asks(.off, coordinator: false) && !asks(.off, coordinator: true))
+        #expect(try !asks(.off, coordinator: false) && !asks(.off, coordinator: true) && !asks(.off, coordinator: true, declared: true))
         #expect(ClusterPlacementTensorAssistantSelection.discoveryMode(.auto, coordinator: true) == .off)
+        #expect(ClusterPlacementTensorAssistantSelection.discoveryMode(.auto, coordinator: true, declared: true) == .auto)
         #expect(ClusterPlacementTensorAssistantSelection.discoveryMode(.auto, coordinator: false) == .auto)
+    }
+
+    /// A coordinator-paired setup plans the declared public assistant (`ClusterPublicModels.tensorAssistant`): its
+    /// depth with singleton verification (no cohort argument), and the native helper's quote must return exactly the
+    /// declared policy, inventory included; a local cluster's automatic cohort quote is refused there.
+    @Test func aCoordinatorPlanQuotesExactlyTheDeclaredSingletonAssistant() throws {
+        let (_, cap, _, _) = try fixture()
+        let declared = try ClusterQwenTensorAssistantPolicy(depth: 3, inventorySHA256: hash("8"))
+        let arguments = try ClusterPlacementTensorAssistantSelection.discoveryArguments(modelDirectory: "/fixture/model",
+            promptTokens: 32768, outputTokens: 32768, chunkTokens: 128, declared: declared)
+        #expect(arguments.suffix(2) == ["--mtp-depth", "3"])
+        #expect(!arguments.contains(ClusterQwenTensorAssistantPolicy.verificationArgument))
+        #expect(!arguments.contains(ClusterQwenTensorAssistantPolicy.inventoryArgument))
+        // The native helper's quote of the memory plan's whole request (as `automaticQuotePinsNativeInventory...`).
+        func quote(_ verification: ClusterQwenTensorAssistantPolicy.Verification = .singleton, depth: Int = 3,
+                   assistant: Bool = true) throws -> ClusterPlacementTensorBatchQuote {
+            let original = try assistantQuote(1, depth: depth, verification: verification)
+            let request = try ClusterPlacementRequestScope(runtimeModelID: cap.runtimeModelID,
+                artifactSHA256: cap.artifactSHA256, configurationSHA256: cap.configurationSHA256,
+                promptTokens: cap.profile.maximumPromptTokens, outputTokens: cap.profile.maximumOutputTokens,
+                maximumPromptTokens: cap.profile.maximumPromptTokens, maximumOutputTokens: cap.profile.maximumOutputTokens,
+                maximumContextTokens: cap.profile.maximumContextTokens, requestChargeEveryRankBytes: gib)
+            return try .init(request: request, lanes: 1, chunkTokens: original.chunkTokens,
+                perLaneStateBytes: original.perLaneStateBytes, sharedBytesExcludingCollectives: original.sharedBytesExcludingCollectives,
+                allowance: original.allowance, assistant: assistant ? original.assistant : nil)
+        }
+        let singleton = try quote()
+        try ClusterPlacementTensorAssistantSelection.requireDiscoveredQuote(singleton, capability: cap, chunkTokens: 128,
+                                                                           declared: declared)
+        for other in [try quote(.admittedCohort), try quote(depth: 2), try quote(assistant: false)] {
+            #expect(throws: (any Error).self) {
+                try ClusterPlacementTensorAssistantSelection.requireDiscoveredQuote(other, capability: cap, chunkTokens: 128,
+                                                                                   declared: declared)
+            }
+        }
+        let otherInventory = try ClusterQwenTensorAssistantPolicy(depth: 3, inventorySHA256: hash("9"))
+        #expect(throws: (any Error).self) {
+            try ClusterPlacementTensorAssistantSelection.requireDiscoveredQuote(singleton, capability: cap, chunkTokens: 128,
+                                                                               declared: otherInventory)
+        }
+        // A local cluster keeps its automatic cohort policy.
+        #expect(throws: (any Error).self) {
+            try ClusterPlacementTensorAssistantSelection.requireDiscoveredQuote(singleton, capability: cap, chunkTokens: 128)
+        }
     }
 
     @Test func automaticQuotePinsNativeInventoryAndCompleteWidthOneScope() throws {
@@ -934,9 +982,9 @@ final class DistributedAutomaticBatchPlannerTests {
 
     /// The onboarding's public-traffic line (`ClusterSetupPlanning.decide`, `publicTraffic`) for Qwen3.8 27B, whose
     /// owner declared tensor parallel public (`ClusterPublicModels`): a plan without the speculative assistant is
-    /// qualified; a plan that decodes with it is not said to be, since a setup saved for coordinator pairing carries
-    /// no assistant (`ClusterConfiguration.validate`).
-    @Test func onlyAPlanWithoutTheAssistantSaysItIsQualifiedForPublicTraffic() throws {
+    /// qualified, and so is one that decodes with it while the build declares the assistant; without a declaration
+    /// it is not, since a setup saved for coordinator pairing then carries none (`ClusterConfiguration.validate`).
+    @Test func aPlanWithTheAssistantIsQualifiedForPublicTrafficOnlyWhereDeclared() throws {
         let home = try home(); record(home)
         let artifact = try #require(ClusterPublicModels.declared.first {
             $0.runtimeModelID == ClusterQwenTensorAssistantPolicy.runtimeModelID }).artifactSHA256
@@ -961,7 +1009,16 @@ final class DistributedAutomaticBatchPlannerTests {
         let target = try plan(try assistantQuote(1, artifact: artifact, assistant: false))
         #expect(target.setup.selectedGenerationMode == .tensorParallel && target.setup.tensorAssistant == nil)
         #expect(target.line?.hasPrefix("qualified for public traffic in tensor parallel mode") == true, "\(target.line ?? "")")
-        let assisted = try plan(try assistantQuote(1, verification: .admittedCohort, artifact: artifact))
+        // This build declares the 27B's assistant: a plan that decodes with it is qualified too.
+        let declared = try plan(try assistantQuote(1, verification: .admittedCohort, artifact: artifact))
+        #expect(declared.setup.tensorAssistant != nil)
+        #expect(declared.line == target.line, "\(declared.line ?? "")")
+        // A build that declares none says the assisted plan is not offered.
+        var undeclared = ClusterPublicModels.declared
+        undeclared.indices.forEach { undeclared[$0].tensorAssistant = nil }
+        let assisted = try ClusterPublicModels.$declarationOverride.withValue(undeclared) {
+            try plan(try assistantQuote(1, verification: .admittedCohort, artifact: artifact))
+        }
         #expect(assisted.setup.tensorAssistant != nil)
         #expect(assisted.line?.hasPrefix("qualified for public traffic") == false, "\(assisted.line ?? "")")
         #expect(assisted.line?.hasPrefix("not offered for public traffic") == true, "\(assisted.line ?? "")")
@@ -971,6 +1028,42 @@ final class DistributedAutomaticBatchPlannerTests {
         #expect(publicSection(target.explanation)?.hasPrefix("  Qualified for public traffic in tensor parallel mode") == true)
         #expect(publicSection(assisted.explanation)?.hasPrefix("  Not offered for public traffic: it decodes with Qwen's speculative assistant") == true,
                 "\(publicSection(assisted.explanation) ?? "")")
+    }
+
+    /// Through Darkbloom a refused assistant quote (a helper error or timeout, or an inventory other than the declared
+    /// one) leaves the Qwen pair its plain tensor parallel, which it served before the assistant was declared, and the
+    /// plan says why in one line. On a local cluster the refusal still stands.
+    @Test func throughDarkbloomARefusedAssistantQuoteFallsBackToPlainTensorParallel() throws {
+        let home = try home(); record(home)
+        let artifact = try #require(ClusterPublicModels.declared.first {
+            $0.runtimeModelID == ClusterQwenTensorAssistantPolicy.runtimeModelID }).artifactSHA256
+        let (pair, cap, layout, _) = try fixture(artifact: artifact)
+        let data = try ClusterRuntimeCapabilityCodec.encode(cap), digest = ClusterConfigurationCodec.sha256(data)
+        let model = ClusterSetupLocalModel(folder: "Qwen3.8-27B-4bit-mtp-fixture", modelID: "EigenLabs/Qwen3.8-27B-4bit-mtp",
+            version: "fixture", artifactSHA256: artifact, totalBytes: 16_320_415_757)
+        let link = try #require(ClusterLinkProbeHistory.costs(homeDirectory: home, members: ["a", "b"]))
+        let local = try profile(), peer = try profile()
+        let refusal = ClusterSetupFailure("The embedded assistant differs from this build's public declaration")
+        let reading = ClusterSetupPlanning.ModelReading(model: model, layout: .success(layout), capability: .success((cap, data, digest)),
+            tokenizerFiles: pair.tokenizerFiles, tensorAssistantQuote: .failure(refusal),
+            targetFallbackQuote: .success(try assistantQuote(1, artifact: artifact, assistant: false)))
+        func decide(coordinator: Bool) throws -> ClusterSetupPlanning.Decision {
+            try #require(onLargeStack {
+                ClusterSetupPlanning.decide(readings: [reading], description: pair, localMemberID: "a", localProfile: local,
+                    peerProfile: peer, peerModels: [model], measurements: [], link: link, coordinator: coordinator)
+            }.first)
+        }
+        let darkbloom = try decide(coordinator: true)
+        let plan = try #require(darkbloom.option.plan, "not offered: \(darkbloom.option.blocker ?? "")")
+        let bytes = try #require(darkbloom.setup?.configurations["a"])
+        let setup = try ClusterConfigurationCodec.decode(bytes, capability: cap, capabilitySHA256: digest)
+        #expect(setup.selectedGenerationMode == .tensorParallel && setup.tensorAssistant == nil)
+        #expect(plan.speculationNote == ClusterSetupPlanning.assistantRefusedLine(refusal))
+        #expect(plan.speculationNote?.hasPrefix("Qwen's speculative assistant could not be planned (The embedded assistant differs") == true)
+        #expect(plan.explanation.first == plan.speculationNote)
+        #expect(plan.publicTraffic?.hasPrefix("qualified for public traffic in tensor parallel mode") == true, "\(plan.publicTraffic ?? "")")
+        let localCluster = try decide(coordinator: false)
+        #expect(localCluster.option.plan == nil && localCluster.option.blocker != nil)
     }
 
     /// The guided setup's plan for Qwen3.8 27B on two unequal Macs, whose layout offers unequal tensor-parallel shares:
@@ -990,7 +1083,7 @@ final class DistributedAutomaticBatchPlannerTests {
         let model = ClusterSetupLocalModel(folder: "Qwen3.8-27B-4bit-mtp-fixture", modelID: "EigenLabs/Qwen3.8-27B-4bit-mtp",
             version: "fixture", artifactSHA256: artifact, totalBytes: 16_320_415_757)
         let link = try #require(ClusterLinkProbeHistory.costs(homeDirectory: home, members: ["a", "b"]))
-        let local = try profile(decodeIndex: 50_000), peer = try profile()
+        let local = try profile(decodeIndex: 50_000, gpuCores: 80), peer = try profile()
         let quote = try assistantQuote(1, artifact: artifact, assistant: false)
         func plan(coordinator: Bool) throws -> ClusterConfiguration {
             let reading = ClusterSetupPlanning.ModelReading(model: model, layout: .success(layout),
@@ -1127,7 +1220,9 @@ final class DistributedAutomaticBatchPlannerTests {
 /// build.
 private func onLargeStack<T: Sendable>(_ body: @escaping @Sendable () -> T) -> T {
     let result = LargeStackResult<T>(), done = DispatchSemaphore(value: 0)
-    let thread = Thread { result.value = body(); done.signal() }
+    // A thread inherits no task-local value: the test's public-model declaration is bound again there.
+    let declaration = ClusterPublicModels.declarationOverride
+    let thread = Thread { result.value = ClusterPublicModels.$declarationOverride.withValue(declaration) { body() }; done.signal() }
     thread.stackSize = 16 << 20
     thread.start()
     done.wait()

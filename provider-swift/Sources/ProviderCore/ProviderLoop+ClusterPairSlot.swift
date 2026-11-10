@@ -64,13 +64,24 @@ final class ClusterPairSlotHandle: @unchecked Sendable {
     let tokenizer: TokenizerHandle
     let sizing: SlotSizingSnapshot
     let owner: ClusterPairSlotOwner
+    /// The profile's request lifetime, the unit of a queued local request's
+    /// ceiling (`DistributedRequestQueue.Limits.waitCeiling`).
+    let requestTimeout: Duration
+    /// The prompt, output and context the pair's mode serves
+    /// (`DistributedResidentExecutionProfile.served`): what its slot reports to
+    /// the coordinator, and what the leader lists on its local API.
+    let served: (promptTokens: Int, outputTokens: Int, contextTokens: Int)
     let publishedAt = ContinuousClock.now
 
     init(modelID: String, membershipEpoch: UUID, tokenizer: TokenizerHandle, sizing: SlotSizingSnapshot,
-         owner: ClusterPairSlotOwner) {
+         owner: ClusterPairSlotOwner, requestTimeout: Duration,
+         served: (promptTokens: Int, outputTokens: Int, contextTokens: Int)) {
         self.modelID = modelID; self.membershipEpoch = membershipEpoch; self.tokenizer = tokenizer
-        self.sizing = sizing; self.owner = owner
+        self.sizing = sizing; self.owner = owner; self.requestTimeout = requestTimeout; self.served = served
     }
+
+    /// The pair's batch lanes, which its engine admits at once.
+    var lanes: Int { max(1, owner.concurrentRequests) }
 }
 
 /// The execution owner as the slot's engine sees it, with one addition: the
@@ -193,13 +204,21 @@ extension ProviderLoop {
                 modelDirectory: specification.modelDirectory, pairTelemetry: specification.pairTelemetry)
         } catch { throw ClusterPairSlotError.ownerUnavailable }
         guard let bridge = entry.engineV2Bridge else { throw ClusterPairSlotError.ownerUnavailable }
+        // The pair's MTP posture (`darkbloom status`, the slot posture telemetry): ranks whose readiness names the
+        // resident assistant they loaded (`ClusterQwenTensorAssistantReady`) decode with it; any other pair keeps the
+        // disabled posture.
+        if ready.tensorAssistant != nil {
+            await bridge.configureMTPStatus(.init(configured: true, active: true, reason: nil, source: nil, revision: nil,
+                                                  artifactBytes: 0, assistantBytes: 0))
+        }
         let profile = specification.profile
         let sizing = SlotSizingSnapshot(weightsBytes: specification.artifactBytes, fp16KVBytesPerToken: 0,
             maxContextLength: profile.maxContextTokens,
             defaultMaxTokens: min(profile.maxOutputTokens, Self.schedulerDefaultMaxTokens))
         let handle = ClusterPairSlotHandle(modelID: specification.publicModelID,
             membershipEpoch: specification.expectedIdentity.membershipEpoch,
-            tokenizer: specification.tokenizer, sizing: sizing, owner: owner)
+            tokenizer: specification.tokenizer, sizing: sizing, owner: owner, requestTimeout: profile.requestTimeout,
+            served: profile.served)
         // No suspension since the checks above: publication is atomic on
         // this actor with them.
         try requireClusterPairPublication(specification.publicModelID)
@@ -230,11 +249,17 @@ extension ProviderLoop {
                 return id
             }
         }
+        // Admission opens, the coordinator's and the local API's alike: a
+        // local request made during the canary has waited for this.
+        clusterPairAdmissionOpenSlotID = handle.id
         refreshClusterMemberAdmission()
+        wakeClusterPairLocalWaiters()
         syncWarmModelState()
         startClusterPairCapacityRefresh()
         await refreshClusterPairCapacity()
         logger.info("Cluster pair slot published (\(handle.id.uuidString.prefix(8)))")
+        // Both ranks loaded and, with the canary on, the pair answered its first request: it serves now.
+        Self.reportPair(ClusterOnboardingPairReport.servingLine(warmupSeconds: clusterPairWarmup.flatMap { $0.succeeded ? $0.seconds : nil }))
         if let client = coordinatorClient { await client.sendEventHeartbeat() }
         return id
     }
@@ -271,7 +296,13 @@ extension ProviderLoop {
             return false
         }
         modelsUnloading.insert(modelID)
+        // Local admission closes with the slot: its waiters hear 503 now; its
+        // local requests in flight drain below with the Darkbloom ones.
+        clusterPairAdmissionOpenSlotID = nil
+        wakeClusterPairLocalWaiters()
         logger.info("Cluster pair slot retiring (\(handle.id.uuidString.prefix(8))): \(reason)")
+        // Fixed words only: a warm-up failure's detail is the engine's own text.
+        Self.reportPair(ClusterOnboardingPairReport.stoppedLine(reason.hasPrefix("warmup canary failed") ? "its first request failed" : reason))
         if reason == Self.readinessLostReason {
             // S24: serving ended without being asked to. A planned stop
             // retires the slot first with its own reason and records nothing.
@@ -337,6 +368,9 @@ extension ProviderLoop {
         state.inferenceActive = summary.activeRequests > 0
         scheduleEventHeartbeatIfMaterial()
         writeDaemonState()
+        // Each Darkbloom request's end comes through here (`updateAggregateCapacity`),
+        // as does the periodic refresh: a lane may be free for a local waiter.
+        wakeClusterPairLocalWaiters()
     }
 
     /// A member runs no solo capacity monitor; while a pair slot is

@@ -21,6 +21,7 @@ func checkGemmaTensorParallel(golden: URL, _ checks: PlacementChecks) throws {
         tensorParallelAllocationBound: { $0 + 16_384 })
     try checkGemmaRequestAllowance(priced, checks)
     try checkGemmaFastestPlan(priced, checks)
+    try checkGemmaPairModePrediction(golden: golden, checks)
 }
 
 /// Every stored tensor of the QAT 4-bit artifact, as its retained headers name it.
@@ -324,4 +325,57 @@ private func gemmaTensorParallelFirst(_ layout: ClusterModelLayout) throws -> Cl
     var family = tp["family"] as? [String: Any] ?? [:]
     family["choice"] = nil; tp["family"] = family; object["tensorParallel"] = tp
     return try ClusterModelLayout.decode(JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]))
+}
+
+/// Two M5 Ultras 256 GB (DevNet, 2026-11-05) on their measured keyed link, Gemma 4 26B never measured whole on them, its
+/// tensor parallel served at 105 tok/s and probed at about 7 ms a half step: the question recommended the pipeline,
+/// "about 183 against 107 tokens/s, predicted", and 59.9 against 105.1 were served. The pipeline's step was the device
+/// index's whole-model estimate, the weights' read time alone (5.5 ms), below the half step measured on the same Mac.
+/// The whole step is now at least a measured share's step plus the rest of the weights: tensor parallel is predicted
+/// faster, from the Macs' own index and measurements. With nothing of Gemma measured, the estimate stands as before.
+private func checkGemmaPairModePrediction(golden: URL, _ checks: PlacementChecks) throws {
+    let layout = try ClusterModelLayout.decode(Data(contentsOf: golden.appendingPathComponent("layouts/gemma-4-26b-qat-4bit.json")))
+    // The pair's own probe (two M5 Ultras, keyed JACCL): sealed all-sum 29 us at 16 KB, 3,919 us at 32 MiB.
+    let link = ClusterLinkCosts(probe: ClusterWorkerLinkProbe(transport: "jaccl", keyed: true, pointToPointSmallBytes: 64,
+        pointToPointSmallMicroseconds: 180, pointToPointLargeBytes: 4 << 20, pointToPointLargeMicroseconds: 2_502,
+        allSumSmallBytes: 16_384, allSumSmallMicroseconds: 29, allSumLargeBytes: 32 << 20, allSumLargeMicroseconds: 3_919),
+        measuredUTC: "2026-10-31T00:00:00Z")!
+    var profile = try SyntheticMac.idle(256).profile(chip: "Apple M5 Ultra")
+    profile.speedIndex = .init(chip: profile.chip, osBuild: profile.osBuild, benchmark: "qmm_h4096_b4_g64_x16_v1",
+        prefillIndex: 2_337_768, decodeIndex: 46_409)
+    let profiles = [("mac-a", profile), ("mac-b", profile)]
+    // As every plan of the pair reads them (`ClusterPlacementFlow.decide`): estimated, then the index's absolute rates.
+    let speeds = ClusterSpeedEstimator.estimate(devices: profiles.map { .init(chip: $0.1.chip, osBuild: $0.1.osBuild) },
+        artifactSHA256: layout.artifactSHA256, measurements: [], indices: profiles.compactMap { $0.1.speedIndex })
+    let fresh = ClusterHardwarePrior.absolute(zip(profiles, speeds).map { ClusterPlacementDevice(label: $0.0.0, profile: $0.0.1, speed: $0.1) },
+        layout: layout, link: link)
+    var policy = ClusterPlacementPolicy(); policy.promptTokens = 128; policy.outputTokens = 128
+    func decode(_ devices: [ClusterPlacementDevice]) throws -> (pipeline: Double, tensor: Double) {
+        let pipeline = try ClusterPlacementPlanner.evaluate(devices: devices, cuts: [15], mode: .pipeline, prefillSchedule: .serial,
+            layout: layout, policy: policy, link: link)
+        let tensor = try ClusterPlacementPlanner.evaluate(devices: devices, cuts: [], mode: .tensorParallel, prefillSchedule: .serial,
+            layout: layout, policy: policy, link: link)
+        return (pipeline.rested.decodeTokensPerSecond, tensor.rested.decodeTokensPerSecond)
+    }
+    func line(_ d: (pipeline: Double, tensor: Double)) -> String { String(format: "pipeline %.0f, tensor parallel %.0f tok/s", d.pipeline, d.tensor) }
+    checks.require("gemma 2x M5 Ultra: the index alone is an estimate of the whole model, and says so",
+        fresh.allSatisfy { $0.speed.source == .transferredByDeviceIndex && $0.speed.wholeModelEstimated == true })
+    let unmeasured = try decode(fresh)
+    checks.require("gemma 2x M5 Ultra, nothing of Gemma measured: the index's estimate stands (\(line(unmeasured)))",
+        unmeasured.pipeline > 160 && unmeasured.pipeline < 175)
+    let probed = try decode(withShareProbes(fresh, layout: layout, halfStepMicroseconds: 7_000))
+    let served = try afterServedTensorParallel(withShareProbes(fresh, layout: layout, halfStepMicroseconds: 7_000), layout: layout, link: link,
+        decode: 105, prompt: 128, outputs: 128)
+    let afterServing = try decode(served)
+    for (name, d) in [("share probes at 7 ms a half step", probed), ("served in tensor parallel at 105 tok/s", afterServing)] {
+        checks.require("gemma 2x M5 Ultra, \(name): tensor parallel is predicted faster than the pipeline (\(line(d))); 105 and 60 were served",
+            d.tensor > d.pipeline && d.pipeline < 105)
+    }
+    checks.require("gemma 2x M5 Ultra, served: the served record's whole-model rate is marked an estimate",
+        served.allSatisfy { $0.speed.source == .measured && $0.speed.wholeModelEstimated == true })
+    // A Mac's own whole-model measurement is never overridden: 90 tok/s measured, the pipeline predicts from it.
+    let measuredWhole = fresh.map { ClusterPlacementDevice(label: $0.label, profile: $0.profile, speed: measured(prefill: 7_000, decode: 90)) }
+    let wholeKept = try decode(withShareProbes(measuredWhole, layout: layout, halfStepMicroseconds: 7_000))
+    checks.require("gemma 2x M5 Ultra, whole model measured at 90 tok/s: the pipeline predicts from that measurement (\(line(wholeKept)))",
+        wholeKept.pipeline > 85 && wholeKept.pipeline < 90)
 }

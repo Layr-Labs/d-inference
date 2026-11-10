@@ -57,7 +57,9 @@ public enum ClusterWorkerOwnerService {
 
     /// `lanes`: requests the worker serves at once (the plan's batch lanes,
     /// which the worker's own load agreement binds); one by default.
+    /// `machineLock`: the Mac's device lock every build shares, held with this owner's lease for its session.
     public static func serveKeyed(input: Int32, output: Int32, clusterID: String, leaseDirectory: URL,
+                             machineLock: ClusterMachineDeviceLock? = nil,
                              bootstrapProfile: ClusterOwnerBootstrapProfile?,
                              authorizeNativeStart: (@Sendable (ClusterNativeAuthorizationStart) throws -> Void)? = nil,
                              lanes: Int = 1,
@@ -101,7 +103,7 @@ public enum ClusterWorkerOwnerService {
                   ownerBinding.executionPlanSHA256 == nativeStart.common.planSHA256.map({ String(format: "%02x", $0) }).joined(),
                   ownerBinding.identity.artifactSHA256 == nativeStart.common.artifactSHA256.map({ String(format: "%02x", $0) }).joined() else { throw OwnerWire.invalid("Configured native plan differs") }
         }
-        let lease = try ClusterDeviceLease(directoryURL: leaseDirectory)
+        let lease = try ClusterDeviceLease(directoryURL: leaseDirectory, machineLock: machineLock)
         let localNow = DispatchTime.now().uptimeNanoseconds
         var remaining = duration
         if let end = open.nativeLocalDeadline {
@@ -469,8 +471,11 @@ extension ClusterWorkerOwnerService {
     /// public end-to-end track added for the same purpose).
     static func workerExitEcho(rank: Int, termination: ClusterWorkerProcessTermination, diagnosticTail: Data) -> String? {
         if case .exited(0) = termination { return nil }
-        return workerDiagnosticEcho(header: "darkbloom-worker-exit-v1 rank=\(rank) termination=\(termination)", diagnosticTail: diagnosticTail)
+        return workerDiagnosticEcho(header: "darkbloom-\(workerExitMarker)\(rank) termination=\(termination)", diagnosticTail: diagnosticTail)
     }
+    /// The exit line's marker after its `darkbloom-` prefix, which an incident's redaction can replace (a Mac whose
+    /// user is named so reads `<user>-worker-exit-v1`): how a reader finds which rank's own worker ended abnormally.
+    public static let workerExitMarker = "worker-exit-v1 rank="
     static func workerFailureEcho(rank: Int, label: String, diagnosticTail: Data) -> String {
         workerDiagnosticEcho(header: "darkbloom-worker-fail-v1 rank=\(rank) \(label)", diagnosticTail: diagnosticTail)
     }

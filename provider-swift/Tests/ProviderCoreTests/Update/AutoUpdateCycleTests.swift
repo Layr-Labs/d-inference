@@ -136,7 +136,7 @@ struct AutoUpdateCycleTests {
             Issue.record("expected checkFailed, got \(outcome)")
             return
         }
-        #expect(reason.contains("unsupported release platform linux-x86_64"))
+        #expect(reason.contains("latest release is for another platform (linux-x86_64)"), "\(reason)")
         #expect(await loop.updatePhase == .idle)
         #expect(await loop.updateSession == nil)
         #expect(try fixture.liveBinaryContents() == "1.0.0-darkbloom")

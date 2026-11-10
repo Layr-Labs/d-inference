@@ -2,7 +2,7 @@ import Foundation
 import DarkbloomClusterProtocol
 
 /// Where the setup wizard keeps what only it knows, in an owner-only
-/// directory of its own: `~/.darkbloom/cluster-setup/`.
+/// directory of its own: `~/.darkbloom/cluster-setup/` (the install's own, `ClusterUserPaths.setupDirectory`).
 public struct ClusterSetupPaths: Sendable, Equatable {
     public let directory: URL
     /// The wizard's progress: the pair it was given, codes confirmed, setups sent, checks passed.
@@ -12,7 +12,7 @@ public struct ClusterSetupPaths: Sendable, Equatable {
     public var inboxCapability: URL { directory.appendingPathComponent("inbox-capability.json") }
 
     public init(paths: ClusterUserPaths) {
-        directory = paths.homeDirectory.appendingPathComponent(".darkbloom/cluster-setup", isDirectory: true)
+        directory = paths.setupDirectory
     }
 }
 
@@ -93,6 +93,37 @@ public struct ClusterSetupRecord: Codable, Sendable, Equatable {
     /// Why the pair serves on the leader's local API although its coordinator offers a cluster approval (one line,
     /// `ClusterApprovalSync`); nil when it is offered for pairing or the coordinator offers none.
     public var approvalNote: String? = nil
+    /// How far the leading Mac's start is (`ClusterOnboardingStartProgressMark`), published in its status for the Mac
+    /// that joined; nil when no start set it.
+    public var startProgress: ClusterOnboardingStartProgressMark? = nil
+    /// The leading Mac's start that serves through Darkbloom and has not yet asked the coordinator whether to offer the
+    /// pair (its process id; only the screen's start sets it, `OnboardingLive.markRegistrationPending`; `localRegister`,
+    /// a failed test and a stop clear it): the status says the start is not over while that process runs, so the Mac
+    /// that joined never shows an early ✓. A local-only start marks itself too, until its test is answered (its outcome
+    /// clears it): the status then says the leading Mac is testing it, never that it checks with Darkbloom.
+    public var registrationPendingPID: Int32? = nil
+    /// When the leading Mac's start last stopped at the single-Mac block (`ClusterOnboardingSoloServing`; its ✗ and offer
+    /// were on screen) on a pair that isn't started: the status of both Macs says the block, not just "Stopped", while
+    /// single-Mac serving still runs (0.10.9 DevNet build C, R8-1). A start, a stop and the consented stop clear it.
+    public var soloBlockedAt: Double? = nil
+    /// When the process `registrationPendingPID` names started (microseconds since 1970): the pid counts only while
+    /// the process that has it started then, so a pid the system gave to another process never does.
+    public var registrationPendingStarted: UInt64? = nil
+    /// What the leading Mac's setup screen waits on now (`ClusterOnboardingLeaderStepMark`), published in its status for
+    /// the Mac that joined; nil when nothing set it.
+    public var onboardingStep: ClusterOnboardingLeaderStepMark? = nil
+    /// The start's outcome when its test request failed (the failure's first line, without its period): the leading
+    /// Mac's status says it, so the Mac that joined ends with the same ✗. The next start or serve, a passing test and a
+    /// stop clear it.
+    public var startTestFailure: String? = nil
+    /// The start's outcome when its test request passed: the time its screen showed ("in 0.61 s"). The leading Mac's
+    /// status says it under the serving line, so the Mac that joined ends with the same ✓ and time, without a test of its
+    /// own. The next start or serve and a stop clear it.
+    public var startTestPassed: String? = nil
+    /// The leading Mac's latest test that was not a start's (the serving model's test, its Retry, the scope switch's, a
+    /// re-test), when it failed: its first line without the period. The status says it under the not-serving line with
+    /// `ClusterOnboardingReady.lastTestFailedNote`. A pass, the next start or serve, a scope switch and a stop clear it.
+    public var lastTestFailure: String? = nil
     /// The approval set aside while the pair serves locally (`ApprovalSetAside`); nil otherwise.
     public var approvalSetAside: ApprovalSetAside? = nil
 
@@ -163,19 +194,29 @@ public struct ClusterOnboardingLeadership: Codable, Sendable, Equatable {
     public var modelName: String?
     /// How the chosen model is served, in one line from the adopted plan ("Serving … across both Macs: pipeline, …").
     public var deployment: String?
+    /// Why the adopted plan serves without the model's speculative assistant, in one line from that plan
+    /// (`ClusterSetupPlanSummary.speculationNote`); nil when it has the assistant or none was offered.
+    public var speculationNote: String?
     /// How the cluster serves (`ClusterServingScope`), kept until the person changes it: true after
     /// `darkbloom cluster local`, with the local API's address in `localBind` (nil: every interface). Nil or false:
     /// through the coordinator, as before. A member records the leader's choice from its start command.
     public var localOnly: Bool?
     public var localBind: String?
+    /// True for Both, me first (`ClusterServingScope.publicServingWithLocalAPI`): through the coordinator, with the
+    /// pair's local API on `localBind`. Nil: an older build's record, or no local API.
+    public var localAPI: Bool?
 
     public init(role: String, leaderPin: String, peerPin: String, peerName: String, since: String) {
         self.role = role; self.leaderPin = leaderPin; self.peerPin = peerPin; self.peerName = peerName; self.since = since
     }
 
     public var scope: ClusterServingScope {
-        get { ClusterServingScope(localOnly: localOnly, bind: localBind) }
-        set { localOnly = newValue.isLocalOnly ? true : nil; localBind = newValue.bind }
+        get { ClusterServingScope(localOnly: localOnly, localAPI: localAPI, bind: localBind) }
+        set {
+            localOnly = newValue.isLocalOnly ? true : nil
+            localAPI = newValue.addsLocalAPI ? true : nil
+            localBind = newValue.localAPIBind
+        }
     }
 }
 

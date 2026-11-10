@@ -1,11 +1,12 @@
 # Install, update, and uninstall the provider
 
-> Last updated: 2026-11-02
+> Last updated: 2026-11-08
 
 How to put the `darkbloom` CLI on an Apple Silicon Mac with `scripts/install.sh`,
 what the script verifies before it touches an existing install, how the binary
-is updated afterwards, and how to remove everything. For operators; at the end
-`darkbloom doctor` runs and reports the machine's state.
+is updated afterwards, and how to remove everything. For anyone installing
+Darkbloom; after it, `darkbloom --opencode` sets up OpenCode on this
+Mac's models ([quickstart](./quickstart.md)).
 
 ## Prerequisites
 
@@ -27,18 +28,8 @@ is updated afterwards, and how to remove everything. For operators; at the end
 
 ### 1. Run the installer
 
-[backend]
-enabled_models = []
-idle_timeout_mins = 60   # free when idle; 0 = always ready (see `darkbloom idle`)
-max_model_slots = 3
-
-[gemma_optimizations]
-prefill_layer18 = true
-weighted_r1 = true
-
-[coordinator]
-url = "wss://api.darkbloom.dev/ws/provider"
-private_only = false
+```bash
+curl -fsSL https://api.darkbloom.dev/install.sh | bash
 ```
 
 The coordinator serves `scripts/install.sh` at `/install.sh` with its own base
@@ -142,21 +133,30 @@ The script performs these actions in order (`scripts/install.sh`; failures exit
    [authorization contract](../reference/provider-authorization.md).
 8. **Step 5/5 — catalog.** `GET $COORD_URL/v1/models/catalog?type=text`;
    interactive runs print up to 20 entries. Nothing is downloaded.
+9. **Done.** It prints the version, the command and what to run next. Every
+   command it prints uses the installed identity's name (`darkbloom-dev` for a
+   DevNet build).
 
-### 2. Reload your shell
-
-```bash
-source ~/.zshrc   # or open a new terminal
-```
-
-### 3. Check the machine
+### 2. Open a new shell
 
 ```bash
-darkbloom doctor
+exec $SHELL -l    # or open a new Terminal window
 ```
 
-Continue with the [quickstart](./quickstart.md) to download a model, link the
-account and start serving.
+The `PATH` line the installer added is read only by a new shell. Until then,
+`darkbloom` is found only where the `/usr/local/bin` link was made, and
+`~/.darkbloom/bin/darkbloom` always works.
+
+### 3. Start Darkbloom
+
+```bash
+darkbloom --opencode            # or --hermes, or plain darkbloom start for neither
+```
+
+It asks how this Mac serves (**Only me**, **Darkbloom network** or **Both, me
+first**); with **Both, me first** it then asks which models to serve and sets
+OpenCode up. The [quickstart](./quickstart.md) walks through each choice,
+including linking your account to earn on the Darkbloom network.
 
 ## Verify
 
@@ -167,6 +167,11 @@ codesign --verify --deep --strict \
   -R='anchor apple generic and identifier "io.darkbloom.provider" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"' \
   ~/.darkbloom/Darkbloom.app && echo signature OK
 ```
+
+`darkbloom doctor` checks the machine for serving the Darkbloom network: its
+hardware, account link, verification and the coordinator
+([doctor checks](./troubleshooting.md#doctor-checks)). **Only me** needs none
+of the network checks.
 
 ## Update
 
@@ -183,8 +188,11 @@ darkbloom update                  # download, verify, atomic replace, restart th
 `GET {coordinator}/v1/releases/latest?platform=macos-arm64`, verifies the
 SHA-256 of the bundle and, when published, of the binary and `mlx.metallib`,
 verifies the code signature (production always constructs the updater with
-`verifyCodeSignatures: true`), replaces the install, and — if the LaunchAgent is
-loaded — restarts it via `ProcessLifecycle.restartAfterUpdate()`. Flags:
+`verifyCodeSignatures: true`), replaces the install, registers the new
+`Darkbloom.app` with macOS LaunchServices (`LSRegisterURL`; App Attest reports
+`is_supported_false` while LaunchServices still describes the replaced bundle,
+see [attestation](./attestation.md#app-attest-without-darkbloom-mdm)), and — if
+the LaunchAgent is loaded — restarts it via `ProcessLifecycle.restartAfterUpdate()`. Flags:
 `--check-only`, `--override-quarantine`, `--coordinator <url>`, `--config`.
 
 ### Automatic
@@ -220,11 +228,24 @@ that exact version is blocked; a newer release installs normally.
 
 When the updater installs a release, it keeps the signed release it replaced
 in `~/.darkbloom/recovery/predecessor/` (`provider-swift/Sources/ProviderCore/Update/UpdateInstallLayout.swift`,
-`snapshotLiveAsPredecessor`). A release that runs but regresses can be rolled
-back to it on one Mac, with automatic updates left on:
+`snapshotLiveAsPredecessor`). `install.sh` keeps none. On a `darkbloom cluster`
+Mac, the cluster service removes the kept release at its next start once an
+install outside the updater has changed the app, so the next rollback needs the
+next update ([an install outside the updater](./cluster-always-on.md#an-install-outside-the-updater)).
+A Mac that is not a cluster Mac does not check its record yet. When `install.sh`
+replaces a release that the updater installed and has not promoted yet, the
+watchdog (`WatchdogRecoveryService`) takes the healthy provider for that pending
+release. Each check past its startup window (at least 300 s) counts as a failed
+start and restarts the serving provider; at the third, the watchdog restores
+whatever the kept copy holds (possibly an older release than the one
+`install.sh` installed), quarantines the pending release and restarts on the
+copy. Reinstall only once the pending release is promoted (after
+`defaultStabilizationSeconds` of healthy running).
+A release that runs but regresses can be rolled back to the kept release on one
+Mac, with automatic updates left on:
 
 1. On a Mac that serves in a `darkbloom cluster` pair, first stop its cluster
-   service with `darkbloom cluster stop`, roll it back, then start it again
+   service with `darkbloom cluster stop --service`, roll it back, then start it again
    with `darkbloom cluster`. The other Mac follows the rollback to the same
    release by itself ([the pair's coordinated update](./cluster-always-on.md#a-rollback-on-one-mac)).
    For a cluster-member provider service, stop it with `darkbloom stop` and
@@ -289,39 +310,75 @@ each Mac: `darkbloom cluster`; no SSH, no network settings typed).
 
 ## Uninstall
 
+One command takes Darkbloom off this Mac. In a terminal it shows two choices
+with this Mac's sizes and reads one key (Esc cancels):
+
 ```bash
-sudo darkbloom fan uninstall    # only if fan control was enabled
-darkbloom cluster link --remove # only if `darkbloom cluster` set up a two-Mac link; asks for approval
-darkbloom stop --uninstall      # stops the daemon, removes both LaunchAgent plists
-darkbloom unenroll              # opens System Settings to remove the MDM profile; offers to delete config + tokens
-rm -rf ~/.darkbloom ~/.config/darkbloom
-sudo rm -f /usr/local/bin/darkbloom
+darkbloom uninstall
 ```
 
-`darkbloom cluster link --remove` (`provider-swift/Sources/darkbloom/ClusterLinkCommand.swift`)
-restores what `darkbloom cluster` changed for a two-Mac link: it removes the
-network service `Darkbloom Cluster Link (<port>)`, switches the services it
-turned off on that port on again and puts the port back into its bridge, or,
-for a link set up by an earlier version, removes the root launchd job
-`io.darkbloom.cluster-link.<port>` and the address it kept. Run it before
-deleting `~/.darkbloom`, which holds the record of what was changed; without
-the record it still removes Darkbloom's own service or job. It changes nothing
-on a Mac that never ran `darkbloom cluster`.
+1. **Remove everything.** The app, settings, pairing, logs and all models. It
+   asks once more, with the size of the models it deletes; only `y` goes on.
+2. **Keep models.** Removes everything else; a reinstall reuses the models.
 
-`darkbloom stop --uninstall` (`provider-swift/Sources/darkbloom/StopCommand.swift`)
-disarms the watchdog first, deletes `~/Library/LaunchAgents/io.darkbloom.watchdog.plist`
-and `io.darkbloom.provider.plist`, and disables both labels in launchd.
-`darkbloom unenroll` (`provider-swift/Sources/darkbloom/UnenrollCommand.swift`)
-opens System Settings → Device Management (macOS does not let a binary remove a
-profile) and, after confirmation or with `--force`, deletes
-`~/.config/darkbloom/`, `~/.darkbloom/auth_token` and the legacy key files.
-Remove the `# Darkbloom` `PATH` line from your rc file by hand. Model weights
-live in `~/.cache/huggingface/hub`; delete them with `darkbloom models remove <id>`
-before removing the CLI.
+Run it as yourself, not with `sudo`: it refuses to run as root, and macOS asks
+for the password when a step needs it.
+
+Both choices stop serving (the drain of `darkbloom stop`), stop this Mac's
+part of a two-Mac pair (also when its cluster service runs without a login
+agent; while one it can't stop runs, nothing is deleted), remove every
+Darkbloom background service, revoke this Mac's account token, forget the
+pairing, undo the cable port setup (macOS asks for an administrator's password)
+and delete `~/.config/darkbloom`,
+`~/Library/Caches/darkbloom`, the `/usr/local/bin/darkbloom` link and
+`~/.darkbloom`, which holds the app, logs and pairing. **Remove everything** also
+deletes the models Darkbloom downloaded into `~/.cache/huggingface/hub` and the
+cluster model store. **Keep models** leaves them where they are: after
+reinstalling, `darkbloom start` or `darkbloom cluster` finds them without
+downloading. The summary lists each step as done, skipped or failed, what was
+kept and where, and the space freed. If the cable port setup could not be
+undone, `~/.darkbloom` stays so you can run it again.
+
+For scripts and agents:
+
+```bash
+darkbloom uninstall --keep-models --dry-run   # every action and path, with sizes; changes nothing (--json too)
+darkbloom uninstall --keep-models --yes
+darkbloom uninstall --everything --yes
+```
+
+No choice deletes a models folder you chose or the cluster model store beside
+it, even inside `~/.darkbloom` (the rest of that folder goes), caches in a
+folder you chose, anything that resolves outside Darkbloom's folders, or
+Keychain keys (a new install replaces them). With both the production Darkbloom
+and Darkbloom Dev on this Mac, uninstalling one removes only its own pairing and
+cluster setup and keeps this Mac's cable port setup, which the other may use;
+uninstall that one too to undo it. Remove what it leaves first, if you
+use it:
+
+```bash
+sudo darkbloom fan uninstall   # fan control: restores macOS automatic control
+darkbloom sandbox uninstall    # Darkbloom Sandbox
+darkbloom unenroll             # a legacy MDM profile
+darkbloom cluster gpu-limit --undo  # only if you raised the GPU limit with it; asks for approval
+```
+
+Then remove the `# Darkbloom` `PATH` line from your rc file by hand. On a
+paired Mac, run `darkbloom uninstall` on the other Mac too, or `darkbloom
+cluster` on it to pair it with another Mac. `darkbloom stop --uninstall` still
+removes only the provider, watchdog and desktop API agents and keeps every file.
+Every flag, step and path rule is in the
+[CLI reference](./cli-reference.md#darkbloom-uninstall).
+
+`darkbloom cluster gpu-limit --undo` (`provider-swift/Sources/darkbloom/ClusterGPULimitCommand.swift`)
+removes the root boot job `com.layrlabs.glm53-wired-limits` and returns the GPU
+limit to the macOS default
+([GPU memory limit for a GLM pair](../reference/configuration.md#gpu-memory-limit-for-a-glm-pair)).
+Neither `darkbloom uninstall` nor `darkbloom stop --uninstall` removes that job.
 
 ## Related
 
-- [Quickstart](./quickstart.md) — login, start, status.
+- [Quickstart](./quickstart.md) — `darkbloom --opencode`, the three choices, then earning.
 - [CLI reference](./cli-reference.md) — every flag, path and runtime constant.
 - [Troubleshooting](./troubleshooting.md) — installer exit messages and fixes.
 - [Attestation](./attestation.md) — what the Secure Enclave key and MDM profile buy you.

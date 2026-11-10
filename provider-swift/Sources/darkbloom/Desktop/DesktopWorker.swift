@@ -107,7 +107,7 @@ final class DesktopWorker: @unchecked Sendable {
             }
             var lastProgress = Date.distantPast
             do {
-              while let bytes = try output.fileHandleForReading.read(upToCount: 4096), !bytes.isEmpty {
+              while let bytes = try output.fileHandleForReading.readDrained(upToCount: 4096), !bytes.isEmpty {
                 buffer.append(bytes)
                 let now = Date()
                 if now.timeIntervalSince(lastProgress) >= 0.25 {
@@ -162,10 +162,7 @@ private final class DesktopOutputBuffer: @unchecked Sendable {
   func append(_ bytes: Data) {
     lock.withLock {
       data.append(bytes)
-      if data.count > 32_768 {
-        data = data.suffix(32_768)
-        didTruncate = true
-      }
+      if data.keepLast(32_768) { didTruncate = true }
     }
   }
   func markReadFailure() { lock.withLock { didFailRead = true } }

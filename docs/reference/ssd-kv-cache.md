@@ -1,6 +1,6 @@
 # SSD KV cache reference
 
-> Last updated: 2026-11-01
+> Last updated: 2026-11-06
 
 Exact on-disk format, paths, identity binding, environment knobs, size and
 eviction rules, and per-family reuse capability of the provider's encrypted SSD
@@ -62,7 +62,7 @@ header comment and `enum SSDBlockStore`).
 | Lookup key | `K_lookup = HKDF-SHA256-Expand(PRK: KEK, info: "dbkv3-lookup-v1", L = 32)` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDLookupKeys.swift` |
 | File-name tag | `HMAC-SHA256(K_lookup, "dbkv3-name-v1" ‖ u64le(len(salt)) ‖ salt ‖ chainHash)`, truncated to `truncatedTagLength = 16` bytes; full tag authenticated in metadata | `SSDLookupKeys.swift` |
 | Window sidecar tags | `"dbkv3-window-v1"`, `"dbkv3-window-base-v1"` domains (format only; `DARKBLOOM_PREFIX_CACHE_SSD_WINDOW_SIDECAR` off; no restore consumer) | `SSDLookupKeys.swift`, `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDWindowSidecar.swift` |
-| Streaming read | `SSDBlockChunkCursor` returns one authenticated chunk per call in file order, or skips one unread, then checks EOF and file identity; `readStreaming` drives one cursor. A field or chunk that one read returns whole is kept as read rather than copied into a second buffer (`SSDBlockStore.readExactly`) | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockChunkCursor.swift`, `SSDBlockStore.swift` (`readExactly`) |
+| Streaming read | `SSDBlockChunkCursor` returns one authenticated chunk per call in file order, or skips one unread, then checks EOF and file identity; `readStreaming` drives one cursor. A field or chunk that one read returns whole is kept as read rather than copied into a second buffer (`SSDBlockStore.readExactly`). Each read runs in its own autorelease pool (`FileHandle.readDrained`), so a streamed restore holds the chunks in use, not every chunk it read | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockChunkCursor.swift`, `SSDBlockStore.swift` (`readExactly`) |
 | Temp files | `tempMarker = "darkbloom-tmp"`, crash-orphan TTL `crashTempTTLSeconds = 3600` | `SSDBlockStore.swift` |
 | Path safety | Descriptor-relative no-follow traversal; nonblocking final read/touch opens followed by regular-file validation | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDNoFollowIO.swift`, `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockPathGuard.swift` |
 
@@ -581,8 +581,12 @@ accounting and publication behavior are unchanged.
 ## Cluster prompt-prefix records
 
 The two-Mac cluster's ranks keep their prompt prefixes in their own encrypted
-records under `<cache base>/darkbloom/cluster-prefix-v1`, separate from the
-`kv3/` tier above and its DBK3 format
+records under `<cache base>/<encryptedCacheNamespace>/cluster-prefix-v1`
+(`<cache base>/darkbloom/cluster-prefix-v1` in production; a dev build's pair
+has its own namespace, as for `kv3`, so it never reads, evicts or sweeps
+production's records; `ClusterPrefixCacheSettings.rootDirectoryName` in
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/ClusterPrefixCacheSettings.swift`),
+separate from the `kv3/` tier above and its DBK3 format
 (`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Prefix/QwenStagePrefixDiskTier.swift`,
 `QwenStagePrefixDiskRecord.swift` beside it). Attention rows are stored at the
 pair's checkpoint precision, `balanced` by default; the mechanism, eligibility

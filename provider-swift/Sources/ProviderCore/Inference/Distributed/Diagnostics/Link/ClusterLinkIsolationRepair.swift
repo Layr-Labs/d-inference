@@ -98,9 +98,11 @@ extension ClusterLinkRepair {
         return ended(.fixed)
     }
 
-    /// `--remove` for what link setup v2 changed. Nil when it changed nothing
-    /// that is on record or recognisable on this Mac, so the first version's
-    /// removal runs instead.
+    /// `--remove` for what link setup v2 changed: every port Darkbloom set up (its record, and a service of its own
+    /// whose record is gone), under one approval, or the one port `--device` names. It never asks for a choice (R5-2:
+    /// the uninstall on pair-2's MacBook stopped at "More than one port qualifies" for three ports Darkbloom had set up).
+    /// Nil when it changed nothing that is on record or recognisable on this Mac, so the first version's removal runs
+    /// instead.
     static func removeIsolation(device requested: String?, dryRun: Bool,
                                 in environment: Environment) -> ClusterLinkRepairResult? {
         guard let record = try? environment.loadIsolationRecord() else {
@@ -116,65 +118,78 @@ extension ClusterLinkRepair {
                   service.interface == interface, record.entry(on: interface) == nil else { return nil }
             return interface
         }
-        let candidates = (record.entries.map(\.interface) + orphans).filter { wanted == nil || $0 == wanted }
-        guard !candidates.isEmpty else { return nil }
-        guard candidates.count == 1, let interface = candidates.first else {
-            return .init(operation: .remove, outcome: .ambiguousPorts,
-                candidates: candidates.map(ClusterLinkName.device(ofInterface:)), isolated: true)
+        var seen = Set<String>()
+        let interfaces = (record.entries.map(\.interface) + orphans).filter { (wanted == nil || $0 == wanted) && seen.insert($0).inserted }
+        guard !interfaces.isEmpty else { return nil }
+        let single = interfaces.count == 1 ? interfaces[0] : nil
+        let devices = interfaces.map(ClusterLinkName.device(ofInterface:))
+        func ended(_ outcome: ClusterLinkRepairOutcome, plannedCommands: [String] = [], manualCommands: [String] = [],
+                   remaining: [String] = []) -> ClusterLinkRepairResult {
+            let entry = single.flatMap(record.entry(on:))
+            var result = ClusterLinkRepairResult(operation: .remove, outcome: outcome, device: single.map(ClusterLinkName.device(ofInterface:)),
+                interface: single, candidates: single == nil ? devices : [], isolated: true, plannedCommands: plannedCommands,
+                manualCommands: manualCommands, hardwarePort: entry?.hardwarePort, bridge: entry?.bridge?.bridge)
+            result.remaining = remaining.map(ClusterLinkName.device(ofInterface:))
+            return result
         }
-        let entry = record.entry(on: interface)
-        let rdmaDevice = ClusterLinkName.device(ofInterface: interface)
-        func ended(_ outcome: ClusterLinkRepairOutcome, plannedCommands: [String] = [],
-                   manualCommands: [String] = []) -> ClusterLinkRepairResult {
-            .init(operation: .remove, outcome: outcome, device: rdmaDevice, interface: interface, isolated: true,
-                plannedCommands: plannedCommands, manualCommands: manualCommands, hardwarePort: entry?.hardwarePort,
-                bridge: entry?.bridge?.bridge)
-        }
-        func forget() {
+        func forget(_ done: [String]) {
             guard !dryRun else { return }
-            try? environment.updateIsolationRecord { $0.forget(interface: interface) }
+            try? environment.updateIsolationRecord { record in done.forEach { record.forget(interface: $0) } }
         }
-        guard let restore = restoreNeeded(interface: interface, entry: entry, run: run) else {
-            return ended(.nothingFixable(.probeFailed))
+        /// What is still to undo on each port, read now; nil when a reading failed.
+        func left(_ run: ClusterLinkToolRunner) -> [(interface: String, restore: ClusterLinkIsolationRestore)]? {
+            var restores = [(interface: String, restore: ClusterLinkIsolationRestore)]()
+            for interface in interfaces {
+                guard let restore = restoreNeeded(interface: interface, entry: record.entry(on: interface), run: run) else { return nil }
+                restores.append((interface, restore))
+            }
+            return restores
         }
-        guard let request = ClusterLinkIsolationRequest(.restore(restore)) else {
-            forget()
+        guard let before = left(run) else { return ended(.nothingFixable(.probeFailed)) }
+        guard let request = ClusterLinkIsolationRequest(.restore(before.map { $0.restore })) else {
+            forget(interfaces)
             return ended(.alreadyAbsent)
         }
         if dryRun { return ended(.dryRun, plannedCommands: request.commands) }
+        // A port with nothing left to undo is spent now; the others go with the approval.
+        forget(before.filter { $0.restore.isEmpty }.map { $0.interface })
         let answer = environment.requestIsolationApproval(request)
         switch answer {
         case .declined: return ended(.approvalDeclined)
         case .unavailable:
             var result = ended(.approvalUnavailable, manualCommands: request.manualCommands)
-            result.manualScript = environment.writeManualScript("link-remove.sh", manualScriptBody(request, purpose: "restores \(interface)'s earlier network settings"))
+            result.manualScript = environment.writeManualScript("link-remove.sh", manualScriptBody(request,
+                purpose: "restores the earlier network settings of \(ClusterLinkIsolationRequest.list(request.interfaces))"))
             return result
         case .applied, .commandFailed:
-            // What is left decides, not the exit status.
-            guard restoreNeeded(interface: interface, entry: entry, run: environment.toolRunner())?.isEmpty == true else {
-                return ended(answer == .applied ? .removalNotVerified : .commandFailed)
+            // What is left decides, not the exit status: each port that is back is forgotten.
+            guard let after = left(environment.toolRunner()) else {
+                return ended(answer == .applied ? .removalNotVerified : .commandFailed, remaining: request.interfaces)
             }
-            forget()
+            forget(after.filter { $0.restore.isEmpty }.map { $0.interface })
+            let remaining = after.filter { !$0.restore.isEmpty }.map { $0.interface }
+            guard remaining.isEmpty else { return ended(answer == .applied ? .removalNotVerified : .commandFailed, remaining: remaining) }
             return ended(.removed)
         }
     }
 
     /// The script an administrator runs with `sudo sh` where no prompt can be
     /// shown: exactly the commands the prompt would run, under the same
-    /// `set -e` for an isolation (its stale-index guard stops everything), and
-    /// every command for a restore.
+    /// `set -e`, so it stops at the first that fails.
     static func manualScriptBody(_ request: ClusterLinkIsolationRequest, purpose: String) -> String {
-        var lines = ["#!/bin/sh", "# Darkbloom link setup v2: \(purpose). Run once as an administrator: sudo sh <this file>",
-                     "# These are the commands macOS's approval prompt would run. Undo: darkbloom cluster link --remove"]
-        if case .isolate = request.purpose { lines.append("set -e") }
+        let lines = ["#!/bin/sh", "# Darkbloom link setup v2: \(purpose). Run once as an administrator: sudo sh <this file>",
+                     "# These are the commands macOS's approval prompt would run. Undo: darkbloom cluster link --remove", "set -e"]
         return (lines + request.commands).joined(separator: "\n") + "\n"
     }
 
     /// Ports that are isolated exactly as link setup v2 leaves them (no
     /// finding, Darkbloom's service present, this Mac's own derived address on
-    /// the port) but have no record entry: the commands were run by hand. Each
-    /// is recorded with the services found switched off on it, so `--remove`
-    /// can restore them. Returns the interfaces recorded.
+    /// the port) but have no record entry: the commands were run by hand, or
+    /// the other app on this Mac set the port up. Each is recorded with the
+    /// services found switched off on it, so `--remove` can restore them; when
+    /// the other app's record has the port at the same address, with what that
+    /// setup changed (its bridge slot too), so this app can still undo it all
+    /// once the other app and its record are gone. Returns the interfaces recorded.
     static func adoptIsolatedPorts(report: ClusterLinkReadinessReport, record: ClusterLinkIsolationRecord?, run: ClusterLinkToolRunner,
                                    in environment: Environment) -> [String] {
         guard let record, let machineID = environment.machineIdentifier(),
@@ -187,11 +202,21 @@ extension ClusterLinkRepair {
             guard ClusterLinkNetworkFacts.lists(address.dottedDecimal, on: interface, inListing: listing) else { continue }
             let ours = ClusterLinkServiceName.cluster(interface: interface)
             let disabled = machine.services.filter { $0.interface == interface && !$0.enabled && $0.name != ours }.map(\.name)
-            let entry = ClusterLinkIsolationRecord.Entry(interface: interface, address: address, hardwarePort: hardwarePort,
-                bridge: nil, disabledServices: disabled)
+            let entry = adoptionEntry(interface: interface, address: address, hardwarePort: hardwarePort, disabledHere: disabled,
+                                      others: environment.otherInstallsIsolationEntries(interface))
             if (try? environment.updateIsolationRecord { $0.set(entry) }) != nil { adopted.append(interface) }
         }
         return adopted
+    }
+
+    /// The entry an adopted port gets: what the other install's record says its setup changed (the bridge slot, the
+    /// services it turned off) when that record has the port at the same address and hardware port; otherwise the
+    /// services found turned off on it now, and no bridge slot.
+    static func adoptionEntry(interface: String, address: ClusterLinkClusterAddress, hardwarePort: String, disabledHere: [String],
+                              others: [ClusterLinkIsolationRecord.Entry]) -> ClusterLinkIsolationRecord.Entry {
+        let setUp = others.first { $0.interface == interface && $0.address == address && $0.hardwarePort == hardwarePort }
+        return .init(interface: interface, address: address, hardwarePort: hardwarePort, bridge: setUp?.bridge,
+                     disabledServices: setUp?.disabledServices ?? disabledHere)
     }
 
     /// What is still to undo for a port: read now, from the record entry when
@@ -215,9 +240,29 @@ extension ClusterLinkRepair {
             !clusterServicePresent && ClusterLinkNetworkFacts.lists(entry.address.dottedDecimal, on: interface, inListing: listing)
                 ? entry.address : nil
         }
+        // Darkbloom's service alone on its port: macOS's `networksetup` refuses to remove it, so it goes through
+        // SCPreferences, with its ID read now (R5-2, pair-2's MacBook).
+        var lastService: ClusterLinkLastService?
+        if clusterServicePresent, !machine.services.contains(where: { $0.interface == interface && $0.name != ours }) {
+            guard case .output(let services) = run(.networkServicePreferences),
+                  let id = ClusterLinkLastService.serviceID(of: ours, on: interface, inPreferences: services),
+                  case .output(let current) = run(.currentNetworkSet) else { return nil }
+            let set = current.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "/Sets/", with: "")
+            guard ClusterLinkLastService.isID(set) else { return nil }
+            var order: [String]?
+            switch run(.networkServiceOrderPreferences(set: set)) {
+            case .output(let text):
+                guard let ids = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String] else { return nil }
+                order = ids
+            case .unavailable: order = nil
+            case .timedOut, .outputTooLarge: return nil
+            }
+            guard let resolved = ClusterLinkLastService(serviceID: id, set: set, serviceOrder: order) else { return nil }
+            lastService = resolved
+        }
         return ClusterLinkIsolationRestore(interface: interface, removeClusterService: clusterServicePresent,
             servicesToEnable: toEnable, bridge: bridge, addressToRemove: leftover,
-            keeperToRemove: countingKeeper && keeperInstalled(interface: interface, run: run))
+            keeperToRemove: countingKeeper && keeperInstalled(interface: interface, run: run), lastService: lastService)
     }
 
     /// Whether the first version's keeper is loaded or its file exists.

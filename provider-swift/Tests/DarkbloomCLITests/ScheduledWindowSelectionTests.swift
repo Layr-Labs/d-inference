@@ -75,6 +75,7 @@ struct ScheduledWindowSelectionTests {
         var original = ProviderConfig(provider: ProviderSettings(name: "startup-provider"))
         original.backend.enabledModels = ["fixture/a"]
         original.backend.idleTimeoutMins = 17
+        original.local = LocalSettings(meFirstIdleMinutes: 7)
         try ConfigManager.save(original, to: path)
         let loopConfig = startup(config: original, path: path)
         var selection = ScheduledWindowSelection(startup: loopConfig, configFileExists: true)
@@ -84,6 +85,7 @@ struct ScheduledWindowSelectionTests {
         edited.provider.name = "not-live"
         edited.backend.idleTimeoutMins = 99
         edited.coordinator.url = "wss://not-live.invalid"
+        edited.local = LocalSettings(meFirst: false)
         try ConfigManager.save(edited, to: path)
         try ProviderModelSelection.save(["fixture/b"], configPath: path, fallbackConfig: original)
         let next = try selection.nextWindowConfiguration(
@@ -102,6 +104,8 @@ struct ScheduledWindowSelectionTests {
         #expect(loopConfig.config.backend.enabledModels == ["fixture/a"])
         #expect(next.config.provider.name == "startup-provider")
         #expect(next.config.backend.idleTimeoutMins == 17)
+        // Each window's loop keeps the startup's me first (`[local]`).
+        #expect(next.config.local == LocalSettings(meFirstIdleMinutes: 7))
         #expect(next.config.coordinator.url == original.coordinator.url)
         #expect(next.coordinatorURL == loopConfig.coordinatorURL)
         #expect(next.hardware == loopConfig.hardware)

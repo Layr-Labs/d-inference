@@ -29,7 +29,11 @@ xcrun swiftc "${task_flags[@]}" -parse-as-library -I "$task_out" -L "$task_out" 
  "$task_repo/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/ClusterMiMoPrivateImagePolicy.swift" \
  "$task_repo/provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterGLMOnboardingSelection.swift" \
  "$task_repo/provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingFlow.swift" \
+ "$task_repo/provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingSoloServing.swift" \
+ "$task_repo/provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingPairServing.swift" \
  "$task_repo/provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingTerminal.swift" \
  "$task_repo/provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingBrand.swift" \
+ "$task_repo/provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingFollow.swift" "$task_repo/provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingLeaderStep.swift" \
+ "$task_repo/provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterOnboardingStartProgress.swift" \
  "$task_repo/libs/darkbloom-cluster/Tests/GLMImageAdmissionChecks/Main.swift" -o "$task_out/check"
 "$task_out/check"

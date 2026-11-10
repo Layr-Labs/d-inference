@@ -1,14 +1,23 @@
 import DarkbloomClusterProtocol
 import Foundation
 import MLX
+import MLXLMCommon
 
 /// One request on one rank of a Gemma 4 tensor-parallel pair, as the resident
 /// runtime serves it alone: the prompt in chunks of the request's own size
 /// (from a restored prefix's boundary, when both ranks restored one), then
-/// one decode step a token. Each step's token and both ranks' stop flags
+/// one decode step a token (`TensorParallelOneTokenLoop`, GLM tensor
+/// parallel's step order). Each step's token and both ranks' stop flags
 /// are agreed in the step's own evaluation (`Gemma4TensorParallelChoice`);
 /// both ranks submit the same collectives in the same order whatever either
-/// decides, and end after the same step.
+/// decides, and end after the same step. Each step is built one ahead, on
+/// the previous step's lazy agreed token
+/// (`Gemma4TensorParallelPagedSession.submitDecode`), so the GPU and the
+/// collectives run it while the host reads the previous one: greedy and
+/// sampled requests (rank 0's keyed draw is the one made at its output index
+/// with the history up to it), but not a greedy request asking for logprobs
+/// (`pipelines`). A step built after the request ended is evaluated; its
+/// token is never committed or published.
 ///
 /// Rank 0 publishes each token at once and reads the owner's answer to it
 /// after the next step ran; a stop answer is acted on one step later (the
@@ -37,18 +46,48 @@ struct Gemma4TensorParallelRequestLoop {
         var pagesRefused: Bool
     }
 
+    /// One built step: its logits, its agreement (`Gemma4TensorParallelChoice.build`)
+    /// and, on rank 0 of a sampled request asking for them, its draw's
+    /// logprobs as graph nodes (kept with the step, as the next step's draw
+    /// may be built before this one is read).
+    struct Step {
+        let logits: MLXArray
+        let selected: MLXArray
+        let logprobs: CBv2StepLogprobs?
+    }
+
+    /// Whether `choice`'s steps are built one ahead: greedy and sampled
+    /// requests alike (each draw is keyed on its output index and its
+    /// history on the device, `QwenStageTokenSampler.sample`). A greedy
+    /// request asking for logprobs reads each step before building the next:
+    /// its logprobs come from a vocabulary-split top-k gather, a collective
+    /// evaluated on the host after the step's token is agreed, which would
+    /// wait for the step built ahead and gain nothing.
+    static func pipelines(_ choice: Gemma4TensorParallelChoice) -> Bool {
+        if let buildsAhead { return buildsAhead }
+        return choice.gathersRow || choice.sampler?.wire.capturedLogprobs == nil
+    }
+    /// Tests only: a test's own order (nil: `pipelines`'s). The product never sets it.
+    @TaskLocal static var buildsAhead: Bool?
+
     func run(channel: ClusterCommittedTokenChannel, check: () throws -> Void) throws -> Outcome {
         let rank = choice.rank, prompt = request.promptTokenIDs
         let sampler = choice.sampler
         // A restored prefix ends on the chunk grid: the rest runs the chunks a cold request runs there.
         var offset = session.committedTokens
-        var current: (logits: MLXArray, selected: MLXArray)?
+        /// A built step, with rank 0's sampled draw's logprobs taken now.
+        func built(_ step: (logits: MLXArray, selected: MLXArray)) -> Step {
+            let logprobs = rank == 0 && choice.gathersRow ? sampler?.takePendingStepLogprobs() : nil
+            return Step(logits: step.logits, selected: step.selected, logprobs: logprobs)
+        }
+        var current: Step?
         while offset < prompt.count {
             let end = min(prompt.count, offset + request.chunkSize)
-            current = try session.prefill(prompt, range: offset ..< end, check: check) { choice.build($0, stop: 0) } ?? current
+            current = try session.prefill(prompt, range: offset ..< end, check: check) { choice.build($0, stop: 0) }
+                .map(built) ?? current
             offset = end
         }
-        guard var step = current else { throw ProbeError("Gemma tensor-parallel prompt produced no logits") }
+        guard let step = current else { throw ProbeError("Gemma tensor-parallel prompt produced no logits") }
         var tokens: [Int] = []
         var finish: ClusterWorkerFinishReason = .length
         var clientStopped = false
@@ -61,9 +100,10 @@ struct Gemma4TensorParallelRequestLoop {
             if try !channel.answer(), stopKeep == 0 { clientStopped = true; stopKeep = Float(tokens.count) }
         }
         let logprobCount = sampler?.wire.capturedLogprobs
+        var stepLogprobs: ClusterWorkerTokenLogprobs?
         /// Commits one agreed token on this rank (and publishes it on rank 0):
         /// the request's own end at it (EOS or length), else nil.
-        func commit(_ value: Int, logprobs: ClusterWorkerTokenLogprobs?) throws -> ClusterWorkerFinishReason? {
+        func commit(_ value: Int, logprobs: ClusterWorkerTokenLogprobs?) throws -> QwenTensorParallelStopRule.Finish? {
             tokens.append(value)
             if rank == 0 {
                 try channel.publishToken(tokens.count - 1, value, prompt.count + tokens.count - 1, logprobs)
@@ -76,59 +116,58 @@ struct Gemma4TensorParallelRequestLoop {
             case .clientStop, .proceed: return nil
             }
         }
-        try GPU.withCommandBufferLimits(Gemma4TensorParallelModel.decodeCommandBuffers) {
-            steps: for index in 0 ..< request.outputCount {
-                // The answer to the last token arrived while this step ran.
-                if stopKeep == 0 { try readAnswer() }
-                let agreed = try choice.read(step.selected)
-                if let slot = agreed.flags.filter({ $0 > 0 }).min() {
-                    // A rank asked both to stop: both keep the tokens it named
-                    // and end here (at the request's length when its pages could not grow).
-                    let stop = QwenTensorParallelStopRule.stop(slot: slot)
-                    tokens = Array(tokens.prefix(stop.keep))
-                    finish = stop.finish == .length ? .length : .clientStop
-                    break steps
-                }
-                // A greedy step's logprobs come from the split top-k gather, a
-                // collective every rank takes; a sampled one's from rank 0's draw.
-                var logprobs: ClusterWorkerTokenLogprobs?
-                if let count = logprobCount {
+        try withoutActuallyEscaping(check) { check in
+            // Steps are built one ahead (`TensorParallelOneTokenLoop`, GLM's step order): the next step is submitted
+            // on this step's lazy agreed token before the host reads it (`pipelines`).
+            let pipelined = Self.pipelines(choice)
+            let steps = TensorParallelOneTokenLoop<Step>(
+                outputCount: request.outputCount, stopTokenIDs: request.stopTokenIDs, pipelined: pipelined,
+                step: { current, stop in
+                    let select: (MLXArray) -> MLXArray = { choice.build($0, stop: stop) }
+                    return try built(pipelined ? session.submitDecode(after: current.selected, check: check, select: select)
+                        : session.decode(choice.read(current.selected).token, check: check, select: select))
+                },
+                read: { current in
+                    let agreed = try choice.read(current.selected)
+                    return (agreed.token, agreed.flags)
+                },
+                evaluate: { eval($0.selected); try check() },
+                // Pages grow a granule ahead, at least a margin before they are
+                // needed: a growth the pool refuses still leaves the next step its
+                // row, and a later step carries the length stop (rank-local; the
+                // collectives are the same either way).
+                growPages: { if !pagesRefused { pagesRefused = !session.reservePages(writing: 1) } },
+                pagesRefused: { pagesRefused },
+                stopKeep: { stopKeep }, setStopKeep: { stopKeep = $0 }, readAnswer: readAnswer,
+                committed: { tokens.count }, keep: { tokens = Array(tokens.prefix($0)) },
+                agreedStep: { current, token in
+                    // A greedy step's logprobs come from the split top-k gather, a
+                    // collective every rank takes, a stopped rank too; a sampled
+                    // one's from rank 0's draw.
+                    stepLogprobs = nil
+                    guard let count = logprobCount else { return }
                     if choice.gathersRow {
                         if rank == 0, stopKeep == 0 {
-                            guard let drawn = sampler?.takePendingLogprobs() else {
+                            guard let drawn = current.logprobs else {
                                 throw ProbeError("Gemma tensor-parallel token has no logprobs")
                             }
-                            logprobs = drawn
+                            stepLogprobs = QwenStageTokenSampler.tokenLogprobs(drawn)
                         }
                     } else {
-                        let gathered = try choice.logprobs(step.logits, token: agreed.token, maximum: agreed.maximum,
-                                                           count: count)
-                        logprobs = rank == 0 ? gathered : nil
+                        let maximum = try choice.read(current.selected).maximum
+                        let gathered = try choice.logprobs(current.logits, token: token, maximum: maximum, count: count)
+                        stepLogprobs = rank == 0 ? gathered : nil
                     }
+                },
+                commit: { _, token in
+                    sampler?.commit(token)
+                    return try commit(token, logprobs: stepLogprobs)
+                },
+                localStop: localStop)
+            try GPU.withCommandBufferLimits(Gemma4TensorParallelModel.decodeCommandBuffers) {
+                if let ended = try steps.run(first: step) {
+                    finish = ended == .eos ? .eos : ended == .length ? .length : .clientStop
                 }
-                if stopKeep == 0 {
-                    sampler?.commit(agreed.token)
-                    if let end = try commit(agreed.token, logprobs: logprobs) { finish = end; break steps }
-                    if localStop() {
-                        stopKeep = Float(tokens.count)
-                    } else if pagesRefused {
-                        stopKeep = QwenTensorParallelStopRule.lengthStop(keep: tokens.count)
-                    }
-                } else if request.stopTokenIDs.contains(agreed.token) {
-                    // The owner's stop was read after this step ran, so only the
-                    // next step could carry it; the peer ends at this token.
-                    break steps
-                }
-                guard index + 1 < request.outputCount else { break steps }
-                // Pages grow a granule ahead, at least a margin before they are
-                // needed: a growth the pool refuses still leaves this step its
-                // row, and the step carries the length stop (rank-local; the
-                // collectives are the same either way).
-                if !pagesRefused {
-                    pagesRefused = !session.reservePages(writing: 1)
-                    if pagesRefused, stopKeep == 0 { stopKeep = QwenTensorParallelStopRule.lengthStop(keep: tokens.count) }
-                }
-                step = try session.decode(agreed.token, check: check) { choice.build($0, stop: stopKeep) }
             }
         }
         // The owner answers every published token, the last one too. A stop

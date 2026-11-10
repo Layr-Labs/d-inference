@@ -36,6 +36,17 @@ final class VerifiedCheckpoint {
             bypassesPayloadCache = true
         }
 
+        /// Drops this file's pages from the file cache through the pinned
+        /// descriptor (no path is resolved again): a read-only shared mapping
+        /// invalidated with `msync(MS_INVALIDATE)`, which leaves the bytes and
+        /// the identity `checkUnchanged` compares as they are. Best effort.
+        func dropCachedPages() {
+            guard size > 0, let mapping = mmap(nil, size, PROT_READ, MAP_SHARED, descriptor, 0),
+                  mapping != MAP_FAILED else { return }
+            _ = msync(mapping, size, MS_INVALIDATE)
+            munmap(mapping, size)
+        }
+
         func checkUnchanged() throws {
             var current = stat()
             guard fstat(descriptor, &current) == 0,
@@ -58,6 +69,28 @@ final class VerifiedCheckpoint {
                     into: destination, offset: offset, checkUnchanged: checkUnchanged)
             }
             try readOrdinary(into: destination, offset: offset)
+            return nil
+        }
+
+        /// `count` runs of `length` bytes, `stride` apart from `offset`, back to back into `destination`
+        /// (`CheckpointAlignedReader.read(…stride:count:…)` when the payload cache is bypassed).
+        @discardableResult
+        func read(into destination: UnsafeMutableRawBufferPointer, offset: Int, length: Int, stride: Int,
+                  count: Int) throws -> CheckpointAlignedReadAccounting? {
+            let total = length.multipliedReportingOverflow(by: count)
+            let span = stride.multipliedReportingOverflow(by: max(0, count - 1))
+            guard offset >= 0, length >= 0, count >= 0, stride >= length, !total.overflow, total.partialValue == destination.count,
+                  !span.overflow, count == 0 || span.partialValue <= size - offset - length else {
+                throw ProbeError("Checkpoint read out of range: \(path)")
+            }
+            if bypassesPayloadCache && !destination.isEmpty {
+                return try CheckpointAlignedReader.read(descriptor: descriptor, fileSize: size, into: destination,
+                    offset: offset, length: length, stride: stride, count: count, checkUnchanged: checkUnchanged)
+            }
+            for run in 0..<count where length > 0 {
+                try readOrdinary(into: UnsafeMutableRawBufferPointer(start: destination.baseAddress!.advanced(by: run * length),
+                                                                     count: length), offset: offset + run * stride)
+            }
             return nil
         }
 
@@ -284,10 +317,15 @@ final class VerifiedCheckpoint {
     /// Called after admission and before any selected-stage payload is read.
     /// Failure propagates before materialization; closing these owned descriptors
     /// ends the policy, with no global cache or filesystem setting to restore.
+    /// The weight files' pages already in the file cache (a copy, a download, an
+    /// earlier read) are dropped too: uncached reads are still served from them,
+    /// and a load into a cache full of its own model makes macOS compress other
+    /// memory to free it, past the load gate's guard (MiMo, 2026-11-01).
     func bypassTensorPayloadCache() throws {
         for file in files.values.sorted(by: { $0.path < $1.path })
         where file.path.hasSuffix(".safetensors") {
             try file.bypassPayloadCache()
+            file.dropCachedPages()
         }
     }
 }

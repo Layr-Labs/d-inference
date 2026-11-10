@@ -10,6 +10,32 @@ enum ClusterConsoleText {
         }.prefix(maximum))
     }
 
+    /// `text` as one printable line of at most `maximum` characters (`bounded`). One that is longer is cut at a word,
+    /// never inside a parenthesis, and ends with "…" (the leader's Local Network ✗ cut a line at "(its part is still
+    /// running": the pair-2 re-test, R-4).
+    static func boundedAtWord(_ text: String, maximum: Int) -> String {
+        let line = bounded(text, maximum: .max)
+        guard line.count > maximum, maximum > 1 else { return line }
+        var kept = line.prefix(maximum - 1)
+        if let space = kept.lastIndex(of: " ") { kept = kept[..<space] }
+        var depth = 0
+        var open: Substring.Index?
+        for index in kept.indices {
+            switch kept[index] {
+            case "(":
+                if depth == 0 { open = index }
+                depth += 1
+            case ")" where depth > 0:
+                depth -= 1
+                if depth == 0 { open = nil }
+            default: break
+            }
+        }
+        if let open { kept = kept[..<open] }
+        while let last = kept.last, " ,;:".contains(last) { kept = kept.dropLast() }
+        return (kept.isEmpty ? line.prefix(maximum - 1) : kept) + "…"
+    }
+
     /// `2026-10-09T06:45:12Z`.
     static func timestamp(_ date: Date = Date()) -> String {
         let formatter = ISO8601DateFormatter()

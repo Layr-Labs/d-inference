@@ -3,11 +3,28 @@ import ArgumentParser
 import ProviderCore
 
 struct Cluster: AsyncParsableCommand {
+    static let abstract = "Set up two Macs to serve one model together. Run it on each Mac and follow the screen."
+
+    /// The other cluster commands in plain words: `darkbloom cluster --help` shows the setup's help (it is the default
+    /// subcommand), so its discussion ends with this list.
+    static let commandList = """
+        Other commands:
+          darkbloom cluster status   Is the cluster serving now? If not, why and what to do (--json for scripts).
+          darkbloom cluster stop     Stop the cluster on both Macs, the same as `darkbloom stop`.
+          darkbloom cluster local    Serve on the leading Mac's own API only, without Darkbloom.
+          darkbloom cluster link     Check the Thunderbolt cable and this Mac's port setup.
+          darkbloom cluster doctor   Check this Mac's cluster files, keys and cable.
+          darkbloom cluster leave    Leave the pair on this Mac: stop its part and forget its pairing.
+        On a Mac in a cluster, `darkbloom start`, `stop`, `restart` and `status` control the pair (--solo: this Mac alone).
+        Details: `darkbloom help cluster <command>`.
+        """
+
     static let configuration = CommandConfiguration(commandName: "cluster",
-        abstract: "Set up two or more Macs to serve one model together. Run it on each Mac and follow the screen.",
+        abstract: abstract,
         subcommands: [Setup.self, Local.self, Console.self, Plan.self, Configure.self, Status.self, Doctor.self, Link.self, Recover.self, WorkerOwner.self,
                       Report.self, Inbox.self, LinkChannel.self, LinkFollower.self, MemberIdentity.self, Pair.self, Incidents.self,
-                      Service.self, Stop.self, Reap.self, VerifyTeardown.self, CancelAll.self, GLMCalibrationQuote.self, GLMCalibrationCandidates.self, GLMCalibrationRun.self, RuntimeFacts.self],
+                      Service.self, Stop.self, Leave.self, Reap.self, VerifyTeardown.self, CancelAll.self, GLMCalibrationQuote.self, GLMCalibrationCandidates.self, GLMCalibrationRun.self, RuntimeFacts.self,
+                      GPULimit.self],
         defaultSubcommand: Setup.self)
 
     struct Configure: AsyncParsableCommand {

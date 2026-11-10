@@ -8,7 +8,7 @@ extension Autopilot {
         @OptionGroup var configOptions: ConfigOptions
         mutating func run() async throws {
             var start = try Start.parse(["--autopilot"]); start.configOptions = configOptions
-            try await start.run()
+            try await DarkbloomCommandLook.runNested { try await start.run() }
         }
     }
     struct Models: AsyncParsableCommand {
@@ -16,7 +16,7 @@ extension Autopilot {
         @OptionGroup var configOptions: ConfigOptions
         mutating func run() async throws {
             var start = try Start.parse(["--autopilot"]); start.configOptions = configOptions
-            try await start.run()
+            try await DarkbloomCommandLook.runNested { try await start.run() }
         }
     }
 }

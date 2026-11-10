@@ -1,0 +1,304 @@
+name: Darkbloom Watchdog
+
+# Rescues runs stranded on Darkbloom: a job routed to Darkbloom can only run
+# on a Darkbloom runner, so when one waits queued with no runner for
+# DARKBLOOM_WATCHDOG_MINUTES (default 30) since its own creation, and no
+# Darkbloom job of the run got a runner within that time, this cancels the
+# run and re-runs the route job and its dependents (the whole run when the
+# cancel interrupted other jobs), also when other Darkbloom jobs of the run
+# ran or still run. The new
+# attempt's route job then keeps its fallback labels: the plane unreachable,
+# or answering run_fallback_forced. It needs only GitHub and this
+# repository's GITHUB_TOKEN, so it works while Darkbloom's plane is down.
+# What it cannot see, it does not guess: GitHub shows no sign of a job that
+# waits by design, so a payer at its concurrency or resource limit (a sized
+# job waiting for room in its grant) looks like a fault to it once no runner
+# came for the whole wait. Set DARKBLOOM_WATCHDOG_MINUTES above such waits.
+# Darkbloom's own watchdog acts first (after 15 minutes, on the plane's
+# evidence) and marks the run with a `Darkbloom watchdog` check run, which
+# this leaves alone for 20 minutes. A run is rescued at most once, by either:
+# stranded again, it is only cancelled. Off when the repository variable
+# DARKBLOOM_WATCHDOG is `off`.
+#
+# Copy this file into the repository as .github/workflows/darkbloom-watchdog.yml,
+# beside darkbloom-route.yml, unchanged. See README.md.
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: darkbloom-watchdog
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    name: Rescue Stranded Runs
+    runs-on: ubuntu-24.04
+    # A minute of jitter, then at most two rescues of three minutes each.
+    timeout-minutes: 12
+    permissions:
+      actions: write
+      checks: write
+    steps:
+      - name: Cancel and re-run runs whose Darkbloom jobs are stranded
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          API_URL: ${{ github.api_url }}
+          REPOSITORY: ${{ github.repository }}
+          SELF_RUN_ID: ${{ github.run_id }}
+          WATCHDOG: ${{ vars.DARKBLOOM_WATCHDOG }}
+          MINUTES: ${{ vars.DARKBLOOM_WATCHDOG_MINUTES }}
+          ROUTE_JOB: ${{ vars.DARKBLOOM_ROUTE_JOB }}
+          APP_SLUG: ${{ vars.DARKBLOOM_APP_SLUG }}
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          summary() { echo "$1"; echo "$1" >> "$GITHUB_STEP_SUMMARY"; }
+          configuration_error() {
+            echo "::error title=Darkbloom watchdog configuration::$1"
+            exit 1
+          }
+
+          if [ "${WATCHDOG:-}" = off ]; then
+            summary "The Darkbloom watchdog is off: DARKBLOOM_WATCHDOG is 'off'."
+            exit 0
+          fi
+          minutes=${MINUTES:-30}
+          if ! [[ $minutes =~ ^[0-9]{1,4}$ ]] || ((10#$minutes < 15 || 10#$minutes > 1440)); then
+            configuration_error "DARKBLOOM_WATCHDOG_MINUTES must be 15 to 1440"
+          fi
+          minutes=$((10#$minutes))
+          route_job=${ROUTE_JOB:-Select Runners}
+          api=${API_URL:-https://api.github.com}
+          [[ $api == https://* ]] || configuration_error "the API URL must start with https://"
+          [[ ${REPOSITORY:-} =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || configuration_error "no repository"
+          # A random delay, so that repositories and Darkbloom's rounds do not
+          # move in step. Tests set these.
+          jitter=${JITTER_SECONDS:-60}
+          poll=${POLL_SECONDS:-10}
+          cancel_wait=${CANCEL_WAIT_SECONDS:-120}
+          app=${APP_SLUG:-darkbloom-sandbox}
+          max_rescues=2
+          rerun_title="Cancelled to re-run on the fallback runners"
+          cancel_title="Cancelled: rescued once already, not re-run"
+          sleep $((RANDOM % (jitter + 1)))
+
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp"' EXIT
+          # One API call: sets STATUS (000 when the transport failed); the
+          # body is in $tmp/body.
+          request() { # method path [JSON body]
+            local method=$1 path=$2
+            if [ $# -ge 3 ]; then
+              set -- --header 'Content-Type: application/json' --data-binary "$3"
+            else
+              set --
+            fi
+            STATUS=$(curl --disable --silent --show-error --proto '=https' --max-time 20 \
+              --max-filesize 16777216 --user-agent darkbloom-watchdog/1 --request "$method" "$@" \
+              --header "Authorization: Bearer $GH_TOKEN" --header 'Accept: application/vnd.github+json' \
+              --header 'X-GitHub-Api-Version: 2022-11-28' --output "$tmp/body" --write-out '%{http_code}' \
+              "${api%/}/repos/$REPOSITORY/$path") || STATUS=000
+          }
+          # Large JSON never goes on jq's command line: one argument is at
+          # most 128 KiB on Linux, and a day of runs is more ("Argument list
+          # too long"). Pages go through files, the rest through stdin.
+          # The repository's runs with `status` created in the last day, as
+          # one JSON array, up to 1,000; fails when GitHub does.
+          runs_with() { # status
+            local page=1 count
+            : >"$tmp/run-pages"
+            while :; do
+              request GET "actions/runs?status=$1&created=%3E%3D$since&per_page=100&page=$page"
+              [ "$STATUS" = 200 ] || return 1
+              jq -c '.workflow_runs // []' "$tmp/body" >>"$tmp/run-pages"
+              count=$(jq '.workflow_runs // [] | length' "$tmp/body")
+              [ "$count" = 100 ] && [ "$page" -lt 10 ] || break
+              page=$((page + 1))
+            done
+            jq -cs 'add // []' "$tmp/run-pages"
+          }
+          # The run's jobs (filter latest or all) as one JSON array, up to
+          # 1,000; fails when GitHub does.
+          jobs_of() { # run filter
+            local page=1 count
+            : >"$tmp/job-pages"
+            while :; do
+              request GET "actions/runs/$1/jobs?filter=$2&per_page=100&page=$page"
+              [ "$STATUS" = 200 ] || return 1
+              jq -c '.jobs // []' "$tmp/body" >>"$tmp/job-pages"
+              count=$(jq '.jobs // [] | length' "$tmp/body")
+              [ "$count" = 100 ] && [ "$page" -lt 10 ] || break
+              page=$((page + 1))
+            done
+            jq -cs 'add // []' "$tmp/job-pages"
+          }
+          # Waits up to $2 seconds for GitHub to report the run completed.
+          completed() { # run seconds
+            local deadline=$((SECONDS + $2))
+            while :; do
+              request GET "actions/runs/$1"
+              [ "$STATUS" = 200 ] && [ "$(jq -r .status "$tmp/body")" = completed ] && return 0
+              [ "$SECONDS" -lt "$deadline" ] || return 1
+              sleep "$poll"
+            done
+          }
+          # Darkbloom's labels (self-hosted beside a darkbloom-* label), a
+          # GitHub time in Unix seconds (null when absent), a name safe to
+          # print (no workflow commands, no markup), and a marker check run.
+          # shellcheck disable=SC2016 # jq's variables
+          defs='def darkbloom: (.labels // [] | map(ascii_downcase))
+              | index("self-hosted") != null and any(.[]; startswith("darkbloom-"));
+            def at: if type == "string" then sub("[.][0-9]+Z$"; "Z") | fromdateiso8601 else null end;
+            def clean: tostring | gsub("[^A-Za-z0-9 ._()/,+-]"; "?") | .[0:80];
+            def marker($id): .check_runs[]? | select(.name == "Darkbloom watchdog" and .external_id == $id);'
+
+          # Re-runs run $1 after its cancel: the route job and its dependents,
+          # or the whole run when it has no single route job or the cancel
+          # interrupted a job that started before the route job completed (a
+          # route job's rerun would leave it cancelled). Prints what it re-ran.
+          rerun() { # run attempt
+            local jobs route
+            jobs=$(jobs_of "$1" latest) || return 1
+            route=$(jq -r --arg name "$route_job" --argjson attempt "$2" "$defs"'
+              [.[] | select((.name == $name or (.name | endswith(" / " + $name))) and .conclusion == "success")] as $r
+              | if ($r | length) != 1 then empty
+                else ($r[0].completed_at | at // 0) as $done
+                  | if any(.[]; .run_attempt == $attempt and .conclusion == "cancelled" and (.runner_id // 0) != 0
+                      and ((.started_at | at) // 1e12) < $done) then empty else $r[0].id end
+                end' <<<"$jobs")
+            if [ -n "$route" ]; then
+              request POST "actions/jobs/$route/rerun"
+              what="its route job and dependents"
+            else
+              request POST "actions/runs/$1/rerun"
+              what="the whole run"
+            fi
+            case $STATUS in
+              201) echo "$what" ;;
+              403) echo "nothing: it is re-running already" ;;
+              *) return 1 ;;
+            esac
+          }
+
+          now=$(date -u +%s)
+          since=$(date -u -d "@$((now - 86400))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+            || date -u -r "$((now - 86400))" +%Y-%m-%dT%H:%M:%SZ)
+          before=$((now - minutes * 60))
+          failed=0
+          acted=0
+          : >"$tmp/runs"
+          for status in in_progress queued; do
+            runs_with "$status" >>"$tmp/runs" || { echo "::warning::Listing $status runs failed (HTTP $STATUS)"; exit 1; }
+          done
+          runs=$(jq -cs 'add // []' "$tmp/runs")
+
+          # Rescues this workflow cancelled and did not re-run (cut short
+          # between the two): cancelled runs changed in the last half hour
+          # whose current attempt carries this workflow's own marker.
+          cancelled=$(runs_with cancelled) || { echo "::warning::Listing cancelled runs failed (HTTP $STATUS)"; exit 1; }
+          resumable=$(jq -r --arg self "${SELF_RUN_ID:-0}" --argjson recent "$((now - 1800))" "$defs"'
+            .[] | select((.id | tostring) != $self and ((.updated_at | at) // 0) >= $recent)
+            | "\(.id) \(.run_attempt) \(.head_sha)"' <<<"$cancelled")
+          while read -r run attempt sha; do
+            [ -n "$run" ] || continue
+            request GET "commits/$sha/check-runs?check_name=Darkbloom%20watchdog&filter=all&per_page=100"
+            [ "$STATUS" = 200 ] || continue
+            jq -e --arg id "run:$run:$attempt" --arg title "$rerun_title" "$defs"'[marker($id)
+              | select(.app.slug == "github-actions" and .output.title == $title)] | length > 0' \
+              "$tmp/body" >/dev/null || continue
+            acted=1
+            if what=$(rerun "$run" "$attempt"); then
+              summary "Run $run attempt $attempt: resumed its rescue, re-ran $what."
+            else
+              echo "::warning::Run $run: re-running it failed (HTTP $STATUS)"
+              failed=1
+            fi
+          done <<<"$resumable"
+
+          # Runs whose attempt started before the wait, other than this.
+          candidates=$(jq -r --arg self "${SELF_RUN_ID:-0}" --argjson before "$before" "$defs"'
+            unique_by(.id) | .[] | select((.id | tostring) != $self)
+            | select((.run_started_at // .created_at | at) as $t | $t != null and $t <= $before)
+            | "\(.id) \(.run_attempt) \(.head_sha)"' <<<"$runs")
+          rescues=0
+          while read -r run attempt sha; do
+            [ -n "$run" ] || continue
+            jobs=$(jobs_of "$run" latest) || { echo "::warning::Run $run: listing its jobs failed"; failed=1; continue; }
+            # Stranded: a Darkbloom job of this attempt queued with no runner
+            # since before the wait, timed from its own creation (GitHub
+            # creates a job behind `needs:` once those are done), while no
+            # Darkbloom job of the run got a runner within the wait (runners
+            # still coming: a payer at its limit). Other Darkbloom jobs of the
+            # run that ran, or run still, do not hold it back.
+            stranded=$(jq -r --argjson before "$before" --argjson attempt "$attempt" "$defs"'
+              if any(.[]; darkbloom and (.runner_id // 0) != 0 and ((.started_at | at) // 0) > $before) then ""
+              else [.[] | select(.run_attempt == $attempt and .status == "queued" and (.runner_id // 0) == 0
+                and darkbloom and ((.created_at | at) // 1e12) <= $before) | .name | clean]
+                | join(", ") end' <<<"$jobs")
+            [ -n "$stranded" ] || continue
+            request GET "commits/$sha/check-runs?check_name=Darkbloom%20watchdog&filter=all&per_page=100"
+            [ "$STATUS" = 200 ] || { echo "::warning::Run $run: reading its checks failed (HTTP $STATUS)"; failed=1; continue; }
+            # Darkbloom's watchdog (its App) marked this attempt within 20
+            # minutes: it is rescuing it.
+            if jq -e --arg id "run:$run:$attempt" --arg app "$app" --argjson since "$((now - 1200))" "$defs"'
+                [marker($id) | select(.app.slug == $app and ((.started_at // .completed_at | at) // 0) >= $since)]
+                | length > 0' "$tmp/body" >/dev/null; then
+              summary "Run $run attempt $attempt: Darkbloom's watchdog is rescuing it."
+              continue
+            fi
+            # Rescued before, by either watchdog: a marker of an earlier
+            # attempt, or an earlier attempt's Darkbloom job cancelled with no
+            # runner after the whole wait. Then it is only cancelled.
+            marked=$(jq -r --arg run "run:$run:" --argjson attempt "$attempt" '[.check_runs[]?
+              | select(.name == "Darkbloom watchdog" and (.external_id // "" | startswith($run)))
+              | .external_id | ltrimstr($run) | tonumber? | select(. < $attempt)] | length > 0' "$tmp/body")
+            all=$(jobs_of "$run" all) || { echo "::warning::Run $run: listing its attempts failed"; failed=1; continue; }
+            once=$(jq -r --argjson attempt "$attempt" --argjson wait "$((minutes * 60))" --argjson marked "$marked" "$defs"'
+              $marked or any(.[]; .run_attempt < $attempt and .conclusion == "cancelled" and (.runner_id // 0) == 0
+                and darkbloom and ((.completed_at | at) // 0) - ((.created_at | at) // 1e12) >= $wait)' <<<"$all")
+            if [ "$rescues" -ge "$max_rescues" ]; then
+              summary "Run $run attempt $attempt: stranded; left for the next round ($max_rescues rescues a round)."
+              continue
+            fi
+            # Nobody re-ran it since it was listed.
+            request GET "actions/runs/$run"
+            [ "$STATUS" = 200 ] && [ "$(jq -r .run_attempt "$tmp/body")" = "$attempt" ] || continue
+            rescues=$((rescues + 1))
+            acted=1
+            # Marked first: a rescue cut short after the cancel resumes next time.
+            title=$rerun_title
+            [ "$once" != true ] || title=$cancel_title
+            mark=$(jq -cn --arg sha "$sha" --arg id "run:$run:$attempt" --arg title "$title" --arg jobs "$stranded" '{
+              name: "Darkbloom watchdog", head_sha: $sha, external_id: $id, status: "completed",
+              conclusion: "neutral", output: {title: $title,
+                summary: "A Darkbloom job of this run attempt got no runner (\($jobs)): the repository watchdog cancelled it."}}')
+            request POST check-runs "$mark"
+            [ "$STATUS" = 201 ] || { echo "::warning::Run $run: marking it failed (HTTP $STATUS)"; failed=1; continue; }
+            request POST "actions/runs/$run/cancel"
+            case $STATUS in
+              202) ;;
+              409) summary "Run $run attempt $attempt: someone else is cancelling it; not re-run."; continue ;;
+              *) echo "::warning::Run $run: cancelling it failed (HTTP $STATUS)"; failed=1; continue ;;
+            esac
+            if ! completed "$run" "$cancel_wait"; then
+              request POST "actions/runs/$run/force-cancel"
+              completed "$run" 60 || { echo "::warning::Run $run: GitHub did not cancel it"; failed=1; continue; }
+            fi
+            if [ "$once" = true ]; then
+              summary "Run $run attempt $attempt: cancelled ($stranded waited ${minutes}+ minutes for a Darkbloom runner); it was rescued once already, so it is not re-run again."
+              continue
+            fi
+            if what=$(rerun "$run" "$attempt"); then
+              summary "Run $run attempt $attempt: $stranded waited ${minutes}+ minutes for a Darkbloom runner; cancelled and re-ran $what on the fallback runners."
+            else
+              echo "::warning::Run $run: re-running it failed (HTTP $STATUS)"
+              failed=1
+            fi
+          done <<<"$candidates"
+          [ "$acted" = 1 ] || summary "No run is stranded on Darkbloom."
+          exit "$failed"

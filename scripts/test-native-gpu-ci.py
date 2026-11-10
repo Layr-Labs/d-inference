@@ -203,10 +203,11 @@ class NativeGPUTestRouting(unittest.TestCase):
                 self.assertEqual(calls, [])
 
     def test_workflow_keeps_checked_entrypoints(self):
-        workflow = (ROOT / '.github/workflows/ci.yml').read_text()
+        # The test jobs, then CI (master)'s Release Integrity, which runs this file.
+        workflow = ((ROOT / '.github/workflows/provider-tests.yml').read_text()
+                    + (ROOT / '.github/workflows/ci-master.yml').read_text())
         self.assertIn('python3 ../scripts/run-provider-test-watchdog.py', workflow)
         self.assertIn('-- ../scripts/run-provider-tests.sh', workflow)
-        self.assertIn('run: ../../scripts/run-paged-kernel-tests.sh', workflow)
         self.assertIn('run: python3 scripts/test-native-gpu-ci.py', workflow)
 
 

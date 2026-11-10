@@ -8,6 +8,8 @@ struct SandboxSetupOptions: Equatable, Sendable {
     var waitReady = false
     var linuxSlots: Int?
     var macOSSlots: Int?
+    /// `--disk`: absolute paths, in the owner's order.
+    var disks: [String] = []
 }
 
 /// Downloads the add-on's installer (`install.sh`) from the Darkbloom
@@ -24,6 +26,9 @@ enum SandboxInstaller {
     /// text: they check this Mac and print the add-on's slot plan, installing
     /// nothing. An installer is run with it only when its text names it.
     static let planOption = "--plan"
+    /// Installers whose release supports work disks (external drives) accept
+    /// this option, repeated, and name it in their text.
+    static let diskOption = "--disk"
 
     enum Failure: Error, Equatable, CustomStringConvertible {
         case download(URL, String)
@@ -95,16 +100,19 @@ enum SandboxInstaller {
         return data
     }
 
-    static func supportsJSONProgress(_ script: Data) -> Bool {
-        String(decoding: script, as: UTF8.self).contains(jsonProgressOption)
-    }
+    static func supportsJSONProgress(_ script: Data) -> Bool { names(script, jsonProgressOption) }
 
-    static func supportsPlan(_ script: Data) -> Bool {
-        String(decoding: script, as: UTF8.self).contains(planOption)
+    static func supportsPlan(_ script: Data) -> Bool { names(script, planOption) }
+
+    static func supportsDisks(_ script: Data) -> Bool { names(script, diskOption) }
+
+    private static func names(_ script: Data, _ option: String) -> Bool {
+        String(decoding: script, as: UTF8.self).contains(option)
     }
 
     /// The installer's arguments. An installer without `--json-progress`
-    /// knows only the slot options, so the others are left out for it.
+    /// knows only the slot options, so the others are left out for it; setup
+    /// gives `--disk` only to an installer that names it.
     static func arguments(_ options: SandboxSetupOptions, jsonProgress: Bool) -> [String] {
         var arguments: [String] = []
         if jsonProgress {
@@ -113,20 +121,20 @@ enum SandboxInstaller {
             if options.noBrowser { arguments.append("--no-browser") }
             if options.waitReady { arguments.append("--wait-ready") }
         }
-        return arguments + slotArguments(options)
+        return arguments + sizingArguments(options)
     }
 
     /// The arguments that ask for the add-on's plan for the owner's slot
-    /// counts. No `--yes`: the plan installs nothing.
+    /// counts and disks. No `--yes`: the plan installs nothing.
     static func planArguments(_ options: SandboxSetupOptions) -> [String] {
-        [planOption, jsonProgressOption] + slotArguments(options)
+        [planOption, jsonProgressOption] + sizingArguments(options)
     }
 
-    private static func slotArguments(_ options: SandboxSetupOptions) -> [String] {
+    private static func sizingArguments(_ options: SandboxSetupOptions) -> [String] {
         var arguments: [String] = []
         if let linux = options.linuxSlots { arguments += ["--linux-slots", String(linux)] }
         if let macOS = options.macOSSlots { arguments += ["--macos-slots", String(macOS)] }
-        return arguments
+        return arguments + options.disks.flatMap { [diskOption, $0] }
     }
 
     /// Writes the script into a new owner-only directory and returns its path;

@@ -126,12 +126,22 @@ enum UpdateAtomicFilesystem {
         let handle = try FileHandle(forReadingFrom: file)
         defer { try? handle.close() }
         var hasher = SHA256()
+        try hashRemainingBytes(of: handle, into: &hasher)
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Feeds the rest of `handle` to `hasher` in 1 MiB chunks, each read in its
+    /// own autorelease pool. On Darwin `read(upToCount:)` returns autoreleased
+    /// storage, and a Swift concurrency thread drains no pool between jobs:
+    /// without one, every byte hashed in one synchronous run stays resident,
+    /// and an install or rollback hashes each bundle several times.
+    /// WeightHasher bounds its reads the same way.
+    private static func hashRemainingBytes(of handle: FileHandle, into hasher: inout SHA256) throws {
         while true {
-            let chunk = try handle.read(upToCount: 1024 * 1024) ?? Data()
-            if chunk.isEmpty { break }
+            let chunk = try autoreleasepool { try handle.read(upToCount: 1024 * 1024) ?? Data() }
+            if chunk.isEmpty { return }
             hasher.update(data: chunk)
         }
-        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     /// Content-address the complete backup tree. File paths, node kinds,
@@ -167,11 +177,7 @@ enum UpdateAtomicFilesystem {
                 hashLine("F \(relative)", into: &hasher)
                 let handle = try FileHandle(forReadingFrom: entry)
                 do {
-                    while true {
-                        let chunk = try handle.read(upToCount: 1024 * 1024) ?? Data()
-                        if chunk.isEmpty { break }
-                        hasher.update(data: chunk)
-                    }
+                    try hashRemainingBytes(of: handle, into: &hasher)
                     try handle.close()
                 } catch {
                     try? handle.close()

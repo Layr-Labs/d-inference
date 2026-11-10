@@ -19,7 +19,7 @@ extension Start {
         // could only fail and exhaust its restart budget.
         _ = try DistributedStartSessionFactory(providerConfiguration: path)
         guard let setup = try ClusterMemberSupervisionSetup.load(providerConfiguration: path) else {
-            throw ValidationError("No saved cluster setup in \(path.path); run `darkbloom cluster` on both Macs to pair them again.")
+            throw ValidationError("No saved cluster setup in \(path.path); run `\(ClusterPairSummary.cli) cluster` on both Macs to pair them again.")
         }
         let config = try ConfigManager.load(from: path)
         let effectiveCoordinator = coordinatorURL ?? config.coordinator.url
@@ -48,7 +48,8 @@ extension Start {
         print("  Updates are coordinated: both members drain and update at the cluster's update slot.")
         let identity = ClusterMemberPermissionIdentity.current(executablePath: Self.currentExecutablePath())
         if identity.verdict == .askedOnce {
-            print("  Permissions: macOS asks once for Local Network on this Mac; click Allow when it appears.")
+            print("  Permissions: macOS asks once for Local Network on this Mac's own screen; click Allow when it appears")
+            print("  (on a Mac with no display, through Screen Sharing).")
         } else {
             print("  Permissions: macOS will not ask once for this build:")
             for problem in identity.problems { print("    - \(problem)") }

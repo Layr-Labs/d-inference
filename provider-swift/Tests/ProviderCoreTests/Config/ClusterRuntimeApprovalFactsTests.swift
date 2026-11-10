@@ -70,9 +70,11 @@ struct ClusterRuntimeApprovalFactsTests {
             #"{"evidence_sha256":"\#(h(seed))","mode_families":[\#(families.map { "\"\($0)\"" }.joined(separator: ","))]}"#
         }
         func qualification(_ schedule: Int, _ mode: String, cuts: String, media: Bool) -> String {
-            #"{"cuts":[\#(cuts)],"diverged":false,"evidence_sha256":"\#(h("f"))","mode":"\#(mode)","#
+            // Tensor parallel serves the row's native limits; the pipeline its memory plan's request.
+            let (output, prompt) = media ? (65_536, 262_143) : (32_768, 32_768)
+            return #"{"cuts":[\#(cuts)],"diverged":false,"evidence_sha256":"\#(h("f"))","mode":"\#(mode)","#
                 + #""numerics_classes":["g17d-nax1-mlx-22222222-macos27.0","g17d-nax1-mlx-22222222-macos27.0"],"promotable":true,"#
-                + #""qualified_at":"2026-10-31T00:00:00Z","request_envelope":{"max_output_tokens":1048576,"max_prompt_tokens":1048576,"#
+                + #""qualified_at":"2026-10-31T00:00:00Z","request_envelope":{"max_output_tokens":\#(output),"max_prompt_tokens":\#(prompt),"#
                 + #""sampling":true,"tools":true,"video":\#(media),"vision":\#(media)},"schedule":\#(schedule),"tensor_parallel_shares":null}"#
         }
         // Keys in byte order at every level, a model without a grant and equal shares written as null, no whitespace, no
@@ -110,8 +112,15 @@ struct ClusterRuntimeApprovalFactsTests {
         #expect(glm.capabilitySHA256 == "2069ee1bf4e5f829203a252dfddf7ea365d322b76c33a662e384aaf7600fb462")
         #expect(glm.pairServingGrant == .init(evidenceSHA256: ClusterPublicModels.evidenceSHA256, modeFamilies: ["pipeline", "tensor_parallel"]))
         let declared = try #require(ClusterPublicModels.declared.first { $0.catalogModelID == "glm-5.3-flash" })
+        // That app's envelopes predate the profile-bound allowances: the coordinator's maximum for both.
+        let unbounded = ClusterWorkerProfile(id: "registered_glm53_flash_greedy_generation_v1", vocabularySize: 154_880,
+            maximumPromptTokens: ClusterPublicModels.maximumTokens, maximumOutputTokens: ClusterPublicModels.maximumTokens,
+            maximumChunkTokens: 2048, maximumContextTokens: ClusterPublicModels.maximumTokens)
         #expect(glm.parityQualifications == ClusterRuntimeApprovalFacts.parityQualifications(declared, metallibSHA256: facts.metallibSHA256,
-            inputModalities: ["text", "image", "video"], layers: 45, servesMedia: { $0 == .tensorParallel }))
+            inputModalities: ["text", "image", "video"], layers: 45, servedProfile: { _ in unbounded },
+            servesMedia: { $0 == .tensorParallel }))
+        #expect(glm.parityQualifications.allSatisfy {
+            $0.requestEnvelope.maxPromptTokens == 1_048_576 && $0.requestEnvelope.maxOutputTokens == 1_048_576 })
         // Per schedule, q1 the pipeline (cut at 45 / 2 = 22) and q2 tensor parallel.
         #expect(glm.parityQualifications.map(\.mode) == [.pipeline, .pipeline, .tensorParallel, .tensorParallel])
         #expect(glm.parityQualifications.map(\.schedule) == [1, 2, 1, 2])
@@ -440,9 +449,11 @@ struct ClusterRuntimeApprovalFactsTests {
     }
 
     @Test func theRequestEnvelopeAdmitsTheMediaTheCatalogEntryListsWhereThePlacementServesMedia() {
+        let profile = ClusterWorkerProfile(id: "p", vocabularySize: 1000, maximumPromptTokens: 262_143,
+            maximumOutputTokens: 65_536, maximumChunkTokens: 512, maximumContextTokens: 262_144)
         func envelope(_ modalities: [String], servesMedia: Bool = true) -> (vision: Bool, video: Bool) {
-            let e = ClusterPublicModels.requestEnvelope(inputModalities: modalities, servesMedia: servesMedia)
-            #expect(e.sampling && e.tools && e.maxPromptTokens == 1_048_576 && e.maxOutputTokens == 1_048_576)
+            let e = ClusterPublicModels.requestEnvelope(inputModalities: modalities, servesMedia: servesMedia, profile: profile)
+            #expect(e.sampling && e.tools && e.maxPromptTokens == 262_143 && e.maxOutputTokens == 65_536)
             return (e.vision, e.video)
         }
         #expect(envelope([]) == (false, false))
@@ -468,14 +479,26 @@ struct ClusterRuntimeApprovalFactsTests {
         // The declared 27B (64 layers) given by hand: the pipeline then tensor parallel, each on both schedules, this
         // build's class on both ranks, text only.
         let q27 = try f.model("q27", fixture: "registered-qwen38-27b")
+        let capability = try ClusterRuntimeCapabilityCodec.decode(Data(contentsOf: q27.appendingPathComponent("capability.out")))
         let byHand = try qualifications(q27)
         #expect(byHand.map(\.mode) == [.pipeline, .pipeline, .tensorParallel, .tensorParallel])
         #expect(byHand.map(\.schedule) == [1, 2, 1, 2])
         #expect(byHand.map(\.cuts) == [[32], [32], [], []])
+        // Its serial tensor parallel rests on its declared assistant's report (`ClusterPublicModels.qwen27TensorAssistant`).
+        let assistant = ClusterPublicModels.qwen27TensorAssistant
         for q in byHand {
             #expect(q.numericsClasses == [metallibClass, metallibClass])
-            #expect(q.promotable && !q.diverged && q.evidenceSHA256 == ClusterPublicModels.evidenceSHA256 && q.qualifiedAt == "2026-11-03T00:00:00Z")
-            #expect(q.requestEnvelope == ClusterPublicModels.requestEnvelope(inputModalities: [], servesMedia: true))
+            #expect(q.promotable && !q.diverged)
+            #expect(q.mode == .tensorParallel && q.schedule == 1
+                ? q.evidenceSHA256 == assistant.evidenceSHA256 && q.qualifiedAt == assistant.qualifiedAt
+                : q.evidenceSHA256 == ClusterPublicModels.evidenceSHA256 && q.qualifiedAt == "2026-11-03T00:00:00Z")
+            #expect(q.requestEnvelope == ClusterPublicModels.requestEnvelope(inputModalities: [], servesMedia: true,
+                profile: ClusterModelFeaturePolicy.servedProfile(capability, mode: q.mode)))
+            // What a pair serves in the qualification's mode, not the coordinator's maximum: the coordinator sends a
+            // public request outside it to a single Mac instead of to the pair's refusal (production 11-05/06, 503
+            // `request_exceeds_context`). Tensor parallel serves the row's native limits; a pipeline its memory plan.
+            let served = q.mode == .tensorParallel ? (262_143, 65_536) : (32_768, 32_768)
+            #expect((q.requestEnvelope.maxPromptTokens, q.requestEnvelope.maxOutputTokens) == served, "\(q.mode)")
         }
         // As a release candidate, the catalog entry's media where the placement serves media (tensor parallel,
         // `ClusterModelFeaturePolicy.mediaContract`); the pipeline is text only.
@@ -768,12 +791,14 @@ struct ClusterRuntimeApprovalFactsTests {
                   pairServingGrant: grant, parityQualifications: qualifications)
         }
         let classes = Array(repeating: "g17d-nax1-mlx-22222222-macos27.0", count: 2)
+        let profile = ClusterWorkerProfile(id: "registered_qwen38_27b_greedy_generation_v1", vocabularySize: 248_320,
+            maximumPromptTokens: 262_143, maximumOutputTokens: 65_536, maximumChunkTokens: 512, maximumContextTokens: 262_144)
         let qualifications = [(ClusterGenerationMode.pipeline, [32]), (.tensorParallel, [])].flatMap { mode, cuts in
             [UInt8(1), 2].map {
                 ClusterRuntimeApprovalFacts.ParityQualification(schedule: $0, numericsClasses: classes, cuts: cuts, mode: mode,
                     promotable: true, diverged: false, evidenceSHA256: String(repeating: "f", count: 64), qualifiedAt: "2026-10-31T00:00:00Z",
                     requestEnvelope: ClusterPublicModels.requestEnvelope(inputModalities: ["text", "image", "video"],
-                                                                         servesMedia: mode == .tensorParallel))
+                        servesMedia: mode == .tensorParallel, profile: mode == .tensorParallel ? profile : profile.memoryScope))
             }
         }
         return try .init(nativeRuntimeSHA256: String(repeating: "1", count: 64), metallibSHA256: String(repeating: "2", count: 64),

@@ -79,6 +79,49 @@ struct ProviderBusyWireTests {
         #expect(heartbeat.busy == nil && heartbeat.status == .draining)
     }
 
+    @Test func theOwnerPauseHasItsOwnReasonAndNoAddOn() throws {
+        let owner = ProviderBusy(reason: .owner, sinceMs: 1_800_000_000_456)
+        let json = try object(heartbeat(status: .draining, busy: owner))
+        #expect(json["status"] as? String == "draining")
+        #expect(json["busy_reason"] as? String == "owner")
+        #expect((json["busy_since_ms"] as? NSNumber)?.int64Value == 1_800_000_000_456)
+        #expect(json["busy_addon"] == nil)
+        for message in [heartbeat(status: .draining, busy: owner), register(attestation: nil, busy: owner)] {
+            switch try ProviderProtocolCodec.decodeProviderMessage(from: ProviderProtocolCodec.encodeProviderMessage(message)) {
+            case .heartbeat(let heartbeat): #expect(heartbeat.busy == owner)
+            case .register(let register): #expect(register.busy == owner)
+            case let other: Issue.record("unexpected \(other)")
+            }
+        }
+    }
+
+    @Test func anAddOnHoldOutranksTheOwnerPause() {
+        let owner = ProviderBusy(reason: .owner, sinceMs: 1_800_000_000_000)
+        #expect(ProviderBusy.publishing(addonHold: Self.busy, ownerPause: owner) == Self.busy)
+        #expect(ProviderBusy.publishing(addonHold: Self.busy, ownerPause: nil) == Self.busy)
+        #expect(ProviderBusy.publishing(addonHold: nil, ownerPause: owner) == owner)
+        #expect(ProviderBusy.publishing(addonHold: nil, ownerPause: nil) == nil)
+    }
+
+    /// A reason newer than this build still decodes: the frame stays valid, without the busy fields.
+    @Test func aBusyReasonThisBuildDoesNotKnowStillDecodes() throws {
+        func frame(_ reason: String) -> Data {
+            Data(("{\"type\":\"heartbeat\",\"status\":\"draining\",\"busy_reason\":\"\(reason)\",\"busy_since_ms\":7,"
+                + #""stats":{"requests_served":0,"tokens_generated":0},"#
+                + #""system_metrics":{"memory_pressure":0,"cpu_usage":0,"thermal_state":"nominal"}}"#).utf8)
+        }
+        guard case .heartbeat(let heartbeat) = try ProviderProtocolCodec.decodeProviderMessage(from: frame("vacation")) else {
+            Issue.record("expected a heartbeat")
+            return
+        }
+        #expect(heartbeat.status == .draining && heartbeat.busy == nil)
+        guard case .heartbeat(let owner) = try ProviderProtocolCodec.decodeProviderMessage(from: frame("owner")) else {
+            Issue.record("expected a heartbeat")
+            return
+        }
+        #expect(owner.busy == ProviderBusy(reason: .owner, sinceMs: 7))
+    }
+
     @Test func theClientSendsBusyFieldsOnlyBesideADrainingStatus() async throws {
         let state = ProviderState()
         let client = CoordinatorClient(

@@ -235,6 +235,8 @@ public actor ProviderLoop {
     internal var appAttestEvidenceLog: @Sendable (_ context: String) -> Void = {
         ProviderProcessRun.logAppAttestEntitlementEvidence(context: $0)
     }
+    /// How long a planned stop waits for an attestation already with Apple.
+    internal var appAttestStopWaitSeconds = AppAttestShadowClient.outstandingAttestationWaitSeconds
     internal let loopConfig: ProviderLoopConfig
     internal var ordinaryServingModelIDs: Set<String>
     /// The operator's explicit selection: `enabled_models` with the start
@@ -305,6 +307,8 @@ public actor ProviderLoop {
     /// container EOS snapshot, and the production CBv2 engine builder used
     /// by `makeEngineV2BundleForSlot`. nil in production.
     internal var engineV2SlotHooks: EngineV2SlotHooks?
+    /// Stands in for `ClusterGPUHold.productionServesHere` in tests of the load's production guard. nil in production.
+    internal var productionServesForTesting: (@Sendable () -> String?)?
     #if DEBUG
     /// Replaces the GLM publication verdict so its unwind is testable without
     /// an undersized real pool.
@@ -432,6 +436,9 @@ public actor ProviderLoop {
 
     /// The running local OpenAI HTTP server task (unified mode), if any.
     internal var localServerTask: Task<Void, Never>?
+    /// Why that server couldn't listen, for `status` and `local` (`DaemonState.localAPIFailure`); nil while it
+    /// listens or there is none.
+    internal var localEndpointFailure: DaemonState.LocalAPIFailure?
 
     /// Guards against concurrent loads. `modelsLoading` tracks which models
     /// are mid-load; waiters suspend until the first loader finishes.
@@ -526,6 +533,26 @@ public actor ProviderLoop {
     /// Internal, nil in production: suspends the drain bound's cancellation
     /// pass where a release can interleave with it.
     internal var addonHoldBeforeCancellingStragglersForTesting: (@Sendable () async -> Void)?
+    /// Me first (`ProviderLoop+MeFirst`): the owner pause's state machine,
+    /// nil while me first is off; the one timer that ends the pause, armed
+    /// when the owner's idle time starts counting and gone once the pause
+    /// ends; and the wall clock (Unix milliseconds), a test seam.
+    internal var meFirst: MeFirstPolicy?
+    internal var meFirstResumeTimer: Task<Void, Never>?
+    internal var meFirstTimerGeneration: UInt64 = 0
+    internal var meFirstNowMs: @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1_000) }
+    /// Test seam, nil in production: replaces the capacity rebuild, which
+    /// reads MLX's Metal allocator, so loop tests on a serving Mac never open
+    /// the GPU.
+    internal var capacityRebuildForTesting: (@Sendable () async -> Void)?
+    /// Test seam, nil in production: replaces a coordinator request's
+    /// terminal read of MLX's allocator (active and peak bytes), for the same
+    /// reason.
+    internal var terminalMemoryForTesting: (@Sendable () -> (active: Int64, peak: Int64))?
+    /// Test seam, nil in production: awaited by a coordinator request's
+    /// handler right after its cancellation token is registered, so a test
+    /// can give way at that point and check the handler's exits.
+    internal var afterTokenRegisteredForTesting: (@Sendable (String) async -> Void)?
     internal var lifecycleStatus = ProviderDrainStatus()
     internal var lastLifecycleTelemetry: ProviderDrainStatus?
     internal var lifecycleDrainTask: Task<ProviderDrainStatus, Never>?
@@ -550,6 +577,11 @@ public actor ProviderLoop {
     /// returned yet (`ProviderLoop+WorkFIFO.swift`).
     internal var releasedAdmissions: [String: ReleasedAdmission] = [:]
     internal var coldLoadReleasesWorkFIFO = WorkFIFOPolicy.releasesColdLoadWaits()
+    /// Coordinator requests read off the connection whose admission has not
+    /// returned yet, and the coordinator cancels held for them
+    /// (`ProviderLoop+WorkFIFO.swift`).
+    internal var unreturnedCoordinatorAdmissions: [String: Int] = [:]
+    internal var cancelsAwaitingAdmission: Set<String> = []
     internal let localResponseTracker = LocalResponseTracker()
     internal var mtpStagingReservations = MTPStagingReservations()
     internal var mtpAdmissionDrains = MTPAdmissionDrains()
@@ -764,6 +796,11 @@ public actor ProviderLoop {
     /// The follower member's link serving of its committed starts; retained
     /// here because the session control holds its serving host weakly.
     internal var clusterPairFollower: DistributedMemberLinkFollower?
+    /// The pair slot whose admission opened, once its warmup canary passed:
+    /// the leader's local requests wait for it (`ProviderLoop+ClusterPairLocal`).
+    internal var clusterPairAdmissionOpenSlotID: UUID?
+    /// The leader's local requests on its pair's lanes: waiting, or holding one.
+    internal var clusterPairLocalLanes = ClusterPairLocalLanes(limits: .fromEnvironment())
 
     /// Rate cap + trailing-edge coalescing for event-triggered heartbeats
     /// (routing v2, Phase 1). Driven from `updateAggregateCapacity()` — the
@@ -1076,7 +1113,7 @@ public actor ProviderLoop {
 
     internal static let schedulerMaxConcurrent = 24
     internal static let schedulerPendingTimeout: Duration = .seconds(120)
-    internal static let schedulerDefaultMaxTokens = 4096
+    internal static let schedulerDefaultMaxTokens = SlotSizingSnapshot.defaultOutputTokens
 
     /// Infer the reasoning parser format from the model's `model_type`
     /// (read from config.json at scan time). Used to auto-select the

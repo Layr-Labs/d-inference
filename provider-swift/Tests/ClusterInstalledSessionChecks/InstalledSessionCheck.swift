@@ -102,7 +102,7 @@ final class EndpointBox: @unchecked Sendable {
             "No probe: no share rates")
         try require(ClusterShareProbeHistory.record([leader, follower], artifactSHA256: artifact, homeDirectory: probeHome, now: 1_000),
             "Probes not kept")
-        let file = ClusterShareProbeHistory.defaultFile(homeDirectory: probeHome)
+        let file = ClusterShareProbeHistory.defaultFile(installDirectory: BuildEnvironment.current.installDirectory(home: probeHome))
         let mode = (try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? NSNumber)?.intValue
         try require(mode == 0o600, "The share probe file is not owner-only")
         let rates = ClusterShareProbeHistory.shareRates(homeDirectory: probeHome, artifactSHA256: artifact, members: ["a", "b"], now: 2_000)
@@ -152,7 +152,7 @@ final class EndpointBox: @unchecked Sendable {
                   handoffBytes: nil, mtpDrafted: nil, mtpAccepted: nil, outcome: "stop", ranks: ranks, concurrentRequests: 0,
                   rankBuildSHA256: builds)
         }
-        let log = ClusterPairTelemetryLog(file: ClusterPairTelemetryLog.defaultFile(homeDirectory: home), sessionID: "served-build")
+        let log = ClusterPairTelemetryLog(file: ClusterPairTelemetryLog.defaultFile(installDirectory: BuildEnvironment.current.installDirectory(home: home)), sessionID: "served-build")
         // The session's first request on the route warms it (telemetry only); then one record of each kind.
         for value in [record("warm", [current, current]), record("now-1", [current, current]), record("now-2", [current, current]),
                       record("other", [earlier, earlier]), record("mixed", [current, earlier]), record("old", nil),
@@ -756,7 +756,7 @@ final class EndpointBox: @unchecked Sendable {
         try require(flock(descriptor,LOCK_EX|LOCK_NB)==0,"lock fixture")
         var message=""
         do { try check() } catch { message=String(describing:error) }
-        try require(message.contains("process 4242") && message.contains("darkbloom stop"),"ordinary provider was not refused clearly: \(message)")
+        try require(message.contains("process 4242") && message.contains("stop --solo` on this Mac")&&message.contains("single-Mac Darkbloom provider"),"ordinary provider was not refused clearly: \(message)")
         try check(parent:4242) // The leader that launched this owner holds the lock for its own session.
         try check(arguments:["darkbloom","start","--cluster-member"]) // A control-only member serves nothing itself.
         try rejected{try check(arguments:nil)} // A holder that cannot be identified is not assumed to be a member.

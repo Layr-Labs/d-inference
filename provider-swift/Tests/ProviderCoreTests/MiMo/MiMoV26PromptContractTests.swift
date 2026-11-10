@@ -95,7 +95,7 @@ final class MiMoV26PromptContractTests: XCTestCase {
         for bad: Any in ["false", 0, 1, NSNull()] {
             bodies.append(["model": "m", "messages": [["role": "user", "content": "hello"]], "enable_thinking": bad])
         }
-        bodies.append(["model": "m", "messages": [["role": "user", "content": "hello"]], "reasoning": ["effort": "high"]])
+        bodies.append(["model": "m", "messages": [["role": "user", "content": "hello"]], "reasoning": ["effort": "turbo"]])
         bodies.append(["model": "m", "messages": [
             ["role": "assistant", "content": "", "tool_calls": [["id": "a", "type": "function",
                 "function": ["name": "f", "arguments": [1, NSNull()] as [Any]]]]],

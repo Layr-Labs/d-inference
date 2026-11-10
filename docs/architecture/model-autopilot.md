@@ -1,6 +1,6 @@
 # Provider Autopilot
 
-> Last updated: 2026-11-02
+> Last updated: 2026-11-08
 
 Provider Autopilot offers an external controller the models of a Mac whose
 operator saved Autopilot consent: the saved selection plus every verified
@@ -16,6 +16,17 @@ earnings or relaxed memory limits.
 owns consent and the persisted selection. Ordinary startup selection remains
 separate. The provider publishes typed snapshots, validates control leases and
 rechecks actual work, pins, inventory and memory before changing residency.
+`darkbloom autopilot enable` and `autopilot models` enroll through that startup
+selector by running `darkbloom start --autopilot` inside themselves
+(`Autopilot/AutopilotEnrollmentCommands.swift`), with a plain look
+(`DarkbloomCommandLook.runNested`): in a terminal, that inner `start` draws no
+Darkbloom mark of its own. Autopilot is for the Darkbloom network: a plain
+interactive `darkbloom start` asks for consent only when it serves the Darkbloom
+network alone. Both, me first never asks and keeps the saved answer
+(`Start.resolveAutopilotChoice`,
+`provider-swift/Sources/darkbloom/Start/StartCommand+Autopilot.swift`). Only me
+has no Autopilot (`start --autopilot` is refused for it) and leaves the saved
+answer as it is.
 
 | Responsibility | Provider source |
 |---|---|
@@ -193,7 +204,9 @@ status carries the first reason as `detail`, and consented snapshots report the
 reasons and their age ([protocol](../reference/protocol-messages.md#model_autopilot-state)).
 While a local add-on holds the Mac the reason is `addon_hold`, reported instead
 of `draining` for the drain the hold owns; operations are refused until the
-[hold](addon-hold.md) ends.
+[hold](addon-hold.md) ends. While the [owner pause](owner-pause.md) holds
+Darkbloom work the reason is `draining`, so a command racing its heartbeat is
+refused and cannot evict the model the owner is using.
 
 `superviseTransitions` runs on the capacity tick while consent is saved. It ages
 each occurrence of a bounded transition (`ModelAutopilotTransition.stallBound`).

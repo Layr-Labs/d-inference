@@ -257,9 +257,10 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
     /// The facts of `installation` for exactly `models`: a model `publicModels`
     /// declare (this build's declaration by default) has the declared grant and
     /// parity qualifications, any other the grant of `decisions` (this build's
-    /// bundled records by default).
+    /// bundled records by default). A resident assistant `publicModels` declare
+    /// for a model's artifact is part of its resource policy.
     public static func compute(installation: Installation, models: [ModelFiles],
-                               publicModels: [ClusterPublicModel] = ClusterPublicModels.declared,
+                               publicModels: [ClusterPublicModel] = ClusterPublicModels.current,
                                decisions: ClusterPairServingDecisions = ClusterPairServingGrants.decisions) throws -> Self {
         let installed = try HashedInstallation(installation)
         return try installed.facts(models.map { try installed.describe($0, publicModels: publicModels, decisions: decisions).entry })
@@ -292,12 +293,17 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
             grant = try (try? ClusterPairServingGrants.grant(runtimeModelID: capability.runtimeModelID, publicModelID: artifact.modelID,
                 artifactSHA256: capability.artifactSHA256, decisions: decisions)).map(PairServingGrant.init)
         }
+        // The member's own start computes the same digest from the same declaration (`DistributedInstalledNativeStart`).
+        let assistant = ClusterPublicModels.tensorAssistant(runtimeModelID: capability.runtimeModelID,
+            artifactSHA256: capability.artifactSHA256, in: publicModels)
         return Described(entry: Model(model: artifact.modelID, artifactSHA256: capability.artifactSHA256,
             capabilitySHA256: ClusterConfigurationCodec.sha256(bytes), profileSHA256: capability.profileFingerprint,
-            resourcePolicySHA256: NativePairMemberPolicy.hex(DistributedInstalledNativeStart.resourcePolicySHA256(capability)),
+            resourcePolicySHA256: NativePairMemberPolicy.hex(DistributedInstalledNativeStart.resourcePolicySHA256(capability,
+                assistant: assistant)),
             pairServingGrant: grant,
             parityQualifications: declared.map { parityQualifications($0, metallibSHA256: metallibSHA256, inputModalities: inputModalities,
                 layers: layerCount(configuration),
+                servedProfile: { ClusterModelFeaturePolicy.servedProfile(capability, mode: $0) },
                 servesMedia: { ClusterModelFeaturePolicy.mediaContract(capability: capability, mode: $0) != nil }) } ?? []),
             runtimeModelID: capability.runtimeModelID)
     }
@@ -311,6 +317,9 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
         }
     }
 
+    /// The prefill schedule a resident tensor assistant runs under: serial (`ClusterPrefillSchedule.serial`).
+    static let assistantSchedule: UInt8 = 1
+
     /// The parity qualifications of a declared model: one per declared family
     /// (byte order: `pipeline`, `pipeline_speculative`, then `tensor_parallel`)
     /// and schedule (ascending), so each approval's first is the pipeline and
@@ -318,19 +327,29 @@ public struct ClusterRuntimeApprovalFacts: Equatable, Sendable {
     /// (a pipeline needs the model's `layers`: without them its records are
     /// left out), its ranks in this build's numerics class, its envelope
     /// admitting media only when its mode `servesMedia` for this model
-    /// (`ClusterModelFeaturePolicy.mediaContract`).
+    /// (`ClusterModelFeaturePolicy.mediaContract`) and prompts and outputs up
+    /// to what a pair serves in that mode (`servedProfile`,
+    /// `ClusterModelFeaturePolicy.servedProfile`). A model declared with a
+    /// resident assistant (`ClusterPublicModel.tensorAssistant`) has its
+    /// serial-schedule (1) tensor-parallel qualification rest on the
+    /// assistant's evidence: a pair of that build decodes with it. The
+    /// assistant requires serial prefill (`ClusterConfiguration.validate`), so a
+    /// one-chunk-lookahead (2) pair decodes plain and keeps the model's evidence.
     static func parityQualifications(_ declared: ClusterPublicModel, metallibSHA256: String, inputModalities: [String],
-                                     layers: Int?, servesMedia: (ClusterGenerationMode) -> Bool) -> [ParityQualification] {
+                                     layers: Int?, servedProfile: (ClusterGenerationMode) -> ClusterWorkerProfile,
+                                     servesMedia: (ClusterGenerationMode) -> Bool) -> [ParityQualification] {
         let classes = numericsClasses(declared.ranks, metallibSHA256: metallibSHA256)
         return declared.families.sorted { $0.rawValue.utf8.lexicographicallyPrecedes($1.rawValue.utf8) }.flatMap { family in
             guard let placement = ClusterPublicModels.placement(of: family, layers: layers, ranks: declared.ranks.count) else {
                 return [ParityQualification]()
             }
-            let envelope = ClusterPublicModels.requestEnvelope(inputModalities: inputModalities, servesMedia: servesMedia(placement.mode))
+            let envelope = ClusterPublicModels.requestEnvelope(inputModalities: inputModalities, servesMedia: servesMedia(placement.mode),
+                                                               profile: servedProfile(placement.mode))
             return declared.schedules.sorted().map { schedule in
-                ParityQualification(schedule: schedule, numericsClasses: classes, cuts: placement.cuts, mode: placement.mode,
-                    promotable: true, diverged: false, evidenceSHA256: ClusterPublicModels.evidenceSHA256,
-                    qualifiedAt: ClusterPublicModels.qualifiedAt, requestEnvelope: envelope)
+                let assistant = family == .tensorParallel && schedule == Self.assistantSchedule ? declared.tensorAssistant : nil
+                return ParityQualification(schedule: schedule, numericsClasses: classes, cuts: placement.cuts, mode: placement.mode,
+                    promotable: true, diverged: false, evidenceSHA256: assistant?.evidenceSHA256 ?? ClusterPublicModels.evidenceSHA256,
+                    qualifiedAt: assistant?.qualifiedAt ?? ClusterPublicModels.qualifiedAt, requestEnvelope: envelope)
             }
         }
     }

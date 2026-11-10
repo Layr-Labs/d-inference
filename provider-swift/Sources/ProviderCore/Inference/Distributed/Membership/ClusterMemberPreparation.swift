@@ -13,6 +13,15 @@ public struct ClusterMemberPreparation: Sendable {
     public let model: ModelInfo
     let validation: DistributedInstalledValidation
 
+    /// How a member's start ends when it is refused because another Darkbloom app holds this Mac's GPU, or production
+    /// serves here (`ClusterGPUHold.refused`): the `Error:` line it prints (ArgumentParser's own form for any error),
+    /// which the cluster service reads as its part's last error and waits on (`ClusterService.lastError`,
+    /// `ClusterMachineDeviceLock.isRefusal`), and the exit code reserved for it, which the always-on supervisor waits on
+    /// (`ClusterMemberRunEnd.gpuHeldExitCode`). Nil for any other error.
+    public static func gpuHoldRefusal(_ error: any Error) -> (line: String, exitCode: Int32)? {
+        ClusterGPUHold.refused(error) ? ("Error: \(error)", ClusterMemberRunEnd.gpuHeldExitCode) : nil
+    }
+
     /// `localChipClass` is this Mac's own class
     /// (`ClusterChipClass.local()`): the rank this Mac runs must not be a
     /// rank-shape that diverged on that class, and the model must have a
@@ -24,7 +33,7 @@ public struct ClusterMemberPreparation: Sendable {
     public static func prepare(reference: ClusterConfigurationReference,
                                localChipClass: ClusterChipClass?) throws -> Self {
         let paths = try ClusterUserPaths()
-        let gate = try ClusterDeviceExclusion(directoryURL: paths.deviceDirectory)
+        let gate = try ClusterDeviceExclusion(directoryURL: paths.deviceDirectory, machineLock: paths.machineDeviceLock)
         return try withExtendedLifetime(gate) {
             let validation = try DistributedInstalledValidation.validate(reference: reference,
                 paths: paths, deadline: DispatchTime.now().uptimeNanoseconds + 15_000_000_000)
@@ -50,6 +59,16 @@ public struct ClusterMemberPreparation: Sendable {
             try validation.requireUnchanged()
             return Self(model: model, validation: validation)
         }
+    }
+
+    /// Why the coordinator will serve only this account's own requests from the pair this setup offers, nil when it
+    /// may serve the public or the setup offers none (`ClusterPublicServingCheck`).
+    public func ownerOnlyReason() -> String? {
+        let configuration = validation.plan.configuration
+        guard let attachment = configuration.nativeMember else { return nil }
+        return ClusterPublicServingCheck.ownerOnlyReason(clusterApproval: attachment.clusterApproval,
+                                                         handSaved: attachment.approval != nil,
+                                                         family: configuration.selectedGenerationMode.servingFamily)
     }
 
     /// What a member registers for its pair's model: the artifact's scan, with image and video input only where

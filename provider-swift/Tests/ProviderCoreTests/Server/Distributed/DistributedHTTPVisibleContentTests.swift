@@ -75,6 +75,29 @@ struct DistributedHTTPVisibleContentTests {
         }
     }
 
+    /// The shared pipeline rejects output mid-stream (a forced tool choice
+    /// answered with text), frames the failure itself and cancels the request.
+    /// A pair publishes a cancellation only once both Macs retired it, so the
+    /// frame can end the stream before any native terminal: the client gets
+    /// it either way, as on a single Mac, and no terminal is made up for it.
+    @Test func productFailureFrameEndsTheStreamWhetherOrNotTheNativeTerminalCameFirst() async throws {
+        for terminalFirst in [true, false] {
+            let capture = HTTPDeliveryCapture(), control = DistributedHTTPResponse()
+            try control.bind(deadline: ContinuousClock.now.advanced(by: .seconds(10)), cancel: capture.cancel)
+            control.firstTokenCommitted()
+            if terminalFirst { control.recordTerminal(.init(promptTokens: 3, completionTokens: 2, cause: .cancelled)) }
+            let frames = [try httpDeliveryFrame(role: "assistant"), try httpDeliveryProductFailureFrame()]
+            let stream = AsyncThrowingStream<String, Error> { continuation in
+                for frame in frames { continuation.yield(frame) }
+                continuation.finish()
+            }
+            try await DistributedHTTPEventStream.response(stream, control: control)
+                .body.write(HTTPDeliveryWriter(capture: capture))
+            #expect(capture.values == frames && capture.finishCount == 1, "terminal first: \(terminalFirst)")
+            #expect(capture.cancelCount == 0 && (control.terminal != nil) == terminalFirst)
+        }
+    }
+
     /// A thinking stream: reasoning frames, then content, ends normally.
     @Test func reasoningOnlyStreamIsNotAnErrorFrame() async throws {
         let capture = HTTPDeliveryCapture(), control = DistributedHTTPResponse()

@@ -1,6 +1,6 @@
 # Keep a cluster member always on
 
-> Last updated: 2026-10-31
+> Last updated: 2026-11-08
 
 `darkbloom cluster` on each Mac does all of this. Nothing below is needed: it
 explains what the onboarding sets up and how to check it.
@@ -43,8 +43,12 @@ the cluster comes back by itself, with no command run on either Mac (see
 - The label is `io.darkbloom.cluster-service.<12 hex digits>`, a digest of the
   installed app (`Darkbloom.app`, whether `darkbloom` runs from
   `Contents/MacOS`, `Contents/Helpers` or the `~/.darkbloom/bin` symlink) or of
-  the folder of a development build. One cluster service runs per user: a
-  newer install's agent replaces an older one's.
+  the folder of a development build. The DevNet app's is
+  `io.darkbloom.cluster-service.dev.<12 hex digits>`
+  (`BuildEnvironment.clusterServiceLabelPrefix`). One cluster service runs per
+  user and app: a newer install of the same app replaces the older one's
+  agent, and neither app starts, stops or removes the other's
+  (`ClusterServiceAgentPlan.isOwnAgent`).
 - The job's `AssociatedBundleIdentifiers` names the actual enclosing app from
   its `Info.plist`. macOS attributes Local Network access to that app after the
   setup terminal exits; the supervisor, service and follower use its approval.
@@ -66,7 +70,7 @@ the cluster comes back by itself, with no command run on either Mac (see
   without that identity uses a session-only fallback. Keep its originating
   Terminal or SSH session open: detaching does not preserve that session's
   Local Network access. Use a signed app for background qualification.
-- `darkbloom cluster stop` (on the leader, the cluster stops serving first)
+- `darkbloom cluster stop --service` (from either Mac, the pair stops serving first)
   and unpairing (`darkbloom cluster pair --forget`, once no pairing is left)
   remove the agent; the service stops this Mac's part first (SIGTERM, up to
   300 s for a rank to release its model; launchd's exit allowance is 360 s).
@@ -87,10 +91,17 @@ the cluster comes back by itself, with no command run on either Mac (see
 3. Within a few minutes of both being logged in: `darkbloom status` on each Mac
    shows the service running with `runs 1`; on the leader,
    `darkbloom cluster` shows the cluster serving the same model, and its
-   test request answers.
+   test request answers. Each part is new after the restart, so for about a
+   minute both Macs may say `… is not serving yet: checking both Macs with
+   Apple.` (App Attest, as at every start; read as loading). It is not a fault:
+   ``… isn't verified by Apple yet; … Don't restart either Mac until then.``
+   comes only once a Mac's part has run 2 minutes without App Attest, or its
+   key-generation safeguard holds it back. A pair that serves Both, me first
+   says on both Macs whether it is paused for you (`Pair: …`, with how long and
+   when it comes back, said from now).
 4. Note any macOS prompt or notice that appeared after the restart (expected:
    none; the "Background item added" notice appears only at install).
-5. To leave it off: `darkbloom cluster stop` on each Mac; after a further
+5. To leave it off: `darkbloom cluster stop --service` on each Mac; after a further
    restart, `darkbloom status` shows no cluster service line except
    `not running and not set to start at login` on a paired Mac.
 
@@ -126,12 +137,12 @@ supervisor starts (`Watchdog.settings`,
 | Step | Single Mac | Pair (both Macs) |
 |---|---|---|
 | When | 5 min after start, then every 30 min | Every 30 min at the update slot of the pairing's cluster ID (`ClusterMemberUpdateSlot`), the same moment on both Macs; or at once for `darkbloom update` |
-| Check, download, verify, stage | While serving (`SelfUpdater`) | The same, on each Mac, while the pair serves |
+| Check, download, verify, stage | While serving (`SelfUpdater`). The check makes up to 3 tries of 15 s | The same, on each Mac, while the pair serves. At the slot or catching up with the other Mac, a check without an answer makes a second round 60–120 s later (`ReleaseCheck.pairCycle`, `ClusterPairUpdateCycle.Environment.live(automatic:)`); the other Mac waits for its fresh `checking` |
 | Stop taking requests | Once staged | Once staged on both Macs (each reads the other's progress, `ClusterPairUpdateProgress`, from the other cluster service's status over the link) |
 | Drain | Accepted requests finish, at most 120 s; never cancelled | The part that serves the pair (rank 0) finishes its accepted requests, at most 120 s (`ClusterUpdateDrainRequest`, through its lifecycle mailbox); the other part serves none. A request still running reopens the pair on both Macs and defers to the next slot |
 | Install | Commit the staged bundle | Each Mac commits once both drained |
 | Restart | launchd restarts the provider | The supervisor stops its cluster service (the drained part stops with it), checks that the installed binary starts, and starts again from it |
-| Recovery | The watchdog promotes the candidate after 600 s of fresh heartbeats, rolls back after 3 failed starts | A binary that fails the start check is never restarted into: the supervisor restores the previous release and quarantines the new one at once, and starts its cluster service again. Otherwise the restarted supervisor does what the watchdog does, with its cluster service's heartbeat (`ClusterCandidateRecovery`) |
+| Recovery | The watchdog promotes the candidate after 600 s of fresh heartbeats, rolls back after 3 failed starts | A binary that fails the start check is never restarted into: the supervisor restores the previous release and quarantines the new one at once, and starts its cluster service again. Otherwise the restarted supervisor does what the watchdog does, with its cluster service's heartbeat (`ClusterCandidateRecovery`), on an update record checked against the installed app ([an install outside the updater](#an-install-outside-the-updater)) |
 
 The rules each Mac applies to the other's progress are in
 `provider-swift/Sources/ProviderCore/Service/ClusterSupervision/ClusterPairUpdate.swift`
@@ -178,6 +189,56 @@ failed starts checks the restored predecessor the same way; if that check fails
 too, the supervisor starts the cluster service itself instead of restarting
 into it. A binary that passes the check but whose supervisor fails before it
 starts the cluster service is still not rolled back.
+
+### An install outside the updater
+
+The update record (`~/.darkbloom/recovery/state.json`, `UpdateRecoveryState`)
+names the installed release, a release installed but not yet promoted, and the
+release kept for rollback. Only the updater writes it: `install.sh` and a copied
+app replace `Darkbloom.app` and leave it naming releases that are gone. Before
+each start of the cluster service, and before an end of it counts toward a
+rollback, the supervisor checks the record against the installed app under the
+update lease (`ClusterCandidateRecovery`, `noteLaunch` and `recordFailedStart`;
+`provider-swift/Sources/ProviderCore/Update/UpdateRecoveryStore.swift`,
+`reconcileWithInstalledApp`). A release's version is the one its signed
+`Info.plist` names (`CFBundleShortVersionString`); an app that names none counts
+as the release the supervisor runs.
+
+| The record | What the check does |
+|---|---|
+| Names the installed app: the hashes the updater recorded and its version | Nothing |
+| Names another release: the installed app's signed version or hashes differ | Records the installed app as the installed release, drops the pending release without counting a failed start, and removes the rollback copy |
+| Names the installed app, but the app cannot be read (a file it needs is missing or unreadable) | Nothing: failed starts still count, and the third restores the verified copy |
+| Keeps a rollback copy recorded as another release than its app names | Records the copy as the release its app names, when its files are the recorded ones and its signature holds (`verifyPredecessor`); otherwise removes it |
+| Keeps a rollback copy whose app names no version | Removes the copy |
+
+A pair forms only between Macs on the same build
+(`ClusterConfiguration.peerBuildDiffers`). A rollback restores the release this
+Mac ran before the installed one, recorded as the version its app names, and
+the pair forms again once the other Mac, which keeps the same release, follows
+([a rollback on one Mac](#a-rollback-on-one-mac)). A copy that an earlier
+updater recorded under a stale label is still that release, so it is relabelled
+and kept. A copy kept for an install that is gone is not, so it is removed, and
+nothing is rolled back until an update keeps a copy of the installed release.
+The supervisor logs
+one line, for example `cluster update: v0.10.7 is installed, but the update
+record said v0.9.22 with v0.10.6 pending (installed outside the updater): it now
+records v0.10.7, v0.10.6 is no longer pending and the rollback copy (recorded as
+v0.9.22) is removed; nothing is rolled back until an update keeps a copy of
+v0.10.7`. A relabelled copy logs `cluster update: the rollback copy recorded as
+v0.10.6 is a v0.10.7 app: it is now recorded as v0.10.7 and kept for rollback`.
+A record it cannot check otherwise (an unreadable record) counts no start
+toward a rollback.
+
+Two rules keep an update from acting on such a record too:
+
+- The release that runs is never an update target. A pending release older
+  than it is not pending, and a release is offered only when it is newer than
+  both the running and the installed release (`SelfUpdater.checkForUpdate`).
+- An update over an app installed outside the updater keeps a copy of that app,
+  also when the record names a pending release that is not installed, and
+  records the copy as the release the app's `Info.plist` names
+  (`UpdateRecoveryStore`, `preparePredecessor`).
 
 ### A rollback on one Mac
 
@@ -273,6 +334,29 @@ does not restart into it; restored v<previous> and quarantined v<version>`,
 `cluster update: starting the cluster service on candidate v<version>` and
 `cluster update: this Mac's part serves again on v<version>`.
 
+Planning again and registering again both act only once the other Mac has
+confirmed the leader's claim, or hasn't answered for the lease's 30 s
+(`ClusterControlNode.leadershipConfirmed`): the two Macs restart seconds apart,
+and the one that comes back first may take control after the lease's 30 s, so a
+restarted leader's saved claim may be superseded. Both stop the pair
+(`OnboardingLive.localStop`, which clears the pair's saved start first) only to
+start it again
+(`provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterService+RestartingStop.swift`):
+when the stop fails, the saved start is put back and the stop request it left
+is dropped, so the next check tries again. The log says `could not set the
+cluster up again after the update: <reason>` or `could not stop the parts to
+change the cluster approval: <reason>`, followed by `The pair stays started`.
+While the other Mac doesn't answer its status, a change of approval that would
+stop a serving pair waits: every change is sent to the other Mac. The
+coordinator is still asked at each check.
+
+An owner's stop is never undone by either step. Every stop of the pair takes
+the control command lock: `darkbloom cluster stop`, `darkbloom stop` (also on a
+Mac where the pair doesn't run and the other Mac doesn't answer) and
+`darkbloom start --solo`, which wait up to 10 minutes for a cluster command that
+runs. A step that waited for the lock goes on only while the pair's start is
+still saved.
+
 ## Permissions asked once
 
 One administrator approval sets up the cluster link per Mac; macOS then decides
@@ -340,6 +424,7 @@ system setting:
 |---|---|---|
 | Supervisor `parked` (`exhausted`) | The last three `member ended` lines in the provider log | Fix the cause, then `darkbloom restart` (a new supervisor starts with a fresh budget) |
 | Supervisor `waitingForLink` | `darkbloom cluster link` | Connect the cable, or follow the printed fix |
+| `… is not serving yet: checking both Macs with Apple.` after a restart or a start | Each new part's App Attest authorization lands about a minute after it registers | Nothing: wait. Past 2 minutes, or when a key-generation safeguard holds a Mac back, the status says ``… isn't verified by Apple yet …`` instead: leave both Macs running ([troubleshooting](troubleshooting.md)) |
 | Follower never connects; log shows `Local network prohibited` | **Privacy & Security → Local Network** | Turn on Darkbloom; an ad-hoc build needs this per build |
 | A firewall alert after an update | `codesign -dv` on the listening binary | The binary is not Developer-ID signed; install the release build |
 | Install or provider log says `permissions: not asked once` | The listed reasons | Install the signed release (a locally built binary is ad-hoc signed and outside `Darkbloom.app`) |
@@ -410,6 +495,7 @@ it. It documents the developer route that runs `darkbloom start
 | Member exits or is killed (anything the supervisor did not ask for, a clean exit included) | Restarts it after 15 s, doubling to 300 s; a run of 120 s or more resets the wait |
 | Three runs in a row each shorter than 120 s | Stops restarting and parks, holding no memory, until `darkbloom restart` |
 | JACCL guard teardown (exit 75) | Restarts without counting a startup failure; six inside 120 s mean the link is flapping and it parks |
+| The other Darkbloom app holds this Mac's GPU, or (DevNet) production serves here: the member exits 76 | Waits without counting anything, says why once in the log and the status (`backoff`), and starts the member as soon as the hold ends (a hold already over: after 15 s) |
 | Member alive but its heartbeat is 75 s old (after a 180 s start grace) | Asks it to stop (SIGTERM), then restarts it; SIGKILL only if it ignored SIGTERM for 300 s |
 | The leader's pair engine stays wedged (its own watchdog's verdict) for 180 s | Same recycle |
 | An active request made no progress at all for `clamp(120, 120 + prompt tokens / 1000, 900)` s (when the member reports one) | Same recycle |

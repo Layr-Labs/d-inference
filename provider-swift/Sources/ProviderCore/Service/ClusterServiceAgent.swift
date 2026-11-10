@@ -51,10 +51,24 @@ public enum ClusterServiceAgent {
         launchAgentsDirectory().appendingPathComponent("\(label).plist")
     }
 
-    /// The cluster service agents installed for this user (any install), by label.
-    public static func installedLabels() -> [String] {
-        let names = (try? FileManager.default.contentsOfDirectory(atPath: launchAgentsDirectory().path)) ?? []
-        return names.filter(ClusterServiceAgentPlan.isAgentFileName).map { String($0.dropLast(".plist".count)) }.sorted()
+    /// This build's own cluster service agents installed for this user, by label (`ClusterServiceAgentPlan.isOwnAgent`):
+    /// another build's agent (production's, beside DevNet) is never listed, so nothing here starts, stops or
+    /// removes it.
+    public static func installedLabels(environment: BuildEnvironment = .current) -> [String] {
+        let directory = launchAgentsDirectory()
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+        return names.filter { name in
+            guard name.hasSuffix(".plist") else { return false }
+            return ClusterServiceAgentPlan.isOwnAgent(fileName: name, program: program(of: directory.appendingPathComponent(name)),
+                                                      environment: environment, home: LaunchctlControl.homeDirectory())
+        }.map { String($0.dropLast(".plist".count)) }.sorted()
+    }
+
+    /// The program a launch agent file runs (its first program argument), nil when it can't be read.
+    static func program(of plist: URL) -> String? {
+        guard let data = FileManager.default.contents(atPath: plist.path),
+              let job = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else { return nil }
+        return (job["ProgramArguments"] as? [String])?.first
     }
 
     public static func isLoaded(label: String) -> Bool {
@@ -101,11 +115,11 @@ public enum ClusterServiceAgent {
     ///   keep the lock the supervised one needs; called only when the job is
     ///   not loaded and a service runs.
     @discardableResult
-    public static func install(_ job: Job, serviceRunning: () -> Bool,
-                               stopUnsupervisedService: () throws -> Void) throws -> Outcome {
-        // One cluster service per user: another install's agent (an older app
-        // location, a development build) gives way to this one.
-        for other in installedLabels() where other != job.label {
+    public static func install(_ job: Job, serviceRunning: () -> Bool, stopUnsupervisedService: () throws -> Void,
+                               environment: BuildEnvironment = .current) throws -> Outcome {
+        // One cluster service per user and build: this build's other agents (an older app location, a development
+        // build, the label an older build of it used) give way to this one. Another build's agent stays.
+        for other in installedLabels(environment: environment) where other != job.label {
             try remove(label: other)
         }
         let path = plistPath(label: job.label)
@@ -130,12 +144,13 @@ public enum ClusterServiceAgent {
 
     // MARK: - Remove
 
-    /// Unloads and deletes every cluster service agent of this user (the
+    /// Unloads and deletes every cluster service agent of this build (the
     /// service stops this Mac's part first, within the job's exit allowance),
-    /// so nothing starts at the next login. Returns the labels removed.
+    /// so nothing of it starts at the next login. Another build's agent stays
+    /// loaded. Returns the labels removed.
     @discardableResult
-    public static func uninstall(alsoLabel current: String? = nil) throws -> [String] {
-        var labels = installedLabels()
+    public static func uninstall(alsoLabel current: String? = nil, environment: BuildEnvironment = .current) throws -> [String] {
+        var labels = installedLabels(environment: environment)
         if let current, !labels.contains(current), isLoaded(label: current) { labels.append(current) }
         for label in labels { try remove(label: label) }
         return labels
@@ -203,7 +218,14 @@ public enum ClusterServiceAgent {
         public let loaded: Bool
     }
 
-    public static func status() -> [Status] {
-        installedLabels().map { Status(label: $0, installed: true, loaded: isLoaded(label: $0)) }
+    /// Whether the cluster service running with `environment` starts by itself at login, as that process can tell
+    /// without launchctl: it runs under its login agent's supervisor, which launchd starts at login
+    /// (`ClusterSupervisionFiles.healthPathEnvironmentKey`), and that agent is still installed.
+    public static func startsAtLogin(environment: [String: String], installedAgents: () -> [String]) -> Bool {
+        environment[ClusterSupervisionFiles.healthPathEnvironmentKey] != nil && !installedAgents().isEmpty
+    }
+
+    public static func status(environment: BuildEnvironment = .current) -> [Status] {
+        installedLabels(environment: environment).map { Status(label: $0, installed: true, loaded: isLoaded(label: $0)) }
     }
 }

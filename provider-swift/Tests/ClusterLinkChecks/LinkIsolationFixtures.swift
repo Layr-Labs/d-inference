@@ -12,6 +12,11 @@ struct FakeIsolationTools {
     var routes = ClusterLinkToolOutcome.unavailable
     var dns = ClusterLinkToolOutcome.unavailable
     var dhcpPackets: [String: ClusterLinkToolOutcome] = [:]
+    /// `NetworkServices`, `CurrentSet` and the set's IPv4 order from the network preferences (a removal of a port's
+    /// only service reads them).
+    var servicePreferences = ClusterLinkToolOutcome.unavailable
+    var currentSet = ClusterLinkToolOutcome.unavailable
+    var serviceOrderPreferences: [String: ClusterLinkToolOutcome] = [:]
 }
 
 /// Tool text captured on the two Macs on 2026-10-09 with read-only commands
@@ -403,8 +408,154 @@ enum IsolationFixtures {
         tools.isolation.serviceInfo["Darkbloom Cluster Link (en6)"] = .output(manualServiceInfo(address: address.dottedDecimal))
         tools.isolation.bridgePreferences = .output(macBBridgePreferencesWithoutPort)
         tools.isolation.routes = .output(macBIsolatedRoutes(address: address.dottedDecimal))
+        // Darkbloom's service is the only one on Thunderbolt 2 (the ports start in the bridge): its ID in the preferences.
+        tools.isolation.servicePreferences = .output(servicePreferences([(serviceID("e6"), "Darkbloom Cluster Link (en6)", "en6"),
+                                                                         (serviceID("b0"), "Thunderbolt Bridge", "bridge0")]))
+        tools.isolation.currentSet = .output("/Sets/\(networkSet)\n")
+        tools.isolation.serviceOrderPreferences[networkSet] = .output("[\"\(serviceID("b0"))\",\"\(serviceID("e6"))\"]")
         return tools
     }
+
+    /// The network set and service IDs of the fixtures' preferences.
+    static let networkSet = "D8185C32-7BC9-46CB-BDF8-FB71374DDB40"
+    static func serviceID(_ tag: String) -> String { "00000000-0000-4000-8000-0000000000" + tag.uppercased() }
+
+    /// `plutil -extract NetworkServices json` for these services.
+    static func servicePreferences(_ services: [(id: String, name: String, device: String)]) -> String {
+        "{" + services.map { "\"\($0.id)\":{\"UserDefinedName\":\"\($0.name)\",\"Interface\":{\"DeviceName\":\"\($0.device)\",\"Type\":\"Ethernet\"}}" }
+            .joined(separator: ",") + "}"
+    }
+
+    // MARK: three isolated Macs after pairing
+
+    /// An isolated Mac captured read-only on 2026-11-03 after its port paired
+    /// and carried traffic. `routes` are the captured `netstat -rn -f inet`
+    /// rows for the default routes, the cluster subnet and the loopback, the
+    /// port carries its captured cluster address and the service order is the
+    /// captured one where there is one; MAC addresses, the Wi-Fi gateway and
+    /// its address are placeholders. The rest of each Mac is what Darkbloom
+    /// leaves on an isolated port.
+    struct PairedMac {
+        let name: String
+        let port: String
+        let address: String
+        let hardwarePort: String
+        let wifi: String
+        let devices: [String]
+        let otherPorts: [String]
+        let bridgeMembers: [String]
+        let routes: [String]
+        let serviceOrder: String
+
+        var device: String { ClusterLinkName.device(ofInterface: port) }
+
+        var interfaceListing: String {
+            LinkFixtures.loopback + IsolationFixtures.port(wifi, active: true, addresses: [LinkFixtures.wifiIPv4])
+                + otherPorts.map { IsolationFixtures.port($0, active: false, addresses: []) }.joined()
+                + IsolationFixtures.port(port, active: true, addresses: [address])
+                + (bridgeMembers.isEmpty ? "" : LinkFixtures.bridge(members: bridgeMembers))
+        }
+
+        func tools(extraRoutes: [String] = [], extraInterfaces: String = "") -> FakeLinkTools {
+            var tools = FakeLinkTools(
+                deviceList: .output(devices.map { LinkFixtures.deviceBlock($0, active: $0 == device) }.joined()),
+                interfaces: .output(interfaceListing + extraInterfaces),
+                details: [device: .output(LinkFixtures.detailWithMappedGID(device))])
+            let bridges = bridgeMembers.isEmpty ? IsolationFixtures.emptyBridgePreferences
+                : "{\"bridge0\":{\"Interfaces\":[\(bridgeMembers.map { "\"\($0)\"" }.joined(separator: ","))]}}\n"
+            tools.isolation = FakeIsolationTools(hardwarePorts: .output("Hardware Port: \(hardwarePort)\nDevice: \(port)\n"),
+                serviceOrder: .output(serviceOrder),
+                serviceInfo: [ClusterLinkServiceName.cluster(interface: port): .output(IsolationFixtures.manualServiceInfo(address: address))],
+                bridgePreferences: .output(bridges), routes: .output(IsolationFixtures.routeTable(routes + extraRoutes)),
+                dns: .output("DNS configuration\n\n" + IsolationFixtures.resolver(1, servers: ["192.0.2.1"], interface: wifi, scoped: false)))
+            // Darkbloom's services in the preferences, each the only one on its port (pair-2's MacBook).
+            let ours = ([port] + otherPorts).map { (id: IsolationFixtures.serviceID("a" + String($0.last!)), name: ClusterLinkServiceName.cluster(interface: $0), device: $0) }
+            tools.isolation.servicePreferences = .output(IsolationFixtures.servicePreferences(ours))
+            tools.isolation.currentSet = .output("/Sets/\(IsolationFixtures.networkSet)\n")
+            tools.isolation.serviceOrderPreferences[IsolationFixtures.networkSet] = .output("[\"\(IsolationFixtures.serviceID("f0"))\","
+                + ours.map { "\"\($0.id)\"" }.joined(separator: ",") + "]")
+            return tools
+        }
+    }
+
+    /// `ifconfig` of a VPN tunnel with one IPv4 address.
+    static func tunnel(_ name: String, address: String) -> String {
+        "\(name): flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 1380\n\tinet \(address) --> \(address) netmask 0xffffffff\n"
+            + "\tnd6 options=201<PERFORMNUD,DAD>\n"
+    }
+
+    /// Mac A, port en3, paired with 10.219.165.133. macOS reaches its own
+    /// address through `lo0`, as it does the Wi-Fi address.
+    static let pairedMacA = PairedMac(name: "Mac A", port: "en3", address: "10.219.13.112", hardwarePort: "Thunderbolt 3",
+        wifi: "en1", devices: ["rdma_en2", "rdma_en13", "rdma_en3", "rdma_en4", "rdma_en5", "rdma_en6"],
+        otherPorts: ["en2", "en13", "en4", "en5", "en6"], bridgeMembers: ["en2", "en13", "en5", "en6"],
+        routes: [
+            "default            192.0.2.1          UGScg                 en1       ",
+            "default            link#38            UCSIg               utun8       ",
+            "10.219/16          link#19            UCS                   en3      !",
+            "10.219.13.112/32   link#19            UCS                   en3      !",
+            "10.219.13.112      0:0:5e:0:53:3      UHLWIi                lo0       ",
+            "10.219.165.133     0:0:5e:0:53:33     UHLWIi                en3   1150",
+            "10.219.255.255     ff:ff:ff:ff:ff:ff  UHLWbI                en3      !",
+            "127                127.0.0.1          UCS                   lo0       ",
+            "127.0.0.1          127.0.0.1          UH                    lo0       ",
+            "\(LinkFixtures.wifiIPv4)         0:0:5e:0:53:1      UHLWI                 lo0       ",
+        ],
+        serviceOrder: serviceOrderHeader + service(1, "Ethernet", port: "Ethernet", device: "en0")
+            + service(2, "USB 10/100/1000 LAN", port: "USB 10/100/1000 LAN", device: "en14")
+            + service(3, "Thunderbolt Bridge", port: "Thunderbolt Bridge", device: "bridge0")
+            + service(4, "Wi-Fi", port: "Wi-Fi", device: "en1")
+            + service(5, "Darkbloom Cluster Link (en4)", port: "Thunderbolt 4", device: "en4")
+            + service(6, "Darkbloom Cluster Link (en3)", port: "Thunderbolt 3", device: "en3")
+            + service(7, "Tailscale", port: "io.tailscale.ipn.macsys", device: ""))
+
+    /// The M5 Max, port en6, paired with the M3 Ultra. Darkbloom's services
+    /// on en1 and en2 are left from earlier cables; those ports are down.
+    static let pairedM5Max = PairedMac(name: "M5 Max", port: "en6", address: "10.219.129.164", hardwarePort: "Thunderbolt 2",
+        wifi: "en0", devices: ["rdma_en1", "rdma_en6", "rdma_en2"], otherPorts: ["en1", "en2"], bridgeMembers: [],
+        routes: [
+            "default            192.0.2.1          UGScg                 en0       ",
+            "default            link#40            UCSIg              utun15       ",
+            "10.219/16          link#11            UCS                   en6      !",
+            "10.219.21.80       0:0:5e:0:53:26     UHLWIi                en6   1128",
+            "10.219.129.164/32  link#11            UCS                   en6      !",
+            "10.219.129.164     0:0:5e:0:53:16     UHLWI                 lo0       ",
+            "10.219.255.255     ff:ff:ff:ff:ff:ff  UHLWbI                en6      !",
+            "127                127.0.0.1          UCS                   lo0       ",
+            "127.0.0.1          127.0.0.1          UH                    lo0       ",
+        ],
+        serviceOrder: serviceOrderHeader + service(1, "Dell D3100 USB3.0 Dock", port: "Dell D3100 USB3.0 Dock", device: "en8")
+            + service(2, "USB 10/100/1000 LAN", port: "USB 10/100/1000 LAN", device: "en10")
+            + service(3, "Thunderbolt Bridge", port: "Thunderbolt Bridge", device: "bridge0")
+            + service(4, "Thunderbolt Bridge 2", port: "Thunderbolt Bridge", device: "bridge0")
+            + service(5, "Wi-Fi", port: "Wi-Fi", device: "en0")
+            + service(6, "Darkbloom Cluster Link (en2)", port: "Thunderbolt 3", device: "en2")
+            + service(7, "Darkbloom Cluster Link (en1)", port: "Thunderbolt 1", device: "en1")
+            + service(8, "Darkbloom Cluster Link (en6)", port: "Thunderbolt 2", device: "en6")
+            + service(9, "iPhone USB", port: "iPhone USB", device: "en9")
+            + service(10, "Tailscale 2", port: "io.tailscale.ipn.macsys", device: ""))
+
+    /// The M3 Ultra, port en6, paired with the M5 Max: only its route table
+    /// was captured, so its hardware port and services are assumed.
+    static let pairedM3Ultra = PairedMac(name: "M3 Ultra", port: "en6", address: "10.219.21.80", hardwarePort: "Thunderbolt 5",
+        wifi: "en1", devices: ["rdma_en2", "rdma_en3", "rdma_en4", "rdma_en5", "rdma_en7", "rdma_en6"],
+        otherPorts: ["en2", "en3", "en4", "en5", "en7"], bridgeMembers: [],
+        routes: [
+            "default            192.0.2.1          UGScg                 en1       ",
+            "default            link#29            UCSIg               utun2       ",
+            "10.219/16          link#21            UCS                   en6      !",
+            "10.219.21.80/32    link#21            UCS                   en6      !",
+            "10.219.21.80       0:0:5e:0:53:26     UHLWIi                lo0       ",
+            "10.219.129.164     0:0:5e:0:53:16     UHLWIi                en6   1186",
+            "10.219.255.255     ff:ff:ff:ff:ff:ff  UHLWbI                en6      !",
+            "127                127.0.0.1          UCS                   lo0       ",
+            "127.0.0.1          127.0.0.1          UH                    lo0       ",
+        ],
+        serviceOrder: serviceOrderHeader + service(1, "Wi-Fi", port: "Wi-Fi", device: "en1")
+            + service(2, "Thunderbolt Bridge", port: "Thunderbolt Bridge", device: "bridge0")
+            + service(3, "Darkbloom Cluster Link (en6)", port: "Thunderbolt 5", device: "en6"))
+
+    static let pairedMacs = [pairedMacA, pairedM5Max, pairedM3Ultra]
 }
 
 /// A scripted Mac for link setup v2: the first version's world with the
@@ -413,6 +564,8 @@ final class FakeIsolationWorld {
     var base: FakeRepairWorld
     var isolationRecord = ClusterLinkIsolationRecord()
     var isolationRecordFails = false
+    /// The other app's record on this Mac (production's beside DevNet's), which this app only reads.
+    var otherInstallRecord = ClusterLinkIsolationRecord()
     var isolationApproval: (ClusterLinkIsolationRequest, FakeIsolationWorld) -> ClusterLinkApprovalResult = { _, _ in .unavailable }
     private(set) var isolationRequests = [ClusterLinkIsolationRequest]()
     private(set) var isolationRecordSaves = 0
@@ -440,6 +593,7 @@ final class FakeIsolationWorld {
             isolationRecordSaves += 1
             change(&isolationRecord)
         }
+        environment.otherInstallsIsolationEntries = { [self] interface in otherInstallRecord.entry(on: interface).map { [$0] } ?? [] }
         return environment
     }
 

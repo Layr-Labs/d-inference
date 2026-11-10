@@ -4,7 +4,12 @@ import MLXLLM
 import MLXLMCommon
 
 struct QwenTensorParallelMTPPromptResult {
-    let hidden: MLXArray
+    /// Each prompt frame's target hidden rows (`[1, frame tokens, hidden]`), in
+    /// order: one for a lone frame, one per frame of a merged prompt step. Each
+    /// is its own array, never a view of the whole step's rows: the carried
+    /// prompt row is a view of the last one, whose backing root
+    /// `QwenTensorParallelBatchMTPBudget` prices at one chunk's rows.
+    let hidden: [MLXArray]
     let logits: MLXArray?
 }
 
@@ -16,7 +21,8 @@ protocol QwenTensorParallelMTPTarget: AnyObject {
     var request: QwenLayerStageGenerationRequest { get }
     var state: CBv2OwnedRequestState { get }
     var retired: Bool { get }
-    func prefillForMTP(check: () throws -> Void) throws -> QwenTensorParallelMTPPromptResult
+    /// The next `frames` consecutive prompt frames as one step (1: a lone frame).
+    func prefillForMTP(frames: Int, check: () throws -> Void) throws -> QwenTensorParallelMTPPromptResult
     func beginWindow(tokens: MLXArray, offset: Int) throws -> (outputs: [MLXArray], roots: [MLXArray])
     func confirmWindow(check: () throws -> Void) throws
     func settleWindow(keeping: Int) throws -> [MLXArray]
@@ -92,8 +98,9 @@ final class QwenTensorParallelTargetWindow {
         } catch { failed = true; throw error }
     }
 
-    /// A window's forward is submitted to the GPU layer by layer, as a decode
-    /// step's is (`QwenTensorParallelBatchSession.decodeLayerStride`): the GPU
+    /// A window's forward is submitted to the GPU as it is built, every
+    /// `QwenTensorParallelBatchSession.decodeLayerStride` layers as a decode
+    /// step's is: the GPU
     /// and the collectives run the layers already built while the host builds
     /// the rest, instead of idling for the whole graph construction.
     /// Evaluation order only: every primitive, input and rounded value is the

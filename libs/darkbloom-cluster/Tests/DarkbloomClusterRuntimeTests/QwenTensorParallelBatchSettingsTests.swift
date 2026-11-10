@@ -28,6 +28,11 @@ struct QwenTensorParallelBatchSettingsTests {
                 #expect(value.agreementFields.contains("lanes=\(lanes)"))
                 #expect(value.agreementFields.contains(QwenTensorParallelBatchWire.agreement))
                 #expect(value.agreementFields.contains("moe-rows-one-collective-v1") == value.routedExperts)
+                // Build-ahead is off until the native executor submits steps; on, it is in the agreement,
+                // so ranks of the two protocols refuse each other before loading.
+                #expect(!value.buildsAhead && !value.agreementFields.contains(QwenTensorParallelBatchWire.buildAheadAgreement))
+                var ahead = value; ahead.buildsAhead = true
+                #expect(ahead.agreementFields == value.agreementFields + [QwenTensorParallelBatchWire.buildAheadAgreement])
                 #expect(value.routedExperts == [.qwen35ThirtyFiveBA3B, .qwen36ThirtyFiveBA3B].contains(model))
                 // No unsealed pair serves a TP row: the single-lane path is retired.
                 #expect(throws: ProbeError.self) {

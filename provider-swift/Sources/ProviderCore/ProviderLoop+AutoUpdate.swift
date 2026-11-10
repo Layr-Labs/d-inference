@@ -19,15 +19,16 @@ extension ProviderLoop {
 
     /// Initial delay before the first background update check (5 minutes).
     /// Avoids slowing down startup; lets the provider stabilize first.
-    private static let autoUpdateInitialDelay: Duration = .seconds(300)
+    /// Only me's background service keeps the same cadence (`StandaloneServer+AutoUpdate`).
+    static let autoUpdateInitialDelay: Duration = .seconds(300)
 
     /// Interval between subsequent update checks (30 minutes).
-    private static let autoUpdateInterval: Duration = .seconds(1800)
+    static let autoUpdateInterval: Duration = .seconds(1800)
 
     /// How long to wait for in-flight requests to drain after installing a new
     /// binary before deferring the update. Accepted requests are never
     /// force-cancelled by the background updater.
-    private static let updateDrainTimeout: Duration = .seconds(120)
+    static let updateDrainTimeout: Duration = .seconds(120)
 
     /// Start the background auto-update monitor. Checks the coordinator for a
     /// newer release every 30 minutes (after an initial 5-minute delay). On a
@@ -85,7 +86,8 @@ extension ProviderLoop {
         coordinatorURL: String,
         updater injectedUpdater: SelfUpdater? = nil,
         launchSnapshot: @escaping @Sendable () -> ProviderLaunchSnapshot? = { LaunchAgent.launchSnapshot() },
-        restart: @escaping @Sendable () throws -> Void = { try ProcessLifecycle.restartAfterUpdate() }
+        restart: @escaping @Sendable () throws -> Void = { try ProcessLifecycle.restartAfterUpdate() },
+        pairFollows: @escaping @Sendable () -> Bool = { ProviderLoop.askPairToFollowSingleMacUpdate() }
     ) async -> AutoUpdateController.Outcome {
         let updater = injectedUpdater ?? SelfUpdater(coordinatorBaseURL: coordinatorURL)
         let me = self
@@ -97,7 +99,7 @@ extension ProviderLoop {
             resumeServing: { await me.resumeServingAfterUpdate() },
             check: {
                 guard let session = await me.activeUpdateSession() else {
-                    return .checkFailed(reason: "cross-process update lease was lost")
+                    return .checkFailed(.init(.thisMac, "cross-process update lease was lost"))
                 }
                 return await updater.checkForUpdate(session: session)
             },
@@ -134,7 +136,11 @@ extension ProviderLoop {
                 return await me.prepareInstalledCandidateRestart(
                     updater: updater, baseline: launchSnapshot)
             },
-            restart: { try await me.restartAfterAutoUpdate(restart) },
+            restart: {
+                // On a Mac whose pair runs here, the pair follows this install instead of staying split.
+                if pairFollows() { logger.info("Auto-update: this Mac's pair runs here; asked its cluster service to restart into the release with the other Mac") }
+                try await me.restartAfterAutoUpdate(restart)
+            },
             restartDidFail: {
                 try? updater.cancelPendingCandidateAttempt(
                     operation: "background-restart-failure")
@@ -167,6 +173,13 @@ extension ProviderLoop {
             logger.warning("Auto-update: restart failed: \(reason)")
         }
         return outcome
+    }
+
+    /// `ClusterPairUpdate.askPairToFollow` with this Mac's actual pair state and its cluster service's request path.
+    static func askPairToFollowSingleMacUpdate() -> Bool {
+        guard let directory = try? ClusterService.paths().lock.deletingLastPathComponent() else { return false }
+        return ClusterPairUpdate.askPairToFollow(pairServes: ClusterService.pairServesHere(),
+            requestPath: ClusterServiceAgent.updateRequestPath(serviceDirectory: directory), now: Date().timeIntervalSince1970)
     }
 
     // MARK: - Auto-Update Phase Transitions
@@ -225,7 +238,8 @@ extension ProviderLoop {
         // A lifecycle-owned drain cannot replay model work after a cancelled update.
         guard !servingDrain.refusing else { return }
         lifecycleStatus = .init()
-        if let entries = deferredDesiredModels {
+        // An owner pause that goes on replays it when it ends.
+        if !ownerPausesPublic, let entries = deferredDesiredModels {
             deferredDesiredModels = nil
             if let send = outboundSend {
                 logger.info("Replaying desired_models deferred during update drain (\(entries.count) entr(ies))")

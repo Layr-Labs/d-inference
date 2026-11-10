@@ -42,6 +42,10 @@ extension Start {
         // Hardware-only capabilities are honest here. Native/kernel capability
         // proof belongs to the selected installed adapter, not a solo GPU probe.
         let capabilities = DistributedServingEligibility.memberCapabilities(chipFamily: hardware.chipFamily)
+        let coordinator = coordinatorURL ?? config.coordinator.url
+        let endpoint = Self.clusterMemberLocalEndpoint(requested: localEndpoint, hostsPairSlot: prepared.hostsPairSlot,
+                                                       bind: bind, port: port, local: config.local, settingsFile: path,
+                                                       coordinatorURL: coordinator)
         // A setup saved for coordinator pairing yields this Mac's member
         // installation; every other setup yields none and registers no claim.
         let installation = try current.withCurrentReference { _ in
@@ -53,11 +57,12 @@ extension Start {
             return installation
         }
         let loopConfig = ProviderLoopConfig(
-            coordinatorURL: coordinatorURL ?? config.coordinator.url,
+            coordinatorURL: coordinator,
             hardware: hardware, models: [prepared.model], config: config,
             authToken: AuthTokenStore.load(), runtimeHashes: hashes,
             runtimeCapabilities: capabilities,
             modelHashes: prepared.model.weightHash.map { [prepared.model.id: $0] } ?? [:],
+            localEndpoint: endpoint,
             executionRole: .clusterMember, clusterMemberStopsOnDisconnect: stopOnDisconnect,
             clusterMemberAnswersUpdateDrain: answersUpdateDrain,
             pairServingGrantedModelIDs: [prepared.model.id])
@@ -72,6 +77,46 @@ extension Start {
             }
         }
         return (loop, prepared, installation != nil)
+    }
+
+    /// The pair's local API beside Darkbloom (Both, me first), on the address and port the cluster service chose, with
+    /// the local router, for which this Mac's engine is the pair. Without `--local-endpoint` the member is today's.
+    ///
+    /// Only the slot's host runs it, checked three times: the service passes `--local-endpoint` to rank 0's part only
+    /// (`ClusterLocalServing.memberArguments`); here, any other member runs none and says so in one line; and the loop
+    /// refuses an endpoint on a member without the slot (`admitsClusterPairLocalAPI`), which would end the part.
+    /// Never without a key: this Mac's own (`local_token`, which its tools read), beside the pair's, which every other
+    /// Mac's relay passes requests on with (`ClusterLocalRelay`); `validate` refuses `--no-auth`, the loop refuses a
+    /// keyless endpoint, and a key that can't be read here leaves the pair serving Darkbloom without the API, never
+    /// with an open one. Its router reads `[local] route` again from `settingsFile`, this Mac's provider.toml, when it
+    /// changes.
+    static func clusterMemberLocalEndpoint(requested: Bool, hostsPairSlot: Bool, bind: String, port: UInt16,
+                                           local: LocalSettings?, settingsFile: URL, coordinatorURL: String?,
+                                           loadToken: () throws -> String = { try LocalEndpoint.loadOrCreateToken() },
+                                           loadPairToken: () throws -> String = { try LocalEndpoint.loadOrCreateClusterToken() },
+                                           say: (String) -> Void = printError) -> LocalInferenceHTTPConfig? {
+        guard requested else { return nil }
+        guard hostsPairSlot else {
+            say("This Mac's part runs no local API: the pair's API is on the Mac that runs rank 0.")
+            return nil
+        }
+        guard let token = try? loadToken(), !token.isEmpty, let pairToken = try? loadPairToken(), !pairToken.isEmpty else {
+            say("The pair's local API keys could not be read or created, so this part serves Darkbloom without the local API.")
+            return nil
+        }
+        return LocalInferenceHTTPConfig(host: bind, port: port, authToken: token, pairToken: pairToken,
+            router: .host(local: local, settingsFile: settingsFile, coordinatorURL: coordinatorURL, takesCoordinatorWork: true))
+    }
+
+    /// What a member's start that failed with `error` ends with. Refused because another Darkbloom app holds this Mac's
+    /// GPU, or production serves here, it is a wait, never a failure: it says the refusal's `Error:` line (an `ExitCode`
+    /// prints nothing, and the cluster service waits on that line) and ends with the exit code reserved for it, which
+    /// the always-on supervisor waits on without spending its restart budget (`ClusterMemberPreparation.gpuHoldRefusal`).
+    /// Any other error is thrown as it is.
+    static func memberStartFailure(_ error: any Error, say: (String) -> Void = printError) -> any Error {
+        guard let refusal = ClusterMemberPreparation.gpuHoldRefusal(error) else { return error }
+        say(refusal.line)
+        return ExitCode(refusal.exitCode)
     }
 
     func runClusterMember() async throws {
@@ -92,8 +137,13 @@ extension Start {
         // bootstrap directories), reported in this member's log.
         Self.sweepOrphans(phase: "start", waitForContract: true)
         defer { Self.sweepOrphans(phase: "end", waitForContract: true) }
-        let (loop, prepared, offered) = try await makeClusterMemberLoopAndPreparation(reference: factory.reference,
-                                                                                      answersUpdateDrain: true)
+        let made: (loop: ProviderLoop, prepared: ClusterMemberPreparation, offered: Bool)
+        do {
+            made = try await makeClusterMemberLoopAndPreparation(reference: factory.reference, answersUpdateDrain: true)
+        } catch {
+            throw Self.memberStartFailure(error)
+        }
+        let (loop, prepared, offered) = made
         heartbeat.attach(loop: loop)
         // A setup saved for coordinator pairing over the link serves the
         // pair's committed starts (S10): the leader hosts the link listener
@@ -118,7 +168,13 @@ extension Start {
             try await loop.waitForClusterMemberRegistration(until: .now.advanced(by: wait))
             print("darkbloom \(ProviderCore.version) (registered cluster member; solo inference disabled)")
             // The cluster service reads its part's latest notice line (unbuffered stderr): this part is offered.
-            if offered { printError(ClusterLocalServing.offeredLogLine) }
+            if offered {
+                printError(ClusterLocalServing.offeredLogLine)
+                // Owner-only by the coordinator's rule: the screens and status show it instead of ✓ once it serves.
+                if let reason = prepared.ownerOnlyReason() { printError(ClusterLocalServing.logPrefix + reason) }
+                let url = coordinatorURL ?? (try? ConfigManager.load(from: path))?.coordinator.url
+                if let url { Self.sayCatalogRefusal(modelID: prepared.model.id, coordinatorURL: url) }
+            }
             try await withTaskCancellationHandler { try await task.value }
                 onCancel: { task.cancel() }
         } catch {
@@ -128,6 +184,20 @@ extension Start {
             // finding 3); the process exits and its supervisor decides.
             await Self.awaitFinished(task, atMostSeconds: 30)
             throw error
+        }
+    }
+
+    /// Reads the coordinator's public model catalog once, without holding up the part, and writes the refusal notice
+    /// when it does not list `modelID` (`ClusterLocalServing.catalogRefusal`). A catalog that can't be read says nothing.
+    static func sayCatalogRefusal(modelID: String, coordinatorURL: String) {
+        Task.detached {
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.timeoutIntervalForRequest = 20
+            let client = ModelCatalogClient(coordinatorURL: coordinatorURL, urlSession: URLSession(configuration: configuration))
+            guard let catalog = try? await client.fetchCatalog(),
+                  let refusal = ClusterLocalServing.catalogRefusal(modelID: modelID, catalogIDs: Set(catalog.map(\.id)))
+            else { return }
+            printError(ClusterLocalServing.logPrefix + refusal)
         }
     }
 

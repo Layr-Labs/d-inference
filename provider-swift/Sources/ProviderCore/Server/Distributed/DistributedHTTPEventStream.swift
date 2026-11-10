@@ -7,7 +7,8 @@ import NIOCore
 /// Distributed-only body writer. Existing solo response framing is unchanged.
 /// The native profile already bounds generation; these are additional limits
 /// on frames examined/written here, not a claim about upstream stream buffers.
-/// A single writer sends a comment probe every 500 ms while awaiting output;
+/// A single writer sends a comment probe every 500 ms while awaiting output
+/// (until the first token, every ~5 s, the prompt's progress in its place);
 /// comments are never visible content, tokens or a refreshed request budget.
 enum DistributedHTTPEventStream {
     static let maximumFrameBytes = 1_048_576
@@ -96,7 +97,14 @@ enum DistributedHTTPEventStream {
         return frame
     }
 
-    static func response(_ frames: AsyncThrowingStream<String, Error>, control: DistributedHTTPResponse) -> Response {
+    /// `prefillProgress`: the request's prompt progress, said in place of a probe every `ticker.interval` until the
+    /// first token, on the probes' own timer (`LocalPrefillProgress.startComments` is not used here).
+    /// `clockForTesting` exists for tests: it times the probes and those comments, so a test can step through them
+    /// without waiting. Production passes none and gets the continuous clock.
+    static func response<C: Clock<Duration>>(_ frames: AsyncThrowingStream<String, Error>,
+                                             control: DistributedHTTPResponse,
+                                             prefillProgress: LocalPrefillProgress? = nil,
+                                             clockForTesting clock: C = ContinuousClock()) -> Response {
         let lifetime = DistributedHTTPBodyLifetime(control)
         // The product's event-stream headers (`LocalChatUploadResponder.sseResponse`).
         return Response(status: .ok, headers: [.contentType: "text/event-stream; charset=utf-8", .cacheControl: "no-cache"],
@@ -106,7 +114,8 @@ enum DistributedHTTPEventStream {
                     // The caller's isolation, named: SDKs with the `nonisolated(nonsending)` overload would otherwise
                     // pick it and send the non-Sendable writer into this helper.
                     try await withTaskCancellationHandler(operation: {
-                        try await write(frames, control: control, writer: &writer)
+                        try await write(frames, control: control, prefillProgress: prefillProgress, clock: clock,
+                                        writer: &writer)
                     }, onCancel: { control.disconnect() }, isolation: #isolation)
                 } catch {
                     control.disconnect(); throw error
@@ -114,12 +123,15 @@ enum DistributedHTTPEventStream {
             })
     }
 
-    private static func write(_ frames: AsyncThrowingStream<String, Error>, control: DistributedHTTPResponse,
-                              writer: inout any ResponseBodyWriter) async throws {
+    private static func write<C: Clock<Duration>>(_ frames: AsyncThrowingStream<String, Error>,
+                                                  control: DistributedHTTPResponse,
+                                                  prefillProgress: LocalPrefillProgress?, clock: C,
+                                                  writer: inout any ResponseBodyWriter) async throws {
         let pump = DistributedHTTPFramePump(frames, maximumFrameBytes: maximumFrameBytes)
         do {
             try await withTaskCancellationHandler(operation: {
-                try await consume(pump, control: control, writer: &writer)
+                try await consume(pump, control: control, prefillProgress: prefillProgress, clock: clock,
+                                  writer: &writer)
             }, onCancel: { _ = pump.cancel() }, isolation: #isolation)
         } catch {
             let producer = pump.cancel(); await producer?.value
@@ -128,10 +140,13 @@ enum DistributedHTTPEventStream {
         let producer = pump.cancel(); await producer?.value
     }
 
-    private static func consume(_ pump: DistributedHTTPFramePump, control: DistributedHTTPResponse,
-                                writer: inout any ResponseBodyWriter) async throws {
+    private static func consume<C: Clock<Duration>>(_ pump: DistributedHTTPFramePump, control: DistributedHTTPResponse,
+                                                    prefillProgress: LocalPrefillProgress?, clock: C,
+                                                    writer: inout any ResponseBodyWriter) async throws {
         let probe = ": keep-alive\n\n"
-        var nextProbe = ContinuousClock.now.advanced(by: .milliseconds(500))
+        var nextProbe = clock.now.advanced(by: .milliseconds(500))
+        // When a probe next says the prompt's progress instead; nil without one, and once it has nothing more to say.
+        var nextProgressComment = prefillProgress.map { clock.now.advanced(by: $0.ticker.interval) }
         var total = 0
         var writerFailed = false
         var upstreamFailed = false
@@ -141,16 +156,25 @@ enum DistributedHTTPEventStream {
             readLoop: while true {
                 try Task.checkCancellation()
                 let item: DistributedHTTPFramePump.Item
-                switch await pump.next(until: nextProbe) {
+                switch await pump.next(until: nextProbe, clock: clock) {
                 case .item(let value): item = value
                 case .closed: throw CancellationError()
                 case .probe:
                     try Task.checkCancellation()
-                    guard probe.utf8.count <= maximumStreamBytes - maximumTerminalBytes - total else { throw Failure.outputLimit }
-                    total += probe.utf8.count
-                    do { try await writer.write(ByteBuffer(string: probe)) }
+                    var line = probe
+                    if let due = nextProgressComment, let prefillProgress, clock.now >= due {
+                        if let comment = prefillProgress.comment {
+                            line = comment
+                            nextProgressComment = clock.now.advanced(by: prefillProgress.ticker.interval)
+                        } else {
+                            nextProgressComment = nil
+                        }
+                    }
+                    guard line.utf8.count <= maximumStreamBytes - maximumTerminalBytes - total else { throw Failure.outputLimit }
+                    total += line.utf8.count
+                    do { try await writer.write(ByteBuffer(string: line)) }
                     catch { writerFailed = true; throw error }
-                    nextProbe = ContinuousClock.now.advanced(by: .milliseconds(500))
+                    nextProbe = clock.now.advanced(by: .milliseconds(500))
                     continue
                 }
                 try Task.checkCancellation()
@@ -167,6 +191,7 @@ enum DistributedHTTPEventStream {
                 total += size
                 let visible = try isVisibleContent(frame)
                 if identity == nil { identity = ChunkIdentity(frame: frame) }
+                // The request's deadline is on the continuous clock, whatever times the probes.
                 control.expire(at: ContinuousClock.now)
                 // Defer final usage/finish/DONE until error disposition
                 // is known. At most the existing finish frame + DONE.
@@ -178,7 +203,7 @@ enum DistributedHTTPEventStream {
                 do { try await writer.write(ByteBuffer(string: frame)) }
                 catch { writerFailed = true; throw error }
                 if visible { control.contentAccepted() }
-                nextProbe = ContinuousClock.now.advanced(by: .milliseconds(500))
+                nextProbe = clock.now.advanced(by: .milliseconds(500))
             }
         } catch {
             if writerFailed || Task.isCancelled {
@@ -188,11 +213,14 @@ enum DistributedHTTPEventStream {
             upstreamFailed = true
         }
         control.expire(at: ContinuousClock.now)
-        if let failure = try failureFrame(for: control, upstreamFailed: upstreamFailed, identity: identity) {
-            // When the shared pipeline framed the failure itself, the client
-            // gets exactly the single-Mac endpoint's frame; either way the
-            // stream ends there, as the product's does (no [DONE] after it).
-            try await writer.write(ByteBuffer(string: trailing.first(where: isProductFailureFrame) ?? failure))
+        if let productFailure = trailing.first(where: isProductFailureFrame) {
+            // The shared pipeline framed the failure itself: the client gets
+            // exactly the single-Mac endpoint's frame, and nothing follows it
+            // (no [DONE]). It needs no native terminal, which a request the
+            // pipeline cancelled mid-stream has only once the pair retired it.
+            try await writer.write(ByteBuffer(string: productFailure))
+        } else if let failure = try failureFrame(for: control, upstreamFailed: upstreamFailed, identity: identity) {
+            try await writer.write(ByteBuffer(string: failure))
         } else {
             for frame in trailing { try await writer.write(ByteBuffer(string: frame)) }
         }

@@ -2,13 +2,14 @@
 # Landing site (Next.js 16 / React 19) and desktop app (Electron).
 node = "22"
 
-# Provider (Swift 6.3, Apple Silicon). The local `libs/mlx-swift` dependency
-# declares `// swift-tools-version: 6.3`, which sets the effective minimum even
-# though provider-swift's own manifest remains source-compatible with 6.1.
+# Provider (Apple Silicon). Releases build with Swift 6.4.2, the Swift of
+# Xcode 27.2. The local `libs/mlx-swift` dependency declares
+# `// swift-tools-version: 6.3`, which sets the effective minimum even though
+# provider-swift's own manifest remains source-compatible with 6.1.
 # mise installs swiftly toolchains; on macOS the system Xcode swift is also
 # acceptable — this pin ensures a consistent CLI for non-Xcode shells / Linux
 # cross builds of ProviderCoreFoundation.
-swift = "6.3"
+swift = "6.4.2"
 
 # Python is used by provider build, release and benchmark scripts.
 # MLX 0.31.x wheels target 3.10–3.12.

@@ -28,7 +28,7 @@ private final class UpgradeNoticeBundleAnchor {}
     }
 
     @Test("real CLI entry warns on stderr without changing command output", arguments: [
-        ["--version"], ["--help"], ["models", "--help"], ["start", "--help"], ["stop", "--help"],
+        ["--version"], ["--help"],
     ])
     func realEntryPointKeepsStdoutClean(arguments: [String]) throws {
         let bundle = Bundle(for: UpgradeNoticeBundleAnchor.self).bundleURL

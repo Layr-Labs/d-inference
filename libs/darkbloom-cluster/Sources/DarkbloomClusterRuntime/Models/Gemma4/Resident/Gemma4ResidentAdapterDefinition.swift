@@ -34,15 +34,41 @@ enum Gemma4ResidentAdapterDefinition {
     /// held to this value by `Gemma4StageGeometry.decode`).
     static let declaredContextTokens = 262_144
 
-    /// The request bounds: the protocol's, cut to the declared context, as the
-    /// dense Qwen rows derive theirs (`QwenResidentContextLimits`).
+    /// The output limit at the native context: the catalog's `max_output_length`
+    /// for every registered Gemma 4 26B row, the `max_tokens` the coordinator
+    /// gives a request that omits it, as Qwen3.8 27B's row names its catalog's
+    /// (`QwenDenseRegisteredSpecification.nativeOutputTokens`).
+    static let nativeOutputTokens = 32_768
+
+    /// The request bounds the pair advertises and holds a request to: the
+    /// model's whole declared context (up to 262,143 prompt tokens), as a
+    /// single Mac serving it holds a request to its window
+    /// (`QwenResidentContextLimits.Ceiling.native`).
     static func contextLimits() throws -> QwenResidentContextLimits {
+        try QwenResidentContextLimits(declaredContextTokens: declaredContextTokens,
+            ceiling: .native(outputTokens: nativeOutputTokens))
+    }
+
+    /// The request every LOAD gate, every quote and the planner size a pair
+    /// for: the protocol's standard request cut to the declared context. A
+    /// longer request is charged at its own context when a rank reserves it.
+    static func memoryContextLimits() throws -> QwenResidentContextLimits {
         try QwenResidentContextLimits(declaredContextTokens: declaredContextTokens)
     }
 
     static func profile(specification: Gemma4RegisteredSpecification) throws -> QwenLayerStageGenerationProfile {
-        let limits = try contextLimits()
-        return try .init(identifier: profileID(specification.model),
+        try profile(specification: specification, limits: contextLimits())
+    }
+
+    /// The memory plan's profile (`memoryContextLimits`): the same identifier,
+    /// another fingerprint.
+    static func memoryProfile(specification: Gemma4RegisteredSpecification) throws -> QwenLayerStageGenerationProfile {
+        try profile(specification: specification, limits: memoryContextLimits())
+    }
+
+    private static func profile(specification: Gemma4RegisteredSpecification,
+                                limits: QwenResidentContextLimits) throws -> QwenLayerStageGenerationProfile {
+        try .init(identifier: profileID(specification.model),
             vocabularySize: Gemma4StageGeometry.vocabularySize, hiddenSize: Gemma4StageGeometry.hiddenSize,
             activationDType: "bfloat16", maximumPromptTokens: limits.maximumPromptTokens,
             maximumChunkTokens: limits.maximumChunkTokens, maximumOutputTokens: limits.maximumOutputTokens,

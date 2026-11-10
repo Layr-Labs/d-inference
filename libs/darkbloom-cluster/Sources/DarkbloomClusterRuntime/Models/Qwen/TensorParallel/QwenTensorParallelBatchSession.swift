@@ -108,12 +108,13 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
     /// The prompt frames one step runs from the next frame: up to `limit`
     /// merged into one graph (`QwenTensorParallelPromptWavefront`), ending at
     /// the capture frontier; the next frame alone where frames do not merge.
-    func promptFrames(limit: Int) -> [QwenLayerStageFrame] {
+    /// `frontiers`: further boundaries a step must end at (an assistant's capture).
+    func promptFrames(limit: Int, frontiers extra: [Int] = []) -> [QwenLayerStageFrame] {
         guard !retired else { return [] }
         let merges = QwenTensorParallelPromptWavefront.merges(model: model, request: request,
             mediaInputs: inputs != nil, packedStorage: state.packedStorage)
         return QwenTensorParallelPromptWavefront.frames(request: request, from: schedule.nextSequence,
-            frontiers: prefixCapture?.frontiers ?? [], limit: merges ? limit : 1)
+            frontiers: (prefixCapture?.frontiers ?? []) + extra, limit: merges ? limit : 1)
     }
 
     /// Runs the planned prompt step `step` (`promptFrames`), its frames as one graph.
@@ -125,15 +126,21 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
         return try prompt(capturingHidden: false, frames: count, check: check).logits
     }
 
-    func prefillForMTP(check: () throws -> Void) throws -> QwenTensorParallelMTPPromptResult {
+    /// An assisted lane's prompt step of `frames` frames: a lone frame through
+    /// the target's hidden forward, consecutive frames through the same
+    /// wavefront an unassisted lane runs (every target value its bits), with
+    /// each frame's last-layer rows for the assistant's history.
+    func prefillForMTP(frames count: Int, check: () throws -> Void) throws -> QwenTensorParallelMTPPromptResult {
         guard inputs == nil, request.qwenMedia == nil else { throw ProbeError("Qwen TP media cannot enter assistant history") }
-        let result = try prompt(capturingHidden: true, check: check)
-        guard let hidden = result.hidden else { throw ProbeError("Qwen TP assistant prompt omitted target hidden") }
+        let result = try prompt(capturingHidden: true, frames: count, check: check)
+        guard let hidden = result.hidden, hidden.count == count else {
+            throw ProbeError("Qwen TP assistant prompt omitted target hidden")
+        }
         return .init(hidden: hidden, logits: result.logits)
     }
 
     private func prompt(capturingHidden: Bool, frames count: Int = 1,
-                        check: () throws -> Void) throws -> (hidden: MLXArray?, logits: MLXArray?) {
+                        check: () throws -> Void) throws -> (hidden: [MLXArray]?, logits: MLXArray?) {
         try MLX.withError { error in
             func checked() throws { try error.check(); try check() }
             // Each frame is admitted on the schedule as the frames before it leave it.
@@ -144,7 +151,7 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
                     final: proposed.finalPromptChunk)
                 frames.append(admitted); try planned.commit(admitted)
             }
-            guard let frame = QwenTensorParallelPromptWavefront.step(frames), count == 1 || !capturingHidden,
+            guard let frame = QwenTensorParallelPromptWavefront.step(frames),
                   !retired, !failed, window?.isIdle ?? true, frame.phase == .prefill, state.committedTokens == frame.tokenOffset else {
                 throw ProbeError("Qwen TP batch prefill frontier differs")
             }
@@ -161,7 +168,7 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
                 }
             }
             let final = range.upperBound == request.promptCount
-            var hidden: MLXArray?
+            var hidden: [MLXArray]?
             let started = DispatchTime.now().uptimeNanoseconds
             var phases: CBv2OwnerPhaseObserver?
             var timing: QwenTensorParallelPrefillFrameClock?
@@ -177,15 +184,17 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
             let stride = Self.prefillStride ?? (state.packedStorage ? 0 : Self.prefillLayerStride)
             let output = try state.run(tokenCount: frame.tokenCount, observer: phases, check: checked, forward: { caches, evaluation in
               if frames.count > 1 {
-                  return QwenTensorParallelPromptWavefront.forward(model: self.model, request: self.request,
-                      frames: frames, caches: caches, evaluation: evaluation)
+                  let step = QwenTensorParallelPromptWavefront.forward(model: self.model, request: self.request,
+                      frames: frames, caches: caches, evaluation: evaluation, capturingHidden: capturingHidden)
+                  hidden = step.hidden
+                  return step.output
               }
               return Qwen35LayerSubmission.$stride.withValue(stride) { () -> MLXArray in
                 let native = self.model.model
                 if capturingHidden {
                     let result = native.cbv2ForwardWithHidden(input,
                         caches: caches.map { $0 as! any KVCache }, recurrentState: [evaluation], positionIds: nil)
-                    hidden = result.lastHidden
+                    hidden = [result.lastHidden]
                     return final ? result.logits[0..., -1, 0...] : result.lastHidden
                 }
                 if !final {
@@ -212,8 +221,11 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
                 }
             })
             if capturingHidden {
-                guard let hidden, hidden.shape == [1, frame.tokenCount, model.plan.hiddenSize],
-                      String(describing: hidden.dtype) == request.profile.activationDType else {
+                guard let hidden, hidden.count == frames.count,
+                      zip(hidden, frames).allSatisfy({ rows, frame in
+                          rows.shape == [1, frame.tokenCount, model.plan.hiddenSize]
+                              && String(describing: rows.dtype) == request.profile.activationDType
+                      }) else {
                     throw ProbeError("Qwen TP assistant prompt hidden differs from the actual target")
                 }
                 eval(hidden); try checked()
@@ -234,10 +246,10 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
     }
 
     /// A decode forward is submitted to the GPU every this many layers
-    /// (`Qwen35LayerSubmission`), so the GPU and the collectives run the
-    /// layers already built while the host builds the rest. Evaluation order
-    /// only: the logits and every committed state keep their bits.
-    static let decodeLayerStride = 1
+    /// (`QwenTensorParallelLaunch.decodeLayerStride`, where the measured
+    /// choice is). Evaluation order only: the logits and every committed
+    /// state keep their bits.
+    static let decodeLayerStride = QwenTensorParallelLaunch.decodeLayerStride
     /// A bench or test's own stride (0: the whole forward in one evaluation).
     @TaskLocal static var layerStride: Int?
     /// A prompt frame is submitted to the GPU every this many decoder layers
@@ -417,9 +429,40 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
         return (result.logits, hidden)
     }
 
+    /// `decode`'s step, submitted and not read, on lazy input tokens (`[B]`
+    /// int32, the previous step's unread selection; `CBv2OwnedRequestState.submitBatch`),
+    /// so the next step can be built before this one is read
+    /// (`QwenTensorParallelBatchDriver`'s build-ahead). The same forward and
+    /// arithmetic as `decode` on the read tokens; native (unpacked) rows.
+    static func submitDecode(_ sessions: [QwenTensorParallelBatchSession], tokens: MLXArray,
+                             check: () throws -> Void) throws -> MLXArray {
+        guard tokens.shape == [sessions.count], tokens.dtype == .int32 else {
+            throw ProbeError("Qwen TP submitted decode needs one int32 token a row")
+        }
+        return try decodeResult(sessions, input: .submitted(tokens), capturingHidden: false, check: check).logits
+    }
+
+    /// A batch decode step's input: tokens the host read, or a previous step's lazy selection.
+    private enum DecodeInput {
+        case read([Int])
+        case submitted(MLXArray)
+
+        var rows: Int {
+            switch self {
+            case .read(let tokens): tokens.count
+            case .submitted(let tokens): tokens.dim(0)
+            }
+        }
+    }
+
     private static func decodeResult(_ sessions: [QwenTensorParallelBatchSession], tokens: [Int],
                                      capturingHidden: Bool, check: () throws -> Void) throws -> (logits: MLXArray, hidden: MLXArray?) {
-        guard let first = sessions.first, (1...8).contains(sessions.count), sessions.count == tokens.count,
+        try decodeResult(sessions, input: .read(tokens), capturingHidden: capturingHidden, check: check)
+    }
+
+    private static func decodeResult(_ sessions: [QwenTensorParallelBatchSession], input decodeInput: DecodeInput,
+                                     capturingHidden: Bool, check: () throws -> Void) throws -> (logits: MLXArray, hidden: MLXArray?) {
+        guard let first = sessions.first, (1...8).contains(sessions.count), sessions.count == decodeInput.rows,
               Set(sessions.map { ObjectIdentifier($0) }).count == sessions.count,
               sessions.allSatisfy({ $0.model === first.model && !$0.retired && !$0.failed && ($0.window?.isIdle ?? true) }) else {
             throw ProbeError("Qwen TP batch decode needs distinct sessions of one loaded shard")
@@ -431,9 +474,12 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
             // If any lane carries explicit media positions, all rows supply
             // their own three axes, including ordinary text rows in the cohort.
             let positioned = sessions.contains { $0.inputs != nil }
-            for (session, token) in zip(sessions, tokens) {
-                guard (0..<first.model.plan.vocabularySize).contains(token),
-                      session.state.committedTokens == session.schedule.committedTokens else {
+            if case .read(let tokens) = decodeInput,
+               !tokens.allSatisfy({ (0..<first.model.plan.vocabularySize).contains($0) }) {
+                throw ProbeError("Qwen TP decode token or committed frontier differs")
+            }
+            for session in sessions {
+                guard session.state.committedTokens == session.schedule.committedTokens else {
                     throw ProbeError("Qwen TP decode token or committed frontier differs")
                 }
                 try session.reservePages(writing: 1)
@@ -447,14 +493,19 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
                     positionRows.append(positions)
                 }
             }
-            let input = MLXArray(tokens.map(Int32.init)).reshaped([sessions.count, 1])
+            let input: MLXArray, submitted: Bool
+            switch decodeInput {
+            case .read(let tokens): input = MLXArray(tokens.map(Int32.init)).reshaped([sessions.count, 1]); submitted = false
+            case .submitted(let tokens): input = tokens.reshaped([sessions.count, 1]); submitted = true
+            }
+            guard !(submitted && capturingHidden) else { throw ProbeError("A submitted Qwen TP decode captures no hidden rows") }
             let positions = positioned ? concatenated(positionRows, axis: 1) : nil
             var hidden: MLXArray?
             // A packed step is evaluated whole: its refused writes are checked after the graph is built and before
             // any of it runs (`CBv2OwnedRequestState.checkStepWrites`), which layer submission would precede.
             let stride = layerStride ?? (first.state.packedStorage ? 0 : decodeLayerStride)
-            let output = try CBv2OwnedRequestState.runBatch(sessions.map(\.state), tokenCount: 1, check: checked,
-                forward: { caches, evaluations in
+            let step = submitted ? CBv2OwnedRequestState.submitBatch : CBv2OwnedRequestState.runBatch
+            let output = try step(sessions.map(\.state), 1, checked, { caches, evaluations in
                     Qwen35BatchDecodeScope.$enabled.withValue(true) { Qwen35LayerSubmission.$stride.withValue(stride) {
                       Qwen35BatchDecodeScope.$exactVectors.withValue(usesExactVectors) {
                         Qwen35BatchDecodeScope.$explicitPositionRows.withValue(sessions.map { $0.inputs != nil }) {
@@ -469,7 +520,7 @@ final class QwenTensorParallelBatchSession: QwenTensorParallelMTPTarget {
                         }
                       }
                     } }
-                }, validateOutput: { output in
+                }, { output in
                     try validateLogits(output, rows: sessions.count, model: first.model, request: first.request)
                 })
             if capturingHidden {

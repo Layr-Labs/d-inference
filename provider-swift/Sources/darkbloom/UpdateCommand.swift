@@ -47,6 +47,15 @@ struct Update: AsyncParsableCommand {
     @Flag(name: .shortAndLong, help: "With --rollback: don't ask for confirmation.")
     var yes = false
 
+    /// Tests run `update` as root without being root.
+    @TaskLocal static var runsAsRootForTesting: Bool?
+
+    /// Tests give `update` an updater for the coordinator URL it chose, with an install root of their own.
+    @TaskLocal static var updaterForTesting: (@Sendable (String) -> SelfUpdater)?
+
+    /// Whether this process runs as root: `--rollback` refuses it.
+    static var runsAsRoot: Bool { runsAsRootForTesting ?? (geteuid() == 0) }
+
     func validate() throws {
         if rollback, checkOnly || overrideQuarantine || coordinator != nil {
             throw ValidationError("--rollback cannot be combined with --check-only, --override-quarantine or --coordinator.")
@@ -57,6 +66,11 @@ struct Update: AsyncParsableCommand {
     }
 
     mutating func run() async throws {
+        // Run as root, the locks `--rollback` creates in this home would be root's, and the user's provider and cluster
+        // service could no longer take them: it is refused before any work, so it draws no mark.
+        let refusesRollbackAsRoot = rollback && Self.runsAsRoot
+        let look = DarkbloomCommandLook.forCommand()
+        if !refusesRollbackAsRoot { look.open("Darkbloom update") }
         let config = try loadUpdateConfig(configPath: configOptions.config)
 
         print("\(BuildEnvironment.current.cliName) update")
@@ -64,12 +78,10 @@ struct Update: AsyncParsableCommand {
         print("")
 
         let coordinatorURL = coordinator ?? config.coordinator.url
-        let updater = SelfUpdater(coordinatorBaseURL: coordinatorURL)
+        let updater = Self.updaterForTesting?(coordinatorURL) ?? SelfUpdater(coordinatorBaseURL: coordinatorURL)
 
         if rollback {
-            // Run as root, the locks it creates in this home would be root's, and the user's provider and cluster
-            // service could no longer take them.
-            guard geteuid() != 0 else {
+            guard !refusesRollbackAsRoot else {
                 throw ValidationError("Run `\(BuildEnvironment.current.cliName) update --rollback` as the user the provider runs as, not as root.")
             }
             try await UpdateRollback(
@@ -81,9 +93,10 @@ struct Update: AsyncParsableCommand {
         }
 
         if checkOnly {
-            let result = await updater.checkForUpdate(
-                manualOverride: overrideQuarantine
-            )
+            let manualOverride = overrideQuarantine
+            let result = await look.working("Checking for updates") {
+                await updater.checkForUpdate(manualOverride: manualOverride)
+            }
             switch result {
             case .upToDate(let version):
                 print("Up to date (v\(version)).")
@@ -111,8 +124,8 @@ struct Update: AsyncParsableCommand {
                 print("A strictly newer release remains eligible automatically.")
                 print("Use --override-quarantine only for an explicit operator retry.")
 
-            case .checkFailed(let reason):
-                printError("update check failed: \(reason)")
+            case .checkFailed(let failure):
+                for line in Self.checkFailedLines(failure, checkOnly: true) { printError(line) }
                 throw ExitCode.failure
             }
             return
@@ -123,7 +136,10 @@ struct Update: AsyncParsableCommand {
             printError("The quarantined release failed its starts or was rolled back; it may fail or regress again.")
         }
         print("Checking for updates...")
-        let result = await updater.update(manualOverride: overrideQuarantine)
+        let manualOverride = overrideQuarantine
+        let result = await look.working("Checking, downloading and staging the update") {
+            await updater.update(manualOverride: manualOverride)
+        }
 
         switch result {
         case .alreadyUpToDate(let version):
@@ -131,22 +147,32 @@ struct Update: AsyncParsableCommand {
 
         case .updated(let from, let to):
             print("Updated: v\(from) -> v\(to)")
-            if LaunchAgent.isLoaded() {
-                try await restartInstalledProvider(updater, operation: "manual-update-restart")
-            } else if ClusterService.running() {
-                try await restartClusterService(into: to)
-            } else {
-                print("Restart the provider for the new version to take effect.")
+            switch Self.restartChoice() {
+            case .pair:
+                for line in Self.soloJobLeftLines { print(line) }
+                try await restartClusterService(into: to, look: look)
+            case .singleMac(let releaseLeftover):
+                try await releaseLeftoverPart(releaseLeftover)
+                try await restartInstalledProvider(updater, operation: "manual-update-restart", look: look)
+            case .clusterService:
+                try await restartClusterService(into: to, look: look)
+            case .nothing:
+                print(Self.nothingRestartedLine(version: to))
             }
 
         case .restartRequired(let from, let to):
             print("v\(to) is already installed (current process: v\(from)).")
-            if LaunchAgent.isLoaded() {
-                try await restartInstalledProvider(updater, operation: "manual-candidate-restart")
-            } else if ClusterService.running() {
-                try await restartClusterService(into: to)
-            } else {
-                print("Restart the provider for v\(to) to take effect.")
+            switch Self.restartChoice() {
+            case .pair:
+                for line in Self.soloJobLeftLines { print(line) }
+                try await restartClusterService(into: to, look: look)
+            case .singleMac(let releaseLeftover):
+                try await releaseLeftoverPart(releaseLeftover)
+                try await restartInstalledProvider(updater, operation: "manual-candidate-restart", look: look)
+            case .clusterService:
+                try await restartClusterService(into: to, look: look)
+            case .nothing:
+                print(Self.nothingRestartedLine(version: to))
             }
 
         case .quarantined(let version, let reason):
@@ -161,6 +187,10 @@ struct Update: AsyncParsableCommand {
 
         case .cancelled(let reason):
             printError("update cancelled: \(reason)")
+            throw ExitCode.failure
+
+        case .checkFailed(let failure):
+            for line in Self.checkFailedLines(failure, checkOnly: false) { printError(line) }
             throw ExitCode.failure
 
         case .downloadFailed(let reason):
@@ -180,9 +210,68 @@ struct Update: AsyncParsableCommand {
         }
     }
 
-    private func restartInstalledProvider(_ updater: SelfUpdater, operation: String) async throws {
+    /// A failed release check in plain words: what failed, that nothing changed, and what to do. Only a check that got
+    /// no answer points at this Mac's network connection.
+    static func checkFailedLines(_ failure: UpdateCheckFailure, checkOnly: Bool) -> [String] {
+        let command = "`\(BuildEnvironment.current.cliName) update\(checkOnly ? " --check-only" : "")`"
+        let reason = failure.reason
+        let failed = "Couldn't check for updates: " + (reason.hasSuffix(".") ? reason : reason + ".")
+            + (checkOnly ? "" : " Nothing was downloaded or changed.")
+        switch failure.cause {
+        case .noAnswer:
+            return [failed, "Run \(command) again in a minute. If it keeps failing, check this Mac's network connection."]
+        case .badAnswer:
+            return [failed, "The coordinator answered, so this Mac's network connection works. Run \(command) again later."]
+        case .thisMac:
+            return [failed, "This is on this Mac, not its network connection: fix it, then run \(command) again."]
+        }
+    }
+
+    /// A single-Mac provider job is loaded on a Mac whose pair is started: the update restarts the pair, never that job
+    /// (0.10.7 restarted it first, and it took the serving lock the pair's parts need: the pair could not start again).
+    static func soloJobBesidePair(soloJobLoaded: Bool = LaunchAgent.isLoaded() && !LaunchAgent.installedJobIsClusterMember(),
+                                  pairServes: Bool = ClusterService.pairServesHere()) -> Bool {
+        soloJobLoaded && pairServes
+    }
+
+    /// What an update restarts.
+    enum RestartChoice: Equatable {
+        /// The pair, which runs here; a single-Mac job beside it is left as it is (`soloJobLeftLines`).
+        case pair
+        /// Single-Mac serving, which this Mac has; `releaseLeftover`: a pair that doesn't run here first gives back the
+        /// serving lock its leftover part holds (`Start.releaseLeftoverPartToServeAlone`).
+        case singleMac(releaseLeftover: Bool)
+        case clusterService
+        case nothing
+    }
+
+    /// The pair decides only while it runs here (`ClusterService.pairServesHere`), not by its saved start: a Mac whose
+    /// other Mac stopped taking part gets its single-Mac serving back from an update.
+    static func restartChoice(soloJobLoaded: Bool = LaunchAgent.isLoaded(),
+                              soloJobIsMember: Bool = LaunchAgent.installedJobIsClusterMember(),
+                              pairServes: Bool = ClusterService.pairServesHere(),
+                              leftoverPart: Bool = ClusterPairSummary.local().leftoverPartHere,
+                              clusterServiceRunning: Bool = ClusterService.running()) -> RestartChoice {
+        if soloJobBesidePair(soloJobLoaded: soloJobLoaded && !soloJobIsMember, pairServes: pairServes) { return .pair }
+        if soloJobLoaded { return .singleMac(releaseLeftover: leftoverPart && !soloJobIsMember) }
+        return clusterServiceRunning ? .clusterService : .nothing
+    }
+
+    private func releaseLeftoverPart(_ release: Bool) async throws {
+        guard release else { return }
+        try await Start.releaseLeftoverPartToServeAlone(ClusterPairSummary.local())
+    }
+
+    static var soloJobLeftLines: [String] {
+        let cli = BuildEnvironment.current.cliName
+        return ["Single-Mac serving is also set up on this Mac, which serves in a two-Mac pair: the update leaves it as it is and "
+                + "restarts the pair.",
+                "It can't run beside the pair (both need this Mac's one serving lock). Run `\(cli) stop --solo` to remove it."]
+    }
+
+    private func restartInstalledProvider(_ updater: SelfUpdater, operation: String, look: DarkbloomCommandLook) async throws {
         let previous = LaunchAgent.launchSnapshot()?.process
-        let session = try await ServiceDrain.prepare(options: drain)
+        let session = try await look.working("Draining accepted requests") { try await ServiceDrain.prepare(options: drain) }
         defer { session.release() }
         // A stop that won the update lease while download/install completed
         // must not be resurrected by a late updater restart.
@@ -191,27 +280,45 @@ struct Update: AsyncParsableCommand {
             return
         }
         print("Accepted requests drained. Restarting the installed provider...")
+        let restarted: SavedChoiceService.Alignment
         do {
-            try updater.prepareCandidateLaunch(session: session, baseline: LaunchAgent.launchSnapshot())
-            try await ServiceDrain.stopDrainedProvider(unloadService: false)
-            try LaunchAgent.restartAfterDrain()
+            restarted = try await look.working("Restarting the provider") {
+                try updater.prepareCandidateLaunch(session: session, baseline: LaunchAgent.launchSnapshot())
+                try await ServiceDrain.stopDrainedProvider(unloadService: false)
+                return try SavedChoiceService.restartAsSaved(configPath: configOptions.config)
+            }
             ServiceDrain.rearmWatchdog(explicitConfig: configOptions.config)
         } catch {
             session.release()
             try? updater.cancelPendingCandidateAttempt(operation: operation + "-failure")
             throw error
         }
+        if let line = restarted.line { print(line) }
         session.release()
-        try await ServiceDrain.waitForRestart(previous: previous, timeout: 180)
+        try await ServiceDrain.waitForRestartedService(serving: restarted.mode, previous: previous, timeout: 180,
+                                                       look: look)
+    }
+
+    /// Nothing serves in the background to restart into `version`: Only me in a terminal, or nothing at all.
+    static func nothingRestartedLine(version: String, terminalOnlyMe: Bool = Restart.terminalOnlyMe(
+        ServiceDrain.soloProviderState())) -> String {
+        let cli = BuildEnvironment.current.cliName
+        guard terminalOnlyMe else {
+            return "Nothing serves in the background now; your next `\(cli) start` serves v\(version)."
+        }
+        return "Only me serves in a terminal now (`\(cli) start --local --here`): press Ctrl-C there, then "
+            + "`\(cli) start` serves v\(version) in the background."
     }
 
     /// A `darkbloom cluster` Mac: its cluster service supervisor restarts into the installed release together with
     /// the other Mac, after the pair drained, as at the pair's update slot (`ClusterPairUpdateCycle`).
-    private func restartClusterService(into version: String) async throws {
+    private func restartClusterService(into version: String, look: DarkbloomCommandLook) async throws {
         let directory = try ClusterService.paths().lock.deletingLastPathComponent()
         let request = ClusterPairUpdate.Request(createdAt: Date().timeIntervalSince1970)
-        let outcome = try await ClusterServiceUpdateRequest.restart(into: version, request: request, serviceDirectory: directory,
-            timeoutSeconds: drain.timeout, say: { print($0) })
+        let outcome = try await look.working("Waiting for the cluster service") {
+            try await ClusterServiceUpdateRequest.restart(into: version, request: request, serviceDirectory: directory,
+                timeoutSeconds: drain.timeout, say: look.saying { print($0) })
+        }
         guard outcome != .failed else { throw ExitCode.failure }
     }
 
@@ -220,7 +327,7 @@ struct Update: AsyncParsableCommand {
 /// `darkbloom update` asks the cluster service supervisor for the pair's restart into the installed release
 /// (`ClusterPairUpdate.Request`) and follows its progress.
 enum ClusterServiceUpdateRequest {
-    enum Outcome: Equatable { case restarting, waiting, failed }
+    enum Outcome: Equatable { case restarting, restarted, waiting, failed }
 
     static func restart(into version: String, request: ClusterPairUpdate.Request, serviceDirectory: URL, timeoutSeconds: Int,
                         pollSeconds: Double = 1, say: (String) -> Void) async throws -> Outcome {
@@ -235,10 +342,16 @@ enum ClusterServiceUpdateRequest {
             throw ValidationError("Could not ask this Mac's cluster service to restart (\(serviceDirectory.path) is not writable).")
         }
         say("Asked this Mac's cluster service to restart into v\(version) together with the other Mac; the pair finishes its accepted requests first.")
-        say("Run `darkbloom update` on the other Mac too (or wait for the pair's next update slot): both restart once both have v\(version).")
+        say("Run `\(ClusterPairSummary.cli) update` on the other Mac too (or wait for the pair's next update slot): both restart once both have v\(version).")
         let deadline = Date().addingTimeInterval(Double(timeoutSeconds))
         var said: String?
         while Date() < deadline {
+            // The restarted service publishes `idle` for the release it now runs, without the request; it may do so
+            // before this command reads `restarting` (R5-3: the command waited out its whole timeout).
+            if let progress = ClusterPairUpdate.readProgress(from: progressPath), Self.runs(version, progress.running) {
+                say("This Mac's cluster service now runs v\(version); the cluster sets itself up again once both Macs run it.")
+                return .restarted
+            }
             if let progress = ClusterPairUpdate.readProgress(from: progressPath), progress.request == request.id {
                 if progress.line != said {
                     said = progress.line
@@ -249,7 +362,7 @@ enum ClusterServiceUpdateRequest {
                     say("The cluster service restarts into v\(version); the cluster sets itself up again once both Macs run it.")
                     return .restarting
                 case .deferred, .failed:
-                    say("Not restarted now. The pair tries again at its next update slot, or run `darkbloom update` again.")
+                    say("Not restarted now. The pair tries again at its next update slot, or run `\(ClusterPairSummary.cli) update` again.")
                     return .failed
                 default:
                     break
@@ -257,7 +370,13 @@ enum ClusterServiceUpdateRequest {
             }
             try await Task.sleep(nanoseconds: UInt64(pollSeconds * 1_000_000_000))
         }
-        say("Still waiting after \(timeoutSeconds) s; the cluster service goes on by itself. Its log: ~/.darkbloom/cluster-setup/service.log")
+        say("Still waiting after \(timeoutSeconds) s; the cluster service goes on by itself. Its log: \(ClusterUserPaths.serviceLogShown)")
         return .waiting
+    }
+
+    /// Whether the service's running version is the release asked for (either may carry a leading "v").
+    static func runs(_ version: String, _ running: String) -> Bool {
+        func bare(_ text: String) -> Substring { text.hasPrefix("v") ? text.dropFirst() : Substring(text) }
+        return !version.isEmpty && bare(version) == bare(running)
     }
 }

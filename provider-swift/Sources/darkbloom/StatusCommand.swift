@@ -4,10 +4,17 @@ import ProviderCore
 
 struct Status: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Show local provider configuration and hardware status."
+        abstract: "Show local provider configuration and hardware status.",
+        discussion: "On a Mac in a two-Mac cluster it starts with the pair, in the words of `\(ClusterPairSummary.cli) cluster status` "
+            + "(who leads, the model, whether it serves now and what to do), then this Mac's configuration and hardware. "
+            + "When this Mac serves alone instead of the pair, it says so under the pair and shows that serving's own lines. "
+            + "With --solo it shows single-Mac serving on this Mac instead of the pair."
     )
 
     @OptionGroup var configOptions: ConfigOptions
+
+    @Flag(help: "On a Mac in a two-Mac cluster: show single-Mac serving on this Mac (the provider service) instead of the pair.")
+    var solo = false
 
     mutating func run() async throws {
         // Asked first, so the add-on answers while the banner and the config
@@ -15,6 +22,7 @@ struct Status: AsyncParsableCommand {
         let sandboxLine = Task.detached {
             SandboxStatusView.statusLine(SandboxAddon.live().queryStatus(timeout: Sandbox.statusLineTimeout))
         }
+        DarkbloomCommandLook.forCommand().open("Darkbloom status")
 
         // Best-effort: tell the user if a newer release is published before
         // we dump current status. Bounded by a 2s timeout in UpdateBanner.
@@ -23,6 +31,19 @@ struct Status: AsyncParsableCommand {
         let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
         let config = snapshot.config
         let models = advertisedModels(from: snapshot.models, config: config)
+
+        // On a Mac in a cluster the pair comes first, as `darkbloom cluster status` says it, then whether this Mac serves
+        // alone instead (`start --solo`), in plain words.
+        let pair = ClusterPairSummary.local()
+        let showsPair = pair.paired && !solo
+        let servingAlone = showsPair ? soloServingHere() : nil
+        if showsPair {
+            for line in await ClusterPairSummary.live(config: configOptions.config, bounded: ClusterPairCommands.printLine).clusterStatusLines {
+                print(line)
+            }
+            if let state = servingAlone { print(Self.servingAloneLine(pid: state.pid)) }
+            print("")
+        }
 
         print("\(BuildEnvironment.current.cliName) \(ProviderCore.version)")
         print("Provider: \(config.provider.name)")
@@ -74,7 +95,16 @@ struct Status: AsyncParsableCommand {
             print(supervisor.summary(now: Date().timeIntervalSince1970))
         }
         for line in Self.clusterServiceLines() { print(line) }
-        printDaemonStatus(config: config, models: snapshot.models, hardware: snapshot.hardware)
+        if showsPair {
+            // The daemon lines are single-Mac serving's only when it runs here; otherwise they would be the cluster's own
+            // part's, read as single-Mac serving.
+            if servingAlone != nil {
+                printDaemonStatus(config: config, models: snapshot.models, hardware: snapshot.hardware, pair: pair)
+            }
+        } else {
+            if pair.paired { print(pair.statusLine) }
+            printDaemonStatus(config: config, models: snapshot.models, hardware: snapshot.hardware, pair: pair)
+        }
 
         // Crash-loop KV-backend guard — printed whether or not the daemon is
         // up, because the guard's whole story happens while the daemon is
@@ -87,6 +117,19 @@ struct Status: AsyncParsableCommand {
         {
             print(line)
         }
+    }
+
+    /// On a Mac in a cluster: single-Mac serving that runs here (`start --solo`), never the cluster's own part; nil when
+    /// none runs.
+    private func soloServingHere() -> DaemonState? {
+        guard let state = ServiceDrain.soloProviderState(), daemonProcessAlive(pid: state.pid) else { return nil }
+        return state
+    }
+
+    /// Under the pair's block when this Mac serves alone: the pair and single-Mac serving share its one serving lock, so
+    /// it serves one or the other, never both.
+    static func servingAloneLine(pid: Int32) -> String {
+        "This Mac serves alone (single-Mac serving, process \(pid)), not the pair; its status is below."
     }
 
     /// One-line summary of crash-recovery state: the config opt-out plus whether
@@ -112,23 +155,33 @@ struct Status: AsyncParsableCommand {
 
     /// Prints the running daemon's live state, including the coordinator's last
     /// trust reason — the answer to "am I earning, and if not, why?".
-    private func printDaemonStatus(config: ProviderConfig, models: [ModelInfo], hardware: HardwareInfo?) {
+    private func printDaemonStatus(config: ProviderConfig, models: [ModelInfo], hardware: HardwareInfo?,
+                                   pair: ClusterPairSummary) {
         let now = Date().timeIntervalSince1970
         guard let state = DaemonStateFile.read() else {
-            print("Daemon: not running (run `\(BuildEnvironment.current.cliName) start`)")
+            print(Self.daemonNotRunningLine(paired: pair.paired, unsure: pair.pairingUnreadable))
+            if let line = Self.steppedAsideLine(paired: pair.paired) { print(line) }
             return
         }
         let alive = daemonProcessAlive(pid: state.pid)
         if !alive {
-            print("Daemon: not running (stale state file)")
+            print(Self.daemonNotRunningLine(paired: pair.paired, unsure: pair.pairingUnreadable, staleStateFile: true))
+            if let line = Self.steppedAsideLine(paired: pair.paired) { print(line) }
             return
         }
         print(daemonHealthLine(
             state: state,
             now: now,
             heartbeatIntervalSecs: config.coordinator.heartbeatIntervalSecs))
+        // The cluster's part writes this state too: say so, so its lines are not read as single-Mac serving.
+        if pair.paired, ServiceDrain.soloProviderState(state) == nil { print(Self.clusterPartLine) }
         if let drain = Self.lifecycleDrainLine(state.lifecycle) { print(drain) }
         if let hold = Self.addonHoldLine(state.addonHold) { print(hold) }
+        for line in Self.servingLines(state: state, liveEndpoint: LocalEndpoint.readLiveInfo(), route: config.local?.route,
+                                      accountKeySaved: { Start.accountKeySaved() },
+                                      server: .of(state, paired: pair.paired)) {
+            print(line)
+        }
         if state.autopilotPhase != nil {
             let fresh = Autopilot.Status.snapshotIsFresh(state,
                 heartbeatIntervalSecs: config.coordinator.heartbeatIntervalSecs, now: now)

@@ -31,16 +31,19 @@ xcrun swiftc -j 4 "${task_flags[@]}" -emit-library -emit-module -module-name MLX
 # shipped qualification records ran (never in a product build).
 xcrun swiftc -j 4 "${task_flags[@]}" -D DARKBLOOM_CLUSTER_FIXTURE_ARTIFACTS -parse-as-library "${task_links[@]}" -lDarkbloomClusterProtocol -lDarkbloomClusterPlacement -lMLXLMCommon \
   "$task_config/ClusterConfigurationFiles.swift" "$task_config/ClusterConfigurationPaths.swift" \
+  "$task_provider"/Sources/ProviderBuildEnvironment/*.swift \
   "$task_config/ClusterConfiguration.swift" "$task_config/ClusterConfigurationCodec.swift" \
   "$task_config/ClusterGenerationSelection.swift" "$task_config/ClusterCapabilityRecord.swift" \
   "$task_config/ClusterNativeMemberAttachment.swift" "$task_config/ClusterLinkControlAttachment.swift" "$task_config/ClusterPairApproval.swift" \
   "$task_provider/Sources/ProviderCore/Coordinator/NativePairMemberPolicy.swift" \
   "$task_provider/Sources/ProviderCore/Config/ClusterRuntimeApproval.swift" "$task_provider/Sources/ProviderCore/Protocol/ClusterRosterRegistration.swift" \
   "$task_provider/Tests/ClusterInstalledSessionChecks/AttestationSignerStandIn.swift" \
+  "$task_provider/Tests/ClusterPlacementChecks/OnboardingCommandStandIn.swift" \
   "$task_provider/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPairServingGrant.swift" \
   "$task_provider/Sources/ProviderCore/Inference/Distributed/Installed/ClusterPublicModels.swift" \
   "$task_provider/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPairQualificationRecords.swift" \
   "$task_provider/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementSetup.swift" \
+  "$task_provider/Sources/ProviderCore/Diagnostics/GLM5NextGPULimitEligibility.swift" \
   "$task_provider/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementFlow.swift" \
   "$task_provider/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementTensorWidth.swift" \
   "$task_provider/Sources/ProviderCore/Inference/Distributed/Placement/ClusterForcedModeSetting.swift" \

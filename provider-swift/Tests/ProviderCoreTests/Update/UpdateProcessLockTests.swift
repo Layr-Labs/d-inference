@@ -28,6 +28,39 @@ struct UpdateProcessLockTests {
         }
     }
 
+    /// 0.10.8 on a pair: "another update operation owns the lock (pid 9523, provider-instance)" for a single-Mac
+    /// provider that was serving. The owner is named for what it is.
+    @Test("a held provider-instance lock names the single-Mac provider serving, never an update")
+    func providerInstanceOwnerIsNamed() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("update-lock-named-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let path = root.appendingPathComponent("provider.pid.lock")
+        let held = try UpdateProcessLock.acquire(at: path, operation: "provider-instance")
+        defer { held.release() }
+        let error = #expect(throws: UpdateProcessLock.LockError.self) {
+            _ = try UpdateProcessLock.acquire(at: path, operation: "provider-instance")
+        }
+        let text = error.map { String(describing: $0) } ?? ""
+        #expect(text.contains("a single-Mac Darkbloom provider (process \(getpid())) is serving on this Mac"), "\(text)")
+        #expect(text.contains("stop --solo"), "\(text)")
+        #expect(!text.contains("update"), "\(text)")
+    }
+
+    @Test("an update, a rollback and a stop are each named as such")
+    func otherOwnersAreNamed() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("update-lock-kinds-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        for (operation, words) in [("manual-update-restart", "an update (process"), ("operator-rollback", "a rollback (process"),
+                                   ("provider-lifecycle", "a stop or restart of the provider (process")] {
+            let path = root.appendingPathComponent("\(operation).lock")
+            let held = try UpdateProcessLock.acquire(at: path, operation: operation)
+            defer { held.release() }
+            let error = #expect(throws: UpdateProcessLock.LockError.self) { _ = try UpdateProcessLock.acquire(at: path, operation: "x") }
+            let text = error.map { String(describing: $0) } ?? ""
+            #expect(text.contains(words) && !text.contains("another update operation"), "\(operation): \(text)")
+        }
+    }
+
     #if canImport(Darwin)
     @Test("kernel releases lock after owner is killed")
     func crashedOwnerRecovery() throws {
@@ -150,7 +183,8 @@ struct UpdateProcessLockTests {
             coordinatorBaseURL: "http://127.0.0.1:1",
             installRoot: fixture.installRoot,
             verifyCodeSignatures: false,
-            currentVersion: fixture.oldVersion
+            currentVersion: fixture.oldVersion,
+            releaseCheck: .withoutPauses
         )
         let service = WatchdogRecoveryService(
             updater: updater,

@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-11-02
+> Last updated: 2026-11-09
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon in
@@ -184,17 +184,18 @@ and local response writes finish
 ## Add-on hold busy fields
 
 While a local add-on holds the Mac ([add-on hold](../architecture/addon-hold.md)),
+or while its owner uses it through the local API ([owner pause](../architecture/owner-pause.md)),
 the provider stays registered and reports `heartbeat.status = draining` with
 three optional busy fields. `register` carries the same fields, so a connection
-made during a hold is excluded before its first heartbeat. The hold never sends
-`provider_drain`: that barrier fences a connection until it closes, and the hold
-returns on the same connection with its next `idle` or `serving` heartbeat.
+made during a hold is excluded before its first heartbeat. Neither sends
+`provider_drain`: that barrier fences a connection until it closes, and both
+return on the same connection with the next `idle` or `serving` heartbeat.
 
 | JSON key | Swift | Presence | Meaning |
 |---|---|---|---|
-| `busy_reason` | `ProviderBusy.reason` (`ProviderBusyReason`) | opt | Closed vocabulary: `addon` |
-| `busy_since_ms` | `ProviderBusy.sinceMs` (`Int64`) | opt, with `busy_reason` | Unix milliseconds at which the oldest active hold began |
-| `busy_addon` | `ProviderBusy.addon` (`String?`) | opt | Holding add-on's code-signing identifier, for example `io.darkbloom.sandbox`; `operator` for `darkbloom addon hold` |
+| `busy_reason` | `ProviderBusy.reason` (`ProviderBusyReason`) | opt | Closed vocabulary: `addon` (an add-on holds the Mac) or `owner` (the owner pause) |
+| `busy_since_ms` | `ProviderBusy.sinceMs` (`Int64`) | opt, with `busy_reason` | Unix milliseconds at which the oldest active hold, or the owner pause, began |
+| `busy_addon` | `ProviderBusy.addon` (`String?`) | opt | Holding add-on's code-signing identifier, for example `io.darkbloom.sandbox`; `operator` for `darkbloom addon hold`. Never sent with `owner` |
 
 All three are omitted when the provider is not held, and a heartbeat sends
 them only beside `status: draining` (`buildHeartbeatFrame` in
@@ -205,6 +206,22 @@ Decoders map an unknown `busy_reason` to absent. Coordinator support for the
 fields is separate platform work; a coordinator that ignores them still stops
 routing on the draining status and clears the mark on the release heartbeat.
 Routed requests that arrive during a hold get the typed draining rejection.
+
+An add-on hold outranks the owner pause: while both apply the fields describe
+the hold, and its release hands them back to the pause (`ProviderBusy.publishing`).
+Coordinators key the add-on hold on `addon` only, so they treat `owner` as a
+plain drain for routing: the Mac leaves routing and keeps its uptime. Because a coordinator
+does not act on `owner` in `register`, the first event heartbeat of a fresh
+connection repeats the draining status. Routed requests that race the owner
+pause's heartbeat get the same typed draining rejection. On a pair, only the
+leader member (the slot's host) sends `owner`; every other member keeps its
+control-only `draining` heartbeat with no busy fields. The whole pair then
+leaves routing. Its base reward depends on the coordinator: on the coordinator
+that ships with 0.10.11
+([darkbloom-platform#709](https://github.com/Layr-Labs/darkbloom-platform/pull/709)
+onwards) the pair keeps it while paused, as a single Mac does; on coordinators
+before #709 both Macs lose it for the pause plus the idle minutes
+([owner pause](../architecture/owner-pause.md#pairs)).
 
 
 ## Close codes and the reconnect wait
@@ -315,7 +332,7 @@ connection, first.
 | `member_registration_nonce` | `string` | `String?` | opt | 64 lowercase hex chars, this connection's member negotiation nonce; invalid without the member role |
 | `cluster_models` | `[]ModelInfo` | `[ModelInfo]?` | opt | separate cluster inventory for the member role; invalid on a solo registration; old coordinators ignore it and see no routable model |
 | `cluster_membership` | `*ClusterMembership` | `ClusterMembership?` | opt | member role only (a solo registration carrying it is refused, and the provider never encodes it for one). `cluster_id`: the saved cluster label, 1–128 of `A–Z a–z 0–9 - . _`, not starting with `-`; `rank`: `0` leader or `1` follower; `policy_sha256`: 64 lowercase hex, SHA-256 of the canonical coordinator runtime policy the member installed. A claim the pair selector matches against a second member of the same account and the operator's approval catalog; it grants nothing. A member that omits it is acknowledged and never paired (`darkbloom-platform:coordinator/protocol/execution_role.go`, `ClusterMembership.Validate`; [pair formation](cluster-control-protocol.md#pair-formation)). The provider sends it only when its saved setup carries a pair approval, and derives it from the installed member control, so `policy_sha256` is the digest of exactly the policy bytes that control requires in a prepare frame (`provider-swift/Sources/ProviderCore/Protocol/ClusterMembership.swift`, `ClusterMembership`; `provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberInstallation.swift`, `membership`). Each plan of a roster registration's `plans[]` names its generation `mode` (omitted is `pipeline_v1`) and that mode's `cuts`: none for `tensor_parallel_v1`, one fewer than `members` for every other mode (`provider-swift/Sources/ProviderCore/Protocol/ClusterRosterRegistration.swift`, `ClusterPlan.cutCount`; `darkbloom-platform:coordinator/protocol/cluster_generation_mode.go`, `ClusterPlanModeCutCount`). The provider does not encode `tensor_parallel_shares` yet, so a setup with unequal tensor-parallel shares is refused at registration (`provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberRoster.swift`, `NativePairMemberRoster`). A plan for a model approval also carries `runtime`, exactly `native_runtime_sha256`, `capability_sha256`, `resource_policy_sha256` and `profile_sha256` (64 lowercase hex, nonzero), from the member's own saved setup; it is left out of a plan for a build-pinned approval and is part of the plan both members must register byte for byte (`ClusterPlan.runtime`, `samePlacement`; [model approvals](configuration.md#model-approvals)) |
-| `busy_reason`, `busy_since_ms`, `busy_addon` | — | `ProviderBusy?` | opt | Present only while an add-on holds the provider; [add-on hold busy fields](#add-on-hold-busy-fields) |
+| `busy_reason`, `busy_since_ms`, `busy_addon` | — | `ProviderBusy?` | opt | Present only while an add-on holds the provider or the owner pause is on; [add-on hold busy fields](#add-on-hold-busy-fields) |
 
 An attested registration is encoded by the raw-attestation encoder, not the
 Codable one. Both write the three member fields, and only for the member role
@@ -419,7 +436,7 @@ the sinks of each field are in [telemetry-inventory.md](https://github.com/Layr-
 | `prefix_cache_memory_models` | `*[]PrefixCacheV2Capability` | `[…]?` | ptr | omitted preserves resident inventory; `[]` clears it; protocol downgrade clears it; `UpdatePrefixCacheSnapshot`, [coordinator/registry/cache_snapshot.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/cache_snapshot.go) |
 | `prefix_cache_statuses`, `prefix_cache_donation_outcomes` | `*[]…` | `[…]?` | ptr | same pointer rule |
 | `apns_device_token`, `apns_environment` | `string` | `String?` | opt | late or rotated APNs token so the coordinator can re-arm a code challenge without a reconnect; the token alone never grants `CodeAttested` |
-| `busy_reason`, `busy_since_ms`, `busy_addon` | — | `ProviderBusy?` | opt | Only beside `status: draining` while an add-on holds the provider; [add-on hold busy fields](#add-on-hold-busy-fields) |
+| `busy_reason`, `busy_since_ms`, `busy_addon` | — | `ProviderBusy?` | opt | Only beside `status: draining` while an add-on holds the provider or the owner pause is on; [add-on hold busy fields](#add-on-hold-busy-fields) |
 
 #### `stats`
 
@@ -502,6 +519,7 @@ routing on them.
 | `deadline_profile` | `*DeadlinePerformanceProfileReference` | `DeadlinePerformanceProfileReference?` | opt | Exact scheduler identity for measured first-content cells; grants no concurrency or chunk-policy change |
 | `deadline_work` | `*DeadlineWork` | `DeadlineWork?` | opt | Coherent existing-owner work bounds; [schema below](#slotsdeadline_work) |
 | `performance_measurements` | `*PerformanceMeasurements` | `PerformanceMeasurements?` | opt | Transient routing observations; [schema below](#slotsperformance_measurements) |
+| `request_limits` | `*SlotRequestLimits` | `SlotRequestLimits?` | opt | The request sizes a cluster pair leader's slot serves; [schema below](#slotsrequest_limits). Omitted by a single Mac's slot and by providers before 0.10.10 |
 | `active_tokens` | `int64` | `Int64` | req | Σ (prompt + completion) tokens over running requests |
 | `max_tokens_potential` | `int64` | `Int64` | req | Σ `max_tokens` over running requests |
 | `observed_decode_tps` | `float64` | `Double` | opt | EWMA of per-request decode TPS |
@@ -518,6 +536,41 @@ routing on them.
 | `telemetry` | `*SlotTelemetry` | `SlotTelemetry?` | opt | [`slots[].telemetry`](#slotstelemetry); **presence is the "profiler-aware provider" sentinel** — omission ≠ empty object |
 | `prefix_cache` | `*PrefixCacheTelemetry` | `PrefixCacheTelemetry?` | opt | [Durable cache observation](#slotsprefix_cache); no store or disabled stats tick means absent |
 | `paged_storage` | `*PagedStorageTelemetry` | `PagedStorageTelemetry?` | opt | [Paged storage observation](#slotspaged_storage); absent means uninstrumented, never zero ownership |
+
+#### `slots[].request_limits`
+
+Optional `SlotRequestLimits` ([coordinator/protocol/slot_request_limits.go](https://github.com/Layr-Labs/darkbloom-platform/blob/e7d0a03f1cab0bf4a8b8b6a0b61f49490760bd90/coordinator/protocol/slot_request_limits.go),
+`provider-swift/Sources/ProviderCore/Protocol/SlotRequestLimits.swift`). It
+describes the whole cluster, every member included. Only the member that serves
+the cluster (its leader) sends it, on the cluster's slot, in every heartbeat.
+Every value is a token count.
+
+| JSON key | Presence | Meaning |
+|---|---|---|
+| `max_prompt_tokens` | req | The cluster refuses a longer prompt (`prompt_too_long`) |
+| `max_output_tokens` | req | The cluster cuts a larger `max_tokens` to it, as one Mac cuts to its window |
+| `max_context_tokens` | req | The cluster cuts `max_tokens` to what the prompt leaves of it, and refuses a prompt that fills it (`context_length_exceeded`) |
+| `serving_context_tokens` | opt | The longest prompt plus `max_tokens` that every member's memory admits now: the minimum over the ranks (`ClusterWorkerPair.servingContextTokens`), at most `max_context_tokens`. Each rank works its own out again while idle. A longer request is refused for capacity (`request_exceeds_node_budget`). Omitted, never `0`, when the owner states none; a ready cluster always states one |
+
+The first three are what the cluster serves in its generation mode
+(`DistributedResidentExecutionProfile.served`,
+`ClusterModelFeaturePolicy.servedProfile`). In tensor parallel, that is the
+worker's whole profile: for Qwen3.8 27B, 262,143 prompt tokens, 65,536 output
+tokens and a 262,144-token context; for Gemma 4 26B, 262,143 prompt tokens,
+32,768 output tokens and a 262,144-token context. In any other mode, a pipeline
+included, it is the memory plan's request: 32,768 prompt and
+32,768 output tokens in a 65,536-token context, and the pipeline's ranks refuse
+any reservation beyond it. The leader refuses a prompt outside these limits
+before it asks any rank, and cuts a larger `max_tokens` to fit.
+
+A change of `request_limits` is a material capacity change
+(`CapacityHeartbeatMateriality`): the next capacity rebuild, when a request
+starts or ends, sends it at once as an event heartbeat. A serving context that
+moves while the cluster idles rides the next 5-second baseline heartbeat. The
+coordinator drops the whole object when a required value is not positive, when
+one is above 1,048,576, or when the context is below the prompt or output limit.
+It caps `serving_context_tokens` at the context. It then holds every request
+routed to the cluster to these limits.
 
 #### `slots[].prefix_cache`
 
@@ -1268,7 +1321,7 @@ was cut off by `max_tokens` fails with 422 `invalid_request` / `client_error`;
 GLM-5.3-Flash validates its withheld JSON itself and keeps 422
 `generation_failure` / `tool_noncompliance` for a truncated one. Local HTTP names
 the part type and the service-validated cut-off
-([direct mode](../provider/direct-mode.md#refused-request-shapes)). Sources:
+([the local API](../provider/direct-mode.md#refused-request-shapes)). Sources:
 `provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift`
 (`handleInferenceRequest`), `provider-swift/Sources/ProviderCore/ProviderLoop+ErrorMapping.swift`
 (`mapInferenceErrorToStatus`).

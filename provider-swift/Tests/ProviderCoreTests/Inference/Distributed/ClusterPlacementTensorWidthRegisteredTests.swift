@@ -170,4 +170,49 @@ struct ClusterPlacementTensorWidthRegisteredTests {
             for (local, peer) in [(256.0, 36.0), (256.0, 48.0), (256.0, 128.0)] { _ = try saved(local, peer) }
         }
     }
+
+    /// The owner (2026-11-04): tensor parallel and pipeline both offered and choosable where the model allows both. A
+    /// person's choice reaches the placement as `chosenMode`, as the developer setting does (the candidate, 2026-11-04:
+    /// "Planning failed (Singleton tensor placement requires its complete serial tensor quote)" for either). On the two
+    /// recorded pairs' sizes (2 x 256 GB, as two M5 Ultras; 256 + 128 GB, as the M3 Ultra and the M5 Max), with the plain
+    /// quote and with the assistant's: Qwen 3.8 27B plans in tensor parallel when it is chosen; pipeline is refused in
+    /// the words of its feature contract (images, video and committed-token logprobs only in tensor parallel), never the
+    /// quote's internal error.
+    @Test func qwenPlansInTheChosenModeOnBothPairs() throws {
+        let model = try Self.registered()
+        let link = ClusterLinkCosts(measured: true, perChunkSeconds: 0.002, perDecodeStepSeconds: [:],
+            handoffSecondsPerByte: 1 / 2e9, provenance: "constructed for a check",
+            reduction: .init(fixedSeconds: 1e-6, secondsPerByte: 1 / 5e9, keyed: true, provenance: "constructed for a check"))
+        for (kind, quotes) in [("plain", model.plain), ("assistant", model.assisted)] {
+            let singleton: ClusterPlacementTensorBatchQuote = try #require(quotes[1])
+            for (local, peer) in [(256.0, 256.0), (256.0, 128.0)] {
+                for chosen in [ClusterForcedMode.tensorParallel, .pipeline] {
+                    let decide = { () throws in
+                        try ClusterPlacementFlow.decide(description: model.pair, capability: model.capability,
+                            localMemberID: "a", localProfile: try Self.idle(local), peerProfile: try Self.idle(peer), layout: model.layout,
+                            tensorAssistantQuote: singleton, tensorWidthQuotes: [2, 4, 6, 8].compactMap { quotes[$0] },
+                            leader: "a", link: link, chosenMode: chosen, environment: [:], benchDebugBuild: false)
+                    }
+                    guard chosen == .tensorParallel else {
+                        do {
+                            _ = try decide()
+                            Issue.record("\(kind) \(Int(local))+\(Int(peer)): pipeline placed for Qwen 3.8 27B, whose contract is tensor parallel only")
+                        } catch {
+                            print("qwen27-chosen kind=\(kind) macs=\(Int(local))+\(Int(peer)) chosen=pipeline refused=\"\(error)\"")
+                            #expect("\(error)".contains("only in tensor parallel") && !"\(error)".contains("Singleton"),
+                                    "\(kind) \(Int(local))+\(Int(peer)) pipeline: the contract's words: \(error)")
+                        }
+                        continue
+                    }
+                    let decided = try decide()
+                    let placed: ClusterPlacementCandidate = try #require(decided.result.chosen, "\(kind) \(Int(local))+\(Int(peer)) \(chosen.rawValue): placed")
+                    print("qwen27-chosen kind=\(kind) macs=\(Int(local))+\(Int(peer)) chosen=\(chosen.rawValue) mode=\(placed.mode.rawValue)"
+                        + " shares=\(placed.tensorShares.map { "\($0)" } ?? "-")"
+                        + placed.ranks.map { " rank\($0.rank)=layers \($0.firstLayer)..<\($0.endLayer) need_bytes=\($0.needBytes)" }.joined())
+                    #expect(chosen.admits(placed.mode) && decided.setup != nil, "\(kind) \(Int(local))+\(Int(peer)) \(chosen.rawValue): \(placed.mode)")
+                    #expect(placed.ranks.allSatisfy { $0.needBytes <= $0.admissibleNowBytes }, "\(kind) \(Int(local))+\(Int(peer)) \(chosen.rawValue): fits now")
+                }
+            }
+        }
+    }
 }

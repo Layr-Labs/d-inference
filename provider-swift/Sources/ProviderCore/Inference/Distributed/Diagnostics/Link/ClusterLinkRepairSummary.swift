@@ -4,7 +4,13 @@ extension ClusterLinkRepairResult {
     /// Plain sentences for the operator: what happened and what, if anything,
     /// to do next. Names only; never the address.
     public var message: String {
-        let port = interface.map { "Thunderbolt port \($0)" } ?? "the Thunderbolt port"
+        // A removal of link setup v2 covering several ports names them all.
+        let ports = interface == nil && operation == .remove && isolated == true ? candidates.compactMap(ClusterLinkName.interface(ofDevice:)) : []
+        let port = interface.map { "Thunderbolt port \($0)" }
+            ?? (ports.count > 1 ? "Thunderbolt ports \(ClusterLinkIsolationRequest.list(ports))" : "the Thunderbolt port")
+        // What a removal that did not finish left, by port.
+        let left = remaining.compactMap(ClusterLinkName.interface(ofDevice:))
+        let leftWords = left.isEmpty ? "" : " Still to undo: \(left.count > 1 ? "Thunderbolt ports" : "Thunderbolt port") \(ClusterLinkIsolationRequest.list(left))."
         let rdmaDevice = device ?? "its RDMA device"
         switch outcome {
         case .dryRun:
@@ -29,6 +35,8 @@ extension ClusterLinkRepairResult {
                 return ready + " The address is temporary: macOS removes it when it next reconfigures the port, and at a restart; run `darkbloom cluster` to keep it. `darkbloom cluster link --remove` takes it away."
             }
             return ready + " A system job (\(ClusterLinkAddressKeeper.label(forInterface: interface))) puts the address back within about \(ClusterLinkAddressKeeper.intervalSeconds) seconds whenever macOS leaves the port without an IPv4 address, and after a restart. `darkbloom cluster link --remove` removes the job and the address."
+        case .removed where isolated == true && ports.count > 1:
+            return "The network settings of \(port) are as they were before Darkbloom set them up: their network services are removed, the services it switched off are on again, and each port is back in its bridge where it had been in one."
         case .removed where isolated == true:
             return "The network settings of \(port) are as they were before Darkbloom set it up: its network service is removed, the services it switched off are on again, and the port is back in its bridge where it had been in one."
         case .removed:
@@ -54,13 +62,15 @@ extension ClusterLinkRepairResult {
         case .machineIdentityUnavailable:
             return "Darkbloom could not read this Mac's hardware identifier, which it uses to choose the address; nothing was changed."
         case .recordUnavailable:
-            return "Darkbloom could not read or update its owner-only record of the addresses it adds (~/.darkbloom/cluster-device/link-alias.json); nothing was changed."
+            return "Darkbloom could not read or update its owner-only record of the addresses it adds (\(ClusterUserPaths.shown("cluster-device/link-alias.json"))); nothing was changed."
         case .approvalDeclined:
             return "The macOS prompt was cancelled; nothing was changed."
         case .approvalUnavailable where manualScript != nil:
             return "macOS could not show its approval prompt here (as in an SSH session without a desktop), so nothing was changed; run this one line once as an administrator on this Mac: sudo sh \(manualScript!) (the same commands the prompt would run; `darkbloom cluster link --remove` undoes them)."
         case .approvalUnavailable:
             return "macOS did not grant approval: its prompt could not be shown here, as in an SSH session without a desktop, or it was not answered in time or was refused; nothing was changed. An administrator can run the commands printed on standard error instead."
+        case .commandFailed where isolated == true && operation == .remove:
+            return "The removal was approved, but one of its commands reported an error, so it stopped there and the commands after it did not run." + leftWords + " Run `darkbloom cluster link` to see the current state and `darkbloom cluster link --remove` to finish."
         case .commandFailed where isolated == true:
             return "The change was approved, but one of its commands reported an error, and the commands after it did not run; run `darkbloom cluster link` to see the current state and `darkbloom cluster link --remove` to restore what was changed."
         case .commandFailed:
@@ -89,7 +99,7 @@ extension ClusterLinkRepairResult {
             return "The change was made to \(port), but afterwards " + findings.map { $0.fact(interface: name, bridge: bridge) }.joined(separator: ", ")
                 + ". What was done is still in place; `darkbloom cluster link` shows the port and `darkbloom cluster link --remove` restores the previous network settings."
         case .removalNotVerified where isolated == true:
-            return "The removal was approved, but Darkbloom could not confirm that the network settings of \(port) are back as they were; run `darkbloom cluster link --remove` again."
+            return "The removal was approved, but Darkbloom could not confirm that the network settings of \(port) are back as they were." + leftWords + " Run `darkbloom cluster link --remove` again."
         case .removalNotVerified:
             return "The removal was approved, but Darkbloom could not confirm that nothing it gave \(port) is left; run `darkbloom cluster link --remove` again."
         }

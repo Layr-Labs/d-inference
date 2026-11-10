@@ -2,6 +2,7 @@ import DarkbloomClusterPlacement
 import DarkbloomClusterProtocol
 import Foundation
 import MLX
+import MLXLLM
 import MLXLMCommon
 import Testing
 @testable import DarkbloomClusterRuntime
@@ -104,15 +105,70 @@ struct Gemma4TensorParallelRuntimeTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let model = try Gemma4TensorParallelModel.load(modelDirectory: directory, role: .full, reduction: nil)
         func run(_ stride: Int) throws -> Gemma4TensorParallelModel.Generation {
-            try Gemma4TensorParallelModel.$layerStride.withValue(stride) {
+            try Gemma4TensorParallelModel.withLayerStride(stride) {
                 try model.generatePaged(prompt: Self.prompt, outputCount: 6, chunk: 16, recordTop: 4)
             }
         }
-        let whole = try run(0), layered = try run(1), pairs = try run(2)
-        for other in [layered, pairs] {
+        // Strides a bench compares (`tp-check gemma run --layer-stride`), on the synthetic model's 10 layers.
+        let whole = try run(0)
+        for other in try [1, 2, 5, 8].map(run) {
             #expect(other.tokenIDs == whole.tokenIDs && Self.bits(other.topLogits) == Self.bits(whole.topLogits))
             #expect(other.finalLogits.map { $0.map(\.bitPattern) } == whole.finalLogits.map { $0.map(\.bitPattern) })
         }
+    }
+
+    /// A prompt chunk's work after attention in row parts
+    /// (`Gemma4TensorParallelPromptParts`), each part's sums issued as soon as
+    /// they are built: both ranks keep every bit of the whole chunk's tokens,
+    /// top candidates, log probabilities and final row, each 16-row chunk's
+    /// layers take one attention and one feed-forward collective per part, and
+    /// the link carries the same rows in all.
+    @Test(arguments: [2, 4]) func promptPartsKeepEveryBitAndSplitEachChunksCollectives(parts: Int) throws {
+        let topK = 4, chunk = 16
+        let directory = try Self.synthetic(topK: topK)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let prompt = Self.prompt
+        func run(_ parts: Int) throws -> (ranks: [Gemma4TensorParallelModel.Generation], payloads: [[Int]]) {
+            let pair = Pair()
+            let models = Box(try (0 ..< 2).map {
+                try Gemma4TensorParallelModel.load(modelDirectory: directory, role: .shard(rank: $0),
+                                                   reduction: pair.reduction(rank: $0))
+            })
+            let ranks = try Pair.run(device: .gpu) { rank in
+                try Gemma4TensorParallelModel.withPromptParts(parts) {
+                    try models.value[rank].generatePaged(prompt: prompt, outputCount: 6, chunk: chunk, recordTop: 4)
+                }
+            }
+            return (ranks, pair.payloads)
+        }
+        let whole = try run(1), split = try run(parts)
+        for rank in 0 ... 1 {
+            let a = whole.ranks[rank], b = split.ranks[rank]
+            #expect(a.tokenIDs == b.tokenIDs && a.topTokenIDs == b.topTokenIDs, "rank \(rank)")
+            #expect(Self.bits(a.topLogits) == Self.bits(b.topLogits), "rank \(rank): top logits")
+            #expect(Self.bits(a.topLogprobs) == Self.bits(b.topLogprobs), "rank \(rank): log probabilities")
+            #expect(a.finalLogits.map { $0.map(\.bitPattern) } == b.finalLogits.map { $0.map(\.bitPattern) }, "rank \(rank)")
+        }
+        // Rows of hidden width a collective carries: an attention sum's [1, S, H], a feed-forward's [S * K + S, H]
+        // (K: the model's `topK` experts per token).
+        func rows(_ payloads: [[Int]]) -> Set<Int> { Set(payloads.filter { $0.count > 1 }.map { $0.dropLast().reduce(1, *) }) }
+        let part = chunk / parts, wholeRows = rows(whole.payloads), splitRows = rows(split.payloads)
+        #expect(wholeRows.isSuperset(of: [chunk, chunk * topK + chunk]), "\(wholeRows.sorted())")
+        #expect(splitRows.isSuperset(of: [part, part * topK + part]), "\(parts) parts: \(splitRows.sorted())")
+        #expect(splitRows.isDisjoint(with: [chunk, chunk * topK + chunk]), "\(parts) parts: \(splitRows.sorted())")
+        func elements(_ payloads: [[Int]]) -> Int { payloads.reduce(0) { $0 + $1.reduce(1, *) } }
+        #expect(elements(split.payloads) == elements(whole.payloads))
+    }
+
+    /// A bench's own decode layer stride holds for its body only.
+    @Test func aBenchsLayerStrideHoldsForItsBodyOnly() {
+        #expect(Gemma4TensorParallelModel.layerStride == nil)
+        Gemma4TensorParallelModel.withLayerStride(8) { #expect(Gemma4TensorParallelModel.layerStride == 8) }
+        Gemma4TensorParallelModel.withLayerStride(nil) { #expect(Gemma4TensorParallelModel.layerStride == nil) }
+        #expect(Gemma4TensorParallelModel.layerStride == nil)
+        // Only ranks that decode on the calling thread see it: `simulated` is refused.
+        #expect(["full", "shard", "tp"].allSatisfy { Gemma4TensorParallelModel.benchLayerStrideApplies(mode: $0) })
+        #expect(!["simulated", "split-sum", ""].contains { Gemma4TensorParallelModel.benchLayerStrideApplies(mode: $0) })
     }
 
     /// Batch lanes: three requests of different lengths decode together on
@@ -372,6 +428,8 @@ struct Gemma4TensorParallelRuntimeTests {
         var ownerStopsAt: Int?
         /// Rank 1 stops on its own after this many committed tokens.
         var rankOneStopsAfter: Int?
+        /// The loop's step order (nil: the product's, `Gemma4TensorParallelRequestLoop.pipelines`).
+        var buildsAhead: Bool?
     }
 
     private struct LoopResult: Sendable {
@@ -403,7 +461,8 @@ struct Gemma4TensorParallelRuntimeTests {
                 published.append(token); logprobs.append(captured); committed = ordinal + 1
             }, answer: { value.ownerStopsAt.map { committed - 1 != $0 } ?? true })
             var localTokens = 0
-            let outcome = try Gemma4TensorParallelRequestLoop(session: session, request: request,
+            let outcome = try Gemma4TensorParallelRequestLoop.$buildsAhead.withValue(value.buildsAhead) {
+              try Gemma4TensorParallelRequestLoop(session: session, request: request,
                 choice: Gemma4TensorParallelChoice(selection: model.selection, sampler: request.sampler, rank: rank),
                 exchange: { values in
                     let summed = reduction.allSum(MLXArray(values.map(Float.init)))
@@ -413,6 +472,7 @@ struct Gemma4TensorParallelRuntimeTests {
                     localTokens += 1
                     return rank == 1 && value.rankOneStopsAfter.map { localTokens >= $0 } == true
                 }).run(channel: channel, check: {})
+            }
             try session.retire()
             return LoopResult(tokens: outcome.tokens, finish: outcome.finish, clientStopped: outcome.clientStopped,
                 published: published, logprobs: logprobs)
@@ -473,6 +533,51 @@ struct Gemma4TensorParallelRuntimeTests {
         let race = try Self.loop(models, LoopCase(stops: [drawn[raceAt]], sampling: sampling(1.0), ownerStopsAt: raceAt - 1))
         for result in race { #expect(result.tokens == Array(drawn.prefix(raceAt)) && result.finish == .clientStop) }
         #expect(race[0].clientStopped && race[0].published == Array(drawn.prefix(raceAt)))
+    }
+
+    /// Greedy and sampled requests build their steps one ahead
+    /// (`TensorParallelOneTokenLoop`, GLM's order; its two-rank order and
+    /// endings are the model-free TensorParallelPlanChecks'). A greedy request
+    /// asking for logprobs (a top-k gather of its own, read on the host)
+    /// reads each step first. The tokens are the read-then-build order's
+    /// (`theRequestLoopEndsBothRanksAfterTheSameStep`,
+    /// `sampledStepsBuiltAheadTakeTheReadThenBuildTokens`).
+    @Test func greedyRequestsBuildTheirStepsAhead() throws {
+        let selection = Gemma4TensorParallelSelection(vocabularyRange: 0 ..< 512, vocabularySize: 512, reduction: nil)
+        #expect(Gemma4TensorParallelRequestLoop.pipelines(.init(selection: selection, sampler: nil, rank: 0)))
+        func pipelines(temperature: Float, topLogprobs: Int) throws -> Bool {
+            Gemma4TensorParallelRequestLoop.pipelines(Gemma4TensorParallelChoice(selection: selection,
+                sampler: try Self.sampler(temperature: temperature, topLogprobs: topLogprobs), rank: 0))
+        }
+        #expect(try pipelines(temperature: 1, topLogprobs: 0))
+        #expect(try pipelines(temperature: 1, topLogprobs: 2))
+        #expect(try !pipelines(temperature: 0, topLogprobs: 2))
+    }
+
+    /// Sampled requests, with logprobs and with history-dependent transforms,
+    /// built one ahead: on two ranks the same tokens, finish and published
+    /// logprobs as the read-then-build order, plainly and when the owner
+    /// stops early (keyed draws: each token is the draw at its output index).
+    @Test func sampledStepsBuiltAheadTakeTheReadThenBuildTokens() throws {
+        let directory = try Self.synthetic()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let pair = Pair()
+        let models = Box(try (0 ..< 2).map {
+            try Gemma4TensorParallelModel.load(modelDirectory: directory, role: .shard(rank: $0), reduction: pair.reduction(rank: $0))
+        })
+        let drawn = ClusterWorkerSampling(temperature: 1.0, topP: 0.95, topK: 0, minP: 0, repetitionPenalty: 1.2,
+            repetitionContextSize: 64, frequencyPenalty: 0.3, presencePenalty: 0, seed: 0x5eed, stream: 0xab,
+            logitBias: [], topLogprobs: 3)
+        for ownerStopsAt in [nil, 3] as [Int?] {
+            let ahead = try Self.loop(models, LoopCase(sampling: drawn, ownerStopsAt: ownerStopsAt, buildsAhead: true), outputs: 12)
+            let plain = try Self.loop(models, LoopCase(sampling: drawn, ownerStopsAt: ownerStopsAt, buildsAhead: false), outputs: 12)
+            for (a, b) in zip(ahead, plain) {
+                #expect(a.tokens == b.tokens && a.finish == b.finish && a.published == b.published)
+                #expect(a.logprobs.map { $0?.logprob } == b.logprobs.map { $0?.logprob })
+            }
+            #expect(ahead[0].tokens == ahead[1].tokens && !ahead[0].tokens.isEmpty)
+            #expect(ahead[0].logprobs.allSatisfy { $0?.top.count == 3 })
+        }
     }
 
     // MARK: - The step's choice

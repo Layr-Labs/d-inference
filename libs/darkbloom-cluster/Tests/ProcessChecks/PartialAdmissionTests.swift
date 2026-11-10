@@ -12,7 +12,7 @@ private final class SubmissionEndpoint: ClusterWorkerEndpoint, @unchecked Sendab
     private let lock = NSLock()
     private let proof = DispatchGroup()
     private var proofGranted: Bool
-    private var reserves = 0, cancels = 0
+    private var reserves = 0, cancels = 0, fences = 0
     /// Refuses every reservation as a full command queue does
     /// (`ClusterWorkerOwnerError.refused(.busy)`): the rank is never asked.
     private let queueFull: Bool
@@ -21,6 +21,7 @@ private final class SubmissionEndpoint: ClusterWorkerEndpoint, @unchecked Sendab
         if holdProof { proof.enter() }
     }
     var counts: (Int, Int) { lock.withLock { (reserves, cancels) } }
+    var fenceCount: Int { lock.withLock { fences } }
     var expectedIdentity: ClusterWorkerIdentity { child.expectedIdentity }
     var expectedProfile: ClusterWorkerProfile { child.expectedProfile }
     var rank: Int { child.rank }
@@ -39,7 +40,7 @@ private final class SubmissionEndpoint: ClusterWorkerEndpoint, @unchecked Sendab
     func receiveWorkerEvent(until deadline: UInt64, cancelled: () -> Bool) throws -> ClusterWorkerEventFrame {
         try child.receiveWorkerEvent(until: deadline, cancelled: cancelled)
     }
-    func requestNativeCleanup() { child.requestNativeCleanup() }
+    func requestNativeCleanup() { lock.withLock { fences += 1 }; child.requestNativeCleanup() }
     func waitForNativeCleanup() { child.waitForNativeCleanup(); proof.wait() }
     func waitUntilNativeCleanup() async {
         await child.waitUntilNativeCleanup()
@@ -66,37 +67,11 @@ private final class AdmissionCompletion: @unchecked Sendable {
         try await endpointRefusals(executable)
         try await cancelledBeforeStart(executable)
         try await servingContext(executable)
-        // An unanswered submitted reservation is not a refusal: the pair is
-        // quarantined. Real children enforce their protocol.
-        for (behaviors, milliseconds, reserves, cancels) in [
-            (["slow-admit", "normal"], 100, [1, 0], [0, 0])
-        ] {
-            let now = DispatchTime.now().uptimeNanoseconds, end = now + 10_000_000_000
-            let endpoints = try (0..<2).map { rank -> SubmissionEndpoint in
-                let child = try ClusterWorkerProcess(launch: .init(executable: executable,
-                    arguments: [String(rank), behaviors[rank]], environment: [:]), expectedIdentity: fixtureIdentity,
-                    rank: rank, profile: fixtureProfile, executionPlanSHA256: fixturePlan,
-                    startupDeadline: now + 3_000_000_000, initialLeaseDeadline: end)
-                try child.launch(); return SubmissionEndpoint(child)
-            }
-            defer { for endpoint in endpoints { endpoint.requestNativeCleanup() } }
-            let pair = try ClusterWorkerPair(workers: endpoints, startupDeadline: now + 3_000_000_000)
-            var refused = false
-            do {
-                _ = try pair.reserve(requestID: UUID(), reservation: .init(profileID: fixtureProfile.id,
-                    promptTokenIDs: [1, 2, 3], stopTokenIDs: [], outputCount: 2, chunkSize: 2,
-                    deadlineUptimeNanoseconds: end, capacityLimitBytes: 1800, sampling: nil, prefixCache: nil),
-                    admissionDeadline: DispatchTime.now().uptimeNanoseconds + UInt64(milliseconds) * 1_000_000)
-            } catch { refused = true }
-            try requirePartial(refused && pair.readiness == nil, "Admission failure did not quarantine pair")
-            try requirePartial(endpoints.map { $0.counts.0 } == reserves, "Unexpected reservation submission")
-            try requirePartial(endpoints.map { $0.counts.1 } == cancels, "Cancel reached an unconfirmed or refused rank")
-            await pair.shutdown()
-            try requirePartial(endpoints.allSatisfy(\.nativeCleanupObserved), "Missing actual child cleanup")
-        }
+        try await admissionDeadline(executable)
         try await missingProof(executable)
         print("{\"passed\":true,\"groups\":8,\"actualLocalChildren\":true,\"partialAdmission\":true,"
-            + "\"requestScopedRefusal\":true,\"endpointRefusal\":true,\"cancelBeforeStart\":true,\"servingContext\":true}")
+            + "\"requestScopedRefusal\":true,\"endpointRefusal\":true,\"cancelBeforeStart\":true,\"servingContext\":true,"
+            + "\"admissionDeadline\":true}")
         alarm(0)
     }
 
@@ -233,6 +208,37 @@ private final class AdmissionCompletion: @unchecked Sendable {
         try requirePartial(endpoints.allSatisfy { $0.child.termination == .exited(0) }, "A rank did not exit cleanly")
     }
 
+    /// Production, 2026-11-03 (six drops of a GLM pair in 19 minutes): a
+    /// request whose own admission deadline, its first-content budget, passes
+    /// while rank 0 is still answering ends alone. Rank 0 gives back its late
+    /// admission, rank 1 is never asked, nothing is fenced and the same pair
+    /// serves the next request. Before, the pair was quarantined and both
+    /// ranks were fenced.
+    static func admissionDeadline(_ executable: URL) async throws {
+        let end = DispatchTime.now().uptimeNanoseconds + 10_000_000_000
+        let endpoints = try launch(executable, ["slow-admit", "normal"], until: end)
+        defer { for endpoint in endpoints { endpoint.requestNativeCleanup() } }
+        let pair = try ClusterWorkerPair(workers: endpoints, startupDeadline: DispatchTime.now().uptimeNanoseconds + 3_000_000_000)
+        var outcome: ClusterWorkerOwnerError?
+        do {
+            _ = try pair.reserve(requestID: UUID(), reservation: reservation(until: end),
+                admissionDeadline: DispatchTime.now().uptimeNanoseconds + 100_000_000)
+        } catch let error as ClusterWorkerOwnerError { outcome = error }
+        try requirePartial(outcome == .deadline, "The request did not end with its deadline (\(String(describing: outcome)))")
+        try requirePartial(pair.readiness != nil && pair.admissionState.isValid,
+            "One request's admission deadline quarantined the pair: \(pair.lastRequestFailure ?? "no failure noted")")
+        try requirePartial(endpoints.map(\.fenceCount) == [0, 0], "A rank was fenced for one request's deadline")
+        try requirePartial(endpoints.map { $0.counts.0 } == [1, 0], "Rank 1 was asked after the request's deadline")
+        try requirePartial(endpoints.map { $0.counts.1 } == [1, 0], "Rank 0's late admission was not given back")
+        try await serve(pair, until: end)
+        await pair.shutdown()
+        try requirePartial(endpoints.allSatisfy { $0.child.termination == .exited(0) }, "A rank did not exit cleanly")
+    }
+
+    /// A rank that does not answer within the pair's own admission wait has
+    /// failed: the pair is quarantined, that rank is fenced, and reserve does
+    /// not return before its actual cleanup proof. The rank never asked holds
+    /// nothing of the request: it is not fenced, and the pair's shutdown ends it.
     static func missingProof(_ executable: URL) async throws {
         let now = DispatchTime.now().uptimeNanoseconds, end = now + 10_000_000_000
         let endpoints = try (0..<2).map { rank -> SubmissionEndpoint in
@@ -240,33 +246,36 @@ private final class AdmissionCompletion: @unchecked Sendable {
                 arguments: [String(rank), rank == 0 ? "slow-admit" : "normal"], environment: [:]),
                 expectedIdentity: fixtureIdentity, rank: rank, profile: fixtureProfile, executionPlanSHA256: fixturePlan,
                 startupDeadline: now + 3_000_000_000, initialLeaseDeadline: end)
-            try child.launch(); return SubmissionEndpoint(child, holdProof: rank == 1)
+            try child.launch(); return SubmissionEndpoint(child, holdProof: rank == 0)
         }
         defer { for endpoint in endpoints { endpoint.allowCleanupProof(); endpoint.requestNativeCleanup() } }
-        let pair = try ClusterWorkerPair(workers: endpoints, startupDeadline: now + 3_000_000_000)
+        let pair = try ClusterWorkerPair(workers: endpoints, startupDeadline: now + 3_000_000_000,
+            timing: .init(admissionWaitNanoseconds: 100_000_000, shutdownAcknowledgementNanoseconds: 2_000_000_000))
         let completion = AdmissionCompletion()
         DispatchQueue.global().async {
             do {
                 _ = try pair.reserve(requestID: UUID(), reservation: .init(profileID: fixtureProfile.id,
                     promptTokenIDs: [1, 2, 3], stopTokenIDs: [], outputCount: 2, chunkSize: 2,
-                    deadlineUptimeNanoseconds: end, capacityLimitBytes: 1800, sampling: nil, prefixCache: nil),
-                    admissionDeadline: DispatchTime.now().uptimeNanoseconds + 100_000_000)
+                    deadlineUptimeNanoseconds: end, capacityLimitBytes: 1800, sampling: nil, prefixCache: nil))
                 completion.complete(refused: false)
             } catch { completion.complete(refused: true) }
         }
         let wait = DispatchTime.now().uptimeNanoseconds + 3_000_000_000
-        while !endpoints.allSatisfy({ $0.child.nativeCleanupObserved }), DispatchTime.now().uptimeNanoseconds < wait {
+        while !endpoints[0].child.nativeCleanupObserved, DispatchTime.now().uptimeNanoseconds < wait {
             try await Task.sleep(nanoseconds: 10_000_000)
         }
-        try requirePartial(endpoints.allSatisfy({ $0.child.nativeCleanupObserved }), "Expected actual child exits")
-        try requirePartial(completion.result == nil && !endpoints[1].nativeCleanupObserved && pair.readiness == nil,
+        try requirePartial(endpoints[0].child.nativeCleanupObserved, "Expected rank 0's actual child exit")
+        try requirePartial(completion.result == nil && !endpoints[0].nativeCleanupObserved && pair.readiness == nil,
             "Missing endpoint proof allowed reserve to return/release its partial ownership")
         try requirePartial(endpoints.map { $0.counts.1 } == [0, 0], "Pending/never-submitted rank received cancel")
-        endpoints[1].allowCleanupProof()
+        try requirePartial(endpoints[1].counts.0 == 0 && endpoints[1].fenceCount == 0,
+            "The rank never asked was fenced (\(endpoints[1].fenceCount)) or asked")
+        endpoints[0].allowCleanupProof()
         while completion.result == nil, DispatchTime.now().uptimeNanoseconds < wait {
             try await Task.sleep(nanoseconds: 10_000_000)
         }
         try requirePartial(completion.result == true, "Actual cleanup proof did not finish failed admission")
         await pair.shutdown()
+        try requirePartial(endpoints[1].child.termination == .exited(0), "The rank never asked did not exit by its shutdown")
     }
 }

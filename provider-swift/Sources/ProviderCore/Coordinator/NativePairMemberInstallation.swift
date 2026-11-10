@@ -19,6 +19,8 @@ public struct NativePairMemberInstallation: Sendable {
     let artifacts: [URL]
     let chip: String
     let leaseDirectory: URL
+    /// The Mac's device lock every build shares, taken with the lease (`ClusterUserPaths.machineDeviceLock`); nil in fixtures.
+    let machineLock: ClusterMachineDeviceLock?
     /// Whether the installed owner can honour a start the coordinator
     /// committed. When it cannot, the member declines preparation, so nothing
     /// is ever committed that this Mac could not start and later release.
@@ -53,10 +55,11 @@ public struct NativePairMemberInstallation: Sendable {
                 metallib: URL, resourceLibrary: URL, chip: String, meshOverLink: Bool = false,
                 roster: NativePairMemberRoster? = nil, batchLanes: Int? = nil,
                 installedDigests: (metallib: String, resourceLibrary: String)? = nil) throws {
+        let paths = try ClusterUserPaths()
         try self.init(expectedCoordinatorPolicy: expectedCoordinatorPolicy, rank: rank, clusterID: clusterID,
             identity: identity, profile: profile, installedOwner: installedOwner, ownerSHA256: ownerSHA256,
             nativeExecutable: nativeExecutable, metallib: metallib, resourceLibrary: resourceLibrary,
-            chip: chip, leaseDirectory: ClusterUserPaths().deviceDirectory,
+            chip: chip, leaseDirectory: paths.deviceDirectory, machineLock: paths.machineDeviceLock,
             ownerServesCommittedStart: DistributedInstalledOwner.servesCommittedNativeStart && meshOverLink,
             bootstrap: meshOverLink ? .preludeThenMesh : .nativeKeyPrelude, roster: roster, batchLanes: batchLanes,
             installedDigests: installedDigests)
@@ -67,7 +70,7 @@ public struct NativePairMemberInstallation: Sendable {
     init(expectedCoordinatorPolicy: Data, rank: Int, clusterID: String,
          identity: ClusterWorkerIdentity, profile: ClusterWorkerProfile,
          installedOwner: URL, ownerSHA256: String, nativeExecutable: URL,
-         metallib: URL, resourceLibrary: URL, chip: String, leaseDirectory: URL,
+         metallib: URL, resourceLibrary: URL, chip: String, leaseDirectory: URL, machineLock: ClusterMachineDeviceLock? = nil,
          ownerServesCommittedStart: Bool = true, bootstrap: Bootstrap = .nativeKeyPrelude,
          roster: NativePairMemberRoster? = nil, batchLanes: Int? = nil,
          installedDigests: (metallib: String, resourceLibrary: String)? = nil) throws {
@@ -110,6 +113,7 @@ public struct NativePairMemberInstallation: Sendable {
         self.identity = identity; self.profile = profile
         localOwner = try .init(installedDarkbloom: installedOwner, batchLanes: batchLanes); self.ownerSHA256 = ownerSHA256
         artifacts = [nativeExecutable, metallib, resourceLibrary]; self.chip = chip; self.leaseDirectory = leaseDirectory
+        self.machineLock = machineLock
         self.ownerServesCommittedStart = ownerServesCommittedStart; self.bootstrap = bootstrap
         self.roster = roster; self.runtime = runtime; self.executionPlanSHA256 = executionPlanSHA256
     }
@@ -132,7 +136,7 @@ public struct NativePairMemberInstallation: Sendable {
     func prepare(start: ClusterNativeAuthorizationStart, deadline: UInt64) throws -> [DistributedInstalledFiles.Identity] {
         try requireStart(start)
         guard start.rank == rank else { throw NativePairMemberError.binding }
-        let gate = try ClusterDeviceExclusion(directoryURL: leaseDirectory)
+        let gate = try ClusterDeviceExclusion(directoryURL: leaseDirectory, machineLock: machineLock)
         return try withExtendedLifetime(gate) { try verifyInstalledFiles(deadline: deadline) }
     }
     /// Hashes the owner against its saved pin, and the native executable,

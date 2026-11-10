@@ -38,6 +38,70 @@ struct WedgeMonitorTests {
         return m
     }
 
+    /// A pair (no step counter) is marked crashed only once a hanging request
+    /// is `pastAllowanceGraceSeconds` past its own first-token allowance; an
+    /// engine with a step counter keeps `wedgeSuspected`.
+    @Test func anEngineWithoutStepsIsMarkedCrashedOnlyPastAnAllowance() {
+        var m = WedgeMonitor()
+        let allowance = base.advanced(by: .seconds(200))
+        let ids = (0..<WedgeMonitor.suspectConsecutiveAdmits).map { "r\($0)" }
+        for id in ids { m.recordAdmit(now: base, id: id, firstTokenDeadline: allowance) }
+        m.sampleSteps(0, now: base)
+        let afterStall = base.advanced(by: .seconds(11))
+        #expect(m.wedgeSuspected(now: afterStall))
+        #expect(m.marksCrashed(now: afterStall, engineReportsSteps: true))
+        #expect(!m.marksCrashed(now: afterStall, engineReportsSteps: false))
+        let grace = Int(WedgeMonitor.pastAllowanceGraceSeconds)
+        #expect(!m.marksCrashed(now: allowance.advanced(by: .seconds(grace - 1)), engineReportsSteps: false))
+        #expect(m.marksCrashed(now: allowance.advanced(by: .seconds(grace)), engineReportsSteps: false))
+        // A request with no allowance is never tracked; each request's first
+        // token clears its own allowance.
+        var unbounded = WedgeMonitor()
+        unbounded.recordAdmit(now: base, id: "u")
+        #expect(!unbounded.marksCrashed(now: base.advanced(by: .seconds(3600)), engineReportsSteps: false))
+        for id in ids { m.recordFirstToken(now: afterStall, id: id) }
+        #expect(!m.marksCrashed(now: allowance.advanced(by: .seconds(grace)), engineReportsSteps: false))
+    }
+
+    /// A short request that ends at its own allowance takes that allowance
+    /// with it, never the long prefill's ahead of it (the pair ranks prefill
+    /// one prompt at a time, so the later, shorter request ends first).
+    @Test func anEndedRequestTakesItsOwnAllowanceWithIt() {
+        var m = WedgeMonitor()
+        let long = base.advanced(by: .seconds(600)), short = base.advanced(by: .seconds(20))
+        m.recordAdmit(now: base, id: "long", firstTokenDeadline: long)
+        m.recordAdmit(now: base, id: "short", firstTokenDeadline: short)
+        m.recordTerminalWithoutFirstToken(id: "short")
+        #expect(!m.marksCrashed(now: base.advanced(by: .seconds(61)), engineReportsSteps: false),
+                "the long prefill inherited the short request's expired allowance")
+        #expect(m.firstTokenAllowance(for: "long") == long && m.firstTokenAllowance(for: "short") == nil)
+        let grace = Int(WedgeMonitor.pastAllowanceGraceSeconds)
+        #expect(m.marksCrashed(now: long.advanced(by: .seconds(grace)), engineReportsSteps: false))
+    }
+
+    /// A first token on another lane does not untrack a request that hangs
+    /// past its own allowance.
+    @Test func aFirstTokenOnAnotherRequestKeepsAHungRequestTracked() {
+        var m = WedgeMonitor()
+        let hung = base.advanced(by: .seconds(20))
+        m.recordAdmit(now: base, id: "hung", firstTokenDeadline: hung)
+        m.recordAdmit(now: base, id: "streaming", firstTokenDeadline: base.advanced(by: .seconds(600)))
+        m.recordFirstToken(now: base.advanced(by: .seconds(5)), id: "streaming")
+        let grace = Int(WedgeMonitor.pastAllowanceGraceSeconds)
+        #expect(m.marksCrashed(now: hung.advanced(by: .seconds(grace)), engineReportsSteps: false))
+    }
+
+    /// An allowance whose request already left the bridge never marks the
+    /// slot crashed, even if no terminal was recorded for it.
+    @Test func anAllowanceWhoseRequestLeftTheBridgeIsIgnored() {
+        var m = WedgeMonitor()
+        let gone = base.advanced(by: .seconds(20))
+        m.recordAdmit(now: base, id: "gone", firstTokenDeadline: gone)
+        let later = gone.advanced(by: .seconds(Int(WedgeMonitor.pastAllowanceGraceSeconds)))
+        #expect(m.marksCrashed(now: later, engineReportsSteps: false, isActive: { $0 == "gone" }))
+        #expect(!m.marksCrashed(now: later, engineReportsSteps: false, isActive: { _ in false }))
+    }
+
     @Test func notSuspectedBelowConsecutiveThreshold() {
         var m = WedgeMonitor()
         // Two admits (< 3) with steps frozen + a long stall must NOT trip.

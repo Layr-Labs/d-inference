@@ -157,5 +157,46 @@ extension ClusterDiagnosticsCheck {
             ("localLinkDevice.rdma_en7", .passed), ("localLinkIsolation.rdma_en7", .passed)], "an exposed port serving does not use")
         try require(try detail(sharing, "localLinkIsolation.rdma_en6").contains("Darkbloom does not change Internet Sharing")
             && detail(sharing, "localLinkIsolation.rdma_en6").contains("“Thunderbolt 2” (en6)"), "the owner's step for Internet Sharing")
+
+        // Mac A after pairing, through the inspection itself: macOS reaches the
+        // port's own address through lo0, which is not the subnet used elsewhere.
+        let paired = report(ClusterLinkReadinessProbe.inspect(run: pairedMacA, readingIsolation: true), configuredDevice: "rdma_en3")
+        try requireChecks(paired, [("localLink", .passed), ("localLinkDevice.rdma_en3", .passed), ("localLinkIsolation.rdma_en3", .passed)],
+            "Mac A after pairing")
+        try require(try detail(paired, "localLinkIsolation.rdma_en3").hasPrefix("Isolated: Thunderbolt port en3 has its own network service"),
+            "Mac A after pairing: the doctor says isolated")
+    }
+
+    /// Mac A after pairing (2026-11-03): its cable port's address and cluster
+    /// subnet routes as captured, MAC addresses replaced; the other readings as
+    /// Darkbloom leaves an isolated port.
+    private static func pairedMacA(_ command: ClusterLinkToolCommand) -> ClusterLinkToolOutcome {
+        let device = "hca_id:\trdma_en3\n\ttransport:\t\t\tThunderbolt (100)\n\t\tport:\t1\n\t\t\tstate:\t\t\tPORT_ACTIVE (4)\n"
+        switch command {
+        case .rdmaControlStatus: return .output("enabled\n")
+        case .rdmaDeviceList: return .output(device)
+        case .rdmaDeviceDetail: return .output(device + "\t\t\tGID[  2]:\t\t::ffff:10.219.13.112\n")
+        case .interfaceList:
+            return .output("lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> mtu 16384\n\tinet 127.0.0.1 netmask 0xff000000\n"
+                + "en3: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500\n"
+                + "\tinet 10.219.13.112 netmask 0xffff0000 broadcast 10.219.255.255\n\tstatus: active\n")
+        case .hardwarePorts: return .output("Hardware Port: Thunderbolt 3\nDevice: en3\n")
+        case .networkServiceOrder:
+            return .output("An asterisk (*) denotes that a network service is disabled.\n(1) Darkbloom Cluster Link (en3)\n"
+                + "(Hardware Port: Thunderbolt 3, Device: en3)\n")
+        case .networkServiceInfo:
+            return .output("Manual Configuration\nIP address: 10.219.13.112\nSubnet mask: 255.255.0.0\nRouter: (null)\nIPv6: Link Local\n")
+        case .bridgePreferences: return .output("{}\n")
+        case .routeTable:
+            return .output("Routing tables\n\nInternet:\nDestination        Gateway            Flags               Netif Expire\n"
+                + "default            192.0.2.1          UGScg                 en1\n"
+                + "10.219/16          link#19            UCS                   en3      !\n"
+                + "10.219.13.112/32   link#19            UCS                   en3      !\n"
+                + "10.219.13.112      0:0:5e:0:53:3      UHLWIi                lo0\n"
+                + "10.219.165.133     0:0:5e:0:53:33     UHLWIi                en3   1150\n"
+                + "10.219.255.255     ff:ff:ff:ff:ff:ff  UHLWbI                en3      !\n")
+        case .dnsConfiguration: return .output("DNS configuration\n")
+        default: return .unavailable
+        }
     }
 }

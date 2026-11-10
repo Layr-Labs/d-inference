@@ -70,12 +70,12 @@
     },
     {
       "name": "public fixtures and qualification",
-      "source_patterns": ["fixtures/**", "provider-swift/Tests/ProviderCoreTests/Fixtures/**", "scripts/verify*prompt*", "scripts/prepare-prompt-fixtures.py", "scripts/prepare-mimo*", "scripts/generate*prompt*", "scripts/qualify*", "provider-swift/Tests/test_protocol_fixture_resources.py"],
+      "source_patterns": ["fixtures/**", "provider-swift/Tests/ProviderCoreTests/Fixtures/**", "scripts/verify*prompt*", "scripts/prepare-prompt-fixtures.py", "scripts/prepare-mimo*", "scripts/fixture_redirects.py", "scripts/generate*prompt*", "scripts/qualify*", "provider-swift/Tests/test_protocol_fixture_resources.py"],
       "docs_any_of": ["docs/developer/test.md", "docs/developer/mimo-prompt-fixtures.md", "docs/developer/serving-performance-qualification.md"]
     },
     {
       "name": "build and test tooling",
-      "source_patterns": ["Makefile", "mise.toml", ".githooks/**", ".github/dependabot.yml", ".github/workflows/ci.yml", ".github/workflows/component-changes.yml", ".github/workflows/darkbloom-route.yml", ".github/actions/provider-ci-build/**", "scripts/ci-component-paths.py", "scripts/test-ci-component-paths.py", "scripts/docs-*", "scripts/test-docs-*", "scripts/run-*", "scripts/stage-*", "scripts/fetch-metallib.sh", "scripts/provider-ci-cache.py", "provider-swift/Package.swift", ".gitmodules"],
+      "source_patterns": ["Makefile", "mise.toml", ".githooks/**", ".github/dependabot.yml", ".github/workflows/ci-dev.yml", ".github/workflows/ci-master.yml", ".github/workflows/provider-plan.yml", ".github/workflows/provider-tests.yml", ".github/workflows/component-changes.yml", ".github/workflows/darkbloom-route.yml", ".github/actions/provider-ci-build/**", ".github/actions/provider-ci-products/**", "scripts/ci-test-products.py", "scripts/ci-resource-sampler.py", "scripts/ci-component-paths.py", "scripts/test-ci-component-paths.py", "scripts/docs-*", "scripts/test-docs-*", "scripts/run-*", "scripts/stage-*", "scripts/fetch-metallib.sh", "scripts/provider-ci-cache.py", "provider-swift/Package.swift", ".gitmodules"],
       "docs_any_of": ["docs/developer/build.md", "docs/developer/test.md"]
     },
     {

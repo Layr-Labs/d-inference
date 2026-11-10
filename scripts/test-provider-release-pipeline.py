@@ -55,7 +55,8 @@ class ReleasePipelineTests(unittest.TestCase):
         # Every script a release runs must start the push lanes when it changes.
         scripts = set(re.findall(r'scripts/[A-Za-z0-9_.*-]+\.(?:sh|py)', RELEASE + CALLER + ACTION))
         scripts |= {'scripts/provider_release_resume/api.py', 'scripts/provider_release_artifact.py',
-                    'scripts/provider_release_github.py', 'scripts/provider_release_cache/mtimes.py',
+                    'scripts/provider_release_github.py', 'scripts/provider_release_notes.py',
+                    'scripts/changelog.py', 'scripts/provider_release_cache/mtimes.py',
                     'scripts/stage-swiftpm-resource-bundles.sh'}
         for script in sorted(scripts):
             with self.subTest(script=script):
@@ -225,6 +226,10 @@ class ReleasePipelineTests(unittest.TestCase):
             self.assertNotIn('gh release create', content)
             self.assertNotIn('releases/latest/', content)
             self.assertNotIn('secrets.PROD_RELEASE_KEY', content)
+        # The release notes list the release's own pull requests (provider_release_notes.py);
+        # GitHub's generated notes would list only those merged into master.
+        for content in [RELEASE, CALLER, (ROOT / 'scripts/provider_release_github.py').read_text()]:
+            self.assertNotIn('--generate-notes', content)
         self.assertNotIn('provider-release-publication.py stage', sign)
         self.assertNotIn('secrets.PROD_R2_ACCESS_KEY_ID', sign)
         self.assertNotIn('secrets.PROD_R2_SECRET_ACCESS_KEY', sign)

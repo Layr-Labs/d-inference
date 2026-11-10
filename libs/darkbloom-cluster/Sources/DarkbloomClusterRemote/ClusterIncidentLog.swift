@@ -6,7 +6,7 @@ import Foundation
 // Ported from the design of the owner's oMLX `omlx/cluster/incidents.py`
 // (Apache-2.0, multi-contributor upstream code; see ACKNOWLEDGEMENTS): every
 // abnormal end state of a cluster session becomes one durable, already
-// redacted record in `~/.darkbloom/cluster/incidents.json`. Readers poll with
+// redacted record in the install's `cluster/incidents.json`. Readers poll with
 // a `since` cursor and merge; nothing a reader does can erase a record.
 // Dismissal is the only removal path, and supersession ("launch #4 replaces
 // #3") flags the earlier record but keeps it.
@@ -55,6 +55,9 @@ public struct ClusterIncident: Codable, Sendable, Equatable {
     public let origin: String?
     public internal(set) var dismissedAt: Double?
     public internal(set) var supersededBy: String?
+    /// The install that recorded it (`BuildEnvironment.rawValue`: "prod", "dev"): the installs on one Mac share this
+    /// file. Older records have none and count as production's (`ClusterIncidentLog.install`).
+    public internal(set) var install: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case seq, id, ts, severity, source, message, rank
@@ -62,6 +65,7 @@ public struct ClusterIncident: Codable, Sendable, Equatable {
         case jobID = "job_id", deploymentID = "deployment_id", modelID = "model_id", bundleRef = "bundle_ref"
         case origin
         case dismissedAt = "dismissed_at", supersededBy = "superseded_by"
+        case install
     }
 
     public var isDismissed: Bool { dismissedAt != nil }
@@ -181,13 +185,31 @@ public final class ClusterIncidentLog: @unchecked Sendable {
     public static let maximumMessageBytes = 512
     static let maximumFileBytes = 2 * 1024 * 1024
     static let maximumFieldBytes = 128
+    /// The install of records written before records named theirs: production, the only install then.
+    public static let unstampedInstall = "prod"
 
-    /// `~/.darkbloom/cluster/incidents.json` for this home directory.
-    public static func defaultFile(homeDirectory: URL) -> URL {
-        homeDirectory.appendingPathComponent(".darkbloom/cluster/incidents.json")
+    /// `cluster/incidents.json` in an install's data folder (`installDirectory`: production's `~/.darkbloom`).
+    public static func defaultFile(installDirectory: URL) -> URL {
+        installDirectory.appendingPathComponent("cluster/incidents.json")
+    }
+
+    /// This install's incident log in its data folder: production's (`install` nil or `unstampedInstall`) is
+    /// `incidents.json`; another install's is named after it, e.g. `incidents.dev.json` (in `~/.darkbloom-dev`).
+    public static func defaultFile(installDirectory: URL, install: String?) -> URL {
+        guard let install, install != unstampedInstall else { return defaultFile(installDirectory: installDirectory) }
+        let name = String(install.map { $0.isASCII && ($0.isLetter || $0.isNumber) ? $0 : "_" })
+        return installDirectory.appendingPathComponent("cluster/incidents.\(name).json")
     }
 
     public let file: URL
+    /// Where a corrupt log is moved aside, named after its file, so each install keeps its own.
+    var corruptCopy: URL {
+        file.deletingLastPathComponent().appendingPathComponent(file.deletingPathExtension().lastPathComponent + ".corrupt.json")
+    }
+    /// This install, stamped on each record it adds; its feed holds its own records and the older unstamped ones
+    /// (`unstampedInstall`). Nil: every record, and the records it adds stay unstamped. Each install also keeps its own
+    /// file (`defaultFile(installDirectory:install:)`); the stamp is the second check.
+    public let install: String?
     private let lockFile: URL
     private let redact: @Sendable (String) -> String
     private let clock: @Sendable () -> Double
@@ -197,8 +219,9 @@ public final class ClusterIncidentLog: @unchecked Sendable {
     /// passes its diagnostic redaction: addresses, host and user names, home
     /// paths, key material). It must never throw away the meaning of a message.
     public init(file: URL, redact: @escaping @Sendable (String) -> String = { $0 },
-                clock: @escaping @Sendable () -> Double = { Date().timeIntervalSince1970 }) {
+                clock: @escaping @Sendable () -> Double = { Date().timeIntervalSince1970 }, install: String? = nil) {
         self.file = file
+        self.install = install
         lockFile = file.deletingLastPathComponent().appendingPathComponent(file.lastPathComponent + ".lock")
         self.redact = redact
         self.clock = clock
@@ -220,9 +243,15 @@ public final class ClusterIncidentLog: @unchecked Sendable {
             case .loaded(let stored):
                 return .init(schemaVersion: ClusterIncidentFeed.schemaVersion, epoch: stored.epoch,
                              latestSeq: stored.incidents.last?.seq ?? 0, loadError: nil,
-                             incidents: stored.incidents.filter { $0.seq > cursor })
+                             incidents: stored.incidents.filter { $0.seq > cursor && owns($0) })
             }
         }
+    }
+
+    /// Whether the feed holds `incident`: this install's own, and production's older unstamped ones.
+    private func owns(_ incident: ClusterIncident) -> Bool {
+        guard let install else { return true }
+        return (incident.install ?? Self.unstampedInstall) == install
     }
 
     // MARK: Writing
@@ -246,7 +275,7 @@ public final class ClusterIncidentLog: @unchecked Sendable {
                 source: draft.source, stateCode: draft.stateCode, reasonCode: draft.reasonCode,
                 guidanceCode: draft.guidanceCode, message: message, jobID: draft.jobID,
                 deploymentID: draft.deploymentID, modelID: model, rank: draft.rank, bundleRef: nil,
-                origin: draft.origin, dismissedAt: nil, supersededBy: nil)
+                origin: draft.origin, dismissedAt: nil, supersededBy: nil, install: install)
             stored.incidents.append(incident)
             if stored.incidents.count > Self.maximumIncidents {
                 stored.incidents.removeFirst(stored.incidents.count - Self.maximumIncidents)
@@ -331,8 +360,9 @@ public final class ClusterIncidentLog: @unchecked Sendable {
             case .missing:
                 stored = .init(schemaVersion: ClusterIncidentFeed.schemaVersion, epoch: Self.newEpoch(), nextSeq: 1, incidents: [])
             case .corrupt:
-                // Kept for whoever investigates, never trusted, never blocking.
-                let aside = directory.appendingPathComponent("incidents.corrupt.json")
+                // Kept for whoever investigates, never trusted, never blocking; named after its file, so each install
+                // keeps its own (`incidents.corrupt.json`, `incidents.dev.corrupt.json`).
+                let aside = corruptCopy
                 _ = unlink(aside.path)
                 _ = rename(file.path, aside.path)
                 stored = .init(schemaVersion: ClusterIncidentFeed.schemaVersion, epoch: Self.newEpoch(), nextSeq: 1, incidents: [])
@@ -378,7 +408,7 @@ public final class ClusterIncidentLog: @unchecked Sendable {
         ok = true
     }
 
-    /// Creates the directory (and `~/.darkbloom`) owner-only; refuses a symbolic link.
+    /// Creates the directory (and the install's folder above it) owner-only; refuses a symbolic link.
     static func makePrivateDirectory(_ directory: URL) throws {
         var info = stat()
         if lstat(directory.path, &info) == 0 {

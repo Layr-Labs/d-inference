@@ -22,8 +22,9 @@ func clusterObservabilityLog(_ level: ClusterObservabilityLogLevel, _ message: S
 
 enum ClusterObservabilityLogLevel: Sendable { case info, warning, error }
 
-/// This Mac's cluster observability files (PROD-PLAN S24), under
-/// `~/.darkbloom/cluster/`: the durable incident log, the leader's pair
+/// This Mac's cluster observability files (PROD-PLAN S24), in this install's
+/// `cluster/` folder (`ClusterUserPaths.observabilityDirectory`, production's
+/// `~/.darkbloom/cluster/`): the durable incident log, the leader's pair
 /// telemetry and the follower status the leader mirrors. Recording never
 /// throws into the caller and never blocks a request: an incident that cannot
 /// be written is logged and dropped.
@@ -41,10 +42,10 @@ public final class ClusterObservability: Sendable {
             userNames: userNames, hostNames: hostNames)
         localIdentifiers = identifiers
         let redaction = ClusterDiagnosticRedaction(identifiers: identifiers)
-        incidents = ClusterIncidentLog(file: ClusterIncidentLog.defaultFile(homeDirectory: homeDirectory),
-                                       redact: { redaction.redact($0) })
-        telemetryFile = ClusterPairTelemetryLog.defaultFile(homeDirectory: homeDirectory)
-        followerStatusFile = ClusterLinkStatusBoardFile.defaultFile(homeDirectory: homeDirectory)
+        incidents = ClusterIncidentLog.forThisInstall(homeDirectory: homeDirectory, redact: { redaction.redact($0) })
+        let install = BuildEnvironment.current.installDirectory(home: homeDirectory)
+        telemetryFile = ClusterPairTelemetryLog.defaultFile(installDirectory: install)
+        followerStatusFile = ClusterLinkStatusBoardFile.defaultFile(installDirectory: install)
     }
 
     /// For the user running this process.
@@ -173,6 +174,7 @@ extension DistributedInstalledPlan {
                   mode: configuration.selectedGenerationMode, tensorShares: configuration.tensorShares),
               membershipEpoch: membershipEpoch?.uuidString.lowercased(), diagnostics: diagnostics, terminations: [],
               peerHosts: configuration.peers.map(\.host), peerUsers: configuration.peers.map(\.user),
-              ranks: configuration.peers.sorted { $0.rank < $1.rank }.map(\.id))
+              ranks: configuration.peers.sorted { $0.rank < $1.rank }.map(\.id),
+              serving: DistributedSessionFacts.serving(configuration), tensorAssistant: configuration.tensorAssistant != nil)
     }
 }

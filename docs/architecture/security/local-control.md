@@ -1,13 +1,15 @@
 # Local control channels
 
-> Last updated: 2026-10-27
+> Last updated: 2026-11-05
 
 Two local channels can take a provider out of serving without the coordinator:
 the add-on hold socket and the lifecycle mailbox behind `darkbloom addon`. This
 explanation is for security reviewers: who can drive each channel, what the
 provider checks, and what neither protects against. Behavior is in
 [add-on hold](../addon-hold.md); exact values are in the
-[add-on hold IPC reference](../../reference/addon-hold-ipc.md).
+[add-on hold IPC reference](../../reference/addon-hold-ipc.md). It also
+records the cluster commands that change macOS settings as root, each only
+with an administrator's approval.
 
 ## Context
 
@@ -86,6 +88,22 @@ flowchart LR
    `provider-swift/Sources/ProviderCore/Addon/AddonHoldPaths.swift`
    (`AddonHoldPaths.production`).
 
+### Administrator-approved system changes
+
+Two cluster commands change macOS settings as root, each only after a person
+approves macOS's own authorization prompt for one fixed command line. Both run
+through `/usr/bin/osascript` (`ClusterLinkApproval`); Darkbloom never uses
+`sudo`, never sees a password, and adds no privileged helper.
+
+| Command | What it changes | Values | Undo |
+|---|---|---|---|
+| `darkbloom cluster link --fix` | A link-local address on the cluster's Thunderbolt port, and its keeper job | Generated from the port; no operator text (`ClusterLinkPrivilegedRequest`) | `--remove` |
+| `darkbloom cluster gpu-limit` | The GPU and user wire limits, and a boot job that reapplies them | From this Mac's own memory: the GPU keeps at most its memory less 16 GiB (a sixteenth from 512 GB); Apple silicon Macs with 128 GB or more only, and never where the limits cannot be read (`GLM5NextWiredLimitRequest`) | `--undo` |
+
+`gpu-limit` also requires a terminal and one confirmation before the prompt. A
+raised GPU limit removes no admission check: the host memory gate still decides
+every load and request on live memory.
+
 ## Failure modes and limits
 
 | Action | Result | Threat-model entry |
@@ -96,6 +114,11 @@ flowchart LR
 | The add-on crashes while its VMs, or another program, keep `ownership.lock` | An expired lease is kept for as long as the lock is held; `darkbloom addon release --force` ends it | `T-059` |
 | A program of the same user tampers with the add-on, the record or the lock | Outside the boundary: that user can equally stop the provider | `TB-012` |
 | The coordinator reads the `busy_*` fields | They are the provider's own report, not verified evidence | `TB-012` |
+| `darkbloom cluster gpu-limit` runs without a terminal (the daemon, a script, a remote session without one) | No prompt and no change: it prints the commands for an administrator and exits 2 | `T-062` |
+| It runs on a Mac other than an M5 of 128 or 256 GB | No values and no prompt: exit 2. The plan never names the command there; it uses the same rule | `T-062` |
+| The limits are met, but the boot job is missing or differs from the one it writes | It installs the job after the same confirmation and prompt; it reports nothing to change only when both match | `TB-014` |
+| A step of the raise fails as root | The command line stops at that step; the command says so, and running it again shows what is in place | `TB-014` |
+| The provider is uninstalled | The boot job stays until `darkbloom cluster gpu-limit --undo` | `TB-014` |
 
 ## Code map
 
@@ -105,7 +128,8 @@ flowchart LR
 | Peer policy | `provider-swift/Sources/ProviderCore/Addon/AddonPeerPolicy.swift` (`AddonPeerPolicy`) |
 | Operator requests | `provider-swift/Sources/ProviderCore/Addon/AddonHoldControl.swift` (`AddonHoldControlRequest`), `provider-swift/Sources/ProviderCore/Service/LifecycleMailbox.swift` (`LifecycleMailbox`) |
 | Hold record | `provider-swift/Sources/ProviderCore/Addon/AddonHoldStore.swift` (`AddonHoldStore`) |
-| Risk register | [Threat model](../../threat-model.yaml) `TB-012`, `T-059`, `T-060` |
+| GPU limit approval | `provider-swift/Sources/darkbloom/ClusterGPULimitCommand.swift` (`Cluster.GPULimit`), `provider-swift/Sources/ProviderCore/Diagnostics/GLM5NextGPULimitFlow.swift` (`GLM5NextGPULimitFlow`), `provider-swift/Sources/ProviderCore/Diagnostics/GLM5NextGPULimitEligibility.swift` (`GLM5NextGPULimitEligibility`), `provider-swift/Sources/ProviderCore/Diagnostics/GLM5NextWiredLimitApproval.swift` (`GLM5NextWiredLimitRequest`) |
+| Risk register | [Threat model](../../threat-model.yaml) `TB-012`, `T-059`, `T-060`, `TB-014`, `T-062` |
 
 ## Related
 

@@ -165,15 +165,21 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .glm5NextTensorParallel(let runtime): runtime.refreshServingContext()
         // Nil for a row whose profile is its memory plan.
         case .qwenTensorParallel(let runtime): runtime.refreshServingContext()
-        case .mimoV26, .mimoV26TensorParallel, .glm5Next, .gemma4TensorParallel: nil
+        case .gemma4TensorParallel(let runtime): runtime.refreshServingContext()
+        // A GLM pipeline rank admits each request on arrival: its context fits live memory.
+        case .glm5Next(let runtime): runtime.refreshServingContext()
+        case .mimoV26, .mimoV26TensorParallel: nil
         }
     }
-    /// Qwen tensor parallel's lanes re-derive their serving context on a
-    /// keep-warm answer too (a row that serves its native context); every
-    /// other lane owner keeps the one its readiness reported.
+    /// Qwen and Gemma 4 tensor parallel's lanes re-derive their serving
+    /// context on a keep-warm answer too (a row that serves its native
+    /// context); every other lane owner keeps the one its readiness reported.
     func refreshLaneServingContext() -> Int? {
-        guard case .qwenTensorParallel(let runtime) = owner else { return nil }
-        return runtime.refreshServingContext()
+        switch owner {
+        case .qwenTensorParallel(let runtime): runtime.refreshServingContext()
+        case .gemma4TensorParallel(let runtime): runtime.refreshServingContext()
+        case .qwenDense, .mimoV26, .mimoV26TensorParallel, .glm5Next, .glm5NextTensorParallel: nil
+        }
     }
     // Batch lanes are supplied by each admitted native owner.
     var batchLanes: Int {

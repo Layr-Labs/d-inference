@@ -9,17 +9,17 @@ extension Cluster {
         static let configuration = CommandConfiguration(commandName: "local",
             abstract: "Serve the cluster on the leading Mac's local API only, never contacting Darkbloom's coordinator.",
             discussion: """
-                The same as `darkbloom cluster` (pairing, model choice, the split across the Macs, model copies), but \
+                The same as `\(ClusterPairSummary.cli) cluster` (pairing, model choice, the split across the Macs, model copies), but \
                 the cluster serves on the leading Mac's local OpenAI-compatible API only: no registration, public \
                 traffic or billing, and no network beyond the cable is needed to serve. The API listens on every \
                 network of the leading Mac (LAN or tailnet) unless --bind names an address, and always needs its API \
-                key: `darkbloom local` on that Mac shows the address and the key.
+                key: `\(ClusterPairSummary.cli) local` on that Mac shows the address and the key.
 
-                The choice is kept: both Macs serve this way after restarts, until `darkbloom cluster` is used to \
+                The choice is kept: both Macs serve this way after restarts, until `\(ClusterPairSummary.cli) cluster` is used to \
                 serve through Darkbloom again (choose Serve through Darkbloom there). Run it on a cluster that already serves to switch it.
                 """)
         @OptionGroup var configOptions: ConfigOptions
-        @Argument(help: "The model to serve, by its id or name as `darkbloom cluster` lists it; without one, the list is shown.")
+        @Argument(help: "The model to serve, by its id or name as `\(ClusterPairSummary.cli) cluster` lists it; without one, the list is shown.")
         var model: String?
         @Option(help: ArgumentHelp("The address the API listens on (default 0.0.0.0: every network of the leading Mac; 127.0.0.1: that Mac only). The API key is always required.",
                                    valueName: "address"))
@@ -42,16 +42,16 @@ extension Cluster {
                   privateMiMoImageQualification: privateMiMoImageQualification, privateGLMImageQualification: privateGLMImageQualification)
         }
 
-        static let needsTerminalLine = "Run `darkbloom cluster local` in a Terminal window on this Mac."
+        static let needsTerminalLine = "Run `\(ClusterPairSummary.cli) cluster local` in a Terminal window on this Mac."
 
         func validate() throws {
             if let refusal = onboardingRequest.privateQualificationInputRefusal { throw ValidationError(refusal) }
             for path in [configOptions.config, modelDir, worker].compactMap({ $0 }) {
-                guard path.hasPrefix("/"), !path.contains("\0") else { throw ValidationError("`darkbloom cluster local` takes absolute paths.") }
+                guard path.hasPrefix("/"), !path.contains("\0") else { throw ValidationError("`\(ClusterPairSummary.cli) cluster local` takes absolute paths.") }
             }
             if let model {
                 guard !model.isEmpty, model.utf8.count <= 200, !model.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
-                    throw ValidationError("Name the model by its id or name as `darkbloom cluster` lists it.")
+                    throw ValidationError("Name the model by its id or name as `\(ClusterPairSummary.cli) cluster` lists it.")
                 }
             }
             if let bind, !ClusterServingScope.isValidBind(bind) {

@@ -60,7 +60,13 @@ final class QwenStageTokenSampler {
     var nextOutputIndex: Int { selected.count }
 
     /// Graph only: one token `[1]` (int32) from a selected row `[1, V]`, drawn
-    /// at output index `nextOutputIndex`. Follow with `commit`.
+    /// at output index `nextOutputIndex`. Follow with `commit`. The next draw
+    /// may be built before this one is read and committed (one step ahead):
+    /// the product's sampler advances its penalty counts with each drawn
+    /// token on the device and its keyed step index with each draw
+    /// (`CBv2DefaultSampler`, `SamplerV2.commit`); `selected` only configures
+    /// it at the first draw. So each draw is the one made at its output index
+    /// with the history up to it, whenever the host reads the tokens.
     func sample(_ logits: MLXArray) -> MLXArray {
         let token = sampler.sample(logits: logits, params: [parameters], requestIDs: [stream], stepIndex: selected.count,
             pendingSampledTokens: nil,
@@ -80,6 +86,17 @@ final class QwenStageTokenSampler {
     func takePendingLogprobs() -> ClusterWorkerTokenLogprobs? {
         defer { pendingLogprobs = nil }
         return pendingLogprobs.map(Self.tokenLogprobs)
+    }
+
+    /// The last `sample`'s logprobs as graph nodes, once: a caller that draws
+    /// the next step before it reads this one (`TensorParallelOneTokenLoop`,
+    /// Qwen's build-ahead decode)
+    /// keeps each step's gather with its step and reads it with
+    /// `tokenLogprobs` after the step's token was agreed. Nil when the
+    /// request asks for none.
+    func takePendingStepLogprobs() -> CBv2StepLogprobs? {
+        defer { pendingLogprobs = nil }
+        return pendingLogprobs
     }
 
     /// The current round's verify window (`verifyRound`), kept for its

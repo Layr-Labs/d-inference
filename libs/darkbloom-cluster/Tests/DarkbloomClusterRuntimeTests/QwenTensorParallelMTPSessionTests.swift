@@ -612,7 +612,7 @@ struct QwenTensorParallelMTPSessionTests {
             while owners[0].session.schedule.committedPromptTokens < request.promptCount {
                 try parallel(owners) { owner in
                     let output = try owner.session.prefill(check: {})
-                    #expect(output.hidden.shape[0] == 1 && output.hidden.shape[2] == 256)
+                    #expect(output.hidden.count == 1 && output.hidden[0].shape[0] == 1 && output.hidden[0].shape[2] == 256)
                     if let logits = output.logits { #expect(logits.shape == [1, 128] && all(isFinite(logits)).item(Bool.self)) }
                 }
             }
@@ -678,7 +678,7 @@ struct QwenTensorParallelMTPSessionTests {
     }
 
     /// MLX's process-default compile cache, emptied through mlx-c's handle API.
-    private static func clearDefaultCompileCache() {
+    static func clearDefaultCompileCache() {
         var cache = mlx_compile_cache_new()
         defer { _ = mlx_compile_cache_free(cache) }
         if mlx_detail_compile_cache(&cache) == 0 { _ = mlx_detail_compile_clear_cache(cache) }

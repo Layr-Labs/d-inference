@@ -14,7 +14,7 @@ Use a browser or a local Git checkout containing complete document history and
 the referenced source commits. A shallow clone may need
 `git fetch --unshallow origin`; check first with
 `git rev-parse --is-shallow-repository`. CI's Docs Lint job checks out full
-history (`.github/workflows/ci.yml`, `docs`).
+history (`.github/workflows/ci-master.yml`, `docs`).
 
 ## Steps
 

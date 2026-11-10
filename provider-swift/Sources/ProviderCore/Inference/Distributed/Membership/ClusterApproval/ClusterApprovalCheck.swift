@@ -1,36 +1,5 @@
+import DarkbloomClusterProcess
 import Foundation
-
-/// Why a pair that was registered with the coordinator serves on the leader's local API instead.
-public enum ClusterApprovalFallback: String, Codable, Equatable, Sendable {
-    /// No HTTP answer for the absence grace (`ClusterService.soloGraceSeconds`, the grace before a Mac serves alone).
-    case unreachable
-    /// The coordinator answers (404, or a list without the saved approval) and serves no other matching entry.
-    case withdrawn
-    /// The coordinator-paired parts ended `ClusterControlSoloAdmission.maximumQuickEnds` times in a row right after
-    /// starting with the approval (the rule for a solo server that keeps ending; `ClusterApprovalCheck.memberQuickEnds`).
-    /// The approval itself is taken again `failingSeconds` after it was set aside; a later matching one at once.
-    case failing
-
-    /// How long the same build does not take an approval set aside as `failing` again. Meanwhile each Mac's part that
-    /// serves locally starts its count of quick ends again (`ClusterService`), so the approval comes back with none.
-    public static let failingSeconds: Double = 3_600
-
-    /// The one line for the screen, the log and the status.
-    func line(_ approval: ClusterRuntimeApproval, grace: Double) -> String {
-        switch self {
-        case .unreachable:
-            return "The coordinator has not answered for " + (grace >= 60 ? "\(Int(grace / 60)) minutes" : "\(Int(grace)) s")
-                + ": the pair serves on the leader's local API until it answers again, then it is offered again with approval \(approval.id)"
-        case .withdrawn:
-            return "The coordinator no longer lists cluster approval \(approval.id): the pair serves on the leader's local API "
-                + "until it lists a matching one again"
-        case .failing:
-            return "The coordinator-paired parts ended \(ClusterControlSoloAdmission.maximumQuickEnds) times in a row right after "
-                + "starting with cluster approval \(approval.id): the pair serves on the leader's local API for "
-                + "\(Int(Self.failingSeconds / 60)) minutes, then it is offered again with it, or sooner with a later one the coordinator lists"
-        }
-    }
-}
 
 /// The control leader's check of the pair's cluster approval (`ClusterService.checkApproval`): whether to ask the
 /// coordinator, and what to change after it answered, from the saved setup, the answer and how the members' parts
@@ -147,11 +116,25 @@ enum ClusterApprovalCheck {
     /// handles instead. A quick end because the coordinator did not accept the member role in its negotiation window
     /// (during a deploy, right after a restart, or when it is slow) leaves the count as it is: the coordinator decided
     /// it, not this Mac's part. Every other end counts, a crash or a changed input included.
-    static func memberQuickEnds(after count: Int, ranSeconds: Double, lastError: String?) -> Int {
+    static func memberQuickEnds(after count: Int, ranSeconds: Double, lastError: String?, heldBack: Bool = false) -> Int {
         if lastError?.contains(unreachableMemberEnd) == true { return 0 }
+        // A part that ended because single-Mac serving holds a Mac's serving lock (this Mac's, or the other Mac's part held
+        // back), or because the other Darkbloom app on a Mac holds its GPU (`ClusterMachineDeviceLock`), says nothing about
+        // the approval: it never counts toward serving locally.
+        if heldBack || blockedByLock(lastError) || ClusterMachineDeviceLock.isRefusal(lastError) { return count }
         if lastError?.contains(notAcceptedMemberEnd) == true, ranSeconds < ClusterControlSoloAdmission.quickEndSeconds { return count }
         return ClusterControlSoloAdmission.quickEnds(after: count, ranSeconds: ranSeconds)
     }
+
+    /// An end caused by the provider instance lock: single-Mac serving held it (the lock's words since 0.10.9, and before).
+    static func blockedByLock(_ lastError: String?) -> Bool {
+        guard let lastError else { return false }
+        return lastError.contains("single-Mac Darkbloom provider") || lastError.contains("provider-instance")
+            || lastError.contains("provider instance lock")
+    }
+
+    /// An approval set aside because its parts kept failing is taken again once the blocker that made them end cleared.
+    static func clearsAfterBlocker(_ reason: ClusterApprovalFallback) -> Bool { reason == .failing }
 
     /// How a member's error line starts when its registration wait never reached the coordinator.
     static let unreachableMemberEnd = String(ClusterMemberControlError.coordinatorUnreachable.rawValue.prefix(40))

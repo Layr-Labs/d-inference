@@ -20,7 +20,7 @@ extension Schedule {
         }
         var merged: [DateInterval] = []
         for interval in intervals.sorted(by: { $0.start < $1.start }) {
-            if let last = merged.last, interval.start <= last.end {
+            if let last = merged.last, interval.start.timeIntervalSince(last.end) <= 0 {
                 merged[merged.count - 1] = DateInterval(start: last.start, end: max(last.end, interval.end))
             } else {
                 merged.append(interval)

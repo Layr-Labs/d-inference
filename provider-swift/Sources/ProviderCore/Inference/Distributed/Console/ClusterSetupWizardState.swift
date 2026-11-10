@@ -84,6 +84,9 @@ public struct ClusterSetupModelOption: Codable, Sendable, Equatable {
     /// Why it cannot be chosen; nil when it can.
     public var blocker: String?
     public var plan: ClusterSetupPlanSummary?
+    /// The plan of each other mode family the setup's question offers, made as a start makes it once that family is
+    /// chosen; the start adopts it (`ClusterSetupPlanning.offered`). Nil when only `plan`'s family is offered.
+    public var familyPlans: [ClusterSetupPlanSummary]? = nil
 
     public init(model: ClusterSetupLocalModel, onOtherMac: Bool?, blocker: String?, plan: ClusterSetupPlanSummary?) {
         self.model = model; self.onOtherMac = onOtherMac; self.blocker = blocker; self.plan = plan
@@ -148,6 +151,38 @@ public struct ClusterSetupPlanSummary: Codable, Sendable, Equatable {
     /// (`ClusterPlacementExplanation.tensorParallelNote`): nil when it is, when the model has no tensor-parallel
     /// plan, and in a summary written before it.
     public var tensorParallelNote: String? = nil
+    /// Why the plan serves without the model's speculative assistant where one was discovered or declared, in one
+    /// line (`ClusterSetupPlanning.assistantDoesNotFit`, `assistantRefusedLine`); nil otherwise and in a summary
+    /// written before it.
+    public var speculationNote: String? = nil
+    /// Each mode family the planner could place for these Macs (`ClusterShardAssessment`), the chosen first, with each
+    /// Mac's share and the decode rate this pair served it at (`ClusterServedModes`); nil before it existed.
+    public var modes: [Mode]? = nil
+
+    public struct Mode: Codable, Sendable, Equatable {
+        public struct Share: Codable, Sendable, Equatable {
+            public var local: Bool
+            public var firstLayer: Int
+            public var endLayer: Int
+            /// Its share of every layer under tensor parallel; nil for a pipeline range.
+            public var share: Double?
+        }
+        /// A `ClusterGenerationMode` raw value.
+        public var mode: String
+        public var shares: [Share]
+        /// Nil: this pair has not served it in this mode with this build yet (never a prediction).
+        public var servedDecodeTokensPerSecond: Double?
+        /// Requests the pair serves at once in this mode, as its plan's setup says (1: one at a time); nil when not
+        /// known, and in a summary written before it existed.
+        public var concurrentRequests: Int? = nil
+        /// Darkbloom's coordinator serves the model publicly in this mode (`ClusterPairServingGrants.publicTrafficLine`);
+        /// nil when not known, and in a summary written before it existed.
+        public var publicTraffic: Bool? = nil
+        /// The decode rate this pair last served it at in this mode with an earlier worker build, served the way the plan
+        /// will serve (`ClusterSetupPlanning.earlierFigures`): what the mode question ranks by until this build has served.
+        /// Nil when no earlier build did (never a prediction), and in a summary written before it existed.
+        public var earlierServedDecodeTokensPerSecond: Double? = nil
+    }
 }
 
 /// What reaching the other Mac gave.

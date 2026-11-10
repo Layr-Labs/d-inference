@@ -151,6 +151,26 @@ struct SandboxAddonStatus: Equatable, Sendable {
     var accepting: Bool?
     var lastUpdateCheck: Date?
     var consoleURL: String?
+    /// The add-on reports its work disks (`disks`), so it takes
+    /// `install --disk`.
+    var supportsWorkDisks = false
+    /// Its work disks, in order: the internal disk alone without `--disk`.
+    var disks: [Disk] = []
+
+    /// One work disk, as `status --json` reports it.
+    struct Disk: Equatable, Sendable {
+        /// Its mount point.
+        var path: String
+        /// The install root's own volume, the internal disk.
+        var rootVolume: Bool
+        /// `online`, `verifying` or `offline`.
+        var state: String
+        /// What to do about it, when it is not online.
+        var detail: String?
+        var freeBytes: Int64?
+        var linuxSlots: Int
+        var macOSSlots: Int
+    }
 }
 
 extension SandboxAddonStatus {
@@ -188,7 +208,21 @@ extension SandboxAddonStatus {
             },
             accepting: object["accepting"] as? Bool,
             lastUpdateCheck: Self.timestamp(object["last_update_check"]),
-            consoleURL: text("console_url"))
+            consoleURL: text("console_url"),
+            supportsWorkDisks: object["disks"] is [Any],
+            disks: (object["disks"] as? [[String: Any]] ?? []).compactMap(Self.disk))
+    }
+
+    /// One entry of `disks`; nil without a path and a state.
+    private static func disk(_ entry: [String: Any]) -> Disk? {
+        guard let path = entry["path"] as? String, let state = entry["state"] as? String else { return nil }
+        func total(_ platform: String) -> Int {
+            let slots = (entry["slots"] as? [String: Any])?[platform] as? [String: Any]
+            return max(0, slots?["total"] as? Int ?? 0)
+        }
+        return Disk(path: path, rootVolume: entry["root_volume"] as? Bool ?? false, state: state,
+                    detail: (entry["detail"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+                    freeBytes: entry["free_bytes"] as? Int64, linuxSlots: total("linux"), macOSSlots: total("macos"))
     }
 
     /// Unix seconds (or milliseconds) or an ISO 8601 string.

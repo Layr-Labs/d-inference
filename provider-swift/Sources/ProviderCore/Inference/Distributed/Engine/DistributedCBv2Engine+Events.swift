@@ -4,6 +4,7 @@ import MLXLMCommon
 extension DistributedCBv2Engine {
     func receive(_ event: DistributedResidentEvent, state: DistributedRequestState) -> Bool {
         guard isActive(state) else { return false }
+        defer { publishCapacity() }
         // The prefix report arrives after the last token, when the request
         // may already have its terminal; it only feeds usage and receipts.
         if case .promptCache(let reused, let stored) = event {
@@ -43,6 +44,7 @@ extension DistributedCBv2Engine {
             let arrived = clock.now()
             if state.firstTokenAt == nil { state.firstTokenAt = arrived }
             state.lastTokenAt = arrived
+            state.lastTokenUptimeNanos = DispatchTime.now().uptimeNanoseconds
             let isStop = state.request.stopTokens.contains(token)
             let text = isStop ? "" : state.detokenizer.push([token])
             if clock.now() >= state.absoluteDeadline {
@@ -203,7 +205,8 @@ extension DistributedCBv2Engine {
             do { try await ContinuousClock().sleep(until: deadline) }
             catch { return }
             guard let self, let state else { return }
-            self.onQueue { self.checkDeadline(state) }
+            // Never wait for a reservation holding the queue; the check runs after it.
+            self.onQueueWithoutWaiting { self.checkDeadline(state) }
         }
     }
 
@@ -223,12 +226,21 @@ extension DistributedCBv2Engine {
             }
             if state.detokenizer.matchedStopString { reason = .stop }
         }
-        let usage = Self.usage(state)
+        var usage = Self.usage(state)
+        usage.timing = Self.timing(state, finishedAt: clock.now())
         if reason == .stop || reason == .length, let receipt = state.request.prefixCacheReceiptID,
            !state.storedPromptFrontiers.isEmpty {
             residentPrefixPublication?(receipt, state.storedPromptFrontiers)
         }
+        // The prompt's measurement, once its reuse is known: the ranks report
+        // what they restored only after the last token, so the observation
+        // comes at a clean finish, before the terminal reaches the bridge. The
+        // bridge fixed the prompt's overlap and date at its first token.
+        if reason == .stop || reason == .length, state.firstTokenAt != nil {
+            state.request.onPrefillCompleted?(usage)
+        }
         actives[state.generation] = nil
+        publishCapacity()
         state.continuation.onTermination = nil
         if !state.terminalPublished {
             state.continuation.yield(.finished(reason: reason, usage: usage))

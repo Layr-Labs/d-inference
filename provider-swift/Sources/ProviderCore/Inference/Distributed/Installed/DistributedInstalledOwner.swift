@@ -93,6 +93,7 @@ public enum DistributedInstalledOwner {
         try features.requirePrefixSSDKeyInput(tierOn: prefixSSDKey != nil)
         try ClusterWorkerOwnerService.serveKeyed(input: input, output: output,
             clusterID: plan.configuration.clusterID, leaseDirectory: plan.paths.deviceDirectory,
+            machineLock: plan.paths.machineDeviceLock,
             bootstrapProfile: plan.bootstrap.ownerProfile,
             // The committed native start of the combined profile is admitted
             // only when it is the one this Mac derives from its own setup, or,

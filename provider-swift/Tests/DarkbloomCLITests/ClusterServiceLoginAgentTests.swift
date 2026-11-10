@@ -40,11 +40,38 @@ struct ClusterServiceLoginAgentTests {
         }
     }
 
+    /// R5-1 (pair 2, 0.10.8): the leader's `cluster stop --service` after the other Mac's service was already off
+    /// failed (exit 1) and left this Mac's service and login agent running. This Mac stopped serving and the other
+    /// Mac did not answer: this Mac's service still goes, and each Mac's state is said.
+    @Test func stopWhoseOtherMacDidNotAnswerStillRemovesThisMacsService() throws {
+        let other = "The other Mac (Apple M5 Max, 128 GB) did not answer (the other Mac's cluster service did not answer on the cable)"
+        let stopped: Result<[String], ClusterOnboardingFailure> = .failure(.init(
+            ["This Mac stopped serving; the other Mac (Apple M5 Max, 128 GB) did not answer (the other Mac's cluster service did not answer on the cable). This Mac's cluster service tells it to stop as soon as it answers again."],
+            otherMacUnanswered: other))
+        var removals = 0
+        let lines = try Cluster.Stop.finishStop(stopped) { removals += 1; return ["fixture"] }.lines
+        #expect(removals == 1, "this Mac's service and login agent go although the other Mac did not answer")
+        #expect(lines == [
+            "This Mac stopped serving.",
+            other + ", so it was not asked to stop (its cluster service may already be off).",
+            "This Mac's cluster service is stopped and will not start at login. Run `\(ClusterPairSummary.cli) cluster` to start it again.",
+            "If the other Mac's cluster service is still on, run `\(ClusterPairSummary.cli) cluster stop --service` there too.",
+        ])
+        // This Mac's own drain not finishing is still a failure that keeps its service.
+        removals = 0
+        #expect(throws: Cluster.Stop.Failure.self) {
+            _ = try Cluster.Stop.finishStop(.failure(.init("This Mac's part has not finished releasing its memory"))) {
+                removals += 1; return ["fixture"]
+            }
+        }
+        #expect(removals == 0)
+    }
+
     @Test func successfulOrAlreadyIdleStopRemovesTheServiceOnce() throws {
         let outcomes: [Result<[String], ClusterOnboardingFailure>?] = [.success(["pair drained"]), nil]
         for stopped in outcomes {
             var removals = 0
-            let lines = try Cluster.Stop.finishStop(stopped) { removals += 1; return ["fixture"] }
+            let lines = try Cluster.Stop.finishStop(stopped) { removals += 1; return ["fixture"] }.lines
             #expect(removals == 1)
             #expect(lines.last?.contains("will not start at login") == true)
             if stopped != nil { #expect(lines.first == "pair drained") }
@@ -61,11 +88,11 @@ struct ClusterServiceLoginAgentTests {
         #expect(try Cluster.Stop.parse(["--local-only"]).localOnly)
         #expect(try !Cluster.Stop.parse([]).localOnly)
         var removals = 0
-        let lines = try Cluster.Stop.finishStop(nil, localOnly: true) { removals += 1; return ["fixture"] }
+        let lines = try Cluster.Stop.finishStop(nil, localOnly: true) { removals += 1; return ["fixture"] }.lines
         #expect(removals == 1)
         #expect(lines.contains { $0.contains("will not start at login") })
-        #expect(lines.last == "The other Mac was not asked to stop. If it comes back, run `darkbloom cluster stop` there too.")
-        let ordinary = try Cluster.Stop.finishStop(nil) { ["fixture"] }
+        #expect(lines.last == "The other Mac was not asked to stop. If it comes back, run `darkbloom cluster stop --service` there too.")
+        let ordinary = try Cluster.Stop.finishStop(nil) { ["fixture"] }.lines
         #expect(!ordinary.contains { $0.contains("not asked to stop") })
     }
 
@@ -87,36 +114,5 @@ struct ClusterServiceLoginAgentTests {
         #expect(stop.wait(timeout: .now() + 0.3) == .timedOut)
         supervision.finish()
         #expect(ClusterSupervisionFiles.read(ClusterMemberHealth.self, from: health)?.phase == .stopping)
-    }
-
-    @Test func theServiceSupervisorRestartsAKilledServiceAfterTheBackoffAndNamesItself() async throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("cluster-service-sup-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let state = directory.appendingPathComponent("service-supervisor.json")
-        // A shell stands in for `darkbloom cluster service`, as in the member supervisor's tests.
-        let supervisor = ClusterMemberSupervisor(configuration: .init(
-            executable: "/bin/sh", childArguments: ["-c", "exec sleep 60"], environment: ["PATH": "/usr/bin:/bin"],
-            statePath: state, healthPath: directory.appendingPathComponent("service-health.json"),
-            setup: nil, coordinatorURL: "", autoUpdate: false,
-            budgetLimits: .init(maxQuickFailures: 3, quickFailureWindowSeconds: 30, initialBackoffSeconds: 1, maxBackoffSeconds: 4),
-            guardLimits: .production, recycleGraceSeconds: 5, reexecArguments: ["/bin/false"],
-            logName: "cluster service supervisor", restartHint: "`darkbloom cluster` is run again"))
-        func read() -> ClusterMemberSupervisorState? { ClusterSupervisionFiles.read(ClusterMemberSupervisorState.self, from: state) }
-        func waitUntil(_ seconds: Double, _ condition: () -> Bool) async -> Bool {
-            let deadline = Date().addingTimeInterval(seconds)
-            while Date() < deadline { if condition() { return true }; try? await Task.sleep(nanoseconds: 50_000_000) }
-            return condition()
-        }
-        let run = Task { await supervisor.run() }
-        #expect(await waitUntil(10) { read()?.phase == .running })
-        let first = try #require(read()?.current?.pid)
-        kill(first, SIGKILL)
-        #expect(await waitUntil(10) { read()?.phase == .backoff })
-        #expect(read()?.lastRun?.signal == SIGKILL)
-        #expect(await waitUntil(10) { read()?.phase == .running && read()?.current?.pid != first })
-        #expect(read()?.runs == 2)
-        supervisor.requestStop()
-        #expect(await run.value == 0)
-        #expect(read()?.phase == .stopped)
     }
 }

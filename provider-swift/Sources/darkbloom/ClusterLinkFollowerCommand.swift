@@ -42,28 +42,34 @@ extension Cluster {
         static func emit(_ event: DistributedInstalledLinkFollower.Event) {
             switch event {
             case .ready: line("ready")
-            case .connected: line("connected")
+            case .connected: line(ClusterService.followerConnected)
             case .disconnected: line("disconnected")
-            case .opened: line("session opened")
+            case .opened: line(ClusterService.followerSessionOpened)
             case .refused(let reason): line("session refused: \(reason)")
             case .fenced(let reason): line("session fenced: \(reason)")
             case .cleanup: line("session cleanup observed")
             case .released(let cleanly): line("session released " + (cleanly ? "cleanly" : "without its owner's proof"))
             case .linkRefused(let reason):
-                line("link refused: \(reason)")
+                line(ClusterService.followerLinkRefused + reason)
                 // macOS answers a dial with "host unreachable" before trying the
                 // cable when this process may not use the local network.
-                if reason.hasSuffix("(unreachable)") {
-                    line("this process may not reach the local network: macOS refused the dial before the cable was tried. "
-                        + "Allow darkbloom under System Settings > Privacy & Security > Local Network (once), "
-                        + "or start the follower from a session that has that access.")
-                }
+                if reason.hasSuffix("(unreachable)") { line(refusalLine(app: ClusterService.appName, row: ClusterService.localNetworkRow)) }
             }
+        }
+
+        /// The line after a dial macOS refused because this process may not use the local network: the row to turn on
+        /// in System Settings (`row`, R4-4: the DevNet app's reads "Darkbloom"), and where there is none, the prompt.
+        static func refusalLine(app: String, row: String) -> String {
+            "this process \(ClusterService.localNetworkRefusal): macOS refused the dial before the cable was tried. "
+                + "Turn on “\(row)” under System Settings > Privacy & Security > Local Network"
+                + ClusterOnboardingDriver.localNetworkRowNote(app: app, row: row)
+                + "; if it isn't listed, click Allow when macOS asks on this Mac's screen at the next dial. "
+                + "Or start the follower from a session that has that access."
         }
 
         static func line(_ text: String) {
             let stamp = ISO8601DateFormatter().string(from: Date())
-            FileHandle.standardOutput.write(Data("\(stamp) link-follower: \(text)\n".utf8))
+            FileHandle.standardOutput.write(Data("\(stamp) \(ClusterService.followerLinePrefix)\(text)\n".utf8))
         }
     }
 }

@@ -44,7 +44,8 @@ struct Switch: AsyncParsableCommand {
         } else if all {
             selected = try Self.selectModels(requested: [], local: ModelScanner.scanAllModels(hardwareInfo: hardware), capabilities: capabilities)
         } else {
-            selected = try await Start().interactiveCatalogPicker(
+            // Parsed, so the picker may read the command's options without ArgumentParser's fatal error.
+            selected = try await Start.parse([]).interactiveCatalogPicker(
                 snapshot: snapshot, config: snapshot.config, coordinatorURL: coordinatorURL,
                 runtimeCapabilities: capabilities)
         }

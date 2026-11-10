@@ -65,7 +65,7 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
         /// How its log lines start: the member's supervisor, or the cluster service's (login agent).
         var logName: String = "cluster-member supervisor"
         /// What the operator runs to start again after the budget is spent.
-        var restartHint: String = "`darkbloom restart` (or `darkbloom stop` then start)"
+        var restartHint: String = "`\(ClusterPairSummary.cli) restart` (or `\(ClusterPairSummary.cli) stop` then start)"
         /// How often a running member is checked for its end and its next probe.
         var childPollSeconds: Double = 0.5
         /// The cluster service route's coordinated update; nil on the member route, which uses the slot above.
@@ -76,6 +76,10 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
         var startCheckTimeoutSeconds = ClusterCandidateRecovery.startCheckTimeoutSeconds
         /// The orphan sweep before every run signals this user's orphaned cluster processes; a test never does.
         var sweepsOrphans = true
+        /// Why another Darkbloom build holds this Mac's GPU now (`ClusterGPUHold.now`); a test stands in.
+        var gpuHold: @Sendable () -> String? = { ClusterGPUHold.now() }
+        /// How often a member held back by another build's hold on the GPU looks again.
+        var gpuHoldPollSeconds: Double = 2
     }
 
     private let configuration: Configuration
@@ -96,6 +100,10 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
     private var followNotice: String?
     /// A deferred follow is tried again only at the pair's next update slot, as a deferred update is (under `lock`).
     private var followDeferredUntil: Double = 0
+    /// The newer release the other Mac runs, which the next tick updates to without waiting for the slot, and the one
+    /// already tried that way (under `lock`): one immediate cycle per release, then the slots as usual.
+    private var forwardDue: String?
+    private var forwardTried: String?
     // The candidate this run's service is (main loop only), until it is promoted.
     private var candidate: String?
     private var updatedServiceServes = false
@@ -204,6 +212,9 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
                         + "\(configuration.restartHint); see the log")
                     update(phase: .exhausted, detail: reason)
                     while !isStopping { await sleepInterruptibly(seconds: 3600) }
+                case .waitForGPU:
+                    await waitForGPU(after: runSeconds, detail: detail)
+                    continue
                 }
             }
             if isStopping || state.phase == .exhausted { break }
@@ -211,6 +222,33 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
         update(phase: .stopped, detail: "operator stop")
         log("supervisor stopped")
         return 0
+    }
+
+    // MARK: - Another build's hold on the GPU
+
+    /// The member ended because another Darkbloom build holds this Mac's GPU, or production serves here
+    /// (`ClusterMemberRunEnd.gpuHeld`): a wait, never a failure, so the restart budget is not spent. The member starts
+    /// again as soon as the hold ends. A hold already over by now starts it after the first backoff, so refusals that
+    /// keep coming never spin.
+    private func waitForGPU(after runSeconds: Double, detail: String) async {
+        var said: String?
+        while !isStopping, let hold = configuration.gpuHold() {
+            if hold != said {
+                log("member ended after \(Int(runSeconds)) s (\(detail)): \(hold) The member waits for it; not counted")
+                update(phase: .backoff, detail: hold)
+                said = hold
+            }
+            await sleepInterruptibly(seconds: configuration.gpuHoldPollSeconds)
+        }
+        guard !isStopping else { return }
+        if said != nil {
+            log("this Mac's GPU is free again: starting the member")
+            return
+        }
+        let wait = budget.limits.initialBackoffSeconds
+        log("member ended after \(Int(runSeconds)) s (\(detail)); starting it again in \(wait) s, not counted")
+        update(phase: .backoff, detail: detail, restartAt: Date().timeIntervalSince1970 + Double(wait))
+        await sleepInterruptibly(seconds: Double(wait))
     }
 
     // MARK: - Orphan sweep
@@ -389,6 +427,7 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
         switch end {
         case .operatorStop: detail = "operator stop"
         case .guardTeardown: detail = "JACCL guard teardown (exit 75)"
+        case .gpuHeld: detail = "another Darkbloom build held this Mac's GPU (exit \(ClusterMemberRunEnd.gpuHeldExitCode))"
         case .failure(let code): detail = recycleReason.map { "recycled by the liveness guard: \($0)" } ?? "exit \(code)"
         case .signaled(let number): detail = recycleReason.map { "recycled by the liveness guard: \($0)" } ?? "signal \(number)"
         }
@@ -488,8 +527,12 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
         } else if !configuration.autoUpdate {
             restAsDisabled(pair, now: now)
             return startFollowCheckIfDue(pair, pid: pid, now: now)
-        } else if !slotDue {
+        } else if !slotDue, lock.withLock({ forwardDue }) == nil {
             return startFollowCheckIfDue(pair, pid: pid, now: now)
+        }
+        lock.withLock {
+            if let due = forwardDue { forwardTried = due }
+            forwardDue = nil
         }
         // A cycle at or after the slot is that slot's.
         if slotDue { pairSlot = pair.clusterID().map { ClusterMemberUpdateSlot.nextSlot(after: now, clusterID: $0) } }
@@ -525,6 +568,7 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
             switch outcome {
             case .cannotFollow(let reason): notice = "not following the other Mac's rollback: " + reason
             case .otherMacStillRuns(let reason): notice = reason
+            case .otherMacNewer(let version): notice = self.followForward(version)
             default: notice = nil
             }
             // From the deferral, not the check's start: a follow that ran past a slot waits for the next.
@@ -542,6 +586,20 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
                 return notice == self.followNotice ? nil : notice
             }
             if let say { self.log("cluster update: \(say)") }
+        }
+    }
+
+    /// The other Mac runs `version`, newer than this Mac's: with automatic updates on, the next tick runs the pair's cycle
+    /// at once (once per release; after that, the slots), which finds the other Mac ready. The line says what happens.
+    private func followForward(_ version: String) -> String {
+        let here = "the other Mac runs v\(version), newer than this Mac's v\(ProviderCore.version)"
+        guard configuration.autoUpdate else {
+            return here + ", and automatic updates are off on this Mac: run `\(BuildEnvironment.current.cliName) update` on this Mac"
+        }
+        return lock.withLock {
+            guard forwardTried != version else { return here + ": this Mac tries again at the pair's next update slot" }
+            forwardDue = version
+            return here + ": updating this Mac now, without waiting for the pair's update slot"
         }
     }
 
@@ -592,11 +650,13 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
         pairCycle = nil
     }
 
-    /// Before each start of the service: a release installed and not yet promoted is a candidate (`ClusterCandidateRecovery`).
+    /// Before each start of the service: a release installed and not yet promoted is a candidate (`ClusterCandidateRecovery`),
+    /// once the update record is reconciled with the installed app.
     private func noteCandidateLaunch(now: Double) {
         candidate = nil
         guard let recovery = configuration.pairUpdate?.recovery,
-              case .candidate(let version, let failed) = recovery.noteLaunch(now: now) else { return }
+              case .candidate(let version, let failed) = recovery.noteLaunch(now: now, log: { log("cluster update: \($0)") })
+        else { return }
         candidate = version
         updatedServiceServes = false
         log("cluster update: starting the cluster service on candidate v\(version)"
@@ -633,7 +693,7 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
     private func recordCandidateEnd(detail: String) -> String? {
         guard candidate != nil, let recovery = configuration.pairUpdate?.recovery else { return nil }
         candidate = nil
-        switch recovery.recordFailedStart(now: Date().timeIntervalSince1970) {
+        switch recovery.recordFailedStart(now: Date().timeIntervalSince1970, log: { log("cluster update: \($0)") }) {
         case .counted(let version, let failures):
             log("cluster update: v\(version) failed start \(failures)/\(UpdateRecoveryState.rollbackThreshold) (\(detail))")
             return nil

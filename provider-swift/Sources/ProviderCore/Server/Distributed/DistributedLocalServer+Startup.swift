@@ -45,7 +45,8 @@ extension DistributedLocalServer {
             session.httpObservabilityFacts.map { facts in
                 DistributedPairTelemetryContext(modelID: facts.modelID, mode: facts.mode, cut: facts.cut,
                     log: observability.telemetryLog(sessionID: facts.membershipEpoch ?? UUID().uuidString.lowercased()),
-                    ranks: facts.ranks, rankBuildSHA256: session.expectedIdentity.peers.map(\.buildSHA256))
+                    ranks: facts.ranks, rankBuildSHA256: session.expectedIdentity.peers.map(\.buildSHA256),
+                    serving: facts.serving, tensorAssistant: facts.tensorAssistant)
             }
         }
         target.entry = try DistributedEngineFactory.makeRegistryEntry(

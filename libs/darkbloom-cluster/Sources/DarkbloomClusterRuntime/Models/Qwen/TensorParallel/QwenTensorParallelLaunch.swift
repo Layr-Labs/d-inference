@@ -79,4 +79,27 @@ extension QwenTensorParallelLaunch {
     public static func freedBufferCacheBytes(allocatorHeadroomBytes: Int) -> Int {
         max(0, allocatorHeadroomBytes) / 2
     }
+
+    /// A decode forward is submitted to the GPU every this many decoder
+    /// layers (`Qwen35LayerSubmission`), so the GPU and the collectives run
+    /// the layers already built while the host builds the rest. One layer a
+    /// submission spent a commit and a GPU wake-up per layer: on two M5 Ultra
+    /// 256 GB over JACCL (27B, sealed sums, one request) a step took 21.4 ms
+    /// at stride 1 and 20.2-20.3 ms at 8-16 (25.1 against 19.9-20.4 ms with
+    /// the host loaded), 35.4 against 29.5-29.9 ms for four requests, and
+    /// 21.2 ms again at 32, where the GPU waits for the host's first batch of
+    /// layers. Re-measured on a quieter pair (2026-11-05 19:58Z): 23.2 → 19.7
+    /// ms (−15 %) for one request and 32.1 → 27.8 ms (−13 %) for four. 8 is inside that flat band and divides the 9B's 32 and the
+    /// 27B's 64 layers. Not a launch option: evaluation
+    /// order only, so each rank's logits and committed state keep their bits
+    /// at any stride and two ranks need not agree on it.
+    public static let decodeLayerStride = 8
+
+    /// The GPU submissions a decode forward of `layers` decoder layers makes
+    /// at `stride` (0: the whole forward at once); the last one also carries
+    /// the head.
+    public static func decodeSubmissions(layers: Int, stride: Int) -> Int {
+        guard stride > 0, layers > 0 else { return 1 }
+        return layers / stride + (layers % stride == 0 ? 0 : 1)
+    }
 }

@@ -34,12 +34,12 @@ func checkMiMoTensorParallel(golden: URL, _ checks: PlacementChecks) throws {
 /// depth 2 and 512-token chunks (438,426,984 bytes) and the window's rows (36,347,904), both pinned by
 /// `MiMoTensorParallelSpeculativeTests`. The product prices it at the allocator's bound, a few pages more
 /// (`placementQuotesWhatTheLoadGateChargesWithRounds`); its drafter half needs the SDK these checks do not compile.
-private let mimoSpeculativeRequestBytes = 438_426_984 + 36_347_904
+let mimoSpeculativeRequestBytes = 438_426_984 + 36_347_904
 
 /// The layout as the product prices it (`MiMoTensorParallelResidentRuntime.placementRounds`): MiMo tensor
 /// parallel decodes in speculative rounds by default (`ClusterMiMoTensorParallel`), so its plan holds the three
 /// heads whole on every rank and its reserve carries each request's speculative charge, with no speed-up credited.
-private func mimoWithRounds(_ layout: ClusterModelLayout, configuration: Data,
+func mimoWithRounds(_ layout: ClusterModelLayout, configuration: Data,
                             allocationBound: @escaping (Int) throws -> Int) throws -> ClusterModelLayout {
     guard let tp = layout.tensorParallel else { throw ProbeError("the MiMo layout carries no tensor-parallel plan") }
     let budget = try MiMoTensorParallelRequestBudget.derive(plan: MiMoTensorParallelPlan(configuration: configuration),
@@ -308,8 +308,14 @@ private func checkMiMoFastestPlan(_ layout: ClusterModelLayout, _ checks: Placem
         keptPipeline.chosen?.mode == .pipeline && keptPipeline.keptModeReason == "kept after the update" && tensor(unkept))
     // The developer setting still places it (MiMo's served records start from such a session).
     var forced = ClusterPlacementPolicy(); forced.forcedMode = .tensorParallel
+    let forcedPlan = try plan(ultras, forced, .unmeasured)
     checks.require("mimo fastest plan: the developer's forced mode still places tensor parallel, with nothing measured",
-        try plan(ultras, forced, .unmeasured).chosen?.mode == .tensorParallel)
+        forcedPlan.chosen?.mode == .tensorParallel)
+    // Tensor parallel prefills serially, the only schedule `MiMoTensorParallelResidentRuntime` loads (2026-11-03: a
+    // MiMo pair planned in tensor parallel was saved with the lookahead and refused at load).
+    checks.require("mimo prefill schedule: the layout lists serial and one-chunk lookahead; the forced tensor parallel and tensor parallel placed first without the choice are planned serial",
+        layout.prefillSchedules == [.serial, .oneChunkLookahead] && forcedPlan.chosen?.prefillSchedule == .serial
+            && ruled.chosen?.mode == .tensorParallel && ruled.chosen?.prefillSchedule == .serial)
 
     // 4. As the provider plans MiMo: its shipped records credit the speculative pipeline the decode speed-up they
     // measured (pipeline_mtp_v1, M5 Ultra + M3 Ultra, 2026-10-14: 59.18 against 43.05 tok/s; the provider's setup
@@ -348,6 +354,12 @@ private func checkMiMoFastestPlan(_ layout: ClusterModelLayout, _ checks: Placem
         checks.require("mimo evidence rule: \(name), the same served at \(Int(fast)) tok/s: tensor parallel on the served split (\(times(faster))), and its line says so",
             tensor(faster) && faster.tensorParallel?.evidence == .measured
                 && (ClusterPlacementExplanation.deploymentReason(faster) ?? "").hasSuffix(", on its own step as measured on both Macs."))
+        // The setup saves the chosen candidate's prefill schedule (`ClusterPlacementSetup`): tensor parallel is planned
+        // serial; the speculative pipeline keeps the lookahead.
+        checks.require("mimo prefill schedule: \(name), tensor parallel chosen on served requests is planned serial, as is the assessment's best tensor-parallel candidate; the speculative pipeline keeps one chunk of lookahead",
+            faster.chosen?.prefillSchedule == .serial && faster.tensorParallel?.tensorParallel?.prefillSchedule == .serial
+                && slower.tensorParallel?.tensorParallel?.prefillSchedule == .serial
+                && slower.chosen?.mode == .pipelineMTP && slower.chosen?.prefillSchedule == .oneChunkLookahead)
     }
     // The rule is model-neutral: a share probe would count as for any family, were MiMo's runtime to take one.
     let probed = try plan(withShareProbes(ultras, layout: layout, halfStepMicroseconds: 9_000), asProvider(128, 128), measuredLink)

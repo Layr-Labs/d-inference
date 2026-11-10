@@ -16,6 +16,8 @@ public final class GLM5NextResidentRuntime {
     private struct Reservation {
         let request: QwenLayerStageGenerationRequest
         let deadline: UInt64
+        /// What this request is charged (`charge(for:)`).
+        let charge: GLM5NextRequestStateBudget
         /// What this request's prefix capture may add (0: it captures nothing).
         var prefixCaptureBytes = 0
     }
@@ -55,6 +57,9 @@ public final class GLM5NextResidentRuntime {
     /// per reservation, as every family keeps one per request allowance).
     private var memoryWatch = QwenDenseStageLoadWatch("GLM resident load")
     private var budget: GLM5NextRequestStateBudget?
+    /// The longest context this rank admits now, when it admits requests on
+    /// arrival (READY, then each keep-warm answer: `refreshServingContext`).
+    private(set) var servingContextTokens: Int?
     private var requestActiveBaseline: Int?
     private var loadPeak: (native: Int, host: Int, activeBaseline: Int)?
     /// Whether this process may honour qualification switches (the worker's
@@ -120,7 +125,8 @@ public final class GLM5NextResidentRuntime {
             throw ProbeError("GLM shard headers are not the registered inventory")
         }
         let resources = try GLM5NextServingResources.envelope(descriptor: descriptor, inventory: inventory,
-            rank: configuration.rank, buildSHA256: configuration.identity.peers[configuration.rank].buildSHA256)
+            rank: configuration.rank, buildSHA256: configuration.identity.peers[configuration.rank].buildSHA256,
+            admitsRequestsOnArrival: true)
         let runtime = try GLM5NextResidentRuntime(configuration: configuration, descriptor: descriptor, resources: resources)
         runtime.qualification = qualification
         runtime.prefixSSDKey = prefixSSDKey
@@ -236,12 +242,16 @@ public final class GLM5NextResidentRuntime {
                 allocationBound: QwenResidentResourceEnvironment.allocationBound)
             let budget = quote.request
             self.budget = budget
+            // A serving rank reserves no request at LOAD: each one is admitted
+            // when it arrives, at its own context (`reserve`).
+            let onArrival = r.admitsRequestsOnArrival
             resident = try .init(directory: admission.configuration.modelDirectory,
                 expectedIdentity: d.artifactIdentity, artifactAggregateSHA256: d.artifactAggregateSHA256,
                 storage: d.storage, stageIndex: collective.rank, cut: d.cut, includeMTP: false,
                 executionPolicy: d.executionPolicy, capacityLimitBytes: r.loadCapacityBytes,
-                executionStateReserveBytes: budget.nativeBytes - budget.workspaceNativeBytes,
-                workspaceReserveBytes: budget.workspaceNativeBytes, hooks: hooks,
+                executionStateReserveBytes: onArrival ? 0 : budget.nativeBytes - budget.workspaceNativeBytes,
+                workspaceReserveBytes: onArrival ? 0 : budget.workspaceNativeBytes, reservesRequest: !onArrival,
+                hooks: hooks,
                 // The facade already owns the process lease before bootstrap.
                 // The lower-level owner retains its own non-reopenable lease.
                 processLease: QwenResidentProcessLease(), includeVision: d.includesVision)
@@ -251,7 +261,11 @@ public final class GLM5NextResidentRuntime {
                   expected.summary == resident.resources.summary else {
                 throw ProbeError("GLM request inventory differs from actual selected-stage metadata")
             }
-            loadPeak = (quote.peak.nativeBytes, quote.peak.hostBytes, Memory.activeMemory)
+            let s = expected.summary
+            loadPeak = onArrival
+                ? (try GLM5NextStageLoadResources.sum([s.sourceAllocationBoundBytes, s.nativeConstructionAllowanceBytes]),
+                   try GLM5NextStageLoadResources.sum([s.hostReadAllowanceBytes, s.metadataAllowanceBytes]), Memory.activeMemory)
+                : (quote.peak.nativeBytes, quote.peak.hostBytes, Memory.activeMemory)
             try requireLoadResources()
             try ClusterDataPlaneAgreement.establish(collective: collective, credential: credential,
                 loadAgreement: agreement, tamper: nil, tensorParallelSeal: probesLink, check: { try self.check() })
@@ -299,8 +313,11 @@ public final class GLM5NextResidentRuntime {
             }, clearCache: {
                 try MLX.withError { error in Memory.clearCache(); try error.check() }
             }, check: { try self.check() })
-            try requireResources()
             guard let budget else { throw ProbeError("GLM ready requires its validated request budget") }
+            // A rank that admits requests on arrival holds no request now; a
+            // rank whose LOAD reserved the whole request must still admit it.
+            let onArrival = admission.resources.admitsRequestsOnArrival
+            if !onArrival { try requireResources(budget) }
             do {
                 try MLX.withError { error in
                     Stream.gpu.synchronize(); Stream.cpu.synchronize(); try error.check()
@@ -353,19 +370,25 @@ public final class GLM5NextResidentRuntime {
             guard receipt.source.planFingerprint == contract.source.planFingerprint else {
                 throw ProbeError("GLM resident receipt differs from the borrowed binding")
             }
-            try requireResources()
+            if !onArrival { try requireResources(budget) }
             try check()
             // Restore steady-state progress limits before READY is observable.
             try finishStartupWaitBudget()
+            // The longest context this rank admits now (on arrival), or the
+            // one its LOAD charged, when below the profile's: the pair refuses
+            // a longer request before asking (`request`).
+            let memoryContext = admission.descriptor.memoryProfile.maximumContextTokens
+            let serving = onArrival ? try servingContext() : memoryContext
+            if onArrival { servingContextTokens = serving }
             baseReady = .init(identity: admission.configuration.identity, rank: collective.rank,
                 profile: admission.wireProfile, executionPlanSHA256: contract.source.planFingerprint,
                 requestCapacityBytes: admission.resources.requestCapacityBytes, dataPlane: collective.workerDataPlane,
-                // The context its LOAD charged, when below the profile's: the
-                // pair refuses a longer request before asking (`request`).
-                servingContextTokens: admission.descriptor.memoryProfile.maximumContextTokens
-                    < admission.descriptor.profile.maximumContextTokens
-                    ? admission.descriptor.memoryProfile.maximumContextTokens : nil,
+                servingContextTokens: serving < admission.descriptor.profile.maximumContextTokens ? serving : nil,
                 linkProbe: linkProbe)
+            if onArrival {
+                log("darkbloom-serving-context-v1 rank=\(collective.rank) tokens=\(serving) previous=0"
+                    + " profile=\(memoryContext) mode=on_arrival")
+            }
             try check()
             try control.loaded()
         } catch { poison(); throw error }
@@ -379,13 +402,14 @@ public final class GLM5NextResidentRuntime {
         return try control.reserving(requestID, rank: admission.configuration.rank,
                                      deadline: value.deadlineUptimeNanoseconds) {
             guard bound != nil else { throw ProbeError("GLM resident model is unavailable") }
-            let current = try admission.resources.budget(descriptor: admission.descriptor)
-            guard current == budget, current.reservedBytes <= value.capacityLimitBytes else {
+            let current = try charge(for: request)
+            guard admission.resources.admitsRequestsOnArrival || current == budget,
+                  current.reservedBytes <= value.capacityLimitBytes else {
                 throw ProbeError("GLM request allocator quotation changed or exceeds owner capacity")
             }
             memoryWatch = QwenDenseStageLoadWatch("GLM resident request")
             requestActiveBaseline = nil
-            var reserved = Reservation(request: request, deadline: value.deadlineUptimeNanoseconds)
+            var reserved = Reservation(request: request, deadline: value.deadlineUptimeNanoseconds, charge: current)
             // Only what this request's capture adds after the prefix this rank
             // holds for it, under the scope its agreement will key the cache by;
             // none when its cache is off.
@@ -398,12 +422,12 @@ public final class GLM5NextResidentRuntime {
             // Kept prefixes give way before a reservation is refused for memory,
             // and this request's own capture is optional.
             do {
-                try prefixCache.yieldingMemory { try requireResources(additionalNativeBytes: reserved.prefixCaptureBytes) }
+                try prefixCache.yieldingMemory { try requireResources(current, additionalNativeBytes: reserved.prefixCaptureBytes) }
             } catch where reserved.prefixCaptureBytes > 0 {
                 log("darkbloom-prefix-v1 rank=\(admission.configuration.rank) family=glm capture-dropped"
                     + " bytes=\(reserved.prefixCaptureBytes): \(error)")
                 reserved.prefixCaptureBytes = 0
-                try prefixCache.yieldingMemory { try requireResources() }
+                try prefixCache.yieldingMemory { try requireResources(current) }
             }
             try check(deadline: value.deadlineUptimeNanoseconds)
             prefixCache.admitCapture(prefixCache.enabled ? reserved.prefixCaptureBytes : nil)
@@ -449,8 +473,8 @@ public final class GLM5NextResidentRuntime {
             rankBuildSHA256: admission.configuration.identity.peers.map(\.buildSHA256),
             numericalPolicySHA256: contract.numericalPolicySHA256)
         try GLM5NextPipelineGeneration.requireSupported(unplanned)
-        try check(deadline: reserved.deadline); try requireResources()
-        guard try admission.resources.budget(descriptor: admission.descriptor) == budget else {
+        try check(deadline: reserved.deadline); try requireResources(reserved.charge)
+        guard try charge(for: reserved.request) == reserved.charge else {
             throw ProbeError("GLM request resource bounds changed after reservation")
         }
         requestActiveBaseline = Memory.activeMemory
@@ -490,7 +514,7 @@ public final class GLM5NextResidentRuntime {
                 // Kept prefixes give way first, then this request's own capture.
                 captureCharge = try QwenResidentRequestExecution.checkRunning(captureBytes: captureCharge,
                     prefixCache: self.prefixCache, rank: collective.rank,
-                    live: { try self.requireResources(additionalNativeBytes: $0) })
+                    live: { try self.requireResources(reserved.charge, additionalNativeBytes: $0) })
                 lastCheck = now
             }
             try self.check(deadline: reserved.deadline)
@@ -571,12 +595,86 @@ public final class GLM5NextResidentRuntime {
         try Task.checkCancellation(); try control.check(deadline: deadline)
     }
 
-    /// `additionalNativeBytes`: a request's prefix capture, beyond its quotation.
-    private func requireResources(additionalNativeBytes: Int = 0) throws {
-        guard let budget else { throw ProbeError("GLM request has no validated memory budget") }
+    /// What `request` is charged on this rank: its own context when requests
+    /// are admitted on arrival, else the memory plan's whole request.
+    private func charge(for request: QwenLayerStageGenerationRequest) throws -> GLM5NextRequestStateBudget {
+        admission.resources.admitsRequestsOnArrival
+            ? try admission.resources.budget(descriptor: admission.descriptor, contextTokens: request.maximumTokens)
+            : try admission.resources.budget(descriptor: admission.descriptor)
+    }
+
+    /// `budget`: the request's charge; `additionalNativeBytes`: its prefix
+    /// capture, beyond its quotation. A request admitted on arrival must also
+    /// fit the GPU's working set beside the loaded stage: LOAD did not reserve it there.
+    private func requireResources(_ budget: GLM5NextRequestStateBudget, additionalNativeBytes: Int = 0) throws {
         try admission.resources.requireExecutionEnvironment(admission.resources.executionEnvironmentSHA256)
         try requireMemory(nativeBytes: try GLM5NextStageLoadResources.sum([budget.nativeBytes, additionalNativeBytes]),
-            hostBytes: budget.hostBytes, activeBaseline: requestActiveBaseline)
+            hostBytes: budget.hostBytes, activeBaseline: requestActiveBaseline,
+            gpuLimitBytes: admission.resources.admitsRequestsOnArrival ? admission.resources.loadCapacityBytes : nil)
+    }
+
+    /// The longest context (prompt plus output) whose charge this idle rank
+    /// admits now within the memory plan, as a reservation takes it: the live
+    /// memory gate, the allocator and the GPU's working set, on one sample.
+    /// Kept prompt prefixes and freed buffers count as free (a reservation
+    /// releases them before it is refused). 1 when not even one chunk and one
+    /// output token fit: the pair then refuses every request up front until a
+    /// keep-warm answer finds room (`refreshServingContext`).
+    private func servingContext() throws -> Int {
+        let memory = admission.descriptor.memoryProfile
+        return try Self.servingContext(memoryContextTokens: memory.maximumContextTokens,
+            chunkTokens: memory.maximumChunkTokens, observation: try .live(), reclaimableBytes: prefixCache.bytesInUse,
+            gpuLimitBytes: admission.resources.loadCapacityBytes) { context in
+                let charge = try admission.resources.budget(descriptor: admission.descriptor, contextTokens: context)
+                return (charge.nativeBytes, charge.hostBytes)
+            }
+    }
+
+    /// `servingContext()` on one observation: the longest context up to
+    /// `memoryContextTokens` whose charge (`charge`, native and host bytes)
+    /// fits the GPU's working set and the allocator beside what this rank
+    /// holds, and passes the host memory gate with its floor and loading
+    /// headroom. `reclaimableBytes` (kept prompt prefixes) and MLX's freed
+    /// buffers count as free for the gate, as a reservation releases them.
+    static func servingContext(memoryContextTokens: Int, chunkTokens: Int,
+                               observation: QwenTensorParallelRequestCharge.GateObservation, reclaimableBytes: Int,
+                               gpuLimitBytes: Int, charge: (Int) throws -> (native: Int, host: Int)) throws -> Int {
+        let sum = GLM5NextStageLoadResources.sum
+        let os = observation.os
+        let headroom = QwenDenseStageLoadPolicy.loadingHeadroomBytes(physicalMemoryBytes: os.physicalMemoryBytes)
+        let held = try sum([max(0, observation.activeBytes - max(0, reclaimableBytes)), observation.cacheBytes])
+        let freed = try sum([max(0, reclaimableBytes), observation.cacheBytes])
+        func admits(_ context: Int) throws -> Bool {
+            let bytes = try charge(context)
+            let resident = try sum([held, bytes.native])
+            guard resident <= gpuLimitBytes,
+                  try sum([resident, QwenDenseStageLoadPolicy.allocatorHeadroomBytes]) <= observation.memoryLimitBytes else {
+                return false
+            }
+            let required = max(0, try sum([bytes.native, bytes.host, headroom]) - freed)
+            return try QwenDenseStageLoadPolicy.decide(os, requiredBytes: required,
+                purpose: "GLM context of \(context) tokens", now: observation.uptimeNanoseconds).admitted
+        }
+        let minimum = min(memoryContextTokens, chunkTokens + 1)
+        return try QwenResidentContextAdmission.largest(minimum: minimum, maximum: memoryContextTokens,
+            admits: admits) ?? 1
+    }
+
+    /// The longest context this idle rank admits now, re-derived on each
+    /// keep-warm answer (`ClusterWorkerEvent.keptWarm`); nil (no change) while
+    /// a request is reserved or runs, and for a rank whose LOAD reserved the
+    /// whole request.
+    public func refreshServingContext() -> Int? {
+        guard admission.resources.admitsRequestsOnArrival, operation.try() else { return nil }
+        defer { operation.unlock() }
+        guard control.available, reservation == nil, bound != nil, let collective,
+              let value = try? servingContext() else { return nil }
+        if value != servingContextTokens {
+            log("darkbloom-serving-context-v1 rank=\(collective.rank) tokens=\(value) previous=\(servingContextTokens ?? 0)"
+                + " mode=on_arrival")
+        }
+        servingContextTokens = value
+        return value
     }
 
     private func requireLoadResources() throws {
@@ -586,7 +684,7 @@ public final class GLM5NextResidentRuntime {
             activeBaseline: loadPeak.activeBaseline)
     }
 
-    private func requireMemory(nativeBytes: Int, hostBytes: Int, activeBaseline: Int?) throws {
+    private func requireMemory(nativeBytes: Int, hostBytes: Int, activeBaseline: Int?, gpuLimitBytes: Int? = nil) throws {
         try QwenResidentResourceEnvironment.requirePower()
         let os = try QwenDenseStageLoadResources.observeOS()
         let native = QwenDenseStageLoadResources.observeNative()
@@ -608,6 +706,14 @@ public final class GLM5NextResidentRuntime {
         let needed = try GLM5NextStageLoadResources.sum([native.activeBytes, native.cacheBytes, remaining,
             QwenDenseStageLoadPolicy.allocatorHeadroomBytes])
         guard needed <= native.allocatorLimitBytes else { throw ProbeError("GLM request exceeds live allocator capacity") }
+        if let gpuLimitBytes {
+            let resident = try GLM5NextStageLoadResources.sum([native.activeBytes, native.cacheBytes, remaining])
+            guard resident <= gpuLimitBytes else {
+                let gib = QwenDenseStageLoadPolicy.gibText
+                throw ProbeError("GLM request needs \(gib(resident)) on the GPU beside the loaded stage, more than the "
+                    + "\(gib(gpuLimitBytes)) its GPU keeps resident")
+            }
+        }
     }
 
     private func finishStartupWaitBudget() throws {

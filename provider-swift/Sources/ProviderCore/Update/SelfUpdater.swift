@@ -1,5 +1,8 @@
 import Foundation
+import Logging
 import ProviderAppAttest
+
+private let releaseCheckLog = Logger(label: "darkbloom.update")
 
 /// Release information returned by the coordinator.
 public struct ReleaseInfo: Sendable {
@@ -27,13 +30,38 @@ public struct ReleaseInfo: Sendable {
     }
 }
 
+/// Why a release check failed: what the person who asked can do about it depends on it.
+public struct UpdateCheckFailure: Sendable, Equatable, CustomStringConvertible {
+    public enum Cause: Sendable, Equatable {
+        /// No answer reached this Mac: none in time, a connection lost or refused, a name that didn't resolve, no
+        /// network, a TLS handshake that broke off. Only this one is about this Mac's network connection.
+        case noAnswer
+        /// The coordinator answered, but not with a release this Mac can use: an HTTP error, an answer that isn't a
+        /// release, a release for another platform or with a version that can't be read.
+        case badAnswer
+        /// This Mac didn't get as far as asking: its update record can't be read, its coordinator URL isn't one.
+        case thisMac
+    }
+
+    public let cause: Cause
+    /// What failed, in plain words.
+    public let reason: String
+
+    public init(_ cause: Cause, _ reason: String) {
+        self.cause = cause
+        self.reason = reason
+    }
+
+    public var description: String { reason }
+}
+
 /// Result of an update check.
 public enum UpdateCheckResult: Sendable {
     case upToDate(currentVersion: String)
     case updateAvailable(current: String, latest: ReleaseInfo)
     case restartRequired(current: String, installed: String)
     case quarantined(version: String, reason: String)
-    case checkFailed(reason: String)
+    case checkFailed(UpdateCheckFailure)
 }
 
 /// Result of an update attempt.
@@ -44,6 +72,8 @@ public enum UpdateResult: Sendable {
     case quarantined(version: String, reason: String)
     case busy(reason: String)
     case cancelled(reason: String)
+    /// The check for the latest release failed (`UpdateCheckResult.checkFailed`); nothing was downloaded.
+    case checkFailed(UpdateCheckFailure)
     case downloadFailed(reason: String)
     case hashMismatch(expected: String, got: String)
     case replaceFailed(reason: String)
@@ -62,11 +92,16 @@ public struct SelfUpdater: Sendable {
     /// `checkForUpdate` uses, from the same injected seam.
     internal let currentVersion: String
     private let urlSession: URLSession
+    let releaseCheck: ReleaseCheck
     let now: @Sendable () -> Double
     /// Test seam threaded into every `UpdateRecoveryStore` this updater
     /// constructs; production always uses the no-op default.
     private let recoveryFaultInjector:
         @Sendable (UpdateRecoveryStore.FaultPoint) throws -> Void
+    /// Test seam that observes the LaunchServices re-registration after a swap.
+    /// Nil in production, where only the signature-verified path registers, so
+    /// tests never write the machine's LaunchServices database.
+    private let installedAppRegistrar: (@Sendable (URL) -> Void)?
 
     /// Whether this updater verifies the pinned Darkbloom code signature on
     /// staged/committed/installed artifacts. Always `true` for the public
@@ -86,6 +121,19 @@ public struct SelfUpdater: Sendable {
             currentVersion: ProviderCore.version,
             urlSession: urlSession,
             now: { Date().timeIntervalSince1970 }
+        )
+    }
+
+    /// A production updater, as the public initializer makes it, whose release check is `releaseCheck` (a pair's
+    /// automatic cycle asks one more round, `ReleaseCheck.pairCycle`).
+    init(coordinatorBaseURL: String, urlSession: URLSession, releaseCheck: ReleaseCheck) {
+        self.init(
+            coordinatorBaseURL: coordinatorBaseURL,
+            installRoot: nil,
+            verifyCodeSignatures: true,
+            currentVersion: ProviderCore.version,
+            urlSession: urlSession,
+            releaseCheck: releaseCheck
         )
     }
 
@@ -123,7 +171,9 @@ public struct SelfUpdater: Sendable {
             Date().timeIntervalSince1970
         },
         recoveryFaultInjector:
-            @escaping @Sendable (UpdateRecoveryStore.FaultPoint) throws -> Void = { _ in }
+            @escaping @Sendable (UpdateRecoveryStore.FaultPoint) throws -> Void = { _ in },
+        installedAppRegistrar: (@Sendable (URL) -> Void)? = nil,
+        releaseCheck: ReleaseCheck = .standard
     ) {
         // Convert WebSocket URL to HTTP if needed
         var base = WebSocketURLScheme.toHTTP(coordinatorBaseURL)
@@ -137,8 +187,10 @@ public struct SelfUpdater: Sendable {
         self.verifyCodeSignatures = verifyCodeSignatures
         self.currentVersion = currentVersion
         self.urlSession = urlSession
+        self.releaseCheck = releaseCheck
         self.now = now
         self.recoveryFaultInjector = recoveryFaultInjector
+        self.installedAppRegistrar = installedAppRegistrar
     }
 
     // MARK: - Version Check
@@ -149,16 +201,18 @@ public struct SelfUpdater: Sendable {
         session: UpdateSession? = nil
     ) async -> UpdateCheckResult {
         let recoveryState: UpdateRecoveryState
+        let store = session?.store ?? recoveryStore()
         do {
             if let session {
                 recoveryState = try session.readState()
-            } else if let store = recoveryStore() {
+            } else if let store {
                 recoveryState = try store.loadState()
             } else {
                 recoveryState = UpdateRecoveryState()
             }
         } catch {
-            return .checkFailed(reason: "could not read update recovery state: \(error)")
+            let record = store.map { $0.recoveryRoot.appendingPathComponent("state.json").path } ?? "unknown"
+            return .checkFailed(.init(.thisMac, "this Mac's update record can't be read (\(record)): \(error)"))
         }
 
         // Compare against the version installed ON DISK, not this process's
@@ -173,8 +227,12 @@ public struct SelfUpdater: Sendable {
             processVersion: currentVersion,
             recorded: recoveryState.current?.version
         )
+        // Installed, not yet running. A candidate older than this process is not
+        // pending: the app was replaced outside the updater, so nothing restarts
+        // into it, and it never makes the running release an update target.
         let pendingCandidate = recoveryState.candidate.flatMap {
-            $0.release.version != currentVersion ? $0 : nil
+            ($0.release.version == currentVersion
+                || isNewer(latest: currentVersion, current: $0.release.version)) ? nil : $0
         }
         func restartPendingCandidate(
             _ candidate: PendingReleaseCandidate
@@ -189,14 +247,14 @@ public struct SelfUpdater: Sendable {
         switch await fetchLatestRelease() {
         case .release(let fetched):
             release = fetched
-        case .failed(let reason):
+        case .failed(let failure):
             // A pending candidate must still restart when the coordinator is
             // unreachable — only DISCOVERY of a superseding release needs the
             // network, never the restart/rollback path itself.
             if let pendingCandidate {
                 return restartPendingCandidate(pendingCandidate)
             }
-            return .checkFailed(reason: reason)
+            return .checkFailed(failure)
         }
 
         guard SemanticVersion(release.version) != nil,
@@ -205,8 +263,11 @@ public struct SelfUpdater: Sendable {
             if let pendingCandidate {
                 return restartPendingCandidate(pendingCandidate)
             }
-            return .checkFailed(
-                reason: "release or current version is not valid SemVer")
+            guard SemanticVersion(release.version) != nil else {
+                return .checkFailed(.init(.badAnswer,
+                    "\(coordinatorName)'s latest release has a version this Mac can't read (\(release.version))"))
+            }
+            return .checkFailed(.init(.thisMac, "this Mac's installed version can't be read (\(installedVersion))"))
         }
 
         if let pendingCandidate {
@@ -222,7 +283,8 @@ public struct SelfUpdater: Sendable {
                isNewer(
                 latest: release.version,
                 current: pendingCandidate.release.version
-               )
+               ),
+               isNewer(latest: release.version, current: installedVersion)
             {
                 return .updateAvailable(current: installedVersion, latest: release)
             }
@@ -265,55 +327,196 @@ public struct SelfUpdater: Sendable {
 
     private enum LatestReleaseFetch {
         case release(ReleaseInfo)
-        case failed(String)
+        case failed(UpdateCheckFailure)
+    }
+
+    /// How the release check asks the coordinator for its latest release, and how long it can take:
+    /// - each try waits at most `requestTimeout` (15 s) for an answer, whatever the session's own bound (60 s for
+    ///   `URLSession.shared`, 30 s for `watchdogURLSession()`);
+    /// - only a try that failed on the way (`retries(after:)`) is made again, after a random pause from `backoff`
+    ///   (0.5–1 s, then 1–2 s), so Macs that lost the coordinator at the same moment don't all ask again together;
+    /// - at most `attempts` (3) tries in a round: a coordinator that never answers gets 3 requests, and the check ends
+    ///   within about 48 s (3 × 15 s, and at most 3 s of pauses);
+    /// - an answer is final, an HTTP error or a release for another platform included;
+    /// - each failed try is logged, with how it connected (`log`);
+    /// - whatever is decided after a failed try, a check makes at most `maximumTries` (`attempts` in each of its
+    ///   `rounds`): the loop counts them, so a check that fails at once and pauses for nothing still ends.
+    ///
+    /// Every caller makes one round, but a pair's automatic cycle (`pairCycle`), at its update slot or catching up with
+    /// the other Mac: a failed check there costs both Macs the slot, so it makes a second round 1–2 min later (at most
+    /// 6 requests and about 3.6 min, inside the 15 min the other Mac waits). No caller asks again after a failed check,
+    /// so nothing multiplies these tries: a background update ends its cycle there and asks at its next one (a single
+    /// Mac 30 min later, a pair or a cluster member at its next update slot, the watchdog at the next restart it makes).
+    struct ReleaseCheck: Sendable {
+        var attempts = 3
+        var requestTimeout: TimeInterval = 15
+        var backoff = ExponentialBackoff(base: 1, max: 4)
+        /// Rounds of `attempts` tries: a round that ends without an answer is followed by one more, after a pause from
+        /// `roundPause`, `rounds` in all.
+        var rounds = 1
+        var roundPause: ClosedRange<TimeInterval> = 60...120
+        var pause: @Sendable (TimeInterval) async -> Void = { seconds in
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+        }
+        /// Draws each pause from its range, so two Macs that failed together don't ask again together.
+        var random: @Sendable (ClosedRange<TimeInterval>) -> TimeInterval = { Double.random(in: $0) }
+        /// Where a failed try is said: the process's log (the provider's, the cluster service's or the watchdog's), or
+        /// standard error for a command, below its live line.
+        var log: @Sendable (String) -> Void = { line in
+            DarkbloomCommandLook.say(line) { releaseCheckLog.info("\($0)") }
+        }
+        /// A test's stand-in for what `next(after:tries:round:cancelled:)` decided after a failed try (nil outside
+        /// tests). `maximumTries` bounds the check all the same.
+        var nextForTesting: (@Sendable (Next) -> Next)? = nil
+
+        static let standard = ReleaseCheck()
+        static let pairCycle = ReleaseCheck(rounds: 2)
+
+        /// Every try a check can make: `attempts` in each of its `rounds`.
+        var maximumTries: Int { max(1, attempts) * max(1, rounds) }
+
+        /// What follows a failed try.
+        enum Next: Equatable, Sendable {
+            case askAgain
+            case nextRound
+            case stop
+        }
+
+        /// After the `tries`-th failed try of round `round`: another try in this round, the next round, or none. Only a
+        /// failure on the way is asked again, and nothing once the check was cancelled.
+        func next(after error: Error, tries: Int, round: Int, cancelled: Bool) -> Next {
+            guard !cancelled, Self.retries(after: error) else { return .stop }
+            if tries < attempts { return .askAgain }
+            return round < rounds ? .nextRound : .stop
+        }
+
+        /// A failure on the way, before any answer, that may not happen again: no answer in time, a connection lost or
+        /// refused, a name that didn't resolve, no network, a TLS handshake that broke off. Never a cancellation.
+        static func retries(after error: Error) -> Bool {
+            guard let code = (error as? URLError)?.code else { return false }
+            return [.timedOut, .networkConnectionLost, .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed,
+                    .notConnectedToInternet, .secureConnectionFailed].contains(code)
+        }
+
+        /// Why the check failed after `tries`, in the words `darkbloom update` prints.
+        func failure(_ error: Error, tries: Int, coordinator: String) -> UpdateCheckFailure {
+            let count = tries > 1 ? " (\(tries) tries)" : ""
+            guard (error as? URLError)?.code != .timedOut else {
+                return .init(.noAnswer, "\(coordinator) didn't answer within \(Int(requestTimeout.rounded(.up))) s\(count)")
+            }
+            return .init(.noAnswer, "couldn't reach \(coordinator)\(count): \(error.localizedDescription)")
+        }
+    }
+
+    /// The coordinator as the check's words name it: its host, and port if any. Never its whole URL.
+    private var coordinatorName: String {
+        guard let url = URL(string: coordinatorBaseURL), let host = url.host else { return "the coordinator" }
+        return url.port.map { "\(host):\($0)" } ?? host
     }
 
     private func fetchLatestRelease() async -> LatestReleaseFetch {
         let endpoint = "\(coordinatorBaseURL)/v1/releases/latest?platform=macos-arm64"
 
         guard let url = URL(string: endpoint) else {
-            return .failed("invalid coordinator URL: \(endpoint)")
+            return .failed(.init(.thisMac, "the coordinator URL isn't a valid URL"))
+        }
+        let coordinator = coordinatorName
+        // The request's own timeout bounds each try, whatever the session's is.
+        var request = URLRequest(url: url)
+        request.timeoutInterval = releaseCheck.requestTimeout
+        var backoff = releaseCheck.backoff
+        var (tries, round) = (0, 1)
+        var failure = UpdateCheckFailure(.noAnswer, "\(coordinator) wasn't asked")
+        // At most `maximumTries`, whatever `next` decides: tries that fail at once, with no pause between, still end.
+        for made in 1...releaseCheck.maximumTries {
+            tries += 1
+            let started = ContinuousClock.now
+            let connection = ReleaseCheckConnection()
+            do {
+                let (data, response) = try await urlSession.data(for: request, delegate: connection)
+                return Self.latestRelease(data: data, response: response, coordinator: coordinator)
+            } catch {
+                let decided = releaseCheck.next(after: error, tries: tries, round: round, cancelled: Task.isCancelled)
+                let next = made < releaseCheck.maximumTries ? (releaseCheck.nextForTesting?(decided) ?? decided) : .stop
+                let pause: TimeInterval? = switch next {
+                case .askAgain: releaseCheck.random(backoff.nextDelayRange())
+                case .nextRound: releaseCheck.random(releaseCheck.roundPause)
+                case .stop: nil
+                }
+                releaseCheck.log(failedTryLine(tries: tries, round: round, coordinator: coordinator,
+                                               elapsed: ContinuousClock.now - started, error: error,
+                                               connection: connection.summary, next: next, pause: pause))
+                failure = releaseCheck.failure(error, tries: made, coordinator: coordinator)
+                guard let pause else { break }
+                if next == .nextRound {
+                    round += 1
+                    tries = 0
+                    backoff = releaseCheck.backoff
+                }
+                await releaseCheck.pause(pause)
+                // A cancellation during the pause (the process stops) is not followed by another request.
+                if Task.isCancelled { break }
+            }
+        }
+        return .failed(failure)
+    }
+
+    /// A failed try for the log: which try, where it got to (its connection's HTTP version, new or reused, direct or
+    /// through a proxy, the address), the error's domain and code, and what follows. The host only, never the URL.
+    private func failedTryLine(tries: Int, round: Int, coordinator: String, elapsed: Duration, error: Error,
+                               connection: String, next: ReleaseCheck.Next, pause: TimeInterval?) -> String {
+        let rounds = releaseCheck.rounds
+        let which = "try \(tries) of \(releaseCheck.attempts)" + (rounds > 1 ? ", round \(round) of \(rounds)," : "")
+        let seconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
+        let failure = error as NSError
+        let then = switch (next, pause) {
+        case (.askAgain, let pause?): "asking again in \(String(format: "%.1f", pause)) s"
+        case (.nextRound, let pause?): "asking again in \(Int(pause.rounded())) s, round \(round + 1) of \(rounds)"
+        default: "giving up"
+        }
+        return "release check: \(which) to \(coordinator) failed after \(String(format: "%.1f", seconds)) s: "
+            + "\(failure.domain) \(failure.code) (\(connection)); \(then)"
+    }
+
+    private static func latestRelease(data: Data, response: URLResponse, coordinator: String) -> LatestReleaseFetch {
+        guard let httpResponse = response as? HTTPURLResponse else {
+            return .failed(.init(.badAnswer, "\(coordinator) answered, but not over HTTP"))
         }
 
-        do {
-            let (data, response) = try await urlSession.data(from: url)
-
-            guard let httpResponse = response as? HTTPURLResponse else {
-                return .failed("unexpected response type")
-            }
-
-            guard httpResponse.statusCode == 200 else {
-                return .failed("coordinator returned HTTP \(httpResponse.statusCode)")
-            }
-
-            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                return .failed("invalid JSON response")
-            }
-
-            guard let version = json["version"] as? String,
-                  let platform = json["platform"] as? String,
-                  let downloadURL = json["url"] as? String
-            else {
-                return .failed("missing required fields in release response")
-            }
-            guard platform == "macos-arm64" else {
-                return .failed("coordinator returned unsupported release platform \(platform)")
-            }
-            guard let bundleHash = json["bundle_hash"] as? String else {
-                return .failed("missing release hash field")
-            }
-
-            return .release(ReleaseInfo(
-                version: version,
-                platform: platform,
-                url: downloadURL,
-                bundleHash: bundleHash,
-                binaryHash: json["binary_hash"] as? String,
-                metallibHash: json["metallib_hash"] as? String
-            ))
-        } catch {
-            return .failed(error.localizedDescription)
+        guard httpResponse.statusCode == 200 else {
+            return .failed(.init(.badAnswer, "\(coordinator) answered HTTP \(httpResponse.statusCode) instead of the latest release"))
         }
+
+        let notARelease = "\(coordinator)'s answer isn't a release"
+        guard let object = try? JSONSerialization.jsonObject(with: data) else {
+            return .failed(.init(.badAnswer, "\(notARelease): it isn't JSON"))
+        }
+        guard let json = object as? [String: Any] else {
+            return .failed(.init(.badAnswer, "\(notARelease): it isn't a JSON object"))
+        }
+
+        guard let version = json["version"] as? String,
+              let platform = json["platform"] as? String,
+              let downloadURL = json["url"] as? String
+        else {
+            return .failed(.init(.badAnswer, "\(notARelease): it has no version, platform or download URL"))
+        }
+        guard platform == "macos-arm64" else {
+            return .failed(.init(.badAnswer,
+                "\(coordinator)'s latest release is for another platform (\(platform)), not this Mac's (macos-arm64)"))
+        }
+        guard let bundleHash = json["bundle_hash"] as? String else {
+            return .failed(.init(.badAnswer, "\(coordinator)'s latest release has no bundle hash"))
+        }
+
+        return .release(ReleaseInfo(
+            version: version,
+            platform: platform,
+            url: downloadURL,
+            bundleHash: bundleHash,
+            binaryHash: json["binary_hash"] as? String,
+            metallibHash: json["metallib_hash"] as? String
+        ))
     }
 
     // MARK: - Download and Verify
@@ -622,9 +825,24 @@ public struct SelfUpdater: Sendable {
                 currentVersion: currentVersion,
                 now: now()
             )
+            registerInstalledApp(
+                session.store.installRoot.appendingPathComponent(BuildEnvironment.current.appBundleName),
+                verified: session.store.verifyCodeSignatures)
             return .success(())
         } catch {
             return .failure(.replaceFailed("\(error)"))
+        }
+    }
+
+    /// The swap leaves macOS LaunchServices describing the previous bundle,
+    /// and App Attest reports `is_supported_false` until it is refreshed.
+    /// Registering the new bundle before the relaunch keeps the record current.
+    /// Best effort: a failed registration never fails the update.
+    private func registerInstalledApp(_ app: URL, verified: Bool) {
+        if let installedAppRegistrar {
+            installedAppRegistrar(app)
+        } else if verified {
+            LaunchServicesRegistration.refresh(app)
         }
     }
 
@@ -958,8 +1176,8 @@ public struct SelfUpdater: Sendable {
         case .quarantined(let version, let reason):
             return .quarantined(version: version, reason: reason)
 
-        case .checkFailed(let reason):
-            return .downloadFailed(reason: "update check failed: \(reason)")
+        case .checkFailed(let failure):
+            return .checkFailed(failure)
 
         case .updateAvailable(let current, let release):
             let downloadResult = await downloadAndVerify(release: release)
@@ -1118,6 +1336,26 @@ public struct SelfUpdater: Sendable {
         #endif
     }
 
+}
+
+/// One try of the release check's connection, as `URLSessionTaskMetrics` reports it: for the log line of a try that
+/// failed, which says whether it got an HTTP/2 or HTTP/3 connection, a new one or a reused one, through a proxy or not.
+private final class ReleaseCheckConnection: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    private let lock = NSLock()
+    private var transaction: URLSessionTaskTransactionMetrics?
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
+        lock.withLock { transaction = metrics.transactionMetrics.last }
+    }
+
+    var summary: String {
+        guard let transaction = lock.withLock({ transaction }) else { return "no connection details" }
+        let address = transaction.remoteAddress.map { address in transaction.remotePort.map { "\(address):\($0)" } ?? address }
+        return [transaction.networkProtocolName ?? "no HTTP version",
+                transaction.isReusedConnection ? "reused connection" : "new connection",
+                transaction.isProxyConnection ? "through a proxy" : "direct",
+                address ?? "no address"].joined(separator: ", ")
+    }
 }
 
 // MARK: - Errors

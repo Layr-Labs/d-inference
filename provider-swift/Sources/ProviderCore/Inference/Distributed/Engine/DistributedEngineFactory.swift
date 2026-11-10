@@ -10,6 +10,14 @@ public enum DistributedEngineFactory {
     /// advertised output maximum and the request's remaining context.
     public static let defaultOutputTokens = ClusterWorkerLimits.outputTokens
 
+    /// What a request that omits `max_tokens` asks of a pair: the cluster
+    /// default, at most the output limit its mode serves, cut by the bridge to
+    /// the context the prompt leaves (`EngineV2Translation.defaultOutputTokens`).
+    /// The pair's bridge and both local APIs default to it.
+    static func defaultMaxTokens(_ profile: DistributedResidentExecutionProfile) -> Int {
+        min(defaultOutputTokens, profile.served.outputTokens)
+    }
+
     public static func makeBridge(
         owner: any DistributedResidentExecutionOwner,
         expectedIdentity: DistributedResidentIdentity,
@@ -54,8 +62,7 @@ public enum DistributedEngineFactory {
         // request and advertises the frontiers both peers hold.
         // Product parity: the artifact's sampling defaults for the families
         // the product honours them for (legacy greedy defaults otherwise);
-        // an omitted `max_tokens` is the product's 32,768 (the pair's output
-        // limit), cut to the context left after the prompt.
+        // an omitted `max_tokens` is the pair's default (`defaultMaxTokens`).
         let samplingDefaults = EngineV2SamplingDefaults.resolve(
             modelId: modelID, modelType: modelType, modelDirectory: modelDirectory)
         var draftMiMoImageConfiguration: Data?
@@ -134,8 +141,8 @@ public enum DistributedEngineFactory {
             // GPT-OSS, only the Harmony final message can end a request.
             stopStringScope: ModelEOSPolicy.stopStringScope(modelId: modelID, modelType: modelType),
             samplingDefaults: samplingDefaults,
-            defaultMaxTokens: min(defaultOutputTokens, profile.maxOutputTokens),
-            defaultMaxTokensContextLimit: profile.maxContextTokens,
+            defaultMaxTokens: defaultMaxTokens(profile),
+            defaultMaxTokensContextLimit: profile.served.contextTokens,
             // As many requests at once as the pair batches (its lanes); the
             // owner's own admission still bounds and refuses beyond them.
             maxConcurrentRequests: max(1, owner.concurrentRequests), residentPrefixCacheEvidence: residentPrefixEvidence,

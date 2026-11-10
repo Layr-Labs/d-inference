@@ -9,7 +9,7 @@ import Foundation
 // the hand-off and MTP acceptance the ranks reported, and the prompt tokens
 // both ranks restored from their prefix caches. Values only: no prompt, no
 // output token, no client identity. The leader keeps the last records in
-// memory and in `~/.darkbloom/cluster/pair-telemetry.json` (owner-only), which
+// memory and in the install's `cluster/pair-telemetry.json` (owner-only), which
 // `darkbloom cluster status` and the console read.
 
 /// What the leader observed of one served request.
@@ -62,12 +62,20 @@ public struct ClusterPairRequestTelemetry: Codable, Sendable, Equatable {
     /// (`ClusterServedSpeedRecords.servedBy`). Nil in a record written before
     /// builds were recorded: such a record counts as another build's.
     public let rankBuildSHA256: [String]?
+    /// Whether the request came through Darkbloom or the leader's local API. Nil in a record written before it was
+    /// recorded: `ClusterServedSpeedRecords.Setup.servedAs` reads it as served either way, and `servedBy` already
+    /// leaves it out of every plan of a build that records it (its worker build is an earlier one).
+    public let serving: ClusterServedScope?
+    /// Whether the setup decoded with Qwen's resident tensor assistant, the one speculative decoder that neither the
+    /// generation mode nor the model fixes (`ClusterQwenTensorAssistantPolicy`). Nil in an older record.
+    public let tensorAssistant: Bool?
 
     public init(requestID: String, finishedAt: Double, modelID: String, mode: String, cut: String,
                 promptTokens: Int, cachedTokens: Int, completionTokens: Int, firstTokenMilliseconds: Double?,
                 decodeTokensPerSecond: Double?, handoffMilliseconds: Double?, handoffBytes: Int?,
                 mtpDrafted: Int?, mtpAccepted: Int?, outcome: String, route: String? = nil, routeReason: String? = nil,
-                ranks: [String]? = nil, concurrentRequests: Int? = nil, rankBuildSHA256: [String]? = nil) {
+                ranks: [String]? = nil, concurrentRequests: Int? = nil, rankBuildSHA256: [String]? = nil,
+                serving: ClusterServedScope? = nil, tensorAssistant: Bool? = nil) {
         self.requestID = requestID; self.finishedAt = finishedAt; self.modelID = modelID; self.mode = mode
         self.cut = cut; self.promptTokens = promptTokens; self.cachedTokens = cachedTokens
         self.completionTokens = completionTokens; self.firstTokenMilliseconds = firstTokenMilliseconds
@@ -82,6 +90,7 @@ public struct ClusterPairRequestTelemetry: Codable, Sendable, Equatable {
         self.ranks = ranks.flatMap { $0.count <= 8 && $0.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 64 }) ? $0 : nil }
         self.concurrentRequests = concurrentRequests.map { max(0, $0) }
         self.rankBuildSHA256 = rankBuildSHA256.flatMap { (1...8).contains($0.count) && $0.allSatisfy(Self.isBuild) ? $0 : nil }
+        self.serving = serving; self.tensorAssistant = tensorAssistant
     }
 
     /// A worker build's SHA-256: 64 lowercase hexadecimal digits.
@@ -157,8 +166,8 @@ public struct ClusterPairTelemetryFile: Codable, Sendable, Equatable {
 
 /// Speed records written from served requests (PERF-BACKLOG item 12 / GAPS
 /// (c) 4): the leader keeps every request that computed its whole prompt, per
-/// setup (model, mode, cut) and route, across serving sessions, in
-/// `~/.darkbloom/cluster/served-speed.json` (owner-only), beside the pair
+/// setup (model, mode, cut) and route, across serving sessions, in the
+/// install's `cluster/served-speed.json` (owner-only), beside the pair
 /// telemetry. The planner reads it on the next plan (`darkbloom-cluster-plan
 /// plan --served`, `ClusterServedCalibration`) and the router prices each
 /// route from it. Values only, as the telemetry. Each record names the worker
@@ -176,8 +185,9 @@ public struct ClusterServedSpeedFile: Codable, Sendable, Equatable {
     /// Oldest first.
     public let records: [ClusterPairRequestTelemetry]
 
-    public static func defaultFile(homeDirectory: URL) -> URL {
-        homeDirectory.appendingPathComponent(".darkbloom/cluster/served-speed.json")
+    /// In the install's data folder (`installDirectory`): production's `~/.darkbloom`.
+    public static func defaultFile(installDirectory: URL) -> URL {
+        installDirectory.appendingPathComponent("cluster/served-speed.json")
     }
 
     /// `records` with `value` added when it is a speed record, bounded.
@@ -185,7 +195,8 @@ public struct ClusterServedSpeedFile: Codable, Sendable, Equatable {
         guard value.isSpeedRecord else { return records }
         var result = records + [value]
         func key(_ r: ClusterPairRequestTelemetry) -> String {
-            [r.modelID, r.mode, r.cut, r.route ?? "pair", (r.ranks ?? []).joined(separator: ",")].joined(separator: "\u{1f}")
+            [r.modelID, r.mode, r.cut, r.route ?? "pair", (r.ranks ?? []).joined(separator: ","), r.serving?.rawValue ?? "",
+             r.tensorAssistant.map(String.init) ?? ""].joined(separator: "\u{1f}")
         }
         let same = result.indices.filter { key(result[$0]) == key(value) }
         if same.count > keptPerRoute {
@@ -216,8 +227,9 @@ public struct ClusterServedSpeedFile: Codable, Sendable, Equatable {
 public final class ClusterPairTelemetryLog: @unchecked Sendable {
     public static let defaultCapacity = 64
 
-    public static func defaultFile(homeDirectory: URL) -> URL {
-        homeDirectory.appendingPathComponent(".darkbloom/cluster/pair-telemetry.json")
+    /// In the install's data folder (`installDirectory`): production's `~/.darkbloom`.
+    public static func defaultFile(installDirectory: URL) -> URL {
+        installDirectory.appendingPathComponent("cluster/pair-telemetry.json")
     }
 
     public let file: URL?

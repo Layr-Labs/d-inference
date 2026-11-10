@@ -42,6 +42,10 @@ public enum LaunchAgent: Sendable {
         isLoaded(label: label)
     }
 
+    /// Single-Mac serving is set up on this Mac: its job is loaded (`stop` disables and unloads it; the plist stays on
+    /// disk for `restart`), and it isn't a cluster member's job.
+    public static func singleMacSetUp() -> Bool { isLoaded() && !installedJobIsClusterMember() }
+
     private static func isLoaded(label: String) -> Bool {
         LaunchctlControl.printSucceeds(label: label)
     }
@@ -133,19 +137,51 @@ public enum LaunchAgent: Sendable {
         }
     }
 
-    /// Desktop local mode uses the same canonical launchd owner as network serving.
-    /// The caller must complete the normal drain and hold the lifecycle lock.
-    public static func installLocalAndStart(models: [String], configPath: URL?) throws {
+    /// The port the installed single-Mac job serves its local API on (`localAPIPort(ofJob:)`); nil without a job, or
+    /// for one that serves none.
+    public static func installedLocalAPIPort(at path: URL = plistPath()) -> UInt16? {
+        guard let data = try? Data(contentsOf: path),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+              let arguments = plist["ProgramArguments"] as? [String] else { return nil }
+        return localAPIPort(ofJob: arguments)
+    }
+
+    /// The port a single-Mac job's arguments serve the local API on: its `--port`, else, for the `start --local` an
+    /// older app wrote without one, the build's default (where it served with no `[local] port`). Nil for a job that
+    /// serves no local API (neither `--local-endpoint` nor `--local`), and for a cluster's (`--cluster-member`,
+    /// `--distributed`).
+    static func localAPIPort(ofJob arguments: [String]) -> UInt16? {
+        guard isSingleMacStartJob(arguments),
+              arguments.contains("--local-endpoint") || arguments.contains("--local") else { return nil }
+        guard let flag = arguments.lastIndex(of: "--port") else { return BuildEnvironment.current.defaultLocalPort }
+        return flag + 1 < arguments.count ? UInt16(arguments[flag + 1]) : nil
+    }
+
+    /// Desktop local mode uses the same canonical launchd owner as network serving, on this Mac's local API port
+    /// (`LocalAPIPort`), which the caller resolved. The caller must complete the normal drain and hold the lifecycle
+    /// lock.
+    public static func installLocalAndStart(models: [String], configPath: URL?, port: UInt16, bind: String,
+                                            noAuth: Bool) throws {
         guard !isLoaded() else { throw LaunchAgentError.bootstrapFailed("Existing provider must be drained first") }
-        var arguments = [currentExecutablePath(), "start", "--local"]
-        for model in models { arguments += ["--model", model] }
-        if let configPath { arguments += ["--config", configPath.path] }
+        let arguments = localProgramArguments(binaryPath: currentExecutablePath(), models: models,
+                                              configPath: configPath, port: port, bind: bind, noAuth: noAuth)
         let contents = makeServicePlist(label: label, programArguments: arguments,
             logPath: logPath().path, environment: ProcessInfo.processInfo.environment)
         try FileManager.default.createDirectory(at: plistPath().deletingLastPathComponent(), withIntermediateDirectories: true)
         try PropertyListSerialization.data(fromPropertyList: contents, format: .xml, options: 0)
             .write(to: plistPath(), options: .atomic)
         try loadService()
+    }
+
+    /// The local-only job's argv, without touching launchd or the filesystem: launchd's child (`--foreground`) serves
+    /// only the local API on the port and address given, and never asks, probes or saves.
+    static func localProgramArguments(binaryPath: String, models: [String], configPath: URL?, port: UInt16,
+                                      bind: String, noAuth: Bool) -> [String] {
+        var arguments = [binaryPath, "start", "--foreground", "--local", "--port", "\(port)", "--bind", bind]
+        if noAuth { arguments.append("--no-auth") }
+        for model in models { arguments += ["--model", model] }
+        if let configPath { arguments += ["--config", configPath.standardizedFileURL.path] }
+        return arguments
     }
 
     // MARK: - Stop

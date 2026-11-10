@@ -237,8 +237,23 @@ enum SuperHTTPErrors {
                 return MultiModelBatchSchedulerEngineError.generationFailed("native output handling failed")
             }
         }
-        if error is NemotronSuperVideoDecode.Failure || error is NemotronSuperVideoPreprocessing.Failure {
+        if let failure = error as? VideoReaderFailure, failure.isTransient {
+            return MultiModelBatchSchedulerEngineError.requestRejected(
+                "inline video decoder fault (\(failure)); retry on another provider")
+        }
+        if error as? NemotronSuperVideoDecode.Failure == .decodeAllowanceSpent {
+            return MultiModelBatchSchedulerEngineError.requestRejected(
+                "inline video decoder outlasted its decode allowance; retry on another provider")
+        }
+        if error is VideoReaderFailure || error is NemotronSuperVideoDecode.Failure
+            || error is NemotronSuperVideoPreprocessing.Failure {
             return MultiModelBatchSchedulerEngineError.multimodalRejected("unsupported or invalid inline video request")
+        }
+        if case .unknownReasoningEffort(let field)? = error as? NemotronSuperPromptContract.Failure {
+            return MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort(field)
+        }
+        if error as? NemotronSuperPromptContract.Failure == .conflictingReasoningEfforts {
+            return MultiModelBatchSchedulerEngineError.conflictingReasoningEfforts
         }
         if error is DecodingError || error is NemotronSuperImageDecode.Failure
             || error is NemotronSuperImagePreprocessing.Failure || error is MediaIngest.MediaError

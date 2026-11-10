@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-import ProviderAppAttest
+@testable import ProviderAppAttest
 @testable import ProviderCore
 
 private func lifecycleHardware() -> HardwareInfo {
@@ -47,6 +47,16 @@ private extension ProviderLoop {
     func installIdleAppAttestClient() {
         appAttestShadowClient = AppAttestShadowClient(scope: loopConfig.coordinatorURL, service: IdleAppAttestService(),
                                                       storage: EmptyShadowKeys())
+    }
+    func setAppAttestStopWait(_ seconds: Double) { appAttestStopWaitSeconds = seconds }
+    /// Starts `attest` as `handleAppAttestShadow` does, so a stop cancels it
+    /// through `cancelAppAttestShadow`.
+    func beginAppAttestation(_ client: AppAttestShadowClient, key: String) {
+        appAttestShadowClient = client
+        let request = lifecycleShadowRequest("attest", key: key)
+        appAttestShadowTask = Task.detached {
+            _ = await client.respond(to: request, publicKey: lifecycleEndpoint, status: lifecycleShadowStatus)
+        }
     }
     func holdLifecycleRequests(_ ids: Set<String>) { acceptedLifecycleRequests.formUnion(ids) }
     func completeLifecycleRequest(_ id: String) { acceptedLifecycleRequests.remove(id) }
@@ -101,6 +111,60 @@ struct ProviderLifecycleTests {
         await worker.release()
         #expect(await draining.value.outcome == .drained)
         #expect(await loop.drainAndShutdown(timeoutSeconds: 1))
+    }
+
+    /// SIGTERM, `darkbloom stop` and the cluster service's part stop all drain
+    /// here. Apple already has the attestation: the stop lets it answer, so the
+    /// next process sends the proof instead of retiring the key for an hour.
+    @Test(.timeLimit(.minutes(1)))
+    func shutdownWaitsForAnAttestationAppleIsAnswering() async throws {
+        let (loop, root) = try await lifecycleLoop()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let apple = SlowAttestingApple(answerAfter: 1)
+        let keys = LifecycleShadowKeys()
+        let client = AppAttestShadowClient(scope: "test", service: AvailableAttestingApple(apple), storage: keys)
+        let ready = await client.respond(to: lifecycleShadowRequest("prepare"), publicKey: lifecycleEndpoint)
+        let key = try #require(ready.keyID)
+        await loop.beginAppAttestation(client, key: key)
+        #expect(await waitFor { apple.attestationsStarted == 1 })
+        let identity = try #require(ProcessIdentity.current())
+        let stop = await loop.drainForLifecycle(request: .init(target: identity, timeoutSeconds: 3))
+        #expect(stop.outcome == .drained)
+        #expect(apple.attestationsAnswered == 1, "the stop waited for Apple's answer")
+        let stored = try #require(keys.load(scope: lifecycleKeyScope))
+        #expect(stored.keyID == key)
+        #expect(stored.pendingProof == Data("attestation-\(key)".utf8).base64EncodedString())
+        #expect(stored.attestationStartedAt == nil)
+        #expect(await loop.drainAndShutdown(timeoutSeconds: 1))
+    }
+
+    /// Apple keeps the attestation until the test answers it, so the stop can
+    /// only return by giving up on Apple at the bound. Wall time is checked
+    /// from below only: a busy host can delay the stop, never hurry it.
+    @Test(.timeLimit(.minutes(1)))
+    func shutdownStopsWaitingForAppleAtTheBound() async throws {
+        let (loop, root) = try await lifecycleLoop()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let apple = SlowAttestingApple(answerAfter: nil)
+        let keys = LifecycleShadowKeys()
+        let client = AppAttestShadowClient(scope: "test", service: AvailableAttestingApple(apple), storage: keys)
+        let ready = await client.respond(to: lifecycleShadowRequest("prepare"), publicKey: lifecycleEndpoint)
+        let key = try #require(ready.keyID)
+        await loop.setAppAttestStopWait(0.2)
+        await loop.beginAppAttestation(client, key: key)
+        #expect(await waitFor { apple.attestationsStarted == 1 })
+        let identity = try #require(ProcessIdentity.current())
+        let started = ContinuousClock.now
+        let stop = await loop.drainForLifecycle(request: .init(target: identity, timeoutSeconds: 3))
+        #expect(stop.outcome == .drained)
+        #expect(ContinuousClock.now - started >= .milliseconds(200), "the stop gave Apple the bound")
+        // Apple still has the attestation: the stop ended at the bound, not at
+        // Apple's answer or at its 25 s callback deadline.
+        #expect(await !client.waitForOutstandingAttestation(atMostSeconds: 0), "the stop returned before Apple answered")
+        // This process outlives the stop here, so Apple's later answer is still kept.
+        apple.answerHeldAttestations()
+        #expect(await waitFor { keys.load(scope: lifecycleKeyScope)?.pendingProof != nil })
+        #expect(keys.load(scope: lifecycleKeyScope)?.keyID == key)
     }
 
     @Test func failedWorkerRetirementCannotAcknowledgeForcedShutdown() async throws {
@@ -337,6 +401,78 @@ private actor IdleAppAttestService: AppAttestService {
 private struct EmptyShadowKeys: ShadowKeyStorage {
     func load(scope: String) -> ShadowKeyRecord? { nil }
     func save(_ record: ShadowKeyRecord, scope: String) {}
+}
+
+private let lifecycleEndpoint = Data(repeating: 7, count: 32).base64EncodedString()
+private let lifecycleKeyScope = "test:production:account:" + String(repeating: "a", count: 64)
+private let lifecycleShadowStatus = AppAttestStatus(osVersion: "27.2.0", osBuild: "test", appVersion: "0.10.7",
+                                                    chip: "test", binaryHash: String(repeating: "b", count: 64))
+
+private func lifecycleShadowRequest(_ action: String, key: String? = nil) -> AppAttestShadowPayload {
+    var request = AppAttestShadowPayload(action: action, session: Data(repeating: 3, count: 32).base64EncodedString())
+    request.protocolVersion = 3
+    request.accountScope = String(repeating: "a", count: 64)
+    request.environment = "production"
+    request.keyID = key
+    if action != "prepare" { request.challenge = Data(repeating: 4, count: 32).base64EncodedString() }
+    return request
+}
+
+private final class LifecycleShadowKeys: ShadowKeyStorage, @unchecked Sendable {
+    private let lock = NSLock()
+    private var records: [String: ShadowKeyRecord] = [:]
+    func load(scope: String) -> ShadowKeyRecord? { lock.withLock { records[scope] } }
+    func save(_ record: ShadowKeyRecord, scope: String) { lock.withLock { records[scope] = record } }
+}
+
+/// Apple's side: keys at once, each attestation `answerAfter` seconds after it
+/// starts. With nil, Apple answers only when the test calls `answerHeldAttestations`.
+private final class SlowAttestingApple: AppAttestCallbacks, @unchecked Sendable {
+    private let lock = NSLock()
+    private let answerAfter: Double?
+    private var started = 0
+    private var answered = 0
+    private var heldAnswers: [@Sendable () -> Void] = []
+    init(answerAfter: Double?) { self.answerAfter = answerAfter }
+    func generateKey(_ complete: @escaping @Sendable (Result<String, Error>) -> Void) {
+        complete(.success(Data(repeating: 1, count: 32).base64EncodedString()))
+    }
+    func attestKey(_ id: String, hash: Data, complete: @escaping @Sendable (Result<Data, Error>) -> Void) {
+        let answer: @Sendable () -> Void = { [self] in
+            lock.withLock { answered += 1 }
+            complete(.success(Data("attestation-\(id)".utf8)))
+        }
+        lock.withLock {
+            started += 1
+            if answerAfter == nil { heldAnswers.append(answer) }
+        }
+        if let answerAfter {
+            DispatchQueue.global().asyncAfter(deadline: .now() + answerAfter, execute: answer)
+        }
+    }
+    func answerHeldAttestations() {
+        let answers = lock.withLock { () -> [@Sendable () -> Void] in
+            defer { heldAnswers = [] }
+            return heldAnswers
+        }
+        answers.forEach { $0() }
+    }
+    func generateAssertion(_ id: String, hash: Data, complete: @escaping @Sendable (Result<Data, Error>) -> Void) {
+        complete(.success(Data("assertion".utf8)))
+    }
+    var attestationsStarted: Int { lock.withLock { started } }
+    var attestationsAnswered: Int { lock.withLock { answered } }
+}
+
+/// Availability passes; key calls go through the real Apple adapter.
+private actor AvailableAttestingApple: AppAttestService {
+    private let apple: AppleAppAttestService
+    init(_ callbacks: SlowAttestingApple) { apple = AppleAppAttestService(callbacks: callbacks, operationTimeout: 25) }
+    func checkAvailability(environment: String) {}
+    func generateKey() async throws -> String { try await apple.generateKey() }
+    func attestKey(_ id: String, hash: Data) async throws -> Data { try await apple.attestKey(id, hash: hash) }
+    func generateAssertion(_ id: String, hash: Data) async throws -> Data { try await apple.generateAssertion(id, hash: hash) }
+    func operationHeldSince() async -> Date? { await apple.operationHeldSince() }
 }
 
 private func waitFor(_ condition: () async -> Bool) async -> Bool {

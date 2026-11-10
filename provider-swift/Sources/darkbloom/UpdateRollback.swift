@@ -77,7 +77,7 @@ struct UpdateRollback {
 
     static let clusterRefusal = """
         This Mac serves in a two-Mac cluster, and `\(cli) update --rollback` does not change one Mac of a running \
-        pair. Stop this Mac's cluster service (`\(cli) cluster stop`), run `\(cli) update --rollback`, then start \
+        pair. Stop this Mac's cluster service (`\(cli) cluster stop --service`), run `\(cli) update --rollback`, then start \
         it again with `\(cli) cluster`: the other Mac follows the rollback to the same release. For a cluster \
         member service, stop it with `\(cli) stop` and roll back both Macs. Nothing was changed.
         """
@@ -305,7 +305,7 @@ struct UpdateRollback {
 extension UpdateRollback.Host {
     static func live(drain options: DrainOptions, configPath: String?) -> Self {
         let previous = LaunchAgent.launchSnapshot()?.process
-        // Configured to serve in a pair even while its service is not running: `darkbloom cluster stop` unloads
+        // Configured to serve in a pair even while its service is not running: `darkbloom cluster stop --service` unloads
         // the login agent, and the member job runs under the provider's own label.
         let configuredInCluster = {
             ClusterServiceAgent.installedLabels().contains { ClusterServiceAgent.isLoaded(label: $0) }

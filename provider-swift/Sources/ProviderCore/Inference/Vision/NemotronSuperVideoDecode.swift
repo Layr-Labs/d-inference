@@ -4,6 +4,7 @@
 import CoreMedia
 import CoreVideo
 import Foundation
+import MLXLMCommon
 import MLXVLM
 
 /// Inline MP4/QuickTime input of the Super video binding, sampled as NVIDIA's
@@ -22,9 +23,12 @@ enum NemotronSuperVideoDecode {
         /// other than BGRA.
         case unsupportedRepresentation
         /// Beyond the coded frame, frame grid, source frame, control-marker
-        /// or decoded-pixel ceiling, or a decoder that outlasted its
-        /// `decodeAllowance`.
+        /// or decoded-pixel ceiling: a property of the movie.
         case limit
+        /// The wait on the decoder outlasted the plan's `decodeAllowance`.
+        /// The allowance is wall time on this machine, so a valid movie on a
+        /// slow or loaded machine can spend it; another provider may decode it.
+        case decodeAllowanceSpent
         /// Decoded frames disagree with the inspected track.
         case inconsistentFrames
     }
@@ -47,12 +51,17 @@ enum NemotronSuperVideoDecode {
     /// The wall time `Frames` may spend waiting on the decoder for `frames`
     /// frames of `codedPixels`: five seconds, then 2 ms a frame and 4 ns a
     /// coded pixel (ten times the 0.2 ms a frame and 0.4 ns a pixel an M3
-    /// Ultra measured decoding H.264 and HEVC to BGRA), two minutes at most.
-    /// Normalization and the tower do not count.
+    /// Ultra measured decoding H.264 and HEVC to BGRA), at most
+    /// `maximumDecodeAllowance`. Normalization and the tower do not count.
+    /// This is wall time, so a loaded machine spends it faster than the
+    /// decoder's work alone does.
     static func decodeAllowance(frames: Int, codedPixels: Int) -> Duration {
         let perFrame = Duration.milliseconds(2) + .nanoseconds(4) * codedPixels
-        return min(.seconds(120), .seconds(5) + perFrame * frames)
+        return min(maximumDecodeAllowance, .seconds(5) + perFrame * frames)
     }
+
+    /// The longest decoder wait any plan is allowed: two minutes.
+    static let maximumDecodeAllowance = Duration.seconds(120)
 
     /// Tests only: runs once for each reader, right after it is cancelled,
     /// with that reader, so a test can count stops and watch the reader be
@@ -154,7 +163,9 @@ enum NemotronSuperVideoDecode {
                 let (pixels, overflow) = coded.width.multipliedReportingOverflow(by: coded.height)
                 guard !overflow, pixels <= pixelCap else { throw Failure.limit }
                 let rotation = try Rotation(try await track.load(.preferredTransform))
-                let timing = try await sampleTiming(movie, track: track, source: asset)
+                let timing = try await VideoReaderRetry.run {
+                    try await sampleTiming(movie, track: track, source: asset)
+                }
                 let indices = try NemotronSuperVideoPreprocessing.sampledFrameIndices(
                     totalFrames: timing.frames, sourceFPS: timing.fps)
                 let width = rotation.swapsAxes ? coded.height : coded.width
@@ -175,10 +186,13 @@ enum NemotronSuperVideoDecode {
     }
 
     /// AVFoundation errors may describe the media; they leave as `invalidVideo`.
+    /// A `VideoReaderFailure` holds the reader's status and error codes only.
     fileprivate static func reading<Result>(_ body: () async throws -> Result) async throws -> Result {
         do {
             return try await body()
         } catch let error as Failure {
+            throw error
+        } catch let error as VideoReaderFailure {
             throw error
         } catch let error as NemotronSuperVideoPreprocessing.Failure {
             throw error
@@ -196,6 +210,21 @@ enum NemotronSuperVideoDecode {
         let tracks = try await movie.loadTracks(withMediaType: .video)
         guard tracks.count == 1, let track = tracks.first else { throw Failure.unsupportedRepresentation }
         return track
+    }
+
+    /// A started BGRA reader of `track`; AVFoundation's refusal leaves as `invalidVideo`.
+    fileprivate static func decodedReader(_ movie: AVAsset, track: AVAssetTrack) throws
+        -> (AVAssetReader, AVAssetReaderOutput) {
+        let reader: AVAssetReader
+        do { reader = try AVAssetReader(asset: movie) } catch { throw Failure.invalidVideo }
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+        ])
+        output.alwaysCopiesSampleData = false
+        guard reader.canAdd(output) else { throw Failure.invalidVideo }
+        reader.add(output)
+        guard reader.startReading() else { throw Failure.invalidVideo }
+        return (reader, output)
     }
 
     /// The stream metadata vLLM's OpenCV loader reads from FFmpeg: the sample
@@ -240,7 +269,8 @@ enum NemotronSuperVideoDecode {
         }
         // Cancellation stops the reader early; it is not a malformed movie.
         try Task.checkCancellation()
-        guard samples.completed, frames > 0, duration.value > 0, duration.timescale > 0 else {
+        if let failure = samples.failure { throw failure }
+        guard frames > 0, duration.value > 0, duration.timescale > 0 else {
             throw Failure.invalidVideo
         }
         let fps = Double(frames) * Double(duration.timescale) / Double(duration.value)
@@ -292,23 +322,15 @@ enum NemotronSuperVideoDecode {
         /// `NemotronSuperVideoDecode.decodeAllowance`.
         init(_ plan: Plan, decodeAllowance: Duration? = nil) async throws {
             let movie = plan.asset.retainedAsset
-            let (reader, output) = try await NemotronSuperVideoDecode.reading {
-                () async throws -> (AVAssetReader, AVAssetReaderTrackOutput) in
-                let track = try await NemotronSuperVideoDecode.videoTrack(movie)
-                let reader = try AVAssetReader(asset: movie)
-                let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
-                    kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-                ])
-                output.alwaysCopiesSampleData = false
-                guard reader.canAdd(output) else { throw Failure.invalidVideo }
-                reader.add(output)
-                guard reader.startReading() else { throw Failure.invalidVideo }
-                return (reader, output)
+            let track = try await NemotronSuperVideoDecode.reading {
+                try await NemotronSuperVideoDecode.videoTrack(movie)
             }
+            let (reader, output) = try NemotronSuperVideoDecode.decodedReader(movie, track: track)
             self.plan = plan
             self.reader = SerialReader(reader, output: output, source: plan.asset, allowance: decodeAllowance
                 ?? NemotronSuperVideoDecode.decodeAllowance(frames: plan.decodedFrames,
-                                                            codedPixels: plan.codedPixels))
+                                                            codedPixels: plan.codedPixels),
+                reopen: { try NemotronSuperVideoDecode.decodedReader(movie, track: track) })
         }
 
         /// Runs `body`, which pulls frames, with a pull waiting on the
@@ -335,7 +357,15 @@ enum NemotronSuperVideoDecode {
             while true {
                 try Task.checkCancellation()
                 let frame = try autoreleasepool { () throws -> [Float]? in
-                    guard let sample = reader.nextSample() else { throw reader.earlyEnd }
+                    guard let sample = reader.nextSample() else {
+                        // A failed reader is replaced once; frames before the
+                        // next sampled one decode again and are dropped.
+                        guard try reader.reopenAfterFailure() else { throw reader.earlyEnd }
+                        index = 0
+                        markers = 0
+                        lastPresentation = nil
+                        return nil
+                    }
                     let count = CMSampleBufferGetNumSamples(sample)
                     guard count > 0 else {
                         markers += 1
@@ -417,14 +447,20 @@ private final class SerialReader: @unchecked Sendable {
         var sample: CMSampleBuffer?
     }
 
-    private let reader: AVAssetReader
-    private let output: AVAssetReaderOutput
+    /// Read, cancelled and replaced only on `queue`.
+    private var reader: AVAssetReader
+    private var output: AVAssetReaderOutput
+    /// Opens a new reader of the same track, for `reopenAfterFailure()`.
+    private let reopen: (() throws -> (AVAssetReader, AVAssetReaderOutput))?
+    /// The pulling thread's: whether the reader was already replaced.
+    private var reopened = false
     /// The in-memory asset the reader loads through; its resource loader
     /// holds the delegate serving the bytes only weakly.
     private let source: NemotronSuperVideoAsset
     private let queue = DispatchQueue(label: "ai.darkbloom.super-video.reader", qos: .userInitiated,
                                       autoreleaseFrequency: .workItem)
     private let cancelledForTesting: (@Sendable (AVAssetReader) -> Void)?
+    private let beforeReadForTesting: (@Sendable (AVAssetReader) -> Void)?
     private let lock = NSLock()
     /// Nanoseconds of decoder wait left; nil without an allowance.
     private var remaining: UInt64?
@@ -437,11 +473,14 @@ private final class SerialReader: @unchecked Sendable {
     private var expired = false
 
     init(_ reader: AVAssetReader, output: AVAssetReaderOutput, source: NemotronSuperVideoAsset,
-         allowance: Duration? = nil) {
+         allowance: Duration? = nil, reopen: (() throws -> (AVAssetReader, AVAssetReaderOutput))? = nil) {
         self.reader = reader
         self.output = output
+        self.reopen = reopen
         self.source = source
         cancelledForTesting = NemotronSuperVideoDecode.readerCancelledForTesting
+        // The reads run on `queue`, so the task's hook is read here.
+        beforeReadForTesting = VideoReaderRetry.beforeReadForTesting
         remaining = allowance.map(Self.nanoseconds)
     }
 
@@ -513,6 +552,7 @@ private final class SerialReader: @unchecked Sendable {
         }
         guard let deadline else { return nil }
         queue.async { [self] in
+            beforeReadForTesting?(reader)
             let sample = autoreleasepool { output.copyNextSampleBuffer() }
             let delivered = lock.withLock { () -> Bool in
                 guard !read.abandoned else { return false }
@@ -534,16 +574,48 @@ private final class SerialReader: @unchecked Sendable {
         }
     }
 
-    /// Whether the reader read to its end, asked on its queue.
-    var completed: Bool { queue.sync { reader.status == .completed } }
+    /// How the reader failed, asked on its queue; nil once it read to its end.
+    var failure: VideoReaderFailure? {
+        queue.sync { reader.status == .completed ? nil : VideoReaderFailure(reader: reader) }
+    }
+
+    /// After `nextSample()` returned nil early: when the reader failed on its
+    /// own, rather than being stopped, replaces it once with a new reader of
+    /// the same asset and returns true, and the caller reads from the first
+    /// frame again. A reader that fails after its replacement throws its
+    /// `VideoReaderFailure`. Each failure goes to `VideoReaderRetry`'s observer.
+    func reopenAfterFailure() throws -> Bool {
+        guard !Task.isCancelled, !lock.withLock({ stopped }), let failure else { return false }
+        guard let reopen, !reopened else {
+            VideoReaderRetry.report(failure, retrying: false)
+            throw failure
+        }
+        VideoReaderRetry.report(failure, retrying: true)
+        reopened = true
+        let (next, nextOutput) = try reopen()
+        queue.sync {
+            // A stop already queued cancels the failed reader; the new one never starts serving.
+            guard !lock.withLock({ stopped }) else {
+                next.cancelReading()
+                cancelledForTesting?(next)
+                return
+            }
+            reader.cancelReading()
+            cancelledForTesting?(reader)
+            reader = next
+            output = nextOutput
+        }
+        return true
+    }
 
     /// Why the reader returned no sample before the plan's last frame: the
-    /// task was cancelled, the allowance ran out, or the reader failed or
-    /// lost frames.
+    /// task was cancelled, the allowance ran out, or the reader ended early
+    /// without failing (a failed reader is `reopenAfterFailure()`'s).
     var earlyEnd: any Error {
         if Task.isCancelled { return CancellationError() }
         return lock.withLock { expired }
-            ? NemotronSuperVideoDecode.Failure.limit : NemotronSuperVideoDecode.Failure.inconsistentFrames
+            ? NemotronSuperVideoDecode.Failure.decodeAllowanceSpent
+            : NemotronSuperVideoDecode.Failure.inconsistentFrames
     }
 
     /// Under the lock.

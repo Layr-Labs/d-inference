@@ -9,7 +9,9 @@ import Testing
 /// the same bytes alone, beside rows of other context lengths that join and
 /// leave, across KV segments, while an assistant observes the cohort, and at
 /// every verify-window position. GPU-gated (`QWEN_TP_REAL_GEOMETRY_GPU=1`):
-/// about 3 GB of random weights for both ranks.
+/// about 3 GB of random weights for both ranks. Each test runs one half of
+/// the check (`QwenTensorParallelRowsCheck.Part`), so CI runs the halves on
+/// separate Macs (scripts/cluster-test-plan.py).
 @Suite(.serialized)
 struct QwenTensorParallelRealGeometryRowsTests {
     static var gpu: Bool { ProcessInfo.processInfo.environment["QWEN_TP_REAL_GEOMETRY_GPU"] == "1" }
@@ -76,8 +78,21 @@ struct QwenTensorParallelRealGeometryRowsTests {
         }
     }
 
+    /// The rows of 100 to 4,090 tokens: P1 on one- and eight-lane hosts, PB8,
+    /// PB2, PB4, the observed cohort and the verify windows.
     @Test(.enabled(if: gpu))
     func rowsEqualTheirSoloStepsAndWindowPositionsAtRealWidths() throws {
+        try check(.rows)
+    }
+
+    /// The rows of 4,000 to 4,600 tokens, whose eight histories span KV
+    /// segments, against each row alone.
+    @Test(.enabled(if: gpu))
+    func rowsAcrossKVSegmentsEqualTheirSoloStepsAtRealWidths() throws {
+        try check(.segments)
+    }
+
+    private func check(_ part: QwenTensorParallelRowsCheck.Part) throws {
         let configuration = try QwenTensorParallelRowsCheck.configuration(layers: 4)
         let wire = Wire()
         let models = try (0..<2).map { rank in
@@ -99,16 +114,21 @@ struct QwenTensorParallelRealGeometryRowsTests {
         DispatchQueue.concurrentPerform(iterations: 2) { rank in
             Device.withDefaultDevice(.gpu) {
                 results.record(rank, Result {
-                    try QwenTensorParallelRowsCheck.run(model: models[rank], configuration: configuration, rank: rank)
+                    try QwenTensorParallelRowsCheck.run(model: models[rank], configuration: configuration, rank: rank,
+                        parts: [part])
                 })
             }
         }
         for failure in results.failures { if let failure { throw failure } }
         for report in results.reports.compactMap({ $0 }) {
-            print("qwen27-real-geometry rank=\(report.rank) compared=\(report.compared)"
+            print("qwen27-real-geometry \(part) rank=\(report.rank) compared=\(report.compared)"
                 + " reserved=\(report.reservedBytesAcrossSegments) differing=\(report.differing.count)"
                 + " first=\(report.differing.prefix(12))")
             #expect(report.passed)
+            // Every digest of the half: each row's prompt logits, its logits
+            // and its history after each solo step (8 rows of 12 steps; 8 long
+            // rows of 8 steps), 336 a rank for the whole check.
+            #expect(report.compared == (part == .rows ? 200 : 136))
         }
         #expect(results.reports.compactMap({ $0 }).count == 2)
     }

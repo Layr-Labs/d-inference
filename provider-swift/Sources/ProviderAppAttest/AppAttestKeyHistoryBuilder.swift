@@ -47,7 +47,7 @@ extension AppAttestKeyHistory {
         if let budget {
             if let attempts = budget.generationHistory {
                 history.generationsLast24h = min(maxGenerations, attempts.filter {
-                    $0 <= now && now.timeIntervalSince($0) < generationWindow
+                    $0.timeIntervalSince(now) <= 0 && now.timeIntervalSince($0) < generationWindow
                 }.count)
                 history.lastGenerationAgeSeconds = attempts.max().flatMap { age(from: $0, to: now) }
             }

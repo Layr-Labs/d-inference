@@ -1,7 +1,10 @@
 name: Contribution Policy
 
+# Pull requests into master only: dev keeps no contribution gates (CI (dev)
+# runs only the tests).
 on:
   pull_request:
+    branches: [master, main]
     types: [opened, synchronize, reopened, labeled, unlabeled]
 
 permissions:

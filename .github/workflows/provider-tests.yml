@@ -1,0 +1,1230 @@
+name: Provider Tests
+
+# The provider and cluster build and test jobs and the Provider Tests gate,
+# shared by CI (dev) (.github/workflows/ci-dev.yml) and CI (master)
+# (.github/workflows/ci-master.yml). Their plan (provider-plan.yml) chooses
+# the components and the runner of every macOS job; pull requests and pushes
+# run the same jobs. Each lane builds once, on a large runner, and its test
+# jobs run those products. Only pushes save caches.
+on:
+  workflow_call:
+    inputs:
+      provider: {type: string, required: true}
+      cluster: {type: string, required: true}
+      mimo_audio: {type: string, required: true}
+      changed_provider: {type: string, required: true}
+      changed_cluster: {type: string, required: true}
+      changes_result: {type: string, required: true}
+      skip: {type: string, required: true}
+      tested_run: {type: string, required: true}
+      tree: {type: string, required: true}
+      base: {type: string, required: true}
+      head: {type: string, required: true}
+      routes: {type: string, required: true}
+      # true: restore only this recipe's builds (master: release-bound
+      # builds never reuse objects of another recipe or dependency set).
+      strict_cache: {type: boolean, default: false}
+
+permissions:
+  contents: read
+
+# A plain build of the dev branch is a DevNet build (provider-swift/Package.swift).
+# CI builds the production identity, which the provider suites pin, as on
+# master; BuildEnvironmentTests checks that the build is the one requested.
+env:
+  DARKBLOOM_RELEASE_ENVIRONMENT: prod
+  # Only pushes to master and dev, and the hourly dispatch on dev, save
+  # caches. A pull request restores its base branch's entries and saves none
+  # (docs/developer/build.md#ci-caching).
+  SAVE_CACHES: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/dev')) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev') }}
+  # Every checkout but Docs Lint's skips the evidence tarballs and landing media
+  # (408 MB of the tree), which only Docs Lint reads. The rest of the evidence
+  # stays: provider-ci-cache.py hashes every tracked Package.swift.
+  CHECKOUT_SPARSE: |
+    /*
+    !/docs/reports/evidence/**/*.gz
+    !/landing/public/media/
+
+jobs:
+  build-cluster:
+    # Each lane builds once, on a large runner, and hands its debug test
+    # products to its test jobs (.github/actions/provider-ci-products). The
+    # cluster lane builds in a job of its own, so the cluster tests start as
+    # soon as their products are up. A push whose tree a pull request run
+    # already tested runs no test job; the build job then builds only the
+    # components the push changed, to refresh the branch's caches. The build
+    # jobs need a large Mac: their lanes ask only with their size, while job
+    # sizes are on; otherwise they run on Blacksmith (provider-plan.yml).
+    name: Build cluster test products
+    if: ${{ inputs.cluster == 'true' || (github.event_name == 'push' && inputs.skip == 'true' && inputs.changed_cluster == 'true') }}
+    runs-on: ${{ fromJSON(inputs.routes)['build-cluster'] }}
+    timeout-minutes: 60
+    steps:
+      # SwiftPM's products hold absolute paths, and Blacksmith and Darkbloom
+      # check out to different paths. A job that builds or runs the test
+      # products works at one fixed path: its workspace becomes a link to it,
+      # so every step's working directory resolves there
+      # (scripts/ci-test-products.py). Its caches outside the workspace live
+      # in /private/tmp/dinf-ci: actions/cache unpacks each path relative to
+      # the workspace, which a runner.temp or home path cannot survive here.
+      - name: Work at the fixed build path
+        run: |
+          cd /
+          rm -rf /private/tmp/dinf /private/tmp/dinf-ci "$GITHUB_WORKSPACE"
+          mkdir -p /private/tmp/dinf /private/tmp/dinf-ci
+          ln -s /private/tmp/dinf "$GITHUB_WORKSPACE"
+      - name: Select today's .git cache
+        id: git-day
+        run: |
+          day=$(date -u +%F)
+          echo "day=$day" >> "$GITHUB_OUTPUT"
+          echo "month=${day%-*}" >> "$GITHUB_OUTPUT"
+          echo "actions/cache compressor: $(command -v zstd >/dev/null && echo zstd || echo gzip)"
+      - name: Restore the newest saved .git
+        id: git-cache
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: .git
+          key: git-v1-${{ runner.os }}-${{ steps.git-day.outputs.day }}
+          restore-keys: |
+            git-v1-${{ runner.os }}-${{ steps.git-day.outputs.month }}-
+            git-v1-${{ runner.os }}-
+      - name: Discard a damaged cached .git
+        run: |
+          if [ -d .git ] && ! { git rev-parse --verify -q HEAD >/dev/null &&
+              git fsck --connectivity-only --no-progress >/dev/null 2>&1; }; then
+            echo "::warning title=.git cache::git fsck rejected the restored .git; checking out without it."
+            rm -rf .git
+          fi
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: recursive
+          persist-credentials: false
+          sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
+          sparse-checkout-cone-mode: false
+      - name: Save .git for later runs
+        if: env.SAVE_CACHES == 'true' && steps.git-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: .git
+          key: ${{ steps.git-cache.outputs.cache-primary-key }}
+      - name: Start the resource sampler
+        run: python3 scripts/ci-resource-sampler.py start "$RUNNER_TEMP/resource-samples"
+      - name: Build cluster test products
+        id: provider-ci-build
+        uses: ./.github/actions/provider-ci-build
+        with:
+          lane: cluster
+          save-caches: ${{ env.SAVE_CACHES }}
+          strict-cache: ${{ inputs.strict_cache }}
+      # Only a run that tests the lane hands its products on; a push of a
+      # tested tree only refreshes the caches.
+      - name: Upload cluster test products
+        if: ${{ inputs.cluster == 'true' }}
+        uses: ./.github/actions/provider-ci-products
+        with:
+          lane: cluster
+          direction: upload
+      # Report-only (scripts/ci-resource-sampler.py): it never fails the job.
+      - name: Report the resource samples
+        if: ${{ always() }}
+        run: python3 scripts/ci-resource-sampler.py report "$RUNNER_TEMP/resource-samples" || true
+      - name: Upload the resource samples
+        if: ${{ always() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: resource-samples-${{ github.job }}-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/resource-samples
+          if-no-files-found: ignore
+          retention-days: 14
+
+  build-provider:
+    name: Build provider test products
+    if: ${{ inputs.provider == 'true' || (github.event_name == 'push' && inputs.skip == 'true' && inputs.changed_provider == 'true') }}
+    runs-on: ${{ fromJSON(inputs.routes)['build-provider'] }}
+    timeout-minutes: 60
+    steps:
+      # The fixed build path, as in build-cluster (scripts/ci-test-products.py).
+      - name: Work at the fixed build path
+        run: |
+          cd /
+          rm -rf /private/tmp/dinf /private/tmp/dinf-ci "$GITHUB_WORKSPACE"
+          mkdir -p /private/tmp/dinf /private/tmp/dinf-ci
+          ln -s /private/tmp/dinf "$GITHUB_WORKSPACE"
+      - name: Select today's .git cache
+        id: git-day
+        run: |
+          day=$(date -u +%F)
+          echo "day=$day" >> "$GITHUB_OUTPUT"
+          echo "month=${day%-*}" >> "$GITHUB_OUTPUT"
+          echo "actions/cache compressor: $(command -v zstd >/dev/null && echo zstd || echo gzip)"
+      - name: Restore the newest saved .git
+        id: git-cache
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: .git
+          key: git-v1-${{ runner.os }}-${{ steps.git-day.outputs.day }}
+          restore-keys: |
+            git-v1-${{ runner.os }}-${{ steps.git-day.outputs.month }}-
+            git-v1-${{ runner.os }}-
+      - name: Discard a damaged cached .git
+        run: |
+          if [ -d .git ] && ! { git rev-parse --verify -q HEAD >/dev/null &&
+              git fsck --connectivity-only --no-progress >/dev/null 2>&1; }; then
+            echo "::warning title=.git cache::git fsck rejected the restored .git; checking out without it."
+            rm -rf .git
+          fi
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: recursive
+          persist-credentials: false
+          sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
+          sparse-checkout-cone-mode: false
+      - name: Save .git for later runs
+        if: env.SAVE_CACHES == 'true' && steps.git-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: .git
+          key: ${{ steps.git-cache.outputs.cache-primary-key }}
+      - name: Start the resource sampler
+        run: python3 scripts/ci-resource-sampler.py start "$RUNNER_TEMP/resource-samples"
+      - name: Build provider test products
+        id: provider-ci-build
+        uses: ./.github/actions/provider-ci-build
+        with:
+          lane: provider
+          save-caches: ${{ env.SAVE_CACHES }}
+          strict-cache: ${{ inputs.strict_cache }}
+      # Only a run that tests the lane hands its products on; a push of a
+      # tested tree only refreshes the caches.
+      - name: Upload provider test products
+        if: ${{ inputs.provider == 'true' }}
+        uses: ./.github/actions/provider-ci-products
+        with:
+          lane: provider
+          direction: upload
+      # Report-only (scripts/ci-resource-sampler.py): it never fails the job.
+      - name: Report the resource samples
+        if: ${{ always() }}
+        run: python3 scripts/ci-resource-sampler.py report "$RUNNER_TEMP/resource-samples" || true
+      - name: Upload the resource samples
+        if: ${{ always() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: resource-samples-${{ github.job }}-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/resource-samples
+          if-no-files-found: ignore
+          retention-days: 14
+
+  test-provider:
+    # The provider suite runs in shards on separate Macs
+    # (scripts/provider-test-shards.py), each routed through its own
+    # test-provider-<shard> lane. Each shard runs the products of Build
+    # provider test products and PROVIDER_TEST_PROCESSES selections at the
+    # same time, each serially in its own process
+    # (scripts/run-provider-tests.sh). Selection 1 also runs the MLX-free test
+    # targets in one parallel process; shard 1 also runs Prompt Parity. The
+    # last selection runs every suite that no other selection picks; the last
+    # shard then runs the isolated processes and the native gates below,
+    # alone. Each shard then checks that its selections executed exactly their
+    # plans (the last shard also that the plans cover the suite once) and
+    # reports its own coverage.
+    name: Provider Unit Tests (shard ${{ matrix.shard }})
+    needs: build-provider
+    if: ${{ inputs.provider == 'true' }}
+    runs-on: ${{ fromJSON(inputs.routes)[format('test-provider-{0}', matrix.shard)] }}
+    timeout-minutes: 60
+    strategy:
+      # A failed shard does not cancel the other shards.
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    steps:
+      # The fixed build path, as in build-cluster (scripts/ci-test-products.py).
+      - name: Work at the fixed build path
+        run: |
+          cd /
+          rm -rf /private/tmp/dinf /private/tmp/dinf-ci "$GITHUB_WORKSPACE"
+          mkdir -p /private/tmp/dinf /private/tmp/dinf-ci
+          ln -s /private/tmp/dinf "$GITHUB_WORKSPACE"
+      - name: Select today's .git cache
+        id: git-day
+        run: |
+          day=$(date -u +%F)
+          echo "day=$day" >> "$GITHUB_OUTPUT"
+          echo "month=${day%-*}" >> "$GITHUB_OUTPUT"
+          echo "actions/cache compressor: $(command -v zstd >/dev/null && echo zstd || echo gzip)"
+      - name: Restore the newest saved .git
+        id: git-cache
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: .git
+          key: git-v1-${{ runner.os }}-${{ steps.git-day.outputs.day }}
+          restore-keys: |
+            git-v1-${{ runner.os }}-${{ steps.git-day.outputs.month }}-
+            git-v1-${{ runner.os }}-
+      - name: Discard a damaged cached .git
+        run: |
+          if [ -d .git ] && ! { git rev-parse --verify -q HEAD >/dev/null &&
+              git fsck --connectivity-only --no-progress >/dev/null 2>&1; }; then
+            echo "::warning title=.git cache::git fsck rejected the restored .git; checking out without it."
+            rm -rf .git
+          fi
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: recursive
+          persist-credentials: false
+          sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
+          sparse-checkout-cone-mode: false
+      - name: Save .git for later runs
+        if: env.SAVE_CACHES == 'true' && steps.git-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: .git
+          key: ${{ steps.git-cache.outputs.cache-primary-key }}
+      - name: Start the resource sampler
+        run: python3 scripts/ci-resource-sampler.py start "$RUNNER_TEMP/resource-samples"
+      - name: Download provider test products
+        id: test-products
+        uses: ./.github/actions/provider-ci-products
+        with:
+          lane: provider
+          direction: download
+      # The provider lane builds with --enable-code-coverage. Every provider
+      # process after this step writes its own profile here, and the report
+      # step at the end of this job merges them.
+      - name: Collect provider coverage profiles
+        run: |
+          profiles="$RUNNER_TEMP/provider-profiles"
+          mkdir -p "$profiles"
+          echo "PROVIDER_COVERAGE_DIR=$profiles" >> "$GITHUB_ENV"
+          echo "LLVM_PROFILE_FILE=$profiles/%p-%m.profraw" >> "$GITHUB_ENV"
+      - name: Test Qwen resources in a relocated app
+        if: ${{ matrix.shard == strategy.job-total }}
+        run: python3 scripts/test-qwen4-packaged-resources.py
+      - name: Test SwiftPM resource bundle staging
+        if: ${{ matrix.shard == strategy.job-total }}
+        run: python3 scripts/test-stage-swiftpm-resource-bundles.py
+      - name: Test profile inventory authentication in a terminal
+        if: ${{ matrix.shard == strategy.job-total }}
+        run: python3 scripts/test-profile-inventory-auth.py
+      # The pinned metadata downloads, named by their SHA-256; each script
+      # uses an entry only if its bytes still have the pinned digest.
+      - name: Restore verified MiMo metadata downloads
+        id: mimo-metadata-cache
+        if: ${{ !cancelled() && steps.test-products.outcome == 'success' }}
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: /private/tmp/dinf-ci/mimo-metadata-cache
+          key: mimo-metadata-v1-${{ hashFiles('scripts/prepare-mimo-prompt-fixtures.py', 'scripts/prepare-mimo-audio-fixtures.py') }}
+      - name: Prepare pinned public MiMo metadata and original corpus
+        id: mimo-prompt-fixtures
+        if: ${{ !cancelled() && steps.test-products.outcome == 'success' }}
+        run: |
+          python3 scripts/test-prepare-mimo-image-http-fixtures.py
+          python3 scripts/prepare-mimo-prompt-fixtures.py --output "$RUNNER_TEMP/mimo-prompt-fixtures" --github-env "$GITHUB_ENV" --cache /private/tmp/dinf-ci/mimo-metadata-cache
+          python3 scripts/prepare-mimo-image-http-fixtures.py --output "$RUNNER_TEMP/mimo-image-http-fixtures" --github-env "$GITHUB_ENV" --cache /private/tmp/dinf-ci/mimo-metadata-cache
+      - name: Save verified MiMo metadata downloads
+        if: ${{ !cancelled() && env.SAVE_CACHES == 'true' && steps.mimo-prompt-fixtures.outcome == 'success' && steps.mimo-metadata-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: /private/tmp/dinf-ci/mimo-metadata-cache
+          key: ${{ steps.mimo-metadata-cache.outputs.cache-primary-key }}
+      - name: Prepare bounded synthetic MiMo provider fixtures offline
+        id: mimo-fixtures
+        if: ${{ !cancelled() && steps.test-products.outcome == 'success' }}
+        run: |
+          python3 scripts/prepare-mimo-provider-fixtures.py --output "$RUNNER_TEMP/mimo-provider-fixtures" --github-env "$GITHUB_ENV"
+          python3 scripts/prepare-mimo-provider-fixtures.py --output "$RUNNER_TEMP/mimo-prefix-fixtures" --asymmetric
+      - name: Run Swift tests
+        id: provider-unit-tests
+        if: ${{ !cancelled() && steps.test-products.outcome == 'success' && steps.mimo-prompt-fixtures.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
+        timeout-minutes: 35
+        env:
+          MIMO_V26_PROVIDER_LIFETIME_METADATA_TESTS: '1'
+          PROVIDER_TEST_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
+          # Selections per shard, at the same time: 3 on a 12-vCPU runner.
+          PROVIDER_TEST_PROCESSES: '3'
+          PROVIDER_TEST_REPORT_DIR: ${{ runner.temp }}/provider-unit-shard
+        working-directory: provider-swift
+        # Reuse the built bundle and matched metallib. The exact allocator
+        # suite runs in its own process even if the general suite fails.
+        run: |
+          python3 ../scripts/run-provider-test-watchdog.py \
+            --output-dir "$RUNNER_TEMP/provider-test-diagnostics" \
+            --diagnostic-after-seconds 900 --timeout-seconds 1800 \
+            -- ../scripts/run-provider-tests.sh
+      - name: Upload provider test diagnostics
+        if: ${{ !cancelled() && steps.provider-unit-tests.outcome != 'skipped' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: provider-test-diagnostics-${{ matrix.shard }}
+          # The watchdog's diagnostics, and each process's whole output, which
+          # the runner prints only after all of the shard's processes end.
+          path: |
+            ${{ runner.temp }}/provider-test-diagnostics
+            ${{ runner.temp }}/provider-unit-shard/slot-*.out
+          if-no-files-found: warn
+          retention-days: 7
+      # The prompt artifacts both parity steps download (tokenizers, templates
+      # and configs), one file per pinned SHA-256
+      # (scripts/verified_download_cache.py). The key hashes the manifests that
+      # pin them; prepare-prompt-fixtures.py uses an entry only if its bytes
+      # still have the pinned size and digest, and downloads any other.
+      - name: Restore verified prompt fixture downloads
+        id: prompt-fixture-cache
+        if: ${{ !cancelled() && matrix.shard == 1 && steps.test-products.outcome == 'success' }}
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: /private/tmp/dinf-ci/prompt-fixture-cache
+          key: prompt-fixtures-v1-${{ hashFiles('fixtures/prompt-contract/v1/manifests/*.json', 'fixtures/prompt-contract/nemotron/manifests/*.json') }}
+      # Prompt Parity runs once, in shard 1 (the shard of selection
+      # PARITY_SHARD), against the provider products. A failure fails the shard,
+      # and with it the Provider Tests gate. The summary checks each run's
+      # executed count against the suite list.
+      - name: Verify public prompt golden vectors
+        id: prompt-parity
+        if: ${{ !cancelled() && matrix.shard == 1 && steps.test-products.outcome == 'success' && steps.mimo-prompt-fixtures.outcome == 'success' }}
+        env:
+          PROMPT_PARITY_SKIP_BUILD: '1'
+          PROMPT_PARITY_DOWNLOAD_CACHE: /private/tmp/dinf-ci/prompt-fixture-cache
+        run: |
+          set -o pipefail
+          report="$RUNNER_TEMP/provider-unit-shard"
+          mkdir -p "$report"
+          ./scripts/verify-prompt-parity.sh 2>&1 | tee "$report/parity-prompt.log"
+          python3 scripts/provider-test-shards.py counts parity ProductionPromptParityTests \
+            "$report/parity-prompt.log" "$report/shard-parity-prompt.json"
+      - name: Verify pinned Nemotron prompts and numeric cache plans
+        id: nemotron-parity
+        if: ${{ !cancelled() && matrix.shard == 1 && steps.test-products.outcome == 'success' }}
+        env:
+          PROMPT_PARITY_DOWNLOAD_CACHE: /private/tmp/dinf-ci/prompt-fixture-cache
+        run: |
+          set -o pipefail
+          report="$RUNNER_TEMP/provider-unit-shard"
+          mkdir -p "$report"
+          ./scripts/verify-nemotron-prompt-parity.sh 2>&1 | tee "$report/parity-nemotron.log"
+          python3 scripts/provider-test-shards.py counts parity NemotronTemplateParityLiveTests \
+            "$report/parity-nemotron.log" "$report/shard-parity-nemotron.json"
+      # Both parity steps passed, so the cache holds every pinned artifact, and
+      # only verified bytes were stored in it.
+      - name: Save verified prompt fixture downloads
+        if: ${{ !cancelled() && env.SAVE_CACHES == 'true' && matrix.shard == 1 && steps.prompt-parity.outcome == 'success' && steps.nemotron-parity.outcome == 'success' && steps.prompt-fixture-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: /private/tmp/dinf-ci/prompt-fixture-cache
+          key: ${{ steps.prompt-fixture-cache.outputs.cache-primary-key }}
+      - name: Test desktop control API with isolated local state
+        if: ${{ !cancelled() && matrix.shard == strategy.job-total && steps.test-products.outcome == 'success' }}
+        timeout-minutes: 3
+        run: python3 scripts/test-desktop-api.py provider-swift/.build/debug/darkbloom
+      - name: Run isolated native MiMo startup gates
+        if: ${{ !cancelled() && matrix.shard == strategy.job-total && steps.test-products.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
+        working-directory: provider-swift
+        timeout-minutes: 5
+        env:
+          MIMO_V26_SERIAL_NATIVE_TESTS: '1'
+        run: ../scripts/run-nested-suite.sh 'MiMoV26StandaloneLifecycleTests.test(ActualScannerPreloadStartsListenerWithSameNativeOwner|StartRefusesActualUnpublishedPreloadWithoutReplacingOwner)' --no-parallel
+      - name: Run isolated native MiMo memory admission gates
+        if: ${{ !cancelled() && matrix.shard == strategy.job-total && steps.test-products.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
+        working-directory: provider-swift
+        timeout-minutes: 5
+        env:
+          MIMO_V26_SERIAL_NATIVE_TESTS: '1'
+        run: ../scripts/run-nested-suite.sh 'testNativeMemoryAdmission|testNativeShutdownActivitySurvivesPendingHostUntilRealQuiescentDrain' --no-parallel
+      - name: Run isolated native MiMo media admission gates
+        if: ${{ !cancelled() && matrix.shard == strategy.job-total && steps.test-products.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
+        working-directory: provider-swift
+        timeout-minutes: 5
+        env:
+          MIMO_V26_SERIAL_NATIVE_TESTS: '1'
+        run: ../scripts/run-nested-suite.sh 'testNativeMediaRelease|testAuthenticatedChatResponsesActuallyRouteEncodedImageThroughNativeBridge|testActualMemoryBackedVideoIndicesAndAuthenticatedNativeRoute|testNativeIdleBootstrapLearnsRealTargetRateAndKeepsTextRateIsolated|testNativePreparedSealReachesRealAtomicDeadlineRejectionWithoutLosingCharge|testTypedDeadlineGatePreservesRawTextAndOffPolicyAndRefusesForeignCapability|MiMoMediaDecodeMemoryTests' --no-parallel
+      - name: Run isolated native MiMo complete-prefix gates
+        if: ${{ !cancelled() && matrix.shard == strategy.job-total && steps.test-products.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
+        working-directory: provider-swift
+        timeout-minutes: 5
+        env:
+          MIMO_V26_SERIAL_NATIVE_TESTS: '1'
+          MIMO_V26_SERIAL_LOAD_FIXTURES: ${{ runner.temp }}/mimo-prefix-fixtures
+        run: ../scripts/run-nested-suite.sh 'MiMoV26NativeLoadTransactionTests.testNativeCompletePrefix' --no-parallel
+      - name: Run isolated native MiMo retained-fault gate
+        if: ${{ !cancelled() && matrix.shard == strategy.job-total && steps.test-products.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
+        working-directory: provider-swift
+        timeout-minutes: 5
+        env:
+          MIMO_V26_SERIAL_NATIVE_TESTS: '1'
+          MIMO_V26_PROVIDER_LIFETIME_NATIVE_TESTS: '1'
+          MIMO_V26_PROVIDER_LIFETIME_FAULT_CASE: testNativeFenceRefusalKeepsActualBundlePermitAndBlocksOtherOwnerReclaim
+          DARKBLOOM_PREFIX_CACHE: '0'
+          DARKBLOOM_PREFIX_CACHE_MEMORY: '0'
+        run: ../scripts/run-nested-suite.sh testNativeFenceRefusalKeepsActualBundlePermitAndBlocksOtherOwnerReclaim --no-parallel
+      - name: Run isolated native MiMo lifecycle drain gate
+        if: ${{ !cancelled() && matrix.shard == strategy.job-total && steps.test-products.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
+        working-directory: provider-swift
+        timeout-minutes: 5
+        env:
+          MIMO_V26_SERIAL_NATIVE_TESTS: '1'
+          MIMO_V26_PROVIDER_LIFETIME_NATIVE_TESTS: '1'
+          DARKBLOOM_PREFIX_CACHE: '0'
+          DARKBLOOM_PREFIX_CACHE_MEMORY: '0'
+        run: ../scripts/run-nested-suite.sh testGracefulDrainAfterServedRequestRetiresNativeOwnerWithinDeadline --no-parallel
+      # The 1.87 GB codec is fetched only when the audio gate's inputs changed
+      # (scripts/ci-component-paths.py MIMO_AUDIO) and on master pushes.
+      - name: Restore pinned MiMo audio codec
+        if: ${{ !cancelled() && matrix.shard == strategy.job-total && steps.test-products.outcome == 'success' && inputs.mimo_audio == 'true' }}
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57
+        id: mimo-audio-cache
+        with:
+          path: /private/tmp/dinf-ci/mimo-audio-source
+          key: mimo-audio-source-v2-077033345d80eef3a315e8d394e0589667e80e4cdaba9bc5a7488410c6657265
+      - name: Prepare selected MiMo audio fixture
+        id: mimo-audio-fixtures
+        if: ${{ !cancelled() && matrix.shard == strategy.job-total && steps.test-products.outcome == 'success' && inputs.mimo_audio == 'true' }}
+        run: python3 scripts/prepare-mimo-audio-fixtures.py --cache /private/tmp/dinf-ci/mimo-audio-source --output "$RUNNER_TEMP/mimo-audio-fixtures" --github-env "$GITHUB_ENV"
+      - name: Cache verified MiMo audio codec
+        if: ${{ !cancelled() && env.SAVE_CACHES == 'true' && matrix.shard == strategy.job-total && steps.mimo-audio-fixtures.outcome == 'success' && steps.mimo-audio-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57
+        with:
+          path: /private/tmp/dinf-ci/mimo-audio-source
+          key: mimo-audio-source-v2-077033345d80eef3a315e8d394e0589667e80e4cdaba9bc5a7488410c6657265
+      - name: Run isolated native MiMo audio gate
+        if: ${{ !cancelled() && matrix.shard == strategy.job-total && steps.test-products.outcome == 'success' && steps.mimo-audio-fixtures.outcome == 'success' }}
+        working-directory: provider-swift
+        timeout-minutes: 5
+        env:
+          MIMO_V26_SERIAL_NATIVE_TESTS: '1'
+          MIMO_V26_MANAGED_AUDIO_PROVIDER_TESTS: '1'
+        run: ../scripts/run-nested-suite.sh testNativeAudioRelease --no-parallel
+      - name: Run atomic installer artifact tests
+        if: ${{ !cancelled() && matrix.shard == strategy.job-total }}
+        timeout-minutes: 2
+        run: ./scripts/test-install-atomic.sh
+      # Report-only coverage: each shard merges its own profiles and writes
+      # its own report.
+      - name: Merge shard coverage profiles
+        if: ${{ !cancelled() && steps.provider-unit-tests.outcome != 'skipped' }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          profiles=("$PROVIDER_COVERAGE_DIR"/*.profraw)
+          if [ "${#profiles[@]}" -eq 0 ]; then
+            echo "::error::No provider coverage profiles in $PROVIDER_COVERAGE_DIR"
+            exit 1
+          fi
+          echo "Merging ${#profiles[@]} provider coverage profiles"
+          mkdir -p "$RUNNER_TEMP/provider-unit-shard"
+          xcrun llvm-profdata merge -sparse -o "$RUNNER_TEMP/provider-unit-shard/provider.profdata" "${profiles[@]}"
+      # The full-suite audit, split by job: this shard's selections each ran
+      # exactly their plan, and the last shard checks that all plans cover
+      # `swift test list` once (scripts/provider-test-shards.py audit-job).
+      - name: Check this shard's selections against the suite list
+        if: ${{ !cancelled() && steps.provider-unit-tests.outcome != 'skipped' }}
+        working-directory: provider-swift
+        env:
+          PROVIDER_TEST_PROCESSES: '3'
+          SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
+        run: |
+          set -euo pipefail
+          swift test list --skip-build > "$RUNNER_TEMP/provider-tests.txt"
+          python3 ../scripts/provider-test-shards.py audit-job "$RUNNER_TEMP/provider-tests.txt" \
+            "$RUNNER_TEMP/provider-unit-shard" "$SHARD"
+      # Report-only. The test steps above keep their own exit codes, so a
+      # coverage failure here cannot hide or replace a test failure.
+      - name: Report provider coverage
+        id: provider-coverage
+        if: ${{ !cancelled() && steps.provider-unit-tests.outcome != 'skipped' }}
+        working-directory: provider-swift
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          # This shard's processes only: the shards run at the same time, so
+          # no job sees the others' profiles.
+          out="$RUNNER_TEMP/provider-coverage"
+          mkdir -p "$out"
+          cp "$RUNNER_TEMP/provider-unit-shard/provider.profdata" "$out/provider.profdata"
+          bin=$(swift build --show-bin-path)
+          # The test bundle holds the libraries and the executables the tests
+          # import; the executables are added so their own code also counts.
+          bundles=("$bin"/*.xctest)
+          if [ "${#bundles[@]}" -eq 0 ]; then
+            echo "::error::No test bundle in $bin"
+            exit 1
+          fi
+          binaries=()
+          for bundle in "${bundles[@]}"; do
+            binaries+=("$bundle/Contents/MacOS/$(basename "$bundle" .xctest)")
+          done
+          for tool in darkbloom darkbloom-fan-helper darkbloom-enclave darkbloom-publish; do
+            binaries+=("$bin/$tool")
+          done
+          # llvm-cov takes the first binary as an argument, the rest as -object.
+          args=("${binaries[0]}")
+          for binary in "${binaries[@]:1}"; do
+            args+=(-object "$binary")
+          done
+          args+=(-instr-profile "$out/provider.profdata"
+            -ignore-filename-regex '/(Tests|\.build|libs)/'
+            "$PWD/Sources")
+          xcrun llvm-cov report "${args[@]}" > "$out/provider-coverage.txt"
+          tail -n 1 "$out/provider-coverage.txt"
+          xcrun llvm-cov export -summary-only "${args[@]}" > "$out/provider-coverage.json"
+          # One row for the code that serves requests (the product), one each
+          # for the CLI and the benchmark harness, and the total of all files.
+          # Each value is read by its field name; a missing field or an empty
+          # row fails the step.
+          python3 - "$out/provider-coverage.json" "$PWD/Sources" \
+            > "$out/provider-coverage-summary.md" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1]) as export:
+              coverage = json.load(export)["data"][0]
+          source_root = sys.argv[2].rstrip("/") + "/"
+          product = ["ProviderCore", "ProviderCoreFoundation", "ProviderAppAttest", "DarkbloomFanCore"]
+          rows = {
+              "Provider (Swift) product": product,
+              "Provider CLI (`darkbloom`)": ["darkbloom"],
+              "Provider benchmark (`ProviderBenchmark`)": ["ProviderBenchmark"],
+          }
+          row_by_target = {target: name for name, targets in rows.items() for target in targets}
+          metrics = ("lines", "regions", "functions")
+          totals_by_row = {name: {metric: [0, 0] for metric in metrics} for name in rows}
+          seen_targets = set()
+          for entry in coverage["files"]:
+              target = entry["filename"].removeprefix(source_root).split("/")[0]
+              seen_targets.add(target)
+              if target not in row_by_target:
+                  continue
+              row_totals = totals_by_row[row_by_target[target]]
+              for metric in metrics:
+                  row_totals[metric][0] += entry["summary"][metric]["covered"]
+                  row_totals[metric][1] += entry["summary"][metric]["count"]
+          totals_by_row["Provider (Swift) total"] = {
+              metric: [coverage["totals"][metric]["covered"], coverage["totals"][metric]["count"]]
+              for metric in metrics
+          }
+          print("| Component | Statements or Lines | Regions or Branches | Functions | Target |")
+          print("|---|---|---|---|---|")
+          for name, row_totals in totals_by_row.items():
+              if row_totals["lines"][1] == 0:
+                  sys.exit(f"No lines for {name}")
+              lines, regions, functions = (
+                  f"{100 * covered / count:.2f}%"
+                  for covered, count in (row_totals[metric] for metric in metrics)
+              )
+              print(f"| {name} | {lines} of {row_totals['lines'][1]:,} lines | {regions} regions | {functions} | 80% (report-only) |")
+          product_names = [f"`{target}`" for target in product]
+          other = ", ".join(f"`{target}`" for target in sorted(seen_targets.difference(row_by_target), key=str.lower))
+          print()
+          print(f"The product row counts the code that serves requests: {', '.join(product_names[:-1])} and {product_names[-1]}. "
+                f"The CLI and the benchmark harness have their own rows. The total counts every file in the report. These targets are only in the total: {other}.")
+          PY
+          cat "$out/provider-coverage-summary.md"
+          {
+            cat "$out/provider-coverage-summary.md"
+            echo
+            echo "Denominator: Swift lines and regions in \`provider-swift/Sources\`, from this shard's provider test processes (each shard reports its own); Prompt Parity counts in shard 1."
+            echo
+            echo "Excluded: \`Tests/\`, \`.build/\` (dependencies and generated code), the \`libs/\` checkouts, and the one C++ file in \`ProviderMetallibControl\`, which is not instrumented; Swift has no branch counters, so branches are not reported."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload provider coverage report
+        if: ${{ !cancelled() && steps.provider-coverage.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: provider-coverage-${{ matrix.shard }}
+          path: |
+            ${{ runner.temp }}/provider-coverage/provider-coverage.txt
+            ${{ runner.temp }}/provider-coverage/provider-coverage.json
+            ${{ runner.temp }}/provider-coverage/provider-coverage-summary.md
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload shard counts, timings and coverage
+        if: ${{ !cancelled() && steps.provider-unit-tests.outcome != 'skipped' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: provider-unit-shard-${{ matrix.shard }}
+          path: |
+            ${{ runner.temp }}/provider-unit-shard/*.json
+            ${{ runner.temp }}/provider-unit-shard/*.xml
+            ${{ runner.temp }}/provider-unit-shard/attempt-1-*.log
+            ${{ runner.temp }}/provider-unit-shard/provider.profdata
+          if-no-files-found: error
+          retention-days: 14
+      # Report-only (scripts/ci-resource-sampler.py): it never fails the job.
+      - name: Report the resource samples
+        if: ${{ always() }}
+        run: python3 scripts/ci-resource-sampler.py report "$RUNNER_TEMP/resource-samples" || true
+      - name: Upload the resource samples
+        if: ${{ always() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: resource-samples-${{ github.job }}-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/resource-samples
+          if-no-files-found: ignore
+          retention-days: 14
+
+  test-cluster:
+    # DarkbloomClusterRuntimeTests in selections, each in its own process, on
+    # separate Macs (scripts/cluster-test-plan.py): every test without a
+    # switch, and the switched tests that pass on these runners. Shard 1 runs
+    # the base selection alone, then the share probe; shards 2 and 3 each run
+    # their ordered groups of selections at the same time; shards 4 and 5
+    # each run one half of the Gemma 4 base suites alone.
+    name: Cluster Runtime Tests (shard ${{ matrix.shard }})
+    needs: build-cluster
+    if: ${{ inputs.cluster == 'true' }}
+    runs-on: ${{ fromJSON(inputs.routes)[matrix.lane] }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      # Each shard and the route lane it reads (provider-plan.yml). Shards 2
+      # and 3 share test-cluster-2, and shards 4 and 5 test-cluster-3: each
+      # of those lanes is requested for its 2 jobs and carries one size.
+      matrix:
+        include:
+          - {shard: 1, lane: test-cluster-1}
+          - {shard: 2, lane: test-cluster-2}
+          - {shard: 3, lane: test-cluster-2}
+          - {shard: 4, lane: test-cluster-3}
+          - {shard: 5, lane: test-cluster-3}
+    steps:
+      # The fixed build path, as in build-cluster (scripts/ci-test-products.py).
+      - name: Work at the fixed build path
+        run: |
+          cd /
+          rm -rf /private/tmp/dinf /private/tmp/dinf-ci "$GITHUB_WORKSPACE"
+          mkdir -p /private/tmp/dinf /private/tmp/dinf-ci
+          ln -s /private/tmp/dinf "$GITHUB_WORKSPACE"
+      - name: Select today's .git cache
+        id: git-day
+        run: |
+          day=$(date -u +%F)
+          echo "day=$day" >> "$GITHUB_OUTPUT"
+          echo "month=${day%-*}" >> "$GITHUB_OUTPUT"
+          echo "actions/cache compressor: $(command -v zstd >/dev/null && echo zstd || echo gzip)"
+      - name: Restore the newest saved .git
+        id: git-cache
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: .git
+          key: git-v1-${{ runner.os }}-${{ steps.git-day.outputs.day }}
+          restore-keys: |
+            git-v1-${{ runner.os }}-${{ steps.git-day.outputs.month }}-
+            git-v1-${{ runner.os }}-
+      - name: Discard a damaged cached .git
+        run: |
+          if [ -d .git ] && ! { git rev-parse --verify -q HEAD >/dev/null &&
+              git fsck --connectivity-only --no-progress >/dev/null 2>&1; }; then
+            echo "::warning title=.git cache::git fsck rejected the restored .git; checking out without it."
+            rm -rf .git
+          fi
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: recursive
+          persist-credentials: false
+          sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
+          sparse-checkout-cone-mode: false
+      - name: Save .git for later runs
+        if: env.SAVE_CACHES == 'true' && steps.git-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: .git
+          key: ${{ steps.git-cache.outputs.cache-primary-key }}
+      - name: Start the resource sampler
+        run: python3 scripts/ci-resource-sampler.py start "$RUNNER_TEMP/resource-samples"
+      - name: Download cluster test products
+        id: test-products
+        uses: ./.github/actions/provider-ci-products
+        with:
+          lane: cluster
+          direction: download
+      - name: Run cluster runtime tests
+        if: ${{ !cancelled() && steps.test-products.outcome == 'success' }}
+        timeout-minutes: 40
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: python3 scripts/cluster-test-plan.py run blocking "$SHARD"
+      # Report-only (scripts/ci-resource-sampler.py): it never fails the job.
+      - name: Report the resource samples
+        if: ${{ always() }}
+        run: python3 scripts/ci-resource-sampler.py report "$RUNNER_TEMP/resource-samples" || true
+      - name: Upload the resource samples
+        if: ${{ always() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: resource-samples-${{ github.job }}-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/resource-samples
+          if-no-files-found: ignore
+          retention-days: 14
+
+  test-cluster-gpu:
+    # The switched cluster runtime tests these runners cannot pass, the long
+    # ones and the benchmarks (scripts/cluster-test-plan.py). They run and
+    # report whenever the cluster jobs run; a failure does not fail the
+    # workflow. Shards 1 and 3 each run one half of the real-geometry rows
+    # check. Shard 2 uses 42 GiB, more than any signed Darkbloom size, so
+    # every shard runs on Blacksmith without asking the route
+    # (provider-plan.yml).
+    name: Cluster GPU Tests (non-blocking, shard ${{ matrix.shard }})
+    needs: build-cluster
+    if: ${{ inputs.cluster == 'true' }}
+    runs-on: blacksmith-12vcpu-macos-27
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      # The fixed build path, as in build-cluster (scripts/ci-test-products.py).
+      - name: Work at the fixed build path
+        run: |
+          cd /
+          rm -rf /private/tmp/dinf /private/tmp/dinf-ci "$GITHUB_WORKSPACE"
+          mkdir -p /private/tmp/dinf /private/tmp/dinf-ci
+          ln -s /private/tmp/dinf "$GITHUB_WORKSPACE"
+      - name: Select today's .git cache
+        id: git-day
+        run: |
+          day=$(date -u +%F)
+          echo "day=$day" >> "$GITHUB_OUTPUT"
+          echo "month=${day%-*}" >> "$GITHUB_OUTPUT"
+          echo "actions/cache compressor: $(command -v zstd >/dev/null && echo zstd || echo gzip)"
+      - name: Restore the newest saved .git
+        id: git-cache
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: .git
+          key: git-v1-${{ runner.os }}-${{ steps.git-day.outputs.day }}
+          restore-keys: |
+            git-v1-${{ runner.os }}-${{ steps.git-day.outputs.month }}-
+            git-v1-${{ runner.os }}-
+      - name: Discard a damaged cached .git
+        run: |
+          if [ -d .git ] && ! { git rev-parse --verify -q HEAD >/dev/null &&
+              git fsck --connectivity-only --no-progress >/dev/null 2>&1; }; then
+            echo "::warning title=.git cache::git fsck rejected the restored .git; checking out without it."
+            rm -rf .git
+          fi
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: recursive
+          persist-credentials: false
+          sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
+          sparse-checkout-cone-mode: false
+      - name: Save .git for later runs
+        if: env.SAVE_CACHES == 'true' && steps.git-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: .git
+          key: ${{ steps.git-cache.outputs.cache-primary-key }}
+      - name: Start the resource sampler
+        run: python3 scripts/ci-resource-sampler.py start "$RUNNER_TEMP/resource-samples"
+      - name: Download cluster test products
+        id: test-products
+        uses: ./.github/actions/provider-ci-products
+        with:
+          lane: cluster
+          direction: download
+      - name: Run non-blocking cluster GPU tests
+        if: ${{ !cancelled() && steps.test-products.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 40
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: python3 scripts/cluster-test-plan.py run nonblocking "$SHARD"
+      # Report-only (scripts/ci-resource-sampler.py): it never fails the job.
+      - name: Report the resource samples
+        if: ${{ always() }}
+        run: python3 scripts/ci-resource-sampler.py report "$RUNNER_TEMP/resource-samples" || true
+      - name: Upload the resource samples
+        if: ${{ always() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: resource-samples-${{ github.job }}-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/resource-samples
+          if-no-files-found: ignore
+          retention-days: 14
+
+  cluster-release-checks:
+    # The worker capability and prefill schedule checks compile a release
+    # build of the cluster runtime and MLX (each runner its own source
+    # closure; no GPU, no model load, no weights), so they run in a job of
+    # their own: no test job waits for them. The build is reused across runs:
+    # SwiftPM rebuilds what changed, and source timestamps are restored only
+    # for files whose contents match the cached build's
+    # (scripts/provider-release-cache.py). Its lane asks only with its size,
+    # while job sizes are on, as the build jobs' lanes do; otherwise it runs
+    # on Blacksmith (provider-plan.yml).
+    name: Cluster Release Build Checks
+    if: ${{ inputs.cluster == 'true' }}
+    runs-on: ${{ fromJSON(inputs.routes)['cluster-release-checks'] }}
+    timeout-minutes: 60
+    steps:
+      - name: Select today's .git cache
+        id: git-day
+        run: |
+          day=$(date -u +%F)
+          echo "day=$day" >> "$GITHUB_OUTPUT"
+          echo "month=${day%-*}" >> "$GITHUB_OUTPUT"
+          echo "actions/cache compressor: $(command -v zstd >/dev/null && echo zstd || echo gzip)"
+      - name: Restore the newest saved .git
+        id: git-cache
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: .git
+          key: git-v1-${{ runner.os }}-${{ steps.git-day.outputs.day }}
+          restore-keys: |
+            git-v1-${{ runner.os }}-${{ steps.git-day.outputs.month }}-
+            git-v1-${{ runner.os }}-
+      - name: Discard a damaged cached .git
+        run: |
+          if [ -d .git ] && ! { git rev-parse --verify -q HEAD >/dev/null &&
+              git fsck --connectivity-only --no-progress >/dev/null 2>&1; }; then
+            echo "::warning title=.git cache::git fsck rejected the restored .git; checking out without it."
+            rm -rf .git
+          fi
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: recursive
+          persist-credentials: false
+          sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
+          sparse-checkout-cone-mode: false
+      - name: Save .git for later runs
+        if: env.SAVE_CACHES == 'true' && steps.git-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: .git
+          key: ${{ steps.git-cache.outputs.cache-primary-key }}
+      - name: Start the resource sampler
+        run: python3 scripts/ci-resource-sampler.py start "$RUNNER_TEMP/resource-samples"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.10'
+      - name: Select SDK 27 provider toolchain
+        id: toolchain
+        run: ./scripts/prepare-provider-release-toolchain.sh
+      # The key binds the toolchain, the package manifests, the submodule pins,
+      # the runner script and the paths; it drops `git describe` text, which
+      # depends on the refs a cached .git holds.
+      - name: Resolve cluster metadata build cache key
+        id: cluster-build-key
+        if: ${{ steps.toolchain.outcome == 'success' }}
+        env:
+          MANIFESTS: ${{ hashFiles('libs/darkbloom-cluster/Package.swift', 'libs/darkbloom-cluster/Package.resolved', 'libs/darkbloom-cluster-worker/Package.swift', 'libs/darkbloom-cluster-worker/Package.resolved', 'libs/darkbloom-cluster/Tests/Support/native-metadata.sh', '.gitmodules') }}
+        run: |
+          set -euo pipefail
+          identity=$( { swift --version 2>&1; xcodebuild -version; xcrun --show-sdk-path; \
+            git submodule status --recursive | awk '{print $1, $2}'; echo "$GITHUB_WORKSPACE $RUNNER_TEMP $MANIFESTS"; } | shasum -a 256 | cut -c1-32)
+          echo "prefix=cluster-metadata-release-v1-$identity-" >> "$GITHUB_OUTPUT"
+          echo "key=cluster-metadata-release-v1-$identity-$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+      - name: Restore cluster metadata build
+        id: cluster-build-cache
+        if: ${{ steps.cluster-build-key.outcome == 'success' }}
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ${{ runner.temp }}/cluster-native-metadata
+          key: ${{ steps.cluster-build-key.outputs.key }}
+          restore-keys: ${{ steps.cluster-build-key.outputs.prefix }}
+      - name: Restore unchanged source timestamps
+        if: ${{ steps.cluster-build-key.outcome == 'success' }}
+        run: |
+          manifest="$RUNNER_TEMP/cluster-native-metadata/provider-release-source-mtimes.json"
+          if [ -f "$manifest" ]; then
+            mkdir -p provider-swift/.build
+            cp "$manifest" provider-swift/.build/
+            python3 scripts/provider-release-cache.py restore-mtimes
+          fi
+      - name: Run worker capability checks
+        id: capability-checks
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        # The runner is this job's alone: compile the native closure on all its cores.
+        env:
+          DARKBLOOM_CLUSTER_METADATA_BUILD_JOBS: '12'
+          DARKBLOOM_CLUSTER_METADATA_BUILD_ROOT: ${{ runner.temp }}/cluster-native-metadata
+        run: bash libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh
+      # Builds the bootstrap product beside the capability runner's, in the same
+      # retained build, before the steps below record and save it.
+      - name: Run prefill schedule checks
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        env:
+          DARKBLOOM_CLUSTER_METADATA_BUILD_JOBS: '12'
+          DARKBLOOM_CLUSTER_METADATA_BUILD_ROOT: ${{ runner.temp }}/cluster-native-metadata
+        run: bash libs/darkbloom-cluster/Tests/PrefillScheduleChecks/run.sh
+      # Only pushes to master and dev save the cluster build (SAVE_CACHES).
+      - name: Record source timestamps for the cluster build
+        if: ${{ !cancelled() && env.SAVE_CACHES == 'true' && steps.capability-checks.outcome == 'success' && steps.cluster-build-cache.outputs.cache-hit != 'true' }}
+        run: |
+          python3 scripts/provider-release-cache.py snapshot-mtimes
+          cp provider-swift/.build/provider-release-source-mtimes.json "$RUNNER_TEMP/cluster-native-metadata/"
+      - name: Upload cluster metadata build cache
+        if: ${{ !cancelled() && env.SAVE_CACHES == 'true' && steps.capability-checks.outcome == 'success' && steps.cluster-build-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ${{ runner.temp }}/cluster-native-metadata
+          key: ${{ steps.cluster-build-key.outputs.key }}
+      # Report-only (scripts/ci-resource-sampler.py): it never fails the job.
+      - name: Report the resource samples
+        if: ${{ always() }}
+        run: python3 scripts/ci-resource-sampler.py report "$RUNNER_TEMP/resource-samples" || true
+      - name: Upload the resource samples
+        if: ${{ always() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: resource-samples-${{ github.job }}-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/resource-samples
+          if-no-files-found: ignore
+          retention-days: 14
+
+  test-cluster-focused:
+    # The model-free cluster check runners on two Macs; each compiles its own
+    # source closure and runs on retained fixtures (no GPU, no model load, no
+    # weights; every runner runs even after another fails). Shard 1 runs the
+    # runner scripts under libs/darkbloom-cluster/Tests
+    # (scripts/cluster-test-plan.py focused lane) and the pairing, diagnostics
+    # and placement flow runners;
+    # shard 2 runs the stage metadata, provisioning, onboarding and console
+    # runners. They need no test
+    # products. Both shards read the one lane test-cluster-focused, which the
+    # route requests for 2 jobs (provider-plan.yml).
+    name: Cluster Focused Checks (shard ${{ matrix.shard }})
+    if: ${{ inputs.cluster == 'true' }}
+    runs-on: ${{ fromJSON(inputs.routes)['test-cluster-focused'] }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    steps:
+      - name: Select today's .git cache
+        id: git-day
+        run: |
+          day=$(date -u +%F)
+          echo "day=$day" >> "$GITHUB_OUTPUT"
+          echo "month=${day%-*}" >> "$GITHUB_OUTPUT"
+          echo "actions/cache compressor: $(command -v zstd >/dev/null && echo zstd || echo gzip)"
+      - name: Restore the newest saved .git
+        id: git-cache
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: .git
+          key: git-v1-${{ runner.os }}-${{ steps.git-day.outputs.day }}
+          restore-keys: |
+            git-v1-${{ runner.os }}-${{ steps.git-day.outputs.month }}-
+            git-v1-${{ runner.os }}-
+      - name: Discard a damaged cached .git
+        run: |
+          if [ -d .git ] && ! { git rev-parse --verify -q HEAD >/dev/null &&
+              git fsck --connectivity-only --no-progress >/dev/null 2>&1; }; then
+            echo "::warning title=.git cache::git fsck rejected the restored .git; checking out without it."
+            rm -rf .git
+          fi
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: recursive
+          persist-credentials: false
+          sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
+          sparse-checkout-cone-mode: false
+      - name: Save .git for later runs
+        if: env.SAVE_CACHES == 'true' && steps.git-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: .git
+          key: ${{ steps.git-cache.outputs.cache-primary-key }}
+      - name: Start the resource sampler
+        run: python3 scripts/ci-resource-sampler.py start "$RUNNER_TEMP/resource-samples"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.10'
+      - name: Select SDK 27 provider toolchain
+        id: toolchain
+        run: ./scripts/prepare-provider-release-toolchain.sh
+      - name: Run stage metadata checks
+        if: ${{ !cancelled() && matrix.shard == 2 && steps.toolchain.outcome == 'success' }}
+        run: python3 libs/darkbloom-cluster/Tests/StageMetadataChecks/run.py --output "$RUNNER_TEMP/stage-metadata-checks"
+      - name: Run GPT-OSS stage checks
+        if: ${{ !cancelled() && matrix.shard == 2 && steps.toolchain.outcome == 'success' }}
+        run: bash libs/darkbloom-cluster/Tests/GPTOSSStageChecks/run.sh
+      - name: Run Nemotron stage checks
+        if: ${{ !cancelled() && matrix.shard == 2 && steps.toolchain.outcome == 'success' }}
+        run: bash libs/darkbloom-cluster/Tests/NemotronStageChecks/run.sh
+      # The download cache-policy check of the same runner stays on a Mac: on the
+      # hosted VM, 0.75 of the pages written with F_NOCACHE stayed resident
+      # (run 40804083002), which the VM's kernel and disk decide, not the code.
+      - name: Run cluster model provisioning checks
+        if: ${{ !cancelled() && matrix.shard == 2 && steps.toolchain.outcome == 'success' }}
+        run: bash provider-swift/Tests/ClusterModelProvisioningChecks/run.sh provisioning
+      - name: Run cluster onboarding checks
+        if: ${{ !cancelled() && matrix.shard == 2 && steps.toolchain.outcome == 'success' }}
+        run: bash provider-swift/Tests/ClusterOnboardingChecks/run.sh
+      - name: Run cluster console checks
+        if: ${{ !cancelled() && matrix.shard == 2 && steps.toolchain.outcome == 'success' }}
+        run: bash provider-swift/Tests/ClusterConsoleChecks/run.sh
+      - name: Run cluster pairing checks
+        if: ${{ !cancelled() && matrix.shard == 1 && steps.toolchain.outcome == 'success' }}
+        run: bash provider-swift/Tests/ClusterPairingChecks/run.sh
+      - name: Run cluster diagnostics checks
+        if: ${{ !cancelled() && matrix.shard == 1 && steps.toolchain.outcome == 'success' }}
+        run: bash provider-swift/Tests/ClusterDiagnosticsChecks/run.sh
+      - name: Run cluster placement flow checks
+        if: ${{ !cancelled() && matrix.shard == 1 && steps.toolchain.outcome == 'success' }}
+        run: bash provider-swift/Tests/ClusterPlacementChecks/run-flow.sh
+      - name: Run cluster focused checks
+        if: ${{ !cancelled() && matrix.shard == 1 && steps.toolchain.outcome == 'success' }}
+        timeout-minutes: 40
+        run: python3 scripts/cluster-test-plan.py run focused 1
+      # Report-only (scripts/ci-resource-sampler.py): it never fails the job.
+      - name: Report the resource samples
+        if: ${{ always() }}
+        run: python3 scripts/ci-resource-sampler.py report "$RUNNER_TEMP/resource-samples" || true
+      - name: Upload the resource samples
+        if: ${{ always() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: resource-samples-${{ github.job }}-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/resource-samples
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # The CI plans run on dev too, not only in master's Release Integrity: the
+  # cluster plan's audit against the sources and this workflow, the provider
+  # shard plan, the component classifier, the tested-change lookup, the route,
+  # the workflow pins, the test products hand-off and the resource sampler.
+  # Python only; no build and no test result, so they run beside the test
+  # jobs, on every run, and the Provider Tests gate requires them.
+  ci-plan-checks:
+    name: Check the CI plans
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          filter: blob:none
+          sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
+          sparse-checkout-cone-mode: false
+      - name: Check the CI plans
+        if: ${{ !cancelled() }}
+        run: |
+          python3 scripts/cluster-test-plan.py audit
+          python3 scripts/test-cluster-test-plan.py
+          python3 scripts/test-provider-test-shards.py
+          python3 scripts/test-ci-component-paths.py
+          python3 scripts/test-ci-tested-tree.py
+          python3 scripts/test-darkbloom-route.py
+          python3 scripts/test-provider-ci-workflow.py
+          python3 scripts/test-ci-test-products.py
+          python3 scripts/test-ci-resource-sampler.py
+      # dev has no Release Integrity, so this job runs the Date comparison
+      # check too. SDK 27.2 back-deploys Date's >= and <=; pre-release macOS
+      # 27.2 builds lack the symbols. The release build also checks the built
+      # binaries (.github/actions/provider-release-build).
+      - name: Refuse back-deployed Date comparisons in provider source
+        if: ${{ !cancelled() }}
+        run: |
+          python3 scripts/test-check-date-comparisons.py
+          python3 scripts/test-check-provider-weak-imports.py
+          python3 scripts/check-date-comparisons.py
+      # The prompt fixture downloaders' retry and redirect rules, offline: no Mac, no network.
+      # Master also runs the first in its provider script checks.
+      - name: Test the prompt fixture downloaders offline
+        if: ${{ !cancelled() }}
+        run: |
+          python3 scripts/test-prepare-prompt-fixtures.py
+          python3 scripts/test-prepare-mimo-prompt-fixtures.py
+          python3 scripts/test-prepare-mimo-image-http-fixtures.py
+
+  provider-test-gate:
+    name: Provider Tests
+    runs-on: ubuntu-24.04
+    # The test jobs need their build jobs: a failed build skips its test jobs,
+    # and a skipped test job that should have run fails this gate.
+    needs: [test-provider, test-cluster, test-cluster-focused, cluster-release-checks, ci-plan-checks]
+    if: ${{ always() }}
+    permissions:
+      contents: read
+    steps:
+      - name: Require selected provider lanes or verified intentional skips
+        env:
+          CHANGES_RESULT: ${{ inputs.changes_result }}
+          SKIP: ${{ inputs.skip }}
+          TESTED_RUN: ${{ inputs.tested_run }}
+          PROVIDER_CHANGED: ${{ inputs.provider }}
+          CLUSTER_CHANGED: ${{ inputs.cluster }}
+          UNIT_RESULT: ${{ needs.test-provider.result }}
+          CLUSTER_RESULT: ${{ needs.test-cluster.result }}
+          CLUSTER_FOCUSED_RESULT: ${{ needs.test-cluster-focused.result }}
+          CLUSTER_RELEASE_RESULT: ${{ needs.cluster-release-checks.result }}
+        run: |
+          test "$CHANGES_RESULT" = success
+          # A tree that a successful run of this workflow already tested runs
+          # no test job here (provider-plan.yml); the plan then selects none.
+          if [ "$SKIP" = true ]; then
+            echo "::notice title=Tested once::This tree passed in $TESTED_RUN; no test job ran."
+          fi
+          case "$PROVIDER_CHANGED" in
+            true) expected=success ;;
+            false) expected=skipped ;;
+            *) exit 1 ;;
+          esac
+          test "$UNIT_RESULT" = "$expected"
+          # The cluster jobs run only when their inputs changed; a skip passes
+          # only when the classifier did not select them.
+          case "$CLUSTER_CHANGED" in
+            true) cluster_expected=success ;;
+            false) cluster_expected=skipped ;;
+            *) exit 1 ;;
+          esac
+          test "$CLUSTER_RESULT" = "$cluster_expected"
+          test "$CLUSTER_FOCUSED_RESULT" = "$cluster_expected"
+          test "$CLUSTER_RELEASE_RESULT" = "$cluster_expected"
+      # The CI plan checks, which ran beside the test jobs: the cluster plan's
+      # audit against the sources and this workflow, the provider shard plan,
+      # the component classifier, the tested-change lookup, the route, the
+      # workflow pins, the test products hand-off, the resource sampler, the
+      # Date comparison check and the prompt fixture downloaders.
+      - name: Require the CI plan checks
+        env:
+          PLAN_CHECKS_RESULT: ${{ needs.ci-plan-checks.result }}
+        run: test "$PLAN_CHECKS_RESULT" = success
+      # Only the record's naming script is checked out.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        if: ${{ inputs.skip != 'true' && (inputs.provider == 'true' || inputs.cluster == 'true') }}
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/ci-tested-tree.py
+          sparse-checkout-cone-mode: false
+      # The record a later run of the same change finds (scripts/ci-tested-tree.py):
+      # the tree, the event's base and head, and the components that ran. It
+      # counts only once the whole run succeeded. A run that tested nothing
+      # records nothing.
+      - name: Name the record of the change these tests passed
+        id: record
+        if: ${{ inputs.skip != 'true' && (inputs.provider == 'true' || inputs.cluster == 'true') }}
+        env:
+          TREE: ${{ inputs.tree }}
+          BASE: ${{ inputs.base }}
+          HEAD: ${{ inputs.head }}
+          RAN: provider=${{ inputs.provider }},cluster=${{ inputs.cluster }},mimo_audio=${{ inputs.mimo_audio }}
+        run: |
+          name=$(python3 scripts/ci-tested-tree.py name --tree "$TREE" --base "$BASE" --head "$HEAD" --components "$RAN")
+          mkdir -p "$RUNNER_TEMP/tested-change"
+          printf '%s\n' "$name" > "$RUNNER_TEMP/tested-change/record"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+      - name: Upload the record
+        if: ${{ inputs.skip != 'true' && (inputs.provider == 'true' || inputs.cluster == 'true') }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.record.outputs.name }}
+          path: ${{ runner.temp }}/tested-change/record
+          if-no-files-found: error
+          retention-days: 30

@@ -297,13 +297,19 @@ public struct ClusterDeviceSpeed: Codable, Equatable, Sendable {
     /// Prompt length the prefill rate holds at, when measured.
     public let promptTokens: Int?
     public let explanation: String
+    /// True when the whole-model rates are not a measurement of this model on
+    /// this Mac: the device index's estimate (`ClusterHardwarePrior.absolute`),
+    /// or the estimate a tensor-parallel served record carries beside its
+    /// measured shard rates (`ClusterSpeedMeasurement.correctsShardRatesOnly`).
+    /// Nil otherwise (omitted, so a speed encodes as before).
+    public let wholeModelEstimated: Bool?
 
     public init(source: Source, absolute: Bool, rested: ClusterSpeedRates, sustained: ClusterSpeedRates?,
                 hashBytesPerSecond: Double? = nil, materializeBytesPerSecond: Double? = nil,
-                promptTokens: Int? = nil, explanation: String) {
+                promptTokens: Int? = nil, explanation: String, wholeModelEstimated: Bool? = nil) {
         self.source = source; self.absolute = absolute; self.rested = rested; self.sustained = sustained
         self.hashBytesPerSecond = hashBytesPerSecond; self.materializeBytesPerSecond = materializeBytesPerSecond
-        self.promptTokens = promptTokens; self.explanation = explanation
+        self.promptTokens = promptTokens; self.explanation = explanation; self.wholeModelEstimated = wholeModelEstimated
     }
 
     public static let assumedEqual = ClusterDeviceSpeed(source: .assumedEqual, absolute: false,
@@ -317,7 +323,8 @@ public struct ClusterDeviceSpeed: Codable, Equatable, Sendable {
         guard absolute, !points.isEmpty else { return self }
         return .init(source: source, absolute: absolute, rested: rested.addingShareRates(points),
             sustained: sustained?.addingShareRates(points), hashBytesPerSecond: hashBytesPerSecond,
-            materializeBytesPerSecond: materializeBytesPerSecond, promptTokens: promptTokens, explanation: explanation)
+            materializeBytesPerSecond: materializeBytesPerSecond, promptTokens: promptTokens, explanation: explanation,
+            wholeModelEstimated: wholeModelEstimated)
     }
 }
 
@@ -441,7 +448,8 @@ public enum ClusterSpeedEstimator {
             if let m = own[index] {
                 return .init(source: .measured, absolute: true, rested: m.rested, sustained: m.sustained,
                     hashBytesPerSecond: m.hashBytesPerSecond, materializeBytesPerSecond: m.materializeBytesPerSecond,
-                    promptTokens: m.promptTokens, explanation: "measured at \(m.promptTokens) prompt tokens: " + m.provenance)
+                    promptTokens: m.promptTokens, explanation: "measured at \(m.promptTokens) prompt tokens: " + m.provenance,
+                    wholeModelEstimated: m.correctsShardRatesOnly ? true : nil)
             }
             if let reference, let m = own[reference], let r = ratio(devices[index], over: devices[reference]) {
                 return .init(source: r.source, absolute: true, rested: scaled(m.rested, r),

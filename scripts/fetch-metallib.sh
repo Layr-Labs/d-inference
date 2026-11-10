@@ -41,6 +41,13 @@ COMPLETENESS_CONTRACT="$(
         "$QMV_WIDE_W8_M2_SYMBOL" "$QMV_WIDE_W8_M4_BATCHED_SYMBOL" \
         | shasum -a 256 | cut -d' ' -f1
 )"
+# Apple's metal-cpp archive as a Darkbloom macOS sandbox image ships it
+# (darkbloom-sandbox images/macos/pins.env METAL_CPP_*), used only while MLX
+# names this archive. MLX_METAL_CPP_ARCHIVE names another local copy of it,
+# under any file name; it must have the same SHA-256.
+METAL_CPP_NAME="metal-cpp_26.zip"
+METAL_CPP_ARCHIVE="${MLX_METAL_CPP_ARCHIVE:-/usr/local/libexec/darkbloom/share/metal-cpp/$METAL_CPP_NAME}"
+METAL_CPP_SHA256="4df3c078b9aadcb516212e9cb03004cbc5ce9a3e9c068fa3144d021db585a3a4"
 TARGET_ARG="${1:-debug}"
 
 case "$TARGET_ARG" in
@@ -292,12 +299,31 @@ if [ ! -s "$CACHED" ]; then
     BUILD_DIR="$(mktemp -d "$CACHE_DIR/.build-${CACHE_KEY}.$$.XXXXXX")"
     CACHE_TMP="$CACHE_DIR/.${CACHE_KEY}.$$"
 
+    # MLX's configure downloads Apple's metal-cpp headers with FetchContent,
+    # which does not try again. Darkbloom's macOS sandbox images carry that
+    # archive, pinned by SHA-256 (Layr-Labs/darkbloom-sandbox#299): use it
+    # when it is the archive this MLX names, with the pinned digest. Anywhere
+    # else, FetchContent downloads it as before. The headers are the same
+    # bytes either way, so the cache key does not change.
+    metal_cpp_args=()
+    if [ -f "$METAL_CPP_ARCHIVE" ]; then
+        if grep -Fq "/metal/cpp/files/$METAL_CPP_NAME" "$MLX_SRC/CMakeLists.txt" &&
+            [ "$(shasum -a 256 "$METAL_CPP_ARCHIVE" | cut -d' ' -f1)" = "$METAL_CPP_SHA256" ] &&
+            unzip -q "$METAL_CPP_ARCHIVE" -d "$BUILD_DIR/metal-cpp-archive" &&
+            [ -f "$BUILD_DIR/metal-cpp-archive/metal-cpp/Metal/Metal.hpp" ]; then
+            echo "→ Using metal-cpp from $METAL_CPP_ARCHIVE"
+            metal_cpp_args=(-DFETCHCONTENT_SOURCE_DIR_METAL_CPP="$BUILD_DIR/metal-cpp-archive/metal-cpp")
+        else
+            echo "→ Not using $METAL_CPP_ARCHIVE (another archive or digest than this MLX's); downloading metal-cpp"
+        fi
+    fi
     cmake -S "$MLX_SRC" -B "$BUILD_DIR" \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_OSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET" \
         -DMLX_METAL_JIT="$JIT_MODE" \
         -DMLX_BUILD_TESTS=OFF -DMLX_BUILD_EXAMPLES=OFF \
-        -DMLX_BUILD_BENCHMARKS=OFF -DMLX_BUILD_PYTHON_BINDINGS=OFF >/dev/null
+        -DMLX_BUILD_BENCHMARKS=OFF -DMLX_BUILD_PYTHON_BINDINGS=OFF \
+        ${metal_cpp_args[@]+"${metal_cpp_args[@]}"} >/dev/null
     cmake --build "$BUILD_DIR" --target mlx-metallib -j"$(sysctl -n hw.ncpu 2>/dev/null || echo 4)"
     cp "$BUILD_DIR/mlx/backend/metal/kernels/mlx.metallib" "$CACHE_TMP"
     verify_metallib "$CACHE_TMP"

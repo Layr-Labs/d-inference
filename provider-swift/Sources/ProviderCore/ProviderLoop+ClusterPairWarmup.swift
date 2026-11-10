@@ -56,8 +56,10 @@ extension ProviderLoop {
                                             repetition_penalty: 1, presence_penalty: 0, frequency_penalty: 0, stream: true)
         // No prefix-cache receipt: the pair's workers serve only cold, receipt-free
         // requests ("stop strings stay in the provider" refusal otherwise), as the
-        // pair's own scheduler submits them.
-        let stream = await bridge.submit(request: request, requestId: requestID, cacheEnabled: false)
+        // pair's own scheduler submits them. Its few tokens measure first use,
+        // not the pair's speed: they never become the slot's rates.
+        let stream = await bridge.submit(request: request, requestId: requestID, cacheEnabled: false,
+                                         measurementPurpose: .startupWarmup)
         let outcome = ClusterWarmupOutcome()
         let consumer = Task {
             var chunks = 0

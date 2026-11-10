@@ -98,7 +98,7 @@ public enum ClusterApprovalSync {
                 _ = try ClusterApprovalAttachment.attachment(for: approval, saved: saved, paths: paths, pairingStore: pairingStore,
                                                              edge: nil, now: now, chipClass: chipClass, facts: facts)
             } catch {
-                let line = "Not offered for pairing: this Mac's check refused it: \(refusal(error))"
+                let line = ClusterOnboardingCommand.named("Not offered for pairing: this Mac's check refused it: \(refusal(error))")
                 return Result(changed: false, line: line, note: .some(line))
             }
         }

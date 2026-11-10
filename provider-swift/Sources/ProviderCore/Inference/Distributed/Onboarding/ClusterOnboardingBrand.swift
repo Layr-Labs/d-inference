@@ -53,6 +53,60 @@ public enum ClusterOnboardingBrand {
         return String(repeating: "\u{25CF}", count: step) + String(repeating: "\u{25CB}", count: total - step)
     }
 
+    // MARK: - Live rows
+
+    /// Turns the terminal's line wrap off for a live row's redraw and back on after it, in the same write. A row the
+    /// terminal counts wider than its text (a petal or an ellipsis drawn two columns wide, a character it shows wide) is
+    /// then cut at the window's edge, never wrapped: a wrapped row's start stayed behind at every redraw, so the line
+    /// read as repeated end to end (0.10.8, a Gemma 4 26B start whose part's reason ran past the window).
+    public static let noWrap = "\u{1B}[?7l", wrap = "\u{1B}[?7h"
+
+    /// `text` as one live row of at most `room` columns: each control character (a reason's newline or tab, an escape)
+    /// becomes a space, and a longer text is shortened, counting a character the terminal shows wide as two; a row that
+    /// ends with its time keeps it.
+    public static func liveText(_ text: String, room: Int) -> String {
+        let flat = String(text.map { character -> Character in
+            character.unicodeScalars.contains { $0.properties.generalCategory == .control } ? " " : character
+        })
+        let room = max(1, room)
+        guard textColumns(flat) > room else { return flat }
+        // A row that ends with its time (" · 1 min 3 s") keeps it: the reason before it is shortened instead.
+        if let mark = flat.range(of: " \u{00B7} ", options: .backwards) {
+            let tail = String(flat[mark.lowerBound...])
+            if textColumns(tail) <= 24, room - textColumns(tail) >= 12 {
+                return cut(String(flat[..<mark.lowerBound]), room - textColumns(tail) - 1) + "\u{2026}" + tail
+            }
+        }
+        return cut(flat, room)
+    }
+
+    /// The columns `text` takes.
+    static func textColumns(_ text: String) -> Int { text.reduce(0) { $0 + columns($1) } }
+
+    /// The start of `text` that fits `room` columns.
+    static func cut(_ text: String, _ room: Int) -> String {
+        var fitted = "", used = 0
+        for character in text {
+            let width = columns(character)
+            guard used + width <= room else { break }
+            fitted.append(character); used += width
+        }
+        return fitted
+    }
+
+    /// The columns `character` takes: two for East Asian wide and full-width characters and emoji, else one.
+    static func columns(_ character: Character) -> Int {
+        guard let scalar = character.unicodeScalars.first else { return 0 }
+        if scalar.properties.isEmojiPresentation { return 2 }
+        switch scalar.value {
+        case 0x1100...0x115F, 0x2E80...0x303E, 0x3041...0x33FF, 0x3400...0x4DBF, 0x4E00...0x9FFF, 0xA000...0xA4CF,
+             0xAC00...0xD7A3, 0xF900...0xFAFF, 0xFE30...0xFE4F, 0xFF00...0xFF60, 0xFFE0...0xFFE6, 0x20000...0x3FFFD:
+            return 2
+        default:
+            return 1
+        }
+    }
+
     /// One pixel petal turning, eight frames a second.
     static let spinner = ["\u{2596}", "\u{2598}", "\u{259D}", "\u{2597}"]
     static func spin(_ uptimeNanoseconds: UInt64) -> String {

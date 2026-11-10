@@ -125,9 +125,12 @@ final class Gemma4TensorParallelPagedSession {
         var logits: MLXArray?
         let output = try state.run(tokenCount: range.count, check: check, forward: { caches, _ in
             let kv = caches.map { $0 as! any KVCache }
+            let parts = Gemma4TensorParallelModel.benchPromptParts ?? Gemma4TensorParallelModel.promptChunkParts
             let row = Gemma4PrefillProjectionScope.withPrefillFrame(tokens: input, enabled: true) {
-                text.cbv2Prefill(input, inputEmbedding: nil, cache: kv,
-                    requirement: final ? .lastPositionLogits : .evaluationOnly)
+                Gemma4TensorParallelPromptParts.$parts.withValue(parts) {
+                    text.cbv2Prefill(input, inputEmbedding: nil, cache: kv,
+                        requirement: final ? .lastPositionLogits : .evaluationOnly)
+                }
             }
             guard final else { return row }
             logits = row
@@ -152,21 +155,50 @@ final class Gemma4TensorParallelPagedSession {
             throw ProbeError("Gemma tensor-parallel decode step differs from its request or pages")
         }
         let input = MLXArray([Int32(token)]).reshaped([1, 1])
-        let text = model.textModel
         var logits: MLXArray?
-        let stride = Gemma4TensorParallelModel.layerStride ?? Gemma4TensorParallelModel.decodeLayerStride
         let output = try state.run(tokenCount: 1, check: check, forward: { caches, _ in
-            let row = Gemma4LayerSubmission.$stride.withValue(stride) {
-                Gemma4BatchDecodeScope.withDecodeFrame(tokens: input, enabled: true) {
-                    text(input, cache: caches.map { $0 as! any KVCache })[0..., -1, 0...]
-                }
-            }
+            let row = decodeRow(input, caches: caches)
             logits = row
             return select(row)
         }, validateOutput: { _ in })
         guard let logits else { throw ProbeError("Gemma tensor-parallel decode produced no logits") }
         try Self.validate(logits, rows: 1, model: model)
         return (logits, output)
+    }
+
+    /// One decode step on the agreed token of the previous step's lazy
+    /// selection (`Gemma4TensorParallelChoice.build`, greedy: the token is its
+    /// first element), submitted and committed before that selection is read
+    /// (`CBv2OwnedRequestState.submit`), so the GPU and the collectives run
+    /// this step while the host reads the last one. The same graph as
+    /// `decode` on the read token: every value and token is unchanged.
+    func submitDecode(after selected: MLXArray, check: () throws -> Void,
+                      select: (MLXArray) -> MLXArray) throws -> (logits: MLXArray, selected: MLXArray) {
+        guard !retired, state.committedTokens >= promptCount, selected.ndim == 1, selected.dim(0) >= 1,
+              pagesCover(writing: 1) || reservePages(writing: 1) else {
+            throw ProbeError("Gemma tensor-parallel decode step differs from its request or pages")
+        }
+        let input = selected[0 ..< 1].asType(.int32).reshaped([1, 1])
+        var logits: MLXArray?
+        let output = try state.submit(tokenCount: 1, check: check, forward: { caches, _ in
+            let row = decodeRow(input, caches: caches)
+            logits = row
+            return select(row)
+        })
+        guard let logits else { throw ProbeError("Gemma tensor-parallel decode produced no logits") }
+        try Self.validate(logits, rows: 1, model: model)
+        return (logits, output)
+    }
+
+    /// One decode row's logits on `input` (`[1, 1]`) at the decode layer
+    /// stride: `decode`'s and `submitDecode`'s forward.
+    private func decodeRow(_ input: MLXArray, caches: [any CBv2AttendingLayerCache]) -> MLXArray {
+        let stride = Gemma4TensorParallelModel.layerStride ?? Gemma4TensorParallelModel.decodeLayerStride
+        return Gemma4LayerSubmission.$stride.withValue(stride) {
+            Gemma4BatchDecodeScope.withDecodeFrame(tokens: input, enabled: true) {
+                model.textModel(input, cache: caches.map { $0 as! any KVCache })[0..., -1, 0...]
+            }
+        }
     }
 
     /// One decode step of each of `sessions` (distinct requests on one model's
@@ -234,6 +266,31 @@ extension Gemma4TensorParallelModel {
     static let decodeLayerStride = 1
     /// A bench or test's own stride (0: the whole step in one evaluation).
     @TaskLocal static var layerStride: Int?
+    /// Runs `body` with a bench's own decode layer stride (`layerStride`; nil:
+    /// the product's `decodeLayerStride`), to compare strides on a pair
+    /// (`darkbloom-cluster-tp-check gemma run --layer-stride`).
+    public static func withLayerStride<R>(_ stride: Int?, _ body: () throws -> R) rethrows -> R {
+        try $layerStride.withValue(stride, operation: body)
+    }
+    /// Row parts of each prompt chunk's work after attention, each part's sums
+    /// issued as soon as built (`Gemma4TensorParallelPromptParts`). Bit-identical
+    /// to the whole chunk on the GPU for two ranks while every op after
+    /// attention is per-row; not on the CPU backend, not exact with more than
+    /// two ranks, and not enforced at production size, so 1 (whole): off. On
+    /// two M5 Ultras 4 parts measured best (9,651-token prefill +13 %).
+    static let promptChunkParts = 1
+    /// A bench or test's own part count (nil: `promptChunkParts`).
+    @TaskLocal static var benchPromptParts: Int?
+    /// Runs `body` with a bench's own prompt parts
+    /// (`darkbloom-cluster-tp-check gemma run --prompt-parts`).
+    public static func withPromptParts<R>(_ parts: Int?, _ body: () throws -> R) rethrows -> R {
+        try $benchPromptParts.withValue(parts, operation: body)
+    }
+    /// The bench modes a `withLayerStride` stride reaches: ranks that decode
+    /// on the calling thread (`full`, `shard`, `tp`). `simulated` runs both
+    /// ranks on `Gemma4TensorParallelLocalPair`'s own threads, which never see
+    /// the stride, so a stride there is refused instead of silently ignored.
+    public static func benchLayerStrideApplies(mode: String) -> Bool { ["full", "shard", "tp"].contains(mode) }
 
     /// Greedy generation as `generate`, on this model's paged KV through the
     /// resident runtime's own request path (`Gemma4TensorParallelPagedSession`,

@@ -6,8 +6,8 @@ import DarkbloomClusterRemote
 
 /// The device profiles of a pair's members as the last plan read them (each
 /// Mac's `darkbloom-cluster-plan device --json` with its speed index,
-/// `ClusterLocalDeviceProfile`), by member ID, in
-/// `~/.darkbloom/cluster/member-profiles.json` (owner-only). Planning writes
+/// `ClusterLocalDeviceProfile`), by member ID, in this install's
+/// `cluster/member-profiles.json` (owner-only). Planning writes
 /// it, whichever way it ran (the guided flow, `darkbloom cluster plan`); the
 /// serving leader reads it to price each request's route. System facts only:
 /// chip, cores, memory, OS build and the speed index; no name, no address.
@@ -24,7 +24,7 @@ public struct ClusterMemberProfiles: Codable, Sendable, Equatable {
     }
 
     public static func defaultFile(homeDirectory: URL) -> URL {
-        homeDirectory.appendingPathComponent(".darkbloom/cluster/member-profiles.json")
+        ClusterUserPaths.observabilityDirectory(home: homeDirectory).appendingPathComponent("member-profiles.json")
     }
 
     /// Nil when absent, unreadable, not owner-only or malformed.
@@ -65,14 +65,15 @@ public enum ClusterServedSpeedHistory {
     /// plan keeps only the records its own worker builds served
     /// (`ClusterPlacementFlow.decide`), and the router only its setup's.
     public static func entries(homeDirectory: URL) -> [ClusterServedSpeedRecords.Entry] {
-        guard let file = ClusterServedSpeedFile.read(ClusterServedSpeedFile.defaultFile(homeDirectory: homeDirectory)) else { return [] }
+        guard let file = ClusterServedSpeedFile.read(ClusterServedSpeedFile.defaultFile(installDirectory: BuildEnvironment.current.installDirectory(home: homeDirectory))) else { return [] }
         return file.records.compactMap { record in
             guard record.isSpeedRecord, let sample = ClusterServedSample.fromTelemetry(route: record.route, promptTokens: record.promptTokens,
                 cachedTokens: record.cachedTokens, completionTokens: record.completionTokens,
                 firstTokenMilliseconds: record.firstTokenMilliseconds, decodeTokensPerSecond: record.decodeTokensPerSecond,
                 outcome: record.outcome, finishedAt: record.finishedAt) else { return nil }
             return .init(setup: .init(modelID: record.modelID, mode: record.mode, cut: record.cut, ranks: record.ranks,
-                                      rankBuildSHA256: record.rankBuildSHA256), sample: sample)
+                                      rankBuildSHA256: record.rankBuildSHA256, serving: record.serving,
+                                      tensorAssistant: record.tensorAssistant), sample: sample)
         }
     }
 
@@ -160,13 +161,17 @@ public enum ClusterRequestRoutingBasis {
         // Only what the worker builds this setup runs served (each member's as the setup pins it): a speed served by
         // another build says nothing of this one. The setup key names the builds, so the live samples are this build's too.
         let builds = ClusterServedSpeedHistory.builds(configuration.peers)
+        // And only what was served the way this setup serves (through Darkbloom or locally, with or without Qwen's
+        // tensor assistant): the key names both, as each record does.
+        let serving = DistributedSessionFacts.serving(configuration), assisted = configuration.tensorAssistant != nil
         let setupKey = ClusterServedSpeedRecords.Setup(modelID: modelID, mode: mode.rawValue,
             cut: ClusterServedSpeedRecords.Setup.cut(cuts, layerCount: layout.layerCount), ranks: ranks,
-            rankBuildSHA256: configuration.peers.sorted { $0.rank < $1.rank }.map(\.runtimeBinarySHA256))
+            rankBuildSHA256: configuration.peers.sorted { $0.rank < $1.rank }.map(\.runtimeBinarySHA256),
+            serving: serving, tensorAssistant: assisted)
         // The estimates start from what this pair served, as the next plan does.
         var placed = devices([])
         let scoped = ClusterServedSpeedHistory.entries(homeDirectory: homeDirectory, modelID: modelID, builds: builds)
-        let served = scoped.current
+        let served = ClusterServedSpeedRecords.servedAs(serving, tensorAssistant: assisted, scoped.current)
         if let derived = try? ClusterServedCalibration.measurements(entries: served, devices: placed, layout: layout,
                                                                     link: .unmeasured, measuredUTC: "served"),
            !derived.measurements.isEmpty {

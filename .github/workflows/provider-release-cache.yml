@@ -22,6 +22,7 @@ on:
       - 'scripts/test-provider-release-pipeline.py'
       - 'scripts/provider-release-swift.sh'
       - 'scripts/prepare-provider-release-toolchain.sh'
+      - 'scripts/check-provider-weak-imports.py'
       - 'scripts/install-release-cmake.sh'
       - 'scripts/prepare-metal-toolchain.py'
       - 'scripts/test-prepare-metal-toolchain.py'
@@ -29,6 +30,8 @@ on:
       - 'scripts/verify-prompt-parity.sh'
       - 'scripts/verify-nemotron-prompt-parity.sh'
       - 'scripts/prepare-prompt-fixtures.py'
+      - 'scripts/verified_download_cache.py'
+      - 'scripts/fixture_redirects.py'
       - 'scripts/test-prepare-prompt-fixtures.py'
       - 'scripts/run-provider-tests.sh'
       - 'provider-swift/Tests/ProviderCoreTests/Qwen4StandaloneAdmissionTests.swift'
@@ -70,6 +73,10 @@ jobs:
       MLX_METALLIB_DEPLOYMENT_TARGET: '26.2'
       # As in ci.yml: test and warm the production identity on the dev branch too.
       DARKBLOOM_RELEASE_ENVIRONMENT: prod
+      # Master and dispatched warms fill the caches that release builds
+      # restore, so they use the release toolchain. A pull request may run on
+      # a Darkbloom Sandbox with another accepted SDK.
+      DARKBLOOM_PROVIDER_TOOLCHAIN: ${{ github.event_name == 'pull_request' && 'qualification' || 'release' }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:

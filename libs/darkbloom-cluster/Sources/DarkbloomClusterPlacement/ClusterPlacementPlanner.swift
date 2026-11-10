@@ -168,6 +168,27 @@ public struct ClusterPlacementRank: Codable, Equatable, Sendable {
     /// `ClusterDeviceProfile.hardwareFits`: the hardware can hold this range.
     /// Nil in a result written before it was recorded (read as `fit.possible`).
     public var hardwareFits: Bool? = nil
+    /// A rank whose requests are admitted on arrival (`ClusterModelLayout.requestsOnArrival`):
+    /// the longest context (prompt plus output, at most the memory plan's) its
+    /// Mac admits now beside the loaded weights; 0 when none does. Nil (and
+    /// omitted) for every other rank.
+    public var servingContextTokens: Int? = nil
+    /// Such a rank whose GPU cannot keep its weights and what loading holds, or
+    /// its weights and the memory plan's whole request, resident: by how much.
+    /// Freeing memory cannot change it; raising the GPU's limit can. Nil
+    /// (and omitted) otherwise.
+    public var gpuWorkingSetShortBytes: Int? = nil
+    /// What `withinGPUWorkingSet` compares with the Mac's GPU limit: weights,
+    /// request state, workspace and the attention transient (or the complete
+    /// native quote). Not encoded, so a written plan reads as before; nil in a
+    /// decoded one.
+    public var gpuResidentBytes: Int? = nil
+
+    private enum CodingKeys: String, CodingKey {
+        case rank, device, firstLayer, endLayer, weightsBytes, loadNeedBytes, requestNeedBytes, needBytes
+        case admissibleNowBytes, fit, withinGPUWorkingSet, transientBytes, hardwareFits
+        case servingContextTokens, gpuWorkingSetShortBytes
+    }
 }
 
 public struct ClusterPlacementPrediction: Codable, Equatable, Sendable {
@@ -193,11 +214,15 @@ public struct ClusterPlacementCandidate: Codable, Equatable, Sendable {
     /// a restart would do, 4 never.
     public let tier: Int
     /// Every rank's hardware can hold its range, or its load gate admits it
-    /// now: the at-rest ceiling assumes the kernel's file-cache minimum, which
-    /// can sit below what a Mac admits now, and a split that loads now is never
-    /// impossible (owner, 2026-10-19). `tier` reports what the Macs' memory
-    /// allows right now (the load gate still decides).
-    public var possible: Bool { ranks.allSatisfy { $0.fit.tier == 0 || ($0.hardwareFits ?? $0.fit.possible) } }
+    /// now and it stays within that Mac's GPU limit: a split that loads now is
+    /// never impossible (owner, 2026-10-19), but one whose GPU part exceeds the
+    /// wired limit fails its first command buffers however much is free, so it
+    /// is not offered (`ClusterPlacementMemoryVerdict` says when a raised limit
+    /// would hold it). `tier` reports what the Macs' memory allows right now
+    /// (the load gate still decides).
+    public var possible: Bool {
+        ranks.allSatisfy { ($0.fit.tier == 0 && $0.withinGPUWorkingSet) || ($0.hardwareFits ?? $0.fit.possible) }
+    }
     /// The planner's first ordering key, lower first: the hardware holds every range, then inside the GPU working
     /// set, then the load gate admits every rank now (`tier` 0).
     public var hardwareGroup: Int { (possible ? 0 : 4) + (withinGPUWorkingSet ? 0 : 2) + (tier == 0 ? 0 : 1) }
@@ -376,8 +401,9 @@ public enum ClusterPlacementPlanner {
             }
         }
         if policy.tensorParallelBatchQuote?.assistant != nil {
+            // A forced or chosen tensor parallel is the one family this quote prices (`ClusterForcedMode`).
             guard devices.count == 2, policy.modes == [.tensorParallel], policy.schedules == [.serial],
-                  policy.forcedMode == nil, !policy.handOffModes else {
+                  policy.forcedMode == nil || policy.forcedMode == .tensorParallel, !policy.handOffModes else {
                 throw ClusterPlacementError("Tensor assistant quotation requires its exact two-rank tensor placement")
             }
         }
@@ -832,6 +858,10 @@ public enum ClusterPlacementPlanner {
                   earlier: [ClusterModelLayout.Range], mode: ClusterGenerationMode,
                   schedule: ClusterPrefillSchedule) -> ClusterPlacementRank {
             let memory = device.profile.memory, last = rank == count - 1
+            // Only a pair's pipeline rank: one Mac alone serves through its own engine, on the full quote.
+            if let terms = layout.requestsOnArrival, count > 1, !mode.isPhaseSplit {
+                return onArrivalRequirement(rank: rank, of: count, device: device, own: own, mode: mode, terms: terms)
+            }
             // Under a phase split the last rank also loads every earlier range,
             // after its own, so that it can decode alone.
             let loads = [own] + (mode.isPhaseSplit && last ? earlier : [])
@@ -872,13 +902,69 @@ public enum ClusterPlacementPlanner {
             }
             let requestNeed = max(memory.minimumAdmissibleBytes, state + work + extra + transient + (layout.allowanceEveryRankBytes ?? 0) + memory.loadingHeadroomBytes)
             let need = max(loadNeed, held + requestNeed)
+            let gpu = held + state + work + extra + transient
             return .init(rank: rank, device: device.label, firstLayer: own.layers.lowerBound, endLayer: own.layers.upperBound,
                 weightsBytes: held, loadNeedBytes: loadNeed, requestNeedBytes: requestNeed, needBytes: need,
                 admissibleNowBytes: memory.admissibleNowBytes,
                 fit: device.profile.fit(needBytes: need, weightsBytes: held, largestTensorBytes: largest),
-                withinGPUWorkingSet: held + state + work + extra + transient <= device.profile.residentCapacityBytes,
+                withinGPUWorkingSet: gpu <= device.profile.residentCapacityBytes,
                 transientBytes: transient,
-                hardwareFits: device.profile.hardwareFits(needBytes: need, weightsBytes: held, largestTensorBytes: largest))
+                hardwareFits: device.profile.hardwareFits(needBytes: need, weightsBytes: held, largestTensorBytes: largest,
+                    gpuResidentBytes: gpu),
+                gpuResidentBytes: gpu)
+        }
+
+        /// A rank whose LOAD reserves no request (`ClusterModelLayout.requestsOnArrival`):
+        /// it needs what loading holds (its weights at their allocator bounds,
+        /// their construction copies and the load allowance) with the gate's
+        /// headroom, now or at rest; its GPU must keep that resident, and also
+        /// the weights with the memory plan's whole request, which each request
+        /// is admitted against when it arrives. Whether one fits now is the
+        /// longest context it admits beside the weights (`servingContextTokens`).
+        func onArrivalRequirement(rank: Int, of count: Int, device: ClusterPlacementDevice, own: ClusterModelLayout.Range,
+                                  mode: ClusterGenerationMode, terms: ClusterRequestsOnArrival) -> ClusterPlacementRank {
+            let profile = device.profile, memory = profile.memory, last = rank == count - 1
+            let holding = last ? layout.speculativeHolding(mode: mode, pageSizeBytes: memory.pageSizeBytes) : (bytes: 0, largestTensorBytes: 0)
+            let weights = own.loadedBytes + holding.bytes
+            let largest = max(own.largestTensorBytes, holding.largestTensorBytes)
+            let loading = weights + own.requestWorkBytes + terms.loadAllowanceEveryRankBytes
+            let need = max(memory.minimumAdmissibleBytes, loading + memory.loadingHeadroomBytes)
+            let chunk = min(layout.maximumChunkTokens, memoryPrompt)
+            func request(_ context: Int) -> Int {
+                own.stateBytes(tokens: context) + own.transientBytes(chunk: min(chunk, context), context: context)
+                    + terms.requestAllowanceEveryRankBytes + (last ? terms.requestAllowanceLastRankBytes : 0)
+            }
+            let whole = request(memoryContext), resident = max(loading, weights + whole)
+            let short = max(0, resident - profile.residentCapacityBytes)
+            // Raising the GPU's limit helps only up to what macOS keeps for itself.
+            let raisable = resident <= profile.gpuMemoryLimitCeilingBytes
+            // A request is admitted beside the loaded weights: within the GPU's working set, and by the gate
+            // on what this Mac admits now less the weights, with its headroom and floor.
+            func fitsNow(_ context: Int) -> Bool {
+                let bytes = request(context)
+                return weights + bytes <= profile.residentCapacityBytes
+                    && weights + max(memory.minimumAdmissibleBytes, bytes + memory.loadingHeadroomBytes) <= memory.admissibleNowBytes
+            }
+            var serving = 0, low = min(memoryContext, chunk + 1), high = memoryContext
+            if short == 0, fitsNow(low) {
+                while low < high {
+                    let middle = low + (high - low + 1) / 2
+                    if fitsNow(middle) { low = middle } else { high = middle - 1 }
+                }
+                serving = low
+            }
+            var value = ClusterPlacementRank(rank: rank, device: device.label, firstLayer: own.layers.lowerBound,
+                endLayer: own.layers.upperBound, weightsBytes: weights, loadNeedBytes: need,
+                requestNeedBytes: max(memory.minimumAdmissibleBytes, whole + memory.loadingHeadroomBytes), needBytes: need,
+                admissibleNowBytes: memory.admissibleNowBytes,
+                fit: short > 0 ? .never(shortBytes: short) : profile.fit(needBytes: need, weightsBytes: weights, largestTensorBytes: largest),
+                withinGPUWorkingSet: short == 0, transientBytes: own.transientBytes(chunk: chunk, context: memoryContext),
+                hardwareFits: profile.hardwareFits(needBytes: need, weightsBytes: weights, largestTensorBytes: largest,
+                    gpuResidentBytes: resident),
+                gpuResidentBytes: resident)
+            value.servingContextTokens = serving
+            value.gpuWorkingSetShortBytes = short > 0 && raisable ? short : nil
+            return value
         }
 
         /// The load gate's largest ask while loading `parts` in turn (each
@@ -1025,15 +1111,17 @@ public enum ClusterPlacementPlanner {
             let assistantTransient = (assistant?.loadBytes ?? 0) - (assistant?.residentBytes ?? 0)
             let allocatorHeld = load.held + batchLoadReservation + assistantTransient
             let need = max(loadPeak, load.held + requestNeed)
+            let gpu = load.held + max(state + work + extra + transient, nativeFloor)
             return .init(rank: rank, device: device.label,
                 firstLayer: pipelined ? own.layers.lowerBound : 0, endLayer: pipelined ? own.layers.upperBound : layout.layerCount,
                 weightsBytes: load.held, loadNeedBytes: loadPeak, requestNeedBytes: requestNeed, needBytes: need,
                 admissibleNowBytes: memory.admissibleNowBytes,
                 fit: device.profile.fit(needBytes: need, weightsBytes: allocatorHeld, largestTensorBytes: load.largest),
-                withinGPUWorkingSet: load.held + max(state + work + extra + transient, nativeFloor) <= device.profile.residentCapacityBytes,
+                withinGPUWorkingSet: gpu <= device.profile.residentCapacityBytes,
                 transientBytes: transient,
                 hardwareFits: device.profile.hardwareFits(needBytes: need, weightsBytes: allocatorHeld,
-                    largestTensorBytes: load.largest))
+                    largestTensorBytes: load.largest, gpuResidentBytes: gpu),
+                gpuResidentBytes: gpu)
         }
 
         /// `policy.tensorParallelMargin`: a tensor-parallel candidate stays
@@ -1125,7 +1213,7 @@ public enum ClusterPlacementPlanner {
                 let (rate, known) = rates(device, regime)
                 measured = measured && known
                 prefill.append(range.cost / total / rate.prefillTokensPerSecond)
-                decode.append(range.cost / total / rate.decodeTokensPerSecond)
+                decode.append(range.cost / total * wholeStepSeconds(device, regime))
             }
             let chunk = min(layout.maximumChunkTokens, prompt)
             let chunks = (prompt + chunk - 1) / chunk
@@ -1205,6 +1293,30 @@ public enum ClusterPlacementPlanner {
             return .init(regime: regime, regimeMeasuredOnEveryDevice: measured, firstTokenSeconds: first,
                 prefillTokensPerSecond: Double(prompt) / first, decodeTokensPerSecond: 1 / step,
                 requestSeconds: first + handoff + Double(max(0, outputs - 1)) * step)
+        }
+
+        /// A device's whole-model decode step in this regime. Where that rate is
+        /// only an estimate (`ClusterDeviceSpeed.wholeModelEstimated`) and a
+        /// share of this model was measured on the Mac, the whole step is at
+        /// least that share's measured step plus the rest of the weights at its
+        /// index's rate (`ClusterHardwarePrior.weightSeconds`, the part a share
+        /// divides): a larger share never steps faster. The index's estimate
+        /// is the weights' read time alone, with no per-token floor; on two
+        /// M5 Ultras it predicted Gemma 4 26B's whole step at 5.5 ms beside a
+        /// measured 7 ms half step, so a pipeline (one whole step across both
+        /// Macs) at about 170 tok/s against 107 in tensor parallel, where 60
+        /// and 105 were served.
+        func wholeStepSeconds(_ device: ClusterPlacementDevice, _ regime: ClusterPlacementPolicy.Regime) -> Double {
+            let rate = rates(device, regime).0, whole = 1 / rate.decodeTokensPerSecond
+            guard device.speed.wholeModelEstimated == true else { return whole }
+            var shares = (rate.tensorShareRates ?? []).map {
+                ClusterMeasuredStep(fraction: Double($0.sharePerMille) / 1000, seconds: 1 / $0.decodeTokensPerSecond) }
+            if let half = rate.tensorShardDecodeTokensPerSecond { shares.append(.init(fraction: 0.5, seconds: 1 / half)) }
+            let divided = (ClusterHardwarePrior.weightSeconds(profile: device.profile, layout: layout) ?? 0)
+                * ClusterHardwarePrior.dividedDecodeFraction(layout)
+            let fromShares = shares.filter { $0.fraction > 0 && $0.fraction <= 1 && $0.seconds.isFinite }
+                .map { $0.seconds + divided * (1 - $0.fraction) }.max() ?? 0
+            return max(whole, fromShares)
         }
 
         /// One device's decode split in this regime: its shard probes, else its

@@ -392,24 +392,10 @@ extension ProviderLoop {
                         )
                     }
 
-                case .cancel(let requestId):
-                    if !deferCancelForReleasedAdmission(requestId) {
-                        await handleCancellation(requestId: requestId)
-                    }
-
-                case .attestationChallenge(let nonce, let timestamp):
-                    await handleAttestationChallenge(
-                        nonce: nonce,
-                        timestamp: timestamp,
-                        send: send
-                    )
-
-                case .appAttestShadow, .trustStatus:
+                case .cancel, .attestationChallenge, .codeAttestationResumeChallenge,
+                    .appAttestShadow, .trustStatus:
                     // Consumed by the connection-control reader below.
                     break
-
-                case .codeAttestationResumeChallenge(let challenge):
-                    handleCodeChallenge(challenge, send: send)
 
                 case .runtimeOutdated(let mismatches):
                     logger.warning("Runtime outdated: \(mismatches.count) mismatch(es)")
@@ -426,12 +412,7 @@ extension ProviderLoop {
                     handleLoadModelRequest(modelId: modelId, send: send)
 
                 case .prefetchModel(let modelId, let priority):
-                    if isDraining {
-                        sendDrainingPrefetchFailure(modelId: modelId, send: send)
-                    } else {
-                        staleDesiredPrefetches.remove(modelId)
-                        await handlePrefetchModelRequest(modelId: modelId, priority: priority, send: send)
-                    }
+                    await handleCoordinatorPrefetch(modelId: modelId, priority: priority, send: send)
 
                 case .desiredModels(let entries):
                     await handleDesiredModels(entries, send: send)
@@ -447,6 +428,8 @@ extension ProviderLoop {
             // so a healthy socket can renew trust while that work is parked.
             // All fast handlers are synchronous on this actor; connection
             // invalidation therefore precedes the next session's challenge.
+            // Challenges and cancels are read here too: work ahead of them in
+            // the FIFO can wait as long as a pair's rank reservation (30 s).
             for await event in events {
                 // Member-mode events are consumed first: ordinary dispatch
                 // paths never see them, and direct work handlers refuse
@@ -466,14 +449,24 @@ extension ProviderLoop {
                     handleTrustStatus(trustLevel: level, status: status, reason: reason,
                                       authorization: authorization)
                     continue
+                case .attestationChallenge(let nonce, let timestamp):
+                    handleAttestationChallenge(nonce: nonce, timestamp: timestamp, send: send)
+                    continue
+                case .codeAttestationResumeChallenge(let challenge):
+                    handleCodeChallenge(challenge, send: send)
+                    continue
+                case .cancel(let requestId):
+                    routeCoordinatorCancel(requestId)
+                    continue
                 case .connected, .disconnected:
                     noteCoordinatorConnection(connected: event.isConnected)
                     clearConnectionAuthorization()
                     cancelAppAttestShadow()
-                case .inferenceRequest:
+                case .inferenceRequest(let requestId, _, _, _, _, _, _, _, _, _, _, _, _, _):
                     // Here, not in the work reader: on arrival, in order with
                     // the trust statuses `ServingReadiness` compares it to.
                     noteCoordinatorRequest()
+                    noteCoordinatorAdmissionQueued(requestId)
                 default:
                     break
                 }
@@ -503,6 +496,7 @@ extension ProviderLoop {
             // No grant or key is retained across a control connection boundary.
             memberConnectionID = nil
             state.refusingNewWork = true
+            cancelMeFirstResumeTimer()
             // A refused or unanswered negotiation ended the client: a waiting
             // start reports that, not a plain connection end.
             let roleRefused = await coordinator.memberRoleFailure
@@ -529,6 +523,7 @@ extension ProviderLoop {
         // session shutdown is closing (its shutdown check has a hop).
         pendingRetirementReconnect?.cancel()
         idleMonitorTask = nil
+        cancelMeFirstResumeTimer()
         capacityRefreshTask?.cancel()
         await stopServiceAllowanceRefreshMonitor()
         await stopPerformanceRefreshMonitor()

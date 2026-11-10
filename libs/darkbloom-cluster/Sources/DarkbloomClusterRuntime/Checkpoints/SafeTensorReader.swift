@@ -14,11 +14,14 @@ struct TensorDescriptor {
         let selectedBytes = resultShape.reduce(1, *) * dtype.size
         var data = Data(count: selectedBytes)
         var accounting: CheckpointAlignedReadAccounting?
-        func copy(_ destination: UnsafeMutableRawBufferPointer, _ offset: Int) throws {
-            if let part = try file.read(into: destination, offset: offset) {
+        func merge(_ part: CheckpointAlignedReadAccounting?) throws {
+            if let part {
                 if accounting == nil { accounting = .init() }
                 try accounting!.merge(part)
             }
+        }
+        func copy(_ destination: UnsafeMutableRawBufferPointer, _ offset: Int) throws {
+            try merge(try file.read(into: destination, offset: offset))
         }
         try data.withUnsafeMutableBytes { destination in
             switch selection {
@@ -27,6 +30,16 @@ struct TensorDescriptor {
                 let innerBytes = shape.dropFirst(axis + 1).reduce(dtype.size, *)
                 let outerCount = shape.prefix(axis).reduce(1, *)
                 let sourceStride = shape[axis] * innerBytes
+                // A rank's part of a divided axis (one range, less than the whole axis): every outer index's run,
+                // read together where they share pages (`VerifiedCheckpoint.File.read(…stride:count:)`). Whole-axis
+                // and several-range selections keep one read per run.
+                if ranges.count == 1, ranges[0].count < shape[axis] {
+                    let length = ranges[0].count * innerBytes
+                    guard length * outerCount == selectedBytes else { throw ProbeError("Tensor copy byte accounting failed") }
+                    try merge(try file.read(into: destination, offset: offset + ranges[0].lowerBound * innerBytes,
+                                            length: length, stride: sourceStride, count: outerCount))
+                    return
+                }
                 var written = 0
                 for outer in 0..<outerCount {
                     for range in ranges {

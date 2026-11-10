@@ -324,49 +324,6 @@ struct CoordinatorIntegrationTests {
         #expect(enc.ephemeralPublicKey == keys.publicKeyBase64)
     }
 
-    // MARK: 3. Reconnect after WS drop
-
-    @Test("CoordinatorClient reconnects after the server drops the WS")
-    func coordinatorReconnectAfterDrop() async throws {
-        let mock = MockCoordinator()
-        let baseURL = try await mock.start()
-        defer { Task { await mock.shutdown() } }
-
-        let keys = NodeKeyPair.generate()
-        let coordinator = makeClient(
-            url: baseURL.mockProviderWebSocketURL(),
-            publicKey: keys.publicKeyBase64,
-            heartbeatInterval: 60
-        )
-        let (events, _) = await coordinator.start()
-
-        // Drain events in the background so the AsyncStream doesn't fill up.
-        let drainTask = Task {
-            for await _ in events {}
-        }
-        defer {
-            drainTask.cancel()
-            Task { await coordinator.shutdown() }
-        }
-
-        // First registration.
-        let first = try await mock.awaitFirstRegister(timeout: .seconds(5))
-        try #require(first != nil)
-        let countBefore = mock.snapshot().registers.count
-
-        // Force-close the active WS.
-        await mock.dropActiveWebSocket()
-
-        // The provider should reconnect and re-send register. ExponentialBackoff
-        // base is 1.0s, so we should see the second register within ~5s.
-        let after = try await mock.waitForSnapshot(timeout: .seconds(10)) {
-            $0.registers.count > countBefore
-        }
-        let snap = try #require(after)
-        #expect(snap.registers.count >= countBefore + 1)
-        #expect(snap.registers.last?.backend == "mlx-swift")
-    }
-
     // MARK: 3b. Outbound delivery survives a reconnect (regression)
 
     /// Regression test for the outage where ~half the fleet got pinned

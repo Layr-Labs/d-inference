@@ -305,6 +305,48 @@ final class CBv2OwnedRequestState {
         }
     }
 
+    /// `run`'s step, submitted (`asyncEval`) instead of evaluated, for a caller
+    /// that builds its next step before it reads this one (a greedy one-token
+    /// loop, `TensorParallelOneTokenLoop`): the next step's input may be this
+    /// step's lazy output. The step commits on what the host holds: a paged
+    /// host's frontiers and bindings, the recurrent generation, every layer's
+    /// state shape. Native errors and the output's values surface when the
+    /// caller evaluates or reads it, under the same `MLX.withError`, and fail
+    /// the request there. Packed storage is refused: its step writes are
+    /// checked on the device before the step completes (`checkStepWrites`).
+    func submit(tokenCount: Int, check: () throws -> Void,
+                forward: ([any CBv2AttendingLayerCache], CBv2RecurrentStateEvaluation) throws -> MLXArray) throws -> MLXArray {
+        do {
+            guard pagedHost, !packedStorage else {
+                throw ProbeError("A submitted CBv2 step needs a paged host with native storage")
+            }
+            try requireOpen()
+            guard tokenCount > 0, tokenCount <= maximumTokens - committedTokens,
+                  tokenCount <= reservedTokens - committedTokens else {
+                throw ProbeError("CBv2 state advance exceeds the admitted capacity or its reserved pages")
+            }
+            let caches = bank.layerCaches(rowStates: [rows])
+            evaluation = try recurrent.bind(); evaluationWasStaged = false
+            let output = try forward(caches, evaluation!)
+            let recurrentRoots = try evaluation!.evaluate(); evaluationWasStaged = true
+            let cacheRoots = caches.flatMap { ($0 as! any KVCache).innerState() }
+            asyncEval([output] + recurrentRoots + cacheRoots)
+            try check()
+            try validateState(after: committedTokens + tokenCount, storageViews: false)
+            try evaluation!.commit()
+            evaluation = nil; evaluationWasStaged = false
+            committedTokens += tokenCount
+            guard Set(recurrent.confirmedStateSnapshot()?.keys.map { $0 } ?? [])
+                == Set(geometry.recurrent.modelLayerIndices) else {
+                throw ProbeError("CBv2 recurrent generation did not commit every local layer")
+            }
+            return output
+        } catch {
+            isFailed = true
+            throw error
+        }
+    }
+
     /// A speculative window: `tokenCount` tokens run through the stage with
     /// every recurrent layer capturing its state per position, and nothing is
     /// committed. Used only by a decoding rank that verifies drafted tokens.
@@ -799,6 +841,77 @@ extension CBv2OwnedRequestState {
                 }
             }
             try host.finishStep()
+            return output
+        } catch {
+            states.forEach { $0.isFailed = true }
+            throw error
+        }
+    }
+
+    /// `runBatch`'s frame, submitted (`asyncEval`) instead of evaluated, for a
+    /// caller that builds the next frame before it reads this one (Qwen tensor
+    /// parallel's build-ahead decode, `QwenTensorParallelBatchDriver`): the
+    /// next frame's input may be this one's lazy selection. Every row commits
+    /// on what the host holds: a paged host's frontiers and bindings (no
+    /// device read), the recurrent generation and each state's shape. Native
+    /// errors and the output's values surface when the caller reads it, under
+    /// the same `MLX.withError`, and fail every row there. A contiguous host
+    /// reads its frontiers from the device, which waits for the frame: still
+    /// exact, without the overlap (tests on the CPU device). Native storage
+    /// only (packed rows check their writes on the device first).
+    static func submitBatch(_ states: [CBv2OwnedRequestState], tokenCount: Int, check: () throws -> Void,
+                            forward: ([any CBv2AttendingLayerCache], [CBv2RecurrentStateEvaluation]) throws -> MLXArray,
+                            validateOutput: (MLXArray) throws -> Void) throws -> MLXArray {
+        guard let host = states.first?.geometry.host, states.count <= host.lanes,
+              states.allSatisfy({ $0.geometry.host === host && !$0.packedStorage }),
+              Set(states.map { ObjectIdentifier($0) }).count == states.count else {
+            states.forEach { $0.isFailed = true }
+            throw ProbeError("A submitted batched frame needs distinct requests of one native stage KV host")
+        }
+        do {
+            for state in states {
+                try state.requireOpen()
+                guard tokenCount > 0, tokenCount <= state.maximumTokens - state.committedTokens,
+                      tokenCount <= state.reservedTokens - state.committedTokens else {
+                    throw ProbeError("CBv2 batched advance exceeds a request's admitted capacity or reserved pages")
+                }
+            }
+            let caches = host.bank.layerCaches(rowStates: states.map(\.rows))
+            for state in states {
+                state.evaluation = try state.recurrent.bind(); state.evaluationWasStaged = false
+            }
+            let output = try forward(caches, states.map { $0.evaluation! })
+            var roots: [MLXArray] = []
+            for state in states {
+                roots += try state.evaluation!.evaluate(); state.evaluationWasStaged = true
+            }
+            let cacheRoots = caches.flatMap { ($0 as! any KVCache).innerState() }
+            asyncEval([output] + roots + cacheRoots)
+            try check()
+            try validateOutput(output)
+            let frontiers = states.map { Int32($0.committedTokens + tokenCount) }
+            let readsDevice = host.kind != .paged
+            for (index, cache) in caches.enumerated() {
+                if readsDevice || !(cache is PagedLayerCache) { host.submittedDeviceFrontierReads += 1 }
+                guard cache.rows.count == states.count, cache.positionOffsets.shape == [states.count],
+                      cache.positionOffsets.dtype == .int32, frontier(of: cache, deviceRead: readsDevice) == frontiers,
+                      host.owns(cache, at: index) else {
+                    throw ProbeError("CBv2 batched KV binding or host token frontiers differ")
+                }
+            }
+            for (lane, state) in states.enumerated() {
+                try state.validateBatchRow(lane: lane, after: state.committedTokens + tokenCount)
+            }
+            try check()
+            for state in states {
+                try state.evaluation!.commit()
+                state.evaluation = nil; state.evaluationWasStaged = false
+                state.committedTokens += tokenCount
+                guard Set(state.recurrent.confirmedStateSnapshot()?.keys.map { $0 } ?? [])
+                    == Set(state.geometry.recurrent.modelLayerIndices) else {
+                    throw ProbeError("CBv2 batched recurrent generation did not commit every local layer")
+                }
+            }
             return output
         } catch {
             states.forEach { $0.isFailed = true }

@@ -183,6 +183,15 @@ public struct GLM5NextResidentResourceEnvelope {
     public let requestCapacityBytes: Int
     public let executionEnvironmentSHA256: String
     let calibrationOnly: Bool
+    /// A serving rank's envelope (`GLM5NextServingResources.envelope`): LOAD
+    /// holds only what loading needs (the stage's weights at their allocator
+    /// bounds and what only loading holds beside them) within
+    /// `loadCapacityBytes`, and each request is admitted when it arrives, on
+    /// live memory and that capacity, at its own context
+    /// (`budget(descriptor:contextTokens:)`). False: LOAD reserves the memory
+    /// plan's whole request beside the load (qualification, calibration and
+    /// tensor parallel's quotes of the pipeline stages).
+    let admitsRequestsOnArrival: Bool
     let descriptorFingerprint: String
     let inventory: GLM5NextWeightInventory
     let rank: Int
@@ -190,6 +199,10 @@ public struct GLM5NextResidentResourceEnvelope {
     let scope: GLM5NextRequestStateBudget.Scope
     let hostAllocationBound: (Int) throws -> Int
     let requireExecutionEnvironment: (String) throws -> Void
+    /// The inventory's evidence digests, computed once: a request admitted on
+    /// arrival is quoted at its own context, and the serving context is
+    /// searched over many, each on a fresh memory sample.
+    let digests: GLM5NextRequestStateBudget.EvidenceDigests
 
     /// Workspace JSON is GLM5NextRequestStateBudget.WorkspaceEvidence's
     /// qualification document. Authentication must cover the exact supplied bytes.
@@ -210,7 +223,8 @@ public struct GLM5NextResidentResourceEnvelope {
                 loadCapacityBytes: Int, requestCapacityBytes: Int, executionEnvironmentSHA256: String,
                 workspaceEvidence: Data, authenticateWorkspace: (Data) throws -> Void,
                 requireExecutionEnvironment: @escaping (String) throws -> Void,
-                hostAllocationBound: @escaping (Int) throws -> Int, calibrationOnly: Bool) throws {
+                hostAllocationBound: @escaping (Int) throws -> Int, calibrationOnly: Bool,
+                admitsRequestsOnArrival: Bool = false) throws {
         guard (0...1).contains(rank), loadCapacityBytes > 0, requestCapacityBytes > 0,
               requestCapacityBytes <= loadCapacityBytes,
               inventory.configuration == descriptor.configuration, inventory.storage == descriptor.storage,
@@ -224,18 +238,21 @@ public struct GLM5NextResidentResourceEnvelope {
             throw ProbeError("Experimental calibration allowance is not serving workspace evidence")
         }
         self.calibrationOnly = calibrationOnly
+        self.admitsRequestsOnArrival = admitsRequestsOnArrival && !calibrationOnly
         let p = descriptor.memoryProfile
         let scope = GLM5NextRequestStateBudget.Scope(maximumContextTokens: p.maximumContextTokens,
             maximumPromptTokens: p.maximumPromptTokens, maximumOutputTokens: p.maximumOutputTokens,
             maximumChunkTokens: p.maximumChunkTokens, includesVision: descriptor.includesVision)
         let layers = rank == 0 ? 0..<descriptor.cut : descriptor.cut..<inventory.configuration.textConfig.hiddenLayers
+        let digests = try GLM5NextRequestStateBudget.EvidenceDigests(inventory: inventory,
+            executionPolicy: descriptor.executionPolicy)
         // CPU-only structural/evidence validation. Live allocator bounds are
         // applied again under the process lease before the load agreement.
         let minimum = try GLM5NextRequestStateBudget.estimate(inventory: inventory, layers: layers,
             rank: rank, scope: scope, executionPolicy: descriptor.executionPolicy,
             executionEnvironmentSHA256: executionEnvironmentSHA256, workspace: workspace,
             transport: Self.transportTerms, maximumBufferBytes: Int.max,
-            allocationBound: { $0 }, hostAllocationBound: hostAllocationBound)
+            allocationBound: { $0 }, hostAllocationBound: hostAllocationBound, digests: digests)
         guard minimum.reservedBytes <= requestCapacityBytes else {
             throw ProbeError("GLM request envelope exceeds its owner capacity")
         }
@@ -243,7 +260,7 @@ public struct GLM5NextResidentResourceEnvelope {
         self.executionEnvironmentSHA256 = executionEnvironmentSHA256
         descriptorFingerprint = descriptor.fingerprint; self.inventory = inventory; self.rank = rank
         self.workspace = workspace; self.scope = scope; self.hostAllocationBound = hostAllocationBound
-        self.requireExecutionEnvironment = requireExecutionEnvironment
+        self.requireExecutionEnvironment = requireExecutionEnvironment; self.digests = digests
     }
 
     // Exact defaults used by Collective.establishDataPlane and the regular
@@ -267,26 +284,70 @@ public struct GLM5NextResidentResourceEnvelope {
             scope: scope, executionPolicy: descriptor.executionPolicy,
             executionEnvironmentSHA256: executionEnvironmentSHA256, workspace: workspace,
             transport: Self.transportTerms, maximumBufferBytes: maximumBufferBytes,
-            allocationBound: allocationBound, hostAllocationBound: hostAllocationBound)
+            allocationBound: allocationBound, hostAllocationBound: hostAllocationBound, digests: digests)
         let load = try GLM5NextStageLoadResources(inventory: inventory, stageIndex: rank,
             cut: descriptor.cut, includeMTP: false, executionPolicy: descriptor.executionPolicy,
             metadataAllowanceBytes: Self.metadataAllowanceBytes, maximumBufferBytes: maximumBufferBytes,
             allocationBound: allocationBound, includeVision: descriptor.includesVision)
         let peak = try GLM5NextResidentPeak(load: load.summary, request: request)
-        guard request.reservedBytes <= requestCapacityBytes, peak.reservedBytes <= loadCapacityBytes else {
-            throw ProbeError("GLM quotation exceeds the bound load/request capacities")
+        // A serving rank's LOAD holds only what loading needs; its requests
+        // are admitted as they arrive (`admitsRequestsOnArrival`).
+        let loadBytes = admitsRequestsOnArrival ? load.summary.initialLoadPeakBytes : peak.reservedBytes
+        guard request.reservedBytes <= requestCapacityBytes, loadBytes <= loadCapacityBytes else {
+            throw ProbeError(capacityRefusal(cut: descriptor.cut, load: load.summary, request: request, peak: peak))
         }
         return (load, request, peak)
     }
 
+    /// Which capacity a quote exceeds, with the quote's terms: the stage's
+    /// weights, what only loading holds beside them, and (when LOAD reserves
+    /// it) the request the memory plan charges. A serving rank's load
+    /// capacity is what its GPU keeps resident (`GLM5NextServingResources.envelope`).
+    func capacityRefusal(cut: Int, load: GLM5NextStageLoadResources.Summary, request: GLM5NextRequestStateBudget,
+                         peak: GLM5NextResidentPeak) -> String {
+        let gib = QwenDenseStageLoadPolicy.gibText
+        let context = "its \(scope.maximumContextTokens)-token request"
+        let capacity = "more than its load capacity of \(gib(loadCapacityBytes)) (on a serving rank, what its GPU keeps resident)"
+        let weights = load.sourceAllocationBoundBytes, scratch = load.initialLoadPeakBytes - weights
+        guard (admitsRequestsOnArrival ? load.initialLoadPeakBytes : peak.reservedBytes) > loadCapacityBytes else {
+            return "GLM rank \(rank) at cut \(cut) quotes \(gib(request.reservedBytes)) for \(context), "
+                + "more than its request capacity of \(gib(requestCapacityBytes))"
+        }
+        if admitsRequestsOnArrival {
+            return "GLM rank \(rank) at cut \(cut) needs \(gib(load.initialLoadPeakBytes)) to load (weights \(gib(weights)), "
+                + "load scratch \(gib(scratch))), \(capacity)"
+        }
+        return "GLM rank \(rank) at cut \(cut) needs \(gib(peak.reservedBytes)) to load and serve \(context) "
+            + "(weights \(gib(weights)), load scratch \(gib(scratch)), request \(gib(request.reservedBytes))), \(capacity)"
+    }
+
+    /// What one request of `contextTokens` (prompt plus output) is charged on
+    /// this rank when it arrives: the memory plan's scope cut to that context,
+    /// so its DSA histories are bounded by the cache's own doubling for it.
+    func budget(descriptor: GLM5NextResidentDescriptor, contextTokens: Int) throws -> GLM5NextRequestStateBudget {
+        guard (2...scope.maximumContextTokens).contains(contextTokens) else {
+            throw ProbeError("GLM request context is outside the memory plan's request")
+        }
+        let prompt = min(scope.maximumPromptTokens, contextTokens - 1)
+        return try budget(descriptor: descriptor, scope: .init(maximumContextTokens: contextTokens,
+            maximumPromptTokens: prompt, maximumOutputTokens: min(scope.maximumOutputTokens, contextTokens - 1),
+            maximumChunkTokens: min(scope.maximumChunkTokens, prompt), includesVision: scope.includesVision))
+    }
+
     func budget(descriptor: GLM5NextResidentDescriptor) throws -> GLM5NextRequestStateBudget {
+        try budget(descriptor: descriptor, scope: scope)
+    }
+
+    private func budget(descriptor: GLM5NextResidentDescriptor,
+                        scope: GLM5NextRequestStateBudget.Scope) throws -> GLM5NextRequestStateBudget {
         try requireExecutionEnvironment(executionEnvironmentSHA256)
         let layers = rank == 0 ? 0..<descriptor.cut : descriptor.cut..<inventory.configuration.textConfig.hiddenLayers
         let budget = try GLM5NextRequestStateBudget.estimate(inventory: inventory, layers: layers, rank: rank,
             scope: scope, executionPolicy: descriptor.executionPolicy,
             executionEnvironmentSHA256: executionEnvironmentSHA256, workspace: workspace,
             transport: Self.transportTerms, maximumBufferBytes: GPU.deviceInfo().maxBufferSize,
-            allocationBound: QwenResidentResourceEnvironment.allocationBound, hostAllocationBound: hostAllocationBound)
+            allocationBound: QwenResidentResourceEnvironment.allocationBound, hostAllocationBound: hostAllocationBound,
+            digests: digests)
         guard descriptor.fingerprint == descriptorFingerprint, budget.reservedBytes <= requestCapacityBytes else {
             throw ProbeError("GLM live request quotation exceeds the bound resource envelope")
         }
@@ -339,9 +400,9 @@ struct GLM5NextResidentAdmission {
               configuration.admitsRequestDeadline(value.deadlineUptimeNanoseconds, now: now) else {
             throw ProbeError("GLM reservation differs from its profile, capacity, route or deadline")
         }
-        // The pipeline's LOAD charged its memory scope, never more: a longer
-        // request is not charged here, so it is not served here (its READY
-        // says so too: `servingContextTokens`).
+        // A pipeline rank charges at most its memory scope, at LOAD or on
+        // arrival: a longer request is not charged here, so it is not served
+        // here (its READY says so too: `servingContextTokens`).
         let memory = descriptor.memoryProfile
         guard value.promptTokenIDs.count <= memory.maximumPromptTokens, value.outputCount <= memory.maximumOutputTokens,
               value.promptTokenIDs.count + value.outputCount <= memory.maximumContextTokens else {

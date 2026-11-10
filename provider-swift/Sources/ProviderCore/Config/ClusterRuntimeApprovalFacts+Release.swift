@@ -51,7 +51,7 @@ extension ClusterRuntimeApprovalFacts {
     /// at all, and when no model is left (naming what was left out).
     public static func release(installation: Installation, candidates: [ModelFiles],
                                models: [ReleaseModel] = ClusterRuntimeApprovalFacts.releaseModels,
-                               publicModels: [ClusterPublicModel] = ClusterPublicModels.declared,
+                               publicModels: [ClusterPublicModel] = ClusterPublicModels.current,
                                decisions: ClusterPairServingDecisions = ClusterPairServingGrants.decisions,
                                note: (String) -> Void = { _ in }) throws -> Self {
         let installed = try HashedInstallation(installation)

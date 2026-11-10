@@ -26,24 +26,36 @@ public struct LocalInferenceHTTPConfig: Sendable {
     public let port: UInt16
     /// Bearer token required on every inference route (nil = open / `--no-auth`).
     public let authToken: String?
+    /// A pair's API only: the pair's key (`LocalEndpoint.loadOrCreateClusterToken`), taken beside `authToken`, which is
+    /// this Mac's own. Every other Mac of the pair passes its requests on with it (`ClusterLocalRelay`), and tools set
+    /// up with it before keep working. Nil everywhere else.
+    public let pairToken: String?
+    /// Where a request goes when this Mac can't take it (`LocalRouter`); nil serves this Mac's engine only, with
+    /// the endpoint's behaviour before the router.
+    public let router: LocalRouterConfig?
 
-    public init(host: String = "127.0.0.1", port: UInt16 = BuildEnvironment.current.defaultLocalPort, authToken: String? = nil) {
+    public init(host: String = "127.0.0.1", port: UInt16 = BuildEnvironment.current.defaultLocalPort, authToken: String? = nil,
+                pairToken: String? = nil, router: LocalRouterConfig? = nil) {
         self.host = host
         self.port = port
         self.authToken = authToken
+        self.pairToken = pairToken
+        self.router = router
     }
 }
 
 /// The concrete responder stack the local endpoint always uses:
-/// disconnect ownership → auth → CORS → MTP-augmented /metrics → chat-upload
-/// interception (32 MiB body ceiling for the media-bearing chat routes, see
-/// `LocalChatUploadResponder`) → upstream MLXLMServer router.
+/// disconnect ownership → auth → the local router (this Mac first, then the
+/// route's upstream hops; a pass-through without a router) → CORS →
+/// MTP-augmented /metrics → chat-upload interception (32 MiB body ceiling for
+/// the media-bearing chat routes, see `LocalChatUploadResponder`) → upstream
+/// MLXLMServer router.
 public typealias LocalInferenceApplication =
     Application<
-        LocalDisconnectResponder<LocalRequestOriginResponder<LocalAuthResponder<
+        LocalDisconnectResponder<LocalRequestOriginResponder<LocalAuthResponder<LocalRouterResponder<
             CORSResponder<
                 LocalMetricsResponder<
-                    LocalChatUploadResponder<RouterResponder<BasicRequestContext>>>>>>>>
+                    LocalChatUploadResponder<RouterResponder<BasicRequestContext>>>>>>>>>
 
 /// Builds the local OpenAI-compatible Hummingbird application from a model
 /// registry expressed as three closures. Shared by `StandaloneServer` and the
@@ -65,6 +77,12 @@ public typealias LocalInferenceApplication =
 ///   signal — used to write the discovery record only after a confirmed bind
 ///   (so a port collision never advertises a foreign process). If the bind
 ///   fails, `runService` throws instead and this never fires.
+/// - Parameter modelLimits: this Mac's engine limits for a model (context and
+///   output tokens, input modalities), which the router's `/v1/models` carries;
+///   nil knows none. The list says whether a model reasons from its type
+///   (`modelTypeProvider`, `LocalModelFeatures`).
+/// - Parameter prefillTicker: how often a streamed request's prompt is
+///   commented on until its first token (`LocalPrefillProgress`); nil, never.
 func makeLocalInferenceApplication(
     config: LocalInferenceHTTPConfig,
     defaultMaxTokens: Int,
@@ -79,7 +97,9 @@ func makeLocalInferenceApplication(
     distributedResponses: (any DistributedHTTPResponseProviding)? = nil,
     nemotronSuperImageHTTP: NemotronSuperLocalImageHTTP? = nil,
     managedSuperEngine: (@Sendable (Data, OpenAIChatCompletionRequest, EngineV2LogprobsChannel?)
-        -> (any MLXServerEngine)?)? = nil
+        -> (any MLXServerEngine)?)? = nil,
+    modelLimits: (@Sendable (String) async -> LocalModelLimits?)? = nil,
+    prefillTicker: LocalPrefillTicker? = .standard
 ) -> LocalInferenceApplication {
     // The upstream OpenAI request shape intentionally ignores Qwen's
     // template-only controls. Build a lightweight engine/service facade per
@@ -165,6 +185,7 @@ func makeLocalInferenceApplication(
         responseConversations: LocalResponseConversationStore(),
         serviceForLogprobs: serviceForLogprobs,
         reasoningTokenCounter: reasoningTokenCounter,
+        prefillTicker: prefillTicker,
         serviceForRawChat: { body, request, logprobs in
             if let service = nemotronSuperImageHTTP?.service(body: body, request: request,
                 responseStore: responseStore, metrics: metrics, logprobs: logprobs) { return service }
@@ -178,9 +199,28 @@ func makeLocalInferenceApplication(
     let metricsResponder = LocalMetricsResponder(
         inner: uploadResponder, service: service, mtpSlots: mtpSlots)
     let corsResponder = CORSResponder(inner: metricsResponder)
+    // After auth (a bad local key never reaches it) and outside CORS (this
+    // Mac's engine errors arrive as statuses it can pass on).
+    let localRouter = config.router.map { router -> LocalRouter in
+        var router = router
+        // No upstream hop without the local key: without one (`--no-auth`) anything that reaches the port is a
+        // client, and must not borrow the owner's other Macs or balance.
+        if (config.authToken ?? "").isEmpty {
+            router.localKeyRequired = false
+            router.log("no local key (--no-auth): requests stay on this Mac, and the account key is never used")
+        }
+        // Each model's limits and input come from the server; whether it reasons comes from its type alone, here, for
+        // every server (one Mac, a pair's leader, the pair's own API).
+        return LocalRouter(config: router, localModels: availableModels, localLimits: { model in
+            var limits = await modelLimits?(model) ?? LocalModelLimits()
+            limits.reasoning = LocalModelFeatures.reasons(modelID: model, modelType: await modelTypeProvider?(model))
+            return limits
+        })
+    }
+    let routedResponder = LocalRouterResponder(inner: corsResponder, router: localRouter)
     // Auth rejects unauthenticated requests before body/model handling. The
     // outer disconnect layer only binds lifetime; it does not inspect content.
-    let authedResponder = LocalAuthResponder(inner: corsResponder, token: config.authToken)
+    let authedResponder = LocalAuthResponder(inner: routedResponder, token: config.authToken, pairToken: config.pairToken)
 
     return Application(
         responder: LocalDisconnectResponder(

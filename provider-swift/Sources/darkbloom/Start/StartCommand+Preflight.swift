@@ -20,11 +20,14 @@ extension Start {
             throw ExitCode.failure
         }
 
-        guard let hardware = snapshot.hardware else { return }
-        if hardware.memoryGb < 8 {
-            printError("This Mac has \(hardware.memoryGb) GB RAM. At least 8 GB is needed to serve any model.")
-            throw ExitCode.failure
-        }
+        try Self.requireMemoryForAnyModel(snapshot.hardware)
+    }
+
+    /// Refuses (exit 1) a Mac with less than the 8 GB any model needs; unknown hardware passes.
+    static func requireMemoryForAnyModel(_ hardware: HardwareInfo?) throws {
+        guard let hardware, hardware.memoryGb < 8 else { return }
+        printError("This Mac has \(hardware.memoryGb) GB RAM. At least 8 GB is needed to serve any model.")
+        throw ExitCode.failure
     }
 
     /// Offers to link the machine to a Darkbloom account if not already logged

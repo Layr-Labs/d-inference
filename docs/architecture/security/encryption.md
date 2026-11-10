@@ -1,6 +1,6 @@
 # Provider Encryption And Privacy
 
-> Last updated: 2026-10-26
+> Last updated: 2026-11-07
 
 This page describes the provider's plaintext boundary, encrypted network traffic
 and local cache storage. Backend cryptographic implementation and consumer
@@ -249,7 +249,7 @@ across the Thunderbolt cable:
   links one scope's requests within the cache as the scope does. Both ranks bind
   the partition into the request fingerprint they compare first, so ranks given
   different partitions fail the request rather than share state. Requests from
-  the local endpoint carry no partition and share only one another's prefixes
+  the local API carry no partition and share only one another's prefixes
   (`libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterWorkerPrefixCache.swift`,
   `provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedPipeExecutionOwner.swift`;
   [mechanism](../prefix-cache.md#cluster-prefix-tenant-partitions)).

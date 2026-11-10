@@ -100,7 +100,7 @@ final class GLM5NextResidentStage {
          artifactAggregateSHA256: String, storage: GLM5NextWeightInventory.Storage,
          stageIndex: Int, cut: Int, includeMTP: Bool, executionPolicy: GLM5NextExecutionPolicy,
          capacityLimitBytes: Int, executionStateReserveBytes: Int, workspaceReserveBytes: Int,
-         hooks: GLM5NextResidentLoadHooks = .init(),
+         reservesRequest: Bool = true, hooks: GLM5NextResidentLoadHooks = .init(),
          processLease: QwenResidentProcessLease = .shared, includeVision: Bool = false) throws {
         guard qwenStageWireIsSHA256(artifactAggregateSHA256) else {
             throw ProbeError("GLM resident source requires its trusted artifact aggregate")
@@ -114,7 +114,8 @@ final class GLM5NextResidentStage {
             maximumBufferBytes: GPU.deviceInfo().maxBufferSize,
             allocationBound: { try Memory.allocationFootprintUpperBound(byteCount: $0) }, includeVision: includeVision)
         let gate = try GLM5NextStageLoadGate(resources: resources, capacityLimitBytes: capacityLimitBytes,
-            executionStateReserveBytes: executionStateReserveBytes, workspaceReserveBytes: workspaceReserveBytes)
+            executionStateReserveBytes: executionStateReserveBytes, workspaceReserveBytes: workspaceReserveBytes,
+            reservesRequest: reservesRequest)
         self.directory = directory; self.expectedIdentity = expectedIdentity
         self.artifactAggregateSHA256 = artifactAggregateSHA256; self.inventory = inventory
         inventorySHA256 = GLM5NextArtifactMetadata.fingerprint(inventory)

@@ -87,9 +87,17 @@ build_module InstalledContract \
   "$task_sources/Protocol/ProviderExecutionRole.swift" \
   "$task_sources/Inference/Distributed/Onboarding/ClusterControlLeadership.swift" \
   "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingFlow.swift" \
+  "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingSoloServing.swift" \
+  "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingBrand.swift" \
+  "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingStartProgress.swift" \
+  "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingFollow.swift" "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingLeaderStep.swift" \
+  "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingPairServing.swift" \
   "${task_placement[@]}" \
+  "$task_sources/Diagnostics/GLM5NextGPULimitEligibility.swift" \
   "$task_sources"/Inference/Distributed/LinkControl/*.swift \
   "$task_sources/Inference/Distributed/Observability/ClusterObservability.swift" \
+  "$task_sources/Inference/Distributed/Observability/ClusterIncidentLog+Install.swift" \
+  "$task_provider"/Sources/ProviderBuildEnvironment/*.swift \
   "$task_sources/Inference/Distributed/Observability/ClusterLinkObservability.swift" \
   "$task_sources/Inference/Distributed/Console/ClusterDiagnosticRedaction.swift" \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusValues.swift \

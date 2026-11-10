@@ -95,7 +95,7 @@ public final class ProviderUsageHistory: @unchecked Sendable {
     }
     private func saveLockedLoggingFailure() {
         do { try saveLocked() }
-        catch { ProviderLogger(subsystem: "dev.darkbloom.provider", category: "usage").warning("Local usage history could not be saved") }
+        catch { ProviderLogger(subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "usage").warning("Local usage history could not be saved") }
     }
     private func saveLocked() throws {
         guard hasUnsavedRecords else { return }

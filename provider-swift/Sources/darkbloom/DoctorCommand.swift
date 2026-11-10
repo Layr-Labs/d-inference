@@ -41,19 +41,31 @@ struct Doctor: AsyncParsableCommand {
         let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
         let bootSecurity = BootSecuritySnapshot.live()
         let coordinatorURL = coordinator ?? snapshot.config.coordinator.url
+        let daemonState = DaemonStateFile.read()
+        let daemonRunning = doctorDaemonProcessMatches(daemonState: daemonState)
+        let pair = ClusterPairSummary.local()
+        // How this Mac serves you comes first; on a Mac set to Only me the Darkbloom network's checks don't apply.
+        let localAPI = await DoctorLocalAPI.live(config: snapshot.config, daemonState: daemonState,
+                                                 daemonRunning: daemonRunning, pair: pair)
+        let networkChecks = localAPI.runsNetworkChecks(coordinatorOverride: coordinator)
         var checks = buildDoctorChecks(snapshot: snapshot, bootSecurity: bootSecurity)
-        checks.append(contentsOf: await buildCoordinatorDoctorChecks(
-            snapshot: snapshot,
-            coordinatorOverride: coordinator
-        ))
+        if networkChecks {
+            checks.append(contentsOf: await buildCoordinatorDoctorChecks(
+                snapshot: snapshot,
+                coordinatorOverride: coordinator
+            ))
+        } else {
+            checks.append(DoctorLocalAPI.networkNotNeeded)
+        }
         // A Mac paired for a cluster: the cluster's own checks too (none on a single Mac).
         checks.append(contentsOf: await buildClusterDoctorChecks(configPath: configOptions.config))
 
         // Operator-facing diagnosis: trust reason, SE key, model fit, runtime,
         // billing, version — the "why am I / aren't I earning?" answers.
-        let diagnosis = await DoctorRunner.buildOperatorDiagnosis(
+        let diagnosis = await localAPI.lines(networkChecks: networkChecks) + DoctorRunner.buildOperatorDiagnosis(
             snapshot: snapshot,
-            coordinatorURL: coordinatorURL
+            coordinatorURL: coordinatorURL,
+            networkChecks: networkChecks
         )
 
         print("\(BuildEnvironment.current.cliName) doctor \(ProviderCore.version)")
@@ -61,9 +73,8 @@ struct Doctor: AsyncParsableCommand {
         print("Build: \(BuildEnvironment.current.rawValue)")
         print("Coordinator: \(coordinatorURL)")
         print("Model CDN: \(ModelDownloader.resolveCDNURL())")
-        let daemonState = DaemonStateFile.read()
-        let daemonRunning = doctorDaemonProcessMatches(daemonState: daemonState)
-        print("Daemon: \(daemonRunning ? "running" : "NOT running — run `\(BuildEnvironment.current.cliName) start`")")
+        print(Self.daemonLine(running: daemonRunning, paired: pair.paired, unsure: pair.pairingUnreadable))
+        if pair.paired { print(pair.statusLine) }
 
         // §16.5: did this box serve the KV backend it was configured for,
         // and is the snapshot that answer comes from still being refreshed?

@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-10-25
+> Last updated: 2026-11-07
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -58,10 +58,21 @@ buffers past it fail with "Insufficient Memory". Set the values the production
 and `vm.global_user_wire_limit=261134011596` and `vm.user_wire_limit=261134011596`
 (95% of physical memory), then restart the provider. The
 [troubleshooting steps](troubleshooting.md#glm-53-flash-gpu-wired-memory-limit)
-keep them after a reboot. Only the 256 GB values are defined
+keep them after a reboot. Only the 256 GB values are defined for one Mac
 (`provider-swift/Sources/ProviderCore/Diagnostics/GLM5NextWiredLimit.swift`,
 `GLM5NextWiredLimit.recommendation`); they change no admission or capacity
-figure.
+figure. A rank of a GLM pair, which on a 128 GB Mac holds about half the
+model, uses the same derivation for 128 and 256 GB, applied with
+[`darkbloom cluster gpu-limit`](../reference/configuration.md#gpu-memory-limit-for-a-glm-pair)
+(`GLM5NextWiredLimit.pairRankRecommendation`).
+
+A GLM pair of 128 GB Macs serves as a pipeline only. An M4 Max can be one of
+them: its part is sized to the GPU limit its macOS reports (107.52 GiB on
+macOS 26). `darkbloom cluster gpu-limit` raises the limit on any Apple silicon
+Mac with 128 GB or more (an M4 Max, M3 Ultra, M2 Ultra, M1 Ultra or M3 Max as
+well as an M5), so where a raise makes a split fit the setup names that step
+first, and otherwise says "needs more memory"
+([two-Mac cluster](two-mac-cluster.md)).
 
 Current backend behavior is owned by the
 [platform's latest default branch](https://github.com/Layr-Labs/darkbloom-platform/tree/master).
@@ -312,7 +323,7 @@ not certify space for a concurrently staged assistant replacement.
 | Assistant download | The pinned catalog assistant adds 236,127,665 bytes (about 236 MB) of files beside the target and SSD cache. This is artifact size, not a promise of loaded memory use; future catalog revisions may differ | [Pinned assistant file sizes](../reports/evidence/2026-09-08-gemma-qat-defaults/hf-assistant-identity-verification.json); `provider-swift/Sources/ProviderCore/SpecDec/SpecDecResolver.swift` (`SpecDecResolver`) |
 | Replacement memory | Before preparation, reserve the assistant's resident-byte estimate plus the minimum serviceable KV grant (1 GiB) while the old engine remains resident. Existing activation/headroom reserves remain enforced; shared target weights are retained and counted once. Insufficient memory defers the optional upgrade without evicting a serving model | `provider-swift/Sources/ProviderCore/ProviderLoop+MTPUpgrade.swift` (`prepareMTPUpgrade`); `provider-swift/Sources/ProviderCore/Inference/Memory/EngineV2Reslice.swift` (`EngineV2KVSizing.minimumServiceableGrantBytes`); `provider-swift/Sources/ProviderCore/Inference/MTP/MTPStagingReservations.swift` (`extraBytes`) |
 | Download, verification and preparation | The original engine continues serving. Missing or invalid artifacts and preparation failures preserve target-only serving | `provider-swift/Sources/ProviderCore/SpecDec/SpecDecArtifactFunnel.swift` (`prepare`); `provider-swift/Sources/ProviderCore/Models/ModelIdleUpgrade.swift` (`run`) |
-| Prepared-engine activation | Network serving continues through the configured rollout jitter, then new admissions for this model close until accepted work finishes and the engine swaps. Other models remain eligible. Standalone skips fleet jitter; new acquisitions during either model drain can receive transient 503. Timeout/cancellation discards the candidate and reopens the original engine without force-cancelling accepted work | [Drain bounds, controls and failure behavior](../architecture/inference.md#multi-token-prediction); [`update_jitter_seconds`](cli-reference.md#providertoml-keys-read-by-the-cli) |
+| Prepared-engine activation | Network serving continues through the configured rollout jitter, then new admissions for this model close until accepted work finishes and the engine swaps. Other models remain eligible. Only me (`--local`) skips fleet jitter; new acquisitions during either model drain can receive transient 503. Timeout/cancellation discards the candidate and reopens the original engine without force-cancelling accepted work | [Drain bounds, controls and failure behavior](../architecture/inference.md#multi-token-prediction); [`update_jitter_seconds`](cli-reference.md#providertoml-keys-read-by-the-cli) |
 
 Jitter spreads independent network-provider upgrades; it does not reserve spare
 fleet capacity or guarantee another provider remains available. Explicit MTP

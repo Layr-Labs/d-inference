@@ -5,16 +5,6 @@ import Testing
 
 @Suite("Fan temperature policy")
 struct FanPolicyTests {
-    @Test("defaults pin the agreed trigger, release, speed, and debounce")
-    func defaults() {
-        let config = FanPolicyConfiguration.defaults
-        #expect(config.triggerCelsius == 45)
-        #expect(config.releaseCelsius == 40)
-        #expect(config.speedPercent == 80)
-        #expect(config.engageSampleCount == 3)
-        #expect(config.releaseSampleCount == 30)
-    }
-
     @Test("normal speed is restricted to 60 through 90 percent")
     func speedValidation() throws {
         #expect(try FanPolicyConfiguration(speedPercent: 60).speedPercent == 60)

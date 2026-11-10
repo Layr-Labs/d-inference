@@ -20,7 +20,7 @@ extension Cluster.Setup {
     }
 
     /// The one line `darkbloom cluster` prints when it is not run in a terminal.
-    static let needsTerminalLine = "Run `darkbloom cluster` in a Terminal window on this Mac."
+    static let needsTerminalLine = "Run `\(ClusterPairSummary.cli) cluster` in a Terminal window on this Mac."
 
     /// The pair the wizard was given, all four options or none.
     func wizardPair() throws -> ClusterSetupRecord.Pair? {
@@ -113,20 +113,86 @@ extension Cluster.Setup {
     /// local-only serving). Run again, it shows where this Mac stands and the next step.
     static func runOnboarding(config: String?, modelDir: String?, worker: String?, request: ClusterOnboardingRequest) async throws {
         Darkbloom.ensureLogging()
+        try await requireNewPairApproval(request: request, gate: clusterWaitlistGate(access: .live(configPath: config)))
         let settings = try onboardingSettings(config: config, modelDir: modelDir, worker: worker, request: request)
-        let operations = try ClusterOnboardingOperations.live(settings)
+        let operations = withServingChoice(try ClusterOnboardingOperations.live(settings), config: config, request: request)
         let instance: ClusterConsoleInstanceLock
         do { instance = try ClusterConsoleInstanceLock.acquire() } catch let held as ClusterConsoleInstanceLock.Held {
             fputs(held.description + "\n", stderr)
             throw ExitCode.failure
         }
         let code = await Task.detached {
-            let console = ClusterOnboardingTerminal(input: STDIN_FILENO, output: STDOUT_FILENO)
+            // A colour window folds each finished step to one line; this run's whole flow goes to a log beside the
+            // setup's other files (this install's `cluster-setup/screens/`), its path said at the end.
+            let screens = (try? ClusterUserPaths()).map { ClusterSetupPaths(paths: $0).directory.appendingPathComponent("screens", isDirectory: true) }
+            let console = ClusterOnboardingTerminal(input: STDIN_FILENO, output: STDOUT_FILENO,
+                                                    logFile: screens.flatMap { ClusterOnboardingTerminal.screenLog(in: $0) })
             defer { console.restore() }
             return ClusterOnboardingDriver.run(operations, console: console, request: request)
         }.value
         withExtendedLifetime(instance) {}
         if code != 0 { throw ExitCode(code) }
+    }
+
+    /// Plain `darkbloom cluster` (and `darkbloom start` on a paired Mac) asks how the pair serves; `darkbloom cluster
+    /// local` names it, so its screens stay as they were.
+    static func asksServingChoice(request: ClusterOnboardingRequest) -> Bool { request.scope == nil }
+
+    /// The live operations, which ask how the pair serves and save the answer where `asksServingChoice` says so. Only
+    /// this screen sets them, and it runs only in a terminal (`entry`): every other caller of the operations (the
+    /// cluster service, status, stop) asks and saves nothing. So without a terminal a pair serves as its record says,
+    /// and a record from before this question as the Darkbloom network.
+    static func withServingChoice(_ live: ClusterOnboardingOperations, config: String?,
+                                  request: ClusterOnboardingRequest) -> ClusterOnboardingOperations {
+        guard asksServingChoice(request: request) else { return live }
+        var operations = live
+        operations.servingChoice = { servingChoiceAsk(config: config) }
+        operations.saveServingChoice = { saveServingChoice($0, config: config) }
+        return operations
+    }
+
+    /// What the question asks with: the answer saved in `[local] mode`, and the idle minutes the pair's pause keeps
+    /// (`[local] me_first_idle_minutes`). A config that can't be read asks as on a new Mac.
+    static func servingChoiceAsk(config: String?) -> ClusterServingChoiceAsk {
+        let local = try? savedLocalSettings(configPath: config)
+        return .init(saved: local?.mode.flatMap { ClusterServingChoice(rawValue: $0.rawValue) },
+                     idleMinutes: Int(local?.resolvedMeFirstIdleMinutes ?? LocalSettings.defaultMeFirstIdleMinutes))
+    }
+
+    /// Saves the answer as `[local] mode`, and nothing else, as `darkbloom start`'s question does.
+    static func saveServingChoice(_ choice: ClusterServingChoice, config: String?) -> Result<[String], ClusterOnboardingFailure> {
+        guard let mode = LocalSettings.Mode(rawValue: choice.rawValue) else { return .success([]) }
+        do {
+            try setLocalSettings(configPath: config) { $0.mode = mode }
+            return .success([])
+        } catch {
+            let why = String(String(describing: error).map { $0.isNewline ? " " : $0 }.prefix(160))
+            return .failure(.init(["Your choice wasn't saved in [local] (\(why)); the pair serves that way all the same."]))
+        }
+    }
+
+    /// The clusters waitlist's id in the coordinator's catalog.
+    static let waitlistFeature = "cluster"
+
+    /// The approval a new pair needs, asked at the terminal the onboarding runs in.
+    static func clusterWaitlistGate(access: @escaping @autoclosure () -> FeatureWaitlistAccess) -> () -> FeatureWaitlistGate {
+        {
+            FeatureWaitlistGate(feature: waitlistFeature, fallbackTitle: "Clusters", setupCommand: "\(ClusterPairSummary.cli) cluster",
+                                unchanged: "Nothing was set up.", access: access(), ask: { SandboxTerminal.confirm($0) },
+                                stopNote: "  Serving on your own Macs only needs no approval: \(ClusterPairSummary.cli) cluster local")
+        }
+    }
+
+    /// A new pair that serves through Darkbloom needs an account Darkbloom approved from the clusters waitlist
+    /// (`FeatureWaitlistGate`). `darkbloom cluster local` serves on the owner's own Macs only and is never asked, so it
+    /// works offline as its help says. A Mac that holds a pairing, or one it can't read, is never asked either: a pair
+    /// set up before the waitlist, or serving now, keeps working as it did, across updates and restarts, and its screen
+    /// (start over, pair again) stays as it was.
+    static func requireNewPairApproval(pair: @autoclosure () -> ClusterPairSummary = .local(), request: ClusterOnboardingRequest,
+                                       gate: () -> FeatureWaitlistGate) async throws {
+        if case .localOnly = request.scope { return }
+        guard !pair().paired else { return }
+        try await gate().require()
     }
 
     /// `darkbloom cluster --plain`: the six steps as text, and nothing started or asked.

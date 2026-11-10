@@ -1,6 +1,6 @@
 # Provider process
 
-> Last updated: 2026-10-26
+> Last updated: 2026-11-07
 
 The provider is the Apple Silicon Mac that decrypts prompts and runs inference.
 It ships as one Swift package (`provider-swift/`) producing the `darkbloom` CLI,
@@ -42,7 +42,7 @@ lives inside this one hardened process. The authoritative provider version is
 | Inference | `MultiModelBatchSchedulerEngine` → one `EngineV2Bridge` per model → CBv2; slot construction, memory model, deadlines, MTP, vision | `provider-swift/Sources/ProviderCore/Inference/` — [`../inference.md`](../inference.md), [`../hardware-support.md`](../hardware-support.md) |
 | KV cache tiers | Encrypted SSD attention snapshots and complete checkpoints (`KVCacheSSD/`); resident paged blocks and recurrent checkpoints require explicit memory opt-in. `KVCache/` retains the legacy cache API and the shared key-wrapping service | `provider-swift/Sources/ProviderCore/KVCacheSSD/`, `provider-swift/Sources/ProviderCore/KVCache/` — [`../prefix-cache.md`](../prefix-cache.md) |
 | Model discovery and download | Scan of the Hugging Face cache, quantization detection, padded memory estimate, catalog client, prefetch and hot-swap | `provider-swift/Sources/ProviderCore/Models/`, `provider-swift/Sources/ProviderCore/Server/ModelPrefetchCoordinator.swift` |
-| Local / standalone serving | OpenAI-compatible HTTP on loopback or tailnet (`start --local`, `--local-endpoint`) using the upstream `MLXLMServer` router over the same engine | `provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift`, `provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift` |
+| The local API (Only me or Both, me first) | OpenAI-compatible HTTP on loopback or tailnet (Only me: `start --local`, in `StandaloneServer`; Both, me first: `--me-first`/`--local-endpoint`, in the `ProviderLoop`) using the upstream `MLXLMServer` router over the same engine | `provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift`, `provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift` |
 | Security and identity | Secure Enclave P-256 identity, attestation blob, APNs code-identity, anti-debug, environment scrub, SIP/boot checks | `provider-swift/Sources/ProviderCore/Security/`, `provider-swift/Sources/ProviderCore/Apns/APNsBridge.swift` — [`../security/attestation.md`](../security/attestation.md) |
 | Crypto | X25519 node keypair; NaCl Box via `swift-sodium` for the coordinator wire | `provider-swift/Sources/ProviderCore/Crypto/NodeKeyPair.swift` |
 | Service management | launchd agents for the provider and the crash-recovery watchdog (`io.darkbloom.watchdog`), env allowlist (`passthroughEnvKeys`), daemon state file, sleep prevention | `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`, `provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift`, `provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift`, `provider-swift/Sources/ProviderCore/Service/ProcessLifecycle.swift` |
@@ -65,20 +65,33 @@ flowchart LR
 
 ### Process boundaries
 
-`ProviderLoop+Serve.swift` reads App Attest messages, authorization status and
-connection invalidation before forwarding slower events to its ordered work
-consumer. An inference handler awaiting a model load therefore cannot hold a
-renewal reply or a received grant update. Both consumers belong to the same
-serve invocation; shutdown finishes the work stream and waits for its consumer.
-The [attestation lifecycle](../security/attestation.md#provider-connection-control)
+`ProviderLoop+Serve.swift` reads App Attest messages, authorization status,
+attestation challenges, coordinator cancels and connection invalidation before
+forwarding slower events to its ordered work consumer. An inference handler
+awaiting a model load therefore cannot hold a renewal reply, a received grant
+update or a challenge answer. Both consumers belong to the same serve
+invocation; shutdown finishes the work stream and waits for its consumer. The
+[attestation lifecycle](../security/attestation.md#provider-connection-control)
 owns the connection and trust guarantees.
+
+A coordinator cancel never waits in the work consumer. Cancelling reaches the
+request's engine, and a two-Mac pair's engine can be held for up to 30 s by a
+rank reservation (see [the pair engine queue](../inference.md)); a cancel in the
+consumer used to hold every later event that long, so challenges timed out and
+new requests spent their first-content budget waiting. The reader now holds a
+cancel for a request whose admission has not returned and applies it when that
+admission returns, exactly where the consumer applied it; any other cancel runs
+at once, beside the consumer (`routeCoordinatorCancel` in
+`provider-swift/Sources/ProviderCore/ProviderLoop+WorkFIFO.swift`). A cancel
+therefore never runs before or during its own request's admission and is never
+lost, and it waits for no other request's work.
 
 An accepted request whose model is not resident releases the work consumer when
 it starts waiting for the load (`releaseWorkFIFO` in
 `provider-swift/Sources/ProviderCore/ProviderLoop+WorkFIFO.swift`), so later
-inference requests, cancels and attestation challenges are not held behind
-weight loading. A coordinator cancel for the waiting request is applied when its
-admission returns, where the serial consumer applied it. Connection, drain and
+inference requests are not held behind weight loading. A coordinator cancel for
+the waiting request is applied when its admission returns, before the events
+that wait for it. Connection, drain and
 model-management events, and the end of the work stream, still wait for it. So
 does a request for another model that is not resident, before its pre-accept
 capacity check (`awaitReleasedLoads`): the waiting load may not yet hold the
@@ -156,7 +169,10 @@ endpoint private key in the child. `cancelAppAttestShadow` invalidates the old
 exchange generation and chains worker retirement before the next transport can
 start verification. `stopAppAttestWorkerAndWait` is a terminal shutdown barrier.
 The separate `stopAppAttestWorkerForUpdateAndWait` guards installation and every
-update restart, including an already-installed candidate. A failed reap withholds
+update restart, including an already-installed candidate. Both also wait, at most
+`AppAttestShadowClient.outstandingAttestationWaitSeconds`, for an in-process
+attestation already handed to Apple, so its answer is persisted before the process
+ends (`AppAttestShadowClient.waitForOutstandingAttestation`). A failed reap withholds
 drain completion or postpones update; a fresh `prepare` may retry retained-owner
 cleanup only after a failed update returns to idle, never after terminal shutdown.
 No worker-stall recovery restarts inference or falls back to in-process Apple

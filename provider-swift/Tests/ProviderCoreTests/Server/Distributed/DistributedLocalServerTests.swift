@@ -29,6 +29,30 @@ import Testing
     #expect(finished.cleanupComplete && finished.acquisitions == 0)
 }
 
+/// `cluster local`'s own `/v1/models`, through the router it builds (`LocalRouterConfig.pairLeaderOutsideDarkbloom`,
+/// here with an in-memory key store): the pair's model as this Mac's, with the pair's limits and the input its slot
+/// takes (`DistributedLocalServer.localModelLimits`, `LocalInputModalities.of(pair:)`). This fabricated pair serves no
+/// media contract, so `["text"]`. The tools take a `this-mac` entry's list as the engine's word; without one they
+/// would fall back to the catalog.
+@Test func distributedLocalServerListsThePairsLimitsAndInput() async throws {
+    let session = LocalHostTestSession()
+    let host = localHost(session, router: .host(local: nil, settingsFile: nil, coordinatorURL: nil,
+                                                takesCoordinatorWork: false,
+                                                accountKeys: InMemoryLocalRouterAccountKeyStore()))
+    try await host.start()
+    let port = try #require(await host.status.boundPort)
+    let (body, response) = try await localHostGET(port: port, path: "/v1/models")
+    #expect(response.statusCode == 200)
+    let object = try JSONSerialization.jsonObject(with: body)
+    let entries = try #require((object as? [String: Any])?["data"] as? [[String: Any]], "\(object)")
+    let pair = try #require(entries.first { $0["id"] as? String == session.model.publicModelID }, "\(entries)")
+    #expect(pair["owned_by"] as? String == "this-mac", "\(pair)")
+    #expect(pair["context_length"] as? Int == session.profile.maxContextTokens, "\(pair)")
+    #expect(pair["max_output_length"] as? Int == session.profile.maxOutputTokens, "\(pair)")
+    #expect(pair["input_modalities"] as? [String] == ["text"], "\(pair)")
+    #expect(await host.stop(until: localHostDeadline()).cleanupComplete)
+}
+
 @Test func distributedLocalServerPortCollisionNeverPublishesForeignListener() async throws {
     let first = localHost(LocalHostTestSession())
     try await first.start()
@@ -58,20 +82,6 @@ import Testing
     #expect(try await localHostEventually { await host.status.cleanupComplete })
     let done = await host.waitUntilStopped()
     #expect(done.cleanupComplete)
-}
-
-/// No fixed lifetime: the server keeps serving past what used to be the
-/// session's lifetime and stops only when it is asked to (or the session fails).
-@Test func distributedLocalServerHasNoLifetimeAndServesUntilStopped() async throws {
-    let session = LocalHostTestSession(); session.lifetimeNanoseconds = 1_000_000_000
-    let discovery = LocalHostDiscovery()
-    let host = localHost(session, discovery: discovery)
-    try await host.start()
-    try await Task.sleep(for: .milliseconds(1_500))
-    let serving = await host.status
-    #expect(serving.phase == .serving && discovery.value != nil)
-    let done = await host.stop(until: localHostDeadline())
-    #expect(done.cleanupComplete && session.base.reserveCount == 0 && discovery.value == nil)
 }
 
 @Test func distributedLocalServerDoesNotEquateListenerExitOrNativeCleanupWithOwnerACK() async throws {

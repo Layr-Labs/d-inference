@@ -5,8 +5,6 @@ on:
     outputs:
       provider:
         value: ${{ jobs.changes.outputs.provider }}
-      sdk:
-        value: ${{ jobs.changes.outputs.sdk }}
       cluster:
         value: ${{ jobs.changes.outputs.cluster }}
       mimo_audio:
@@ -23,7 +21,6 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       provider: ${{ steps.paths.outputs.provider }}
-      sdk: ${{ steps.paths.outputs.sdk }}
       cluster: ${{ steps.paths.outputs.cluster }}
       mimo_audio: ${{ steps.paths.outputs.mimo_audio }}
     steps:

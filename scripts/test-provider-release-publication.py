@@ -658,6 +658,13 @@ class ClusterRuntimeTests(PublicationFixture):
 
 
 class GitHubPublicationTests(PublicationFixture):
+    def setUp(self):
+        super().setUp()
+        # scripts/test-provider-release-notes.py covers the body; these rows cover publication steps.
+        notes = patch('provider_release_github.write_release_notes', return_value=self.root / 'release-notes.md')
+        notes.start()
+        self.addCleanup(notes.stop)
+
     def fake_github(self, release=None, fail_at=None, content=None):
         self.release = release
         self.content = (self.root / PUB.BUNDLE).read_bytes() if content is None else content

@@ -1,6 +1,6 @@
 # Provider Attestation
 
-> Last updated: 2026-10-13
+> Last updated: 2026-11-04
 
 Provider attestation binds keys and reported runtime identity to an approved
 process. It does not prove model correctness, physical uniqueness, certified
@@ -16,17 +16,22 @@ describes the consumed contract; provider support does not activate platform pol
 ## Provider connection control
 
 `provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift` consumes
-`app_attest_shadow`, `trust_status` and
+`app_attest_shadow`, `trust_status`, `attestation_challenge` and
 connection invalidation independently of the ordered inference/model consumer.
-These actor-isolated handlers do not await model work. A suspended model load
-therefore does not postpone starting App Attest or writing received authorization
-to daemon state. Connect, disconnect and stream termination clear the old local
+These actor-isolated handlers do not await model work. A suspended model load,
+or a cancel waiting for a two-Mac pair's engine, therefore does not postpone
+starting App Attest, answering a challenge (the coordinator allows 30 s) or
+writing received authorization to daemon state. Connect, disconnect and stream termination clear the old local
 grant and invalidate the previous App Attest task generation before subsequent
 challenges are handled. Delayed model cleanup does not clear a replacement
 connection's grant.
 
 The existing App Attest client and Apple-operation admission still serialize
-proof work. Cancellation cannot cancel Apple's underlying native call. Replies
+proof work. Cancellation cannot cancel Apple's underlying native call. Apple
+attests a key once, so the client also keeps the answer to an attestation: a
+cancelled exchange keeps waiting for it, bounded by the callback deadline, and
+records it as an uncancelled exchange would. Planned stops wait for it too; see
+the [enrollment rules](../../reference/app-attest-shadow.md#bounds-and-credential-lifecycle). Replies
 use the originating-socket `AppAttestShadowReply` capability, which rechecks the
 current transport immediately before submission. A late callback therefore
 cannot send an old proof through a replacement connection even before the

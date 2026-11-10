@@ -9,33 +9,117 @@ extension DistributedCBv2Engine {
         let deadlineRefused: Bool
     }
 
-    enum AdmissionOutcome {
+    /// A submission with a first-token deadline: refused for its projection,
+    /// or holding a lane.
+    enum ProjectedSubmission {
         case refused(CBv2FirstTokenProjectedWork)
-        case admitted(Admission, CBv2FirstTokenProjectedWork)
+        case held(Admitting, CBv2FirstTokenProjectedWork)
     }
 
-    func admit(
+    /// A request holding a lane from its submission until it is in `actives`.
+    struct Admitting {
+        let request: CBv2Request
+        let deadlineContext: DistributedRequestDeadlineContext
+        let projected: CBv2FirstTokenProjectedWork?
+        let cancellation: DistributedAdmissionCancellation?
+    }
+
+    /// On queue, at submission: the request's checks, and a lane held for it
+    /// (`admitting`), so that the lane check and the capacity read count it
+    /// while it waits for its reservation.
+    func holdLane(
         _ submitted: CBv2Request, deadlineContext: DistributedRequestDeadlineContext,
         projected: CBv2FirstTokenProjectedWork? = nil,
         cancellation: DistributedAdmissionCancellation? = nil
-    ) throws -> Admission {
+    ) throws -> Admitting {
         try validate(submitted)
         let request = resolvingSeed(submitted)
-        try deadlineContext.checkAdmission(at: clock.now())
-        let deadline = deadlineContext.firstTokenDeadline
+        admitting[request.id, default: 0] += 1
+        publishCapacity()
+        return .init(request: request, deadlineContext: deadlineContext, projected: projected, cancellation: cancellation)
+    }
+
+    /// The reservation, then the admission, of a request holding a lane. Never
+    /// on `queue`: the ranks answer a reservation at their next step boundary,
+    /// and a running lane's step waits for its token's answer, which is given
+    /// on `queue`. Reservations run one after another, on `admissionQueue`.
+    func admit(_ held: Admitting) throws -> Admission {
+        dispatchPrecondition(condition: .notOnQueue(queue))
+        return try admissionQueue.sync { try admitInTurn(held) }
+    }
+
+    /// `admit` from an async caller: resumed from `admissionQueue`.
+    func admitInTurn(_ held: Admitting, continuation: CheckedContinuation<Admission, Error>) {
+        admissionQueue.async { [self] in continuation.resume(with: Result { try admitInTurn(held) }) }
+    }
+
+    func admitInTurn(_ held: Admitting) throws -> Admission {
+        dispatchPrecondition(condition: .onQueue(admissionQueue))
+        let capacity: Int
+        do {
+            capacity = try onQueue { try prepareReservation(held) }
+        } catch {
+            onQueue {
+                releaseLane(held.request.id)
+                publishCapacity()
+            }
+            throw error
+        }
+        let admissionStartedAt = clock.now()
+        let lease = Result { try reserve(held, capacityLimit: capacity) }
+        return try onQueue {
+            try complete(held, lease: lease, capacity: capacity, admissionStartedAt: admissionStartedAt)
+        }
+    }
+
+    /// On queue, just before the reservation: what may have changed since
+    /// submission. Returns the capacity the reservation is limited to.
+    private func prepareReservation(_ held: Admitting) throws -> Int {
+        guard !stopping else { throw DistributedEngineError.shuttingDown }
+        try held.deadlineContext.checkAdmission(at: clock.now())
         guard let capacity = readyCapacity(), capacity > 0 else {
             throw DistributedEngineError.unavailable
         }
-        let admissionStartedAt = clock.now()
-        let lease: any DistributedResidentRequestLease
+        // A caller that went away while this submission waited (behind another
+        // reservation) costs no reservation.
+        if held.cancellation?.isCancelled == true { throw CancellationError() }
+        return capacity
+    }
+
+    /// Off queue: the ranks' reservation.
+    private func reserve(_ held: Admitting, capacityLimit capacity: Int) throws -> any DistributedResidentRequestLease {
         if let boundedOwner = owner as? any DistributedDeadlineExecutionOwner {
-            lease = try boundedOwner.reserve(request, identity: identity, profileID: profile.id,
-                                             capacityLimit: capacity, deadlineContext: deadlineContext)
-        } else {
-            // Existing injected owners retain their contract. Only the opt-in
-            // capability above can interrupt a synchronous reserve wait itself.
-            lease = try owner.reserve(request, identity: identity, profileID: profile.id, capacityLimit: capacity)
+            return try boundedOwner.reserve(held.request, identity: identity, profileID: profile.id,
+                                            capacityLimit: capacity, deadlineContext: held.deadlineContext)
         }
+        // Existing injected owners retain their contract. Only the opt-in
+        // capability above can interrupt a synchronous reserve wait itself.
+        return try owner.reserve(held.request, identity: identity, profileID: profile.id, capacityLimit: capacity)
+    }
+
+    /// On queue: the lane is no longer held for an admission. True when a
+    /// cancel named the request meanwhile. The caller publishes the capacity
+    /// once the request is in `actives` or refused, so that no snapshot shows
+    /// its lane free in between.
+    @discardableResult
+    private func releaseLane(_ id: CBv2RequestID) -> Bool {
+        let cancelled = cancelledWhileAdmitting.contains(id)
+        let count = admitting[id] ?? 0
+        admitting[id] = count > 1 ? count - 1 : nil
+        if admitting[id] == nil { cancelledWhileAdmitting.remove(id) }
+        return cancelled
+    }
+
+    /// On queue, once the reservation returned: the request runs in its lane.
+    private func complete(
+        _ held: Admitting, lease reserved: Result<any DistributedResidentRequestLease, Error>,
+        capacity: Int, admissionStartedAt: ContinuousClock.Instant
+    ) throws -> Admission {
+        defer { publishCapacity() }
+        let cancelledMeanwhile = releaseLane(held.request.id)
+        let lease = try reserved.get()
+        let request = held.request, deadlineContext = held.deadlineContext, cancellation = held.cancellation
+        let deadline = deadlineContext.firstTokenDeadline
         let (stream, continuation) = AsyncStream<CBv2Event>.makeStream()
         let state = DistributedRequestState(
             request: request, lease: lease, continuation: continuation,
@@ -64,6 +148,9 @@ extension DistributedCBv2Engine {
             await state.lease.waitUntilRetired()
             queue.async { [self] in retire(state) }
         }
+        // A cancel that named it during its reservation, or a shutdown begun
+        // meanwhile, stops it before its prompt starts.
+        if cancelledMeanwhile || stopping { stop(state, reason: .cancelled) }
         var refused = false
         let admittedAt = clock.now()
         if state.terminal != nil, !state.cleanStopPending {
@@ -74,7 +161,7 @@ extension DistributedCBv2Engine {
             stop(state, reason: .error("distributed owner returned an invalid reservation"))
         } else if readyCapacity() == nil {
             stop(state, reason: .error("distributed readiness changed during admission"))
-        } else if let deadline, let projected,
+        } else if let deadline, let projected = held.projected,
             !projectionFits(projected, deadline: min(deadline, state.absoluteDeadline),
                             promptTokens: request.promptTokens.count) {
             refused = true
@@ -111,7 +198,7 @@ extension DistributedCBv2Engine {
         // A pair that can no longer serve says so first, also while its last
         // request is still retiring (not "busy", which invites a retry).
         guard readyCapacity() != nil else { throw DistributedEngineError.unavailable }
-        guard actives.count < max(1, owner.concurrentRequests) else {
+        guard actives.count + admittingCount < max(1, owner.concurrentRequests) else {
             throw CBv2KVError.capacityExhausted(needed: 1, available: 0)
         }
         // Within the profile but longer than what the owner serves now (a

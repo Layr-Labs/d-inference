@@ -44,9 +44,23 @@ extension ClusterLinkCheck {
         expectEqual(Facts.defaultRouteInterfaces(IsolationFixtures.macBRoutes), ["en0", "bridge0", "utun2"], "Mac B: none via en6")
         expectEqual(Facts.defaultRouteInterfaces(IsolationFixtures.macAIsolatedRoutes(address: "10.219.1.2")), ["en1", "utun4"],
             "isolated Mac A: no default route via the cable")
-        expectEqual(Facts.clusterSubnetRouteInterfaces(IsolationFixtures.macAIsolatedRoutes(address: "10.219.1.2")), ["en7", "en7"],
-            "the cluster subnet routes through the port")
-        expectEqual(Facts.clusterSubnetRouteInterfaces(IsolationFixtures.macARoutes), [], "no cluster subnet before")
+        expectEqual(Facts.clusterSubnetRouteInterfaces(IsolationFixtures.macAIsolatedRoutes(address: "10.219.1.2"),
+            interfaceListing: IsolationFixtures.macAInterfaces(en7: ["10.219.1.2"])), ["en7", "en7"], "the cluster subnet routes through the port")
+        expectEqual(Facts.clusterSubnetRouteInterfaces(IsolationFixtures.macARoutes,
+            interfaceListing: IsolationFixtures.macAInterfaces(en7: [IsolationFixtures.macALeaseIPv4])), [], "no cluster subnet before")
+        // macOS reaches an address of its own through lo0: the route counts on
+        // the interface that carries the address, and only there.
+        let paired = IsolationFixtures.pairedMacA, pairedRoutes = IsolationFixtures.routeTable(paired.routes)
+        expectEqual(Facts.clusterSubnetRouteInterfaces(pairedRoutes, interfaceListing: paired.interfaceListing),
+            ["en3", "en3", "en3", "en3", "en3"], "paired Mac A: its own address through lo0 counts on en3")
+        expectEqual(Facts.clusterSubnetRouteInterfaces(pairedRoutes, interfaceListing: ""), ["en3", "en3", "lo0", "en3", "en3"],
+            "without a listing it counts on the loopback")
+        let loopbackRoute = "10.219.77.1        0:0:5e:0:53:99     UHLWIi                lo0       "
+        expectEqual(Facts.clusterSubnetRouteInterfaces(IsolationFixtures.routeTable(paired.routes + [loopbackRoute]),
+            interfaceListing: paired.interfaceListing + IsolationFixtures.tunnel("utun4", address: "10.219.77.1"))?.last, "utun4",
+            "another interface's own address counts on that interface")
+        expectEqual(Facts.clusterSubnetRouteInterfaces(IsolationFixtures.routeTable(paired.routes + [loopbackRoute]),
+            interfaceListing: paired.interfaceListing)?.last, "lo0", "an address no interface carries stays on the loopback")
         expectEqual(Facts.defaultRouteInterfaces("default 192.0.2.1 UGScg en1\n"), nil, "rows without the header are not a table")
 
         expectEqual(Facts.dnsInterfaces(IsolationFixtures.macADNS()), ["en1", "en7", "utun4"], "Mac A: a resolver through en7")
@@ -223,6 +237,47 @@ extension ClusterLinkCheck {
             "a hostile service name on the port blocks it")
     }
 
+    /// Three isolated Macs after pairing: macOS's loopback route to the port's
+    /// own address is not the cluster subnet used elsewhere, and everything
+    /// that is still blocks.
+    static func isolationPairedMacs() {
+        for mac in IsolationFixtures.pairedMacs {
+            let world = FakeIsolationWorld(mac.tools())
+            let report = world.report()
+            let port = report.devices.first { $0.device == mac.device }
+            expectEqual(port?.verdict, .ready, "\(mac.name): ready")
+            expectEqual(port?.isolation?.findings, [], "\(mac.name): isolated with its own address routed through lo0")
+            expect(report.summaryLines.contains("  \(mac.device) (\(mac.port)): ready · port active · own IPv4 address · "
+                + "IPv4-mapped GID published · isolated: own network service, fixed address, no bridge, router or DNS"),
+                "\(mac.name): the probe says isolated: \(report.summaryLines)")
+            expectEqual(report.guidance, nil, "\(mac.name): nothing to do")
+            expect(compactJSON(report).contains("\"isolation\":{\"findings\":[],\"isolated\":true}"), "\(mac.name): JSON says isolated")
+            expectEqual(world.fix(dryRun: true).outcome, .alreadyReady, "\(mac.name): a dry run of the fix is not refused")
+            var flow = ClusterLinkSetupFlow(mayPrompt: true)
+            let step = flow.observed(report)
+            expectEqual(step.action, .finish(exitCode: 0), "\(mac.name): the guided flow is done")
+            expect(step.lines.contains { $0.hasPrefix("Isolated: Thunderbolt port \(mac.port) has its own network service") },
+                "\(mac.name): and says so: \(step.lines)")
+
+            func findings(routes: [String] = [], interfaces: String = "") -> [ClusterLinkIsolationFinding]? {
+                FakeIsolationWorld(mac.tools(extraRoutes: routes, extraInterfaces: interfaces)).report()
+                    .devices.first { $0.device == mac.device }?.isolation?.findings
+            }
+            let vpn = IsolationFixtures.tunnel("utun4", address: "10.219.77.1")
+            expectEqual(findings(interfaces: vpn), [.clusterSubnetInUse], "\(mac.name): a VPN address in the cluster subnet")
+            expectEqual(findings(routes: ["10.219.77.1        0:0:5e:0:53:99     UHLWIi                lo0       "], interfaces: vpn),
+                [.clusterSubnetInUse], "\(mac.name): the VPN address and its loopback route")
+            for route in ["10.219/16          link#40            UCS                 utun4       ",
+                          "10.219.77/24       link#13            UCS               bridge0      !",
+                          "10.219.77.7        0:0:5e:0:53:99     UHLWIi                en9   1200",
+                          "\(mac.address)     \(mac.address)     UH                  utun4       "] {
+                expectEqual(findings(routes: [route]), [.clusterSubnetInUse], "\(mac.name): a route elsewhere: \(route)")
+            }
+            expectEqual(findings(routes: ["10.219.77.77       0:0:5e:0:53:99     UHLWIi                lo0       "]),
+                [.clusterSubnetInUse], "\(mac.name): a loopback route for an address the port does not carry")
+        }
+    }
+
     static func isolationPlans() {
         let addressA = IsolationFixtures.macAAddress.dottedDecimal
         let planA = ClusterLinkIsolationPlan(interface: "en7", address: IsolationFixtures.macAAddress, hardwarePort: "Thunderbolt 6",
@@ -241,7 +296,8 @@ extension ClusterLinkCheck {
             "AppleScript wrapper")
         expectEqual(requestA.appleScript.filter { $0 == "\"" }.count, 4, "no double quote inside the script or prompt")
         expect(!requestA.appleScript.contains("\\"), "no backslash")
-        expectEqual(requestA.manualCommands.first, "sudo " + expectedA[0], "manual commands")
+        expectEqual(requestA.manualCommands, ["sudo /bin/sh -e <<'DARKBLOOM_CLUSTER_LINK'"] + expectedA + ["DARKBLOOM_CLUSTER_LINK"],
+            "manual commands: one root shell block")
         expectEqual(requestA.prompt, "Darkbloom wants to give Thunderbolt port en7 its own network service with a fixed address and no router or DNS and switch the other service on that port off, so RDMA can use it.", "Mac A prompt")
 
         let planB = ClusterLinkIsolationPlan(interface: "en6", address: IsolationFixtures.macBAddress, hardwarePort: "Thunderbolt 2",
@@ -268,8 +324,22 @@ extension ClusterLinkCheck {
         expectEqual(ClusterLinkIsolationRequest(.isolate(both))!.prompt, "Darkbloom wants to give Thunderbolt port en6 its own network service with a fixed address and no router or DNS, switch the other service on that port off and take the port out of bridge0, so RDMA can use it.", "a prompt with all three")
         let replaced = ClusterLinkIsolationPlan(interface: "en6", address: IsolationFixtures.macBAddress, hardwarePort: "Thunderbolt 2",
             bridge: nil, servicesToDisable: [], replaceClusterService: true, linkLocalToRemove: nil, keeperToRemove: false)!
-        expectEqual(replaced.commands.first, "/usr/sbin/networksetup -removenetworkservice 'Darkbloom Cluster Link (en6)'",
-            "an existing service of Darkbloom's is made afresh")
+        // R5-2 (pair-2's MacBook): macOS refuses to remove a port's only service, which Darkbloom's is where the ports
+        // start in the bridge. An existing service of Darkbloom's is set up again in place, never removed and made again.
+        expectEqual(replaced.commands, [
+            "/usr/sbin/networksetup -setnetworkserviceenabled 'Darkbloom Cluster Link (en6)' on",
+            "/usr/sbin/networksetup -setmanual 'Darkbloom Cluster Link (en6)' \(IsolationFixtures.macBAddress.dottedDecimal) 255.255.0.0",
+            "/usr/sbin/networksetup -setdnsservers 'Darkbloom Cluster Link (en6)' Empty",
+            "/usr/sbin/networksetup -setv6LinkLocal 'Darkbloom Cluster Link (en6)'",
+        ], "an existing service of Darkbloom's is reconfigured in place")
+        // The MacBook as found: en6 in bridge0's saved members and in its own service.
+        let inBoth = ClusterLinkIsolationPlan(interface: "en6", address: IsolationFixtures.macBAddress, hardwarePort: "Thunderbolt 2",
+            bridge: .init(bridge: "bridge0", index: 0), servicesToDisable: [], replaceClusterService: true, linkLocalToRemove: nil,
+            keeperToRemove: false)!
+        expect(!inBoth.commands.contains { $0.contains("-removenetworkservice") || $0.contains("-createnetworkservice") }
+            && inBoth.commands.contains { $0.contains("Delete :VirtualNetworkInterfaces:Bridge:bridge0:Interfaces:0") }
+            && inBoth.commands.last == "/usr/sbin/networksetup -setv6LinkLocal 'Darkbloom Cluster Link (en6)'",
+            "in both: out of the bridge, the service kept and set: \(inBoth.commands)")
 
         // Nothing unvalidated reaches a command.
         let address = IsolationFixtures.macAAddress
@@ -287,16 +357,19 @@ extension ClusterLinkCheck {
 
         let restore = ClusterLinkIsolationRestore(interface: "en6", removeClusterService: true, servicesToEnable: ["Thunderbolt 6"],
             bridge: .init(bridge: "bridge0", index: 1), addressToRemove: nil, keeperToRemove: false)!
+        // R5-2: Darkbloom's service goes before the port goes back into its bridge (written first, it left the port in
+        // both), and the restore stops at the first command that fails.
         expectEqual(restore.commands, [
-            "/usr/libexec/PlistBuddy -c 'Add :VirtualNetworkInterfaces:Bridge:bridge0:Interfaces:1 string en6' \(preferences)",
             "/usr/sbin/networksetup -removenetworkservice 'Darkbloom Cluster Link (en6)'",
+            "/usr/libexec/PlistBuddy -c 'Add :VirtualNetworkInterfaces:Bridge:bridge0:Interfaces:1 string en6' \(preferences)",
             "/usr/sbin/networksetup -setnetworkserviceenabled 'Thunderbolt 6' on",
             "/sbin/ifconfig bridge0 addm en6",
-        ], "the exact restore commands")
-        let restoreRequest = ClusterLinkIsolationRequest(.restore(restore))!
-        expectEqual(restoreRequest.shellCommand, restore.commands.joined(separator: "; "), "a restore runs every command")
-        expect(ClusterLinkIsolationRequest(.restore(ClusterLinkIsolationRestore(interface: "en6", removeClusterService: false,
-            servicesToEnable: [], bridge: nil, addressToRemove: nil, keeperToRemove: false)!)) == nil, "nothing to restore, no request")
+        ], "the exact restore commands, the service first")
+        let restoreRequest = ClusterLinkIsolationRequest(.restore([restore]))!
+        expectEqual(restoreRequest.shellCommand, "set -e; " + restore.commands.joined(separator: "; "), "a restore stops at the first failure")
+        expect(ClusterLinkRepair.manualScriptBody(restoreRequest, purpose: "restores en6").contains("\nset -e\n"), "and so does its script")
+        expect(ClusterLinkIsolationRequest(.restore([ClusterLinkIsolationRestore(interface: "en6", removeClusterService: false,
+            servicesToEnable: [], bridge: nil, addressToRemove: nil, keeperToRemove: false)!])) == nil, "nothing to restore, no request")
         expectEqual(ClusterLinkApproval.arguments(for: requestA), ["-e", requestA.appleScript], "osascript arguments")
     }
 
@@ -363,7 +436,7 @@ extension ClusterLinkCheck {
         let unavailable = FakeIsolationWorld(IsolationFixtures.macA)
         let noPrompt = unavailable.fix()
         expectEqual(noPrompt.outcome, .approvalUnavailable, "unavailable")
-        expectEqual(noPrompt.manualCommands.first, "sudo /usr/sbin/networksetup -createnetworkservice 'Darkbloom Cluster Link (en7)' 'Thunderbolt 6'",
+        expect(noPrompt.manualCommands.contains("/usr/sbin/networksetup -createnetworkservice 'Darkbloom Cluster Link (en7)' 'Thunderbolt 6'"),
             "manual commands for an administrator")
         expect(!compactJSON(noPrompt).contains("sudo"), "manual commands stay out of JSON")
         expect(unavailable.isolationRecord.entry(on: "en7") != nil, "the entry stays for what an administrator may do")
@@ -385,7 +458,7 @@ extension ClusterLinkCheck {
         expect(bodyLines.contains("/usr/sbin/networksetup -createnetworkservice 'Darkbloom Cluster Link (en7)' 'Thunderbolt 6'"),
             "the exact commands the prompt would run")
         expect(!bodyLines.contains { $0.hasPrefix("sudo ") }, "commands without sudo: the one line runs the script with sudo")
-        expectEqual(bodyLines.filter { !$0.hasPrefix("#") && $0 != "set -e" }.count, noPrompt.manualCommands.count, "every command, nothing else")
+        expectEqual(bodyLines.filter { !$0.hasPrefix("#") && $0 != "set -e" }.count, noPrompt.manualCommands.count - 2, "every command, nothing else")
         expect(oneLine.message.contains("sudo sh ~/.darkbloom/cluster-device/link-fix.sh") && oneLine.message.contains("--remove"),
             "the message names the one line and the undo: \(oneLine.message)")
         expect(compactJSON(oneLine).contains("\"manualScript\":\"~/.darkbloom/cluster-device/link-fix.sh\""), "JSON names the script")
@@ -404,6 +477,23 @@ extension ClusterLinkCheck {
         expect(adopted.message.contains("recorded") && adopted.message.contains("--remove"), "the message says so")
         expectNoAddress(compactJSON(adopted), "adopted JSON")
         expectEqual(byHand.fix().adopted, [], "a second run has nothing to adopt")
+        // Set up by the other app on this Mac (production beside DevNet): adopted with what that setup changed, read from
+        // the other app's record and never written there, so this app can undo it all once the other app is uninstalled.
+        let besideOther = FakeIsolationWorld(IsolationFixtures.macAIsolated())
+        let theirs = ClusterLinkIsolationRecord.Entry(interface: "en7", address: IsolationFixtures.macAAddress, hardwarePort: "Thunderbolt 6",
+            bridge: .init(bridge: "bridge0", index: 1), disabledServices: ["Thunderbolt 6", "Thunderbolt 2"])
+        besideOther.otherInstallRecord.set(theirs)
+        let otherRecordBefore = besideOther.otherInstallRecord
+        expectEqual(besideOther.fix().adopted, ["en7"], "adopted beside the other app's setup")
+        expectEqual(besideOther.isolationRecord.entry(on: "en7"), theirs, "with the other app's bridge slot and services")
+        expectEqual(besideOther.otherInstallRecord, otherRecordBefore, "the other app's record is only read")
+        // The other app's entry for another address is not this setup: what this Mac shows is recorded, as by hand.
+        let elsewhere = FakeIsolationWorld(IsolationFixtures.macAIsolated())
+        elsewhere.otherInstallRecord.set(.init(interface: "en7", address: IsolationFixtures.macBAddress, hardwarePort: "Thunderbolt 6",
+            bridge: .init(bridge: "bridge0", index: 1), disabledServices: ["Thunderbolt 2"]))
+        expectEqual(elsewhere.fix().adopted, ["en7"], "adopted")
+        expectEqual(elsewhere.isolationRecord.entry(on: "en7"), .init(interface: "en7", address: IsolationFixtures.macAAddress,
+            hardwarePort: "Thunderbolt 6", bridge: nil, disabledServices: ["Thunderbolt 6"]), "recorded from this Mac alone")
         let partial = FakeIsolationWorld(IsolationFixtures.macA)
         partial.isolationApproval = { _, world in
             // The service was made, then a later command failed.
@@ -439,11 +529,12 @@ extension ClusterLinkCheck {
             bridge: .init(bridge: "bridge0", index: 1), disabledServices: []))
         let dry = b.remove(dryRun: true)
         expectEqual(dry.outcome, .dryRun, "remove dry run")
-        expectEqual(dry.plannedCommands, [
+        // Darkbloom's service is the only one on Mac B's port: removed through SCPreferences, as proven on pair-2's MacBook.
+        expectEqual(dry.plannedCommands, lastServiceRemoval(id: IsolationFixtures.serviceID("e6"), interface: "en6",
+                order: [IsolationFixtures.serviceID("b0")]) + [
             "/usr/libexec/PlistBuddy -c 'Add :VirtualNetworkInterfaces:Bridge:bridge0:Interfaces:1 string en6' /Library/Preferences/SystemConfiguration/preferences.plist",
-            "/usr/sbin/networksetup -removenetworkservice 'Darkbloom Cluster Link (en6)'",
             "/sbin/ifconfig bridge0 addm en6",
-        ], "the exact restore of Mac B")
+        ], "the exact restore of Mac B, the service first")
         expect(b.isolationRequests.isEmpty && b.isolationRecord.entry(on: "en6") != nil, "a dry run asks and forgets nothing")
         b.isolationApproval = { _, world in
             var restored = IsolationFixtures.macBUnshared
@@ -494,6 +585,187 @@ extension ClusterLinkCheck {
         expectEqual(unreadable.remove().outcome, .recordUnavailable, "unreadable record")
         // First-version worlds never take this path.
         expectEqual(FakeRepairWorld(IsolationFixtures.macAIsolated()).remove().outcome, .nothingRecorded, "a v1 world reads no services")
+    }
+
+    /// R5-2 (pair-2's MacBook, 2026-11-04): Darkbloom's services were on en2, en1 and en6, and the uninstall gave up
+    /// with "More than one port qualifies …; choose one", naming a disconnected port. Every port Darkbloom set up is
+    /// undone under one approval, never a choice; a failure part-way says what is left; `--device` still names one.
+    static func isolationRemoveEveryPort() {
+        let mac = IsolationFixtures.pairedM5Max
+        // Each is its port's only service; one approval, and every removal leaves all three out of the service order.
+        let removals = ["en2", "en1", "en6"].flatMap { lastServiceRemoval(id: IsolationFixtures.serviceID("a" + String($0.last!)), interface: $0,
+                                                                         order: [IsolationFixtures.serviceID("f0")]) }
+        let dry = FakeIsolationWorld(mac.tools()).remove(dryRun: true)
+        expectEqual(dry.outcome, .dryRun, "every port, no choice: \(dry.message)")
+        expectEqual(dry.plannedCommands, removals, "one removal for each of Darkbloom's ports")
+        func without(_ gone: Set<String>) -> String {
+            IsolationFixtures.serviceOrderHeader + IsolationFixtures.service(1, "Wi-Fi", port: "Wi-Fi", device: "en0")
+                + [("en2", "Thunderbolt 3"), ("en1", "Thunderbolt 1"), ("en6", "Thunderbolt 2")].enumerated().filter { !gone.contains($1.0) }
+                    .map { IsolationFixtures.service($0 + 2, "Darkbloom Cluster Link (\($1.0))", port: $1.1, device: $1.0) }.joined()
+        }
+        let all = FakeIsolationWorld(mac.tools())
+        all.isolationApproval = { _, world in
+            world.tools.isolation.serviceOrder = .output(without(["en2", "en1", "en6"]))
+            return .applied
+        }
+        let removed = all.remove()
+        expectEqual(removed.outcome, .removed, "all removed: \(removed.message)")
+        expectEqual(all.isolationRequests.count, 1, "one approval for every port")
+        expectEqual(all.isolationRequests.first?.interfaces, ["en2", "en1", "en6"], "the approval covers them all")
+        expect(all.isolationRequests.first?.prompt.contains("Thunderbolt ports en2, en1 and en6") == true, "the prompt names them")
+        expectEqual(all.isolationRequests.first?.shellCommand, "set -e; " + removals.joined(separator: "; "), "stops at the first failure")
+        expect(removed.message.hasPrefix("The network settings of Thunderbolt ports en2, en1 and en6 are as they were before Darkbloom set them up"),
+               "the message names every port: \(removed.message)")
+        expectEqual(removed.candidates, ["rdma_en2", "rdma_en1", "rdma_en6"], "the ports it covered")
+        // A command failed part-way: the first port is back, the commands after it did not run, and the rest is named.
+        let partial = FakeIsolationWorld(mac.tools())
+        partial.isolationApproval = { _, world in
+            world.tools.isolation.serviceOrder = .output(without(["en2"]))
+            return .commandFailed
+        }
+        let failed = partial.remove()
+        expectEqual(failed.outcome, .commandFailed, "part-way: \(failed.message)")
+        expectEqual(failed.remaining, ["rdma_en1", "rdma_en6"], "what is left, by port")
+        expect(failed.message.contains("stopped there and the commands after it did not run")
+            && failed.message.contains("Still to undo: Thunderbolt ports en1 and en6."), "said truthfully: \(failed.message)")
+        expect(compactJSON(failed).contains("\"remaining\":[\"rdma_en1\",\"rdma_en6\"]"), "and in JSON")
+        // A named port is still the only one.
+        expectEqual(FakeIsolationWorld(mac.tools()).remove(device: "rdma_en6", dryRun: true).plannedCommands,
+                    lastServiceRemoval(id: IsolationFixtures.serviceID("a6"), interface: "en6",
+                                       order: [IsolationFixtures.serviceID("f0"), IsolationFixtures.serviceID("a1"), IsolationFixtures.serviceID("a2")]),
+                    "--device names one, and leaves only its own ID out of the order")
+        // The MacBook as found: en6 in bridge0's saved members and in its own service. Only the service goes.
+        var inBoth = mac.tools()
+        inBoth.isolation.bridgePreferences = .output("{\"bridge0\":{\"Interfaces\":[\"en6\"]}}\n")
+        let both = FakeIsolationWorld(inBoth)
+        both.isolationRecord.set(.init(interface: "en6", address: IsolationFixtures.macBAddress, hardwarePort: "Thunderbolt 2",
+            bridge: .init(bridge: "bridge0", index: 0), disabledServices: []))
+        expectEqual(both.remove(device: "rdma_en6", dryRun: true).plannedCommands,
+                    lastServiceRemoval(id: IsolationFixtures.serviceID("a6"), interface: "en6",
+                                       order: [IsolationFixtures.serviceID("f0"), IsolationFixtures.serviceID("a1"), IsolationFixtures.serviceID("a2")]),
+                    "in both: the service goes; the port is already in the bridge's saved members")
+        // Unreadable preferences: nothing is guessed.
+        var unread = mac.tools()
+        unread.isolation.servicePreferences = .unavailable
+        expectEqual(FakeIsolationWorld(unread).remove(dryRun: true).outcome, .nothingFixable(.probeFailed), "no service ID, no removal")
+        // AppleScript carries the shell's quotes and backslash escaped.
+        let script = ClusterLinkIsolationRequest(.restore([ClusterLinkRepair.restoreNeeded(interface: "en6", entry: nil,
+            run: mac.tools().outcome(of:))!]))!.appleScript
+        expect(script.contains("printf '%s\\\\n' ") && !script.dropFirst(17).dropLast(80).contains("\"\""), "escaped: \(script.prefix(400))")
+    }
+
+    /// Review of `bac9a58c4f`, finding 1: `scutil --prefs` exits 0 even when its `commit` fails, so the read-back is
+    /// what must stop the script. The generated restore line runs in `/bin/sh` with stubs in place of the system
+    /// tools (only the absolute paths are rewritten, in this copy): scutil exits 0 and removes nothing, PlistBuddy
+    /// still finds the service. The line must exit non-zero, and nothing after it may run: no bridge entry, no
+    /// service switched on, no bridge member. With the service gone, the same line runs on to the end.
+    static func isolationLastServiceStopsOnFailedCommit() {
+        guard let last = ClusterLinkLastService(serviceID: IsolationFixtures.serviceID("e6"), set: IsolationFixtures.networkSet,
+                                                serviceOrder: [IsolationFixtures.serviceID("b0"), IsolationFixtures.serviceID("e6")]),
+              let restore = ClusterLinkIsolationRestore(interface: "en6", removeClusterService: true, servicesToEnable: ["Thunderbolt 2"],
+                  bridge: .init(bridge: "bridge0", index: 1), addressToRemove: nil, keeperToRemove: false, lastService: last),
+              let request = ClusterLinkIsolationRequest(.restore([restore])) else { return expect(false, "fixture restore") }
+        func run(serviceStillThere: Bool) -> (status: Int32, log: String) {
+            runWithStubs(request.shellCommand, serviceStillThere: serviceStillThere)
+        }
+        let failed = run(serviceStillThere: true)
+        expect(failed.status != 0, "a commit that removed nothing stops the restore (exit \(failed.status))")
+        expectEqual(failed.log, "", "and nothing after it ran: no bridge entry, no service switched on, no bridge member")
+        let removed = run(serviceStillThere: false)
+        expectEqual(removed.status, 0, "the service gone, the restore runs on")
+        expect(removed.log.contains("PlistBuddy Add :VirtualNetworkInterfaces:Bridge:bridge0:Interfaces:1 string en6")
+            && removed.log.contains("networksetup -setnetworkserviceenabled Thunderbolt 2 on") && removed.log.contains("ifconfig bridge0 addm en6"),
+            "every later step ran: \(removed.log)")
+        // Review finding 5: IDs are ASCII hexadecimal only; a fullwidth digit is refused.
+        expect(ClusterLinkLastService.isID(IsolationFixtures.serviceID("e6")), "an ASCII ID")
+        expect(!ClusterLinkLastService.isID("0000000\u{FF10}-0000-4000-8000-0000000000E6"), "a fullwidth digit is refused")
+        expect(!ClusterLinkLastService.isID("0000000G-0000-4000-8000-0000000000E6"), "a letter past F is refused")
+    }
+
+    /// Runs `text` in `/bin/sh` with stubs in place of the system tools (only the absolute paths are rewritten, in
+    /// this copy): PlistBuddy names Darkbloom's service on en6 and still finds it when `serviceStillThere`; scutil
+    /// reads its input and exits 0 without changing anything; networksetup, ifconfig and PlistBuddy `Add` write what
+    /// they were asked to the log; `sudo` runs its arguments. Returns the exit status and the log.
+    static func runWithStubs(_ text: String, serviceStillThere: Bool) -> (status: Int32, log: String) {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("last-service-\(getpid())-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let log = directory.appendingPathComponent("ran.log").path
+        let stubs = [
+            "PlistBuddy": """
+                case "$2" in
+                  Add*) echo "PlistBuddy $2" >> \(log) ;;
+                  *:UserDefinedName) echo 'Darkbloom Cluster Link (en6)' ;;
+                  *:Interface:DeviceName) echo en6 ;;
+                  *) \(serviceStillThere ? "exit 0" : "exit 1") ;;
+                esac
+                """,
+            "scutil": "cat >/dev/null; exit 0",
+            "networksetup": "echo \"networksetup $*\" >> \(log)",
+            "ifconfig": "echo \"ifconfig $*\" >> \(log)",
+            "sudo": "exec \"$@\"",
+        ]
+        for (name, body) in stubs {
+            let path = directory.appendingPathComponent(name).path
+            FileManager.default.createFile(atPath: path, contents: Data(("#!/bin/sh\n" + body + "\n").utf8))
+            chmod(path, 0o755)
+        }
+        var line = text
+        for (real, name) in [("/usr/libexec/PlistBuddy", "PlistBuddy"), ("/usr/sbin/scutil", "scutil"),
+                             ("/usr/sbin/networksetup", "networksetup"), ("/sbin/ifconfig", "ifconfig")] {
+            line = line.replacingOccurrences(of: real, with: directory.appendingPathComponent(name).path)
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", line]
+        process.environment = ["PATH": directory.path + ":/usr/bin:/bin"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return (-1, "") }
+        process.waitUntilExit()
+        return (process.terminationStatus, (try? String(contentsOfFile: log, encoding: .utf8)) ?? "")
+    }
+
+    /// Integration review of `6a3874827c`: where no script could be written, the commands printed for an administrator
+    /// to paste must run as the script does, as root and under `set -e`. Pasted in `/bin/sh` with the same stubs
+    /// (`sudo` passing through), they run exactly the script's steps, and stop where it stops.
+    static func isolationManualCommandsRunAsTheScript() {
+        guard let last = ClusterLinkLastService(serviceID: IsolationFixtures.serviceID("e6"), set: IsolationFixtures.networkSet,
+                                                serviceOrder: [IsolationFixtures.serviceID("b0"), IsolationFixtures.serviceID("e6")]),
+              let restore = ClusterLinkIsolationRestore(interface: "en6", removeClusterService: true, servicesToEnable: ["Thunderbolt 2"],
+                  bridge: .init(bridge: "bridge0", index: 1), addressToRemove: nil, keeperToRemove: false, lastService: last),
+              let request = ClusterLinkIsolationRequest(.restore([restore])) else { return expect(false, "fixture restore") }
+        let pasted = request.manualCommands.joined(separator: "\n") + "\n"
+        for still in [false, true] {
+            let script = runWithStubs(request.shellCommand, serviceStillThere: still)
+            let manual = runWithStubs(pasted, serviceStillThere: still)
+            expect((manual.status == 0) == (script.status == 0) && manual.log == script.log,
+                   "pasted, service \(still ? "still there" : "gone"): the script's steps (\(script.status)) and no others: "
+                   + "pasted exit \(manual.status), ran \(manual.log)")
+        }
+        expect(!runWithStubs(request.shellCommand, serviceStillThere: false).log.isEmpty, "the comparison saw steps run")
+        // Every request's lines: none is the delimiter, so the block always ends where it should; setup's too.
+        let setup = ClusterLinkIsolationRequest(.isolate(ClusterLinkIsolationPlan(interface: "en6", address: IsolationFixtures.macBAddress,
+            hardwarePort: "Thunderbolt 2", bridge: .init(bridge: "bridge0", index: 1), servicesToDisable: ["Thunderbolt 2"],
+            replaceClusterService: true, linkLocalToRemove: nil, keeperToRemove: false)!))!
+        for each in [request, setup] {
+            expect(!each.commands.contains(ClusterLinkIsolationRequest.manualDelimiter)
+                && each.manualCommands.first == "sudo /bin/sh -e <<'\(ClusterLinkIsolationRequest.manualDelimiter)'"
+                && each.manualCommands.last == ClusterLinkIsolationRequest.manualDelimiter
+                && Array(each.manualCommands.dropFirst().dropLast()) == each.commands, "one root shell block: \(each.manualCommands.first ?? "")")
+        }
+    }
+
+    /// The exact removal of a port's only service through SCPreferences (`ClusterLinkLastService.removal`).
+    static func lastServiceRemoval(id: String, interface: String, order: [String]) -> [String] {
+        let preferences = "/Library/Preferences/SystemConfiguration/preferences.plist", set = IsolationFixtures.networkSet
+        return [
+            "/usr/libexec/PlistBuddy -c 'Print :NetworkServices:\(id):UserDefinedName' \(preferences) | /usr/bin/grep -qxF 'Darkbloom Cluster Link (\(interface))'",
+            "/usr/libexec/PlistBuddy -c 'Print :NetworkServices:\(id):Interface:DeviceName' \(preferences) | /usr/bin/grep -qxF \(interface)",
+            "/usr/bin/printf '%s\\n' 'remove /NetworkServices/\(id)' 'remove /Sets/\(set)/Network/Service/\(id)' 'get /Sets/\(set)/Network/Global/IPv4' "
+                + "'d.add ServiceOrder * \(order.joined(separator: " "))' 'set /Sets/\(set)/Network/Global/IPv4' 'commit' 'apply' | /usr/sbin/scutil --prefs",
+            "if /usr/libexec/PlistBuddy -c 'Print :NetworkServices:\(id)' \(preferences) >/dev/null 2>&1; then exit 1; fi",
+        ]
     }
 
     static func isolationRecordFile() {

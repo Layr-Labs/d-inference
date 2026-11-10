@@ -2,7 +2,7 @@ import Foundation
 import DarkbloomClusterProtocol
 import MLXLMCommon
 
-/// Experimental identity reported by an owner after both peer loads finish.
+/// Experimental identity reported by an owner after every peer's load finished.
 /// These are backend assertions, not remote attestation or hardware qualification.
 public struct DistributedResidentIdentity: Sendable, Equatable {
     public struct Peer: Sendable, Equatable {
@@ -38,11 +38,20 @@ public struct DistributedResidentIdentity: Sendable, Equatable {
                 (48...57).contains($0) || (97...102).contains($0)
             }
         }
+        // Two ranks or more, each named once: nothing here keys on a pair of two.
+        // This checks only the shape of the roster the provider expects, never a
+        // peer's claim. A repeated peer is refused at any size (for two, the same
+        // test as `peers[0].id != peers[1].id`); an impostor or any other roster
+        // is refused because the engine serves only an owner whose readiness
+        // equals this identity, peer for peer, and the owner checks it again on
+        // every reservation. Every roster formed today is still two distinct
+        // peers (`ClusterConfiguration`, `NativePairMemberInstallation`, each
+        // worker's readiness in `ClusterWorkerValidation`).
         guard !modelID.isEmpty, modelID.utf8.count <= 512,
             digest(artifactSHA256), digest(configurationSHA256),
-            peers.count == 2, peers[0].id != peers[1].id,
+            peers.count >= 2, Set(peers.map(\.id)).count == peers.count,
             peers.allSatisfy({ !$0.id.isEmpty && $0.id.utf8.count <= 128 && digest($0.buildSHA256) })
-        else { throw DistributedEngineError.invalidConfiguration("invalid two-peer identity") }
+        else { throw DistributedEngineError.invalidConfiguration("invalid peer identity") }
     }
 }
 
@@ -53,24 +62,39 @@ public struct DistributedResidentExecutionProfile: Sendable {
     public let maxPromptTokens: Int
     public let maxOutputTokens: Int
     public let maxContextTokens: Int
+    /// The prompt, output and context the selected generation mode serves
+    /// within the limits above (`ClusterModelFeaturePolicy.servedProfile`):
+    /// all of them in tensor parallel and in a Gemma 4 pipeline, the memory
+    /// plan's request in every other mode. The one source of what the pair
+    /// advertises (its slot's `SlotRequestLimits`, `LocalModelLimits(served:)`)
+    /// and of what it holds a request to: a `max_tokens` past them is cut to
+    /// fit (`EngineV2Bridge.pairServedLimits`), and a prompt past them is
+    /// refused before any rank is asked (`refusal(for:)`).
+    public let served: (promptTokens: Int, outputTokens: Int, contextTokens: Int)
     public let requestTimeout: Duration
     /// Whether the selected resident runtime emits committed-token logprobs.
     /// Numeric sampling limits do not imply that the runtime captures them.
     public let supportsLogprobs: Bool
 
+    /// `served` defaults to the whole profile.
     public init(
         id: String, vocabularySize: Int, maxPromptTokens: Int, maxOutputTokens: Int,
-        maxContextTokens: Int, requestTimeout: Duration, supportsLogprobs: Bool = false
+        maxContextTokens: Int, requestTimeout: Duration, supportsLogprobs: Bool = false,
+        served: (promptTokens: Int, outputTokens: Int, contextTokens: Int)? = nil
     ) throws {
+        let served = served ?? (maxPromptTokens, maxOutputTokens, maxContextTokens)
         guard !id.isEmpty, vocabularySize > 0, maxPromptTokens > 0, maxOutputTokens > 0,
             maxContextTokens >= maxPromptTokens, requestTimeout > .zero,
-            requestTimeout <= .seconds(3600)
+            requestTimeout <= .seconds(3600),
+            (1...maxPromptTokens).contains(served.promptTokens), (1...maxOutputTokens).contains(served.outputTokens),
+            (served.promptTokens...maxContextTokens).contains(served.contextTokens)
         else { throw DistributedEngineError.invalidConfiguration("invalid bounded execution profile") }
         self.id = id
         self.vocabularySize = vocabularySize
         self.maxPromptTokens = maxPromptTokens
         self.maxOutputTokens = maxOutputTokens
         self.maxContextTokens = maxContextTokens
+        self.served = served
         self.requestTimeout = requestTimeout
         self.supportsLogprobs = supportsLogprobs
     }
@@ -82,10 +106,12 @@ public struct DistributedResidentExecutionProfile: Sendable {
     init(capability: ClusterRuntimeCapability, generationMode: ClusterGenerationMode,
          requestTimeout: Duration) throws {
         let wire = capability.profile
+        let served = ClusterModelFeaturePolicy.servedProfile(capability, mode: generationMode)
         try self.init(id: wire.id, vocabularySize: wire.vocabularySize,
             maxPromptTokens: wire.maximumPromptTokens, maxOutputTokens: wire.maximumOutputTokens,
             maxContextTokens: wire.maximumContextTokens, requestTimeout: requestTimeout,
-            supportsLogprobs: ClusterModelFeaturePolicy.capturesLogprobs(capability, mode: generationMode))
+            supportsLogprobs: ClusterModelFeaturePolicy.capturesLogprobs(capability, mode: generationMode),
+            served: (served.maximumPromptTokens, served.maximumOutputTokens, served.maximumContextTokens))
     }
 }
 
@@ -285,6 +311,10 @@ public enum DistributedEngineError: Error, Sendable, Equatable {
 /// it may be returned to the client as is.
 public enum DistributedRequestRefusal: String, Sendable, Equatable, CaseIterable {
     case emptyPrompt = "empty_prompt"
+    /// The prompt fills the context the pair serves: no output fits after it.
+    /// One Mac's code and words for the same bound (`promptExceedsContext`,
+    /// `contextLengthExceededMessage`).
+    case contextLengthExceeded = "context_length_exceeded"
     case promptTooLong = "prompt_too_long"
     case invalidMaxTokens = "invalid_max_tokens"
     case outputTooLong = "output_too_long"
@@ -302,21 +332,22 @@ public enum DistributedRequestRefusal: String, Sendable, Equatable, CaseIterable
     /// The prompt or output does not fit the model's limits on the pair:
     /// the coordinator classifies these as exceeding context.
     public var exceedsContext: Bool {
-        [.promptTooLong, .outputTooLong, .contextTooLong].contains(self)
+        [.contextLengthExceeded, .promptTooLong, .outputTooLong, .contextTooLong].contains(self)
     }
 
     /// The client-facing text. With the profile it names the model's limits.
     public func message(_ profile: DistributedResidentExecutionProfile?) -> String {
-        func limit(_ value: Int?) -> String { value.map { " of \($0) tokens" } ?? "" }
+        let limit = Self.limit
         switch self {
         case .emptyPrompt: return "The prompt is empty."
+        case .contextLengthExceeded: return Self.contextLengthExceededMessage(contextTokens: profile?.served.contextTokens)
         case .promptTooLong:
-            return "The prompt is longer than this model's limit\(limit(profile?.maxPromptTokens)) on this cluster."
+            return "The prompt is longer than this model's limit\(limit(profile?.served.promptTokens)) on this cluster."
         case .invalidMaxTokens: return "max_tokens must be at least 1."
         case .outputTooLong:
-            return "max_tokens is above this model's output limit\(limit(profile?.maxOutputTokens)) on this cluster."
+            return "max_tokens is above this model's output limit\(limit(profile?.served.outputTokens)) on this cluster."
         case .contextTooLong:
-            return "The prompt plus max_tokens is above this model's context\(limit(profile?.maxContextTokens)) on this cluster."
+            return "The prompt plus max_tokens is above this model's context\(limit(profile?.served.contextTokens)) on this cluster."
         case .tokenOutsideVocabulary: return "A token is outside this model's vocabulary."
         case .logprobsUnsupported:
             return "top_logprobs is above this cluster's limit of \(ClusterWorkerSampling.maximumTopLogprobs)."
@@ -331,12 +362,28 @@ public enum DistributedRequestRefusal: String, Sendable, Equatable, CaseIterable
             return "logit_bias has more than \(ClusterWorkerSampling.maximumLogitBiasEntries) entries."
         }
     }
+
+    /// The words of `context_length_exceeded`: a prompt that fills a context
+    /// window of `contextTokens` (unnamed when nil) leaves no room for an
+    /// answer. The one text for that refusal on one Mac
+    /// (`MultiModelBatchSchedulerEngineError.promptExceedsContext`) and on a
+    /// pair, so a client reads the same answer on both: the window, never
+    /// request content. In this file because the cluster checks compile it
+    /// without the bridge.
+    static func contextLengthExceededMessage(contextTokens: Int?) -> String {
+        "The prompt fills this model's context window\(limit(contextTokens)), leaving no room for an answer."
+            + " Shorten the prompt or start a new conversation."
+    }
+
+    /// " of N tokens", or nothing when the limit is not known here.
+    private static func limit(_ value: Int?) -> String { value.map { " of \($0) tokens" } ?? "" }
 }
 
 extension DistributedResidentExecutionProfile {
     /// The first rule a request breaks on this pair, or nil when the pair can
     /// serve it. The engine refuses with it before any reservation; the owner
-    /// checks it again before anything reaches a worker.
+    /// checks it again before anything reaches a worker. Sizes are held to
+    /// what the selected mode serves (`served`).
     func refusal(for request: CBv2Request) -> DistributedRequestRefusal? {
         let p = request.sampling
         if request.multimodal != nil || request.positionState != nil { return .mediaUnsupported }
@@ -372,11 +419,12 @@ extension DistributedResidentExecutionProfile {
         if p.topLogprobs > 0, !supportsLogprobs { return .logprobCaptureUnsupported }
         if request.priority != 0 { return .priorityUnsupported }
         if request.promptTokens.isEmpty { return .emptyPrompt }
-        if request.promptTokens.count > maxPromptTokens { return .promptTooLong }
+        if request.promptTokens.count >= served.contextTokens { return .contextLengthExceeded }
+        if request.promptTokens.count > served.promptTokens { return .promptTooLong }
         if request.maxTokens <= 0 { return .invalidMaxTokens }
-        if request.maxTokens > maxOutputTokens { return .outputTooLong }
+        if request.maxTokens > served.outputTokens { return .outputTooLong }
         let total = request.promptTokens.count.addingReportingOverflow(request.maxTokens)
-        if total.overflow || total.partialValue > maxContextTokens { return .contextTooLong }
+        if total.overflow || total.partialValue > served.contextTokens { return .contextTooLong }
         if !request.promptTokens.allSatisfy({ 0 <= $0 && $0 < vocabularySize })
             || !request.stopTokens.allSatisfy({ 0 <= $0 && $0 < vocabularySize }) {
             return .tokenOutsideVocabulary

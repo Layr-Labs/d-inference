@@ -42,5 +42,9 @@ extension SelfUpdater {
         func rollback(now: Double, reason: String) throws -> String {
             try store.rollback(now: now, reason: reason)
         }
+
+        func reconcileWithInstalledApp(runningVersion: String, now: Double) throws -> UpdateRecoveryReconciliation? {
+            try store.reconcileWithInstalledApp(runningVersion: runningVersion, now: now)
+        }
     }
 }

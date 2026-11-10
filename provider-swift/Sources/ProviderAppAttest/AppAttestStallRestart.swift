@@ -127,7 +127,7 @@ public enum AppAttestStallRestartPolicy {
                                                   relaunchesThroughLaunchd: @autoclosure () -> Bool) -> Bool {
         guard profileExpired != true, let lastVerifiedAt,
               abs(now.timeIntervalSince(lastVerifiedAt)) < verifiedWithin else { return false }
-        if let lastRestartAt, lastVerifiedAt <= lastRestartAt { return false }
+        if let lastRestartAt, lastVerifiedAt.timeIntervalSince(lastRestartAt) <= 0 { return false }
         return relaunchesThroughLaunchd()
     }
 }

@@ -13,7 +13,7 @@ import type {
   Snapshot,
 } from '../shared/contracts';
 import type { SystemInfo } from '../shared/macos';
-import { submitAction } from './actions';
+import { errorMessage, submitAction } from './actions';
 import { pageResources } from './data/pageResources';
 import { previewAPI } from './preview';
 import { parseReleaseHistory } from './features/updates/version';
@@ -213,7 +213,8 @@ export function useBackend(route: Route = 'home', machine: MachineSelection = nu
         await refreshVisible();
         return true;
       } catch (error) {
-        setError(error instanceof Error ? error.message : 'The action failed');
+        // The action's own words: a refusal crosses IPC behind Electron's prefix.
+        setError(errorMessage(error) || 'The action failed');
         return false;
       } finally {
         setBusy(false);

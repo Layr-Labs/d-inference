@@ -9,7 +9,7 @@ public struct ClusterPairCommandRequest: Sendable {
     public var interface: String?
     public var device: String?
     public var localAddress: String?
-    public var port: Int = Int(ClusterLinkPairing.defaultPort)
+    public var port: Int = Int(ClusterCablePorts.current.pairing)
     public var clusterID: String?
     /// Only listen (answering probes): no search first, never dial. Default
     /// without `connect`: find the other Mac on the cable, or wait for it.
@@ -36,7 +36,8 @@ public struct ClusterPairCommandRequest: Sendable {
 public enum ClusterPairCommandLine {
     public struct Failure: Error, CustomStringConvertible { public let description: String }
 
-    public static var defaultPort: Int { Int(ClusterLinkPairing.defaultPort) }
+    /// This install's pairing port (`ClusterCablePorts`): production's 47421.
+    public static var defaultPort: Int { Int(ClusterCablePorts.current.pairing) }
     public static func isPin(_ value: String) -> Bool { ClusterPairingPin.isPin(value) }
 
     /// Runs the ceremony on this terminal; true when the Macs are paired.
@@ -66,8 +67,10 @@ public enum ClusterPairCommandLine {
         let callbacks = terminal.callbacks { interface, port in
             guard let selection = try? ClusterLinkInterfaceAdmission.select(interface: interface, localAddress: local,
                 peerAddress: nil, policy: policy, inspector: ClusterLinkSystemInterfaceInspector()) else { return nil }
-            let portText = port == ClusterLinkPairing.defaultPort ? "" : " --port \(port)"
-            return "darkbloom cluster pair\(portText)   (it finds this Mac; if not: darkbloom cluster pair --connect "
+            let portText = port == ClusterCablePorts.current.pairing ? "" : " --port \(port)"
+            // This build's command: the other app's `cluster pair` pairs that app, on its own port, and never finds this Mac.
+            let cli = BuildEnvironment.current.cliName
+            return "\(cli) cluster pair\(portText)   (it finds this Mac; if not: \(cli) cluster pair --connect "
                 + "\(selection.local.address.dottedDecimal)\(portText))"
         }
         let result = ClusterLinkPairing.run(options: options, participant: participant, hooks: ClusterPairingProvider.hooks,
@@ -83,7 +86,7 @@ public enum ClusterPairCommandLine {
         if let interface = request.interface { return interface }
         if let device = request.device {
             guard let carrier = ClusterLinkControlHost.listenInterface(forDevice: device, reaching: peer) else {
-                throw Failure(description: "\(device) has no interface carrying IPv4 (check `darkbloom cluster link`).")
+                throw Failure(description: "\(device) has no interface carrying IPv4 (check `\(BuildEnvironment.current.cliName) cluster link`).")
             }
             return carrier
         }
@@ -119,12 +122,9 @@ public enum ClusterPairCommandLine {
         return lines.joined(separator: "\n")
     }
 
-    /// `--forget PIN`: the lines to print.
-    public static func forget(pin: String, store: ClusterPairingStore = .default()) throws -> String {
-        do {
-            let record = try store.forget(peerPin: pin)
-            return "Unpaired from \(record.peerPin.prefix(16))… (\(record.peerName)); its pin and link key were removed.\n"
-                + "A setup whose roster names it no longer starts here until the two Macs pair again."
-        } catch { throw Failure(description: "\(error)") }
+    /// `--forget PIN`: the lines to print for the pairing it removed (`ClusterUnpairing`).
+    public static func forgotten(_ record: ClusterPairingRecord) -> String {
+        "Unpaired from \(record.peerPin.prefix(16))… (\(record.peerName)); its pin and link key were removed.\n"
+            + "A setup whose roster names it no longer starts here until the two Macs pair again."
     }
 }

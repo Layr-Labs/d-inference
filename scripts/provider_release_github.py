@@ -5,6 +5,8 @@ from pathlib import Path
 import subprocess
 import tempfile
 
+from provider_release_notes import write_release_notes
+
 
 def publish_github_release(root, bundle_name, expected_hash, env, is_latest):
     tag = env.get('RELEASE_TAG') or env['GITHUB_REF_NAME']
@@ -26,8 +28,10 @@ def publish_github_release(root, bundle_name, expected_hash, env, is_latest):
     if release is None:
         # Keep each step recoverable: a failed create/upload/edit can leave a
         # draft or starter asset. A retry re-reads state instead of rebuilding.
+        # The notes list the release's own pull requests (provider_release_notes);
+        # GitHub's generated notes would list only those merged into master.
         gh('create', tag, '--draft', '--verify-tag', '--title', tag,
-           '--notes-file', str(root / 'release-notes.md'), '--generate-notes', check=True)
+           '--notes-file', str(write_release_notes(root, env)), check=True)
         release = view(required=True)
 
     assets = [asset for asset in release['assets'] if asset['name'] == bundle_name]

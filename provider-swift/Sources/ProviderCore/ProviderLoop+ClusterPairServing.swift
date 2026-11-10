@@ -143,11 +143,13 @@ extension ProviderLoop: NativePairMemberServingHost {
         }
         guard clusterPairServingEpoch == nil else { throw ClusterPairSlotError.notServing("a committed start is already served") }
         clusterPairServingEpoch = epoch
+        Self.reportPair(ClusterOnboardingPairReport.startingLine)
         let owner: any DistributedResidentExecutionOwner
         do { owner = try await Task.detached { try context.makeOwner(start) }.value }
         catch {
             // S24: a pair that could not form is a launch failure with a reason.
-            recordClusterPairIncident(.activationLaunchFailed, error: error, context: context, start: start)
+            let guidance = recordClusterPairIncident(.activationLaunchFailed, error: error, context: context, start: start)
+            Self.reportPair(ClusterOnboardingPairReport.stoppedLine(guidance ?? "the pair did not form"))
             endClusterPairServing(epoch); throw error
         }
         // A stop that arrived while the pair formed wins: nothing publishes,
@@ -164,7 +166,7 @@ extension ProviderLoop: NativePairMemberServingHost {
         let telemetry = context.observabilityFacts.map { facts in
             DistributedPairTelemetryContext(modelID: facts.modelID, mode: facts.mode, cut: facts.cut,
                 log: ClusterObservability.current().telemetryLog(sessionID: epoch.uuidString.lowercased()), ranks: facts.ranks,
-                rankBuildSHA256: identity.peers.map(\.buildSHA256))
+                rankBuildSHA256: identity.peers.map(\.buildSHA256), serving: facts.serving, tensorAssistant: facts.tensorAssistant)
         }
         let specification = ClusterPairSlotSpecification(publicModelID: context.publicModelID,
             modelType: context.modelType, tokenizer: context.tokenizer, eosTokenIDs: context.eosTokenIDs,
@@ -198,16 +200,25 @@ extension ProviderLoop: NativePairMemberServingHost {
     }
 
     /// One incident about a committed start this leader serves (S24), with
-    /// the session endpoint's owner diagnostics when it has them.
+    /// the session endpoint's owner diagnostics when it has them. Returns the
+    /// incident's guidance code (`memory_gate_refused`, …) when one was recorded.
+    @discardableResult
     func recordClusterPairIncident(_ stateCode: ClusterIncidentStateCode, error: Error,
-                                   context: ClusterPairServingContext, start: NativePairMemberServingStart) {
-        guard let base = context.observabilityFacts else { return }
+                                   context: ClusterPairServingContext, start: NativePairMemberServingStart) -> String? {
+        guard let base = context.observabilityFacts else { return nil }
         let diagnostics = (start.endpoint as? ClusterRemoteWorkerEndpoint).map { [DistributedSessionFacts.tail($0.diagnosticTail)] } ?? []
         let facts = DistributedSessionFacts(clusterID: base.clusterID, memberID: base.memberID, modelID: base.modelID,
             mode: base.mode, cut: base.cut, membershipEpoch: start.membershipEpoch.uuidString.lowercased(),
-            diagnostics: diagnostics, terminations: [], peerHosts: base.peerHosts, peerUsers: base.peerUsers, ranks: base.ranks)
-        ClusterObservability.current().recordFailure(stateCode, source: "member",
-            error: String(describing: error), facts: facts)
+            diagnostics: diagnostics, terminations: [], peerHosts: base.peerHosts, peerUsers: base.peerUsers, ranks: base.ranks,
+            serving: base.serving, tensorAssistant: base.tensorAssistant)
+        return ClusterObservability.current().recordFailure(stateCode, source: "member",
+            error: String(describing: error), facts: facts)?.guidanceCode
+    }
+
+    /// One line of the pair's progress in this coordinator-paired part's log (its stderr, the cluster service's
+    /// `rank.log`), which the onboarding and the status read: registered is not serving.
+    static func reportPair(_ line: String) {
+        FileHandle.standardError.write(Data((line + "\n").utf8))
     }
 
     /// Clears the served epoch, once, for this epoch only.

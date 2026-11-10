@@ -14,3 +14,13 @@
 public enum ClusterServedSpeedRule {
     public static let minimumCompletionTokens = 64
 }
+
+/// How a served request reached the pair: through Darkbloom (a coordinator-paired
+/// setup) or the leader's own local API. A speed record names it, and a plan uses
+/// only the records served the way the plan will serve (`ClusterServedSpeedRecords.Setup.servedAs`):
+/// the two ways can run different decode paths (Qwen's tensor assistant served
+/// locally only before a build declared it public), and their loads differ.
+public enum ClusterServedScope: String, Codable, Sendable {
+    case darkbloom
+    case local
+}

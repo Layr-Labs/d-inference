@@ -11,6 +11,16 @@ public enum AppAttestLocalDiagnosis {
         + "then `\(BuildEnvironment.current.cliName) restart`; enable automatic login so the session exists after reboots. Also confirm "
         + "SIP is enabled (`csrutil status`) and Startup Security Utility in Recovery is set to Full Security."
 
+    static let lsregister =
+        "/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
+
+    /// The provider already runs in the GUI session, so a restart cannot help.
+    /// After a self-update, LaunchServices can still describe the previous app.
+    static let isSupportedFalseInGUIFix =
+        "re-register the app with LaunchServices: `\(lsregister) -f \"$HOME/\(BuildEnvironment.current.installDirectoryName)/\(BuildEnvironment.current.appBundleName)\"`, "
+        + "then wait for the next App Attest check (up to 10 minutes) or run `\(BuildEnvironment.current.cliName) restart`. Also confirm "
+        + "SIP is enabled (`csrutil status`) and Startup Security Utility in Recovery is set to Full Security."
+
     /// App Attest verdicts require macOS 27; persisted APNs history is useful
     /// on every supported OS, including without an App Attest observation.
     /// `pushHistory` is the local `apns-push-history.json`, read by the CLI.
@@ -28,10 +38,7 @@ public enum AppAttestLocalDiagnosis {
         var out = pushes + [launchSession(status.launchSession)]
         if let reason = status.availabilityReason {
             out.append(reason == .isSupportedFalse
-                ? Diagnostic(section: .appAttest, name: "app attest support", level: .fail,
-                             message: "Apple reports App Attest as unsupported for this provider process (`is_supported_false`)"
-                                 + (status.launchSession == .background ? ", which runs outside the logged-in GUI session." : "."),
-                             fix: isSupportedFalseFix)
+                ? isSupportedFalse(status.launchSession)
                 : Diagnostic(section: .appAttest, name: "app attest support", level: .fail,
                              message: "App Attest is unavailable to this provider process (`\(reason.rawValue)`).",
                              fix: "run the signed \(BuildEnvironment.current.appBundleName) release on macOS 27 or later (`\(BuildEnvironment.current.cliName) update`), then `\(BuildEnvironment.current.cliName) restart`."))
@@ -45,6 +52,25 @@ public enum AppAttestLocalDiagnosis {
         if status.availabilityReason == nil { out.append(keyDiagnostic(status.key, now: now)) }
         out.append(contentsOf: AppAttestDeepDiagnosis.evaluate(status, pushHistory: nil, now: now))
         return out
+    }
+
+    private static func isSupportedFalse(_ session: AppAttestLaunchSession) -> Diagnostic {
+        let message = "Apple reports App Attest as unsupported for this provider process (`is_supported_false`)"
+        switch session {
+        case .gui:
+            return Diagnostic(section: .appAttest, name: "app attest support", level: .fail,
+                              message: message + ", although it already runs in the logged-in GUI session, so a restart from "
+                                  + "Screen Sharing will not change it. This usually follows a self-update: macOS LaunchServices still "
+                                  + "describes the previous \(BuildEnvironment.current.appBundleName). The provider re-registers its app "
+                                  + "by itself when this happens.",
+                              fix: isSupportedFalseInGUIFix)
+        case .background:
+            return Diagnostic(section: .appAttest, name: "app attest support", level: .fail,
+                              message: message + ", which runs outside the logged-in GUI session.", fix: isSupportedFalseFix)
+        case .unknown:
+            return Diagnostic(section: .appAttest, name: "app attest support", level: .fail,
+                              message: message + ".", fix: isSupportedFalseFix)
+        }
     }
 
     private static func launchSession(_ session: AppAttestLaunchSession) -> Diagnostic {

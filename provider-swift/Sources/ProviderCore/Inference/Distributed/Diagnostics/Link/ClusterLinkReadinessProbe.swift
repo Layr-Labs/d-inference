@@ -51,7 +51,7 @@ public enum ClusterLinkReadinessProbe {
         do {
             var (devices, listing) = try inspectDevices(run: run, recorded: recorded)
             if readingIsolation, devices.contains(where: \.portActive) {
-                let machine = ClusterLinkIsolationInspection.machine(run: run)
+                let machine = ClusterLinkIsolationInspection.machine(run: run, interfaceListing: listing)
                 for index in devices.indices where devices[index].portActive {
                     guard let interface = devices[index].interface else { continue }
                     devices[index].isolation = ClusterLinkIsolationInspection.status(interface: interface,

@@ -79,7 +79,9 @@ enum ModelLoadingFixtures {
         beforeModelLoad: (@Sendable (String) async -> Void)? = nil,
         hardware: HardwareInfo = ModelLoadingFixtures.defaultHardware,
         runtimeCapabilities: Set<ProviderRuntimeCapability> = [],
-        mtpMode: MTPMode = .off
+        mtpMode: MTPMode = .off,
+        localEndpoint: LocalInferenceHTTPConfig? = nil,
+        local: LocalSettings? = nil
     ) async throws -> ProviderLoop {
         let config = ProviderLoopConfig(
             coordinatorURL: "ws://127.0.0.1:0/ignored",
@@ -89,11 +91,13 @@ enum ModelLoadingFixtures {
                 provider: ProviderSettings(name: "model-loading-test", memoryReserveGB: 0),
                 backend: BackendSettings(
                     idleTimeoutMins: 0, maxModelSlots: maxModelSlots, mtpMode: mtpMode),
-                coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)
+                coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60),
+                local: local
             ),
             runtimeCapabilities: runtimeCapabilities,
             modelHashes: modelHashes,
-            modelHashFingerprints: modelHashFingerprints
+            modelHashFingerprints: modelHashFingerprints,
+            localEndpoint: localEndpoint
         )
         let loop = try ProviderLoop(
             config: config,
@@ -150,12 +154,13 @@ extension ProviderLoop {
         bridge: EngineV2Bridge,
         weightsBytes: Int = 0,
         modelType: String? = "gpt_oss",
-        lastInferenceAt: ContinuousClock.Instant = .now
+        lastInferenceAt: ContinuousClock.Instant = .now,
+        tokenizer: TokenizerHandle = TokenizerHandle(StubBridgeTokenizer())
     ) {
         modelSlots[modelId] = ModelSlot(
             engineV2: bridge,
             container: mtpFloorContainer(),
-            tokenizer: TokenizerHandle(StubBridgeTokenizer()),
+            tokenizer: tokenizer,
             sizing: SlotSizingSnapshot(
                 weightsBytes: weightsBytes, fp16KVBytesPerToken: 20_480,
                 maxContextLength: 8192, defaultMaxTokens: 4096),

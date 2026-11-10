@@ -1,9 +1,22 @@
 import Foundation
 
-/// One canonical device namespace for this user's clusters. The input document
-/// cannot select a different lease directory to evade an unresolved allocation.
+/// One canonical device namespace for this user's clusters of this build. Neither
+/// the input document nor a public caller can select a different lease directory
+/// (another build's included) to evade an unresolved allocation.
+///
+/// Every cluster file of an install lives in that install's own folders
+/// (`BuildEnvironment.installDirectory` and `configDirectory`): production's in
+/// `~/.darkbloom` and `~/.config/darkbloom`, DevNet's in `~/.darkbloom-dev` and
+/// `~/.config/darkbloom-dev`. Two installs on one Mac share no pairing, setup,
+/// service lock or device lease, and neither writes the other's. So the device
+/// lease no longer keeps the two installs' native sessions apart: each install's
+/// pair can hold this Mac's GPU and cable port while the other's does. The one
+/// read across installs is the cable port setup's record, which is this Mac's:
+/// a port the other install set up is adopted with what that setup changed
+/// (`ClusterLinkRepair.Environment.otherInstallsIsolationEntries`).
 public struct ClusterUserPaths: Sendable, Equatable {
     public let homeDirectory: URL
+    public let environment: BuildEnvironment
     public let configurationsDirectory: URL
     public let deviceDirectory: URL
     public var deviceLeaseFile: URL { deviceDirectory.appendingPathComponent("native-device.lease") }
@@ -11,19 +24,48 @@ public struct ClusterUserPaths: Sendable, Equatable {
     var linkAliasRecordFile: URL { deviceDirectory.appendingPathComponent("link-alias.json") }
     /// What link setup v2 changed for each cluster port, so a removal can put it back.
     var linkIsolationRecordFile: URL { deviceDirectory.appendingPathComponent("link-isolation.json") }
+    /// The install's data folder, which holds the cluster folders below.
+    public var installDirectory: URL { environment.installDirectory(home: homeDirectory) }
+    /// The pairing store: the pins, each pairing's edge secret, the lockout and its audit.
+    public var pairingDirectory: URL { Self.pairingDirectory(home: homeDirectory, environment: environment) }
+    /// What `darkbloom cluster` and the cluster service keep: the setup record, the service's lock, pid, status and
+    /// logs, and the screens' transcripts.
+    public var setupDirectory: URL { installDirectory.appendingPathComponent("cluster-setup", isDirectory: true) }
+    /// The observability files: incidents, pair telemetry, follower status, served speeds and the planner's probes.
+    public var observabilityDirectory: URL { Self.observabilityDirectory(home: homeDirectory, environment: environment) }
 
+    /// This user's, for the running build: no public caller opens another build's folders.
     public init() throws {
-        try self.init(homeDirectory: FileManager.default.homeDirectoryForCurrentUser)
+        try self.init(homeDirectory: FileManager.default.homeDirectoryForCurrentUser, environment: .current)
     }
 
-    // Internal fixture seam; public callers cannot choose another device gate.
-    init(homeDirectory: URL) throws {
+    // Internal fixture seam; public callers cannot choose another home, build or device gate.
+    init(homeDirectory: URL, environment: BuildEnvironment = .current) throws {
         guard homeDirectory.isFileURL else { throw ClusterConfigurationError.invalid("Expected a local home directory") }
         try ClusterConfigurationFiles.requireAbsolute(homeDirectory.path)
         self.homeDirectory = homeDirectory
-        configurationsDirectory = homeDirectory.appendingPathComponent(".config/darkbloom/clusters", isDirectory: true)
-        deviceDirectory = homeDirectory.appendingPathComponent(".darkbloom/cluster-device", isDirectory: true)
+        self.environment = environment
+        configurationsDirectory = environment.configDirectory(home: homeDirectory).appendingPathComponent("clusters", isDirectory: true)
+        deviceDirectory = environment.installDirectory(home: homeDirectory).appendingPathComponent("cluster-device", isDirectory: true)
     }
+
+    /// `pairingDirectory` without a checked home, for the pairing store's default.
+    public static func pairingDirectory(home: URL, environment: BuildEnvironment = .current) -> URL {
+        environment.installDirectory(home: home).appendingPathComponent("cluster-pairing", isDirectory: true)
+    }
+
+    /// `observabilityDirectory` without a checked home, for the observability files' defaults.
+    public static func observabilityDirectory(home: URL, environment: BuildEnvironment = .current) -> URL {
+        environment.installDirectory(home: home).appendingPathComponent("cluster", isDirectory: true)
+    }
+
+    /// A file in the install's folder as messages name it: `~/.darkbloom/cluster-setup/service.log` in production.
+    public static func shown(_ relativePath: String, environment: BuildEnvironment = .current) -> String {
+        "~/\(environment.installDirectoryName)/\(relativePath)"
+    }
+
+    /// The cluster service's log as messages name it (`ClusterService.paths().log`).
+    public static var serviceLogShown: String { shown("cluster-setup/service.log") }
 
     public func configurationURL(sha256: String) throws -> URL {
         guard ClusterConfigurationSyntax.hash(sha256) else { throw ClusterConfigurationError.invalid("Invalid configuration digest") }

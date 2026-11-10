@@ -87,7 +87,8 @@ extension ClusterPlacementPlanner {
                     withinGPUWorkingSet: quote.nativeBytes <= devices[original.rank].profile.residentCapacityBytes,
                     transientBytes: original.transientBytes,
                     hardwareFits: devices[original.rank].profile.hardwareFits(needBytes: total,
-                        weightsBytes: original.weightsBytes, largestTensorBytes: 0))
+                        weightsBytes: original.weightsBytes, largestTensorBytes: 0, gpuResidentBytes: quote.nativeBytes),
+                    gpuResidentBytes: quote.nativeBytes)
             }
             let headroom = ranks.map { Double($0.admissibleNowBytes - $0.needBytes) / Double(max(1, $0.needBytes)) }.min() ?? 0
             return ClusterPlacementCandidate(cuts: prediction.cuts, mode: prediction.mode,

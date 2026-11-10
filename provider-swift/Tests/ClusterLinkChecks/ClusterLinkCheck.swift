@@ -19,6 +19,7 @@ import Darwin
         signal(SIGALRM) { _ in Darwin._exit(124) }; alarm(60); defer { alarm(0) }
         let groups: [(String, () -> Void)] = [
             ("rdma_ctl status text", controlStateText),
+            ("no prompt over SSH", noPromptOverSSH),
             ("ibv_devinfo device list text", deviceListText),
             ("ibv_devinfo device detail text", deviceDetailText),
             ("ifconfig text", interfaceText),
@@ -56,9 +57,13 @@ import Darwin
             ("isolation command set", isolationCommandSet),
             ("isolation Mac A findings", isolationMacAFindings),
             ("isolation Mac B findings", isolationMacBFindings),
+            ("isolation after pairing", isolationPairedMacs),
             ("isolation plans", isolationPlans),
             ("isolation fix outcomes", isolationFixOutcomes),
             ("isolation remove outcomes", isolationRemoveOutcomes),
+            ("isolation remove every port", isolationRemoveEveryPort),
+            ("isolation last service stops on a failed commit", isolationLastServiceStopsOnFailedCommit),
+            ("isolation manual commands run as the script", isolationManualCommandsRunAsTheScript),
             ("isolation record file", isolationRecordFile),
             ("isolation setup flow", isolationSetupFlow),
             ("isolation vocabulary", isolationVocabulary),
@@ -71,5 +76,16 @@ import Darwin
             exit(1)
         }
         print("Cluster link: \(passed) expectations in \(groups.count) groups passed; real children were /bin and /usr/bin fixtures only")
+    }
+
+    /// SSH with no desktop: no prompt can show, said before anything is tried (2026-11-04, owner).
+    static func noPromptOverSSH() {
+        typealias S = ClusterLinkApprovalSession
+        expect(S.cannotPrompt(environment: ["SSH_CONNECTION": "10.0.0.2 50000 10.0.0.1 22"], graphicAccess: { false }), "SSH, no desktop")
+        expect(S.cannotPrompt(environment: ["SSH_TTY": "/dev/ttys001"], graphicAccess: { false }), "SSH_TTY alone")
+        expect(!S.cannotPrompt(environment: ["SSH_TTY": "/dev/ttys001"], graphicAccess: { true }), "SSH inside a desktop session")
+        expect(!S.cannotPrompt(environment: [:], graphicAccess: { false }), "not SSH: macOS decides")
+        expect(S.lines(command: "darkbloom cluster link --remove") == ["macOS can't show its approval prompt over SSH.",
+            "Run `darkbloom cluster link --remove` in Terminal on this Mac's own screen, or through Screen Sharing."], "the words")
     }
 }

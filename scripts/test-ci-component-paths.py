@@ -5,6 +5,7 @@ import importlib.util
 import itertools
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -22,10 +23,24 @@ spec.loader.exec_module(workflow)
 
 class ComponentPathsTests(unittest.TestCase):
     def test_only_same_workflow_pr_revisions_share_cancellation_group(self):
-        source = (ROOT / ".github/workflows/ci.yml").read_text()
-        concurrency = source.split("\nconcurrency:\n", 1)[1].split("\njobs:\n", 1)[0]
-        self.assertIn("  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}\n", concurrency)
-        self.assertIn("  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n", concurrency)
+        # Pull request revisions cancel each other; every push has a group of
+        # its own (a push of a tested tree runs no test job, so none is skipped).
+        # CI (dev)'s dispatches (the hourly full run) share one group and
+        # cancel nothing.
+        key = "github.event.pull_request.number || github.run_id"
+        groups = {
+            "ci-master.yml": "${{ github.workflow }}-${{ github.event_name }}-${{ %s }}" % key,
+            "ci-dev.yml": "${{ github.event_name == 'workflow_dispatch' && 'ci-dev-hourly' || "
+                          "format('{0}-{1}-{2}', github.workflow, github.event_name, %s) }}" % key,
+        }
+        for filename, group in groups.items():
+            with self.subTest(workflow=filename):
+                source = (ROOT / ".github/workflows" / filename).read_text()
+                concurrency = source.split("\nconcurrency:\n", 1)[1].split("\njobs:\n", 1)[0]
+                self.assertIn(f"  group: {group}\n", concurrency)
+                self.assertIn("  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n", concurrency)
+        # The shared test workflow takes its callers' concurrency.
+        self.assertNotIn("\nconcurrency:", (ROOT / ".github/workflows/provider-tests.yml").read_text())
 
     def test_instructions_and_docs_never_select_expensive_lanes(self):
         paths = ["AGENTS.md", "docs/AGENTS.md", "docs/developer/test.md",
@@ -53,20 +68,39 @@ class ComponentPathsTests(unittest.TestCase):
             "provider-swift/Tests/ProviderCoreTests/MiMo/MiMoV26ManagedAudioProviderTests.swift": {"provider", "mimo_audio"},
             "scripts/prepare-mimo-audio-fixtures.py": {"provider", "mimo_audio"},
             # The audio fixture script runs this generator with --audio-source.
-            "scripts/prepare-mimo-provider-fixtures.py": {"provider", "sdk", "mimo_audio"},
-            "libs/mlx-swift-lm": {"provider", "sdk", "cluster", "mimo_audio"},
-            "libs/mlx-swift-lm/Libraries/MLXLMCommon/Generate.swift": {"provider", "sdk", "cluster", "mimo_audio"},
-            "libs/mlx-swift": {"provider", "sdk", "cluster", "mimo_audio"},
+            "scripts/prepare-mimo-provider-fixtures.py": {"provider", "mimo_audio"},
+            "libs/mlx-swift-lm": {"provider", "cluster", "mimo_audio"},
+            "libs/mlx-swift-lm/Libraries/MLXLMCommon/Generate.swift": {"provider", "cluster", "mimo_audio"},
+            "libs/mlx-swift": {"provider", "cluster", "mimo_audio"},
             "libs/mlx": {"provider", "cluster", "mimo_audio"},
             "libs/darkbloom-cluster/Package.swift": {"provider", "cluster"},
             "libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh": {"provider", "cluster"},
+            "provider-swift/Tests/ClusterConsoleChecks/run.sh": {"provider", "cluster"},
+            "provider-swift/Tests/ClusterDiagnosticsChecks/run.sh": {"provider", "cluster"},
+            "provider-swift/Tests/ClusterPlacementChecks/run-flow.sh": {"provider", "cluster"},
+            # A provider file outside the cluster names that those runners compile.
+            "provider-swift/Sources/ProviderCore/Diagnostics/GLM5NextGPULimitEligibility.swift": {"provider", "cluster"},
+            "provider-swift/Tests/ClusterPairingChecks/PairingTerminalChecks.swift": {"provider", "cluster"},
+            "provider-swift/Sources/ProviderBuildEnvironment/BuildEnvironment.swift": {"provider", "cluster"},
+            "handoff/TUI-wiring.md": {"provider", "cluster"},
             "fixtures/prompt-contract/v1/corpus.json": {"provider"},
-            ".github/actions/provider-ci-build/action.yml": {"provider", "sdk", "cluster"},
-            ".github/workflows/ci.yml": {"provider", "sdk", "cluster", "mimo_audio"},
-            "scripts/run-paged-kernel-tests.sh": {"provider", "sdk"},
+            ".github/actions/provider-ci-build/action.yml": {"provider", "cluster"},
+            ".github/actions/provider-ci-products/action.yml": {"provider", "cluster"},
+            "scripts/ci-test-products.py": {"provider", "cluster"},
+            "scripts/ci-resource-sampler.py": {"provider", "cluster"},
+            ".github/workflows/provider-tests.yml": {"provider", "cluster", "mimo_audio"},
+            ".github/workflows/ci-dev.yml": {"provider", "cluster", "mimo_audio"},
+            ".github/workflows/provider-plan.yml": {"provider", "cluster", "mimo_audio"},
+            "scripts/ci-tested-tree.py": {"provider", "cluster", "mimo_audio"},
+            ".github/workflows/ci-master.yml": {"provider", "cluster", "mimo_audio"},
+            "scripts/run-paged-kernel-tests.sh": {"provider"},
             "scripts/run-provider-tests.sh": {"provider"},
+            "scripts/provider-ci-cold-retry.sh": {"provider", "cluster"},
+            "scripts/verified_download_cache.py": {"provider"},
+            "scripts/fixture_redirects.py": {"provider"},
             "scripts/provider-test-shards.py": {"provider"},
             "scripts/cluster-test-plan.py": {"provider", "cluster"},
+            "scripts/swift_test_lock_retry.py": {"provider", "cluster"},
             "coordinator/store/postgres/users.go": set(),
             "coordinator/protocol/messages.go": set(),
             "console-ui/package-lock.json": set(),
@@ -80,9 +114,8 @@ class ComponentPathsTests(unittest.TestCase):
                 self.assertEqual({name for name, value in routing.classify([path]).items() if value}, expected)
         for path in routing.COMMON:
             self.assertTrue(all(routing.classify([path]).values()), path)
-        # Every SDK-lane, cluster and MiMo audio input is also a provider input.
-        for component, patterns in (("sdk", routing.SDK), ("cluster", routing.CLUSTER),
-                                    ("mimo_audio", routing.MIMO_AUDIO)):
+        # Every cluster and MiMo audio input is also a provider input.
+        for component, patterns in (("cluster", routing.CLUSTER), ("mimo_audio", routing.MIMO_AUDIO)):
             for pattern in patterns:
                 path = pattern.replace("**", "x").replace("*", "Cluster" if component == "cluster" else "MiMo")
                 self.assertTrue(routing.classify([path])[component], path)
@@ -192,7 +225,6 @@ class GitDiffTests(unittest.TestCase):
         selected = self.pr(base, head)
         self.assertTrue(selected["provider"], "rename source must be considered")
         self.assertEqual(set(selected), set(routing.COMPONENTS))
-        self.assertFalse(selected["sdk"], "provider sources are not SDK-lane inputs")
         base = head
         self.git("mv", "docs/moved.md", "provider-swift/new.swift")
         head = self.commit()
@@ -222,26 +254,47 @@ class GitDiffTests(unittest.TestCase):
         head = self.commit()
         event = {"before": self.base, "after": head, "ref": "refs/heads/topic"}
         self.assertFalse(any(self.run_detector("push", event).values()))
-        # A provider-only change: a pull request skips the cluster jobs, a
-        # push that runs the provider lanes runs them too.
+        # A provider-only change skips the cluster jobs, on a pull request and
+        # on a push alike.
         self.write("provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2.swift")
         provider_only = self.commit()
         self.assertEqual(self.pr(head, provider_only),
-                         {"provider": True, "sdk": False, "cluster": False, "mimo_audio": False})
-        self.assertEqual(self.run_detector("push", {"before": head, "after": provider_only, "ref": "refs/heads/dev"}),
-                         {"provider": True, "sdk": False, "cluster": True, "mimo_audio": False})
+                         {"provider": True, "cluster": False, "mimo_audio": False})
+        for ref in ("refs/heads/topic", "refs/heads/dev"):
+            self.assertEqual(self.run_detector("push", {"before": head, "after": provider_only, "ref": ref}),
+                             {"provider": True, "cluster": False, "mimo_audio": False})
         self.write("libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/New.swift")
         cluster = self.commit()
         self.assertEqual(self.pr(provider_only, cluster),
-                         {"provider": True, "sdk": False, "cluster": True, "mimo_audio": False})
+                         {"provider": True, "cluster": True, "mimo_audio": False})
         # The MiMo audio gate and its 1.87 GB codec run only for their inputs.
         self.write("provider-swift/Tests/ProviderCoreTests/MiMo/MiMoV26ManagedAudioProviderTests.swift")
         audio = self.commit()
-        self.assertEqual(self.pr(cluster, audio), {"provider": True, "sdk": False, "cluster": False, "mimo_audio": True})
-        for ref in ("refs/heads/master", "refs/heads/main"):
-            self.assertTrue(all(self.run_detector("push", {**event, "ref": ref}).values()))
+        self.assertEqual(self.pr(cluster, audio), {"provider": True, "cluster": False, "mimo_audio": True})
+        # A push to dev selects by its diff, as a pull request into dev does.
+        self.assertFalse(any(self.run_detector("push", {**event, "ref": "refs/heads/dev"}).values()))
         self.assertTrue(all(self.run_detector("push", {**event, "before": "0" * 40}).values()))
         self.assertTrue(all(self.run_detector("workflow_dispatch", {}).values()))
+
+    def test_master_pushes_and_pull_requests_into_master_select_every_component(self):
+        # Master is the release line: a docs-only change into master still
+        # runs every component, so a master record always covers them all.
+        self.write("landing/new.ts")
+        head = self.commit()
+        everything = dict.fromkeys(routing.COMPONENTS, True)
+        for ref in ("refs/heads/master", "refs/heads/main"):
+            with self.subTest(ref=ref):
+                self.assertEqual(self.run_detector("push", {"before": self.base, "after": head, "ref": ref}),
+                                 everything)
+        for branch in ("master", "main"):
+            with self.subTest(base=branch):
+                event = {"pull_request": {"base": {"sha": self.base, "ref": branch}, "head": {"sha": head}}}
+                self.assertEqual(self.run_detector("pull_request", event), everything)
+        # Into dev or a stacked branch, the diff decides.
+        for branch in ("dev", "ci/stacked"):
+            with self.subTest(base=branch):
+                event = {"pull_request": {"base": {"sha": self.base, "ref": branch}, "head": {"sha": head}}}
+                self.assertFalse(any(self.run_detector("pull_request", event).values()))
 
     def test_missing_invalid_revisions_and_unsupported_events_fail_closed(self):
         for before in ("f" * 40, "--help", "", None):
@@ -251,8 +304,43 @@ class GitDiffTests(unittest.TestCase):
 
 
 class WorkflowRoutingTests(unittest.TestCase):
+    def test_every_pull_request_runs_exactly_one_ci_workflow(self):
+        # CI (dev) runs for pull requests into any branch but master (dev and
+        # stacked branches); CI (master) for pull requests into master. The
+        # two filters are disjoint and cover every base.
+        def triggers(filename):
+            """The `on:` block as {event: {key: value}}, one level deep."""
+            text = (ROOT / ".github/workflows" / filename).read_text()
+            block = text.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]
+            events = {}
+            for line in block.splitlines():
+                event = re.fullmatch(r"  ([a-z_]+):(?: (.*))?", line)
+                option = re.fullmatch(r"    ([a-z-]+): (.*)", line)
+                if event:
+                    events[event.group(1)] = {}
+                elif option:
+                    events[list(events)[-1]][option.group(1)] = option.group(2)
+            return events
+
+        dev, master = triggers("ci-dev.yml"), triggers("ci-master.yml")
+        self.assertEqual(dev, {"push": {"branches": "[dev]"},
+                               "pull_request": {"branches-ignore": "[master, main]"},
+                               "workflow_dispatch": {}})
+        self.assertEqual(master, {"push": {"branches": "[master, main]"},
+                                  "pull_request": {"branches": "[master, main]"}})
+        # Both run the same plan and tests, whatever the base (Release
+        # Integrity alone reads the base, for the branch's build default).
+        for filename in ("ci-dev.yml", "ci-master.yml"):
+            jobs = workflow.job_blocks((ROOT / ".github/workflows" / filename).read_text().split("\njobs:\n", 1)[1])
+            with self.subTest(workflow=filename):
+                self.assertNotIn("github.base_ref", jobs["plan"] + jobs["tests"])
+                self.assertIn("    uses: ./.github/workflows/provider-plan.yml\n", jobs["plan"])
+                self.assertIn("    uses: ./.github/workflows/provider-tests.yml\n", jobs["tests"])
+                self.assertIn("    needs: plan\n    if: ${{ !cancelled() }}\n", jobs["tests"])
+
     def test_public_provider_workflows_have_no_backend_execution_or_private_access(self):
-        for filename in ("ci.yml", "component-changes.yml", "provider-release-cache.yml",
+        for filename in ("ci-dev.yml", "ci-master.yml", "provider-tests.yml", "component-changes.yml",
+                         "provider-release-cache.yml",
                          "provider-signing-validation.yml", "release-swift.yml",
                          "release-provider.yml"):
             text = (ROOT / ".github/workflows" / filename).read_text()
@@ -261,46 +349,73 @@ class WorkflowRoutingTests(unittest.TestCase):
                                   "console-ui/", "e2e/", "install-release-rust.sh", "cargo "):
                     self.assertNotIn(forbidden, text)
                 self.assertNotRegex(text, r"(?m)^\s+repository:")
-        for filename in ("integration.yml", "benchmarks.yml", "telemetry-archive.yml"):
+        for filename in ("integration.yml", "benchmarks.yml", "telemetry-archive.yml", "ci.yml"):
             self.assertFalse((ROOT / ".github/workflows" / filename).exists())
-        for filename in ("ci.yml", "provider-release-cache.yml", "component-changes.yml"):
+        for filename in ("ci-dev.yml", "ci-master.yml", "provider-tests.yml", "provider-release-cache.yml",
+                         "component-changes.yml"):
             text = (ROOT / ".github/workflows" / filename).read_text()
             self.assertNotIn("secrets.", text)
             self.assertNotRegex(text, r"(?m)^\s+(environment:|id-token:|repository:)")
 
     def test_expensive_jobs_depend_on_successful_classifier(self):
-        expected = {
-            "ci.yml": {"test-provider": "provider", "test-cluster-checks": "cluster", "test-cluster": "cluster",
-                       "test-cluster-focused": "cluster"},
-        }
-        for name, lanes in expected.items():
-            jobs = workflow.job_blocks((ROOT / ".github/workflows" / name).read_text())
-            self.assertIn("uses: ./.github/workflows/component-changes.yml", jobs["changes"])
-            self.assertIn("contents: read", jobs["changes"])
-            # Runner routing follows the classifier, so only selected lanes are requested.
-            self.assertIn("    needs: changes\n", jobs["route"])
-            for lane, component in lanes.items():
-                self.assertIn("    needs: [changes, route]\n", jobs[lane])
-                self.assertIn("    if: ${{ needs.changes.outputs." + component + " == 'true' }}\n", jobs[lane])
-                self.assertNotIn("continue-on-error:", jobs[lane])
-        ci = workflow.job_blocks((ROOT / ".github/workflows/ci.yml").read_text())
-        # The GPU job's test step continues on error (scripts/test-cluster-test-plan.py).
-        self.assertIn("    needs: [changes, route]\n", ci["test-cluster-gpu"])
-        self.assertIn("    if: ${{ needs.changes.outputs.cluster == 'true' }}\n", ci["test-cluster-gpu"])
-        # The SDK lane runs on every push and on pull requests that change its inputs.
-        self.assertIn("    needs: [changes, route]\n", ci["test-provider-sdk"])
-        self.assertIn("    if: ${{ github.event_name == 'push' || needs.changes.outputs.sdk == 'true' }}\n",
-                      ci["test-provider-sdk"])
-        self.assertNotIn("continue-on-error:", ci["test-provider-sdk"])
-        # The summary runs after failed shards too, but only when the shards were selected.
-        self.assertIn("    needs: [changes, route, test-provider]\n", ci["test-provider-summary"])
-        self.assertIn("    if: ${{ !cancelled() && needs.changes.outputs.provider == 'true' }}\n",
-                      ci["test-provider-summary"])
-        self.assertNotIn("continue-on-error:", ci["test-provider-summary"])
-        for policy in ("release-integrity", "docs"):
-            self.assertNotRegex(ci[policy], r"(?m)^    if:")
-        self.assertIn("python3 scripts/test-ci-component-paths.py", ci["release-integrity"])
+        # The plan (provider-plan.yml) runs the classifier and the tree lookup,
+        # then routes only the lanes of the components it chose; the test jobs
+        # read those components as inputs, on pull requests and pushes alike.
+        plan = workflow.job_blocks((ROOT / ".github/workflows/provider-plan.yml").read_text().split("\njobs:\n", 1)[1])
+        self.assertIn("uses: ./.github/workflows/component-changes.yml", plan["changes"])
+        self.assertIn("contents: read", plan["changes"])
+        self.assertIn("    needs: [changes, tested]\n", plan["components"])
+        # The lookup needs the classifier's components: a record must cover them.
+        self.assertIn("    needs: changes\n    if: ${{ !cancelled() && needs.changes.result == 'success' }}\n",
+                      plan["tested"])
+        self.assertIn("          SELECTED: provider=${{ needs.changes.outputs.provider }},"
+                      "cluster=${{ needs.changes.outputs.cluster }},"
+                      "mimo_audio=${{ needs.changes.outputs.mimo_audio }}\n", plan["tested"])
+        self.assertIn("    needs: [tested, components]\n", plan["route"])
+        for name in routing.COMPONENTS:
+            self.assertIn(f"      {name}: ${{{{ steps.choose.outputs.{name} }}}}\n", plan["components"])
+        ci = workflow.job_blocks((ROOT / ".github/workflows/provider-tests.yml").read_text().split("\njobs:\n", 1)[1])
+        # Each test job needs only its lane's build job, which runs when the
+        # component is selected.
+        lanes = {"test-provider": ("provider", "build-provider"), "test-cluster": ("cluster", "build-cluster"),
+                 "test-cluster-focused": ("cluster", None), "test-cluster-gpu": ("cluster", "build-cluster"),
+                 "cluster-release-checks": ("cluster", None)}
+        for lane, (component, build) in lanes.items():
+            with self.subTest(job=lane):
+                if build:
+                    self.assertIn(f"    needs: {build}\n", ci[lane])
+                    self.assertIn(f"    if: ${{{{ inputs.{component} == 'true' ||", ci[build])
+                else:
+                    self.assertNotRegex(ci[lane], r"(?m)^    needs:")
+                self.assertIn("    if: ${{ inputs." + component + " == 'true' }}\n", ci[lane])
+                if lane != "test-cluster-gpu":
+                    self.assertEqual(workflow.continues_on_error(ci[lane]), [workflow.SAMPLER_STEPS[-1]])
+        # Pull requests and pushes run the same jobs: only cache saving and the
+        # build jobs' refresh of a tested tree on a push read the event.
+        for name, job in ci.items():
+            if name not in workflow.BUILD_JOBS:
+                self.assertNotIn("github.event_name", job, name)
+        self.assertNotIn("github.event_name", "".join(plan[name] for name in ("changes", "components")))
+        # The lookup reads the event only to bind a record to its change.
+        self.assertEqual(plan["tested"].count("github.event_name"), 1)
+        self.assertIn("          EVENT: ${{ github.event_name }}\n", plan["tested"])
+        # The Provider SDK Tests lane is gone (David, 2026-11-04): its suites run
+        # in the SDK's own Fork Tests.
+        self.assertNotIn("test-provider-sdk", ci)
+        self.assertNotIn("sdk", routing.COMPONENTS)
+        # No Mac job exists only to audit or to run the metadata runners.
+        self.assertNotIn("test-provider-summary", ci)
+        self.assertNotIn("test-cluster-checks", ci)
         self.assertNotIn("cache-swift", ci)
+        # Release Integrity and Docs Lint run for master only, after the plan
+        # whose route they read; nothing but cancellation skips them.
+        master = workflow.job_blocks((ROOT / ".github/workflows/ci-master.yml").read_text())
+        for policy in ("release-integrity", "docs"):
+            self.assertIn("    needs: plan\n    if: ${{ !cancelled() }}\n", master[policy])
+        self.assertIn("python3 scripts/test-ci-component-paths.py", master["release-integrity"])
+        dev = (ROOT / ".github/workflows/ci-dev.yml").read_text()
+        self.assertEqual(set(workflow.job_blocks(dev.split("\njobs:\n", 1)[1])), {"plan", "tests", "hourly-failures"})
+        self.assertIn("    uses: ./.github/workflows/provider-tests.yml\n", dev)
 
     def test_detector_has_full_history_no_credentials_or_api_truncation(self):
         text = (ROOT / ".github/workflows/component-changes.yml").read_text()
@@ -317,26 +432,28 @@ class WorkflowRoutingTests(unittest.TestCase):
             self.assertIn(name + ": ${{ steps.paths.outputs." + name + " }}", text)
 
     def test_provider_aggregate_exhaustive_truth_table(self):
-        jobs = workflow.job_blocks((ROOT / ".github/workflows/ci.yml").read_text())
+        jobs = workflow.job_blocks((ROOT / ".github/workflows/provider-tests.yml").read_text())
         gate = jobs["provider-test-gate"]
-        self.assertIn("needs: [changes, test-provider, test-provider-summary, test-cluster, test-cluster-focused]", gate)
+        self.assertIn("needs: [test-provider, test-cluster, test-cluster-focused, cluster-release-checks, "
+                      "ci-plan-checks]", gate)
         self.assertNotIn("test-provider-sdk", gate)
         self.assertIn("if: ${{ always() }}", gate)
         self.assertNotIn("continue-on-error:", gate)
         step = workflow.step_blocks(gate)[0]
         for name, expression in {
-            "CHANGES_RESULT": "needs.changes.result", "PROVIDER_CHANGED": "needs.changes.outputs.provider",
-            "CLUSTER_CHANGED": "needs.changes.outputs.cluster",
-            "UNIT_RESULT": "needs.test-provider.result", "SUMMARY_RESULT": "needs.test-provider-summary.result",
+            "CHANGES_RESULT": "inputs.changes_result", "PROVIDER_CHANGED": "inputs.provider",
+            "CLUSTER_CHANGED": "inputs.cluster", "SKIP": "inputs.skip", "TESTED_RUN": "inputs.tested_run",
+            "UNIT_RESULT": "needs.test-provider.result",
             "CLUSTER_RESULT": "needs.test-cluster.result",
             "CLUSTER_FOCUSED_RESULT": "needs.test-cluster-focused.result",
+            "CLUSTER_RELEASE_RESULT": "needs.cluster-release-checks.result",
         }.items():
             self.assertIn(name + ": ${{ " + expression + " }}", step)
         command = workflow.run_command(step)
         results = ("success", "skipped", "failure", "cancelled")
         # Prompt Parity runs in a provider shard, so UNIT_RESULT carries it.
         self.assertNotIn("PARITY_RESULT", step)
-        names = ("UNIT_RESULT", "SUMMARY_RESULT", "CLUSTER_RESULT", "CLUSTER_FOCUSED_RESULT")
+        names = ("UNIT_RESULT", "CLUSTER_RESULT", "CLUSTER_FOCUSED_RESULT", "CLUSTER_RELEASE_RESULT")
         selections = ("true", "false", "")
 
         def passes(selected, lanes):
@@ -350,7 +467,7 @@ class WorkflowRoutingTests(unittest.TestCase):
                                          "CLUSTER_CHANGED": cluster, **dict(zip(names, lanes))})
             # A skipped cluster job passes only when the classifier did not
             # select the cluster jobs; a failed or cancelled one never passes.
-            expected = detector == "success" and passes(changed, lanes[:2]) and passes(cluster, lanes[2:])
+            expected = detector == "success" and passes(changed, lanes[:1]) and passes(cluster, lanes[1:])
             self.assertEqual(result.returncode == 0, expected, (detector, changed, cluster, *lanes))
 
 

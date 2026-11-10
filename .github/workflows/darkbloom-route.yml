@@ -4,14 +4,23 @@ name: Darkbloom Route
 # plane grants one, otherwise the lane's fallback label. Callers run each job on
 # `fromJSON(needs.route.outputs.routes)['<lane>']`. Routing is off unless the
 # DARKBLOOM_ROUTING variable is exactly `on`; the plane can never fail this job.
+# DARKBLOOM_MACOS_LANES, when set, caps the macOS jobs one run asks for: lanes
+# are kept in the caller's order while they fit, and the others keep their
+# fallback without asking. A macOS lane can name a size. Sizes are sent only
+# when the DARKBLOOM_JOB_SHAPES variable is exactly `on`; otherwise the request
+# is the one without sizes, and a `required` lane keeps its fallback without
+# asking.
 on:
   workflow_call:
     inputs:
       lanes:
         description: >-
-          One lane per line: `<lane> <profile> <fallback-label> [count]`.
-          Profiles are linux_arm64 and macos_arm64. Count is the number of jobs
-          that will run (default 1); 0 keeps the fallback without asking.
+          One lane per line: `<lane> <profile> <fallback-label> [count [size
+          [required]]]`. Profiles are linux_arm64 and macos_arm64. Count is the
+          number of jobs that will run (default 1); 0 keeps the fallback
+          without asking. Size, macOS only, is `<vCPUs>x<GiB>`, such as 4x24.
+          While sizes are off, a `required` lane keeps its fallback without
+          asking, and any other lane asks without its size.
         type: string
         required: true
     outputs:
@@ -36,6 +45,8 @@ jobs:
         env:
           LANES: ${{ inputs.lanes }}
           ROUTING: ${{ vars.DARKBLOOM_ROUTING }}
+          MACOS_LANES: ${{ vars.DARKBLOOM_MACOS_LANES }}
+          JOB_SHAPES: ${{ vars.DARKBLOOM_JOB_SHAPES }}
           PLANE_URL: ${{ vars.DARKBLOOM_SANDBOX_URL }}
           REPOSITORY: ${{ github.repository }}
           EVENT_NAME: ${{ github.event_name }}
@@ -47,6 +58,8 @@ jobs:
 
           # The only labels a lane can receive besides its fallback. A plane
           # decision is used only when it repeats its profile's array exactly.
+          # For a lane sent with a size, the size qualifies the last label
+          # (darkbloom-macos-arm64-4x24).
           profiles='{"linux_arm64":["self-hosted","linux","ARM64","darkbloom-linux-arm64"],"macos_arm64":["self-hosted","macOS","ARM64","darkbloom-macos-arm64"]}'
           # Plane text is untrusted: keep it short, on one line, and free of
           # Markdown, HTML and workflow-command syntax before printing it.
@@ -59,23 +72,68 @@ jobs:
 
           configured='[]'
           seen=' '
-          while read -r lane profile fallback count extra; do
+          while read -r lane profile fallback count shape required extra; do
             [ -n "$lane" ] || continue
             count=${count:-1}
-            [ -z "$extra" ] || configuration_error "lane $lane has more than four fields"
+            [ -z "$extra" ] || configuration_error "lane $lane has more than six fields"
             [[ $lane =~ ^[A-Za-z0-9_-]+$ ]] || configuration_error "invalid lane name: $lane"
             jq -e --arg profile "$profile" 'has($profile)' <<<"$profiles" >/dev/null \
               || configuration_error "lane $lane has unknown profile: $profile"
             [[ $fallback =~ ^[A-Za-z0-9._-]+$ ]] \
               || configuration_error "lane $lane has invalid fallback label: $fallback"
             [[ $count =~ ^(0|[1-9][0-9]?)$ ]] || configuration_error "lane $lane has invalid count: $count"
+            # The plane's size grammar: <vCPUs>x<GiB>, lowercase decimal, no leading zeros.
+            if [ -n "$shape" ]; then
+              [[ $shape =~ ^[1-9][0-9]*x[1-9][0-9]*$ ]] \
+                || configuration_error "lane $lane has invalid size: $shape (use <vCPUs>x<GiB>, such as 4x24)"
+              [ "$profile" = macos_arm64 ] || configuration_error "lane $lane has a size, but sizes are macOS only"
+            fi
+            [ -z "$required" ] || [ "$required" = required ] \
+              || configuration_error "lane $lane has an unknown sixth field: $required"
             case $seen in *" $lane "*) configuration_error "lane $lane is listed twice" ;; esac
             seen="$seen$lane "
             configured=$(jq -c --arg lane "$lane" --arg profile "$profile" --arg fallback "$fallback" \
-              --argjson count "$count" '. + [{$lane, $profile, $fallback, $count}]' <<<"$configured")
+              --argjson count "$count" --arg shape "$shape" --arg required "$required" \
+              '. + [{$lane, $profile, $fallback, $count,
+                     shape: (if $shape == "" then null else $shape end), required: ($required != ""), held: false}]' \
+              <<<"$configured")
           done <<<"${LANES:-}"
           [ "$configured" != '[]' ] || configuration_error "no lanes are configured"
-          requested=$(jq -c '[.[] | select(.count > 0) | {lane, profile, count}]' <<<"$configured")
+
+          # Job sizes are a repository setting, off unless exactly `on`. While
+          # they are off, no size is sent, so the request is the request of a
+          # lane table without sizes. A `required` lane is then held: it keeps
+          # its fallback without asking and takes no place under the macOS cap.
+          shapes_note=""
+          if jq -e 'any(.[]; .shape != null)' <<<"$configured" >/dev/null; then
+            if [ "${JOB_SHAPES:-}" = on ]; then
+              shapes_note=" Job sizes are on: DARKBLOOM_JOB_SHAPES is 'on'."
+            else
+              shapes_note=" Job sizes are off: DARKBLOOM_JOB_SHAPES is not 'on'. No size was requested."
+              configured=$(jq -c 'map(.held = .required | .shape = null)' <<<"$configured")
+            fi
+          fi
+
+          # The macOS cap is a repository setting, not caller configuration: a
+          # value other than 0 to 99 asks for no macOS lane rather than failing.
+          macos_cap=${MACOS_LANES:-}
+          cap_note=""
+          if [ -n "$macos_cap" ] && ! [[ $macos_cap =~ ^(0|[1-9][0-9]?)$ ]]; then
+            cap_note=" DARKBLOOM_MACOS_LANES is not a number from 0 to 99, so no macOS lane was requested."
+            macos_cap=0
+          fi
+          configured=$(jq -c --arg cap "$macos_cap" '
+            reduce .[] as $entry ({used: 0, lanes: []};
+              if $entry.held then .lanes += [$entry + {capped: false}]
+              elif $cap != "" and $entry.profile == "macos_arm64" and $entry.count > 0
+                and .used + $entry.count > ($cap | tonumber)
+              then .lanes += [$entry + {capped: true}]
+              else .used += (if $entry.profile == "macos_arm64" then $entry.count else 0 end)
+                | .lanes += [$entry + {capped: false}]
+              end) | .lanes' <<<"$configured")
+          # A lane without a size is exactly {lane, profile, count}.
+          requested=$(jq -c '[.[] | select(.count > 0 and (.capped | not) and (.held | not))
+            | {lane, profile, count} + (if .shape != null then {shape} else {} end)]' <<<"$configured")
 
           plane_url=${PLANE_URL:-https://api-sandbox.darkbloom.dev}
           body=$(mktemp)
@@ -100,6 +158,8 @@ jobs:
             request=$(jq -n -c --arg repository "$REPOSITORY" --argjson run_id "$RUN_ID" \
               --argjson run_attempt "$RUN_ATTEMPT" --argjson lanes "$requested" \
               '{$repository, $run_id, $run_attempt, $lanes}')
+            # The request names only the repository, the run and the lanes.
+            echo "Request: $request"
             # One attempt plus at most one retry after a transport failure,
             # timeout or transient status; each attempt is bounded to 5 seconds.
             for attempt in 1 2; do
@@ -136,26 +196,32 @@ jobs:
             ($reply[0].lanes // {}) as $plane_decisions
             | [ $configured[]
                 | ($plane_decisions[.lane] | if type == "object" then . else {} end) as $decision
+                | (.shape as $shape | $profiles[.profile]
+                    | if $shape == null then . else .[:-1] + [.[-1] + "-" + $shape] end) as $labels
                 | if .count == 0 then .target = "fallback" | .reason = "not requested"
                   elif $fallback_reason != "" then .target = "fallback" | .reason = $fallback_reason
-                  elif $decision.target == "darkbloom" and $decision.runs_on == $profiles[.profile]
+                  elif .held then .target = "fallback" | .reason = "needs its size, and job sizes are off (DARKBLOOM_JOB_SHAPES)"
+                  elif .capped then .target = "fallback" | .reason = "over the macOS lane cap (DARKBLOOM_MACOS_LANES)"
+                  elif $decision.target == "darkbloom" and $decision.runs_on == $labels
                   then .target = "darkbloom" | .reason = "granted"
                   elif $decision.target == "fallback"
                   then .target = "fallback" | .reason = "plane: " + ($decision.reason // "no reason" | clean)
                   else .target = "fallback" | .reason = "plane decision is missing or invalid"
                   end
-                | .runs_on = (if .target == "darkbloom" then $profiles[.profile] else .fallback end) ]')
+                | .runs_on = (if .target == "darkbloom" then $decision.runs_on else .fallback end) ]')
           routes=$(jq -c 'map({key: .lane, value: .runs_on}) | from_entries' <<<"$decisions")
           echo "routes=$routes" >> "$GITHUB_OUTPUT"
 
+          note="$note$cap_note$shapes_note"
           echo "$note"
-          jq -r '.[] | "\(.lane): \(.runs_on | if type == "array" then join(",") else . end) (\(.reason))"' <<<"$decisions"
+          jq -r '.[] | (if .shape == null then "" else "; size \(.shape)" end) as $size
+            | "\(.lane): \(.runs_on | if type == "array" then join(",") else . end) (\(.reason)\($size))"' <<<"$decisions"
           {
             echo "### Darkbloom runner routing"
             echo
             echo "$note"
             echo
-            echo "| Lane | Profile | Jobs | Runner | Decision |"
-            echo "| --- | --- | --- | --- | --- |"
-            jq -r '.[] | "| `\(.lane)` | \(.profile) | \(.count) | `\(.runs_on | if type == "array" then join(", ") else . end)` | \(.target): \(.reason) |"' <<<"$decisions"
+            echo "| Lane | Profile | Jobs | Size | Runner | Decision |"
+            echo "| --- | --- | --- | --- | --- | --- |"
+            jq -r '.[] | "| `\(.lane)` | \(.profile) | \(.count) | \(.shape // "-") | `\(.runs_on | if type == "array" then join(", ") else . end)` | \(.target): \(.reason) |"' <<<"$decisions"
           } >> "$GITHUB_STEP_SUMMARY"

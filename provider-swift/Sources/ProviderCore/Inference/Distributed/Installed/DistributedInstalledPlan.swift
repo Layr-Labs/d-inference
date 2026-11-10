@@ -279,8 +279,15 @@ struct DistributedInstalledPlan: Sendable {
     /// same saved setup. Each member forwards its locally resolved count through
     /// the fixed owner launch; arbitrary environment values are not inherited.
     func batchLanes(_ environment: [String: String] = ProcessInfo.processInfo.environment) -> Int? {
+        Self.batchLanes(configuration: configuration, capability: capability, environment: environment)
+    }
+
+    /// `batchLanes` for a saved setup and its capability, before a plan is installed (the setup's mode question says
+    /// how many requests each way serves at once).
+    static func batchLanes(configuration: ClusterConfiguration, capability: ClusterRuntimeCapability,
+                           environment: [String: String]) -> Int? {
         guard let adapter = ClusterRuntimeAdapter(rawValue: capability.adapterID),
-              let lanes = Self.defaultBatchLanes(adapter: adapter, mode: configuration.selectedGenerationMode,
+              let lanes = defaultBatchLanes(adapter: adapter, mode: configuration.selectedGenerationMode,
                   hasPrivateImages: capability.hasPrivateImages, runtimeModelID: capability.runtimeModelID,
                   prefillSchedule: configuration.selectedPrefillSchedule) else {
             return nil
@@ -288,7 +295,7 @@ struct DistributedInstalledPlan: Sendable {
         // The assistant quote admits exactly this capacity. A diagnostic
         // environment override cannot enlarge its resident histories.
         if configuration.tensorAssistant != nil { return configuration.batchLanes ?? 1 }
-        guard let raw = environment[Self.batchLanesSwitch] else { return configuration.batchLanes ?? lanes }
+        guard let raw = environment[batchLanesSwitch] else { return configuration.batchLanes ?? lanes }
         guard let value = Int(raw), (1...8).contains(value) else { return 1 }
         return value
     }

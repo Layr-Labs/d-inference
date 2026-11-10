@@ -1,4 +1,5 @@
 import Darwin
+import DarkbloomClusterProcess
 import Foundation
 
 /// Process-only service fixture: no owner protocol, model, GPU, or sockets.
@@ -17,6 +18,23 @@ func memberFixtureServicePart(arguments: [String]) throws {
 
     // The test also owns explicit cleanup. This bounds a fixture whose test dies.
     alarm(60)
+    // The device scope a real part takes first (`ClusterDeviceExclusion`): with `gpu.lock.refusal` in the gate directory,
+    // `gpu.lock` there stands in for the Mac's GPU lock. Refused, the part writes that file's words as its error line and
+    // ends, as a real part does: the member with the exit code reserved for it (`ClusterMemberRunEnd.gpuHeldExitCode`,
+    // which the test checks the service saw), any other part with 1.
+    var scope: ClusterDeviceExclusion?
+    if let words = try? String(contentsOf: directory.appendingPathComponent("gpu.lock.refusal"), encoding: .utf8) {
+        do {
+            scope = try ClusterDeviceExclusion(directoryURL: directory.appendingPathComponent("lease-\(role)", isDirectory: true),
+                machineLock: .init(file: directory.appendingPathComponent("gpu.lock"), heldElsewhere: words))
+        } catch {
+            try? Data().write(to: directory.appendingPathComponent("\(role)-\(pid).refused"))
+            FileHandle.standardError.write(Data("Error: \(error)\n".utf8))
+            let gpuHeldExitCode: Int32 = 76
+            exit(role == "member" ? gpuHeldExitCode : 1)
+        }
+    }
+    defer { withExtendedLifetime(scope) {} }
     signal(SIGTERM, SIG_IGN)
     let termination = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global())
     let registered = DispatchSemaphore(value: 0)
@@ -25,6 +43,9 @@ func memberFixtureServicePart(arguments: [String]) throws {
     termination.resume()
     defer { termination.cancel() }
     guard registered.wait(timeout: .now() + 2) == .success else { throw MemberFixtureError.invalid }
+    // The arguments the service started this part with (its `--port`, for one), one a line, written before `ready`.
+    try Data(arguments.joined(separator: "\n").utf8).write(to: directory.appendingPathComponent("\(role)-\(pid).args"),
+                                                          options: .withoutOverwriting)
     // The heartbeat file the service told this part to beat into (written before `ready`, so a test sees both).
     if let health = ProcessInfo.processInfo.environment["DARKBLOOM_CLUSTER_MEMBER_HEALTH_FILE"] {
         try Data(health.utf8).write(to: directory.appendingPathComponent("\(role)-\(pid).health"), options: .withoutOverwriting)

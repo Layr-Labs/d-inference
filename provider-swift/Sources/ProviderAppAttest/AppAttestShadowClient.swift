@@ -1,8 +1,13 @@
 import Foundation
 
 /// Serializes Apple/keychain work without occupying the serving actor. Reentrant
-/// calls get a bounded busy result rather than spawning additional Apple calls.
+/// calls get a bounded busy result rather than spawning additional Apple calls;
+/// one that arrives while an attestation is with Apple first waits for its answer.
 public actor AppAttestShadowClient {
+    /// How long the next exchange or a planned stop waits for an attestation
+    /// already with Apple: its 25 s callback deadline plus time to persist it.
+    public static let outstandingAttestationWaitSeconds: Double = 30
+
     private let service: any AppAttestService
     private let storage: any ShadowKeyStorage
     private let scope: String
@@ -12,6 +17,10 @@ public actor AppAttestShadowClient {
     /// Waits between retries of an unavailable Apple service; takes seconds.
     private let retrySleep: @Sendable (Double) async throws -> Void
     private var busy = false
+    /// The exchange holding `busy` has handed Apple a one-time attestation.
+    /// Cleared with `busy` when that exchange ends, after it records Apple's
+    /// answer, even if it was cancelled.
+    private var attestationOutstanding = false
     private var session: String?
     private var record: ShadowKeyRecord?
     private var preparedEnvironment: String?
@@ -43,6 +52,16 @@ public actor AppAttestShadowClient {
     /// idle. Readable while an exchange is in flight.
     public func appleOperationHeldSince() async -> Date? {
         await service.operationHeldSince()
+    }
+
+    /// Waits at most `seconds` for an attestation this process handed to Apple
+    /// to be answered and persisted. False while one is still outstanding.
+    public func waitForOutstandingAttestation(atMostSeconds seconds: Double) async -> Bool {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(seconds))
+        while attestationOutstanding, ContinuousClock.now < deadline {
+            do { try await appAttestSleep(seconds: 0.05) } catch { break }
+        }
+        return !attestationOutstanding
     }
 
     public func respond(to request: AppAttestShadowPayload, publicKey: String, status: AppAttestStatus? = nil) async -> AppAttestShadowPayload {
@@ -129,14 +148,30 @@ public actor AppAttestShadowClient {
         return scope + ":" + environment + ":account:" + account
     }
 
+    /// Apple attests a key once, and a key whose answer is lost must be retired.
+    /// So the call runs in its own task, outside this exchange's cancellation (a
+    /// connection end, a planned stop): the exchange still waits for the answer,
+    /// bounded by the service's callback deadline, and persists it as usual.
+    private func attestToCompletion(_ keyID: String, hash: Data) async throws -> Data {
+        attestationOutstanding = true
+        let service = self.service
+        return try await Task { try await service.attestKey(keyID, hash: hash) }.value
+    }
+
     private func exchange(_ request: AppAttestShadowPayload, publicKey: String, status: AppAttestStatus?) async -> AppAttestShadowPayload {
         var response = AppAttestShadowPayload(action: ["prepare":"ready", "attest":"attestation", "assert":"assertion"][request.action] ?? "error", session: request.session)
         response.protocolVersion=request.protocolVersion
         response.keyID = request.keyID
         response.challenge = request.challenge
+        // A connection end may have cancelled the previous exchange while Apple
+        // was attesting. Wait for that answer instead of answering busy: this
+        // exchange then finds the cached proof, or the key a failure retired.
+        if attestationOutstanding {
+            _ = await waitForOutstandingAttestation(atMostSeconds: Self.outstandingAttestationWaitSeconds)
+        }
         guard !busy else { response.result = ShadowFailure.busy.rawValue; return response }
         busy = true
-        defer { busy = false }
+        defer { busy = false; attestationOutstanding = false }
         var calledAttestation = false
         var assertionFailures = 0
         do {
@@ -204,11 +239,13 @@ public actor AppAttestShadowClient {
                     var proof: Data?
                     for attempt in 0..<3 {
                         do {
+                            // A cancelled exchange hands Apple no new attestation.
+                            try Task.checkCancellation()
                             key.attestationStartedAt = Date()
                             try storage.save(key, scope: keyScope)
                             record = key
                             calledAttestation = true
-                            proof = try await service.attestKey(key.keyID, hash: enrollment.clientHash)
+                            proof = try await attestToCompletion(key.keyID, hash: enrollment.clientHash)
                             break
                         } catch where appAttestFailure(error) == .appleUnavailable && attempt < 2 {
                             // Apple answered: this key is safe to retry. A

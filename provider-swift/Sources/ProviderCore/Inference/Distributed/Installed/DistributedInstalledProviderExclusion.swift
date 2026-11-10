@@ -22,9 +22,11 @@ enum DistributedInstalledProviderExclusion {
     struct Refusal: Error, Equatable, CustomStringConvertible {
         let processIdentifier: Int32?
         var description: String {
-            let holder = processIdentifier.map { "process \($0)" } ?? "another process"
-            return "An ordinary Darkbloom provider (\(holder)) is running on this Mac and holds the provider instance lock. "
-                + "A cluster worker cannot share the GPU with it. Stop it with `darkbloom stop`, then start the cluster again."
+            let holder = processIdentifier.map { "process \($0)" } ?? "another process", cli = BuildEnvironment.current.cliName
+            // `stop --solo`: plain `stop` on a paired Mac stops the pair, and leaves this provider serving.
+            return "A single-Mac Darkbloom provider (\(holder)) is serving on this Mac and holds the provider instance lock. "
+                + "A cluster worker cannot share the GPU with it. Stop it with `\(cli) stop --solo` on this Mac, then start the pair "
+                + "again (`\(cli) start`)."
         }
     }
 

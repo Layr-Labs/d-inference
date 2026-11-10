@@ -64,22 +64,22 @@ struct DesktopAccountEarnings {
     return totals.jobs == count && totals.work + totals.reward == lifetime
   }
   func complete(_ window: String) -> Bool {
-    fullHistory || rows.first.map { $0.at <= start(window) } == true
+    fullHistory || rows.first.map { $0.at.timeIntervalSince(start(window)) <= 0 } == true
   }
-  func selected(_ window: String) -> [Row] { rows.filter { $0.at >= start(window) && $0.at <= now } }
+  func selected(_ window: String) -> [Row] { rows.filter { $0.at.timeIntervalSince(start(window)) >= 0 && $0.at.timeIntervalSince(now) <= 0 } }
   func sum(_ rows: [Row]) -> Amounts { rows.reduce(Amounts()) { totals, row in var totals = totals; totals.add(row); return totals } }
 
   func cloud() -> JSONValue {
     let recent = selected("7d")
     let local = recent.filter { localKeys.contains($0.key) }
-    let localDay = local.filter { $0.at >= now.addingTimeInterval(-86400) }
+    let localDay = local.filter { $0.at.timeIntervalSince(now.addingTimeInterval(-86400)) >= 0 }
     return .dict([
       "linked": .bool(true), "account_id": .string(account), "observed_at": .number(now.timeIntervalSince1970),
       "lifetime_micro_usd": .string(String(lifetime)), "week_micro_usd": .string(String(sum(recent).work + sum(recent).reward)),
       "balance_micro_usd": balance, "machines": .array([]),
       "local_earnings_micro_usd": localKeys.isEmpty ? .null : .string(String(sum(local).work + sum(local).reward)),
       "local_lifetime_micro_usd": .null,
-      "local_day_micro_usd": !localKeys.isEmpty && (fullHistory || rows.first.map { $0.at <= now.addingTimeInterval(-86400) } == true)
+      "local_day_micro_usd": !localKeys.isEmpty && (fullHistory || rows.first.map { $0.at.timeIntervalSince(now.addingTimeInterval(-86400)) <= 0 } == true)
         ? .string(String(sum(localDay).work + sum(localDay).reward)) : .null,
       "earnings_complete": .bool(complete("7d")),
       "earnings_since": .number((complete("7d") ? start("7d") : rows.first?.at ?? now).timeIntervalSince1970),
@@ -99,7 +99,7 @@ struct DesktopAccountEarnings {
     }
     let since = complete(window) ? start(window) : max(start(window), rows.first?.at ?? now)
     var date = start(window)
-    while date <= now {
+    while date.timeIntervalSince(now) <= 0 {
       days[String(iso.string(from: date).prefix(10)), default: Amounts()] = days[String(iso.string(from: date).prefix(10))] ?? Amounts()
       date = calendar.date(byAdding: .day, value: 1, to: date)!
     }
@@ -110,9 +110,9 @@ struct DesktopAccountEarnings {
       var fields = days[id]!.json
       fields["id"] = .string(id)
       let day = iso.date(from: "\(id)T00:00:00Z")!
-      let covered = complete(window) || day >= calendar.startOfDay(for: since)
+      let covered = complete(window) || day.timeIntervalSince(calendar.startOfDay(for: since)) >= 0
       fields["available"] = .bool(covered)
-      fields["complete"] = .bool(covered && day >= since && day < calendar.startOfDay(for: now))
+      fields["complete"] = .bool(covered && day.timeIntervalSince(since) >= 0 && day < calendar.startOfDay(for: now))
       return .dict(fields)
     }
     return .dict([

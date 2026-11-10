@@ -16,6 +16,7 @@ public actor DistributedAutomaticBatchFactory {
     private let environment: [String: String]
     private var attempts = DistributedAutomaticBatchAttempt()
     private let creditRefusals = DistributedAutomaticBatchCreditRefusals()
+    private let failures = DistributedAutomaticBatchFailures()
 
     public init(providerConfiguration: URL,
                 stopNotice: @escaping @Sendable (DistributedInstalledStopNotice) -> Void) throws {
@@ -27,7 +28,8 @@ public actor DistributedAutomaticBatchFactory {
     public func replacement(for demand: DistributedLocalBatchDemand) async throws -> DistributedLocalBatchReplacement? {
         // An explicit diagnostic choice keeps its meaning. This path never
         // changes an installed coordinator-approved native member contract.
-        let widths = Self.replacementWidths(for: demand)
+        let running = try? ClusterConfigurationStore.installedReference(providerConfiguration: providerConfiguration)
+        let widths = running.map { Self.replacementWidths(for: demand, setup: $0.sha256, failures: failures) } ?? []
         guard environment[DistributedInstalledPlan.batchLanesSwitch] == nil,
               environment[ClusterForcedModeSetting.environmentName] == nil,
               environment[ClusterHandOffModes.environmentName] == nil,
@@ -58,10 +60,16 @@ public actor DistributedAutomaticBatchFactory {
             "pid": String(getpid()),
         ])
         let transition = DistributedAutomaticBatchTransition(planner: planner, preview: preview,
-            demand: demand, announce: announce, creditRefusals: creditRefusals)
+            demand: demand, announce: announce, creditRefusals: creditRefusals, failures: failures)
         return .init(requestedCapacity: preview.lanes,
             makeSession: { try await transition.prepareReplacement() },
             restorePreviousSession: { try await transition.restorePrevious() })
+    }
+
+    /// `replacementWidths(for:)` less the widths `failures` holds back for `setup`.
+    static func replacementWidths(for demand: DistributedLocalBatchDemand, setup: String,
+                                  failures: DistributedAutomaticBatchFailures) -> [Int] {
+        replacementWidths(for: demand).filter { failures.allows(setup: setup, lanes: $0) }
     }
 
     /// The widths queued demand may propose, widest first: only wider than the running capacity, so a pair whose
@@ -85,14 +93,16 @@ private final class DistributedAutomaticBatchTransition: @unchecked Sendable {
     let demand: DistributedLocalBatchDemand
     let announce: @Sendable (DistributedInstalledStopNotice) -> Void
     let creditRefusals: DistributedAutomaticBatchCreditRefusals
+    let failures: DistributedAutomaticBatchFailures
     private let lock = NSLock()
     private var attempted: DistributedAutomaticBatchPlanner.Snapshot?
 
     init(planner: DistributedAutomaticBatchPlanner, preview: DistributedAutomaticBatchPlanner.Snapshot,
          demand: DistributedLocalBatchDemand, announce: @escaping @Sendable (DistributedInstalledStopNotice) -> Void,
-         creditRefusals: DistributedAutomaticBatchCreditRefusals = .init()) {
+         creditRefusals: DistributedAutomaticBatchCreditRefusals = .init(),
+         failures: DistributedAutomaticBatchFailures = .init()) {
         self.planner = planner; self.preview = preview; self.demand = demand; self.announce = announce
-        self.creditRefusals = creditRefusals
+        self.creditRefusals = creditRefusals; self.failures = failures
     }
 
     func prepareReplacement() async throws -> DistributedInstalledSession {
@@ -122,8 +132,14 @@ private final class DistributedAutomaticBatchTransition: @unchecked Sendable {
         }.value
     }
 
+    /// The host calls this only after the replacement failed (its factory or its
+    /// start): the width is remembered for this setup before the restore runs.
     func restorePrevious() async throws -> DistributedInstalledSession {
-        try await Task.detached {
+        failures.record(setup: preview.reference.sha256, lanes: preview.lanes)
+        clusterObservabilityLog(.info, "cluster.batch_replan failed lanes=\(preview.lanes)", [
+            "setup_sha256": preview.reference.sha256, "pid": String(getpid()),
+        ])
+        return try await Task.detached {
             try self.withCommandLock {
                 let context = self.planner.context(configuration: self.preview.configuration)
                 // A lost reply is not proof that the peer kept its old setup.
@@ -278,5 +294,36 @@ final class DistributedAutomaticBatchCreditRefusals: @unchecked Sendable {
             guard let at = refused[setup + "|" + String(lanes)] else { return true }
             return at.duration(to: now) >= Self.hold
         }
+    }
+}
+
+/// Replacements that failed after release, by the running setup and width.
+/// Such a width is not proposed again for that setup until its hold passes:
+/// `initialHold`, doubling on each repeat, at most `maximumHold`. A different
+/// setup (something changed) is tried at once.
+final class DistributedAutomaticBatchFailures: @unchecked Sendable {
+    static let initialHold: Duration = .seconds(120)
+    static let maximumHold: Duration = .seconds(1800)
+    private let lock = NSLock()
+    private var failed: [String: (at: ContinuousClock.Instant, count: Int)] = [:]
+
+    func record(setup: String, lanes: Int, now: ContinuousClock.Instant = .now) {
+        lock.withLock {
+            let key = setup + "|" + String(lanes)
+            failed[key] = (now, min(16, (failed[key]?.count ?? 0) + 1))
+        }
+    }
+
+    func allows(setup: String, lanes: Int, now: ContinuousClock.Instant = .now) -> Bool {
+        lock.withLock {
+            guard let entry = failed[setup + "|" + String(lanes)] else { return true }
+            return entry.at.duration(to: now) >= Self.hold(afterFailures: entry.count)
+        }
+    }
+
+    static func hold(afterFailures count: Int) -> Duration {
+        var hold = initialHold
+        for _ in 1..<max(1, count) where hold < maximumHold { hold = hold * 2 }
+        return min(hold, maximumHold)
     }
 }

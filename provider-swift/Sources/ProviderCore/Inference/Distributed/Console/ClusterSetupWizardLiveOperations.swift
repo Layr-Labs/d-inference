@@ -6,6 +6,7 @@ import DarkbloomClusterProcess
 import DarkbloomClusterProtocol
 import DarkbloomClusterRemote
 import DarkbloomClusterSecurity
+import ProviderCoreFoundation
 
 /// The wizard's operations as the installed command runs them. Each one is
 /// the function behind an existing `darkbloom cluster` subcommand, a
@@ -145,6 +146,7 @@ final class ClusterSetupLinkPairingRunner: @unchecked Sendable {
         let chipName = (try? HardwareDetector.detect().chipName) ?? "Mac"
         let participant = ClusterPairingProvider.participant(identity: identity, chipName: chipName, interface: interface, store: store, clusterID: nil)
         var options = ClusterLinkPairing.Options(role: peer == nil ? .listener : .connector, interface: interface, peerAddress: peer)
+        options.port = ClusterCablePorts.current.pairing
         // No address: find the other Mac on the cable, or wait there for it (it finds this one).
         if peer == nil { options.discovery = .find }
         let callbacks = ClusterLinkPairing.Callbacks(progress: { progress in
@@ -155,7 +157,7 @@ final class ClusterSetupLinkPairingRunner: @unchecked Sendable {
                 let address = (try? ClusterLinkInterfaceAdmission.select(interface: name, localAddress: nil, peerAddress: nil,
                     policy: .thunderboltOnly, inspector: ClusterLinkSystemInterfaceInspector()))?.local.address.dottedDecimal
                 let other = "on the other Mac press l: it finds this Mac by itself" + (address.map { " (or press c and type \($0)"
-                    + (port == ClusterLinkPairing.defaultPort ? "" : ", port \(port)") + ")" } ?? "")
+                    + (port == ClusterCablePorts.current.pairing ? "" : ", port \(port)") + ")" } ?? "")
                 events(.waiting("Waiting on \(name) for the other Mac, up to 10 minutes: \(other)."))
             case .dialing: events(.waiting("Dialing the other Mac over the link\u{2026}"))
             case .connected: events(.waiting("Connected over the link; exchanging keys\u{2026}"))
@@ -307,7 +309,7 @@ final class LiveContext: @unchecked Sendable {
         guard let handle = FileHandle(forReadingAtPath: path) else { throw ClusterSetupFailure("this Mac's cluster worker cannot be read") }
         defer { try? handle.close() }
         var hasher = SHA256()
-        while let chunk = try handle.read(upToCount: 4 << 20), !chunk.isEmpty { hasher.update(data: chunk) }
+        while let chunk = try handle.readDrained(upToCount: 4 << 20), !chunk.isEmpty { hasher.update(data: chunk) }
         let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
         lock.withLock { workerDigest = (key, digest) }
         return digest
@@ -524,7 +526,7 @@ final class LiveContext: @unchecked Sendable {
     /// serve through the coordinator (the onboarding's public scope): no speculative assistant under `auto`, and equal
     /// tensor-parallel shares only. The six-step wizard's local sessions leave it off.
     func plan(peer: ClusterSetupReport, keeping: [String: ClusterGenerationMode] = [:],
-              coordinator: Bool = false) -> ClusterSetupPlansResult {
+              coordinator: Bool = false, chosenModes: [String: ClusterForcedMode] = [:]) -> ClusterSetupPlansResult {
         let input = pairInput()
         guard let description = input.description, let memberID = input.pair?.memberID,
               let local = description.members.first(where: { $0.id == memberID }) else {
@@ -561,9 +563,6 @@ final class LiveContext: @unchecked Sendable {
         let mtpMode: MTPMode
         do { mtpMode = try ConfigManager.loadOrDefaults(from: settings.providerConfiguration).backend.mtpMode }
         catch { return .failed("The provider configuration could not be read: \(clean(ClusterConsoleText.bounded(error)))") }
-        // A setup that serves through the coordinator carries no speculative assistant: under `auto` its plan quotes
-        // the ordinary target only.
-        let discovery = ClusterPlacementTensorAssistantSelection.discoveryMode(mtpMode, coordinator: coordinator)
         let readings = models.filter {
             settings.privateGLMImageQualification ? ClusterGLMOnboardingSelection.accepts($0)
                 : ClusterMiMoOnboardingSelection.accepts($0, qualifying: settings.privateMiMoImageQualification)
@@ -614,7 +613,7 @@ final class LiveContext: @unchecked Sendable {
                         return ClusterPlacementBatchScope.tensorParallelWidths.compactMap { lanes in
                             try? ClusterPlacementTensorAssistantSelection.readAutomatic(tool: tool, modelDirectory: directory,
                                 publicModelID: model.modelID, capability: admitted, mode: mode, chunkTokens: chunk,
-                                deadline: deadline(), lanes: lanes)
+                                deadline: deadline(), lanes: lanes, coordinator: coordinator)
                         }.filter { $0.request == singleton.request && $0.assistant?.policy == singleton.assistant?.policy }
                     }
                     if mtpMode != .off, SpecDecArtifactFunnel.killSwitchEnabled(environment: ProcessInfo.processInfo.environment),
@@ -625,11 +624,29 @@ final class LiveContext: @unchecked Sendable {
                             outputTokens: admitted.profile.memoryScope.maximumOutputTokens, lanes: 1, chunkTokens: chunk,
                             deadline: deadline()))
                     } else {
-                        let discovered = try ClusterPlacementTensorAssistantSelection.readAutomatic(tool: tool,
-                            modelDirectory: directory, publicModelID: model.modelID, capability: admitted,
-                            mode: discovery, chunkTokens: chunk, deadline: deadline())
+                        // A setup that serves through the coordinator carries only the speculative assistant this build
+                        // declares public for the artifact: under `auto` its plan quotes that one, or the ordinary target
+                        // only (`ClusterPlacementTensorAssistantSelection.discoveryMode`).
+                        let discovered: ClusterPlacementTensorBatchQuote?
+                        do {
+                            discovered = try ClusterPlacementTensorAssistantSelection.readAutomatic(tool: tool,
+                                modelDirectory: directory, publicModelID: model.modelID, capability: admitted,
+                                mode: mtpMode, chunkTokens: chunk, deadline: deadline(), coordinator: coordinator)
+                        } catch where coordinator {
+                            // Through Darkbloom the pair served plain tensor parallel before the assistant was declared:
+                            // a failed assistant quote leaves it the ordinary target (`ClusterSetupPlanning.decide`).
+                            let refusal = ClusterSetupFailure(error)
+                            let target = try ClusterPlacementTensorAssistantSelection.readAutomatic(tool: tool,
+                                modelDirectory: directory, publicModelID: model.modelID, capability: admitted,
+                                mode: .off, chunkTokens: chunk, deadline: deadline(), coordinator: coordinator)
+                            let targetWidths = widths(of: target, mode: .off)
+                            return .init(model: model, layout: layout, capability: capability,
+                                tokenizerFiles: ClusterSetupPlanning.tokenizerFiles(manifest: manifest), tensorAssistantQuote: .failure(refusal),
+                                targetFallbackQuote: target.map { .success($0) }, targetFallbackWideningQuote: targetWidths.first { $0.lanes == 2 },
+                                targetFallbackWidthQuotes: targetWidths)
+                        }
                         assistantQuote = discovered.map { .success($0) }
-                        discoveredWidths = widths(of: discovered, mode: discovery)
+                        discoveredWidths = widths(of: discovered, mode: mtpMode)
                         // Only a discovered assistant may give way to the ordinary target (`assistantOrTarget`).
                         if discovered?.assistant != nil {
                             var target: ClusterPlacementTensorBatchQuote?
@@ -670,9 +687,9 @@ final class LiveContext: @unchecked Sendable {
             served: ClusterServedSpeedHistory.entries(homeDirectory: home) + (peer.served ?? []),
             link: description.members.count == 2
                 ? ClusterLinkProbeHistory.costs(homeDirectory: home, members: description.members.map(\.id)) ?? .unmeasured : .unmeasured,
-            shareProbes: ClusterShareProbeHistory.read(ClusterShareProbeHistory.defaultFile(homeDirectory: home)),
+            shareProbes: ClusterShareProbeHistory.read(ClusterShareProbeHistory.defaultFile(installDirectory: BuildEnvironment.current.installDirectory(home: home))),
             peerMayReceive: settings.derivedPlacement && !settings.privateImageQualification, keeping: keeping,
-            coordinator: coordinator)
+            coordinator: coordinator, chosenModes: chosenModes)
         lock.withLock { decisions = Dictionary(decided.map { ($0.option.model.folder, $0) }, uniquingKeysWith: { a, _ in a }) }
         // Models that can be chosen first, each group by size.
         let options = decided.map(\.option)
@@ -707,11 +724,12 @@ final class LiveContext: @unchecked Sendable {
     /// (the other Mac's, when it forwarded the choice).
     func adopt(folder: String, planKey: String, peer: ClusterSetupReport,
                here: String = ClusterOnboardingMacName.this, there: String = ClusterOnboardingMacName.other) -> ClusterConsoleActionResult {
-        guard let decision = lock.withLock({ decisions[folder] }), let plan = decision.option.plan,
-              ClusterSetupState.planKey(decision.option.model, plan) == planKey,
-              let setup = decision.setup, let capability = decision.capability else {
+        // The listed plan, or the plan of another mode the question offered (`ClusterSetupModelOption.familyPlans`).
+        guard let decision = lock.withLock({ decisions[folder] }), let placement = decision.placement(planKey: planKey),
+              let capability = decision.capability else {
             return .init(succeeded: false, lines: ["The plan changed. Choose the model again; nothing was saved."])
         }
+        let plan = placement.plan, setup = placement.setup
         let input = pairInput()
         guard let memberID = input.pair?.memberID, let localData = setup.configurations[memberID],
               let peerID = setup.configurations.keys.first(where: { $0 != memberID }), let peerData = setup.configurations[peerID] else {
@@ -737,7 +755,7 @@ final class LiveContext: @unchecked Sendable {
             let part = localRank == 0 ? "this Mac runs rank 0 and the serving API" : "this Mac runs rank \(localRank)"
             // The onboarding shows the deployment in one plain line once it serves; the six-step wizard keeps its detail.
             var lines = settings.derivedPlacement ? ["Saved \(here)'s setup for \(decision.option.model.modelID)."]
-                : ["Saved this Mac's setup \(saved.configurationSHA256.prefix(12)): \(decision.option.model.modelID), cut after \(plan.cut) layers, \(plan.mode); \(part)."]
+                : ["Saved this Mac's setup \(saved.configurationSHA256.prefix(12)): \(decision.option.model.modelID), cut after \(ClusterOnboardingDeployment.layers(plan.cut)), \(plan.mode); \(part)."]
             if let pairing = linkPairing() {
                 // Over the paired link: the other Mac's open wizard puts it in its inbox.
                 let delivery = try JSONEncoder().encode(ClusterSetupStore.Delivery(configuration: peerData, capability: capability.data,

@@ -23,9 +23,12 @@ enum DoctorRunner {
         }
     }
 
+    /// `networkChecks` false (a Mac set to Only me, `DoctorLocalAPI.runsNetworkChecks`): the sections about the
+    /// Darkbloom network (`networkDiagnosis`) are left out; model fit, runtime and version stay.
     static func buildOperatorDiagnosis(
         snapshot: RuntimeSnapshot,
-        coordinatorURL: String
+        coordinatorURL: String,
+        networkChecks: Bool = true
     ) async -> [Diagnostic] {
         var out: [Diagnostic] = []
         let now = Date().timeIntervalSince1970
@@ -34,91 +37,10 @@ enum DoctorRunner {
         // "Fresh" = the daemon is running AND its state snapshot isn't stale, so
         // its live fields (trust level, current model, capacity) are trustworthy.
         let stateFresh = daemonUp && !(state?.isStale(now: now) ?? true)
-        let authorization = state?.displayedProviderAuthorization(coordinatorURL: coordinatorURL, now: now)
-        let removalAuthorization = state?.currentProviderAuthorization(coordinatorURL: coordinatorURL, now: now)
-        let appAttestAuthorized = authorization?.hasCurrentAppAttestAuthorization(now: now) == true
 
-        // ---- Attestation key (read-only daemon state) ----
-        let attestationIdentity = resolveDoctorAttestationIdentity(
-            daemonState: state,
-            now: now)
-        let se = SEKeySelfTest.run(
-            identity: attestationIdentity)
-        out.append(Diagnostic(section: .attestationKey, name: "active se key",
-                              level: se.level, message: se.message, fix: se.fix))
-
-        // ---- App Attest local state (from the daemon's last observation) ----
-        // Shown even when authorized: key state, launch session and a stalled
-        // Apple call explain a later lapse before the coordinator reports it.
-        let macOSMajor = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
-        out.append(contentsOf: AppAttestLocalDiagnosis.evaluate(
-            daemonUp ? state?.appAttest : nil, daemonRunning: daemonUp,
-            macOSMajorVersion: macOSMajor, now: now, pushHistory: APNsPushHistoryStore().load()))
-        // Local-only devicecheckd evidence (needs an admin account to read).
-        if ProviderOnboardingPolicy.usesAppAttest(macOSMajorVersion: macOSMajor) {
-            out.append(DeviceCheckEvidence.doctorDiagnostic(DeviceCheckEvidence.collect()))
-        }
-
-        // ---- APNs code-identity readiness (local) ----
-        // Will this box be able to obtain an APNs token and attest its code
-        // identity? Requires a logged-in console (Aqua) session; a missing
-        // session, no auto-login, or idle auto-logout each break attestation.
-        // Pure verdict logic lives in ProviderCore; here we only feed it the
-        // live machine signals.
-        if !appAttestAuthorized {
-            out.append(contentsOf: AttestationReadiness.evaluate(
-                AttestationReadiness.gather(),
-                sleepPrevented: systemSleepPrevented()))
-        }
-
-        // ---- Coordinator trust (from the daemon's last trust_status) ----
-        if let authorization {
-            out.append(Diagnostic(section: .trust, name: "serving authorization",
-                                  level: appAttestAuthorized || authorization.path == "legacy" ? .pass : .warn,
-                                  message: ProviderAuthorizationReadiness.summary(
-                                      authorization, removalAuthorization: removalAuthorization, now: now),
-                                  fix: nil))
-        } else if let state, let trust = state.trust, daemonUp, !state.isStale(now: now) {
-            let advice = TrustReasonCatalog.advice(level: trust.trustLevel, status: trust.status, reason: trust.reason)
-            let level = TrustReasonCatalog.level(trustLevel: trust.trustLevel, status: trust.status)
-            out.append(Diagnostic(section: .trust, name: "trust level",
-                                  level: level,
-                                  message: "\(trust.trustLevel) / \(trust.status) — \(advice.message)",
-                                  fix: advice.fix))
-        } else if daemonUp {
-            out.append(Diagnostic(section: .trust, name: "trust level", level: .warn,
-                                  message: "the daemon is running but hasn't received a trust status from the coordinator yet (or it's stale).",
-                                  fix: "wait ~1 min and re-run `\(BuildEnvironment.current.cliName) doctor`; if it persists, check connectivity below."))
-        } else {
-            out.append(Diagnostic(section: .trust, name: "trust level", level: .warn,
-                                  message: "the provider daemon isn't running, so live trust status is unavailable.",
-                                  fix: "run `\(BuildEnvironment.current.cliName) start`, then `\(BuildEnvironment.current.cliName) doctor`."))
-        }
-        // Enrollment hint (local) — but skip it when the coordinator already
-        // grants this provider hardware trust. Nagging an already-hardware-trusted
-        // box to enroll in MDM is a false warning that sends the operator down the
-        // wrong flow and contradicts the trust line printed just above.
-        //
-        // Otherwise, delegate the verdict to the pure MDMTrustDiagnosis helper,
-        // which combines the daemon's last trust level with this Mac's actual MDM
-        // enrollment. This is what lets doctor DISTINGUISH "enrolled in Darkbloom
-        // MDM but the coordinator's live SecurityInfo check is still pending /
-        // timing out" (trust stuck at self_signed) from "not enrolled at all" —
-        // the previously-silent stall that left operators thinking they passed
-        // while earning nothing.
-        let alreadyHardwareTrusted = stateFresh && state?.trust?.trustLevel == "hardware"
-        if !alreadyHardwareTrusted && !appAttestAuthorized {
-            let liveTrustLevel = stateFresh ? state?.trust?.trustLevel : nil
-            let liveStatus = stateFresh ? state?.trust?.status : nil
-            let enrollment = checkMDMEnrollment(coordinatorURL: snapshot.config.coordinator.url)
-            if let diag = MDMTrustDiagnosis.diagnose(trustLevel: liveTrustLevel, status: liveStatus, enrollment: enrollment) {
-                out.append(diag)
-            }
-        }
-
-        // ---- Coordinator traffic: is this connection routable, and if not, why? ----
-        if stateFresh, let state, let verdict = ServingReadiness.verdict(state, now: now) {
-            out.append(trafficDiagnostic(verdict))
+        if networkChecks {
+            out += networkDiagnosis(snapshot: snapshot, coordinatorURL: coordinatorURL, state: state, daemonUp: daemonUp,
+                                    stateFresh: stateFresh, now: now)
         }
 
         // ---- Traffic readiness: does the assigned/configured model fit RAM? ----
@@ -260,16 +182,6 @@ enum DoctorRunner {
             if !state.isStale(now: now) {
                 out.append(contentsOf: PrefixCacheDiagnosis.diagnostics(slots: state.slots))
             }
-            // ---- Billing ----
-            if state.stats.usageGaps > 0 {
-                out.append(Diagnostic(section: .billing, name: "usage reporting", level: .warn,
-                                      message: "\(state.stats.usageGaps) completed request(s) had a missing/zero usage chunk (under-counting risk).",
-                                      fix: "run `\(BuildEnvironment.current.cliName) report --dry-run` to review the logs, then upload with `\(BuildEnvironment.current.cliName) report` if support needs them."))
-            } else {
-                out.append(Diagnostic(section: .billing, name: "usage reporting", level: .pass,
-                                      message: "\(state.stats.requestsServed) requests / \(state.stats.tokensGenerated) output tokens completed since the daemon started, all with usage; the console's Earnings page lists the paid ones.",
-                                      fix: nil))
-            }
         }
 
         // ---- Version (coordinator) ----
@@ -303,6 +215,116 @@ enum DoctorRunner {
             break // network section already covers coordinator reachability
         }
 
+        return out
+    }
+
+    /// Whether every request the daemon completed reported its usage (billing).
+    private static func usageReporting(_ state: DaemonState) -> Diagnostic {
+        guard state.stats.usageGaps == 0 else {
+            return Diagnostic(section: .billing, name: "usage reporting", level: .warn,
+                              message: "\(state.stats.usageGaps) completed request(s) had a missing/zero usage chunk (under-counting risk).",
+                              fix: "run `\(BuildEnvironment.current.cliName) report --dry-run` to review the logs, then upload with `\(BuildEnvironment.current.cliName) report` if support needs them.")
+        }
+        return Diagnostic(section: .billing, name: "usage reporting", level: .pass,
+                          message: "\(state.stats.requestsServed) requests / \(state.stats.tokensGenerated) output tokens completed since the daemon started, all with usage; the console's Earnings page lists the paid ones.",
+                          fix: nil)
+    }
+
+    /// The sections about the Darkbloom network: attestation key, App Attest, attestation readiness, coordinator trust,
+    /// the coordinator traffic verdict and billing. The report groups lines by section, so where they sit in the list
+    /// doesn't change it.
+    private static func networkDiagnosis(snapshot: RuntimeSnapshot, coordinatorURL: String, state: DaemonState?,
+                                         daemonUp: Bool, stateFresh: Bool, now: Double) -> [Diagnostic] {
+        var out: [Diagnostic] = []
+        let authorization = state?.displayedProviderAuthorization(coordinatorURL: coordinatorURL, now: now)
+        let removalAuthorization = state?.currentProviderAuthorization(coordinatorURL: coordinatorURL, now: now)
+        let appAttestAuthorized = authorization?.hasCurrentAppAttestAuthorization(now: now) == true
+
+        // ---- Attestation key (read-only daemon state) ----
+        let attestationIdentity = resolveDoctorAttestationIdentity(
+            daemonState: state,
+            now: now)
+        let se = SEKeySelfTest.run(
+            identity: attestationIdentity)
+        out.append(Diagnostic(section: .attestationKey, name: "active se key",
+                              level: se.level, message: se.message, fix: se.fix))
+
+        // ---- App Attest local state (from the daemon's last observation) ----
+        // Shown even when authorized: key state, launch session and a stalled
+        // Apple call explain a later lapse before the coordinator reports it.
+        let macOSMajor = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+        out.append(contentsOf: AppAttestLocalDiagnosis.evaluate(
+            daemonUp ? state?.appAttest : nil, daemonRunning: daemonUp,
+            macOSMajorVersion: macOSMajor, now: now, pushHistory: APNsPushHistoryStore().load()))
+        // Local-only devicecheckd evidence (needs an admin account to read).
+        if ProviderOnboardingPolicy.usesAppAttest(macOSMajorVersion: macOSMajor) {
+            out.append(DeviceCheckEvidence.doctorDiagnostic(DeviceCheckEvidence.collect()))
+        }
+
+        // ---- APNs code-identity readiness (local) ----
+        // Will this box be able to obtain an APNs token and attest its code
+        // identity? Requires a logged-in console (Aqua) session; a missing
+        // session, no auto-login, or idle auto-logout each break attestation.
+        // Pure verdict logic lives in ProviderCore; here we only feed it the
+        // live machine signals.
+        if !appAttestAuthorized {
+            out.append(contentsOf: AttestationReadiness.evaluate(
+                AttestationReadiness.gather(),
+                sleepPrevented: systemSleepPrevented()))
+        }
+
+        // ---- Coordinator trust (from the daemon's last trust_status) ----
+        if let authorization {
+            out.append(Diagnostic(section: .trust, name: "serving authorization",
+                                  level: appAttestAuthorized || authorization.path == "legacy" ? .pass : .warn,
+                                  message: ProviderAuthorizationReadiness.summary(
+                                      authorization, removalAuthorization: removalAuthorization, now: now),
+                                  fix: nil))
+        } else if let state, let trust = state.trust, daemonUp, !state.isStale(now: now) {
+            let advice = TrustReasonCatalog.advice(level: trust.trustLevel, status: trust.status, reason: trust.reason)
+            let level = TrustReasonCatalog.level(trustLevel: trust.trustLevel, status: trust.status)
+            out.append(Diagnostic(section: .trust, name: "trust level",
+                                  level: level,
+                                  message: "\(trust.trustLevel) / \(trust.status) — \(advice.message)",
+                                  fix: advice.fix))
+        } else if daemonUp {
+            out.append(Diagnostic(section: .trust, name: "trust level", level: .warn,
+                                  message: "the daemon is running but hasn't received a trust status from the coordinator yet (or it's stale).",
+                                  fix: "wait ~1 min and re-run `\(BuildEnvironment.current.cliName) doctor`; if it persists, check connectivity below."))
+        } else {
+            out.append(Diagnostic(section: .trust, name: "trust level", level: .warn,
+                                  message: "the provider daemon isn't running, so live trust status is unavailable.",
+                                  fix: "run `\(BuildEnvironment.current.cliName) start`, then `\(BuildEnvironment.current.cliName) doctor`."))
+        }
+        // Enrollment hint (local) — but skip it when the coordinator already
+        // grants this provider hardware trust. Nagging an already-hardware-trusted
+        // box to enroll in MDM is a false warning that sends the operator down the
+        // wrong flow and contradicts the trust line printed just above.
+        //
+        // Otherwise, delegate the verdict to the pure MDMTrustDiagnosis helper,
+        // which combines the daemon's last trust level with this Mac's actual MDM
+        // enrollment. This is what lets doctor DISTINGUISH "enrolled in Darkbloom
+        // MDM but the coordinator's live SecurityInfo check is still pending /
+        // timing out" (trust stuck at self_signed) from "not enrolled at all" —
+        // the previously-silent stall that left operators thinking they passed
+        // while earning nothing.
+        let alreadyHardwareTrusted = stateFresh && state?.trust?.trustLevel == "hardware"
+        if !alreadyHardwareTrusted && !appAttestAuthorized {
+            let liveTrustLevel = stateFresh ? state?.trust?.trustLevel : nil
+            let liveStatus = stateFresh ? state?.trust?.status : nil
+            let enrollment = checkMDMEnrollment(coordinatorURL: snapshot.config.coordinator.url)
+            if let diag = MDMTrustDiagnosis.diagnose(trustLevel: liveTrustLevel, status: liveStatus, enrollment: enrollment) {
+                out.append(diag)
+            }
+        }
+
+        // ---- Coordinator traffic: is this connection routable, and if not, why? ----
+        if stateFresh, let state, let verdict = ServingReadiness.verdict(state, now: now) {
+            out.append(trafficDiagnostic(verdict))
+        }
+
+        // ---- Billing ----
+        if let state, daemonUp { out.append(usageReporting(state)) }
         return out
     }
 

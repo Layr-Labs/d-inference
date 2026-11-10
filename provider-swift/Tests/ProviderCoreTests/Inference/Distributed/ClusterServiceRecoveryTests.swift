@@ -6,7 +6,8 @@ import DarkbloomClusterProcess
 @testable import ProviderCore
 
 /// Runs the actual service loop, process launch/stop, status publication, and
-/// IOKit ownership. Only the path namespace and initial recovery deadline vary.
+/// IOKit ownership. Only the path namespace, initial recovery deadline and the power assertions' name vary
+/// (macOS lists all of this process's assertions together, and other suites run services in it too).
 @Suite(.serialized)
 struct ClusterServiceRecoveryTests {
     @Test func leftoverRecoveryAndPowerOwnershipSurviveTwoServiceLifetimes() throws {
@@ -24,7 +25,8 @@ struct ClusterServiceRecoveryTests {
             // On failed cleanup retain the private directory for diagnosis.
             if completed { try? FileManager.default.removeItem(at: home) }
         }
-        try #require(try serviceAssertionTypes().isEmpty, "this test must start without another service's assertions")
+        let reason = "Cluster recovery test " + UUID().uuidString
+        try #require(try serviceAssertionTypes(reason).isEmpty, "this test must start without another service's assertions")
 
         for lifetime in 0..<2 {
             let directory = home.appendingPathComponent("lifetime-\(lifetime)", isDirectory: true)
@@ -73,7 +75,8 @@ struct ClusterServiceRecoveryTests {
                 darkbloomExecutable: helper, sessionArguments: [], pair: nil, dryRun: true, version: "fixture")
             let service = ClusterService(settings: .init(wizard: wizard, leaderArguments: [], followerArguments: [],
                 soloArguments: ["--service-part-fixture", directory.path, "replacement"]),
-                paths: paths, recoveryGraceSeconds: 0.2, supervisionIntervalSeconds: serviceSupervisionInterval)
+                paths: paths, recoveryGraceSeconds: 0.2, supervisionIntervalSeconds: serviceSupervisionInterval,
+                powerAssertionReason: reason)
             // Existing collaborator: a real control node already past its peer
             // absence grace. No fake launch/supervise/power/publication methods.
             let local = "mac-aaaaaaaaaaaa", peer = "mac-bbbbbbbbbbbb"
@@ -94,7 +97,7 @@ struct ClusterServiceRecoveryTests {
             }, "the real loop must publish the adopted leftover after its cleanup deadline")
             try #require(FileManager.default.fileExists(atPath: directory.appendingPathComponent("leftover-\(oldPID).term").path),
                          "startup cleanup must actually send TERM")
-            let held = try serviceAssertionTypes()
+            let held = try serviceAssertionTypes(reason)
             try #require(held.contains(kIOPMAssertionTypeNoIdleSleep) && held.contains("NetworkClientActive"))
             #expect(Set(held).count == held.count, "at most one assertion of each type")
             var publication = try recoveryPublicationDate(statusFile)
@@ -106,7 +109,7 @@ struct ClusterServiceRecoveryTests {
                 #expect(value.control?.mode == "alone" && value.serving, "a replacement is otherwise wanted")
                 #expect(readyPIDs(in: directory, role: "replacement").isEmpty)
                 #expect(ClusterService.runningPart(oldPart) != nil)
-                #expect(try serviceAssertionTypes() == held)
+                #expect(try serviceAssertionTypes(reason) == held)
             }
 
             // Saved intent alone must not mask a broken leftover-to-power edge.
@@ -114,7 +117,7 @@ struct ClusterServiceRecoveryTests {
             try #require(waitForRecovery { readRecoveryStatus(statusFile)?.serving == false })
             publication = try nextRecoveryPublication(statusFile, after: recoveryPublicationDate(statusFile))
             #expect(readRecoveryStatus(statusFile)?.child.pid == oldPID)
-            #expect(try serviceAssertionTypes() == held)
+            #expect(try serviceAssertionTypes(reason) == held)
             _ = try store.updateRecord { $0.leadership?.serving = true }
             try #require(waitForRecovery { readRecoveryStatus(statusFile)?.serving == true })
 
@@ -134,7 +137,7 @@ struct ClusterServiceRecoveryTests {
                 #expect(readRecoveryStatus(statusFile)?.child.starts == 1)
                 #expect(readRecoveryStatus(statusFile)?.child.pid == replacement.pid)
                 #expect(readyPIDs(in: directory, role: "replacement") == [replacement.pid])
-                #expect(try serviceAssertionTypes() == held)
+                #expect(try serviceAssertionTypes(reason) == held)
             }
 
             if lifetime == 0 {
@@ -147,12 +150,12 @@ struct ClusterServiceRecoveryTests {
             let requested = directory.appendingPathComponent("replacement-\(replacement.pid).term")
             try #require(waitForRecovery { FileManager.default.fileExists(atPath: requested.path) })
             #expect(ClusterService.runningPart(replacement) != nil)
-            #expect(try serviceAssertionTypes() == held, "retirement is requested but has not finished")
+            #expect(try serviceAssertionTypes(reason) == held, "retirement is requested but has not finished")
             try Data().write(to: directory.appendingPathComponent("release-replacement"))
             try #require(waitForRecovery { ClusterService.runningPart(replacement) == nil })
             if lifetime == 0 {
                 try #require(waitForRecovery { readRecoveryStatus(statusFile)?.child.running == false })
-                #expect(try serviceAssertionTypes().isEmpty, "idle service releases after its child stops")
+                #expect(try serviceAssertionTypes(reason).isEmpty, "idle service releases after its child stops")
                 currentRun.requestStop()
             }
             try #require(currentRun.join(seconds: 10), "service did not return: \(currentRun.log)")
@@ -160,7 +163,7 @@ struct ClusterServiceRecoveryTests {
             let final = try #require(readRecoveryStatus(statusFile))
             #expect(!final.child.running && final.child.pid == nil && final.child.starts == 1)
             #expect(!FileManager.default.fileExists(atPath: pidFile.path))
-            #expect(try serviceAssertionTypes().isEmpty, "run's defer releases even with saved serving true")
+            #expect(try serviceAssertionTypes(reason).isEmpty, "run's defer releases even with saved serving true")
             let fd = open(lockFile.path, O_RDONLY | O_CLOEXEC)
             try #require(fd >= 0)
             let acquired = flock(fd, LOCK_EX | LOCK_NB) == 0
@@ -170,6 +173,53 @@ struct ClusterServiceRecoveryTests {
         }
         completed = true
     }
+    /// The solo server a pair falls back to (this Mac alone, after the other Mac's absence grace) listens on this Mac's
+    /// own saved port (`LocalAPIPort.thisMac`), as every local API here does, so this Mac's tools keep their address;
+    /// never 8000 unless that is the saved one. The service's status names the port for the screens that check it.
+    @Test func theSoloServerTakesThisMacsSavedPort() throws {
+        let home = try NativePairMemberFixture.privateRoot()
+        let helper = home.appendingPathComponent("service-part-fixture")
+        try NativePairMemberFixture.helper().write(to: helper, options: .withoutOverwriting)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helper.path)
+        let directory = home.appendingPathComponent("part", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        let provider = home.appendingPathComponent("provider.toml")
+        try "[provider]\nname = \"fixture\"\n\n[local]\nport = 8017\n".write(to: provider, atomically: true, encoding: .utf8)
+        let wizard = ClusterSetupOperations.LiveSettings(providerConfiguration: provider, darkbloomExecutable: helper,
+            sessionArguments: [], pair: nil, dryRun: true, version: "fixture")
+        let service = ClusterService(settings: .init(wizard: wizard, leaderArguments: [], followerArguments: [],
+            soloArguments: ["--service-part-fixture", directory.path, "replacement"]), paths: try ClusterUserPaths(homeDirectory: home),
+            supervisionIntervalSeconds: serviceSupervisionInterval, powerAssertionReason: "Cluster solo port test " + UUID().uuidString)
+        var leadership = ClusterOnboardingLeadership(role: "leader", leaderPin: "fixture-local",
+            peerPin: "fixture-peer", peerName: "fixture peer", since: "fixture")
+        leadership.serving = true; leadership.modelName = "fixture-model"
+        _ = try service.store.updateRecord { $0.leadership = leadership }
+        let local = "mac-aaaaaaaaaaaa", peer = "mac-bbbbbbbbbbbb"
+        // A real control node already past the other Mac's absence grace, on a Mac that holds the model alone.
+        let node = ClusterControlNode(localID: local,
+            members: [.init(memberID: local, name: "fixture", memoryBytes: 1, gpuCores: 1, holdsModelAlone: true)],
+            claim: .init(term: 1, leaderID: local, members: [local, peer], reason: "fixture"),
+            rankOrder: [local, peer], now: ClusterService.monotonicSeconds() - 2, ttl: 1, soloGrace: 0)
+        service.lock.withLock { service.control = node }
+        let run = ServiceRecoveryRun(service: service)
+        var completed = false
+        defer {
+            try? Data().write(to: directory.appendingPathComponent("release-replacement"))
+            run.requestStop()
+            #expect(run.join(seconds: 12), "owned service must finish; retain \(home.path) on failure")
+            if completed { try? FileManager.default.removeItem(at: home) }
+        }
+        run.start()
+        try #require(waitForRecovery { readyPIDs(in: directory, role: "replacement").count == 1 }, "\(run.log)")
+        let pid = try #require(readyPIDs(in: directory, role: "replacement").first)
+        let arguments = try String(contentsOf: directory.appendingPathComponent("replacement-\(pid).args"), encoding: .utf8)
+            .components(separatedBy: "\n")
+        #expect(zip(arguments, arguments.dropFirst()).contains { $0 == "--port" && $1 == "8017" }, "\(arguments)")
+        let statusFile = service.store.paths.directory.appendingPathComponent("service-status.json")
+        #expect(waitForRecovery { readRecoveryStatus(statusFile)?.child.port == 8017 }, "the status names the solo server's port")
+        completed = true
+    }
+
     @Test func plannedStopWaitsForOwnedServiceChildBeforePeerAndRetainsFailureIntent() throws {
         for outcome in ["success", "missing-peer", "timeout"] {
             let home = try NativePairMemberFixture.privateRoot()
@@ -530,12 +580,13 @@ private func readyPIDs(in directory: URL, role: String) -> [Int32] {
         .compactMap { Int32($0.dropFirst(role.count + 1).dropLast(".ready".count)) }.sorted()
 }
 
-private func serviceAssertionTypes() throws -> [String] {
+/// The types of this process's assertions named `reason`: the service under test's own.
+private func serviceAssertionTypes(_ reason: String) throws -> [String] {
     var raw: Unmanaged<CFDictionary>?
     try #require(IOPMCopyAssertionsByProcess(&raw) == kIOReturnSuccess)
     let values = try #require(raw?.takeRetainedValue() as? [NSNumber: [[String: Any]]])
     return (values[NSNumber(value: getpid())] ?? []).compactMap {
-        guard $0[kIOPMAssertionNameKey] as? String == "Darkbloom cluster: serving deployment" else { return nil }
+        guard $0[kIOPMAssertionNameKey] as? String == reason else { return nil }
         return $0[kIOPMAssertionTypeKey] as? String
     }.sorted()
 }

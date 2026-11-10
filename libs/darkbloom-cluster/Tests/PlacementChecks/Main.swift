@@ -52,6 +52,7 @@ import Foundation
             try checkTensorParallel(inputs, golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
             try checkMeasuredShareSteps(inputs, checks)
             try checkServedBuildScope(inputs, golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
+            try checkServedOverLimit(inputs, golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
             try checkTensorParallelFeasibility(inputs, checks)
             try checkTensorParallelRequestAllowance(inputs, golden: URL(fileURLWithPath: CommandLine.arguments[2]), checks)
             try checkQwenVisionResidency(inputs, golden: URL(fileURLWithPath: CommandLine.arguments[2]), checks)
@@ -66,10 +67,15 @@ import Foundation
             try checkGemmaRoutedExperts(golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
             try checkGemmaTensorParallel(golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
             try checkMiMoTensorParallel(golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
+            try checkGLMMaxPair(golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
+            try checkGLMPairOffer(golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
+            try checkGLMUltraPipeline(golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
             try checkServedModes(golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
             try checkPipelineSpeculativeHolding(URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
             try checkMiMoRoutedExperts(golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
             try checkQwenPipelineSpeculative(URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
+            try checkMemoryFit(golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
+            try checkMemoryVerdict(golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
             guard checks.failures.isEmpty else {
                 for failure in checks.failures { fputs("FAIL: \(failure)\n", stderr) }
                 fputs("\(checks.failures.count) failed, \(checks.passed.count) passed\n", stderr)

@@ -276,6 +276,38 @@ public struct QwenDenseStageLoadAdmissionSummary: Encodable, Sendable {
             + (lastRefusal?.refusal.map { "; last refusal: \($0)" } ?? "")
             + (lastUnjudged.map { "; last sample not judged: \($0)" } ?? "")
     }
+
+    /// The record as one `key=value` line for the worker's log: the counts, the rule that settled this load or
+    /// request, the figures of the decision it rests on (the last refusal, else the admission with the least room,
+    /// else the latest) and the growth since the first sample. No word of it is one the incident classifier reads
+    /// as a failure (`ClusterFailureClassifier`), so a log tail that carries it is classified by its other lines.
+    public var logLine: String {
+        let decision = lastRefusal ?? tightest ?? latest
+        var fields = ["darkbloom-load-memory-v1", "scope=" + purpose.replacingOccurrences(of: " ", with: "_"),
+                      "decisions=\(decisions)", "refused=\(refusals)", "unjudged=\(unjudged)",
+                      "rule=" + (decision.map(Self.rule) ?? "not_judged")]
+        if let decision {
+            fields += ["required=\(decision.requiredBytes)", "admissible=\(decision.admissibleBytes)",
+                       "free=\(decision.actualFreeBytes)", "file_backed=\(decision.fileBackedBytes)",
+                       "counted=\(decision.countedReclaimableBytes)",
+                       "kernel_file_cache_minimum=" + (decision.kernelFileCacheMinimumBytes.map(String.init) ?? "unknown"),
+                       "anonymous=\(decision.anonymousBytes)", "compressor=\(decision.compressorBytes)",
+                       "pressure=\(decision.pressureLevel)"]
+        }
+        fields += ["compressed_since_first=" + (compressedSinceFirstSampleBytes.map(String.init) ?? "none"),
+                   "swapped_out_since_first=" + (swappedOutSinceFirstSampleBytes.map(String.init) ?? "none")]
+        return fields.joined(separator: " ")
+    }
+
+    /// Which of the policy's rules settled `decision`, in the order `QwenDenseStageLoadPolicy.decide` applies them.
+    private static func rule(_ decision: QwenDenseStageLoadAdmission) -> String {
+        guard !decision.admitted else { return decision.reclaimableUsedForAdmission ? "file_cache" : "free_pages" }
+        if decision.actualFreeBytes < QwenDenseStageLoadPolicy.minimumTrulyFreeBytes { return "truly_free_floor" }
+        if decision.requiredBytes > decision.physicalMemoryBytes { return "more_than_physical" }
+        if decision.stoppedByCompressionOrSwap { return "compression_or_swap" }
+        if decision.pressureLevel != QwenDenseStageLoadPolicy.normalPressureLevel { return "pressure" }
+        return "short"
+    }
 }
 
 /// The host memory gate's record for the calling process: its entry checks,

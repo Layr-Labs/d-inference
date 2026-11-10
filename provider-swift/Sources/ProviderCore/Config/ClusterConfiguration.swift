@@ -104,13 +104,16 @@ public struct ClusterConfiguration: Codable, Sendable, Equatable {
     /// run different Darkbloom builds); the onboarding says it in plain words (`ClusterSetupPlanning.differentBuilds`).
     static let peerBuildDiffers = "Peer native build differs from the capability"
 
-    /// The refusal of a tensor assistant beside `nativeMember`. Its speculative decoding has no parity qualification,
-    /// so it serves local clusters only; the guided setup plans a cluster served through Darkbloom without it under
-    /// `auto` (`ClusterPlacementTensorAssistantSelection.discoveryMode`). The leader's check of a coordinator's
-    /// approval runs this rule before any part stops (`ClusterApprovalAttachment.attachment`). Short enough to reach
-    /// the leader whole through the other Mac's refusal (`ClusterSetupFailure` keeps 240 characters).
-    static let tensorAssistantServesLocally = "Qwen's speculative assistant serves local clusters only (not qualified for "
-        + "public traffic); with mtp_mode \"auto\", press m in `darkbloom cluster` to plan without it"
+    /// The refusal of a tensor assistant beside `nativeMember` that this build does not declare public for the
+    /// artifact (`ClusterPublicModels.tensorAssistant`, the exact policy: depth, inventory and verification). Under
+    /// `auto` the guided setup plans a cluster served through Darkbloom with the declared assistant or without one
+    /// (`ClusterPlacementTensorAssistantSelection.discoveryMode`). The leader's check of a coordinator's approval runs
+    /// this rule before any part stops (`ClusterApprovalAttachment.attachment`). Short enough to reach the leader whole
+    /// through the other Mac's refusal (`ClusterSetupFailure` keeps 240 characters).
+    static var tensorAssistantServesLocally: String {
+        ClusterOnboardingCommand.named("Qwen's speculative assistant serves local clusters only unless "
+            + "declared public; with mtp_mode \"auto\", choose the model again in `darkbloom cluster` to drop it")
+    }
 
     func validate(capability: ClusterRuntimeCapability, rawCapabilitySHA256: String) throws {
         func require(_ value: Bool, _ message: String) throws {
@@ -171,7 +174,8 @@ public struct ClusterConfiguration: Codable, Sendable, Equatable {
                 && selectedGenerationMode == .tensorParallel && selectedPrefillSchedule == .serial
                 && !capability.hasPrivateImages,
                 "A tensor assistant requires Qwen TP on a row with an inline head and serial prefill")
-            try require(nativeMember == nil, Self.tensorAssistantServesLocally)
+            try require(nativeMember == nil || ClusterPublicModels.tensorAssistant(for: capability)?.policy == tensorAssistant,
+                Self.tensorAssistantServesLocally)
         }
         try require(ClusterConfigurationSyntax.ipv4(coordinator.address) && (1...65535).contains(coordinator.port), "Invalid JACCL coordinator address")
         if let linkControl {

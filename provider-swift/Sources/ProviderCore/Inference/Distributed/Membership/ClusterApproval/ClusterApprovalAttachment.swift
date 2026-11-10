@@ -13,10 +13,13 @@ import DarkbloomClusterSecurity
 enum ClusterApprovalAttachment {
     /// The refusal of an approval beside unequal tensor-parallel shares: the member's registration names no shares
     /// (`NativePairMemberRoster`), so such a setup could never register. A cluster served through Darkbloom is planned
-    /// with equal shares (`ClusterPlacementFlow.decide`). Short enough to reach the leader whole through the other
-    /// Mac's refusal (`ClusterSetupFailure` keeps 240 characters).
-    static let unequalTensorSharesServeLocally = "Unequal tensor-parallel shares serve local clusters only (the coordinator "
-        + "registration carries no shares yet); press m in `darkbloom cluster` to plan equal shares"
+    /// with equal shares (`ClusterPlacementFlow.decide`), as choosing its model again in `darkbloom cluster` plans it
+    /// (the list has no key m, which this named before). In this build's command, and short enough to reach the leader
+    /// whole through the other Mac's refusal and the link's (`ClusterSetupFailure` keeps 240 characters).
+    static var unequalTensorSharesServeLocally: String {
+        ClusterOnboardingCommand.named("Unequal tensor-parallel shares serve local clusters only (the coordinator can't "
+            + "register them yet); choose the model again in `darkbloom cluster` for equal shares")
+    }
 
     /// The block digests of a build-pinned `approval` that are not this Mac's facts, by their contract names; `model`
     /// when the facts describe no entry for the approval's model. A model approval is never compared with facts.
@@ -53,7 +56,7 @@ enum ClusterApprovalAttachment {
     /// The link a member registers to the other Mac: the latest probe this Mac recorded for the pair (the serving
     /// leader records one per load), as `rdma`; nil when it has none.
     static func measuredEdge(peerPin: String, members: [String], homeDirectory: URL) -> ClusterEdge? {
-        guard let probe = ClusterLinkProbeHistory.read(ClusterLinkProbeHistory.defaultFile(homeDirectory: homeDirectory))?
+        guard let probe = ClusterLinkProbeHistory.read(ClusterLinkProbeHistory.defaultFile(installDirectory: BuildEnvironment.current.installDirectory(home: homeDirectory)))?
                 .pairs[ClusterLinkProbeHistory.key(members: members)]?.probe,
               probe.pointToPointLargeMicroseconds > 0, probe.pointToPointSmallMicroseconds > 0 else { return nil }
         let megabits = Double(probe.pointToPointLargeBytes) * 8 / Double(probe.pointToPointLargeMicroseconds)
@@ -142,9 +145,10 @@ enum ClusterApprovalAttachment {
             resourceLibraryPath: tools.resourceLibrary.path, clusterApproval: approval, roster: paired.roster,
             memberPins: paired.pins, edges: edge.map { [$0] })
         // Every check the save runs on the setup with the attachment, as at every load: the approval names this setup's
-        // model, artifact and schedule (and a build-pinned one its runtime, capability and profile), the roster's pins
-        // are its members in rank order, and nothing the setup carries is refused beside an approval (a tensor
-        // assistant serves local clusters only). So no part stops for an approval either Mac must refuse at the save.
+        // model, artifact and schedule (and a build-pinned one its runtime, capability, profile and resource policy,
+        // which carries any resident assistant this build declares public), the roster's pins are its members in rank
+        // order, and nothing the setup carries is refused beside an approval (a tensor assistant only as this build
+        // declares it public). So no part stops for an approval either Mac must refuse at the save.
         try configuration.replacingNativeMember(attachment).validate(capability: saved.capability,
                                                                     rawCapabilitySHA256: configuration.capabilitySHA256)
         return attachment

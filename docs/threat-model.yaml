@@ -38,6 +38,14 @@ methodology: STRIDE
 # Existing proof verification, native-call admission, expiry and revocation remain
 # authoritative; this availability change does not revalidate older threat entries.
 # See docs/architecture/security/attestation.md#provider-connection-control.
+# SDK 27.2 Date comparison review 2026-11-04: the App Attest key-generation
+# budget, enrollment resume, stall restart and key history checks compare Dates
+# with timeIntervalSince(_:), not >= or <=. SDK 27.2 back-deploys those two
+# operators as weak imports that pre-release macOS 27.2 lacks; a call through
+# one crashed the provider in a loop (A-018 availability). Thresholds and results
+# are unchanged. Release builds refuse a binary that imports either symbol
+# (scripts/check-provider-weak-imports.py). This availability change does not
+# revalidate older threat entries.
 # Current backend behavior belongs to the platform's latest default branch.
 # Immutable links preserve reviewed evidence, not current source or deployment.
 # Provider add-on hold reviewed 2026-10-26: TB-012, A-018 and T-059 describe the
@@ -50,6 +58,9 @@ methodology: STRIDE
 # Darkbloom Sandbox CLI reviewed 2026-10-28: TB-013, A-019 and T-061 describe
 # darkbloom sandbox setup downloading and running the add-on's installer, and the
 # CLI running the installed add-on's command, as the Mac's owner.
+# GPU limit for a GLM pair reviewed 2026-11-01: TB-014, A-020 and T-062 describe
+# darkbloom cluster gpu-limit raising the macOS GPU and wire limits and installing
+# a boot job as root, behind the owner's confirmation and an administrator prompt.
 description: >
   Provider and native-runtime threat model, including the external trust
   contracts the provider consumes. The provider and coordinator remain plaintext
@@ -257,6 +268,17 @@ assets:
       darkbloom sandbox setup runs the add-on's downloaded installer, and the CLI runs
       the installed add-on's command, with this account's rights.
       Code: provider-swift/Sources/darkbloom/Sandbox/.
+
+  - id: A-020
+    name: mac_system_memory_settings
+    description: >
+      Root-owned memory settings of a provider Mac: the GPU wired-memory limit
+      (iogpu.wired_limit_mb), the user wire limits and the boot job under
+      /Library/LaunchDaemons that reapplies them.
+    sensitivity: high
+    notes: >
+      darkbloom cluster gpu-limit changes them only with an administrator's approval.
+      Code: provider-swift/Sources/ProviderCore/Diagnostics/GLM5NextWiredLimitApproval.swift.
 
 trust_boundaries:
   - id: TB-002
@@ -914,6 +936,50 @@ trust_boundaries:
       - "The add-on's status JSON is shown, not verified: a tampered add-on can
         misreport its state, which only changes what the CLI prints and whether setup
         reruns the installer."
+
+  - id: TB-014
+    name: provider_cli_to_administrator_approved_gpu_limit
+    description: >
+      darkbloom cluster gpu-limit asks macOS to run one fixed command line as root,
+      behind the person's confirmation and macOS's own administrator prompt: it sets
+      the GPU wired-memory limit and the user wire limits now and installs a
+      LaunchDaemon that sets them at boot. The provider daemon, the coordinator, the
+      peer Mac and the plan have no path to it; the plan only names the command.
+    how_it_works: >
+      The command refuses without a terminal on stdin and stdout (it prints the
+      commands for an administrator instead) and asks y/N. Its values come only from
+      this Mac's physical memory and the chip's own name
+      (GLM5NextWiredLimit.pairRankRecommendation, GLM5NextGPULimitEligibility, the
+      rule the plan's advice also uses): Apple silicon Macs with 128 GiB or more,
+      iogpu.wired_limit_mb at physical memory less 16 GiB (a sixteenth from 512 GiB), vm.global_user_wire_limit
+      and vm.user_wire_limit at 95% of it; other Macs exit 2 with no prompt. It
+      reads the job file (a regular file of at most 64 KiB) and asks nothing when
+      the limits are met and the job is the one it writes.
+      GLM5NextWiredLimitRequest refuses any other values. Its commands are fixed
+      paths and digits with one leading `|| true`, and neither they nor the prompt
+      hold a double quote or a backslash, so they pass as one AppleScript literal to
+      /usr/bin/osascript `do shell script ... with administrator privileges`
+      (ClusterLinkApproval, the link setup's approval path). The raise stops at its
+      first failed command. The job
+      /Library/LaunchDaemons/com.layrlabs.glm53-wired-limits.plist is built key by
+      key with plutil in that root-owned directory, owned root:wheel with mode 644; it
+      runs /usr/sbin/sysctl -w with the three assignments at load, with no shell, and
+      logs to /var/log. --undo boots the job out, removes it and sets
+      iogpu.wired_limit_mb=0; the wire limits return at the next restart. No helper,
+      setuid binary or XPC service is added, and Darkbloom never sees a password.
+      Code: provider-swift/Sources/darkbloom/ClusterGPULimitCommand.swift and
+      provider-swift/Sources/ProviderCore/Diagnostics/GLM5NextWiredLimitApproval.swift.
+    current_limitations:
+      - "The job is, key for key, the one the doctor's advice installs by hand on 256 GB
+        hosts: where it is in place and the limits are met the command changes
+        nothing, and --undo removes it."
+      - "darkbloom stop --uninstall leaves the job; darkbloom cluster gpu-limit --undo
+        removes it."
+      - "With the limit raised, the GPU may wire up to physical memory less 16 GiB,
+        leaving macOS and other applications less. Every load and request still passes
+        the host memory gate on live memory."
+      - "Same-UID code can drive the terminal or run osascript itself; the
+        administrator prompt is the boundary, as for every approval."
 
 threats:
   - id: T-007
@@ -2494,3 +2560,45 @@ threats:
       Test http and credential URLs, redirects to http, non-200 and oversized
       responses, non-script bodies, a hung or failing add-on command, and Ctrl-C
       while the installer runs.
+
+  - id: T-062
+    trust_boundary: TB-014
+    stride: Elevation_of_Privilege
+    title: A remote or non-interactive caller changes the Mac's GPU limits or plants a boot job
+    description: >
+      The coordinator, the peer Mac, plan text, the environment or the provider
+      daemon could try to trigger the root change or place text in the command root
+      runs; a malformed boot job would run something other than sysctl at every boot,
+      and a limit above physical memory less 16 GiB would let the GPU starve macOS.
+    adversaries: [ADV-003]
+    affected_assets: [A-020]
+    affected_files:
+      - provider-swift/Sources/darkbloom/ClusterGPULimitCommand.swift
+      - provider-swift/Sources/ProviderCore/Diagnostics/GLM5NextGPULimitFlow.swift
+      - provider-swift/Sources/ProviderCore/Diagnostics/GLM5NextGPULimitEligibility.swift
+      - provider-swift/Sources/ProviderCore/Diagnostics/GLM5NextWiredLimitApproval.swift
+      - provider-swift/Sources/ProviderCore/Diagnostics/GLM5NextWiredLimit.swift
+      - provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkApproval.swift
+    mitigations:
+      - description: >
+          Only the interactive CLI command asks for the approval: a terminal on stdin
+          and stdout, a y/N answer, then macOS's administrator prompt. Values derive
+          from this Mac's own memory and chip, are capped at physical memory less
+          16 GiB and are checked again before any command is built; the command line
+          is fixed text and digits needing no AppleScript escaping; the raise stops at
+          its first failed command; the job is built key by key in a root-owned
+          directory, root:wheel 644, with a fixed program and no shell.
+        status: implemented
+      - description: >
+          A local administrator can already set any sysctl or install any job. The
+          job is the doctor's documented job on 256 GB hosts, and uninstalling the
+          provider leaves it until --undo.
+        status: accepted
+    open_findings: []
+    severity: medium
+    detection_hint: >
+      Check that only ClusterGPULimitCommand reaches GLM5NextWiredLimitApproval
+      (through GLM5NextGPULimitFlow), that no command or prompt holds a double quote
+      or a backslash, that other chips and sizes exit 2 before any prompt, and that
+      the installed plist holds exactly Label, ProgramArguments, RunAtLoad,
+      StandardOutPath and StandardErrorPath.

@@ -109,6 +109,9 @@ env:
   FAN_HELPER_NAME: 'darkbloom-fan-helper'
   FAN_HELPER_ID: 'io.darkbloom.fan-helper'
   MIN_MACOS: '14.0'
+  # Release bytes build, qualify and sign with Xcode 27.2 only
+  # (scripts/prepare-provider-release-toolchain.sh).
+  DARKBLOOM_PROVIDER_TOOLCHAIN: release
   # The mlx.metallib (compiled Metal GPU kernels) is BUILT FROM SOURCE from the
   # MLX fork pinned at libs/mlx-swift/Source/Cmlx/mlx — NOT fetched from a PyPI
   # wheel. Building from source guarantees the GPU kernels match the exact fork
@@ -408,7 +411,7 @@ jobs:
           ref: ${{ needs.resolve-env.outputs.workflow_sha }}
           persist-credentials: false
           submodules: recursive
-          fetch-depth: 0   # gh release --generate-notes wants full history
+          fetch-depth: 0   # every tag: prepare reads the release tag's annotation
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -1311,7 +1314,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           ref: ${{ needs.resolve-env.outputs.workflow_sha }}
-          fetch-depth: 0
+          fetch-depth: 0   # the GitHub release notes read master, dev and the release tags
           persist-credentials: false
       - name: Resolve env-specific secrets
         if: needs.resolve-env.outputs.publish == 'true'
@@ -1438,7 +1441,7 @@ jobs:
           identity = json.loads((root / 'darkbloom-validation-identity.json').read_text())
           assert identity['source_commit'] == os.environ['GITHUB_SHA']
           assert identity['release_published'] is False
-          assert identity['build_sdk_version'] == '27.0'
+          assert identity['build_sdk_version'] == '27.2'
           assert hashlib.sha256((root / 'darkbloom-bundle-macos-arm64.tar.gz').read_bytes()).hexdigest() == identity['bundle_sha256']
           major = int(subprocess.check_output(['sw_vers', '-productVersion'], text=True).split('.')[0])
           assert 14 <= major < 27, 'This compatibility lane must exercise older macOS'

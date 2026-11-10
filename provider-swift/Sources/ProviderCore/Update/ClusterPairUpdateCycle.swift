@@ -138,9 +138,22 @@ public final class ClusterPairUpdateCycle: @unchecked Sendable {
         case otherMacStillRuns(String)
         /// Another update or recovery holds the update lease; the next check tries again.
         case busy
+        /// The other Mac already runs this newer release (it updated alone). Nothing was changed: the supervisor runs
+        /// the pair's cycle at once instead of at the slot, and that cycle finds the other Mac ready.
+        case otherMacNewer(String)
         /// The cycle that followed it ended as an update cycle ends: `.restarted` once the earlier release is restored
         /// and the restart asked for.
         case followed(AutoUpdateController.Outcome)
+    }
+
+    /// The newer release the other Mac runs, or is updating to (a fresh working phase), than `mine`; nil when none.
+    public static func ahead(of mine: String, partner progress: ClusterPairUpdateProgress, now: Double) -> String? {
+        guard let running = SemanticVersion(mine) else { return nil }
+        if let theirs = SemanticVersion(progress.running), running < theirs { return progress.running }
+        let working: Set<ClusterPairUpdateProgress.Phase> = [.checking, .staged, .draining, .drained, .restarting]
+        guard working.contains(progress.phase), now - progress.writtenAt <= ClusterPairUpdate.progressStaleSeconds,
+              let target = progress.target, let theirs = SemanticVersion(target), running < theirs else { return nil }
+        return target
     }
 
     /// The other Mac rolled back and quarantined the release this Mac runs (`ClusterPairUpdateProgress.quarantined`),
@@ -171,6 +184,12 @@ public final class ClusterPairUpdateCycle: @unchecked Sendable {
         if let mine = recorded?.quarantine?.version, progress.running == mine, progress.quarantined != mine,
            Self.installed(recorded) != mine {
             return .otherMacStillRuns("the other Mac still runs v\(mine), which is quarantined on this Mac")
+        }
+        // The other Mac updated alone and runs a newer release, or is updating to one (a single-Mac updater or
+        // `darkbloom update` there asked its pair to follow): this Mac follows it forward, never into one it quarantined.
+        if let ahead = Self.ahead(of: Self.installed(recorded) ?? updater.currentVersion, partner: progress, now: Self.now()),
+           recorded?.quarantine?.version != ahead {
+            return .otherMacNewer(ahead)
         }
         // A Mac that runs the release it quarantined (installed again with `--override-quarantine`) rolled nothing back.
         guard let quarantined = progress.quarantined, progress.running != quarantined,
@@ -270,7 +289,7 @@ public final class ClusterPairUpdateCycle: @unchecked Sendable {
     }
 
     private func check() async -> UpdateCheckResult {
-        guard let session = lock.withLock({ session }) else { return .checkFailed(reason: "the update lease was lost") }
+        guard let session = lock.withLock({ session }) else { return .checkFailed(.init(.thisMac, "the update lease was lost")) }
         let result = await environment.updater.checkForUpdate(session: session)
         lock.withLock {
             switch result {
@@ -560,13 +579,17 @@ public final class ClusterPairUpdateCycle: @unchecked Sendable {
 
 extension ClusterPairUpdateCycle.Environment {
     /// This Mac's cluster service: the installed release's updater (with the watchdog's bounded network session), the
-    /// part its status publishes, and the other Mac's progress over the link.
-    public static func live(serviceDirectory: URL, coordinatorURL: String,
+    /// part its status publishes, and the other Mac's progress over the link. `automatic`: a cycle at the pair's update
+    /// slot or catching up with the other Mac, not one `darkbloom update` asked for. Its release check makes a second
+    /// round 1–2 min after one without an answer (`SelfUpdater.ReleaseCheck.pairCycle`): a failed check would cost both
+    /// Macs the slot, and the other Mac waits for this one's `checking` up to 15 min.
+    public static func live(serviceDirectory: URL, coordinatorURL: String, automatic: Bool = false,
                             log: @escaping @Sendable (String) -> Void) -> Self {
         let partHealth = ClusterServiceAgent.partHealthPath(serviceDirectory: serviceDirectory)
         let peer = ClusterPairUpdateCycle.PeerAddress()
         return Self(
-            updater: SelfUpdater(coordinatorBaseURL: coordinatorURL, urlSession: SelfUpdater.watchdogURLSession()),
+            updater: SelfUpdater(coordinatorBaseURL: coordinatorURL, urlSession: SelfUpdater.watchdogURLSession(),
+                                 releaseCheck: automatic ? .pairCycle : .standard),
             progressPath: ClusterServiceAgent.updateProgressPath(serviceDirectory: serviceDirectory),
             partner: { ClusterPairUpdateCycle.livePartner(peer) },
             part: { ClusterPairUpdateCycle.livePart() },

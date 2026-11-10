@@ -57,21 +57,12 @@ enum ClusterSetupLocalReader {
             journal: journal, memoryGuard: .init(ClusterOrphanWiredGuard.evaluate(role: "wizard")), models: models,
             modelsError: modelsError, pairingCode: pairingCode(installation), checks: doctor,
             linkPairings: linkPairings(ClusterPairingStore.default()))
-        report.modelStoreFreeBytes = store.flatMap(freeBytes)
+        let disk = store.flatMap(ClusterModelStore.diskSpace(at:))
+        report.modelStoreFreeBytes = disk?.freeBytes
+        report.modelStorePurgeableBytes = disk?.purgeableBytes
         report.served = Array(ClusterServedSpeedHistory.entries(homeDirectory: FileManager.default.homeDirectoryForCurrentUser)
             .sorted { $0.sample.finishedAt > $1.sample.finishedAt }.prefix(ClusterSetupReport.servedShared))
         return report
-    }
-
-    /// Free bytes on the volume of `url` (or its nearest existing parent).
-    static func freeBytes(_ url: URL) -> Int64? {
-        var probe = url
-        while !FileManager.default.fileExists(atPath: probe.path), probe.path != "/" { probe.deleteLastPathComponent() }
-        if let values = try? probe.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]),
-           let important = values.volumeAvailableCapacityForImportantUsage, important > 0 { return important }
-        var info = statfs()
-        guard statfs(probe.path, &info) == 0 else { return nil }
-        return Int64(info.f_bavail) * Int64(info.f_bsize)
     }
 
     /// The ceremony's store, as public values; nil when this Mac never paired.
@@ -125,11 +116,11 @@ enum ClusterSetupLocalReader {
         let osText = "\(os.majorVersion).\(os.minorVersion)" + (os.patchVersion > 0 ? ".\(os.patchVersion)" : "")
         let volume = URL(fileURLWithPath: installation.modelDirectory.map { URL(fileURLWithPath: $0).deletingLastPathComponent().path }
             ?? NSHomeDirectory())
-        let values = try? volume.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey, .volumeTotalCapacityKey])
+        let values = try? volume.resourceValues(forKeys: [.volumeTotalCapacityKey])
         return .init(profile: profile, profileError: profileError, chip: profile?.chip ?? sysctlString("machdep.cpu.brand_string") ?? "Apple silicon",
             physicalMemoryBytes: profile?.physicalMemoryBytes ?? Int(clamping: ProcessInfo.processInfo.physicalMemory),
             osVersion: profile.map { "\($0.osVersion) (\($0.osBuild))" } ?? osText, osMajor: os.majorVersion, osMinor: os.minorVersion,
-            diskFreeBytes: values?.volumeAvailableCapacityForImportantUsage.map { Int(clamping: $0) },
+            diskFreeBytes: ClusterModelStore.diskSpace(at: volume).map { Int(clamping: $0.freeBytes) },
             diskTotalBytes: values?.volumeTotalCapacity)
     }
 

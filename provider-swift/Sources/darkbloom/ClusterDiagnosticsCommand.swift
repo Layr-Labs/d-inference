@@ -5,11 +5,30 @@ import ProviderCore
 extension Cluster {
     struct Status: AsyncParsableCommand {
         static let configuration = CommandConfiguration(commandName: "status",
-            abstract: "Show saved setup and a fresh local leader observation, without starting inference.")
+            abstract: "Say whether the cluster serves now, and if not, why and what to do (--json for scripts).",
+            discussion: """
+                Prints which Mac leads, the model and how it is split, whether it serves through Darkbloom or \
+                locally only, whether it serves now (the reasons `darkbloom cluster` shows) and what to do next. On \
+                the Mac that follows, the leading Mac is asked over the cable. Nothing is started or changed.
+
+                Exit status: 0 serving; 3 not serving yet (loading, or a reason); 4 stopped; 5 the other Mac isn't \
+                answering; 6 this Mac isn't in a cluster; 7 this Mac's pairing record couldn't be read. --json prints the same as one JSON object with the same exit \
+                status. --details prints the saved setup and the leading Mac's session for support, as earlier \
+                versions printed by default (with --json, that report).
+                """)
         @OptionGroup var configOptions: ConfigOptions
-        @Flag(help: "Print saved configuration and explicitly scoped live evidence as JSON.") var json = false
+        @Flag(help: "Print the status as one JSON object (schema 1), with the same exit status.") var json = false
+        @Flag(help: "Print the saved setup and the leading Mac's live session for support (the earlier output); with --json, that report.")
+        var details = false
         mutating func run() async throws {
             Darkbloom.ensureLogging()
+            guard details else {
+                let summary = await ClusterPairSummary.live(config: configOptions.config,
+                                                            bounded: json ? ClusterPairSummary.sayOnStandardError : ClusterPairCommands.printLine)
+                if json { try printJSON(summary.json) } else { for line in summary.clusterStatusLines { print(line) } }
+                if summary.exitCode != 0 { throw ExitCode(summary.exitCode) }
+                return
+            }
             let path = try diagnosticsPath(configOptions.config)
             let report = await ClusterDiagnostics.status(providerConfiguration: path)
             // What each Mac holds is the plan's figure from the model's own files; it is printed

@@ -11,15 +11,6 @@ import Testing
 // don't require a live engine. End-to-end generation is covered by the
 // live test suites.
 
-@Test("availableModels reports the registry keys sorted")
-func multiModelEngineReportsRegistry() async throws {
-    let engine = MultiModelBatchSchedulerEngine(
-        registryProvider: { @Sendable in [:] }
-    )
-    let models = try await engine.availableModels()
-    #expect(models.isEmpty)
-}
-
 @Test("availableModels returns sorted ids")
 func multiModelEngineReturnsSortedIDs() async throws {
     let entry = MultiModelBatchSchedulerEngine.ModelRegistryEntry(
@@ -269,30 +260,27 @@ func templateContextComposesReasoningControls() {
     #expect(context?["reasoning_effort"] as? String == "high")
 }
 
-@Test("GPT-OSS high reasoning effort is downgraded to medium")
-func templateContextDowngradesGPTOSSHighReasoningEffort() {
+@Test("GPT-OSS renders each effort at its nearest Harmony level")
+func templateContextRendersGPTOSSHarmonyLevels() {
     let request = OpenAIChatCompletionRequest(
         model: "openai/gpt-oss-20b",
         messages: [.init(role: .user, content: .text("hi"))])
-
-    let high = MultiModelBatchSchedulerEngine.templateAdditionalContext(
-        for: request, controls: .init(reasoningEffort: "high"))
-    let medium = MultiModelBatchSchedulerEngine.templateAdditionalContext(
-        for: request, controls: .init(reasoningEffort: "medium"))
-    let low = MultiModelBatchSchedulerEngine.templateAdditionalContext(
-        for: request, controls: .init(reasoningEffort: "low"))
     let opaqueAlias = OpenAIChatCompletionRequest(
         model: "opaque-alias",
         messages: [.init(role: .user, content: .text("hi"))])
-    let identifiedByModelType = MultiModelBatchSchedulerEngine.templateAdditionalContext(
-        for: opaqueAlias,
-        controls: .init(reasoningEffort: "high"),
-        modelType: "gpt_oss")
-
-    #expect(high?["reasoning_effort"] as? String == "medium")
-    #expect(medium?["reasoning_effort"] as? String == "medium")
-    #expect(low?["reasoning_effort"] as? String == "low")
-    #expect(identifiedByModelType?["reasoning_effort"] as? String == "medium")
+    func rendered(_ request: OpenAIChatCompletionRequest, _ effort: String, modelType: String? = nil) -> String? {
+        MultiModelBatchSchedulerEngine.templateAdditionalContext(
+            for: request, controls: .init(reasoningEffort: effort), modelType: modelType)?["reasoning_effort"] as? String
+    }
+    let levels = ["none": "low", "minimal": "low", "low": "low", "medium": "medium", "high": "high",
+                  "xhigh": "high", "max": "high", "High": "high", "OFF": "low"]
+    for (effort, level) in levels {
+        #expect(rendered(request, effort) == level, "\(effort)")
+        #expect(rendered(opaqueAlias, effort, modelType: "gpt_oss") == level, "\(effort), by model type")
+    }
+    // A value that is none of the names reaches no Harmony level (the request
+    // is refused before rendering, `ReasoningEffortPolicy.validate`).
+    #expect(rendered(request, "turbo") == "turbo")
 }
 
 @Test("nested reasoning.enabled wins over raw-body template controls")
@@ -415,7 +403,7 @@ func templateContextLeavesOtherFormatsAndFamiliesUnchanged() {
     }
 }
 
-@Test("none off and zero disable; minimal remains an explicit effort")
+@Test("none off and zero disable; minimal reasons, at the model's lowest level")
 func templateContextNormalizesOnlyReviewedDisableSpellings() {
     let request = OpenAIChatCompletionRequest(
         model: "EigenLabs/Qwen3.8-27B-4bit",
@@ -432,7 +420,8 @@ func templateContextNormalizesOnlyReviewedDisableSpellings() {
         for: request,
         controls: .init(reasoningEffort: "minimal"),
         hasMedia: true)
-    #expect(minimal?["reasoning_effort"] as? String == "minimal")
+    // Qwen 3.8's lowest level.
+    #expect(minimal?["reasoning_effort"] as? String == "low")
     #expect(minimal?["enable_thinking"] == nil)
 }
 

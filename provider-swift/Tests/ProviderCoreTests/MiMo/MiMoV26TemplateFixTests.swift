@@ -263,9 +263,20 @@ final class MiMoV26TemplateFixTests: XCTestCase {
                 XCTAssertThrowsError(try MiMoV26TemplateFix.validateRawControls(JSONSerialization.data(withJSONObject: body)))
             }
         }
-        for effort in ["minimal", "low", "medium", "high", "xhigh", "on", "false", ""] {
+        for effort in ["on", "false", ""] {
             XCTAssertThrowsError(try MiMoV26TemplateFix.additionalContext(
-                request: .init(model: "m", messages: []), controls: .init(reasoningEffort: effort)))
+                request: .init(model: "m", messages: []), controls: .init(reasoningEffort: effort))) {
+                XCTAssertEqual($0 as? MultiModelBatchSchedulerEngineError, .unsupportedReasoningEffort(.reasoningEffort))
+            }
+        }
+        // One reasoning depth: every effort but none thinks.
+        for effort in ["minimal", "low", "medium", "high", "xhigh", "max"] {
+            let raw = try MiMoV26TemplateFix.additionalContext(
+                request: .init(model: "m", messages: []), controls: .init(reasoningEffort: effort))
+            XCTAssertEqual(raw?["enable_thinking"] as? Bool, true, effort)
+            let nested = try MiMoV26TemplateFix.additionalContext(
+                request: .init(model: "m", messages: [], reasoning: .init(effort: effort)), controls: .init())
+            XCTAssertEqual(nested?["enable_thinking"] as? Bool, true, effort)
         }
         for preserve in [true, false] {
             XCTAssertThrowsError(try MiMoV26TemplateFix.additionalContext(

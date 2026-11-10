@@ -7703,9 +7703,20 @@ and GLM). Two pricing sources size it:
   seven would be planned at a width that LOAD then refuses. GLM:
   `GLM5NextTensorParallelRequestCharge.reservedBytes(contextTokens:lanes:)`,
   one request's charge at the memory plan's context and one lane charge for
-  each lane after the first; the load line reports it as `reserved=`. Each
-  lane is still admitted against live memory, and a lane the host cannot hold
-  is refused alone.
+  each lane after the first; the load line reports it as `reserved=`. For GLM
+  the saved width is a ceiling: where the gate admits fewer lanes when the
+  rank loads, LOAD reserves the widest width it admits, never fewer than one
+  lane (`QwenDenseStageLoadPolicy.lanesAdmitted`; the load line's
+  `reserved_lanes=`), and each lane beyond it is admitted as it comes. The pair
+  still serves and reports the saved width, and both ranks bind that width
+  into their load agreement, so nothing else changes. On 2026-11-10 an 8-lane
+  GLM pair did not load on an M5 Ultra with 38.68 GiB of other programs'
+  memory in use (200.19 GiB admissible against 211.10 GiB), although one lane
+  needs 143.8 GiB; it now loads there at six. Making the width that loaded the
+  pair's advertised width needs the ranks to agree on it before the load
+  agreement and READY to carry it, so it is not done. Each lane is still
+  admitted against live memory, and a lane the host cannot hold is refused
+  alone.
 - **One number.** The setup screen (`ClusterSetupPlanning.loads`), both owners'
   lanes, the slot's `max_concurrency` and the leader's local API all read
   `DistributedInstalledPlan.batchLanes`, which returns the saved width.

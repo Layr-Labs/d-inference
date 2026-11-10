@@ -8,6 +8,9 @@
   32,768 output tokens): about 9.7 GB.
 - The setup screen and the number the pair reports to Darkbloom are the same width. Where only one request fits, the
   pair saves no width and serves one request at a time.
+- When a Mac has less memory free at load time than at setup, the pair still loads: each Mac reserves as many of the
+  saved requests as it can hold then, at least one, and takes the others as memory allows. On two M5 Ultras an
+  8-request pair whose Mac had other programs using 38.68 GiB did not load at all; it now loads with 6 reserved.
 - A pair set up before this version is planned again by itself after the update, as after every Darkbloom update,
   and saves its width then.
 - Each request still gets exactly the tokens it gets alone.

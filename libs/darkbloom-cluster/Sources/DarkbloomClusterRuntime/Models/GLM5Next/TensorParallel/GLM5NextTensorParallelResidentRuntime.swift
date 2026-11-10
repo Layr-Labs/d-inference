@@ -431,11 +431,31 @@ public final class GLM5NextTensorParallelResidentRuntime {
                 phases.mark("probe")
                 // The live gate admits this rank's shard and the whole request charge before any read, and for a
                 // saved width (`lanes`) each further lane's charge beside it (`GLM5NextTensorParallelRequestCharge.reservedBytes`):
-                // the figure its placement priced (`ClusterTensorParallelFamilyPlan.laneBytes`).
-                let laneReserve = try requestCharge.reservedBytes(contextTokens: descriptor.memoryProfile.maximumContextTokens,
-                    lanes: lanes.lanes)
-                try requireLiveMemory(bytes: try QwenLongPrefillCheckedBytes.sum([shardBytes, mtpBytes, visionBytes,
-                    laneReserve, bufferCacheBytes]))
+                // the figure its placement priced (`ClusterTensorParallelFamilyPlan.laneBytes`). That width is a
+                // ceiling: where the gate admits fewer lanes now, LOAD reserves the widest width it admits, never
+                // fewer than one lane, and each lane beyond it is admitted as it comes by the lane's own live gate
+                // (`QwenDenseStageLoadPolicy.lanesAdmitted`). The width served and bound into the load agreement
+                // stays the saved one.
+                let context = descriptor.memoryProfile.maximumContextTokens
+                func gateBytes(_ width: Int) throws -> Int {
+                    try QwenLongPrefillCheckedBytes.sum([shardBytes, mtpBytes, visionBytes,
+                        requestCharge.reservedBytes(contextTokens: context, lanes: width), bufferCacheBytes])
+                }
+                var reservedLanes = (try? QwenDenseStageLoadPolicy.lanesAdmitted(saved: lanes.lanes,
+                    on: QwenDenseStageLoadResources.observeOS(), purpose: "GLM tensor-parallel",
+                    now: DispatchTime.now().uptimeNanoseconds, bytes: gateBytes)) ?? 1
+                do {
+                    try requireLiveMemory(bytes: try gateBytes(reservedLanes))
+                } catch is QwenResidentMemoryRefusal where reservedLanes > 1 {
+                    // The sample moved between the two looks: one lane is what a load must never be refused for.
+                    reservedLanes = 1
+                    try requireLiveMemory(bytes: try gateBytes(1))
+                }
+                let laneReserve = try requestCharge.reservedBytes(contextTokens: context, lanes: reservedLanes)
+                if reservedLanes < lanes.lanes {
+                    log("darkbloom-cluster-worker: GLM tensor-parallel LOAD reserves \(reservedLanes) of its \(lanes.lanes) lanes:"
+                        + " the memory gate admits no more now; each further lane is admitted as it comes, or refused alone")
+                }
                 phases.mark("gate")
                 // `prepared` (the product): the owner parsed the metadata on the
                 // metadata thread and checks every file's SHA-256 in `prepare`, in
@@ -538,6 +558,7 @@ public final class GLM5NextTensorParallelResidentRuntime {
                     + " mtp_load_lanes=\(decodePolicy.depth == .load ? decodePolicy.loadLanes : 0)"
                     + " width_invariant=\(decodePolicy.widthInvariant ? 1 : 0)"
                     + " mtp_bytes=\(mtpBytes) prefix_budget=\(prefixBudget) lanes=\(lanes.lanes) reserved=\(laneReserve)"
+                    + " reserved_lanes=\(reservedLanes)"
                     + " vision_bytes=\(visionBytes) media=\(mediaContract)"
                     + " paged_kv=\(pagedKV ? Self.dsaPageTokens : 0)"
                     + " page_bytes=\(loaded?.dsaPagePool?.pageBytes ?? 0) frame_timing=\(frameTiming)")

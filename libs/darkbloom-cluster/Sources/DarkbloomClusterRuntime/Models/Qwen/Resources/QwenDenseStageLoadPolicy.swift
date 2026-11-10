@@ -414,14 +414,18 @@ enum QwenDenseStageLoadPolicy {
 }
 
 extension QwenDenseStageLoadPolicy {
-    /// The lanes a tensor-parallel rank's LOAD reserves on this sample (`GLM5NextTensorParallelResidentRuntime`), for
-    /// `bytes(lanes)` beside the loading headroom: its saved width (`lanes`) when the gate admits it, else nil, a
-    /// refused load.
+    /// The lanes a tensor-parallel rank's LOAD reserves on this sample (`GLM5NextTensorParallelResidentRuntime`): the
+    /// widest of its saved width (`lanes`) down to one whose requirement (`bytes(width)`, beside the loading headroom)
+    /// the gate admits, or nil when not even one lane fits. The saved width is a ceiling, not a condition: a load one
+    /// lane fits is never refused for the rest, which are admitted one by one as they come (each lane's live gate).
     static func lanesAdmitted(saved lanes: Int, on os: QwenDenseStageLoadOSObservation, purpose: String, now: UInt64,
                               bytes: (_ lanes: Int) throws -> Int) throws -> Int? {
         let physical = os.physicalMemoryBytes
-        let required = max(minimumAdmissibleBytes(physicalMemoryBytes: physical),
-            try QwenLongPrefillCheckedBytes.sum([bytes(lanes), loadingHeadroomBytes(physicalMemoryBytes: physical)]))
-        return try decide(os, requiredBytes: required, purpose: purpose, now: now).admitted ? lanes : nil
+        for width in stride(from: lanes, through: 1, by: -1) {
+            let required = max(minimumAdmissibleBytes(physicalMemoryBytes: physical),
+                try QwenLongPrefillCheckedBytes.sum([bytes(width), loadingHeadroomBytes(physicalMemoryBytes: physical)]))
+            if try decide(os, requiredBytes: required, purpose: purpose, now: now).admitted { return width }
+        }
+        return nil
     }
 }

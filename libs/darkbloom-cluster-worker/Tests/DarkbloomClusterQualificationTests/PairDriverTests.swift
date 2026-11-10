@@ -931,22 +931,21 @@ final class PairDriverTests: XCTestCase {
 
     // MARK: - Tensor-parallel batch lanes, tokens and logprobs against the requests alone
 
-    /// Tensor parallel on `lanes` lanes with two batch requests of `outputCount` tokens, each run alone first and
-    /// then in the waves, with `--evidence none`. The run's own request is the first reservation, the two requests
-    /// alone the next two, and a wave's the ones after.
-    private func tensorParallelBatch(_ sides: Sides, lanes: Int = 2, waves: [Int] = [2],
-                                     outputCount: Int = 6) throws -> PairConfiguration {
+    /// Tensor parallel on two lanes with two batch requests of six tokens, each run alone first and then in a wave
+    /// of two, with `--evidence none`. The run's own request is the first reservation, the two requests alone the
+    /// next two, and the wave's the ones after.
+    private func tensorParallelBatch(_ sides: Sides) throws -> PairConfiguration {
         var configuration = try sides.configuration(outputCount: 3, recording: false)
         configuration.generationMode = PairConfiguration.tensorParallelMode
-        configuration.batchLanes = lanes
+        configuration.batchLanes = 2
         // A lane is cancelled 20 s before its deadline (`ClusterWorkerRequest.laneDeadlineMarginNanoseconds`), and
         // the fake refuses a deadline past its own lease, 30 s from its launch: 25 s leaves each lane 5 s.
         configuration.requestSeconds = 25
         configuration.batchRequests = try (0..<2).map { index in
             try QualificationRequest(requestID: UUID(), promptTokenIDs: Array(1...(30 + index)), chunkSize: 16,
-                outputCount: outputCount, stopTokenIDs: [], promptSource: .init(kind: "tokenIDs", description: "batch \(index)"))
+                outputCount: 6, stopTokenIDs: [], promptSource: .init(kind: "tokenIDs", description: "batch \(index)"))
         }
-        configuration.batchWaves = waves
+        configuration.batchWaves = [2]
         try configuration.validate()
         return configuration
     }

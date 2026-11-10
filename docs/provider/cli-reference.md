@@ -3669,7 +3669,9 @@ every batch request, alone and in its waves, ask for each committed token's
 logprob and its K most likely alternatives, which tensor-parallel workers send
 (a pipeline worker refuses such a request). The report keeps them per request as
 IEEE-754 bit patterns (`logprobBits`, `[logprob, token 1, logprob 1, ...]` per
-token, and their `logprobsSHA256`). Each wave's are compared with the requests'
+token, and their `logprobsSHA256`); a token sent without them, or with another
+count, fails its request (`ClusterWorkerRequest`), so record i is token i's.
+Each wave's are compared with the requests'
 alone bit for bit (`logprobsMatchSolo`, `firstLogprobDifferenceIndex`,
 `allLogprobsMatchSolo`); a cancelled lane is compared as far as it got. A lane
 whose logprobs differ fails the run even when its tokens match.

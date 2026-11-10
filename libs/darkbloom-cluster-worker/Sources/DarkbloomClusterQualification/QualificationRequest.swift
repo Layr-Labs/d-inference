@@ -80,11 +80,18 @@ public struct QualificationSampling: Codable, Equatable, Sendable {
         self.temperature = temperature; self.topP = topP; self.topK = topK; self.minP = minP
         self.seed = seed; self.stream = stream
     }
+    /// Greedy text, as a reservation without sampling decodes; only a request that asks for logprobs carries it.
+    static let greedy = QualificationSampling(temperature: 0, seed: 0, stream: 0)
+
     /// The reservation's sampling: no penalties or bias, so speculative
     /// decoding verifies it (target-prefix acceptance).
-    public var wire: ClusterWorkerSampling {
+    public var wire: ClusterWorkerSampling { wire(topLogprobs: 0) }
+
+    /// `wire`, asking for each committed token's logprob and `topLogprobs` alternatives (none: 0).
+    func wire(topLogprobs: Int) -> ClusterWorkerSampling {
         .init(temperature: temperature, topP: topP, topK: topK, minP: minP, repetitionPenalty: 1,
-              repetitionContextSize: 0, frequencyPenalty: 0, presencePenalty: 0, seed: seed, stream: stream, logitBias: [])
+              repetitionContextSize: 0, frequencyPenalty: 0, presencePenalty: 0, seed: seed, stream: stream, logitBias: [],
+              topLogprobs: topLogprobs)
     }
 }
 

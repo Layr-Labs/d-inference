@@ -423,18 +423,15 @@ public struct PairConfiguration: Sendable {
         return value
     }
 
-    /// Everything below is by rank; only these two say which side a rank is on.
     /// A batch request's reservation sampling: its own (`QualificationSampling.wire`, none for greedy text), asking
     /// for `batchLogprobs` alternatives when the run compares them. A greedy request then carries greedy sampling
     /// that asks for them alone.
     func batchSampling(_ request: QualificationRequest) -> ClusterWorkerSampling? {
         guard let count = batchLogprobs else { return request.sampling?.wire }
-        let own = request.sampling?.wire
-        return ClusterWorkerSampling(temperature: own?.temperature ?? 0, topP: own?.topP ?? 1, topK: own?.topK ?? 0,
-            minP: own?.minP ?? 0, repetitionPenalty: 1, repetitionContextSize: 0, frequencyPenalty: 0, presencePenalty: 0,
-            seed: own?.seed ?? 0, stream: own?.stream ?? 0, logitBias: [], topLogprobs: count)
+        return (request.sampling ?? .greedy).wire(topLogprobs: count)
     }
 
+    /// Everything below is by rank; only these two say which side a rank is on.
     func side(_ rank: Int) -> PairSide { rank == localRank ? local : remote }
     func transport(_ rank: Int) -> [String] { rank == localRank ? ["/bin/sh", "-c"] : remoteTransport }
 

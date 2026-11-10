@@ -333,7 +333,7 @@ ordinary provider component suites remain required for changes to shared code.
 for changes to `scripts/install.sh`, which the app bundles. Manual workflow
 dispatch also runs `desktop-package`, which produces the unsigned macOS
 review artifact `unsigned-desktop-review`. It runs on a Darkbloom Sandbox Mac
-when the route grants one, otherwise on `blacksmith-12vcpu-macos-27`
+when the plane grants one, otherwise on `blacksmith-12vcpu-macos-27`
 ([CI Runner Routing](build.md#ci-runner-routing)). It does not publish a
 release or establish attestation qualification.
 

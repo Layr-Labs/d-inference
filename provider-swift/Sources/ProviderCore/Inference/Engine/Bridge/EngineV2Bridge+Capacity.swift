@@ -52,6 +52,8 @@ extension EngineV2Bridge {
         // incrementing it, which is exactly the flatline term
         // `wedgeSuspected` requires.
         wedgeMonitor.sampleSteps(snapshot.stepsExecuted, now: now)
+        wedgeMonitor.sampleQueue(waiting: snapshot.waitingRequests, running: snapshot.activeRequests,
+            steps: snapshot.stepsExecuted, now: now)
         emitStepWedgeTransitionIfNeeded(now: now)
 
         // Worst-case potential is bridge bookkeeping (the snapshot has no
@@ -204,7 +206,8 @@ extension EngineV2Bridge {
             // legacy `heartbeatSlotState` precedence — so the coordinator
             // deroutes the model without treating it as crashed-forever.
             state = "reloading"
-        } else if (ownedEngine as? CBv2NativeBlockEngine)?.isHealthy == false
+        } else if engineStopped(queueStalledFor: WedgeMonitor.suspectQueueStallSeconds, now: now)
+            || (ownedEngine as? CBv2NativeBlockEngine)?.isHealthy == false
             || wedgeMonitor.marksCrashed(
                 now: now, engineReportsSteps: !(ownedEngine is DistributedCBv2Engine),
                 isActive: { active[$0] != nil })

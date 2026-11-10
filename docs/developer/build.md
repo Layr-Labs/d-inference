@@ -489,7 +489,7 @@ shard the lane its matrix entry names, `matrix.lane`.
 
 | Workflow | Routed jobs | Fallback |
 |---|---|---|
-| `provider-tests.yml` (lanes requested by `provider-plan.yml`) | `test-provider` (lanes `test-provider-1` and `test-provider-2`, one per shard), `test-cluster` (lanes `test-cluster-1` for shard 1, `test-cluster-2` for shards 2 and 3, and `test-cluster-3` for shards 4 and 5), `test-cluster-focused` (one lane, `test-cluster-focused`, requested for both shards), `build-cluster`, `build-provider`, `cluster-release-checks`, `test-cluster-gpu` (lanes `test-cluster-gpu-1` and `test-cluster-gpu-3`, one per shard; shard 2 is not routed) | `blacksmith-12vcpu-macos-27` |
+| `provider-tests.yml` (lanes requested by `provider-plan.yml`) | `test-provider` (lanes `test-provider-1` and `test-provider-2`, one per shard), `test-cluster` (lanes `test-cluster-1` for shard 1, `test-cluster-2` for shards 2 and 3, and `test-cluster-3` for shards 4 and 5), `test-cluster-focused` (one lane, `test-cluster-focused`, requested for both shards), `build-cluster`, `build-provider`, `cluster-release-checks`, `test-cluster-gpu` (lanes `test-cluster-gpu-1`, `test-cluster-gpu-2` and `test-cluster-gpu-3`, one per shard) | `blacksmith-12vcpu-macos-27` |
 | `ci-master.yml` (lanes requested by `provider-plan.yml`) | `release-integrity`, `docs` | `blacksmith-4vcpu-ubuntu-2404` |
 | `docs-impact.yml` | `commit-signatures`, `docs-impact` | `blacksmith-4vcpu-ubuntu-2404` |
 | `landing.yml`, `desktop.yml`, `nightly-linear-package.yml` | `check`, `frontend`, `test` | `blacksmith-4vcpu-ubuntu-2404` |
@@ -586,7 +586,7 @@ repository variable `DARKBLOOM_JOB_SHAPES` is exactly `on`. While it is off:
   without sizes.
 - Every lane asks without a size and gets the approval's pinned macOS size
   ([CI Runner Routing](#ci-runner-routing)): the 9 blocking test jobs, the
-  build jobs and Cluster Release Build Checks.
+  build jobs, Cluster Release Build Checks and the 3 GPU shards.
 - Risk: the build jobs need a large Mac. If the approval pins a smaller macOS
   size, they get that smaller size, and a cold build takes longer.
 - A lane marked `required` keeps its fallback without asking. It takes no
@@ -595,7 +595,8 @@ repository variable `DARKBLOOM_JOB_SHAPES` is exactly `on`. While it is off:
 
 The lane table in the `route` job of `provider-plan.yml` is the one place that
 names each job's lane and size. The lanes are in cap order: the critical-path
-test shards first, then the build jobs and Cluster Release Build Checks.
+test shards first, then the build jobs and Cluster Release Build Checks, then
+the GPU shards.
 
 Each size is the smallest signed size (4x16, 4x24, 8x16, 12x32) that holds the
 job's used memory times 1.25, on which the job takes at most 5% longer than on
@@ -646,7 +647,8 @@ image of that size), `unavailable` (the plane cannot read its image catalog),
 image is not staged) or `lane_not_enabled` (the approval does not name the
 lane). A new lane routes only after the operator adds it to the approval's
 `lanes`; until then it keeps its fallback. On 2026-11-10 the approval named
-`test-cluster-gpu-1` but not `test-cluster-gpu-2` or `test-cluster-gpu-3`.
+`test-cluster-gpu-1` and `test-cluster-gpu-2` but not `test-cluster-gpu-3`
+(run 42924487818).
 For each lane, the route job's log and step summary show the size asked, the
 runner, and the decision with its reason.
 

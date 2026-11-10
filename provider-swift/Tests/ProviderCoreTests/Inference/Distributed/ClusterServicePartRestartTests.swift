@@ -87,7 +87,11 @@ struct ClusterServicePartRestartTests {
             }
             leader.run()
             let child = try leader.endedPart()
-            #expect(leader.lines.values.contains { $0.contains("this Mac's solo server ended") }, "\(leader.lines.values)")
+            // The service says so just after its status shows the wait.
+            let saidBy = Date().addingTimeInterval(2)
+            func said() -> Bool { leader.lines.values.contains { $0.contains("this Mac's solo server ended") } }
+            while !said(), Date() < saidBy { usleep(20_000) }
+            #expect(said(), "\(leader.lines.values)")
             #expect((1...6).contains(child.restartInSeconds ?? 0),
                     "it waits 6 s, not the away wait: \(String(describing: child.restartInSeconds))")
             #expect(child.restartWaitsForOtherMac == nil, "the other Mac's answer is not what it waits for")

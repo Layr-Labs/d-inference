@@ -3,6 +3,7 @@
 
   upload-model-revision.py inputs --model-id ID --version V --template-url URL --source-url URL --recipe R
                                   --manifest FILE [--mode check|build|upload] [--confirm-version V]
+                                  [--keys prod|legacy]
   upload-model-revision.py verify --manifest FILE --directory DIR
   upload-model-revision.py upload --manifest FILE --directory DIR --endpoint URL [--bucket darkbloom-models]
 
@@ -21,6 +22,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 RECIPES = {"g32", "mixed46", "router8", "router8+mixed46"}
+KEY_SETS = {"prod", "legacy"}  # the prod environment's PROD_R2_*, or the repo's R2_* (release-provider's fallback)
 CDN = "https://models.darkbloom.ai/"
 TEMPLATE_URL = re.compile(r"https://models\.darkbloom\.ai/(v2/[A-Za-z0-9._-]+--[0-9a-f]{12}/[A-Za-z0-9._-]+)/?")
 SHA256_HEX = re.compile(r"[0-9a-f]{64}")
@@ -163,6 +165,8 @@ def cmd_inputs(a):
         die("version must be one path component, not starting with '.'")
     if a.recipe not in RECIPES:
         die(f"recipe must be one of {sorted(RECIPES)}")
+    if a.keys not in KEY_SETS:
+        die(f"keys must be one of {sorted(KEY_SETS)}")
     if not re.fullmatch(r"https://huggingface\.co/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/resolve/[0-9a-f]{40}", a.source_url):
         die("source_url must be https://huggingface.co/<owner>/<repo>/resolve/<40-hex commit>")
     template = TEMPLATE_URL.fullmatch(a.template_url)
@@ -179,7 +183,7 @@ def cmd_inputs(a):
         die("the new version must differ from the template's")
     if a.mode == "upload" and a.confirm_version != a.version:
         die("upload needs confirm_version equal to version")
-    print(f"inputs ok: {a.model_id} {a.version} recipe {a.recipe}; {len(manifest['files'])} files, "
+    print(f"inputs ok: {a.model_id} {a.version} recipe {a.recipe} keys {a.keys}; {len(manifest['files'])} files, "
           f"{manifest.get('total_size_bytes', 0) / 1e9:.2f} GB, aggregate {manifest.get('aggregate_sha256', '')[:16]}…; "
           f"template prefix {template_prefix}")
     out = os.environ.get("GITHUB_OUTPUT")
@@ -242,6 +246,7 @@ def main():
         p.add_argument(k, required=True)
     p.add_argument("--mode", default="check")
     p.add_argument("--confirm-version", default="")
+    p.add_argument("--keys", default="prod")
     for name in ("verify", "upload"):
         q = sub.add_parser(name)
         q.add_argument("--manifest", required=True)

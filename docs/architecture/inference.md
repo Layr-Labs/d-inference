@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-10
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -2064,10 +2064,19 @@ reaches a destination
 A donor's stream retires only after its complete checkpoint is published
 (`EngineLoopV2.finishAfterCompletePrefixPublication`), so export time is added
 to the donating response's end. At a quantized checkpoint precision, export
-encodes each older attention row on the CPU with one prepared row encoder per
-segment read, which writes the scalar codec's exact bytes
-([conversion](../reference/ssd-kv-cache.md#complete-checkpoint-payload),
+encodes each older attention row on the CPU and writes the scalar codec's exact
+bytes ([conversion](../reference/ssd-kv-cache.md#complete-checkpoint-payload),
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/NativeQuantizedCheckpointTensorSource.swift`).
+It reads a head's consecutive native rows from the source in batches of up to
+256 KiB (`CBv2NativeCheckpointRowCodec.exportBatchBytes`), so a read's fixed
+cost is paid per batch: under GLM-5.3-Flash's native profile each read
+revalidates the publication's native binding, about 25 µs, which one read per
+row made the larger part of a 63 s end-of-stream wait after a 200k-token
+prompt on an M5 Ultra. Each batch is coded on up to four cores
+(`exportCodingWorkers`, a quarter of the active ones), one prepared encoder
+per core, and the encoder rotates eight lanes at a time with the scalar
+butterflies' additions in the same order, so the bytes and the first refused
+row are those of coding row by row (`CBv2NativeCheckpointBatchCoding`).
 
 Segmented paged admission no longer waits for queued GPU work. A released row's
 free 64 MiB segments are parked per pool, up to `min(2 GiB, slot grant / 8)`,

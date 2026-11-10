@@ -1,0 +1,139 @@
+name: Model Requant Upload
+
+# Re-quantize an existing model's language-model linears from its pinned bf16 source with
+# scripts/models/requant.py, verify the result byte for byte against the canonical manifest of the
+# candidate that was built and tested locally, then reserve and upload it to the model bucket
+# (manifest last). It never registers or promotes: promotion stays `Register Model` with
+# publish_revision_only=true and promote=true, on the owner's go.
+#
+# Modes (default `check`, so a dispatch with no choice moves nothing):
+#   check   read one known object in darkbloom-models with the repo's R2 credentials (proves the
+#           credential tuple reaches the model bucket; release credentials need not)
+#   build   check + rebuild + verify against the manifest; no write
+#   upload  build + the conditional revision reservation + upload; needs confirm_version = version
+#
+# Inputs are untrusted: every one reaches the scripts through `env`, never through `${{ }}` inside a
+# script, and `upload-model-revision.py inputs` validates them before any step that holds a secret.
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: check (read access only), build (rebuild and verify, no write) or upload
+        required: true
+        default: check
+        type: choice
+        options: [check, build, upload]
+      model_id:
+        description: Existing model ID (a new revision of it), for example qwen3.6-35b-a3b-vl-mtp-mxfp8
+        required: true
+      version:
+        description: The new revision's version (one path component)
+        required: true
+      recipe:
+        description: requant.py recipe (g32, mixed46, router8, router8+mixed46)
+        required: true
+      template_url:
+        description: The current revision's base URL, https://models.darkbloom.ai/v2/<slug>--<sha12>/<version>
+        required: true
+      source_url:
+        description: The bf16 source, https://huggingface.co/<owner>/<repo>/resolve/<40-hex commit>
+        required: true
+      manifest_json:
+        description: The canonical manifest (darkbloom-publish hash) of the locally built and tested candidate
+        required: true
+      confirm_version:
+        description: For upload only, the version again
+        required: false
+        default: ""
+
+concurrency:
+  group: model-requant-upload
+  cancel-in-progress: false
+
+jobs:
+  requant-upload:
+    name: ${{ inputs.mode }} ${{ inputs.model_id }} ${{ inputs.version }}
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    timeout-minutes: 300
+    env:
+      MODE: ${{ inputs.mode }}
+      MODEL_ID: ${{ inputs.model_id }}
+      VERSION: ${{ inputs.version }}
+      RECIPE: ${{ inputs.recipe }}
+      TEMPLATE_URL: ${{ inputs.template_url }}
+      SOURCE_URL: ${{ inputs.source_url }}
+      MANIFEST_JSON: ${{ inputs.manifest_json }}
+      CONFIRM_VERSION: ${{ inputs.confirm_version }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      - name: Validate inputs (no secret in scope)
+        id: inputs
+        run: |
+          set -euo pipefail
+          printf '%s' "$MANIFEST_JSON" > "$RUNNER_TEMP/manifest.json"
+          python3 scripts/models/upload-model-revision.py inputs --model-id "$MODEL_ID" --version "$VERSION" \
+            --template-url "$TEMPLATE_URL" --source-url "$SOURCE_URL" --recipe "$RECIPE" \
+            --manifest "$RUNNER_TEMP/manifest.json" --mode "$MODE" --confirm-version "$CONFIRM_VERSION"
+
+      - name: Install tools (numpy pinned to the local build's, so the bytes reproduce)
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/tools"
+          "$RUNNER_TEMP/tools/bin/pip" install --quiet numpy==2.5.4 awscli
+          echo "$RUNNER_TEMP/tools/bin" >> "$GITHUB_PATH"
+
+      - name: Check read access to the model bucket
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          KEY: ${{ steps.inputs.outputs.template_manifest_key }}
+        run: |
+          set -euo pipefail
+          test -n "$AWS_ACCESS_KEY_ID" && test -n "$R2_ENDPOINT"
+          if ! aws s3api head-object --bucket darkbloom-models --key "$KEY" --endpoint-url "$R2_ENDPOINT" \
+               --region auto --query ContentLength --output text > "$RUNNER_TEMP/head.out" 2> "$RUNNER_TEMP/head.err"; then
+            echo "::error::These R2 credentials cannot read darkbloom-models (they may be release-bucket only)."
+            grep -o -E 'AccessDenied|Forbidden|NoSuchKey|NoSuchBucket|[0-9]{3}' "$RUNNER_TEMP/head.err" | head -3 || true
+            exit 1
+          fi
+          echo "read access ok: the template manifest is $(cat "$RUNNER_TEMP/head.out") bytes"
+
+      - name: Free runner disk
+        if: env.MODE != 'check'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          df -h "$RUNNER_TEMP"
+
+      - name: Rebuild the candidate
+        if: env.MODE != 'check'
+        run: |
+          set -euo pipefail
+          need=$(python3 -c 'import json,os; print(int(json.load(open(os.environ["RUNNER_TEMP"]+"/manifest.json"))["total_size_bytes"]/2**30)+10)')
+          free=$(df -BG --output=avail "$RUNNER_TEMP" | tail -1 | tr -dc 0-9)
+          [ "$free" -ge "$need" ] || { echo "::error::runner has ${free} GiB free, needs ${need}"; exit 1; }
+          python3 scripts/models/requant.py build --template "$TEMPLATE_URL" --source "$SOURCE_URL" \
+            --recipe "$RECIPE" --out "$RUNNER_TEMP/model" | tail -5
+
+      - name: Verify against the manifest
+        if: env.MODE != 'check'
+        run: python3 scripts/models/upload-model-revision.py verify --manifest "$RUNNER_TEMP/manifest.json" --directory "$RUNNER_TEMP/model"
+
+      - name: Reserve and upload (manifest last; no registration, no promotion)
+        if: env.MODE == 'upload'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+        run: |
+          set -euo pipefail
+          python3 scripts/models/upload-model-revision.py upload --manifest "$RUNNER_TEMP/manifest.json" \
+            --directory "$RUNNER_TEMP/model" --endpoint "$R2_ENDPOINT"
+          echo "Next, on the owner's go: Register Model with model_id=$MODEL_ID version=$VERSION publish_revision_only=true promote=true"

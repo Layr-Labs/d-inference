@@ -21,8 +21,8 @@ name: Release Dev-Branch Provider
 # <base>-dev.branch.<run number>.
 #
 # Secrets: `secrets: inherit` on job dev's call is the only secret reference in
-# this file; job qualify passes none. For environment dev the reusable workflow reads the Apple signing and
-# notarization secrets (APPLE_CERTIFICATE_P12, APPLE_CERTIFICATE_PASSWORD,
+# this file; job qualify passes none. For environment dev the reusable workflow
+# reads the Apple signing and notarization secrets (APPLE_CERTIFICATE_P12, APPLE_CERTIFICATE_PASSWORD,
 # PROVISIONING_PROFILE_BASE64, APPLE_ID, APPLE_APP_PASSWORD) in its signing job
 # and only DEV_* secrets for staging and publication. It reads a PROD_*,
 # STAGING_* or unprefixed publication secret only when the environment is prod

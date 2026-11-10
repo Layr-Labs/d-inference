@@ -1116,14 +1116,17 @@ are not successful physical runs.
 
 Release SDK qualification uses SDK 27.2 / Swift 6.4.2 (Xcode 27.2, the
 [`release` toolchain](build.md#sdk-27-release-builds-and-caches)) and runs before
-optimized compilation, in `release-qualify.yml`. The `qualify-sdk-shard` jobs run the provider suite in
-five shards on separate Macs (Darkbloom Sandboxes when the plane grants lane
-`release-qualify`, see [Release qualification on Darkbloom](build.md#release-qualification-on-darkbloom)), with the shard plan of CI
-(`scripts/provider-test-shards.py`). Shard 2 also runs Prompt Parity, and the
-last shard runs the isolated processes and the audio gate. The `qualify-sdk`
-job runs after every shard passes. It audits the executed counts of each shard
-against the full suite list. Each caller's release call needs `qualify-sdk`'s
-call, so the build and signing start only after it passed (or on a resume). GPU suites retain serial execution and exclusive-process isolation.
+optimized compilation, in `release-qualify.yml`. The `qualify-sdk-shard` jobs
+run the provider suite in five shards on separate Macs, with the shard plan of
+CI (`scripts/provider-test-shards.py`). The shards run on Darkbloom Sandboxes
+when the plane grants lane `release-qualify`
+([Release qualification on Darkbloom](build.md#release-qualification-on-darkbloom)).
+Shard 2 also runs Prompt Parity, and the last shard runs the isolated processes
+and the audio gate. The `qualify-sdk` job runs after every shard passes. It
+audits the executed counts of each shard against the full suite list. Each
+caller's release call needs the caller's job `qualify`, which calls
+`release-qualify.yml`. So the build and signing start only after `qualify-sdk`
+passed, or on a resume. GPU suites retain serial execution and exclusive-process isolation.
 A cache hit never skips a test.
 
 The SDK 27.2 Date checks run without a Mac. The CI plan checks job of

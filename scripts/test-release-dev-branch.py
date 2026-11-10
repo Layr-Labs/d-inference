@@ -12,8 +12,7 @@ release-swift.yml's master push paths, has no dispatch, no input and no
 qualification, whose shards may run on a Darkbloom Sandbox) with read-only
 permissions and no secrets. Its job `dev` needs it, and only calls the
 reusable release workflow with environment `dev` and `secrets: inherit`. Both
-are guarded to `refs/heads/dev`. The caller
-names no secret, has no step and signs nothing itself, so there is no second
+are guarded to `refs/heads/dev`. The caller names no secret, has no step and signs nothing itself, so there is no second
 build or signing path and no ad-hoc signature. They also pin the reusable
 workflow's dev path: the secrets it reads for a non-prod, non-staging lane are
 exactly the Apple signing and notarization set, used only in the signing job,

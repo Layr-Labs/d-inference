@@ -266,14 +266,14 @@ jobs:
 
   build-and-release:
     name: Sign, notarize and retain exact artifact
-    # SDK qualification passed before this workflow started: each caller's
-    # release lane needs its `qualify` job (release-qualify.yml), skipped only
-    # on a resume.
     needs: [resolve-env, build-provider]
     if: >-
       ${{ !cancelled() && needs.resolve-env.result == 'success' &&
           ((needs.resolve-env.outputs.resume == 'true' && needs.build-provider.result == 'skipped') ||
            (needs.resolve-env.outputs.resume == 'false' && needs.build-provider.result == 'success')) }}
+    # SDK qualification passed before this workflow started: each caller's
+    # release lane needs its `qualify` job (release-qualify.yml), skipped only
+    # on a resume.
     # The signed artifact and its unsigned inputs are all built on Blacksmith.
     runs-on: blacksmith-12vcpu-macos-27
     outputs:

@@ -4,7 +4,8 @@ name: Provider Release Qualification (reusable)
 # shards, on the release toolchain, and the one gate that audits them. The
 # callers (release-dev-branch.yml, release-swift.yml) call this from one job,
 # `qualify`, with read-only permissions and no secrets, and call the
-# credentialed release-provider.yml only after it passes (skipped on a resume).
+# credentialed release-provider.yml only after it passes. A resume skips
+# `qualify`.
 #
 # Runners: the shards ask the Darkbloom plane for lane release-qualify and keep
 # blacksmith-12vcpu-macos-27 when it is not granted. The plane admits a

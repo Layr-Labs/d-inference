@@ -25,8 +25,8 @@ name: Release Provider Bundle (Swift)
 # the dependent build/sign/stage/publish jobs, so each lane is a separate call
 # of the reusable workflow. Before it, job qualify calls release-qualify.yml
 # (the SDK qualification shards and their gate) once for the run's lane, with
-# read-only permissions and no secrets. The reusable workflow signs dev, staging and prod
-# with the real Developer ID; resolve-provider-release.sh refuses prod on any
+# read-only permissions and no secrets. The reusable workflow signs dev,
+# staging and prod with the real Developer ID; resolve-provider-release.sh refuses prod on any
 # non-tag trigger, so a master push can never reach the prod signing identity.
 # The STAGING_* secrets and the staging coordinator do not exist yet (DBLM-771),
 # so the staging lane runs only when the STAGING_ENABLED repository variable is

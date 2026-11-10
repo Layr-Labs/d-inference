@@ -239,7 +239,7 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn('test "$(git diff --name-only)" = "$SOURCE"', stamp)
         self.assertNotIn('version:', WARM.split('uses: ./.github/actions/provider-release-build', 1)[1].split('\n      - ', 1)[0])
 
-    def test_parallel_lanes_use_sdk27_without_signing_secrets(self):
+    def test_build_and_qualification_lanes_use_sdk27_without_signing_secrets(self):
         # The build stays on Blacksmith in the credentialed workflow; the
         # shards read their lane in the workflow that gets no secrets.
         lanes = [(RELEASE, 'build-provider', 'release', 'resolve-env', 'blacksmith-12vcpu-macos-27'),
@@ -272,7 +272,7 @@ class ReleasePipelineTests(unittest.TestCase):
         for name in ['build-and-release', 'validate-older-macos']:
             self.assertIn(resolve, job(RELEASE, name))
 
-    def test_signing_requires_both_sdk_lanes_without_environment_approval(self):
+    def test_signing_requires_the_build_without_environment_approval(self):
         content = job(RELEASE, 'build-and-release')
         # Qualification passed before this workflow started (the callers' lanes need `qualify`).
         self.assertIn('needs: [resolve-env, build-provider]', content)

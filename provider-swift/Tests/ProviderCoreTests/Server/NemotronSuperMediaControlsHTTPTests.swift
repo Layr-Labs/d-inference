@@ -177,9 +177,11 @@ struct NemotronSuperMediaControlsHTTPTests {
             #expect(minP.contains("Invalid inference request."), "\(minP)")
             let bias = try await send(body(image, ["x"], stream: false, ["logit_bias": ["1": 1]]), status: .badRequest)
             #expect(!bias.contains("Invalid media input."), "\(bias)")
-            // Media the route does not serve is named as unsupported media.
-            let tiff = Media(part: "image_url", uri: "data:image/tiff;base64," + png.base64EncodedString())
-            let unsupported = try await send(body(tiff, ["x"], stream: false), status: .badRequest)
+            // Media the route does not serve is named as unsupported media:
+            // here an image part whose label is not an image.
+            let octets = Media(part: "image_url",
+                               uri: "data:application/octet-stream;base64," + png.base64EncodedString())
+            let unsupported = try await send(body(octets, ["x"], stream: false), status: .badRequest)
             #expect(unsupported.contains("Media input is not supported."), "\(unsupported)")
             #expect(await budget.outstandingReservedBytes() == baseline)
         }

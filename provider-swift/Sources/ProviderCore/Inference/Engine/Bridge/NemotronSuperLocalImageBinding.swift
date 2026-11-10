@@ -46,7 +46,7 @@ actor NemotronSuperLocalImageBinding {
         var message: String {
             switch self {
             case .imageSource:
-                "an image must be an inline base64 data: URI labelled image/png, image/jpeg, image/webp, image/gif or image/bmp"
+                "an image must be an inline base64 data: URI with an image/ media type"
             case .videoSource:
                 "a video must be an inline base64 data: URI labelled video/mp4 or video/quicktime"
             case .audio: "this model takes no audio input"
@@ -113,8 +113,9 @@ actor NemotronSuperLocalImageBinding {
     }
     #endif
 
-    /// Inline base64 media under one of `admittedDataURIPrefixes` (images) or
-    /// `admittedVideoDataURIPrefixes` (one video), rendered with this exact
+    /// Inline base64 media, images under any image label
+    /// (`isInlineBase64Image`) or one video under
+    /// `admittedVideoDataURIPrefixes`, rendered with this exact
     /// Owner's verified template/tokenizer from `plan`, the body's request
     /// plan, as the text route renders it: tools, tool choice and the
     /// response format reach the prompt, and the caller's output parser
@@ -276,12 +277,35 @@ actor NemotronSuperLocalImageBinding {
         return UInt64(bodyBytes) * 32 + UInt64(templateBytes) * 4 + 16 * 1024 * 1024
     }
 
-    /// Data-URI labels of the formats `NemotronSuperImageDecode` admits. The
-    /// decoder sniffs content as the reference loader does, so a label only
-    /// gates the URI shape: PNG bytes under the JPEG label decode as PNG.
-    private static let admittedDataURIPrefixes = ["data:image/png;base64,", "data:image/jpeg;base64,",
-                                                  "data:image/webp;base64,", "data:image/gif;base64,",
-                                                  "data:image/bmp;base64,"]
+    /// An inline base64 image: `data:image/<subtype>[;attribute=value]...;base64,`.
+    /// `NemotronSuperImageDecode` takes the format from the bytes, as the
+    /// reference loader and the coordinator's fetch do, so the label gates
+    /// only the URI's shape and kind: any image subtype, in any case (RFC
+    /// 2045), such as the `image/jpg` alias clients send. A remote or file
+    /// URL, percent encoding, a label that is not an image, and a header
+    /// above 256 bytes are refused. `data:` and `;base64` are matched as
+    /// written, as the coordinator and `MediaIngest.dataFromDataURI` read them.
+    private static func isInlineBase64Image(_ uri: String) -> Bool {
+        guard let comma = uri.utf8.firstIndex(of: UInt8(ascii: ",")) else { return false }
+        let header = uri[..<comma]
+        guard header.utf8.count <= 256, header.hasPrefix("data:"), header.hasSuffix(";base64") else { return false }
+        let fields = header.dropFirst("data:".count).dropLast(";base64".count)
+            .split(separator: ";", omittingEmptySubsequences: false)
+        let type = fields[0].split(separator: "/", omittingEmptySubsequences: false)
+        guard type.count == 2, type[0].lowercased() == "image", isToken(type[1]) else { return false }
+        return fields.dropFirst().allSatisfy { parameter in
+            let pair = parameter.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            return pair.count == 2 && isToken(pair[0]) && isToken(pair[1])
+        }
+    }
+
+    /// An RFC 2045 token: printable ASCII without spaces or `tspecials`.
+    private static func isToken(_ text: Substring) -> Bool {
+        !text.isEmpty && text.utf8.allSatisfy { byte in
+            byte > 0x20 && byte < 0x7f && !"()<>@,;:\\\"/[]?=".utf8.contains(byte)
+        }
+    }
+
     /// The inline movie labels `MediaIngest.decodeVideo` admits.
     private static let admittedVideoDataURIPrefixes = ["data:video/mp4;base64,", "data:video/quicktime;base64,"]
 
@@ -302,8 +326,7 @@ actor NemotronSuperLocalImageBinding {
                         guard video == nil else { throw Failure.unsupportedMedia(.imagesWithVideo) }
                         guard images.count < NemotronSuperServingPolicy.maximumImages
                         else { throw Failure.unsupportedMedia(.tooManyImages) }
-                        guard admittedDataURIPrefixes.contains(where: uri.hasPrefix)
-                        else { throw Failure.unsupportedMedia(.imageSource) }
+                        guard isInlineBase64Image(uri) else { throw Failure.unsupportedMedia(.imageSource) }
                         images.append(try MediaIngest.dataFromDataURI(uri))
                     case .videoURL(let uri):
                         guard images.isEmpty else { throw Failure.unsupportedMedia(.imagesWithVideo) }

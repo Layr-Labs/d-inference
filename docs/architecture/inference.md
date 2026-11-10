@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-10
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -721,10 +721,10 @@ Its quote alone is not admission. The exact-owner `runEncoded` boundary charges
 ingress before JSON/base64/header inspection and media before decode. The media
 charge adds the SDK's shape-derived tower and projector working-memory bound for
 the largest image, which preparation evaluates one at a time; the global
-activation reserve is unchanged. It only accepts `data:image/png;base64,`,
-`data:image/jpeg;base64,`, `data:image/webp;base64,`, `data:image/gif;base64,`
-and `data:image/bmp;base64,` URIs, whose content selects the format, and uses the
-owned tokenizer. Native input arrays are constructed in a separate retained,
+activation reserve is unchanged. It only accepts inline base64 URIs under an
+image media type, `data:image/<subtype>[;attribute=value]...;base64,` in any
+case (`isInlineBase64Image`; `image/jpg` included), whose content selects the
+format, and uses the owned tokenizer. Native input arrays are constructed in a separate retained,
 fenced epoch before tower preparation. Synthetic RGB tests cover generation,
 cancellation, busy rejection and release after task completion; loopback HTTP
 tests serve PNG, JPEG, WebP, GIF and BMP variants through the tiny synthetic owner. Actual
@@ -780,14 +780,19 @@ the reader's one cancellation, runs in order on the reader's own serial queue
 while the pulling thread waits for the sample, so the reader is never
 cancelled during a read. Waiting on the decoder is bounded by
 `NemotronSuperVideoDecode.decodeAllowance` (5 s, then 2 ms a frame and 4 ns a
-coded pixel, at most `maximumDecodeAllowance`, 120 s): when it is spent the
+coded pixel, at most `maximumDecodeAllowance`, 120 s). The per-frame and
+per-pixel terms are 10 times what an idle M3 Ultra measured, but the 120 s cap
+lowers the margin for the largest movies: 18,000 frames of 1,920 x 1,088 need
+about 18.6 s on an idle M3 Ultra, so the cap is about 6.4 times that. When the
+allowance is spent the
 wait ends and the video is refused with `decodeAllowanceSpent`. The allowance
 is wall time, so a loaded machine spends it faster than the decoder's work
 alone. A spent allowance stops the reader; it is not a reader failure and is
 not decoded again. Because the movie's work is already bounded by the plan's
 decoded pixels, a spent allowance is this provider's fault: it refuses as a
-retryable 503 (failure code `capacity`), so the coordinator can send the
-request to another provider.
+retryable 503 (failure code `capacity`, error reason
+`media_memory_unavailable`), so the coordinator can send the request to
+another provider without a capacity strike or a budget clamp.
 Cancelling the request, as the binding's `drain` does, ends the wait
 at once. Either way the reader is cancelled once the read in progress
 returns, and that read's sample is dropped.
@@ -822,9 +827,14 @@ every control the text route refuses is refused with media in the same way
 (`invalid_request`). Super therefore advertises `native_media_tools`
 (`ToolChoiceEnforcementPolicy.advertisesNativeMediaTools`), and the coordinator
 routes forced tool choice with media, and media in tool results, to it. It also
-advertises `native_media_controls` (`advertisesNativeMediaControls`): during
-rollout the coordinator sends a Super request with image or video and a JSON
-response format or tools only to a Mac that advertises it.
+advertises `native_media_controls` (`advertisesNativeMediaControls`): a
+coordinator with platform
+[#729](https://github.com/Layr-Labs/darkbloom-platform/pull/729) (on platform
+`dev`, not yet in production) sends a Super request with image or video and a
+JSON response format or tools only to a Mac that advertises it
+([`BuildNeedsNativeMediaControls`](https://github.com/Layr-Labs/darkbloom-platform/blob/820c2755a85b9a9e7b033ea488d2f8d53a0d57a6/coordinator/registry/native_media_tools.go)).
+Without #729 such requests reach any Super Mac, and a Mac without this build
+refuses them.
 `NemotronSuperLocalImageBinding.encodedBody` keeps only the media rules. Each
 refusal names its cause by its failure code (`SuperHTTPErrors.map`):
 
@@ -3090,7 +3100,10 @@ needs the sidecar's matching change and a new normalization version.
   gives the same frames or samples. A second failure with an AVFoundation or
   VideoToolbox decoder, hardware or interruption code
   (`VideoReaderFailure.isTransient`) refuses as a retryable 503 (failure code
-  `capacity`), so the coordinator can send the request to another provider.
+  `capacity`, error reason `media_memory_unavailable`), so the coordinator can
+  send the request to another provider. The reason is health-neutral at the
+  coordinator: the re-route counts toward its three capacity refusals, but the
+  provider gets no capacity strike and no budget clamp.
   Any other second failure is the media's `invalid_media` 400. Each failed pass
   emits a WARN `engine_health` event, operation `video_reader_failed` for a
   video track and `audio_reader_failed` for an audio track, with `retrying`,
@@ -3230,8 +3243,9 @@ the request's real retirement; a failed evaluation retains all fault roots.
 This prevents the ownership registry from keeping every old layer output alive.
 
 A refused media reservation maps to the typed `media_memory_unavailable`
-reason (`MiMoV26EncodedMediaIngress.outwardFailure`). It leaves a healthy text
-engine and its routing budget available. Failed required native completion
+reason (`MiMoV26EncodedMediaIngress.outwardFailure`), and so does an audio or
+video reader that failed twice with a transient decoder fault. It leaves a
+healthy text engine and its routing budget available. Failed required native completion
 still retains and quarantines the actual owner; it is not reclassified as a
 recoverable media refusal.
 
@@ -3903,8 +3917,8 @@ evidence, not a change to the normal final-row contract or the near-tie rule
 | Model advertised, capacity quotes rejected with reason `template` | Scan-time render check failed (`template_render_ok = false`) | `TemplateRenderCheck.swift`, `provider-swift/Sources/ProviderCore/Coordinator/CapacityQuoteEngine.swift` (`reject(.template)`) |
 | Image rejected | Over `MediaIngest` caps or over the N² tower budget | `MediaIngest.swift`, `VisionTowerBudget.swift` |
 | `video_reader_failed` or `audio_reader_failed` WARN event, `retrying: true`, and the request served | A video or audio reader pass failed and the second pass decoded the track; `reader_error` names the reader's error codes | `libs/mlx-swift-lm/Libraries/MLXLMCommon/VideoReaderFailure.swift` (`VideoReaderRetry`), `VideoReaderFailureReport.swift` |
-| Video refused after two `video_reader_failed` or `audio_reader_failed` events (503 `capacity` or 400 `invalid_media`) | Both reader passes failed: 503 for a transient decoder, hardware or interruption code, 400 otherwise | `EngineV2VisionPrefill.swift` (`clientFault(for:)`), `EngineV2GLM5NextMediaPrefill.swift` (`glm5NextInputError`), `MiMoV26EncodedMediaIngress.swift` (`outwardFailure`), `NemotronSuperLocalImageHTTP.swift` (`SuperHTTPErrors.map`) |
-| Nemotron Super video refused with 503 `capacity` and no `video_reader_failed` event | The wait on the decoder outlasted `decodeAllowance` (wall time; a slow or loaded Mac), `NemotronSuperVideoDecode.Failure.decodeAllowanceSpent` | `NemotronSuperVideoDecode.swift` (`decodeAllowance`, `SerialReader.earlyEnd`), `NemotronSuperLocalImageHTTP.swift` (`SuperHTTPErrors.map`) |
+| Video refused after two `video_reader_failed` or `audio_reader_failed` events (503 `capacity` with `media_memory_unavailable`, or 400 `invalid_media`) | Both reader passes failed: 503 for a transient decoder, hardware or interruption code, 400 otherwise | `EngineV2VisionPrefill.swift` (`clientFault(for:)`, `constructionRefusal(for:mediaKind:)`), `EngineV2GLM5NextMediaPrefill.swift` (`glm5NextInputError`), `MiMoV26EncodedMediaIngress.swift` (`outwardFailure`), `NemotronSuperLocalImageHTTP.swift` (`SuperHTTPErrors.map`) |
+| Nemotron Super video refused with 503 `capacity` (`media_memory_unavailable`) and no `video_reader_failed` event | The wait on the decoder outlasted `decodeAllowance` (wall time; a slow or loaded Mac), `NemotronSuperVideoDecode.Failure.decodeAllowanceSpent` | `NemotronSuperVideoDecode.swift` (`decodeAllowance`, `SerialReader.earlyEnd`), `NemotronSuperLocalImageHTTP.swift` (`SuperHTTPErrors.map`) |
 | `missingUserQuery` (400) | Qwen 3.5/3.6/3.8 or Bonsai 2 history with no user turn beyond `<tool_response>` wrappers | `provider-swift/Sources/ProviderCore/Inference/Prompting/Qwen35TemplateFixes.swift` (`validateUserQuery`) |
 | `Inference failure: invalid request (<reason>)` in `darkbloom logs` (400) | The sealed request, its body decode or the model's native controls refused it before the inference task, or a prompt policy or engine admission refused it while its prompt was prepared; the reason is the closed [refusal line](../provider/cli-reference.md#refusal-lines) | `provider-swift/Sources/ProviderCore/Inference/Engine/InferenceRefusalReason.swift` (`InferenceRefusalReason`, `init(promptRefusal:)`); `provider-swift/Sources/ProviderCore/Inference/Prompting/ProviderPromptContractPipeline.swift` (`nativeControlsRefusal`) |
 | Load refused: `pagedUnavailable` (503) | Explicit `engine_v2_kv_backend = paged` and the paged pool/kernels failed | `EngineV2Factory+BackendPreparation.swift` — see [`prefix-cache.md`](prefix-cache.md) |

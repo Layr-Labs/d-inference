@@ -252,9 +252,10 @@ struct NemotronSuperVideoBindingTests {
     }
 
     /// A spent decode allowance is this machine's wall time, not the movie's
-    /// fault: a retryable 503 (`capacity`) that a coordinator sends to another
-    /// provider. The movie's own limits are `media_too_large` (400 here, 413
-    /// at the coordinator).
+    /// fault: a retryable 503 (`capacity`, error reason
+    /// `media_memory_unavailable`) that a coordinator sends to another provider
+    /// without a capacity strike. The movie's own limits are `media_too_large`
+    /// (400 here, 413 at the coordinator).
     @Test func spentDecodeAllowanceIsARetryableRefusal() {
         func wire(_ error: NemotronSuperVideoDecode.Failure) -> (InferenceFailureCode, UInt16) {
             let failure = ProviderLoop.sanitizedInferenceFailure(
@@ -262,9 +263,10 @@ struct NemotronSuperVideoBindingTests {
             return (failure.code, failure.statusCode)
         }
         let mapped = SuperHTTPErrors.map(NemotronSuperVideoDecode.Failure.decodeAllowanceSpent, media: true)
-        #expect(mapped as? MultiModelBatchSchedulerEngineError
-            == .requestRejected("inline video decoder outlasted its decode allowance; retry on another provider"))
+        #expect(mapped as? MultiModelBatchSchedulerEngineError == .mediaMemoryUnavailable)
         #expect(wire(.decodeAllowanceSpent) == (.capacity, 503))
+        #expect(ProviderLoop.sanitizedInferenceFailure(from: mapped, phase: .request).errorReason
+            == .mediaMemoryUnavailable)
         #expect(wire(.limit) == (.mediaTooLarge, 400))
     }
 

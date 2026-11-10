@@ -102,6 +102,41 @@ extension NemotronSuperManagedSlotTests {
         #expect(await fixture.budget.outstandingReservedBytes() == 0)
     }
 
+    /// The image formats and labels production refused with a 400 on every
+    /// Super Mac, served on the sealed coordinator path: WebP, GIF and BMP,
+    /// which the coordinator fetches and inlines, and a JPEG under the
+    /// `image/jpg` alias and a capitalised `image/JPEG`, which clients send
+    /// inline. Images with tools or a JSON response format:
+    /// `coordinatorImagesServeJSONOutputAndTools`.
+    @Test(.timeLimit(.minutes(3)))
+    func coordinatorImagesTakeEveryFormatAndImageLabel() async throws {
+        let fixture = try await Self.fixture(mode: .auto)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let loop = fixture.loop, script = fixture.script
+        try await loop.ensureModelLoaded(modelId: Self.modelID, allowEviction: false,
+                                         revisionDirectory: fixture.directory)
+        let held = await fixture.budget.reservationBytesSnapshot()
+        let recorder = Recorder(), consumer = NodeKeyPair.generate()
+        typealias Formats = NemotronSuperImageIOFormatTests
+        let jpeg = try NemotronSuperImageFixtures.data("jpeg-420.jpeg")
+        let images: [(type: String, data: Data)] = [
+            ("image/webp", try NemotronSuperImageFixtures.data("webp-rgb8-lossless.webp")),
+            ("image/gif", try Formats.gif(Formats.raster("png-palette8.png"))),
+            ("image/bmp", Formats.bmp(try Formats.raster("png-rgb8.png"))),
+            ("image/jpg", jpeg), ("image/JPEG", jpeg),
+        ]
+        for image in images {
+            let uri = "data:\(image.type);base64," + image.data.base64EncodedString()
+            let body = try Self.imageBody(["A", " cat."], script: script, maxTokens: 2, image: uri)
+            let answer = try await Self.send(body, to: loop, recorder: recorder, consumer: consumer)
+            #expect(SuperSSE(answer.sse).content == "A cat.", "\(image.type): \(answer.terminal)")
+            #expect(Self.usage(answer.terminal)?.completionTokens == 2, "\(image.type)")
+            #expect(await fixture.budget.reservationBytesSnapshot() == held, "\(image.type)")
+        }
+        #expect(await loop.unloadModel(Self.modelID))
+        #expect(await fixture.budget.outstandingReservedBytes() == 0)
+    }
+
     @Test(.timeLimit(.minutes(3)))
     func imagesRunTargetOnlyBesideSpeculatingText() async throws {
         let fixture = try await Self.fixture(mode: .auto)

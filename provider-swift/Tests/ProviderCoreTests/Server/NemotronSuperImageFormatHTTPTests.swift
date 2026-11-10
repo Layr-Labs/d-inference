@@ -35,10 +35,11 @@ struct NemotronSuperImageFormatHTTPTests {
         let hook = try NemotronSuperLocalImageHTTP(owner: owner, templateBytes: template)
         let model = NemotronSuperLocalBinding.modelID
         // The decoder sniffs content, so every accepted fixture is sent under
-        // both admitted labels: each format also arrives under the other's.
-        let admittedLabels = ["png", "jpeg"]
+        // several image labels: each format also arrives under another's, and
+        // under `image/jpg`, an alias clients send.
+        let admittedLabels = ["png", "jpeg", "jpg"]
         @Sendable func uri(_ data: Data, _ label: String) -> String {
-            "data:image/\(label);base64," + data.base64EncodedString()
+            "data:\(label.contains("/") ? label : "image/" + label);base64," + data.base64EncodedString()
         }
         @Sendable func body(_ images: [Data], label: String) throws -> ByteBuffer {
             let parts: [[String: Any]] = [["type": "text", "text": "fixture"]]
@@ -102,10 +103,11 @@ struct NemotronSuperImageFormatHTTPTests {
                     #expect(await budget.outstandingReservedBytes() == baseline)
                 }
             }
-            // Content decides the format; a label outside the decoder's formats
-            // is refused even when the content would decode.
+            // Content decides the format: a TIFF is refused under any image
+            // label, and a PNG under a label that is not an image.
+            let tiff = Data([0x49, 0x49, 0x2a, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0])
             let refusals = rejected.flatMap { image in admittedLabels.map { (image, $0) } }
-                + [(accepted[0], "tiff"), (accepted[0], "jpg")]
+                + [(tiff, "tiff"), (tiff, "png"), (accepted[0], "application/octet-stream")]
             for (image, label) in refusals {
                 try await client.execute(uri: "/v1/chat/completions", method: .post,
                     headers: headers, body: try body([image], label: label)) { response in

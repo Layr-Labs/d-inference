@@ -5536,9 +5536,9 @@ See [focused Gemma 4 tensor-parallel checks](../developer/test.md#focused-gemma-
 
 ### Gemma 4 native context on a pair
 
-A Gemma 4 26B pair in tensor parallel serves the model's declared context, as
-one Mac serving it does: prompts up to 262,143 tokens and up to 32,768 output
-tokens (the catalog's `max_output_length`) within 262,144
+A Gemma 4 26B pair serves the model's declared context, as one Mac serving it
+does, in tensor parallel and in the pipeline: prompts up to 262,143 tokens and
+up to 32,768 output tokens (the catalog's `max_output_length`) within 262,144
 (`Gemma4ResidentAdapterDefinition.contextLimits`,
 `QwenResidentContextLimits.Ceiling.native`). Before, the pair advertised
 65,536. On pair-2 (2026-11-08) a streamed prompt longer than 32,768 tokens to
@@ -5565,35 +5565,68 @@ it alone:
   longest context the reservation gate admits now (`servingContextTokens`,
   `refreshServingContext`; kept prefix entries count as room). The paged
   host's bound is the profile's (`hostBound`); pages grow with each request.
-- Pipeline: the memory plan's request, as for every family: 65,536 tokens of
-  context, with prompts up to 32,768. The adapter says whether its stages
-  serve the whole profile (`ClusterRuntimeAdapter.pipelineServesWholeProfile`,
-  false for every adapter), and the worker's stages
+- Pipeline: the adapter says whether its stages serve the whole profile
+  (`ClusterRuntimeAdapter.pipelineServesWholeProfile`; the memory plan for
+  every other adapter). The worker's stages
   (`LayerStageResidentAdmission.servedProfile`) and the provider
   (`ClusterModelFeaturePolicy.servedProfile`) both read that one rule, so a
-  pair never advertises a context its ranks refuse. The release facts carry
-  the same prompt limit in the pipeline's parity qualifications, so a
-  coordinator sends a longer Gemma prompt to tensor parallel or one Mac. Each
-  stage charges the whole model's ledger (`Gemma4StateBudget`) at the
-  request's context: 2.0 GB, plus one prompt frame's 2.2 GB on a stage with a
-  full-attention layer, at the standard request. READY's capacity is the
-  memory plan's planned bytes (`QwenResidentRuntime.stageRequestCapacity`
-  charges no longer request), and each stage's KV host is bounded by the
-  memory plan's request, 65,536 tokens in 512-token chunks
-  (`stageKVHostBound`). `load` takes a stage's READY capacity and host bound
-  from these functions, and a tensor-parallel rank's from `capacityBytes` and
-  `hostBound`, so the tests pin them per stage and per rank
+  pair never advertises a context its ranks refuse. Gemma's pipeline serves
+  its whole profile. Each stage charges the whole model's ledger
+  (`Gemma4StateBudget`) at the request's context and, on a stage with a
+  full-attention layer, one prompt frame's FP32 scores over the whole
+  context: 6.4 GB and 8.6 GB at 262,144 tokens, against 2.0 GB and 2.2 GB at
+  the standard request. Its lookahead frame does not grow with the prompt.
+  READY's capacity covers the longest request
+  (`QwenResidentRuntime.stageRequestCapacity`: the larger of the memory plan's
+  planned bytes and one 262,144-token request with its prompt's prefill), each
+  stage's KV host is bounded by that request, 262,144 tokens in 512-token
+  chunks (`stageKVHostBound`), and each stage's serving context is searched up
+  to 262,144; the pair serves the smaller of its two stages' contexts. `load`
+  takes a stage's READY capacity and host bound from these functions, and a
+  tensor-parallel rank's from `capacityBytes` and `hostBound`, so the tests pin
+  them per stage and per rank
   (`ResidentAdmissionGemma4Tests.eachStageHoldsAndCoversTheLongestRequestItServes`,
-  `Gemma4NativeContextTests.aRankHoldsAndCoversTheLongestRequestItServes`). A
-  stage whose running-request memory check refuses a request ends that request
-  alone, on both ranks, as tensor parallel's ranks do
-  ([a pipeline stage's memory refusal](#a-pipeline-stages-memory-refusal-ends-that-request-alone)).
+  `Gemma4NativeContextTests.aRankHoldsAndCoversTheLongestRequestItServes`).
+  A pipeline with lanes keeps its READY figure, as every lane owner of the
+  stage modes does. A Gemma pipeline that keeps the
+  one-chunk lookahead (the default) serves one request at a time: its
+  prompt capture is charged and capped, and its running check asks only for
+  what the request still needs (`requireContinuing`). One whose setup
+  prefills serially serves four lanes, and a long lane needs more than its
+  reservation asked. The lanes' running check
+  (`QwenResidentRuntime+Batch.swift`, `memoryRefused`) asks on every pass for
+  the first lane's whole charge, the others' state and the loading headroom,
+  with no credit for what the lanes already allocated (tensor parallel's
+  lanes give it). With the request prefix cache on, a lane's prompt capture
+  is outside its charge: at most the cache's 32 frontiers per prompt, as on
+  the one-request path, each with its own copy of every sliding-window
+  layer's window (about 0.1 GB a stage), and one copy of the full-attention
+  rows. Before that cap a lane kept every 512-token frontier: on the
+  M5 Ultras (2026-11-10, four lanes) a 73,128-token lane grew 17.5 GB and a
+  127,205-token lane 30.4 GB against charges of 4.6 and 7.6 GB. Capped, a
+  lane grows at most about its charge plus 3 to 4 GB. It runs to its end
+  with about twice its charge, plus the headroom, plus 4 GB admissible:
+  about 24 GB at 131,072 tokens and 38 GB at 262,144 on a Mac of 96 GiB or
+  more, where it is admitted with 12.1 and 19.3 GB (a stage's charge is
+  7.8 and 15.0 GB; the headroom 4.3 GB, 2.9 GB at 64 GiB, 2.2 GB at 48 GiB).
+  Those figures are the measured footprint less the frontiers the cap
+  drops, not yet measured with it. In between, the lane gets the memory 503
+  partway through its prompt, for that request alone and never a worker's
+  end: the check refuses while the lane's charge and the headroom are still
+  admissible. With about 20 GB of a Mac held by macOS, the provider and the
+  stage's weights, an idle Mac of 64 GB or more runs a 262,144-token lane to
+  its end. A 48 GB Mac refuses a lane past about 190,000 tokens and a 36 GB
+  Mac past about 85,000, as does any Mac whose other work holds the
+  difference: the serving context the pair advertises prices only the
+  reservation. The M5 Ultras (256 GB) don't meet it. A stage whose memory
+  refuses a request while it runs ends that request alone, on both ranks
+  ([a pipeline stage's memory refusal](#a-pipeline-stages-memory-refusal-ends-that-request-alone)),
+  as tensor parallel's ranks do.
 
 The provider holds a request to what its mode serves
-(`ClusterModelFeaturePolicy.servedProfile`: tensor parallel's whole profile, a
-pipeline's memory plan)
-as one Mac holds a request to its window. A `max_tokens` past the output limit,
-or past what the prompt leaves of the context, is cut to fit
+(`ClusterModelFeaturePolicy.servedProfile`: Gemma's whole profile in both
+modes) as one Mac holds a request to its window. A `max_tokens` past the
+output limit, or past what the prompt leaves of the context, is cut to fit
 (`EngineV2Bridge.pairServedLimits`, by the rule that cuts one Mac's to its
 window). A prompt that fills the context is refused with one Mac's 400,
 `context_length_exceeded`, in one Mac's words

@@ -309,12 +309,16 @@ extension EngineV2Bridge {
 
     /// The committed bytes a heartbeat reports as `active_token_budget_used`.
     /// A native row can retain its reservation after client termination, so a
-    /// native engine's ledger stands in until real retirement.
+    /// native engine's ledger stands in until real retirement. GLM reports what
+    /// its slot gate charges (`glm5NextCommittedBytes`): its engine's reserved
+    /// bytes also keep the paged pool's retained segments, which the engine
+    /// reuses for the next request.
     nonisolated static func heartbeatCommittedBytes(
         heldBytes: Int, engineReservedBytes: Int, tracksNativeShutdown: Bool,
         glm5NextHeldBytes: Int?
     ) -> Int {
-        tracksNativeShutdown ? max(heldBytes, engineReservedBytes) : heldBytes
+        if let glm5NextHeldBytes { return glm5NextHeldBytes }
+        return tracksNativeShutdown ? max(heldBytes, engineReservedBytes) : heldBytes
     }
 
     /// Number of requests currently active on this bridge (heartbeat

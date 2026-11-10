@@ -229,8 +229,11 @@ final class Qwen35CheckpointRetentionFixture: @unchecked Sendable {
         return store
     }
 
+    /// `mtpConfig` replaces the adaptive production-shaped speculation (a fixed
+    /// depth makes a speculating request's output deterministic run to run).
     func makeBridge(store: SSDHybridCheckpointStore?, maxConcurrentRequests: Int = 1,
-                    stripeTokens: Int = Qwen35CheckpointRetentionFixture.stripeTokens) throws -> EngineV2Bridge {
+                    stripeTokens: Int = Qwen35CheckpointRetentionFixture.stripeTokens,
+                    mtpConfig: CBv2MTPConfig? = nil) throws -> EngineV2Bridge {
         var environment = ["DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE": String(stripeTokens)]
         if store == nil { environment["DARKBLOOM_PREFIX_CACHE"] = "0" }
         // `.auto` maps catalog IDs to paged; this dev artifact is not listed,
@@ -239,7 +242,7 @@ final class Qwen35CheckpointRetentionFixture: @unchecked Sendable {
             model: model, modelID: modelID, tokenizer: tokenizer.inner,
             kvBytesCapacity: 16 << 30, maxConcurrentRequests: maxConcurrentRequests,
             completePrefixCache: store, mtpDrafter: assistant,
-            mtpConfig: assistant == nil ? CBv2MTPConfig() : .init(
+            mtpConfig: assistant == nil ? CBv2MTPConfig() : mtpConfig ?? .init(
                 enabled: true, maxDraftTokens: CBv2MTPConfig.testedMaxDraftTokens, verificationMode: .rectangular),
             kvBackend: .paged, checkpointQuantization: .native, environment: environment)
         try #require(build.kvBackendKind == .paged && build.kvBackendFallbackReason == nil,

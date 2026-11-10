@@ -796,9 +796,25 @@ func checkStopRule() {
     check(adopted.finish == .clientStop && adopted.count == 15, "rank 1 adopts rank 0's client stop: \(adopted)")
     let same = R.reconcile(rank: 1, localFinish: .eos, localCount: 6, localStopped: false, rank0Finish: .eos, rank0Count: 6)
     check(same.finish == .eos && same.count == 6, "agreeing ranks keep their finish")
-    // A rank that stopped on its own (cancel, deadline, memory) keeps its stop: the request fails on both.
-    let own = R.reconcile(rank: 1, localFinish: .clientStop, localCount: 9, localStopped: true, rank0Finish: .length, rank0Count: 16)
-    check(own.finish == .clientStop && own.count == 9, "a rank's own stop is kept")
+    // A stop of rank 1's own (cancel, deadline, memory) that ended the request
+    // is kept: rank 0 ended on its flag, as a client stop, and the end
+    // agreement makes a memory stop an abort on both ranks.
+    let own = R.reconcile(rank: 1, localFinish: .clientStop, localCount: 9, localStopped: true, rank0Finish: .clientStop, rank0Count: 9)
+    check(own.finish == .clientStop && own.count == 9, "a rank's own stop is kept: \(own)")
+    // One made too late for any step to carry it (steps built one ahead; a
+    // GLM round commits several tokens) while rank 0 ended the request itself,
+    // at its stop token or its length: rank 1 reports rank 0's finish with the
+    // tokens it committed, or the owner fails the request and the pair.
+    for (finish, count) in [(R.Finish.eos, 10), (.length, 10), (.eos, 13)] {
+        let late = R.reconcile(rank: 1, localFinish: .clientStop, localCount: 9, localStopped: true,
+                               rank0Finish: finish, rank0Count: count)
+        check(late.finish == finish && late.count == 9, "a late stop of rank 1's own reports rank 0's \(finish): \(late)")
+    }
+    let pages = R.reconcile(rank: 1, localFinish: .length, localCount: 9, localStopped: true, rank0Finish: .eos, rank0Count: 10)
+    check(pages.finish == .eos && pages.count == 9, "pages that ran out too late report rank 0's EOS: \(pages)")
+    // Rank 0 never holds fewer tokens than a rank that stopped: that differs, and is kept as it is.
+    let diverged = R.reconcile(rank: 1, localFinish: .clientStop, localCount: 9, localStopped: true, rank0Finish: .eos, rank0Count: 8)
+    check(diverged.finish == .clientStop && diverged.count == 9, "a rank 0 behind a stopped rank 1 is not adopted: \(diverged)")
     // Rank 0 never changes its outcome.
     let zero = R.reconcile(rank: 0, localFinish: .clientStop, localCount: 15, localStopped: false, rank0Finish: .clientStop, rank0Count: 15)
     check(zero.finish == .clientStop && zero.count == 15, "rank 0 keeps its outcome")

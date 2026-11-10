@@ -2519,8 +2519,8 @@ Typical acceptance is an explicit opt-in, globally or per model. It locks a
 repetition in once the drafter predicts it: the catalog Qwen 3.5 builds ran
 away under it in the 0.10.12 gate where exact acceptance did not (see the
 Qwen 3.5/3.6 defaults below). On OpenRouter's GPQA runs, while these builds
-still drafted under typical acceptance (10-17 and 10-24), 41 % of Qwen 3.6's
-and 32 % of Qwen3.5-9B's answers ended at their output cap; on 10-31, when a
+still drafted under typical acceptance (10-17 and 10-24), 36 % of Qwen 3.6's
+and 21 % of Qwen3.5-9B's answers ended at their output cap; on 10-31, when a
 default presence penalty kept them from drafting, 9 % and 1 % did. Gemma
 drafted every GPQA answer on 10-31 and 30 % of them ended at 32,768 tokens.
 Under typical acceptance a draft is kept when the sampler-filtered target row

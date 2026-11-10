@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-10
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -3069,6 +3069,39 @@ Show the coordinator's supported-model catalog.
 ```bash
 darkbloom models catalog [--coordinator <url>] [--json] [--type <type>]
 ```
+
+After the table, when there is at least one, the command names the catalog
+models that are not downloaded and that this Mac could select:
+
+```text
+Not downloaded (this Mac meets their listed requirements)
+
+  Nemotron 3.5 Lightning  [nvidia-nemotron-3.5-lightning]  ~19.1 GB download
+  Qwen 3.5 9B  [Qwen3.5-9B]  ~6.1 GB download
+
+  Not checked: free disk space, memory reserved or in use when a model loads, provider version and trust status.
+  Download one: darkbloom models download <id>
+  Then choose what to serve: darkbloom switch (darkbloom start when the provider is stopped)
+```
+
+The note only prints: it downloads, selects and saves nothing, and it is absent
+from `--json` output and when hardware detection fails. It adds no request; the
+table's one catalog request now also asks for the public aliases
+(`include_aliases=1`, as the picker does), and the `--json` request is as
+before. At most three models are named, larger first, and one more line counts
+the rest. A model is named (`ModelsCatalogHint.candidates`) when the
+`darkbloom start` picker would offer it to this Mac (this Mac has its required
+runtime capabilities, and it is not a hidden build or one replaced under a
+public alias), it is an active text model, its listed `min_ram_gb` is at most
+this Mac's memory (the coordinator's comparison for a listed tier; a model with
+no listed tier is not named), and it fits the provider's load budget alone
+([RAM tiers and catalog models](hardware-requirements.md#ram-tiers-and-catalog-models)).
+The note does not promise that a named model will download, load or receive
+requests: free disk space, the configured `memory_reserve_gb`, memory in use at
+load time, the coordinator's minimum provider version and the provider's trust
+status are not checked. `darkbloom models download` does not edit
+`backend.enabled_models`; with an empty `enabled_models` the provider serves
+every local model it can run.
 
 ### `darkbloom models list`
 

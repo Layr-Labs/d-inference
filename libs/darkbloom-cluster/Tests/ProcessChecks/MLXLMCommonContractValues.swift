@@ -31,9 +31,24 @@ public struct CBv2Request: Sendable {
         self.id = id; self.promptTokens = promptTokens; self.sampling = sampling; self.maxTokens = maxTokens
     }
 }
-public struct CBv2FirstTokenDeadlineAdmission: Sendable { public init() {} }
+public struct CBv2FirstTokenDeadlineAdmission: Sendable {
+    public let conservativePrefillTokensPerSecond: Double?
+    public init(conservativePrefillTokensPerSecond: Double? = nil) {
+        self.conservativePrefillTokensPerSecond = conservativePrefillTokensPerSecond
+    }
+}
 public enum CBv2FirstTokenUnboundedReason: Sendable, Equatable { case unsupportedScheduler }
-public enum CBv2FirstTokenProjectedWork: Sendable, Equatable { case unbounded(reason: CBv2FirstTokenUnboundedReason? = nil) }
+public struct CBv2FirstTokenScheduledWork: Sendable, Equatable {
+    public let prefillTokens: Int, decodeTokens: Int, scheduledSteps: Int, mixedSteps: Int
+    public init(prefillTokens: Int, decodeTokens: Int, scheduledSteps: Int, mixedSteps: Int) {
+        self.prefillTokens = prefillTokens; self.decodeTokens = decodeTokens
+        self.scheduledSteps = scheduledSteps; self.mixedSteps = mixedSteps
+    }
+}
+public enum CBv2FirstTokenProjectedWork: Sendable, Equatable {
+    case bounded(work: CBv2FirstTokenScheduledWork, serviceDuration: Duration)
+    case unbounded(reason: CBv2FirstTokenUnboundedReason? = nil)
+}
 public enum CBv2FinishReason: Sendable, Equatable { case stop, length, cancelled, error(String) }
 public struct CBv2TokenLogprob: Sendable {
     public var token: Int, logprob: Float

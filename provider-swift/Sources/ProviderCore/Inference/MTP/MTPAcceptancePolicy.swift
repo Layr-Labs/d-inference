@@ -7,9 +7,9 @@ import MLXLMCommon
 /// Precedence: `[backend] mtp_acceptance_by_model` for the exact model id,
 /// then `[backend] mtp_acceptance`, then the built-in rule (exact for the
 /// private Bonsai 9B candidate and the catalog Qwen3.5-9B, typical for
-/// existing profiles). A value that
-/// names no known rule is reported and resolves to `exact`, so a typo can
-/// never install a lossy rule. The typical threshold is the engine constant
+/// existing profiles). A value that names no known rule is reported and
+/// resolves to `exact`, so a typo can never install a lossy rule. The
+/// typical threshold is the engine constant
 /// `CBv2MTPAcceptance.defaultTypicalDelta`; it is not a production key.
 /// Serving reads no environment variable for this rule; the benchmark
 /// harness alone honours `DARKBLOOM_MTP_ACCEPTANCE`.

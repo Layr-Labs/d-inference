@@ -2517,10 +2517,10 @@ defaults to typical acceptance for eligible sampled target-prefix rows, except
 on the owned Bonsai 9B candidate and the catalog `Qwen3.5-9B`, whose built-in
 rule is exact (`MTPAcceptancePolicy.builtInIsExact`; the 9B looped under
 typical acceptance in the 0.10.12 gate, see the Qwen 3.5/3.6 defaults below).
-Typical acceptance:
-a draft is kept when the sampler-filtered target row gives it probability above
-`min(1, 0.2 * exp(-H))`, `H` the row's entropy in nats; the first rejected
-position and the bonus position still commit the keyed target sample. Output
+Under typical acceptance a draft is kept when the sampler-filtered target row
+gives it probability above `min(1, 0.2 * exp(-H))`, `H` the row's entropy in
+nats; the first rejected position and the bonus position still commit the keyed
+target sample. Output
 is approximate, not distribution-exact for the target. Greedy rows keep the exact
 walk. Explicit `"exact"` opts out; invalid values warn and safely resolve to
 exact, including an invalid per-model override rather than falling back to the
@@ -2607,7 +2607,7 @@ disabled for this hybrid model.
 | `top_p` | `topP` | artifact default, else `1.0` |
 | `top_k` | `topK` | artifact default, else `0` |
 | `repetition_penalty` | `repetitionPenalty` | artifact default, else `1.0` |
-| `frequency_penalty` / `presence_penalty` | `frequencyPenalty` / `presencePenalty` | `0`; `presence_penalty` takes a model-card default (catalog Qwen 3.5/3.6) |
+| `frequency_penalty` / `presence_penalty` | `frequencyPenalty` / `presencePenalty` | `0`; `presence_penalty` takes a model-card default on the catalog 35B Qwen 3.5/3.6 builds (`Qwen3.5-9B` has none) |
 | `seed` | `seed`; also keys a stable engine request id | nil |
 | `logit_bias` | `logitBias` — string keys parsed to non-negative `Int`; invalid keys dropped and counted | `[:]` |
 | `logprobs` + `top_logprobs` | `topLogprobs = logprobs ? min(20, max(1, top_logprobs ?? 0)) : 0` | `0` |
@@ -2683,9 +2683,11 @@ donation, the cost the gate accepted for loop safety. A request's own
 `presence_penalty` always wins: `0` on a 35B build speculates under typical
 acceptance and donates checkpoints (the configuration that looped in the gate,
 now the caller's choice); a nonzero value on the 9B turns its MTP and cache
-donation off for that request. The coordinator adds only the registry's
-`temperature`, `top_p` and `top_k` to these builds' requests, and no penalty
-unless the registry sets one.
+donation off for that request. The coordinator forwards a build's registry
+runtime defaults for the fields a request omits
+([`requestRuntimeDefaultKeys`](https://github.com/Layr-Labs/darkbloom-platform/blob/c69380d91fd3f9e4ef3ff1e3775690d80adbbe57/coordinator/api/inference/request/model_runtime_defaults.go));
+on 2026-11-10 the registry set `temperature`, `top_p` and `top_k` for these
+builds and no `presence_penalty`, so the provider default above decides it.
 
 Other model identities keep the legacy defaults in the table byte-for-byte. `do_sample: false` or an absent/unreadable file is legacy. The
 sampler is not part of prompt or cache identity, so prefix-cache and SSD

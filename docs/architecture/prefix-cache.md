@@ -966,7 +966,7 @@ rules applied to these signals.
    donates nothing, though it can still restore. So `Qwen3.5-9B` sets no
    default presence penalty, while the 35B Qwen builds keep the cards' 1.5 for
    loop safety and their omitted-penalty requests donate nothing
-   ([sampling defaults](inference.md)) —
+   ([sampling defaults](inference.md#sampling-parameters)) —
    `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPExecution.swift`
    (`mtpTakeHistoryState`),
    `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CompleteCheckpointCapture.swift`,

@@ -500,6 +500,57 @@ of them is serving work, and `no loaded model can be evicted` otherwise. The
 daemon state publishes the same exclusions (`eviction_exclusions`) and the
 ordinary serving selection (`serving_selection`) for `darkbloom status`.
 
+Selected-model recovery (`ProviderLoop+SelectedModelRecovery.swift`) retries
+the models the operator chose explicitly (`enabled_models`, `preload_models`,
+the pinned `model`, Autopilot's persisted selection) that memory, not the
+operator, kept out: the startup preload's candidates it skipped or that failed
+for memory, or that a slot cap left untried, and the selected models an
+Autopilot operation unloaded to load another model, queued as each leaves
+residency, whether the operation then succeeds or fails
+(`noteSelectedModelUnloaded`; an unload-only operation queues nothing). Before
+it, nothing retried them, and the coordinator cold-routes a model only to an
+idle machine. The capacity tick
+checks a waiting model when it is due: after 30 s, then 1, 2, 5 and every 10
+minutes, at once after any unload or a configuration change the running daemon
+reads (the saved `enabled_models` or Autopilot settings), and sooner when what
+blocked it ends first (a hold's expiry plus the idle threshold, an idle
+threshold, a minimum dwell or a per-model lease). A check plans on the same
+figures as the load gate (Super's LOAD-claim room against its narrowest
+configuration, otherwise usable load memory against weights plus headroom) and
+loads with `allowEviction: false`. Before the load it may unload only resident
+models whose weights make the room, least recently used first, that have no
+`evictionExclusions` entry and that `isProtectedFromRecoveryEviction` does not
+keep: never the ordinary selection, an Autopilot pin, or an advertised model a
+request could load straight back (`autopilotAllowsModel`), which would then
+evict the recovered model in turn. A candidate that still serves must also meet
+Autopilot's own victim rules (`selectedModelRecoveryVictimWait`): resident for
+`min_dwell_seconds`, no unexpired per-model lease, and idle, from its last
+request or its hold's expiry, for the longer of two minutes
+(`SelectedModelRecovery.victimMinimumIdle`) and `min_idle_seconds`. The attempt
+rechecks each victim against the plan's instant right before its unload. It
+never evicts a selected model, so it cannot churn against the operator's own
+models. It waits while a live Autopilot lease or a pause manages residency,
+while the owner uses the Mac under me first (`ownerPausesPublic`), and during
+any load, unload, operation, switch, startup preload or drain. The attempt
+rechecks these before each unload and again before the load, so one that
+begins while the last victim unloads stops the load. A
+refusal for memory, a slot or a transient state keeps the model waiting; any
+other load failure ends its recovery and leaves the model to the request path.
+A memory refusal that comes after the weights loaded (the post-load KV headroom
+guard, the re-slice checks, MiMo's grant) costs a whole load each time, so
+after three of them (`SelectedModelRecovery.postLoadRefusalLimit`, a policy
+value), counted since the model was queued or last made due by an unload or a
+configuration change, it is checked again only after one of those.
+Victims are evicted before the load's own checks run, so a load that then fails
+for another reason (missing files, an unpinned checkpoint) has still evicted
+them; that failure ends the model's recovery, so it costs at most one attempt's
+evictions. The daemon state reports each waiting model, its next check (none
+while it waits for an unload or a configuration change) and the last blocker
+(`selected_model_recovery`). The queue lives in memory: a restart rebuilds it
+from the startup preload only, so with `startup_preload = false`, or a
+nonempty `preload_models` that omits a model, a model that waited before the
+restart is not queued again and loads on request.
+
 The prompt token store (`PromptPieceTokenStore` in
 `provider-swift/Sources/ProviderCore/Inference/Prompting/PromptTokenCache.swift`)
 is ordinary process heap with no claim or reserve in this gate: at most

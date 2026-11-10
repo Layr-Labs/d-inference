@@ -16,7 +16,7 @@ import Testing
 /// histories, of the same requests with contiguous histories, alone and
 /// batched (`rounds`); a prompt prefix shared by page continues exactly as a
 /// prefilled one; and every page comes back.
-@Suite(.serialized)
+@Suite(.serialized, .boundedBufferCache)
 struct GLM5NextTensorParallelPagedKVTests {
     typealias Runtime = GLM5NextTensorParallelResidentRuntime
     typealias Rows = GLM5NextTensorParallelSpeculationRowsTests

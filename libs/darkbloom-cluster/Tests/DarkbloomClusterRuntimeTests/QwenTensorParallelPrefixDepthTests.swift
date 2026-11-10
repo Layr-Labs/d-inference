@@ -10,7 +10,7 @@ import Testing
 /// logits, every attention row, every convolution and SSM state), for each
 /// case one Mac reuses: a repeat, the next turn, a shared system prompt.
 /// GatedDelta's recurrence is Metal-only, so the hybrid shards run on the GPU.
-@Suite(.serialized)
+@Suite(.serialized, .boundedBufferCache)
 struct QwenTensorParallelPrefixDepthTests {
     private final class Rendezvous: @unchecked Sendable {
         let condition = NSCondition()

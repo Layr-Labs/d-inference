@@ -98,15 +98,16 @@ public enum ClusterRuntimeAdapter: String, Sendable, CaseIterable {
             && Self.registering(runtimeModelID: runtimeModelID) == self
     }
 
-    /// Whether this adapter's layer stages serve its rows' whole profile in the pipeline. None does: every
-    /// pipeline serves the memory plan's request (`ClusterWorkerProfile.memoryScope`), and a longer one goes to
-    /// tensor parallel. A pipeline stage whose live memory check refuses a running request ends its worker, and with
-    /// it the pair for about a minute, where tensor parallel's ranks end that request alone (journey 3, D6: a
-    /// 128K-token Gemma 4 pipeline request on a MacBook under memory pressure). The one place for this rule: the
-    /// provider advertises and holds requests to it (`ClusterModelFeaturePolicy.servedProfile`) and the worker's
-    /// stages admit it (`LayerStageResidentAdmission.servedProfile`), so a pair never advertises a context its ranks
-    /// refuse.
-    public var pipelineServesWholeProfile: Bool { false }
+    /// Whether this adapter's layer stages serve its rows' whole profile in the pipeline: LOAD still sizes the
+    /// memory plan's request (`ClusterWorkerProfile.memoryScope`), and each stage charges a longer request at its
+    /// own context when it is reserved (Gemma 4: the whole model's state ledger at the request's context), admitted
+    /// by that rank's live memory gate. A stage whose gate refuses the request while it runs ends that request alone,
+    /// on both ranks (`QwenStageAbort`; journey 3's D6, a 128K-token Gemma 4 request on a MacBook under memory
+    /// pressure, ended the worker before). Every other adapter's pipeline serves the memory plan's request. The one
+    /// place for this rule: the provider advertises and holds requests to it (`ClusterModelFeaturePolicy.servedProfile`)
+    /// and the worker's stages admit it (`LayerStageResidentAdmission.servedProfile`), so a pair never advertises a
+    /// context its ranks refuse.
+    public var pipelineServesWholeProfile: Bool { self == .gemma4LayerStage }
 }
 
 public struct ClusterRuntimeStage: Equatable, Sendable {

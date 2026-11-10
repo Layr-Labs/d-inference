@@ -256,6 +256,7 @@ extension QwenResidentRuntime {
             if split, prefixCache.enabled, lane.scope != nil {
                 session.prefixCaptureFrontiers = planned.prefixCaptureFrontiers(
                     stride: prefixCache.stride(chunkSize: planned.chunkSize))
+                session.prefixCaptureMaximumFrontiers = prefixCache.frontiersPerPrompt
             }
             return (planned, session)
         } catch {

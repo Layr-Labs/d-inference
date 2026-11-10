@@ -1882,7 +1882,15 @@ An uncancelled calibration retirement schedules the next eligible resident
 slot immediately; the process-wide owner still permits only one session at a
 time. That successor scheduling runs after the session's retirement, outside
 the task a preempting customer request waits for; a preempted session schedules
-no successor. Ordinary and native MiMo load
+no successor. That wait is bounded
+(`provider-swift/Sources/ProviderCore/Inference/Performance/IdleCalibrationCoordinator.swift`,
+`admitForeground`): it ends when the session retires, when the waiting request
+is cancelled, or after `retirementBound` (30 s). A probe whose engine stopped
+stepping never retires, and an unbounded wait held every later request on the
+Mac accepted and never started. Past the bound the request is refused as
+retriable capacity (`token_budget_exhausted: the idle calibration probe did not
+retire`) before any reservation, and the slot that owns the session reads
+`crashed` until the session retires (`isOverdue`). Ordinary and native MiMo load
 completion share a handoff that releases the finished construction activity and
 offers the newly loaded slot first,
 while keeping the load-transition gate closed. It rechecks cancellation and

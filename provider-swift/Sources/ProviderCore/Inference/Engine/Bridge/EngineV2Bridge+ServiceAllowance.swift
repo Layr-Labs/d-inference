@@ -4,6 +4,10 @@ extension EngineV2Bridge {
     /// Capacity refusal of a Mac whose serving concurrency is full; thrown
     /// before any stream exists (503 locally, retriable capacity upstream).
     static let serviceAllowanceExhausted = "token_budget_exhausted: whole-Mac service allowance exhausted"
+    /// Capacity refusal of a request whose wait for the idle calibration
+    /// probe's retirement reached its bound (`IdleCalibrationCoordinator`).
+    static let idleCalibrationRetirementOverdue =
+        "token_budget_exhausted: the idle calibration probe did not retire"
 
     func retainDeadlinePostureMonitoring() {
         guard deadlineProfile != nil || nativeTransactionID != nil,

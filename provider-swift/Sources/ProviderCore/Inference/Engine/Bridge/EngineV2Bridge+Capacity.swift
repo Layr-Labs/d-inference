@@ -207,9 +207,12 @@ extension EngineV2Bridge {
         } else if (ownedEngine as? CBv2NativeBlockEngine)?.isHealthy == false
             || wedgeMonitor.marksCrashed(
                 now: now, engineReportsSteps: !(ownedEngine is DistributedCBv2Engine),
-                isActive: { active[$0] != nil }) {
+                isActive: { active[$0] != nil })
+            || serviceBudget?.idleCalibration.isOverdue(modelCalibration.task) == true {
             // Same truthful-derouting contract as the legacy heartbeat: a
-            // wedged slot must not keep advertising healthy.
+            // wedged slot must not keep advertising healthy. Neither may one
+            // whose calibration probe outlived a request's retirement wait:
+            // every request would wait for it, then be refused.
             state = "crashed"
         } else {
             state = snapshot.activeRequests > 0 ? "running" : "idle"

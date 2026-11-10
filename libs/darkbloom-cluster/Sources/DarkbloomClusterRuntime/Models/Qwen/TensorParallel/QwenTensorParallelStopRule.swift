@@ -21,7 +21,9 @@
 /// late for any step to carry it, while rank 0 ended the request itself at
 /// its stop token or its length, changes nothing the client gets: rank 1
 /// reports rank 0's finish then, with the tokens it committed (two finishes
-/// that differ fail the request on the owner, and with it the pair).
+/// that differ fail the request on the owner, and with it the pair). The
+/// same goes for rank 1's length stop (its pages could not grow) when the
+/// owner stopped the request as it came: rank 1 reports rank 0's client stop.
 enum QwenTensorParallelStopRule {
     enum Outcome: Equatable { case proceed, eos, length, clientStop }
 
@@ -96,13 +98,19 @@ enum QwenTensorParallelStopRule {
     }
 
     /// The finish and token count this rank reports, given rank 0's. Rank 1
-    /// takes rank 0's when it went on to the end; when it stopped on its own,
-    /// only rank 0's stop token or length, which ended a request that is
-    /// whole (rank 0 never holds fewer tokens than a rank that stopped).
+    /// takes rank 0's when it went on to the end. When it stopped on its own,
+    /// it takes rank 0's stop token or length, which ended a request that is
+    /// whole (rank 0 then holds at least the tokens rank 1 committed), with
+    /// its own count. When that stop was its pages (it ends at its length),
+    /// it also takes rank 0's client stop: the owner stopped the request as
+    /// rank 1's pages ran out, and rank 0's client stop is then its owner's
+    /// (rank 0's memory stop is an abort before this, its cancel or deadline
+    /// fails it), with rank 0's count where rank 0 holds fewer.
     static func reconcile(rank: Int, localFinish: Finish, localCount: Int, localStopped: Bool,
                           rank0Finish: Finish, rank0Count: Int) -> (finish: Finish, count: Int) {
         guard rank != 0, rank0Count >= 0 else { return (localFinish, localCount) }
         if localStopped {
+            if localFinish == .length, rank0Finish == .clientStop { return (.clientStop, min(localCount, rank0Count)) }
             guard rank0Finish != .clientStop, rank0Count >= localCount else { return (localFinish, localCount) }
             return (rank0Finish, localCount)
         }

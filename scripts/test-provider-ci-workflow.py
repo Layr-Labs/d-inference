@@ -753,6 +753,8 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 (focused, 2, "bash provider-swift/Tests/ClusterModelProvisioningChecks/run.sh provisioning"),
             "Run cluster onboarding checks": (focused, 2, "bash provider-swift/Tests/ClusterOnboardingChecks/run.sh"),
             "Run cluster console checks": (focused, 2, "bash provider-swift/Tests/ClusterConsoleChecks/run.sh"),
+            "Run cluster qualification checks":
+                (focused, 2, "bash libs/darkbloom-cluster-worker/Tests/QualificationChecks/run.sh"),
             "Run cluster pairing checks": (focused, 1, "bash provider-swift/Tests/ClusterPairingChecks/run.sh"),
             "Run cluster diagnostics checks": (focused, 1, "bash provider-swift/Tests/ClusterDiagnosticsChecks/run.sh"),
             "Run cluster placement flow checks": (focused, 1, "bash provider-swift/Tests/ClusterPlacementChecks/run-flow.sh"),

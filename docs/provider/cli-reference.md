@@ -3767,6 +3767,43 @@ qualification or performance. Sources:
 `libs/darkbloom-cluster-worker/Sources/DarkbloomClusterQualification/PairConfiguration.swift`
 (`validate`, `launchScript`), and [test boundaries](../developer/test.md#two-mac-cluster-checks).
 
+## Pair batch lane parity
+
+`darkbloom-cluster-pair-check run --batch-lanes N --batch-request REQUEST.json ...`
+runs each batch request alone in the loaded session, then each `--batch-wave N`
+starts the first N together (`--batch-stagger-ms` apart; `--batch-cancel-after T`
+cancels a wave's last request after T tokens). A tensor-parallel run fails when a
+lane's tokens differ from its request alone. In another mode the run records
+the comparison (`matchesSolo`, `firstDifferenceIndex`, `allMatchSolo`) and fails
+on it only with `--batch-require-parity yes`, which needs the requests run alone
+first (`--batch-solo yes`, the default). Use it for a pipeline's lane
+qualification: the pass rule is the same for every mode, each request's tokens
+equal to its run alone at every width.
+
+`--batch-logprobs K` (1...20, tensor parallel with batch requests only) makes
+every batch request, alone and in its waves, ask for each committed token's
+logprob and its K most likely alternatives, which tensor-parallel workers send
+(a pipeline worker refuses such a request). The report keeps them per request as
+IEEE-754 bit patterns (`logprobBits`, `[logprob, token 1, logprob 1, ...]` per
+token, and their `logprobsSHA256`); a token sent without them, or with another
+count, fails its request (`ClusterWorkerRequest`), so record i is token i's.
+Each wave's are compared with the requests'
+alone bit for bit (`logprobsMatchSolo`, `firstLogprobDifferenceIndex`,
+`allLogprobsMatchSolo`); a cancelled lane is compared as far as it got. A lane
+whose logprobs differ fails the run even when its tokens match.
+
+A request that asks for logprobs may take another decode path than one that
+doesn't: Qwen tensor parallel decodes it without its assistant, one token per
+step, as the product does, and GLM checks its rounds' proposals by replaying the
+draws. To qualify both paths, run once without the option (token parity) and
+once with it (token and logprob parity).
+
+Sources: `libs/darkbloom-cluster-worker/Sources/DarkbloomClusterQualification/PairDriver.swift`
+(`runBatchWave`, `compareLogprobs`), `PairConfiguration.swift` (`batchLogprobs`,
+`batchRequireParity`, `batchSampling`) and `QualificationReports.swift` (`PairBatchRequestTiming`).
+`bash libs/darkbloom-cluster-worker/Tests/QualificationChecks/run.sh` drives
+these waves through two fake workers that serve batch lanes.
+
 ## Exit codes
 
 | Code | Meaning |

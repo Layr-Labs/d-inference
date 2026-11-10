@@ -113,11 +113,11 @@ extension EngineV2Bridge {
         // Coordinator requests are expressed in ordinary tokens. Convert the
         // provider's byte-exact commitments back through the advertised rate;
         // rounding up preserves fixed recurrent and assistant allocation blocks.
-        // A native row can retain its reservation after client termination.
-        // Its engine ledger remains authoritative until real retirement.
-        if tracksNativeShutdown {
-            committedBytes = max(committedBytes, snapshot.kvBytesReserved)
-        }
+        committedBytes = Self.heartbeatCommittedBytes(
+            heldBytes: committedBytes, engineReservedBytes: snapshot.kvBytesReserved,
+            tracksNativeShutdown: tracksNativeShutdown,
+            glm5NextHeldBytes: glm5NextNativeOwner == nil ? nil : glm5NextCommittedBytes())
+        committedBytesOverflow = committedBytesOverflow || committedBytes == Int.max
         let budgetUsed: Int64
         if kvBytesPerToken > 0 {
             let (roundedBytes, roundingOverflow) = committedBytes.addingReportingOverflow(
@@ -305,6 +305,16 @@ extension EngineV2Bridge {
         guard let reason else { return nil }
         guard reason.count > maxHeartbeatFallbackReasonLength else { return reason }
         return String(reason.prefix(maxHeartbeatFallbackReasonLength))
+    }
+
+    /// The committed bytes a heartbeat reports as `active_token_budget_used`.
+    /// A native row can retain its reservation after client termination, so a
+    /// native engine's ledger stands in until real retirement.
+    nonisolated static func heartbeatCommittedBytes(
+        heldBytes: Int, engineReservedBytes: Int, tracksNativeShutdown: Bool,
+        glm5NextHeldBytes: Int?
+    ) -> Int {
+        tracksNativeShutdown ? max(heldBytes, engineReservedBytes) : heldBytes
     }
 
     /// Number of requests currently active on this bridge (heartbeat

@@ -2389,16 +2389,24 @@ id: it leaves with its own request's first token or end, and an entry whose
 request left the bridge never counts. The `step_wedge` telemetry still reports
 the plain rule.
 
-A single-Mac slot also reads `crashed` when its queue stalls: the engine holds
-waiting requests, runs none and its step counter stands still for
-`WedgeMonitor.suspectQueueStallSeconds` (30 s; `sampleQueue`, sampled on every
-heartbeat). A request stuck there never registers as an admit, so the rule
-above cannot see it, and the slot otherwise read `idle` while the coordinator
-kept routing to it. Held for `EngineV2Bridge.recoveryStallSeconds` (120 s) the
-stall is a confirmed wedge (`confirmedWedgeForRecovery`): the recovery driver
-rebuilds an ordinary engine and retires a native MiMo slot. A step, a running
-row or an empty queue restarts the measurement. A pair's engine has no step
-counter and is left out.
+A slot also reads `crashed` when its engine has stopped
+(`EngineV2Bridge.engineStopped`, `EngineV2Bridge+Liveness.swift`). A request
+stuck behind a stopped engine never registers as an admit, so the rule above
+cannot see it, and such a slot read `idle` while the coordinator kept routing
+to it.
+- **A sealed native fault, any slot.** When native work fails, the SDK seals
+  the engine's native shutdown state `incomplete` and its step loop never runs
+  again (`EngineV2.nativeCompletionFault`). The slot reads `crashed` at once,
+  and the recovery driver acts on it at its next tick.
+- **A stalled queue, native MiMo only.** The engine holds waiting requests, runs
+  none and its step counter stands still (`WedgeMonitor.sampleQueue`, sampled on
+  every heartbeat). After `WedgeMonitor.suspectQueueStallSeconds` (30 s) the
+  slot reads `crashed`; after `EngineV2Bridge.recoveryStallSeconds` (120 s) the
+  recovery driver retires it. A step, a running row or an empty queue restarts
+  the measurement. Other engines are left out: in 7 days of production the same
+  queue held a minute or more about 360 times on 11 models, nearly always ending
+  by itself (vision encoding counts as waiting; a plan with nothing to assign
+  takes no step), and on MiMo only once, when its engine had stopped.
 
 A hung pair is ended
 first by the engine's first-token and request deadlines, which fail the request

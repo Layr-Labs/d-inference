@@ -39,8 +39,8 @@ struct WedgeMonitor {
     /// slow prefill (idle prefill p90 only crosses 10s at ~20–32k tokens).
     static let suspectStallSeconds: Double = 10
 
-    /// How long the engine may hold queued work, run nothing and take no step
-    /// before the slot reads crashed.
+    /// How long a native MiMo engine may hold queued work, run nothing and take
+    /// no step before its slot reads crashed (`EngineV2Bridge.engineStopped`).
     static let suspectQueueStallSeconds: Double = 30
 
     // MARK: - Cumulative counters (per load epoch; reset on (re)load)
@@ -89,7 +89,8 @@ struct WedgeMonitor {
     /// First sample of the current stretch in which the engine's queue held
     /// work, nothing ran and the step counter did not move; nil otherwise. A
     /// request stuck there never registers as an admit, so the admit streak
-    /// above cannot see it, and the slot otherwise reads idle.
+    /// above cannot see it. Only native MiMo reads it (`EngineV2Bridge.engineStopped`):
+    /// on other engines the same queue is common and healthy.
     private(set) var queueStalledSince: ContinuousClock.Instant?
     private var queueStalledAtSteps = 0
 
@@ -224,9 +225,8 @@ struct WedgeMonitor {
     static let pastAllowanceGraceSeconds: Double = 40
 
     /// The slot-state verdict. An engine with a step counter keeps
-    /// `wedgeSuspected`, and also reads crashed once its queue has stalled for
-    /// `suspectQueueStallSeconds`. A two-Mac pair's engine has none (its ranks
-    /// send nothing while they prefill, and they prefill one prompt at a time), so
+    /// `wedgeSuspected`. A two-Mac pair's engine has none (its ranks send
+    /// nothing while they prefill, and they prefill one prompt at a time), so
     /// the flatline term would read every long prefill behind three admits as a
     /// wedge. It is marked crashed only when a hanging admit is still without a
     /// first token `pastAllowanceGraceSeconds` after its own first-token
@@ -237,9 +237,7 @@ struct WedgeMonitor {
     func marksCrashed(
         now: ContinuousClock.Instant, engineReportsSteps: Bool, isActive: (String) -> Bool = { _ in true }
     ) -> Bool {
-        guard !engineReportsSteps else {
-            return wedgeSuspected(now: now) || queueStallSeconds(now: now) >= Self.suspectQueueStallSeconds
-        }
+        guard !engineReportsSteps else { return wedgeSuspected(now: now) }
         return hangingFirstTokenDeadlines.contains { id, deadline in
             isActive(id) && Self.seconds(now - deadline) >= Self.pastAllowanceGraceSeconds
         }

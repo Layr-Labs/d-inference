@@ -206,7 +206,8 @@ extension EngineV2Bridge {
             // legacy `heartbeatSlotState` precedence — so the coordinator
             // deroutes the model without treating it as crashed-forever.
             state = "reloading"
-        } else if (ownedEngine as? CBv2NativeBlockEngine)?.isHealthy == false
+        } else if engineStopped(queueStalledFor: WedgeMonitor.suspectQueueStallSeconds, now: now)
+            || (ownedEngine as? CBv2NativeBlockEngine)?.isHealthy == false
             || wedgeMonitor.marksCrashed(
                 now: now, engineReportsSteps: !(ownedEngine is DistributedCBv2Engine),
                 isActive: { active[$0] != nil }) {

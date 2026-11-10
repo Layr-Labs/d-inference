@@ -50,23 +50,32 @@ extension EngineV2Bridge {
     /// emit its first token.
     static let recoveryStallSeconds: Double = 120
 
+    /// Whether this slot's engine has stopped: its native work failed and the
+    /// SDK sealed it (any slot; a sealed engine never steps again), or, on a
+    /// native MiMo slot only, its queue has held work with nothing running and
+    /// no step for `seconds`. Production shows that same queue on healthy
+    /// Gemma, Qwen, Bonsai and Super slots (vision encoding counts as waiting;
+    /// a plan with nothing to assign takes no step), and on MiMo only once in
+    /// 7 days, when its engine had stopped.
+    func engineStopped(queueStalledFor seconds: Double, now: ContinuousClock.Instant) -> Bool {
+        if (ownedEngine as? any SealedNativeFaultReporting)?.hasSealedNativeFault == true { return true }
+        return nativeTransactionID != nil && wedgeMonitor.queueStallSeconds(now: now) >= seconds
+    }
+
     /// Confirmed-wedge verdict for the recovery driver. True when the
     /// oldest STILL-HANGING admit (admitted, zero first tokens, not
     /// terminated) has stalled ≥ 120s while the engine's step counter has
-    /// been frozen ≥ 120s, or when an engine with a step counter has held
-    /// queued work with nothing running and no step for 120s. Samples the
-    /// live engine first so the verdict never depends on heartbeat cadence.
-    /// Never fires while a recovery is already in flight for this bridge.
+    /// been frozen ≥ 120s, or when the engine has stopped
+    /// (`engineStopped`, its queue term at 120s). Samples the live engine
+    /// first so the verdict never depends on heartbeat cadence. Never fires
+    /// while a recovery is already in flight for this bridge.
     func confirmedWedgeForRecovery(now: ContinuousClock.Instant = .now) -> Bool {
         guard !recoveryReloading, ownedEngine != nil else { return false }
         let snapshot = capacitySnapshot()
         wedgeMonitor.sampleSteps(snapshot.stepsExecuted, now: now)
         wedgeMonitor.sampleQueue(waiting: snapshot.waitingRequests, running: snapshot.activeRequests,
             steps: snapshot.stepsExecuted, now: now)
-        if !(ownedEngine is DistributedCBv2Engine),
-            wedgeMonitor.queueStallSeconds(now: now) >= Self.recoveryStallSeconds {
-            return true
-        }
+        if engineStopped(queueStalledFor: Self.recoveryStallSeconds, now: now) { return true }
         return wedgeMonitor.consecutiveAdmitsWithoutFirstToken >= 1
             && wedgeMonitor.dryStreakSeconds(now: now) >= Self.recoveryStallSeconds
             && wedgeMonitor.secondsSinceLastStep(now: now) >= Self.recoveryStallSeconds

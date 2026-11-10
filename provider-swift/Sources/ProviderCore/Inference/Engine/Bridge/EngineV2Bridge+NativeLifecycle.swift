@@ -110,17 +110,23 @@ extension EngineV2Bridge {
     /// Held GLM reservations: admitted requests at their reserved tokens, plus
     /// any still between the gate and admission.
     func glm5NextCommittedBytes() -> Int {
+        var held: [String: Int] = [:]
+        for (id, state) in active {
+            let (tokens, overflow) = state.promptTokens.addingReportingOverflow(state.maxTokens)
+            held[id] = overflow ? Int.max : requestReservationBytes(tokenCount: tokens) ?? Int.max
+        }
+        return Self.glm5NextCommittedBytes(gateReservations: glm5NextGateReservations, heldBytes: held)
+    }
+
+    /// `heldBytes` is each admitted request's reservation; `Int.max` when it
+    /// cannot be computed. The sum saturates at `Int.max`.
+    nonisolated static func glm5NextCommittedBytes(
+        gateReservations: [String: Int], heldBytes: [String: Int]
+    ) -> Int {
         var total = 0
-        for bytes in glm5NextGateReservations.values {
+        for bytes in Array(gateReservations.values) + Array(heldBytes.values) {
             let (sum, overflow) = total.addingReportingOverflow(bytes)
             if overflow { return Int.max }
-            total = sum
-        }
-        for state in active.values {
-            let (tokens, overflow) = state.promptTokens.addingReportingOverflow(state.maxTokens)
-            guard !overflow, let bytes = requestReservationBytes(tokenCount: tokens) else { return Int.max }
-            let (sum, sumOverflow) = total.addingReportingOverflow(bytes)
-            if sumOverflow { return Int.max }
             total = sum
         }
         return total

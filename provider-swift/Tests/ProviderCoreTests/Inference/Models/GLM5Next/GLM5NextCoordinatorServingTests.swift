@@ -222,6 +222,41 @@ struct GLM5NextCoordinatorServingTests {
             committedBytes: .max, admissibleBytes: bridgeAdmissible) == .committed)
     }
 
+    /// A request keeps its gate reservation until `submitTokenized` returns,
+    /// which a streamed local request does only once the engine starts it, but
+    /// it is in `active` from the engine's acceptance. Window 3 (11-10, a
+    /// 256 GB M5 Ultra, 57k/16k requests at 116,066 tokens each): two requests
+    /// waiting behind a prefill read 464,263 tokens, four charges, and the
+    /// third was refused. Each request counts once, at its full need.
+    @Test func aWaitingGLMRequestIsChargedOnce() {
+        let rate = 33_836 + 55_057 + 33_900, request = 14_252_056_525
+        let admissible = 387_586 * rate
+        func tokens(_ bytes: Int) -> Int { (bytes + rate - 1) / rate }
+        #expect(tokens(request) == 116_066)
+
+        let waiting = ["q1": request, "q2": request]
+        let twoWaiting = EngineV2Bridge.glm5NextCommittedBytes(gateReservations: waiting, heldBytes: waiting)
+        #expect(tokens(twoWaiting) == 232_132)
+        #expect(EngineV2Bridge.glm5NextSlotAdmission(requestBytes: request,
+            committedBytes: twoWaiting, admissibleBytes: admissible) == .admit(request))
+
+        // Three held (348,198 tokens): a fourth is refused as committed capacity.
+        let three = EngineV2Bridge.glm5NextCommittedBytes(
+            gateReservations: ["q1": request, "q2": request, "q3": request], heldBytes: waiting)
+        #expect(tokens(three) == 348_198)
+        #expect(EngineV2Bridge.glm5NextSlotAdmission(requestBytes: request,
+            committedBytes: three, admissibleBytes: admissible) == .committed)
+
+        // A request still before the engine and one admitted after its gate
+        // reservation was released each count once; the larger figure stands.
+        #expect(EngineV2Bridge.glm5NextCommittedBytes(gateReservations: ["q1": request + 7],
+            heldBytes: ["q1": request, "q2": request]) == 2 * request + 7)
+        #expect(EngineV2Bridge.glm5NextCommittedBytes(gateReservations: ["q1": request],
+            heldBytes: ["q1": request + 7]) == request + 7)
+        #expect(EngineV2Bridge.glm5NextCommittedBytes(gateReservations: ["q1": 1],
+            heldBytes: ["q2": .max]) == .max)
+    }
+
     /// A GLM heartbeat reports what the slot gate above charges: the requests
     /// the bridge holds, gate reservations included. The engine's reserved
     /// bytes also keep the paged pool's retained segments, which it reuses for

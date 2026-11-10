@@ -362,7 +362,8 @@ final class ClusterPlacementTensorWidthTests {
 
     /// What both Macs saved and what the setup screen then says the pair serves at once (`ClusterSetupPlanning.loads`,
     /// the number the slot's `max_concurrency` and both owners read): equal, or the test fails.
-    private func savedLanes(_ decision: ClusterSetupPlanning.PlacementDecision, row: LaneRow = gemma) throws -> (saved: Int?, screen: Int?) {
+    private func savedAndScreenLanes(_ decision: ClusterSetupPlanning.PlacementDecision, row: LaneRow = gemma)
+        throws -> (saved: Int?, screen: Int?) {
         let (pair, cap, _) = try laneChargeFixture(laneBytes: nil, row: row)
         let setup = try #require(decision.setup)
         let saved = try ["a", "b"].map { member in
@@ -390,7 +391,7 @@ final class ClusterPlacementTensorWidthTests {
                                  ((need(2) + need(4)) / 2, 2), ((need(1) + need(2)) / 2, nil)] as [(Int, Int?)] {
             let decided = try decideLaneCharged(home, free: free)
             let chosen = try #require(decided.result.chosen)
-            let lanes = try savedLanes(decided)
+            let lanes = try savedAndScreenLanes(decided)
             #expect(lanes.saved == expected && lanes.screen == (expected ?? 1), "\(free / gib) GiB free")
             #expect(chosen.mode == .tensorParallel && chosen.admitted(requireNow: true))
             // Priced at its width: every lane after the first adds its charge, and each Mac admits it now.
@@ -400,9 +401,9 @@ final class ClusterPlacementTensorWidthTests {
             #expect(chosen.ranks.map(\.device) == alone.ranks.map(\.device) && chosen.tensorShares == alone.tensorShares)
         }
         // Both Macs must admit it: the smaller Mac decides.
-        #expect(try savedLanes(try decideLaneCharged(home, free: 200 * gib, peerFree: (need(4) + need(6)) / 2)).saved == 4)
+        #expect(try savedAndScreenLanes(try decideLaneCharged(home, free: 200 * gib, peerFree: (need(4) + need(6)) / 2)).saved == 4)
         // A layout that states no lane charge prices no width: the setup saves none and serves one request at a time.
-        let unpriced = try savedLanes(try decideLaneCharged(home, free: 200 * gib, laneBytes: nil))
+        let unpriced = try savedAndScreenLanes(try decideLaneCharged(home, free: 200 * gib, laneBytes: nil))
         #expect(unpriced.saved == nil && unpriced.screen == 1)
     }
 
@@ -419,15 +420,15 @@ final class ClusterPlacementTensorWidthTests {
                                  ((need(2) + need(4)) / 2, 2), ((need(1) + need(2)) / 2, nil)] as [(Int, Int?)] {
             let decided = try decideLaneCharged(home, free: free, laneBytes: lane, row: row)
             let chosen = try #require(decided.result.chosen)
-            let lanes = try savedLanes(decided, row: row)
+            let lanes = try savedAndScreenLanes(decided, row: row)
             #expect(lanes.saved == expected && lanes.screen == (expected ?? 1), "\(free / gib) GiB free")
             #expect(chosen.mode == .tensorParallel && chosen.admitted(requireNow: true))
             #expect(chosen.ranks.map(\.needBytes).max() == need(expected ?? 1), "\(free / gib) GiB free")
             #expect(chosen.ranks.map(\.device) == alone.ranks.map(\.device) && chosen.tensorShares == alone.tensorShares)
         }
-        #expect(try savedLanes(try decideLaneCharged(home, free: 200 * gib, peerFree: (need(2) + need(4)) / 2, laneBytes: lane, row: row),
+        #expect(try savedAndScreenLanes(try decideLaneCharged(home, free: 200 * gib, peerFree: (need(2) + need(4)) / 2, laneBytes: lane, row: row),
             row: row).saved == 2)
-        let unpriced = try savedLanes(try decideLaneCharged(home, free: 200 * gib, laneBytes: nil, row: row), row: row)
+        let unpriced = try savedAndScreenLanes(try decideLaneCharged(home, free: 200 * gib, laneBytes: nil, row: row), row: row)
         #expect(unpriced.saved == nil && unpriced.screen == 1)
     }
 }

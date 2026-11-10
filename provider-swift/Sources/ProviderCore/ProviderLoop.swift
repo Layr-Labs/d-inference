@@ -573,6 +573,12 @@ public actor ProviderLoop {
     /// unchanged TOML while a manual foreground override was serving.
     public internal(set) var hasPersistedModelSwitch = false
     internal var acceptedLifecycleRequests: Set<String> = []
+    /// When the coordinator cancelled an accepted request that has not
+    /// finished yet. Its client is gone; see `coordinatorRequestsInFlight`.
+    internal var coordinatorCancelledAt: [String: ContinuousClock.Instant] = [:]
+    /// How long a lifecycle drain still counts an accepted request after its
+    /// coordinator cancelled it (`coordinatorRequestsInFlight`).
+    internal var orphanedRequestGrace: Duration = .seconds(30)
     /// Requests that released the work FIFO at a model-load wait and have not
     /// returned yet (`ProviderLoop+WorkFIFO.swift`).
     internal var releasedAdmissions: [String: ReleasedAdmission] = [:]

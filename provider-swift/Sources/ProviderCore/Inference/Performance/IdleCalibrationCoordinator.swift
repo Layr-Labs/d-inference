@@ -9,6 +9,13 @@ final class IdleCalibrationCoordinator: @unchecked Sendable {
     private var session: (id: UUID, task: Task<Void, Never>)?
     /// First cancellation of the current session, for its outcome log.
     private var cancelledBy: String?
+    private var bound: Duration = .seconds(30)
+
+    /// How long a request waits for a preempted session to retire.
+    var retirementBound: Duration {
+        get { lock.withLock { bound } }
+        set { lock.withLock { bound = newValue } }
+    }
 
     func startIfIdle(isIdle: () -> Bool,
         onRetired: (@Sendable () async -> Void)? = nil,

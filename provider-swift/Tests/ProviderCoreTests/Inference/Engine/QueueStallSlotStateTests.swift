@@ -1,4 +1,5 @@
 import Foundation
+import MLX
 import MLXLMCommon
 import Testing
 
@@ -79,6 +80,41 @@ struct QueueStallSlotStateTests {
         await bridge.shutdown()
     }
 
+    @Test("a real EngineV2 that the SDK sealed reads crashed and is a confirmed wedge")
+    func realSealedEngineStopsTheSlot() async {
+        // Native completion tracking with no issued execution contract: the SDK
+        // seals the engine at construction (`unsupportedExecutionContract`), the
+        // same write-once `incomplete` outcome a failed native step leaves. No
+        // tensor is built and the step loop never starts.
+        let sealed = Self.realEngine(nativeCompletionTracking: true)
+        #expect(sealed.nativeCompletionFault?.reason == .unsupportedExecutionContract)
+        let bridge = EngineV2Bridge(engine: sealed, modelId: "mimo-v2.6-flash-mopd",
+            tokenizer: TokenizerHandle(QueueStallTokenizer()), eosTokenIds: [], maxConcurrentRequests: 4)
+        let now = ContinuousClock.now
+        #expect(await bridge.backendSlotCapacity(now: now).state == "crashed",
+            "the slot must read the SDK's own fault, not only a fake engine's")
+        #expect(await bridge.confirmedWedgeForRecovery(now: now))
+
+        let healthy = Self.realEngine(nativeCompletionTracking: false)
+        #expect(healthy.nativeCompletionFault == nil)
+        let control = EngineV2Bridge(engine: healthy, modelId: "gemma-4-26b-qat-4bit",
+            tokenizer: TokenizerHandle(QueueStallTokenizer()), eosTokenIds: [], maxConcurrentRequests: 4)
+        #expect(await control.backendSlotCapacity(now: now).state == "idle")
+        #expect(!(await control.confirmedWedgeForRecovery(now: now)))
+        await bridge.shutdown()
+        await control.shutdown()
+    }
+
+    /// A host-only engine: one attention layer, a 1 MiB contiguous backend, a
+    /// model that is never asked to build a graph.
+    private static func realEngine(nativeCompletionTracking: Bool) -> EngineV2 {
+        let kinds = [CBv2LayerKind(attention: .full, headDim: 64, valueHeadDim: 32, kvHeads: 1, queryHeads: 1)]
+        return EngineV2(model: NeverForwardModel(), layerKinds: kinds,
+            backend: CBv2ContiguousKVBackend(config: .init(bytesCapacity: 1 << 20, kvDType: .float32)),
+            cacheProvider: CBv2LayerCacheBank(layerKinds: kinds),
+            nativeCompletionTracking: nativeCompletionTracking)
+    }
+
     @Test("a step, a running row or an empty queue restarts the stall clock", arguments: [0, 1, 2])
     func progressClearsTheStall(change: Int) async {
         let engine = QueueStallEngine(waiting: 1, running: 0, steps: 10)
@@ -136,6 +172,12 @@ private final class QueueStallEngine: CBv2Engine, SealedNativeFaultReporting, @u
         }
     }
     func shutdown() async {}
+}
+
+private final class NeverForwardModel: CBv2SteppableModel {
+    func forward(tokens: MLXArray, caches: [CBv2AttendingLayerCache]) -> MLXArray {
+        preconditionFailure("a sealed or idle engine never builds a model graph")
+    }
 }
 
 private struct QueueStallTokenizer: MLXLMCommon.Tokenizer {

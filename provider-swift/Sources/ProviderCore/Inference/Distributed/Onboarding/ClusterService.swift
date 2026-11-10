@@ -101,6 +101,9 @@ public final class ClusterService: @unchecked Sendable {
     /// The part whose end (or failed start) set `nextStart`: its restart backoff does not hold back another part.
     private var endedKey: String?
     private var backoff: Double = 3
+    /// The pair's part ended while the other Mac didn't answer, so `nextStart` is further off
+    /// (`ClusterControlPartChoice.restartBackoff`): the other Mac's answer ends the wait.
+    private var restartWaitsForOtherMac = false
     var responder: ClusterSetupLinkExchange.Responder?
     var stopping = false
     private var syncing = false
@@ -1275,11 +1278,13 @@ public final class ClusterService: @unchecked Sendable {
         return lock.withLock {
             let reference = try? saved.reference.get()
             let wait = nextStart.timeIntervalSinceNow
+            let waitsToStart = child == nil && oldPart == nil && wait > 0
             var value = ClusterServiceStatus(role: record?.leadership?.role, serving: record?.leadership?.serving ?? false,
                 modelName: record?.leadership?.modelName, sessionLeader: leads, localRank: configuration?.localRank,
                 setup: reference.map { String($0.sha256.prefix(12)) },
                 child: .init(running: child?.isRunning == true || oldPart != nil, starts: starts, lastEnd: lastEnd,
-                    restartInSeconds: child == nil && oldPart == nil && wait > 0 ? Int(wait.rounded(.up)) : nil,
+                    restartInSeconds: waitsToStart ? Int(wait.rounded(.up)) : nil,
+                    restartWaitsForOtherMac: waitsToStart && restartWaitsForOtherMac ? true : nil,
                     // A running part says only a refusal its follower got (it keeps retrying, P2-1); an ended one its error.
                     lastError: soloNow != nil ? Self.soloServingError(soloNow!)
                         : child?.isRunning == true
@@ -2080,6 +2085,11 @@ public final class ClusterService: @unchecked Sendable {
         let scope = record.leadership?.scope ?? .publicServing
         let leadsSession = saved.configuration?.role == .leader
         let runningSolo = lock.withLock { child != nil && childSetup?.hasPrefix("solo:") == true }
+        // A part that waits longer because the other Mac didn't answer starts again as soon as it answers.
+        if lock.withLock({ restartWaitsForOtherMac && child == nil && nextStart.timeIntervalSinceNow > 0 }), !otherMacAway() {
+            lock.withLock { restartWaitsForOtherMac = false; nextStart = .distantPast; backoff = 3 }
+            say("the other Mac answers again: this Mac's part starts again without waiting")
+        }
         let want = watchPair(partWanted(serving: serving, hasSetup: reference != nil && saved.configuration != nil,
                                         model: saved.configuration?.publicModelID ?? record.leadership?.modelName, runningSolo: runningSolo),
                              intent: serving, scope: scope, say: say)
@@ -2099,10 +2109,14 @@ public final class ClusterService: @unchecked Sendable {
         if let running, ended {
             let ran = Date().timeIntervalSince(lock.withLock { childStarted })
             let end = running.terminationReason == .uncaughtSignal ? "signal \(running.terminationStatus)" : "exit \(running.terminationStatus)"
-            lock.withLock {
+            // The pair's part can't form the pair while the other Mac doesn't answer: it waits longer each time.
+            let waitsForOtherMac = setup?.hasPrefix("cluster:") == true && otherMacAway()
+            let wait = lock.withLock { () -> Double in
                 child = nil; childSetup = nil; lastEnd = end; lastRunSeconds = ran; endedKey = setup
-                backoff = ran >= 120 ? 3 : min(backoff * 2, 30)
-                nextStart = Date().addingTimeInterval(ran >= 120 ? 3 : backoff)
+                backoff = ClusterControlPartChoice.restartBackoff(after: backoff, ranSeconds: ran, otherMacAway: waitsForOtherMac)
+                nextStart = Date().addingTimeInterval(backoff)
+                restartWaitsForOtherMac = waitsForOtherMac
+                return backoff
             }
             // A part refused because the other Darkbloom app holds this Mac's GPU (`ClusterMachineDeviceLock`) waits for
             // it from the next tick (`holdsBackForOtherApp`), which starts it again as soon as the hold ends.
@@ -2134,7 +2148,9 @@ public final class ClusterService: @unchecked Sendable {
                 }
             }
             say("this Mac's \(setup?.hasPrefix("solo:") == true ? "solo server" : "part") ended (\(end)) after \(Int(ran)) s; "
-                + (key != nil ? "starting it again" : "not serving"))
+                + (key == nil ? "not serving" : waitsForOtherMac
+                    ? "the other Mac doesn't answer: starting it again in \(Int(wait)) s, or as soon as it answers"
+                    : "starting it again"))
             if let setup, setup.hasPrefix("cluster:"), leadsSession, let model = record.leadership?.modelName {
                 noteMemoryRefusal(key: setup, since: Date().addingTimeInterval(-ran - 5), model: model, say: say)
             }

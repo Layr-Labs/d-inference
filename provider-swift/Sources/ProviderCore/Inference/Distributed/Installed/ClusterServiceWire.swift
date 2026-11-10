@@ -17,6 +17,9 @@ public struct ClusterServiceStatus: Codable, Sendable, Equatable {
         public var lastEnd: String?
         /// Seconds until the next start while it waits after an end.
         public var restartInSeconds: Int?
+        /// While it waits after an end: the wait grew because the other Mac doesn't answer, and its answer ends the wait
+        /// (`ClusterControlPartChoice.restartBackoff`); nil otherwise and from an older build.
+        public var restartWaitsForOtherMac: Bool? = nil
         /// The last error line this Mac's part printed (its log), when its last run ended.
         public var lastError: String?
         /// While it runs: its process, when that process started (seconds since 1970, as the process table reads it, so

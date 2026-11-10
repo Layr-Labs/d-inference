@@ -3359,6 +3359,26 @@ or the check fails rather than passing on a host that caches nothing.
 Sources: `provider-swift/Tests/ProviderCoreTests/Inference/Distributed/ClusterServicePartStartCacheTests.swift`
 and `libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/CheckpointPayloadCacheCheck.swift`.
 
+### A part whose other Mac is away
+
+`ClusterServicePartRestartTests` runs the actual service loop for the leading
+Mac's part (pairing moved away, so nothing answers; the part is `/usr/bin/true`,
+which ends at once) with a control node whose other member was last heard past
+its time-to-live, inside a one-hour absence grace. The part's first restart must
+wait at least 30 s and the status must say the other Mac's answer ends the wait
+(`restartWaitsForOtherMac`); once the other Mac's answer is applied to the node,
+the part must start again within 3 s. The suite also checks the restart waits
+(`ClusterControlPartChoice.restartBackoff`: 6, 12, 24, then 30 s while the
+other Mac answers; 30 s doubling to 10 min while it doesn't), the modes that
+count as the other Mac away, and the leader's status line
+(`OnboardingLive.partWaitLine`). `Tests/ClusterControlChecks/run.sh` checks the
+same waits, modes and line with plain `swiftc`. Run it from `provider-swift`
+with `swift test --filter ClusterServicePartRestartTests`; it gives its service
+a power-assertion name of its own.
+
+Sources: `provider-swift/Tests/ProviderCoreTests/Inference/Distributed/ClusterServicePartRestartTests.swift`
+and `provider-swift/Tests/ClusterControlChecks/ControlChecks.swift`.
+
 ### Cluster service listeners after pairing again
 
 `ClusterServicePairingChangeTests` runs the actual service's two listeners on

@@ -2158,6 +2158,13 @@ final class OnboardingLive: @unchecked Sendable {
         return "; \(mac)'s part ended (\(end)\(child.lastError.map { ": " + $0 } ?? "")) and starts again by itself"
     }
 
+    /// While the leading Mac waits for the other Mac (`localStatus`): when its part, which ended, starts again, while that
+    /// wait grew because the other Mac doesn't answer (`ClusterControlWords.partWaitLine`); nil otherwise.
+    static func partWaitLine(_ child: ClusterServiceStatus.Child?, here: String, there: String) -> String? {
+        guard let child, child.restartWaitsForOtherMac == true, let seconds = child.restartInSeconds else { return nil }
+        return ClusterControlWords.partWaitLine(seconds: seconds, here: here, there: there)
+    }
+
     /// Whether a part's end is said in the live rows (`readinessOnce`, `offeredReadiness`) as an end that starts again by
     /// itself, on either Mac: not a clean stop ("stopped", or exit 0 with no reason), which a planned switch makes on both
     /// Macs (the DevNet run, A-10, B18); an exit 0 that says why (a refused dial, A-3) is still said.
@@ -2435,8 +2442,8 @@ final class OnboardingLive: @unchecked Sendable {
         let answering = self.answering
         if let control = ClusterService.published()?.control, ["alone", "cannotServe", "waiting"].contains(control.mode) {
             // Serving alone is said only once this service's own solo server answers, as the setup's wait counts it.
-            return lines + Self.awayLines(control, started: leadership?.serving == true, stopped: stoppedLine, there: there,
-                                          prefix: answering ? Self.sentence(hereShort) + ": " : "") {
+            var away = Self.awayLines(control, started: leadership?.serving == true, stopped: stoppedLine, there: there,
+                                      prefix: answering ? Self.sentence(hereShort) + ": " : "") {
                 let published = ClusterService.published()
                 switch ClusterService.soloReadiness(published) {
                 case .ready: return nil
@@ -2444,6 +2451,11 @@ final class OnboardingLive: @unchecked Sendable {
                 case .foreign: return " (another program answers on port \(ClusterService.soloPort(of: published)), so its solo server cannot serve there)"
                 }
             }
+            if control.mode == "waiting",
+               let wait = Self.partWaitLine(ClusterService.published()?.child, here: Self.sentence(hereShort), there: thereShort) {
+                away.append(wait)
+            }
+            return lines + away
         }
         // One line for the screen (the banner above says which Mac leads): what serves and where, or why it does not.
         let model = (leadership?.modelName).map(modelTitle) ?? "the chosen model"

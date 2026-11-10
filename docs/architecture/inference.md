@@ -4310,6 +4310,23 @@ for its missing follower and ends again. The rule applies only while this Mac
 leads and runs the cluster, and never to serving alone (`solo:`); a Mac that
 doesn't answer reports nothing, so its absence follows the control lease.
 
+## A part that waits for the other Mac
+
+The cluster service starts this Mac's part again after it ends, after a restart
+backoff (`ClusterControlPartChoice.restartBackoff`): 3 s after a run of 2
+minutes or more, otherwise twice the last wait, from 6 s up to 30 s. While the
+control leader has a member of the plan absent past the lease's time-to-live
+(`ClusterControlNode.Mode.othersAway`: `waiting`, `alone`, `cannotServe`), the
+pair's part (`cluster:`) can't form the pair, so its wait keeps doubling from
+30 s up to 10 minutes, whatever the run's length. Inside the absence grace the
+part stays wanted, and each start reads its share of the model and registers it
+again: a MiMo leader whose follower slept started it every 48 s (2026-11-09).
+Once the other Mac answers again (`ClusterService.otherMacAway`) the wait ends
+and the part starts at the next tick. A solo server's restarts keep the ordinary
+backoff. The status carries the wait (`restartInSeconds`) and, when it grew for
+the absence, `restartWaitsForOtherMac`; the leader's `cluster status` then says
+when the part starts again (`OnboardingLive.partWaitLine`).
+
 ## Cluster service listeners follow the cable and the pairing
 
 Each Mac's cluster service answers the other Mac on two listeners: the setup

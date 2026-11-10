@@ -42,6 +42,8 @@ final class Qwen35CheckpointRetentionFixture: @unchecked Sendable {
     let prompts: Prompts
     let root: URL
     let key = SymmetricKey(size: .bits256)
+    /// Reads back what this fixture's stores wrote.
+    private(set) lazy var scan = CompleteCheckpointFixtureScan(root: root, key: key)
     let identity: CBv2CompleteCheckpointIdentity
     private var bridges: [EngineV2Bridge] = []
     private var stores: [SSDHybridCheckpointStore] = []
@@ -229,6 +231,7 @@ final class Qwen35CheckpointRetentionFixture: @unchecked Sendable {
             maxWriteBytesPerDay: SSDPrefixCachePolicy.defaultMaxWriteBytesPerDay,
             usesEphemeralKey: true)
         stores.append(store)
+        scan.storeMade(maxReadBytes: maxReadBytes)
         store.scanOnDisk()
         return store
     }
@@ -315,17 +318,9 @@ final class Qwen35CheckpointRetentionFixture: @unchecked Sendable {
 
     /// Authenticate every encrypted segment, retaining only the small manifest.
     func persistedManifests() throws -> [CBv2CompleteCheckpointManifest] {
-        let enumerator = try #require(FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil))
-        let files = enumerator.compactMap { $0 as? URL }.filter { $0.pathExtension == "dbk3" }
+        let files = try scan.files()
         try #require(!files.isEmpty, "no encrypted complete-checkpoint files found")
-        return try files.map { file in
-            var manifestBytes: Data?
-            try SSDBlockStore.readStreaming(from: file, kekKey: key,
-                maximumChunkBytes: CBv2CompleteCheckpointManifest.maximumSegmentBytes,
-                maximumPlaintextBytes: SSDPrefixCachePolicy.maxStageBytes(environment: [:]),
-                requireEOF: true, validateMetadata: { _ in },
-                consumeChunk: { index, data in if index == 0 { manifestBytes = data } })
-            let manifest = try SSDHybridCheckpointEnvelope.decodeManifest(try #require(manifestBytes))
+        return files.map { _, manifest in
             #expect(manifest.identity == identity)
             #expect(manifest.backendLayout == CBv2CompleteCheckpointManifest.pagedLayout)
             #expect(manifest.cacheSalt?.hasPrefix("tenant-") == true)
@@ -339,18 +334,10 @@ final class Qwen35CheckpointRetentionFixture: @unchecked Sendable {
     /// comparison. Moving it aside reproduces the old publication set while
     /// using the same engine, weights, prompt and encrypted remaining files.
     func checkpointFile(position: Int, scope: String) throws -> URL {
-        let enumerator = try #require(FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil))
-        for case let file as URL in enumerator where file.pathExtension == "dbk3" {
-            var bytes: Data?
-            try SSDBlockStore.readStreaming(from: file, kekKey: key,
-                maximumChunkBytes: CBv2CompleteCheckpointManifest.maximumSegmentBytes,
-                maximumPlaintextBytes: SSDPrefixCachePolicy.maxStageBytes(environment: [:]),
-                requireEOF: true, validateMetadata: { _ in },
-                consumeChunk: { index, data in if index == 0 { bytes = data } })
-            let manifest = try SSDHybridCheckpointEnvelope.decodeManifest(try #require(bytes))
-            if manifest.position == position && manifest.cacheSalt == scope { return file }
-        }
-        throw FixtureFailure.promptTooShort
+        guard let file = try scan.files().first(where: {
+            $0.manifest.position == position && $0.manifest.cacheSalt == scope
+        }) else { throw FixtureFailure.promptTooShort }
+        return file.url
     }
 
     /// Retained boundaries of one scope that prefix `tokens`, ascending, with

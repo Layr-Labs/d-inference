@@ -1528,10 +1528,13 @@ public final class GLM5NextTensorParallelResidentRuntime {
             + " kv_tokens=\(opened.pages?.tokens ?? 0) kv_grown=\(opened.pages?.grown ?? 0) kv_refused=\(pagesRefused ? 1 : 0)"
             + " mtp_proposed=\(speculation?.proposedTokens ?? 0)" + Self.proposalFields(speculation, sampler: sampler)
             + " media_frames=\(opened.media?.media.frames.count ?? 0) media_tokens=\(opened.media?.featureCount ?? 0)")
+        // A rank whose own refusal stopped it too late to change rank 0's end
+        // still ends cleanly (`reconcile`), but its gate gave way first: its
+        // prefix cache dropped every entry (`yieldingMemory`), these frontiers too.
         var completion = QwenResidentGenerationCompletion(requestID: request.requestID, finishReason: finish,
             selectedTokenIDs: tokens, completedFrames: tokens.count, committedTokens: prompt.count + tokens.count,
             tokenChainSHA256: sha256(try canonicalJSONData(tokens.map { String($0) })), bothRequestStatesRetired: true,
-            reusedPromptTokens: start, storedPromptFrontiers: stored)
+            reusedPromptTokens: start, storedPromptFrontiers: stoppedHere ? [] : stored)
         if rank == 0 { completion.telemetry = Self.speculationTelemetry(speculation) }
         return completion
     }

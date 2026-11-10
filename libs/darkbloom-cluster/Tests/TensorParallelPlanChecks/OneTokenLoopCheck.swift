@@ -205,5 +205,46 @@ func checkOneTokenLoop() {
     if let plain = byCase["read-then-build stop token"] { check(!buildsAhead(plain.events), "read-then-build order is detected") }
     let stopToken = byCase["pipelined stop token"]
     check(stopToken?.tokens == [11, 12, 13, 14, 2] && stopToken?.finish == .eos, "pipelined stop token ends at EOS: \(String(describing: stopToken))")
-    print("one-token loop: \(cases.count) two-rank cases, build-ahead order, collectives and endings checked")
+    let late = checkLateOwnStops()
+    print("one-token loop: \(cases.count + late) two-rank cases, build-ahead order, collectives and endings checked")
+}
+
+/// Rank 1 stops on its own (its memory gate, or pages that could not grow) on
+/// the token just before rank 0 ends the request itself, at its stop token or
+/// its length. Built one ahead, rank 1's flag rides the step after the one
+/// already built, which rank 0, ending there, never reads; nor does the end
+/// agreement take an abort (rank 0 did not stop on a flag). The request is
+/// complete, so both ranks must report rank 0's finish: the owner fails the
+/// request and the pair when rank 1's finish differs from rank 0's
+/// (`ClusterWorkerRequest`, "Rank 1 finish or local retirement differs").
+/// Rank 1 keeps the tokens it committed. Returns the number of cases.
+func checkLateOwnStops() -> Int {
+    typealias R = QwenTensorParallelStopRule
+    let cases: [(String, OneTokenCase, R.Finish)] = [
+        ("rank 1's memory stop just before the stop token", .init(pipelined: true, localStopAfter: [1: 4]), .eos),
+        ("rank 1's memory stop just before the length",
+         .init(pipelined: true, script: [11, 12, 13, 14, 15, 16], localStopAfter: [1: 5]), .length),
+        ("rank 1's pages run out just before the stop token", .init(pipelined: true, refusePagesAfter: [1: 3]), .eos),
+    ]
+    for (label, spec, finish) in cases {
+        guard let run = oneTokenPair(spec) else {
+            failures += 1; print("FAIL: one-token \(label): a rank failed or hung"); continue
+        }
+        let zero = run.ended[0], one = run.ended[1]
+        check(run.mismatch == nil, "one-token \(label): ranks ran different collectives: \(run.mismatch ?? "")")
+        check(zero.finish == finish && zero.published == zero.tokens,
+              "one-token \(label): rank 0 ends the request itself: \(zero.tokens)/\(zero.finish), streamed \(zero.published)")
+        check(one.finish == zero.finish,
+              "one-token \(label): rank 1 reports \(one.finish) where rank 0 reports \(zero.finish): the owner fails the request and the pair")
+        check(one.tokens.count + 1 == zero.tokens.count && Array(zero.tokens.prefix(one.tokens.count)) == one.tokens,
+              "one-token \(label): rank 1 keeps the tokens it committed: \(one.tokens) against \(zero.tokens)")
+        // The end agreement takes no abort: rank 0 ended the request itself.
+        let words = zip(R.endWords(rank: 0, count: zero.tokens.count, finish: zero.finish, clientStopped: false,
+                                   stoppedForMemory: false),
+                        R.endWords(rank: 1, count: 0, finish: .clientStop, clientStopped: false,
+                                   stoppedForMemory: spec.localStopAfter[1] != nil)).map(+)
+        check((try? R.readEnd(words)).map { $0.memoryStopRank == nil } == true,
+              "one-token \(label): the end agreement \(words) takes no abort")
+    }
+    return cases.count
 }

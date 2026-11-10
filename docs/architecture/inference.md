@@ -5686,8 +5686,19 @@ batches failed whole on a refusal, so the worker exited either way. Now:
   and each rank's memory stop (`QwenTensorParallelStopRule.endWords`,
   `readEnd`; MiMo's one extra exchange). A local stop with a memory stop is an
   abort naming that rank on both ranks; a stop token, the length or the owner's
-  stop end the request as before. The request's state retires normally, its
-  prompt capture is withdrawn, and nothing goes to the SSD tier. The check runs
+  stop end the request as before. Gemma's and GLM's steps (and GLM's MTP
+  rounds) are built one ahead, so rank 1's flag rides the step after the one
+  already built. When rank 0 ends the request in that step, at its stop token
+  or its length, rank 1's stop came too late to change what the client gets:
+  rank 1 reports rank 0's finish with the tokens it committed
+  (`QwenTensorParallelStopRule.reconcile`), and both end cleanly. Two finishes
+  that differ would fail the request on the owner, and the pair with it.
+  (MiMo reads a round's stops before it commits, so its stop is never late.)
+  An aborted request's state retires normally and nothing of it goes to the
+  SSD tier. Gemma withdraws the prompt's capture. GLM stores a prompt's kept
+  boundary when the prefill frame that reaches it finishes, so the rank that
+  didn't refuse keeps that entry until it is evicted (the refusing rank's gate
+  dropped all of its own), and a restore needs both ranks. The check runs
   after each committed token, as before.
 - **A prompt's prefill** (one request: Gemma 4 and MiMo by default, GLM with
   one lane) runs its chunks without a check, as before, so a refusal is acted

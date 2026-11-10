@@ -1392,7 +1392,12 @@ the memory 503 (or, once a stream has started, an error chunk with `code`
   10 s into the request.
 - **When.** The worker reads the file when the next request starts on that Mac
   and deletes it, so it fires once; a running pair needs no restart. The
-  request's end disarms it.
+  request's end disarms it. With lanes (GLM tensor parallel's default eight,
+  for example), every pass of that rank's gate counts while it is armed: the
+  lanes' step checks, and another lane's reservation, which then reads the
+  memory as taken and is refused at reservation (the pair's 503), as any
+  memory refusal there is. A step check's refusal ends the newest running
+  lane, normally the armed one.
 - **How.** The fault changes only the sample the gate judges
   (`ClusterMemoryFault.reading`, in `QwenDenseStageLoadWatch.admits`): no free
   page and no file cache, as on a Mac whose memory another process has taken
@@ -1445,8 +1450,14 @@ CI (`.github/workflows/provider-tests.yml`) runs them in three places. The job
 [Job sizes](build.md#job-sizes)) runs
 `libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh` and
 `libs/darkbloom-cluster/Tests/PrefillScheduleChecks/run.sh`, which compile a
-release build of the cluster runtime. Shard 2 of `test-cluster-focused`
-(Cluster Focused Checks) runs
+release build of the cluster runtime, and
+`libs/darkbloom-cluster-worker/Tests/LifecycleChecks/run.sh`: the worker
+package's own request lifecycle tests (`WorkerTests` and `WorkerLaneTests`, the
+worker coordinator over its real pipes with a fake runtime, in a debug build
+with `DARKBLOOM_WORKER_TEST_JOBS` jobs, 4 by default and 12 in CI), among them
+a running request that a rank's memory refused ending alone while the worker
+serves the next. No other job runs that package's tests. Shard 2 of
+`test-cluster-focused` (Cluster Focused Checks) runs
 `libs/darkbloom-cluster/Tests/StageMetadataChecks/run.py`,
 `libs/darkbloom-cluster/Tests/GPTOSSStageChecks/run.sh`,
 `libs/darkbloom-cluster/Tests/NemotronStageChecks/run.sh`,

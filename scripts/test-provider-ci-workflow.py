@@ -737,6 +737,9 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         runners = {
             "Run worker capability checks": (release, None, "bash libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh"),
             "Run prefill schedule checks": (release, None, "bash libs/darkbloom-cluster/Tests/PrefillScheduleChecks/run.sh"),
+            # The worker package's own tests (D6's no-exit path among them): no other job runs them.
+            "Run the worker's request lifecycle tests":
+                (release, None, "bash libs/darkbloom-cluster-worker/Tests/LifecycleChecks/run.sh"),
             "Run stage metadata checks": (focused, 2, 'python3 libs/darkbloom-cluster/Tests/StageMetadataChecks/run.py '
                                                       '--output "$RUNNER_TEMP/stage-metadata-checks"'),
             "Run GPT-OSS stage checks": (focused, 2, "bash libs/darkbloom-cluster/Tests/GPTOSSStageChecks/run.sh"),

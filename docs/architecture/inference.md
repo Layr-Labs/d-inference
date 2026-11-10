@@ -2513,10 +2513,16 @@ verification remains available as a diagnostic oracle; drafter-required modes
 retain priority (`provider-swift/Sources/ProviderCore/Inference/MTP/EngineV2MTPAssistant.swift`,
 `providerMTPVerificationPolicy`).
 When neither a global nor a per-model acceptance value is configured, serving
-defaults to typical acceptance for eligible sampled target-prefix rows, except
-on the owned Bonsai 9B candidate and the catalog `Qwen3.5-9B`, whose built-in
-rule is exact (`MTPAcceptancePolicy.builtInIsExact`; the 9B looped under
-typical acceptance in the 0.10.12 gate, see the Qwen 3.5/3.6 defaults below).
+uses exact acceptance for every model, so a speculating row emits the target's
+own distribution (`MTPAcceptancePolicy.resolve`; the design record's D1).
+Typical acceptance is an explicit opt-in, globally or per model. It locks a
+repetition in once the drafter predicts it: the catalog Qwen 3.5 builds ran
+away under it in the 0.10.12 gate where exact acceptance did not (see the
+Qwen 3.5/3.6 defaults below). On OpenRouter's GPQA runs, while these builds
+still drafted under typical acceptance (10-17 and 10-24), 41 % of Qwen 3.6's
+and 32 % of Qwen3.5-9B's answers ended at their output cap; on 10-31, when a
+default presence penalty kept them from drafting, 9 % and 1 % did. Gemma
+drafted every GPQA answer on 10-31 and 30 % of them ended at 32,768 tokens.
 Under typical acceptance a draft is kept when the sampler-filtered target row
 gives it probability above `min(1, 0.2 * exp(-H))`, `H` the row's entropy in
 nats; the first rejected position and the bonus position still commit the keyed
@@ -2673,16 +2679,16 @@ the 9B, an M5 Ultra for the 35B):
 
 | Build | Omitted `presence_penalty` | Built-in MTP acceptance | The gate without the penalty |
 |---|---|---|---|
-| `qwen3.5-35b-a3b`, `qwen3.6-35b-a3b-vl-mtp-mxfp8` (`qwen35CardDefaults`) | 1.5 | typical | `qwen3.5-35b-a3b` ran away under typical acceptance (5 of 19 everyday prompts, 8 of 12 loopers to 32,768, MTP running at concurrency 1) and under exact (2 of 12 loopers); the 3.6 build shares its architecture |
-| `Qwen3.5-9B` (`qwen35NineBCardDefaults`) | none | **exact** (`MTPAcceptancePolicy.builtInIsExact`) | ran away on 13 of 31 draws under typical acceptance and on 0 of 31 under exact, MTP running; the penalty-free body cached 8,192 tokens on the second send, the penalty body none |
+| `qwen3.5-35b-a3b`, `qwen3.6-35b-a3b-vl-mtp-mxfp8` (`qwen35CardDefaults`) | 1.5 | exact (every model's) | `qwen3.5-35b-a3b` ran away under typical acceptance (5 of 19 everyday prompts, 8 of 12 loopers to 32,768, MTP running at concurrency 1) and under exact (2 of 12 loopers); the 3.6 build shares its architecture |
+| `Qwen3.5-9B` (`qwen35NineBCardDefaults`) | none | exact (every model's) | ran away on 13 of 31 draws under typical acceptance and on 0 of 31 under exact, MTP running; the penalty-free body cached 8,192 tokens on the second send, the penalty body none |
 
 A row with a penalty neither speculates nor, on these builds, stages a prefix
 checkpoint ([prefix caching](prefix-cache.md#invariants), invariant 9), so the
 35B builds' requests that omit the penalty stay without MTP and without cache
 donation, the cost the gate accepted for loop safety. A request's own
-`presence_penalty` always wins: `0` on a 35B build speculates under typical
-acceptance and donates checkpoints (the configuration that looped in the gate,
-now the caller's choice); a nonzero value on the 9B turns its MTP and cache
+`presence_penalty` always wins: `0` on a 35B build speculates under exact
+acceptance and donates checkpoints (in the gate that configuration still ran
+away on 2 of 12 loopers, the model's own loops, so it is the caller's choice); a nonzero value on the 9B turns its MTP and cache
 donation off for that request. The coordinator forwards a build's registry
 runtime defaults for the fields a request omits
 ([`requestRuntimeDefaultKeys`](https://github.com/Layr-Labs/darkbloom-platform/blob/c69380d91fd3f9e4ef3ff1e3775690d80adbbe57/coordinator/api/inference/request/model_runtime_defaults.go));

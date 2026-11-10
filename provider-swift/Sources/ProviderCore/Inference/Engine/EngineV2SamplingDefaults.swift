@@ -76,9 +76,9 @@ public struct EngineV2SamplingDefaults: Sendable, Equatable {
     static let qwen35CardDefaults = EngineV2SamplingDefaults(
         temperature: 1.0, topP: 0.95, topK: 20, presencePenalty: 1.5)
     /// Qwen3.5-9B's: the same values without the penalty. Without it the 9B
-    /// looped only under typical MTP acceptance, and its built-in rule is exact
-    /// (`MTPAcceptancePolicy`); a penalty would keep its rows from speculating
-    /// and from staging prefix checkpoints.
+    /// looped only under typical MTP acceptance, and the built-in rule is exact
+    /// for every model (`MTPAcceptancePolicy`); a penalty would keep its rows
+    /// from speculating and from staging prefix checkpoints.
     static let qwen35NineBCardDefaults = EngineV2SamplingDefaults(
         temperature: 1.0, topP: 0.95, topK: 20)
     static let qwen35NineBModelID = "Qwen3.5-9B"

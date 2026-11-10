@@ -506,7 +506,7 @@ and rollback are defined in the [provider configuration reference](../provider/c
 
 | Config key | Default | Read in | Effect |
 |---|---|---|---|
-| `[backend] mtp_acceptance`, `mtp_acceptance_by_model` | unset resolves to `typical` (delta `0.2`), except `exact` for the Bonsai 9B candidate and the catalog `Qwen3.5-9B` (`builtInIsExact`); model map `{}` | `provider-swift/Sources/ProviderCore/Inference/MTP/MTPAcceptancePolicy.swift` (`resolve`) | Exact model override precedes global, then the built-in default. Eligible sampled target-prefix MTP output is approximate, not distribution-exact; explicit `exact` opts out and invalid values safely resolve to `exact`. Greedy behavior and native MiMo exact acceptance are unchanged. Does not enable disabled MTP or widen eligibility. |
+| `[backend] mtp_acceptance`, `mtp_acceptance_by_model` | unset resolves to `exact` for every model; model map `{}` | `provider-swift/Sources/ProviderCore/Inference/MTP/MTPAcceptancePolicy.swift` (`resolve`) | Exact model override precedes global, then the built-in `exact`. `typical` is an opt-in: eligible sampled target-prefix MTP output is then approximate, not distribution-exact; invalid values safely resolve to `exact`. Greedy behavior and native MiMo exact acceptance are unchanged. Does not enable disabled MTP or widen eligibility. |
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|

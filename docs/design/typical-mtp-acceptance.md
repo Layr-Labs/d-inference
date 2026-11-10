@@ -1,6 +1,6 @@
 # Typical acceptance for target-prefix MTP
 
-> Last updated: 2026-10-06
+> Last updated: 2026-11-10
 
 Status: **In progress** — 2026-09-26 — engine layer in mlx-swift-lm [#165](https://github.com/Layr-Labs/mlx-swift-lm/pull/165), provider layer in d-inference [#1204](https://github.com/Layr-Labs/d-inference/pull/1204); G4 measurement pending. Source: ddalcu/mlx-serve main `2a93a011e` (David's PR #427, `1ee8af3da`).
 
@@ -171,7 +171,7 @@ Original L1 sequencing used the DiffusionGemma pin `6f3d171` and fork main `cb53
 
 | # | Decision | Applied |
 |---|---|---|
-| D1 | Default acceptance everywhere | `exact`. Typical is per-model opt-in only. |
+| D1 | Default acceptance everywhere | `exact`. Typical is per-model opt-in only. Restored in 0.10.12 after the built-in rule had drifted to typical for existing profiles (`MTPAcceptancePolicy.resolve`). |
 | D2 | `delta` as a production key | No. Engine constant `0.2` (mlx-serve default). Benchmark env only. Add a key when G4 shows a model needs another value. |
 | D3 | Catalog fleet default (L3) | Deferred until G4 has numbers for at least one target. |
 | D4 | First target to measure | Qwen 3.8 Flash-Next, then Gemma QAT. |

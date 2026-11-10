@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-10
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -1564,6 +1564,11 @@ throws `MultiModelBatchSchedulerEngineError.tokenBudgetExhausted`
 answers 503 with the fixed capacity message before response headers
 (`CORSResponder`), and the coordinator receives a pre-stream `inference_error`
 503 with `failure_code` `capacity` and `error_reason` `token_budget_exhausted`.
+The heartbeat's `active_token_budget_used` reports what that gate charges, the
+held requests and gate reservations (`EngineV2Bridge.heartbeatCommittedBytes`).
+The engine's reserved bytes also keep the paged pool's retained segments after
+every request retires, which the engine reuses, so reporting them read an idle
+GLM slot as 90–99 % full and the coordinator turned its requests away.
 The engine's activation check prices step scratch for every row at the full
 context against the same capacity, so the protected scheduler's running-row
 cap is the largest value that check admits

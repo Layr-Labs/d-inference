@@ -87,19 +87,56 @@ struct EngineV2SamplingDefaultsTests {
     @Test func qwen35CatalogBuildsUseTheirModelCardDefaults() throws {
         for (id, type) in EngineV2SamplingDefaults.qwen35CardModelTypes {
             #expect(EngineV2SamplingDefaults.resolve(modelId: id, modelType: type, modelDirectory: nil)
-                == EngineV2SamplingDefaults.qwen35CardDefaults)
+                == (id == "Qwen3.5-9B" ? EngineV2SamplingDefaults(temperature: 1.0, topP: 0.95, topK: 20)
+                    : EngineV2SamplingDefaults.qwen35CardDefaults))
         }
         let defaults = EngineV2SamplingDefaults.resolve(
             modelId: "Qwen3.5-9B", modelType: "qwen3_5", modelDirectory: nil)
         let omitted = EngineV2Translation.samplingParams(from: try request(bareRequest), defaults: defaults)
         #expect(omitted.temperature == 1 && omitted.topP == 0.95 && omitted.topK == 20)
-        #expect(omitted.presencePenalty == 1.5 && omitted.repetitionPenalty == 1)
+        #expect(omitted.presencePenalty == 0 && omitted.repetitionPenalty == 1)
         let explicit = EngineV2Translation.samplingParams(
             from: try request(#"{"model":"m","messages":[],"temperature":0,"presence_penalty":0}"#),
             defaults: defaults)
         #expect(explicit.temperature == 0 && explicit.presencePenalty == 0)
         for (id, type) in [("Qwen3.5-9B", "qwen3_5_moe"), ("qwen3.5-35b-a3b", "qwen3_5"), ("mlx-community/Qwen3.5-397B", "qwen3_5")] {
             #expect(EngineV2SamplingDefaults.resolve(modelId: id, modelType: type, modelDirectory: nil) == .legacy)
+        }
+    }
+
+    /// The 0.10.12 gate on the signed 0.10.11 (temperature 1, top_p 0.95,
+    /// top_k 20) decided each build's omitted presence penalty. Without the
+    /// cards' 1.5, qwen3.5-35b-a3b looped under both MTP acceptance rules, so
+    /// the two 35B builds (one architecture) keep it. Qwen3.5-9B looped only
+    /// under typical acceptance and not under exact (13 against 0 of 31 draws
+    /// with MTP running), so it has no default penalty, which lets its rows
+    /// speculate and stage prefix checkpoints, and exact acceptance
+    /// (MTPAcceptancePolicy). The coordinator's body adds the registry's
+    /// temperature, top_p and top_k, and no penalty unless the registry sets
+    /// one. A request's own presence_penalty wins on every build.
+    @Test func qwen35OmittedPresencePenaltyFollowsEachBuildsGate() throws {
+        let coordinatorBody =
+            #"{"model":"m","messages":[{"role":"user","content":"hi"}],"temperature":1,"top_p":0.95,"top_k":20}"#
+        let builds: [(id: String, type: String, penalty: Float)] = [
+            ("Qwen3.5-9B", "qwen3_5", 0),
+            ("qwen3.5-35b-a3b", "qwen3_5_moe", 1.5),
+            ("qwen3.6-35b-a3b-vl-mtp-mxfp8", "qwen3_5_moe", 1.5),
+        ]
+        for build in builds {
+            let defaults = EngineV2SamplingDefaults.resolve(
+                modelId: build.id, modelType: build.type, modelDirectory: nil)
+            for body in [bareRequest, coordinatorBody] {
+                let sampling = EngineV2Translation.samplingParams(from: try request(body), defaults: defaults)
+                #expect(sampling.temperature == 1 && sampling.topP == 0.95 && sampling.topK == 20, "\(build.id)")
+                #expect(sampling.presencePenalty == build.penalty, "\(build.id): \(body)")
+                #expect(sampling.frequencyPenalty == 0 && sampling.repetitionPenalty == 1, "\(build.id)")
+            }
+            for own in ["0", "1.5"] {
+                let explicit = EngineV2Translation.samplingParams(
+                    from: try request(#"{"model":"m","messages":[],"presence_penalty":"# + own + "}"),
+                    defaults: defaults)
+                #expect(explicit.presencePenalty == Float(own), "\(build.id): a request's own \(own)")
+            }
         }
     }
 

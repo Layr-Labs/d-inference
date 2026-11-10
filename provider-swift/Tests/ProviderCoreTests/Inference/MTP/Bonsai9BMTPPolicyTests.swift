@@ -15,7 +15,7 @@ struct Bonsai9BMTPPolicyTests {
     func defaultAcceptancePreservesTargetSampling(modelID: String) {
         #expect(MTPAcceptancePolicy.resolve(global: nil, byModel: [:],
             modelID: modelID).acceptance == .exact)
-        #expect(MTPAcceptancePolicy.resolve(global: nil, byModel: [:],
+        #expect(MTPAcceptancePolicy.resolve(global: "typical", byModel: [:],
             modelID: "prism-ml/bonsai-27b").acceptance
             == .typical(delta: CBv2MTPAcceptance.defaultTypicalDelta))
         #expect(MTPAcceptancePolicy.resolve(global: "typical",

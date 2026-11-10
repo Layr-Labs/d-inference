@@ -172,6 +172,9 @@ jobs:
         run: python3 scripts/test-native-gpu-ci.py
       - name: Test model registry workflow with loopback HTTP
         run: python3 scripts/test_model_registry_workflow.py
+      # Without numpy the quantizer's tests skip; the workflow's guards and the manifest rules still run.
+      - name: Test Model Requant Upload's inputs, manifest rules and workflow steps offline
+        run: python3 -m unittest discover -s scripts/models -p 'test_*.py'
       - name: Test bounded MiMo provider fixture provisioning offline
         run: python3 scripts/test-prepare-mimo-provider-fixtures.py
       - name: Test serving qualification evidence and catalogs without a GPU

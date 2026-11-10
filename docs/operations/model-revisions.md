@@ -180,35 +180,79 @@ revision: vision tower, MTP head, norms and tokenizer files. The workflow then
 compares the result byte for byte with the canonical manifest of the candidate
 that was built and qualified locally. It never registers or promotes.
 
+It is one job with three modes. Dispatch it from `master` only:
+
+```bash
+gh workflow run model-requant-upload.yml --ref master -f mode=check \
+  -f model_id=… -f version=… -f recipe=… -f template_url=… -f source_url=… \
+  -f manifest_json="$(cat manifest.json)"
+```
+
+A run on any other ref stops at its first step, so the bytes are always checked
+by the reviewed code. Run one dispatch at a time: a third dispatch while one runs
+replaces the pending second (GitHub's concurrency rule).
+
 1. **Locally.**
-   - Build the candidate with the same script and recipe, using numpy 2.5.4, the
-     version the workflow pins.
+   - Install the tools the workflow installs, by hash. numpy 2.5.4 needs
+     Python 3.12 or later:
+     `pip install --require-hashes --only-binary :all: -r scripts/models/requirements-requant-upload.txt`.
+   - Run `python3 scripts/models/requant.py selftest`. It takes about a second
+     and must print `selftest ok`.
+   - Build the candidate with the same script and recipe, with no
+     `--shard-gb` or `--base-group`. Nothing may write into the folder
+     afterwards.
    - Qualify it: load, quality and speed.
-   - Hash it with `darkbloom-publish hash … --id <model> --version <new version>`.
-     The resulting `manifest.json` is the workflow's `manifest_json` input, and its
+   - Hash it with `darkbloom-publish hash … --id <model> --version <new version>`,
+     and hash it again after qualification to confirm nothing changed. The
+     resulting `manifest.json` is the workflow's `manifest_json` input, and its
      aggregate is the new cache-routing tuple's.
-2. **Dispatch in mode `check`** (the default). It reads one known object in
-   `darkbloom-models` with `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` /
-   `R2_ENDPOINT`. A failure means those credentials cannot reach the model
-   bucket. Stop there: release-bucket credentials are not model-bucket
-   credentials.
-3. **Dispatch in mode `build`.** It rebuilds and verifies with no write. The
-   output depends only on the template revision, the pinned source, the recipe and
-   numpy, so a difference in any file stops the run.
+2. **Dispatch in mode `check`** (the default). It runs the selftest on the
+   runner, then reads one known object in `darkbloom-models` with
+   `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` / `R2_ENDPOINT`. Stop at a
+   failure:
+   - An empty secret stops it before any command runs.
+   - A read failure means those credentials cannot reach the model bucket.
+     Release-bucket credentials are not model-bucket credentials.
+3. **Dispatch in mode `build`** for the first model. It rebuilds and verifies
+   with no write. The output depends only on the template revision, the pinned
+   source, the recipe and numpy, so a difference in any file stops the run. Once
+   one model has matched, `upload` alone is enough for the next ones: it rebuilds
+   and verifies before any write.
 4. **Dispatch in mode `upload`** with `confirm_version` set to the version. It
    makes the conditional reservation (`publish-model-revision.py`'s rule, so an
    existing revision with other bytes is refused), uploads the files, then the
-   manifest last.
+   manifest last. Each object is public at `models.darkbloom.ai` once it lands,
+   but nothing selects the revision until it is registered.
 5. **Promote separately**, on its own approval: **Register Model** with
    `publish_revision_only=true` and `promote=true`.
 
 Inputs are validated before any credential is in scope:
-- the template must be a `models.darkbloom.ai` revision of the same model ID;
+- the template must be `https://models.darkbloom.ai/v2/<slug>--<12 hex>/<version>`,
+  a revision of the same model ID;
 - the source must be pinned to a 40-character Hugging Face commit;
 - the recipe must be `g32`, `mixed46`, `router8` or `router8+mixed46`;
-- the manifest's ID, version and canonical `r2_prefix` must match.
+- the version must be one path component that does not start with `.`;
+- the manifest must be one that Register and every provider read, and its ID,
+  version and canonical `r2_prefix` must match. The manifest checks are:
+  - schema 1 and integer counts;
+  - `created_at` in `darkbloom-publish hash`'s form (`YYYY-MM-DDTHH:MM:SSZ`). Register
+    accepts a manifest without it, but providers cannot decode one;
+  - `file_count`, the total and the aggregate recomputed from the file digests;
+  - unique paths (ignoring case), with no hidden, empty, `.` or `..` parts;
+  - each file's role is the one `darkbloom-publish` assigns.
 
-Tests: `python3 -m unittest scripts/models/test_model_requant_upload.py`.
+**If the selftest or `build` ever reports a difference, do not loosen the check**,
+change the recorded digests to pass, or upload the runner's bytes as the tested
+ones. The fallback moves the locally qualified bytes instead:
+1. Stage them at a pinned Hugging Face commit.
+2. Download them in CI.
+3. Verify them against the same manifest.
+4. Reserve and upload them.
+
+The registry already records a revision's `hugging_face_artifact`.
+
+Tests: `python3 -m unittest discover -s scripts/models -p 'test_*.py'`
+([model publication workflow checks](../developer/test.md#model-publication-workflow-checks)).
 
 ## Verification
 

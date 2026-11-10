@@ -6,14 +6,20 @@ name: Model Requant Upload
 # (manifest last). It never registers or promotes: promotion stays `Register Model` with
 # publish_revision_only=true and promote=true, on the owner's go.
 #
-# Modes (default `check`, so a dispatch with no choice moves nothing):
-#   check   read one known object in darkbloom-models with the repo's R2 credentials (proves the
-#           credential tuple reaches the model bucket; release credentials need not)
+# One job, three modes (default `check`, so a dispatch with no choice moves nothing):
+#   check   the quantizer's selftest, then read one known object in darkbloom-models with the repo's
+#           R2 credentials (proves the credential tuple reaches the model bucket; release
+#           credentials need not)
 #   build   check + rebuild + verify against the manifest; no write
 #   upload  build + the conditional revision reservation + upload; needs confirm_version = version
 #
+# Dispatch from master only (`gh workflow run model-requant-upload.yml --ref master ...`): a run on
+# any other ref stops at its first step, so the bytes are checked by the reviewed code. One run at a
+# time; a third dispatch while one runs replaces the pending second (GitHub's concurrency rule).
+#
 # Inputs are untrusted: every one reaches the scripts through `env`, never through `${{ }}` inside a
 # script, and `upload-model-revision.py inputs` validates them before any step that holds a secret.
+# The tools are installed by hash (scripts/models/requirements-requant-upload.txt).
 
 permissions:
   contents: read
@@ -69,6 +75,16 @@ jobs:
       MANIFEST_JSON: ${{ inputs.manifest_json }}
       CONFIRM_VERSION: ${{ inputs.confirm_version }}
     steps:
+      - name: Refuse a run from any ref but master
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [ "$REF" != refs/heads/master ]; then
+            echo "::error::Dispatch this workflow from master: gh workflow run model-requant-upload.yml --ref master"
+            exit 1
+          fi
+
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
@@ -82,12 +98,19 @@ jobs:
             --template-url "$TEMPLATE_URL" --source-url "$SOURCE_URL" --recipe "$RECIPE" \
             --manifest "$RUNNER_TEMP/manifest.json" --mode "$MODE" --confirm-version "$CONFIRM_VERSION"
 
-      - name: Install tools (numpy pinned to the local build's, so the bytes reproduce)
+      - name: Install tools by hash (numpy as the local build's, so the bytes reproduce; awscli for R2)
         run: |
           set -euo pipefail
           python3 -m venv "$RUNNER_TEMP/tools"
-          "$RUNNER_TEMP/tools/bin/pip" install --quiet numpy==2.5.4 awscli
+          "$RUNNER_TEMP/tools/bin/pip" install --quiet --require-hashes --only-binary :all: \
+            -r scripts/models/requirements-requant-upload.txt
           echo "$RUNNER_TEMP/tools/bin" >> "$GITHUB_PATH"
+
+      - name: Self-test the quantizer against the recorded digests
+        run: |
+          set -euo pipefail
+          sha256sum scripts/models/requant.py
+          python3 scripts/models/requant.py selftest
 
       - name: Check read access to the model bucket
         env:
@@ -97,11 +120,19 @@ jobs:
           KEY: ${{ steps.inputs.outputs.template_manifest_key }}
         run: |
           set -euo pipefail
-          test -n "$AWS_ACCESS_KEY_ID" && test -n "$R2_ENDPOINT"
+          empty=""
+          [ -n "${AWS_ACCESS_KEY_ID:-}" ] || empty="$empty R2_ACCESS_KEY_ID"
+          [ -n "${AWS_SECRET_ACCESS_KEY:-}" ] || empty="$empty R2_SECRET_ACCESS_KEY"
+          [ -n "${R2_ENDPOINT:-}" ] || empty="$empty R2_ENDPOINT"
+          if [ -n "$empty" ]; then
+            echo "::error::Empty repository secret(s):$empty"
+            exit 1
+          fi
           if ! aws s3api head-object --bucket darkbloom-models --key "$KEY" --endpoint-url "$R2_ENDPOINT" \
                --region auto --query ContentLength --output text > "$RUNNER_TEMP/head.out" 2> "$RUNNER_TEMP/head.err"; then
-            echo "::error::These R2 credentials cannot read darkbloom-models (they may be release-bucket only)."
-            grep -o -E 'AccessDenied|Forbidden|NoSuchKey|NoSuchBucket|[0-9]{3}' "$RUNNER_TEMP/head.err" | head -3 || true
+            # Only aws's parenthesised error code: the rest of its message can name the endpoint.
+            code=$(grep -o -E '\((AccessDenied|Forbidden|NoSuchKey|NoSuchBucket|[0-9]{3})\)' "$RUNNER_TEMP/head.err" | head -1 || true)
+            echo "::error::These R2 credentials cannot read darkbloom-models ${code:-(no error code; a connection error, its text withheld)}. They may be release-bucket only."
             exit 1
           fi
           echo "read access ok: the template manifest is $(cat "$RUNNER_TEMP/head.out") bytes"
@@ -120,7 +151,7 @@ jobs:
           free=$(df -BG --output=avail "$RUNNER_TEMP" | tail -1 | tr -dc 0-9)
           [ "$free" -ge "$need" ] || { echo "::error::runner has ${free} GiB free, needs ${need}"; exit 1; }
           python3 scripts/models/requant.py build --template "$TEMPLATE_URL" --source "$SOURCE_URL" \
-            --recipe "$RECIPE" --out "$RUNNER_TEMP/model" | tail -5
+            --recipe "$RECIPE" --out "$RUNNER_TEMP/model"
 
       - name: Verify against the manifest
         if: env.MODE != 'check'
@@ -134,6 +165,14 @@ jobs:
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
         run: |
           set -euo pipefail
+          empty=""
+          [ -n "${AWS_ACCESS_KEY_ID:-}" ] || empty="$empty R2_ACCESS_KEY_ID"
+          [ -n "${AWS_SECRET_ACCESS_KEY:-}" ] || empty="$empty R2_SECRET_ACCESS_KEY"
+          [ -n "${R2_ENDPOINT:-}" ] || empty="$empty R2_ENDPOINT"
+          if [ -n "$empty" ]; then
+            echo "::error::Empty repository secret(s):$empty"
+            exit 1
+          fi
           python3 scripts/models/upload-model-revision.py upload --manifest "$RUNNER_TEMP/manifest.json" \
             --directory "$RUNNER_TEMP/model" --endpoint "$R2_ENDPOINT"
           echo "Next, on the owner's go: Register Model with model_id=$MODEL_ID version=$VERSION publish_revision_only=true promote=true"

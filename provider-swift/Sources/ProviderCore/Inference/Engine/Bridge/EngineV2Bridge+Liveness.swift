@@ -30,6 +30,18 @@
 // exist on this engine.
 
 import Foundation
+import MLXLMCommon
+
+/// An engine that reports a sealed native fault: its native work failed, the
+/// SDK sealed the native shutdown state `incomplete`, and the engine's step
+/// loop never runs again (`EngineV2.nativeCompletionFault`).
+protocol SealedNativeFaultReporting {
+    var hasSealedNativeFault: Bool { get }
+}
+
+extension EngineV2: SealedNativeFaultReporting {
+    var hasSealedNativeFault: Bool { nativeCompletionFault != nil }
+}
 
 extension EngineV2Bridge {
 

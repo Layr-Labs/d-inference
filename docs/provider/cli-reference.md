@@ -1699,8 +1699,10 @@ window: the restart itself is never a failed start, but the new process still
 is one if it sends no heartbeat within it. After a crash, a hang, a power loss
 or any other stop (a reboot, a logout, a `kill`, a `launchctl kickstart -k`:
 these record `shutdown`, or nothing), the window stays the launch's, whatever
-started the provider again. Three failed starts restore the kept release and
-quarantine the new one
+started the provider again; so does it after a `--force` stop that kills the
+provider (`ProcessLifecycle.terminate`, 1 s after its SIGTERM) before it records
+its stop. Three failed starts restore the kept release and quarantine the new
+one
 (`UpdateRecoveryState.rollbackThreshold`). On a `darkbloom cluster` Mac its
 cluster service supervisor counts them instead
 ([a rollback on one Mac](./cluster-always-on.md#a-rollback-on-one-mac)).

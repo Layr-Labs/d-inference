@@ -54,9 +54,9 @@ public struct WatchdogRecoveryService: Sendable {
         /// `DownOutcome` is pattern-matched by equality across the decision
         /// tests and the chain is orthogonal to the outcome shape.
         public var noteCrashLoopChain: @Sendable (_ count: Int, _ installedVersion: String) -> Void
-        /// The provider's run marker (`provider-run.json`), read only when the provider launchd runs started after the
-        /// candidate's launch attempt (`startupWindowStart`). Without it (the default) that process gets no startup
-        /// window of its own; `Watchdog.runTick` passes the real file.
+        /// The provider's run marker (`provider-run.json`), read only when the provider process launchd runs started
+        /// after the candidate's launch attempt (`startupWindowStart`). Without it (the default) that process gets no
+        /// startup window of its own; `Watchdog.runTick` passes the real file.
         public var providerRunMarker: @Sendable () -> ProviderRunMarker.Record?
         public var log: @Sendable (String) -> Void
 
@@ -717,7 +717,7 @@ public struct WatchdogRecoveryService: Sendable {
                 return .promoted(version: candidate.release.version)
             }
             // A release restarted more often than its stabilization window is never promoted, and no restart the owner
-            // or the provider asked for is a failed start: say so, from the fifth restart.
+            // or the provider asked for is a failed start: say so at the 5th, 10th, 20th… restart.
             if let restarts, Self.warnsAfterRestarts(restarts) {
                 deps.log("warning: v\(candidate.release.version) restarted \(restarts) times before its promotion: a "
                     + "release is promoted only once one process has served it for \(Int(stabilizationSeconds)) s. "

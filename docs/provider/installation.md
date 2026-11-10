@@ -297,11 +297,12 @@ A restart you ask for before the release is promoted (`darkbloom restart`, or
 from the start of the next process launchd runs (`startupWindowStart`). The
 provider's own restart into an update counts the same way. After a crash, a
 hang, a reboot, a `kill` or any other stop, the timeout still runs from the
-release's launch, whatever started the provider again; a restarted process that
-sends no heartbeat within its own window still counts too. A release restarted
-more often than every 10 minutes is never promoted: from the fifth restart the
-watchdog logs a warning in `~/.darkbloom/watchdog.log`
-([`darkbloom update`](./cli-reference.md#darkbloom-update)).
+release's launch, whatever started the provider again, and so it does after a
+`--force` stop that had to kill the provider before it recorded its stop. A
+restarted process that sends no heartbeat within its own window still counts
+too. A release restarted more often than every 10 minutes is never promoted:
+the watchdog logs a warning in `~/.darkbloom/watchdog.log` at its 5th, 10th,
+20th, 40th… restart ([`darkbloom update`](./cli-reference.md#darkbloom-update)).
 
 The unprivileged updater never touches the root fan helper; after an update run
 `sudo darkbloom fan enable` again if you use [fan control](./fan-control.md).

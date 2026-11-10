@@ -1976,11 +1976,15 @@ threats:
           leaves that record `running`, and any other SIGTERM (a reboot, a logout,
           a `kill`) records `shutdown`: the window stays the launch's whoever
           started the provider again, so a release that crashes or hangs the Mac
-          is still rolled back at its third failed start. A process that dies
-          before it records its start leaves the previous record in place; such a
-          release is still charged when it is found down, as before. An unpromoted
-          release restarted more often than its 600 s stabilization is never
-          promoted; the watchdog logs a warning from its fifth restart. A pair's
+          is still rolled back at its third failed start. A `--force` stop that
+          kills the provider before it records its stop is timed the same way. A
+          process that dies or hangs before it records its start
+          (`ProviderProcessRun.begin`, before any model loads) leaves the previous
+          record in place and is timed as that record says: a hang is still
+          charged when its window passes without a heartbeat, and a death when
+          the watchdog finds the provider down. An unpromoted release restarted
+          more often than its 600 s stabilization is never promoted; the watchdog
+          logs a warning at its 5th, 10th, 20th… restart. A pair's
           supervisor does not count a clean stop (exit 0) of the candidate's
           cluster service that it did not ask for, and still counts a crash, an
           error exit, a stop by its liveness guard and a failed start check; the

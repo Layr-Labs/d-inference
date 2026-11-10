@@ -1264,9 +1264,9 @@ Mac, `darkbloom cluster` shows the status and names the Mac to use.
 
 While the leading Mac waits for the other Mac, its part can't form the pair, and
 each start reads its share of the model and registers it again. A part that
-ends then starts again after 30 seconds, then 1, 2 and 4 minutes, twice as long
-each time up to 10 minutes, instead of every 30 seconds; it starts at once when
-the other Mac answers. `darkbloom cluster status` on the leading Mac says when,
+ends then waits twice as long as the last time before it starts again, from 30
+seconds up to 10 minutes (30 seconds, then 1, 2 and 4 minutes), instead of every
+30 seconds; it starts at once when the other Mac answers. `darkbloom cluster status` on the leading Mac says when,
 under the line that it waits for the other Mac: ``This Mac's part starts again in
 4 min, or as soon as the other Mac answers: …``.
 

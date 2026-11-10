@@ -1267,12 +1267,13 @@ public final class ClusterService: @unchecked Sendable {
         return lock.withLock {
             let reference = try? saved.reference.get()
             let wait = nextStart.timeIntervalSinceNow
+            let waitsToStart = child == nil && oldPart == nil && wait > 0
             var value = ClusterServiceStatus(role: record?.leadership?.role, serving: record?.leadership?.serving ?? false,
                 modelName: record?.leadership?.modelName, sessionLeader: leads, localRank: configuration?.localRank,
                 setup: reference.map { String($0.sha256.prefix(12)) },
                 child: .init(running: child?.isRunning == true || oldPart != nil, starts: starts, lastEnd: lastEnd,
-                    restartInSeconds: child == nil && oldPart == nil && wait > 0 ? Int(wait.rounded(.up)) : nil,
-                    restartWaitsForOtherMac: child == nil && oldPart == nil && wait > 0 && restartWaitsForOtherMac ? true : nil,
+                    restartInSeconds: waitsToStart ? Int(wait.rounded(.up)) : nil,
+                    restartWaitsForOtherMac: waitsToStart && restartWaitsForOtherMac ? true : nil,
                     // A running part says only a refusal its follower got (it keeps retrying, P2-1); an ended one its error.
                     lastError: soloNow != nil ? Self.soloServingError(soloNow!)
                         : child?.isRunning == true

@@ -107,8 +107,8 @@ extension EngineV2Bridge {
                 + " (\(reservedTokens) reserved tokens)")
     }
 
-    /// Held GLM reservations: admitted requests at their reserved tokens, plus
-    /// any still between the gate and admission.
+    /// Held GLM reservations, each request once: admitted requests at their
+    /// reserved tokens, plus any still between the gate and admission.
     func glm5NextCommittedBytes() -> Int {
         var held: [String: Int] = [:]
         for (id, state) in active {
@@ -119,12 +119,18 @@ extension EngineV2Bridge {
     }
 
     /// `heldBytes` is each admitted request's reservation; `Int.max` when it
-    /// cannot be computed. The sum saturates at `Int.max`.
+    /// cannot be computed. A request is in `active` from the engine's
+    /// acceptance but keeps its gate reservation until `submitTokenized`
+    /// returns, which a streamed local request does once the engine starts it
+    /// (`holdHeadUntilAdmitted`). So each request counts once, at the larger of
+    /// its two figures. The sum saturates at `Int.max`.
     nonisolated static func glm5NextCommittedBytes(
         gateReservations: [String: Int], heldBytes: [String: Int]
     ) -> Int {
+        var charges = heldBytes.map { id, bytes in max(bytes, gateReservations[id] ?? 0) }
+        charges += gateReservations.filter { heldBytes[$0.key] == nil }.values
         var total = 0
-        for bytes in Array(gateReservations.values) + Array(heldBytes.values) {
+        for bytes in charges {
             let (sum, overflow) = total.addingReportingOverflow(bytes)
             if overflow { return Int.max }
             total = sum

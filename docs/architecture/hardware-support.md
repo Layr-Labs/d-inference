@@ -1158,9 +1158,8 @@ full-artifact memory fit, numerical parity or throughput; those require
 paired hardware qualification. The restore mechanism is described in
 [inference](inference.md#gemma-paged-prefix-restoration).
 
-A Gemma 4 pipeline's width (the one its placement saved, or
-`DistributedInstalledPlan.gemma4PipelineBatchLanes` for a serial setup saved
-without one; [Gemma pipeline lanes](inference.md#gemma-pipeline-lanes)) adds no
+A Gemma 4 pipeline's width (the one its placement saved; one lane without
+one, [Gemma pipeline lanes](inference.md#gemma-pipeline-lanes)) adds no
 load-time allocation: the paged pool's capacity is a ceiling, and pages are
 reserved per request (`CBv2StageKVHost`). LOAD admits the width whole against
 live memory: every lane at the memory plan's request, as the lane book charges

@@ -6693,11 +6693,12 @@ pipeline lane adapter, which keeps its default. Pipeline widths are 2, 4 and 8
 (`ClusterPlacementBatchScope.pipelineWidths`), so a pair that fits six but
 not eight saves four.
 
-A Gemma setup saved with serial prefill and no width (typed by hand) serves
-`DistributedInstalledPlan.gemma4PipelineBatchLanes` (4), admitted whole at
-LOAD the same way. Every other pipeline lane adapter keeps the default of one
-(`DistributedInstalledPlan.defaultBatchLanes`). A saved width or the owner's
-`DARKBLOOM_CLUSTER_BATCH_LANES` overrides the default.
+A Gemma setup saved without a width (typed by hand, or one only a single
+request fits) serves one request at a time under either schedule, as every
+pipeline lane adapter does (`DistributedInstalledPlan.defaultBatchLanes`):
+nothing priced a width for it. Until 0.10.12 a serial one defaulted to four
+lanes. A saved width or the owner's `DARKBLOOM_CLUSTER_BATCH_LANES` overrides
+the default.
 
 | Property | Basis |
 |---|---|

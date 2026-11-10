@@ -2638,10 +2638,10 @@ with the fixed owner arguments and checks its exact environment, supported
 lane widths, out-of-range rejection, malformed-override parity even with an
 eight-lane family default, admission/owner/native parity, unsupported
 mode and image gates, and both member ranks. No model, GPU or real service is
-started. The checks preserve the singleton and GLM tensor-parallel defaults
-and the serial-prefill Gemma 4 pipeline's default lanes
-(`DistributedInstalledPlan.gemma4PipelineBatchLanes`), which reach the rank,
-while a Gemma setup saved with the one-chunk lookahead keeps one lane;
+started. The checks preserve the singleton and GLM tensor-parallel defaults:
+a Gemma 4 pipeline saved without a width serves one lane under either
+schedule and names none to its rank, while the width its placement saved
+reaches the rank;
 `DistributedInstalledLanesTests` covers the same rules for every adapter and
 schedule. Actual multi-lane output, encrypted transport and retirement still require
 qualification on both Macs. The same real-child checks pass canonical local

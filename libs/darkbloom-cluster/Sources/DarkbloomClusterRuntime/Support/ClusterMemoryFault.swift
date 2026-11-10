@@ -87,8 +87,8 @@ enum ClusterLiveMemory {
         try QwenResidentResourceEnvironment.require()
         let watch = QwenDenseStageLoadWatch("\(family) tensor-parallel")
         let os = try QwenDenseStageLoadResources.observeOS()
-        let free = max(QwenDenseStageLoadPolicy.minimumAdmissibleBytes,
-            try QwenLongPrefillCheckedBytes.sum([bytes, QwenDenseStageLoadPolicy.loadingHeadroomBytes]))
+        let free = try QwenDenseStageLoadPolicy.tensorParallelRequiredBytes(bytes,
+            physicalMemoryBytes: QwenDenseStageLoadPolicy.localPhysicalMemoryBytes)
         do {
             try ClusterMemoryFault.current.refuseIfDue()
             guard try watch.admits(os, bytes: free) else {

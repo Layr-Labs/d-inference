@@ -7717,7 +7717,7 @@ and GLM). Two pricing sources size it:
   into their load agreement, so nothing else changes. On 2026-11-10 an 8-lane
   GLM pair did not load on an M5 Ultra with 38.68 GiB of other programs'
   memory in use (200.19 GiB admissible against 211.10 GiB), although one lane
-  needs 143.8 GiB; it now loads there at six. Making the width that loaded the
+  needs 147.8 GiB; it now loads there at six. Making the width that loaded the
   pair's advertised width needs the ranks to agree on it before the load
   agreement and READY to carry it, so it is not done. Each lane is still
   admitted against live memory, and a lane the host cannot hold is refused

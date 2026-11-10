@@ -447,7 +447,8 @@ public final class GLM5NextTensorParallelResidentRuntime {
                 do {
                     try requireLiveMemory(bytes: try gateBytes(reservedLanes))
                 } catch is QwenResidentMemoryRefusal where reservedLanes > 1 {
-                    // The sample moved between the two looks: one lane is what a load must never be refused for.
+                    // The gate refused the width its first look admitted (a later sample, or the compression it
+                    // measures from its own first one): one lane is what a load must never be refused for.
                     reservedLanes = 1
                     try requireLiveMemory(bytes: try gateBytes(1))
                 }

@@ -420,12 +420,17 @@ extension QwenDenseStageLoadPolicy {
     /// lane fits is never refused for the rest, which are admitted one by one as they come (each lane's live gate).
     static func lanesAdmitted(saved lanes: Int, on os: QwenDenseStageLoadOSObservation, purpose: String, now: UInt64,
                               bytes: (_ lanes: Int) throws -> Int) throws -> Int? {
-        let physical = os.physicalMemoryBytes
         for width in stride(from: lanes, through: 1, by: -1) {
-            let required = max(minimumAdmissibleBytes(physicalMemoryBytes: physical),
-                try QwenLongPrefillCheckedBytes.sum([bytes(width), loadingHeadroomBytes(physicalMemoryBytes: physical)]))
+            let required = try tensorParallelRequiredBytes(bytes(width), physicalMemoryBytes: os.physicalMemoryBytes)
             if try decide(os, requiredBytes: required, purpose: purpose, now: now).admitted { return width }
         }
         return nil
+    }
+
+    /// What a tensor-parallel rank's gate asks the host for `bytes` (`ClusterLiveMemory.requireTensorParallel`):
+    /// those bytes and the loading headroom, never less than the floor.
+    static func tensorParallelRequiredBytes(_ bytes: Int, physicalMemoryBytes: Int) throws -> Int {
+        max(minimumAdmissibleBytes(physicalMemoryBytes: physicalMemoryBytes),
+            try QwenLongPrefillCheckedBytes.sum([bytes, loadingHeadroomBytes(physicalMemoryBytes: physicalMemoryBytes)]))
     }
 }

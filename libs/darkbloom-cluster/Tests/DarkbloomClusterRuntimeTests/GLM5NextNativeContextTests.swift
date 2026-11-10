@@ -258,7 +258,7 @@ struct GLM5NextNativeContextTests {
         }
     }
 
-    /// The registered GLM row's placement family states its lane charge (#1939): a lost `laneBytes:` would leave every
+    /// The registered GLM row's placement family states its lane charge: a lost `laneBytes:` would leave every
     /// new GLM pair at one lane with every other check green. Read from the registered `config.json` the worker's
     /// capability checks keep (its pinned SHA-256), at the memory plan's request and MLX's own allocation bounds, as the
     /// layout command runs it; the real model's charge is 9,700,905,472 bytes before allocator rounding, 9,707,589,940

@@ -153,10 +153,11 @@ struct Qwen35CardDefaultDonationTests {
         }
 
         /// The production assembly the slot factory builds for these IDs: native paged KV,
-        /// native checkpoints, the provider's MTP policy and the card's sampling defaults. The
+        /// native checkpoints, the provider's MTP policy shape for them (adaptive depth, typical
+        /// acceptance) and the card's sampling defaults. The
         /// grant clears the bridge's 1 GiB load floor (`UnifiedMemoryCap.minimumLoadKVBytes`);
         /// paged storage allocates only what the requests use.
-        func makeBridge(store: SSDHybridCheckpointStore?) throws -> EngineV2Bridge {
+        func makeBridge(store: SSDHybridCheckpointStore?) throws -> (EngineV2Bridge, EngineV2) {
             var environment = ["DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE": String(Qwen35CardDefaultDonationTests.stripe)]
             if store == nil { environment["DARKBLOOM_PREFIX_CACHE"] = "0" }
             let tokenizer = IDTokenizer()
@@ -170,8 +171,9 @@ struct Qwen35CardDefaultDonationTests {
                     acceptance: .typical(delta: CBv2MTPAcceptance.defaultTypicalDelta)),
                 kvBackend: .paged, checkpointQuantization: .native, environment: environment)
             try #require(build.kvBackendKind == .paged && build.kvBackendFallbackReason == nil)
+            let engine = try #require(build.engine as? EngineV2)
+            try #require(engine.mtpMetricsSnapshot() != nil, "the inline assistant is active")
             if store != nil {
-                let engine = try #require(build.engine as? EngineV2)
                 try #require(engine.completeCheckpointCodec?.assistant != nil,
                              "the complete checkpoints carry the assistant's history")
             }
@@ -183,7 +185,7 @@ struct Qwen35CardDefaultDonationTests {
                 fixedRequestBytes: build.fixedRequestBytes, ssdHybridCheckpointStore: store,
                 kvBackendKind: .paged)
             bridges.append(bridge)
-            return bridge
+            return (bridge, engine)
         }
 
         func close() async {
@@ -239,6 +241,10 @@ struct Qwen35CardDefaultDonationTests {
         return served
     }
 
+    static func drafted(_ engine: EngineV2) -> Int {
+        engine.mtpMetricsSnapshot()?.draftedTokens ?? 0
+    }
+
     static func idle(_ bridge: EngineV2Bridge) async throws {
         let deadline = ContinuousClock.now + .seconds(30)
         while true {
@@ -260,7 +266,7 @@ struct Qwen35CardDefaultDonationTests {
         do {
             let request = Self.request(build, extra)
 
-            let coldBridge = try fixture.makeBridge(store: nil)
+            let (coldBridge, coldEngine) = try fixture.makeBridge(store: nil)
             let defaults = await coldBridge.samplingDefaults
             #expect(defaults == EngineV2SamplingDefaults.qwen35CardDefaults,
                     "the provider keeps the card's presence penalty")
@@ -270,13 +276,15 @@ struct Qwen35CardDefaultDonationTests {
             #expect(cold.hit == 0)
             #expect(!cold.text.isEmpty)
             #expect(extra != .logprobs || !cold.logprobBits.isEmpty)
+            #expect(Self.drafted(coldEngine) == 0, "the card request never drafts")
             try await Self.idle(coldBridge)
             await coldBridge.shutdown()
 
             let donorStore = try fixture.makeStore()
-            let donorBridge = try fixture.makeBridge(store: donorStore)
+            let (donorBridge, donorEngine) = try fixture.makeBridge(store: donorStore)
             let donor = try await Self.serve(donorBridge, request, id: "donor")
             #expect(donor == cold, "capture does not change the answer")
+            #expect(Self.drafted(donorEngine) == 0, "the donor never speculates")
             try await Self.idle(donorBridge)
             await donorStore.waitForWritesForTesting()
             let written = donorStore.stats().filesWritten
@@ -286,7 +294,7 @@ struct Qwen35CardDefaultDonationTests {
 
             let warmStore = try fixture.makeStore()
             try #require(warmStore.stats().entries == written, "the reopened store scans the donated files")
-            let warmBridge = try fixture.makeBridge(store: warmStore)
+            let (warmBridge, _) = try fixture.makeBridge(store: warmStore)
             var warm = try await Self.serve(warmBridge, request, id: "warm")
             #expect(warm.hit == 2 * Self.stripe, "the next request restores the deepest chunk end")
             warm.hit = 0

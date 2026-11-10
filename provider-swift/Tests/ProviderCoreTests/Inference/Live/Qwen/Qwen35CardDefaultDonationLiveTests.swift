@@ -13,7 +13,8 @@ import Testing
 /// exactly as their cold runs (tokens through the text, and every logprob bit). Prints
 /// time to first token and peak MLX memory per run for the GPU validation report. Run with
 /// `DARKBLOOM_LIVE_MLX_TESTS=1 DARKBLOOM_LIVE_MLX_QWEN35_CARD_DONATION=1`; the dense run reads
-/// `DARKBLOOM_LIVE_MLX_QWEN_RETENTION_MODEL`, the MoE run `DARKBLOOM_LIVE_MLX_QWEN_MOE_MODEL`.
+/// `DARKBLOOM_LIVE_MLX_QWEN_RETENTION_MODEL`, the MoE run `DARKBLOOM_LIVE_MLX_QWEN_MOE_MODEL`;
+/// `DARKBLOOM_LIVE_MLX_QWEN35_CARD_TARGETS=dense` or `=moe` runs one of them.
 @Suite("Qwen3.5 card-default checkpoint donation (live)", .serialized)
 struct Qwen35CardDefaultDonationLiveTests {
     private static let enabled = LiveInferenceFixtures.liveTestsEnabled
@@ -23,6 +24,11 @@ struct Qwen35CardDefaultDonationLiveTests {
     enum Target: String, CaseIterable, CustomTestStringConvertible {
         case dense, moe
         var testDescription: String { rawValue }
+        static var selected: [Target] {
+            let names = ProcessInfo.processInfo.environment["DARKBLOOM_LIVE_MLX_QWEN35_CARD_TARGETS"]?
+                .split(separator: ",").map(String.init)
+            return allCases.filter { names?.contains($0.rawValue) ?? true }
+        }
         var modelID: String {
             self == .dense ? Qwen35CheckpointRetentionFixture.modelID : Qwen35CheckpointRetentionFixture.moeModelID
         }
@@ -107,7 +113,7 @@ struct Qwen35CardDefaultDonationLiveTests {
     }
 
     @Test("card-default requests donate, and every restorer answers as its cold run",
-          .timeLimit(.minutes(30)), .enabled(if: enabled), arguments: Target.allCases)
+          .timeLimit(.minutes(30)), .enabled(if: enabled), arguments: Target.selected)
     func cardDefaultRequestsDonateAndRestoreExactly(_ target: Target) async throws {
         let fixture = try await Qwen35CheckpointRetentionFixture(
             modelID: target.modelID, memoryBudgetBytes: target.memoryBudgetBytes)

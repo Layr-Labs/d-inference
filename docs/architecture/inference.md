@@ -2592,24 +2592,27 @@ draft KV is never shared. This is prompt-prefix reuse, not persistence of an
 in-flight speculative round. The ordinary attention-only prefix index remains
 disabled for this hybrid model.
 
-A request these assistants cannot draft for still records their prompt history
-when its prompt can be cached ([prefix-cache invariant 9](prefix-cache.md#invariants)).
-That covers a token constraint, logprobs, `logit_bias`, a penalty or a `stop`
-string, so it includes the catalog Qwen 3.5/3.6 builds' default request, whose
-card presence penalty keeps it from speculating. Its prompt chunks run the MTP
-step's hidden-returning prefill, the forward a speculating prompt runs, followed
-by the same sampler call, and its checkpoints equal a speculating request's. It
+On the Qwen 3.5/3.6, Nemotron Super and native Qwen4 assistants (not the
+embedded Nemotron head above), a request the assistant cannot draft for still
+records its prompt history when its prompt can be cached
+([prefix-cache invariant 9](prefix-cache.md#invariants)). That covers a token
+constraint, logprobs, `logit_bias`, a penalty or a `stop` string, so it
+includes the catalog Qwen 3.5/3.6 builds' default request, whose card presence
+penalty keeps it from speculating. Its prompt chunks run the MTP step's
+hidden-returning prefill, the forward a speculating prompt runs, followed by
+the same sampler call, and its checkpoints equal a speculating request's. It
 never drafts, verifies or seeds a carry, and `beginMTPPlan` releases its
-assistant state once its prompt completes. Before 0.10.12 such a request
-staged no checkpoint on these heads, so the Qwen builds donated almost nothing
-from 0.10.5 on. The opt-in is per head
-(`CBv2MTPPrefixCheckpointDrafter.checkpointsNonSpeculatingRows`: Qwen 3.5,
-Nemotron Super and native Qwen4); the rows are chosen by
-`EngineLoopV2.mtpRecordsPromptHistory`
+assistant state at the first plan after its prompt completes. Through 0.10.11
+such a request staged no checkpoint on these heads, so from 0.10.5, which gave
+the Qwen builds' default request the card penalty, those builds donated almost
+nothing. The opt-in is per head
+(`CBv2MTPPrefixCheckpointDrafter.checkpointsNonSpeculatingRows`); the rows are
+chosen by `EngineLoopV2.mtpRecordsPromptHistory`
 (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPPlanning.swift`).
-A step that holds such a prompt chunk is an MTP step; decode rows beside it
-take the MTP step's plain decode, whose tokens and logprobs equal ordinary
-decode's (`Qwen35CardDefaultCheckpointTests` in the SDK, and
+A step that holds such a prompt chunk is an MTP step: its prompt rows are not
+packed, the next step does not chain from it, and decode rows beside it take
+the MTP step's plain decode, whose tokens and logprobs equal ordinary decode's
+(`Qwen35CardDefaultCheckpointTests` in the SDK, and
 `Qwen35CardDefaultDonationTests` on the provider's production assembly and
 encrypted store).
 

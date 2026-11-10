@@ -923,8 +923,12 @@ preparation, not a text/KV-budget observation. It carries no capacity enrichment
 fields, does not strike model-wide capacity or health trackers, and still uses
 the bounded failover budget. A contradictory native `terminal_cause` retains
 normal terminal handling instead of this exemption. The provider emits it
-through `MiMoV26EncodedMediaIngress.outwardFailure`; the coordinator enforces
-the contract in `sanitizeProviderInferenceError`.
+(`MultiModelBatchSchedulerEngineError.mediaMemoryUnavailable`) for a refused
+media reservation, for a video or audio reader that failed twice with a
+transient decoder fault (`EngineV2VisionPrefill.constructionRefusal`,
+`MiMoV26EncodedMediaIngress.outwardFailure`, `SuperHTTPErrors.map`), and for a
+spent Nemotron Super decode allowance (`SuperHTTPErrors.map`). The coordinator
+enforces the contract in `sanitizeProviderInferenceError`.
 
 A GLM slot refusal is a pre-stream `capacity`/503 failure with `error_reason`
 `token_budget_exhausted`, enriched like other capacity rejections

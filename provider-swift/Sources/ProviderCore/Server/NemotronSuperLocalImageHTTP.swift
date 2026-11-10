@@ -250,16 +250,15 @@ enum SuperHTTPErrors {
                 return MultiModelBatchSchedulerEngineError.generationFailed("native output handling failed")
             }
         }
-        if let failure = error as? VideoReaderFailure, failure.isTransient {
-            return MultiModelBatchSchedulerEngineError.requestRejected(
-                "inline video decoder fault (\(failure)); retry on another provider")
+        // A transient decoder fault and a spent decode allowance are this
+        // machine's: another provider may decode the same movie.
+        if (error as? VideoReaderFailure)?.isTransient == true {
+            return MultiModelBatchSchedulerEngineError.mediaMemoryUnavailable
         }
         if let failure = error as? NemotronSuperVideoDecode.Failure {
             switch failure {
             case .decodeAllowanceSpent:
-                // This machine's wall time, not the movie's fault: another provider may decode it.
-                return MultiModelBatchSchedulerEngineError.requestRejected(
-                    "inline video decoder outlasted its decode allowance; retry on another provider")
+                return MultiModelBatchSchedulerEngineError.mediaMemoryUnavailable
             case .unsupportedRepresentation:
                 return MediaIngest.MediaError.unsupportedMedia(
                     "a video must be H.264 or HEVC in SDR, unmirrored, with one frame size")

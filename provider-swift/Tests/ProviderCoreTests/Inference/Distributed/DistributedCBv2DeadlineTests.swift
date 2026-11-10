@@ -220,27 +220,30 @@ struct DistributedCBv2DeadlineTests {
                                     serviceDuration: .seconds(8))
         let clock = DistributedTestClock()
         let engine = try distributedTestEngine(owner, clock: clock.clock)
-        func admitted(_ id: UInt64) async throws -> Bool {
+        // An admitted request's stream, kept: a stream nobody holds cancels its request.
+        func admitted(_ id: UInt64) async throws -> AsyncStream<CBv2Event>? {
             let request = CBv2Request(id: .init(id), promptTokens: Array(repeating: 1, count: 8_000),
                                       sampling: .init(temperature: 0), maxTokens: 2)
             let admission = CBv2FirstTokenDeadlineAdmission(deadline: clock.now.advanced(by: .seconds(30)),
                 conservativePrefillTokensPerSecond: 1_000, conservativeDecodeTokensPerSecond: 100)
             let result = try await engine.submit(request, firstTokenDeadline: admission)
-            if case .admitted = result { return true }
-            guard case .deadlineUnreachable = result else { Issue.record("request \(id): \(result)"); return false }
-            return false
+            if case .admitted(let stream, _, _, _) = result { return stream }
+            guard case .deadlineUnreachable = result else { Issue.record("request \(id): \(result)"); return nil }
+            return nil
         }
-        var burst: [Bool] = []
-        for id in 1...8 { burst.append(try await admitted(UInt64(id))) }
+        var streams: [AsyncStream<CBv2Event>?] = []
+        for id in 1...8 { streams.append(try await admitted(UInt64(id))) }
         // First tokens at 8, 16 and 24 s meet the 30 s deadline; the fourth would come at 32 s.
-        #expect(burst == [true, true, true, false, false, false, false, false])
+        #expect(streams.map { $0 != nil } == [true, true, true, false, false, false, false, false])
         #expect(owner.reserveCount == 3)
         // The first prompt has given its first token: the next request waits for the other two only.
         #expect(owner.lease(0).send(.token(4)))
-        let next = try await admitted(9), after = try await admitted(10)
-        #expect(next && !after)
+        streams.append(try await admitted(9))
+        streams.append(try await admitted(10))
+        #expect(streams.suffix(2).map { $0 != nil } == [true, false])
         #expect(owner.reserveCount == 4)
         for index in 0..<owner.reserveCount { owner.lease(index).acknowledge() }
+        withExtendedLifetime(streams) {}
         await engine.shutdown()
     }
 }

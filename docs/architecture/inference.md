@@ -2687,8 +2687,8 @@ checkpoint ([prefix caching](prefix-cache.md#invariants), invariant 9), so the
 35B builds' requests that omit the penalty stay without MTP and without cache
 donation, the cost the gate accepted for loop safety. A request's own
 `presence_penalty` always wins: `0` on a 35B build speculates under exact
-acceptance and donates checkpoints (in the gate that configuration still ran
-away on 2 of 12 loopers, the model's own loops, so it is the caller's choice); a nonzero value on the 9B turns its MTP and cache
+acceptance and donates checkpoints (the configuration that looped in the gate,
+now the caller's choice); a nonzero value on the 9B turns its MTP and cache
 donation off for that request. The coordinator forwards a build's registry
 runtime defaults for the fields a request omits
 ([`requestRuntimeDefaultKeys`](https://github.com/Layr-Labs/darkbloom-platform/blob/c69380d91fd3f9e4ef3ff1e3775690d80adbbe57/coordinator/api/inference/request/model_runtime_defaults.go));

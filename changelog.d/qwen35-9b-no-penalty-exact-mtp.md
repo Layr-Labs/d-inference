@@ -6,4 +6,4 @@
   - **`Qwen3.5-9B`:** it ran away on 13 of 31 draws under typical acceptance and on none of 31 under exact.
 - **`Qwen3.5-9B`** now has no default presence penalty, and its built-in MTP acceptance is exact. Its requests speculate and stage prefix checkpoints: in the gate the penalty-free body cached 8,192 tokens on its second send, where the penalty body cached none. A `[backend] mtp_acceptance_by_model` or `mtp_acceptance` value still takes precedence.
 - **`qwen3.5-35b-a3b` and `qwen3.6-35b-a3b-vl-mtp-mxfp8`** (one architecture) keep the 1.5, so their requests that omit it still run without MTP and without cache donation.
-- A request's own `presence_penalty` always wins: `0` on a 35B build speculates under the built-in MTP acceptance and donates checkpoints, and any nonzero value on the 9B turns its MTP and cache donation off for that request.
+- A request's own `presence_penalty` always wins: `0` on a 35B build speculates under exact acceptance and donates checkpoints, and any nonzero value on the 9B turns its MTP and cache donation off for that request.

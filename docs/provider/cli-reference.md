@@ -3662,7 +3662,12 @@ qualification or performance. Sources:
 runs each batch request alone in the loaded session, then each `--batch-wave N`
 starts the first N together (`--batch-stagger-ms` apart; `--batch-cancel-after T`
 cancels a wave's last request after T tokens). A tensor-parallel run fails when a
-lane's tokens differ from its request alone.
+lane's tokens differ from its request alone. In another mode the run records
+the comparison (`matchesSolo`, `firstDifferenceIndex`, `allMatchSolo`) and fails
+on it only with `--batch-require-parity yes`, which needs the requests run alone
+first (`--batch-solo yes`, the default). Use it for a pipeline's lane
+qualification: the pass rule is the same for every mode, each request's tokens
+equal to its run alone at every width.
 
 `--batch-logprobs K` (1...20, tensor parallel with batch requests only) makes
 every batch request, alone and in its waves, ask for each committed token's
@@ -3684,7 +3689,7 @@ once with it (token and logprob parity).
 
 Sources: `libs/darkbloom-cluster-worker/Sources/DarkbloomClusterQualification/PairDriver.swift`
 (`runBatchWave`, `compareLogprobs`), `PairConfiguration.swift` (`batchLogprobs`,
-`batchSampling`) and `QualificationReports.swift` (`PairBatchRequestTiming`).
+`batchRequireParity`, `batchSampling`) and `QualificationReports.swift` (`PairBatchRequestTiming`).
 `bash libs/darkbloom-cluster-worker/Tests/QualificationChecks/run.sh` drives
 these waves through two fake workers that serve batch lanes.
 

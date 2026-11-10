@@ -80,6 +80,8 @@ import Foundation
               [--batch-logprobs 1...20 (tensor parallel: every batch request asks for each token's logprob and this
                many alternatives, and a wave's must equal the requests' alone bit for bit; a request that asks may
                decode differently, so run the waves once without it too)]
+              [--batch-require-parity yes|no (every mode: a wave whose tokens differ from the requests alone fails
+               the run, as tensor parallel always does; default no, a pipeline's parity is then only recorded)]
               [--batch-trace yes|no (qualification: content-free decode-width and credit counts)]
               [--batch-logit-directory /ABS (qualification: bounded private rows on rank 1's Mac;
                   plain Qwen pipeline lanes 2...8 and --evidence none; off unless explicitly named)]
@@ -251,7 +253,7 @@ import Foundation
             "--memory-gate", "--stage-residency", "--mimo-step-evidence", "--local-rank", "--follow-request", "--prefix-cache",
             "--data-plane", "--data-plane-fault", "--data-plane-rekey-records", "--serving-context-check",
             "--batch-lanes", "--batch-request", "--batch-wave", "--batch-solo", "--batch-stagger-ms", "--batch-cancel-after",
-            "--batch-logprobs", "--kv-backend", "--batch-trace", "--batch-logit-directory",
+            "--batch-logprobs", "--batch-require-parity", "--kv-backend", "--batch-trace", "--batch-logit-directory",
             "--prefix-ssd", "--local-prefix-ssd-dir", "--local-prefix-ssd-key-file", "--remote-prefix-ssd-dir",
             "--remote-prefix-ssd-key-file", "--worker-environment", "--prefix-ssd-quantization"]
         let fields = try parse(arguments, allowed: names, repeated: ["--ssh-option", "--remote-command-prefix", "--follow-request",
@@ -367,9 +369,13 @@ import Foundation
             configuration.batchStaggerMilliseconds = try integer(fields, "--batch-stagger-ms") ?? 0
             configuration.batchCancelAfterTokens = try integer(fields, "--batch-cancel-after")
             configuration.batchLogprobs = try integer(fields, "--batch-logprobs")
+            if let parity = fields["--batch-require-parity"]?.first {
+                guard ["yes", "no"].contains(parity) else { throw Failure("--batch-require-parity takes yes or no") }
+                configuration.batchRequireParity = parity == "yes"
+            }
             try configuration.validate()
-        } else if fields["--batch-logprobs"] != nil {
-            throw Failure("--batch-logprobs needs --batch-request")
+        } else if fields["--batch-logprobs"] != nil || fields["--batch-require-parity"] != nil {
+            throw Failure("--batch-logprobs and --batch-require-parity need --batch-request")
         }
         for (side, keyPath) in [("local", \PairConfiguration.localPrefixSSD), ("remote", \PairConfiguration.remotePrefixSSD)] {
             let directory = fields["--\(side)-prefix-ssd-dir"]?.first, key = fields["--\(side)-prefix-ssd-key-file"]?.first

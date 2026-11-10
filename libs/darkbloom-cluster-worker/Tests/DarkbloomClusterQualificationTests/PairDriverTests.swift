@@ -1094,12 +1094,17 @@ final class PairDriverTests: XCTestCase {
         }
     }
 
-    /// A wave whose tokens match its requests' alone passes a run that requires parity, in a pipeline too.
+    /// A wave whose tokens match its requests' alone passes a run that requires parity, in a pipeline too. Parity
+    /// compares a wave with the requests run alone, so it needs batch requests and their solo runs.
     func testAPipelineWaveThatMatchesItsRequestsAlonePassesARunThatRequiresParity() throws {
         let sides = try Sides(modes: ["ok", "ok"])
         var configuration = try pipelineBatch(sides)
         configuration.batchRequireParity = true
         try configuration.validate()
+        var unpaired = configuration; unpaired.batchSolo = false
+        XCTAssertThrowsError(try unpaired.validate(), "no solo run to compare with")
+        var alone = try sides.configuration(recording: false); alone.batchRequireParity = true
+        XCTAssertThrowsError(try alone.validate(), "no batch request to compare")
         let report = PairDriver(configuration: configuration).run()
         XCTAssertEqual(report.outcome, "completed", report.failure ?? "")
         XCTAssertEqual(report.timing.batch?.waves.first?.allMatchSolo, true)

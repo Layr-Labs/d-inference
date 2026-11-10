@@ -579,8 +579,9 @@ public struct PairDriver: Sendable {
                 }
                 // Tensor-parallel lanes keep each request's own arithmetic:
                 // a token, or a logprob, that differs from the request alone
-                // fails the run.
-                if c.generationMode == PairConfiguration.tensorParallelMode, wave.allMatchSolo == false {
+                // fails the run. In another mode a token does when the run
+                // requires parity (`batchRequireParity`).
+                if c.generationMode == PairConfiguration.tensorParallelMode || c.batchRequireParity, wave.allMatchSolo == false {
                     timing.batch = batch
                     return finish("failed", "batch wave of \(size): tokens differ from the requests run alone")
                 }

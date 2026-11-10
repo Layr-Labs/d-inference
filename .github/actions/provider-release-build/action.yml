@@ -180,8 +180,10 @@ runs:
         test -s "$RUNNER_TEMP/metallib/mlx.metallib"
         echo "metallib=$RUNNER_TEMP/metallib/mlx.metallib" >> "$GITHUB_OUTPUT"
     # Release builds restore this cache into signed bytes, so only the release
-    # lane saves it. A qualification lane can run on a Darkbloom Sandbox
-    # (release-qualify.yml) and only restores it.
+    # lane saves it; a qualification lane (release-qualify.yml, which can run
+    # on a Darkbloom Sandbox) only restores it. This is hygiene, not
+    # protection: any job of the run holds the run's cache token and can write
+    # any key of the branch's scope (docs/developer/build.md#release-qualification-on-darkbloom).
     - name: Save source-matched metallib cache
       if: inputs.lane == 'release' && steps.metallib-cache.outputs.cache-hit != 'true'
       uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57

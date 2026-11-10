@@ -2442,7 +2442,8 @@ final class OnboardingLive: @unchecked Sendable {
         let answering = self.answering
         if let control = ClusterService.published()?.control, ["alone", "cannotServe", "waiting"].contains(control.mode) {
             // Serving alone is said only once this service's own solo server answers, as the setup's wait counts it.
-            var away = Self.awayLines(control, started: leadership?.serving == true, stopped: stoppedLine, there: there,
+            let started = leadership?.serving == true
+            var away = Self.awayLines(control, started: started, stopped: stoppedLine, there: there,
                                       prefix: answering ? Self.sentence(hereShort) + ": " : "") {
                 let published = ClusterService.published()
                 switch ClusterService.soloReadiness(published) {
@@ -2451,7 +2452,8 @@ final class OnboardingLive: @unchecked Sendable {
                 case .foreign: return " (another program answers on port \(ClusterService.soloPort(of: published)), so its solo server cannot serve there)"
                 }
             }
-            if control.mode == "waiting",
+            // Only a started pair's part starts again: a stopped pair says only that it is stopped (`awayLines`).
+            if started, control.mode == "waiting",
                let wait = Self.partWaitLine(ClusterService.published()?.child, here: Self.sentence(hereShort), there: thereShort) {
                 away.append(wait)
             }

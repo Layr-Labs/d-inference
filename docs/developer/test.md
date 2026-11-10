@@ -66,8 +66,9 @@ a wave of two (`PairDriverTests`). A wave's tokens are compared with the
 requests' alone; with `--batch-logprobs` each token's logprob bit patterns are
 recorded and compared too, a lane that drifts by one ulp with its tokens
 unchanged fails the run, and a cancelled lane matches as far as it got
-([lane parity](../provider/cli-reference.md#pair-batch-lane-parity)). CI does
-not run this runner. These fakes establish the driver's comparison, not any
+([lane parity](../provider/cli-reference.md#pair-batch-lane-parity)). CI runs
+this runner in shard 2 of Cluster Focused Checks (step `Run cluster
+qualification checks`). These fakes establish the driver's comparison, not any
 runtime's lane parity on real Macs.
 
 Automatic local batching's CPU checks run with

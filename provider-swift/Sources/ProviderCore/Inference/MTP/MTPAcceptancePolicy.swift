@@ -6,9 +6,12 @@ import MLXLMCommon
 ///
 /// Precedence: `[backend] mtp_acceptance_by_model` for the exact model id,
 /// then `[backend] mtp_acceptance`, then the built-in rule, which is exact for
-/// every model: speculation never changes what a sampled request can say, and
+/// every model: a speculating sampled row keeps the model's own output
+/// distribution (every committed token is the target's keyed draw; not
+/// bit-identical to MTP off, since verify windows round differently), and
 /// lossy typical acceptance is an explicit per-model or global opt-in
-/// (`docs/design/typical-mtp-acceptance.md`, D1). Typical acceptance locks a
+/// (`docs/design/typical-mtp-acceptance.md`, D1, which #1376 had reversed for
+/// its decode gains). Typical acceptance locks a
 /// repetition in once the drafter predicts it: in the 0.10.12 gate it ran the
 /// catalog Qwen 3.5 builds away to `max_tokens` where exact acceptance did not
 /// (Qwen3.5-9B 13 of 31 draws against 0 of 31). A value that names no

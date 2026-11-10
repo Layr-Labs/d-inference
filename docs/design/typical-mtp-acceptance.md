@@ -171,7 +171,7 @@ Original L1 sequencing used the DiffusionGemma pin `6f3d171` and fork main `cb53
 
 | # | Decision | Applied |
 |---|---|---|
-| D1 | Default acceptance everywhere | `exact`. Typical is per-model opt-in only. Restored in 0.10.12 after the built-in rule had drifted to typical for existing profiles (`MTPAcceptancePolicy.resolve`). |
+| D1 | Default acceptance everywhere | `exact`. Typical is per-model opt-in only. #1376 (10-07) then made typical the built-in default on purpose, for the decode gains in `docs/reports/2026-10-07-typical-mtp-acceptance-benchmarks.md` (B=1: Gemma QAT +4.5 %, Qwen 3.8 +8.0 %, Qwen 3.6 +11.2 %). #1973 (0.10.12) restores exact, giving those gains back, because typical acceptance made long sampled answers loop to their output cap (`MTPAcceptancePolicy.resolve`). |
 | D2 | `delta` as a production key | No. Engine constant `0.2` (mlx-serve default). Benchmark env only. Add a key when G4 shows a model needs another value. |
 | D3 | Catalog fleet default (L3) | Deferred until G4 has numbers for at least one target. |
 | D4 | First target to measure | Qwen 3.8 Flash-Next, then Gemma QAT. |

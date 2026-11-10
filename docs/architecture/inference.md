@@ -2514,7 +2514,9 @@ retain priority (`provider-swift/Sources/ProviderCore/Inference/MTP/EngineV2MTPA
 `providerMTPVerificationPolicy`).
 When neither a global nor a per-model acceptance value is configured, serving
 uses exact acceptance for every model, so a speculating row emits the target's
-own distribution (`MTPAcceptancePolicy.resolve`; the design record's D1).
+own distribution (`MTPAcceptancePolicy.resolve`; the design record's D1, which
+#1376 had reversed for typical's decode gains); its tokens are not bit-identical
+to MTP off, since verify windows round differently.
 Typical acceptance is an explicit opt-in, globally or per model. It locks a
 repetition in once the drafter predicts it: the catalog Qwen 3.5 builds ran
 away under it in the 0.10.12 gate where exact acceptance did not (see the

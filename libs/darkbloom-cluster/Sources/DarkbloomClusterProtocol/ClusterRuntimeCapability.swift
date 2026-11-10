@@ -98,6 +98,14 @@ public enum ClusterRuntimeAdapter: String, Sendable, CaseIterable {
             && Self.registering(runtimeModelID: runtimeModelID) == self
     }
 
+    /// Whether a tensor-parallel setup of `runtimeModelID` saves a width (`ClusterConfiguration.batchLanes`): its
+    /// owner serves request-owned lanes at a width priced at placement and reserved at LOAD. The Qwen rows price
+    /// theirs with native quotes (`servesQwenTensorLanes`); Gemma 4 with its lane charge.
+    public func savesTensorParallelWidth(runtimeModelID: String) -> Bool {
+        servesQwenTensorLanes(runtimeModelID: runtimeModelID)
+            || (self == .gemma4LayerStage && Self.registering(runtimeModelID: runtimeModelID) == self)
+    }
+
     /// Whether this adapter's layer stages serve its rows' whole profile in the pipeline: LOAD still sizes the
     /// memory plan's request (`ClusterWorkerProfile.memoryScope`), and each stage charges a longer request at its
     /// own context when it is reserved (Gemma 4: the whole model's state ledger at the request's context), admitted

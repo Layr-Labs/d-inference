@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-09
 
 Provider CLI and native-runtime environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -871,7 +871,7 @@ solo serving is unchanged and the whole surface stays default-off.
 
 | Field | Meaning and bounds | Source |
 |---|---|---|
-| `batchLanes` | Optional integer 2, 4 or 8, or 6 for a Qwen TP row in `tensor_parallel_v1`; omitted in existing setups. Only registered text batch adapters in plain pipeline with serial prefill accept it. It is a requested width, never a capacity grant. The guided setup writes it into both Macs' setups for a Qwen TP placement ([saved width](../architecture/inference.md#qwen-tensor-parallel-saved-width)), and a setup saved for coordinator pairing keeps it beside its approval. | `provider-swift/Sources/ProviderCore/Config/ClusterConfiguration.swift` (`validate`), `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementTensorWidth.swift` (`widest`) |
+| `batchLanes` | Optional integer 2, 4 or 8, or 6 for a tensor-parallel width (a Qwen TP row or Gemma 4 in `tensor_parallel_v1`); omitted in existing setups. Registered text batch adapters in plain pipeline, and those tensor-parallel rows, accept it with serial prefill only. It is a requested width, never a capacity grant. The guided setup writes it into both Macs' setups for a Qwen TP or Gemma 4 tensor-parallel placement ([lane widths](../architecture/inference.md#tensor-parallel-lane-widths)), and a setup saved for coordinator pairing keeps it beside its approval. | `provider-swift/Sources/ProviderCore/Config/ClusterConfiguration.swift` (`validate`), `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementTensorWidth.swift` (`plan`) |
 | `DARKBLOOM_CLUSTER_BATCH_LANES` | An explicit diagnostic setting retains precedence; absent settings use the persisted width, then the existing family default. Malformed explicit values fail closed to one lane. | `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPlan.swift` (`batchLanes`) |
 
 The normal cluster API can persist a wider setup after queued demand, conservative

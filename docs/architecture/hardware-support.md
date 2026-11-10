@@ -1276,8 +1276,11 @@ A Gemma 4 tensor-parallel rank is charged its own share, not the whole model
 | Eight sealed frames of the packed collective (512 x 101,376 bytes and the seal) | per rank | about 415 MB |
 
 The layout's `requestAllowance` quotes one request at the memory plan's longest
-context (65,536 tokens) and prompt plus the per-rank charges, and the worker's
-LOAD gate reserves exactly that beside the shard. A reservation or lane asks
+context (65,536 tokens) and prompt plus the per-rank charges, and its
+`laneBytes` that request's per-request charges again for each further lane. The
+worker's LOAD gate reserves the allowance and the lane charge for every lane of
+its saved width after the first beside the shard, the width the planner priced
+([lane widths](inference.md#tensor-parallel-lane-widths)). A reservation or lane asks
 the live gate for every held request, the new one and the per-rank charges. A
 request past the memory plan, up to the profile's 262,144 tokens, is charged at
 its own context ([Gemma 4 native context](inference.md#gemma-4-native-context-on-a-pair)). The

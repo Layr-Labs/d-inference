@@ -104,6 +104,45 @@ import DarkbloomClusterProtocol
                 }
             }
         }
+        // A tensor-parallel width is saved for a row whose owner serves request-owned lanes at a priced width: Gemma 4
+        // (priced by its lane charge) keeps 2, 4, 6 or 8 under tensor_parallel_v1 with serial prefill; GLM keeps its
+        // own eight and MiMo serves one, so neither saves one.
+        for (adapter, saves) in [(ClusterRuntimeAdapter.gemma4LayerStage, true), (.glm5NextLayerStage, false), (.mimoV26LayerStage, false)] {
+            let otherProfile = ClusterWorkerProfile(id: adapter.profileID, vocabularySize: profile.vocabularySize,
+                maximumPromptTokens: profile.maximumPromptTokens, maximumOutputTokens: profile.maximumOutputTokens,
+                maximumChunkTokens: profile.maximumChunkTokens, maximumContextTokens: profile.maximumContextTokens)
+            let tensorCapability = try ClusterRuntimeCapability(runtimeBinarySHA256: capability.runtimeBinarySHA256,
+                adapterID: adapter.rawValue, adapterVersion: adapter.version, runtimeModelID: adapter.runtimeModelID,
+                artifactSHA256: capability.artifactSHA256, configurationSHA256: capability.configurationSHA256,
+                manifestSHA256: capability.manifestSHA256, profile: otherProfile, profileFingerprint: capability.profileFingerprint,
+                partitions: capability.partitions, arithmeticPolicyID: adapter.arithmeticPolicyID,
+                arithmeticPolicySHA256: capability.arithmeticPolicySHA256, supportedPrefillSchedules: [.serial, .oneChunkLookahead],
+                supportedGenerationModes: [.pipeline, .tensorParallel])
+            let tensorHash = ClusterConfigurationCodec.sha256(try ClusterRuntimeCapabilityCodec.encode(tensorCapability))
+            func tensorSetup(_ width: Int, schedule: String = "serial_v1", rank: Int = 0) -> [String: Any] {
+                var setup = object; setup["batchLanes"] = width; setup["capabilitySHA256"] = tensorHash
+                setup["generationMode"] = "tensor_parallel_v1"; setup["prefillSchedule"] = schedule
+                setup["role"] = rank == 0 ? "leader" : "follower"; setup["memberID"] = "peer-\(rank)"
+                return setup
+            }
+            func read(_ setup: [String: Any]) throws -> ClusterConfiguration {
+                try ClusterConfigurationCodec.decode(bytes(setup), capability: tensorCapability, capabilitySHA256: tensorHash)
+            }
+            for width in [2, 4, 6, 8] {
+                for rank in [0, 1] {
+                    if saves {
+                        let parsed = try read(tensorSetup(width, rank: rank))
+                        try require(parsed.batchLanes == width && parsed.localRank == rank,
+                            "\(adapter.rawValue) tensor parallel refused its saved width \(width)")
+                    } else {
+                        try rejected { _ = try read(tensorSetup(width, rank: rank)) }
+                    }
+                }
+                // Lanes prefill serially: a width beside the one-chunk lookahead is refused in every family.
+                try rejected { _ = try read(tensorSetup(width, schedule: "one_chunk_lookahead_v1")) }
+            }
+            for invalid: Any in [0, 1, 3, 5, 7, 9] { try rejected { _ = try read(tensorSetup(2).merging(["batchLanes": invalid]) { $1 }) } }
+        }
         // Six lanes are a tensor-parallel width; this pipeline setup refuses it.
         for invalid: Any in [NSNull(), true, false, 0, 1, 3, 6, 7, 9, Int.max, "8", [8]] {
             var bad = object; bad["batchLanes"] = invalid; try rejected { _ = try decode(bad) }

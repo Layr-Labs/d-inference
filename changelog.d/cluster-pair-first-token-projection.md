@@ -1,0 +1,4 @@
+### A two-Mac pair takes the requests whose first token it can deliver in time, and only those
+
+- Once a pair had measured how fast it reads a prompt, it turned away every Darkbloom request as "deadline unreachable", even one it could serve at once. Darkbloom sends a first-content deadline with every request, and the pair estimated no first token at all.
+- Now the pair estimates each request's first token from its own measured prompt speed, behind the prompts it is still reading for the requests it already holds, since it reads them one after another. It takes a request whose first token comes in time and turns one away at once when it would not, so Darkbloom sends it to another Mac. Before, eight long prompts arriving together were all taken, and the last waited about a minute for its first token.

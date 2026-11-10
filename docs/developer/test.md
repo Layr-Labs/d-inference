@@ -2710,7 +2710,9 @@ mode and image gates, and both member ranks. No model, GPU or real service is
 started. The checks preserve the singleton and GLM tensor-parallel defaults
 and the serial-prefill Gemma 4 pipeline's default lanes
 (`DistributedInstalledPlan.gemma4PipelineBatchLanes`), which reach the rank,
-while a Gemma setup saved with the one-chunk lookahead keeps one lane;
+while a Gemma setup saved with the one-chunk lookahead keeps one lane, and a
+Gemma 4 tensor-parallel setup's saved width (2, 4, 6 or 8) reaches its owner
+and its rank;
 `DistributedInstalledLanesTests` covers the same rules for every adapter and
 schedule. Actual multi-lane output, encrypted transport and retirement still require
 qualification on both Macs. The same real-child checks pass canonical local

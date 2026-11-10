@@ -298,11 +298,14 @@ public enum ClusterPlacementFlow {
         // ranked. A developer's forced mode is placed anyway, and the plan says what it drops.
         let (parity, parityRefusal) = ClusterModeParity.apply(to: &policy, capability: capability, layout: layout,
             forced: developerForced != nil) { try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: $0, link: link) }
-        // A singleton tensor placement saves the widest width its owner's quotes admit on both Macs now. One call
-        // initializes a constant `result`, so the sizing's plans stay off this frame, which a deep planner stack shares.
+        // A singleton tensor placement saves the widest width both Macs admit now, priced by its owner's quotes or its
+        // family's lane charge, up to what the family qualified on real Macs. One call initializes a constant `result`,
+        // so the sizing's plans stay off this frame, which a deep planner stack shares.
         var batchLanes = batchScope?.lanes
         let result = try ClusterPlacementTensorWidth.plan(devices: devices, layout: layout, policy: policy, link: link,
-            quotes: tensorWidthQuotes, lanes: &batchLanes)
+            quotes: tensorWidthQuotes, maximumLanes: ClusterPlacementTensorWidth.qualifiedLanes(
+                adapter: ClusterRuntimeAdapter(rawValue: capability.adapterID), runtimeModelID: capability.runtimeModelID),
+            lanes: &batchLanes)
         var lines = (developerForced.map(ClusterForcedModeSetting.lines) ?? [])
             + (benchCap.map(ClusterPlannerBenchCap.lines(capBytes:)) ?? []) + (benchChip.map(ClusterBenchChip.lines(chipName:)) ?? [])
             + servedLines

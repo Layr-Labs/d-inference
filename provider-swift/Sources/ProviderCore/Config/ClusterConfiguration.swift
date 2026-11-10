@@ -30,7 +30,8 @@ public struct ClusterConfiguration: Codable, Sendable, Equatable {
     /// saved before this field keeps its bytes. Passed to both workers
     /// (`--tensor-shares`), which bind it into their load agreement.
     public private(set) var tensorShares: [Int]?
-    /// A locally planned pipeline or Qwen TP width. Omission keeps the existing
+    /// A locally planned pipeline width, or a tensor-parallel one for a row whose owner saves one (Qwen TP rows and
+    /// Gemma 4: `ClusterRuntimeAdapter.savesTensorParallelWidth`). Omission keeps the existing
     /// family default and old configuration bytes; it is never inferred from
     /// a remote memory advertisement. Both installed owners use the same
     /// pinned value, and still run their own native memory/admission gates.
@@ -152,7 +153,7 @@ public struct ClusterConfiguration: Codable, Sendable, Equatable {
         if let batchLanes {
             let tensor = selectedGenerationMode == .tensorParallel
                 && ClusterRuntimeAdapter(rawValue: capability.adapterID)?
-                    .servesQwenTensorLanes(runtimeModelID: capability.runtimeModelID) == true
+                    .savesTensorParallelWidth(runtimeModelID: capability.runtimeModelID) == true
             let pipeline = selectedGenerationMode == .pipeline
                 && ClusterRuntimeAdapter(rawValue: capability.adapterID).map {
                     switch $0 {
@@ -165,7 +166,7 @@ public struct ClusterConfiguration: Codable, Sendable, Equatable {
             // 2, 4 and 8; `ClusterPlacementBatchScope` lists both).
             try require([2, 4, 6, 8].contains(batchLanes) && (pipeline || tensor) && (tensor || batchLanes != 6)
                 && selectedPrefillSchedule == .serial && !capability.hasPrivateImages,
-                "A planned batch width requires a supported pipeline or Qwen tensor mode with serial prefill")
+                "A planned batch width requires a supported pipeline or tensor-parallel width with serial prefill")
         }
         if let tensorAssistant {
             try tensorAssistant.validate()

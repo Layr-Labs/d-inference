@@ -54,6 +54,10 @@ public struct WatchdogRecoveryService: Sendable {
         /// `DownOutcome` is pattern-matched by equality across the decision
         /// tests and the chain is orthogonal to the outcome shape.
         public var noteCrashLoopChain: @Sendable (_ count: Int, _ installedVersion: String) -> Void
+        /// The provider's run marker (`provider-run.json`), read only when the provider launchd runs started after the
+        /// candidate's launch attempt (`startupWindowStart`). Without it (the default) that process gets no startup
+        /// window of its own; `Watchdog.runTick` passes the real file.
+        public var providerRunMarker: @Sendable () -> ProviderRunMarker.Record?
         public var log: @Sendable (String) -> Void
 
         public init(
@@ -72,6 +76,7 @@ public struct WatchdogRecoveryService: Sendable {
                     crashCount: $0, now: $1, guardedVersion: $2, lastKnownModel: nil)
             },
             noteCrashLoopChain: @escaping @Sendable (Int, String) -> Void = { _, _ in },
+            providerRunMarker: @escaping @Sendable () -> ProviderRunMarker.Record? = { nil },
             log: @escaping @Sendable (String) -> Void
         ) {
             self.kickstartIfLoaded = kickstartIfLoaded
@@ -82,6 +87,7 @@ public struct WatchdogRecoveryService: Sendable {
             self.isPastTickDeadline = isPastTickDeadline
             self.tripKVBackendGuard = tripKVBackendGuard
             self.noteCrashLoopChain = noteCrashLoopChain
+            self.providerRunMarker = providerRunMarker
             self.log = log
         }
     }
@@ -131,15 +137,34 @@ public struct WatchdogRecoveryService: Sendable {
     }
 
     /// When the startup window of the provider launchd runs began: the candidate's launch attempt, or the later start of
-    /// that process. A restart the owner asks for (`darkbloom restart`, `start`, `stop` then `start`), a login or a
-    /// reboot replaces the attempt's process, and the re-armed watchdog's first check still reads the replaced process's
-    /// daemon state: the new process gets the whole window from its own start, so only a crash, or a process that sends
-    /// no heartbeat within its own window, is a failed start. Sound only while the provider job is `KeepAlive = false`
-    /// (`LaunchAgent`): launchd never relaunches a crashed provider itself, so a new process comes from the watchdog,
-    /// which counts the failed start first, or from the owner.
-    static func startupWindowStart(attemptStartedAt: Double, runningProcess: ProcessIdentity?) -> Double {
+    /// that process when the process it replaced stopped on request (`stopsThatEarnAWindow`), as `provider-run.json`
+    /// records it (`runMarker`): the stopping process writes its clean stop and why before it exits, and the new one
+    /// keeps that in its own record. The re-armed watchdog's first check after `darkbloom restart`, or `stop` then
+    /// `start`, still reads the replaced process's daemon state: the new process gets the whole window from its own
+    /// start, and is a failed start only if it sends no heartbeat within it. After a crash, a hang, a power loss or any
+    /// other stop, the window stays the attempt's whoever started the new process, so a release that crashes or hangs
+    /// the Mac is still charged and rolled back.
+    static func startupWindowStart(attemptStartedAt: Double, runningProcess: ProcessIdentity?,
+                                   runMarker: () -> ProviderRunMarker.Record?) -> Double {
         guard let runningProcess else { return attemptStartedAt }
-        return max(attemptStartedAt, Double(runningProcess.startTimeMicros) / 1_000_000)
+        let processStartedAt = Double(runningProcess.startTimeMicros) / 1_000_000
+        guard processStartedAt > attemptStartedAt,
+              let stop = ProviderRunMarker.previousExitCause(runMarker(),
+                                                             processStartMicros: runningProcess.startTimeMicros),
+              stopsThatEarnAWindow.contains(stop)
+        else { return attemptStartedAt }
+        return processStartedAt
+    }
+
+    /// The stops after which the next provider process gets a startup window of its own: the owner's `darkbloom stop`
+    /// or `restart` (`lifecycleCommand`) and the provider's own relaunch into an update or out of a stalled App Attest
+    /// call. Not `shutdown`: any other SIGTERM (a logout, a reboot, a `kill`, a `launchctl kickstart -k`), or a serve
+    /// loop that ended by itself.
+    static let stopsThatEarnAWindow: Set<ProviderRunMarker.ExitCause> = [.lifecycleCommand, .update, .stallRestart]
+
+    /// The restart counts of a pending release that log a warning: 5, 10, 20, 40… (`observeHealthyProvider`).
+    static func warnsAfterRestarts(_ restarts: Int) -> Bool {
+        restarts >= 5 && restarts % 5 == 0 && (restarts / 5).nonzeroBitCount == 1
     }
 
     public init(
@@ -279,7 +304,8 @@ public struct WatchdogRecoveryService: Sendable {
             // candidate. A DEAD candidate (providerProcessAlive == false) is
             // still charged and restarted so a real crash-loop rolls back.
             let windowStart = state.candidate?.attemptStartedAt.map {
-                Self.startupWindowStart(attemptStartedAt: $0, runningProcess: snapshot?.process)
+                Self.startupWindowStart(attemptStartedAt: $0, runningProcess: snapshot?.process,
+                                        runMarker: deps.providerRunMarker)
             }
             if providerProcessAlive,
                let candidate = state.candidate,
@@ -672,6 +698,10 @@ public struct WatchdogRecoveryService: Sendable {
                 freshMatchingHeartbeat = false
             }
 
+            var restarts: Int?
+            if freshMatchingHeartbeat, let process = daemonState?.processIdentity {
+                restarts = state.countCandidateRestart(healthyProcessStartMicros: process.startTimeMicros)
+            }
             let promoted = state.observeCandidateHealth(
                 healthySignal: freshMatchingHeartbeat,
                 processStartedAt: daemonState?.startedAt,
@@ -686,13 +716,21 @@ public struct WatchdogRecoveryService: Sendable {
                     "v\(candidate.release.version) passed \(Int(stabilizationSeconds))s stabilization; promoted")
                 return .promoted(version: candidate.release.version)
             }
+            // A release restarted more often than its stabilization window is never promoted, and no restart the owner
+            // or the provider asked for is a failed start: say so, from the fifth restart.
+            if let restarts, Self.warnsAfterRestarts(restarts) {
+                deps.log("warning: v\(candidate.release.version) restarted \(restarts) times before its promotion: a "
+                    + "release is promoted only once one process has served it for \(Int(stabilizationSeconds)) s. "
+                    + "Something may be restarting the provider: a script, a cron job or a login item")
+            }
             if !freshMatchingHeartbeat,
                providerRunning,
                candidate.pendingAttemptID != nil,
                let attemptStartedAt = candidate.attemptStartedAt
             {
                 let launchedAt = Self.startupWindowStart(attemptStartedAt: attemptStartedAt,
-                                                         runningProcess: deps.launchSnapshot()?.process)
+                                                         runningProcess: deps.launchSnapshot()?.process,
+                                                         runMarker: deps.providerRunMarker)
                 if now - launchedAt >= candidateStartupTimeoutSeconds {
                     return .inactiveCandidate(launchedAt: launchedAt)
                 }

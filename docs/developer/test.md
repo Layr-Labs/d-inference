@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-10
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -1169,7 +1169,7 @@ are injected; no model or MLX kernel runs.
 
 ```bash
 swift test --skip-build --no-parallel \
-  --filter 'unprovenLaunchEvidencePreservesIntent|prelaunchHealthObservationRetainsIntent|partialLaunchEvidenceRequiresComparison|interruptedLaunchReceiptTimesOut|unprovenLaunchIntentDoesNotTimeOut|interruptedLaunchReceiptPromotes|requestedRestart|crashAfterARequestedRestartStillCounts'
+  --filter 'unprovenLaunchEvidencePreservesIntent|prelaunchHealthObservationRetainsIntent|partialLaunchEvidenceRequiresComparison|interruptedLaunchReceiptTimesOut|unprovenLaunchIntentDoesNotTimeOut|interruptedLaunchReceiptPromotes|requestedRestart|crashAfterARequestedRestartStillCounts|crashLoopRestartedFromOutsideStillRollsBack|rebootAfterAHangIsAFailedStart|stopNobodyAskedForIsAFailedStart|restartsBeforePromotionAreLogged'
 ```
 
 It covers missing and partial baseline evidence, intent retention before
@@ -1178,18 +1178,28 @@ timeout, one-time failure accounting and heartbeat promotion. It does not run
 native launchd, the controller cancellation interleaving or a signed release
 installation.
 
-The same suite covers a restart the owner asks for before promotion
-(`requestedRestartIsNotAFailedStart`,
+The same suite covers restarts before promotion. The launch snapshot names a
+provider process started 7 minutes after the update and only that process
+lives, while the daemon state is still the replaced process's; the run marker
+(`provider-run.json`) is injected, as the replaced process left it or as the new
+process rewrote it.
+After a stop on request (`lifecycle_command`, `update`, `stall_restart`;
+`requestedRestartIsNotAFailedStart`,
 `requestedRestartWithoutAHeartbeatIsAFailedStart`,
-`requestedRestartDefersTheDownPathInsideItsOwnWindow`,
-`crashAfterARequestedRestartStillCounts`): the launch snapshot names a provider
-process started 7 minutes after the update (two of the tests start with two
-failed starts recorded) and only that process lives, while the daemon state is
-still the replaced process's.
-The re-armed watchdog's first check must not count a failed start; the new
+`requestedRestartDefersTheDownPathInsideItsOwnWindow`), the re-armed watchdog's
+first check must not count a failed start, with two already recorded; the new
 process is promoted 180 s after its first heartbeat, is a failed start only 300 s
-after its own start without one, keeps the down path's grace for a long preload
-from its own start, and a crash still rolls the release back.
+after its own start without one, and keeps the down path's grace for a long
+preload from its own start. After any other end (a crash, a hang or a SIGKILL
+leaves the record `running`, another SIGTERM records `shutdown`, or no record;
+`stopNobodyAskedForIsAFailedStart`, `crashAfterARequestedRestartStillCounts`,
+`crashLoopRestartedFromOutsideStillRollsBack`, `rebootAfterAHangIsAFailedStart`)
+the window stays the launch's whatever started the new process: three crashes
+restarted from outside the watchdog roll the release back, and the start at
+login after a hang is a failed start.
+`restartsBeforePromotionAreLogged` restarts a pending release every 122 s with a
+fresh heartbeat from each process: it is never promoted or charged, and the
+watchdog logs one warning at the fifth restart and one at the tenth.
 
 ## Cluster Pair Coordinated Update
 

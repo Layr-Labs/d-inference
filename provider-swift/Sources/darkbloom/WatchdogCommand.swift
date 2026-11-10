@@ -131,6 +131,9 @@ struct Watchdog: AsyncParsableCommand {
                 noteCrashLoopChain: { count, version in
                     resolvedChain.set(count: count, version: version)
                 },
+                providerRunMarker: {
+                    ProviderRunMarker(directory: DaemonStateFile.path().deletingLastPathComponent()).read()
+                },
                 log: { Self.log($0) }
             ),
             candidateStartupTimeoutSeconds: settings.candidateStartupTimeoutSeconds

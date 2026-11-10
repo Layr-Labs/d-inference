@@ -382,19 +382,37 @@ struct WatchdogRecoveryIntegrationTests {
     // MARK: - A restart the owner asks for
 
     /// The update's process (pid 4242) served the new release from 100 s; at 520 s the owner's `darkbloom restart`
-    /// (or `start`, or `stop` and then `start`, or a reboot) replaced it with pid 4343.
+    /// (or `stop` and then `start`) replaced it with pid 4343.
     private static let replacedProcess = ProcessIdentity(pid: 4242, startTimeMicros: 100_000_000)
     private static let restartedProcess = ProcessIdentity(pid: 4343, startTimeMicros: 520_000_000)
 
+    /// `provider-run.json` once the replaced process ended: a clean stop it recorded with `stop` as the cause, or none
+    /// (nil): a crash, a hang, a SIGKILL or a power loss leaves its record `running`. The replaced process's record
+    /// until the restarted process records its start (`ProviderProcessRun.begin`), then the restarted process's
+    /// (`recordedByTheNewProcess`), which keeps how the replaced one ended.
+    private static func runMarker(replacedEnded stop: ProviderRunMarker.ExitCause?,
+                                  recordedByTheNewProcess: Bool) -> ProviderRunMarker.Record {
+        if recordedByTheNewProcess {
+            return .init(state: .running, processStartMicros: restartedProcess.startTimeMicros, version: "2.0.0",
+                         previousExit: stop == nil ? .unclean : .clean, previousExitCause: stop)
+        }
+        return .init(state: stop == nil ? .running : .clean, processStartMicros: replacedProcess.startTimeMicros,
+                     version: "2.0.0", exitCause: stop, exitedAt: stop == nil ? nil : 519.5, previousExit: .clean)
+    }
+
     /// The watchdog after that restart: launchd runs pid 4343 (none once `crashed`), and only that pid lives.
-    private func watchdogAfterRequestedRestart(_ context: InstalledContext, crashed: Bool = false,
-                                               candidateStartupTimeoutSeconds: Double = 300) -> WatchdogRecoveryService {
+    private func watchdogAfterRestart(
+        _ context: InstalledContext, crashed: Bool = false, candidateStartupTimeoutSeconds: Double = 300,
+        runMarker: ProviderRunMarker.Record = Self.runMarker(replacedEnded: .lifecycleCommand,
+                                                             recordedByTheNewProcess: false)
+    ) -> WatchdogRecoveryService {
         let restarted = Self.restartedProcess
         return makeService(updater: context.updater, restarts: context.restarts,
                            candidateStartupTimeoutSeconds: candidateStartupTimeoutSeconds,
                            launchSnapshot: { ProviderLaunchSnapshot(label: "io.darkbloom.provider", runs: 2,
                                                                     process: crashed ? nil : restarted) },
-                           processAlive: { !crashed && $0 == restarted.pid })
+                           processAlive: { !crashed && $0 == restarted.pid },
+                           runMarker: { runMarker })
     }
 
     /// The daemon state the replaced process left: the re-armed watchdog's first check reads it.
@@ -422,16 +440,21 @@ struct WatchdogRecoveryIntegrationTests {
     /// `darkbloom restart` 7 minutes after an update, before the release is promoted: the command stops the watchdog,
     /// replaces the provider and starts the watchdog again, whose first check runs at once and still reads the daemon
     /// state of the process it replaced. Timed from the update's launch, that was a start without a heartbeat: a failed
-    /// start, and with two before it a rollback that quarantined a release nothing was wrong with (0.10.11). The new
+    /// start, and with two before it a rollback that quarantined a release nothing was wrong with (0.10.11). The
+    /// replaced process recorded its stop on request (`lifecycle_command`; an update's or a stalled App Attest call's
+    /// own relaunch records `update` or `stall_restart`), before or after the new process replaced its record: the new
     /// process's window runs from its own start.
-    @Test("a restart the owner asks for before promotion is not a failed start, with two failed starts before it")
-    func requestedRestartIsNotAFailedStart() async throws {
+    @Test("a restart the owner or the provider asks for before promotion is not a failed start, with two before it",
+          arguments: [ProviderRunMarker.ExitCause.lifecycleCommand, .update, .stallRestart], [false, true])
+    func requestedRestartIsNotAFailedStart(stop: ProviderRunMarker.ExitCause,
+                                           recordedByTheNewProcess: Bool) async throws {
         let context = try await installedCandidate()
         defer { context.fixture.cleanup() }
         defer { Task { await context.mock.shutdown() } }
         try setFailedStarts(2, context)
         let restartsBefore = context.restarts.value
-        let watchdog = watchdogAfterRequestedRestart(context)
+        let watchdog = watchdogAfterRestart(
+            context, runMarker: Self.runMarker(replacedEnded: stop, recordedByTheNewProcess: recordedByTheNewProcess))
 
         #expect(await healthyTick(watchdog, daemonState: Self.replacedProcessState, now: 521) == .stabilizing(since: nil))
         var outcomes: [WatchdogRecoveryService.HealthOutcome] = []
@@ -455,7 +478,8 @@ struct WatchdogRecoveryIntegrationTests {
         let context = try await installedCandidate()
         defer { context.fixture.cleanup() }
         defer { Task { await context.mock.shutdown() } }
-        let watchdog = watchdogAfterRequestedRestart(context)
+        let watchdog = watchdogAfterRestart(
+            context, runMarker: Self.runMarker(replacedEnded: .lifecycleCommand, recordedByTheNewProcess: true))
 
         for now in [521.0, 580, 700, 819] {
             #expect(watchdog.observeHealthyProvider(providerRunning: true, daemonState: Self.replacedProcessState, now: now)
@@ -479,7 +503,7 @@ struct WatchdogRecoveryIntegrationTests {
         defer { context.fixture.cleanup() }
         defer { Task { await context.mock.shutdown() } }
         let restartsBefore = context.restarts.value
-        let watchdog = watchdogAfterRequestedRestart(context, candidateStartupTimeoutSeconds: window)
+        let watchdog = watchdogAfterRestart(context, candidateStartupTimeoutSeconds: window)
 
         let outcome = await watchdog.recoverDownProvider(autoUpdateEnabled: false, providerProcessAlive: true, now: 900)
         #expect(outcome == .retryBackoff(until: 1_120, reason: "candidate still within startup window"))
@@ -494,7 +518,7 @@ struct WatchdogRecoveryIntegrationTests {
         defer { context.fixture.cleanup() }
         defer { Task { await context.mock.shutdown() } }
         try setFailedStarts(2, context)
-        let watchdog = watchdogAfterRequestedRestart(context, crashed: true)
+        let watchdog = watchdogAfterRestart(context, crashed: true)
 
         let outcome = await watchdog.recoverDownProvider(autoUpdateEnabled: false, providerProcessAlive: false, now: 900)
         #expect(outcome == .restartIssued(updatedTo: nil, rolledBackTo: "1.0.0"))
@@ -574,6 +598,35 @@ struct WatchdogRecoveryIntegrationTests {
         #expect(outcome == .restartIssued(updatedTo: nil, rolledBackTo: nil))
         #expect(try recoveryStore(context.fixture).loadState().candidate?.failureCount == 1)
         #expect(context.restarts.value == restartsBefore + 1)
+    }
+
+    /// 7 minutes after an update the provider ends with no stop on request: a crash, a SIGKILL or a hang leaves its
+    /// record `running`, and a SIGTERM from outside the CLI (a logout, a reboot, a script's `kill`, a `launchctl
+    /// kickstart -k`) records `shutdown`. Something starts pid 4343 at 520 s (a script, the login, the owner), and the
+    /// watchdog's first check reads the ended process's daemon state. The window stays the attempt's, before or after
+    /// the new process replaced the record: a failed start, and with two before it a rollback.
+    @Test("a newer process after a stop nobody asked for has no window of its own: a failed start; the third rolls back",
+          arguments: [ProviderRunMarker.ExitCause?.none, .shutdown], [false, true])
+    func stopNobodyAskedForIsAFailedStart(stop: ProviderRunMarker.ExitCause?,
+                                          recordedByTheNewProcess: Bool) async throws {
+        let context = try await installedCandidate()
+        defer { context.fixture.cleanup() }
+        defer { Task { await context.mock.shutdown() } }
+        try setFailedStarts(2, context)
+        let watchdog = watchdogAfterRestart(
+            context, runMarker: Self.runMarker(replacedEnded: stop, recordedByTheNewProcess: recordedByTheNewProcess))
+
+        let health = watchdog.observeHealthyProvider(providerRunning: true, daemonState: Self.replacedProcessState,
+                                                     now: 521)
+        guard case .inactiveCandidate(let launchedAt) = health else {
+            Issue.record("expected a failed start, got \(health)")
+            return
+        }
+        #expect(launchedAt >= 100 && launchedAt < 101, "timed from the update's launch")
+        let outcome = await watchdog.recoverDownProvider(autoUpdateEnabled: false, providerProcessAlive: true, now: 521)
+        #expect(outcome == .restartIssued(updatedTo: nil, rolledBackTo: "1.0.0"))
+        let state = try recoveryStore(context.fixture).loadState()
+        #expect(state.quarantine?.version == "2.0.0" && state.quarantine?.failureCount == 3)
     }
 
     // MARK: - Restarts that keep a release from promotion
@@ -1905,6 +1958,7 @@ struct WatchdogRecoveryIntegrationTests {
         isPastTickDeadline: @escaping @Sendable () -> Bool = { false },
         launchSnapshot: @escaping @Sendable () -> ProviderLaunchSnapshot? = { nil },
         processAlive: @escaping @Sendable (Int32) -> Bool = { _ in true },
+        runMarker: @escaping @Sendable () -> ProviderRunMarker.Record? = { nil },
         log: @escaping @Sendable (String) -> Void = { _ in }
     ) -> WatchdogRecoveryService {
         WatchdogRecoveryService(
@@ -1919,6 +1973,7 @@ struct WatchdogRecoveryIntegrationTests {
                 launchSnapshot: launchSnapshot,
                 processAlive: processAlive,
                 isPastTickDeadline: isPastTickDeadline,
+                providerRunMarker: runMarker,
                 log: log
             ),
             stabilizationSeconds: stabilizationSeconds,

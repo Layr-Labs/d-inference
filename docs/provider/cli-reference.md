@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-10
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -1686,16 +1686,34 @@ Until an installed release is promoted (600 s of fresh heartbeats of it from one
 provider process), the watchdog counts a failed start for a crash (the job
 loaded and the provider gone through the restart grace) and for a provider that
 sends no heartbeat of the release within its startup window,
-`max(300, startup_preload_timeout_secs + 180)` s. The window runs from the later
-of the release's launch and the start of the process launchd runs
-(`WatchdogRecoveryService.startupWindowStart`), so a restart you ask for
-(`darkbloom restart`, `start`, `stop` then `start`), a login or a reboot gives
-the new process the whole window: the restart itself is never a failed start,
-but the new process still is one if it sends no heartbeat within it. Three failed
-starts restore the kept release and quarantine the new one
+`max(300, startup_preload_timeout_secs + 180)` s. The window runs from the
+release's launch, or from the start of the process launchd runs when the
+process it replaced stopped on request
+(`WatchdogRecoveryService.startupWindowStart`). Before it exits, a provider
+records in `provider-run.json` (beside the daemon state) that `darkbloom stop`
+or `restart` stopped it (`lifecycle_command`), or that it restarted itself into
+an update or out of a stalled App Attest call (`update`, `stall_restart`); the
+next provider keeps that in its own record (`previous_exit_cause`). So
+`darkbloom restart`, or `stop` then `start`, gives the new process the whole
+window: the restart itself is never a failed start, but the new process still
+is one if it sends no heartbeat within it. After a crash, a hang, a power loss
+or any other stop (a reboot, a logout, a `kill`, a `launchctl kickstart -k`:
+these record `shutdown`, or nothing), the window stays the launch's, whatever
+started the provider again. Three failed starts restore the kept release and
+quarantine the new one
 (`UpdateRecoveryState.rollbackThreshold`). On a `darkbloom cluster` Mac its
 cluster service supervisor counts them instead
 ([a rollback on one Mac](./cluster-always-on.md#a-rollback-on-one-mac)).
+
+A release restarted more often than every 600 s is never promoted, and a restart
+on request is no failed start, so it stays pending. The watchdog counts each
+provider process that sends a healthy heartbeat of it after an earlier one did
+(`UpdateRecoveryState.countCandidateRestart`) and, at 5, 10, 20, 40… restarts,
+logs in `~/.darkbloom/watchdog.log`:
+
+```text
+warning: v0.10.12 restarted 5 times before its promotion: a release is promoted only once one process has served it for 600 s. Something may be restarting the provider: a script, a cron job or a login item
+```
 
 `--rollback` cannot be combined with `--check-only`, `--override-quarantine` or
 `--coordinator`, and `--yes` applies only to it. It prints the plan (installed
@@ -3705,7 +3723,7 @@ qualification or performance. Sources:
 | KV-backend crash-loop guard | `~/.darkbloom/kv-backend-guard.json` (`DARKBLOOM_KV_BACKEND_GUARD`) | `provider-swift/Sources/ProviderCore/Service/KVBackendGuard.swift` |
 | App Attest stall restart marker | `app-attest-stall-restart.json` beside the daemon state file, `0600`; time of the last automatic App Attest restart, for a stalled DeviceCheck call or for `is_supported_false` ([limits](../reference/app-attest-shadow.md#bounds-and-credential-lifecycle)) | `provider-swift/Sources/ProviderAppAttest/AppAttestStallRestart.swift` (`AppAttestStallRestartMarker`) |
 | App Attest verified marker | `app-attest-verified.json` beside the daemon state file, `0600`; time of the last coordinator App Attest authorization, rewritten at most once per hour. When it is missing at serve start, it is seeded once from the previous daemon state (the last Apple success of an attested key, or an App Attest grant left by an unclean exit), with evidence from the last 7 days. It only allows the `is_supported_false` restart; it never authorizes serving | `provider-swift/Sources/ProviderAppAttest/AppAttestStallRestart.swift` (`AppAttestVerifiedMarker`) |
-| Provider run marker | `provider-run.json` beside the daemon state file, `0600`. Set to `running` when a serve process starts and to `clean` (with cause) after its drain or before an update/stall relaunch. Explicit update/stall relaunch causes survive later generic termination callbacks; a failed hand-off restores running state and clears the cause. The next process derives `previous_exit` and `start_reason` from it | `provider-swift/Sources/ProviderCore/Service/ProviderRunMarker.swift`, `ProviderProcessRun.swift` |
+| Provider run marker | `provider-run.json` beside the daemon state file, `0600`. Set to `running` when a serve process starts and to `clean` (with cause) after its drain or before an update/stall relaunch. Explicit update/stall relaunch causes survive later generic termination callbacks; a failed hand-off restores running state and clears the cause. The next process derives `previous_exit` and `start_reason` from it, and keeps the previous process's clean-stop cause in its own record (`previous_exit_cause`). The watchdog reads it to time a pending release's startup window ([`darkbloom update`](#darkbloom-update)) | `provider-swift/Sources/ProviderCore/Service/ProviderRunMarker.swift`, `ProviderProcessRun.swift` |
 | APNs push history | `apns-push-history.json` beside the daemon state file, `0600`. The last 50 code-identity push receipt times and reply times, plus whether a device token was present. No token, nonce or payload | `provider-swift/Sources/ProviderCore/Apns/APNsPushHistory.swift` |
 | Provider LaunchAgent | label `io.darkbloom.provider`; `~/Library/LaunchAgents/io.darkbloom.provider.plist`; `RunAtLoad = true`, `KeepAlive = false`; stdout/stderr → `~/.darkbloom/provider.log` | `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift` (`label`, `plistPath`, `logPath`) |
 | Watchdog LaunchAgent | label `io.darkbloom.watchdog`; `~/Library/LaunchAgents/io.darkbloom.watchdog.plist`; log `~/.darkbloom/watchdog.log` | `provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift` |

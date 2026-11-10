@@ -3,8 +3,9 @@ import ProviderAppAttest
 
 /// `provider-run.json` beside the daemon state file (0600). Written `running`
 /// when a serve process starts and `clean` when it finishes its drain or
-/// hands off to a relaunch, so the next process can tell a clean stop from a
-/// crash, SIGKILL, jetsam, power loss or a reboot without a drain.
+/// hands off to a relaunch, so the next process, and the watchdog
+/// (`WatchdogRecoveryService.startupWindowStart`), can tell a clean stop from
+/// a crash, SIGKILL, jetsam, power loss or a reboot without a drain.
 public struct ProviderRunMarker: Sendable {
     public static let fileName = "provider-run.json"
 
@@ -29,15 +30,21 @@ public struct ProviderRunMarker: Sendable {
         /// What this run itself reported as `previous_exit`, so an in-place
         /// exec (same kernel process, new image) keeps the real answer.
         public var previousExit: AppAttestPreviousExit?
+        /// The `exit_cause` of the run before this one when that run stopped
+        /// cleanly, so the watchdog still knows why it stopped once this run
+        /// has replaced its record (`previousExitCause(_:processStartMicros:)`).
+        public var previousExitCause: ExitCause?
 
         public init(state: State, processStartMicros: UInt64?, version: String?, exitCause: ExitCause? = nil,
-                    exitedAt: Double? = nil, previousExit: AppAttestPreviousExit? = nil) {
+                    exitedAt: Double? = nil, previousExit: AppAttestPreviousExit? = nil,
+                    previousExitCause: ExitCause? = nil) {
             self.state = state
             self.processStartMicros = processStartMicros
             self.version = version
             self.exitCause = exitCause
             self.exitedAt = exitedAt
             self.previousExit = previousExit
+            self.previousExitCause = previousExitCause
         }
 
         enum CodingKeys: String, CodingKey {
@@ -46,6 +53,7 @@ public struct ProviderRunMarker: Sendable {
             case exitCause = "exit_cause"
             case exitedAt = "exited_at"
             case previousExit = "previous_exit"
+            case previousExitCause = "previous_exit_cause"
         }
     }
 
@@ -59,8 +67,10 @@ public struct ProviderRunMarker: Sendable {
         OwnerOnlyFile.read(url).flatMap { try? JSONDecoder().decode(Record.self, from: $0) }
     }
 
-    public func markRunning(processStartMicros: UInt64?, version: String, previousExit: AppAttestPreviousExit?) throws {
-        try write(Record(state: .running, processStartMicros: processStartMicros, version: version, previousExit: previousExit))
+    public func markRunning(processStartMicros: UInt64?, version: String, previousExit: AppAttestPreviousExit?,
+                            previousExitCause: ExitCause? = nil) throws {
+        try write(Record(state: .running, processStartMicros: processStartMicros, version: version,
+                         previousExit: previousExit, previousExitCause: previousExitCause))
     }
 
     /// Only the process that wrote `running` may mark it clean; a stale
@@ -89,5 +99,17 @@ public struct ProviderRunMarker: Sendable {
         case .running: return .unclean
         case nil: return .unknown
         }
+    }
+
+    /// Pure: why the previous process stopped when it stopped cleanly, from the
+    /// marker read before this process overwrote it or after (the record this
+    /// process wrote keeps it, as an in-place exec does). Nil after a crash,
+    /// SIGKILL, hang or power loss, or without a record.
+    public static func previousExitCause(_ record: Record?, processStartMicros: UInt64?) -> ExitCause? {
+        guard let record else { return nil }
+        if let processStartMicros, record.processStartMicros == processStartMicros {
+            return record.previousExitCause
+        }
+        return record.state == .clean ? record.exitCause : nil
     }
 }

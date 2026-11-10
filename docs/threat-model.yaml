@@ -1968,14 +1968,23 @@ threats:
       - description: >
           A restart or clean stop the owner asks for does not count toward the
           rollback threshold, so it never rolls a working release back. The watchdog
-          times a candidate's startup window from the later of its launch and
-          the start of the process launchd runs: a `darkbloom restart`, `start`,
-          `stop` then `start`, login or reboot gives the new process the whole
-          window, never a shorter one, while a crash or a process that sends no
-          heartbeat within its own window still counts. A pair's supervisor does
-          not count a clean stop (exit 0) of the candidate's cluster service that
-          it did not ask for, and still counts a crash, an error exit, a stop by
-          its liveness guard and a failed start check.
+          times a candidate's startup window from its launch, or from the start
+          of the process launchd runs when the process it replaced recorded a stop
+          on request in `provider-run.json` before it exited: `darkbloom stop` or
+          `restart` (`lifecycle_command`), or its own relaunch into an update or
+          out of a stalled App Attest call. A crash, hang, SIGKILL or power loss
+          leaves that record `running`, and any other SIGTERM (a reboot, a logout,
+          a `kill`) records `shutdown`: the window stays the launch's whoever
+          started the provider again, so a release that crashes or hangs the Mac
+          is still rolled back at its third failed start. A process that dies
+          before it records its start leaves the previous record in place; such a
+          release is still charged when it is found down, as before. An unpromoted
+          release restarted more often than its 600 s stabilization is never
+          promoted; the watchdog logs a warning from its fifth restart. A pair's
+          supervisor does not count a clean stop (exit 0) of the candidate's
+          cluster service that it did not ask for, and still counts a crash, an
+          error exit, a stop by its liveness guard and a failed start check; the
+          service exits 0 only after a stop signal today.
         status: implemented
       - description: >
           Bounded watchdog network I/O (URLSession request/resource timeouts)

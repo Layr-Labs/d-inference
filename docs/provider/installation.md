@@ -1,6 +1,6 @@
 # Install, update, and uninstall the provider
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-10
 
 How to put the `darkbloom` CLI on an Apple Silicon Mac with `scripts/install.sh`,
 what the script verifies before it touches an existing install, how the binary
@@ -291,11 +291,17 @@ a candidate that remains running without a heartbeat
 (`provider-swift/Sources/ProviderCore/Service/WatchdogRecoveryService.swift`,
 `observeHealthyProvider`).
 
-A restart you ask for before the release is promoted (`darkbloom restart`,
-`start`, `stop` then `start`), a login or a reboot is never a failed start: the
-startup timeout runs from the start of the process launchd runs when that is
-later than the release's launch (`startupWindowStart`). A crash, or a restarted
-process that sends no heartbeat within its own window, still counts.
+A restart you ask for before the release is promoted (`darkbloom restart`, or
+`stop` then `start`) is never a failed start: the stopped provider records in
+`provider-run.json` that it was asked to stop, and the startup timeout then runs
+from the start of the next process launchd runs (`startupWindowStart`). The
+provider's own restart into an update counts the same way. After a crash, a
+hang, a reboot, a `kill` or any other stop, the timeout still runs from the
+release's launch, whatever started the provider again; a restarted process that
+sends no heartbeat within its own window still counts too. A release restarted
+more often than every 10 minutes is never promoted: from the fifth restart the
+watchdog logs a warning in `~/.darkbloom/watchdog.log`
+([`darkbloom update`](./cli-reference.md#darkbloom-update)).
 
 The unprivileged updater never touches the root fan helper; after an update run
 `sudo darkbloom fan enable` again if you use [fan control](./fan-control.md).

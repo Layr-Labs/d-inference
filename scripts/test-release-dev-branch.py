@@ -119,22 +119,34 @@ class ReleaseDevBranchCallerTests(unittest.TestCase):
         self.assertEqual(push_paths(self.text), expected)
 
     def test_the_only_job_is_the_guarded_call_of_the_reusable_workflow(self):
-        self.assertEqual(set(self.jobs), {"dev"})
+        # Besides the call, only the route job, which asks Darkbloom for a
+        # sandbox for each SDK qualification shard: no secret, no permission
+        # (scripts/test-darkbloom-route.py pins its lanes and their reader).
+        self.assertEqual(set(self.jobs), {"route", "dev"})
+        route = self.jobs["route"]
+        self.assertIn(DEV_GUARD, route)
+        self.assertEqual(re.findall(r"(?m)^    uses: (.+)$", route), ["./.github/workflows/darkbloom-route.yml"])
+        self.assertIn("\n    permissions: {}\n", route)
+        self.assertNotIn("secrets", route)
         job = self.jobs["dev"]
-        self.assertIn(DEV_GUARD, job)
+        # The same guard, and still run when the route job failed: without
+        # routes every shard keeps Blacksmith.
+        self.assertIn("    if: ${{ !cancelled() && github.ref == 'refs/heads/dev' }}\n", job)
         self.assertEqual(len(re.findall(r"(?m)^    if:", job)), 1)
         # A local path: the reusable workflow of the pushed commit, no @ref.
         self.assertEqual(re.findall(r"(?m)^    uses: (.+)$", job),
                          ["./.github/workflows/release-provider.yml"])
-        # Exactly one input, environment dev; the version, resume and
+        # Environment dev and the route job's routes; the version, resume and
         # validation inputs keep their defaults.
         with_block = job.split("\n    with:\n", 1)[1]
         with_block = re.split(r"(?m)^    [a-z]", with_block, maxsplit=1)[0]
         self.assertEqual(re.findall(r"(?m)^      ([a-z_]+): (.+)$", with_block),
-                         [("environment", "dev")])
+                         [("environment", "dev"), ("routes", "${{ needs.route.outputs.routes }}")])
+        # The call waits for the route job and runs even when it failed.
         self.assertEqual(
             [key for key in re.findall(r"(?m)^    ([a-z_-]+):", without_comments(job))],
-            ["if", "permissions", "uses", "with", "secrets"])
+            ["needs", "if", "permissions", "uses", "with", "secrets"])
+        self.assertIn("\n    needs: route\n", job)
         self.assertIn("\n    secrets: inherit\n", job)
         # The caller grants exactly what the reusable workflow declares.
         self.assertIn("\n    permissions:\n      contents: write\n      actions: read\n", job)

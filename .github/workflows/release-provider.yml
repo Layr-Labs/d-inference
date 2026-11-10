@@ -98,6 +98,14 @@ on:
         required: false
         type: boolean
         default: false
+      routes:
+        description: >-
+          Optional routes of darkbloom-route.yml: a JSON object that maps
+          qualify-sdk-<shard> to that shard's runs-on value. Read only when the
+          environment is dev; empty keeps every job on Blacksmith
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: write   # gh release create
@@ -262,7 +270,13 @@ jobs:
     name: Qualify provider with SDK 27 (shard ${{ matrix.shard }})
     needs: resolve-env
     if: needs.resolve-env.outputs.resume != 'true'
-    runs-on: blacksmith-12vcpu-macos-27
+    # The only job a caller's route can move: it reads no secret, holds a
+    # read-only token and builds its own test products, and no later job
+    # signs or publishes anything it made. Only the dev lane routes it, each
+    # shard on a lane of its own; staging, prod and a run without routes keep
+    # Blacksmith. The source gate, the build whose bytes are signed, and every
+    # job after it keep literal Blacksmith runners.
+    runs-on: ${{ inputs.environment == 'dev' && fromJSON(inputs.routes || '{}')[format('qualify-sdk-{0}', matrix.shard)] || 'blacksmith-12vcpu-macos-27' }}
     timeout-minutes: 60
     permissions:
       contents: read

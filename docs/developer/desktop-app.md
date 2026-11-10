@@ -1,6 +1,6 @@
 # Build and validate the macOS desktop app
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-09
 
 Build the Electron frontend and its Swift CLI/backend API in this repository.
 This guide covers development and review artifacts; production distribution also
@@ -161,7 +161,8 @@ The local build is for desktop review, not a qualified provider release.
 
 ## Verify
 
-The primary sidebar contains Home, My Macs, Leaderboard, and Updates. The current
+The primary sidebar contains Home, Chat, My Macs, Clusters, Sandboxes,
+Leaderboard, Updates and Early access. The current
 Mac's detail workspace uses Overview, Models, Cooling, Stats, and Settings
 panels, with Studio and Earnings shortcuts;
 Home retains the Earnings entry. These pages remain implemented, not deleted.
@@ -556,6 +557,418 @@ Preview links (`?preview` plus):
 | `&autopilot=off` | Manual selection with the turn-on card |
 | `&autopilot=unsupported` | Runtime without Autopilot: manual selection with the note |
 
+## Chat
+
+Chat talks to the models this Mac's local API serves (Only me, or Both, me
+first), with the iPhone app's chat look and motion. The renderer never calls
+the local API: the main process does, and the key stays there.
+
+| Piece | Where | What it does |
+|---|---|---|
+| Contract | `desktop-app/src/shared/chat.ts` | `ChatModel(s)`, `ChatRequest`, `ChatEvent`, `ChatAPI`; `reasoningEfforts`, `chatLimits`, `validateChatRequest` |
+| Relay | `desktop-app/src/main/chat.ts` (`ChatRelay`) | IPC `chat:models`, `chat:send`, `chat:cancel`; streams `chat:event` |
+| Page | `desktop-app/src/renderer/features/chat/` | `Chat.tsx` (layout, pickers, states), `store.ts` (chats and live answers), `storage.ts`, `text.ts`, `Hero.tsx`, `Indicators.tsx`, `Messages.tsx`, `Composer.tsx`, `ChatList.tsx`, `chat.module.css` |
+| Preview | `desktop-app/src/renderer/preview/chat.ts` | `previewChatAPI`, `chatPreview` |
+
+`ChatRelay` calls only `Snapshot.endpoint.base_url`, and only when it is plain
+`http` on `127.0.0.1`, `localhost` or `[::1]` (`loopbackBase`). With no
+endpoint, `models()` answers `code: 'no_endpoint'`; anything else that stops
+the list is `code: 'unavailable'` with the local API's own message. When the
+endpoint is `authenticated` it reads the key per request through the
+`endpoint-key` resource and sends it as a bearer token; no event or result
+carries it.
+
+- **Models.** `GET <base>/models` (5 s) is the local router's list
+  ([direct mode](../provider/direct-mode.md#when-this-mac-cant-take-a-request-the-local-router)).
+  `parseModelList` keeps `owned_by` (`this-mac`, `my-macs`, `darkbloom`),
+  `context_length` (or `max_model_len`), `max_output_length` and
+  `input_modalities`. `reasoning` is true when `supported_features` lists
+  `reasoning`, and such a model takes all seven
+  [reasoning efforts](../provider/direct-mode.md#reasoning-effort)
+  (`reasoning_efforts`). A model the list doesn't name gets this Mac's
+  `display_name`.
+- **Answers.** `send` refuses more than 200 messages or 400,000 characters,
+  roles other than `system`, `user` and `assistant`, and an effort outside the
+  seven. It then POSTs `<base>/chat/completions` with `stream: true`,
+  `stream_options.include_usage` and the chosen `reasoning_effort`. Each chunk
+  becomes `reasoning` (from `reasoning_content`, else `reasoning`: the local
+  API sends the same text in both), `content`, then `done` with the finish
+  reason and usage. A refused request (such as the 503 when this Mac's memory
+  can't hold it) or the mid-answer failure frame becomes `error` with the
+  local API's own message (`apiErrorMessage`, `parseChatData`).
+- **Streams.** At most two stream at once. A stream may wait 10 minutes for its
+  head (a cold load, then the engine's 120 s admission) and 5 minutes between
+  chunks. `cancel` ends one with `done` and `finish_reason: 'cancelled'`;
+  `reset` (the window navigates or its renderer goes) ends all of them without
+  another event.
+
+The page keeps chats in `localStorage` (`darkbloom.chat.conversations`): at
+most 200 chats and 1,500,000 characters, newest first; a full storage halves
+the room and tries again. Every read and write is guarded, so a storage that
+throws leaves chat working for the session. The last model, effort, speed line
+and chat list state are kept under `darkbloom.chat.*`. `ChatStore` lives
+outside React, so an answer keeps streaming while another page is shown; its
+text reaches the screen once a frame. A request carries the newest messages
+that fit the limits, without answers that failed.
+
+| iPhone app (`darkbloom-ios-redesign`) | Here |
+|---|---|
+| `LaunchHero`, `TileField`, `ExtrudedMark`, `Tagline` | `Hero.tsx`, `launchIndex` and `launchTagline` in `text.ts`: the bloom, the tile canvas at 20 fps, the mark from `landing/public/footer-logo.svg`'s three paths turning toward the pointer, one line per launch in serif italic; behind messages it recedes. Lines that say your words stay on this Mac show only while `Snapshot.local` keeps every request here (`route` `this-mac`, or no route and no account key: `staysOnThisMac`); otherwise, and on a runtime that doesn't say, the lines that claim nothing about it take their turn |
+| `PixelLoader`, `SweepText`, `InkTail` | `Indicators.tsx`: CSS keyframes for the 1.8 s diagonal wave and the 2.6 s band; the newest 28 characters of a streaming answer as faint spans |
+| `MessageRows`, `ReasoningDisclosure` | `Messages.tsx`: your words in a blue-tinted slab, replies as text with fenced code blocks, "Thinking N s" then "Thought for N s" |
+| `Composer`, `LiveLine` | `Composer.tsx`, the Show speed line in `Chat.tsx` |
+| `Motion`, `PressableStyle` | `chat.module.css`: `cubic-bezier(.16, .84, .28, 1)`, no bounce, press scale 0.96 |
+
+Colors are the app's tokens, so Light, Dark and System follow
+`styles/theme.css`. With reduced motion the tiles hold one frame, the mark
+doesn't tilt, streamed text is full ink at once, and every CSS animation is
+off. Chats restored from storage, or opened from the list, never settle in;
+only messages written while the page is open do. The page fills the workspace:
+`chat.module.css` styles the `chat-page` class `App.tsx` gives `<main>` and
+hides the page footer there.
+
+Preview links (`?preview` plus):
+
+| Query | Shows |
+|---|---|
+| none | GPT-OSS 20B (reasons, every effort), Qwen3-VL 30B (doesn't reason) and Gemma 4 26B (your Macs); canned answers with reasoning and a code block at about 55 and 42 tokens a second |
+| `&chat=no_endpoint` | No local API: the line and **Open Studio** (the snapshot has no endpoint) |
+| `&chat=unavailable` | The local API doesn't answer: the message and **Try again** |
+| `&chat=fail` | Each answer refused with the busy Mac's 503 message |
+
+`chatRelay.test.ts` runs the relay against a local HTTP server (loopback
+only, key handling, parsing, refusals, cancel, reset, limits);
+`chatStore.test.ts`, `chatText.test.ts`, `chatPage.test.tsx`,
+`chatPreview.test.ts` and `chatApp.test.tsx` cover the page, storage, the
+preview and the route.
+
+## Clusters
+
+Clusters sets up a two-Mac pair, chooses its model and how it serves, and runs
+it, with `darkbloom cluster`'s own steps and words
+(`desktop-app/src/renderer/features/cluster/`; for users:
+[Two Macs as one provider](../provider/two-mac-cluster.md)).
+
+- **Capabilities.** The page needs `cluster` (the `cluster` resource,
+  `cluster_leave`, `start` with `solo`); without it, one line, "Clusters need a
+  newer Darkbloom CLI.", and **Updates**. The guided setup needs
+  `cluster_session`; without it, the page names the Terminal commands instead
+  (`darkbloom cluster`, `darkbloom cluster local`), each with Copy.
+- **Reading.** The `cluster` resource is
+  [`darkbloom cluster status --json`](../provider/cli-reference.md#darkbloom-cluster-status)
+  (`ClusterStatus` in `desktop-app/src/shared/cluster.ts`), read while the page
+  is shown (`useResource`): on `resource_revision`, when the window becomes
+  visible, on **Refresh** and after each action. On the Mac that follows it can
+  take 10 s; meanwhile the page names the pair from `Snapshot.pair`. A status
+  the API couldn't read (`error`) shows "Couldn’t read the pair." with the API's
+  words. A state this app doesn't know reads as Unknown, with the runtime's
+  `reason` and `next`.
+- **Not paired.** Two Macs joined by a cable, what a pair needs (two Apple
+  silicon Macs, a Thunderbolt cable, Darkbloom on both), the compact cluster
+  waitlist notice (`WaitlistCard` with `compact`), **Set up a pair** (session
+  `setup`) while the waitlist is open, and **Serve on my own Macs only** (session
+  `local`), which needs no approval. On a runtime without `waitlists`, **Set up
+  a pair** is offered and the CLI's
+  [waitlist gate](../provider/cli-reference.md#the-cluster-waitlist-gate) checks
+  first.
+- **Paired** (`PairStatus.tsx`). Both Macs (this Mac by its name, the other by
+  the hardware name pairing showed, which one leads, whether the other
+  answers), the model with its mode as a tag and the split as a bar, how the
+  pair serves (`serves`; Both, me first from its `Serves:` line, "not offered"
+  when that line says so), the state with `reason` and `next` verbatim, commands
+  in `<code>`, the cluster service, and the status lines under **Details**. The
+  actions follow the state (`status.ts`, `pairActions`):
+
+  | Action | Offered | Sends |
+  |---|---|---|
+  | **Start serving** | stopped, unknown | `{ action: 'start', models: [] }` |
+  | **Stop serving** | serving, loading, not serving, other Mac away, unknown | `{ action: 'stop' }` |
+  | **Restart serving** | serving, not serving | `{ action: 'restart' }` |
+  | **Change model or how it serves** | the Mac that leads (on the Mac that follows: "The other Mac leads: choose the model there.") | session `setup` |
+  | **Check the pairing** | a pairing record that can't be read | session `setup` |
+  | **Serve this Mac alone** | every paired state, after a confirm that says the pair stops serving and picks this Mac's downloaded models (catalog models unless Only me is saved) | `{ action: 'stop' }` unless the pair is stopped (the CLI refuses `--solo` while the pair runs here), then `{ action: 'start', models, solo: true }` with the saved mode's flag (`local`, `endpoint` or `network`) (`PairStatus.serveAlone`) |
+  | **Leave the pair** | a readable pairing, after a confirm in `darkbloom cluster leave`'s words | `{ action: 'cluster_leave' }` |
+
+  On a paired Mac, start, stop and restart act on the pair. Each waits for its
+  operation (`backend.act(action, true)`), then reads the status again.
+- **The relay** (`desktop-app/src/main/clusterSession.ts`,
+  `ClusterSessionRelay`). `current()` reads `cluster/session` (JSON `null` when
+  none ran), `start()` posts a `ClusterSessionStart` rebuilt from checked fields
+  (`sessionStart`: kind `setup` or `local`; for `local` only, a model matching
+  `^[A-Za-z0-9._/-]{1,256}$` without `..` or a leading `-` or `/`, and a bind of
+  `localhost` or a numeric IPv4 or IPv6 address), and `answer()` posts a choice,
+  a key or cancel (`sessionAnswer`). Replies are checked (`isClusterSession`)
+  before they reach the renderer. While the renderer watches, one
+  reference-counted stream of `cluster/session/events`
+  (`Backend.openClusterSessionEvents`) publishes each `event: cluster-session`
+  frame's session. It opens again when it ends or says nothing for 120 s, waits
+  longer after each failure (2 s, doubling to 30 s), drops a stream over 4 MB,
+  and on opening publishes the current session unless a frame came first.
+- **The session** (`useClusterSession.ts`). Opening the page restores a running
+  session (`clusterSession()` and `onClusterSession`; a streamed session wins
+  over the first read). While a session runs and its stream is silent for 5 s,
+  the page reads it every 3 s. The page shows a session from when it runs until
+  **Done**; one cancelled from the page ends at once. A failed session offers
+  **Run again**.
+- **The screen** (`transcript.ts`, `Wizard.tsx`, `Question.tsx`). The banner is
+  the title. Headings are steps; a numbered one ("2/4 Pair") drives the step
+  meter, and finished steps fold to their title. Said lines keep the CLI's
+  order, with ✓ and ✗ as marks. "Run `…`" lines are the one thing to do, with
+  Copy. "Label:   value" rows and command rows read as a table. `working` rows
+  each have a spinner, and a bar when a row carries a percentage. `progress` is
+  a bar when it carries one. `result` is a ✓ or ✗ card. `needs_terminal` is a
+  notice with its command to copy. An event type this app doesn't know is
+  skipped.
+- **Questions.** The question's own lines (the last said lines, from the one
+  that asks, with a pairing code just above it) move into the question card: a
+  pairing code ("Pairing code:  482 913", "Code 482 913. Same on the other
+  Mac?") is shown large, with its question as the card's heading. `choose` is a
+  list of option cards: ↑↓ (or ←→), Home and End move, Enter takes, and the
+  default starts selected and focused. An option's first row is its title and
+  the rest its detail. Its " · " markers show as tags: the split ("tensor
+  parallel", "pipeline"), "serving now", "last used" or "recommended", and
+  "does not fit now" or "not enough free disk". The option a list took shows
+  under its question (the CLI's "▸" line). `key` is one button per key,
+  labelled from `keys`, except a key labelled Cancel: the setup's own
+  **Cancel** does that. A terminal's key hints in live rows ("(q cancels)",
+  "q leaves") are left out. **Cancel** sends `{ cancel: true }`. While the
+  pairing step runs and hasn't said "Paired", it asks first ("Stop
+  pairing?").
+- **This Mac's overview.** With `Snapshot.pair` set, the pair in one line
+  (`PairCard.tsx`) and a link to Clusters.
+
+Preview links (`?preview` plus):
+
+| Query | Shows |
+|---|---|
+| none, `&cluster=not_paired` | No pair, Clusters approved. **Set up a pair** plays the leading Mac's setup |
+| `&cluster=serving`, `loading`, `not_serving`, `stopped`, `away`, `unreadable` | That state, on the Mac that leads |
+| `&cluster=error` | A status the API couldn't read |
+| `&cluster=unsupported` | A runtime from before clusters |
+| `&cluster-role=member` | The Mac that follows (its status takes 1.6 s). Its setup plays the joining Mac |
+| `&waitlist-cluster=waitlisted` (and the other standings) | Where the account stands on the cluster waitlist |
+
+The scripted setup (`desktop-app/src/renderer/preview/clusterSession.ts`) uses
+the CLI's own lines and keeps them as the desktop API does (live work only as
+the last event, each list's answer as a "▸" line). On the Mac that leads it
+checks the cable, says "Run `darkbloom cluster` on the other Mac." and waits
+(the other Mac shows up after 5 s), then shows the code 482 913 with Yes and
+No, asks how the
+pair serves (Only me, Darkbloom network, Both, me first), and lists the models
+(one tensor parallel, one downloaded with the mode question, one copied, one
+that doesn't fit). Then it shows copy and download bars, each Mac's loading
+row, and the ✓ card, and the status reads serving. The joining Mac follows the
+leading Mac's start. On a set-up pair, **Change model or how it serves** plays
+the list with "serving now", **Change how the pair serves** and **Start over**.
+`Snapshot.pair` follows a finished setup at once (`previewClusterSession.start`
+takes the preview's store). Tests: `tests/cluster*.test.ts(x)`.
+
+Two of those tests run on what the real runtime printed:
+
+- `tests/clusterLiveStatus.test.tsx` renders `cluster status --json` exactly as a
+  live pair serving in tensor parallel printed it
+  (`tests/fixtures/cluster-status-live-serving.json`; only this Mac's name is
+  replaced). Its `split` names the Macs without shares, so the page says it as
+  text rather than as a bar.
+- `tests/clusterSessionReplay.test.tsx` replays the sessions the real desktop
+  API streamed (`tests/fixtures/cluster-session-waitlist-gate.json`) and checks
+  that the page's answer is the one that API took.
+
+`scripts/test-desktop-cluster-session.py <darkbloom>` records that fixture
+(`--record FILE`) and drives the guided setup end to end: the API runs this
+build's own `cluster --app-console`, in a home of its own, against a local
+coordinator that never approves clusters. The real onboarding then stops at its
+waitlist question, before its operations exist, so no cable, pairing, service
+or network setting is read or changed; the script cancels and fails if the
+setup's screen ever opens. It checks the question, No, Yes (a join), a cancel,
+one session at a time, the mutation slot and the event stream. The stream
+samples the session every 200 ms, so the script, like a person, answers only
+once the stream has shown the question.
+
+## Sandboxes
+
+Sandboxes sets up and manages [Darkbloom Sandbox](../provider/sandboxes.md), the
+add-on that runs approved GitHub Actions jobs in Linux and macOS VMs on this
+Mac, through the same commands as
+[`darkbloom sandbox`](../provider/cli-reference.md#darkbloom-sandbox) and in
+their words (`desktop-app/src/renderer/features/sandboxes/`, contract in
+`desktop-app/src/shared/sandbox.ts`). The page reads `sandbox` with
+`useResource` on the snapshot's `resource_revision`, and again when a
+`sandbox_*` operation ends (`Sandboxes.tsx`, `useRereadAfterActions`).
+
+- **Older runtime.** Without the `sandbox` capability the page says
+  "Darkbloom Sandbox needs a newer Darkbloom CLI." with a link to Updates, and
+  reads nothing.
+- **Not set up** (`installed: false` or `not_installed`). Two lines on what it
+  is, what this Mac needs (Apple silicon and macOS 27 marked from the snapshot
+  and `system()`; the desktop session and network are checked by setup) and
+  what loses jobs (Wi-Fi, battery, sleep on the power adapter). Below macOS 27
+  it offers **Open Software Update** instead of setup. Setup is offered when
+  `useWaitlist(backend, 'sandbox')` is open (approved, or a coordinator without
+  that waitlist); otherwise the compact `WaitlistCard` says where the account
+  stands, with **Join the waitlist**, **Link account** or **Try again**. A
+  runtime without the `waitlists` capability (`unsupported`) leaves the
+  waitlist to the CLI's own check (`NotInstalled.tsx`, `SetupGate`). An
+  installed add-on that is `waitlisted` shows the same card under its status.
+- **Setup form** (`SetupForm.tsx`, `setup.ts`, `setupRequest`). Jobs at a time
+  Automatic (no slot options) or chosen (Linux 0–16, macOS 0–2, never both 0),
+  one optional work disk as an absolute path, and **Wait until images are
+  downloaded**. It sends only what was chosen.
+- **Setup running** (`SetupProgress.tsx`), from the newest `sandbox_setup`
+  operation (`latestSetup`): the installer's eight stages in the CLI's words,
+  marked from `sandbox_setup.stage` or `step`; the approval card while it waits
+  (code, **Copy code**, **Open approval page** through `openApproval` with
+  `verification_uri_complete`, else `verification_uri`; **Copy link**); the
+  waitlist note; the `background` sentence that the app can close; **Cancel**
+  when the operation is `cancellable`; the operation's `lines` under Details.
+- **Setup ended without success.** What the exit status means (`setupOutcome`):
+  `2` this Mac can't host it as it is, with the failed stage's message; `3` not
+  enrolled; `4` a job is running, so nothing changed; a stop, with whether an
+  enrollment goes on; otherwise the CLI's last line. The status is
+  `sandbox_setup.exit_status` when the runtime reports it, else the CLI's own
+  advice line (`exitStatus`). The result stays until dismissed
+  (`darkbloom.sandbox.dismissed-setup` in local storage).
+- **Installed** (`SandboxStatusCard.tsx`, `status.ts`). The headline, level and
+  line follow `SandboxStatusView` (`headline`, `explanation`): the add-on's
+  `detail` except while jobs can run, where the line says what the state means
+  for inference; an unknown state shows as its words. Free slots are meters
+  only while the agent reports (`ready`, `running`, `paused`, `updating`);
+  images show their state and download; work disks show only with an external
+  drive or more than one disk, with free GiB, slots and `detail` when not
+  online. A status the API could not read (`error`) shows **Status
+  unavailable** with **Try again** and **Repair**.
+
+| Control | Shown | Sends |
+|---|---|---|
+| **Set up** | not set up, waitlist open | `{ action: 'sandbox_setup', linux_slots?, macos_slots?, disks?, wait_ready? }` |
+| **Continue setup** | `waiting_for_approval`, `waitlisted`, `enrolling` | `{ action: 'sandbox_setup' }` |
+| **Repair** | `stopped`, `error`, status unavailable | `{ action: 'sandbox_setup' }` |
+| **Pause** (asks) | other installed states | `{ action: 'sandbox_pause' }` |
+| **Resume** | `paused` | `{ action: 'sandbox_resume' }` |
+| **Change jobs at a time** | `ready`, `running`, `paused`, `downloading_images`, `updating` with slots; **Apply** disabled while a job runs | `{ action: 'sandbox_setup', linux_slots, macos_slots }` |
+| **Logs** | installed | reads `sandbox-logs` while shown and on **Refresh** |
+| **Uninstall** (asks; running jobs end unpaid) | installed | `{ action: 'sandbox_uninstall' }` |
+| **Open console** | installed with `console_url` | `openApproval(console_url)`: the main process opens only https Darkbloom hosts (`approvalURL`) |
+
+Preview links (`?preview` plus):
+
+| Query | Shows |
+|---|---|
+| none, `&sandbox=ready` | Installed and ready: free slots, images, console |
+| `&sandbox=running`, `paused`, `downloading_images`, `stopped`, `error` | That state |
+| `&sandbox=waiting_for_approval`, `waitlisted`, `enrolling` | Installed, not yet enrolled |
+| `&sandbox=disks` | Ready, with an external work disk and one offline |
+| `&sandbox=not_installed&waitlist-sandbox=approved` | Setup; it walks the stages with an approval code (approved after 9 s) and reaches ready |
+| `&sandbox=not_installed` | The waitlist instead of setup (the preview account is waitlisted) |
+| `&sandbox-setup=waitlisted`, `cannot_host`, `not_enrolled`, `job_running` | Setup waits on the waitlist in the background, or ends with exit status 2, 3 or 4 (`job_running` with an installed state) |
+| `&sandbox=unsupported` | A runtime without the `sandbox` capability |
+
+`sandboxStatus.test.ts`, `sandboxSetup.test.ts`, `sandboxes.test.tsx`,
+`sandboxPreview.test.ts`, `sandboxApp.test.tsx` and `sandboxSecurity.test.ts`
+cover the status words, the setup model and form, the page's states and
+controls, the preview and the approval link allowlist.
+
+## Early access
+
+Early access lists every waitlist the coordinator offers, in its order, and
+where this Mac's account stands on each, as
+[`darkbloom waitlist`](../provider/cli-reference.md#darkbloom-waitlist) does
+(`desktop-app/src/renderer/features/waitlists/`). A waitlist is per account, so
+the answer is the linked account's.
+
+- **Reading.** The `waitlists` resource (`Waitlists` in
+  `desktop-app/src/shared/waitlists.ts`) is read only on a runtime with the
+  `waitlists` capability and only while a page that shows it is open. One read
+  serves every hook and card on the page (`waitlistStore.ts`). Opening a page
+  starts from loading and reads, as `useResource` does. On the page, a new
+  `resource_revision`, the window becoming visible and **Try again** read again
+  and keep the last answer on screen meanwhile. A new `account_revision`, or
+  linking or unlinking this Mac (the CLI asks with the link token), shows
+  loading until that account's answer arrives. A runtime without the capability
+  gets one line, "Early access needs a newer Darkbloom CLI.", and
+  **Open Updates**.
+- **Standing.** Each card says where the account stands in the CLI's words:
+  - not joined, with **Join the waitlist**;
+  - its place (`#<n> in line`), the day it joined and "Darkbloom reviews
+    accounts in the order they joined.";
+  - `Approved since <day>`, with **Open** for a feature that has a page here
+    (`cluster` opens Clusters, `sandbox` opens Sandboxes), or else its start
+    command to copy;
+  - `Revoked on <day>` and "Joining again doesn’t restore it.", with nothing to
+    join.
+
+  Coordinator text shows each control or format character as `�`, as the CLI
+  prints it.
+- **Join.** **Join the waitlist** sends `{ action: 'waitlist_join', feature }`
+  (`darkbloom waitlist <feature>`), then reads the list again. A refusal shows
+  under the card in the runtime's own words.
+- **Unavailable.** `code: 'login'` on an unlinked Mac offers the app's link flow:
+  **Link account**, its code and **Open link page**. A linked Mac whose link the
+  coordinator refuses shows the runtime's words and **Open Settings**, where it
+  is unlinked and linked again. `code: 'none'` says there is nothing to join.
+  Anything else shows the runtime's reason with **Try again**.
+
+Clusters and Sandboxes use the same hook and card:
+
+| Export | Use |
+|---|---|
+| `useWaitlist(backend, feature)` | `{ entry, standing, open, error, joining, join, refresh, problem, supported }`. `open` is true once approved, or when the coordinator has no waitlist for the feature; `join()` resolves `true` when it joined |
+| `WaitlistCard` (`feature`, `backend`, `compact?`, `onOpen?`) | The card. `compact` is the one-row notice above a feature's page; it shows nothing while loading or once the feature is open |
+
+Preview links (`?preview` plus):
+
+| Query | Shows |
+|---|---|
+| none | Clusters approved, Darkbloom Sandbox third in line |
+| `&waitlist-cluster=`, `&waitlist-sandbox=`, `&waitlist-labs=` (`none`, `waitlisted`, `approved`, `revoked`) | Where the account stands on that waitlist |
+| `&waitlists=more` | A third, illustrative waitlist with no page in the app: it shows its start command |
+| `&waitlists=login`, `none`, `fail` | The list unavailable for that reason |
+| `&waitlists=unsupported` | A runtime without the `waitlists` capability |
+| `&waitlist-join=fail` | Every join refused |
+
+## Local API and serving modes
+
+This Mac > Studio is the local API page (`desktop-app/src/renderer/features/Studio.tsx`,
+`Studio`; its parts in `desktop-app/src/renderer/features/studio/`). From a runtime whose
+`Snapshot.capabilities` lists `local_serving`, it reads `Snapshot.local`, the `[local]` section
+of `provider.toml` (`desktop-app/src/shared/localServing.ts`, `LocalServing`), and says
+everything in the CLI's words (`desktop-app/src/renderer/features/studio/words.ts`), as
+[Use your Mac yourself, first](../provider/local-first.md) describes them:
+
+| Section | Shows | Sends |
+|---|---|---|
+| How this Mac serves (`ServingChoice`) | The start question's answers, **Only me**, **Darkbloom network** and **Both, me first** (Recommended), `mode` marked Saved. With none saved, Both, me first is preselected, as in the question | **Apply**: `{ action: 'start', models, local: true }`, `network: true` or `endpoint: true` (the CLI's `--local`, through `desktop start-local`, `--network` and `--local-endpoint`), each saved as `[local] mode` once the start goes ahead. `models` are the models serving now that the choice can serve (the network only catalog models, `servesNetwork`); with none, a list asks for one. The line beside Apply says that applying restarts serving (starts it, when stopped) and with which models |
+| Me first (`MeFirst`), with `mode` `both` | `me_first` as a switch and `me_first_idle_minutes`, whole minutes from 1 to 120. While `paused_until` is set: "Darkbloom is paused for you" and when it comes back, timed from `observed_at` in `MeFirstWords`' words | `{ action: 'local_settings', me_first, me_first_idle_minutes }`, waited for. A serving process reads both when it starts (`ProviderLoop.enableMeFirst` in `provider-swift/Sources/ProviderCore/ProviderLoop+MeFirst.swift`), so a save while serving offers **Restart serving** |
+| When this Mac can't take a request (`RequestRoute`) | Only this Mac, Only my Macs (free), My Macs first. The route checked is `route`, else `my-macs` with `route_key`, else `this-mac` (`LocalSettings.resolvedRoute`). Without `route_key`, the two that pass requests on are disabled and say they need the account API key | **Save**: `{ action: 'route', route }`. **Save key**: `{ action: 'route_key', key }` from a password field, trimmed and checked first with the rules of `LocalRouterAccountKeyFormat` (`provider-swift/Sources/ProviderCore/Server/LocalRouterAccountKey.swift`), then cleared as it is sent. The key is never shown, stored or read back; "Key saved" comes from `route_key`, and **Replace** asks for another |
+| Use it in your tools (`ToolSetup`) | **Set up OpenCode** and **Set up Hermes** while the local API runs with a key. Without the `tool_setup` capability, `darkbloom --opencode` and `darkbloom --hermes` to copy | `{ action: 'tool_setup', tool: 'opencode' }` or `'hermes'` |
+| Connection details, Make a request | Base URL, the key on Reveal only (`useEndpointKey`), **Listens on** from `port` and `bind` with whether only this Mac can reach it, and the curl example with a key placeholder | Nothing |
+
+- **Where no local API serves** (`mode` `network`, or none saved, and no `Snapshot.endpoint`),
+  only How this Mac serves shows.
+- **A paired Mac** (`Snapshot.pair`): a start there starts the pair, so the choices are
+  disabled and a line says the pair serves its own way, with a link to Clusters.
+- **An older runtime** (no `local_serving`, or no `Snapshot.local`) keeps the earlier Studio:
+  "Alongside the network" (`start` with `endpoint: true`) and "Local only" (`local: true`),
+  one model, and one line, "A newer Darkbloom CLI adds me first, request routing and tool
+  setup." (`LegacyServingMode`).
+
+`studioServing.test.tsx`, `studioRoute.test.tsx`, `studioTools.test.tsx`,
+`studioWords.test.ts` and `studio.test.tsx` (the key reveal, copy and example) cover the page;
+`localServingPreview.test.tsx` covers the preview.
+
+Preview links (`?preview` plus; then My Macs > This Mac > Studio):
+
+| Query | Shows |
+|---|---|
+| none, or `&local=both` | Both, me first saved, its local API on port 8001, no route and no account key saved |
+| `&local=only-me`, `&local=network` | That choice saved; the network has no local API |
+| `&local=paused` | Both, me first, with Darkbloom paused for you |
+| `&local=unsupported` | A runtime without `local_serving`, `tool_setup` and `update_rollback` |
+
+The preview simulates every action in the CLI's words
+(`desktop-app/src/renderer/preview/localServing.ts`): `route` with a route that passes requests
+on fails until a key is saved, and an entered key is checked for its shape and never kept.
+
 ## Updates presentation
 
 Updates shows installed/latest runtime versions, a compact release timeline and
@@ -564,6 +977,12 @@ the UI preserves an existing opt-out. Disabling asks for confirmation in both
 Updates and Settings. Updates saves through the revision-checked native settings
 action, and offers **Restart serving** to apply the setting to a running provider.
 It never restarts automatically from a toggle.
+
+From a runtime whose `Snapshot.capabilities` lists `update_rollback`, Updates offers
+**Return to the previous release** (`desktop-app/src/renderer/features/updates/Rollback.tsx`,
+`Rollback`). It asks first, as `darkbloom update --rollback` does, then sends
+`{ action: 'update_rollback' }`; the runtime's refusal, such as no release kept for rollback,
+shows in the operation feed. `updatesRollback.test.tsx` covers it.
 
 A mandatory update is shown only when the installed version is below the
 coordinator's published minimum. An available release alone is not mandatory.
@@ -668,7 +1087,9 @@ menu bar item stays available. Passing `--hidden` also starts hidden.
 | `desktop-app/src/main/backend.ts` | runtime discovery, signature checks and the native API client |
 | `desktop-app/src/main/installProgress.ts` | installer output: bounded line reader, plain-language steps, sanitized failure reason |
 | `desktop-app/src/main/hardware.ts` | `HardwareWatch`: the reference-counted hardware SSE client, hardware event parser and size guard |
-| `desktop-app/src/main/sse.ts` | server-sent event framing (`splitFrames`, `frameData`) shared by the state and hardware streams |
+| `desktop-app/src/main/clusterSession.ts` | `ClusterSessionRelay`: the guided cluster setup's routes with checked shapes, and its reference-counted `cluster/session/events` stream |
+| `desktop-app/src/main/chat.ts` | `ChatRelay`: Chat's calls to this Mac's local API (loopback only; the local API key stays in the main process), streamed as `ChatEvent`s |
+| `desktop-app/src/main/sse.ts` | server-sent event framing (`splitFrames`, `frameData`, `eventPayload`) and the wait before a stream opens again (`sleep`), shared by the state, hardware and cluster setup streams |
 
 `Backend.verifyRuntime` checks the runtime's code signature in packaged builds before
 running `desktop ensure` or `update`.

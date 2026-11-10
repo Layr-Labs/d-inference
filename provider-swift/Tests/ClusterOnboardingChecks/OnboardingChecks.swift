@@ -236,6 +236,8 @@ import Darwin
         // the leader's start, and said "Stopped … Close" with no ✗.
         theJoiningMacOnAStoppedPairSaysTheBlock()
         stoppedLocalPairSwitchedToDarkbloomKeepsItsMode()
+        // The desktop app runs the same setup with its own screens (`darkbloom cluster --app-console`).
+        appConsoleChecks()
         print("onboarding checks: \(passed) passed, \(failures.count) failed")
         for failure in failures { print("FAIL " + failure) }
         exit(failures.isEmpty ? 0 : 1)

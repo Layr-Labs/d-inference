@@ -1,0 +1,6 @@
+### The desktop app sets up and manages Darkbloom Sandbox
+
+- The app's new **Sandboxes** page does what `darkbloom sandbox` does, in its words. Without the add-on it says what Darkbloom Sandbox is (approved GitHub Actions jobs in Linux and macOS VMs; each job pays its price minus a 10% fee into your Darkbloom balance, and inference pauses while a job runs), what this Mac needs and what loses jobs, and offers setup once Darkbloom approved your account from the waitlist: jobs at a time (automatic, or your own Linux and macOS counts), an optional work disk such as `/Volumes/FastSSD`, and whether to wait for the VM images.
+- While setup runs, the page shows the installer's stages, the one browser approval with its code and **Open approval page**, and the waitlist; it says when the app can close because this Mac enrolls by itself. A setup that ends early says why: this Mac can't host it as it is, it was not enrolled, or a job is running so nothing changed.
+- Once installed, the page shows the add-on's state and what it means for inference, free Linux and macOS slots, running jobs, images and work disks, with **Open console**, **Pause** and **Resume**, **Change jobs at a time**, the add-on's log, and **Uninstall** (running jobs end unpaid, so it asks first).
+- A Darkbloom CLI without Darkbloom Sandbox support gets one line saying it needs a newer one.

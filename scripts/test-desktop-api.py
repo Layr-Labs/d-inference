@@ -10,6 +10,7 @@ import http.server
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -20,8 +21,46 @@ import urllib.request
 import uuid
 
 
+WAITLIST_TITLES = {"cluster": "Clusters", "sandbox": "Darkbloom Sandbox"}
+
+
+def waitlist_place(server, feature):
+    joined = feature in server.waitlist_joined or feature == "sandbox" and server.sandbox_waitlisted
+    status = "approved" if feature == "cluster" else ("waitlisted" if joined else "none")
+    place = {"feature": feature, "title": WAITLIST_TITLES[feature], "summary": "Fixture waitlist",
+             "start_command": "darkbloom " + feature, "status": status}
+    if status == "waitlisted":
+        place.update(position=3, requested_at="2026-11-08T00:00:00Z")
+    return place
+
+
 class Catalog(http.server.BaseHTTPRequestHandler):
+    def send_json(self, status, payload):
+        data = json.dumps(payload).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def waitlists(self, method):
+        """The coordinator's waitlist routes: a login token for the list; a join keeps its place."""
+        feature = self.path[len("/v1/waitlists/"):] if self.path.startswith("/v1/waitlists/") else None
+        if feature is None:
+            if not self.headers.get("Authorization"):
+                return self.send_json(401, {"error": {"message": "login required"}})
+            return self.send_json(200, {"data": [waitlist_place(self.server, name) for name in WAITLIST_TITLES]})
+        if feature not in WAITLIST_TITLES:
+            return self.send_json(404, {"error": {"message": "no such waitlist"}})
+        if method == "POST":
+            assert self.rfile.read(int(self.headers.get("Content-Length", "0"))) == b"{}"
+            self.server.waitlist_joined.add(feature)
+        return self.send_json(200, waitlist_place(self.server, feature))
+
     def do_POST(self):
+        self.server.posts.append(self.path)
+        if self.path.startswith("/v1/waitlists"):
+            return self.waitlists("POST")
         if self.server.issue_codes:
             # A code the user must approve in the browser; it stays pending until cancelled.
             assert self.path in ("/v1/device/code", "/v1/device/token"), self.path
@@ -50,6 +89,8 @@ class Catalog(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         self.server.reads.append(self.path)
         assert self.path not in ("/v1/releases/desktop", "/v1/provider/desktop"), "obsolete dashboard request"
+        if self.path.startswith("/v1/waitlists"):
+            return self.waitlists("GET")
         if self.path == "/v1/releases/latest":
             assert self.headers.get("Authorization") is None
             self.send_response(200)
@@ -135,6 +176,77 @@ def check_replacement_exit(binary, root, config, env):
                 process.wait()
 
 
+def check_isolated_home(binary, root, server, env):
+    """`cluster`, `sandbox`, `sandbox-logs` and `sandbox_setup` run this build's own commands, which read this Mac's
+    pairing, Darkbloom Sandbox add-on and default provider.toml: here a home of their own, so nothing real is read or
+    asked over the cable, and the setup's waitlist check reaches only the fixture coordinator."""
+    home = root / "home"
+    (home / ".config/darkbloom").mkdir(parents=True)
+    config = home / ".config/darkbloom/provider.toml"
+    config.write_text(f'[provider]\nname = "Isolated fixture"\nauto_update = false\n'
+                      f'[coordinator]\nurl = "http://127.0.0.1:{server.server_port}"\n')
+    env = dict(env, HOME=str(home), CFFIXED_USER_HOME=str(home), DARKBLOOM_DESKTOP_DIR=str(root / "isolated-desktop"),
+               DARKBLOOM_SANDBOX_ROOT=str(root / "sandbox-addon"))
+    with (root / "isolated.log").open("w") as log:
+        process = subprocess.Popen([str(binary), "desktop", "serve", "--config", str(config)], env=env, stdout=log,
+                                   stderr=log)
+        try:
+            discovery = root / "isolated-desktop/connection.json"
+            for _ in range(100):
+                if discovery.exists() or process.poll() is not None:
+                    break
+                time.sleep(.1)
+            assert discovery.exists(), (root / "isolated.log").read_text()
+            connection = json.loads(discovery.read_text())
+
+            def request(path="state", body=None):
+                req = urllib.request.Request(f'http://127.0.0.1:{connection["port"]}/control/v1/{path}',
+                                             data=json.dumps(body).encode() if body else None,
+                                             headers={"Content-Type": "application/json",
+                                                      "Authorization": "Bearer " + connection["token"]})
+                try:
+                    with urllib.request.urlopen(req, timeout=45) as response:
+                        return response.status, json.load(response)
+                except urllib.error.HTTPError as error:
+                    return error.code, json.load(error)
+
+            code, cluster = request("cluster")
+            assert code == 200 and cluster["schema"] == 1 and cluster["state"] == "not_paired", cluster
+            assert cluster["exit_code"] == 6 and cluster["paired"] is False and "error" not in cluster, cluster
+            assert {"role", "this_mac", "other_mac", "model", "mode", "split", "serves", "reason", "next", "lines",
+                    "service"} <= set(cluster), cluster
+            code, sandbox = request("sandbox")
+            assert code == 200 and sandbox["state"] == "not_installed" and sandbox["installed"] is False, sandbox
+            assert sandbox["last_update_check"] is None and "error" not in sandbox, sandbox
+            code, logs = request("sandbox-logs")
+            assert code == 200 and "error" not in logs and isinstance(logs["observed_at"], (int, float)), logs
+            assert logs["lines"] and "not set up on this Mac" in logs["lines"][0], logs
+            # A first setup asks the fixture whether the account was approved; waitlisted, it stops before anything
+            # is checked, downloaded or installed, and says so in lines the app reads from `--json-events`.
+            server.sandbox_waitlisted = True
+            setup_id = str(uuid.uuid4())
+            code, operation = request("actions", {"id": setup_id, "action": "sandbox_setup", "linux_slots": 1})
+            assert code == 202 and operation["cancellable"], operation
+            for _ in range(300):
+                operation = [item for item in request()[1]["operations"] if item["id"] == setup_id][0]
+                if operation["state"] != "running":
+                    break
+                time.sleep(.1)
+            assert operation["state"] == "failed", operation
+            assert any(line.startswith("You're on the Darkbloom Sandbox waitlist: #3 in line")
+                       for line in operation["lines"]), operation
+            assert "Nothing was installed." in operation["message"], operation
+            assert "/v1/waitlists/sandbox" in server.reads, server.reads
+            assert not (root / "sandbox-addon").exists()
+        finally:
+            process.terminate()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("binary", type=Path)
@@ -142,6 +254,9 @@ def main():
     args = parser.parse_args()
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Catalog)
     server.reads = []
+    server.posts = []
+    server.waitlist_joined = set()
+    server.sandbox_waitlisted = False
     server.link_started = threading.Event()
     server.issue_codes = False
     server.link_release = threading.Event()
@@ -342,8 +457,68 @@ idle_timeout_mins = 60
                     time.sleep(.1)
                 assert snapshot["operations"][0]["state"] == "cancelled", snapshot
                 server.issue_codes = False
+
+                def finished(operation_id, path_request=request, seconds=30):
+                    for _ in range(int(seconds * 10)):
+                        current = path_request()[1]
+                        found = [item for item in current["operations"] if item["id"] == operation_id]
+                        if found and found[0]["state"] != "running":
+                            return found[0], current
+                        time.sleep(.1)
+                    raise AssertionError(f"{operation_id} still running")
+
+                # Feature waitlists: the CLI's own client, with this Mac's login token, against the fixture.
+                code, waitlists = request("waitlists")
+                assert code == 200 and waitlists == {"data": [], "code": "login", "error":
+                    "Link this Mac to your Darkbloom account first: darkbloom login"}, waitlists
+                (root / "auth").write_text("fixture-provider-token")
+                (root / "auth").chmod(0o600)
+                code, waitlists = request("waitlists")
+                assert code == 200 and [entry["feature"] for entry in waitlists["data"]] == ["cluster", "sandbox"], waitlists
+                assert waitlists["data"][1]["status"] == "none" and "error" not in waitlists, waitlists
+                join_id = str(uuid.uuid4())
+                assert request("actions", {"id": join_id, "action": "waitlist_join", "feature": "sandboxes"})[0] == 202
+                joined, snapshot = finished(join_id)
+                assert joined["state"] == "succeeded", joined
+                assert joined["message"].startswith("You're on the Darkbloom Sandbox waitlist: #3 in line"), joined
+                assert server.posts.count("/v1/waitlists/sandbox") == 1, server.posts
+                # The join makes the next read ask again.
+                assert request("waitlists")[1]["data"][1]["status"] == "waitlisted"
+                code, refused = request("actions", {"id": str(uuid.uuid4()), "action": "waitlist_join", "feature": "Sandbox"})
+                assert code == 400 and refused["error"] == "Invalid waitlist", refused
+                (root / "auth").unlink()
+
+                # How this Mac serves: provider.toml's [local], written with the CLI's own writers.
+                local = snapshot["local"]
+                assert set(local) == {"mode", "me_first", "me_first_idle_minutes", "route", "route_key", "port", "bind",
+                                      "paused_until"}, local
+                assert local["mode"] is None and local["me_first"] is True and local["me_first_idle_minutes"] == 2, local
+                assert local["port"] is None and local["bind"] == "127.0.0.1" and local["paused_until"] is None, local
+                assert isinstance(local["route_key"], bool) and local["route"] in ("this-mac", "my-macs"), local
+                assert {"cluster", "cluster_session", "sandbox", "waitlists", "local_serving", "tool_setup",
+                        "update_rollback"} <= set(snapshot["capabilities"]), snapshot["capabilities"]
+                settings_id = str(uuid.uuid4())
+                assert request("actions", {"id": settings_id, "action": "local_settings", "me_first": False,
+                                           "me_first_idle_minutes": 30})[0] == 202
+                saved, snapshot = finished(settings_id)
+                assert saved["state"] == "succeeded" and saved["message"].startswith("Saved."), saved
+                assert snapshot["local"]["me_first"] is False and snapshot["local"]["me_first_idle_minutes"] == 30, snapshot["local"]
+                assert "me_first = false" in config.read_text() and "me_first_idle_minutes = 30" in config.read_text()
+                route_id = str(uuid.uuid4())
+                assert request("actions", {"id": route_id, "action": "route", "route": "this-mac"})[0] == 202
+                routed, snapshot = finished(route_id)
+                assert routed["state"] == "succeeded" and routed["message"].startswith("✓ Saved."), routed
+                assert re.search(r"""^route = ["']this-mac["']$""", config.read_text(), re.M), config.read_text()
+                assert snapshot["local"]["route"] == "this-mac", snapshot["local"]
+                code, refused = request("actions", {"id": str(uuid.uuid4()), "action": "route_key", "key": "two words"})
+                assert code == 400 and "two words" not in refused["error"], refused
+                code, refused = request("actions", {"id": str(uuid.uuid4()), "action": "start", "models": ["m"],
+                                                    "local": True, "network": True})
+                assert code == 400 and refused["error"].startswith("Choose one way to serve"), refused
+
+                check_isolated_home(args.binary.resolve(), root, server, env)
                 check_replacement_exit(args.binary.resolve(), root, config, env)
-                print("desktop-api: authentication, isolation, account insights, exact counters, state, settings, idempotency, cancellation, validation, error statuses, and replaced-executable exit passed")
+                print("desktop-api: authentication, isolation, account insights, exact counters, state, settings, idempotency, cancellation, validation, error statuses, waitlists, local serving, cluster and sandbox resources, sandbox setup events, and replaced-executable exit passed")
                 if args.hold:
                     print("DARKBLOOM_DESKTOP_DIR=" + str(root / "desktop"), flush=True)
                     input("Press Enter to stop the isolated API: ")

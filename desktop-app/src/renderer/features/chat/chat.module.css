@@ -1,0 +1,1087 @@
+/* Chat, after the iPhone app's chat (darkbloom-ios-redesign, Darkbloom/UI/Chat and UI/Design):
+   the canvas with the mark and its tile field, typography first, the site's entrance curve,
+   zero-bounce motion and press scale 0.96. Colours are the app's tokens (styles/theme.css). */
+
+/* The page fills the workspace below the top bar like a chat app; App gives <main> the
+   `chat-page` class on this route. */
+:global(.workspace:has(> main.chat-page)) {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+:global(main.page-content.chat-page) {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+:global(main.chat-page > .page-footer) {
+  display: none;
+}
+:global(main.chat-page > .notice) {
+  margin: 12px 20px 0;
+}
+
+.chat {
+  /* darkbloom.ai's entrance curve; zero-bounce springs settle on it too. */
+  --ease: cubic-bezier(0.16, 0.84, 0.28, 1);
+  --ease-open: cubic-bezier(0.22, 1, 0.36, 1);
+  --canvas: var(--brand-ink);
+  --column: 760px;
+  /* Your words: a quiet blue-tinted slab with a hairline. */
+  --question-fill: color-mix(in srgb, var(--blue) 16%, transparent);
+  --question-edge: color-mix(in srgb, var(--accent-brand) 32%, transparent);
+  /* The mark's edge, near to far (dark: deep blue under a white face), and its watermark. */
+  --mark-near: #2b3e9e;
+  --mark-far: #0a1030;
+  --mark-receded: 0.16;
+  --mark-shadow: drop-shadow(0 4px 18px color-mix(in srgb, var(--blue) 22%, transparent));
+  --sweep-high: color-mix(in srgb, var(--text-primary) 85%, transparent);
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 232px minmax(0, 1fr);
+  background: var(--canvas);
+  transition: grid-template-columns 0.38s var(--ease);
+}
+:global([data-theme='light']) .chat {
+  --question-fill: color-mix(in srgb, var(--blue) 7%, transparent);
+  --question-edge: color-mix(in srgb, var(--blue) 16%, transparent);
+  /* Light: an ink face over a cool-gray edge, fainter as a watermark on white. */
+  --mark-near: #8b93a8;
+  --mark-far: #c9ceda;
+  --mark-receded: 0.1;
+  --mark-shadow: drop-shadow(0 5px 8px rgba(0, 0, 0, 0.1));
+}
+.chat[data-list='closed'] {
+  grid-template-columns: 0 minmax(0, 1fr);
+}
+
+.iconButton {
+  position: relative;
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  grid-auto-flow: column;
+  gap: 4px;
+  min-width: 34px;
+  height: 34px;
+  padding: 0 8px;
+  border-radius: 8px;
+  color: var(--text-secondary);
+  transition:
+    background var(--hover-duration),
+    color var(--hover-duration),
+    transform 0.18s var(--ease),
+    opacity 0.18s var(--ease);
+}
+.iconButton:not(:disabled):hover {
+  background: rgba(var(--contrast-rgb), 0.05);
+  color: var(--text-primary);
+}
+.iconButton[aria-pressed='true'] {
+  color: var(--accent-brand);
+}
+
+/* Press feedback: scale 0.96, never below. */
+.iconButton:not(:disabled):active,
+.pickerButton:not(:disabled):active,
+.newChat:active,
+.send:not(:disabled):active,
+.stop:active,
+.latest:active,
+.disclosure:active {
+  transform: scale(0.96);
+  opacity: 0.85;
+}
+
+/* Your chats */
+
+.list {
+  grid-column: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden auto;
+  display: flex;
+  flex-direction: column;
+  padding: 12px 10px 18px;
+  border-right: 1px solid var(--line);
+  transition: visibility 0s;
+}
+.chat[data-list='closed'] .list {
+  visibility: hidden;
+  padding-inline: 0;
+  border-right-color: transparent;
+  transition: visibility 0s 0.38s;
+}
+.newChat {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 210px;
+  min-height: 38px;
+  margin-bottom: 8px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text-primary);
+  font-size: 13px;
+  transition:
+    background var(--hover-duration),
+    border-color var(--hover-duration),
+    transform 0.18s var(--ease);
+}
+.newChat:hover {
+  background: rgba(var(--contrast-rgb), 0.04);
+  border-color: rgba(var(--contrast-rgb), 0.16);
+}
+.listEmpty {
+  min-width: 210px;
+  padding: 10px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+.groupTitle {
+  min-width: 210px;
+  padding: 14px 10px 6px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--text-tertiary);
+}
+.rows {
+  display: grid;
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.row {
+  display: flex;
+  align-items: center;
+  min-width: 210px;
+  border-radius: 6px;
+  transition: background 0.12s ease-out;
+}
+.row:hover {
+  background: rgba(var(--contrast-rgb), 0.027);
+}
+.row[data-current] {
+  background: rgba(var(--contrast-rgb), 0.047);
+}
+.rowButton {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  text-align: left;
+  color: var(--text-secondary);
+  transition: color 0.12s ease-out;
+}
+.rowButton:hover,
+.row[data-current] .rowButton {
+  color: var(--text-primary);
+}
+.rowTitle {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rowDelete {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  margin-right: 4px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  color: var(--muted);
+  opacity: 0;
+  transition:
+    opacity 0.12s ease-out,
+    color var(--hover-duration),
+    background var(--hover-duration);
+}
+.row:hover .rowDelete,
+.row:focus-within .rowDelete {
+  opacity: 1;
+}
+.rowDelete:hover {
+  color: var(--negative);
+  background: rgba(var(--contrast-rgb), 0.05);
+}
+.confirmTitle {
+  overflow-wrap: anywhere;
+}
+.scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  background: rgba(0, 0, 0, 0.32);
+  animation: fade 0.25s var(--ease-open) backwards;
+}
+
+/* The conversation */
+
+.conversation {
+  grid-column: 2;
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.topBar {
+  position: relative;
+  z-index: 3;
+  flex: none;
+  height: 52px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  background: var(--canvas);
+}
+/* Solid behind the bar, then a short fade, so text slides under softly. */
+.topBar::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  height: 16px;
+  background: linear-gradient(var(--canvas), transparent);
+  pointer-events: none;
+}
+.topStart,
+.topCenter,
+.topEnd {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+.topCenter {
+  gap: 4px;
+}
+.topEnd {
+  justify-content: flex-end;
+}
+.loadingModels {
+  display: inline-grid;
+  place-items: center;
+  height: 32px;
+  padding: 0 12px;
+}
+
+.stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  container-type: size;
+}
+.scroller {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.messages {
+  max-width: var(--column);
+  margin: 0 auto;
+  padding: 20px 28px 36px;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+/* The mark, its tile field and the launch line */
+
+.hero {
+  --art: 1;
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  padding: 0 28px 24px;
+  text-align: center;
+}
+.hero[data-receded] {
+  pointer-events: none;
+}
+.art {
+  position: relative;
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: calc(340px * var(--art));
+  height: calc(240px * var(--art));
+  animation: rise 0.5s var(--ease) backwards;
+}
+.art > * {
+  grid-area: 1 / 1;
+}
+.bloom {
+  width: calc(340px * var(--art));
+  height: calc(340px * var(--art));
+  border-radius: 50%;
+  background: radial-gradient(
+    closest-side,
+    color-mix(in srgb, var(--blue) 16%, transparent),
+    transparent
+  );
+  transition: opacity 0.7s var(--ease);
+}
+.tiles {
+  width: calc(240px * var(--art));
+  height: calc(240px * var(--art));
+  opacity: 0.85;
+  -webkit-mask-image: radial-gradient(closest-side, #000 20%, transparent 100%);
+  mask-image: radial-gradient(closest-side, #000 20%, transparent 100%);
+  transition: opacity 0.7s var(--ease);
+}
+.mark {
+  --tx: 0;
+  --ty: 0;
+  --dx: 0px;
+  --dy: 2.5px;
+  width: calc(84px * var(--art));
+  height: calc(94px * var(--art));
+  overflow: visible;
+  transform: perspective(300px) rotateY(calc(var(--tx) * 11deg)) rotateX(calc(var(--ty) * -11deg));
+  filter: var(--mark-shadow);
+  transition: opacity 0.7s var(--ease);
+}
+.edge {
+  transform: translate(calc(var(--dx) * var(--f)), calc(var(--dy) * var(--f)));
+}
+.face {
+  fill: var(--text-primary);
+}
+.words {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  animation: rise 0.5s 0.08s var(--ease) backwards;
+  transition: opacity 0.7s var(--ease);
+}
+.tagline {
+  max-width: 300px;
+  font-family: ui-serif, 'New York', 'Iowan Old Style', Charter, Georgia, serif;
+  font-size: 20px;
+  font-style: italic;
+  line-height: 1.3;
+  color: var(--text-secondary);
+}
+.modelLine {
+  min-height: 1.4em;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-tertiary);
+}
+/* Behind messages the art steps back and the words go. */
+.hero[data-receded] .bloom {
+  opacity: 0.625;
+}
+.hero[data-receded] .tiles {
+  opacity: 0.55;
+}
+.hero[data-receded] .mark {
+  opacity: var(--mark-receded);
+}
+.hero[data-receded] .words {
+  opacity: 0;
+}
+/* A short window: the art shrinks and the line folds away. */
+@container (max-height: 380px) {
+  .hero {
+    --art: 0.62;
+    gap: 8px;
+  }
+  .tagline {
+    display: none;
+  }
+}
+@container (max-height: 200px) {
+  .hero {
+    --art: 0.45;
+  }
+}
+@container (max-height: 120px) {
+  .hero {
+    visibility: hidden;
+  }
+}
+
+/* Messages */
+
+.question {
+  align-self: flex-end;
+  max-width: min(80%, 600px);
+  padding: 10px 14px;
+  border: 0.75px solid var(--question-edge);
+  border-radius: 18px;
+  background: var(--question-fill);
+  color: var(--text-primary);
+  font-size: 15px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  transform-origin: bottom right;
+  user-select: text;
+}
+.answer {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  transform-origin: bottom left;
+}
+/* New messages settle in; a chat opened from the list appears as it is. */
+.enter {
+  animation: settleIn 0.35s var(--ease) backwards;
+}
+.status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  font-size: 13px;
+}
+.reply {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  color: var(--text-primary);
+  font-size: 15px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.prose {
+  white-space: pre-wrap;
+}
+.heading {
+  font-weight: 600;
+}
+.bullet {
+  color: var(--text-tertiary);
+}
+.inlineCode {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(var(--contrast-rgb), 0.07);
+  font-family: ui-monospace, Menlo, Monaco, monospace;
+  font-size: 0.86em;
+}
+.code {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-bg);
+  overflow: hidden;
+}
+.codeBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 34px;
+  padding: 0 4px 0 14px;
+  border-bottom: 1px solid var(--line);
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+.code pre {
+  margin: 0;
+  padding: 14px 16px;
+  overflow-x: auto;
+  font-family: ui-monospace, Menlo, Monaco, monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+  white-space: pre;
+  tab-size: 2;
+  overflow-wrap: normal;
+}
+.code pre:focus-visible {
+  outline: 2px solid #6487ff;
+  outline-offset: -2px;
+}
+/* Streamed text settles from faint to full ink over its newest glyphs. */
+.ink {
+  transition: opacity 0.12s linear;
+}
+.settle .ink {
+  opacity: 1 !important;
+  transition: opacity 0.6s ease-out;
+}
+
+/* "Thinking 3 s" while it reasons, "Thought for 3.2 s" after: it opens to the reasoning. */
+.reasoning {
+  display: grid;
+  justify-items: start;
+  gap: 6px;
+  min-width: 0;
+}
+.disclosure {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  transition:
+    color var(--hover-duration),
+    transform 0.18s var(--ease),
+    opacity 0.18s var(--ease);
+}
+.disclosure:hover {
+  color: var(--text-primary);
+}
+.seconds {
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.chevron {
+  color: var(--text-tertiary);
+  transition: transform 0.35s var(--ease);
+}
+.chevron[data-open] {
+  transform: rotate(90deg);
+}
+.thoughts,
+.thoughtTail {
+  width: 100%;
+  padding-left: 12px;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--text-tertiary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.thoughts {
+  border-left: 1.5px solid rgba(var(--contrast-rgb), 0.14);
+  animation: fade 0.25s var(--ease-open) backwards;
+  user-select: text;
+}
+/* The last lines of the live reasoning drift up and fade out at the top. */
+.thoughtTail {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  max-height: calc(13.5px * 1.6 * 3);
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.15), #000 55%);
+  mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.15), #000 55%);
+}
+
+/* No spinners: a patch of pixel tiles with a slow diagonal wave, and a faint band of light. */
+.pixels {
+  --size: 12px;
+  flex: none;
+  display: inline-grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: repeat(3, 1fr);
+  gap: calc(var(--size) * 0.12);
+  width: var(--size);
+  height: var(--size);
+}
+.pixels i {
+  border-radius: 22%;
+  background: var(--accent-brand);
+  opacity: var(--rest);
+  animation: wave 1.8s linear infinite;
+  animation-delay: calc(var(--k) * 0.2722s - 1.8s);
+}
+.sweep {
+  color: var(--text-tertiary);
+  background: linear-gradient(
+      90deg,
+      var(--text-tertiary) 0 41%,
+      var(--sweep-high) 50%,
+      var(--text-tertiary) 59% 100%
+    )
+    130% 0 / 200% 100% no-repeat;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: sweep 2.6s linear infinite;
+}
+
+.error {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+.error svg {
+  flex: none;
+  margin-top: 3px;
+  color: var(--warning);
+}
+.empty {
+  font-size: 13px;
+  color: var(--text-tertiary);
+}
+.footer {
+  display: grid;
+  gap: 6px;
+  animation: fade 0.25s var(--ease) backwards;
+}
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: -8px;
+}
+.badge {
+  margin-left: 6px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(var(--contrast-rgb), 0.05);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.badge[data-tone='caution'] {
+  color: var(--warning);
+}
+.stats {
+  font-family: ui-monospace, Menlo, Monaco, monospace;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-tertiary);
+  animation: drop 0.3s var(--ease) backwards;
+}
+/* Copy swaps to a check, and back. */
+.copyIcons {
+  position: relative;
+  width: 15px;
+  height: 15px;
+}
+.copyIcons > svg {
+  position: absolute;
+  inset: 0;
+  transition:
+    opacity 0.3s var(--ease),
+    transform 0.3s var(--ease),
+    filter 0.3s var(--ease);
+}
+.copyIcons > svg:last-child,
+[data-copied] .copyIcons > svg:first-child {
+  opacity: 0;
+  transform: scale(0.25);
+  filter: blur(4px);
+}
+[data-copied] .copyIcons > svg:last-child {
+  opacity: 1;
+  transform: none;
+  filter: none;
+}
+.copyFailed {
+  font-size: 11px;
+  color: var(--warning);
+}
+
+.latest {
+  position: absolute;
+  z-index: 2;
+  bottom: 10px;
+  left: 50%;
+  translate: -50% 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--raised-bg);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary);
+  transition:
+    transform 0.18s var(--ease),
+    opacity 0.18s var(--ease);
+  animation: lift 0.35s var(--ease) backwards;
+}
+
+/* The composer */
+
+.composerArea {
+  position: relative;
+  z-index: 2;
+  flex: none;
+  padding: 6px 20px 18px;
+  background: var(--canvas);
+}
+/* Messages slide under it softly. */
+.composerArea::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  height: 28px;
+  background: linear-gradient(transparent, var(--canvas));
+  pointer-events: none;
+}
+.composerInner {
+  max-width: var(--column);
+  margin: 0 auto;
+  display: grid;
+  gap: 8px;
+}
+.composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  min-height: 52px;
+  padding: 0 7px 0 20px;
+  border: 1px solid var(--line);
+  border-radius: 26px;
+  background: var(--panel-bg);
+  transition:
+    border-color var(--hover-duration),
+    box-shadow var(--hover-duration);
+}
+.composer:focus-within {
+  border-color: rgba(var(--contrast-rgb), 0.22);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 14%, transparent);
+}
+.field {
+  flex: 1;
+  min-width: 0;
+  min-height: 50px;
+  max-height: 240px;
+  padding: 14px 0;
+  border: 0;
+  outline: none;
+  resize: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 15px;
+  line-height: 22px;
+  field-sizing: content;
+}
+.field::placeholder {
+  color: var(--text-tertiary);
+}
+.field:disabled {
+  cursor: not-allowed;
+}
+.send,
+.stop {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  margin-bottom: 7px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  transition:
+    background var(--hover-duration),
+    transform 0.18s var(--ease),
+    opacity 0.18s var(--ease);
+  animation: pop 0.3s var(--ease) backwards;
+}
+.send {
+  background: var(--blue);
+  color: #fff;
+}
+.send:not(:disabled):hover {
+  background: #2858ff;
+}
+.stop {
+  background: var(--text-primary);
+  color: var(--canvas);
+}
+/* While answering, the model and its speed (Show speed). */
+.live {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 16px;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-tertiary);
+  animation: fade 0.25s var(--ease) backwards;
+}
+.where {
+  margin-left: auto;
+  opacity: 0.8;
+}
+.unavailable {
+  max-width: var(--column);
+  min-height: 52px;
+  margin: 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 10px 16px;
+  font-size: 13px;
+  text-align: center;
+  color: var(--text-secondary);
+}
+
+/* Pickers: the model, and how hard it reasons */
+
+.picker {
+  position: relative;
+  min-width: 0;
+}
+.pickerButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  transition:
+    background var(--hover-duration),
+    color var(--hover-duration),
+    transform 0.18s var(--ease),
+    opacity 0.18s var(--ease);
+}
+.pickerButton > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pickerButton > svg {
+  flex: none;
+  color: var(--text-tertiary);
+}
+.pickerButton:hover,
+.pickerButton[aria-expanded='true'] {
+  background: rgba(var(--contrast-rgb), 0.05);
+  color: var(--text-primary);
+}
+.popover {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 6px);
+  left: 50%;
+  translate: -50% 0;
+  width: max-content;
+  min-width: 240px;
+  max-width: min(380px, 80vw);
+  max-height: min(60vh, 440px);
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid rgba(var(--contrast-rgb), 0.12);
+  border-radius: 12px;
+  background: var(--panel-bg);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.32);
+  outline: none;
+  transform-origin: top center;
+  animation: open 0.25s var(--ease-open) backwards;
+}
+.groupLabel {
+  padding: 8px 10px 4px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-tertiary);
+}
+.option {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.option[data-active] {
+  background: rgba(var(--contrast-rgb), 0.06);
+}
+.popover:focus-visible .option[data-active] {
+  box-shadow: inset 0 0 0 1.5px #6487ff;
+}
+.optionText {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.optionText > span,
+.optionText > small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.optionText > span {
+  font-size: 13px;
+  color: var(--text-primary);
+}
+.optionText > small {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+.option > svg {
+  flex: none;
+  color: var(--accent-brand);
+  visibility: hidden;
+}
+.option[aria-selected='true'] > svg {
+  visibility: visible;
+}
+
+/* A narrow window: the list lies over the chat and slides in from the left. */
+@media (max-width: 760px) {
+  .chat,
+  .chat[data-list='closed'] {
+    grid-template-columns: 0 minmax(0, 1fr);
+  }
+  .list {
+    position: absolute;
+    z-index: 6;
+    inset: 0 auto 0 0;
+    width: min(280px, 86%);
+    background: var(--sidebar-bg);
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+    transform: translateX(-100%);
+    transition:
+      transform 0.38s var(--ease),
+      visibility 0s 0.38s;
+  }
+  .chat[data-list='open'] .list {
+    transform: none;
+    transition: transform 0.38s var(--ease);
+  }
+  .messages {
+    padding: 16px 18px 32px;
+  }
+  .composerArea {
+    padding: 6px 12px 14px;
+  }
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+    filter: blur(4px);
+  }
+}
+@keyframes settleIn {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.98);
+  }
+}
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes drop {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+@keyframes lift {
+  from {
+    opacity: 0;
+    transform: translateY(16px) scale(0.97);
+  }
+}
+@keyframes pop {
+  from {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+}
+@keyframes open {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.97);
+  }
+}
+/* One wave every 1.8 s: 0.16 + 0.74 × (½ + ½ sin 2πt)², as the iPhone's PixelLoader draws it. */
+@keyframes wave {
+  0% {
+    opacity: 0.345;
+  }
+  6.25% {
+    opacity: 0.514;
+  }
+  12.5% {
+    opacity: 0.699;
+  }
+  18.75% {
+    opacity: 0.845;
+  }
+  25% {
+    opacity: 0.9;
+  }
+  31.25% {
+    opacity: 0.845;
+  }
+  37.5% {
+    opacity: 0.699;
+  }
+  43.75% {
+    opacity: 0.514;
+  }
+  50% {
+    opacity: 0.345;
+  }
+  56.25% {
+    opacity: 0.231;
+  }
+  62.5% {
+    opacity: 0.176;
+  }
+  68.75% {
+    opacity: 0.161;
+  }
+  75% {
+    opacity: 0.16;
+  }
+  81.25% {
+    opacity: 0.161;
+  }
+  87.5% {
+    opacity: 0.176;
+  }
+  93.75% {
+    opacity: 0.231;
+  }
+  100% {
+    opacity: 0.345;
+  }
+}
+/* The band crosses in the first 70% of each 2.6 s, then rests. */
+@keyframes sweep {
+  0% {
+    background-position: 130% 0;
+  }
+  70%,
+  100% {
+    background-position: -30% 0;
+  }
+}

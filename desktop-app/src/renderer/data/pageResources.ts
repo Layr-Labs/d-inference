@@ -17,6 +17,8 @@ export function pageResources(route: Route): Resource[] {
       return ['leaderboard', 'network'];
     case 'updates':
       return ['release', 'release-history'];
+    // Other pages read what they show themselves while shown: Clusters and Sandboxes with
+    // `useResource`, Early access through the waitlist store, Chat its model list.
     default:
       return [];
   }

@@ -35,7 +35,7 @@ extension DesktopBackend {
       do { try await Task.sleep(for: interval) } catch { return }
       let restart = Self.shouldRestartForReplacedExecutable(
         startup: startupExecutableStamp, current: Self.currentExecutableStamp(),
-        hasRunningOperation: operations.contains { $0.state == "running" })
+        hasRunningOperation: operations.contains { $0.state == "running" } || clusterSessions.running)
       if restart {
         persist()
         Darwin.exit(0)

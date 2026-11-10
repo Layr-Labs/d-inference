@@ -2,6 +2,16 @@ import type { AutopilotAction, AutopilotPolicyAction, AutopilotStatus } from './
 import type { Eligibility, WaitlistAction } from './eligibility';
 import type { HardwareSample } from './hardware';
 import type { SystemInfo } from './macos';
+import type { ChatAPI } from './chat';
+import type {
+  ClusterAction,
+  ClusterSession,
+  ClusterSessionAnswer,
+  ClusterSessionStart,
+} from './cluster';
+import type { LocalServing, LocalServingAction } from './localServing';
+import type { SandboxAction, SandboxSetupProgress } from './sandbox';
+import type { WaitlistJoinAction } from './waitlists';
 export type { HardwareLoad, HardwareSample, HardwareTopology } from './hardware';
 export const protocolVersion = 1;
 export type Route =
@@ -14,7 +24,11 @@ export type Route =
   | 'settings'
   | 'studio'
   | 'leaderboard'
-  | 'updates';
+  | 'updates'
+  | 'chat'
+  | 'cluster'
+  | 'sandboxes'
+  | 'waitlists';
 export interface Operation {
   id: string;
   action: Action['action'];
@@ -26,6 +40,11 @@ export interface Operation {
   // Reported by runtimes that attribute a download to its model, with progress from 0 to 1.
   model?: string;
   progress?: number;
+  // The last lines a long CLI action printed (sanitized, newest last), for actions whose output
+  // the person needs while they run, such as `sandbox_setup`. Absent from older runtimes.
+  lines?: string[];
+  // A `sandbox_setup` operation's installer stage and its one browser approval.
+  sandbox_setup?: SandboxSetupProgress;
 }
 export interface NativeModel {
   id: string;
@@ -38,7 +57,7 @@ export interface NativeModel {
   eligible: boolean;
   reason?: string | null;
   // Listed by the Darkbloom catalog. Only these can be served to the network or enrolled in
-  // Autopilot; a model found only on disk runs in Local only. Absent from older runtimes.
+  // Autopilot; a model found only on disk runs with Only me. Absent from older runtimes.
   network?: boolean;
   // What this Mac's live coordinator registration carries for the model: `routable` in its
   // models (the network sends it requests), `autopilot` in its Autopilot inventory only, `none`
@@ -155,6 +174,8 @@ export interface Snapshot {
   catalog_error?: string;
   eligibility?: Eligibility;
   autopilot?: AutopilotStatus;
+  // How this Mac serves and where your requests go (provider.toml `[local]`).
+  local?: LocalServing;
 }
 export interface ActivitySample {
   at: number;
@@ -249,7 +270,18 @@ export interface Leader {
   earnings_micro_usd?: string;
 }
 export type Action =
-  | { action: 'start' | 'switch'; models: string[]; local?: boolean; endpoint?: boolean }
+  // `local`: Only me (`--local`); `endpoint`: Both, me first (`--local-endpoint`); `network`:
+  // the Darkbloom network with no local API (`--network`). Each is saved as `[local] mode`, which
+  // later starts follow. `solo`: on a paired Mac, `start --solo` serves this Mac alone with
+  // `models` (which it needs without a terminal); refused while the pair runs here.
+  | {
+      action: 'start' | 'switch';
+      models: string[];
+      local?: boolean;
+      endpoint?: boolean;
+      network?: boolean;
+      solo?: boolean;
+    }
   | {
       action:
         | 'stop'
@@ -274,7 +306,11 @@ export type Action =
   | { action: 'cooling'; enabled: boolean; speed?: number; temperature?: number }
   | WaitlistAction
   | AutopilotAction
-  | AutopilotPolicyAction;
+  | AutopilotPolicyAction
+  | ClusterAction
+  | SandboxAction
+  | WaitlistJoinAction
+  | LocalServingAction;
 export type Resource =
   | 'state'
   | 'cloud'
@@ -287,7 +323,11 @@ export type Resource =
   | 'insights-week'
   | 'insights-month'
   | 'request-history'
-  | 'hardware';
+  | 'hardware'
+  | 'cluster'
+  | 'sandbox'
+  | 'sandbox-logs'
+  | 'waitlists';
 export interface DesktopStatus {
   state: 'connecting' | 'ready' | 'missing' | 'incompatible' | 'error' | 'installing';
   message?: string;
@@ -299,7 +339,7 @@ export interface GUIUpdate {
   version?: string;
   message?: string;
 }
-export interface DesktopAPI {
+export interface DesktopAPI extends ChatAPI {
   read<T>(resource: Resource): Promise<T>;
   act(action: Action): Promise<Operation>;
   status(): Promise<DesktopStatus>;
@@ -323,6 +363,16 @@ export interface DesktopAPI {
   onNavigate(callback: (route: Route) => void): () => void;
   // Streams 1 Hz samples while subscribed; read('hardware') returns HardwareLoad.
   onHardware(callback: (sample: HardwareSample) => void): () => void;
+  // The guided cluster setup (`darkbloom cluster` with the app's screens). `clusterSession`
+  // returns the current or last session (null when none ran since the API started).
+  clusterSession(): Promise<ClusterSession | null>;
+  startClusterSession(start: ClusterSessionStart): Promise<ClusterSession>;
+  answerClusterSession(answer: ClusterSessionAnswer): Promise<ClusterSession>;
+  // Streams the whole session on every change while subscribed.
+  onClusterSession(callback: (session: ClusterSession) => void): () => void;
+  // Opens a sandbox approval page from a running `sandbox_setup` operation; the main process
+  // accepts only an https URL on a Darkbloom host.
+  openApproval(url: string): Promise<void>;
 }
 declare global {
   interface Window {

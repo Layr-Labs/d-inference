@@ -1,0 +1,8 @@
+{
+  "version": "0.10.11",
+  "platform": "macos-arm64",
+  "backend": "mlx-swift",
+  "active": true,
+  "created_at": "2026-11-09T20:46:47.305512Z",
+  "changelog": "v0.10.11 - Your Mac first, faster pairs\n\nUse your Mac yourself, first: a Mac serving with --local-endpoint, including the desktop app's \"Alongside the network\", pauses Darkbloom while you use its local API and takes Darkbloom requests again 2 minutes after your last one. To share the Mac as before, set me_first = false under [local] in ~/.config/darkbloom/provider.toml and run darkbloom restart. Each Mac has one local port and one key; Macs updated from 0.10.10 keep port 8000."
+}

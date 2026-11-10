@@ -256,6 +256,19 @@
   animation: spin 1s linear infinite;
 }
 
+/* Said to screen readers, not shown. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .modal-backdrop {
   position: fixed;
   inset: 0;

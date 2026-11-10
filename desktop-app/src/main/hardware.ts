@@ -1,5 +1,5 @@
 import { isHardwareSample, type HardwareSample } from '../shared/hardware';
-import { frameData, splitFrames } from './sse';
+import { eventPayload, sleep, splitFrames } from './sse';
 
 // A frame carries one ~1 KB sample; anything far larger is not ours.
 const maxBufferedBytes = 256_000;
@@ -8,30 +8,7 @@ const streamTimeoutMs = 150_000;
 const reconnectMs = 250;
 const retryMs = 2000;
 
-export function hardwareFrame(frame: string): HardwareSample | undefined {
-  if (!frame.split('\n').includes('event: hardware')) return undefined;
-  const data = frameData(frame);
-  if (data === undefined) return undefined;
-  try {
-    const value: unknown = JSON.parse(data);
-    return isHardwareSample(value) ? value : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-const sleep = (ms: number, signal: AbortSignal) =>
-  new Promise<void>((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    signal.addEventListener(
-      'abort',
-      () => {
-        clearTimeout(timer);
-        resolve();
-      },
-      { once: true },
-    );
-  });
+export const hardwareFrame = (frame: string) => eventPayload(frame, 'hardware', isHardwareSample);
 
 // Reference-counted hardware stream: connected while at least one renderer
 // subscription is held, so the runtime samples only while someone is looking.

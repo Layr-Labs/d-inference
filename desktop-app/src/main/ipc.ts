@@ -2,10 +2,18 @@ import { app, clipboard, ipcMain, shell } from 'electron';
 import path from 'node:path';
 import type { Backend } from './backend';
 import { HardwareWatch } from './hardware';
+import { ChatRelay } from './chat';
+import { ClusterSessionRelay } from './clusterSession';
 import type { desktopUpdates } from './updates';
 import type { MainWindow } from './window';
 import type { SystemInfo } from '../shared/macos';
-import { clipboardText, externalURL, isTrustedSender, softwareUpdateURL } from './security';
+import {
+  approvalURL,
+  clipboardText,
+  externalURL,
+  isTrustedSender,
+  softwareUpdateURL,
+} from './security';
 
 function installScript() {
   return path.join(
@@ -61,14 +69,43 @@ export function registerIPC(options: {
     (signal) => backend.openHardwareEvents(signal),
     (sample) => window.send('hardware:sample', sample),
   );
+  const chat = new ChatRelay(backend, (event) => window.send('chat:event', event));
+  const clusterSession = new ClusterSessionRelay(backend, (session) =>
+    window.send('cluster:session', session),
+  );
+  // A reloaded or crashed renderer can't release its streams or stop its answers.
+  const resetRelays = () => {
+    hardware.reset();
+    chat.reset();
+    clusterSession.reset();
+  };
   window.webContents?.on('did-start-navigation', (details) => {
-    if (details.isMainFrame && !details.isSameDocument) hardware.reset();
+    if (details.isMainFrame && !details.isSameDocument) resetRelays();
   });
-  window.webContents?.on('render-process-gone', () => hardware.reset());
+  window.webContents?.on('render-process-gone', resetRelays);
   handle('hardware:watch', () => {
     if (!smokeTest) hardware.acquire();
   });
   handle('hardware:unwatch', () => hardware.release());
+  handle('chat:models', () => chat.models());
+  handle('chat:send', (request) => {
+    if (smokeTest) throw new Error('Chat is disabled in UI smoke tests');
+    return chat.send(request);
+  });
+  handle('chat:cancel', (stream) => chat.cancel(stream));
+  handle('cluster:session', () => clusterSession.current());
+  handle('cluster:session-start', (start) => {
+    if (smokeTest) throw new Error('Native actions are disabled in UI smoke tests');
+    return clusterSession.start(start);
+  });
+  handle('cluster:session-answer', (answer) => clusterSession.answer(answer));
+  handle('cluster:session-watch', () => {
+    if (!smokeTest) clusterSession.acquire();
+  });
+  handle('cluster:session-unwatch', () => clusterSession.release());
+  handle('app:approval', async (url) => {
+    await shell.openExternal(approvalURL(url));
+  });
   handle('app:update-status', () => updates.status());
   handle('app:update', () => updates.check());
   handle('app:apply-update', () => updates.apply());

@@ -1,0 +1,219 @@
+// @vitest-environment jsdom
+import { afterEach, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import '@testing-library/jest-dom/vitest';
+import type { Action, Snapshot } from '../src/shared/contracts';
+import type { PreviewStore } from '../src/renderer/preview/types';
+import { snapshot } from './onboardingFixtures';
+
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
+
+// The preview module reads its query once, when it loads.
+async function previewWith(query: string) {
+  window.history.replaceState({}, '', `/?preview${query}`);
+  vi.resetModules();
+  return (await import('../src/renderer/preview/localServing')).localServingPreview;
+}
+
+// As the preview snapshot starts: its own capability list, Autopilot and the eligibility sign-up.
+const base = () =>
+  snapshot({
+    capabilities: ['autopilot', 'waitlist'],
+    state: 'running',
+    endpoint: {
+      base_url: 'http://127.0.0.1:8000/v1',
+      authenticated: true,
+      models: ['gpt-oss-20b'],
+    },
+  });
+
+function storeOf(state: Snapshot): PreviewStore & { current: () => Snapshot } {
+  let current = state;
+  return { get: () => current, set: (next) => (current = next), current: () => current };
+}
+
+async function act(
+  store: PreviewStore,
+  action: Action,
+  preview: Awaited<ReturnType<typeof previewWith>>,
+) {
+  vi.useFakeTimers();
+  const pending = preview.act!(store, action);
+  await vi.advanceTimersByTimeAsync(2000);
+  return pending;
+}
+
+it('shows the whole feature by default, added to the snapshot’s own capabilities', async () => {
+  const preview = await previewWith('');
+  const next = preview.snapshot!(base());
+  expect(next.capabilities).toEqual([
+    'autopilot',
+    'waitlist',
+    'local_serving',
+    'tool_setup',
+    'update_rollback',
+  ]);
+  expect(next.local).toMatchObject({
+    mode: 'both',
+    me_first: true,
+    me_first_idle_minutes: 2,
+    route: null,
+    route_key: false,
+    port: 8001,
+    bind: '127.0.0.1',
+    paused_until: null,
+  });
+  expect(next.endpoint).toEqual({
+    base_url: 'http://127.0.0.1:8001/v1',
+    authenticated: true,
+    models: ['gpt-oss-20b'],
+  });
+  // Added to whatever list the snapshot has, once each, and never in place of it.
+  expect(
+    preview.snapshot!({ ...base(), capabilities: ['account-signin', 'tool_setup'] }).capabilities,
+  ).toEqual(['account-signin', 'tool_setup', 'local_serving', 'update_rollback']);
+  expect(preview.snapshot!({ ...base(), capabilities: undefined }).capabilities).toEqual([
+    'local_serving',
+    'tool_setup',
+    'update_rollback',
+  ]);
+});
+
+it.each([
+  ['&local=only-me', 'local', true],
+  ['&local=network', 'network', false],
+  ['&local=both', 'both', true],
+])('saves the choice %s names', async (query, mode, endpoint) => {
+  const next = (await previewWith(query)).snapshot!(base());
+  expect(next.local?.mode).toBe(mode);
+  expect(!!next.endpoint).toBe(endpoint);
+});
+
+it('pauses Darkbloom for you with &local=paused, and offers nothing with &local=unsupported', async () => {
+  const state = base();
+  const paused = (await previewWith('&local=paused')).snapshot!(state);
+  expect(paused.local?.paused_until).toBe(state.observed_at + 100);
+  const unsupported = await previewWith('&local=unsupported');
+  const older = unsupported.snapshot!(state);
+  expect(older.local).toBeUndefined();
+  expect(older.capabilities).toEqual(['autopilot', 'waitlist']);
+  expect(older.endpoint).toEqual(state.endpoint);
+  // Drops them from a runtime that listed them too.
+  expect(
+    unsupported.snapshot!({
+      ...state,
+      capabilities: ['autopilot', 'local_serving', 'tool_setup', 'update_rollback'],
+    }).capabilities,
+  ).toEqual(['autopilot']);
+});
+
+it.each([
+  ['&route=this-mac', 'this-mac', false],
+  ['&route=my-macs', 'my-macs', true],
+  ['&route=my-macs-first', 'my-macs-first', true],
+  ['&route=everywhere', null, false],
+])(
+  'starts with the route %s names saved, and a key with one that passes requests on',
+  async (query, route, route_key) => {
+    const next = (await previewWith(query)).snapshot!(base());
+    expect(next.local).toMatchObject({ route, route_key });
+  },
+);
+
+it('rolls back to the release before the installed one', async () => {
+  const preview = await previewWith('');
+  for (const [version, before] of [
+    ['0.10.11', 'v0.10.10'],
+    ['0.11.0', 'the previous release'],
+  ]) {
+    const store = storeOf(preview.snapshot!({ ...base(), version }));
+    const done = await act(store, { action: 'update_rollback' }, preview);
+    expect(done?.message).toBe(
+      `Rolled back: v${version} -> ${before}.\nv${version} is quarantined on this Mac: automatic updates skip it, and the next newer release installs normally.`,
+    );
+  }
+});
+
+it('refuses a route that passes requests on until a key is saved, and never keeps the key', async () => {
+  const preview = await previewWith('');
+  const store = storeOf(preview.snapshot!(base()));
+  const refused = await act(store, { action: 'route', route: 'my-macs' }, preview);
+  expect(refused?.state).toBe('failed');
+  expect(refused?.message).toMatch(
+    /^✗ Not saved: `darkbloom route my-macs` passes your requests on/,
+  );
+  expect(store.current().local?.route).toBeNull();
+  const key = await act(store, { action: 'route_key', key: 'sk-preview-secret' }, preview);
+  expect(key?.state).toBe('succeeded');
+  expect(store.current().local?.route_key).toBe(true);
+  expect(JSON.stringify(store.current())).not.toContain('sk-preview-secret');
+  const saved = await act(store, { action: 'route', route: 'my-macs' }, preview);
+  expect(saved?.state).toBe('succeeded');
+  expect(store.current().local?.route).toBe('my-macs');
+  const local = await act(store, { action: 'route_key', key: 'dk-local-abc' }, preview);
+  expect(local?.state).toBe('failed');
+});
+
+it('applies a way to serve, saves me first and leaves a plain start to the shared preview', async () => {
+  const preview = await previewWith('');
+  const store = storeOf(preview.snapshot!(base()));
+  await act(store, { action: 'start', models: ['gpt-oss-20b'], network: true }, preview);
+  expect(store.current().local?.mode).toBe('network');
+  expect(store.current().endpoint).toBeUndefined();
+  await act(store, { action: 'start', models: ['gpt-oss-20b'], local: true }, preview);
+  expect(store.current().local?.mode).toBe('local');
+  expect(store.current().endpoint?.base_url).toBe('http://127.0.0.1:8001/v1');
+  expect(await preview.act!(store, { action: 'start', models: ['gpt-oss-20b'] })).toBeUndefined();
+  const refused = await act(
+    store,
+    { action: 'local_settings', me_first: true, me_first_idle_minutes: 0 },
+    preview,
+  );
+  expect(refused?.state).toBe('failed');
+  await act(
+    store,
+    { action: 'local_settings', me_first: false, me_first_idle_minutes: 9 },
+    preview,
+  );
+  expect(store.current().local).toMatchObject({ me_first: false, me_first_idle_minutes: 9 });
+  const tool = await act(store, { action: 'tool_setup', tool: 'opencode' }, preview);
+  expect(tool?.message).toMatch(/^✓ OpenCode can use Darkbloom/);
+});
+
+it('falls through for a runtime without local-first serving', async () => {
+  const preview = await previewWith('&local=unsupported');
+  const store = storeOf(preview.snapshot!(base()));
+  expect(await preview.act!(store, { action: 'route', route: 'this-mac' })).toBeUndefined();
+});
+
+it('keeps Autopilot and the eligibility sign-up beside local serving in the whole preview', async () => {
+  window.history.replaceState({}, '', '/?preview');
+  vi.resetModules();
+  const { previewAPI } = await import('../src/renderer/preview');
+  const state = await previewAPI.read<Snapshot>('state');
+  expect(state.capabilities).toEqual(
+    expect.arrayContaining([
+      'autopilot',
+      'waitlist',
+      'local_serving',
+      'tool_setup',
+      'update_rollback',
+    ]),
+  );
+});
+
+it('opens Studio from This Mac in the preview with the three ways to serve', async () => {
+  window.history.replaceState({}, '', '/?preview');
+  vi.resetModules();
+  const App = (await import('../src/renderer/App')).default;
+  render(<App />);
+  await screen.findByRole('heading', { name: 'Your contribution' });
+  fireEvent.click(screen.getByRole('button', { name: 'My Macs' }));
+  fireEvent.click(await screen.findByRole('button', { name: /^Studio/ }));
+  expect(await screen.findByRole('heading', { name: 'How this Mac serves' })).toBeVisible();
+  expect(screen.getByRole('radio', { name: 'Both, me first' })).toBeChecked();
+  expect(screen.getByRole('button', { name: 'Set up OpenCode' })).toBeEnabled();
+});

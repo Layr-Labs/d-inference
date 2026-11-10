@@ -70,6 +70,25 @@ export function externalURL(target: unknown, deviceLinkURL: string | undefined) 
   return url;
 }
 
+// A sandbox setup's browser approval page, from the installer's own event: https on a
+// Darkbloom host only (darkbloom.dev, darkbloom.ai and their subdomains), without credentials.
+export function approvalURL(value: unknown) {
+  if (typeof value !== 'string' || value.length > 2048) throw new Error('Unsupported link');
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error('Unsupported link');
+  }
+  const host = url.hostname;
+  const darkbloom = ['darkbloom.dev', 'darkbloom.ai'].some(
+    (domain) => host === domain || host.endsWith('.' + domain),
+  );
+  if (url.protocol !== 'https:' || !darkbloom || url.username || url.password)
+    throw new Error('Unsupported link');
+  return url.toString();
+}
+
 export function clipboardText(text: unknown) {
   if (typeof text !== 'string' || text.length > 65536) throw new Error('Invalid clipboard value');
   return text;

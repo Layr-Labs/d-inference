@@ -73,6 +73,10 @@
   font-size: 12px;
   color: var(--muted);
 }
+.rollback {
+  margin-top: 18px;
+  border-top: 1px solid var(--line);
+}
 .sectionHead {
   display: flex;
   align-items: baseline;

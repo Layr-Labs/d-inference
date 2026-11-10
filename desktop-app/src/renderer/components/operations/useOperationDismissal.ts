@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Operation } from '../../../shared/contracts';
 
-const storageKey = 'darkbloom.dismissed-operation';
 const successLifetime = 10_000;
 
-export function useOperationDismissal(operation?: Operation) {
+// The operation last dismissed under `storageKey`, remembered across launches.
+export function useDismissedOperation(storageKey: string) {
   const [dismissed, setDismissed] = useState(() => {
     try {
       return localStorage.getItem(storageKey) ?? '';
@@ -12,15 +12,23 @@ export function useOperationDismissal(operation?: Operation) {
       return '';
     }
   });
+  const dismiss = useCallback(
+    (id: string) => {
+      try {
+        localStorage.setItem(storageKey, id);
+      } catch {
+        // The current window still remembers dismissal when storage is disabled.
+      }
+      setDismissed(id);
+    },
+    [storageKey],
+  );
+  return { dismissed, dismiss };
+}
+
+export function useOperationDismissal(operation?: Operation) {
+  const { dismissed, dismiss } = useDismissedOperation('darkbloom.dismissed-operation');
   const deadline = useRef<{ id: string; at: number } | undefined>(undefined);
-  const dismiss = useCallback((id: string) => {
-    try {
-      localStorage.setItem(storageKey, id);
-    } catch {
-      // The current window still remembers dismissal when storage is disabled.
-    }
-    setDismissed(id);
-  }, []);
 
   useEffect(() => {
     if (!operation || operation.state !== 'succeeded' || operation.id === dismissed) return;

@@ -86,13 +86,15 @@ Starts without a terminal never ask:
   serves its own model, and a line says so when the app named another
   ([Two Macs](#two-macs)). Your saved choice is for this Mac alone: it applies
   with `--solo`.
-- **The app's choices are saved too:** its onboarding, its Autopilot and
-  Studio's "Alongside the network" start **Both, me first** (`--local-endpoint`)
-  and save it, whatever you saved before; Studio's "Local only" starts **Only
-  me** in the background and saves it. The app's Start, Restart and Update then
-  serve that choice, as login and the watchdog do.
-
-<!-- pending LS-7: a Darkbloom network choice in the app, saved as its other two are. -->
+- **The app's choices are saved too:** This Mac > Studio asks the same
+  question, with your saved choice marked, and its **Apply** starts the answer
+  with the models serving now and saves it: **Only me** in the background,
+  **Darkbloom network** (`--network`) or **Both, me first**
+  (`--local-endpoint`). Its onboarding and its Autopilot start **Both, me
+  first** and save it, whatever you saved before. The app's Start, Restart and
+  Update then serve that choice, as login and the watchdog do. With a CLI from
+  before the app's question, Studio offers "Alongside the network" (Both, me
+  first) and "Local only" (Only me).
 
 You can also name the choice in the command, in a terminal or not:
 

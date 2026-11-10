@@ -61,6 +61,8 @@ it('withholds a published version while its resource reports an error', () => {
 it('uses revision-checked native settings and never restarts the provider automatically', async () => {
   const state = await previewAPI.read<NonNullable<BackendState['state']>>('state');
   state.settings.startup_preload = true;
+  // Older than the release below, so an update is available.
+  state.version = state.machine.version = '0.9.16';
   const backend: BackendState = {
     state,
     status: { state: 'ready' },

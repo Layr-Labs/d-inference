@@ -1,6 +1,6 @@
 # Desktop control API
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-09
 
 The Electron app controls the Swift CLI/backend through its authenticated local
 API. The backend owns provider operations, configuration, model state, credentials,
@@ -75,6 +75,11 @@ credential (`desktop-app/src/main/backend.ts`, `Backend`; `DesktopHTTP.authorize
 | `GET /control/v1/endpoint-key` | Existing local inference credential for explicit reveal | `DesktopBackend.resource` |
 | `GET /control/v1/hardware` | Chip topology and the latest whole-machine load sample (see [Hardware load](#hardware-load)); waits up to 1.5 s for a first sample | `DesktopHardware.resource` |
 | `GET /control/v1/hardware/events` | One full `hardware` sample per SSE frame at 1 Hz; connection renews after 120 frames; shares the eight-stream limit with `/events` | `DesktopHardware.events`, `DesktopStreamLimiter` |
+| `GET /control/v1/cluster` | This Mac's two-Mac cluster: `cluster status --json` (schema 1) as this build's own child printed it (see [Clusters, Darkbloom Sandbox and waitlists](#clusters-darkbloom-sandbox-and-waitlists)) | `DesktopBackend.clusterStatus`, `readClusterStatus` |
+| `GET /control/v1/sandbox` | The Darkbloom Sandbox add-on's `sandbox status --json` document, `last_update_check` in Unix seconds | `DesktopBackend.sandboxStatus` |
+| `GET /control/v1/sandbox-logs` | `{lines, observed_at}`: the agent log's last 200 lines (`sandbox logs -n 200`), sanitized | `DesktopBackend.sandboxLogs`, `DesktopText` |
+| `GET /control/v1/waitlists` | `darkbloom waitlist --json` as `{data}`, or `{data: [], error, code}` | `DesktopBackend.waitlists`, `readWaitlists` |
+| `POST /control/v1/cluster/session`, `GET /control/v1/cluster/session`, `POST /control/v1/cluster/session/answer`, `GET /control/v1/cluster/session/events` | The guided two-Mac setup run with the app's screens (see [Cluster setup session](#cluster-setup-session)) | `DesktopHTTP.clusterSessionRoute`, `DesktopClusterSessions` |
 
 Failures return `{"error": "<message>"}` (`DesktopHTTP.errorResponse`):
 
@@ -83,6 +88,7 @@ Failures return `{"error": "<message>"}` (`DesktopHTTP.errorResponse`):
 | `400` | Malformed action body, or failed validation | `Invalid request body`, or the validation message verbatim (the app displays it) |
 | `401` | Missing/wrong token, browser `Origin`, non-loopback authority | `Unauthorized local client` |
 | `404` | Unknown route or resource | `Unknown route` / `Unknown resource` |
+| `409` | A cluster setup session that can't start or take the answer now ([below](#cluster-setup-session)) | The session's message verbatim |
 | `413` | Action body over 16 KiB | `Content Too Large` |
 | `415` | Action without `Content-Type: application/json` | `JSON required` |
 | `429` | A ninth concurrent event stream | `Too Many Requests` |
@@ -199,7 +205,7 @@ that cleanup completes, then the operation becomes `cancelled`.
 
 | Action | Additional fields | Behavior |
 |---|---|---|
-| `start` | `models`; optional `local`, `endpoint` | Existing start path; `local` (Only me, the app's "Local only") uses the same canonical provider LaunchAgent, on this Mac's one local API port (`[local] port`, else the one its local API already uses, else one chosen; `desktop start-local`), and saves Only me (`[local] mode = "local"`) and that port once the service started, and `endpoint` (Both, me first, the app's "Alongside the network") passes `--local-endpoint`. `models` may be empty only for a `start` without `local` on a paired Mac, which starts the pair with its own model; a pair with no model yet refuses it with the CLI's line (`DesktopBackend.startsThePair`) |
+| `start` | `models`; optional `local`, `endpoint`, `network`, `solo` | Existing start path; `local` (Only me, the app's "Local only") uses the same canonical provider LaunchAgent, on this Mac's one local API port (`[local] port`, else the one its local API already uses, else one chosen; `desktop start-local`), and saves Only me (`[local] mode = "local"`) and that port once the service started, `endpoint` (Both, me first, the app's "Alongside the network") passes `--local-endpoint`, and `network` (the Darkbloom network, no local API) passes `--network`; each mode flag is saved in `[local] mode`, which later starts follow. Two of `local`, `endpoint` and `network` are refused: ``Choose one way to serve: Only me, the Darkbloom network, or Both, me first.`` `models` may be empty only for a `start` without `local` on a paired Mac, which starts the pair with its own model; a pair with no model yet refuses it with the CLI's line (`DesktopBackend.startsThePair`). `solo`, only on a Mac that holds a pairing (else ``This Mac isn't in a two-Mac cluster: Start serving serves it alone.``), runs `start --solo --model <id>… [--local\|--local-endpoint\|--network]` (`local` is then `start --solo --local`). It names its models, as every start without a terminal must (`Start.requireModelsNamedWithoutTerminal`; none: ``Choose at least one model``), and while the pair runs on this Mac the CLI refuses it in its own words (`Start.pairStart`), which fails the operation (`DesktopBackend.servingFlag`, `DesktopAction.validateServingChoice`) |
 | `autopilot` | `models`, `pinned`; optional `downloads`, `endpoint` | Complete selected native downloads, then verified `start --autopilot --model …`; pin only after successful start. Fail before enrollment when a download fails. Every startup model must be a network model (`models[].network`). On a paired Mac, failed before any download, with the pair's state and what works there: ``This Mac is in a pair, which is stopped; Autopilot isn't available for pairs yet. Use Start serving.`` ("serves in a pair" only while it serves; the no-model line, or the check of an unreadable pairing record, instead of "Use Start serving.") (`DesktopBackend.pairRefusedActions`, `pairAutopilotRefusal`) |
 | `autopilot_pin`, `autopilot_unpin` | `models` | Existing CLI pin/unpin; pin budget is rechecked against downloaded estimates and configured slots |
 | `autopilot_pause`, `autopilot_resume`, `autopilot_disable` | — | Existing CLI policy commands |
@@ -212,8 +218,18 @@ that cleanup completes, then the operation becomes `cancelled`.
 | `link`, `unlink` | — | Native provider account linking/logout; UI does not retain the token |
 | `update` | — | Existing verified native updater and lifecycle exclusion |
 | `diagnose` | — | Existing `doctor` checks; result output is bounded |
-| `cancel` | `operation` | Cancels supported download, diagnostic, or linking operations; does not force-stop provider work |
+| `cancel` | `operation` | Cancels supported download, diagnostic, linking, Autopilot or `sandbox_setup` operations; does not force-stop provider work |
 | `cooling` | `enabled`; optional `speed`, `temperature` | Signed native fan helper, with macOS administrator authorization |
+| `cluster_leave` | — | `cluster leave --yes`: stops this Mac's part and forgets its pairing (`Cluster.Leave`) |
+| `waitlist_join` | `feature` (`^[a-z0-9][a-z0-9-]{0,63}$`, else `Invalid waitlist`) | In process, what `darkbloom waitlist <feature>` does (`FeatureWaitlistCommand.join`): the catalog's waitlist the name names (a plural too), the join (`{}`), and the message in the CLI's words, such as ``You're on the Darkbloom Sandbox waitlist: #3 in line (joined …).``; an unknown name, a problem or a revoked account fails it. It makes the next `waitlists` read ask again |
+| `sandbox_pause`, `sandbox_resume` | — | `sandbox pause` / `sandbox resume` |
+| `sandbox_uninstall` | — | `sandbox uninstall --yes`: running jobs end unpaid |
+| `sandbox_setup` | optional `linux_slots` (0–16), `macos_slots` (0–2, not both 0), `disks` (up to four different absolute paths, no `..` and no control or format characters), `wait_ready` | `sandbox setup --yes --no-browser --json-events [--linux-slots n] [--macos-slots n] [--disk p]… [--wait-ready]`, reported while it runs (see [Sandbox setup progress](#sandbox-setup-progress)). Cancellable: SIGTERM ends the setup at once, or, while its installer runs, reaches the installer as SIGINT, so an enrollment waiting for approval goes on (`SandboxSetupFlow.forwardedTermination`); the child has 30 s before SIGKILL (`DesktopBackend.sandboxSetupGrace`) |
+| `route` | `route`: `this-mac`, `my-macs` or `my-macs-first` | `route <route>`: saves `[local] route`; a running local API uses it from its next request (`RouteChoiceFlow`) |
+| `route_key` | `key` | `route key --stdin`, the key on standard input only, never argv (`DesktopBackend.routeKeyInput`). Refused first by `route key`'s own rules, in its words without the key (`LocalRouterAccountKeyFormat.refusal`: ``Not saved: an API key has no spaces, line breaks or non-ASCII characters.``). The key never reaches `operations.json`, an operation, a snapshot, a log or an error: the retained request holds an HMAC of it under a per-process key for idempotent retries (`DesktopAction.retained`, `requestDigest`), and the command's output is scrubbed of it (`withoutKey`) |
+| `local_settings` | `me_first`, `me_first_idle_minutes` (1–120) | Saves `[local] me_first` and `me_first_idle_minutes` with the CLI's `[local]` writer (`setLocalSettings`, other keys kept). A running provider reads them when it starts (`ProviderLoopConfig.meFirstIdle`), so they apply from its next start: the message says ``Saved. Restart serving to use it now.`` while one runs (`DesktopBackend.executeLocalSettings`) |
+| `tool_setup` | `tool`: `opencode` or `hermes` | `start --opencode` / `start --hermes`, which runs without a terminal: beside a running local API it sets the tool up and starts nothing; otherwise it starts as `start` does (Only me serves the models on this Mac; the network or Both without models say they need `--model`, exit 64) ([Set up OpenCode or Hermes](../provider/cli-reference.md#set-up-opencode-or-hermes)) |
+| `update_rollback` | — | `update --rollback --yes`: restores the release kept for rollback and quarantines the installed one; like `update`, a success that replaced this executable exits the API for launchd to relaunch (`UpdateRollback`) |
 
 The terminal commands remain independently usable. The API invokes validated
 argument arrays in the same CLI binary for existing operations, without a shell
@@ -274,6 +290,151 @@ allowance and current/configured slot limit (`DesktopBackend.state`). Pins prote
 from unloading while Autopilot controls residency; a cold pin is not reported as
 loaded. Operations optionally report the current download `model` and `progress`
 in `[0,1]` (`DesktopBackend.runAutopilot`, `downloadProgress`).
+
+## Clusters, Darkbloom Sandbox and waitlists
+
+These resources are read only on demand, by this build's own commands, never on
+the event stream (`DesktopBackend.sharedRead`). Concurrent and repeated reads
+within the time to live share one run; an action that changes what they say
+makes the next read run again (`forgetSharedReads(after:)`).
+
+| Resource | Command | Shared for | Read again after | When it can't be read |
+|---|---|---|---|---|
+| `cluster` | `cluster status --json [--config]`, its own 10 s wait for the leading Mac kept, under a 30 s bound | 10 s | `start`, `stop`, `restart`, `switch`, `update`, `update_rollback`, `cluster_leave` | HTTP 200, every `ClusterStatus` key `null`, `state` `unknown`, `lines` `[]`, `exit_code` `-1`, `error` the command's last stderr line or why it didn't run |
+| `sandbox` | `sandbox status --json`, whatever its exit status (exit 1 with `not_installed` is normal) | 10 s | any `sandbox_*` action | `{"schema": 1, "state": "unknown", "error": …}` |
+| `sandbox-logs` | `sandbox logs -n 200` | 5 s | any `sandbox_*` action | `{"lines": [], "observed_at": …, "error": …}` |
+| `waitlists` | In process: the CLI's client (`FeatureWaitlistAccess.live`) with the `darkbloom login` token | 30 s per coordinator and token | `waitlist_join`, `link`, `unlink` | `{"data": [], "error": …, "code": …}` |
+
+`cluster` passes the document of exit 0, 3, 4, 5, 6 or 7 through as it is
+([`cluster status`](../provider/cli-reference.md#darkbloom-cluster-status)); a
+document with any other exit, or no object with `schema` and `state`, is not
+trusted (`DesktopBackend.clusterStatus`). `sandbox` keeps only a document the
+CLI itself accepts (`SandboxAddonStatus`: an integer `schema` of 1 or more and a
+string `state`), and rewrites `last_update_check` as the CLI reads it (seconds,
+milliseconds or ISO 8601; `SandboxAddonStatus.timestamp`), else `null`
+(`DesktopBackend.sandboxStatus`). Log lines drop ANSI escape sequences, other
+control and format characters and line separators, keep what a carriage return
+redraws last, and are cut at 1000 characters (`DesktopText`).
+
+`waitlists` is `{data: [{feature, title, summary, start_command, status, position,
+requested_at, decided_at}]}` in the coordinator's order, times in ISO 8601,
+optional keys left out when absent (`FeatureWaitlistPlace`). Without a list,
+`code` says what to do: `login` (401 or 403), `none` (404: no waitlists) or
+`unavailable` (anything else, including the 10 s timeout); `error` is the CLI's
+sentence, such as ``Link this Mac to your Darkbloom account first: darkbloom
+login`` (`DesktopBackend.waitlistsProblem`, `FeatureWaitlistView.problem`).
+
+### Sandbox setup progress
+
+`sandbox setup --json-events` (hidden) writes one JSON object per line
+(`SandboxSetupEvents`): `{"type":"line","text":…}` for each line setup says
+(`"stream":"error"` for one it says on standard error at a terminal), and
+`{"type":"installer","event":{…}}` for each event of the installer's
+`--json-progress`, as the installer wrote it. The API follows it line by line
+(`DesktopSandboxSetupTracker`) and sets on the running operation:
+
+| Field | Value |
+|---|---|
+| `lines` | The last 40 lines, sanitized as log lines are; other output, such as an older runtime's usage, counts as lines |
+| `message` | The newest line while it runs; all `lines` once it ends. A runtime without `--json-events` (exit 64 before any event) is named instead |
+| `sandbox_setup.stage`, `step`, `steps`, `message` | The installer's latest stage event |
+| `sandbox_setup.approval` | `{user_code, verification_uri, verification_uri_complete}` from the approval event; removed once `enrolled` is done |
+| `sandbox_setup.waitlisted`, `background` | The waitlist event, and whether the wait goes on in the background (add-on 1.1.2 and later); both false once `enrolled` is done |
+| `sandbox_setup.progress` | Image download, 0 to 1, with `wait_ready` |
+| `sandbox_setup.exit_status` | Once the setup ended without success: the CLI's exit status (the installer's `2`, `3` or `4`, `130` when stopped, else the CLI's own), or `130` when the cancel's signal ended it first (`DesktopWorker.lastTermination`). Absent while it runs and after a success |
+
+These are the renderer's own readings of the same events
+(`SandboxSetupRenderer`). Both fields are kept with the operation in
+`operations.json`, as `message` is.
+
+## Local serving and capabilities
+
+`Snapshot.local` is `[local]` in provider.toml as the CLI resolves it
+(`DesktopBackend.localServing`, `LocalSettings`):
+
+| Field | Value |
+|---|---|
+| `mode` | The saved `mode` (`local`, `network`, `both`); `null` before the first choice |
+| `me_first`, `me_first_idle_minutes` | `me_first` unless `false`; the minutes, `2` when unset (`resolvedMeFirstIdleMinutes`) |
+| `route` | Where your requests go: the saved route, else `my-macs` with an account key saved and `this-mac` without (`resolvedRoute`) |
+| `route_key` | Whether an account key is saved, never the key: `Start.accountKeySaved`, read again after 30 s and after `route_key` |
+| `port`, `bind` | The saved port, else `null`; the bind address, `127.0.0.1` when unset |
+| `paused_until` | Unix seconds when Darkbloom comes back if you stay idle: only while a fresh provider says it is paused for you and knows when (`MeFirstSnapshot.resumesAtMs`; unknown while your request runs), else `null` (`DesktopBackend.pausedUntil`) |
+
+`capabilities` adds `cluster` (the `cluster` resource, `cluster_leave`, `start`
+with `solo`), `sandbox` (`sandbox`, `sandbox-logs`, every `sandbox_*` action),
+`waitlists` (`waitlists`, `waitlist_join`), `local_serving` (`Snapshot.local`,
+`route`, `route_key`, `local_settings`), `tool_setup` and `update_rollback`
+(`DesktopBackend.snapshotCapabilities`). The guided cluster setup session is
+separate (`cluster_session`).
+
+## Cluster setup session
+
+The app runs the two-Mac setup (pairing, the pair's model and how it serves,
+serving) with its own screens: the API runs `darkbloom cluster` in a child that
+writes its screen as JSON lines and reads the app's answers
+([`--app-console`](../provider/cli-reference.md#darkbloom-cluster---app-console-the-desktop-apps-setup)),
+and keeps that screen as a session (`provider-swift/Sources/darkbloom/Desktop/DesktopClusterSession.swift`,
+`DesktopClusterSessions`; the app's types are `ClusterSession` and its neighbours in
+`desktop-app/src/shared/cluster.ts`). A runtime that has these routes lists
+`cluster_session` in `capabilities` (`DesktopBackend.snapshotCapabilities`).
+
+| Route | Body and result | Refusals |
+|---|---|---|
+| `POST /control/v1/cluster/session` | `{"kind": "setup" \| "local", "model"?: string, "bind"?: string}`; `202` and the new session | `400` for a `kind` other than these, `model` or `bind` with `setup`, a `model` that fails `DesktopAction.validateModel`, or a `bind` that fails `ClusterServingScope.isValidBind`; `409` `A cluster setup is already running.`; `409` `An operation is already running. Wait for it to finish.` (`DesktopBackend.startClusterSession`) |
+| `GET /control/v1/cluster/session` | The current or last session, or `null` | — |
+| `POST /control/v1/cluster/session/answer` | `{"question": "<id>", "choice": <index>}`, `{"question": "<id>", "key": "q"}` or `{"cancel": true}`; the line goes to the child and the session comes back with `question` `null` until the child asks again | `409` `No cluster setup is running.` (also once the child wrote its `exit`); `409` `That question is no longer asked.`; `400` `Invalid answer` for a choice outside the options, a key not offered, or mixed fields (`DesktopClusterSessions.answer`, `answerLine`) |
+| `GET /control/v1/cluster/session/events` | SSE frames `event: cluster-session` whose `data` is the whole session (or `null`): one at once, then one per change, at most five a second; the stream renews after 300 frames or 60 s and shares the eight-stream limit | `429` (`DesktopClusterSessions.events`) |
+
+Bodies need `Content-Type: application/json` (`415` otherwise) and at most
+16 KiB, as actions take (`DesktopHTTP.jsonBody`). `setup` runs `darkbloom cluster --app-console`; `local` runs
+`darkbloom cluster local --app-console [--bind <bind>] [<model>]`; both add
+`--config` as every child gets it, made absolute (`DesktopClusterSessionStart.arguments`).
+The child has no terminal and, as every child of the API, runs with `DARKBLOOM_NO_UPDATE_CHECK=1` and `NO_COLOR=1`
+(`DesktopWorker.childEnvironment`).
+
+A running session holds the mutation slot actions use, since the setup starts
+and stops this Mac's services itself: it starts only while no operation runs,
+every action except `cancel` is refused with `A cluster setup is already running.`
+while it runs (`DesktopBackend.submit`), and the restart for a replaced
+executable waits for it (`exitWhenExecutableReplaced`). The session lives in the
+API process: a restarted API has none, and its child sees its input end, which
+leaves the setup as a cancel does.
+
+| Session field | Meaning |
+|---|---|
+| `id`, `kind` | A UUID; `setup` or `local` |
+| `state` | `running` until the child exits; then `cancelled` after a cancel, else `succeeded` (exit status 0) or `failed` |
+| `started_at`, `finished_at` | Epoch seconds; `finished_at` only once ended |
+| `events` | The screen in order, at most the last 600. Live work (`working`, `progress`) is only ever the last event: the next live work replaces it, and the next line or a `settle` ends it |
+| `question` | What the setup waits for (below), or `null` |
+| `exit_code` | Only once ended: the child's exit status, 128 + the signal for one it died of |
+| `error` | Only when the child ended without its `exit` event: ``The installed Darkbloom runtime doesn’t support this yet. It needs a runtime release that includes the desktop app’s commands.`` for a runtime without `--app-console`, else its last standard-error lines, else its status (`DesktopClusterSessions.endedEarly`). The setup's own outcome is its `result` event |
+
+Each event is the console's, with its `event` named `type` (`DesktopClusterSessions.event`);
+a standard-output line that isn't JSON is a `say` of that line.
+
+| `type` | Fields | What it is |
+|---|---|---|
+| `banner` | `title`, `subtitle` | The setup's opening (`Darkbloom cluster`, or with the Mac's part: `Darkbloom cluster · Leading Mac`) |
+| `heading` | `text` | A step: `1/4 Connect` … `4/4 Start` in the first setup, else `Model`, `Start`, `Change model` |
+| `say` | `text`; `stressed` `{lead, stressed, tail}` where a terminal shows bold | A line as Terminal shows it, its indent kept, blank lines left out. An answered list adds `  ▸ <the option's first row>`, as Terminal folds the list to it |
+| `working` | `rows` | Work still running, one row per Mac while the parts load |
+| `progress` | `text` | A copy's or download's whole report line |
+| `result` | `ok`, `title`, `lines` | The outcome block: ✓ (`ok`) with what serves, or ✗ with why nothing does |
+| `needs_terminal` | `text` | A step the app can't take (sudo where macOS shows no prompt; **Log in on this Mac**): ``Run `darkbloom cluster` in a Terminal window on this Mac.`` (`cluster local`'s line for `local`). The step then runs with nothing to read, so sudo fails at once |
+
+| Question `type` | Fields | Asked |
+|---|---|---|
+| `choose` | `id`, `options` (each option's rows: its title, then its detail rows), `selected` (the default) | Every list of the setup, after the line that asks it; and the clusters waitlist's ``Join the Clusters waitlist now?`` with `Yes` and `No`, `No` selected (`Cluster.Setup.appWaitlistGate`) |
+| `key` | `id`, `keys` `[{key, label}]` | While a wait acts on a key (`ClusterOnboardingWaitKey`): `q` `Cancel` in the pairing's wait and the wait for Local Network's Allow; `q` `Leave` in the start's wait and in the other Mac's start that the joining Mac follows. None in a copy or download, or while the pairing waits for the other Mac to confirm the code. Asked again when the keys change or one was taken; otherwise it stays while the waits go on |
+
+A cancel answers as q and escape do in Terminal: the list asked now, and every
+later one, returns nothing, and every wait that takes `q` gets it, so the setup
+ends at its next question or wait in its own words (``Cancelled: nothing paired.``,
+``Nothing changed.``, …). Work that takes no key, such as a copy, runs to its end
+first, and a start then stops before its first change with ``Cancelled: nothing started.``
+(`ClusterOnboardingAppConsole.guarding`). The child's input ending is a cancel too.
 
 ## Account session and refresh
 

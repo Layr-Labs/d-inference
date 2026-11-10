@@ -39,6 +39,19 @@ const bridge: DesktopAPI = {
   onHardware: () => () => {},
   system: async () => ({ macosVersion: '27.0' }),
   openSoftwareUpdate: async () => {},
+  chatModels: async () => ({ models: [] }),
+  chatSend: async () => ({ stream: 'test' }),
+  chatCancel: async () => {},
+  onChat: () => () => {},
+  clusterSession: async () => null,
+  startClusterSession: async () => {
+    throw new Error('No cluster session in this test');
+  },
+  answerClusterSession: async () => {
+    throw new Error('No cluster session in this test');
+  },
+  onClusterSession: () => () => {},
+  openApproval: async () => {},
 };
 
 beforeAll(async () => {

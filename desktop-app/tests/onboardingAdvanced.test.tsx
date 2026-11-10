@@ -145,7 +145,7 @@ it('starts Autopilot on a network model and never pins a disk-only model', async
   openAdvanced(snapshot({ models: [diskOnly, ...models] }));
   expect(pin(/gemma-4-26B-A4B/)).toBeDisabled();
   expect(pin(/gemma-4-26B-A4B/).closest('label')).toHaveTextContent(
-    'Not on the Darkbloom network. Runs in Local only.',
+    'Not on the Darkbloom network. Runs with Only me.',
   );
   // Onboarding has no local-only mode (#1502), so a disk-only model can't be pinned here at all.
   fireEvent.click(pin(/gemma-4-26B-A4B/));

@@ -10,6 +10,7 @@ task_build="$(mktemp -d "$task_provider/.cluster-onboarding.XXXXXXXX")"
 trap 'rm -rf "$task_build"' EXIT
 xcrun swiftc -swift-version 6 -warnings-as-errors -parse-as-library -target "$(uname -m)-apple-macos14.0" \
   "$task_sources/ClusterOnboardingFlow.swift" "$task_sources/ClusterOnboardingTerminal.swift" \
+  "$task_sources/ClusterOnboardingAppConsole.swift" "$task_provider/Tests/ClusterOnboardingChecks/AppConsoleChecks.swift" \
   "$task_sources/ClusterOnboardingBrand.swift" "$task_sources/ClusterOnboardingPairServing.swift" \
   "$task_sources/ClusterOnboardingFollow.swift" "$task_sources/ClusterOnboardingLeaderStep.swift" \
   "$task_sources/ClusterOnboardingSoloServing.swift" \

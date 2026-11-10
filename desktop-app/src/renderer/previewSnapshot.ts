@@ -10,11 +10,14 @@ const memoryGb = previewTopology.memory.total_gb;
 export function previewSnapshot(now: number, samples: ActivitySample[]): Snapshot {
   return {
     protocol: 1,
-    version: '0.9.16',
+    version: '0.10.11',
     observed_at: now,
     installation_id: 'preview',
     linked: true,
     account_revision: 'preview-account',
+    // What an absent list meant to the app before features listed themselves: Autopilot and
+    // the eligibility sign-up. Each feature's preview module adds its own capability to this.
+    capabilities: ['autopilot', 'waitlist'],
     state: 'running',
     readiness: 'Connected and ready for requests',
     machine: {
@@ -24,7 +27,7 @@ export function previewSnapshot(now: number, samples: ActivitySample[]): Snapsho
       memory_gb: memoryGb,
       status: 'running',
       observed_at: now,
-      version: '0.9.16',
+      version: '0.10.11',
       models: ['gpt-oss-20b', 'gemma-4-26b'],
     },
     models: [
@@ -116,6 +119,8 @@ export function previewCloud(now: number): CloudData {
     linked: true,
     account_id: 'preview',
     observed_at: now,
+    // Production's floor (the coordinator's EIGENINFERENCE_MIN_PROVIDER_VERSION).
+    minimum_provider_version: '0.9.5',
     lifetime_micro_usd: '2146200000',
     week_micro_usd: '46100000',
     balance_micro_usd: '146200000',
@@ -130,7 +135,7 @@ export function previewCloud(now: number): CloudData {
         memory_gb: 192,
         status: 'online',
         observed_at: now - 25,
-        version: '0.9.16',
+        version: '0.10.11',
         models: ['gemma-4-26b'],
         earnings_micro_usd: '7000000',
         lifetime_micro_usd: '186400000',

@@ -54,6 +54,9 @@ struct SandboxInstallerEvent: Equatable, Sendable {
     var status: Status = .other("")
     /// One line for people (a stage's title when it starts, its result when done).
     var message: String?
+    /// The stage's place among the installer's steps (`"step":n,"steps":8`).
+    var step: Int?
+    var steps: Int?
     var exitCode: Int?
     // `waiting_for_approval`
     var userCode: String?
@@ -99,6 +102,8 @@ struct SandboxInstallerEvent: Equatable, Sendable {
         default: self.init(kind: .other(event), message: text("message"))
         }
         exitCode = object["exit_code"] as? Int
+        step = object["step"] as? Int
+        steps = object["steps"] as? Int
         userCode = text("user_code")
         verificationURI = text("verification_uri")
         verificationURIComplete = text("verification_uri_complete")

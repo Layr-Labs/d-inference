@@ -5,6 +5,7 @@ keeping every other byte of the build (numpy on the CPU; no MLX, no GPU).
   requant.py verify --template URL --source URL [--limit N]
   requant.py plan   --template URL --recipe RECIPE
   requant.py build  --template URL --source URL --recipe RECIPE --out DIR
+  requant.py selftest [--record]
 
 - template: the published revision's base URL (models.darkbloom.ai/<r2_prefix>), range-read; its config.json,
   tokenizer and template files, vision tower, MTP head and every non-linear tensor are copied byte for byte.
@@ -18,6 +19,9 @@ keeping every other byte of the build (numpy on the CPU; no MLX, no GPU).
 - verify re-quantizes modules at the template's own bits and compares codes, to prove the name mapping first.
 - The output is deterministic for a given template, source, recipe and numpy (pinned by the workflow), so a build in
   CI reproduces a locally tested candidate byte for byte; the canonical manifest is the check.
+- selftest (about a second, no network): quantizes fixed inputs at every recipe width and serializes them, and compares
+  the digests with the recorded ones. Run it before any build, on every machine; a difference means this machine would
+  not reproduce the tested bytes. --record prints this machine's digests.
 - RECIPEs (bits, group) per module path; a module the template keeps above 4 bits (MoE routers) keeps it:
     g64       4/64 (the template's layout)        g32       4/32
     mixed46   6/64 for lm_head and for down_proj / v_proj in the first and last eighth of the layers and every third
@@ -25,25 +29,42 @@ keeping every other byte of the build (numpy on the CPU; no MLX, no GPU).
     router8   8/64 for MoE routers (mlp.gate, mlp.shared_expert_gate); 4/64 elsewhere
     router8+mixed46   both
 """
-import argparse, json, os, re, struct, sys, time, urllib.request
+import argparse, hashlib, json, os, platform, re, struct, sys, tempfile, time, urllib.error, urllib.request
 
 import numpy as np
 
 UA = {"User-Agent": "or-quality-requant/1"}
 
 
-def get(url, start=None, end=None, tries=5):
+def get(url, start=None, end=None, tries=12):
+    """GET, or a range of bytes start..end inclusive, with retries. A range read must return exactly the range: a server
+    that ignores Range answers 200 with the whole object, which would otherwise be written as the tensor."""
     for i in range(tries):
         try:
             req = urllib.request.Request(url, headers=dict(UA))
             if start is not None:
                 req.add_header("Range", f"bytes={start}-{end}")
             with urllib.request.urlopen(req, timeout=300) as r:
-                return r.read()
+                data = r.read()
+            if start is not None and len(data) != end - start + 1:
+                raise IOError(f"range {start}-{end} of {url}: {len(data)} bytes")
+            return data
         except Exception as e:  # noqa: BLE001
             if i == tries - 1:
                 raise
-            time.sleep(2 + 3 * i)
+            wait = retry_wait(e, i)
+            if isinstance(e, urllib.error.HTTPError):
+                e.close()
+            time.sleep(wait)
+
+
+def retry_wait(e, i):
+    """Seconds before retry i + 1. 429 and 503 wait for Retry-After, else back off for minutes: Hugging Face limits
+    anonymous requests per IP over 5-minute windows, and CI runners share egress IPs."""
+    if isinstance(e, urllib.error.HTTPError) and e.code in (429, 503):
+        after = (e.headers.get("Retry-After") or "").strip()
+        return min(int(after), 600) if after.isdigit() else min(30 * 2 ** i, 600)
+    return min(2 + 3 * i, 60)
 
 
 class RemoteST:
@@ -95,10 +116,11 @@ def f32_to_bf16(x):
     return ((u + r) >> 16).astype(np.uint16)
 
 
-def affine_quantize(w, bits, group):
-    """MLX affine quantization of a 2-D float32 [out, in] (or 3-D [E, out, in]) array, in row chunks."""
+def affine_quantize(w, bits, group, chunk_values=None):
+    """MLX affine quantization of a 2-D float32 [out, in] (or 3-D [E, out, in]) array, in row chunks of about
+    chunk_values values (64M by default; the selftest sets it small to cover the chunked path)."""
     rows = int(np.prod(w.shape[:-1]))
-    chunk = max(1, (1 << 26) // w.shape[-1])  # ~64M values per chunk
+    chunk = max(1, (chunk_values or 1 << 26) // w.shape[-1])
     if rows > chunk:
         flat = w.reshape(rows, w.shape[-1])
         parts = [affine_quantize_rows(flat[i:i + chunk], bits, group) for i in range(0, rows, chunk)]
@@ -399,6 +421,133 @@ def cmd_build(a):
           f"{total_size / 1e9:.2f} GB, {time.time() - t0:.0f}s", flush=True)
 
 
+# ---- selftest: the arithmetic, packing and serialization, against digests recorded with the pinned numpy -----------
+
+SELFTEST_WIDTHS = ((4, 64), (4, 32), (6, 64), (8, 64))  # every (bits, group) a recipe produces
+# sha256 of (packed, scales, biases) per case and width, and of the serialized safetensors + config + index bytes.
+# Recorded with numpy 2.5.4 (Python 3.14.7, arm64, M5 Ultra); every quantization digest also equals the float64 oracle
+# in test_model_requant_upload.py, which depends on no CPU, SIMD path or numpy version.
+SELFTEST_GOLDEN = {
+    "edges 4/32": "dd870292666f5555c3f558a7872a34e542cbc0dc6d225813ba08b643634507ed",
+    "edges 4/64": "bacebc6a7e6e59a495b1a8d0e481871cd0c20c9d868ed4f82152bb7d13517539",
+    "edges 6/64": "6510e0f9efd61c28ae42d0575da590562377aca3d37b858632374b7aa706b9a6",
+    "edges 8/64": "c3f05982b43be0df6c2ff9f3179121545b6800a425174faaca30727fd4c9a568",
+    "experts-gate-half 4/32": "38cf051133bbf80392c723d865cf6a1cc656d7b3a7b611c04f7e5657f7d16015",
+    "experts-gate-half 4/64": "860019ee474807978f99d21a7d06cdc195fb359f6a46e09af1f54d35e0ccd811",
+    "experts-gate-half 6/64": "3331a859b2cade43a2762f883ff21c8ecf8b4711b4a988836daf62ca74f7ed0d",
+    "experts-gate-half 8/64": "ee0c8cf6f91421984ea983e8884843ccf0e6c05b69ea5c5356ce6a0009622783",
+    "serialization": "655db5e1fefeb0f7a6970efbd534835b3fac2141988136ab6b6b25cfba3e3212",
+    "weights 4/32": "fef56a45907a7d41fa794810acf1409dc51db4a93e89ebadc49494bf0263b2ba",
+    "weights 4/64": "cc5f3af19f6ac327b90d6831a72d1e1c3738b09d6e4d9a44a708d4d002167985",
+    "weights 6/64": "34a2397f5449e269870f9f4400399be76f34bc1f420630fc110ee72895435628",
+    "weights 8/64": "4105b9ff7f0090dccadbf33496a9a2187698d56e2afdc506b3df47348598ee85",
+}
+
+
+def _bf16_bits(label, n):
+    """n bf16 bit patterns from SHAKE-256 (as uint32): the same on every machine and numpy version."""
+    return np.frombuffer(hashlib.shake_256(label.encode()).digest(2 * n), dtype="<u2").astype(np.uint32)
+
+
+def selftest_cases():
+    """name -> (float32 weights, chunk_values): weight-like values with outliers; edge cases (signed zeros, ties,
+    subnormals, constant groups, ranges that overflow float32); and the gate half of a fused [E, 2I, H] expert tensor,
+    a strided 3-D view, quantized in uneven row chunks (the MoE path)."""
+    r = _bf16_bits("weights", 256 * 1024).reshape(256, 1024)
+    exp = 117 + ((r >> 7) & 7) + 6 * ((np.arange(r.size).reshape(r.shape) % 97) == 0)  # 2^-10..2^-3, outliers 2^6 up
+    weights = ((r & 0x8000) | (exp << 7) | (r & 0x7F)).astype(np.uint16)
+
+    e = _bf16_bits("edges", 64 * 512).reshape(64, 512)
+    e = np.where((e & 0x7F80) == 0x7F80, (e & 0x8000) | 0x3F80, e)  # finite only
+    e[0] = 0
+    e[1] = 0x8000
+    e[2, ::2], e[2, 1::2] = 0, 0x8000
+    e[3] = 0x3F80
+    e[4] = 0x0001
+    e[5, ::2], e[5, 1::2] = 0x0001, 0x8001
+    e[6, ::2], e[6, 1::2] = 0x3F80, 0xBF80
+    e[7] &= 0x807F  # subnormals of both signs
+    e[8, ::2], e[8, 1::2] = 0x7F7F, 0xFF7F  # +-max finite: the range overflows to inf
+    edges = e.astype(np.uint16)
+
+    f = _bf16_bits("experts", 4 * 256 * 512).reshape(4, 256, 512)
+    fexp = 118 + ((f >> 7) & 7)
+    fused = ((f & 0x8000) | (fexp << 7) | (f & 0x7F)).astype(np.uint16)
+    fused32 = bf16_to_f32(fused.tobytes(), fused.shape)
+    return {"weights": (bf16_to_f32(weights.tobytes(), weights.shape), None),
+            "edges": (bf16_to_f32(edges.tobytes(), edges.shape), None),
+            "experts-gate-half": (fused32[:, :128, :], 48 * 512)}
+
+
+def _digest(parts):
+    h = hashlib.sha256()
+    for p in parts:
+        h.update(np.ascontiguousarray(p).tobytes())
+    return h.hexdigest()
+
+
+def selftest_digests():
+    out, cases = {}, selftest_cases()
+    with np.errstate(all="ignore"):
+        for name, (w, chunk_values) in cases.items():
+            for bits, group in SELFTEST_WIDTHS:
+                got = _digest(affine_quantize(w, bits, group, chunk_values=chunk_values))
+                if chunk_values and got != _digest(affine_quantize(w, bits, group)):
+                    got = "chunked output differs from unchunked"
+                out[f"{name} {bits}/{group}"] = got
+        pw, ps, pb = affine_quantize(cases["weights"][0], 4, 64)
+    mod = "language_model.model.layers.0.mlp.down_proj"
+    norm = f32_to_bf16(cases["weights"][0][0])
+    tensors = [(mod + ".weight", "U32", pw.shape, pw.tobytes()), (mod + ".scales", "BF16", ps.shape, ps.tobytes()),
+               (mod + ".biases", "BF16", pb.shape, pb.tobytes()),
+               ("language_model.model.norm.weight", "BF16", norm.shape, norm.tobytes())]
+    with tempfile.TemporaryDirectory() as d:
+        write_st(os.path.join(d, "model-00001-of-00001.safetensors"), tensors)
+        with open(os.path.join(d, "model-00001-of-00001.safetensors"), "rb") as fh:
+            st = fh.read()
+    q = {"group_size": 64, "bits": 4, "mode": "affine",
+         "language_model.lm_head": {"group_size": 64, "bits": 6, "mode": "affine"}}
+    cfg = {"architectures": ["Qwen3_5ForConditionalGeneration"], "model_type": "qwen3_5", "name": "Qw\u00e9n",
+           "text_config": {"num_hidden_layers": 32, "rope_theta": 10000000.0, "rms_norm_eps": 1e-06,
+                           "partial_rotary_factor": 0.25, "layer_types": ["linear_attention", "full_attention"]},
+           "quantization": q, "quantization_config": q}
+    index = {"metadata": {"total_size": len(st)}, "weight_map": dict(sorted((n, "model-00001-of-00001.safetensors")
+                                                                          for n, *_ in tensors))}
+    out["serialization"] = hashlib.sha256(st + json.dumps(cfg, indent=2).encode()
+                                          + json.dumps(index, indent=2).encode()).hexdigest()
+    return out
+
+
+def _cpu_features():
+    try:
+        try:
+            from numpy._core import _multiarray_umath as m
+        except ImportError:
+            from numpy.core import _multiarray_umath as m
+        on = [f for f in m.__cpu_dispatch__ if m.__cpu_features__.get(f)]
+        return f"SIMD baseline {' '.join(m.__cpu_baseline__) or '-'}, dispatch {' '.join(on) or '-'}"
+    except Exception:  # noqa: BLE001
+        return "SIMD features unknown"
+
+
+def selftest(golden=None, out=print):
+    """0 when this machine reproduces every recorded digest, else 1."""
+    golden = SELFTEST_GOLDEN if golden is None else golden
+    with open(__file__, "rb") as fh:
+        me = hashlib.sha256(fh.read()).hexdigest()
+    out(f"requant.py sha256 {me}; python {platform.python_version()} {platform.machine()}; numpy {np.__version__}; "
+        f"{_cpu_features()}")
+    got = selftest_digests()
+    for k in sorted(set(got) | set(golden)):
+        out(f"  {'ok  ' if golden.get(k) == got.get(k) else 'DIFF'} {k}: {str(got.get(k))[:16]}")
+    if set(got) != set(golden) or any(golden[k] != got[k] for k in got):
+        out("selftest FAILED: this machine does not reproduce the recorded bytes. Do not build or upload with it, and do "
+            "not change the digests to pass: see docs/operations/model-revisions.md (Re-quantize and upload from CI).")
+        return 1
+    out(f"selftest ok: {len(got)} digests equal the recorded ones")
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -411,7 +560,14 @@ def main():
         p.add_argument("--out")
         p.add_argument("--shard-gb", type=float, default=5.0)
         p.add_argument("--base-group", type=int, default=None)
+    st = sub.add_parser("selftest")
+    st.add_argument("--record", action="store_true", help="print this machine's digests as JSON")
     a = ap.parse_args()
+    if a.cmd == "selftest":
+        if a.record:
+            print(json.dumps(selftest_digests(), indent=2, sort_keys=True))
+            return
+        sys.exit(selftest())
     if a.base_group is None:
         a.base_group = 32 if a.recipe == "g32" else 64
     {"verify": cmd_verify, "build": cmd_build, "plan": cmd_plan}[a.cmd](a)

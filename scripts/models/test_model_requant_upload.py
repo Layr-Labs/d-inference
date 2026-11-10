@@ -127,6 +127,10 @@ class Inputs(unittest.TestCase):
             self.assertEqual(r.github_output, "", over)
         wrong_prefix = dict(self.m, r2_prefix="v2/elsewhere/2026-11-12-g32-r1")
         self.assertNotEqual(run_inputs(wrong_prefix).returncode, 0)
+        # A consistent manifest for a dot version is still not a new prefix.
+        for version in ("..", ".", ".hidden"):
+            dotted = manifest_for("Qwen3.5-9B", version, {"config.json": b"{}"})
+            self.assertNotEqual(run_inputs(dotted).returncode, 0, version)
 
     def test_manifest_is_what_register_and_the_providers_read(self):
         """Register (ValidateModelManifest) would refuse these, or worse promote them while every provider fails to
@@ -340,13 +344,13 @@ class WorkflowSteps(unittest.TestCase):
         self.assertIn("(403)", denied.stdout)
 
     def test_tools_are_pinned_by_hash(self):
-        installs = [s for s in self.steps if "pip" in s.get("run", "")]
+        installs = [s for s in self.steps if re.search(r"\bpip\b", s.get("run", ""))]
         self.assertEqual(len(installs), 1)
         script = installs[0]["run"]
         for flag in ("--require-hashes", "--only-binary :all:", "-r scripts/models/requirements-requant-upload.txt"):
             self.assertIn(flag, script)
         self.assertEqual(len(re.findall(r"\bpip\b.*\binstall\b", self.text)), 1)
-        logical = re.sub(r"\\\n\s*", " ", REQUIREMENTS.read_text())
+        logical = re.sub(r"\s*\\\n\s*", " ", REQUIREMENTS.read_text())
         pins = {}
         for line in logical.splitlines():
             line = line.split("#", 1)[0].strip()
@@ -361,7 +365,7 @@ class WorkflowSteps(unittest.TestCase):
                                      "pyyaml", "rsa", "six", "urllib3", "numpy"})
 
     def test_selftest_runs_in_every_mode_before_any_secret(self):
-        install = next(i for i, s in enumerate(self.steps) if "pip" in s.get("run", ""))
+        install = next(i for i, s in enumerate(self.steps) if re.search(r"\bpip\b", s.get("run", "")))
         selftest = self.steps[install + 1]
         self.assertIn("python3 scripts/models/requant.py selftest", selftest.get("run", ""))
         self.assertIn("sha256sum scripts/models/requant.py", selftest["run"])
@@ -377,9 +381,13 @@ class WorkflowSteps(unittest.TestCase):
             self.assertNotIn("${{", step.get("run", ""), step.get("name"))
         rebuild = self.named("Rebuild")
         self.assertFalse(uses_secrets(rebuild))
-        self.assertNotIn("| tail", rebuild["run"], "the rebuild's progress streams")
+        build = re.search(r"requant\.py build(?:[^\n]*\\\n)*[^\n]*", rebuild["run"]).group(0)
+        self.assertNotIn("|", build, "the rebuild's progress streams")
         self.assertNotIn("publish-revision", self.text)
-        self.assertEqual(self.text.count("promote=true"), 1)  # the closing hint only
+        for step in self.steps:  # promotion appears only as a printed hint
+            for line in step.get("run", "").splitlines():
+                if "promot" in line:
+                    self.assertTrue(line.lstrip().startswith("echo "), line)
 
 
 # ---- the range reader -----------------------------------------------------------------------------------------------

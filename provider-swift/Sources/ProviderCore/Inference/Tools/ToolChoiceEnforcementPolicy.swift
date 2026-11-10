@@ -17,10 +17,31 @@ enum ToolChoiceEnforcementPolicy {
 
     /// Per-model wire capability, never inferred from a caller's model label.
     /// Other families retain their existing media/grammar behavior until their
-    /// complete forced-choice and tool-result-media paths are qualified.
+    /// complete forced-choice and tool-result-media paths are qualified. The
+    /// managed Super owner renders media requests from the same plan as text
+    /// (`NemotronSuperRequestPlan`): forced calls are prompt-forced and
+    /// withheld until they validate, and the pinned template renders media in
+    /// tool results.
     static func advertisesNativeMediaTools(for model: ModelInfo) -> Bool {
-        model.modelType == "diffusion_gemma" && model.isVision == true
+        let family = model.modelType == "diffusion_gemma" || servesMediaWithTextControls(model)
+        return family && model.isVision == true
             && model.templateRenderOK == true && advertisesCapability(for: model)
+    }
+
+    /// Per-model wire capability (`native_media_controls`): a JSON response
+    /// format and non-empty tools are served together with image or video
+    /// input. Only the managed Super owner, whose media route takes the text
+    /// route's request plan, with the same vision and template checks as
+    /// `advertisesNativeMediaTools`.
+    static func advertisesNativeMediaControls(for model: ModelInfo) -> Bool {
+        servesMediaWithTextControls(model) && model.isVision == true
+            && model.templateRenderOK == true && advertisesCapability(for: model)
+    }
+
+    /// The managed Super serving identity: its media route renders from the
+    /// same request plan as text (`NemotronSuperRequestPlan`).
+    private static func servesMediaWithTextControls(_ model: ModelInfo) -> Bool {
+        NemotronSuperServingPolicy.isServingIdentity(modelID: model.id, modelType: model.modelType)
     }
 
     /// Bonsai media uses the same withheld/schema-validated native tool frames
@@ -76,8 +97,8 @@ enum ToolChoiceEnforcementPolicy {
             return true
         }
         // The managed Super owner prompt-forces required/named calls on text
-        // requests and withholds output until the call validates
-        // (`NemotronSuperLocalOutput`); its image requests refuse tools.
+        // and media requests and withholds output until the call validates
+        // (`NemotronSuperLocalOutput`).
         if NemotronSuperServingPolicy.isServingIdentity(modelID: model.id, modelType: model.modelType) {
             return true
         }

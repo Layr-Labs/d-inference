@@ -456,6 +456,7 @@ func vlmMediaErrorMapsTo400() {
         .percentDecodeFailed,
         .imageDecodeFailed,
         .mediaTooLarge("image is 1600000000 px; per-image cap is 100000000 px"),
+        .unsupportedMedia("a request carries at most 16 images"),
     ]
     for err in clientFaults {
         #expect(

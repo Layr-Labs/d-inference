@@ -333,12 +333,6 @@ actor NemotronSuperLocalLoad {
         return try owner.localImageBinding()
     }
 
-    func localImagePrompt(body: Data, templateBytes: Data, featureCounts: [Int]) throws -> [Int] {
-        guard phase == .ready, let owner else { throw Failure.invalidState }
-        return try owner.localImagePrompt(body: body, templateBytes: templateBytes,
-                                         featureCounts: featureCounts)
-    }
-
     /// The HTTP chat route over this transaction's own owner, text and images.
     /// The host drains it before `closeAfterDrain`.
     func localImageHTTP(templateBytes: Data) throws -> NemotronSuperLocalImageHTTP {

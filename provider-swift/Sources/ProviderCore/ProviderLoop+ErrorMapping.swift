@@ -154,6 +154,8 @@ extension ProviderLoop {
             switch mediaError {
             case .mediaTooLarge:
                 return .mediaTooLarge
+            case .unsupportedMedia:
+                return .unsupportedMedia
             case .malformedDataURI,
                 .base64DecodeFailed,
                 .percentDecodeFailed,
@@ -351,7 +353,8 @@ extension ProviderLoop {
                 .percentDecodeFailed,
                 .imageDecodeFailed,
                 .invalidURL,
-                .mediaTooLarge:
+                .mediaTooLarge,
+                .unsupportedMedia:
                 return 400
             }
         }

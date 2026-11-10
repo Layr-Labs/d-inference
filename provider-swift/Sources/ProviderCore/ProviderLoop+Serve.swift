@@ -452,7 +452,7 @@ extension ProviderLoop {
                 case .codeAttestationResumeChallenge(let challenge):
                     handleCodeChallenge(challenge, send: send)
                     continue
-                case .cancel(let requestId):
+                case .cancel(let requestId, _):
                     routeCoordinatorCancel(requestId)
                     continue
                 case .connected, .disconnected:

@@ -1748,7 +1748,11 @@ public enum CoordinatorMessage: Sendable, Equatable {
 
     public struct Cancel: Sendable, Equatable {
         public var requestId: String
-        public init(requestId: String) { self.requestId = requestId }
+        public var reason: CoordinatorCancelReason?
+        public init(requestId: String, reason: CoordinatorCancelReason? = nil) {
+            self.requestId = requestId
+            self.reason = reason
+        }
     }
 
     public struct AttestationChallenge: Sendable, Equatable {

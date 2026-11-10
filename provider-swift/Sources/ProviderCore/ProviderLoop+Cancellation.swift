@@ -123,7 +123,7 @@ extension ProviderLoop {
         }
     }
 
-    internal func cancelAllInflight() async {
+    internal func cancelAllInflight(cause: InferenceEarlyEndCause = .stoppedOnThisMac) async {
         let requestIds = Array(inflightTasks.keys)
         for requestId in requestIds {
             await handleCancellation(requestId: requestId, receivedFromCoordinator: false)

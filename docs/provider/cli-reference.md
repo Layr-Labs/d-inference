@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-09
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -938,7 +938,8 @@ deadline is configurable with
 [`DARKBLOOM_DRAIN_TIMEOUT_SECONDS`](../reference/configuration.md#provider-drain-deadline).
 Once local HTTP admission closes, new POST requests receive HTTP 503 with the
 OpenAI JSON error message `Provider capacity is temporarily unavailable.` and
-the usual CORS header. Health reads and OPTIONS preflights remain available;
+the usual CORS header (a pair's API: its typed 503, `pair_api_unavailable`, and
+the 401 without its key). Health reads and OPTIONS preflights remain available;
 already admitted response bodies retain their drain ownership.
 Signal-only shutdown disarms current watchdog recovery but preserves configured
 login startup; use `darkbloom stop` for a persistent stop.
@@ -1067,9 +1068,10 @@ in a two-Mac cluster. On a Mac whose port relays a pair's API and has no working
 address now, it prints the `Local API:` line `status` gives there instead
 (`ClusterPairSummary.memberAPIDown`): Darkbloom doesn't have the pair yet, or
 another program holds its port; never the pair's key. With the relay up while
-the pair's other Mac can't be reached, the endpoint's lines are followed by that
-`Local API: … answers 503 for now. …` line. While that port is still starting,
-it says so in `status`'s words, ``Local API: not listening on this Mac yet; it
+the pair's other Mac can't be reached, or while the pair's API there doesn't
+listen (`ClusterPairSummary.memberAPIRestarting`), the endpoint's lines are
+followed by that `Local API: … answers 503 for now. …` line. While that port is
+still starting, it says so in `status`'s words, ``Local API: not listening on this Mac yet; it
 starts once the pair's API on the other Mac (…) answers.``, then the pair's key
 as before, under ``The pair's API key (the same on both Macs, and taken on this
 Mac's port once it listens):`` (`ClusterPairSummary.memberAPIStarting`), never
@@ -1345,14 +1347,21 @@ Mac passes your requests to it, and Darkbloom pauses for them too`. Until it run
   `Local API: not listening on this Mac yet; …` with the `Members:` line above. While it runs and the other Mac can't
   be reached (`ClusterServiceStatus.relayRankZeroAway`: 12 s without an answer over the cable; before any answer since
   this Mac's cluster service started, two failed status requests in a row), it answers every request a `503`, in words
-  that name the other Mac only to a request with this Mac's key or the pair's (any other gets the local API's own
-  `401`, and a liveness check or a CORS preflight the `503` without names: `ClusterLocalRelay.Caller`). The line says
-  so in the `503`'s words (`ClusterLocalRelay.Refusals`): ``Local API: http://127.0.0.1:8003/v1 on this Mac answers 503 for now. Your pair's
+  that name the other Mac only to a request with this Mac's key or the pair's (another key in the local key format,
+  which this Mac can't judge, gets them without the name; any other the local API's own `401`; a liveness check or a
+  CORS preflight the `503` without names or commands: `ClusterLocalRelay.Caller`). The line says so in the `503`'s words
+  (`ClusterLocalRelay.Refusals`): ``Local API: http://127.0.0.1:8003/v1 on this Mac answers 503 for now. Your pair's
   other Mac (…) isn't reachable; this Mac relays to it. Requests resume when it's back, or run `darkbloom stop`, then
-  `darkbloom start --solo`, to serve this Mac alone.``, with the same `Members:` line. `darkbloom local` there prints
-  the same `Local API:` line (`ClusterPairSummary.memberAPIDown`), `start --opencode` says it at once
-  (`ToolIntegrationStep.noMemberAddress`), also beside the running relay, and `darkbloom doctor` says it as a ⚠ on
-  its `address` line.
+  `darkbloom start --solo`, to serve this Mac alone (`darkbloom start --solo` by itself is refused while this Mac's part
+  of the pair holds its serving lock: up to 15 minutes after the other Mac last answered over the cable).``, with the
+  same `Members:` line. `darkbloom local` there prints the same `Local API:` line (`ClusterPairSummary.memberAPIDown`),
+  `start --opencode` says it at once (`ToolIntegrationStep.noMemberAddress`), also beside the running relay, and
+  `darkbloom doctor` says it as a ⚠ on its `address` line. While the other Mac answers but the pair's API there doesn't
+  listen (its part starts again: `ClusterServiceStatus.relayRankZeroAPIDown`), the relay keeps its port and answers
+  every request the `503` for that, and the line says so the same way (`ClusterPairSummary.memberAPIRestarting`):
+  ``Local API: http://127.0.0.1:8003/v1 on this Mac answers 503 for now. The pair's API on your pair's other Mac (…)
+  isn't answering yet; this Mac relays to it. Requests resume when it answers, or run …``, never `not listening on this
+  Mac yet`; `darkbloom local` and `darkbloom doctor` too, while `start --opencode` sets the tools up for the address.
 With the API on loopback or one address: ``Local API: on the other Mac (…), which runs the pair's API; `darkbloom
 local` there shows its address and key`` (with ``, and `darkbloom status` there whether Darkbloom is paused for you``
 when the status didn't say it) and `Members: this Mac is part of the pair; it runs no local API`. `--json` is unchanged
@@ -1361,7 +1370,8 @@ when the status didn't say it) and `Members: this Mac is part of the pair; it ru
 A pair that serves Only me (`darkbloom cluster local`) on every address gets no `Local API:` line in `status` on a Mac
 that relays it (`darkbloom local` there shows that Mac's own address), except when its port can't answer now. Then it
 gets the line above, in the same words (`ClusterPairSummary.memberAPIDown`): ``Local API: http://127.0.0.1:8003/v1 on
-this Mac answers 503 for now. …`` while the other Mac can't be reached, or the line for a port another program holds.
+this Mac answers 503 for now. …`` while the other Mac can't be reached or the pair's API there doesn't listen, or the
+line for a port another program holds.
 `darkbloom local`, `start --opencode`, the app's Start and `darkbloom doctor` say the same there.
 
 While single-Mac serving runs on either Mac of a started pair, the pair can't start there and it doesn't stop by
@@ -2905,7 +2915,7 @@ No line shows the key or a speed, and every problem names the next command:
 |---|---|
 | `mode` | How this Mac serves, in the start summary's words: what the running provider serves (`serving now`, read as `status` reads it), else `[local] mode` (`saved`); a saved choice the running provider doesn't serve is named with `` serves at the next `darkbloom start` ``. Only me's server is Only me from its first load: `(starting)` until its local API listens. Nothing saved and nothing running: ``not chosen yet: `darkbloom start` asks …``. On a paired Mac, the pair's way (**Only me (this pair)**, **Both, me first (this pair)** or **Darkbloom network (this pair)**, the start question's names) and the Mac that runs its API; before the pair has chosen, ``this Mac is paired, but how the pair serves isn't chosen yet`` (fix `darkbloom cluster`). A paired Mac serving alone (`start --solo`) is described by what it serves, with `(this Mac serves alone, not the pair)` |
 | `darkbloom network` | Only with **Only me**: ``not needed (Only me): the account, trust, App Attest and coordinator checks are skipped; `darkbloom start --choose` changes how this Mac serves`` (on a pair, `darkbloom cluster`; serving alone, `darkbloom start --solo --choose`) |
-| `address` | With a local API: ✓ `http://127.0.0.1:8001/v1 — up on port 8001` once it answers `GET /health` (2 s); ✗ when its process runs but the port doesn't answer; ✗ `<address> isn't up` with the address that couldn't listen, fix in `status`'s words (``port 8001 is in use (`darkbloom start --port 8002`)``, with `--solo` on a paired Mac serving alone); `— starting: it opens once its models are loaded` while Only me loads; ⚠ `— not running`, fix `` `darkbloom restart` starts it again as saved `` when the background service is installed, else `darkbloom start`. On a pair: ⚠ while it is stopped (`darkbloom start` starts the pair); on the Mac that doesn't run the pair's API, where it runs; on a Mac that passes the pair's API on through its own port and can't answer for it now, ⚠ in `status`'s words (`ClusterPairSummary.memberAPIDown`): ``http://127.0.0.1:8003/v1 on this Mac answers 503 for now. Your pair's other Mac (…) isn't reachable; …`` while that Mac is away (never `restart`), or the line for a port another program holds |
+| `address` | With a local API: ✓ `http://127.0.0.1:8001/v1 — up on port 8001` once it answers `GET /health` (2 s); ✗ when its process runs but the port doesn't answer; ✗ `<address> isn't up` with the address that couldn't listen, fix in `status`'s words (``port 8001 is in use (`darkbloom start --port 8002`)``, with `--solo` on a paired Mac serving alone); `— starting: it opens once its models are loaded` while Only me loads; ⚠ `— not running`, fix `` `darkbloom restart` starts it again as saved `` when the background service is installed, else `darkbloom start`. On a pair: ⚠ while it is stopped (`darkbloom start` starts the pair); on the Mac that doesn't run the pair's API, where it runs; on a Mac that passes the pair's API on through its own port and can't answer for it now, ⚠ in `status`'s words (`ClusterPairSummary.memberAPIDown`): ``http://127.0.0.1:8003/v1 on this Mac answers 503 for now. Your pair's other Mac (…) isn't reachable; …`` while that Mac is away (never `restart`), ``… The pair's API on your pair's other Mac (…) isn't answering yet; …`` while that API starts again (`memberAPIRestarting`), or the line for a port another program holds |
 | `key file` | ✓ the file the API's key is in (`~/.darkbloom/local_token`, `LocalEndpoint.keyFile`); ✗ when no file holds a running API's key, so tools that read it are refused; `none` for an API started with `--no-auth`, or before the first start |
 | `OpenCode`, `Hermes` | Darkbloom's provider in the tool's own config (`~/.config/opencode/opencode.jsonc` or `opencode.json`, `~/.hermes/config.yaml`, as `darkbloom --opencode` / `--hermes` choose them), read and judged as `start`'s notice judges it (`ToolAddress.readPointer`, `ToolAddress.miss`): `localhost`, `127.0.0.1` and `::1` are this Mac, and so is its `.local` name for an API on every address; another file that holds the same key is the same key; Hermes' `key_cmd` names a key file only as `/bin/cat <full path>`. ✓ `points here`; ⚠ `points at <address>, not this Mac's local API (…)`, or at the right address but another key file, or a provider block with no address (fix `darkbloom --opencode` / `--hermes`); ⚠ a config Darkbloom can't read, with why (not valid, larger than 4 MiB); `not set up` with the command that sets it up. With no local API (Darkbloom network), only a tool still pointing at one is shown (⚠, fix `darkbloom start --choose`; on a pair, `darkbloom cluster`) |
 

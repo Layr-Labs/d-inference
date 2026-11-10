@@ -543,6 +543,18 @@ struct DoctorLocalAPITests {
         let heldAddress = try #require(find("address", in: section(.init(saved: nil, pair: held)).diagnostics))
         #expect(heldAddress.level == .warn)
         #expect(heldAddress.message == heldWords)
+
+        // The pair's API on the other Mac doesn't listen for now (its part starts again): the relay answers 503 until it
+        // does, never "up" while it refuses every request.
+        var down = away
+        down.relayRankZeroAway = false
+        down.relayRankZeroAPIDown = true
+        let downWords = try #require(down.memberAPIRestarting)
+        #expect(downWords.hasPrefix("http://127.0.0.1:8002/v1 on this Mac answers 503 for now. The pair's API on "))
+        let downAddress = try #require(find("address", in: section(.init(saved: nil, live: Self.endpoint(pid: 777, port: 8002,
+            host: "0.0.0.0"), answers: true, keyFile: Self.keyFile, pair: down)).diagnostics))
+        #expect(downAddress.level == .warn)
+        #expect(downAddress.message == downWords)
     }
 
     @Test func noLineEverHoldsTheKeyOrASpeed() {

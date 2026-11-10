@@ -689,9 +689,11 @@ must retain media/KV and response ownership until native terminal retirement.
 
 After local admission closes for shutdown, a new POST receives HTTP `503`
 with a structured capacity response (`invalid_request_error`) from `LocalDisconnectResponder`.
-CORS headers remain present. Health checks and preflight requests still work,
-and already admitted responses retain their existing owner. Retry a rejected
-request after the provider is serving again.
+A pair's API answers its own typed `503` instead (`pair_api_unavailable`,
+`Retry-After: 10`, [above](#a-pairs-leader-beside-darkbloom)), and a POST
+without its key the `401`. CORS headers remain present. Health checks and
+preflight requests still work, and already admitted responses retain their
+existing owner. Retry a rejected request after the provider is serving again.
 
 
 ### Queued cluster requests during a mode change
@@ -726,14 +728,14 @@ other Macs pass nothing on.
 | Case | Answer | Source |
 |---|---|---|
 | A member that does not host the slot, or a local API without a key | The member refuses to start (`ClusterMemberControlError.incompatibleConfiguration`), as before | `ProviderLoop.prepareClusterMemberControl`, `admitsClusterPairLocalAPI` |
-| The pair is not serving (forming, re-forming, retired) | HTTP `503`, as `darkbloom cluster local` answers (`DistributedRequestQueue.unavailableMessage`) | `ProviderLoop.clusterPairNotServing` |
+| The pair is not serving (forming, re-forming, retired) | HTTP `503` at once, `code` `pair_api_unavailable`, `Retry-After: 10`: ``The pair's API takes no requests right now: the pair is starting or stopping. Requests resume when it serves, or run `darkbloom stop`, then `darkbloom start --solo`, to serve this Mac alone (`darkbloom start --solo` by itself is refused while this Mac's part of the pair holds its serving lock: up to 15 minutes after the other Mac last answered over the cable).`` (words true on every Mac of the pair, and through the other Mac's port), to a request with either key; one without gets the `401`. Never held: the API's gate reads whether the pair takes requests without waiting for anything else, and the router passes the `503` on as any of this Mac's. `darkbloom cluster local` answers the same | `LocalPairGateResponder`, `ClusterPairAPIRefusal`, `ProviderLoop.clusterPairNotServing` |
 | A model the pair does not serve | HTTP `404` | `acquireClusterPairForLocal` |
 | Every lane busy | Waits in arrival order with at most `DARKBLOOM_CLUSTER_QUEUE_WAITING` (default `64`) others; `429` when the queue is full; `503` after waiting longer than `requestTimeout * ((waiting + lanes) / lanes)` (`DistributedRequestQueue.Limits.waitCeiling`); a cancelled request or a reset connection leaves the queue at once, a connection closed normally only at its turn (below) | `ClusterPairLocalLanes` |
-| The pair's warm-up request is running | Waits until admission opens; `503` if the slot retires instead | `ProviderLoop.publishClusterPairSlot` |
-| A stop or an update drain | Waiting requests get `429` at once, as new ones do; running ones finish before the slot retires | `ProviderLoop.beginServingDrain` |
-| A lost rank | Waiting requests get `503`; running ones end with their terminal | `ProviderLoop.retireClusterPairSlot` |
-| A request on another Mac's port while this Mac can't be reached (unplugged, asleep) | `503` at once, `{"error":{"code":"pair_mac_unreachable","message":"Your pair's other Mac (…) isn't reachable; this Mac relays to it. Requests resume when it's back, or run `darkbloom stop`, then `darkbloom start --solo`, to serve this Mac alone.","type":"server_error"}}`, `Retry-After: 10`, to a request with that Mac's own key or the pair's. Any other gets this API's own `401`, as if it had reached it, and a liveness check or a CORS preflight, which need no key, the `503` with no names, chip or memory. Relaying resumes once this Mac answers over the cable again; this Mac is away after 12 s without an answer there. Never a connection that just closes | `ClusterLocalRelay.pass`, `ClusterLocalRelay.Refusals`, `ClusterLocalRelay.Caller`, `ClusterService.relayAway` |
-| A request on another Mac's port while this API doesn't listen (its part starting again) | `503` with `code` `pair_api_unavailable`, to the same callers the same way | `ClusterLocalRelay.connect(_:within:)` |
+| The pair's warm-up request is running | That `503` at once: the gate opens with admission | `ProviderLoop.publishClusterPairSlot` |
+| A stop or an update drain | New requests get that `503` at once at the API's door (one without a key its `401`), waiting ones too; running ones finish before the slot retires | `LocalDisconnectResponder`, `ProviderLoop.beginServingDrain` |
+| A lost rank | Waiting requests get that `503`; running ones end with their terminal | `ProviderLoop.retireClusterPairSlot` |
+| A request on another Mac's port while this Mac can't be reached (unplugged, asleep) | `503` at once, `{"error":{"code":"pair_mac_unreachable","message":"Your pair's other Mac (…) isn't reachable; this Mac relays to it. Requests resume when it's back, or run `darkbloom stop`, then `darkbloom start --solo`, to serve this Mac alone (`darkbloom start --solo` by itself is refused while this Mac's part of the pair holds its serving lock: up to 15 minutes after the other Mac last answered over the cable).","type":"server_error"}}`, `Retry-After: 10`, to a request with that Mac's own key or the pair's; the same without the name to one with another key in the local key format, such as this Mac's own, which that Mac can't judge. Any other gets this API's own `401`, as if it had reached it, and a liveness check or a CORS preflight, which need no key, the `503` with no names, chip, memory or commands. Relaying resumes once this Mac answers over the cable again; this Mac is away after 12 s without an answer there, and until then the same `503` comes within 3 s. Never a connection that just closes | `ClusterLocalRelay.pass`, `ClusterLocalRelay.Refusals`, `ClusterLocalRelay.Caller`, `ClusterService.relayAway` |
+| A request on another Mac's port while this API doesn't listen (its part starting again) | `503` with `code` `pair_api_unavailable`, ``The pair's API on your pair's other Mac (…) isn't answering yet; this Mac relays to it. Requests resume when it answers, or run …``, to the same callers the same way. That port stays up while this Mac's status says its pair's API is down for now, and its `status` says so | `ClusterLocalRelay.connect(_:within:)`, `ClusterLocalRelay.rankZeroAPIDown` |
 
 A waiting request costs nothing: it is parked, not polled, until a local
 request releases a lane, a Darkbloom request ends (the capacity refresh that

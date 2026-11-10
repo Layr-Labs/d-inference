@@ -188,6 +188,12 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
             // A cluster pair's refusal names its rule and the model's limits
             // (a closed template, never request content): the client sees why.
             return Self.openAIErrorResponse(status: .badRequest, message: message, code: refusal.rawValue)
+        } catch MultiModelBatchSchedulerEngineError.requestRejected(DistributedRequestQueue.unavailableMessage) {
+            // A pair's API whose pair stopped serving once the request was in
+            // (queued for a lane when a rank is lost or a stop begins, or
+            // `cluster local`'s session starting or stopping): its typed 503,
+            // as at its gate.
+            return ClusterPairAPIRefusal.response()
         } catch let error where error is MultiModelBatchSchedulerEngineError
             || error is MediaIngest.MediaError
         {

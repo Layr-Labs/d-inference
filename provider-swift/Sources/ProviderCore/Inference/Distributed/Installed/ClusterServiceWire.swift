@@ -103,6 +103,10 @@ public struct ClusterServiceStatus: Codable, Sendable, Equatable {
     /// answered over the cable for `ClusterService.otherMacSilentSeconds`), so the relay answers each request a 503 that
     /// says so (`ClusterLocalRelay.Refusals`). Nil otherwise, and from an older build.
     public var relayRankZeroAway: Bool? = nil
+    /// On a Mac whose relay passes the pair's API: rank 0's Mac answers, but the pair's API there doesn't listen for now
+    /// (its part starts again: `ClusterLocalRelay.rankZeroAPIDown`), so the relay keeps its port and answers each request
+    /// a 503 that says so. Nil otherwise, and from an older build.
+    public var relayRankZeroAPIDown: Bool? = nil
     /// This Mac's coordinator-paired parts that ended in a row right after starting (`ClusterApprovalCheck`); the
     /// control leader makes the pair serve locally when either Mac's count reaches the solo server's limit. Nil from an
     /// older build.

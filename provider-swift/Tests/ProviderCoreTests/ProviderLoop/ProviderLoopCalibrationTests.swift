@@ -262,6 +262,18 @@ struct ProviderLoopCalibrationTests {
         try? FileManager.default.removeItem(at: fixture.directory)
     }
 
+    @Test("the overdue refusal reaches the coordinator as retriable capacity: 503 token_budget_exhausted")
+    func overdueRefusalIsRetriableCapacity() {
+        let error = MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(
+            EngineV2Bridge.idleCalibrationRetirementOverdue)
+        // As the inference handler maps a stream-start failure.
+        let failure = ProviderLoop.sanitizedInferenceFailure(
+            from: error, phase: .streamStart, errorReason: classifyInferenceErrorReason(error))
+        #expect(failure.code == .capacity, "the coordinator fails a capacity refusal over to another Mac")
+        #expect(failure.statusCode == 503)
+        #expect(failure.errorReason == .tokenBudgetExhausted)
+    }
+
     private func installCalibrationSlot(_ fixture: ServeLoopFixture, gate: RecoveryStepGate,
         afterSelfTest: Bool = false, postureAllows: Bool = true,
         modelID: String = ServeLoopFixture.modelId,

@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-10
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -721,10 +721,10 @@ Its quote alone is not admission. The exact-owner `runEncoded` boundary charges
 ingress before JSON/base64/header inspection and media before decode. The media
 charge adds the SDK's shape-derived tower and projector working-memory bound for
 the largest image, which preparation evaluates one at a time; the global
-activation reserve is unchanged. It only accepts `data:image/png;base64,`,
-`data:image/jpeg;base64,`, `data:image/webp;base64,`, `data:image/gif;base64,`
-and `data:image/bmp;base64,` URIs, whose content selects the format, and uses the
-owned tokenizer. Native input arrays are constructed in a separate retained,
+activation reserve is unchanged. It only accepts inline base64 URIs under an
+image media type, `data:image/<subtype>[;attribute=value]...;base64,` in any
+case (`isInlineBase64Image`; `image/jpg` included), whose content selects the
+format, and uses the owned tokenizer. Native input arrays are constructed in a separate retained,
 fenced epoch before tower preparation. Synthetic RGB tests cover generation,
 cancellation, busy rejection and release after task completion; loopback HTTP
 tests serve PNG, JPEG, WebP, GIF and BMP variants through the tiny synthetic owner. Actual

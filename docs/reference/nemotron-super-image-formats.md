@@ -1,6 +1,6 @@
 # Nemotron Super image formats
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-10
 
 Reference for the inline image encodings that the unregistered Nemotron Super
 image owner decodes, how each becomes RGB8, and how that compares with the
@@ -15,7 +15,7 @@ at model revision `7d4bc747b6bdc2cff64c58d65da0d08dd9caa25c`.
 
 | Step | Reference behaviour | Provider behaviour | Source |
 |---|---|---|---|
-| Format | `PIL.Image.open` sniffs content; the data-URI media type is not used | Content is sniffed. PNG and JPEG, the model card's input formats, and WebP, GIF and BMP, which the coordinator also fetches and inlines, are decoded; every other signature fails with `unsupportedEncoding`. The route admits the `data:image/png;base64,`, `data:image/jpeg;base64,`, `data:image/webp;base64,`, `data:image/gif;base64,` and `data:image/bmp;base64,` labels, and every label carries every format | `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperImageDecode.swift` (`NemotronSuperImageDecode`) |
+| Format | `PIL.Image.open` sniffs content; the data-URI media type is not used | Content is sniffed. PNG and JPEG, the model card's input formats, and WebP, GIF and BMP, which the coordinator also fetches and inlines, are decoded; every other signature fails with `unsupportedEncoding`. The route admits an inline base64 data URI under any image media type, `data:image/<subtype>[;attribute=value]...;base64,` with the type in any case (`image/jpg`, `image/JPEG` and `image/pjpeg` included), and every label carries every format. Another media type, percent encoding and a remote or file URL are refused as `unsupported_media` | `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperImageDecode.swift` (`NemotronSuperImageDecode`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/NemotronSuperLocalImageBinding.swift` (`isInlineBase64Image`) |
 | Orientation | `ImageOps.exif_transpose`: IFD0 Orientation; only when that tag is absent, the first XMP `tiff:Orientation` match. Values 2–8 transpose; other values are ignored | Same rules for `.applyEXIF`, which the image owner uses; `.preserveRaster` ignores both | `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperImageOrientation.swift` (`NemotronSuperImageOrientation`) |
 | Mode conversion | `Image.convert("RGB")` | The PNG, JPEG, and WebP, GIF and BMP sections below | `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperPNGRaster.swift` (`NemotronSuperPNGRaster`), `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperJPEGRaster.swift` (`NemotronSuperJPEGRaster`) |
 | Colour management | None: ICC profiles, `gAMA`, `cHRM` and `sRGB` do not change samples | None. ImageIO samples are read without drawing | as above |
@@ -120,7 +120,7 @@ ImageIO's. A GIF frame smaller than its canvas leaves the rest transparent
 | Largest grid | 13312 patches (3328 tokens) per image, for example a 2048x1664 target; a 5751x5751 source resizes to 1856x1824 | `NemotronSuperImagePreprocessing.grid` |
 | Decoder quote | `data.count * 2 + pixels * 14` (PNG), `* 16` (JPEG) or `* 20` (WebP, GIF, BMP: ImageIO's raster, at most one drawn copy and the decoder's frame buffers) `+ height * 128 + 8 MiB`; `normalizationWorkspaceBytes` adds 256 MiB. Images decode one at a time, so the media reservation charges the largest image's `normalizationWorkspaceBytes` once, beside every image's two normalized Float32 copies (24 bytes per grid pixel) and features | `NemotronSuperImageDecode.swift` (`Quote`); `NemotronSuperLocalImageBinding.swift` (`encodedPlan`) |
 | Tower working memory | The media reservation adds the pinned composition's derived bound for the request's largest image, 2,095,272,960 bytes at 13312 patches. The global activation reserve is unchanged | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/NemotronSuperLocalImageBinding.swift` (`towerActivationBytes`); `libs/mlx-swift-lm/Libraries/MLXVLM/Models/NemotronSuperImageActivation.swift` (`pinnedActivationBytes`) |
-| Route | The binding admits only `data:image/png;base64,`, `data:image/jpeg;base64,`, `data:image/webp;base64,`, `data:image/gif;base64,` and `data:image/bmp;base64,` URIs (`admittedDataURIPrefixes`); the decoder sniffs their content. Another label is `unsupported_media` | `NemotronSuperLocalImageBinding.swift` (`encodedBody`) |
+| Route | The binding admits an inline base64 URI under any image media type, `data:image/<subtype>[;attribute=value]...;base64,`, the type in any case and the header at most 256 bytes (`isInlineBase64Image`); the decoder sniffs the content. Another media type, percent encoding, `DATA:` or `;BASE64` is `unsupported_media` | `NemotronSuperLocalImageBinding.swift` (`encodedBody`, `isInlineBase64Image`) |
 
 ## Related
 

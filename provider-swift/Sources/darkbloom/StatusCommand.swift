@@ -207,6 +207,13 @@ struct Status: AsyncParsableCommand {
             print("Authorization: \(ProviderAuthorizationReadiness.summary(authorization, removalAuthorization: removalAuthorization, now: now))")
             if !authorization.machineID.isEmpty { print("Machine ID: \(authorization.machineID)") }
         } else if let trust = state.trust {
+            // An older none/legacy decision is history, never a current grant.
+            if let lastReported = state.lastReportedProviderAuthorization(
+                coordinatorURL: config.coordinator.url, now: now) {
+                let summary = ProviderAuthorizationReadiness.lastReportedSummary(
+                    lastReported, receivedAt: trust.receivedAt, now: now)
+                print("Last reported authorization: \(summary)")
+            }
             let advice = TrustReasonCatalog.advice(level: trust.trustLevel, status: trust.status, reason: trust.reason)
             print("Trust: \(trust.trustLevel) / \(trust.status)")
             print("  → \(advice.message)")

@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-10
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -2591,6 +2591,27 @@ request-owned assistant pages and primes them before drafting; speculative
 draft KV is never shared. This is prompt-prefix reuse, not persistence of an
 in-flight speculative round. The ordinary attention-only prefix index remains
 disabled for this hybrid model.
+
+A request these assistants cannot draft for still records their prompt history
+when its prompt can be cached ([prefix-cache invariant 9](prefix-cache.md#invariants)).
+That covers a token constraint, logprobs, `logit_bias`, a penalty or a `stop`
+string, so it includes the catalog Qwen 3.5/3.6 builds' default request, whose
+card presence penalty keeps it from speculating. Its prompt chunks run the MTP
+step's hidden-returning prefill, the forward a speculating prompt runs, followed
+by the same sampler call, and its checkpoints equal a speculating request's. It
+never drafts, verifies or seeds a carry, and `beginMTPPlan` releases its
+assistant state once its prompt completes. Before 0.10.12 such a request
+staged no checkpoint on these heads, so the Qwen builds donated almost nothing
+from 0.10.5 on. The opt-in is per head
+(`CBv2MTPPrefixCheckpointDrafter.checkpointsNonSpeculatingRows`: Qwen 3.5,
+Nemotron Super and native Qwen4); the rows are chosen by
+`EngineLoopV2.mtpRecordsPromptHistory`
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPPlanning.swift`).
+A step that holds such a prompt chunk is an MTP step; decode rows beside it
+take the MTP step's plain decode, whose tokens and logprobs equal ordinary
+decode's (`Qwen35CardDefaultCheckpointTests` in the SDK, and
+`Qwen35CardDefaultDonationTests` on the provider's production assembly and
+encrypted store).
 
 ### Sampling parameters
 

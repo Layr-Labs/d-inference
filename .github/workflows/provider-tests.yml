@@ -956,6 +956,17 @@ jobs:
           DARKBLOOM_CLUSTER_METADATA_BUILD_JOBS: '12'
           DARKBLOOM_CLUSTER_METADATA_BUILD_ROOT: ${{ runner.temp }}/cluster-native-metadata
         run: bash libs/darkbloom-cluster/Tests/PrefillScheduleChecks/run.sh
+      # The worker package's own request lifecycle tests (WorkerTests,
+      # WorkerLaneTests: the coordinator over its real pipes with a fake
+      # runtime, CPU only), which no other job runs: among them D6's no-exit
+      # path, a running request ended alone for a rank's memory while the
+      # worker serves the next. A debug build of its own, on all the cores.
+      - name: Run the worker's request lifecycle tests
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        timeout-minutes: 45
+        env:
+          DARKBLOOM_WORKER_TEST_JOBS: '12'
+        run: bash libs/darkbloom-cluster-worker/Tests/LifecycleChecks/run.sh
       # Only pushes to master and dev save the cluster build (SAVE_CACHES).
       - name: Record source timestamps for the cluster build
         if: ${{ !cancelled() && env.SAVE_CACHES == 'true' && steps.capability-checks.outcome == 'success' && steps.cluster-build-cache.outputs.cache-hit != 'true' }}

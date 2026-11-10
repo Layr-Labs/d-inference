@@ -5653,7 +5653,10 @@ on both ranks, and nothing else:
   forward), and in rank 0's one-chunk lookahead, which then prepares no next
   chunk. Only a memory refusal latches (`QwenResidentMemoryRefusal`). Power,
   thermal, native errors, the deadline and a cancel still throw. A recording
-  (benchmark) request keeps the memory check in `check`.
+  (benchmark) request keeps the memory check in `check`. The gate is now asked
+  at those points (still at most every 250 ms), about once per prompt chunk on
+  the rank prefilling, where `check` used to ask it every 250 ms from inside
+  the transfers: a refusal is acted on up to one chunk later.
 - **The marker.** The stages' messages strictly alternate, so a rank that must
   stop owes exactly one next message, and its peer is already waiting for it.
   The rank sends a marker in that message's own record (type, label and size,
@@ -5686,11 +5689,11 @@ on both ranks, and nothing else:
 | Decode, plain or compact | The token frame's header, token, `tokenAccepted`, decision and `decisionAccepted` slots; compact decode's boundary, token and decision frames |
 | A published token | Rank 0 publishes a token and waits for the owner's answer before it decides, so a stop never crosses an answer; the client keeps the tokens it has |
 | Pipeline MTP | Rank 1 at its round (before it drafts) or its result (before it verifies); rank 0 at its round decision, after the window it was sent |
-| Phase split, alone route | Rank 0 at the hand-off header; rank 1 at `handoffReady` or `handoffAccepted`. After the hand-off, rank 1 at its next relay and rank 0 at a relay decision; on the alone route, rank 1's prompt digests too |
+| Phase split, alone route | Rank 0 at the hand-off header; rank 1 at `handoffReady` or `handoffAccepted`. After the hand-off, rank 1 at its next relay and rank 0 at a relay decision. On the alone route, rank 1 prefills the whole prompt by itself, so it takes a stop point before each of its frames, in the slot of the prompt digests it owes rank 0 next (`prefillAlone`, a prompt of more than one frame), and at those digests |
 | Before the first frame | No stop point: the reservation's own gate admitted the request just before, and a refusal is caught at the first frame |
 
-**Batch lanes** (`QwenResidentRuntime+Batch.swift`, wire v3; MiMo's
-`IndependentHistoryBatchDriver` on the same wire). A refusal
+**Batch lanes** (`QwenResidentRuntime+Batch.swift`, wire v3; MiMo's and
+GPT-OSS's `IndependentHistoryBatchDriver` on the same wire). A refusal
 stops one lane, the newest still running (`QwenBatchMemoryStop`), never the
 batch. Rank 0 polls before it builds a step's header, and rank 1 before its
 reply, which names its lane in `memoryMask` (word 6). Rank 0 lets the lane
@@ -5749,8 +5752,17 @@ batches failed whole on a refusal, so the worker exited either way. Now:
   boundary when the prefill frame that reaches it finishes, so the rank that
   didn't refuse keeps that entry until it is evicted (the refusing rank's gate
   dropped all of its own), and a restore needs both ranks. The check runs
-  after each committed token, as before; a prompt's chunks run on the
-  reservation's charge.
+  after each committed token, as before.
+- **A prompt's prefill** (one request: Gemma 4 and MiMo by default, GLM with
+  one lane) runs its chunks without a check, as before, so a refusal is acted
+  on at the first committed token. Meanwhile nothing the request allocates
+  passes its reservation: the gate admitted its whole charge at its context
+  (its state there, the largest frame's transients and, on a paged rank, the
+  pages it grows chunk by chunk). What can change is the rest of the Mac, which
+  the first check sees. A check per chunk would need both ranks to agree per
+  chunk, an evaluated all-sum that ends the prefill's overlap of host and GPU
+  work. Lanes need none: every prompt frame or slice is a step, and the check
+  runs between steps.
 - **Batches** (Qwen 3.8 27B in every width, its one-request singleton and its
   assistant lanes, and Gemma 4's lanes: `QwenTensorParallelBatchDriver`): the
   memory check leaves `check` for `memoryRefused`, polled at a step boundary

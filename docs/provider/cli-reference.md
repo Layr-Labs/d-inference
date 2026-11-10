@@ -153,7 +153,15 @@ Before most subcommands run, `runUpdateBannerIfEnabled`
 (`provider-swift/Sources/darkbloom/Darkbloom.swift`) checks for a newer release
 with a 2 s hard timeout and prints a one-line banner; `DARKBLOOM_NO_UPDATE_CHECK`
 set to any value skips it. Logging goes to stderr so launchd captures it in
-`~/.darkbloom/provider.log`.
+`~/.darkbloom/provider.log`. The local server's own two shutdown lines when its
+owner ends it (`[HummingbirdCore] Server shutdown error: Already closed` and
+`Waiting on child channel: CancellationError()`, at Ctrl-C) are left out
+(`QuietShutdownLogHandler`); every other line is written as before.
+
+Errors: a mistyped flag or option, or options a command refuses together before
+it runs, print `Error: …` and that command's usage (exit 64). A refusal a
+command makes once it runs prints only its own `Error: …` line, which names the
+next step, and no usage block (exit 64, `Darkbloom.exit(afterRunWithError:)`).
 
 In a terminal, `start`, `stop`, `restart`, `status` and `update` open with the
 Darkbloom mark beside the command's name and show a one-row live line while
@@ -259,7 +267,17 @@ A single-Mac `start` decides how this Mac serves (`StartServingResolver`,
    It is saved in `[local] mode`, as the question's answer is
    (`LocalFirstOptions.savesModeFlag`), so the background service, `restart`
    and `update` serve it from now on; `--local --here` (one terminal session)
-   and the `--foreground` service save no mode.
+   and the `--foreground` service save no mode. A plain `start --local` on one
+   Mac saves it.
+   **Beside `--solo`, every flag is for that start only**
+   (`LocalFirstOptions.solo`): on a Mac in a pair `[local]` holds the pair's
+   settings, so a solo start saves no mode, no `--choose` answer (and asks no
+   route: the pair's serves), and refuses `--route`, `--me-first-idle`,
+   `--no-me-first`, and `--me-first` over a saved `me_first = false`, when one
+   would change the pair's value, before anything starts or is saved (exit 64,
+   ``… would change [local] route, which your pair reads too. …``,
+   `StartServingResolver.soloSettingsRefusal`). Only a new or named port is
+   saved: this Mac's one port, the pair's API's too.
 2. `--choose` (a terminal only): the question again.
 3. The saved choice, `[local] mode`, with or without a terminal, Only me
    included: every choice serves in the background.
@@ -467,8 +485,9 @@ They run once, at `start`:
    to run the start again online for names and image support.
    Each model's name says where it runs: `(this Mac)`, `(your pair)` when the
    local API is this Mac's part of a running pair (its pid is the part's, or the
-   cluster service's for a member's relay; `IntegrationEndpoint.servesThePair`),
-   `(your Macs)` or `(Darkbloom network, billed)`.
+   cluster service's for a member's relay; `IntegrationEndpoint.servesThePair`;
+   never the cluster service's solo server, which serves this Mac alone while
+   the other Mac is away), `(your Macs)` or `(Darkbloom network, billed)`.
    The result block names the file changed, the backup, the default model on a
    line of its own and a one-line undo. OpenCode's default is set only when
    OpenCode has none: neither of its global files (`opencode.json`,
@@ -552,11 +571,11 @@ here (its other Mac gone). It first says so in one line, in words for what it do
   Mac (`ClusterPairCommands.openScreen`), whose title names this Mac's part:
   "Darkbloom cluster · Leading Mac" or "Darkbloom cluster · Joining Mac".
   Nothing starts there before a choice, so its line says what the screen does
-  (`ClusterPairSummary.screenLine`): on the leading Mac of a stopped pair,
-  `This Mac is in a two-Mac cluster with the other Mac (…), which is stopped.
-  Press Enter to start it with Qwen 3.8 27B (last used), or choose another
-  model.` (`Choose its model to start it.` before a model was chosen);
-  otherwise `…: opening the pair's screen.`
+  (`ClusterPairSummary.screenLine`): on the leading Mac of a stopped pair
+  whose other Mac answers, `This Mac is in a two-Mac cluster with the other Mac
+  (…), which is stopped. Press Enter to start it with Qwen 3.8 27B (last used),
+  or choose another model.` (`Choose its model to start it.` before a model was
+  chosen); otherwise `…: opening the pair's screen.`
   In a color terminal each finished step folds to one line, and the run's whole
   flow goes to `~/.darkbloom/cluster-setup/screens/` ("Full log: …" at the end);
   see [Two Macs as one provider](two-mac-cluster.md).
@@ -568,12 +587,15 @@ here (its other Mac gone). It first says so in one line, in words for what it do
   (up to 10 min).`), and a status that stays the same is said again once a
   minute (`Still waiting (up to 10 min in all): …`). The exit status is `darkbloom cluster status`'s (`0`
   serving, `3` not serving yet, `4` stopped, `5` the other Mac isn't
-  answering); `1` when no model was chosen yet (``No model was chosen for the pair yet: choose one with `darkbloom cluster` in a terminal on <the leading Mac>.``:
-  only the leading Mac's screen has the model list) or the cluster can't be
-  reached. A pair that runs
+  answering); `1` when no model was chosen yet (only ``No model was chosen for the pair yet: choose one with `darkbloom cluster` in a terminal on <the leading Mac>.``,
+  never `starting the pair` first: only the leading Mac's screen has the model
+  list) or the cluster can't be reached. A pair that runs
   here and already serves, by one look at the status `darkbloom cluster status`
   reads, is kept as it is: `…: the pair already serves.` and the result block,
   exit `0`, with nothing asked of either Mac (`ClusterPairCommands.servingLook`).
+  That look is taken only while this Mac's cluster service starts at login: one
+  that runs from a terminal session gets the start, which moves it to its login
+  agent, so the pair comes back after a restart.
 
 A stopped pair started from a script, as on pair-2 (45 s):
 
@@ -2742,7 +2764,13 @@ pair in one `Cluster:` line (`ClusterPairSummary.statusLine`). `darkbloom status
 `darkbloom cluster status` gives the same pair block with `--json` and exit
 statuses for scripts. `darkbloom doctor` prints the same `Cluster:` line under
 its `Daemon:` line, which reads `Daemon: single-Mac serving off (this Mac serves in its two-Mac cluster)`
-when no provider runs (`Doctor.daemonLine`).
+when no provider runs (`Doctor.daemonLine`). Doctor's line reads the pair as
+`status` does (`Doctor.clusterLine`): on the Mac that follows, the leading Mac's
+answer, waited for up to 10 s. That Mac's own view can't tell a serving pair
+from a loading one, since only the leading Mac's part writes the pair's state,
+so `status --solo` says `started` there rather than `loading`. While the other
+Mac isn't answering, the line names no roles: ``Cluster: this Mac is paired ·
+the other Mac (…) isn't answering · …``.
 
 Output includes:
 
@@ -3504,6 +3532,12 @@ recorded server process is still alive. On a Mac of a pair whose local API runs
 on another Mac, that record is this Mac's relay's (written by its cluster
 service): its own address and its own key. Without it, or with the pair's other
 Mac away, it says why, as `darkbloom status` does.
+
+Under the key, a `key file:` line names the file that holds it, for tools that
+read the key from a file: `~/.darkbloom/local_token`, this Mac's own key. On a
+pair's API (the leading Mac's, or this Mac's relay to it), the pair's key works
+too, and the line says so: ``key file: ~/.darkbloom/local_token (the pair's key,
+in ~/.darkbloom/cluster_local_token, works here too)`` (`Local.keyFileLine`).
 
 ## `darkbloom route`
 

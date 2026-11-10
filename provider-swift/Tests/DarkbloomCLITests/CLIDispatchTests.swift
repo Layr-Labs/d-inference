@@ -105,4 +105,17 @@ private final class BundleAnchor {}
         #expect(status == 64)
         #expect(out.contains("Error: Unknown option '--opencod'\nUsage: darkbloom <subcommand>"), "Got:\n\(out)")
     }
+
+    /// Journey 1 (J-10): a refusal a command makes once it runs ended with the root's "Usage: darkbloom <subcommand> /
+    /// See 'darkbloom --help'…", which names no step. It ends with its own words, exit 64 as before.
+    @Test func aRefusalAfterTheParseEndsWithItsOwnWords() throws {
+        let home = try makeTempHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let config = home.appendingPathComponent("provider.toml").path
+        // `--choose` without a terminal is refused once `start` runs (`LocalFirstOptions.modeStep`), not at parse.
+        let (out, status) = try runWithStatus(["start", "--choose", "--config", config], home: home)
+        #expect(status == 64)
+        #expect(out.contains("Error: `--choose` asks in a terminal. Without one, name how this Mac serves"), "Got:\n\(out)")
+        #expect(!out.contains("Usage: darkbloom") && !out.contains("for more information"), "Got:\n\(out)")
+    }
 }

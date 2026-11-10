@@ -348,14 +348,17 @@ and shows the result.
 After setup, `darkbloom cluster` works like `darkbloom start`; on a paired Mac,
 `darkbloom start` opens the same screen, and `darkbloom stop`, `restart` and
 `status` act on both Macs. In a terminal, `darkbloom start`'s first line says
-what that screen does: on the leader of a stopped pair, ``This Mac is in a two-Mac cluster with the other Mac
-(…), which is stopped. Press Enter to start it with Qwen 3.8 27B (last used), or
-choose another model.``; otherwise ``…: opening the pair's screen.`` The screen
+what that screen does: on the leader of a stopped pair whose other Mac answers,
+``This Mac is in a two-Mac cluster with the other Mac (…), which is stopped.
+Press Enter to start it with Qwen 3.8 27B (last used), or choose another
+model.``; otherwise ``…: opening the pair's screen.`` (with the other Mac
+silent the screen first offers Try again, Start over or Quit). The screen
 opens with both Macs and the cable ("This Mac
 (Studio A) leads · the other Mac (Apple M3 Ultra, 256 GB) follows · cable
 ready"; the other Mac by its hardware name, since no computer name crosses the
-cable), then the pair's status: the outcome block (`✓ Serving …` or `✗ Not
-serving: <reason>`), or "Stopped; last model …".
+cable; "This Mac (Studio A) · the other Mac (…) isn't answering" when it
+doesn't answer), then the pair's status: the outcome block (`✓ Serving …` or
+`✗ Not serving: <reason>`), or "Stopped; last model …".
 
 On the leader, the pair's model list follows, like `darkbloom start`'s picker:
 
@@ -393,10 +396,20 @@ for these Macs", and Enter takes it (`ClusterOnboardingModeAdvice.advise`). The
 leading Mac makes the recommendation from its plans, so both Macs' screens show
 the same words:
 
+- Each mode's line says the context it serves, from the plan that loads it
+  (`ClusterModelFeaturePolicy.servedProfile`, which the pair's limits and
+  refusals read too): "· context 262,144 tokens" for Gemma 4's tensor parallel,
+  "· context 65,536 tokens, prompts up to 32,768" for its pipeline. A narrow
+  window keeps "context 65,536".
 - Only modes whose own plan fits both Macs' free memory now count (while a
   model serves, its memory is freed first, so fitting now doesn't decide). One
   that fits alone is "the only one that fits these Macs now". Serving through
   Darkbloom, a mode Darkbloom serves publicly comes before one it doesn't.
+- Context comes before speed: when the modes left serve different contexts,
+  the one that serves the most is recommended, "the longest context here
+  (262,144 tokens; the other serves 65,536)", however fast the others are. A
+  mode that serves less is recommended only when it alone fits now. Modes that
+  serve the same context are ranked as below.
 - Among the rest, through Darkbloom, the mode that serves more requests at once
   wins, because Darkbloom turns away what a busy pair can't take; serving
   **Only me**, the mode clearly faster on this pair wins (measured, else the
@@ -1752,7 +1765,7 @@ they control single-Mac serving on one Mac
 | Command | On a Mac in the pair |
 |---|---|
 | `darkbloom stop` (or `darkbloom cluster stop`) | Stops serving on both Macs. They stay stopped after a restart, and both cluster services stay up, idle, so the next start needs no visit to the other Mac. It waits until both Macs' parts have ended and says so (`Memory freed on both Macs ✓`) |
-| `darkbloom start` | Starts the pair, whatever its state, also after `darkbloom stop`: in a terminal, the same screen as `darkbloom cluster`; in a script, starts the saved model on both Macs and waits until it serves. A script's start on a pair that already serves keeps it (`…: the pair already serves.`, exit 0). `darkbloom start --solo` serves this Mac alone instead: see [going back to serving on one Mac](#going-back-to-serving-on-one-mac) |
+| `darkbloom start` | Starts the pair, whatever its state, also after `darkbloom stop`: in a terminal, the same screen as `darkbloom cluster`; in a script, starts the saved model on both Macs and waits until it serves. A script's start on a pair that already serves keeps it (`…: the pair already serves.`, exit 0), while this Mac's cluster service starts at login; one that runs from a terminal session is moved to its login agent first. `darkbloom start --solo` serves this Mac alone instead: see [going back to serving on one Mac](#going-back-to-serving-on-one-mac) |
 | `darkbloom restart` | Stops and starts the pair with its current model. While the pair doesn't run here, restarts single-Mac serving that runs here instead, and never starts the pair or single-Mac serving that was stopped |
 | `darkbloom status` | The pair first (who leads, the model, whether it serves now and what to do), then this Mac's fields. When this Mac serves alone instead (`start --solo`), a line under the pair says so, and single-Mac serving's own lines follow. `darkbloom cluster status` gives the pair alone, with `--json` and exit codes |
 
@@ -1841,7 +1854,8 @@ on its own), `darkbloom start --solo` serves this Mac alone:
   on a paired Mac before it downloads anything. It says the pair as this Mac's
   own files tell it ("This Mac serves in a pair with …" only when it serves;
   "… which is stopped", "… that isn't running here", or, on the Mac that
-  follows, "started with …"). A pair with no model yet gets no **Start
+  follows, "started with …", where the summary says Start serving "Makes sure
+  the pair serves …" rather than that it starts it). A pair with no model yet gets no **Start
   serving**: the page says to choose its model with `darkbloom cluster` in
   Terminal on the leading Mac first, and so does the CLI (``No model was chosen for the pair yet: choose one with `darkbloom cluster` in a terminal on <the leading Mac>.``).
 - A pair that is merely stopped gives one line: ``This Mac is in a two-Mac
@@ -1942,11 +1956,16 @@ Until it leaves too, the other Mac still holds its pairing, and it can't tell
 this Mac having left from this Mac being off:
 - its `status`, `cluster status` and a `start`'s result say ``If the other Mac
   left the pair, `darkbloom cluster leave` here unpairs this Mac too.``, and no
-  longer that `start` on either Mac starts the pair;
+  longer that `start` on either Mac starts the pair. They name no roles while
+  this Mac doesn't answer: ``Cluster: this Mac (…) is paired with the other Mac
+  (…), which isn't answering``, then ``■ Stopped; last model …`` with ``The
+  other Mac (…) isn't answering over the cable.``;
 - its `darkbloom cluster`, which a `start` in a terminal opens, no longer
-  reaches this Mac. It says ``If it left the pair, choose Start over to pair
-  again, or Quit and run `darkbloom cluster leave` here.`` and offers
-  **Start over**.
+  reaches this Mac. Its opening line names no roles either (``This Mac (…) ·
+  the other Mac (…) isn't answering``), its status says the pair is stopped,
+  as `cluster status` does, never that it serves alone, and it says ``If it
+  left the pair, choose Start over to pair again, or Quit and run `darkbloom
+  cluster leave` here.`` and offers **Start over**.
 
 The models, single-Mac serving and the cable port setup stay on both Macs
 (`darkbloom cluster link --remove` undoes the cable setup). Every line:

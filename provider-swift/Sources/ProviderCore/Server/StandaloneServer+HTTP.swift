@@ -225,6 +225,12 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
                 // lease (not streamed: a streamed one is refused at its head,
                 // `EngineV2Bridge.holdHeadUntilAdmitted`).
                 return Self.openAIErrorResponse(status: status, message: Self.memoryRefusalMessage)
+            case .mediaUnsupportedByModel?:
+                // Media the model doesn't take as served here (a text-only
+                // model, or a pair that serves a model text only): the typed
+                // code this Mac gives the coordinator for it, on one Mac and
+                // on a pair alike.
+                return Self.openAIErrorResponse(status: status, message: failure.message, code: failure.code.rawValue)
             default:
                 return Self.openAIErrorResponse(status: status, message: failure.message)
             }

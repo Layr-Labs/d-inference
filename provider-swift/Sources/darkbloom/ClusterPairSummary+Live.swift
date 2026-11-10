@@ -78,9 +78,10 @@ extension ClusterPairSummary {
 
     /// The processes that serve the pair `status` publishes, while this Mac's part of it runs: the part's provider
     /// (`runningPartPID`), and the cluster service itself, whose relay answers a member's local API for the pair
-    /// (`ClusterService.relayTick` writes `local.json` with the service's own pid).
+    /// (`ClusterService.relayTick` writes `local.json` with the service's own pid). None while the service runs its solo
+    /// server (`child.solo`, the other Mac away): that serves this Mac alone (#1911's review, N7).
     static func pairProcesses(of status: ClusterServiceStatus?) -> Set<Int32> {
-        guard let status, status.child.running else { return [] }
+        guard let status, status.child.running, status.child.solo != true else { return [] }
         return Set([status.child.pid, status.servicePID].compactMap { $0 })
     }
 
@@ -128,6 +129,9 @@ extension ClusterPairSummary {
         summary.pairRunning = summary.started && ClusterService.pairRuns(own)
         summary.pairNotRunning = own?.pairNotRunning
         summary.otherMacReachable = own?.control.map { !ClusterService.otherMacAbsentModes.contains($0.mode) } ?? false
+        // This Mac's service asks the other Mac all the time: its control waiting for it, or serving without it, is an
+        // answer that didn't come.
+        if let mode = own?.control?.mode, otherMacAwayModes.contains(mode) { summary.otherMacAnswers = false }
         return summary
     }
 
@@ -202,7 +206,9 @@ extension ClusterPairSummary {
         // A part offered for a model the coordinator's catalog does not list: the coordinator never pairs it.
         if let refusal = ClusterLocalServing.pairRefusal(notice: own?.child.notice) { return (.notServing, refusal) }
         // A part registered with the coordinator as a pair member, before its pair line: the coordinator may still pair it.
-        if own?.child.notice == ClusterLocalServing.offeredNotice { return (.loading, nil) }
+        // Only rank 0's part writes that line, so on the Mac that follows this view can't tell a serving pair from a
+        // loading one (journey 3, D1: "loading" for as long as the pair served); the leading Mac's answer says which.
+        if own?.child.notice == ClusterLocalServing.offeredNotice { return (own?.sessionLeader == false ? .unknown : .loading, nil) }
         if let session = own?.session, session.observed {
             guard session.ready else { return (.loading, nil) }
             return localOnly ? (.serving, nil) : (.notServing, ClusterOnboardingReady.notOfferedReason(nil))

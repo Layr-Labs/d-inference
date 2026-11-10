@@ -850,7 +850,8 @@ final class OnboardingLive: @unchecked Sendable {
                          measuredTokensPerSecond: mode.servedDecodeTokensPerSecond,
                          earlierMeasuredTokensPerSecond: mode.earlierServedDecodeTokensPerSecond,
                          predictedTokensPerSecond: own.flatMap { $0.absolute ? $0.decodeTokensPerSecond : nil },
-                         concurrentRequests: mode.concurrentRequests, publicTraffic: mode.publicTraffic)
+                         concurrentRequests: mode.concurrentRequests, publicTraffic: mode.publicTraffic,
+                         contextTokens: mode.contextTokens)
         }
         return ClusterOnboardingModeAdvice.advise(options, throughDarkbloom: throughDarkbloom, serving: serving)
     }
@@ -860,10 +861,11 @@ final class OnboardingLive: @unchecked Sendable {
     static func startsAtLogin(now: Bool?, setUp: Bool?) -> Bool? { now ?? setUp }
 
     /// A planned mode as the screen shows it: each Mac's share (`modeSplit`; `serving`: a model serves now), the decode
-    /// rate this pair served it at, and the requests it serves at once.
+    /// rate this pair served it at, the requests it serves at once, and the context it serves.
     func screenMode(_ mode: ClusterSetupPlanSummary.Mode, serving: Bool) -> ClusterOnboardingMode {
         .init(mode: mode.mode, split: Self.modeSplit(mode.shares, here: hereShort, there: thereShort, serving: serving),
-              measuredTokensPerSecond: mode.servedDecodeTokensPerSecond, concurrentRequests: mode.concurrentRequests)
+              measuredTokensPerSecond: mode.servedDecodeTokensPerSecond, concurrentRequests: mode.concurrentRequests,
+              contextTokens: mode.contextTokens, promptTokens: mode.promptTokens)
     }
 
     /// `keeping`: the mode each model id keeps (`LiveContext.plan`); the service's re-plan after an update passes the
@@ -2412,6 +2414,20 @@ final class OnboardingLive: @unchecked Sendable {
         return MeFirstWords.pairLines(state.meFirst, now: now)
     }
 
+    /// The status while this Mac's service waits for the other Mac, or serves without it (control mode "waiting",
+    /// "alone" or "cannotServe"): a started pair's control line, with serving alone's readiness (`soloNote`, asked only
+    /// then); a stopped pair never serves alone, so it says it is stopped and that the other Mac doesn't answer, as
+    /// `cluster status` reads it (journey 3, D3: after the leading Mac left, the Mac left behind said "degraded: serving
+    /// on this Mac alone … (its solo server is still loading)" while the leave had stopped the pair and nothing ran).
+    static func awayLines(_ control: ClusterServiceStatus.Control, started: Bool, stopped: String, there: String, prefix: String,
+                          soloNote: () -> String?) -> [String] {
+        guard started else { return [stopped, ClusterOnboardingMacName.sentence(there) + " isn't answering over the cable."] }
+        return [prefix + control.line + (control.mode == "alone" ? soloNote() ?? "" : "") + "."]
+    }
+
+    /// A stopped pair's status line: "Stopped; last model Qwen 3.8 27B.", or "Stopped." before a model was chosen.
+    private var stoppedLine: String { "Stopped\(leadership?.modelName.map { "; last model " + modelTitle($0) } ?? "")." }
+
     func localStatus() -> [String] {
         var lines = [String]()
         // After a Darkbloom update this Mac's service sets the cluster up again by itself; said first while it runs.
@@ -2419,17 +2435,15 @@ final class OnboardingLive: @unchecked Sendable {
         let answering = self.answering
         if let control = ClusterService.published()?.control, ["alone", "cannotServe", "waiting"].contains(control.mode) {
             // Serving alone is said only once this service's own solo server answers, as the setup's wait counts it.
-            var line = control.line
-            if control.mode == "alone" {
+            return lines + Self.awayLines(control, started: leadership?.serving == true, stopped: stoppedLine, there: there,
+                                          prefix: answering ? Self.sentence(hereShort) + ": " : "") {
                 let published = ClusterService.published()
                 switch ClusterService.soloReadiness(published) {
-                case .ready: break
-                case .loading: line += " (its solo server is still loading)"
-                case .foreign: line += " (another program answers on port \(ClusterService.soloPort(of: published)), so its solo server cannot serve there)"
+                case .ready: return nil
+                case .loading: return " (its solo server is still loading)"
+                case .foreign: return " (another program answers on port \(ClusterService.soloPort(of: published)), so its solo server cannot serve there)"
                 }
             }
-            lines.append((answering ? Self.sentence(hereShort) + ": " : "") + line + ".")
-            return lines
         }
         // One line for the screen (the banner above says which Mac leads): what serves and where, or why it does not.
         let model = (leadership?.modelName).map(modelTitle) ?? "the chosen model"
@@ -2439,7 +2453,7 @@ final class OnboardingLive: @unchecked Sendable {
             lines.append(ClusterOnboardingNotServing.statusLine(model: model, reason: ClusterOnboardingSoloServing.title(solo.soloServing)))
             lines += ClusterOnboardingSoloServing.remedies(solo.soloServing).map(ClusterOnboardingCommand.named)
         } else if leadership?.serving != true {
-            lines.append("Stopped\(leadership?.modelName.map { "; last model " + modelTitle($0) } ?? "").")
+            lines.append(stoppedLine)
             if let scope = leadership?.scope, scope.localAPIBind != nil { lines.append("When it starts: " + scope.line + ".") }
         } else if let split = versionSplit() {
             // Different versions never clear by themselves: both windows say it, with the versions and the command.

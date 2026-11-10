@@ -84,6 +84,9 @@ enum ClusterSetupPlanning {
     struct Loads: Sendable, Equatable {
         var shares: [ClusterSetupPlanSummary.Mode.Share]
         var concurrentRequests: Int?
+        /// The context the pair then serves, and its longest prompt; nil when not known.
+        var contextTokens: Int? = nil
+        var promptTokens: Int? = nil
     }
 
     /// The modes the question offers, each with what loads when it is chosen: the listed plan's split for the listed
@@ -98,12 +101,16 @@ enum ClusterSetupPlanning {
             var offered = mode
             offered.shares = loads.shares
             offered.concurrentRequests = loads.concurrentRequests
+            offered.contextTokens = loads.contextTokens
+            offered.promptTokens = loads.promptTokens
             return offered
         }
     }
 
-    /// What `placement` loads: each rank's share, named for the Mac that runs it, and the requests its setup serves at
-    /// once (`DistributedInstalledPlan.batchLanes`, without the diagnostic switch); nil when the setup can't be read.
+    /// What `placement` loads: each rank's share, named for the Mac that runs it, the requests its setup serves at once
+    /// (`DistributedInstalledPlan.batchLanes`, without the diagnostic switch; nil when the setup can't be read), and the
+    /// context and longest prompt a pair serves in its mode (`ClusterModelFeaturePolicy.servedProfile`, which the pair's
+    /// limits, `/v1/models` and refusals read too).
     static func loads(_ placement: ClusterPlacementCandidate, setup: ClusterPlacementSetup?, localMemberID: String,
                       capability: (record: ClusterRuntimeCapability, data: Data, sha256: String)) -> Loads {
         let shares = placement.ranks.enumerated().map { index, rank in
@@ -113,9 +120,10 @@ enum ClusterSetupPlanning {
         let configuration = setup?.configurations[localMemberID].flatMap {
             try? ClusterConfigurationCodec.decode($0, capability: capability.record, capabilitySHA256: capability.sha256)
         }
+        let served = ClusterModelFeaturePolicy.servedProfile(capability.record, mode: placement.mode)
         return .init(shares: shares, concurrentRequests: configuration.map {
             DistributedInstalledPlan.batchLanes(configuration: $0, capability: capability.record, environment: [:]) ?? 1
-        })
+        }, contextTokens: served.maximumContextTokens, promptTokens: served.maximumPromptTokens)
     }
 
     /// The pair description for another model folder: the same members,

@@ -166,8 +166,9 @@ enum ClusterPairCommands {
             for line in serving.resultLines { say(line) }
             return serving.exitCode
         }
-        say(pair.actingLine("starting the pair"))
+        // Said only once the pair can start: a pair with no model yet gets its one line (#1908's review, nit 8).
         guard let actions = startable(pair, actions: actions, say: say) else { return 1 }
+        say(pair.actingLine("starting the pair"))
         return await serve(actions, config: config, say: say)
     }
 
@@ -176,8 +177,10 @@ enum ClusterPairCommands {
     /// the Mac that follows, the leading Mac's answer), says the pair serves; this Mac's own view decides only whether to
     /// ask: while the pair runs here and the other Mac answers, so a start whose other Mac is away goes on at once, as
     /// before. Like the wait's looks (`waitUntilServing`), it waits for the answer as long as it takes, never cut short.
+    /// Only while this Mac's cluster service starts at login: one that runs from a terminal session is moved to its login
+    /// agent by the start (`serve`), so the pair comes back after a restart (#1908's review, nit 3).
     private static func servingLook(_ pair: ClusterPairSummary, config: String?) async -> ClusterPairSummary? {
-        guard pair.started, pair.partServes, pair.otherMacReachable else { return nil }
+        guard pair.started, pair.partServes, pair.otherMacReachable, pair.startsAtLogin else { return nil }
         let look = await ClusterPairSummary.live(config: config)
         return look.state == .serving ? look : nil
     }

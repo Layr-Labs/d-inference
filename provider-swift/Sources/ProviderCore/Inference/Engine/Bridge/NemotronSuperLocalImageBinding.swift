@@ -285,7 +285,7 @@ actor NemotronSuperLocalImageBinding {
     /// URL, percent encoding, a label that is not an image, and a header
     /// above 256 bytes are refused. `data:` and `;base64` are matched as
     /// written, as the coordinator and `MediaIngest.dataFromDataURI` read them.
-    static func isInlineBase64Image(_ uri: String) -> Bool {
+    private static func isInlineBase64Image(_ uri: String) -> Bool {
         guard let comma = uri.utf8.firstIndex(of: UInt8(ascii: ",")) else { return false }
         let header = uri[..<comma]
         guard header.utf8.count <= 256, header.hasPrefix("data:"), header.hasSuffix(";base64") else { return false }

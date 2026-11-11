@@ -244,7 +244,7 @@ extension ProviderLoop {
             callback: receiptCallbacks.lookup)
         // Each refusal before the inference task logs its fixed reason publicly,
         // so `darkbloom logs` accounts for it; the frame carries no reason.
-        func reject(_ failure: InferenceFailure, refusal: InferenceRefusalReason) {
+        func reject(_ failure: InferenceFailure, refusal: InferenceRefusalReason?) {
             InferenceFailureLogger(logger: logger).record(requestId: requestId, failure: failure, refusal: refusal)
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceError(requestId: requestId, failure: failure, profile: profile),
@@ -462,6 +462,17 @@ extension ProviderLoop {
             modelType: modelSlots[modelId]?.modelType ?? advertisedModels[modelId]?.modelType)
         {
             rejectInvalidRequest(refusal) // Never publish raw decrypted validation details.
+            return
+        }
+        // Exact-id LFM2.5 refusals (reasoning disable, unenforced
+        // response_format): before acceptance, admission or a cold load. The
+        // typed errors map to the closed 400 client_error frame, and the log
+        // names their reason like every other refusal here.
+        do {
+            try LFM2RequestPolicy.validate(request: chatRequest, controls: templateControls)
+        } catch {
+            let failure = Self.sanitizedInferenceFailure(from: error, phase: .request)
+            reject(failure, refusal: Self.promptRefusal(failure, error))
             return
         }
         if rejectIfDrainingForMTP(modelId: modelId, requestId: requestId, send: send,

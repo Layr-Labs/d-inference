@@ -2891,6 +2891,16 @@ actual artifact chat-template parity and fixed 1K/4K/16K/32K request boundaries.
 The qualification wrapper includes the artifact's newline after `<bos>`;
 existing request files must be regenerated into a fresh evidence directory.
 
+## LFM2.5 chat template parity
+
+`LFM2TemplateParityLiveTests` renders the committed request bodies in
+`provider-swift/Tests/ProviderCoreTests/Fixtures/lfm2-template-request-bodies.json`
+through the provider path and compares the prompt and token IDs with a
+Transformers reference. It needs a local pinned snapshot, because the template
+and tokenizer are not redistributed. Write the reference with
+`scripts/generate-lfm2-template-reference.py`, then set `LFM2_TEMPLATE_MODEL_DIR`
+and `LFM2_TEMPLATE_REFERENCE_DIR`. Without them the test skips.
+
 ## Bonsai packed FP32 row checks
 
 `HadamardLayerTests.testBonsaiFloat32RowsMatchSingletonPackedArithmetic` in

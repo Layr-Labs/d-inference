@@ -50,6 +50,8 @@ public enum InferenceRefusalReason: String, CaseIterable, Sendable, Equatable {
         case .invalidRole: self = .unsupportedMessageRole
         case .unsupportedReasoningEffort: self = .unsupportedReasoningControl
         case .conflictingReasoningEfforts: self = .contradictoryReasoningControls
+        case .reasoningCannotBeDisabled: self = .unsupportedReasoningControl
+        case .responseFormatNotEnforced: self = .unsupportedResponseFormat
         case .advertisedContextExceeded, .promptExceedsContext: self = .requestExceedsContext
         case .unsupportedOutputControl: self = .unsupportedOutputControl
         default: return nil

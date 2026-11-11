@@ -128,6 +128,7 @@ enum ProviderPromptContractPipeline {
         preserveMiMoMediaParts: Bool = false
     ) throws -> NormalizedInput {
         try validateNativeControls(templateControls, modelType: modelType)
+        try LFM2RequestPolicy.validate(request: request, controls: templateControls)
         try FlintRequestPolicy.validate(request, controls: templateControls, modelType: modelType)
         if GLM5NextPromptPolicy.applies(modelType: modelType) {
             guard !preserveMiMoMediaParts else {

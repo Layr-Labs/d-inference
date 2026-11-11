@@ -50,6 +50,14 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
     /// request error, before template rendering; the message names only the
     /// two fields and the accepted names, so a client may be shown it.
     case conflictingReasoningEfforts
+    /// A reasoning-only model (LFM2.5) received a control asking to disable
+    /// reasoning. Deterministic request error, before acceptance or render;
+    /// the field is a closed wire spelling, never a caller value.
+    case reasoningCannotBeDisabled(ThinkingDisableField)
+    /// LFM2.5 received a structured-output `response_format` that nothing
+    /// enforces. Deterministic request error, before acceptance or render;
+    /// the mode is a closed wire spelling, never a caller value.
+    case responseFormatNotEnforced(UnenforcedResponseFormat)
     /// The MODEL failed to satisfy the request's forced `tool_choice`
     /// contract, or the inference-time grammar reached an impossible state.
     /// This depends on what the model GENERATED —
@@ -141,6 +149,10 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
             return field.refusalMessage
         case .conflictingReasoningEfforts:
             return ReasoningEffortField.conflictMessage
+        case .reasoningCannotBeDisabled(let field):
+            return LFM2ReasoningControlPolicy.rejectionMessage(for: field)
+        case .responseFormatNotEnforced(let format):
+            return LFM2ResponseFormatPolicy.rejectionMessage(for: format)
         case .toolChoiceViolation(let message):
             return message
         case .tokenBudgetExhausted(let message):

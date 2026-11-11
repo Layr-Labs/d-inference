@@ -165,6 +165,14 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
                     code: Int(ProviderLoop.mapInferenceErrorToStatus(error))),
                 message: error == .responseFormatCutOffByMaxTokens
                     ? error.localizedDescription : InferenceFailureCode.internalFailure.message)
+        } catch MultiModelBatchSchedulerEngineError.reasoningCannotBeDisabled(let field) {
+            // Fixed text naming a closed field spelling; no caller content.
+            return Self.openAIErrorResponse(
+                status: .badRequest, message: LFM2ReasoningControlPolicy.rejectionMessage(for: field))
+        } catch MultiModelBatchSchedulerEngineError.responseFormatNotEnforced(let format) {
+            // Fixed text naming a closed response_format mode; no caller content.
+            return Self.openAIErrorResponse(
+                status: .badRequest, message: LFM2ResponseFormatPolicy.rejectionMessage(for: format))
         } catch let error as PreContentDeadlineFailure {
             // A distributed first-token budget that is already spent refuses
             // before any SSE header or content, with the existing mapping.

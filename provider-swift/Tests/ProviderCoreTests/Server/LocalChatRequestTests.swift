@@ -49,6 +49,7 @@ struct LocalChatRequestTests {
             promptDate: try #require(local.templateControls.promptDate))
             .withRawMiMoControls(evidence(invalid: true)).withRawGLM5Controls(glm)
             .withRawFlintControls(flint)
+            .withThinkingDisableEvidence(.init(fields: [.enableThinking]))
         expected.rawMiMoTools = try decoder.decode(MiMoV26ToolEvidence.self, from: data)
         #expect(local.templateControls == expected)
         #expect(local.request.reasoning?.enabled == true)
@@ -58,19 +59,20 @@ struct LocalChatRequestTests {
 
     @Test("malformed extension fields are isolated and retain alias precedence", arguments: [
         (#""reasoning_effort":7,"enable_thinking":false,"preserve_thinking":true"#,
-         ChatTemplateControls(enableThinking: false, preserveThinking: true), true),
+         ChatTemplateControls(enableThinking: false, preserveThinking: true), true, [.enableThinking]),
         (#""reasoning_effort":" custom ","enable_thinking":"yes","chat_template_kwargs":{"enable_thinking":true},"preserve_thinking":false"#,
-         ChatTemplateControls(reasoningEffort: "custom", enableThinking: true, preserveThinking: false), true),
+         ChatTemplateControls(reasoningEffort: "custom", enableThinking: true, preserveThinking: false), true, []),
         (#""reasoning_effort":" \n ","enable_thinking":null,"chat_template_kwargs":{"enable_thinking":false},"preserve_thinking":{}"#,
-         ChatTemplateControls(enableThinking: false), true),
+         ChatTemplateControls(enableThinking: false), true, [.chatTemplateKwargsEnableThinking]),
         (#""enable_thinking":true,"chat_template_kwargs":false,"preserve_thinking":false"#,
-         ChatTemplateControls(enableThinking: true, preserveThinking: false), true),
+         ChatTemplateControls(enableThinking: true, preserveThinking: false), true, []),
         (#""enable_thinking":0,"chat_template_kwargs":{"enable_thinking":1},"preserve_thinking":"false""#,
-         ChatTemplateControls(), true),
+         ChatTemplateControls(), true, []),
         (#""unknown_extension":{"enable_thinking":true},"reasoning":{"enabled":false}"#,
-         ChatTemplateControls(), false),
-    ])
-    func malformedExtensionsAreIndependent(fragment: String, expected: ChatTemplateControls, invalid: Bool) throws {
+         ChatTemplateControls(), false, [.reasoningEnabled]),
+    ] as [(String, ChatTemplateControls, Bool, Set<ThinkingDisableField>)])
+    func malformedExtensionsAreIndependent(fragment: String, expected: ChatTemplateControls, invalid: Bool,
+        disables: Set<ThinkingDisableField>) throws {
         let data = Data((#"{"model":"test/qwen","messages":[],"# + fragment + "}").utf8)
         let local = try JSONDecoder().decode(LocalChatRequest.self, from: data)
         let glm = try JSONDecoder().decode(GLM5NextPromptPolicy.RawControls.self, from: data)
@@ -89,6 +91,7 @@ struct LocalChatRequestTests {
         #expect(flint.withholdsReasoning == fragment.hasPrefix(#""unknown_extension""#))
         let complete = expected.withRawMiMoControls(evidence(invalid: invalid)).withRawGLM5Controls(glm)
             .withRawFlintControls(flint)
+            .withThinkingDisableEvidence(.init(fields: disables))
         #expect(local.templateControls == complete.withPromptDate(try #require(local.templateControls.promptDate)))
         #expect(ProviderLoop.extractChatTemplateControls(from: data) == complete)
         #expect(local.templateControls.rawMiMoControls.invalid == invalid)
@@ -115,7 +118,8 @@ struct LocalChatRequestTests {
         #expect(flint.map(\.invalid) == [false, false, true])
         let expected = [
             ChatTemplateControls(enableThinking: false).withRawGLM5Controls(glm[0])
-                .withRawFlintControls(flint[0]),
+                .withRawFlintControls(flint[0])
+                .withThinkingDisableEvidence(.init(fields: [.enableThinking])),
             ChatTemplateControls().withRawGLM5Controls(glm[1]).withRawFlintControls(flint[1]),
             ChatTemplateControls(enableThinking: true).withRawMiMoControls(evidence(invalid: true))
                 .withRawGLM5Controls(glm[2]).withRawFlintControls(flint[2]),

@@ -357,6 +357,15 @@ work. Existing symlink ancestors of candidate and protected cache roots are
 resolved even when the final directories do not exist; dangling links, loops and
 raw traversal refuse. No root is created by that validation.
 
+Gated real-weights qualification tests that must restore their own files in a
+second process without the Secure Enclave or Keychain pass a code-only
+`completeCheckpointKeyLoader` through `EngineV2SlotFactory.AssemblyOverrides`;
+it reaches `SSDHybridCheckpointStoreFactory.build(persistentKeyLoader:)`. The
+factory refuses an injected loader unless the test root, the ephemeral
+allowance and `DARKBLOOM_PREFIX_CACHE_TEST_PERSISTENT_KEY=1` are all present,
+so it can never key the product cache root, and no environment variable can
+supply key bytes (`SSDHybridCheckpointStoreKeyLoaderTests`).
+
 Namespaced key failure cannot fall back to an ephemeral key. Omitting the namespace
 preserves the existing production selection and fallback behavior. Reports record
 namespace, selectors, isolated root and observed key mode without key bytes. This
@@ -429,6 +438,7 @@ exact-artifact release validation claim.
 | Qwen 3.5/3.8 dense (`qwen3_5`) | Full KV, recurrent state and optional typed MTP | Native contiguous or segmented paged | Supported floating/affine embedding typing, full owners and verified complete codec/storage identity |
 | Qwen 3.5/3.6 MoE (`qwen3_5_moe`) | Same recurrent complete codec | Native contiguous or segmented paged | Same gate as dense Qwen |
 | Selected Nemotron 3.5 Lightning (`nemotron_h`) | Native attention KV, Mamba convolution/FP32 SSM state, and optional shifted trusted MTP history | Native contiguous or segmented paged target | Exact Lightning model ID, loaded native types, complete checkpoint identity and typed Nemotron assistant codec when MTP is active |
+| LFM2.5-24B-A2B (`lfm2_moe`) | Native attention KV for the 10 attention layers and the last `L_cache - 1` gated conv inputs of the 30 short-conv layers (no SSM tensor) | Native contiguous or segmented paged target | Exact LFM2.5-24B-A2B model ID, loaded native types and complete checkpoint identity; no assistant (MTP off) |
 | Qwen3-VL MoE (`qwen3_vl_moe`) | Unsupported | No paged capability | No complete store (`unsupported_layout`) |
 | MiMo V2.6 (`mimo_v2`) | Asymmetric full/window target KV and optional trained-head checkpoint state | Native contiguous, text-only profile | Explicit MiMo COMPLETE-prefix opt-in, enabled model cache policy, exact loaded/store/process binding and observed native geometry; media profiles decline this checkpoint path |
 

@@ -72,6 +72,20 @@ owners are encoded. A stateless assistant does not itself exclude storage
 compression. Family and complete-cache eligibility checks still apply; fallback
 does not enable a previously unsupported cache.
 
+Five exact single-Mac artifacts request native checkpoints by default:
+`gemma-4-26b-qat-4bit`, `gpt-oss-20b`, `glm-5.3-flash` and the Bonsai 2 27B and
+9B listings (`PrefixCachePolicy.defaultsToNativeCheckpoints`, resolved in
+`EngineV2SlotFactory` through `PrefixCachePolicy.checkpointPrecision`). Native
+is their per-model default beneath the operator's own
+`engine_v2_kv_checkpoint_quantization_by_model` entry, so that entry or
+`DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` still selects a profile, while the
+global setting, which a saved provider.toml spells out as `balanced`, does not
+apply to them. Under `balanced` their restored answers moved off the cold ones
+at near-ties; native restores matched cold (Gemma bit for bit up to 32,768
+tokens, GLM's text). Other builds and aliases of these models, the pair's
+prompt-prefix records and the benchmark-only `makeProductionBuild` paths keep
+the global setting.
+
 An assistant whose checkpoint is its own state, never re-derived from stored
 target rows, declares `CBv2MTPExactHistoryPrefixCheckpointCoding`: the
 Nemotron Super and GLM5-Next MTP owners. Beside a paged recurrent target its

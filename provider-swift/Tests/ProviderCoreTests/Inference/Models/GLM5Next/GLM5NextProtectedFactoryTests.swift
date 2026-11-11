@@ -23,8 +23,9 @@ struct GLM5NextProtectedFactoryTests {
     }
 
     /// The protected tuple binds the encrypted full-state store of the slot's
-    /// checkpoint precision: the exact layout for `native`, the layout whose
-    /// older latent rows are coded for `balanced` (the default).
+    /// checkpoint precision, here the operator's per-model entry: the exact
+    /// layout for `native` (the default), the layout whose older latent rows
+    /// are coded for `balanced`.
     @Test(arguments: ["native", "balanced"])
     func managedSlotBindsEncryptedStoreAndRestoresPrefix(precision: String) async throws {
         let layout = precision == "native" ? CBv2CompleteCheckpointManifest.glm5NextPagedLayout
@@ -41,7 +42,7 @@ struct GLM5NextProtectedFactoryTests {
                     tokenizer: TokenizerHandle(tokenizer),
                     sizing: fixture.sizing, kvBytesCapacity: fixture.kvBytesCapacity,
                     maxConcurrentRequests: 1, kvBudget: fixture.budget, kvBackendConfig: "paged",
-                    checkpointQuantizationConfig: precision,
+                    checkpointQuantizationConfigByModel: [fixture.plan.weights.catalog.id: precision],
                     weightHash: fixture.plan.weights.manifest.aggregateSHA256,
                     specDecPreparation: fixture.mtpPreparation,
                     assemblyOverrides: .init(completeCheckpointIdentity: fixture.identity),
@@ -101,7 +102,8 @@ struct GLM5NextProtectedFactoryTests {
     /// cache flag and more than one request. Serving resolves the native paged
     /// backend and the provider-resolved MTP configuration reaches the GLM
     /// complete-prefix branch, so the encrypted full-state store is bound at
-    /// the default `balanced` checkpoint precision.
+    /// GLM's default native checkpoint precision under the global `balanced`
+    /// (`PrefixCachePolicy.defaultsToNativeCheckpoints`).
     @Test func defaultServingSelectsPagedKVAndCompletePrefix() async throws {
         try await withFixture { fixture in
             let container = try await fixture.load()
@@ -125,8 +127,8 @@ struct GLM5NextProtectedFactoryTests {
             let store = try #require(bundle.bridge.ssdHybridCheckpointStore)
             let engine = try #require(await bundle.bridge.ownedEngine as? EngineV2)
             #expect(store.identity == fixture.identity)
-            #expect(store.config.backendLayout == CBv2CompleteCheckpointManifest.glm5NextQuantizedPagedLayout)
-            #expect(bundle.bridge.kvCheckpointQuantization == .balanced)
+            #expect(store.config.backendLayout == CBv2CompleteCheckpointManifest.glm5NextPagedLayout)
+            #expect(bundle.bridge.kvCheckpointQuantization == .native)
             #expect(engine.completePrefixCache === store)
             #expect(engine.completeCheckpointCodec?.isNativePagedGLM5Next == true)
             #expect(engine.schedulerConfig.enablePrefixCache)

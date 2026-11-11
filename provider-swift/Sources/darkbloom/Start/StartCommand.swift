@@ -12,11 +12,12 @@ struct Start: AsyncParsableCommand {
         Scans local MLX models, lets you pick which to serve, then launches
         a launchd background service. Use --model to skip the interactive picker.
 
-        In a terminal, the first start asks how this Mac serves: only you (--local),
-        the Darkbloom network (--network), or both with you first (--me-first). The
-        answer is saved, and so is a flag; --choose asks again. Every choice serves in
-        the background; --local --here serves only you in this terminal instead. Without
-        a terminal and without a saved answer, it serves the Darkbloom network as before.
+        A first start asks nothing: it serves the Darkbloom network and this Mac's local
+        API, and Darkbloom keeps serving while you use it. That choice is saved, and so is
+        a flag: only you (--local, or `darkbloom local`), the Darkbloom network alone
+        (--network), or both with Darkbloom paused while you use this Mac (--me-first).
+        Every choice serves in the background; --local --here serves only you in this
+        terminal instead.
 
         On a Mac in a two-Mac cluster it starts the pair instead, also after `stop`: in a
         terminal the `darkbloom cluster` screen; without one the pair's saved model,
@@ -75,7 +76,9 @@ struct Start: AsyncParsableCommand {
             transform: Start.parseRoute)
     var route: LocalSettings.Route?
 
-    @Flag(help: "Ask how this Mac serves again, although a choice is saved (in a terminal).")
+    /// Earlier builds asked how this Mac serves again; no start asks now. Kept, hidden, so scripts that pass it still
+    /// run: it only prints `chooseNote`.
+    @Flag(help: .hidden)
     var choose = false
 
     @Flag(help: "Set up OpenCode to use Darkbloom: adds a provider to ~/.config/opencode (with a backup) pointing at this Mac's local API. Starts Darkbloom only if no local API runs.")
@@ -113,7 +116,7 @@ struct Start: AsyncParsableCommand {
     /// The options that decide how this Mac serves (`[local]`).
     var localFirstOptions: LocalFirstOptions {
         LocalFirstOptions(local: local, localEndpoint: localEndpoint, network: network, meFirst: meFirst,
-                          meFirstIdleMinutes: meFirstIdle, route: route, choose: choose, port: portOption,
+                          meFirstIdleMinutes: meFirstIdle, route: route, port: portOption,
                           bind: bindOption, noAuth: noAuth, foreground: foreground, here: here, solo: solo)
     }
 
@@ -383,18 +386,16 @@ struct Start: AsyncParsableCommand {
             switch choice {
             case .single, .serveAlone:
                 // Before the pair is touched (the solo choice recorded, this Mac's part stopped and its saved start
-                // cleared): the refusals of how this Mac would serve alone, such as `--choose` without a terminal.
-                // `resolveServing` makes the same ones again below.
+                // cleared): the refusals of how this Mac would serve alone. `resolveServing` makes them again below.
                 if pair.paired {
                     let saved = try savedLocalSettings(configPath: configOptions.config)
-                    let step = try localFirstOptions.modeStep(saved: saved, terminal: ClusterPairCommands.isTerminal())
-                    // A flag that would change a [local] key the pair reads is refused before the pair is touched too.
+                    // A flag that would change a [local] key the pair reads is refused before the pair is touched.
                     if let refusal = StartServingResolver.soloSettingsRefusal(localFirstOptions, saved: saved ?? LocalSettings()) {
                         throw ValidationError(refusal)
                     }
                     // Likewise a start that would ask for its models (checked again after `resolveServing`, where a Mac
                     // that isn't paired meets it).
-                    if case .decided(let mode, _) = step { try requireModelsNamedWithoutTerminal(mode: mode) }
+                    try requireModelsNamedWithoutTerminal(mode: localFirstOptions.mode(saved: saved).mode)
                 }
                 if opensLook { look.open(Self.lookTitle) }
             default: break
@@ -439,6 +440,7 @@ struct Start: AsyncParsableCommand {
         if !foreground {
             if opensLook { look.open(Self.lookTitle) }
             printTermsNotice()
+            if choose { print(Self.chooseNote) }
         }
 
         // --local (coordinator-less) and --local-endpoint (alongside the
@@ -466,11 +468,8 @@ struct Start: AsyncParsableCommand {
             return
         }
 
-        // How this Mac serves: a flag, the saved choice, or the question in a terminal.
-        guard let serving = try resolveServing() else {
-            print(ServingQuestion.cancelled)
-            return
-        }
+        // How this Mac serves: a flag, the saved choice, or the default.
+        let serving = try resolveServing()
         let localOnly = serving.mode == .local
         // No start asks without a terminal, the models' picker included.
         try requireModelsNamedWithoutTerminal(mode: serving.mode)
@@ -610,14 +609,13 @@ struct Start: AsyncParsableCommand {
         }
     }
 
-    /// How this start serves (`StartServingResolver`), with the question asked in a terminal; nil when the person
-    /// cancelled at the question. Nothing is saved yet: `saveServingChoice` saves once the start goes ahead.
-    func resolveServing(environment: ServingEnvironment = .live) throws -> StartServing? {
-        guard let serving = try StartServingResolver.resolve(
+    /// How this start serves (`StartServingResolver`). Nothing is saved yet: `saveServingChoice` saves once the start
+    /// goes ahead.
+    func resolveServing(environment: ServingEnvironment = .live) throws -> StartServing {
+        let serving = try StartServingResolver.resolve(
             localFirstOptions, saved: try savedLocalSettings(configPath: configOptions.config), environment: environment)
-        else { return nil }
         if serving.mode == .local, !local {
-            // `--local` is refused with these before anything is asked; an answer is refused before it's saved.
+            // `--local` is refused with these at the start of `run`; a saved Only me here, before anything is saved.
             if schedule {
                 throw ValidationError("--schedule configures a background provider; \"Only me, on this Mac\" does not "
                     + "use availability windows. Nothing was saved.")
@@ -632,13 +630,20 @@ struct Start: AsyncParsableCommand {
         return serving
     }
 
-    /// Saves what this start chose in `[local]` (a mode only from the question or a mode flag,
-    /// `LocalFirstOptions.savesModeFlag`) and says which port a new local API got. Called once the start goes ahead: a
-    /// cancelled picker or a refused start saves nothing.
+    /// Says how a start that took the default serves (`StartServing.defaultLine`), saves what this start chose in
+    /// `[local]` (a mode only from the default or a mode flag, `LocalFirstOptions.savesModeFlag`) and says which port a
+    /// new local API got. Called once the start goes ahead: a cancelled picker or a refused start saves nothing.
     func saveServingChoice(_ serving: StartServing) throws {
+        if let line = serving.defaultLine { print(line) }
         guard !serving.change.isEmpty else { return }
         try setLocalSettings(configPath: configOptions.config) { serving.change.apply(to: &$0) }
         if let note = serving.portNote { print(note) }
+    }
+
+    /// What `--choose` says: no start asks how this Mac serves, so it changes nothing.
+    static var chooseNote: String {
+        "`--choose` no longer asks: name how this Mac serves with --local, --network or --me-first, or run "
+            + "`\(BuildEnvironment.current.cliName) local` for local only."
     }
 
     /// Whether the local router's account key is in this Mac's Keychain. Never prints it.

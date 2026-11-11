@@ -1,6 +1,6 @@
 # Set up Darkbloom with an AI agent
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-11
 
 This page is a setup prompt for an AI agent. The agent installs Darkbloom,
 logs in with the person's help, makes one Mac (or two Macs joined by one
@@ -347,9 +347,22 @@ On DevNet, use the [DevNet names](#devnet-testers-only) in every command below.
    ```
 
    `--model` skips the interactive picker. The command starts a background
-   service, and the service starts again at every login. By default an idle
-   model is unloaded after 60 minutes and loads again on the next request.
-   `--idle-timeout 0` keeps it loaded. Ask the human whether that matters to them.
+   service, and the service starts again at every login. Nothing asks how the
+   Mac serves: on a Mac with no choice saved it serves **Both**, the Darkbloom
+   network and this Mac's local API beside it, and Darkbloom keeps serving
+   while the human uses the Mac. One line says so and the choice is saved:
+   ``Serving Darkbloom and your local API at http://127.0.0.1:<port>/v1
+   (`darkbloom local` for local only).`` A Mac with a saved choice serves it as
+   saved. If the human wants another way, add it to the command instead:
+   `--network` (Darkbloom only, no local API), `--me-first` (Darkbloom pauses
+   while they use the Mac) or `--local` (only them; never Darkbloom). The
+   human's own `darkbloom local` does the last one too, and prints the local
+   API's key (rule 6: don't run it to read the key). Without a terminal it never
+   stops Darkbloom on a Mac that serves it; in a terminal it asks first, and that
+   answer is the human's.
+   By default an idle model is unloaded after 60 minutes and loads again on the
+   next request. `--idle-timeout 0` keeps it loaded. Ask the human whether that
+   matters to them.
 
 5. Go to [verify](#one-mac).
 
@@ -589,6 +602,10 @@ The Mac serves when `darkbloom status` shows all of these lines:
   authorized until 14:05; renewed automatically)`
 - `Warm models:`, naming the model. An idle model unloads after the idle
   timeout and loads again on the next request.
+
+With **Both** (the default) or **Only me**, the Mac also has a local API.
+`darkbloom local --json | jq -r .base_url` prints its address alone; plain
+`darkbloom local` prints the key too (rule 6).
 
 In the first minutes after a start, `Traffic: not yet eligible (…)` is
 normal. Check again every few minutes without restarting anything (rule 8).

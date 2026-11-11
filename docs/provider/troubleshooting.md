@@ -1,6 +1,6 @@
 # Provider troubleshooting
 
-> Last updated: 2026-11-10
+> Last updated: 2026-11-11
 
 Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
 check names, service lifecycle, coordinator connection, updates, models, the
@@ -61,7 +61,7 @@ billing, version; `provider-swift/Sources/darkbloom/Diagnostics/DoctorRunner.swi
 
 | Check | What it tests | When it is not ✓ |
 |---|---|---|
-| `mode`, `darkbloom network` | How this Mac serves (Only me, Darkbloom network or Both, me first), first in the report; with Only me (also while it loads its models), the account, trust, App Attest and coordinator checks are skipped as not needed (`provider-swift/Sources/darkbloom/Diagnostics/DoctorLocalAPI.swift`) | Informational. Not chosen yet: `darkbloom start` asks; `darkbloom start --choose` changes it (`darkbloom cluster` on a pair; `darkbloom start --solo --choose` on a paired Mac serving alone) |
+| `mode`, `darkbloom network` | How this Mac serves (Both, Only me or Darkbloom network), first in the report; with Only me (also while it loads its models), the account, trust, App Attest and coordinator checks are skipped as not needed (`provider-swift/Sources/darkbloom/Diagnostics/DoctorLocalAPI.swift`) | Informational. Not chosen yet: `darkbloom start` serves Both and saves it, `darkbloom local` serves only you; `darkbloom start --local-endpoint` or `--network` changes it (`darkbloom cluster` on a pair; `darkbloom start --solo --local-endpoint` on a paired Mac serving alone) |
 | `address`, `key file` | The local API answers `GET /health` on its port, and a key file holds its key; the key is never printed | Follow the printed fix: `darkbloom restart` (a stopped background service, which starts as saved) or `darkbloom start` (none installed), the free port it names (port in use). For a port that doesn't answer, or no file holding the key, the command that starts the API again as it serves now: Ctrl-C, then `darkbloom start --local --here` for Only me in a terminal; `darkbloom restart` for the background service serving your saved choice; `darkbloom start` with the flag of the way it serves otherwise ([every case](./cli-reference.md#the-local-api-section)). On a pair's Mac whose own port can't pass the pair's API on now, `status`'s words: with the other Mac away, wait, or `darkbloom stop`, then `darkbloom start --solo` |
 | `OpenCode`, `Hermes` | Darkbloom's provider in the tool's config points at this Mac's local API and its key file | `darkbloom --opencode` or `--hermes` points it here again; a config Darkbloom can't read says why |
 | `hardware`, `metal gpu`, `macos` | Chip/RAM detection, Metal device, OS version | Apple Silicon with a working GPU is required; nothing to configure |

@@ -1,6 +1,6 @@
 # Owner pause ("me first")
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-11
 
 How a provider that serves Darkbloom and its owner from one Mac stops taking
 Darkbloom work while the owner uses the Mac through its local API, and returns
@@ -79,14 +79,15 @@ which reads `[local]` from the loaded config through
 | Provider | Me first |
 |---|---|
 | Both, me first (`start --me-first` or `--local-endpoint`): the local API beside the coordinator | On, mode `both`, unless `[local] me_first = false`; idle `me_first_idle_minutes` (default `2`) |
-| The same with `[local] me_first = false`, or a saved `mode` other than `both` | Off: local and Darkbloom requests share the Mac, and the heartbeat is unchanged |
-| Darkbloom network (plain `start`, `--network`), and a cluster member without the pair's slot | Off: no local API |
+| The same with `[local] me_first = false` (what a plain `start` saves from 0.10.12 on a Mac with no choice saved: Both, Darkbloom never paused), or a saved `mode` other than `both` | Off: local and Darkbloom requests share the Mac, and the heartbeat is unchanged |
+| Darkbloom network (`--network`, or launchd's child without a mode flag), and a cluster member without the pair's slot | Off: no local API |
 | A pair's leader with its local API beside Darkbloom | See [pairs](#pairs) |
 | Only me (`start --local`, `StandaloneServer`) | None: no coordinator, so no `ProviderLoop` and nothing to pause |
 
-With no `[local]` section it is on, so a Mac that already served with
-`--local-endpoint` before this change pauses from its first start after the
-update. That includes the desktop app's "Alongside the network" (Both, me
+With no `me_first` saved it is on, so a Mac that already served with
+`--local-endpoint` (or that 0.10.11's start question saved as Both, me first)
+pauses as before after an update; only a Mac with no choice saved gets `me_first
+= false` from the default (`StartServingResolver.resolve`). That includes the desktop app's "Alongside the network" (Both, me
 first), which starts the provider with `--local-endpoint`. To turn it off,
 start once with `--no-me-first`, which saves `me_first = false` under `[local]`
 in `provider.toml` (`~/.config/darkbloom/provider.toml`): the setting is read

@@ -3,32 +3,115 @@ import Foundation
 import ProviderCore
 import SystemConfiguration
 
-/// `darkbloom local` — print the direct/local-mode endpoint (URL + API key)
-/// for the OpenAI-compatible server started by `darkbloom start --local`, with
-/// ready-to-paste client examples. `--json` emits the raw discovery record for
-/// tooling.
+/// `darkbloom local` — serve only you on this Mac, and print the local OpenAI-compatible endpoint (URL + API key) with
+/// ready-to-paste client examples. Where nothing serves, it starts Only me first, as `darkbloom start --local` does.
+/// Where Darkbloom serves, it never stops it by surprise: it prints what runs and, only in a terminal, asks before
+/// switching to local only. A paired Mac is pointed to `darkbloom cluster local`; the pair is never touched. `--json`
+/// only reads: it emits the raw discovery record for tooling.
 struct Local: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "local",
-        abstract: "Show the local (direct-mode) OpenAI endpoint and API key.",
+        abstract: "Serve only you on this Mac, and show the local OpenAI endpoint and API key.",
         discussion: """
-        Reads ~/\(BuildEnvironment.current.installDirectoryName)/local.json, written by `\(BuildEnvironment.current.cliName) start --local`.
+        Where nothing serves, starts Only me in the background (as `\(BuildEnvironment.current.cliName) start --local`),
+        then shows the address and key from ~/\(BuildEnvironment.current.installDirectoryName)/local.json. Where this Mac
+        serves Darkbloom, shows what runs and, in a terminal, asks before switching to local only (Darkbloom stops);
+        without a terminal it never switches. On a Mac in a two-Mac cluster, `\(BuildEnvironment.current.cliName) cluster
+        local` serves the pair locally. --json only reads.
         Point any OpenAI client at the base URL with the API key to run
         inference on this Mac directly — free, and without the coordinator.
         """
     )
 
-    @Flag(help: "Emit the raw discovery record as JSON.")
+    @Flag(help: "Emit the raw discovery record as JSON (only reads: starts and switches nothing).")
     var json = false
+
+    @Option(help: "Model ID to serve when this starts Only me (repeatable). Default: in a terminal the picker, without one the last selection; switching from Darkbloom keeps its models.")
+    var model: [String] = []
 
     mutating func run() async throws {
         Darkbloom.ensureLogging()
+        let pair = ClusterPairSummary.local()
+        switch Self.plan(json: json, paired: pair.paired, pairServesLocalOnly: pair.localOnly,
+                         serving: Self.servingNowForTesting?() ?? Self.servingNow()) {
+        case .show:
+            guard show(pair: pair) else { throw ExitCode.failure }
+        case .pointToClusterLocal:
+            let shown = show(pair: pair)
+            print(Self.pairedLine)
+            guard shown else { throw ExitCode.failure }
+        case .startOnlyMe:
+            try await startOnlyMe(models: model, pair: pair)
+        case .offerSwitch:
+            let shown = show(pair: pair, darkbloomServes: true)
+            guard Self.asksToSwitch(Self.switchQuestion) else {
+                guard shown else { throw ExitCode.failure }
+                return
+            }
+            try await startOnlyMe(models: modelsToKeep, pair: pair)
+        case .offerSwitchWhileStopped:
+            // Without a terminal this line is all it says: Darkbloom stays this Mac's choice (exit 1, no local API).
+            printError(Self.stoppedLine)
+            guard Self.asksToSwitch(Self.stoppedSwitchQuestion) else { throw ExitCode.failure }
+            try await startOnlyMe(models: modelsToKeep, pair: pair)
+        }
+    }
 
+    /// The models a switch to local only serves: those named, else the ones Darkbloom's installed job serves.
+    private var modelsToKeep: [String] {
+        Self.switchModels(named: model, installed: LaunchAgent.installedServingJob()?.models)
+    }
+
+    /// `asksToSwitch` in this terminal (`promptForTesting` in tests), printing the question on standard output.
+    private static func asksToSwitch(_ question: String) -> Bool {
+        let prompt = promptForTesting ?? .live
+        return asksToSwitch(question, terminal: prompt.isTerminal, readInput: prompt.readLine,
+                            emit: { print($0, terminator: ""); fflush(stdout) })
+    }
+
+    /// Tests stand in for this Mac: how it serves now, starting Only me, and the terminal, so a test never reads this
+    /// Mac's provider, starts a service or waits on input.
+    @TaskLocal static var servingNowForTesting: (@Sendable () -> ServingNow)?
+    @TaskLocal static var startOnlyMeForTesting: (@Sendable (_ models: [String]) async throws -> Void)?
+    @TaskLocal static var promptForTesting: Prompt?
+
+    /// Where `local` asks: whether this is a terminal (stdin and stdout), and its input.
+    struct Prompt: Sendable {
+        var isTerminal: Bool
+        var readLine: @Sendable () -> String?
+
+        static var live: Prompt { Prompt(isTerminal: ClusterPairCommands.isTerminal(), readLine: { Swift.readLine() }) }
+    }
+
+    /// Starts Only me (`startOnlyMeAndWait`), then shows it.
+    private func startOnlyMe(models: [String], pair: ClusterPairSummary) async throws {
+        if let standIn = Self.startOnlyMeForTesting {
+            try await standIn(models)
+        } else {
+            try await Self.startOnlyMeAndWait(models: models)
+        }
+        guard show(pair: pair) else { throw ExitCode.failure }
+    }
+
+    /// Starts Only me in the background as `start --local` does (its terms notice, picker, drain and summary), and waits
+    /// for its API as `start --local --opencode` does: it listens once its models are loaded.
+    static func startOnlyMeAndWait(models: [String]) async throws {
+        var start = try Start.parse(onlyMeStartArguments(models: models))
+        try await DarkbloomCommandLook.runNested { try await start.run() }
+        let preload = (try? loadRuntimeConfiguration(configPath: nil).config.backend.startupPreloadTimeoutSecs) ?? 0
+        let seconds = Start.toolWaitSeconds + Int(clamping: preload)
+        _ = await DarkbloomCommandLook.forCommand().working("Waiting for the local API") {
+            await Start.waitForLocalAPI(port: nil, seconds: seconds)
+        }
+    }
+
+    /// Prints the running local API's address and key as `local` always has; false, after saying why on standard
+    /// error, when none answers. `darkbloomServes`: this Mac serves Darkbloom, so a missing API is said as that.
+    private func show(pair: ClusterPairSummary, darkbloomServes: Bool = false) -> Bool {
         // readLiveInfo() returns nil when the recorded server process is gone,
         // so a stale local.json from a Ctrl-C/crash is treated as "not running"
         // rather than advertising a dead endpoint.
         // On a Mac that relays a pair's API: why it has no working address now, in `status`'s words.
-        let pair = ClusterPairSummary.local()
         guard let info = LocalEndpoint.readLiveInfo() else {
             if json {
                 print("{}")
@@ -44,6 +127,8 @@ struct Local: AsyncParsableCommand {
             } else if let notUp = Self.runningProviderLocalAPIFailure() {
                 printError(Self.notUpLine(notUp.failure, nextFree: LocalAPIPort.nextFree(besides: notUp.failure.port),
                                           server: notUp.server))
+            } else if darkbloomServes {
+                for line in Self.networkOnlyLines { printError(line) }
             } else {
                 printError("No local server running.")
                 if let key = LocalEndpoint.existingClusterToken() {
@@ -54,7 +139,7 @@ struct Local: AsyncParsableCommand {
                     for line in Self.notRunningHint { printError(line) }
                 }
             }
-            throw ExitCode.failure
+            return false
         }
 
         if json {
@@ -62,7 +147,7 @@ struct Local: AsyncParsableCommand {
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let data = (try? encoder.encode(info)) ?? Data("{}".utf8)
             print(String(decoding: data, as: UTF8.self))
-            return
+            return true
         }
 
         print("Local (direct-mode) OpenAI endpoint")
@@ -108,6 +193,7 @@ struct Local: AsyncParsableCommand {
         }
         print("    -H 'Content-Type: application/json' \\")
         print("    -d '{\"model\":\"<id>\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}'")
+        return true
     }
 
     /// How the server behind `info` serves, and where your requests go when it can't take them; empty when the
@@ -147,11 +233,118 @@ struct Local: AsyncParsableCommand {
         return (failure, .of(state, paired: ClusterPairSummary.local().paired))
     }
 
+    /// How this Mac serves now, as `local` reads it.
+    enum ServingNow: Equatable, Sendable {
+        /// No provider runs and no job will start one: `local` may start Only me.
+        case nothing
+        /// Only me: its service, or `start --local --here` in a terminal.
+        case onlyMe
+        /// The Darkbloom network, with or without a local API beside it.
+        case darkbloom
+        /// Nothing runs, but what `start` serves again is Darkbloom (network or Both): `stop` keeps the choice.
+        case darkbloomStopped
+    }
+
+    /// The running provider decides; between two runs of its job (a crash, a restart) the loaded job does, since launchd
+    /// starts it again; else a local API that answers is Only me in a terminal. With none of them the Mac is stopped,
+    /// and it is Darkbloom's when what `start` serves again is network or Both: the saved choice, else the installed job
+    /// (`stop` unloads it and keeps its plist). Only a Mac with no such choice is one where nothing serves.
+    static func servingNow(running: DaemonState?, alive: (Int32) -> Bool, installedJob: LocalSettings.Mode?,
+                           jobLoaded: Bool, savedMode: LocalSettings.Mode?, liveLocalAPI: Bool) -> ServingNow {
+        if let running, alive(running.pid) { return running.servesOnlyItsOwner ? .onlyMe : .darkbloom }
+        if jobLoaded, let installedJob { return installedJob == .local ? .onlyMe : .darkbloom }
+        if liveLocalAPI { return .onlyMe }
+        guard let stopped = savedMode ?? installedJob, stopped != .local else { return .nothing }
+        return .darkbloomStopped
+    }
+
+    /// `servingNow` on this Mac: its provider's state, its LaunchAgent (loaded or not), `[local] mode` and `local.json`.
+    static func servingNow() -> ServingNow {
+        servingNow(running: DaemonStateFile.read(), alive: { daemonProcessAlive(pid: $0) },
+                   installedJob: LaunchAgent.installedServingJob()?.mode, jobLoaded: LaunchAgent.isLoaded(),
+                   savedMode: (try? savedLocalSettings(configPath: nil))?.mode,
+                   liveLocalAPI: LocalEndpoint.readLiveInfo() != nil)
+    }
+
+    /// What `local` does.
+    enum Plan: Equatable, Sendable {
+        /// Print the address and key, as `local` always has.
+        case show
+        /// Nothing serves: start Only me in the background, then show it.
+        case startOnlyMe
+        /// Darkbloom serves: show what runs, then, only in a terminal, ask before switching to local only.
+        case offerSwitch
+        /// A paired Mac: show what runs, and name `cluster local`; the pair is never touched.
+        case pointToClusterLocal
+        /// Darkbloom is stopped here: say so, then, only in a terminal, ask before switching to local only; without one,
+        /// exit 1.
+        case offerSwitchWhileStopped
+    }
+
+    /// `--json` only reads. A paired Mac is the pair's (already local only: shown as it is). On a Mac alone: start Only
+    /// me where nothing serves, offer the switch where Darkbloom serves or is stopped, and show Only me as it runs.
+    /// `serving` is read only on a Mac alone without `--json`.
+    static func plan(json: Bool, paired: Bool, pairServesLocalOnly: Bool,
+                     serving: @autoclosure () -> ServingNow) -> Plan {
+        if json { return .show }
+        if paired { return pairServesLocalOnly ? .show : .pointToClusterLocal }
+        switch serving() {
+        case .nothing: return .startOnlyMe
+        case .onlyMe: return .show
+        case .darkbloom: return .offerSwitch
+        case .darkbloomStopped: return .offerSwitchWhileStopped
+        }
+    }
+
+    static let switchQuestion = "Switch this Mac to local only (stops serving Darkbloom)? [y/N] "
+
+    /// Asks `question` in a terminal: only y or yes switches. Without a terminal nothing is asked, and Enter, any other
+    /// answer or the end of input keeps Darkbloom as this Mac's choice.
+    static func asksToSwitch(_ question: String = switchQuestion, terminal: Bool, readInput: () -> String?,
+                             emit: (String) -> Void) -> Bool {
+        guard terminal else { return false }
+        emit(question)
+        guard let answer = readInput() else {
+            emit("\n")
+            return false
+        }
+        return ["y", "yes"].contains(answer.trimmingCharacters(in: .whitespaces).lowercased())
+    }
+
+    /// Where Darkbloom is stopped (`darkbloomStopped`); without a terminal, all `local` says.
+    static var stoppedLine: String {
+        "Darkbloom is stopped on this Mac; `\(BuildEnvironment.current.cliName) start` serves it again."
+    }
+
+    static let stoppedSwitchQuestion = "Switch this Mac to local only instead (Darkbloom stays stopped)? [y/N] "
+
+    static var pairedLine: String {
+        "This Mac is in a two-Mac cluster: `\(BuildEnvironment.current.cliName) cluster local` serves the pair on its "
+            + "local API only."
+    }
+
+    /// Where Darkbloom serves with no local API beside it.
+    static var networkOnlyLines: [String] {
+        ["This Mac serves the Darkbloom network, with no local API.",
+         "  `\(BuildEnvironment.current.cliName) start --local-endpoint --no-me-first` adds one beside Darkbloom."]
+    }
+
+    /// `start`'s arguments for Only me in the background, with `models` when given.
+    static func onlyMeStartArguments(models: [String]) -> [String] {
+        ["--local"] + models.flatMap { ["--model", $0] }
+    }
+
+    /// The models a switch to local only serves: those named, else the ones the Darkbloom job served (none: `start`
+    /// picks them as it does for `--local`).
+    static func switchModels(named: [String], installed: [String]?) -> [String] {
+        named.isEmpty ? installed ?? [] : named
+    }
+
     /// What `local` says to start a local API when none runs.
     static var notRunningHint: [String] {
         let cli = BuildEnvironment.current.cliName
-        return ["Start one with:  \(cli) start --me-first   (Darkbloom and you, you first)",
-                "             or: \(cli) start --local      (only you, on this Mac)"]
+        return ["Start one with:  \(cli) local                                 (only you, on this Mac)",
+                "             or: \(cli) start --local-endpoint --no-me-first  (Darkbloom and you)"]
     }
 
     /// The file the shown key is in (`LocalEndpoint.keyFile(forPort:)`), from `~`; on the pair's API (rank 0's, or this

@@ -19,7 +19,8 @@ extension EngineV2Bridge {
         profile: RequestProfileBuilder? = nil,
         nativeRetirement: CBv2RequestRetirement? = nil,
         httpResponse: DistributedHTTPResponse? = nil,
-        prefillProgress: LocalPrefillProgress? = nil
+        prefillProgress: LocalPrefillProgress? = nil,
+        loopGuard: GenerationLoopGuard? = nil
     ) {
         let bridge = self
         let retirementReceipt = nativeRetirement == nil ? nil : active[id]?.prefillReceipt
@@ -37,7 +38,8 @@ extension EngineV2Bridge {
                 profile: profile,
                 nativeRetirement: nativeRetirement,
                 httpResponse: httpResponse,
-                prefillProgress: prefillProgress
+                prefillProgress: prefillProgress,
+                loopGuard: loopGuard
             )
             retirementReceipt?.endAfterRetirement()
             await bridge.clearPumpTask(id: id, releaseNativeIdentity: nativeRetirement != nil)
@@ -70,7 +72,8 @@ extension EngineV2Bridge {
         profile: RequestProfileBuilder? = nil,
         nativeRetirement: CBv2RequestRetirement? = nil,
         httpResponse: DistributedHTTPResponse? = nil,
-        prefillProgress: LocalPrefillProgress? = nil
+        prefillProgress: LocalPrefillProgress? = nil,
+        loopGuard: GenerationLoopGuard? = nil
     ) async {
         // Resolve only after record(usage:) has delivered the lookup callback
         // or teardown has finalized its failure, and owned resources retire.
@@ -91,6 +94,7 @@ extension EngineV2Bridge {
         // Profiler: pump-LOCAL last-delta instant (one clock read per delta,
         // no lock), written to the profile exactly once at finish.
         var lastDeltaAt: SuspendingClock.Instant?
+        _ = loopGuard
         eventLoop: for await event in events {
             switch event {
             case .delta(let text, let tokens, let logprobs):

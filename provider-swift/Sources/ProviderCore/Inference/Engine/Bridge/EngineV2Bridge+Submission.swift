@@ -64,7 +64,8 @@ extension EngineV2Bridge {
         stopStringScope: CBv2StopStringScope? = nil,
         donationDemand: SSDCheckpointDonationDemand? = nil,
         promptWork: PromptWork? = nil,
-        measurementPurpose: EngineMeasurementPurpose = .serving
+        measurementPurpose: EngineMeasurementPurpose = .serving,
+        loopGuard: GenerationLoopGuard? = nil
     ) async -> AsyncStream<GenerationEvent> {
         do {
             return try await submitTokenized(
@@ -84,7 +85,7 @@ extension EngineV2Bridge {
                 stopStringScope: stopStringScope,
                 donationDemand: donationDemand,
                 firstContentDeadline: nil, promptWork: promptWork,
-                measurementPurpose: measurementPurpose)
+                measurementPurpose: measurementPurpose, loopGuard: loopGuard)
         } catch MultiModelBatchSchedulerEngineError.advertisedContextExceeded {
             // Preserve the typed client rejection across the nonthrowing stream
             // API using only its fixed, content-free scheduler marker.
@@ -162,7 +163,10 @@ extension EngineV2Bridge {
         promptWork: PromptWork? = nil,
         distributedDeadlineContext: DistributedRequestDeadlineContext? = nil,
         distributedRequestOrigin: ContinuousClock.Instant? = nil,
-        measurementPurpose: EngineMeasurementPurpose = .serving
+        measurementPurpose: EngineMeasurementPurpose = .serving,
+        /// Stops the row as `length` once its answer repeats verbatim
+        /// (`GenerationLoopGuardPolicy`); nil leaves it unguarded.
+        loopGuard: GenerationLoopGuard? = nil
     ) async throws -> AsyncStream<GenerationEvent> {
         if let clusterStillImages {
             guard mimoClusterImages == nil, multimodal == nil,
@@ -1151,7 +1155,8 @@ extension EngineV2Bridge {
             profile: profile,
             nativeRetirement: nativeRetirement,
             httpResponse: distributed == nil ? nil : httpResponse,
-            prefillProgress: prefillProgress
+            prefillProgress: prefillProgress,
+            loopGuard: loopGuard
         )
 
         let bridge = self

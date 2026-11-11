@@ -48,7 +48,35 @@ struct GenerationLoopDetector: Sendable {
 
     /// Feed one delta's tokens (several when drafts were accepted).
     mutating func append(_ tokens: [Int]) -> Detection? {
+        guard !tokens.isEmpty else { return nil }
+        tail.append(contentsOf: tokens)
         generatedTokens += tokens.count
+        let window = thresholds.window
+        if tail.count > 2 * window { tail.removeFirst(tail.count - window) }
+        guard generatedTokens >= nextCheck else { return nil }
+        let every = max(thresholds.checkEvery, 1)
+        nextCheck = (generatedTokens / every + 1) * every
+        guard generatedTokens >= thresholds.minTokens else { return nil }
+        return check()
+    }
+
+    private func check() -> Detection? {
+        let count = tail.count
+        var period = thresholds.minPeriod
+        while period <= thresholds.maxPeriod {
+            let span = thresholds.requiredSpan(period: period)
+            // The required span only grows with the period.
+            if span > count { return nil }
+            let first = count - span + period
+            var index = count - 1
+            while index >= first, tail[index] == tail[index - period] { index -= 1 }
+            if index < first {
+                return Detection(
+                    period: smallestPeriod(dividing: period, count: count),
+                    span: span, generatedTokens: generatedTokens)
+            }
+            period += 1
+        }
         return nil
     }
 

@@ -26,6 +26,17 @@ public struct GenerationLoopGuard: Sendable {
     /// One delta of the row: its text and the tokens behind it. Returns the
     /// detection that should stop the row, at most once.
     mutating func observe(text: String, tokens: [Int]) -> GenerationLoopDetector.Detection? {
-        nil
+        guard !disarmed else { return nil }
+        if !toolCallMarkers.isEmpty, !text.isEmpty {
+            let scanned = carry + text
+            if toolCallMarkers.contains(where: { scanned.contains($0) }) {
+                disarmed = true
+                return nil
+            }
+            carry = String(scanned.suffix(carryLength))
+        }
+        guard let detection = detector.append(tokens) else { return nil }
+        disarmed = true
+        return detection
     }
 }

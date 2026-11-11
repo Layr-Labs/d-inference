@@ -88,13 +88,15 @@ extension EngineV2Bridge {
         // the pathological duplicate-id corner.
         var sawFirstToken = false
         var sawTerminal = false
+        var loopGuard = loopGuard
+        // Set once the guard stopped this row: its cancel then ends as `length`.
+        var loopStop: GenerationLoopDetector.Detection?
         // Replay is only needed when a caller consumes matched-stop metadata.
         let trackStopTokens = usageSignal != nil && !stopSequences.isEmpty
         var generatedTokens: [Int] = []
         // Profiler: pump-LOCAL last-delta instant (one clock read per delta,
         // no lock), written to the profile exactly once at finish.
         var lastDeltaAt: SuspendingClock.Instant?
-        _ = loopGuard
         eventLoop: for await event in events {
             switch event {
             case .delta(let text, let tokens, let logprobs):
@@ -143,7 +145,15 @@ extension EngineV2Bridge {
                 if !text.isEmpty {
                     continuation.yield(.chunk(text))
                 }
-            case .finished(let reason, let usage):
+                if loopStop == nil, let detection = loopGuard?.observe(text: text, tokens: tokens) {
+                    loopStop = detection
+                    stopRepeatingRow(id: id, modelType: loopGuard?.modelType, detection: detection)
+                }
+            case .finished(let engineReason, let usage):
+                // The guard's own stop is a complete answer cut at its length,
+                // paid as one; any other terminal keeps its reason.
+                let reason: CBv2FinishReason =
+                    loopStop != nil && engineReason == .cancelled ? .length : engineReason
                 // Only hold the pre-submit identity after active work ends:
                 // marking it pending during decode would divert ordinary cancel
                 // into the pre-admission cancellation path instead of the engine.

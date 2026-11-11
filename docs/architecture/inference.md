@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-11
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -2692,6 +2692,45 @@ order, reasoning tokens included, so a response that ends while reasoning still
 carries them. The local API returns GLM's entries through the ordered stream
 instead: content chunks carry them, and a reply that ends while reasoning carries
 none.
+
+### Loop guard
+
+An answer that starts repeating one block verbatim repeats it until its output
+cap: the slot stays busy for the rest of the cap (up to 131,072 tokens) and the
+answer is wrong anyway. `GenerationLoopGuard`
+(`provider-swift/Sources/ProviderCore/Inference/Streaming/GenerationLoopGuard.swift`)
+stops such a row early.
+
+- **Detection** (`GenerationLoopDetector`): exact token periodicity, no
+  semantics. Every 64 generated tokens, once at least 4,096 were generated,
+  the row fires when its last `span` tokens repeat a block of `p` tokens back to
+  back, with 8 ≤ `p` ≤ 512, `span` ≥ 2,048 and `span` ≥ 8 × `p`. A shorter
+  period (a single repeated token) is found through its multiples and reported
+  as itself. A check reads at most the last 4,096 tokens and stops at the first
+  mismatch for each period.
+- **Where:** the bridge's per-row pump (`EngineV2Bridge+Events.swift`), which
+  sees every generated token of every engine: single-Mac MLX slots, the
+  native GLM-5.3 and MiMo engines, Super and the cluster pairs.
+- **On fire:** the pump cancels the row in the engine without the caller's
+  cancel bookkeeping (`EngineV2Bridge.stopRepeatingRow`), and turns the
+  engine's cancelled terminal into a `length` finish with the engine's usage:
+  `finish_reason: "length"`, the tokens produced, no error frame, paid like
+  any completion. It logs one line (category `engine_v2_loop_guard`: model,
+  `model_type`, period, span, tokens) and emits an `engine_v2_loop_guard`
+  engine-health event with the same fields. To the coordinator it is a
+  `length` finish below the request's bound.
+- **Never on:** the first 4,096 tokens; a request with a token constraint, a
+  forced tool call or a JSON `response_format`; the rest of a row once its text
+  shows a tool-call frame (`<tool_call>`, `<|tool_call>`, `<function=`,
+  `to=functions.`, `<start_function_call>` and the request parser's own tags);
+  a request with tools whose parser also reads untagged calls (bare JSON);
+  media requests.
+- **Models** (`GenerationLoopGuardPolicy`, by `model_type`): on by default
+  for `gemma4`, `gemma4_text`, `qwen3_5`, `qwen3_5_moe`, `qwen4_exp`,
+  `qwen4_exp_text`, `gpt_oss`, `nemotron_h` (Lightning), `nemotron_h_omni`
+  (Super), `glm5_next` and `mimo_v2`. `DARKBLOOM_LOOP_GUARD=0` (or `off`)
+  turns it off; a comma-separated list of `model_type`s replaces the default
+  list.
 
 ### Collected and streaming reasoning state
 

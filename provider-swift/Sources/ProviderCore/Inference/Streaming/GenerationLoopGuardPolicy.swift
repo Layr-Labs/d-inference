@@ -43,7 +43,16 @@ enum GenerationLoopGuardPolicy {
     static let current = setting(environment: ProcessInfo.processInfo.environment)
 
     static func setting(environment: [String: String]) -> Setting {
-        .modelTypes(defaultModelTypes)
+        guard let raw = environment[environmentKey]?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty else { return .modelTypes(defaultModelTypes) }
+        switch raw.lowercased() {
+        case "1", "on", "true": return .modelTypes(defaultModelTypes)
+        case "0", "off", "false": return .off
+        default:
+            let types = Set(raw.lowercased().split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })
+            return types.isEmpty ? .off : .modelTypes(types)
+        }
     }
 
     /// The guard for one text request, or nil when it must not have one.
@@ -55,6 +64,21 @@ enum GenerationLoopGuardPolicy {
         setting: Setting = current,
         thresholds: GenerationLoopDetector.Thresholds = .init()
     ) -> GenerationLoopGuard? {
-        nil
+        guard case .modelTypes(let enabled) = setting,
+              let modelType, enabled.contains(modelType.lowercased()) else { return nil }
+        guard tokenConstraint == nil, !prepared.requiresToolCall,
+              prepared.responseFormat == nil, prepared.glmResponseFormat == nil,
+              request.responseFormat?.requiresJSONOutput != true else { return nil }
+        var markers = genericToolCallMarkers
+        if prepared.tools?.isEmpty == false || modelType == "mimo_v2" {
+            // A parser that also reads a call without any tag (bare JSON, or a
+            // function name then JSON) leaves no marker to stop at.
+            guard let format = try? ServerToolParser.resolve(
+                requested: request.toolCallParser, modelType: modelType) else { return nil }
+            let parser = format.createParser()
+            guard !parser.supportsBareJSON, !parser.supportsMarkerlessNamedJSON else { return nil }
+            markers += [parser.startTag].compactMap { $0 } + parser.alternateStartTags
+        }
+        return GenerationLoopGuard(modelType: modelType, toolCallMarkers: markers, thresholds: thresholds)
     }
 }

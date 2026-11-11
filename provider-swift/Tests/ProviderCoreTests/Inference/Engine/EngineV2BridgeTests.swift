@@ -3335,3 +3335,165 @@ struct EngineV2BridgePagedKVTests {
         #expect(pagedEngine.submitted.count == 1)
     }
 }
+
+// MARK: - Loop guard
+
+@Suite("EngineV2 loop guard: a repeating row ends as length")
+struct EngineV2LoopGuardBridgeTests {
+    private struct Ending {
+        var chunks = 0
+        var infos: [(prompt: Int, completion: Int, reason: String?)] = []
+        var errors: [String] = []
+    }
+
+    private func drain(_ stream: AsyncStream<GenerationEvent>) async -> Ending {
+        var ending = Ending()
+        for await event in stream {
+            switch event {
+            case .chunk: ending.chunks += 1
+            case .info(let prompt, let completion, _, let reason):
+                ending.infos.append((prompt, completion, reason))
+            case .error(let message): ending.errors.append(message)
+            case .terminal(let cause, _, _, _): ending.errors.append(cause.rawValue)
+            case .logprobs: break
+            }
+        }
+        return ending
+    }
+
+    private func loopGuard() -> GenerationLoopGuard {
+        GenerationLoopGuard(modelType: "gemma4", toolCallMarkers: GenerationLoopGuardPolicy.genericToolCallMarkers)
+    }
+
+    /// Window 7's Gemma q63: one 19-token clause, verbatim, until the cap.
+    private func yieldLoop(_ engine: ScriptedCBv2Engine, count: Int, firstText: String = "w") {
+        let block = Array(900..<919)
+        for index in 0..<count {
+            engine.manualContinuation?.yield(.delta(
+                text: index == 0 ? firstText : "w", tokens: [block[index % block.count]], logprobs: nil))
+        }
+    }
+
+    @Test("the row is stopped in the engine and ends as length with the tokens produced, no error")
+    func repeatingRowEndsAsLength() async throws {
+        let engine = ScriptedCBv2Engine(script: .manual)
+        let sink = TelemetrySink()
+        let bridge = makeBridge(engine: engine, telemetry: sink)
+        let stream = await bridge.submitTokenized(
+            promptTokens: [1, 2, 3, 4, 5], request: makeRequest(), requestId: "req-loop",
+            loopGuard: loopGuard())
+        let engineId = try #require(await bridge._testEngineRequestId(for: "req-loop"))
+        yieldLoop(engine, count: 4_200)
+        // The engine's answer to the guard's cancel, after the in-flight steps.
+        engine.manualContinuation?.yield(
+            .finished(reason: .cancelled, usage: CBv2Usage(promptTokens: 5, completionTokens: 4_200)))
+        engine.manualContinuation?.finish()
+        let ending = await drain(stream)
+        #expect(engine.cancelled == [engineId])
+        #expect(ending.errors.isEmpty)
+        #expect(ending.chunks == 4_200)
+        #expect(ending.infos.count == 1)
+        #expect(ending.infos.first?.prompt == 5)
+        #expect(ending.infos.first?.completion == 4_200)
+        #expect(ending.infos.first?.reason == "length")
+        let stops = sink.events.filter { $0.fields?["operation"]?.description == "engine_v2_loop_guard" }
+        #expect(stops.count == 1)
+        #expect(stops.first?.fields?["period_tokens"]?.description == "19")
+        #expect(stops.first?.fields?["generated_tokens"]?.description == "4096")
+        #expect(stops.first?.fields?["model"]?.description == "gemma-4-27b-it")
+        #expect(stops.first?.requestId == "req-loop")
+    }
+
+    @Test("a long answer that does not repeat runs to its own end")
+    func varyingRowIsNotStopped() async throws {
+        let engine = ScriptedCBv2Engine(script: .manual)
+        let bridge = makeBridge(engine: engine)
+        let stream = await bridge.submitTokenized(
+            promptTokens: [1, 2, 3, 4, 5], request: makeRequest(), requestId: "req-long",
+            loopGuard: loopGuard())
+        var state: UInt64 = 29
+        for _ in 0..<8_000 {
+            state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+            engine.manualContinuation?.yield(
+                .delta(text: "v", tokens: [Int(state >> 40) % 50_000 + 1_000], logprobs: nil))
+        }
+        engine.manualContinuation?.yield(
+            .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 8_000)))
+        engine.manualContinuation?.finish()
+        let ending = await drain(stream)
+        #expect(engine.cancelled.isEmpty)
+        #expect(ending.errors.isEmpty)
+        #expect(ending.infos.first?.reason == "stop")
+    }
+
+    @Test("a repeating tool call is never cut")
+    func toolCallIsNotStopped() async throws {
+        let engine = ScriptedCBv2Engine(script: .manual)
+        let bridge = makeBridge(engine: engine)
+        let stream = await bridge.submitTokenized(
+            promptTokens: [1, 2, 3, 4, 5], request: makeRequest(), requestId: "req-tool",
+            loopGuard: loopGuard())
+        yieldLoop(engine, count: 6_000, firstText: "<tool_call>")
+        engine.manualContinuation?.yield(
+            .finished(reason: .length, usage: CBv2Usage(promptTokens: 5, completionTokens: 6_000)))
+        engine.manualContinuation?.finish()
+        let ending = await drain(stream)
+        #expect(engine.cancelled.isEmpty)
+        #expect(ending.infos.first?.reason == "length")
+    }
+
+    @Test("without a guard the same loop runs on, and a caller's cancel still ends as cancelled")
+    func unguardedAndCallerCancel() async throws {
+        let engine = ScriptedCBv2Engine(script: .manual)
+        let bridge = makeBridge(engine: engine)
+        let stream = await bridge.submitTokenized(
+            promptTokens: [1, 2, 3, 4, 5], request: makeRequest(), requestId: "req-plain")
+        let engineId = try #require(await bridge._testEngineRequestId(for: "req-plain"))
+        yieldLoop(engine, count: 6_000)
+        // Only the caller's cancel reaches the engine.
+        await bridge.cancel(requestId: "req-plain")
+        engine.manualContinuation?.yield(
+            .finished(reason: .cancelled, usage: CBv2Usage(promptTokens: 5, completionTokens: 6_000)))
+        engine.manualContinuation?.finish()
+        let ending = await drain(stream)
+        #expect(engine.cancelled == [engineId])
+        #expect(ending.errors == ["request cancelled"])
+        #expect(ending.infos.first?.reason == nil)
+    }
+
+    @Test("a caller's cancel of a guarded row that never repeated still ends as cancelled")
+    func callerCancelOfAGuardedRow() async throws {
+        let engine = ScriptedCBv2Engine(script: .manual)
+        let bridge = makeBridge(engine: engine)
+        let stream = await bridge.submitTokenized(
+            promptTokens: [1, 2, 3, 4, 5], request: makeRequest(), requestId: "req-guarded-cancel",
+            loopGuard: loopGuard())
+        let engineId = try #require(await bridge._testEngineRequestId(for: "req-guarded-cancel"))
+        yieldLoop(engine, count: 200)
+        await bridge.cancel(requestId: "req-guarded-cancel")
+        engine.manualContinuation?.yield(
+            .finished(reason: .cancelled, usage: CBv2Usage(promptTokens: 5, completionTokens: 200)))
+        engine.manualContinuation?.finish()
+        let ending = await drain(stream)
+        #expect(engine.cancelled == [engineId])
+        #expect(ending.errors == ["request cancelled"])
+        #expect(ending.infos.first?.reason == nil)
+    }
+
+    @Test("an engine failure after the guard fired keeps its error")
+    func failureAfterTheStopKeepsItsError() async throws {
+        let engine = ScriptedCBv2Engine(script: .manual)
+        let bridge = makeBridge(engine: engine)
+        let stream = await bridge.submitTokenized(
+            promptTokens: [1, 2, 3, 4, 5], request: makeRequest(), requestId: "req-loop-fault",
+            loopGuard: loopGuard())
+        yieldLoop(engine, count: 4_200)
+        engine.manualContinuation?.yield(
+            .finished(reason: .error("engine fault"), usage: CBv2Usage(promptTokens: 5, completionTokens: 4_200)))
+        engine.manualContinuation?.finish()
+        let ending = await drain(stream)
+        #expect(engine.cancelled.count == 1)
+        #expect(ending.infos.isEmpty)
+        #expect(ending.errors == ["engine fault"])
+    }
+}

@@ -20,7 +20,8 @@ extension EngineV2Bridge {
         nativeRetirement: CBv2RequestRetirement? = nil,
         terminalPrecedesPublication: Bool = false,
         httpResponse: DistributedHTTPResponse? = nil,
-        prefillProgress: LocalPrefillProgress? = nil
+        prefillProgress: LocalPrefillProgress? = nil,
+        loopGuard: GenerationLoopGuard? = nil
     ) {
         let bridge = self
         let retirementReceipt = nativeRetirement == nil ? nil : active[id]?.prefillReceipt
@@ -39,7 +40,8 @@ extension EngineV2Bridge {
                 nativeRetirement: nativeRetirement,
                 terminalPrecedesPublication: terminalPrecedesPublication,
                 httpResponse: httpResponse,
-                prefillProgress: prefillProgress
+                prefillProgress: prefillProgress,
+                loopGuard: loopGuard
             )
             retirementReceipt?.endAfterRetirement()
             await bridge.clearPumpTask(id: id, releaseNativeIdentity: nativeRetirement != nil)
@@ -73,7 +75,8 @@ extension EngineV2Bridge {
         nativeRetirement: CBv2RequestRetirement? = nil,
         terminalPrecedesPublication: Bool = false,
         httpResponse: DistributedHTTPResponse? = nil,
-        prefillProgress: LocalPrefillProgress? = nil
+        prefillProgress: LocalPrefillProgress? = nil,
+        loopGuard: GenerationLoopGuard? = nil
     ) async {
         // Resolve only after record(usage:) has delivered the lookup callback
         // or teardown has finalized its failure, and owned resources retire.
@@ -88,6 +91,9 @@ extension EngineV2Bridge {
         // the pathological duplicate-id corner.
         var sawFirstToken = false
         var sawTerminal = false
+        var loopGuard = loopGuard
+        // Set once the guard stopped this row: its cancel then ends as `length`.
+        var loopStop: GenerationLoopDetector.Detection?
         // Replay is only needed when a caller consumes matched-stop metadata.
         let trackStopTokens = usageSignal != nil && !stopSequences.isEmpty
         var generatedTokens: [Int] = []
@@ -145,7 +151,15 @@ extension EngineV2Bridge {
                 if !text.isEmpty {
                     continuation.yield(.chunk(text))
                 }
-            case .finished(let reason, let usage):
+                if loopStop == nil, let detection = loopGuard?.observe(text: text, tokens: tokens) {
+                    loopStop = detection
+                    stopRepeatingRow(id: id, modelType: loopGuard?.modelType, detection: detection)
+                }
+            case .finished(let engineReason, let usage):
+                // The guard's own stop is a complete answer cut at its length,
+                // paid as one; any other terminal keeps its reason.
+                let reason: CBv2FinishReason =
+                    loopStop != nil && engineReason == .cancelled ? .length : engineReason
                 // Only hold the pre-submit identity after active work ends:
                 // marking it pending during decode would divert ordinary cancel
                 // into the pre-admission cancellation path instead of the engine.

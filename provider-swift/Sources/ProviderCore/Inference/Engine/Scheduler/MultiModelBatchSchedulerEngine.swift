@@ -1006,6 +1006,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // reasoning must already be a separate channel: validation sees only
         // the answer.
         let jsonAnswer = tokenConstraint as? JSONAnswerConstraint
+        let loopGuard = GenerationLoopGuardPolicy.resolve(
+            modelType: modelType, request: request, prepared: prepared, tokenConstraint: tokenConstraint)
 
         let requestId = "req-\(UUID().uuidString.prefix(12))"
 
@@ -1058,7 +1060,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     serviceReservation: serviceReservation,
                     promptWork: promptWork,
                     distributedRequestOrigin: distributedRequestOrigin,
-                    measurementPurpose: measurementPurpose
+                    measurementPurpose: measurementPurpose,
+                    loopGuard: loopGuard
                 )
                 do {
                     try checkFirstContentDeadline()

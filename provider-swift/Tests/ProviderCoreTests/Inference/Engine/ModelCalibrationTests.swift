@@ -359,6 +359,12 @@ struct ModelCalibrationTests {
         #expect(await request.value == expected)
         #expect(profile.wireObject().deadlineDecision?.verdict == expected)
         #expect(profile.wireObject().deadlineDecision?.projectedServiceUs == nil)
+        // A cancelled request no longer waits for the probe it preempted to
+        // retire. Once the probe has, nothing either of them held remains.
+        let retired = ContinuousClock.now + .seconds(5)
+        while budget.serviceBudget.count > 0 && ContinuousClock.now < retired {
+            try await Task.sleep(for: .milliseconds(1))
+        }
         #expect(engine.capacity().activeRequests == 0 && budget.serviceBudget.count == 0)
         #expect(await foreground.calibrationCountersTest() == [0, 0, 0, 0])
         await calibration.shutdown()

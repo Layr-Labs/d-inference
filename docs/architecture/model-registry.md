@@ -1,6 +1,6 @@
 # Provider Model Registry Boundary
 
-> Last updated: 2026-10-30
+> Last updated: 2026-11-09
 
 Providers discover model identity through external registry manifests, then
 download and verify model bytes locally. The database and catalog API are owned
@@ -67,7 +67,10 @@ withholds that id unless `config.json` and `model.safetensors.index.json` are th
 pinned bytes (`NemotronSuperServingPolicy.hasPinnedMetadata`); the managed load
 verifies every shard. A discovered Super artifact reports `quantization`
 `nvfp4`, image input (`ModelMediaPolicy.advertisesMedia`, for that exact id
-only), the ordinary template render check, and its managed LOAD footprint
+only), the ordinary template render check, `native_media_tools` and
+`native_media_controls` (`ToolChoiceEnforcementPolicy`, with image input and a
+template that renders: its media route serves forced tool choice, tool-result
+media, JSON output and tools), and its managed LOAD footprint
 (`NemotronSuperServingPolicy.discoveryFootprint`): `estimated_memory_gb` is the
 same on every Mac, what the narrowest configuration the managed load serves
 requires (`NemotronSuperLoadFit.narrowestRequirementBytes`: the installation

@@ -259,8 +259,27 @@ extension EngineV2Bridge {
         }
         // Foreground work on any model preempts the shared idle calibration.
         // The original deadline keeps running while native retirement completes.
-        let foreground = modelCalibration.requests[id] == nil
-            ? await serviceBudget?.idleCalibration.beginForeground() : nil
+        // The wait ends with this request's cancellation, and at its bound with
+        // a capacity refusal: a probe whose engine stopped stepping never retires.
+        // Either way the cancellation and deadline checks below run first, so
+        // their verdicts and diagnostics are the ones a completed wait records.
+        var foreground: IdleCalibrationForegroundLease?
+        if modelCalibration.requests[id] == nil, let serviceBudget {
+            switch await serviceBudget.idleCalibration.admitForeground() {
+            case .admitted(let lease):
+                foreground = lease
+            case .cancelled:
+                continuation.finish()
+                try checkBeforeServiceAdmission(firstContentDeadline, profile: profile, usageSignal: usageSignal)
+                usageSignal?.finalizeLookup(failure: .policy, fallbackTier: prefixCacheFallbackTier)
+                throw CancellationError()
+            case .retirementOverdue:
+                continuation.finish()
+                try checkBeforeServiceAdmission(firstContentDeadline, profile: profile, usageSignal: usageSignal)
+                usageSignal?.finalizeLookup(failure: .capacity, fallbackTier: prefixCacheFallbackTier)
+                throw MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(Self.idleCalibrationRetirementOverdue)
+            }
+        }
         defer { foreground?.finish() }
         // Waiting for a probe is an actor suspension: revalidate request and
         // engine ownership before creating any service/KV reservations.
@@ -740,6 +759,10 @@ extension EngineV2Bridge {
         defer {
             if active[id]?.prefillReceipt !== prefillReceipt { prefillReceipt.end() }
         }
+        // Seeded sampling reuses a stable engine ID, which stays fenced until
+        // publication, so only unseeded requests take the early terminal.
+        cbv2Request.terminalPrecedesCheckpointPublication =
+            terminalBeforeCheckpointPublication && cbv2Request.sampling.seed == nil
         let engineRequest = cbv2Request
         pendingEngineIDs.insert(cbv2Id)
         idMap[id] = cbv2Id
@@ -977,7 +1000,9 @@ extension EngineV2Bridge {
                     events = submitted.events
                     nativeRetirement = submitted.retirement
                 } else if let autoregressive = engine as? EngineV2,
-                    autoregressive.nativeShutdownExecutionContractID != nil || modelCalibration.requests[id] != nil {
+                    autoregressive.nativeShutdownExecutionContractID != nil || modelCalibration.requests[id] != nil
+                        || engineRequest.terminalPrecedesCheckpointPublication {
+                    // An early terminal leaves rows owned: release capacity at retirement.
                     let submitted = try autoregressive.submitWithRetirement(engineRequest)
                     events = submitted.events
                     nativeRetirement = submitted.retirement
@@ -1150,6 +1175,7 @@ extension EngineV2Bridge {
             readyReceiptRegistered: readyReceiptRegistered,
             profile: profile,
             nativeRetirement: nativeRetirement,
+            terminalPrecedesPublication: engineRequest.terminalPrecedesCheckpointPublication,
             httpResponse: distributed == nil ? nil : httpResponse,
             prefillProgress: prefillProgress
         )

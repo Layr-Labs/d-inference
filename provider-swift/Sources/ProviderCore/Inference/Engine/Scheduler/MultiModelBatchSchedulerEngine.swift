@@ -512,11 +512,13 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     request: request, controls: templateControls)
             } else { nativeMiMoThinkingEnabled = true }
             try ReasoningEffortPolicy.validate(request, controls: templateControls, modelType: modelType)
-            prepared = try ToolChoicePromptPolicy.prepare(
+            var policy = try ToolChoicePromptPolicy.prepare(
                 request,
                 modelType: modelType,
                 allowInternalSchemaMetadata: allowInternalToolSchemaMetadata,
                 glm5PairPostValidation: glm5PairPostValidation)
+            policy.declaredTools = templateControls.declaredTools
+            prepared = policy
             try checkFirstContentDeadline()
         } catch {
             await releaseBox.fire()
@@ -709,8 +711,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             //
             // FAIL LOUD (v0.7.5): a construction failure is REFUSED — ERROR
             // `engine_v2_vision_refusal` telemetry (tagged with the media
-            // kind) + a retriable 503 (`.requestRejected`) so the
-            // coordinator's pre-content failover reroutes invisibly. The
+            // kind) + a retriable 503 (`EngineV2VisionPrefill.constructionRefusal`)
+            // so the coordinator's pre-content failover reroutes invisibly. The
             // legacy wrapper path below is NOT reachable for media on a
             // v2-bridged slot anymore (the pre-release silent fallback is gone).
             // These throws are NOT refusals: `CancellationError` (the
@@ -877,11 +879,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     plumbing.emitTelemetry(
                         EngineV2VisionPrefill.refusalTelemetryEvent(
                             modelId: modelId, mediaKind: mediaKind, error: error))
-                    throw MultiModelBatchSchedulerEngineError.requestRejected(
-                        "engine_v2 media prefill construction failed "
-                            + "(media=\(mediaKind.rawValue)): "
-                            + EngineV2VisionPrefill.refusalDetail(for: error)
-                            + " — request not started; retry on another provider")
+                    throw EngineV2VisionPrefill.constructionRefusal(for: error, mediaKind: mediaKind)
                 }
             }
 
@@ -1237,9 +1235,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             let mediaKind = EngineV2VisionPrefill.mediaKind(of: request)
             (engineV2Vision ?? .production).emitTelemetry(EngineV2VisionPrefill.refusalTelemetryEvent(
                 modelId: request.model, mediaKind: mediaKind, error: error))
-            throw MultiModelBatchSchedulerEngineError.requestRejected(
-                "engine_v2 media prefill construction failed (media=\(mediaKind.rawValue)): "
-                    + EngineV2VisionPrefill.refusalDetail(for: error) + " — request not started; retry on another provider")
+            throw EngineV2VisionPrefill.constructionRefusal(for: error, mediaKind: mediaKind)
         }
         try checkFirstContentDeadline()
         let id = "req-" + UUID().uuidString
@@ -1313,9 +1309,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             if let mediaError = error as? MediaIngest.MediaError { throw mediaError }
             if let engineError = error as? MultiModelBatchSchedulerEngineError { throw engineError }
             if let clientFault = EngineV2VisionPrefill.clientFault(for: error) { throw clientFault }
-            throw MultiModelBatchSchedulerEngineError.requestRejected(
-                "engine_v2 media prefill construction failed: "
-                    + EngineV2VisionPrefill.refusalDetail(for: error) + " — request not started")
+            throw EngineV2VisionPrefill.constructionRefusal(
+                for: error, mediaKind: EngineV2VisionPrefill.mediaKind(of: visionRequest))
         }
         defer { host.lifetime.releaseIfUnsubmitted() }
         try checkFirstContentDeadline()
@@ -1858,7 +1853,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 }
                 do {
                     try ToolConstraintValidation.validate(
-                        toolCalls, prepared: prepared)
+                        toolCalls, prepared: prepared, truncated: stopReason == "length")
                 } catch {
                     await releaseBox.fire()
                     continuation.finish(throwing: error)

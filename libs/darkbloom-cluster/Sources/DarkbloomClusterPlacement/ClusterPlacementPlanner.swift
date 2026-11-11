@@ -68,6 +68,11 @@ public struct ClusterPlacementPolicy: Sendable {
     /// rank now are preferred; when none can, every split stays. Nil keeps
     /// the existing speed-only share choice.
     public var tensorParallelWideningQuote: ClusterPlacementTensorBatchQuote?
+    /// Concurrent requests a tensor-parallel candidate is priced for when its family states a lane charge
+    /// (`ClusterTensorParallelFamilyPlan.laneBytes`): each rank's reservation gains that charge for every lane after
+    /// the first, as its owner's LOAD reserves a saved width. Nil or 1, the default: one request. A family priced by
+    /// a native width quote (`tensorParallelBatchQuote`) takes its width from the quote instead.
+    public var tensorParallelLanes: Int?
     /// The placement shapes the model's qualification records allow, when
     /// they restrict shapes (the shapes a cross-cable check diverged at on
     /// those chips): called with a candidate's chip names in rank order
@@ -400,6 +405,7 @@ public enum ClusterPlacementPlanner {
                 throw ClusterPlacementError("A retained tensor partition needs its exact ordered, supported two-rank shares")
             }
         }
+        try requireLanePricing(policy, layout: layout)
         if policy.tensorParallelBatchQuote?.assistant != nil {
             // A forced or chosen tensor parallel is the one family this quote prices (`ClusterForcedMode`).
             guard devices.count == 2, policy.modes == [.tensorParallel], policy.schedules == [.serial],
@@ -680,6 +686,17 @@ public enum ClusterPlacementPlanner {
             time, fastest.mode.rawValue) + note, restingOn: fastest)
     }
 
+    /// A width priced by lane charges (`ClusterPlacementPolicy.tensorParallelLanes`) is 1 through the protocol's lane
+    /// cap and needs the family's lane charge. A native width quote prices its own width, so it takes no lanes here.
+    static func requireLanePricing(_ policy: ClusterPlacementPolicy, layout: ClusterModelLayout) throws {
+        guard let lanes = policy.tensorParallelLanes, lanes != 1 else { return }
+        guard (2...ClusterServingFeatures.maximumLaneWidth).contains(lanes), layout.tensorParallel?.family.laneBytes != nil,
+              policy.tensorParallelBatchQuote == nil else {
+            throw ClusterPlacementError("A tensor-parallel width priced by lane charges needs the family's lane charge, "
+                + "no native width quote, and 2...\(ClusterServingFeatures.maximumLaneWidth) lanes")
+        }
+    }
+
     /// One explicit placement, evaluated as the planner evaluates its own
     /// candidates: `devices` in rank order, `cuts` ascending. Nothing is
     /// checked against the layout's cut lists, so a caller can ask about any
@@ -712,6 +729,7 @@ public enum ClusterPlacementPlanner {
                 throw ClusterPlacementError("Explicit evaluation changed the retained tensor partition")
             }
         }
+        try requireLanePricing(policy, layout: layout)
         let context = Context(devices: devices, layout: layout, prompt: policy.promptTokens ?? layout.maximumPromptTokens,
             outputs: policy.outputTokens ?? layout.maximumOutputTokens, modes: [mode], schedules: [prefillSchedule],
             link: link, policy: policy, tensorParallelForAssessment: true)
@@ -1097,21 +1115,33 @@ public enum ClusterPlacementPlanner {
             // The native quote already includes its full state, workspace and
             // collective buffers. Keep the larger complete reservation, then
             // add loading headroom once; adding both quotes double counts KV.
+            // A width priced by lane charges (no native quote) adds each lane
+            // after the first on top of what one request is priced at, as its
+            // LOAD does: the family's allowance, or the layout's state where it
+            // states none (GLM).
+            let laneGrowth = quote == nil ? tp.family.laneGrowthBytes(lanes: policy.tensorParallelLanes) : 0
             let nativeFloor = rankReserved ?? (quote?.allowance ?? tp.family.requestAllowance)?.reservedBytes ?? 0
             let requestComponents = max(state + work + extra + transient + (layout.allowanceEveryRankBytes ?? 0), nativeFloor)
+                + laneGrowth
             let requestNeed = max(memory.minimumAdmissibleBytes, requestComponents + memory.loadingHeadroomBytes)
             // Qwen27 batch LOAD reserves its complete future request while
             // reading the shard. Those bytes coexist with the two whole host
             // tensors and aligned read scratch; they are not alternate peaks.
-            // A missing batch quote preserves all existing family behavior.
-            let batchLoadReservation = rankReserved ?? quote?.allowance.reservedBytes ?? 0
+            // A width priced by lane charges reserves its whole width the same
+            // way (Gemma 4's shard gate): the family's allowance (none for GLM,
+            // whose request need decides) and every further lane. One request
+            // without a batch quote keeps the load peak it had: its shard gate
+            // holds the allowance too, so it stays short by the two whole
+            // tensors and the read scratch, as before widths, and one-request
+            // plans are unchanged.
+            let batchLoadReservation = rankReserved ?? quote?.allowance.reservedBytes ?? (laneGrowth > 0 ? nativeFloor + laneGrowth : 0)
             let loadPeak = load.need + batchLoadReservation
             // Native shard LOAD keeps the whole future head constructor/read
             // charge live, not merely its final replicated parameter arrays.
             let assistantTransient = (assistant?.loadBytes ?? 0) - (assistant?.residentBytes ?? 0)
             let allocatorHeld = load.held + batchLoadReservation + assistantTransient
             let need = max(loadPeak, load.held + requestNeed)
-            let gpu = load.held + max(state + work + extra + transient, nativeFloor)
+            let gpu = load.held + max(state + work + extra + transient, nativeFloor) + laneGrowth
             return .init(rank: rank, device: device.label,
                 firstLayer: pipelined ? own.layers.lowerBound : 0, endLayer: pipelined ? own.layers.upperBound : layout.layerCount,
                 weightsBytes: load.held, loadNeedBytes: loadPeak, requestNeedBytes: requestNeed, needBytes: need,

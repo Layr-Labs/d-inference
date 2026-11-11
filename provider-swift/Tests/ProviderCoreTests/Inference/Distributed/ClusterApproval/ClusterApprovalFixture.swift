@@ -32,10 +32,12 @@ final class ClusterApprovalMacs: @unchecked Sendable {
     /// What both Macs' setups place: the Qwen3.5 9B pipeline, or Qwen3.8 27B in tensor parallel as the guided setup
     /// saves it, with or without the model's embedded speculative assistant (`ClusterConfiguration.tensorAssistant`),
     /// with equal shares or the unequal ones a plan for two unequal Macs saves (`ClusterConfiguration.tensorShares`),
-    /// and the width its placement saved (`ClusterConfiguration.batchLanes`).
+    /// and the width its placement saved (`ClusterConfiguration.batchLanes`); or Gemma 4 26B in tensor parallel with the
+    /// width its placement saved.
     enum Shape {
         case pipeline
         case qwen27TensorParallel(assistant: ClusterQwenTensorAssistantPolicy?, shares: [Int]? = nil, lanes: Int? = nil)
+        case gemma4TensorParallel(lanes: Int?)
     }
 
     let root: URL
@@ -127,6 +129,16 @@ final class ClusterApprovalMacs: @unchecked Sendable {
                     .init(rank: 1, sourceLayerStart: 32, sourceLayerEnd: 64, stagePlanSHA256: h("3"), constructionConfigurationSHA256: h("4"))])],
                 arithmeticPolicyID: "qwen_cbv2_query128_bf16_tf32_default_v1", arithmeticPolicySHA256: h("5"),
                 supportedGenerationModes: [.pipeline, .tensorParallel])
+        case .gemma4TensorParallel:
+            let profile = ClusterWorkerProfile(id: "registered_gemma4_26b_qat_4bit_greedy_generation_v1", vocabularySize: 262144,
+                maximumPromptTokens: 32768, maximumOutputTokens: 32768, maximumChunkTokens: 512, maximumContextTokens: 65536)
+            return try ClusterRuntimeCapability(runtimeBinarySHA256: runtime, adapterID: ClusterRuntimeAdapter.gemma4LayerStage.rawValue,
+                adapterVersion: 1, runtimeModelID: "registered_gemma4_26b_qat_4bit", artifactSHA256: h("b"), configurationSHA256: h("c"),
+                manifestSHA256: h("d"), profile: profile, profileFingerprint: h("e"), partitions: [.init(planSHA256: h("f"), stages: [
+                    .init(rank: 0, sourceLayerStart: 0, sourceLayerEnd: 15, stagePlanSHA256: h("1"), constructionConfigurationSHA256: h("2")),
+                    .init(rank: 1, sourceLayerStart: 15, sourceLayerEnd: 30, stagePlanSHA256: h("3"), constructionConfigurationSHA256: h("4"))])],
+                arithmeticPolicyID: ClusterRuntimeAdapter.gemma4LayerStage.arithmeticPolicyID, arithmeticPolicySHA256: h("5"),
+                supportedGenerationModes: [.pipeline, .tensorParallel])
         }
     }
 
@@ -161,6 +173,10 @@ final class ClusterApprovalMacs: @unchecked Sendable {
                 configuration["generationMode"] = ClusterGenerationMode.tensorParallel.rawValue
                 if let assistant { configuration["tensorAssistant"] = assistant.object }
                 if let shares { configuration["tensorShares"] = shares }
+                if let lanes { configuration["batchLanes"] = lanes }
+            }
+            if case .gemma4TensorParallel(let lanes) = shape {
+                configuration["generationMode"] = ClusterGenerationMode.tensorParallel.rawValue
                 if let lanes { configuration["batchLanes"] = lanes }
             }
             let input = mac.scratch.appendingPathComponent("setup.json"), capabilityInput = mac.scratch.appendingPathComponent("capability.json")

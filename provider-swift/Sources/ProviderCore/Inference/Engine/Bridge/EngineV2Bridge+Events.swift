@@ -18,6 +18,7 @@ extension EngineV2Bridge {
         readyReceiptRegistered: Bool = false,
         profile: RequestProfileBuilder? = nil,
         nativeRetirement: CBv2RequestRetirement? = nil,
+        terminalPrecedesPublication: Bool = false,
         httpResponse: DistributedHTTPResponse? = nil,
         prefillProgress: LocalPrefillProgress? = nil
     ) {
@@ -36,6 +37,7 @@ extension EngineV2Bridge {
                 readyReceiptRegistered: readyReceiptRegistered,
                 profile: profile,
                 nativeRetirement: nativeRetirement,
+                terminalPrecedesPublication: terminalPrecedesPublication,
                 httpResponse: httpResponse,
                 prefillProgress: prefillProgress
             )
@@ -69,6 +71,7 @@ extension EngineV2Bridge {
         readyReceiptRegistered: Bool = false,
         profile: RequestProfileBuilder? = nil,
         nativeRetirement: CBv2RequestRetirement? = nil,
+        terminalPrecedesPublication: Bool = false,
         httpResponse: DistributedHTTPResponse? = nil,
         prefillProgress: LocalPrefillProgress? = nil
     ) async {
@@ -91,6 +94,9 @@ extension EngineV2Bridge {
         // Profiler: pump-LOCAL last-delta instant (one clock read per delta,
         // no lock), written to the profile exactly once at finish.
         var lastDeltaAt: SuspendingClock.Instant?
+        // When the client's terminal was yielded: an early terminal is
+        // measured against it once the request retires.
+        var terminalAt: ContinuousClock.Instant?
         eventLoop: for await event in events {
             switch event {
             case .delta(let text, let tokens, let logprobs):
@@ -163,6 +169,7 @@ extension EngineV2Bridge {
                     cause: Self.httpTerminalCause(reason),
                     memoryRefused: Self.isPairMemoryAbort(reason)))
                 if reason == .stop || reason == .length {
+                    usageSignal?.recordAnswerFinished()
                     usageSignal?.record(matchedStopSequence: matchedStopSequence(
                         candidates: stopSequences,
                         generatedTokens: generatedTokens,
@@ -188,6 +195,7 @@ extension EngineV2Bridge {
                     sawFirstToken: sawFirstToken, continuation: continuation,
                     lastDeltaAt: lastDeltaAt
                 )
+                terminalAt = .now
                 break eventLoop
             }
         }
@@ -207,6 +215,9 @@ extension EngineV2Bridge {
             // receipt IDs until actual engine-queue release, even on a wedge.
             continuation.finish()
             await nativeRetirement.wait()
+            if terminalPrecedesPublication, let terminalAt {
+                noteRetirementAfterTerminal(requestId: id, held: terminalAt.duration(to: .now))
+            }
         }
         releaseServiceAllowance(requestID: id)
         // Every exit releases only the resources owned by this submission.

@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-10
 
 Provider CLI and native-runtime environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -243,6 +243,24 @@ causes a reported conflict instead of being overwritten (`stageReplacement`,
 
 Parsing convention: affirmative values are `1`/`true`/`yes`/`on`, negative values `0`/`false`/`no`/`off`, case-insensitive. Only the variables named in the [LaunchAgent environment passthrough](../provider/cli-reference.md#launchagent-environment-passthrough) reach an installed daemon; everything else applies to `darkbloom start --foreground` and to the benchmark and test binaries.
 
+### Gemma 4 row-mapped NAX
+
+This SDK route defaults on within its eligibility guards. Its setting uses exact
+values, not the general boolean convention above; no `provider.toml` key is added.
+
+| Variable | Values / default | Consumer and effect |
+|---|---|---|
+| `DARKBLOOM_GEMMA4_NAX_ROW_MAP` | Enabled when unset or exactly `1`; exact `0` restores the original graph. Other explicit values, including empty, also disable it. Read once by the SDK's static selection | `libs/mlx-swift-lm/Libraries/MLXLMCommon/Gemma4RowMappedNAX.swift` (`requested`, `tryPair`); eligible stock Gemma expert prefill reads original token rows through the sorted assignment map. Hardware, shape, dtype, module and tracing guards still apply. |
+
+`LaunchAgent.inferencePassthroughEnvKeys` and `passthroughEnvironment` in
+`provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift` forward this
+override verbatim, including empty, when creating the background provider job.
+Foreground/local processes read it directly. Restarting an existing job reuses
+its saved environment; stop and start with `DARKBLOOM_GEMMA4_NAX_ROW_MAP=0` to
+persist the rollback, or without the override to restore the default. See the
+[mechanism and measured scope](../architecture/inference.md#gemma-4-row-mapped-nax-prefill)
+and [LaunchAgent boundary](../provider/cli-reference.md#launchagent-environment-passthrough).
+
 ### Scheduler-prefill benchmark prompts
 
 | CLI setting | Default / behavior | Consumer |
@@ -372,10 +390,10 @@ cancelled picker or a refused start writes nothing):
 
 | Writer | Keys |
 |---|---|
-| The start question, in a terminal (no saved `mode`, or `--choose`) | `mode`; `route` from its follow-up, asked only with an account key saved |
-| A mode flag: `--local`, `--network`, `--me-first`, `--local-endpoint` (`LocalFirstOptions.savesModeFlag`) | `mode`, so the background service, `restart` and `update` serve it from now on; never with `--local --here` (one terminal session) or for a service's child |
+| The start question, in a terminal (no saved `mode`, or `--choose`) | `mode`; `route` from its follow-up, asked only with an account key saved; nothing beside `--solo` |
+| A mode flag: `--local`, `--network`, `--me-first`, `--local-endpoint` (`LocalFirstOptions.savesModeFlag`) | `mode`, so the background service, `restart` and `update` serve it from now on (a plain `start --local` on one Mac included); never with `--local --here` (one terminal session), for a service's child, or beside `--solo` |
 | The desktop app's "Local only" (`desktop start-local`), once its service started (`Desktop.StartLocal.serve`) | `mode = "local"`, as `--local` writes it; the app's other choices pass `--local-endpoint`, a mode flag |
-| `--no-me-first`, `--me-first` (only to undo a saved `me_first = false`), `--me-first-idle <min>`, `--route <route>` | `me_first`, `me_first_idle_minutes`, `route`, as `--idle-timeout` writes `idle_timeout_mins` |
+| `--no-me-first`, `--me-first` (only to undo a saved `me_first = false`), `--me-first-idle <min>`, `--route <route>` | `me_first`, `me_first_idle_minutes`, `route`, as `--idle-timeout` writes `idle_timeout_mins`. Never beside `--solo`: on a Mac in a pair these are the pair's settings, so a solo start that would change one is refused, naming it (`StartServingResolver.soloSettingsRefusal`); every flag beside `--solo` is for that start only |
 | `darkbloom route this-mac`, `my-macs`, `my-macs-first` (`RouteChoiceFlow`) | `route` only, at once and without a start, and a running local API uses it from its next request; `my-macs` and `my-macs-first` write nothing while no account key is saved |
 | Any start that serves a local API (the question's Only me or Both, a saved `mode`, `--me-first`, `--local`, `--local-endpoint`, the desktop app's starts), except a service's child (`--foreground`, or `start --local` a service runs) | `port`, when none is saved (the one this Mac's local API already uses, else the first free one, as above) or `--port <n>` names another |
 | The cluster service of a paired Mac, when its port for the pair's API (its relay), rank 0's part or the solo server starts with no `port` saved (`ClusterService.ownAPIPort`) | `port`, the same way; never a new `provider.toml` |
@@ -506,12 +524,12 @@ and rollback are defined in the [provider configuration reference](../provider/c
 
 | Config key | Default | Read in | Effect |
 |---|---|---|---|
-| `[backend] mtp_acceptance`, `mtp_acceptance_by_model` | unset resolves to `typical` (delta `0.2`); model map `{}` | `provider-swift/Sources/ProviderCore/Inference/MTP/MTPAcceptancePolicy.swift` (`resolve`) | Exact model override precedes global, then the built-in default. Eligible sampled target-prefix MTP output is approximate, not distribution-exact; explicit `exact` opts out and invalid values safely resolve to `exact`. Greedy behavior and native MiMo exact acceptance are unchanged. Does not enable disabled MTP or widen eligibility. |
+| `[backend] mtp_acceptance`, `mtp_acceptance_by_model` | unset resolves to `typical` (delta `0.2`), except `exact` for the Bonsai 9B candidate, the catalog `Qwen3.5-9B`, `gemma-4-26b-qat-4bit` and the Qwen 3.8 27B builds `EigenLabs/Qwen3.8-27B-4bit-mtp` and `EigenLabs/Qwen3.8-27B-4bit` (`builtInIsExact`); model map `{}` | `provider-swift/Sources/ProviderCore/Inference/MTP/MTPAcceptancePolicy.swift` (`resolve`) | Exact model override precedes global, then the built-in default. Eligible sampled target-prefix MTP output is approximate, not distribution-exact; explicit `exact` opts out and invalid values safely resolve to `exact`. Greedy behavior and native MiMo exact acceptance are unchanged. Does not enable disabled MTP or widen eligibility. |
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
 | `DARKBLOOM_CBV2_KV_QUANTIZATION` | `balanced`, `k8v4`, `k8v8`, `native` (aliases in the [CLI reference](../provider/cli-reference.md#providertoml-keys-read-by-the-cli)) | `native` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVQuantizationPolicy.swift` (`resolve`, `.live`), through `EngineV2KVQuantizationPolicy` | Overrides exact-model and global live precision settings. Only explicit live packed precision requires paged execution; native retains the model's automatic backend policy. MiMo resolves native before parsing. Forwarded to the LaunchAgent. A cluster pair resolves it the same way on each Mac; see [cluster stage KV precision](#cluster-stage-kv-precision). |
-| `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` | Same four precision values and aliases | `balanced` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVQuantizationPolicy.swift` (`resolve`, `.checkpoint`), through `EngineV2KVQuantizationPolicy` | Overrides exact-model and global checkpoint settings independently. Eligible native paged/contiguous complete stores use lossy older-row encoding and native restore; unsupported cases retain native encoding, and live-packed stores keep their existing format. Does not enable caching, force a backend or grant serving RAM. MiMo resolves native before parsing. Forwarded to the LaunchAgent. |
+| `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` | Same four precision values and aliases | `balanced`; `native` for `nemotron_h` (Lightning) and for the Nemotron 3.5 Super slot (`NemotronSuperLocalPrefixCache.checkpointPrecision`, which the global setting doesn't reach) | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVQuantizationPolicy.swift` (`resolve`, `.checkpoint`), through `EngineV2KVQuantizationPolicy` | Overrides exact-model and global checkpoint settings independently. Eligible native paged/contiguous complete stores use lossy older-row encoding and native restore; unsupported cases retain native encoding, and live-packed stores keep their existing format. Does not enable caching, force a backend or grant serving RAM. MiMo resolves native before parsing. Forwarded to the LaunchAgent. |
 | `DARKBLOOM_CBV2_PAGED_KV` | `0`, `false`, `no`, `off` disable paging | unset (policy decides) | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift` (`preferredBackend`, `killSwitchDisabled`) | Kill switch for paged KV; beats the backend setting. Nemotron Super, which serves paged KV only, fails its load instead (`DARKBLOOM_NEMOTRON_SUPER_KV_BACKEND`). Native live precision can serve contiguous; non-MiMo live-packed precision refuses construction when paging is unavailable. See [backend and precision controls](../provider/cli-reference.md#providertoml-keys-read-by-the-cli). A backend default is not runtime qualification. |
 | `DARKBLOOM_CBV2_PAGED_KV_DTYPE` | `float16`, `float32` | unset: observed native per-layer types | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BackendPreparation.swift` | Optional assertion for resolved paged storage; a nonempty value must match every measured native layer. Unsupported values or mismatches refuse explicit paged construction. |
 | `DARKBLOOM_CBV2_PREFILL_CHUNK` | positive tokens | family policy: `2048` (`widePrefillChunkTokens`) for Gemma 4, otherwise the SDK's `512` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` (`prefillChunkTokens`, `prefillGeometry`) | Plain prefill chunk, including prompt work beside decode rows, for every model except where a family policy replaces it: GLM5Next (`glm5NextServingScheduler`) and Nemotron Super local serving (`DARKBLOOM_NEMOTRON_SUPER_PREFILL_CHUNK`, `NemotronSuperLocalPrefill.Policy.apply`) set their own chunk and step, and calibrated Nemotron models cap the chunk at their calibrated prefill limit (`calibratedPrefillTokenLimit`). Requests with bidirectional media blocks (Gemma 4 images and video) keep `512` whenever the chunk is wider. On Gemma 4 a value that leaves `max(chunk, stripe)` below its largest media block is raised to `1120` (`gemma4MaximumMediaBlockTokens`), because a block rides one chunk. Zero, negative or malformed values restore `512`. The paged pool sizes windowed rings from `max(chunk, stripe)`, so a value above the default stripe raises KV charges. Set it to `512` with `DARKBLOOM_CBV2_STEP_TOKENS=2048` to roll Gemma 4 back. `2048` with `DARKBLOOM_CBV2_STEP_TOKENS=4096` opts GPT-OSS or dense Qwen into the measured wide geometry, which raises their long-context activation peaks above their floors ([prompt geometry](../architecture/inference.md#prompt-geometry)). Forwarded to the LaunchAgent. |
@@ -562,6 +580,7 @@ the qualification hook's keys, for speculation and width
 | `DARKBLOOM_NEMOTRON_SUPER_MTP_DEPTH`, `_MTP_VERIFICATION`, `_PREFILL_CHUNK`, `_KV_BACKEND`, `_VIDEO_PRUNING` | depth `3,2,2,2,1` (`3,2,1,1,0` on an M5); the [builder defaults](../architecture/inference.md#context) otherwise | Kept when set in the provider process |
 | `DARKBLOOM_NEMOTRON_SUPER_DECODE_STEPS_BETWEEN_CHUNKS` | `4` (`NemotronSuperLocalPrefill.defaultDecodeStepsBetweenChunks`); `0`…`64`, any other value fails the load | Decode-only steps after each prompt chunk while requests decode; `0` is the rollback. Forwarded to the launchd provider job |
 | `DARKBLOOM_PREFIX_CACHE_MEMORY` | on for either owner when the grant holds every request's fixed bytes and the bank | An explicit value, `DARKBLOOM_PREFIX_CACHE` negative or `DARKBLOOM_CBV2_HYBRID_PREFIX_CACHE=0` keeps the bank off |
+| `backend.engine_v2_kv_checkpoint_quantization_by_model."nvidia-nemotron-3.5-super"`, `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` | absent: `native` (`NemotronSuperLocalPrefixCache.checkpointPrecision`) | Complete SSD checkpoints store native rows, so a restore continues a cold prefill bit for bit. The global `engine_v2_kv_checkpoint_quantization` does not apply to Super; Super's own entry or the switch selects a profile such as `balanced` ([layouts and sizes](ssd-kv-cache.md#complete-checkpoint-payload)) |
 
 ### Native MiMo V2.6 candidate
 
@@ -775,6 +794,7 @@ Internals and file format: [`ssd-kv-cache.md`](ssd-kv-cache.md).
 | `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MB`, `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MS` | MiB, ms | `1024`, `1000`; complete checkpoints on Macs with ≥ 48 GiB: `7168`, `15000` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Attention staging byte/time caps. Complete checkpoints apply the byte value as a payload cap and the time value as an estimated-read cap when capturing and reading (both defaults raised on large-memory Macs; an explicit value overrides both families); native destination plus bounded scratch is separately reserved before allocation, with no permanent RAM carve. Not forwarded to LaunchAgents, so installed daemons use the defaults. |
 | `DARKBLOOM_PREFIX_CACHE_SSD_STRICT_FSYNC` | affirmative | off | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | `fsync` after every write. |
 | `DARKBLOOM_PREFIX_CACHE_SSD_INCREMENTAL_CHECKPOINTS` | negative (`0`, `false`, `no`, `off`) disables | on | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` (`incrementalCheckpoints`) | Writes eligible native recurrent complete checkpoints as [deltas](ssd-kv-cache.md#delta-complete-checkpoints) of the restored file. Forwarded to the launchd provider job. |
+| `DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION` | affirmative | off | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` (`terminalBeforePublication`) | An unseeded donor's response ends [before its complete checkpoint is durable](ssd-kv-cache.md#size-and-eviction-rules); rows, the KV reservation and the service allowance are still held until the write settles. Forwarded to the launchd provider job. A request that retires at least 1 ms after its answer is [marked](telemetry-schema.md#provider-early-terminal) in the provider log with that time. |
 
 ### Resident recurrent prefix cache
 
@@ -871,7 +891,7 @@ solo serving is unchanged and the whole surface stays default-off.
 
 | Field | Meaning and bounds | Source |
 |---|---|---|
-| `batchLanes` | Optional integer 2, 4 or 8, or 6 for a Qwen TP row in `tensor_parallel_v1`; omitted in existing setups. Only registered text batch adapters in plain pipeline with serial prefill accept it. It is a requested width, never a capacity grant. The guided setup writes it into both Macs' setups for a Qwen TP placement ([saved width](../architecture/inference.md#qwen-tensor-parallel-saved-width)), and a setup saved for coordinator pairing keeps it beside its approval. | `provider-swift/Sources/ProviderCore/Config/ClusterConfiguration.swift` (`validate`), `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementTensorWidth.swift` (`widest`) |
+| `batchLanes` | Optional integer 2, 4 or 8, or 6 for a tensor-parallel width (a Qwen TP row, Gemma 4 or GLM in `tensor_parallel_v1`); omitted in existing setups. Registered text batch adapters in plain pipeline, and those tensor-parallel rows, accept it with serial prefill only. It is a requested width, never a capacity grant. The guided setup writes it into both Macs' setups for a Qwen TP, Gemma 4 or GLM tensor-parallel placement ([lane widths](../architecture/inference.md#tensor-parallel-lane-widths)), and a setup saved for coordinator pairing keeps it beside its approval. | `provider-swift/Sources/ProviderCore/Config/ClusterConfiguration.swift` (`validate`), `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementTensorWidth.swift` (`plan`) |
 | `DARKBLOOM_CLUSTER_BATCH_LANES` | An explicit diagnostic setting retains precedence; absent settings use the persisted width, then the existing family default. Malformed explicit values fail closed to one lane. | `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPlan.swift` (`batchLanes`) |
 
 The normal cluster API can persist a wider setup after queued demand, conservative
@@ -1055,7 +1075,7 @@ runtime digest, and the provider computes no facts for it
 | `…promotable`, `…diverged` | `true`, `false` |
 | `…evidence_sha256` | SHA-256 of the evidence document, [`docs/reports/2026-10-31-public-cluster-models.md`](../reports/2026-10-31-public-cluster-models.md); for the serial-schedule (`1`) `tensor_parallel` qualification of a model declared with a resident assistant, its report's (schedule `2` pairs decode plain: the assistant needs serial prefill) (Qwen3.8-27B: [`docs/reports/2026-11-05-qwen27-public-assistant.md`](../reports/2026-11-05-qwen27-public-assistant.md); `ClusterRuntimeApprovalFacts.parityQualifications`) |
 | `…qualified_at` | `2026-11-03T00:00:00Z`, the date of the latest declaration; for that assistant qualification, the assistant's `qualifiedAt` |
-| `…request_envelope` | `sampling` and `tools` `true`; `max_prompt_tokens` and `max_output_tokens` are what a cluster serves in the qualification's mode (`ClusterModelFeaturePolicy.servedProfile`), at most 1,048,576. In tensor parallel, that is the worker profile's limits: 262,143 and 65,536 for Qwen3.8-27B, 1,048,575 and 65,536 for GLM-5.3-Flash. In a pipeline, it is the memory plan's request, 32,768 and 32,768, which is also what every other declared model serves in every mode. The coordinator sends a public request outside the envelope to a single Mac instead of to the cluster's refusal (builds before 0.10.10 wrote 1,048,576 for both). Where the placement serves media (`ClusterModelFeaturePolicy.mediaContract`: GLM-5.3-Flash and Qwen3.8-27B in tensor parallel; a pipeline is text only), `vision` when the model's catalog entry in the release's environment lists `image` in `input_modalities`, `video` when it also lists `video` (`ClusterPublicModels.requestEnvelope`). A model given by hand has no catalog entry, so its envelope admits text only |
+| `…request_envelope` | `sampling` and `tools` `true`; `max_prompt_tokens` and `max_output_tokens` are what a cluster serves in the qualification's mode (`ClusterModelFeaturePolicy.servedProfile`), at most 1,048,576. In tensor parallel, that is the worker profile's limits: 262,143 and 65,536 for Qwen3.8-27B, 262,143 and 32,768 for Gemma 4 26B, 1,048,575 and 65,536 for GLM-5.3-Flash. In a pipeline, it is the memory plan's request, 32,768 and 32,768, except Gemma 4 26B's, which serves its whole profile (262,143 and 32,768); the memory plan's request is also what every other declared model serves in every mode. The coordinator sends a public request outside the envelope to a single Mac instead of to the cluster's refusal (builds before 0.10.10 wrote 1,048,576 for both). Where the placement serves media (`ClusterModelFeaturePolicy.mediaContract`: GLM-5.3-Flash and Qwen3.8-27B in tensor parallel; a pipeline is text only), `vision` when the model's catalog entry in the release's environment lists `image` in `input_modalities`, `video` when it also lists `video` (`ClusterPublicModels.requestEnvelope`). A model given by hand has no catalog entry, so its envelope admits text only |
 
 The public declaration names GLM-5.3-Flash (`registered_glm53_flash`,
 `glm-5.3-flash`) and Qwen3.8-27B (`registered_qwen38_27b`,
@@ -1775,7 +1795,8 @@ registered headers and requires the native allocator metadata bound. Saved
 `batchLanes` may select 2, 4, 6 or 8 in a Qwen TP row's `tensor_parallel_v1`; omission
 keeps one. The guided setup reads the quote at each of these widths
 ([saved width](../architecture/inference.md#qwen-tensor-parallel-saved-width)).
-GLM defaults remain unchanged.
+Gemma 4 and GLM save theirs from their lane charges instead
+([lane widths](../architecture/inference.md#tensor-parallel-lane-widths)).
 Source: `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementTensorBatchQuote.swift`.
 
 ### Qwen27 saved mode compatibility

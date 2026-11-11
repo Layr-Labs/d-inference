@@ -5,10 +5,12 @@ import ProviderCore
 // How a single-Mac `darkbloom start` serves (`[local]`): only its owner, the Darkbloom network, or both with the
 // owner first. A mode flag decides it, and is saved; otherwise the saved choice; otherwise, in a terminal, one
 // question, whose answer is saved. So the background service always serves the saved choice, and `restart` and
-// `update` bring that back (`SavedChoiceService`). Only `--local --here`, one terminal session, and a service's own
-// child save nothing. Without a terminal and without a saved choice or a mode flag (the LaunchAgent after an upgrade,
-// the desktop app, scripts), a start keeps today's behaviour exactly: the Darkbloom network, with no local API, no
-// Keychain look-up, no port probe and nothing written, so an upgraded Mac never opens a local port by itself.
+// `update` bring that back (`SavedChoiceService`). Only `--local --here`, one terminal session, a service's own
+// child, and a start beside `--solo` (on a Mac in a pair `[local]` holds the pair's settings; every flag there is for
+// that start only) save nothing but a port.
+// Without a terminal and without a saved choice or a mode flag (the LaunchAgent after an upgrade, the desktop app,
+// scripts), a start keeps today's behaviour exactly: the Darkbloom network, with no local API, no Keychain look-up,
+// no port probe and nothing written, so an upgraded Mac never opens a local port by itself.
 // Every local API this Mac serves takes its one port (`LocalAPIPort`), so the address tools were given never moves.
 // No line here names a speed (`StartLocalFirstTests.noSpeedAnywhere` reads them all) or prints a key.
 
@@ -45,6 +47,10 @@ struct LocalFirstOptions: Equatable, Sendable {
     var foreground = false
     /// `--local --here`: Only me in this terminal, for this session only; nothing is saved but this Mac's port.
     var here = false
+    /// `--solo`: this Mac alone instead of its pair. There `[local]` holds the pair's settings (`darkbloom cluster` saves
+    /// its answer as `mode`; its pause and router read `me_first`, `me_first_idle_minutes` and `route`), so every flag
+    /// is for that start only: nothing but a new or named port is saved.
+    var solo = false
 
     /// The mode flags given, in `ServingModeFlag` order.
     var modeFlags: [ServingModeFlag] {
@@ -131,8 +137,9 @@ struct LocalFirstOptions: Equatable, Sendable {
     }
 
     /// Whether this start's mode flag is saved: always, so the background service, `restart` and `update` serve it
-    /// from now on; never for `--local --here` (one terminal session) or a service's child.
-    var savesModeFlag: Bool { modeFlag != nil && !foreground && !here }
+    /// from now on; never for `--local --here` (one terminal session), a service's child, or `--solo`, whose flag is
+    /// for that start only (journey 3: `start --solo --local` replaced the pair's saved Both).
+    var savesModeFlag: Bool { modeFlag != nil && !foreground && !here && !solo }
 }
 
 /// Where a start's mode came from.
@@ -263,9 +270,34 @@ struct ServingEnvironment {
 }
 
 enum StartServingResolver {
+    /// Beside `--solo`, the first settings flag that would change a `[local]` key the pair reads, in words that name it
+    /// and what to do; nil when each one given equals the pair's value (`--me-first` changes nothing over a pause that
+    /// is on). `--me-first` names `--local-endpoint`, which serves Both with the pair's pause as it is.
+    static func soloSettingsRefusal(_ options: LocalFirstOptions, saved: LocalSettings) -> String? {
+        guard options.solo else { return nil }
+        let flag: String, key: String
+        if let route = options.route, route != saved.route {
+            (flag, key) = ("--route", "route")
+        } else if options.meFirst == false, saved.meFirst != false {
+            (flag, key) = ("--no-me-first", "me_first")
+        } else if options.meFirst == true, saved.meFirst == false {
+            (flag, key) = ("--me-first", "me_first")
+        } else if let minutes = options.meFirstIdleMinutes, minutes != saved.meFirstIdleMinutes {
+            (flag, key) = ("--me-first-idle", "me_first_idle_minutes")
+        } else {
+            return nil
+        }
+        let instead = flag == "--me-first" ? "use --local-endpoint to serve Both with the pair's setting (me first off)"
+            : "drop it to serve this Mac alone with the pair's setting"
+        return "`\(flag)` would change [local] \(key), which your pair reads too. Beside --solo a start's flags are for that "
+            + "start only and it saves nothing there: \(instead). Nothing was started or saved."
+    }
+
     /// How this start serves, and what it saves; nil when the person cancelled at the question. The question's answer
     /// and a mode flag are saved (`LocalFirstOptions.savesModeFlag`). The settings flags (`--no-me-first`,
-    /// `--me-first-idle`, `--route`) are saved as `--idle-timeout` is. Every local API takes this Mac's one port
+    /// `--me-first-idle`, `--route`) are saved as `--idle-timeout` is. Beside `--solo` nothing of these is saved: the
+    /// mode serves that start only, no route is asked, and a settings flag that would change the pair's key is refused
+    /// (`soloSettingsRefusal`). Every local API takes this Mac's one port
     /// (`LocalAPIPort.choose`): a named `--port`, else `[local] port`, else one chosen now; a new or named port is saved
     /// so that tools keep finding it. The --foreground service saves nothing, probes no port and never asks the
     /// Keychain: launchd's arguments say how it serves.
@@ -284,8 +316,9 @@ enum StartServingResolver {
             guard let answer = ServingQuestion.askMode(preselected: preselected, idleMinutes: idle,
                                                        readInput: env.readInput, emit: env.emit) else { return nil }
             (mode, source) = (answer, .question)
-            change.mode = answer
-            if answer != .network, options.route == nil {
+            // Beside --solo the answer serves this start only, with the pair's saved route: nothing asked is saved.
+            if !options.solo { change.mode = answer }
+            if answer != .network, options.route == nil, !options.solo {
                 let keySaved = env.accountKeySaved()
                 accountKeySaved = keySaved
                 if keySaved {
@@ -296,7 +329,12 @@ enum StartServingResolver {
                 }
             }
         }
-        if !options.foreground {
+        if options.solo {
+            // The pair reads these keys too (its pause, its idle minutes, its router), and the background service reads
+            // them from [local], so beside --solo they can't serve this start alone: one that would change the pair's is
+            // refused before anything starts or is saved (#1931's review). The pair's own values serve.
+            if let refusal = soloSettingsRefusal(options, saved: saved) { throw ValidationError(refusal) }
+        } else if !options.foreground {
             if let route = options.route { change.route = route }
             if options.meFirst == false {
                 change.meFirst = false

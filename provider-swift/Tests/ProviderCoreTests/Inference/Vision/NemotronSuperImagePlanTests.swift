@@ -132,7 +132,8 @@ struct NemotronSuperImagePlanTests {
                 "messages": [["role": "user", "content": [["type": "image_url",
                     "image_url": ["url": "data:image/\(label);base64," + image.base64EncodedString()]]]]]])
             await #expect(throws: NemotronSuperImagePreprocessing.Failure.workspaceLimit, "\(label)") {
-                try await images.runEncoded(body: body, templateBytes: template) { _ in
+                try await images.runEncoded(body: body, plan: NemotronSuperRequestPlan(body: body),
+                                            templateBytes: template) { _ in
                     Issue.record("refused image emitted an event")
                 }
             }

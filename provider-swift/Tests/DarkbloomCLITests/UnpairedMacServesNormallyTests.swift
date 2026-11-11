@@ -212,6 +212,14 @@ struct UnpairedMacServesNormallyTests {
         #expect(!Watchdog.pairOwnsServing(providerActive: true, jobIsClusterMember: false, pairServes: true))
     }
 
+    @Test("the watchdog brings back a single-Mac job launchd lost, never a member's job or one beside a running pair")
+    func watchdogAbsentJob() {
+        #expect(Watchdog.recoversAbsentJob(jobIsClusterMember: false, pairServes: false))
+        #expect(!Watchdog.recoversAbsentJob(jobIsClusterMember: false, pairServes: true))
+        #expect(!Watchdog.recoversAbsentJob(jobIsClusterMember: true, pairServes: false))
+        #expect(!Watchdog.recoversAbsentJob(jobIsClusterMember: true, pairServes: true))
+    }
+
     @Test("status says the pair isn't running here and the one command to serve alone")
     func status() {
         let stale = pair(running: false)

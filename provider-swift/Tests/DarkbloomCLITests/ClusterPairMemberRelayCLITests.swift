@@ -42,6 +42,9 @@ struct ClusterPairMemberRelayCLITests {
 
     /// The relay's words while the other Mac is away, as the 503 says them.
     static let awayWords = ClusterLocalRelay.Refusals.pair(otherMac: "Apple M5 Ultra, 256 GB", cli: ClusterPairSummary.cli).unreachable
+    /// The relay's words while the pair's API on the other Mac doesn't listen (its part starts again), as the 503 says them.
+    static let notAnsweringWords = ClusterLocalRelay.Refusals.pair(otherMac: "Apple M5 Ultra, 256 GB", cli: ClusterPairSummary.cli)
+        .notAnswering
 
     // MARK: - status
 
@@ -101,6 +104,27 @@ struct ClusterPairMemberRelayCLITests {
                 "back: its address again")
     }
 
+    /// While the pair's API on the other Mac doesn't listen (its part starts again after a stop, a restart or an update),
+    /// the member's relay keeps its port and answers each request a 503, and its `status` says so in the 503's words,
+    /// never "not listening": with Both, me first and with Only me. The other Mac away says that instead; once the API
+    /// listens again, the address. Tools are still set up for the address (`memberAPIDown` says nothing): it passes
+    /// requests on again by itself.
+    @Test func aMembersStatusSaysItsRelayAnswers503WhileThePairsAPIStartsAgain() {
+        var down = member()
+        down.relayRankZeroAPIDown = true
+        let line = "Local API: http://127.0.0.1:8003/v1 on this Mac answers 503 for now. \(Self.notAnsweringWords)"
+        #expect(down.localAPILines(now: F.now) == [line, "Members: \(Self.other) runs the pair's API; this Mac is part of the pair"])
+        #expect(Self.onlyMe(down).localAPILines(now: F.now) == [line])
+        #expect(down.memberAPIDown == nil && down.memberAPIStarting == nil)
+        #expect(down.appStartLines(named: [], localEndpoint: true, code: 0).isEmpty)
+        var away = down
+        away.relayRankZeroAway = true
+        #expect(away.localAPILines(now: F.now).first == "Local API: http://127.0.0.1:8003/v1 on this Mac answers 503 for now. \(Self.awayWords)")
+        down.relayRankZeroAPIDown = false
+        #expect(down.localAPILines(now: F.now).first?.hasPrefix("Local API: http://127.0.0.1:8003/v1 on this Mac,") == true,
+                "listening again: its address")
+    }
+
     /// The app's Start on a member (`Start.appStartOptions`, `--local-endpoint`) never says "No local API was added"
     /// while its relay gives it one (#1905's rule for whichever of the two landed second): relaying, or still starting, it
     /// says nothing of one; with the other Mac away, or while Darkbloom doesn't have the pair, it says this Mac's state in
@@ -149,6 +173,21 @@ struct ClusterPairMemberRelayCLITests {
         #expect(held.appStartLines(named: [], localEndpoint: true, code: 3) == [heldLine])
         for quiet in [Self.onlyMe(member()), Self.onlyMe(member(relaying: nil))] {
             #expect(quiet.memberAPIDown == nil && quiet.localAPILines(now: F.now).isEmpty, "\(quiet.relaying as Any)")
+        }
+    }
+
+    /// Only a Mac that relays the pair's API on every address says its port answers 503 for now: with the pair's API kept
+    /// on the leading Mac (loopback or one address), `status`, `darkbloom local` and `doctor` have no such line, whatever
+    /// this Mac's cluster service last said of a relay, with Both, me first and with Only me.
+    @Test func aPairKeptOnItsLeadingMacGivesAMemberNo503Line() {
+        for bind in ["127.0.0.1", "192.168.1.5"] {
+            for onlyMe in [false, true] {
+                var kept = member(bind: bind)
+                if onlyMe { kept = Self.onlyMe(kept) }
+                kept.relayRankZeroAway = true
+                kept.relayRankZeroAPIDown = true
+                #expect(kept.memberAPIUnavailable == nil, "\(bind), Only me \(onlyMe)")
+            }
         }
     }
 
@@ -246,12 +285,13 @@ struct ClusterPairMemberRelayCLITests {
         }
     }
 
-    /// `darkbloom local` on a member whose pair's other Mac can't be reached shows its address, and says it answers 503
-    /// for now, in the 503's words: with Both, me first and with Only me.
+    /// `darkbloom local` on a member whose pair's other Mac can't be reached, or whose pair's API there doesn't listen
+    /// (its part starts again), shows its address, and says it answers 503 for now, in the 503's words: with Both, me
+    /// first and with Only me.
     @Test func localOnAMemberWhosePairsOtherMacIsAwaySaysSo() async throws {
-        for onlyMe in [false, true] {
+        for (onlyMe, away) in [(false, true), (true, true), (false, false), (true, false)] {
             let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent]) {
-                [onlyMe = onlyMe as Bool] in
+                [onlyMe = onlyMe as Bool, away = away as Bool] in
                 let directory = FileManager.default.temporaryDirectory
                     .appendingPathComponent("member-relay-local-\(UUID().uuidString)", isDirectory: true)
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -261,7 +301,7 @@ struct ClusterPairMemberRelayCLITests {
                 try LocalEndpoint.writeInfo(ClusterService.relayDiscovery(port: 8003, keys: .init(own: own, pair: own)))
                 var pair = ClusterPairMemberRelayCLITests.memberSummary()
                 if onlyMe { pair = ClusterPairMemberRelayCLITests.onlyMe(pair) }
-                pair.relayRankZeroAway = true
+                if away { pair.relayRankZeroAway = true } else { pair.relayRankZeroAPIDown = true }
                 let summary = pair
                 ClusterPairSummary.processReaderForTesting = { _ in summary }
                 var command = try Local.parse([])
@@ -269,9 +309,10 @@ struct ClusterPairMemberRelayCLITests {
                 exit(0)
             }
             let stdout = String(decoding: result?.standardOutputContent ?? [], as: UTF8.self)
-            #expect(stdout.contains("  base URL: http://127.0.0.1:8003/v1\n"), "Only me \(onlyMe): \(stdout)")
-            #expect(stdout.contains("Local API: http://127.0.0.1:8003/v1 on this Mac answers 503 for now. \(Self.awayWords)"),
-                    "Only me \(onlyMe): \(stdout)")
+            let words = away ? Self.awayWords : Self.notAnsweringWords
+            #expect(stdout.contains("  base URL: http://127.0.0.1:8003/v1\n"), "Only me \(onlyMe), away \(away): \(stdout)")
+            #expect(stdout.contains("Local API: http://127.0.0.1:8003/v1 on this Mac answers 503 for now. \(words)"),
+                    "Only me \(onlyMe), away \(away): \(stdout)")
         }
     }
 

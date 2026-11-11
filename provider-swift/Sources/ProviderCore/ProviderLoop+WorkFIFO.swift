@@ -172,8 +172,10 @@ extension ProviderLoop {
 
     /// A coordinator cancel, as the connection reader reads it. A request
     /// still queued for admission, or being admitted, keeps it until that
-    /// admission returns; any other request is cancelled now.
-    func routeCoordinatorCancel(_ requestId: String) {
+    /// admission returns; any other request is cancelled now. Its reason
+    /// waits for `handleCancellation`, which takes it on every path.
+    func routeCoordinatorCancel(_ requestId: String, reason: CoordinatorCancelReason? = nil) {
+        if let reason { coordinatorCancelReasons[requestId] = reason }
         if deferCancelForReleasedAdmission(requestId) { return }
         if unreturnedCoordinatorAdmissions[requestId] != nil {
             cancelsAwaitingAdmission.insert(requestId)

@@ -76,10 +76,17 @@ struct Local: AsyncParsableCommand {
             print("  requests: this Mac only (without a local key nothing is passed on to your other Macs or the network)")
         } else {
             print("  API key:  \(info.apiKey)")
+            let pairKeyFile = ClusterPairSummary.runningPairProcesses().contains(info.pid) && LocalEndpoint.existingClusterToken() != nil
+                ? LocalEndpoint.clusterTokenPath() : nil
+            if let line = Self.keyFileLine(keyFile: LocalEndpoint.keyFile(forPort: Int(info.port)), pairKeyFile: pairKeyFile,
+                                           home: FileManager.default.homeDirectoryForCurrentUser) {
+                print(line)
+            }
         }
         print("  pid:      \(info.pid)")
-        // This record is this Mac's relay, which answers 503 while the pair's other Mac can't be reached.
-        if pair.relaying?.port == info.port, let down = pair.memberAPIDown { print("Local API: " + down) }
+        // This record is this Mac's relay, which answers 503 while the pair's other Mac can't be reached, or while the
+        // pair's API there doesn't listen.
+        if pair.relaying?.port == info.port, let down = pair.memberAPIUnavailable { print("Local API: " + down) }
         if let state = DaemonStateFile.read(), state.pid == info.pid {
             let route = (try? savedLocalSettings(configPath: nil))?.route
             for line in Self.servingLines(info: info, state: state, route: route,
@@ -145,6 +152,16 @@ struct Local: AsyncParsableCommand {
         let cli = BuildEnvironment.current.cliName
         return ["Start one with:  \(cli) start --me-first   (Darkbloom and you, you first)",
                 "             or: \(cli) start --local      (only you, on this Mac)"]
+    }
+
+    /// The file the shown key is in (`LocalEndpoint.keyFile(forPort:)`), from `~`; on the pair's API (rank 0's, or this
+    /// Mac's relay to it), also the pair's key file, whose key works there too. Journey 2a (J2-a): a Mac keeps two key
+    /// files, `local_token` and `cluster_local_token`, and `local` named neither. Nil when no file holds the key.
+    static func keyFileLine(keyFile: URL?, pairKeyFile: URL?, home: URL) -> String? {
+        guard let keyFile else { return nil }
+        let shown = ToolIntegration.displayPath(keyFile, home: home)
+        guard let pairKeyFile, pairKeyFile != keyFile else { return "  key file: \(shown)" }
+        return "  key file: \(shown) (the pair's key, in \(ToolIntegration.displayPath(pairKeyFile, home: home)), works here too)"
     }
 
     /// The line under a keyed server's address: the commands that set the tools up for it.

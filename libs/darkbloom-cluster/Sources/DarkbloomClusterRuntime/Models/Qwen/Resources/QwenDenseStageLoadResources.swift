@@ -5,7 +5,12 @@ import MLX
 /// Direct local observations only: no subprocess, supplied receipt or permissive
 /// parse fallback. A Mach host right is released before returning a snapshot.
 enum QwenDenseStageLoadResources {
+    /// Tests: what this task's (or thread's) samples of the host read instead
+    /// of the kernel's counters, for a Mac in a state the test cannot cause.
+    @TaskLocal static var sampleOverride: (@Sendable () throws -> QwenDenseStageLoadOSObservation)?
+
     static func observeOS() throws -> QwenDenseStageLoadOSObservation {
+        if let sampleOverride { return try sampleOverride() }
         let start = DispatchTime.now().uptimeNanoseconds
         let host = mach_host_self()
         var pageSize: vm_size_t = 0
@@ -144,6 +149,8 @@ final class QwenDenseStageLoadWatch: @unchecked Sendable {
     func admits(_ os: QwenDenseStageLoadOSObservation, bytes: Int,
                 now: UInt64 = DispatchTime.now().uptimeNanoseconds,
                 floor: Int? = nil) throws -> Bool {
+        // A dev install's memory fault, once due, is this pass's reading (`ClusterMemoryFault`).
+        let os = ClusterMemoryFault.current.reading(os)
         lock.lock()
         let register = !registered
         registered = true

@@ -204,7 +204,7 @@ struct CoordinatorIntegrationTests {
                         ))
                     }
 
-                case .cancel(let rid):
+                case .cancel(let rid, _):
                     #expect(rid == requestId)
                     stateBox.markCanceled()
                     send.send(.inferenceError(

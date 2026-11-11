@@ -2717,7 +2717,8 @@ import Darwin
             pairResult: .paired(role: .member, peerName: "Apple M5 Ultra, 256 GB"), otherMacAnswers: [false]))
         expect(run.waitFor(prompt(3)), "silent leader: a list")
         let asked = run.text
-        expect(asked.contains("This Mac follows \u{00B7} the other Mac (Apple M3 Ultra, 256 GB) leads\n  " + silentLine("Apple M3 Ultra, 256 GB")
+        // No roles while the other Mac doesn't answer: it may have left the pair (journey 3, D3).
+        expect(asked.contains("This Mac \u{00B7} the other Mac (Apple M3 Ultra, 256 GB) isn't answering\n  " + silentLine("Apple M3 Ultra, 256 GB")
             + "\n\n  1) Try again\n  2) " + ClusterOnboardingDriver.startOverItem + "\n  3) Quit\n"), "silent leader: why, then the three choices: \(asked)")
         run.type("2")
         expect(run.waitFor(ClusterOnboardingDriver.startOverQuestion), "silent leader: Start over asks first")
@@ -4518,7 +4519,7 @@ import Darwin
         let followed = TerminalRun(operations(member, resume: memberResume(), pairEvents: [], pairResult: .failed([]), otherMacAnswers: [false]))
         expect(followed.waitFor(prompt(3)), "silence (member): a list")
         let asked = followed.text
-        expect(asked.contains("This Mac follows \u{00B7} the other Mac (Apple M3 Ultra, 256 GB) leads\n  " + silentLine("Apple M3 Ultra, 256 GB") + "\n\n  1) Try again\n  2) "
+        expect(asked.contains("This Mac \u{00B7} the other Mac (Apple M3 Ultra, 256 GB) isn't answering\n  " + silentLine("Apple M3 Ultra, 256 GB") + "\n\n  1) Try again\n  2) "
             + ClusterOnboardingDriver.startOverItem + "\n  3) Quit\n"), "silence (member): the Mac, why and what to run there, then the list: \(asked)")
         expect(!asked.contains(") " + ClusterOnboardingDriver.pairAgainItem + "\n"), "silence (member): never Pair again")
         followed.type("2")

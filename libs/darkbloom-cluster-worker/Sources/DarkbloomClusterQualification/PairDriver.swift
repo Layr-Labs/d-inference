@@ -38,14 +38,20 @@ public struct PairDriver: Sendable {
         private var concluded: UInt64?
         private(set) var reused: Int?
         private(set) var stored: [Int] = []
+        /// Each committed token's logprobs as `PairBatchRequestTiming.logprobBits` keeps them, when the request asked.
+        private var logprobBits: [[Int]] = []
         private let first: @Sendable () -> Void
         private let stopAfter: Int?
         init(stopAfter: Int? = nil, first: @escaping @Sendable () -> Void) { self.stopAfter = stopAfter; self.first = first }
         func record(_ event: ClusterWorkerRequestEvent) -> Bool {
             lock.lock(); defer { lock.unlock() }
             switch event {
-            case .token(let id, _):
+            case .token(let id, let logprobs):
                 tokens.append(id); stamps.append(DispatchTime.now().uptimeNanoseconds)
+                if let logprobs {
+                    logprobBits.append([Int(logprobs.logprob.bitPattern)]
+                        + logprobs.top.flatMap { [$0.tokenID, Int($0.logprob.bitPattern)] })
+                }
                 if tokens.count == 1 { first() }
                 // false is the owner's clean stop: no further token is wanted.
                 return stopAfter.map { tokens.count < $0 } ?? true
@@ -62,6 +68,7 @@ public struct PairDriver: Sendable {
         var snapshot: (tokens: [Int], stamps: [UInt64], finish: String?, failure: String?, concluded: UInt64?) {
             lock.lock(); defer { lock.unlock() }; return (tokens, stamps, finish, failure, concluded)
         }
+        var logprobs: [[Int]] { lock.withLock { logprobBits } }
     }
 
     /// Lines the runtime writes for its launcher. They carry a rank, a request
@@ -529,7 +536,8 @@ public struct PairDriver: Sendable {
                 guard finalLease.isRetired else { return finish("failed", "the last repetition did not retire before the batch phase") }
                 finalLease.releaseResources()
             }
-            var batch = PairBatchTiming(lanes: c.batchLanes, kvBackend: c.kvBackend ?? "paged", solo: [], waves: [],
+            var batch = PairBatchTiming(lanes: c.batchLanes, kvBackend: c.kvBackend ?? "paged", logprobs: c.batchLogprobs,
+                solo: [], waves: [],
                 note: "Driver clock per request from its own start command; a wave's requests are started together "
                     + "from separate threads. Solo rows are each request file run alone in the same loaded session.")
             if c.batchSolo {
@@ -558,20 +566,28 @@ public struct PairDriver: Sendable {
                                 : min(request.selectedTokenIDs.count, solo.selectedTokenIDs.count))
                     }
                     wave.allMatchSolo = wave.requests.allSatisfy { $0.matchesSolo == true }
+                    if c.batchLogprobs != nil { Self.compareLogprobs(&wave, solo: batch.solo) }
                 }
                 batch.waves.append(wave)
                 log("pair-check: wave of \(size): \(wave.totalTokens) tokens in \(String(format: "%.2f", wave.wallSeconds)) s"
                     + " (\(String(format: "%.1f", wave.aggregateTokensPerSecond)) tok/s aggregate)"
-                    + (wave.allMatchSolo.map { $0 ? ", tokens equal solo" : ", tokens DIFFER from solo" } ?? ""))
+                    + (wave.allMatchSolo.map { $0 ? ", tokens equal solo" : ", tokens DIFFER from solo" } ?? "")
+                    + (wave.allLogprobsMatchSolo.map { $0 ? ", logprobs equal solo bit for bit" : ", logprobs DIFFER from solo" } ?? ""))
                 if let failure = wave.requests.compactMap(\.failure).first {
                     timing.batch = batch
                     return finish("failed", "batch wave of \(size) failed: \(failure)")
                 }
                 // Tensor-parallel lanes keep each request's own arithmetic:
-                // a token that differs from the request alone fails the run.
-                if c.generationMode == PairConfiguration.tensorParallelMode, wave.allMatchSolo == false {
+                // a token, or a logprob, that differs from the request alone
+                // fails the run. In another mode a token does when the run
+                // requires parity (`batchRequireParity`).
+                if c.generationMode == PairConfiguration.tensorParallelMode || c.batchRequireParity, wave.allMatchSolo == false {
                     timing.batch = batch
                     return finish("failed", "batch wave of \(size): tokens differ from the requests run alone")
+                }
+                if c.generationMode == PairConfiguration.tensorParallelMode, wave.allLogprobsMatchSolo == false {
+                    timing.batch = batch
+                    return finish("failed", "batch wave of \(size): logprobs differ from the requests run alone")
                 }
                 guard pair.readiness != nil else {
                     timing.batch = batch
@@ -643,6 +659,23 @@ public struct PairDriver: Sendable {
             evidence: evidence, ranksAgree: ranksAgree)
     }
 
+    /// Each request of `wave` against the same request run alone (`solo`): its tokens' logprobs identical bit for
+    /// bit, or the first token whose logprobs differ, or that one run has and the other lacks. A request cancelled
+    /// mid-run, or ended by its deadline, is compared as far as it got. A request without logprobs on either side
+    /// (it failed) is not compared, and leaves the wave unmatched.
+    static func compareLogprobs(_ wave: inout PairBatchWave, solo: [PairBatchRequestTiming]) {
+        for row in wave.requests.indices {
+            let request = wave.requests[row]
+            guard let lane = request.logprobBits,
+                  let alone = solo.first(where: { $0.promptIndex == request.promptIndex })?.logprobBits else { continue }
+            let compared = request.cancelledAfterTokens == nil ? max(lane.count, alone.count) : lane.count
+            let difference = (0..<compared).first { $0 >= lane.count || $0 >= alone.count || lane[$0] != alone[$0] }
+            wave.requests[row].logprobsMatchSolo = difference == nil
+            wave.requests[row].firstLogprobDifferenceIndex = difference
+        }
+        wave.allLogprobsMatchSolo = wave.requests.allSatisfy { $0.logprobsMatchSolo == true }
+    }
+
     /// One wave: the batch requests at `indices`, each reserved and started
     /// from its own thread at once; returns when every one finished or failed,
     /// retired and released.
@@ -682,12 +715,19 @@ public struct PairDriver: Sendable {
                         deadlineUptimeNanoseconds: deadline, capacityLimitBytes: capacity,
                         // A batch request's own sampling, as the single request's
                         // (before the reservation's sampling was required, a
-                        // sampled batch request ran greedy here), and its own prefix partition.
-                        sampling: request.sampling?.wire, prefixCache: request.prefixPartition))
+                        // sampled batch request ran greedy here), asking for its
+                        // tokens' logprobs when the run compares them, and its own prefix partition.
+                        sampling: c.batchSampling(request), prefixCache: request.prefixPartition))
                 } catch {
                     var failed = row([], "none"); failed.failure = "reservation failed: \(error)"; box.add(failed); return
                 }
                 let collector = Collector(stopAfter: nil) {}
+                // The logprobs of the tokens the row holds (a token may land after its snapshot).
+                func keepLogprobs(_ value: inout PairBatchRequestTiming) {
+                    guard c.batchLogprobs != nil else { return }
+                    let bits = Array(collector.logprobs.prefix(value.tokens))
+                    value.logprobBits = bits; value.logprobsSHA256 = QualificationHash.logprobBits(bits)
+                }
                 let cancelAfter = cancelled?.index == index ? cancelled?.after : nil
                 do {
                     try lease.start { event in
@@ -707,6 +747,7 @@ public struct PairDriver: Sendable {
                     while !lease.isRetired, DispatchTime.now().uptimeNanoseconds < limit { Thread.sleep(forTimeInterval: 0.002) }
                     var value = row(collector.snapshot.tokens, "cancelled")
                     value.cancelledAfterTokens = cancelAfter
+                    keepLogprobs(&value)
                     if lease.isRetired { lease.releaseResources() } else { value.failure = "the cancelled request did not retire" }
                     box.add(value); return
                 }
@@ -714,6 +755,7 @@ public struct PairDriver: Sendable {
                 let result = collector.snapshot
                 var value = row(result.tokens, result.finish ?? "none")
                 value.reusedPromptTokens = collector.reused
+                keepLogprobs(&value)
                 if let first = result.stamps.first, let last = result.stamps.last {
                     value.firstTokenSeconds = Double(first - started) / 1e9
                     value.decodeSeconds = Double(last - first) / 1e9

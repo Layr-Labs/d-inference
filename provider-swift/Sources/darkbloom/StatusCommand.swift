@@ -71,6 +71,7 @@ struct Status: AsyncParsableCommand {
         }
 
         print(bootSecurityStatusLine(BootSecuritySnapshot.live()))
+        print(Self.fanControlLine(Fan.Status.report()))
 
         if let scheduleConfig = config.schedule,
            let schedule = Schedule.from(config: scheduleConfig) {
@@ -206,6 +207,13 @@ struct Status: AsyncParsableCommand {
             print("Authorization: \(ProviderAuthorizationReadiness.summary(authorization, removalAuthorization: removalAuthorization, now: now))")
             if !authorization.machineID.isEmpty { print("Machine ID: \(authorization.machineID)") }
         } else if let trust = state.trust {
+            // An older none/legacy decision is history, never a current grant.
+            if let lastReported = state.lastReportedProviderAuthorization(
+                coordinatorURL: config.coordinator.url, now: now) {
+                let summary = ProviderAuthorizationReadiness.lastReportedSummary(
+                    lastReported, receivedAt: trust.receivedAt, now: now)
+                print("Last reported authorization: \(summary)")
+            }
             let advice = TrustReasonCatalog.advice(level: trust.trustLevel, status: trust.status, reason: trust.reason)
             print("Trust: \(trust.trustLevel) / \(trust.status)")
             print("  → \(advice.message)")
@@ -220,6 +228,7 @@ struct Status: AsyncParsableCommand {
 
         print("Warm models: \(WarmModelsFormat.warmModelsLine(warmModels: state.warmModels, currentModel: state.currentModel))")
         for line in Self.selectionLines(state: state, enabledModels: config.backend.enabledModels)
+            + Self.pendingSelectionLines(state: state, enabledModels: config.backend.enabledModels)
             + Self.placementLines(state: state, now: now) {
             print(line)
         }
@@ -242,7 +251,9 @@ struct Status: AsyncParsableCommand {
         {
             print(line)
         }
-        for line in Self.evictionExclusionLines(state: state) { print(line) }
+        for line in Self.recoveryLines(state: state, now: now) + Self.evictionExclusionLines(state: state) {
+            print(line)
+        }
         print("\(WarmModelsFormat.mostRecentlyUsedLabel): \(WarmModelsFormat.mostRecentlyUsedLine(currentModel: state.currentModel))")
         for line in Self.servedRequestLines(state: state, now: now) { print(line) }
         if let err = state.lastModelLoadError {

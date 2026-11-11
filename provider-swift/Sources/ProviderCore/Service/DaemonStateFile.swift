@@ -64,12 +64,23 @@ public struct DaemonState: Codable, Sendable, Equatable {
             self.autopilotInventory = autopilotInventory
         }
     }
+    /// The config's `enabled_models` when this daemon started. `status`
+    /// compares it with the saved filter, which applies only at a start.
+    /// Nil for older daemons.
+    public var enabledModelsAtStart: [String]?
+    /// The `enabled_models` the last committed `darkbloom switch` saved and
+    /// applied; `status` compares the saved filter with it instead of the
+    /// start's. Nil until a switch commits, and for older daemons.
+    public var enabledModelsAtLastSwitch: [String]?
     /// Resident models no load can evict now, each with every reason
     /// (`ProviderLoop.evictionExclusions`). Nil for older daemons.
     public var evictionExclusions: [EvictionExclusion]?
     /// Remaining startup preload plan, including the candidate currently
     /// loading. nil means an older daemon did not report this field.
     public var startupPreloadPendingModels: [String]?
+    /// Selected models the daemon keeps trying to load, with the next check
+    /// and what blocked the last one. Nil when none waits or for older daemons.
+    public var selectedModelRecovery: [SelectedModelRecoveryEntry]?
     public var lifecycle: ProviderDrainStatus?
     public var modelSwitch: ProviderModelSwitchStatus?
     public var configPath: String?
@@ -171,12 +182,15 @@ public struct DaemonState: Codable, Sendable, Equatable {
         public var promptTokensProcessed: UInt64?
         public var cachedInputTokens: UInt64?
         public var reasoningTokens: UInt64?
-        /// Served requests that ended early on a coordinator cancel or a
-        /// dropped connection after output had been delivered; included in
-        /// `requestsServed`, and the coordinator may not pay for them. Nil on
-        /// older runtimes.
+        /// Served requests that ended early: a coordinator cancel, a dropped
+        /// connection or the provider's own cancel (forced stop, shutdown,
+        /// add-on hold) stopped them after output had gone out. Included in
+        /// `requestsServed`; `darkbloom status` says which of them the
+        /// coordinator pays for. Nil on older runtimes.
         public var cancellationsPartialComplete: UInt64?
-        public init(requestsServed: UInt64 = 0, tokensGenerated: UInt64 = 0, usageGaps: UInt64 = 0, promptTokensProcessed: UInt64? = nil, cachedInputTokens: UInt64? = nil, reasoningTokens: UInt64? = nil, cancellationsPartialComplete: UInt64? = nil) {
+        /// The same requests by what stopped them. Nil on older runtimes.
+        public var endedEarly: EndedEarlyCounts?
+        public init(requestsServed: UInt64 = 0, tokensGenerated: UInt64 = 0, usageGaps: UInt64 = 0, promptTokensProcessed: UInt64? = nil, cachedInputTokens: UInt64? = nil, reasoningTokens: UInt64? = nil, cancellationsPartialComplete: UInt64? = nil, endedEarly: EndedEarlyCounts? = nil) {
             self.requestsServed = requestsServed
             self.tokensGenerated = tokensGenerated
             self.usageGaps = usageGaps
@@ -184,6 +198,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
             self.cachedInputTokens = cachedInputTokens
             self.reasoningTokens = reasoningTokens
             self.cancellationsPartialComplete = cancellationsPartialComplete
+            self.endedEarly = endedEarly
         }
     }
 
@@ -398,8 +413,11 @@ public struct DaemonState: Codable, Sendable, Equatable {
         advertisedModels: [String]? = nil,
         servingSelection: [String]? = nil,
         registeredModels: RegisteredModels? = nil,
+        enabledModelsAtStart: [String]? = nil,
+        enabledModelsAtLastSwitch: [String]? = nil,
         evictionExclusions: [EvictionExclusion]? = nil,
         startupPreloadPendingModels: [String]? = nil,
+        selectedModelRecovery: [SelectedModelRecoveryEntry]? = nil,
         inferenceActive: Bool = false,
         requestWorkPending: Bool? = nil,
         loadTransitionActive: Bool? = nil,
@@ -439,8 +457,11 @@ public struct DaemonState: Codable, Sendable, Equatable {
         self.advertisedModels = advertisedModels
         self.servingSelection = servingSelection
         self.registeredModels = registeredModels
+        self.enabledModelsAtStart = enabledModelsAtStart
+        self.enabledModelsAtLastSwitch = enabledModelsAtLastSwitch
         self.evictionExclusions = evictionExclusions
         self.startupPreloadPendingModels = startupPreloadPendingModels
+        self.selectedModelRecovery = selectedModelRecovery
         self.lifecycle = lifecycle
         self.modelSwitch = modelSwitch
         self.configPath = configPath

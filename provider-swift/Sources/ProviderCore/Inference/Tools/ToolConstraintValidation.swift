@@ -28,12 +28,16 @@ enum ToolConstraintValidation {
     private static let maxMetadataWalkDepth = 32
     private static let exactDoubleIntegerLimit = 9_007_199_254_740_992.0
 
+    /// `truncated`: generation stopped at `max_tokens`. A call parsed from a
+    /// cut-off frame may be missing arguments, so it is held to the
+    /// declarations even without `strict`, as before.
     static func validate(
         _ calls: [ToolCall],
-        prepared: ToolChoicePromptPolicy.Prepared
+        prepared: ToolChoicePromptPolicy.Prepared,
+        truncated: Bool = false
     ) throws {
         if !prepared.allowsParallelCalls, calls.count > 1 {
-            throw violation("parallel tool calls are disabled for this request")
+            throw violation(ToolNoncomplianceCheck.parallelViolation)
         }
         switch prepared.mode {
         case .none:
@@ -51,12 +55,32 @@ enum ToolConstraintValidation {
                 throw violation("model did not emit the named tool call")
             }
         case .auto:
-            break
+            if prepared.returnsAutoCallsAsGenerated, !truncated { return }
         }
 
         let allowed = prepared.allowedToolNames
         guard calls.allSatisfy({ allowed.contains($0.function.name) }) else {
-            throw violation("model emitted an undeclared tool call")
+            throw violation(ToolNoncomplianceCheck.undeclaredNameViolation)
+        }
+        if prepared.mode == .auto, let declared = prepared.declaredTools {
+            // `strict` auto holds a call to the caller's schema as sent. The
+            // ingress normalizer fills `type: "string"` into every typeless
+            // property for the chat templates (and the compiled subset infers
+            // the same), but a typeless property accepts any value: that type
+            // was never the caller's to enforce.
+            let byName = Dictionary(
+                declared.map { ($0.function.name, $0.function.parameters) },
+                uniquingKeysWith: { first, _ in first })
+            for call in calls {
+                guard let parameters = byName[call.function.name] else {
+                    throw violation(ToolNoncomplianceCheck.undeclaredNameViolation)
+                }
+                guard let schema = parameters else { continue }
+                guard validateJSONSchema(.object(call.function.arguments), schema: schema, depth: 0) else {
+                    throw violation(ToolNoncomplianceCheck.schemaViolation)
+                }
+            }
+            return
         }
         if let schemas = prepared.compiledTools {
             let byName = Dictionary(
@@ -65,7 +89,7 @@ enum ToolConstraintValidation {
                 guard let schema = byName[call.function.name],
                     validate(.object(call.function.arguments), against: schema)
                 else {
-                    throw violation("tool call arguments do not satisfy the declared schema")
+                    throw violation(ToolNoncomplianceCheck.schemaViolation)
                 }
             }
         } else {
@@ -75,13 +99,13 @@ enum ToolConstraintValidation {
                 })
             for call in calls {
                 guard let raw = byName[call.function.name] else {
-                    throw violation("model emitted an undeclared tool call")
+                    throw violation(ToolNoncomplianceCheck.undeclaredNameViolation)
                 }
                 guard let schema = raw else { continue }
                 guard validateJSONSchema(
                     .object(call.function.arguments), schema: schema, depth: 0)
                 else {
-                    throw violation("tool call arguments do not satisfy the declared schema")
+                    throw violation(ToolNoncomplianceCheck.schemaViolation)
                 }
             }
         }

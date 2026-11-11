@@ -287,6 +287,19 @@ it('says a serving pair serves, and that Start serving keeps it', () => {
   expect(screen.getByRole('button', { name: /^Start serving/ })).toBeEnabled();
 });
 
+// On the Mac that follows, or while the pair loads, the runtime says only that the pair was started:
+// the summary says what Start serving does there, never that it starts the pair (#1908's review).
+it('says a started pair is made sure to serve, not started', () => {
+  toStartPage(pairedMac({ state: 'started' }));
+  expect(
+    screen.getByText(
+      'This Mac is in a pair, started with Qwen 3.8 27B. Start serving makes sure it serves.',
+    ),
+  ).toBeVisible();
+  expect(screen.getByText('Makes sure the pair serves Qwen 3.8 27B, on both Macs.')).toBeVisible();
+  expect(screen.queryByText(/^Starts the pair/)).not.toBeInTheDocument();
+});
+
 // A pair with no model yet, or a pairing record that can't be read: Start serving would be refused,
 // so the page says what works first, in Terminal, and offers no Start (#1905's review).
 it('offers no Start serving where the pair needs Terminal first, and says why', () => {

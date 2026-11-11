@@ -501,6 +501,10 @@ public enum ProviderMessage: Sendable, Equatable {
         /// `InferenceComplete`. Closed numerics/enums only — never carries
         /// the failure's text. Omitted on the wire when nil.
         public let profile: InferenceProfile?
+        /// The check a `tool_noncompliance` failure failed (closed
+        /// vocabulary). Omitted on the wire when nil, so every other frame
+        /// keeps its legacy bytes.
+        public let toolCheck: ToolNoncomplianceCheck?
 
         public init(
             requestId: String,
@@ -518,6 +522,7 @@ public enum ProviderMessage: Sendable, Equatable {
             self.feasibleAfterMs = failure.feasibleAfterMs
             self.capacitySeq = failure.capacitySeq
             self.profile = profile
+            self.toolCheck = failure.toolCheck
         }
 
         /// Decoder-only compatibility path. Discards the legacy free-form
@@ -534,7 +539,8 @@ public enum ProviderMessage: Sendable, Equatable {
             availableTokenBudget: Int64?,
             feasibleAfterMs: Int64?,
             capacitySeq: UInt64?,
-            profile: InferenceProfile?
+            profile: InferenceProfile?,
+            toolCheck: ToolNoncomplianceCheck?
         ) {
             self.requestId = decodedRequestId
             self.failureCode = failureCode
@@ -547,6 +553,7 @@ public enum ProviderMessage: Sendable, Equatable {
             self.feasibleAfterMs = feasibleAfterMs
             self.capacitySeq = capacitySeq
             self.profile = profile
+            self.toolCheck = toolCheck
         }
     }
 
@@ -999,6 +1006,7 @@ extension ProviderMessage: Codable {
         case availableTokenBudget = "available_token_budget"
         case feasibleAfterMs = "feasible_after_ms"
         case capacitySeq = "capacity_seq"
+        case toolCheck = "tool_check"
         // CapacityQuote
         case quoteId = "quote_id"
         case admissibleNow = "admissible_now"
@@ -1188,6 +1196,7 @@ extension ProviderMessage: Codable {
                 try container.encode(seq, forKey: .capacitySeq)
             }
             try container.encodeIfPresent(e.profile?.saturatedToWireRanges(), forKey: .profile)
+            try container.encodeIfPresent(e.toolCheck?.rawValue, forKey: .toolCheck)
 
         case .attestationResponse(let a):
             try container.encode(TypeValue.attestationResponse, forKey: .type)
@@ -1467,7 +1476,10 @@ extension ProviderMessage: Codable {
                 feasibleAfterMs: try container.decodeIfPresent(
                     Int64.self, forKey: .feasibleAfterMs),
                 capacitySeq: try container.decodeIfPresent(UInt64.self, forKey: .capacitySeq),
-                profile: try container.decodeIfPresent(InferenceProfile.self, forKey: .profile)
+                profile: try container.decodeIfPresent(InferenceProfile.self, forKey: .profile),
+                // Unknown values decode to nil, like terminal_cause.
+                toolCheck: (try container.decodeIfPresent(String.self, forKey: .toolCheck))
+                    .flatMap(ToolNoncomplianceCheck.init(rawValue:))
             ))
 
         case .attestationResponse:
@@ -1748,7 +1760,13 @@ public enum CoordinatorMessage: Sendable, Equatable {
 
     public struct Cancel: Sendable, Equatable {
         public var requestId: String
-        public init(requestId: String) { self.requestId = requestId }
+        /// Why the coordinator cancelled, from its `reason` and `paid` keys; nil from a coordinator that sends no
+        /// reason (absent or empty `reason`).
+        public var reason: CoordinatorCancelReason?
+        public init(requestId: String, reason: CoordinatorCancelReason? = nil) {
+            self.requestId = requestId
+            self.reason = reason
+        }
     }
 
     public struct AttestationChallenge: Sendable, Equatable {
@@ -1895,6 +1913,7 @@ extension CoordinatorMessage: Codable {
         case priority
         case trustLevel = "trust_level"
         case status, reason, authorization
+        case paid
         case models
         // CapacityProbe
         case quoteId = "quote_id"
@@ -1944,6 +1963,10 @@ extension CoordinatorMessage: Codable {
         case .cancel(let c):
             try container.encode(TypeValue.cancel, forKey: .type)
             try container.encode(c.requestId, forKey: .requestId)
+            if let reason = c.reason {
+                try container.encode(reason.code, forKey: .reason)
+                try container.encode(reason.paid, forKey: .paid)
+            }
 
         case .attestationChallenge(let a):
             try container.encode(TypeValue.attestationChallenge, forKey: .type)
@@ -2061,8 +2084,13 @@ extension CoordinatorMessage: Codable {
             ))
 
         case .cancel:
+            // Diagnostic only: a mistyped reason or paid must never drop the
+            // cancel itself.
+            let reason = (try? container.decodeIfPresent(String.self, forKey: .reason)) ?? ""
+            let paid = (try? container.decodeIfPresent(Bool.self, forKey: .paid)) ?? false
             self = .cancel(Cancel(
-                requestId: try container.decode(String.self, forKey: .requestId)
+                requestId: try container.decode(String.self, forKey: .requestId),
+                reason: reason.isEmpty ? nil : CoordinatorCancelReason(code: reason, paid: paid)
             ))
 
         case .capacityProbe:

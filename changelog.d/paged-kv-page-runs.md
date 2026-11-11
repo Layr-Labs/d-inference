@@ -1,0 +1,5 @@
+### A busy paged engine keeps its fresh decode speed
+
+- Before, on the paged KV backend (the 9B, Qwen 3.6, gpt-oss-20b, the 35B, Gemma 4 and the other paged models), decode slowed while a Mac stayed busy and recovered only when the engine drained. Freed pages went back to the front of one shared free list, so new requests' pages spread over many segments, and the decode kernel, which binds at most 17 segments per pass, needed about one pass per 256 tokens of context per layer instead of one per layer. In production the 9B decoded at 0.40× its fresh speed 3–6 minutes into a busy run and 0.30× after 6 minutes.
+- Now each layer of a request takes its pages in runs of 16 consecutive pages, in as few segments as it can, and requests that start together take different segments. A CPU model of the allocator and the decode planner stays at one pass per layer through busy runs: Qwen 3.6 at 4 requests goes from about 930 passes per step to 10, the 9B under a production-like load from about 430 to 8.
+- Pages that the prefix cache still names are still reused last. Each attention partition is computed as before, so outputs are unchanged.

@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-10
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -153,7 +153,15 @@ Before most subcommands run, `runUpdateBannerIfEnabled`
 (`provider-swift/Sources/darkbloom/Darkbloom.swift`) checks for a newer release
 with a 2 s hard timeout and prints a one-line banner; `DARKBLOOM_NO_UPDATE_CHECK`
 set to any value skips it. Logging goes to stderr so launchd captures it in
-`~/.darkbloom/provider.log`.
+`~/.darkbloom/provider.log`. The local server's own two shutdown lines when its
+owner ends it (`[HummingbirdCore] Server shutdown error: Already closed` and
+`Waiting on child channel: CancellationError()`, at Ctrl-C) are left out
+(`QuietShutdownLogHandler`); every other line is written as before.
+
+Errors: a mistyped flag or option, or options a command refuses together before
+it runs, print `Error: …` and that command's usage (exit 64). A refusal a
+command makes once it runs prints only its own `Error: …` line, which names the
+next step, and no usage block (exit 64, `Darkbloom.exit(afterRunWithError:)`).
 
 In a terminal, `start`, `stop`, `restart`, `status` and `update` open with the
 Darkbloom mark beside the command's name and show a one-row live line while
@@ -259,7 +267,17 @@ A single-Mac `start` decides how this Mac serves (`StartServingResolver`,
    It is saved in `[local] mode`, as the question's answer is
    (`LocalFirstOptions.savesModeFlag`), so the background service, `restart`
    and `update` serve it from now on; `--local --here` (one terminal session)
-   and the `--foreground` service save no mode.
+   and the `--foreground` service save no mode. A plain `start --local` on one
+   Mac saves it.
+   **Beside `--solo`, every flag is for that start only**
+   (`LocalFirstOptions.solo`): on a Mac in a pair `[local]` holds the pair's
+   settings, so a solo start saves no mode, no `--choose` answer (and asks no
+   route: the pair's serves), and refuses `--route`, `--me-first-idle`,
+   `--no-me-first`, and `--me-first` over a saved `me_first = false`, when one
+   would change the pair's value, before anything starts or is saved (exit 64,
+   ``… would change [local] route, which your pair reads too. …``,
+   `StartServingResolver.soloSettingsRefusal`). Only a new or named port is
+   saved: this Mac's one port, the pair's API's too.
 2. `--choose` (a terminal only): the question again.
 3. The saved choice, `[local] mode`, with or without a terminal, Only me
    included: every choice serves in the background.
@@ -467,8 +485,9 @@ They run once, at `start`:
    to run the start again online for names and image support.
    Each model's name says where it runs: `(this Mac)`, `(your pair)` when the
    local API is this Mac's part of a running pair (its pid is the part's, or the
-   cluster service's for a member's relay; `IntegrationEndpoint.servesThePair`),
-   `(your Macs)` or `(Darkbloom network, billed)`.
+   cluster service's for a member's relay; `IntegrationEndpoint.servesThePair`;
+   never the cluster service's solo server, which serves this Mac alone while
+   the other Mac is away), `(your Macs)` or `(Darkbloom network, billed)`.
    The result block names the file changed, the backup, the default model on a
    line of its own and a one-line undo. OpenCode's default is set only when
    OpenCode has none: neither of its global files (`opencode.json`,
@@ -552,11 +571,11 @@ here (its other Mac gone). It first says so in one line, in words for what it do
   Mac (`ClusterPairCommands.openScreen`), whose title names this Mac's part:
   "Darkbloom cluster · Leading Mac" or "Darkbloom cluster · Joining Mac".
   Nothing starts there before a choice, so its line says what the screen does
-  (`ClusterPairSummary.screenLine`): on the leading Mac of a stopped pair,
-  `This Mac is in a two-Mac cluster with the other Mac (…), which is stopped.
-  Press Enter to start it with Qwen 3.8 27B (last used), or choose another
-  model.` (`Choose its model to start it.` before a model was chosen);
-  otherwise `…: opening the pair's screen.`
+  (`ClusterPairSummary.screenLine`): on the leading Mac of a stopped pair
+  whose other Mac answers, `This Mac is in a two-Mac cluster with the other Mac
+  (…), which is stopped. Press Enter to start it with Qwen 3.8 27B (last used),
+  or choose another model.` (`Choose its model to start it.` before a model was
+  chosen); otherwise `…: opening the pair's screen.`
   In a color terminal each finished step folds to one line, and the run's whole
   flow goes to `~/.darkbloom/cluster-setup/screens/` ("Full log: …" at the end);
   see [Two Macs as one provider](two-mac-cluster.md).
@@ -568,12 +587,15 @@ here (its other Mac gone). It first says so in one line, in words for what it do
   (up to 10 min).`), and a status that stays the same is said again once a
   minute (`Still waiting (up to 10 min in all): …`). The exit status is `darkbloom cluster status`'s (`0`
   serving, `3` not serving yet, `4` stopped, `5` the other Mac isn't
-  answering); `1` when no model was chosen yet (``No model was chosen for the pair yet: choose one with `darkbloom cluster` in a terminal on <the leading Mac>.``:
-  only the leading Mac's screen has the model list) or the cluster can't be
-  reached. A pair that runs
+  answering); `1` when no model was chosen yet (only ``No model was chosen for the pair yet: choose one with `darkbloom cluster` in a terminal on <the leading Mac>.``,
+  never `starting the pair` first: only the leading Mac's screen has the model
+  list) or the cluster can't be reached. A pair that runs
   here and already serves, by one look at the status `darkbloom cluster status`
   reads, is kept as it is: `…: the pair already serves.` and the result block,
   exit `0`, with nothing asked of either Mac (`ClusterPairCommands.servingLook`).
+  That look is taken only while this Mac's cluster service starts at login: one
+  that runs from a terminal session gets the start, which moves it to its login
+  agent, so the pair comes back after a restart.
 
 A stopped pair started from a script, as on pair-2 (45 s):
 
@@ -938,7 +960,8 @@ deadline is configurable with
 [`DARKBLOOM_DRAIN_TIMEOUT_SECONDS`](../reference/configuration.md#provider-drain-deadline).
 Once local HTTP admission closes, new POST requests receive HTTP 503 with the
 OpenAI JSON error message `Provider capacity is temporarily unavailable.` and
-the usual CORS header. Health reads and OPTIONS preflights remain available;
+the usual CORS header (a pair's API: its typed 503, `pair_api_unavailable`, and
+the 401 without its key). Health reads and OPTIONS preflights remain available;
 already admitted response bodies retain their drain ownership.
 Signal-only shutdown disarms current watchdog recovery but preserves configured
 login startup; use `darkbloom stop` for a persistent stop.
@@ -1067,9 +1090,10 @@ in a two-Mac cluster. On a Mac whose port relays a pair's API and has no working
 address now, it prints the `Local API:` line `status` gives there instead
 (`ClusterPairSummary.memberAPIDown`): Darkbloom doesn't have the pair yet, or
 another program holds its port; never the pair's key. With the relay up while
-the pair's other Mac can't be reached, the endpoint's lines are followed by that
-`Local API: … answers 503 for now. …` line. While that port is still starting,
-it says so in `status`'s words, ``Local API: not listening on this Mac yet; it
+the pair's other Mac can't be reached, or while the pair's API there doesn't
+listen (`ClusterPairSummary.memberAPIRestarting`), the endpoint's lines are
+followed by that `Local API: … answers 503 for now. …` line. While that port is
+still starting, it says so in `status`'s words, ``Local API: not listening on this Mac yet; it
 starts once the pair's API on the other Mac (…) answers.``, then the pair's key
 as before, under ``The pair's API key (the same on both Macs, and taken on this
 Mac's port once it listens):`` (`ClusterPairSummary.memberAPIStarting`), never
@@ -1282,7 +1306,7 @@ on both Macs, and a scripted `darkbloom start` waits through it.
 | `0` | `serving` | The pair serves: through Darkbloom once the coordinator has it, or on the leading Mac's local API when it serves Only me |
 | `3` | `loading`, `not_serving`, `unknown` | Not serving yet: loading, or a reason in `reason` (such as macOS keeping a Mac off the local network, or a pair not offered to Darkbloom, below). A load whose part keeps ending gives that end as its reason, as the start's screen says it: "this Mac's part ended (exit 1: deadline) and starts again by itself" |
 | `4` | `stopped` | Stopped (Stop in `darkbloom cluster`, or `darkbloom cluster stop`), also while the other Mac isn't answering. `next` says that `darkbloom start` starts the pair again, and ends ``If the other Mac left the pair, `darkbloom cluster leave` here unpairs this Mac too.`` ([leaving](#darkbloom-cluster-leave)) |
-| `5` | `other_mac_away` | The pair is started and the other Mac isn't answering over the cable (its cluster service is off, it sleeps, or waits for a login). Once this Mac's part was given up (15 minutes), `next` also says ``Or serve this Mac alone: `darkbloom start --solo`.``, and it ends with the line about the other Mac leaving, as for `4` |
+| `5` | `other_mac_away` | The pair is started and the other Mac isn't answering over the cable (its cluster service is off, it sleeps, or waits for a login). On the leading Mac, while its part waits to start again, the next line says when: its wait doubles from 30 s up to 10 min while the other Mac is away, and ends when it answers (``This Mac's part starts again in 4 min, or as soon as the other Mac answers: …``, [if a Mac goes away](./two-mac-cluster.md#if-a-mac-goes-away)). Once this Mac's part was given up (15 minutes), `next` also says ``Or serve this Mac alone: `darkbloom start --solo`.``, and it ends with the line about the other Mac leaving, as for `4` |
 | `6` | `not_paired` | This Mac isn't in a cluster |
 | `7` | `pairing_unreadable` | This Mac's pairing record couldn't be read, so it may be in a cluster; `reason` says why when known |
 
@@ -1345,14 +1369,21 @@ Mac passes your requests to it, and Darkbloom pauses for them too`. Until it run
   `Local API: not listening on this Mac yet; …` with the `Members:` line above. While it runs and the other Mac can't
   be reached (`ClusterServiceStatus.relayRankZeroAway`: 12 s without an answer over the cable; before any answer since
   this Mac's cluster service started, two failed status requests in a row), it answers every request a `503`, in words
-  that name the other Mac only to a request with this Mac's key or the pair's (any other gets the local API's own
-  `401`, and a liveness check or a CORS preflight the `503` without names: `ClusterLocalRelay.Caller`). The line says
-  so in the `503`'s words (`ClusterLocalRelay.Refusals`): ``Local API: http://127.0.0.1:8003/v1 on this Mac answers 503 for now. Your pair's
+  that name the other Mac only to a request with this Mac's key or the pair's (another key in the local key format,
+  which this Mac can't judge, gets them without the name; any other the local API's own `401`; a liveness check or a
+  CORS preflight the `503` without names or commands: `ClusterLocalRelay.Caller`). The line says so in the `503`'s words
+  (`ClusterLocalRelay.Refusals`): ``Local API: http://127.0.0.1:8003/v1 on this Mac answers 503 for now. Your pair's
   other Mac (…) isn't reachable; this Mac relays to it. Requests resume when it's back, or run `darkbloom stop`, then
-  `darkbloom start --solo`, to serve this Mac alone.``, with the same `Members:` line. `darkbloom local` there prints
-  the same `Local API:` line (`ClusterPairSummary.memberAPIDown`), `start --opencode` says it at once
-  (`ToolIntegrationStep.noMemberAddress`), also beside the running relay, and `darkbloom doctor` says it as a ⚠ on
-  its `address` line.
+  `darkbloom start --solo`, to serve this Mac alone (`darkbloom start --solo` by itself is refused while this Mac's part
+  of the pair holds its serving lock: up to 15 minutes after the other Mac last answered over the cable).``, with the
+  same `Members:` line. `darkbloom local` there prints the same `Local API:` line (`ClusterPairSummary.memberAPIDown`),
+  `start --opencode` says it at once (`ToolIntegrationStep.noMemberAddress`), also beside the running relay, and
+  `darkbloom doctor` says it as a ⚠ on its `address` line. While the other Mac answers but the pair's API there doesn't
+  listen (its part starts again: `ClusterServiceStatus.relayRankZeroAPIDown`), the relay keeps its port and answers
+  every request the `503` for that, and the line says so the same way (`ClusterPairSummary.memberAPIRestarting`):
+  ``Local API: http://127.0.0.1:8003/v1 on this Mac answers 503 for now. The pair's API on your pair's other Mac (…)
+  isn't answering yet; this Mac relays to it. Requests resume when it answers, or run …``, never `not listening on this
+  Mac yet`; `darkbloom local` and `darkbloom doctor` too, while `start --opencode` sets the tools up for the address.
 With the API on loopback or one address: ``Local API: on the other Mac (…), which runs the pair's API; `darkbloom
 local` there shows its address and key`` (with ``, and `darkbloom status` there whether Darkbloom is paused for you``
 when the status didn't say it) and `Members: this Mac is part of the pair; it runs no local API`. `--json` is unchanged
@@ -1361,7 +1392,8 @@ when the status didn't say it) and `Members: this Mac is part of the pair; it ru
 A pair that serves Only me (`darkbloom cluster local`) on every address gets no `Local API:` line in `status` on a Mac
 that relays it (`darkbloom local` there shows that Mac's own address), except when its port can't answer now. Then it
 gets the line above, in the same words (`ClusterPairSummary.memberAPIDown`): ``Local API: http://127.0.0.1:8003/v1 on
-this Mac answers 503 for now. …`` while the other Mac can't be reached, or the line for a port another program holds.
+this Mac answers 503 for now. …`` while the other Mac can't be reached or the pair's API there doesn't listen, or the
+line for a port another program holds.
 `darkbloom local`, `start --opencode`, the app's Start and `darkbloom doctor` say the same there.
 
 While single-Mac serving runs on either Mac of a started pair, the pair can't start there and it doesn't stop by
@@ -1555,7 +1587,7 @@ shutdown (`provider-swift/Sources/ProviderBenchmark/ThroughputSweep.swift`,
 | Ordinary token scores | `--teacher-forced-input <json>` (`String?`, unset), explicit `--model <id>` and `--kv-backend contiguous\|paged` (`BenchmarkCommand.swift`, `teacherForcedOptionError`) |
 | Runtime generation | `--runtime-generation`, optional `--runtime-prompt-file <utf8>`, `--runtime-prompt-date YYYY-MM-DD`, `--runtime-mtp`, `--runtime-assistant-directory <path>`, `--runtime-concurrency <sizes>`, `--runtime-stagger`; production slot output and memory as JSON, prefix cache off (`RuntimeGenerationBenchmark`; `provider-swift/Sources/ProviderBenchmark/RuntimeConcurrencyBenchmark.swift`, `RuntimeConcurrencyBenchmark`) |
 | Live KV precision | `--kv-quantization balanced\|k8v4\|k8v8\|native`; overrides live config/environment for production benchmark engines; default resolves to native. Use `--runtime-generation`, teacher forcing, sweep or scheduler modes to exercise serving KV. Ordinary scalar `MLX.generate` benchmarks do not measure this representation. MiMo stays native. |
-| Checkpoint KV precision | `--kv-checkpoint-quantization balanced\|k8v4\|k8v8\|native`; independently overrides checkpoint config/environment; default requests balanced. Applies only to eligible complete stores and never forces the live backend. Cache-disabled modes do not measure checkpoint writes or restores. |
+| Checkpoint KV precision | `--kv-checkpoint-quantization balanced\|k8v4\|k8v8\|native`; independently overrides checkpoint config/environment; default requests balanced (native for Nemotron 3.5 Lightning). Applies only to eligible complete stores and never forces the live backend. Cache-disabled modes do not measure checkpoint writes or restores. |
 | Scheduler prefill decision | `--scheduler-prefill-decision`, `--expected-model-aggregate-sha256`, `--expected-registered-binary-sha256`, `--expected-version`, `--source-sha`, `--decision-iterations` (`SchedulerPrefillDecisionReport.minimumLiveIterations`), `--output <path>` (`BenchmarkCommand+SchedulerPrefillDecision.swift`) |
 | Sweep | `--sweep`, `--prefill-lengths` (`"128,512,2048"`), `--max-batch` (`6`), `--batch-sizes` (`String?`), `--decode-tokens`, `--decode-prompt-tokens`, `--decode-iterations` (`ThroughputSweep` defaults), `--kv-backend` (`"auto"`) (`BenchmarkCommand+Sweep.swift`) |
 | Scheduler prefill | `--scheduler-prefill`, `--prefill-iterations` (`2`), `--prefill-fixed-prompt` (`false`; scheduler-prefill only) (`BenchmarkCommand.swift`, `BenchmarkCommand+Sweep.swift`) |
@@ -1681,6 +1713,41 @@ Only me's background service also updates itself, as the network provider
 does: a check 5 minutes after it starts, then every 30 minutes; it downloads
 while serving, lets your requests finish, then restarts into the release
 (`StandaloneServer+AutoUpdate`).
+
+Until an installed release is promoted (600 s of fresh heartbeats of it from one
+provider process), the watchdog counts a failed start for a crash (the job
+loaded and the provider gone through the restart grace) and for a provider that
+sends no heartbeat of the release within its startup window,
+`max(300, startup_preload_timeout_secs + 180)` s. The window runs from the
+release's launch, or from the start of the process launchd runs when the
+process it replaced stopped on request
+(`WatchdogRecoveryService.startupWindowStart`). Before it exits, a provider
+records in `provider-run.json` (beside the daemon state) that `darkbloom stop`
+or `restart` stopped it (`lifecycle_command`), or that it restarted itself into
+an update or out of a stalled App Attest call (`update`, `stall_restart`); the
+next provider keeps that in its own record (`previous_exit_cause`). So
+`darkbloom restart`, or `stop` then `start`, gives the new process the whole
+window: the restart itself is never a failed start, but the new process still
+is one if it sends no heartbeat within it. After a crash, a hang, a power loss
+or any other stop (a reboot, a logout, a `kill`, a `launchctl kickstart -k`:
+these record `shutdown`, or nothing), the window stays the launch's, whatever
+started the provider again; so does it after a `--force` stop that kills the
+provider (`ProcessLifecycle.terminate`, 1 s after its SIGTERM) before it records
+its stop. Three failed starts restore the kept release and quarantine the new
+one
+(`UpdateRecoveryState.rollbackThreshold`). On a `darkbloom cluster` Mac its
+cluster service supervisor counts them instead
+([a rollback on one Mac](./cluster-always-on.md#a-rollback-on-one-mac)).
+
+A release restarted more often than every 600 s is never promoted, and a restart
+on request is no failed start, so it stays pending. The watchdog counts each
+provider process that sends a healthy heartbeat of it after an earlier one did
+(`UpdateRecoveryState.countCandidateRestart`) and, at 5, 10, 20, 40… restarts,
+logs in `~/.darkbloom/watchdog.log`:
+
+```text
+warning: v0.10.12 restarted 5 times before its promotion: a release is promoted only once one process has served it for 600 s. Something may be restarting the provider: a script, a cron job or a login item
+```
 
 `--rollback` cannot be combined with `--check-only`, `--override-quarantine` or
 `--coordinator`, and `--yes` applies only to it. It prints the plan (installed
@@ -2413,9 +2480,16 @@ The command disarms the watchdog and disables login/reboot startup before
 requesting the drain. If setup fails before the mailbox request is published,
 it restores the prior launchd/watchdog recovery state and retains its history. A normal drain timeout returns non-success and leaves the
 process draining with automatic restart disabled. Repeat `stop` or `restart`
-with a new deadline, or explicitly pass `--force`. Interrupting the CLI does not
+with a new deadline, or explicitly pass `--force`. A request its coordinator
+already cancelled (its client left, or its first token was late) counts for at
+most 30 s after that cancel (`ProviderLoop.orphanedRequestGrace`): its answer has
+nobody to go to, so a task that never ends no longer holds the drain. Memory and
+eviction still count it until its task ends. Interrupting the CLI does not
 cancel accepted inference or reopen admission. A running provider without the
 drain control protocol requires an upgrade or an explicit forced interruption.
+After the drain, shutdown waits up to 15 seconds for each model's unload; a
+model whose native retirement never finishes is left to process exit
+(`ProviderLoop.unloadAllModelsForShutdown`).
 
 On a Mac in a two-Mac cluster, `stop` stops the pair on both Macs, the same as
 `darkbloom cluster stop` (`Stop.pairedStop`, `ClusterPairCommands.stop`): the
@@ -2732,7 +2806,13 @@ pair in one `Cluster:` line (`ClusterPairSummary.statusLine`). `darkbloom status
 `darkbloom cluster status` gives the same pair block with `--json` and exit
 statuses for scripts. `darkbloom doctor` prints the same `Cluster:` line under
 its `Daemon:` line, which reads `Daemon: single-Mac serving off (this Mac serves in its two-Mac cluster)`
-when no provider runs (`Doctor.daemonLine`).
+when no provider runs (`Doctor.daemonLine`). Doctor's line reads the pair as
+`status` does (`Doctor.clusterLine`): on the Mac that follows, the leading Mac's
+answer, waited for up to 10 s. That Mac's own view can't tell a serving pair
+from a loading one, since only the leading Mac's part writes the pair's state,
+so `status --solo` says `started` there rather than `loading`. While the other
+Mac isn't answering, the line names no roles: ``Cluster: this Mac is paired ·
+the other Mac (…) isn't answering · …``.
 
 Output includes:
 
@@ -2742,6 +2822,16 @@ Output includes:
   it, and the registration timeout.
 - Detected hardware (chip, RAM, GPU cores).
 - `Inference memory` is the nominal hardware budget, **not** live free RAM.
+- `Fan control (experimental)`, after the local boot checks: the
+  [fan helper](./fan-control.md)'s mode; `helper not answering`; `installed,
+  helper not running` after `fan disable`; `unsupported on this Mac` or
+  `unavailable (…)`; or, on supported hardware without the helper,
+  `off, macOS automatic` with the hottest GPU sensor and
+  `sudo darkbloom fan enable`. It reads the same report as `darkbloom fan status`
+  (`provider-swift/Sources/darkbloom/StatusCommand+FanControl.swift`,
+  `Status.fanControlLine`), so `status` also runs `launchctl print` on the
+  helper's job (5 s timeout) and a read-only SMC read, plus the helper's ≤ 2 s
+  status query when it is loaded.
 - Schedule state (active/inactive).
 - Live daemon PID, uptime, trust verdict, and last model-load error with how
   long ago it was recorded (`Recorded … ago`); the readiness lines above it are
@@ -2752,24 +2842,70 @@ Output includes:
   the `→ fix:` line from
   [GLM-5.3-Flash GPU wired-memory limit](#glm-53-flash-gpu-wired-memory-limit).
 - App Attest serving authorization can remain visible through its unexpired lease, while MDM removal advice requires a matching fresh coordinator decision. The same distinction applies to both doctor summaries; see [provider authorization](../reference/provider-authorization.md).
+- `Last reported authorization: received <age> ago; not a fresh dispatch grant. …`: when no current decision is shown, an older `none` (a denial) or `legacy` report from the running daemon, as dated history. `darkbloom doctor` and `darkbloom verify` print it as `last reported authorization`, INFO for legacy and WARN for none, and still run the public attestation checks; `verify` fails on a WARN or FAIL, never on INFO. See [provider authorization](../reference/provider-authorization.md).
 - `Requests served since the daemon started (… ago)`: coordinator requests
   this daemon finished since it started, with output tokens only. The count
   restarts at zero when the daemon restarts or a scheduled availability window
-  opens. It includes requests that ended early on a coordinator cancel or a
-  dropped connection after output had been delivered (the next line counts
-  them when there are any; the coordinator may not pay for them) and free
-  [self-route](./self-route.md) requests to your own machine. Paid jobs are on
-  the console's Earnings page; the console's machine card adds these counters
-  up across restarts
+  opens. It includes free [self-route](./self-route.md) requests to your own
+  machine and requests that ended early: something stopped them after this Mac
+  had sent output. When there are any, the next lines count them by what
+  stopped them and whether the coordinator pays (`Status.endedEarlyLines`):
+  - `paid for the work done: the requester left mid-answer`: a `cancel` whose
+    `reason` is `client_gone_post` and whose `paid` is true. The coordinator
+    holds the request's billing record for 30 s and settles the prompt and the
+    output this Mac sent
+    ([billing: settlement anomalies](https://github.com/Layr-Labs/darkbloom-platform/blob/3ee0560639291045b288801bd594154dd1d3230e/docs/architecture/billing.md#settlement-anomalies)).
+  - `paid for the work done: stopped on this Mac (a drain or an add-on hold)`:
+    this Mac stopped it itself (a forced drain or an
+    [add-on hold](../architecture/addon-hold.md)'s drain bound). Its usage goes
+    out on a live connection, and the coordinator settles it as a completion.
+  - `paid for the work done: stopped by the network`: a `cancel` with `paid`
+    and any other `reason`.
+  - `unpaid: another Mac answered first`: `reason` `hedge_loser`. The
+    coordinator sent the request to two Macs and kept the first to answer
+    ([`CancelDispatch`](https://github.com/Layr-Labs/darkbloom-platform/blob/3ee0560639291045b288801bd594154dd1d3230e/coordinator/internal/inference/cancellation/cancel_operations.go)).
+  - `unpaid: this Mac started too late`: `reason` `first_chunk_timeout` or
+    `late_content`. Its first output reached the coordinator after the
+    request's first-content deadline.
+  - `unpaid: stopped by the network for another reason`: any other `reason`
+    without `paid`.
+  - `unpaid: the connection to the network dropped`: this Mac's connection to
+    the coordinator dropped (`handleCoordinatorDisconnected`), on this Mac's
+    side or because the coordinator restarted.
+  - `stopped by the network: paid for the work done if the requester left
+    mid-answer, unpaid if another Mac answered first or this Mac started too
+    late`: a `cancel` without a `reason`, from a coordinator that sends none
+    ([protocol: `cancel`](../reference/protocol-messages.md#cancel)).
+
+  A daemon from before these counts prints one note for all of them instead. A
+  paid stop (a `cancel` with `paid`, or this Mac's own stop) that arrives after
+  the engine finished the answer on its own does not count: it is paid as
+  delivered (`EngineV2RequestUsageSignal.answerFinished`). An unpaid stop, or a
+  `cancel` without a `reason`, counts whenever it arrives. Paid jobs are on the
+  console's Earnings page; the console's machine card adds these counters up
+  across restarts
   ([coordinator/registry/heartbeat.go](https://github.com/Layr-Labs/darkbloom-platform/blob/10b8b4fabad60e20961b1b74a8672be41c5a0a2d/coordinator/registry/heartbeat.go),
   `cumulativeDelta`)
   (`provider-swift/Sources/darkbloom/StatusCommand+ServedRequests.swift`).
 - `Enabled model filter` is the saved config; a running daemon applies a
-  changed `enabled_models` only at its next start. `Serving outside the enabled
-  model filter` names each warm or advertised model the filter omits and why it
-  serves: an Autopilot operation's adoption, the running daemon's selection, or
-  the live Autopilot lease. `Autopilot placements` lists adoptions and placement
-  holds with each hold's UTC expiry and time left. `Not evictable for a load
+  changed `enabled_models` only at its next start. `Configuration change needs
+  a restart to apply: enabled_models adds …; removes …` appears when the saved
+  filter differs from the one the running selection applies: the filter the
+  daemon started with, or the one the last committed `switch` saved and applied
+  (`enabled_models_at_start`, `enabled_models_at_last_switch` in the daemon
+  state). `Serving
+  outside the enabled model filter` names each warm or advertised model the
+  filter omits and why it serves: an Autopilot operation's adoption, the
+  running daemon's selection, or the live Autopilot lease. `Autopilot
+  placements` lists adoptions and placement holds with each hold's UTC expiry
+  and time left. `Retrying <model> when memory frees; next check in …
+  (waiting …)` names each selected model the daemon keeps trying to load: one
+  the startup preload left cold for memory or a slot, or one an Autopilot
+  operation unloaded to load another model
+  ([selected-model recovery](../architecture/hardware-support.md#load-gate-modelloadadmission)),
+  followed by `Last check:` and what kept it out. After three memory refusals
+  that came after the model's weights loaded, it says `next check after an
+  unload or a configuration change` instead of a time. `Not evictable for a load
   now` lists the resident models no load can evict at the snapshot, with the
   same reasons a refusal gives (`provider-swift/Sources/darkbloom/StatusCommand+Residency.swift`).
 - `Traffic:` whether the coordinator can route work to this connection, judged
@@ -2905,7 +3041,7 @@ No line shows the key or a speed, and every problem names the next command:
 |---|---|
 | `mode` | How this Mac serves, in the start summary's words: what the running provider serves (`serving now`, read as `status` reads it), else `[local] mode` (`saved`); a saved choice the running provider doesn't serve is named with `` serves at the next `darkbloom start` ``. Only me's server is Only me from its first load: `(starting)` until its local API listens. Nothing saved and nothing running: ``not chosen yet: `darkbloom start` asks …``. On a paired Mac, the pair's way (**Only me (this pair)**, **Both, me first (this pair)** or **Darkbloom network (this pair)**, the start question's names) and the Mac that runs its API; before the pair has chosen, ``this Mac is paired, but how the pair serves isn't chosen yet`` (fix `darkbloom cluster`). A paired Mac serving alone (`start --solo`) is described by what it serves, with `(this Mac serves alone, not the pair)` |
 | `darkbloom network` | Only with **Only me**: ``not needed (Only me): the account, trust, App Attest and coordinator checks are skipped; `darkbloom start --choose` changes how this Mac serves`` (on a pair, `darkbloom cluster`; serving alone, `darkbloom start --solo --choose`) |
-| `address` | With a local API: ✓ `http://127.0.0.1:8001/v1 — up on port 8001` once it answers `GET /health` (2 s); ✗ when its process runs but the port doesn't answer; ✗ `<address> isn't up` with the address that couldn't listen, fix in `status`'s words (``port 8001 is in use (`darkbloom start --port 8002`)``, with `--solo` on a paired Mac serving alone); `— starting: it opens once its models are loaded` while Only me loads; ⚠ `— not running`, fix `` `darkbloom restart` starts it again as saved `` when the background service is installed, else `darkbloom start`. On a pair: ⚠ while it is stopped (`darkbloom start` starts the pair); on the Mac that doesn't run the pair's API, where it runs; on a Mac that passes the pair's API on through its own port and can't answer for it now, ⚠ in `status`'s words (`ClusterPairSummary.memberAPIDown`): ``http://127.0.0.1:8003/v1 on this Mac answers 503 for now. Your pair's other Mac (…) isn't reachable; …`` while that Mac is away (never `restart`), or the line for a port another program holds |
+| `address` | With a local API: ✓ `http://127.0.0.1:8001/v1 — up on port 8001` once it answers `GET /health` (2 s); ✗ when its process runs but the port doesn't answer; ✗ `<address> isn't up` with the address that couldn't listen, fix in `status`'s words (``port 8001 is in use (`darkbloom start --port 8002`)``, with `--solo` on a paired Mac serving alone); `— starting: it opens once its models are loaded` while Only me loads; ⚠ `— not running`, fix `` `darkbloom restart` starts it again as saved `` when the background service is installed, else `darkbloom start`. On a pair: ⚠ while it is stopped (`darkbloom start` starts the pair); on the Mac that doesn't run the pair's API, where it runs; on a Mac that passes the pair's API on through its own port and can't answer for it now, ⚠ in `status`'s words (`ClusterPairSummary.memberAPIDown`): ``http://127.0.0.1:8003/v1 on this Mac answers 503 for now. Your pair's other Mac (…) isn't reachable; …`` while that Mac is away (never `restart`), ``… The pair's API on your pair's other Mac (…) isn't answering yet; …`` while that API starts again (`memberAPIRestarting`), or the line for a port another program holds |
 | `key file` | ✓ the file the API's key is in (`~/.darkbloom/local_token`, `LocalEndpoint.keyFile`); ✗ when no file holds a running API's key, so tools that read it are refused; `none` for an API started with `--no-auth`, or before the first start |
 | `OpenCode`, `Hermes` | Darkbloom's provider in the tool's own config (`~/.config/opencode/opencode.jsonc` or `opencode.json`, `~/.hermes/config.yaml`, as `darkbloom --opencode` / `--hermes` choose them), read and judged as `start`'s notice judges it (`ToolAddress.readPointer`, `ToolAddress.miss`): `localhost`, `127.0.0.1` and `::1` are this Mac, and so is its `.local` name for an API on every address; another file that holds the same key is the same key; Hermes' `key_cmd` names a key file only as `/bin/cat <full path>`. ✓ `points here`; ⚠ `points at <address>, not this Mac's local API (…)`, or at the right address but another key file, or a provider block with no address (fix `darkbloom --opencode` / `--hermes`); ⚠ a config Darkbloom can't read, with why (not valid, larger than 4 MiB); `not set up` with the command that sets it up. With no local API (Darkbloom network), only a tool still pointing at one is shown (⚠, fix `darkbloom start --choose`; on a pair, `darkbloom cluster`) |
 
@@ -3070,6 +3206,39 @@ Show the coordinator's supported-model catalog.
 darkbloom models catalog [--coordinator <url>] [--json] [--type <type>]
 ```
 
+After the table, when there is at least one, the command names the catalog
+models that are not downloaded and that this Mac could select:
+
+```text
+Not downloaded (this Mac meets their listed requirements)
+
+  Nemotron 3.5 Lightning  [nvidia-nemotron-3.5-lightning]  ~19.1 GB download
+  Qwen 3.5 9B  [Qwen3.5-9B]  ~6.1 GB download
+
+  Not checked: free disk space, memory reserved or in use when a model loads, provider version and trust status.
+  Download one: darkbloom models download <id>
+  Then choose what to serve: darkbloom switch (darkbloom start when the provider is stopped)
+```
+
+The note only prints: it downloads, selects and saves nothing, and it is absent
+from `--json` output and when hardware detection fails. It adds no request; the
+table's one catalog request now also asks for the public aliases
+(`include_aliases=1`, as the picker does), and the `--json` request is as
+before. At most three models are named, larger first, and one more line counts
+the rest. A model is named (`ModelsCatalogHint.candidates`) when the
+`darkbloom start` picker would offer it to this Mac (this Mac has its required
+runtime capabilities, and it is not a hidden build or one replaced under a
+public alias), it is an active text model, its listed `min_ram_gb` is at most
+this Mac's memory (the coordinator's comparison for a listed tier; a model with
+no listed tier is not named), and it fits the provider's load budget alone
+([RAM tiers and catalog models](hardware-requirements.md#ram-tiers-and-catalog-models)).
+The note does not promise that a named model will download, load or receive
+requests: free disk space, the configured `memory_reserve_gb`, memory in use at
+load time, the coordinator's minimum provider version and the provider's trust
+status are not checked. `darkbloom models download` does not edit
+`backend.enabled_models`; with an empty `enabled_models` the provider serves
+every local model it can run.
+
 ### `darkbloom models list`
 
 List local models.
@@ -3211,7 +3380,7 @@ darkbloom benchmark [--model <id>] [--prompt <text>] [--iterations <n>] [--max-t
 | `--runtime-concurrency <sizes>` | Comma-separated batch sizes from 1 to 64 (for example `1,2,4,8`) for `--runtime-generation`; an empty, non-numeric or out-of-range entry refuses the whole list (`RuntimeConcurrencyBenchmark.batchSizes`). One production slot per size, warmed by one identical batch, then distinct greedy rows; a slot whose model policy lowers its width below the size is listed in `refusedCells` instead of measured. JSON carries the verified model hash, prompt hash, render date and per-row prompt-token hashes; per cell, the resolved backend, KV precisions, MTP state and assistant identity; per-row tokens, arrival times of the first, third and first eight tokens, decode rates, chained steps (measured batch) and MTP metrics (warmup included). Exit status 2 when a cell is refused or a row does not end with `length` at its quota or a configured stop token within it (`provider-swift/Sources/ProviderBenchmark/RuntimeConcurrencyBenchmarkReport.swift`, `RuntimeConcurrencyBenchmark.rowFailure`) |
 | `--runtime-stagger` | With `--runtime-concurrency`: row i of a B-row batch stops after `max-tokens*(B-i)/B` tokens, so the decode cohort shrinks to one row (speculation resuming as concurrency drops). `--max-tokens` must be at least 3×B for every size, keeping the quotas distinct and at least 3 (`RuntimeConcurrencyBenchmark.rowMaxTokens`); a row that stops before its quota fails the cell |
 | `--kv-quantization <precision>` | Live `balanced`, `k8v4`, `k8v8` or `native`; overrides config/environment, otherwise the provider default is native |
-| `--kv-checkpoint-quantization <precision>` | Independent complete-checkpoint request with the same values; overrides config/environment, otherwise defaults to balanced; does not enable a cache or change the live backend |
+| `--kv-checkpoint-quantization <precision>` | Independent complete-checkpoint request with the same values; overrides config/environment, otherwise defaults to balanced (native for Nemotron 3.5 Lightning); does not enable a cache or change the live backend |
 
 For paired live-cache comparisons, use the same artifact, public prompt and
 `--runtime-prompt-date` with `--runtime-generation --kv-backend paged`, once
@@ -3385,7 +3554,7 @@ darkbloom beta disable <feature>    # turn off
 |---------|--------|
 | `gemma-prefill-layer18` | Default-on layer-18 prefill submission; disable and restart for legacy submission behavior |
 | `gemma-weighted-r1` | Default-on atomic weighted-unsort + safe-R1 pair; disable and restart to roll back both |
-| `mtp` | MTP policy. Default `auto` requests validated embedded Qwen-family, native Qwen4, Nemotron Lightning and native MiMo heads, and the catalog `spec_dec` assistant for exact `gemma-4-26b-qat-4bit` and the exact Prism/Eigen Bonsai 9B identities under `prism_hadamard_qwen35`. Actual artifact/owner/budget checks remain required; explicit `off` is the rollback |
+| `mtp` | MTP policy. Default `auto` requests validated embedded Qwen-family, native Qwen4 and native MiMo heads (Nemotron Lightning's embedded head needs explicit `on`, because its plain decode is faster), and the catalog `spec_dec` assistant for exact `gemma-4-26b-qat-4bit` and the exact Prism/Eigen Bonsai 9B identities under `prism_hadamard_qwen35`. Actual artifact/owner/budget checks remain required; explicit `off` is the rollback |
 
 `enable`/`disable` read-modify-write the TOML config and report whether a restart
 is required. Restart is the activation boundary for process-wide optimization
@@ -3494,6 +3663,12 @@ recorded server process is still alive. On a Mac of a pair whose local API runs
 on another Mac, that record is this Mac's relay's (written by its cluster
 service): its own address and its own key. Without it, or with the pair's other
 Mac away, it says why, as `darkbloom status` does.
+
+Under the key, a `key file:` line names the file that holds it, for tools that
+read the key from a file: `~/.darkbloom/local_token`, this Mac's own key. On a
+pair's API (the leading Mac's, or this Mac's relay to it), the pair's key works
+too, and the line says so: ``key file: ~/.darkbloom/local_token (the pair's key,
+in ~/.darkbloom/cluster_local_token, works here too)`` (`Local.keyFileLine`).
 
 ## `darkbloom route`
 
@@ -3640,6 +3815,34 @@ line before anything is uploaded.
 Internal command used by the launchd crash-recovery watchdog. Not intended for
 manual use.
 
+If the provider job is absent (launchd booted it out; `darkbloom stop` disables
+it instead), recovery requires `provider.auto_restart`, an installed matching
+`RunAtLoad` plist, an explicit enabled launchd override and no live provider
+identity. After the normal grace period, the watchdog bootstraps that plist under
+the lifecycle lease shared with stop and update. It never enables a disabled job,
+so a deliberate stop stays stopped. It never does this for a cluster member's
+job, or while the pair runs on this Mac (`ClusterService.pairServesHere`): the
+pair's own supervision owns those. The watchdog checks both when its tick
+starts (`Watchdog.recoversAbsentJob`), and every sample of the job under the
+lease checks them again, the last one just before the bootstrap. Pending
+candidates use the existing failed-attempt threshold, verified rollback and
+refused-rollback retry backoff after grace. A confirmed attempt is charged once;
+an expired refusal backoff permits one retry of the intact candidate. Rollback
+errors reload durable state before recording the refusal, preserving a rollback
+that committed before cleanup failed. This path downloads no update.
+
+Its launchctl probes and its bootstrap each have a three-second bound. A
+missing-service diagnostic must name the complete provider label; an error about
+a different service does not authorize recovery. A successful registration
+records the version-scoped restart count; it does not prove provider health. An
+uncertain bootstrap result keeps any staged crash-loop protection without
+recording a restart, and the next tick looks at launchd again. A candidate's
+launch intent is saved before the bootstrap; an uncertain result keeps that
+intent without charging a failure. On a loaded tick, run or process evidence can
+confirm the pending attempt under the lease; a registration with zero runs alone
+cannot. See `provider-swift/Sources/ProviderCore/Service/AbsentProviderRecovery.swift`
+and `provider-swift/Sources/darkbloom/WatchdogCommand.swift`.
+
 ## Native pair batch diagnostics
 
 The developer helper `darkbloom-cluster-pair-check run` accepts
@@ -3655,6 +3858,43 @@ qualification or performance. Sources:
 `libs/darkbloom-cluster-worker/Sources/PairCheck/PairCheck.swift` (`PairCheck.run`),
 `libs/darkbloom-cluster-worker/Sources/DarkbloomClusterQualification/PairConfiguration.swift`
 (`validate`, `launchScript`), and [test boundaries](../developer/test.md#two-mac-cluster-checks).
+
+## Pair batch lane parity
+
+`darkbloom-cluster-pair-check run --batch-lanes N --batch-request REQUEST.json ...`
+runs each batch request alone in the loaded session, then each `--batch-wave N`
+starts the first N together (`--batch-stagger-ms` apart; `--batch-cancel-after T`
+cancels a wave's last request after T tokens). A tensor-parallel run fails when a
+lane's tokens differ from its request alone. In another mode the run records
+the comparison (`matchesSolo`, `firstDifferenceIndex`, `allMatchSolo`) and fails
+on it only with `--batch-require-parity yes`, which needs the requests run alone
+first (`--batch-solo yes`, the default). Use it for a pipeline's lane
+qualification: the pass rule is the same for every mode, each request's tokens
+equal to its run alone at every width.
+
+`--batch-logprobs K` (1...20, tensor parallel with batch requests only) makes
+every batch request, alone and in its waves, ask for each committed token's
+logprob and its K most likely alternatives, which tensor-parallel workers send
+(a pipeline worker refuses such a request). The report keeps them per request as
+IEEE-754 bit patterns (`logprobBits`, `[logprob, token 1, logprob 1, ...]` per
+token, and their `logprobsSHA256`); a token sent without them, or with another
+count, fails its request (`ClusterWorkerRequest`), so record i is token i's.
+Each wave's are compared with the requests'
+alone bit for bit (`logprobsMatchSolo`, `firstLogprobDifferenceIndex`,
+`allLogprobsMatchSolo`); a cancelled lane is compared as far as it got. A lane
+whose logprobs differ fails the run even when its tokens match.
+
+A request that asks for logprobs may take another decode path than one that
+doesn't: Qwen tensor parallel decodes it without its assistant, one token per
+step, as the product does, and GLM checks its rounds' proposals by replaying the
+draws. To qualify both paths, run once without the option (token parity) and
+once with it (token and logprob parity).
+
+Sources: `libs/darkbloom-cluster-worker/Sources/DarkbloomClusterQualification/PairDriver.swift`
+(`runBatchWave`, `compareLogprobs`), `PairConfiguration.swift` (`batchLogprobs`,
+`batchRequireParity`, `batchSampling`) and `QualificationReports.swift` (`PairBatchRequestTiming`).
+`bash libs/darkbloom-cluster-worker/Tests/QualificationChecks/run.sh` drives
+these waves through two fake workers that serve batch lanes.
 
 ## Exit codes
 
@@ -3690,7 +3930,7 @@ qualification or performance. Sources:
 | KV-backend crash-loop guard | `~/.darkbloom/kv-backend-guard.json` (`DARKBLOOM_KV_BACKEND_GUARD`) | `provider-swift/Sources/ProviderCore/Service/KVBackendGuard.swift` |
 | App Attest stall restart marker | `app-attest-stall-restart.json` beside the daemon state file, `0600`; time of the last automatic App Attest restart, for a stalled DeviceCheck call or for `is_supported_false` ([limits](../reference/app-attest-shadow.md#bounds-and-credential-lifecycle)) | `provider-swift/Sources/ProviderAppAttest/AppAttestStallRestart.swift` (`AppAttestStallRestartMarker`) |
 | App Attest verified marker | `app-attest-verified.json` beside the daemon state file, `0600`; time of the last coordinator App Attest authorization, rewritten at most once per hour. When it is missing at serve start, it is seeded once from the previous daemon state (the last Apple success of an attested key, or an App Attest grant left by an unclean exit), with evidence from the last 7 days. It only allows the `is_supported_false` restart; it never authorizes serving | `provider-swift/Sources/ProviderAppAttest/AppAttestStallRestart.swift` (`AppAttestVerifiedMarker`) |
-| Provider run marker | `provider-run.json` beside the daemon state file, `0600`. Set to `running` when a serve process starts and to `clean` (with cause) after its drain or before an update/stall relaunch. Explicit update/stall relaunch causes survive later generic termination callbacks; a failed hand-off restores running state and clears the cause. The next process derives `previous_exit` and `start_reason` from it | `provider-swift/Sources/ProviderCore/Service/ProviderRunMarker.swift`, `ProviderProcessRun.swift` |
+| Provider run marker | `provider-run.json` beside the daemon state file, `0600`. Set to `running` when a serve process starts and to `clean` (with cause) after its drain or before an update/stall relaunch. Explicit update/stall relaunch causes survive later generic termination callbacks; a failed hand-off restores running state and clears the cause. The next process derives `previous_exit` and `start_reason` from it, and keeps the previous process's clean-stop cause in its own record (`previous_exit_cause`). The watchdog reads it to time a pending release's startup window ([`darkbloom update`](#darkbloom-update)) | `provider-swift/Sources/ProviderCore/Service/ProviderRunMarker.swift`, `ProviderProcessRun.swift` |
 | APNs push history | `apns-push-history.json` beside the daemon state file, `0600`. The last 50 code-identity push receipt times and reply times, plus whether a device token was present. No token, nonce or payload | `provider-swift/Sources/ProviderCore/Apns/APNsPushHistory.swift` |
 | Provider LaunchAgent | label `io.darkbloom.provider`; `~/Library/LaunchAgents/io.darkbloom.provider.plist`; `RunAtLoad = true`, `KeepAlive = false`; stdout/stderr → `~/.darkbloom/provider.log` | `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift` (`label`, `plistPath`, `logPath`) |
 | Watchdog LaunchAgent | label `io.darkbloom.watchdog`; `~/Library/LaunchAgents/io.darkbloom.watchdog.plist`; log `~/.darkbloom/watchdog.log` | `provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift` |
@@ -3725,10 +3965,11 @@ override `provider.toml` for one process, are in
 | `[backend] engine_v2_kv_backend` | `"auto"` | `auto` / `paged` / `contiguous`; per-model table `engine_v2_kv_backend_by_model` takes precedence. Only live packed precision requires paged. Native auto follows the [exact qualified-artifact allowlist](../architecture/prefix-cache.md#kv-layouts) and retains observable contiguous fallback; checkpoint compression does not change it (`EngineV2KVBackendPolicy.parseSelection`, `preferredBackend`) |
 | `[backend] engine_v2_kv_quantization` | `"native"` | Live attention precision: `balanced` K4/V4, `k8v4` K8/V4, `k8v8` K8/V8 or `native`. Explicit live packed `auto` selects paged; unavailable paging refuses rather than silently serving native. Its durable reuse remains the existing complete packed contract; legacy resident/tensor prefixes stay disabled. MiMo remains native (`EngineV2KVQuantizationPolicy.resolve`). |
 | `[backend] engine_v2_kv_quantization_by_model` | `{}` | Exact model-ID live precision overrides the global setting; `DARKBLOOM_CBV2_KV_QUANTIZATION` overrides both. Existing explicit live `balanced` settings remain live packed. MiMo exclusion precedes parsing. |
-| `[backend] engine_v2_kv_checkpoint_quantization` | `"balanced"` | Independent complete-checkpoint encoding request with the same four values. Eligible native paged and contiguous targets encode older attention rows and restore to native state. Unsupported layouts retain native encoding; live-packed targets keep their existing packed format. This does not enable caching, force paging or reduce native memory admission. See [numerical limits and fallback](../architecture/kv-cache-quantization.md#native-execution-with-quantized-checkpoints). On a two-Mac cluster it also sets the pair's SSD prompt-prefix record precision for the pair's public model; both Macs must resolve the same value ([cluster record precision](../reference/configuration.md#cluster-ssd-prefix-record-precision)). |
+| `[backend] engine_v2_kv_checkpoint_quantization` | `"balanced"` | Independent complete-checkpoint encoding request with the same four values. Nemotron 3.5 Lightning (`nemotron_h`) stores native rows unless the switch, a per-model setting or a global value other than `balanced` says otherwise: a saved `provider.toml` spells out `balanced`, so that word is not a choice there. Nemotron 3.5 Super stores native rows unless the switch or its own per-model setting says otherwise; this global value doesn't apply to it. Eligible native paged and contiguous targets encode older attention rows and restore to native state. Unsupported layouts retain native encoding; live-packed targets keep their existing packed format. This does not enable caching, force paging or reduce native memory admission. See [numerical limits and fallback](../architecture/kv-cache-quantization.md#native-execution-with-quantized-checkpoints). On a two-Mac cluster it also sets the pair's SSD prompt-prefix record precision for the pair's public model; both Macs must resolve the same value ([cluster record precision](../reference/configuration.md#cluster-ssd-prefix-record-precision)). |
 | `[backend] engine_v2_kv_checkpoint_quantization_by_model` | `{}` | Exact model-ID checkpoint request overrides the global setting; `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` overrides both. MiMo remains native before parsing. |
+| `[backend] engine_v2_kv_checkpoint_quantization_by_model."nvidia-nemotron-3.5-super"` | absent: `native` | Nemotron Super's managed slot gives its own entry a built-in `native` default, so a cache hit restores exactly what a cold prefill computes; the global `engine_v2_kv_checkpoint_quantization` does not apply to Super. An explicit entry or `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` selects a profile ([Super's durable checkpoints](../reference/ssd-kv-cache.md#complete-checkpoint-payload)). |
 | `[backend] mtp_mode` | `auto` | Written by `darkbloom beta enable|disable mtp` |
-| `[backend] mtp_acceptance` | unset (resolves to `typical`, delta `0.2`) | `exact` / `typical` draft acceptance for eligible sampled target-prefix requests. `typical` keeps a draft when the target's filtered probability for it is above `min(1, 0.2 * exp(-H))` (`H` = the target row's entropy in nats); sampled output is approximate, not distribution-exact. Greedy requests never change. Native MiMo remains exact and does not apply this preference. This setting does not enable disabled MTP or widen eligibility. Parsing ignores case and surrounding whitespace; unknown values warn and resolve to `exact` (`provider-swift/Sources/ProviderCore/Inference/MTP/MTPAcceptancePolicy.swift`, `resolve`) |
+| `[backend] mtp_acceptance` | unset (resolves to `typical`, delta `0.2`; `exact` for the Bonsai 9B candidate, the catalog `Qwen3.5-9B`, `gemma-4-26b-qat-4bit` and `EigenLabs/Qwen3.8-27B-4bit-mtp` (with its head-less target `EigenLabs/Qwen3.8-27B-4bit`)) | `exact` / `typical` draft acceptance for eligible sampled target-prefix requests. `typical` keeps a draft when the target's filtered probability for it is above `min(1, 0.2 * exp(-H))` (`H` = the target row's entropy in nats); sampled output is approximate, not distribution-exact. Greedy requests never change. Native MiMo remains exact and does not apply this preference. This setting does not enable disabled MTP or widen eligibility. Parsing ignores case and surrounding whitespace; unknown values warn and resolve to `exact` (`provider-swift/Sources/ProviderCore/Inference/MTP/MTPAcceptancePolicy.swift`, `resolve`) |
 | `[backend] mtp_acceptance_by_model` | `{}` | Exact model ID to acceptance string; overrides `mtp_acceptance` for that model. An unknown override resolves to `exact`, not the global value. Same eligibility and native MiMo exclusion as above (`MTPAcceptancePolicy.resolve`) |
 | `[backend.model_autopilot] enabled` | `false` | Experimental cached-inventory enrollment/consent, not activation; nonempty verified inventory is required, and only a live lease enables residency control (`provider-swift/Sources/ProviderCore/Autopilot/ModelAutopilotSettings.swift`) |
 | `[backend.model_autopilot] min_dwell_seconds` | `1800` | Minimum residence before Autopilot replacement; runtime clamps to `60...86400` (`ModelAutopilotSettings.effectiveMinDwellSeconds`) |
@@ -3765,6 +4006,13 @@ Pure-prefill stripes are unchanged. These variables are not forwarded to a Launc
 see the [scheduler environment reference](../reference/configuration.md#engine-and-scheduler).
 
 ## LaunchAgent environment passthrough
+
+The SDK's [Gemma row-mapped NAX route](../reference/configuration.md#gemma-4-row-mapped-nax)
+is enabled by default within its hardware and model guards. The provider forwards
+`DARKBLOOM_GEMMA4_NAX_ROW_MAP` verbatim, including an explicit empty value, when
+creating the LaunchAgent environment. Its exact `0` rollback reaches background
+jobs as well as foreground/local serving. It is a process-environment setting,
+not a new CLI flag.
 
 For sandboxed foreground/local startup, `TMPDIR` selects the anonymous runtime
 metallib snapshot directory. It is not forwarded to the background provider;
@@ -3856,10 +4104,12 @@ must support the checkpoint contract described in
 | `DARKBLOOM_PREFIX_CACHE` | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`environmentFlag`) |
 | `DARKBLOOM_MIMO_COMPLETE_PREFIX` | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`isMiMoCompletePrefixEnabled`); unset/empty uses the model default; `0` disables native MiMo text-prefix caching |
 | `DARKBLOOM_PREFIX_CACHE_SSD_INCREMENTAL_CHECKPOINTS` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` (`incrementalCheckpoints`); a negative value writes complete checkpoints instead of deltas |
+| `DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` (`terminalBeforePublication`); an affirmative value answers an unseeded donor before its complete-checkpoint write settles (default off) |
 | `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26WiredResidency.swift` (`isEnabled`) |
 | `DARKBLOOM_GLM_PERSISTENT_WIRED_RESIDENCY` | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextWiredResidency.swift` (`isEnabled`); on by default, `0`/`false`/`no`/`off` rolls back to per-command-buffer residency |
 | `DARKBLOOM_MLX_RESOURCE_DEBUG` | forwarded to `mlx-swift-lm` |
 | `DARKBLOOM_TTFT_GDN_BLOCKED` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/GatedDelta.swift` (`GatedDeltaPrefill.mode`); `0` keeps the stock Qwen GDN prompt kernel |
+| `DARKBLOOM_GEMMA4_NAX_ROW_MAP` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/Gemma4RowMappedNAX.swift` (`requested`, `tryPair`); exact `0` restores the original Gemma expert-prefill graph |
 | `DARKBLOOM_TTFT_SHAPE_WARMUP` | `provider-swift/Sources/ProviderCore/Inference/Performance/ModelCalibrationPolicy.swift` (`shapeWarmupEnvironmentKey`); `0` disables the load-time shape warmup, `always` skips its shader-cache probe |
 | `DARKBLOOM_CBV2_PAGED_KV` | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift` |
 | `DARKBLOOM_CBV2_KV_QUANTIZATION` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVQuantizationPolicy.swift` (`resolve`, live), as `EngineV2KVQuantizationPolicy`; cluster pairs: `DistributedInstalledKVQuantization` |

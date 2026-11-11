@@ -504,10 +504,16 @@ public struct ClusterOnboardingMode: Codable, Sendable, Equatable {
     /// Requests the pair serves at once in this mode, from the plan that loads (1: one at a time); nil when not known
     /// and from an older leader.
     public var concurrentRequests: Int?
+    /// The context the pair serves in this mode (`ClusterModelFeaturePolicy.servedProfile`), and its longest prompt;
+    /// nil when not known and from an older leader.
+    public var contextTokens: Int?
+    public var promptTokens: Int?
 
-    public init(mode: String, split: String?, measuredTokensPerSecond: Double?, concurrentRequests: Int? = nil) {
+    public init(mode: String, split: String?, measuredTokensPerSecond: Double?, concurrentRequests: Int? = nil,
+                contextTokens: Int? = nil, promptTokens: Int? = nil) {
         self.mode = mode; self.split = split; self.measuredTokensPerSecond = measuredTokensPerSecond
         self.concurrentRequests = concurrentRequests
+        self.contextTokens = contextTokens; self.promptTokens = promptTokens
     }
 
     /// How many requests it serves at once, plainly (R4-15: GLM's pipeline took one request at a time, and Darkbloom
@@ -556,6 +562,27 @@ public struct ClusterOnboardingMode: Codable, Sendable, Equatable {
         concurrentRequests.map { $0 <= 1 ? "serves one at a time" : "serves up to \($0) at once" }
     }
 
+    /// The context it serves, and its longest prompt when that is shorter (journey 3's second delta: Gemma 4's
+    /// pipeline served 65,536 tokens with prompts up to 32,768 in 0.10.11, tensor parallel 262,144, and the question
+    /// said neither): "context 65,536 tokens, prompts up to 32,768" for a pipeline that serves the memory plan's
+    /// request; nil when not known.
+    var contextWords: String? {
+        guard let context = contextTokens else { return nil }
+        let prompts = promptTokens.flatMap { $0 < context - 1 ? ", prompts up to " + Self.grouped($0) : nil } ?? ""
+        return "context " + Self.grouped(context) + " tokens" + prompts
+    }
+
+    /// The same, short: "context 65,536".
+    var shortContextWords: String? { contextTokens.map { "context " + Self.grouped($0) } }
+
+    /// "262,144".
+    static func grouped(_ value: Int) -> String {
+        let digits = Array(String(value))
+        return digits.enumerated().map { index, digit in
+            (index > 0 && (digits.count - index) % 3 == 0 ? "," : "") + String(digit)
+        }.joined()
+    }
+
     /// The list's words for a model's modes, the default first (`defaultIndex`): "tensor parallel or pipeline". No speed,
     /// measured or not (DevNet .118, pair-2: "Gemma 4 26B · tensor parallel 96 tok/s or pipeline (not measured on these
     /// Macs yet)"): the mode question says which mode suits these Macs, and why, in words.
@@ -568,10 +595,10 @@ public struct ClusterOnboardingMode: Codable, Sendable, Equatable {
 }
 
 /// The mode the setup recommends for these two Macs (owner, 2026-11-04: "it also does not suggest which one to select
-/// for the hardware"), from what the plans already know: whether each mode fits now, its speed on this pair (measured
-/// with this build, else as this pair served it with an earlier build, else the planner's prediction), how many
-/// requests it serves at once, and whether Darkbloom serves it publicly. Exactly one mode, or none with the reason: it
-/// never guesses past the evidence.
+/// for the hardware"), from what the plans already know: whether each mode fits now, the context it serves, its speed
+/// on this pair (measured with this build, else as this pair served it with an earlier build, else the planner's
+/// prediction), how many requests it serves at once, and whether Darkbloom serves it publicly. Exactly one mode, or
+/// none with the reason: it never guesses past the evidence.
 public struct ClusterOnboardingModeAdvice: Codable, Sendable, Equatable {
     /// The recommended `ClusterOnboardingMode.mode`; nil when none is recommended.
     public var mode: String?
@@ -597,13 +624,15 @@ public struct ClusterOnboardingModeAdvice: Codable, Sendable, Equatable {
         public var concurrentRequests: Int?
         /// Darkbloom's coordinator serves this mode publicly; nil when not known.
         public var publicTraffic: Bool?
+        /// The context the pair serves in this mode; nil when not known.
+        public var contextTokens: Int?
         public init(mode: String, planned: Bool, fitsNow: Bool, measuredTokensPerSecond: Double? = nil,
                     earlierMeasuredTokensPerSecond: Double? = nil, predictedTokensPerSecond: Double? = nil,
-                    concurrentRequests: Int? = nil, publicTraffic: Bool? = nil) {
+                    concurrentRequests: Int? = nil, publicTraffic: Bool? = nil, contextTokens: Int? = nil) {
             self.mode = mode; self.planned = planned; self.fitsNow = fitsNow; self.measuredTokensPerSecond = measuredTokensPerSecond
             self.earlierMeasuredTokensPerSecond = earlierMeasuredTokensPerSecond
             self.predictedTokensPerSecond = predictedTokensPerSecond; self.concurrentRequests = concurrentRequests
-            self.publicTraffic = publicTraffic
+            self.publicTraffic = publicTraffic; self.contextTokens = contextTokens
         }
     }
 
@@ -636,6 +665,18 @@ public struct ClusterOnboardingModeAdvice: Codable, Sendable, Equatable {
         if open.count == 1 {
             return .init(mode: open[0].mode, reason: publicOnly ? "the only one Darkbloom serves publicly on these Macs"
                 : "the only one that fits these Macs now")
+        }
+        // Context before speed (journey 3's second delta: right after an update the planner ranked Gemma 4's pipeline
+        // faster, and Enter took it: 65,536 tokens against tensor parallel's 262,144). Where every mode left says the
+        // context it serves and they differ, the modes that serve the most stay; one that serves less is recommended
+        // only when none of those fits now (above).
+        let contexts = open.compactMap(\.contextTokens)
+        if contexts.count == open.count, let longest = contexts.max(), Set(contexts).count > 1 {
+            let whole = open.filter { $0.contextTokens == longest }
+            if whole.count == 1 {
+                return .init(mode: whole[0].mode, reason: Self.longestContextWords(longest, others: contexts.filter { $0 != longest }))
+            }
+            open = whole
         }
         func lanes(_ option: Option) -> Int? { option.concurrentRequests.map { max(1, $0) } }
         func atOnce(_ option: Option) -> String {
@@ -699,8 +740,20 @@ public struct ClusterOnboardingModeAdvice: Codable, Sendable, Equatable {
         return .init(mode: nil, reason: "no speed is measured or predicted for these Macs yet")
     }
 
+    /// Why the mode that serves the most context is recommended: "the longest context here (262,144 tokens; the other
+    /// serves 65,536)".
+    static func longestContextWords(_ longest: Int, others: [Int]) -> String {
+        let rest = others.count == 1 ? "the other serves " + ClusterOnboardingMode.grouped(others[0])
+            : "the others serve up to " + ClusterOnboardingMode.grouped(others.max() ?? 0)
+        return longestContextLead + " here (\(ClusterOnboardingMode.grouped(longest)) tokens; \(rest))"
+    }
+
+    /// How `longestContextWords` begins, which `brief` reads.
+    static let longestContextLead = "the longest context"
+
     /// The reason in a few words, for a narrow window (`line`): "faster, up to 8 at once", "the only one that fits".
     var brief: String {
+        if reason.hasPrefix(Self.longestContextLead) { return "longest context" }
         let atOnce = reason.range(of: #"up to (\d+) requests at once"#, options: .regularExpression)
             .map { String(reason[$0]).replacingOccurrences(of: " requests", with: "") }
         if reason.hasPrefix("faster here") { return atOnce.map { "faster, \($0)" } ?? "faster here" }
@@ -1798,7 +1851,7 @@ public enum ClusterOnboardingDriver {
         // (2026-11-04, the owner: "much clearer of what is what"). A cable on a port that is not set up is said below.
         let answered = resume.unsetCablePort == nil ? otherMacAnswers(operations, console) : nil
         let peer = role == .leader ? resume.peerName : resume.leaderName ?? resume.peerName
-        console.banner(title(role), pairLine(role, named: named, other: peer, cableReady: answered == true))
+        console.banner(title(role), pairLine(role, named: named, other: peer, cableReady: answered == true, silent: answered == false))
         switch role {
         case .member: return member(resume, operations, console, request: request, answered: answered)
         case .leader: return leader(resume, operations, console, justPaired: false, request: request, answered: answered)
@@ -1806,9 +1859,12 @@ public enum ClusterOnboardingDriver {
     }
 
     /// The opening of a paired Mac: "This Mac (Studio A) leads · the other Mac (Apple M3 Ultra, 256 GB) follows · cable
-    /// ready" (the other Mac by the name pairing showed; no computer name crosses the cable).
-    static func pairLine(_ role: ClusterOnboardingRole, named: String?, other: String?, cableReady: Bool) -> String {
+    /// ready" (the other Mac by the name pairing showed; no computer name crosses the cable). `silent`: the other Mac
+    /// didn't answer, so no roles are named (journey 3, D3: after the leading Mac left, the Mac left behind said it led
+    /// and the other Mac followed).
+    static func pairLine(_ role: ClusterOnboardingRole, named: String?, other: String?, cableReady: Bool, silent: Bool = false) -> String {
         let peer = ClusterOnboardingMacName.other(named: other)
+        if silent { return thisMac(named: named) + " \u{00B7} " + peer + " isn't answering" }
         let parts = role == .leader ? [thisMac(named: named) + " leads", peer + " follows"] : [thisMac(named: named) + " follows", peer + " leads"]
         return (parts + (cableReady ? ["cable ready"] : [])).joined(separator: " \u{00B7} ")
     }
@@ -1848,15 +1904,16 @@ public enum ClusterOnboardingDriver {
     public static func modeQuestion(model: String) -> String { "How should both Macs split \(model)?" }
     /// A mode's line in `room` columns (nil: the whole line). Too wide, it loses the least important words first, as
     /// the recommendation's line does (R6-2, M5 Ultra pair: "… the other Mac 44 layers) · ser…" at 120 columns): the
-    /// split, then what each Mac does, then the long words; the mode's name and how many requests it serves at once
-    /// stay, on more than one row when one row cannot hold them.
+    /// split, then what each Mac does, then the long words; the mode's name, how many requests it serves at once and
+    /// the context it serves stay, on more than one row when one row cannot hold them.
     /// No speed figure: the mode question recommends from the speeds but never quotes them (owner, 2026-11-05).
     public static func modeLine(_ mode: ClusterOnboardingMode, recommended: Bool = false, room: Int? = nil) -> String {
-        let requests = mode.requestsWords.map { " · " + $0 } ?? ""
+        // The context each mode serves stays with its requests: what a long request needs to know (D8).
+        let requests = [mode.requestsWords, mode.contextWords].compactMap { $0 }.map { " · " + $0 }.joined()
         let marker = recommended ? " · " + ClusterOnboardingModeAdvice.marker : ""
         let full = menuLine(mode.label, mode.what + (mode.split.map { " (\($0))" } ?? "") + requests + marker)
         guard let room else { return full }
-        let short = [mode.label, mode.shortRequestsWords, recommended ? "recommended" : nil].compactMap { $0 }
+        let short = [mode.label, mode.shortRequestsWords, mode.shortContextWords, recommended ? "recommended" : nil].compactMap { $0 }
         let tail = requests + marker, shortTail = requests + (recommended ? " · recommended" : "")
         let lines = [
             full,

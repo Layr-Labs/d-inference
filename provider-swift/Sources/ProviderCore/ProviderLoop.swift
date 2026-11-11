@@ -573,6 +573,12 @@ public actor ProviderLoop {
     /// unchanged TOML while a manual foreground override was serving.
     public internal(set) var hasPersistedModelSwitch = false
     internal var acceptedLifecycleRequests: Set<String> = []
+    /// When the coordinator cancelled an accepted request that has not
+    /// finished yet. Its client is gone; see `coordinatorRequestsInFlight`.
+    internal var coordinatorCancelledAt: [String: ContinuousClock.Instant] = [:]
+    /// How long a lifecycle drain still counts an accepted request after its
+    /// coordinator cancelled it (`coordinatorRequestsInFlight`).
+    internal var orphanedRequestGrace: Duration = .seconds(30)
     /// Requests that released the work FIFO at a model-load wait and have not
     /// returned yet (`ProviderLoop+WorkFIFO.swift`).
     internal var releasedAdmissions: [String: ReleasedAdmission] = [:]
@@ -582,6 +588,8 @@ public actor ProviderLoop {
     /// (`ProviderLoop+WorkFIFO.swift`).
     internal var unreturnedCoordinatorAdmissions: [String: Int] = [:]
     internal var cancelsAwaitingAdmission: Set<String> = []
+    /// The reason of a coordinator cancel `handleCancellation` has not applied yet.
+    internal var coordinatorCancelReasons: [String: CoordinatorCancelReason] = [:]
     internal let localResponseTracker = LocalResponseTracker()
     internal var mtpStagingReservations = MTPStagingReservations()
     internal var mtpAdmissionDrains = MTPAdmissionDrains()
@@ -797,8 +805,11 @@ public actor ProviderLoop {
     /// here because the session control holds its serving host weakly.
     internal var clusterPairFollower: DistributedMemberLinkFollower?
     /// The pair slot whose admission opened, once its warmup canary passed:
-    /// the leader's local requests wait for it (`ProviderLoop+ClusterPairLocal`).
-    internal var clusterPairAdmissionOpenSlotID: UUID?
+    /// the leader's local requests wait for it (`ProviderLoop+ClusterPairLocal`),
+    /// and its API's gate opens and closes with it (`LocalPairGateResponder`).
+    internal var clusterPairAdmissionOpenSlotID: UUID? {
+        didSet { syncClusterPairGate() }
+    }
     /// The leader's local requests on its pair's lanes: waiting, or holding one.
     internal var clusterPairLocalLanes = ClusterPairLocalLanes(limits: .fromEnvironment())
 
@@ -844,6 +855,18 @@ public actor ProviderLoop {
     /// Suffix of the startup plan not yet completed by the driver. Exposed in
     /// the daemon state so status can distinguish warmup from request loading.
     internal var startupPreloadPendingModels: [String] = []
+    /// Selected models waiting to become resident again
+    /// (`ProviderLoop+SelectedModelRecovery`).
+    internal var selectedModelRecovery = SelectedModelRecovery()
+    /// Replaces the recovery's no-eviction load in tests; nil in production.
+    internal var selectedModelRecoveryLoadOverride: (@Sendable (String) async throws -> Void)?
+    /// The config file's `enabled_models` as last read by the policy refresh;
+    /// the running selection changes only at a start or a committed switch.
+    internal var savedEnabledModels: [String]
+    /// The `enabled_models` the last committed `darkbloom switch` saved and
+    /// applied; nil until one does. `status` compares the saved filter with
+    /// it, else with the start configuration's.
+    internal var enabledModelsAtLastSwitch: [String]?
 
     /// Per-loop persistence location for embedded/qualification hosts and tests
     /// (default: `LoadedModelsStore.path()`).
@@ -1008,6 +1031,7 @@ public actor ProviderLoop {
         let enabledModels = config.config.backend.enabledModels
         self.operatorModelFilter = enabledModels.isEmpty
             ? nil : Set(enabledModels).union(config.models.map(\.id))
+        self.savedEnabledModels = enabledModels
         self.autopilotInventoryModels = Dictionary(config.autopilotInventory.filter {
             $0.weightHash?.isEmpty == false && EngineV2SupportedModels.isSupported(model: $0)
                 && ModelRuntimeRequirements.isEligible(modelID: $0.id, available: config.runtimeCapabilities)

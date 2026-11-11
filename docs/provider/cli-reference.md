@@ -1091,12 +1091,16 @@ cache precedence is specified in [model cache configuration](../reference/config
 `Local.servingNow`, `provider-swift/Sources/darkbloom/LocalCommand.swift`). How
 this Mac serves now is read from the running provider (`DaemonState`), else the
 loaded LaunchAgent's job (launchd starts it again after a crash), else a live
-`local.json` (`start --local --here` in another terminal):
+`local.json` (`start --local --here` in another terminal). With none of them the
+Mac is stopped, and it is Darkbloom's when what `start` serves again is the
+network or Both: the saved `[local] mode`, else the installed job (`stop`
+unloads it and keeps its plist):
 
 | This Mac | `darkbloom local` |
 |---|---|
-| Serves nothing | Starts Only me in the background as `darkbloom start --local` does (terms notice, picker, drain, summary; saves `[local] mode = "local"`), waits for its API as `start --local --opencode` does (30 s plus `[backend] startup_preload_timeout_secs`), then prints the address and key |
+| Serves nothing (no Darkbloom choice saved or installed; a stopped Only me included) | Starts Only me in the background as `darkbloom start --local` does (terms notice, picker, drain, summary; saves `[local] mode = "local"`), waits for its API as `start --local --opencode` does (30 s plus `[backend] startup_preload_timeout_secs`), then prints the address and key |
 | Serves Darkbloom (network or Both) | Prints the address and key, or, with no local API, ``This Mac serves the Darkbloom network, with no local API.`` and `` `darkbloom start --local-endpoint --no-me-first` adds one beside Darkbloom.``; then, only in a terminal (stdin and stdout), asks `Switch this Mac to local only (stops serving Darkbloom)? [y/N]`. Only `y` or `yes` switches (Only me, as above, with the job's models; Darkbloom's accepted requests drain first); Enter, any other answer or the end of input keeps Darkbloom serving. Without a terminal it never asks or switches (exit 1 with no local API) |
+| Is stopped, saved as Darkbloom (network or Both) | ``Darkbloom is stopped on this Mac; `darkbloom start` serves it again.`` on standard error. Without a terminal that is all (exit 1): the saved choice and the job stay as they are. In a terminal it then asks `Switch this Mac to local only instead (Darkbloom stays stopped)? [y/N]`; only `y` or `yes` starts Only me as above, with the job's models |
 | Serves Only me | Prints the address and key |
 | Is in a two-Mac cluster | Prints what it always did, then ``This Mac is in a two-Mac cluster: `darkbloom cluster local` serves the pair on its local API only.`` (not when the pair already serves locally only); never starts, switches or stops anything |
 

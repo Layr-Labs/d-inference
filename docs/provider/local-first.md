@@ -70,7 +70,7 @@ now asks nothing: it says which commands to use and serves as a plain start.
 
 `darkbloom local` serves only you, and never stops Darkbloom by surprise:
 
-- **Where nothing serves,** it starts **Only me** in the background, as
+- **Where nothing serves** (no Darkbloom choice saved), it starts **Only me** in the background, as
   `darkbloom start --local` does (the model list in a terminal; without one,
   the models you last chose; `--model <id>` names them), then prints the address
   and the key.
@@ -84,6 +84,11 @@ now asks nothing: it says which commands to use and serves as a plain start.
 
   Enter keeps Darkbloom serving. `y` switches to **Only me** with the models
   Darkbloom served, and saves it. Without a terminal it never switches.
+- **Where Darkbloom is stopped** (`darkbloom stop` on a Mac saved as **Both** or
+  **Darkbloom network**), it says ``Darkbloom is stopped on this Mac; `darkbloom
+  start` serves it again.`` and, only in a terminal, asks `Switch this Mac to
+  local only instead (Darkbloom stays stopped)? [y/N]`. Without a terminal it
+  changes nothing and ends with an error status.
 - **Where Only me serves,** it prints the address and the key.
 - **On a Mac in a pair,** it never touches the pair: it prints what it always
   did and says that `darkbloom cluster local` serves the pair on its local API

@@ -11,5 +11,10 @@
   and `--local-endpoint` work as before. `--choose` asks nothing and says which commands to use.
 - `darkbloom local` starts Only me in the background where nothing serves, then prints the address and key. Where
   Darkbloom serves, it prints them (or that there is no local API) and, only in a terminal, asks `Switch this Mac
-  to local only (stops serving Darkbloom)? [y/N]`; without a terminal it never switches. On a Mac in a two-Mac
-  cluster it points to `darkbloom cluster local`. `--model <id>` names Only me's models; `--json` only reads.
+  to local only (stops serving Darkbloom)? [y/N]`; without a terminal it never switches. Where Darkbloom is stopped
+  but saved (network or Both), it says so and asks the same in a terminal only; without one it changes nothing
+  (exit 1). On a Mac in a two-Mac cluster it points to `darkbloom cluster local`. `--model <id>` names Only me's
+  models; `--json` only reads.
+- A plain `start` no longer reaches the Autopilot question, which only a Darkbloom network start asks: use
+  `--network` or `darkbloom autopilot enable`. The idle-memory question is skipped when standard output isn't a
+  terminal, as it already was for standard input.

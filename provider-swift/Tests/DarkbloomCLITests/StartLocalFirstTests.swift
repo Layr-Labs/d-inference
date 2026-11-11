@@ -668,7 +668,7 @@ struct StartLocalFirstTests {
     @Test("no line of the default, the summary, status or local names a speed")
     func noSpeedAnywhere() throws {
         var lines = Local.networkOnlyLines + Local.notRunningHint
-            + [Local.switchQuestion, Local.pairedLine, Start.chooseNote,
+            + [Local.switchQuestion, Local.stoppedLine, Local.stoppedSwitchQuestion, Local.pairedLine, Start.chooseNote,
                LocalAPIPort.note(chosen: 8001, start: 8000), LocalAPIPort.note(chosen: 8003, start: 8001),
                LocalAPIPort.note(named: 8007, saved: nil), LocalAPIPort.note(named: 8007, saved: 8005),
                LocalAPIPort.note(kept: 8000), LocalAPIPort.noneFree(from: 8001),

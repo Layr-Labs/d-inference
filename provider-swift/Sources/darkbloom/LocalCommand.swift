@@ -42,24 +42,35 @@ struct Local: AsyncParsableCommand {
             guard shown else { throw ExitCode.failure }
         case .startOnlyMe:
             try await startOnlyMe(models: model, pair: pair)
-        case .offerSwitchWhileStopped:
-            try await startOnlyMe(models: model, pair: pair)
         case .offerSwitch:
             let shown = show(pair: pair, darkbloomServes: true)
-            let prompt = Self.promptForTesting ?? .live
-            guard Self.asksToSwitch(terminal: prompt.isTerminal, readInput: prompt.readLine,
-                                    emit: { print($0, terminator: ""); fflush(stdout) })
-            else {
+            guard Self.asksToSwitch(Self.switchQuestion) else {
                 guard shown else { throw ExitCode.failure }
                 return
             }
-            let models = Self.switchModels(named: model, installed: LaunchAgent.installedServingJob()?.models)
-            try await startOnlyMe(models: models, pair: pair)
+            try await startOnlyMe(models: modelsToKeep, pair: pair)
+        case .offerSwitchWhileStopped:
+            // Without a terminal this line is all it says: Darkbloom stays this Mac's choice (exit 1, no local API).
+            printError(Self.stoppedLine)
+            guard Self.asksToSwitch(Self.stoppedSwitchQuestion) else { throw ExitCode.failure }
+            try await startOnlyMe(models: modelsToKeep, pair: pair)
         }
     }
 
-    /// Tests stand in for this Mac: how it serves now, and starting Only me, so a test never reads this Mac's provider
-    /// or starts a service.
+    /// The models a switch to local only serves: those named, else the ones Darkbloom's installed job serves.
+    private var modelsToKeep: [String] {
+        Self.switchModels(named: model, installed: LaunchAgent.installedServingJob()?.models)
+    }
+
+    /// `asksToSwitch` in this terminal (`promptForTesting` in tests), printing the question on standard output.
+    private static func asksToSwitch(_ question: String) -> Bool {
+        let prompt = promptForTesting ?? .live
+        return asksToSwitch(question, terminal: prompt.isTerminal, readInput: prompt.readLine,
+                            emit: { print($0, terminator: ""); fflush(stdout) })
+    }
+
+    /// Tests stand in for this Mac: how it serves now, starting Only me, and the terminal, so a test never reads this
+    /// Mac's provider, starts a service or waits on input.
     @TaskLocal static var servingNowForTesting: (@Sendable () -> ServingNow)?
     @TaskLocal static var startOnlyMeForTesting: (@Sendable (_ models: [String]) async throws -> Void)?
     @TaskLocal static var promptForTesting: Prompt?
@@ -86,7 +97,7 @@ struct Local: AsyncParsableCommand {
     /// for its API as `start --local --opencode` does: it listens once its models are loaded.
     static func startOnlyMeAndWait(models: [String]) async throws {
         var start = try Start.parse(onlyMeStartArguments(models: models))
-        try await start.run()
+        try await DarkbloomCommandLook.runNested { try await start.run() }
         let preload = (try? loadRuntimeConfiguration(configPath: nil).config.backend.startupPreloadTimeoutSecs) ?? 0
         let seconds = Start.toolWaitSeconds + Int(clamping: preload)
         _ = await DarkbloomCommandLook.forCommand().working("Waiting for the local API") {
@@ -230,21 +241,24 @@ struct Local: AsyncParsableCommand {
         case onlyMe
         /// The Darkbloom network, with or without a local API beside it.
         case darkbloom
-        /// Darkbloom is stopped here, and saved to serve again.
+        /// Nothing runs, but what `start` serves again is Darkbloom (network or Both): `stop` keeps the choice.
         case darkbloomStopped
     }
 
     /// The running provider decides; between two runs of its job (a crash, a restart) the loaded job does, since launchd
-    /// starts it again; else a local API that answers is Only me in a terminal.
+    /// starts it again; else a local API that answers is Only me in a terminal. With none of them the Mac is stopped,
+    /// and it is Darkbloom's when what `start` serves again is network or Both: the saved choice, else the installed job
+    /// (`stop` unloads it and keeps its plist). Only a Mac with no such choice is one where nothing serves.
     static func servingNow(running: DaemonState?, alive: (Int32) -> Bool, installedJob: LocalSettings.Mode?,
                            jobLoaded: Bool, savedMode: LocalSettings.Mode?, liveLocalAPI: Bool) -> ServingNow {
-        let loadedJob = jobLoaded ? installedJob : nil
         if let running, alive(running.pid) { return running.servesOnlyItsOwner ? .onlyMe : .darkbloom }
-        if let loadedJob { return loadedJob == .local ? .onlyMe : .darkbloom }
-        return liveLocalAPI ? .onlyMe : .nothing
+        if jobLoaded, let installedJob { return installedJob == .local ? .onlyMe : .darkbloom }
+        if liveLocalAPI { return .onlyMe }
+        guard let stopped = savedMode ?? installedJob, stopped != .local else { return .nothing }
+        return .darkbloomStopped
     }
 
-    /// `servingNow` on this Mac: its provider's state, its loaded LaunchAgent and `local.json`.
+    /// `servingNow` on this Mac: its provider's state, its LaunchAgent (loaded or not), `[local] mode` and `local.json`.
     static func servingNow() -> ServingNow {
         servingNow(running: DaemonStateFile.read(), alive: { daemonProcessAlive(pid: $0) },
                    installedJob: LaunchAgent.installedServingJob()?.mode, jobLoaded: LaunchAgent.isLoaded(),
@@ -262,31 +276,34 @@ struct Local: AsyncParsableCommand {
         case offerSwitch
         /// A paired Mac: show what runs, and name `cluster local`; the pair is never touched.
         case pointToClusterLocal
-        /// Darkbloom is stopped here: say so, then, only in a terminal, ask before switching to local only.
+        /// Darkbloom is stopped here: say so, then, only in a terminal, ask before switching to local only; without one,
+        /// exit 1.
         case offerSwitchWhileStopped
     }
 
     /// `--json` only reads. A paired Mac is the pair's (already local only: shown as it is). On a Mac alone: start Only
-    /// me where nothing serves, offer the switch where Darkbloom serves, and show Only me as it runs. `serving` is read
-    /// only on a Mac alone without `--json`.
+    /// me where nothing serves, offer the switch where Darkbloom serves or is stopped, and show Only me as it runs.
+    /// `serving` is read only on a Mac alone without `--json`.
     static func plan(json: Bool, paired: Bool, pairServesLocalOnly: Bool,
                      serving: @autoclosure () -> ServingNow) -> Plan {
         if json { return .show }
         if paired { return pairServesLocalOnly ? .show : .pointToClusterLocal }
         switch serving() {
-        case .nothing, .darkbloomStopped: return .startOnlyMe
+        case .nothing: return .startOnlyMe
         case .onlyMe: return .show
         case .darkbloom: return .offerSwitch
+        case .darkbloomStopped: return .offerSwitchWhileStopped
         }
     }
 
     static let switchQuestion = "Switch this Mac to local only (stops serving Darkbloom)? [y/N] "
 
-    /// Asks `switchQuestion` in a terminal: only y or yes switches. Without a terminal nothing is asked, and Enter, any
-    /// other answer or the end of input keeps Darkbloom serving.
-    static func asksToSwitch(terminal: Bool, readInput: () -> String?, emit: (String) -> Void) -> Bool {
+    /// Asks `question` in a terminal: only y or yes switches. Without a terminal nothing is asked, and Enter, any other
+    /// answer or the end of input keeps Darkbloom as this Mac's choice.
+    static func asksToSwitch(_ question: String = switchQuestion, terminal: Bool, readInput: () -> String?,
+                             emit: (String) -> Void) -> Bool {
         guard terminal else { return false }
-        emit(switchQuestion)
+        emit(question)
         guard let answer = readInput() else {
             emit("\n")
             return false
@@ -294,8 +311,12 @@ struct Local: AsyncParsableCommand {
         return ["y", "yes"].contains(answer.trimmingCharacters(in: .whitespaces).lowercased())
     }
 
-    static let stoppedLine = ""
-    static let stoppedSwitchQuestion = ""
+    /// Where Darkbloom is stopped (`darkbloomStopped`); without a terminal, all `local` says.
+    static var stoppedLine: String {
+        "Darkbloom is stopped on this Mac; `\(BuildEnvironment.current.cliName) start` serves it again."
+    }
+
+    static let stoppedSwitchQuestion = "Switch this Mac to local only instead (Darkbloom stays stopped)? [y/N] "
 
     static var pairedLine: String {
         "This Mac is in a two-Mac cluster: `\(BuildEnvironment.current.cliName) cluster local` serves the pair on its "

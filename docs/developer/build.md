@@ -1,6 +1,6 @@
 # Build The Provider And Landing
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-10
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. Backend, sidecar, console and admin builds
@@ -380,17 +380,16 @@ again; the next failure opens a new one.
 
 A full run takes about 13 minutes and 110 macOS job-minutes: about 31 for the
 build jobs, Cluster Release Build Checks and Cluster GPU Tests, and about 79
-for the 9 blocking test shards. Every macOS job but Cluster GPU Tests is
-routed, and falls back to Blacksmith when the plane grants no Mac.
+for the 9 blocking test shards. Every macOS job is routed, and falls back to
+Blacksmith when the plane grants no Mac.
 
 ### Build Once
 
 Each lane builds its debug test products once, on a large runner, and its
 test jobs run them with `swift test --skip-build`. No test job compiles the
-provider or the cluster packages. Every job below but `test-cluster-gpu` reads
-its runner from the route ([CI Runner Routing](#ci-runner-routing)). Its
-fallback is `blacksmith-12vcpu-macos-27`. While job sizes are off, every job
-asks without a size ([Job sizes](#job-sizes)).
+provider or the cluster packages. Every job below reads its runner from the
+route ([CI Runner Routing](#ci-runner-routing)). While job sizes are off,
+every job asks without a size ([Job sizes](#job-sizes)).
 
 | Job | Runner | Needs | Does |
 |---|---|---|---|
@@ -399,7 +398,7 @@ asks without a size ([Job sizes](#job-sizes)).
 | `cluster-release-checks` (Cluster Release Build Checks) | routed | - | Compiles the release build of the worker capability and prefill schedule checks, and runs them; then the worker package's request lifecycle tests, in a debug build of their own |
 | `test-provider`, shards 1 and 2 | routed | `build-provider` | The provider selections, Prompt Parity, the native gates, the audit and coverage |
 | `test-cluster`, shards 1 to 5 | routed | `build-cluster` | The blocking cluster selections |
-| `test-cluster-gpu`, shards 1 to 3 | `blacksmith-12vcpu-macos-27`, not routed | `build-cluster` | The non-blocking cluster GPU selections |
+| `test-cluster-gpu`, shards 1 to 3 | routed, a lane per shard | `build-cluster` | The non-blocking cluster GPU selections |
 | `test-cluster-focused`, shards 1 and 2 | routed | - | The focused runner scripts and the pairing, diagnostics and placement flow runners (shard 1); the stage metadata, provisioning, onboarding and console runners (shard 2) |
 
 The cluster lane builds in a job of its own, so the cluster tests start as soon
@@ -492,10 +491,11 @@ shard the lane its matrix entry names, `matrix.lane`.
 
 | Workflow | Routed jobs | Fallback |
 |---|---|---|
-| `provider-tests.yml` (lanes requested by `provider-plan.yml`) | `test-provider` (lanes `test-provider-1` and `test-provider-2`, one per shard), `test-cluster` (lanes `test-cluster-1` for shard 1, `test-cluster-2` for shards 2 and 3, and `test-cluster-3` for shards 4 and 5), `test-cluster-focused` (one lane, `test-cluster-focused`, requested for both shards), `build-cluster`, `build-provider`, `cluster-release-checks` | `blacksmith-12vcpu-macos-27` |
+| `provider-tests.yml` (lanes requested by `provider-plan.yml`) | `test-provider` (lanes `test-provider-1` and `test-provider-2`, one per shard), `test-cluster` (lanes `test-cluster-1` for shard 1, `test-cluster-2` for shards 2 and 3, and `test-cluster-3` for shards 4 and 5), `test-cluster-focused` (one lane, `test-cluster-focused`, requested for both shards), `build-cluster`, `build-provider`, `cluster-release-checks`, `test-cluster-gpu` (lanes `test-cluster-gpu-1`, `test-cluster-gpu-2` and `test-cluster-gpu-3`, one per shard) | `blacksmith-12vcpu-macos-27` |
 | `ci-master.yml` (lanes requested by `provider-plan.yml`) | `release-integrity`, `docs` | `blacksmith-4vcpu-ubuntu-2404` |
 | `docs-impact.yml` | `commit-signatures`, `docs-impact` | `blacksmith-4vcpu-ubuntu-2404` |
 | `landing.yml`, `desktop.yml`, `nightly-linear-package.yml` | `check`, `frontend`, `test` | `blacksmith-4vcpu-ubuntu-2404` |
+| `desktop.yml` | `desktop-package`, manual dispatch only | `blacksmith-12vcpu-macos-27` |
 | `provider-release-cache.yml` | `warm`, pull requests only | `blacksmith-12vcpu-macos-27` |
 
 `.github/workflows/darkbloom-watchdog.yml` is darkbloom-sandbox's GitHub-side
@@ -561,19 +561,20 @@ keep their fallback, so a push saves caches on Darkbloom only from an admitted
 branch and only in routed lanes ([CI Caching](#ci-caching)).
 Release, signing, publication, model registration, review automation and
 `master` or dispatched cache warming keep literal Blacksmith labels. In CI,
-every macOS job but Cluster GPU Tests reads its lane of the plan's one route
-request (the plane routes a run attempt once); the plan's own bookkeeping (the
-tree lookup, the component choice), the CI plan checks and the `Provider Tests`
-gate run on `ubuntu-24.04`. Cluster GPU Tests run on `blacksmith-12vcpu-macos-27` and are
-not routed ([Job sizes](#job-sizes)). A lane without a size gets the
+every macOS job reads its lane of the plan's one route request (the plane
+routes a run attempt once); the plan's own bookkeeping (the tree lookup, the
+component choice), the CI plan checks and the `Provider Tests` gate run on
+`ubuntu-24.04`. A lane without a size gets the
 approval's pinned image size for its profile (one for macOS, one for Linux).
 The macOS one measured 12 vCPU / 32 GiB on 2026-11-05 (run 42105290034,
 attempt 1), the class of the Blacksmith 12-vCPU fallback; it is not a fixed
 default. While sizes are off, the build jobs and Cluster Release Build Checks
 get this size too ([Job sizes](#job-sizes)).
 
-Jobs on Darkbloom Sandboxes use GitHub's Actions cache, not Blacksmith's
-colocated cache, so their first runs start without cached build products.
+A job on a Darkbloom Sandbox uses the plane's Darkbloom cache, which keeps
+each host's own entries, when the plane enables it for the job. Without it, the
+job uses no Actions cache at all ([CI Caching](#ci-caching)). Either way, its
+first runs on a host start without cached build products.
 Darkbloom Linux sandboxes are ARM64; the Blacksmith Linux fallback is x64. The
 decision is fixed for the run: **Re-run failed jobs** reuses it, so turn routing
 off and use **Re-run all jobs** to move a run back to Blacksmith. See the
@@ -590,7 +591,7 @@ repository variable `DARKBLOOM_JOB_SHAPES` is exactly `on`. While it is off:
   without sizes.
 - Every lane asks without a size and gets the approval's pinned macOS size
   ([CI Runner Routing](#ci-runner-routing)): the 9 blocking test jobs, the
-  build jobs and Cluster Release Build Checks.
+  build jobs, Cluster Release Build Checks and the 3 GPU shards.
 - Risk: the build jobs need a large Mac. If the approval pins a smaller macOS
   size, they get that smaller size, and a cold build takes longer.
 - A lane marked `required` keeps its fallback without asking. It takes no
@@ -599,7 +600,8 @@ repository variable `DARKBLOOM_JOB_SHAPES` is exactly `on`. While it is off:
 
 The lane table in the `route` job of `provider-plan.yml` is the one place that
 names each job's lane and size. The lanes are in cap order: the critical-path
-test shards first, then the build jobs and Cluster Release Build Checks.
+test shards first, then the build jobs and Cluster Release Build Checks, then
+the GPU shards.
 
 Each size is the smallest signed size (4x16, 4x24, 8x16, 12x32) that holds the
 job's used memory times 1.25, on which the job takes at most 5% longer than on
@@ -625,12 +627,22 @@ and memory pressure stayed normal.
 | `build-cluster` | 1 | 8x16 | 10.91; a cold build takes 5 to 10% longer on 8 vCPUs | asks without a size |
 | `build-provider` | 1 | 12x32 | 17.50; 8x24 is not signed, and a cold build takes 20% longer on 8 vCPUs | asks without a size |
 | `cluster-release-checks` | 1 | 8x16 | 9.65 with a reused build; a cold release compile (run 42041608780: 11.33 GiB, 11.4 busy vCPUs at p95 of 12) takes 26% longer on 4 vCPUs and 5.5% on 8 | asks without a size |
+| `test-cluster-gpu-1` (GPU shard 1) | 1 | 4x24 | 14.33 in run 42737118357, on Blacksmith with 48 GiB; at most 2.6 busy vCPUs | asks without a size |
+| `test-cluster-gpu-2` (GPU shard 2) | 1 | 4x24 | 17.42 in run 42924487818, on Darkbloom with 32 GiB, during `glm53-depth-invariance-widths` (one process of 10.23); 40.99 before the bench's cache bound (run 42917194201) | asks without a size |
+| `test-cluster-gpu-3` (GPU shard 3) | 1 | 4x24 | 14.72 in run 42737118357, on Blacksmith with 48 GiB | asks without a size |
 
-A run that tests every component asks for 12 macOS jobs, while sizes are on
-or off. The three Cluster GPU Tests shards are not routed: they run on `blacksmith-12vcpu-macos-27` (12 vCPU, 48 GiB). Shard 2 uses
-41.99 GiB, which no signed size holds, and one lane carries one size for every
-shard (shard 1 used 17.40 GiB when it ran the whole real-geometry rows check;
-shards 1 and 3 each run half of it now).
+A run that tests every component asks for 15 macOS jobs, while sizes are on
+or off. Each GPU shard has a lane of its own and falls back alone; shards 1
+and 3 each run half of the real-geometry rows check. GPU shard 2 used 40.99
+GiB in run 42917194201, 34.26 GiB of it in the one process of
+`paged-verify-bench`. That bench attends random K/V of 4 layers at 30,720
+tokens (0.5 GiB of KV), but MLX's freed-buffer cache kept every prompt chunk's
+attention temporaries: they grow with the history, so the cache reuses none
+of them, and its default limit is MLX's memory limit. The bench now bounds
+the cache as a ready Qwen tensor-parallel rank does (1 GiB,
+`QwenTensorParallelLaunch.freedBufferCacheBytes`). In run 42924487818 its
+process peaked at 3.75 GiB (2.78 GiB active, at most 1.05 GiB cached) and the
+shard at 17.42 GiB used.
 
 A lane sent with a size uses a grant only when the grant's labels are its
 profile's labels with the last one qualified by the size, such as
@@ -640,8 +652,12 @@ fallback. The plane names its reason, for example `shape_not_signed` (no signed
 image of that size), `unavailable` (the plane cannot read its image catalog),
 `unsupported_runner_class` (the size has no price), `image_not_available` (the
 image is not staged) or `lane_not_enabled` (the approval does not name the
-lane). For each lane, the route job's log and step summary show the size
-asked, the runner, and the decision with its reason.
+lane). A new lane routes only after the operator adds it to the approval's
+`lanes`; until then it keeps its fallback. On 2026-11-10 the approval named
+`test-cluster-gpu-1` and `test-cluster-gpu-2` but not `test-cluster-gpu-3`
+(run 42924487818).
+For each lane, the route job's log and step summary show the size asked, the
+runner, and the decision with its reason.
 
 ## CI Caching
 
@@ -658,6 +674,29 @@ restore it, and it evicted its base branch's entries from the repository's
 then `master`'s. Blacksmith runners keep their own colocated cache, so an entry
 saved there never reaches a Darkbloom Sandbox, and the reverse: a push warms
 the caches of the runners it ran on.
+
+Every cache step is skipped on a Darkbloom Sandbox that the plane gave no
+Darkbloom cache. When the plane enables the cache, the guest sets
+`DARKBLOOM_CACHE_URL` (the cache server on the guest's loopback) and its
+preload sends the job's `actions/cache` calls there. Without it, the guest
+sets nothing, and `actions/cache` would read and write GitHub's own Actions
+cache through the gateway: a `master` push on 2026-11-05 (job 127018716621)
+saved `.git`, a 1.69 GiB Swift build, the SwiftPM repositories and a Metal
+library to GitHub's `refs/heads/master` scope from a Darkbloom host. So the
+first step of every routed job that uses a cache, `Choose this job's Actions
+cache`, sets `CI_ACTIONS_CACHE=off` when the runner's name starts with
+`darkbloom-` (the plane names each runner `darkbloom-<id>`) and
+`DARKBLOOM_CACHE_URL` is empty. Every `actions/cache`, `actions/cache/restore`
+and `actions/cache/save` step starts its condition with
+`env.CI_ACTIONS_CACHE != 'off'`, and `actions/setup-node` gets `cache: ''`.
+Blacksmith and GitHub-hosted runners never set the flag and keep their caches;
+so do the release workflows, which run only on Blacksmith and do not run the
+step. The routed jobs are those of `provider-tests.yml`, Release Integrity and
+Docs Lint in `ci-master.yml`, the pull-request warm of
+`provider-release-cache.yml`, and the `desktop.yml` and `landing.yml` checks,
+with the composite actions `provider-ci-build` and `provider-release-build`;
+`scripts/test-provider-ci-workflow.py` checks that every cache step anywhere
+under `.github` is gated and that each routed job sets the flag first.
 
 The fixture caches hold downloads pinned by SHA-256, so their keys hash the
 pins, not the run or the branch. The scripts use a restored entry only if its
@@ -701,8 +740,13 @@ build per lane and UTC day; other runners key the build by commit.
 Every checkout uses the same five steps, after the fixed-path step in the jobs
 of the test products ([Build Once](#build-once)). The job computes the UTC day
 (`date -u +%F`) and restores `.git`. A step that cannot fail then deletes the
-restored `.git` unless `git rev-parse --verify HEAD` and
-`git fsck --connectivity-only` accept it. One ordinary `actions/checkout`
+restored `.git` if it could run anything at checkout: if it is not a directory,
+holds a symbolic link, holds any hook but git's `*.sample` files (in `.git` or
+in a submodule's `.git/modules` directory), or has a config that sets
+`core.fsmonitor` or `core.hooksPath` or includes another file. It reads these
+with `find` and `git config --file`, which run nothing, before any git command
+reads the `.git`. It then deletes the `.git` unless `git rev-parse --verify HEAD`
+and `git fsck --connectivity-only` accept it. One ordinary `actions/checkout`
 follows: it fetches only the objects `.git` lacks and reuses the submodule
 repositories under `.git/modules`, and its failure fails the job. No step uses
 `continue-on-error` (only the report-only upload of the resource samples
@@ -729,7 +773,7 @@ uses both settings.
 ```mermaid
 flowchart LR
   W[UTC day] --> R["Restore .git<br/>(today, else newest)"]
-  R --> V{"git fsck<br/>accepts .git?"}
+  R --> V{"no hook, no hook or monitor config,<br/>and git fsck accepts .git?"}
   V -- no --> D[Delete .git] --> K
   V -- yes --> K[actions/checkout]
   K --> G{"master or dev push,<br/>no exact hit?"}

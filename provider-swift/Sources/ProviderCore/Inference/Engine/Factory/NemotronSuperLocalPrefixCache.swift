@@ -74,12 +74,12 @@ enum NemotronSuperLocalPrefixCache {
         return routingIdentity
     }
 
-    /// The precision a durable store encodes its checkpoints at: native, so a
-    /// restore continues a cold prefill bit for bit, unless the operator's
-    /// per-model setting for `modelID` or the process switch selects a
-    /// profile. Native is Super's per-model default, so the global setting
-    /// does not apply: `balanced` rows moved restored reasoning answers off
-    /// the cold ones on the pinned checkpoint.
+    /// The precision a durable store encodes its checkpoints at. Native is
+    /// Super's per-model default, so a restore continues a cold prefill bit
+    /// for bit (`balanced` rows moved restored reasoning answers off the cold
+    /// ones on the pinned checkpoint). The operator's per-model setting for
+    /// `modelID` or the process switch still selects a profile; the global
+    /// setting does not apply.
     static func checkpointPrecision(global: String, byModel: [String: String], modelID: String,
                                     environment: [String: String]) throws -> EngineV2KVQuantizationSelection {
         try EngineV2KVQuantizationPolicy.resolve(modelType: "nemotron_h_omni", global: global,

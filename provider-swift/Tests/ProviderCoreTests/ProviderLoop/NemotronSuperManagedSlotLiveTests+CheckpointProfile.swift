@@ -9,7 +9,8 @@ import Testing
 /// Gated qualification of the managed Super slot's checkpoint profile on the
 /// pinned checkpoint, one storage arm per process: the operator's
 /// `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` (`native` or `balanced`) selects
-/// it, and unset it is the slot's default (native). The loop's complete SSD store lives in an isolated ephemeral-key root
+/// it; unset, the arm is the slot's default (native). The loop's complete SSD
+/// store lives in an isolated ephemeral-key root
 /// (`DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL=1`, `DARKBLOOM_PREFIX_CACHE_TEST_ROOT`).
 /// For each prompt length (`DARKBLOOM_SUPER_CHECKPOINT_LENGTHS`) it records
 /// cold, donor, restored and repeated speculating runs (answer, TTFT, restored

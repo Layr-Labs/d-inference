@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-10
+> Last updated: 2026-11-11
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -2431,7 +2431,13 @@ swaps the module's live parameters for primitive-less placeholders while it
 traces, and a graph the engine builds meanwhile fails its next eval with
 `Attempting to eval an array without a primitive`
 (`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+NativeKVTypes.swift`,
-`probeNativeKVTypes`, `NativeKVTypeObservations`).
+`probeNativeKVTypes`, `NativeKVTypeObservations`). The observation is keyed by
+the target module's identity and layer kinds, so a target that construction wraps anew each time
+(Qwen 3.5 VLM text extraction, Nemotron Super adapters) is still probed on every
+rebuild; that is harmless today because their forwards have no stateful compiled
+trace. The invariant is that only one forward runs on a loaded target at a time:
+any later work that needs a forward on a served target (a warmup, probe or
+diagnostic) must go through its engine.
 
 Once preparation succeeds, network providers keep serving during a random delay
 from `UpdateJitter.delay`, using the existing

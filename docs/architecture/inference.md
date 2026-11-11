@@ -2194,6 +2194,22 @@ idleness and clears while request admission waits
 `DARKBLOOM_TTFT_SEGMENT_RETENTION=0` and `DARKBLOOM_TTFT_IDLE_CACHE_SWEEP=0`
 restore the previous behavior ([configuration](../reference/configuration.md)).
 
+Page placement keeps a busy pool's segmented decode at one pass per layer. The
+decode binds at most 17 segments per pass
+(`PagedSegmentDispatchPlan.maximumBindings`), so a layer whose partitions touch
+more segments needs more passes, issued one after another. A group's free pages
+form two tiers (`PagedKVFreePages`): pages that a prefix-cache alias still names
+wait in eviction order and are reused only when no other page is free; every
+other free page is placed by address. Each segment's usable pages split into
+runs of 16 pages, one 256-token partition. A request's layer continues in the
+run of its last page, then takes a free run in the same segment, then one in the
+segment with the most free runs, so requests that start together use different
+segments; only when no run is free does it take the lowest free page. Before, a
+retired request's pages went to the front of one shared free list and the next
+requests filled those holes across many segments, which took about one pass per
+partition once a busy engine had retired its first requests
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVFreePages.swift`).
+
 Resident publication uses a submission-unique `prefixCacheReceiptID`; the
 sampling engine ID can repeat after a seeded request completes. The bridge
 correlates checkpoint callbacks to that receipt so delayed donor callbacks

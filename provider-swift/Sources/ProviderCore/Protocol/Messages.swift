@@ -1748,7 +1748,13 @@ public enum CoordinatorMessage: Sendable, Equatable {
 
     public struct Cancel: Sendable, Equatable {
         public var requestId: String
-        public init(requestId: String) { self.requestId = requestId }
+        /// Why the coordinator cancelled, from its `reason` and `paid` keys; nil from a coordinator that sends no
+        /// reason (absent or empty `reason`).
+        public var reason: CoordinatorCancelReason?
+        public init(requestId: String, reason: CoordinatorCancelReason? = nil) {
+            self.requestId = requestId
+            self.reason = reason
+        }
     }
 
     public struct AttestationChallenge: Sendable, Equatable {
@@ -1895,6 +1901,7 @@ extension CoordinatorMessage: Codable {
         case priority
         case trustLevel = "trust_level"
         case status, reason, authorization
+        case paid
         case models
         // CapacityProbe
         case quoteId = "quote_id"
@@ -1944,6 +1951,10 @@ extension CoordinatorMessage: Codable {
         case .cancel(let c):
             try container.encode(TypeValue.cancel, forKey: .type)
             try container.encode(c.requestId, forKey: .requestId)
+            if let reason = c.reason {
+                try container.encode(reason.code, forKey: .reason)
+                try container.encode(reason.paid, forKey: .paid)
+            }
 
         case .attestationChallenge(let a):
             try container.encode(TypeValue.attestationChallenge, forKey: .type)
@@ -2061,8 +2072,13 @@ extension CoordinatorMessage: Codable {
             ))
 
         case .cancel:
+            // Diagnostic only: a mistyped reason or paid must never drop the
+            // cancel itself.
+            let reason = (try? container.decodeIfPresent(String.self, forKey: .reason)) ?? ""
+            let paid = (try? container.decodeIfPresent(Bool.self, forKey: .paid)) ?? false
             self = .cancel(Cancel(
-                requestId: try container.decode(String.self, forKey: .requestId)
+                requestId: try container.decode(String.self, forKey: .requestId),
+                reason: reason.isEmpty ? nil : CoordinatorCancelReason(code: reason, paid: paid)
             ))
 
         case .capacityProbe:

@@ -353,12 +353,7 @@ extension ProviderLoop {
                     finishPlannedReconnect()
 
                 case .disconnected:
-                    modelSwitchTask?.cancel()
-                    clearAutopilotControl()
-                    logger.warning(.coordinatorDisconnected)
-                    // Cancel all in-flight requests on disconnect -- the coordinator
-                    // will not route responses for a dead connection.
-                    await cancelAllInflight()
+                    await handleCoordinatorDisconnected()
 
                 case .inferenceRequest(
                     let requestId, let ciphertext, let senderPublicKey,
@@ -452,8 +447,8 @@ extension ProviderLoop {
                 case .codeAttestationResumeChallenge(let challenge):
                     handleCodeChallenge(challenge, send: send)
                     continue
-                case .cancel(let requestId):
-                    routeCoordinatorCancel(requestId)
+                case .cancel(let requestId, let reason):
+                    routeCoordinatorCancel(requestId, reason: reason)
                     continue
                 case .connected, .disconnected:
                     noteCoordinatorConnection(connected: event.isConnected)
@@ -575,7 +570,7 @@ extension ProviderLoop {
         let drained = await waitForInflightDrain(timeout: Self.shutdownDrainTimeout)
         if !drained {
             logger.warning("Timed out waiting for active inference to drain; cancelling remaining requests")
-            await cancelAllInflight()
+            await cancelAllInflight(cause: .stoppedOnThisMac)
         }
         await coordinator.shutdown()
         guard await drainNativeMiMoOwners() else {

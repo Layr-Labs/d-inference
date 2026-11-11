@@ -2847,23 +2847,43 @@ Output includes:
   this daemon finished since it started, with output tokens only. The count
   restarts at zero when the daemon restarts or a scheduled availability window
   opens. It includes free [self-route](./self-route.md) requests to your own
-  machine and requests that ended early: a coordinator cancel, a dropped
-  connection or an [add-on hold](../architecture/addon-hold.md)'s drain bound
-  stopped them after this Mac had sent output. When there are any, the next two
-  lines count them and say which are paid. The coordinator pays for such a
-  request's prompt and the output it sent when its requester left after the
-  answer had started streaming to it and this Mac reported the usage within
-  30 s
-  ([billing: settlement anomalies](https://github.com/Layr-Labs/darkbloom-platform/blob/3ee0560639291045b288801bd594154dd1d3230e/docs/architecture/billing.md#settlement-anomalies)),
-  and when an add-on hold stopped it. It pays nothing when another Mac answered
-  first, when this Mac's first output reached the coordinator after the
-  request's first-content deadline
-  ([`CancelDispatch`, `CancelDispatchForFirstContentTimeout`](https://github.com/Layr-Labs/darkbloom-platform/blob/3ee0560639291045b288801bd594154dd1d3230e/coordinator/internal/inference/cancellation/cancel_operations.go)),
-  or when this Mac lost its connection. The coordinator's `cancel` carries no
-  cause, so the daemon cannot tell which case a cancel was. A request whose
-  requester left just as its answer finished counts too, and is paid for the
-  whole answer. Paid jobs are on the console's Earnings page; the console's
-  machine card adds these counters up across restarts
+  machine and requests that ended early: something stopped them after this Mac
+  had sent output. When there are any, the next lines count them by what
+  stopped them and whether the coordinator pays (`Status.endedEarlyLines`):
+  - `paid for the work done: the requester left mid-answer`: a `cancel` whose
+    `reason` is `client_gone_post` and whose `paid` is true. The coordinator
+    holds the request's billing record for 30 s and settles the prompt and the
+    output this Mac sent
+    ([billing: settlement anomalies](https://github.com/Layr-Labs/darkbloom-platform/blob/3ee0560639291045b288801bd594154dd1d3230e/docs/architecture/billing.md#settlement-anomalies)).
+  - `paid for the work done: stopped on this Mac (a drain or an add-on hold)`:
+    this Mac stopped it itself (a forced drain or an
+    [add-on hold](../architecture/addon-hold.md)'s drain bound). Its usage goes
+    out on a live connection, and the coordinator settles it as a completion.
+  - `paid for the work done: stopped by the network`: a `cancel` with `paid`
+    and any other `reason`.
+  - `unpaid: another Mac answered first`: `reason` `hedge_loser`. The
+    coordinator sent the request to two Macs and kept the first to answer
+    ([`CancelDispatch`](https://github.com/Layr-Labs/darkbloom-platform/blob/3ee0560639291045b288801bd594154dd1d3230e/coordinator/internal/inference/cancellation/cancel_operations.go)).
+  - `unpaid: this Mac started too late`: `reason` `first_chunk_timeout` or
+    `late_content`. Its first output reached the coordinator after the
+    request's first-content deadline.
+  - `unpaid: stopped by the network for another reason`: any other `reason`
+    without `paid`.
+  - `unpaid: the connection to the network dropped`: this Mac's connection to
+    the coordinator dropped (`handleCoordinatorDisconnected`), on this Mac's
+    side or because the coordinator restarted.
+  - `stopped by the network: paid for the work done if the requester left
+    mid-answer, unpaid if another Mac answered first or this Mac started too
+    late`: a `cancel` without a `reason`, from a coordinator that sends none
+    ([protocol: `cancel`](../reference/protocol-messages.md#cancel)).
+
+  A daemon from before these counts prints one note for all of them instead. A
+  paid stop (a `cancel` with `paid`, or this Mac's own stop) that arrives after
+  the engine finished the answer on its own does not count: it is paid as
+  delivered (`EngineV2RequestUsageSignal.answerFinished`). An unpaid stop, or a
+  `cancel` without a `reason`, counts whenever it arrives. Paid jobs are on the
+  console's Earnings page; the console's machine card adds these counters up
+  across restarts
   ([coordinator/registry/heartbeat.go](https://github.com/Layr-Labs/darkbloom-platform/blob/10b8b4fabad60e20961b1b74a8672be41c5a0a2d/coordinator/registry/heartbeat.go),
   `cumulativeDelta`)
   (`provider-swift/Sources/darkbloom/StatusCommand+ServedRequests.swift`).

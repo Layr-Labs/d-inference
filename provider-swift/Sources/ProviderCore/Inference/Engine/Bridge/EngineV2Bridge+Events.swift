@@ -169,6 +169,7 @@ extension EngineV2Bridge {
                     cause: Self.httpTerminalCause(reason),
                     memoryRefused: Self.isPairMemoryAbort(reason)))
                 if reason == .stop || reason == .length {
+                    usageSignal?.recordAnswerFinished()
                     usageSignal?.record(matchedStopSequence: matchedStopSequence(
                         candidates: stopSequences,
                         generatedTokens: generatedTokens,

@@ -588,6 +588,8 @@ public actor ProviderLoop {
     /// (`ProviderLoop+WorkFIFO.swift`).
     internal var unreturnedCoordinatorAdmissions: [String: Int] = [:]
     internal var cancelsAwaitingAdmission: Set<String> = []
+    /// The reason of a coordinator cancel `handleCancellation` has not applied yet.
+    internal var coordinatorCancelReasons: [String: CoordinatorCancelReason] = [:]
     internal let localResponseTracker = LocalResponseTracker()
     internal var mtpStagingReservations = MTPStagingReservations()
     internal var mtpAdmissionDrains = MTPAdmissionDrains()

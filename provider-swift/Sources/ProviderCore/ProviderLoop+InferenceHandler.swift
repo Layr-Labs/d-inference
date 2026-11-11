@@ -1573,8 +1573,13 @@ extension ProviderLoop {
                 usageRecovered = true
             }
 
-            if cancelledMidStream {
-                providerStats.incrementCancellationsPartialComplete()
+            // A paid stop that landed after the engine finished the answer on
+            // its own is not counted: it is paid as delivered. An unpaid stop
+            // counts whenever it lands: a finished engine is not a delivered
+            // answer, and the coordinator pays nothing for it.
+            let endCause = token.endCause ?? .coordinatorCancel(nil)
+            if cancelledMidStream && !(v2UsageSignal.answerFinished && endCause.isPaid) {
+                providerStats.recordEndedEarly(endCause)
             }
 
             // Update stats

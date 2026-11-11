@@ -1381,8 +1381,18 @@ See the [integration gates](../design/glm53-flash-native.md).
 
 ### `cancel`
 
-Go `CancelMessage` · Swift `Cancel`. `request_id` (req). Sent on the strict
-control lane.
+Go `CancelMessage` · Swift `Cancel`. Sent on the strict control lane.
+
+| Field | Go | Swift | Presence | Notes |
+|---|---|---|---|---|
+| `request_id` | `string` | `String` | req | |
+| `reason` | `string` | `CoordinatorCancelReason.code` | opt | The coordinator's cancel cause: `client_gone_post`, `client_gone_pre`, `hedge_loser`, `first_chunk_timeout`, `late_content`, `stream_timeout`, `overflow`, `pair_ended`, `stray_chunk`. Absent from coordinators before the field; Swift reads absent, empty or not a string as no reason, and still applies the cancel |
+| `paid` | `bool` | `CoordinatorCancelReason.paid` | opt | True when the coordinator settles, and pays for, the partial `inference_complete` the provider sends after this cancel (today: a requester who left mid-answer, whose billing record waits 30 s). Read only with a `reason`; absent or not a boolean is false |
+
+The provider counts each request that ended early under its cause for
+`darkbloom status` (`EndedEarlyCounts`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/InferenceEarlyEnd.swift`).
+A provider from before these fields ignores them, as it ignores any unknown key.
 
 ### `attestation_challenge`
 

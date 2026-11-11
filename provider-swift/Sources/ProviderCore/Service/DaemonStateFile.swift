@@ -188,7 +188,9 @@ public struct DaemonState: Codable, Sendable, Equatable {
         /// `requestsServed`; `darkbloom status` says which of them the
         /// coordinator pays for. Nil on older runtimes.
         public var cancellationsPartialComplete: UInt64?
-        public init(requestsServed: UInt64 = 0, tokensGenerated: UInt64 = 0, usageGaps: UInt64 = 0, promptTokensProcessed: UInt64? = nil, cachedInputTokens: UInt64? = nil, reasoningTokens: UInt64? = nil, cancellationsPartialComplete: UInt64? = nil) {
+        /// The same requests by what stopped them. Nil on older runtimes.
+        public var endedEarly: EndedEarlyCounts?
+        public init(requestsServed: UInt64 = 0, tokensGenerated: UInt64 = 0, usageGaps: UInt64 = 0, promptTokensProcessed: UInt64? = nil, cachedInputTokens: UInt64? = nil, reasoningTokens: UInt64? = nil, cancellationsPartialComplete: UInt64? = nil, endedEarly: EndedEarlyCounts? = nil) {
             self.requestsServed = requestsServed
             self.tokensGenerated = tokensGenerated
             self.usageGaps = usageGaps
@@ -196,6 +198,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
             self.cachedInputTokens = cachedInputTokens
             self.reasoningTokens = reasoningTokens
             self.cancellationsPartialComplete = cancellationsPartialComplete
+            self.endedEarly = endedEarly
         }
     }
 

@@ -42,9 +42,12 @@ struct Local: AsyncParsableCommand {
             guard shown else { throw ExitCode.failure }
         case .startOnlyMe:
             try await startOnlyMe(models: model, pair: pair)
+        case .offerSwitchWhileStopped:
+            try await startOnlyMe(models: model, pair: pair)
         case .offerSwitch:
             let shown = show(pair: pair, darkbloomServes: true)
-            guard Self.asksToSwitch(terminal: ClusterPairCommands.isTerminal(), readInput: { readLine() },
+            let prompt = Self.promptForTesting ?? .live
+            guard Self.asksToSwitch(terminal: prompt.isTerminal, readInput: prompt.readLine,
                                     emit: { print($0, terminator: ""); fflush(stdout) })
             else {
                 guard shown else { throw ExitCode.failure }
@@ -59,6 +62,15 @@ struct Local: AsyncParsableCommand {
     /// or starts a service.
     @TaskLocal static var servingNowForTesting: (@Sendable () -> ServingNow)?
     @TaskLocal static var startOnlyMeForTesting: (@Sendable (_ models: [String]) async throws -> Void)?
+    @TaskLocal static var promptForTesting: Prompt?
+
+    /// Where `local` asks: whether this is a terminal (stdin and stdout), and its input.
+    struct Prompt: Sendable {
+        var isTerminal: Bool
+        var readLine: @Sendable () -> String?
+
+        static var live: Prompt { Prompt(isTerminal: ClusterPairCommands.isTerminal(), readLine: { Swift.readLine() }) }
+    }
 
     /// Starts Only me (`startOnlyMeAndWait`), then shows it.
     private func startOnlyMe(models: [String], pair: ClusterPairSummary) async throws {
@@ -218,12 +230,15 @@ struct Local: AsyncParsableCommand {
         case onlyMe
         /// The Darkbloom network, with or without a local API beside it.
         case darkbloom
+        /// Darkbloom is stopped here, and saved to serve again.
+        case darkbloomStopped
     }
 
     /// The running provider decides; between two runs of its job (a crash, a restart) the loaded job does, since launchd
     /// starts it again; else a local API that answers is Only me in a terminal.
-    static func servingNow(running: DaemonState?, alive: (Int32) -> Bool, loadedJob: LocalSettings.Mode?,
-                           liveLocalAPI: Bool) -> ServingNow {
+    static func servingNow(running: DaemonState?, alive: (Int32) -> Bool, installedJob: LocalSettings.Mode?,
+                           jobLoaded: Bool, savedMode: LocalSettings.Mode?, liveLocalAPI: Bool) -> ServingNow {
+        let loadedJob = jobLoaded ? installedJob : nil
         if let running, alive(running.pid) { return running.servesOnlyItsOwner ? .onlyMe : .darkbloom }
         if let loadedJob { return loadedJob == .local ? .onlyMe : .darkbloom }
         return liveLocalAPI ? .onlyMe : .nothing
@@ -232,7 +247,8 @@ struct Local: AsyncParsableCommand {
     /// `servingNow` on this Mac: its provider's state, its loaded LaunchAgent and `local.json`.
     static func servingNow() -> ServingNow {
         servingNow(running: DaemonStateFile.read(), alive: { daemonProcessAlive(pid: $0) },
-                   loadedJob: LaunchAgent.isLoaded() ? LaunchAgent.installedServingJob()?.mode : nil,
+                   installedJob: LaunchAgent.installedServingJob()?.mode, jobLoaded: LaunchAgent.isLoaded(),
+                   savedMode: (try? savedLocalSettings(configPath: nil))?.mode,
                    liveLocalAPI: LocalEndpoint.readLiveInfo() != nil)
     }
 
@@ -246,6 +262,8 @@ struct Local: AsyncParsableCommand {
         case offerSwitch
         /// A paired Mac: show what runs, and name `cluster local`; the pair is never touched.
         case pointToClusterLocal
+        /// Darkbloom is stopped here: say so, then, only in a terminal, ask before switching to local only.
+        case offerSwitchWhileStopped
     }
 
     /// `--json` only reads. A paired Mac is the pair's (already local only: shown as it is). On a Mac alone: start Only
@@ -256,7 +274,7 @@ struct Local: AsyncParsableCommand {
         if json { return .show }
         if paired { return pairServesLocalOnly ? .show : .pointToClusterLocal }
         switch serving() {
-        case .nothing: return .startOnlyMe
+        case .nothing, .darkbloomStopped: return .startOnlyMe
         case .onlyMe: return .show
         case .darkbloom: return .offerSwitch
         }
@@ -275,6 +293,9 @@ struct Local: AsyncParsableCommand {
         }
         return ["y", "yes"].contains(answer.trimmingCharacters(in: .whitespaces).lowercased())
     }
+
+    static let stoppedLine = ""
+    static let stoppedSwitchQuestion = ""
 
     static var pairedLine: String {
         "This Mac is in a two-Mac cluster: `\(BuildEnvironment.current.cliName) cluster local` serves the pair on its "

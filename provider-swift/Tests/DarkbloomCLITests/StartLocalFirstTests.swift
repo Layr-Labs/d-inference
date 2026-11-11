@@ -228,16 +228,18 @@ struct StartLocalFirstTests {
     }
 
     /// launchd's `--foreground` child without a mode flag (a job an older build wrote) serves as its argv says: the
-    /// Darkbloom network, with no local API, no Keychain look-up, no port probe and nothing written.
+    /// Darkbloom network, with no local API, no Keychain look-up, no port probe and nothing written, whatever `[local]`
+    /// saved (a saved Both or Only me must not open a local port at login).
     @Test("the --foreground child without a mode flag is today's Darkbloom network, and touches nothing")
     func foregroundChildWithoutAModeFlagKeepsToday() throws {
-        for toml in [plainConfig, nil] {
+        for toml in [plainConfig, nil, plainConfig + "\n\n[local]\nmode = \"both\"\n",
+                     plainConfig + "\n\n[local]\nmode = \"local\"\n"] {
             let config = try TempConfig(toml)
             defer { config.remove() }
             let before = config.bytes
             let script = ScriptedTerminal()
             let serving = try script.resolve(try config.start(["--foreground", "--model", "fixture/model"]), keySaved: true)
-            #expect(serving.mode == .network && serving.source == .today)
+            #expect(serving.mode == .network && serving.source == .today, "\(toml ?? "no file")")
             #expect(serving.change.isEmpty && serving.portNote == nil && serving.accountKeySaved == nil)
             #expect(serving.defaultLine == nil && serving.summaryLines.isEmpty)
             #expect(script.keyLookups == 0 && script.livePortLookups == 0 && script.probed.isEmpty)

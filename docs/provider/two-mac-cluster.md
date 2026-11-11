@@ -423,7 +423,10 @@ a model's mode.
 
 `darkbloom cluster local` keeps the question, simplified: both modes, the one
 the same rule picks tagged **Recommended** and preselected, so Enter takes it.
-No sentence explains it and no line quotes a speed:
+For the pair's own model (the one it serves or last served, also when
+`darkbloom start` in a terminal starts a stopped pair) the cursor is on the
+mode it last served in instead, the tag staying on the rule's pick, so Enter
+keeps that mode. No sentence explains it and no line quotes a speed:
 
 ```text
   How should both Macs split Gemma 4 26B?

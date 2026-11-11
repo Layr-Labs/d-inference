@@ -1276,8 +1276,9 @@ through Darkbloom** in this command's own list) serves through Darkbloom again,
 with the local API beside it. Its first Mac's wait ends on "→ Now run
 `darkbloom cluster local` on the other Mac". For a model that runs both ways it
 asks how both Macs split it: both modes, the one `darkbloom cluster` would
-choose tagged **Recommended** and preselected
-([tensor parallel or pipeline](./two-mac-cluster.md#tensor-parallel-or-pipeline)).
+choose tagged **Recommended**, preselected unless the pair's own model last
+served in the other mode, which is then preselected (a stopped pair keeps its
+mode; [tensor parallel or pipeline](./two-mac-cluster.md#tensor-parallel-or-pipeline)).
 It ends on "✓ Serving <model> on both Macs, on your local API at
 http://localhost:<port>". It saves nothing in `[local]` itself.
 The leader part then starts with `--no-coordinator`. Needs a terminal; exit 1

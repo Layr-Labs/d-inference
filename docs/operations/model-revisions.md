@@ -198,11 +198,20 @@ It runs two jobs:
 - **`requant-upload`** runs in the **`prod` environment**, with three modes.
   - **Approval:** every run waits for Gajesh2007's approval of the `prod`
     environment, after `preflight` passes. He is its required reviewer, and
-    admins can't bypass it. It is the same gate as the provider release, and no
-    step with a key starts before the approval.
-  - **Branch policy:** the environment's policy admits `master`.
+    admins can't bypass it. No step with a key starts before the approval.
+    This workflow adds no other gate.
+  - **Branch policy:** the environment's deployment policy allows `master`,
+    `v*` branches and `v*` tags. The workflow's ref guard narrows that to
+    `master`, but only in the copy of the workflow it runs.
   - **Keys:** only a job in that environment can see its `PROD_R2_*`
-    secrets.
+    secrets. The gate protects only secrets created in `prod`. The
+    repository's `R2_*` stay readable by any workflow a writer pushes.
+  - **Environment settings, for the repository owner:**
+    - Drop the `v*` branch rule from `prod`'s deployment policy; nothing uses
+      it.
+    - Create any future `PROD_R2_*` inside `prod`, not as repository secrets.
+    - Never add `R2_*` to `prod`. Same-named environment secrets would
+      silently replace the repository's `R2_*` that `keys=legacy` uses.
 
 Two R2 key sets are tested:
 - **`legacy`**: the repository's `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and

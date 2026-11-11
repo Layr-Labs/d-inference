@@ -6,14 +6,24 @@ name: Model Requant Upload
 # (manifest last). It never registers or promotes: promotion stays `Register Model` with
 # publish_revision_only=true and promote=true, on the owner's go.
 #
-# Approval: each run waits for Gajesh2007's approval of the `prod` environment (its required
-# reviewer; admins can't bypass) before any step that holds a key starts. That is the same gate as
-# the provider release; this workflow adds no other.
+# Approval: the key-holding job runs in the `prod` environment. Each run waits for Gajesh2007's
+# approval of the `prod` environment (its required reviewer; admins can't bypass) before any step
+# that holds a key starts. The environment's deployment policy allows `master`, `v*` branches and
+# `v*` tags. This workflow adds no other gate.
+#
+# Owner notes on `prod` (2026-11-10 review):
+#   - drop the `v*` branch rule from its deployment policy (nothing uses it; a pushed `v*` branch
+#     could carry a copy of this workflow without the ref guard, leaving only the approval);
+#   - create any future PROD_R2_* inside `prod` as environment secrets, not repository secrets;
+#   - never add R2_* to `prod`: same-named environment secrets would silently replace the
+#     repository's R2_* that `keys=legacy` means in this job.
+# The gate protects only secrets created in `prod`; the repository's R2_* stay readable by any
+# workflow a writer pushes, as before this workflow.
 #
 # Two jobs. `preflight` holds no secret: the ref guard, the inputs, the hash-pinned tools and the
 # quantizer's selftest. `requant-upload` runs in the `prod` environment, after preflight passes, so
-# the approval above applies, the environment's branch policy (master) applies, and the
-# environment's secrets are visible. Three modes (default `check`):
+# the approval above applies, the environment's deployment policy applies, and the environment's
+# secrets are visible. Three modes (default `check`):
 #   check   test both R2 key sets with a read-only head-object of a known darkbloom-models object:
 #           `legacy` (the repo's R2_* from 04-04, which the 0.10.11 production release used for every
 #           key) and `prod` (PROD_R2_*, absent from the prod environment on 2026-11-10). Prints only

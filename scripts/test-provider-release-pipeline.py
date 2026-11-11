@@ -705,6 +705,24 @@ class ReleasePipelineTests(unittest.TestCase):
         for step in cache_steps:
             with self.subTest(step=step.split('\n', 1)[0]):
                 self.assertRegex(step, r"(?m)^      if: env\.CI_ACTIONS_CACHE != 'off'( && |$)")
+        # The action uses no other cache: no setup-* `cache:` input, no other
+        # cache action, no nested local action, and nothing it runs turns the
+        # switch back on (a `$GITHUB_ENV` write of CI_ACTIONS_CACHE).
+        self.assertNotRegex(ACTION, r'(?m)^\s+cache(-dependency-path)?:')
+        self.assertEqual(sorted(set(re.findall(r'(?m)^\s+uses: (\S+)', ACTION))), [
+            'actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57',
+            'actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57',
+            'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a'])
+        self.assertNotIn('CI_ACTIONS_CACHE=', ACTION)
+        for script in sorted((ROOT / 'scripts').rglob('*')):
+            if script.is_file() and script.suffix in ('.py', '.sh') and not script.name.startswith('test-'):
+                self.assertNotIn('CI_ACTIONS_CACHE', script.read_text(errors='replace'), script.name)
+        # setup-node v4.4.0 caches only with `cache:`. v5 and later also cache
+        # on a packageManager field, so a bump must set package-manager-cache:
+        # false; this pin makes the bump fail here first.
+        desktop = (ROOT / '.github/workflows/release-desktop.yml').read_text()
+        self.assertEqual(re.findall(r'uses: actions/setup-node@(\S+)', desktop),
+                         ['49933ea5288caeca8642d1e84afbd3f7d6820020'])
         # The other signing workflows restore no Actions cache either.
         for name in ('release-desktop.yml', 'provider-signing-validation.yml', 'release-swift.yml',
                      'release-dev-branch.yml'):

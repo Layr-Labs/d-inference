@@ -598,28 +598,6 @@ jobs:
           MIMO_V26_SERIAL_NATIVE_TESTS: '1'
           MIMO_V26_MANAGED_AUDIO_PROVIDER_TESTS: '1'
         run: ../scripts/run-nested-suite.sh testNativeAudioRelease --no-parallel
-      - name: TEMPORARY loop the MiMo AAC video native audio test
-        if: ${{ !cancelled() && matrix.shard == strategy.job-total && steps.test-products.outcome == 'success' && steps.mimo-audio-fixtures.outcome == 'success' }}
-        working-directory: provider-swift
-        timeout-minutes: 30
-        env:
-          MIMO_V26_SERIAL_NATIVE_TESTS: '1'
-          MIMO_V26_MANAGED_AUDIO_PROVIDER_TESTS: '1'
-          LLVM_PROFILE_FILE: ${{ runner.temp }}/loop-profiles/%p-%m.profraw
-        run: |
-          filter='MiMoV26ManagedAudioProviderTests/testNativeAudioReleaseAcceptsOpenRouterAACVideoThroughAuthenticatedHTTP'
-          pass=0
-          for i in $(seq 1 30); do
-            if ../scripts/run-nested-suite.sh "$filter" --no-parallel > "$RUNNER_TEMP/loop-$i.log" 2>&1 &&
-                [ "$(grep -c "' passed (" "$RUNNER_TEMP/loop-$i.log")" -eq 1 ]; then
-              pass=$((pass + 1))
-              grep -h "' passed (" "$RUNNER_TEMP/loop-$i.log"
-            else
-              echo "iteration $i failed"; grep -E "error:|' (passed|failed|skipped) \(" "$RUNNER_TEMP/loop-$i.log" | tail -20
-            fi
-          done
-          echo "LOOP: $pass/30 iterations passed"
-          [ "$pass" -eq 30 ]
       - name: Run atomic installer artifact tests
         if: ${{ !cancelled() && matrix.shard == strategy.job-total }}
         timeout-minutes: 2

@@ -133,7 +133,7 @@ class ReleaseDevBranchCallerTests(unittest.TestCase):
         self.assertNotRegex(without_comments(job), r"(?i)secrets")
         with_block = job.split("\n    with:\n", 1)[1]
         self.assertEqual(re.findall(r"(?m)^      ([a-z_]+): (.+)$", with_block), [("environment", "dev")])
-        self.assertIn("\n    needs: qualify\n", self.jobs["dev"])
+        self.assertRegex(self.jobs["dev"], r"(?m)^    needs: qualify$")
 
     def test_the_only_jobs_are_the_guarded_calls_of_the_reusable_workflows(self):
         self.assertEqual(set(self.jobs), {"qualify", "dev"})

@@ -43,8 +43,8 @@ def caller_jobs(text):
 
 def condition(job_text):
     """A job's `if:` expression body, on one line."""
-    value = re.search(r'(?ms)^    if: (?:>-\n)?(.+?)\n    [a-z]', job_text).group(1)
-    return ' '.join(value.removeprefix('${{').removesuffix('}}').split()).strip()
+    value = re.search(r'(?ms)^    if: (?:>-\n)?(.+?)\n    \S', job_text).group(1)
+    return ' '.join(value.strip().removeprefix('${{').removesuffix('}}').split())
 
 
 def caller_lanes():

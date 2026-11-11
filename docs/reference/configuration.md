@@ -372,7 +372,7 @@ decide the [owner pause](../architecture/owner-pause.md), which stops Darkbloom
 requests while the owner's local requests run (`LocalSettings.meFirstIdle`), for
 the mode that process serves. The local API's router reads `route` (see
 [the local router](../provider/direct-mode.md#when-this-mac-cant-take-a-request-the-local-router)).
-Every key is optional, and an absent key keeps today's behaviour
+Every key is optional, and an absent key keeps the built-in behaviour
 (`LocalSettings` in `provider-swift/Sources/ProviderCore/Config/LocalSettings.swift`;
 `StartServingResolver` in `provider-swift/Sources/darkbloom/Start/StartLocalFirst.swift`).
 

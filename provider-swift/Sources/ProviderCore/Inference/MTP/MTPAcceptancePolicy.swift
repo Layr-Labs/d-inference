@@ -36,7 +36,7 @@ public enum MTPAcceptancePolicy {
         let raw = byModel[modelID] ?? global
         guard let raw else {
             return Resolution(
-                acceptance: Bonsai9BModelPolicy.matchesModelID(modelID) ? .exact
+                acceptance: builtInIsExact(modelID: modelID) ? .exact
                     : .typical(delta: CBv2MTPAcceptance.defaultTypicalDelta),
                 unrecognized: nil)
         }

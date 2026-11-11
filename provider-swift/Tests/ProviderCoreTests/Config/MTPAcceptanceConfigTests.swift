@@ -79,20 +79,6 @@ struct MTPAcceptanceConfigTests {
         #expect(other.acceptance == .typical(delta: CBv2MTPAcceptance.defaultTypicalDelta))
     }
 
-    @Test("Qwen3.5-9B defaults to exact; the 35B Qwen builds keep typical; settings still win")
-    func qwen35NineBDefaultsToExact() {
-        let typical = CBv2MTPAcceptance.typical(delta: CBv2MTPAcceptance.defaultTypicalDelta)
-        #expect(MTPAcceptancePolicy.resolve(global: nil, byModel: [:], modelID: "Qwen3.5-9B").acceptance == .exact)
-        for id in ["qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8", "mlx-community/Qwen3.5-9B-4bit"] {
-            #expect(MTPAcceptancePolicy.resolve(global: nil, byModel: [:], modelID: id).acceptance == typical, "\(id)")
-        }
-        // The precedence is unchanged: a per-model or global value still wins.
-        #expect(MTPAcceptancePolicy.resolve(
-            global: nil, byModel: ["Qwen3.5-9B": "typical"], modelID: "Qwen3.5-9B").acceptance == typical)
-        #expect(MTPAcceptancePolicy.resolve(
-            global: "typical", byModel: [:], modelID: "Qwen3.5-9B").acceptance == typical)
-    }
-
     @Test("Gemma 4 26B QAT defaults to exact; every other model keeps its built-in rule; settings still win")
     func gemmaQATDefaultsToExact() {
         let typical = CBv2MTPAcceptance.typical(delta: CBv2MTPAcceptance.defaultTypicalDelta)
@@ -101,12 +87,11 @@ struct MTPAcceptanceConfigTests {
         // Only the QAT build: its 8-bit siblings, and every other drafting model, stay typical
         // (Qwen 3.8 27B is exact too: qwen38DefaultsToExact).
         for id in [
-            "gemma-4-26b", "gemma-4-26b-8bit", "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+            "gemma-4-26b", "gemma-4-26b-8bit", "Qwen3.5-9B", "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8",
             "nvidia-nemotron-3.5-lightning", "glm-5.3-flash",
         ] {
             #expect(MTPAcceptancePolicy.resolve(global: nil, byModel: [:], modelID: id).acceptance == typical, "\(id)")
         }
-        #expect(MTPAcceptancePolicy.resolve(global: nil, byModel: [:], modelID: "Qwen3.5-9B").acceptance == .exact)
         // The precedence is unchanged: a per-model or global value still wins.
         #expect(MTPAcceptancePolicy.resolve(
             global: nil, byModel: ["gemma-4-26b-qat-4bit": "typical"],
@@ -126,13 +111,13 @@ struct MTPAcceptanceConfigTests {
         // other drafting model keep typical.
         for id in [
             "qwen3.8-flash-next", "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp", "ternary-bonsai-2-27b",
-            "eigenlabs/qwen3.8-27b-4bit-mtp", "gemma-4-26b", "gemma-4-26b-8bit", "qwen3.5-35b-a3b",
+            "eigenlabs/qwen3.8-27b-4bit-mtp", "gemma-4-26b", "gemma-4-26b-8bit", "Qwen3.5-9B", "qwen3.5-35b-a3b",
             "qwen3.6-35b-a3b-vl-mtp-mxfp8", "nvidia-nemotron-3.5-lightning", "glm-5.3-flash",
         ] {
             #expect(MTPAcceptancePolicy.resolve(global: nil, byModel: [:], modelID: id).acceptance == typical, "\(id)")
         }
-        // The earlier exact builds stay exact.
-        for id in ["gemma-4-26b-qat-4bit", "Qwen3.5-9B"] {
+        // The earlier exact build stays exact.
+        for id in ["gemma-4-26b-qat-4bit"] {
             #expect(MTPAcceptancePolicy.resolve(global: nil, byModel: [:], modelID: id).acceptance == .exact, "\(id)")
         }
         // The precedence is unchanged: a per-model or global value still wins.

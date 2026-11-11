@@ -22,11 +22,9 @@
 //   and owned Bonsai 9B listings, native Flint and the exact GLM-5.3-Flash
 //   identities (catalog `glm-5.3-flash` and the local qualification download)
 //   honor their artifact defaults.
-//   The catalog Qwen 3.5/3.6 builds take their model cards' thinking-mode
-//   values instead of the greedy decoding that looped to `max_tokens`. The
-//   35B builds keep the cards' presence penalty (`qwen35CardDefaults`);
-//   Qwen3.5-9B has none (`qwen35NineBCardDefaults`), as the 0.10.12 gate
-//   decided per build.
+//   The catalog Qwen 3.5/3.6 builds ship no `generation_config.json`; they
+//   take their model cards' thinking-mode values (`qwen35CardDefaults`),
+//   whose presence penalty stops greedy decoding looping to `max_tokens`.
 //   Every other model keeps the legacy defaults byte-for-byte.
 // * `do_sample: false` in the file means greedy (legacy), matching HF
 //   semantics; an absent or unreadable file is legacy.
@@ -70,18 +68,9 @@ public struct EngineV2SamplingDefaults: Sendable, Equatable {
     public static let legacy = EngineV2SamplingDefaults()
 
     /// The model cards' thinking-mode values (the template default), shared by
-    /// these exact catalog builds and their `model_type`. The 35B builds keep
-    /// the cards' presence penalty: without it qwen3.5-35b-a3b looped under
-    /// typical and exact MTP acceptance alike.
+    /// these exact catalog builds and their `model_type`.
     static let qwen35CardDefaults = EngineV2SamplingDefaults(
         temperature: 1.0, topP: 0.95, topK: 20, presencePenalty: 1.5)
-    /// Qwen3.5-9B's: the same values without the penalty. Without it the 9B
-    /// looped only under typical MTP acceptance, and its built-in rule is exact
-    /// (`MTPAcceptancePolicy`); a penalty would keep its rows from speculating
-    /// (they would still stage prefix checkpoints).
-    static let qwen35NineBCardDefaults = EngineV2SamplingDefaults(
-        temperature: 1.0, topP: 0.95, topK: 20)
-    static let qwen35NineBModelID = "Qwen3.5-9B"
     static let qwen35CardModelTypes = [
         "Qwen3.5-9B": "qwen3_5",
         "qwen3.5-35b-a3b": "qwen3_5_moe",
@@ -114,9 +103,7 @@ public struct EngineV2SamplingDefaults: Sendable, Equatable {
     static func resolve(
         modelId: String, modelType: String?, modelDirectory: URL?
     ) -> EngineV2SamplingDefaults {
-        if let type = qwen35CardModelTypes[modelId], type == modelType {
-            return modelId == qwen35NineBModelID ? qwen35NineBCardDefaults : qwen35CardDefaults
-        }
+        if let type = qwen35CardModelTypes[modelId], type == modelType { return qwen35CardDefaults }
         guard honorsArtifactDefaults(modelId: modelId, modelType: modelType),
             let modelDirectory
         else { return .legacy }

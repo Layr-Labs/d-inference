@@ -22,6 +22,10 @@ enum ToolChoicePromptPolicy {
         /// automatic choice has `parallel_tool_calls: false`
         /// (`singleCallInstruction`), which the validator holds it to.
         var glm5PairPostValidation = false
+        /// The caller's declarations as sent, before ingress normalization
+        /// (`ToolSchemaNormalization`) filled in render types. Validation of
+        /// `auto` calls reads these; nil falls back to `tools`.
+        var declaredTools: [OpenAITool]? = nil
 
         var requiresToolCall: Bool {
             switch mode {

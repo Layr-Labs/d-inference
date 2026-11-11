@@ -53,6 +53,10 @@ public struct ChatTemplateControls: Sendable, Equatable {
         self.reasoningBudgetTokens = reasoningBudgetTokens
     }
 
+    /// The body's tool declarations before ingress normalization
+    /// (`Prepared.declaredTools`).
+    var declaredTools: [OpenAITool]? { rawMiMoTools.declaredTools }
+
     func withPromptDate(_ date: PromptRenderDate) -> Self {
         var copy = self
         copy.promptDate = date

@@ -55,6 +55,11 @@ func classifyTypedInferenceErrorReason(_ error: Error) -> InferenceErrorReason? 
     return nil
 }
 
+/// The check behind a `tool_noncompliance` error, or nil for any other error.
+func classifyToolNoncomplianceCheck(_ error: Error) -> ToolNoncomplianceCheck? {
+    nil
+}
+
 /// Classify an inference `Error` into the shared normalized `error_reason`
 /// vocabulary, or nil when it cannot be confidently classified.
 ///

@@ -1,0 +1,5 @@
+### Provider CI: smaller job sizes for the cluster runtime shards
+
+- The cluster runtime tests that drove the shards' memory now run with MLX's freed-buffer cache bounded: 4 GiB for the GLM-5.3 paged KV, row invariance, depth invariance and window census tests and Qwen's prefix-depth test, 1 GiB for the Gemma 4 paged synthetic stages and the GLM-5.3 prefix SSD restore. MLX's default cache kept every prefill frame's temporaries, which no later request reuses. The bound changes no result, no assertion and no shard's time.
+- Peak used memory on a 48 GiB Blacksmith Mac: Cluster Runtime Tests shard 2 from 26.51 to 13.86 GiB, shard 3 from 12.97 to 9.11, shard 5 from 15.33 to 9.07.
+- While `DARKBLOOM_JOB_SHAPES` is `on`, the lane of runtime shards 2 and 3 (`test-cluster-2`) asks for 4x24 instead of 12x32, and the lane of shards 4 and 5 (`test-cluster-3`) for 4x16 instead of 4x24. The other lanes keep their sizes; `docs/developer/build.md` (Job sizes) has each job's sampled memory from 20 full dev runs.

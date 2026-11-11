@@ -10,6 +10,10 @@ public struct GenerationLoopGuard: Sendable {
     let modelType: String
     private var detector: GenerationLoopDetector
     private let toolCallMarkers: [String]
+    /// Bytes of which every marker holds at least one (`<`, `=`), or none when
+    /// some marker holds neither: text without them can't contain a marker, so
+    /// the search is skipped.
+    private let markerBytes: [UInt8]
     private let carryLength: Int
     /// The end of the previous delta's text, so a marker split across deltas is seen.
     private var carry = ""
@@ -21,6 +25,10 @@ public struct GenerationLoopGuard: Sendable {
         self.modelType = modelType
         self.detector = GenerationLoopDetector(thresholds: thresholds)
         self.toolCallMarkers = toolCallMarkers.filter { !$0.isEmpty }
+        let probe: [UInt8] = [UInt8(ascii: "<"), UInt8(ascii: "=")]
+        self.markerBytes = self.toolCallMarkers.allSatisfy { marker in
+            marker.utf8.contains { probe.contains($0) }
+        } ? probe : []
         self.carryLength = max(0, (self.toolCallMarkers.map(\.count).max() ?? 1) - 1)
     }
 
@@ -30,7 +38,9 @@ public struct GenerationLoopGuard: Sendable {
         guard !disarmed else { return nil }
         if !toolCallMarkers.isEmpty, !text.isEmpty {
             let scanned = carry + text
-            if toolCallMarkers.contains(where: { scanned.contains($0) }) {
+            let bytes = markerBytes
+            if bytes.isEmpty || scanned.utf8.contains(where: { bytes.contains($0) }),
+               toolCallMarkers.contains(where: { scanned.contains($0) }) {
                 disarmed = true
                 return nil
             }

@@ -162,6 +162,14 @@ struct GenerationLoopGuardTests {
         }
     }
 
+    @Test("a marker without `<` or `=` is still seen")
+    func markerOutsideTheBytePrefilter() {
+        var loopGuard = GenerationLoopGuard(modelType: "gemma4", toolCallMarkers: ["<tool_call>", "[TOOL_CALLS]"])
+        #expect(loopGuard.observe(text: "[TOOL_", tokens: [10]) == nil)
+        #expect(loopGuard.observe(text: "CALLS]", tokens: [11]) == nil)
+        #expect(loopGuard.disarmed)
+    }
+
     private func request(
         tools: [OpenAITool]? = nil, choice: OpenAIToolChoice? = nil,
         responseFormat: OpenAIResponseFormat? = nil, parser: String? = nil

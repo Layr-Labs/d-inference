@@ -134,8 +134,9 @@ client: `darkbloom local` prints the address, the key and a `curl` to try
 - **Switch later:** `darkbloom local` serves only you (where Darkbloom serves, it
   asks first in a terminal); `darkbloom start --network` or `--me-first` saves
   another choice ([switch](./local-first.md#switch)).
-- **Two Macs:** run `darkbloom cluster` on each Mac to pair them and choose
-  how the pair serves, then `darkbloom --opencode` on either Mac
+- **Two Macs:** run `darkbloom cluster` on each Mac to pair them (the pair
+  serves through Darkbloom with your local API beside it; `darkbloom cluster
+  local` serves it for you alone), then `darkbloom --opencode` on either Mac
   ([Two Macs as one provider](./two-mac-cluster.md)). The wait for your model
   and the line when a tool points elsewhere are for one Mac for now: on a pair
   that is still loading, run it again once the pair serves.

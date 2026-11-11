@@ -55,7 +55,7 @@ extension OnboardingChecks {
     static func followingTheUltra(_ recorder: Recorder, status: [[String]], start: [ClusterOnboardingStartProgress?] = [],
                                   followSeconds: Double = 900, step: ClusterOnboardingLeaderStep? = .init(.starting)) -> ClusterOnboardingOperations {
         var made = operations(recorder, pairEvents: memberEvents, pairResult: .paired(role: .member, peerName: ultraName),
-                              pairServingResults: [.failure(.init([appleReason + ".", "Then choose Retry, or serve locally only now."]))],
+                              pairServingResults: [.failure(.init([appleReason + ".", "Then choose Retry."]))],
                               followSeconds: followSeconds)
         let looks = Recorder()
         made.leaderStatus = {
@@ -76,7 +76,7 @@ extension OnboardingChecks {
             expect(run.waitFor(codeQuestion), "f2 \(label): the code"); run.type("y")
             expect(run.finish(seconds: 30) == 0, "f2 \(label): ends with the leader's ✓, exit 0: \(run.text)")
             let text = run.text
-            expect(text.contains("\u{2713} Serving Qwen 3.8 27B through Darkbloom on both Macs (tensor parallel)"), "f2 \(label): the ✓: \(text)")
+            expect(text.contains("\u{2713} Serving Qwen 3.8 27B on both Macs"), "f2 \(label): the ✓: \(text)")
             expect(!text.contains("\u{2717}") && !text.contains("Choose Retry"), "f2 \(label): no ✗ and no Retry for a pair that serves: \(text)")
             expect(text.contains(appleWaitRow), "f2 \(label): it says it waits for Apple: \(text)")
             expect(!recorder.all.contains("pairServing"), "f2 \(label): its own wait never decides: \(recorder.all)")
@@ -122,7 +122,7 @@ extension OnboardingChecks {
         let text = run.text
         expect(text.contains("\u{2717} Not serving: This Mac isn't logged in to Darkbloom, so the coordinator won't pair it.\n"),
                "leader's ✗: its words, named from this Mac: \(text)")
-        expect(text.contains("Run `darkbloom login` on each Mac named, then Retry; or serve locally only."), "leader's ✗: its next step")
+        expect(text.contains("Run `darkbloom login` on each Mac named, then Retry."), "leader's ✗: its next step")
         expect(text.contains(retryOnLeader), "leader's ✗: where Retry is: \(text)")
         expect(text.components(separatedBy: "\u{2717}").count == 2, "leader's ✗: one ✗ only")
     }

@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-11
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -205,7 +205,7 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `models` | `list`, `catalog`, `download`, `remove` | ✓ | `ModelsCommand.swift` (`Models`) |
 | `local` | Serve only you: start Only me where nothing serves, then print the local API's address and key; where Darkbloom serves, ask in a terminal before switching ([below](#darkbloom-local)) | | `LocalCommand.swift` (`Local`) |
 | `route` | Where your requests go when this Mac's local API can't take them: `this-mac`, `my-macs` or `my-macs-first` saves `[local] route` ([below](#darkbloom-route-this-mac-my-macs-my-macs-first)); `key` saves the account API key | ✓ | `RouteCommand.swift` (`Route`), `RouteChoiceCommand.swift` (`RouteChoiceFlow`) |
-| `cluster` | Set up two Macs to serve one model together ([guided setup](./two-mac-cluster.md)); `cluster local` serves without a coordinator. In a terminal, the first setup asks how the pair serves (**Only me (this pair, local)**, **Darkbloom network**, or **Both, me first**, preselected: the leader's local API beside Darkbloom, which pauses while you use it), saves the answer in `[local] mode`, and asks nothing without a terminal ([Both, me first](./two-mac-cluster.md#both-me-first-the-pairs-own-api-beside-darkbloom)). Run again on a paired Mac it works like `darkbloom start` (which opens the same screen there): both Macs, the cable and the status, then the pair's models with the current one preselected (Enter keeps it or starts it again), each with the modes it runs there, the recommended one first and no speed, **Change how the pair serves** (the three choices below; `cluster local`'s list keeps its line to switch to Darkbloom), and **Start over**; another model asks once before the serving one stops, and every start ends with the outcome, the pair's card and `darkbloom stop` / `restart` / `status` ([after setup](./two-mac-cluster.md#the-steps-once)). It offers **Start over** after one question (also when the other Mac does not answer over the cable: the screen then names that Mac and what to run there), and **Pair again** without it only when the saved pairing was made with another Secure Enclave key; both take the steps of `cluster pair --forget` (`ClusterUnpairing`), then pair ([pairing again](./two-mac-cluster.md#pairing-again)) | ✓ | `ClusterCommand.swift` (`Cluster`) |
+| `cluster` | Set up two Macs to serve one model together ([guided setup](./two-mac-cluster.md)); `cluster local` serves without a coordinator. In a terminal it asks nothing about serving: the pair serves through Darkbloom with the leading Mac's local API beside it and Darkbloom keeps serving while you use it (once the pair switches, starts or is shown serving, it saves `[local] mode = "both"` and, where none is saved, `me_first = false`; a saved `me_first` stays, and `me_first = true` set by hand plus `darkbloom restart` turns the pair's pause back on; a run that changes nothing saves nothing; a pair saved as Only me or network switches and says so in one line; `darkbloom start` in a terminal opens the same screen but keeps how the pair is saved to serve), and it chooses tensor parallel unless that can't run on these Macs or was measured slower here (a stopped pair's own model keeps the mode it last served in) ([Both](./two-mac-cluster.md#both-me-first-the-pairs-own-api-beside-darkbloom), [tensor parallel or pipeline](./two-mac-cluster.md#tensor-parallel-or-pipeline)); without a terminal it sets nothing. The first Mac's wait ends on "→ Now run `darkbloom cluster` on the other Mac". Run again on a paired Mac it works like `darkbloom start` (which opens the same screen there): both Macs, the cable and the status, then the pair's models with the current one preselected (Enter keeps it and tests it, or starts it again), no mode and no speed, and **Start over** (`cluster local`'s list keeps its line to switch to Darkbloom); another model asks once before the serving one stops, and every start ends on one line, "✓ Serving <model> on both Macs", and "`darkbloom status` for details", then "Press Enter to exit." on an interactive terminal only ([the ending](./two-mac-cluster.md#the-ending)). It offers **Start over** after one question (also when the other Mac does not answer over the cable: the screen then names that Mac and what to run there), and **Pair again** without it only when the saved pairing was made with another Secure Enclave key; both take the steps of `cluster pair --forget` (`ClusterUnpairing`), then pair ([pairing again](./two-mac-cluster.md#pairing-again)) | ✓ | `ClusterCommand.swift` (`Cluster`) |
 | `waitlist` | List the waitlists the coordinator offers and where the account stands (bare), or put the account on one and show where it stands (`waitlist cluster`, `waitlist sandbox`); waitlists are per account | ✓ | `Waitlist/WaitlistCommand.swift` (`Waitlist`) |
 | `login` | Link the machine to an account (RFC 8628 device code) | ✓ | `LoginCommand.swift` (`Login`) |
 | `logout` | Stop the provider, revoke its current saved token, then remove the local credential | ✓ | `LogoutCommand.swift` (`Logout`) |
@@ -639,7 +639,7 @@ take (`ClusterPairSummary.appStartLines`):
 - a local API (`--local-endpoint`) on a Mac the pair gives none (through
   Darkbloom only, or the Mac that follows when the pair's API is kept on the
   leading Mac, loopback or one address): ``No local API was added on this Mac: a pair's local API comes from how the pair serves (`darkbloom cluster` on the leading Mac changes it).``
-  With **Only me** or **Both, me first** on every address the Mac that follows
+  With **Only me** or **Both** on every address the Mac that follows
   has one, its relay (`ClusterPairSummary.givesThisMacALocalAPI`), so that line
   is never said there. When its relay can't answer, as read once the start is
   over, the line is `status`'s instead (`ClusterPairSummary.memberAPIDown`): ``Local API: http://127.0.0.1:<port>/v1 on this Mac answers 503 for now. Your pair's other Mac (…) isn't reachable; …``
@@ -1000,6 +1000,13 @@ coordinator sent; what the levels mean is in
 [`architecture/security/attestation.md#trust-levels`](../architecture/security/attestation.md#trust-levels),
 and how to read the line in [attestation → Verify](./attestation.md#verify).
 
+On a Mac in a two-Mac cluster it starts with the pair, in `darkbloom cluster
+status`'s words (who leads, the model with its mode and split, how it serves,
+the outcome, the local API), then the rest of the card `darkbloom cluster`'s
+ending points to (`ClusterPairSummary.statusCardLines`): `Logs:` with the
+cluster service's log, whether this Mac's cluster service starts at login, and
+`darkbloom stop` / `restart` / `cluster` ([the ending](./two-mac-cluster.md#the-ending)).
+
 Beside the add-on hold line, a running provider's `Serving:` line says how
 this Mac serves, read from its state and `local.json` (`Status.servingLines`,
 `provider-swift/Sources/darkbloom/StatusCommand+LocalFirst.swift`):
@@ -1289,9 +1296,15 @@ darkbloom cluster local [<model>] [--bind <address>]
 
 Runs the onboarding asking for Only me (`ClusterOnboardingRequest`),
 saved in the leader's setup record (`ClusterOnboardingLeadership.localOnly`,
-`localBind`) until **Change how the pair serves** in `darkbloom cluster`'s list (or
-**Switch to serving through Darkbloom** in this command's own list) serves through Darkbloom again. It asks
-nothing and saves nothing in `[local]`.
+`localBind`) until `darkbloom cluster` on the leader (or **Switch to serving
+through Darkbloom** in this command's own list) serves through Darkbloom again,
+with the local API beside it. Its first Mac's wait ends on "→ Now run
+`darkbloom cluster local` on the other Mac". For a model that runs both ways it
+asks how both Macs split it: both modes, the one `darkbloom cluster` would
+choose tagged **Recommended** and preselected
+([tensor parallel or pipeline](./two-mac-cluster.md#tensor-parallel-or-pipeline)).
+It ends on "✓ Serving <model> on both Macs, on your local API at
+http://localhost:<port>". It saves nothing in `[local]` itself.
 The leader part then starts with `--no-coordinator`. Needs a terminal; exit 1
 otherwise. On the Mac that joins a waiting leader it pairs, says to continue on
 the leader with `darkbloom cluster local` (`ClusterOnboardingDriver.joinedLocalLine`) and, like
@@ -1367,7 +1380,7 @@ through Darkbloom" (`OnboardingLive.notOfferedLines`):
   planned for Darkbloom). Or serve locally only: `darkbloom cluster local` on <the leading Mac>."
 - `darkbloom start` without a terminal stops waiting at once on this reason (exit 3).
 
-A pair that serves Both, me first says `Serves: through Darkbloom, and on its local API with you first`, and:
+A pair that serves Both says `Serves: through Darkbloom, and on its local API` (`… with you first` when its pause is on, `[local] me_first = true`), and:
 - whether Darkbloom is paused for you, under the pair's `✓ Serving …` line on both Macs, in `status`'s words for one
   Mac with `Pair:` (`Pair: you first — Darkbloom paused for 10 minutes (…; back in about 1 minute if you stay idle)`,
   `Pair: Darkbloom and you, me first — open to Darkbloom (…)`, or `Pair: Darkbloom and you, shared — …` with
@@ -2475,8 +2488,8 @@ waitlist (`404`) prints `<coordinator> has no Clusters waitlist; going on.` and
 goes on; not on the waitlist asks `Join the Clusters waitlist now? [y/N]` (no
 prints `Join it: darkbloom waitlist cluster`); waitlisted, revoked, `401`,
 `403` and no usable answer say why and exit `1` with nothing set up; every
-such stop ends with `Serving on your own Macs only needs no approval:
-darkbloom cluster local`. The waitlist gates clustering through Darkbloom only:
+such stop ends with ``To use the pair just for yourself, run `darkbloom
+cluster local` (no approval needed).`` The waitlist gates clustering through Darkbloom only:
 `darkbloom cluster local` serves on the owner's own Macs, is never asked and
 makes no waitlist call, so it works offline. A Mac that
 holds a pairing, or one whose pairing can't be read, is never asked and makes no

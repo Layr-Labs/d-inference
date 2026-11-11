@@ -444,19 +444,21 @@ with `--local-endpoint --no-me-first`.
 
 ## Two Macs
 
-A pair gets the same three choices. Run `darkbloom cluster` on each Mac: it
-pairs them, then the leading Mac asks how the pair serves (**Only me**,
-**Darkbloom network** or **Both, me first**, preselected) and which model; its
-list's **Change how the pair serves** asks again. Then run
-`darkbloom --opencode` on either Mac: with **Only me** or **Both, me first**,
-each Mac answers at its own address, on its own saved port, with its own key.
+A pair asks nothing about how it serves. Run `darkbloom cluster` on each Mac:
+it pairs them, and the leading Mac asks only which model; the pair serves
+through Darkbloom with its local API beside it, and Darkbloom keeps serving
+while you use it (`[local] me_first = false` on the leading Mac where none is
+saved; to have Darkbloom pause for you instead, set `me_first = true` under `[local]` in the leading Mac's `provider.toml`, then `darkbloom restart`). `darkbloom cluster local` serves it **Only me**. Then run
+`darkbloom --opencode` on either Mac: with **Only me** or **Both**, each Mac
+answers at its own address, on its own saved port, with its own key
+([two Macs: Both](./two-mac-cluster.md#both-me-first-the-pairs-own-api-beside-darkbloom)).
 
-- **Only me:** no Mac of the pair contacts Darkbloom. `darkbloom cluster local`
-  serves the pair this way too. The other Mac passes its own port on to the
+- **Only me** (`darkbloom cluster local`): no Mac of the pair contacts Darkbloom. The other Mac passes its own port on to the
   pair's API, so `darkbloom local` and `--opencode` work there too, unless the
   API is kept on the leading Mac with `--bind`.
-- **Both, me first:** the leading Mac runs the pair's API, and Darkbloom pauses
-  for the whole pair while you use it. While it is paused, the pair keeps its
+- **Both** (`darkbloom cluster`): the leading Mac runs the pair's API, and
+  Darkbloom keeps serving while you use it; with `[local] me_first = true` on
+  that Mac, Darkbloom pauses for the whole pair while you use it. While it is paused, the pair keeps its
   base reward on the coordinator that ships with 0.10.11
   ([darkbloom-platform#709](https://github.com/Layr-Labs/darkbloom-platform/pull/709)
   onwards), as one Mac alone does; on coordinators before #709, both Macs lose
@@ -465,14 +467,16 @@ each Mac answers at its own address, on its own saved port, with its own key.
   The pair's API answers on your local network (LAN or tailnet), always with
   a key. Unless it is kept on the leading Mac with `--bind`, the other Mac
   passes its own port on to it too, as with **Only me**: `darkbloom local` and
-  `--opencode` work there as well, and your requests there pause the pair too.
+  `--opencode` work there as well (with the pause on, your requests there pause
+  the pair too).
   While Darkbloom doesn't have the pair, it answers on the leading Mac only.
   `darkbloom status` on either Mac says whether the pair is paused for you,
   for how long and when it comes back (``Pair: you first — Darkbloom paused
   for 1 minute (…; back in about 2 minutes if you stay idle)``): the leading
   Mac's status carries it to the other Mac.
-- Your answer is saved in `[local] mode` too. Without a terminal nothing is
-  asked, and a pair keeps serving as it did
+- `darkbloom cluster` saves `[local] mode = "both"` once the pair switches,
+  starts or is shown serving; a run that changes nothing saves nothing.
+  `darkbloom start` (in a terminal or not) keeps how the pair is saved to serve
   ([Both, me first](./two-mac-cluster.md#both-me-first-the-pairs-own-api-beside-darkbloom)).
 
 On a Mac in a pair, `darkbloom start` starts the pair, in a terminal or not,

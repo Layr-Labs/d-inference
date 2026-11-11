@@ -24,6 +24,8 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
     private let decorates: Bool
     /// The mark blooms and live work turns (never in a transcript).
     private let animates: Bool
+    /// A person is at this terminal: colour on, and not a CI run (`waitForExit`).
+    private let interactive: Bool
     /// The window's width in columns when the setup started (0 when unknown).
     private let startColumns: Int
     /// The window's width now: a window made narrower after the start must not wrap a live row, whose redraw climbs
@@ -84,6 +86,7 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
         startColumns = columns
         decorates = usesColor && ClusterOnboardingBrand.drawsBlocks(environment) && columns >= 40
         animates = decorates && environment["DARKBLOOM_NO_ANIMATION"] == nil && environment["CI"] == nil
+        interactive = usesColor && environment["CI"] == nil
         brand = ClusterOnboardingBrand.colour(environment)
         // Only a window that folds keeps a log: a plain transcript is the whole flow already.
         if decorates, let logFile, let handle = Self.openLog(logFile) {
@@ -156,6 +159,35 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
     }
 
     public var width: Int? { columns > 0 ? columns : nil }
+
+    /// The one thing to do on the other Mac, set apart by blank lines: in a colour terminal bold, its command in the
+    /// brand's colour; elsewhere the same plain line.
+    public func callout(_ line: String) {
+        say("")
+        guard usesColor else { say("  " + line); say(""); return }
+        let command = line.replacingOccurrences(of: "`[^`]+`", with: "\u{1B}[\(brand)m$0\u{1B}[39m", options: .regularExpression)
+        say("  \u{1B}[1m" + command + "\u{1B}[0m")
+        say("")
+    }
+
+    /// Run once right before "Press Enter to exit." waits: the screen lets go of what another command needs (its
+    /// `ClusterConsoleInstanceLock`), since the run is over and only the person's key is awaited.
+    public var beforeExitWait: (() -> Void)?
+
+    /// "Press Enter to exit." and the wait for Enter, q or Esc, where a person is at this interactive terminal (colour on,
+    /// so not `NO_COLOR`, `TERM=dumb` or a pipe, and not `CI`); a closed input ends it too. The pair keeps serving.
+    public func waitForExit() {
+        guard interactive, !closed else { return }
+        beforeExitWait?()
+        beforeExitWait = nil
+        settle()
+        say("")
+        say("\u{1B}[2m" + ClusterOnboardingDriver.exitLine + "\u{1B}[0m")
+        while !closed {
+            guard let key = key(milliseconds: 250) else { continue }
+            if key == "\r" || key == "\n" || key == "q" || key == "Q" || key == "\u{1B}" { return }
+        }
+    }
 
     /// From the last live row back to the first.
     private static func up(_ rows: Int) -> String { rows > 1 ? "\u{1B}[\(rows - 1)A" : "" }

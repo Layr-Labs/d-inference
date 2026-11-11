@@ -27,12 +27,9 @@ struct ClusterSetupRealMacWordsTests {
     @Test("each mode's line says the context it serves, and its prompt limit when that is lower")
     func eachModeSaysItsContext() {
         let modes = Self.gemmaModes()
-        #expect(ClusterOnboardingDriver.modeLine(modes[0]) == ClusterOnboardingDriver.menuLine("Tensor parallel",
-            "both Macs work on every layer, each holding a share of it (this Mac 50% / the other Mac 50%) · serves one request "
-                + "at a time · context 262,144 tokens"))
-        #expect(ClusterOnboardingDriver.modeLine(modes[1], recommended: true) == ClusterOnboardingDriver.menuLine("Pipeline",
-            "each Mac runs its share of the layers (this Mac 1 layer / the other Mac 29 layers) · serves one request at a time · "
-                + "context 65,536 tokens, prompts up to 32,768 · recommended for these Macs"))
+        #expect(ClusterOnboardingDriver.modeLine(modes[0]) == "Tensor parallel · serves one request at a time · context 262,144 tokens")
+        #expect(ClusterOnboardingDriver.modeLine(modes[1], recommended: true)
+            == "Pipeline · Recommended · serves one request at a time · context 65,536 tokens, prompts up to 32,768")
         // A narrow window keeps the context: it is what a long request needs to know.
         for room in [72, 48, 30] {
             #expect(ClusterOnboardingDriver.modeLine(modes[1], room: room).contains("65,536"), "\(room)")

@@ -4962,9 +4962,9 @@ away; mixed pairs are first-class).
   while a model serves or when no plan was made for it (`OnboardingLive.adoption`).
 - **The scope a plan is for:** `chooseAndServe` names the scope before it plans
   the list (`ClusterOnboardingOperations.planScope`, `OnboardingLive.usePlanningScope`,
-  carried in `ClusterControlRequest.scope`); a start whose scope changes before
-  it adopts (the login check's "Serve locally only") is planned again for that
-  scope, and the same model is adopted from the new plan.
+  carried in `ClusterControlRequest.scope`), and the start adopts from that list;
+  the login check offers no other scope (`ClusterOnboardingDriver.localPairHint`
+  names `darkbloom cluster local` instead).
 - **Forwarded choices:** a choice the other Mac forwards to the control leader
   (`ClusterControlRequest`: op, index, model, scope and the mode family chosen
   on that Mac's screen, `OnboardingLive.adoptRequest`) is adopted in that family;
@@ -8773,7 +8773,7 @@ flowchart LR
    impostor still is too, because the engine serves only an owner whose
    readiness equals that identity, peer for peer (`DistributedCBv2Engine`).
    Every roster formed today is still two distinct peers.
-8. `darkbloom cluster` starts the API when the person chooses Both, me first
+8. `darkbloom cluster` starts the API when it serves the pair Both
    (`ClusterServingScope.publicServingWithLocalAPI`, kept in the setup record as
    `localAPI` with `localBind` and carried to the other Mac by the serve
    command). The cluster service gives `--local-endpoint --port --bind` to the

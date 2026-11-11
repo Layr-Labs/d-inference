@@ -139,11 +139,11 @@ struct ClusterPairSummary: Sendable, Equatable {
     var leadingMac: String { role == .member ? otherMac : ClusterOnboardingMacName.this }
 
     /// How the pair is set to serve; "not offered" while Darkbloom can't have it (never read as serving through it), and
-    /// with Both, me first its local API too.
+    /// with Both its local API too, "with you first" only where the pair's API reports its pause on (`[local] me_first`).
     var servesWords: String {
         guard !localOnly else { return "locally only" }
         return "through Darkbloom" + (ClusterOnboardingReady.isNotOffered(reason) ? " (not offered)" : "")
-            + (localAPI == nil ? "" : ", and on its local API with you first")
+            + (localAPI == nil ? "" : ", and on its local API" + (localAPI?.meFirst == nil ? "" : " with you first"))
     }
 
     /// The mode and each Mac's share, from the leader's deployment line ("pipeline", "M3 Ultra 40 layers / M5 Ultra 24

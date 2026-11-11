@@ -24,6 +24,8 @@ extension OnboardingChecks {
         ciNeverWaitsForEnter()
         theScreenLockIsReleasedBeforeTheWait()
         noTensorParallelTakesThePlannersFirstThatCanRun()
+        // The real-Mac proof of b250f13059 (M5U pair, 2026-11-11 W16.9): a stopped local pair flipped to tensor parallel.
+        theModeQuestionPreselectsTheModeTheStoppedPairLastServedIn()
     }
 
     /// Gemma 4 26B on these Macs: both modes, neither measured yet.
@@ -361,5 +363,41 @@ extension OnboardingChecks {
         let modes = [M(mode: "pipeline_v1", split: nil, measuredTokensPerSecond: nil, fitsNow: false),
                      M(mode: "pipeline_mtp_v1", split: nil, measuredTokensPerSecond: nil, fitsNow: true)]
         expect(M.automaticIndex(modes, throughDarkbloom: true, serving: false) == 1, "no TP: the first that fits")
+    }
+
+    /// W16.9: `cluster local` → Pipeline → `stop` → `start` in Terminal → Enter on the last model: the mode question
+    /// preselected Tensor parallel · Recommended and a second Enter served tensor parallel. The question preselects the
+    /// mode the pair last served in, the tag stays on the rule's pick, in every path that asks it: `start` on a paired
+    /// Mac (the pair's list), `cluster local` on the stopped pair, and its re-run.
+    static func theModeQuestionPreselectsTheModeTheStoppedPairLastServedIn() {
+        var piped = gemmaStopped
+        piped.servingMode = "pipeline_v1"
+        piped.scope = .localOnly(bind: "0.0.0.0")
+        let question = "  How should both Macs split Gemma 4 26B?\n"
+            + "  1) Pipeline · serves one request at a time · context 65,536 tokens, prompts up to 32,768\n"
+            + "  2) Tensor parallel · Recommended · serves up to 8 requests at once · context 262,144 tokens\n"
+            + "  " + prompt(2) + "Pipeline\n"
+        for (label, request) in [("start", ClusterOnboardingRequest()), ("cluster local", ClusterOnboardingRequest(scope: .localOnly(bind: "0.0.0.0")))] {
+            let recorder = Recorder()
+            let run = TerminalRun(operations(recorder, resume: piped, pairEvents: [], pairResult: .failed([]), choices: twoModes,
+                                             statusLines: ["Stopped; last model Gemma 4 26B."],
+                                             readyResult: .success(.init(servedBy: "this Mac", port: 8000, split: "pipeline"))), request: request)
+            expect(run.waitFor("  1) Gemma 4 26B · 15.6 GB"), "\(label): the list: \(run.text)"); run.type("\r")
+            expect(run.waitFor("How should both Macs split Gemma 4 26B?"), "\(label): the question"); run.type("\r")
+            expect(run.finish() == 0, "\(label): started")
+            expect(run.text.contains(question), "\(label): the mode it last served in preselected, the tag on the rule's pick: \(run.text)")
+            expect(recorder.all.contains("useMode 0 pipeline_v1") && !recorder.all.contains("useMode 0 tensor_parallel_v1"),
+                   "\(label): Enter keeps pipeline: \(recorder.all)")
+        }
+        // A pair whose last mode is the recommended one: nothing changes (the tag and the cursor on it).
+        var tp = piped
+        tp.servingMode = "tensor_parallel_v1"
+        let run = TerminalRun(operations(Recorder(), resume: tp, pairEvents: [], pairResult: .failed([]), choices: twoModes,
+                                         statusLines: ["Stopped; last model Gemma 4 26B."]))
+        expect(run.waitFor("  1) Gemma 4 26B · 15.6 GB"), "tensor parallel last: the list"); run.type("\r")
+        expect(run.waitFor("  2) Tensor parallel · Recommended · serves up to 8 requests at once · context 262,144 tokens\n  " + prompt(2, enter: 2)),
+               "tensor parallel last: preselected as before: \(run.text)")
+        run.type("q")
+        _ = run.finish()
     }
 }

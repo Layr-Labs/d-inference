@@ -33,7 +33,7 @@ struct Local: AsyncParsableCommand {
         Darkbloom.ensureLogging()
         let pair = ClusterPairSummary.local()
         switch Self.plan(json: json, paired: pair.paired, pairServesLocalOnly: pair.localOnly,
-                         serving: Self.servingNow()) {
+                         serving: Self.servingNowForTesting?() ?? Self.servingNow()) {
         case .show:
             guard show(pair: pair) else { throw ExitCode.failure }
         case .pointToClusterLocal:
@@ -55,17 +55,31 @@ struct Local: AsyncParsableCommand {
         }
     }
 
-    /// Starts Only me in the background as `start --local` does (its terms notice, picker, drain and summary), waits for
-    /// its API as `start --local --opencode` does (it listens once its models are loaded), then shows it.
+    /// Tests stand in for this Mac: how it serves now, and starting Only me, so a test never reads this Mac's provider
+    /// or starts a service.
+    @TaskLocal static var servingNowForTesting: (@Sendable () -> ServingNow)?
+    @TaskLocal static var startOnlyMeForTesting: (@Sendable (_ models: [String]) async throws -> Void)?
+
+    /// Starts Only me (`startOnlyMeAndWait`), then shows it.
     private func startOnlyMe(models: [String], pair: ClusterPairSummary) async throws {
-        var start = try Start.parse(Self.onlyMeStartArguments(models: models))
+        if let standIn = Self.startOnlyMeForTesting {
+            try await standIn(models)
+        } else {
+            try await Self.startOnlyMeAndWait(models: models)
+        }
+        guard show(pair: pair) else { throw ExitCode.failure }
+    }
+
+    /// Starts Only me in the background as `start --local` does (its terms notice, picker, drain and summary), and waits
+    /// for its API as `start --local --opencode` does: it listens once its models are loaded.
+    static func startOnlyMeAndWait(models: [String]) async throws {
+        var start = try Start.parse(onlyMeStartArguments(models: models))
         try await start.run()
         let preload = (try? loadRuntimeConfiguration(configPath: nil).config.backend.startupPreloadTimeoutSecs) ?? 0
         let seconds = Start.toolWaitSeconds + Int(clamping: preload)
         _ = await DarkbloomCommandLook.forCommand().working("Waiting for the local API") {
             await Start.waitForLocalAPI(port: nil, seconds: seconds)
         }
-        guard show(pair: pair) else { throw ExitCode.failure }
     }
 
     /// Prints the running local API's address and key as `local` always has; false, after saying why on standard

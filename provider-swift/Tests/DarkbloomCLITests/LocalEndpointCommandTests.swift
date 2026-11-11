@@ -7,7 +7,9 @@ import Testing
 
 // `darkbloom local` runs in a child process (an exit test): the command sets
 // up process-wide logging, and the child reads a discovery folder that only it
-// points at through DARKBLOOM_LOCAL_DIR.
+// points at through DARKBLOOM_LOCAL_DIR. How the Mac serves comes from that
+// folder alone, and starting Only me is a stand-in that only says so: the test
+// never reads this Mac's provider or starts a service.
 
 private func text(_ bytes: [UInt8]?) -> String {
     String(decoding: bytes ?? [], as: UTF8.self)
@@ -28,7 +30,15 @@ struct LocalEndpointCommandTests {
             func run(_ arguments: [String]) async throws -> Bool {
                 var command = try Local.parse(arguments)
                 do {
-                    try await command.run()
+                    try await Local.$servingNowForTesting.withValue({
+                        LocalEndpoint.readLiveInfo() == nil ? .nothing : .onlyMe
+                    }) {
+                        try await Local.$startOnlyMeForTesting.withValue({ models in
+                            FileHandle.standardError.write(Data("start Only me \(models)\n".utf8))
+                        }) {
+                            try await command.run()
+                        }
+                    }
                     return true
                 } catch let code as ExitCode where code == .failure {
                     return false
@@ -60,9 +70,11 @@ struct LocalEndpointCommandTests {
         }
         let stdout = text(result?.standardOutputContent)
         let stderr = text(result?.standardErrorContent)
-        #expect(stderr.components(separatedBy: "No local server running.\n"
-            + "Start one with:  darkbloom start --me-first   (Darkbloom and you, you first)\n"
-            + "             or: darkbloom start --local      (only you, on this Mac)\n").count - 1 == 2)
+        // Nothing serves: local starts Only me first (the stand-in starts nothing, so no server answers after it).
+        #expect(stderr.components(separatedBy: "start Only me []\nNo local server running.\n"
+            + "Start one with:  darkbloom local                                 (only you, on this Mac)\n"
+            + "             or: darkbloom start --local-endpoint --no-me-first  (Darkbloom and you)\n").count - 1 == 2)
+        #expect(stderr.components(separatedBy: "start Only me").count - 1 == 2, "never with --json or a live API")
 
         let sections = stdout.components(separatedBy: "---")
         try #require(sections.count == 9)

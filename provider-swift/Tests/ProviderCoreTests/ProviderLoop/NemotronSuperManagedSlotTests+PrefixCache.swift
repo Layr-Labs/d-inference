@@ -133,13 +133,11 @@ extension NemotronSuperManagedSlotTests {
                                          revisionDirectory: fixture.directory)
         let owner = try #require(await loop.nemotronSuperOwnerForTesting(modelId: Self.modelID))
         let store = try #require(owner.bridge.ssdHybridCheckpointStore)
-        // The default checkpoint precision: balanced older rows, beside the
-        // speculating owner's exact assistant history.
-        #expect(store.config.backendLayout == (owner.speculates
-            ? CBv2CompleteCheckpointManifest.nativeQuantizedPagedMTPLayout
-            : CBv2CompleteCheckpointManifest.nativeQuantizedPagedLayout))
+        // Super's default checkpoint precision is native under the global
+        // default `balanced`, so a restore continues the cold prefill.
+        #expect(store.config.backendLayout == CBv2CompleteCheckpointManifest.pagedLayout)
         #expect(owner.speculates == (mode == .auto))
-        #expect(owner.bridge.kvCheckpointQuantization == .balanced)
+        #expect(owner.bridge.kvCheckpointQuantization == .native)
         #expect(owner.prefixBankBytes == 0 && owner.bridge.residentPrefixCacheEvidence == nil)
         let readyDeadline = ContinuousClock.now + .seconds(5)
         while owner.bridge.prefixCacheModelStatus().state != .ready, ContinuousClock.now < readyDeadline {
@@ -203,14 +201,15 @@ extension NemotronSuperManagedSlotTests {
         #expect(await fixture.budget.reservationBytesSnapshot().isEmpty)
     }
 
-    /// The operator's `[backend]` checkpoint precision reaches the owner's
-    /// store and engine as for every other model: a per-model `native` entry
-    /// keeps the exact layout and its namespace.
+    /// The operator's `[backend]` per-model checkpoint precision for Super
+    /// reaches the owner's store and engine: a `balanced` entry codes older
+    /// rows beside the speculating owner's exact assistant history, in its own
+    /// layout and namespace.
     @Test(.timeLimit(.minutes(2)))
     func perModelCheckpointPrecisionReachesTheDurableStore() async throws {
         let fixture = try await Self.fixture(mode: .auto,
             environment: [NemotronSuperLocalPrefill.chunkKey: "256"],
-            checkpointQuantizationByModel: [Self.modelID: "native"],
+            checkpointQuantizationByModel: [Self.modelID: "balanced"],
             tokenizer: { SuperBytePromptTokenizer(script: $0) })
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
         try await fixture.loop.ensureModelLoaded(modelId: Self.modelID, allowEviction: false,
@@ -218,8 +217,8 @@ extension NemotronSuperManagedSlotTests {
         let owner = try #require(await fixture.loop.nemotronSuperOwnerForTesting(modelId: Self.modelID))
         let store = try #require(owner.bridge.ssdHybridCheckpointStore)
         #expect(owner.speculates)
-        #expect(store.config.backendLayout == CBv2CompleteCheckpointManifest.pagedLayout)
-        #expect(owner.bridge.kvCheckpointQuantization == .native)
+        #expect(store.config.backendLayout == CBv2CompleteCheckpointManifest.nativeQuantizedPagedMTPLayout)
+        #expect(owner.bridge.kvCheckpointQuantization == .balanced)
         #expect(await fixture.loop.unloadModel(Self.modelID))
         #expect(await fixture.budget.reservationBytesSnapshot().isEmpty)
     }

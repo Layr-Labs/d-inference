@@ -1,6 +1,6 @@
 # Use your Mac yourself, first
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-11
 
 How your Mac serves is one choice: **Only me**, **Darkbloom network** or
 **Both, me first**. This page says what each one runs, costs and earns, how to
@@ -408,19 +408,21 @@ with `--local-endpoint --no-me-first`.
 
 ## Two Macs
 
-A pair gets the same three choices. Run `darkbloom cluster` on each Mac: it
-pairs them, then the leading Mac asks how the pair serves (**Only me**,
-**Darkbloom network** or **Both, me first**, preselected) and which model; its
-list's **Change how the pair serves** asks again. Then run
-`darkbloom --opencode` on either Mac: with **Only me** or **Both, me first**,
-each Mac answers at its own address, on its own saved port, with its own key.
+A pair asks nothing about how it serves. Run `darkbloom cluster` on each Mac:
+it pairs them, and the leading Mac asks only which model; the pair serves
+through Darkbloom with its local API beside it, and Darkbloom keeps serving
+while you use it (`[local] me_first = false` on the leading Mac, unless you set
+`me_first = true`). `darkbloom cluster local` serves it **Only me**. Then run
+`darkbloom --opencode` on either Mac: with **Only me** or **Both**, each Mac
+answers at its own address, on its own saved port, with its own key
+([two Macs: Both](./two-mac-cluster.md#both-me-first-the-pairs-own-api-beside-darkbloom)).
 
-- **Only me:** no Mac of the pair contacts Darkbloom. `darkbloom cluster local`
-  serves the pair this way too. The other Mac passes its own port on to the
+- **Only me** (`darkbloom cluster local`): no Mac of the pair contacts Darkbloom. The other Mac passes its own port on to the
   pair's API, so `darkbloom local` and `--opencode` work there too, unless the
   API is kept on the leading Mac with `--bind`.
-- **Both, me first:** the leading Mac runs the pair's API, and Darkbloom pauses
-  for the whole pair while you use it. While it is paused, the pair keeps its
+- **Both** (`darkbloom cluster`): the leading Mac runs the pair's API, and
+  Darkbloom keeps serving while you use it; with `[local] me_first = true` on
+  that Mac, Darkbloom pauses for the whole pair while you use it. While it is paused, the pair keeps its
   base reward on the coordinator that ships with 0.10.11
   ([darkbloom-platform#709](https://github.com/Layr-Labs/darkbloom-platform/pull/709)
   onwards), as one Mac alone does; on coordinators before #709, both Macs lose

@@ -4905,9 +4905,9 @@ away; mixed pairs are first-class).
   while a model serves or when no plan was made for it (`OnboardingLive.adoption`).
 - **The scope a plan is for:** `chooseAndServe` names the scope before it plans
   the list (`ClusterOnboardingOperations.planScope`, `OnboardingLive.usePlanningScope`,
-  carried in `ClusterControlRequest.scope`); a start whose scope changes before
-  it adopts (the login check's "Serve locally only") is planned again for that
-  scope, and the same model is adopted from the new plan.
+  carried in `ClusterControlRequest.scope`), and the start adopts from that list;
+  the login check offers no other scope (`ClusterOnboardingDriver.localPairHint`
+  names `darkbloom cluster local` instead).
 - **Forwarded choices:** a choice the other Mac forwards to the control leader
   (`ClusterControlRequest`: op, index, model, scope and the mode family chosen
   on that Mac's screen, `OnboardingLive.adoptRequest`) is adopted in that family;

@@ -1,6 +1,6 @@
 # Provider troubleshooting
 
-> Last updated: 2026-11-10
+> Last updated: 2026-11-11
 
 Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
 check names, service lifecycle, coordinator connection, updates, models, the
@@ -274,7 +274,7 @@ request answered. Otherwise its line names why
 
 | Line | What to do |
 |---|---|
-| `… isn't logged in to Darkbloom, so the coordinator won't pair it` | `darkbloom login` on the Mac named, then **Retry**; or **Serve locally only** (Only me). |
+| `… isn't logged in to Darkbloom, so the coordinator won't pair it` | `darkbloom login` on the Mac named, then **Retry**; or `darkbloom cluster local` (Only me). |
 | `<Mac> isn't verified by Apple yet; Darkbloom retries by itself at about <time>` | The coordinator pairs only members with a current App Attest authorization. It is said once a Mac's part has run 2 minutes without one, or its key-generation safeguard holds it back; before that, `checking both Macs with Apple` is a new part's usual first minute. Leave both Macs running and don't restart either until that time (that Mac's local key-generation safeguard; `darkbloom doctor` shows it on the "app attest key" line), then **Retry**; or **Serve locally only** (Only me). |
 | `<Mac> lacks free memory for its share` | Quit apps on that Mac, then **Retry**; or **Change model**. |
 | `A part keeps ending the same way: …` | **Diagnostics** saves a redacted file in the home folder to send with a report. |

@@ -384,8 +384,8 @@ struct ClusterPairMemberRelayCLITests {
             #expect(sandbox.waits == (pair.localAPIBind == nil ? 0 : 1), "a pair with no local API anywhere doesn't wait")
         }
         #expect(ToolIntegrationStep.noPairAPI([.opencode]) == "✗ This pair serves only the Darkbloom network, so OpenCode "
-            + "has no local address to use and wasn't set up. In `darkbloom cluster`, Change how the pair serves to "
-            + "\"Both, me first\" or \"Only me\", then run `darkbloom --opencode` again.")
+            + "has no local address to use and wasn't set up. Run `darkbloom cluster` on the leading Mac (it serves the pair "
+            + "with its local API beside Darkbloom) or `darkbloom cluster local`, then run `darkbloom --opencode` again.")
         #expect(ToolIntegrationStep.pairAPIElsewhere([.opencode], bind: "127.0.0.1") == "✗ The pair's local API listens "
             + "on the Mac that runs it only (127.0.0.1), so OpenCode wasn't set up on this Mac: run `darkbloom "
             + "--opencode` on that Mac.")

@@ -1860,7 +1860,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 }
                 do {
                     try ToolConstraintValidation.validate(
-                        toolCalls, prepared: prepared)
+                        toolCalls, prepared: prepared, truncated: stopReason == "length")
                 } catch {
                     await releaseBox.fire()
                     continuation.finish(throwing: error)

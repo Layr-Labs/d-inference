@@ -74,12 +74,22 @@ func classifyToolNoncomplianceCheck(_ error: Error) -> ToolNoncomplianceCheck? {
 }
 
 extension ToolNoncomplianceCheck {
+    static let undeclaredNameViolation = "model emitted an undeclared tool call"
+    static let schemaViolation = "tool call arguments do not satisfy the declared schema"
+    static let parallelViolation = "parallel tool calls are disabled for this request"
+
+    static func streamedCallViolation(_ failure: ToolCallStreamFailure) -> String {
+        streamedCallViolationPrefix + failure.rawValue
+    }
+
+    private static let streamedCallViolationPrefix = "streamed tool call output was "
+
     /// Maps the fixed violation texts of `ToolConstraintValidation`,
     /// `NativeToolStreamRouter` and the native output owners.
     init(violation message: String) {
-        let streamed = "streamed tool call output was "
-        if message.hasPrefix(streamed),
-            let failure = ToolCallStreamFailure(rawValue: String(message.dropFirst(streamed.count)))
+        let prefix = Self.streamedCallViolationPrefix
+        if message.hasPrefix(prefix),
+            let failure = ToolCallStreamFailure(rawValue: String(message.dropFirst(prefix.count)))
         {
             switch failure {
             case .malformed: self = .malformed
@@ -89,9 +99,9 @@ extension ToolNoncomplianceCheck {
             return
         }
         switch message {
-        case "model emitted an undeclared tool call": self = .undeclaredName
-        case "tool call arguments do not satisfy the declared schema": self = .schema
-        case "parallel tool calls are disabled for this request": self = .parallel
+        case Self.undeclaredNameViolation: self = .undeclaredName
+        case Self.schemaViolation: self = .schema
+        case Self.parallelViolation: self = .parallel
         case _ where message.hasPrefix("tool_choice none") || message.hasPrefix("model did not emit")
             || message.hasPrefix("forced tool_choice"):
             self = .forcedChoice

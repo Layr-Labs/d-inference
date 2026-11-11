@@ -189,10 +189,10 @@ struct StreamedToolCallTests {
 
         // Without `strict` it leaves in one piece, as generated.
         var automatic = try Self.router(Self.request(), modelType: "gpt_oss")
-        var events: [MLXServerGenerationEvent] = []
-        for character in Self.characters(harmonyText) { events += try automatic.process(character) }
-        let call = try #require(Self.deltas(events).first)
-        #expect(Self.deltas(events).count == 1)
+        var returned: [MLXServerGenerationEvent] = []
+        for character in Self.characters(harmonyText) { returned += try automatic.process(character) }
+        let call = try #require(Self.deltas(returned).first)
+        #expect(Self.deltas(returned).count == 1)
         #expect(call.name == "delete_everything")
         #expect(try JSONDecoder().decode([String: MLXLMCommon.JSONValue].self, from: Data(call.arguments.utf8))
             == ["path": .string("/")])

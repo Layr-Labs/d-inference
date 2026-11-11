@@ -5,7 +5,7 @@ import Testing
 
 @testable import ProviderCore
 
-private typealias ArgumentValue = MLXLMCommon.JSONValue
+typealias AutoToolArgumentValue = MLXLMCommon.JSONValue
 
 /// `tool_choice: auto` returns the model's calls as generated unless a
 /// declared function sets `strict: true`; strict and forced choices stay
@@ -39,7 +39,7 @@ struct AutoToolCallValidationTests {
         return prepared
     }
 
-    private static func call(_ name: String = "set_value", _ arguments: [String: ArgumentValue]) -> ToolCall {
+    private static func call(_ arguments: [String: AutoToolArgumentValue], name: String = "set_value") -> ToolCall {
         ToolCall(function: .init(name: name, arguments: arguments))
     }
 
@@ -64,10 +64,10 @@ struct AutoToolCallValidationTests {
     }
 
     @Test(arguments: [
-        ArgumentValue.int(42), .double(2.5), .bool(true), .null, .object(["a": .int(1)]),
+        AutoToolArgumentValue.int(42), .double(2.5), .bool(true), .null, .object(["a": .int(1)]),
         .array([.int(1), .string("b")]), .string("text"),
     ])
-    func aTypelessPropertyAcceptsAnyValueUnderStrict(value: ArgumentValue) throws {
+    func aTypelessPropertyAcceptsAnyValueUnderStrict(value: AutoToolArgumentValue) throws {
         let prepared = try Self.prepared(Self.body(strict: true))
         try ToolConstraintValidation.validate(
             [Self.call(["value": value, "note": value])], prepared: prepared)
@@ -91,14 +91,25 @@ struct AutoToolCallValidationTests {
         try ToolConstraintValidation.validate([Self.call(["value": .object(["a": .int(1)])])], prepared: prepared)
         // Off-schema arguments and an undeclared function pass unchanged.
         try ToolConstraintValidation.validate([Self.call(["count": .string("three")])], prepared: prepared)
-        try ToolConstraintValidation.validate([Self.call("delete_everything", ["path": .string("/")])],
+        try ToolConstraintValidation.validate([Self.call(["path": .string("/")], name: "delete_everything")],
             prepared: prepared)
+    }
+
+    /// A call parsed from a frame that `max_tokens` cut off may be missing
+    /// arguments: it stays held to the declarations, as before.
+    @Test func aCallCutOffByTheTokenLimitIsStillValidated() throws {
+        let prepared = try Self.prepared(Self.body(strict: false))
+        #expect(Self.check {
+            try ToolConstraintValidation.validate([Self.call(["note": .string("cut")])], prepared: prepared,
+                truncated: true)
+        } == .schema)
+        try ToolConstraintValidation.validate([Self.call(["value": .int(1)])], prepared: prepared, truncated: true)
     }
 
     @Test func strictAutoRefusesAnUndeclaredFunction() throws {
         let prepared = try Self.prepared(Self.body(strict: true))
         #expect(Self.check {
-            try ToolConstraintValidation.validate([Self.call("delete_everything", [:])], prepared: prepared)
+            try ToolConstraintValidation.validate([Self.call([:], name: "delete_everything")], prepared: prepared)
         } == .undeclaredName)
     }
 

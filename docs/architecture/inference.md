@@ -2934,7 +2934,9 @@ function and arguments off the declared schema are returned instead of
 failing a response whose reasoning has already streamed. The request stays
 validated when any declared function sets `strict: true`, when it declares no
 tools (a call is then never returned), and for `required`, named and `none`
-choices; `parallel_tool_calls: false` holds either way. Strict `auto` checks
+choices; `parallel_tool_calls: false` holds either way, and a call parsed from
+a frame that `max_tokens` cut off is still validated (it may be missing
+arguments). Strict `auto` checks
 each call against the caller's schema as sent
 (`Prepared.declaredTools`, from the body before ingress normalization
 (`ToolSchemaNormalization`) filled `type: "string"` into typeless properties

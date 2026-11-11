@@ -569,9 +569,16 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             await releaseBox.fire()
             throw MultiModelBatchSchedulerEngineError.mediaUnsupportedByModel(modelId)
         }
-        // Only the GLM text path withholds and validates a JSON answer or a
-        // forced call, on one Mac and on a cluster pair alike.
-        if glmMedia, GLM5NextPromptPolicy.withholdsOutput(prepared, modelType: modelType) {
+        // GLM's JSON answer and forced calls are withheld until they validate,
+        // so its reasoning must already be a separate typed channel, as on the
+        // native families.
+        let withholdsGLMOutput = GLM5NextPromptPolicy.withholdsOutput(prepared, modelType: modelType)
+        // One Mac's media path withholds and validates a JSON answer as its
+        // text path does. A forced call is withheld and validated on the text
+        // path only, and the pair's media routes withhold neither, so media
+        // with either is refused before any media work.
+        if glmMedia, withholdsGLMOutput, prepared.requiresToolCall || glm5PairPostValidation
+            || engineV2Bridge?.clusterGLMMediaIngress != nil || engineV2Bridge?.clusterGLMImageConfiguration != nil {
             await releaseBox.fire()
             let (mode, refusal): (String, InferenceRefusalReason) = prepared.requiresToolCall
                 ? ("required/named tool_choice", .unsupportedForcedToolChoice)
@@ -852,10 +859,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         releaseBox: releaseBox,
                         usageSignal: requestUsage,
                         reasoningPrefix: reasoningPrefix,
-                        nativeReasoningPrefix: nativeMediaTools || glmWithholdsReasoning
+                        nativeReasoningPrefix: nativeMediaTools || glmWithholdsReasoning || withholdsGLMOutput
                             ? (ReasoningPromptProbe.streamingPrefix(forPromptTail:
                                 tokenizer.inner.decode(tokenIds: Array(visionPrepared.promptTokens.suffix(ReasoningPromptProbe.tailTokenCount)),
                                                        skipSpecialTokens: false)) ?? "<think></think>") : nil,
+                        recordsWithheldOutput: withholdsGLMOutput,
                         preserveInnerReasoningSpans: ToolChoiceEnforcementPolicy.preservesInnerReasoningSpans(
                             .init(modelId: modelId, modelType: modelType)),
                         nativeGemmaChannels: diffusionContainer != nil && modelType == "diffusion_gemma",
@@ -1083,10 +1091,6 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 "internal error: model '\(modelId)' has no serving engine (no v2 bridge)")
         }
 
-        // GLM's JSON answer and forced calls are withheld until they validate,
-        // so its reasoning must already be a separate typed channel, as on the
-        // native families.
-        let withholdsGLMOutput = GLM5NextPromptPolicy.withholdsOutput(prepared, modelType: modelType)
         return try await makeDeadlineCheckedEventStream(
             upstream: upstream,
             cancelUpstream: cancelUpstream,

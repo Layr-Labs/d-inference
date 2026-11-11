@@ -1748,7 +1748,11 @@ streams on a separate typed channel, and the answer is withheld until
 generation ends, then decoded and checked (`json_schema` against the caller's
 schema, through the shared compiled subset when the schema fits it) before it
 is exposed; invalid output is a 422 with no
-content (`GLM5NextResponseFormat`, `GLM5NextResponseFormatOutput`). Forced
+content (`GLM5NextResponseFormat`, `GLM5NextResponseFormatOutput`). One Mac
+serves it with image or video input the same way: the instruction turn renders
+in the media prompt (`EngineV2VisionPrefill.glm5NextUserInput`), and the media
+path routes reasoning to the typed channel and records the withheld answer as
+the text path does; a cluster pair refuses that combination with 400. Forced
 `tool_choice` (required or a named function) is structured post-validation, as
 on Qwen 3.5/3.8 and Nemotron: the forcing instruction renders, the native GLM
 parser withholds the call until end of stream, and `ToolConstraintValidation`
@@ -8886,9 +8890,11 @@ configuration declares, and answers each request shape as one Mac does.
    withheld on the text and media paths (`GLM5NextPromptPolicy.withholdsReasoning`;
    the pair's media paths seed the native reasoning channel from the rendered
    prompt as the single-Mac media path does), a JSON answer or forced call is
-   withheld and validated on the text path, and with images or video either is
-   refused with 400 before any media decode, ahead of the pair's media routing
-   (`GLM5NextPromptPolicy.withholdsOutput` in `prepareCompletion`). A
+   withheld and validated on the text path, and a JSON answer also on the
+   single-Mac media path. With images or video, a forced call on any slot and a
+   JSON answer on a pair are refused with 400 before any media decode, ahead of
+   the pair's media routing (`GLM5NextPromptPolicy.withholdsOutput` in
+   `prepareCompletion`); the pair's media routes withhold neither. A
    `response_format` answer the service validates that stopped at
    `max_tokens` before it was complete is
    `MLXOpenAIServiceError.responseFormatCutOffByMaxTokens` (422), not an

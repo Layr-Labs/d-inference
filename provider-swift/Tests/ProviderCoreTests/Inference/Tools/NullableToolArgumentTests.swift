@@ -34,6 +34,9 @@ struct NullableToolArgumentTests {
             "messages": [["role": "user", "content": "Probe it."]],
             "tools": [["type": "function", "function": [
                 "name": "probe",
+                // `strict` keeps an automatic call validated (#2003): these
+                // tests are about the arguments passing or failing validation.
+                "strict": true,
                 "parameters": ["type": "object", "properties": ["p": schema]] as [String: Any],
             ] as [String: Any]]],
             "tool_choice": "auto",

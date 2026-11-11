@@ -512,11 +512,13 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     request: request, controls: templateControls)
             } else { nativeMiMoThinkingEnabled = true }
             try ReasoningEffortPolicy.validate(request, controls: templateControls, modelType: modelType)
-            prepared = try ToolChoicePromptPolicy.prepare(
+            var policy = try ToolChoicePromptPolicy.prepare(
                 request,
                 modelType: modelType,
                 allowInternalSchemaMetadata: allowInternalToolSchemaMetadata,
                 glm5PairPostValidation: glm5PairPostValidation)
+            policy.declaredTools = templateControls.declaredTools
+            prepared = policy
             try checkFirstContentDeadline()
         } catch {
             await releaseBox.fire()
@@ -1851,7 +1853,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 }
                 do {
                     try ToolConstraintValidation.validate(
-                        toolCalls, prepared: prepared)
+                        toolCalls, prepared: prepared, truncated: stopReason == "length")
                 } catch {
                     await releaseBox.fire()
                     continuation.finish(throwing: error)

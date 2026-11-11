@@ -160,6 +160,8 @@ struct GemmaToolConstraintTests {
             name: name, description: "Weather", parameters: parameters))
     }
 
+    /// Automatic requests declare their tools `strict`: without it, `auto`
+    /// returns calls as generated and these tests exercise its validator.
     private func request(
         choice: OpenAIToolChoice,
         tools: [OpenAITool]? = nil,
@@ -168,7 +170,11 @@ struct GemmaToolConstraintTests {
         OpenAIChatCompletionRequest(
             model: "gemma-4-test",
             messages: [.init(role: .user, content: .text("weather"))],
-            tools: tools ?? [tool()],
+            tools: (tools ?? [tool()]).map { declared in
+                var declared = declared
+                if case .mode(.auto) = choice { declared.function.strict = true }
+                return declared
+            },
             toolChoice: choice,
             parallelToolCalls: parallel,
             maxTokens: 128)
@@ -820,7 +826,7 @@ struct GemmaToolConstraintTests {
               "model":"gemma-4-test",
               "messages":[{"role":"user","content":"x"}],
               "tools":[{"type":"function","function":{
-                "name":"calculate",
+                "name":"calculate","strict":true,
                 "parameters":{
                   "type":"object",
                   "properties":{
@@ -2165,7 +2171,7 @@ struct GemmaToolConstraintTests {
             """
             {"model":"gemma-4-test",
              "messages":[{"role":"user","content":"pick"}],
-             "tools":[{"type":"function","function":{"name":"pick","parameters":{
+             "tools":[{"type":"function","function":{"name":"pick","strict":true,"parameters":{
                "type":"object",
                "properties":{
                  "count":{"const":1},
@@ -2223,7 +2229,7 @@ struct GemmaToolConstraintTests {
             """
             {"model":"gemma-4-test",
              "messages":[{"role":"user","content":"pick"}],
-             "tools":[{"type":"function","function":{"name":"pick","parameters":{
+             "tools":[{"type":"function","function":{"name":"pick","strict":true,"parameters":{
                "type":"object",
                "properties":{
                  "blob":{},

@@ -153,6 +153,8 @@ enum ServingModeSource: Equatable, Sendable {
     /// Nothing chose it (no terminal and no saved choice, or the --foreground service without a mode flag): today's
     /// behaviour, the Darkbloom network.
     case today
+    /// No mode flag and no saved choice.
+    case `default`
 }
 
 /// A start's first step: a mode, or the question.
@@ -202,6 +204,9 @@ struct StartServing: Equatable, Sendable {
 
     var hasLocalAPI: Bool { mode != .network }
 
+    /// The one line a start that took the default says.
+    var defaultLine: String? { nil }
+
     /// The address a client on this Mac dials, as `local.json` names it once the API listens.
     var baseURL: String { LocalEndpoint.baseURL(host: bind, port: port) }
 
@@ -244,11 +249,8 @@ extension StartServing {
     }
 }
 
-/// What resolving a start may touch: tests stand in for the terminal, the Keychain and the ports.
+/// What resolving a start may touch: tests stand in for the Keychain and the ports.
 struct ServingEnvironment {
-    var terminal: Bool
-    var readInput: () -> String?
-    var emit: (String) -> Void
     /// Whether the local router's account key is saved; asked only when this start has a local API.
     var accountKeySaved: () -> Bool
     /// The port of this install's running local API, which a start keeps; asked only when no port is saved or named.
@@ -261,9 +263,7 @@ struct ServingEnvironment {
 
     /// This Mac's terminal, Keychain, `local.json`, LaunchAgent and ports.
     static var live: ServingEnvironment {
-        ServingEnvironment(terminal: ClusterPairCommands.isTerminal(), readInput: { readLine() },
-                           emit: { print($0, terminator: ""); fflush(stdout) },
-                           accountKeySaved: { Start.accountKeySaved() },
+        ServingEnvironment(accountKeySaved: { Start.accountKeySaved() },
                            ownLivePort: LocalAPIPort.ownLivePort, installedPort: LocalAPIPort.installedJobPort,
                            isFree: LocalAPIPort.isFreeOnThisMac)
     }
@@ -302,19 +302,22 @@ enum StartServingResolver {
     /// so that tools keep finding it. The --foreground service saves nothing, probes no port and never asks the
     /// Keychain: launchd's arguments say how it serves.
     static func resolve(_ options: LocalFirstOptions, saved section: LocalSettings?,
-                        environment env: ServingEnvironment) throws -> StartServing? {
+                        environment env: ServingEnvironment) throws -> StartServing {
+        let readInput: () -> String? = { readLine() }
+        let emit: (String) -> Void = { print($0, terminator: ""); fflush(stdout) }
         let saved = section ?? LocalSettings()
         var change = LocalSettingsChange()
         var accountKeySaved: Bool?
         let mode: LocalSettings.Mode, source: ServingModeSource
-        switch try options.modeStep(saved: section, terminal: env.terminal) {
+        switch try options.modeStep(saved: section, terminal: ClusterPairCommands.isTerminal()) {
         case .decided(let decided, let from):
             (mode, source) = (decided, from)
             if options.savesModeFlag, decided != saved.mode { change.mode = decided }
         case .ask(let preselected):
             let idle = options.meFirstIdleMinutes ?? saved.resolvedMeFirstIdleMinutes
             guard let answer = ServingQuestion.askMode(preselected: preselected, idleMinutes: idle,
-                                                       readInput: env.readInput, emit: env.emit) else { return nil }
+                                                       readInput: readInput, emit: emit)
+            else { throw ValidationError(ServingQuestion.cancelled) }
             (mode, source) = (answer, .question)
             // Beside --solo the answer serves this start only, with the pair's saved route: nothing asked is saved.
             if !options.solo { change.mode = answer }
@@ -323,8 +326,8 @@ enum StartServingResolver {
                 accountKeySaved = keySaved
                 if keySaved {
                     guard let route = ServingQuestion.askRoute(preselected: saved.resolvedRoute(accountKeySaved: true),
-                                                               readInput: env.readInput, emit: env.emit)
-                    else { return nil }
+                                                               readInput: readInput, emit: emit)
+                    else { throw ValidationError(ServingQuestion.cancelled) }
                     change.route = route
                 }
             }

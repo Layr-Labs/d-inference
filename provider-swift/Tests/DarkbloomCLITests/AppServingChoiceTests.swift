@@ -58,8 +58,7 @@ struct AppServingChoiceTests {
 
         /// A start the app runs (`start …`, no terminal), and the job it installs.
         func start(_ argv: [String]) throws -> StartServing {
-            let serving = try #require(try ScriptedTerminal().resolve(try Start.parse(Array(argv.dropFirst())),
-                                                                      terminal: false))
+            let serving = try ScriptedTerminal().resolve(try Start.parse(Array(argv.dropFirst())))
             try install(serving.mode, port: serving.port)
             return serving
         }

@@ -142,12 +142,12 @@ struct StartSoloModeFlagTests {
         let config = try TempConfig(Self.config)
         defer { config.remove() }
         let terminal = ScriptedTerminal()
-        let solo = try #require(try terminal.resolve(config.start(["--solo", "--local", "--model", "m"]), terminal: false))
+        let solo = try terminal.resolve(config.start(["--solo", "--local", "--model", "m"]))
         #expect(solo.mode == .local)
         #expect(solo.change.mode == nil)
         #expect(config.local?.mode == .both, "the pair's answer stays")
         #expect(LocalFirstOptions(local: true, solo: true).savesModeFlag == false)
-        let single = try #require(try terminal.resolve(config.start(["--local", "--model", "m"]), terminal: false))
+        let single = try terminal.resolve(config.start(["--local", "--model", "m"]))
         #expect(single.change.mode == .local)
         #expect(config.local?.mode == .local)
     }
@@ -164,18 +164,17 @@ struct StartSoloModeFlagTests {
         port = 8001
         """
 
-    /// #1931's review: `--solo --choose` saved its answer over the pair's `[local] mode`, D7's bug by another flag. The
-    /// answer serves that start only, and no route question follows: the route is the pair's setting too.
-    @Test("--solo --choose: the answer serves that start only, and asks for no route")
-    func aSoloChoiceIsForThatStartOnly() throws {
-        let config = try TempConfig(Self.pairSettings)
+    /// #1931's review: `--solo --choose` saved its answer over the pair's `[local] mode`, D7's bug by another flag. No
+    /// start asks now: beside `--solo`, a start with no mode saved serves the default (Both) for that start only, with
+    /// the pair's own pause and route, and saves nothing.
+    @Test("--solo without a saved mode serves Both for that start only, with the pair's settings, and saves nothing")
+    func aSoloDefaultIsForThatStartOnly() throws {
+        let config = try TempConfig(Self.pairSettings.replacingOccurrences(of: "mode = \"both\"\n", with: ""))
         defer { config.remove() }
         let before = config.bytes
-        let terminal = ScriptedTerminal(["1"])
-        let solo = try #require(try terminal.resolve(config.start(["--solo", "--choose", "--model", "m"]), terminal: true, keySaved: true))
-        #expect(solo.mode == .local && solo.source == .question)
-        #expect(solo.change.mode == nil && solo.change.route == nil)
-        #expect(terminal.reads == 1, "the mode question only")
+        let solo = try ScriptedTerminal().resolve(config.start(["--solo", "--choose", "--model", "m"]), keySaved: true)
+        #expect(solo.mode == .both && solo.source == .default && !solo.meFirst && solo.route == .myMacs)
+        #expect(solo.change.isEmpty && solo.defaultLine != nil)
         #expect(config.bytes == before, "the pair's [local] stays as it was")
     }
 
@@ -194,7 +193,7 @@ struct StartSoloModeFlagTests {
         defer { config.remove() }
         let before = config.bytes
         do {
-            _ = try ScriptedTerminal().resolve(config.start(["--solo"] + flags + ["--model", "m"]), terminal: false)
+            _ = try ScriptedTerminal().resolve(config.start(["--solo"] + flags + ["--model", "m"]))
             Issue.record("\(flags) was not refused")
         } catch let refusal as ValidationError {
             #expect(refusal.message.contains("[local] \(key)"), "\(refusal.message)")
@@ -209,8 +208,8 @@ struct StartSoloModeFlagTests {
         let config = try TempConfig(Self.pairSettings)
         defer { config.remove() }
         let before = config.bytes
-        let solo = try #require(try ScriptedTerminal().resolve(
-            config.start(["--solo", "--local-endpoint", "--no-me-first", "--route", "my-macs", "--model", "m"]), terminal: false))
+        let solo = try ScriptedTerminal().resolve(
+            config.start(["--solo", "--local-endpoint", "--no-me-first", "--route", "my-macs", "--model", "m"]))
         #expect(solo.mode == .both && !solo.meFirst && solo.route == .myMacs)
         #expect(solo.change.isEmpty)
         #expect(config.bytes == before)

@@ -21,6 +21,9 @@ struct Local: AsyncParsableCommand {
     @Flag(help: "Emit the raw discovery record as JSON.")
     var json = false
 
+    @Option(help: "Model ID to serve (repeatable).")
+    var model: [String] = []
+
     mutating func run() async throws {
         Darkbloom.ensureLogging()
 
@@ -146,6 +149,18 @@ struct Local: AsyncParsableCommand {
               let failure = state.localAPIFailure else { return nil }
         return (failure, .of(state, paired: ClusterPairSummary.local().paired))
     }
+
+    enum ServingNow: Equatable, Sendable { case nothing, onlyMe, darkbloom }
+    static func servingNow(running: DaemonState?, alive: (Int32) -> Bool, loadedJob: LocalSettings.Mode?,
+                           liveLocalAPI: Bool) -> ServingNow { .nothing }
+    enum Plan: Equatable, Sendable { case show, startOnlyMe, offerSwitch, pointToClusterLocal }
+    static func plan(json: Bool, paired: Bool, pairServesLocalOnly: Bool, serving: ServingNow) -> Plan { .show }
+    static let switchQuestion = ""
+    static func asksToSwitch(terminal: Bool, readInput: () -> String?, emit: (String) -> Void) -> Bool { false }
+    static let pairedLine = ""
+    static let networkOnlyLines: [String] = []
+    static func onlyMeStartArguments(models: [String]) -> [String] { [] }
+    static func switchModels(named: [String], installed: [String]?) -> [String] { [] }
 
     /// What `local` says to start a local API when none runs.
     static var notRunningHint: [String] {

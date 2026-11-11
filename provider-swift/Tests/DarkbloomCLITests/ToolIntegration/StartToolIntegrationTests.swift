@@ -109,26 +109,28 @@ struct StartToolIntegrationTests {
     @Test("a start that would serve no local API refuses the tools before anything starts or is saved")
     func noLocalAPIRefused() throws {
         let directory = try TemporaryDirectory("start-tools-config")
-        let config = try directory.write("[provider]\nname = \"d2b\"\n", to: "provider.toml")
+        let config = try directory.write("[provider]\nname = \"d2b\"\n\n[local]\nmode = \"network\"\n",
+                                         to: "provider.toml")
         let before = try Data(contentsOf: config)
         let refusal = "This Mac serves only the Darkbloom network, so OpenCode and Hermes have no local address to "
             + "use. Choose \"Both, me first\" (`darkbloom --opencode --hermes --me-first`) or \"Only me\" "
             + "(`darkbloom --opencode --hermes --local`). Nothing was started or saved."
-        for (terminal, answers) in [(false, [String]()), (true, ["2"])] {
-            var remaining = answers
-            let start = try Start.parse(["--opencode", "--hermes", "--config", config.path])
-            do {
-                _ = try start.resolveServing(environment: ServingEnvironment(
-                    terminal: terminal, readInput: { remaining.isEmpty ? nil : remaining.removeFirst() },
-                    emit: { _ in }, accountKeySaved: { false }, ownLivePort: { nil }, installedPort: { nil },
-                    isFree: { _ in true }))
-                Issue.record("no local API must refuse the tools")
-            } catch let error as ValidationError {
-                #expect(error.message == refusal)
-            }
+        let environment = ServingEnvironment(accountKeySaved: { false }, ownLivePort: { nil }, installedPort: { nil },
+                                             isFree: { _ in true })
+        let start = try Start.parse(["--opencode", "--hermes", "--config", config.path])
+        do {
+            _ = try start.resolveServing(environment: environment)
+            Issue.record("no local API must refuse the tools")
+        } catch let error as ValidationError {
+            #expect(error.message == refusal)
         }
         #expect(try Data(contentsOf: config) == before)
         #expect(ToolIntegrationStep.noLocalAPI([.opencode]).hasSuffix("(`darkbloom --opencode --local`)."))
+
+        // With no choice saved, the tools get the default's local API beside Darkbloom.
+        let fresh = try directory.write("[provider]\nname = \"d2b\"\n", to: "fresh.toml")
+        let serving = try Start.parse(["--opencode", "--config", fresh.path]).resolveServing(environment: environment)
+        #expect(serving.mode == .both && serving.source == .default && serving.hasLocalAPI)
     }
 
     // MARK: - Already serving: set the tools up, start nothing
@@ -255,11 +257,10 @@ struct StartToolIntegrationTests {
         let config = try directory.write("[provider]\nname = \"d2b\"\n\n[local]\nroute = \"my-macs-first\"\n",
                                          to: "provider.toml")
         var lookups = 0
-        let environment = ServingEnvironment(terminal: false, readInput: { nil }, emit: { _ in },
-                                             accountKeySaved: { lookups += 1; return true }, ownLivePort: { nil },
+        let environment = ServingEnvironment(accountKeySaved: { lookups += 1; return true }, ownLivePort: { nil },
                                              installedPort: { nil }, isFree: { _ in true })
         let start = try Start.parse(["--local", "--opencode", "--config", config.path])
-        let serving = try #require(try start.resolveServing(environment: environment))
+        let serving = try start.resolveServing(environment: environment)
         #expect(serving.mode == .local && serving.accountKeySaved == true && lookups == 1)
         // The banner's words come from that one read: requests can leave this Mac, so it doesn't say "this Mac only".
         #expect(LocalFirstWords.requests(route: serving.route, accountKeySaved: serving.accountKeySaved ?? false)
@@ -268,7 +269,7 @@ struct StartToolIntegrationTests {
         #expect(!start.localServerBanner(serving: serving, models: [], token: key).contains { $0.contains(key) })
         // `--local` alone says where requests go too, from one read of the Keychain, and shows no key either.
         let plain = try Start.parse(["--local", "--config", config.path])
-        let plainServing = try #require(try plain.resolveServing(environment: environment))
+        let plainServing = try plain.resolveServing(environment: environment)
         #expect(plainServing.accountKeySaved == true && lookups == 2)
         #expect(!plain.localServerBanner(serving: plainServing, models: [], token: key).contains { $0.contains(key) })
     }

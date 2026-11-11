@@ -467,10 +467,7 @@ struct Start: AsyncParsableCommand {
         }
 
         // How this Mac serves: a flag, the saved choice, or the question in a terminal.
-        guard let serving = try resolveServing() else {
-            print(ServingQuestion.cancelled)
-            return
-        }
+        let serving = try resolveServing()
         let localOnly = serving.mode == .local
         // No start asks without a terminal, the models' picker included.
         try requireModelsNamedWithoutTerminal(mode: serving.mode)
@@ -612,10 +609,9 @@ struct Start: AsyncParsableCommand {
 
     /// How this start serves (`StartServingResolver`), with the question asked in a terminal; nil when the person
     /// cancelled at the question. Nothing is saved yet: `saveServingChoice` saves once the start goes ahead.
-    func resolveServing(environment: ServingEnvironment = .live) throws -> StartServing? {
-        guard let serving = try StartServingResolver.resolve(
+    func resolveServing(environment: ServingEnvironment = .live) throws -> StartServing {
+        let serving = try StartServingResolver.resolve(
             localFirstOptions, saved: try savedLocalSettings(configPath: configOptions.config), environment: environment)
-        else { return nil }
         if serving.mode == .local, !local {
             // `--local` is refused with these before anything is asked; an answer is refused before it's saved.
             if schedule {
@@ -640,6 +636,9 @@ struct Start: AsyncParsableCommand {
         try setLocalSettings(configPath: configOptions.config) { serving.change.apply(to: &$0) }
         if let note = serving.portNote { print(note) }
     }
+
+    /// What `--choose` says.
+    static let chooseNote = ""
 
     /// Whether the local router's account key is in this Mac's Keychain. Never prints it.
     static func accountKeySaved(_ store: any LocalRouterAccountKeyStore = KeychainLocalRouterAccountKeyStore()) -> Bool {

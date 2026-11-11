@@ -242,7 +242,7 @@ struct ServingEnvironment {
     /// No other program listens on the port; asked only about the ports a choice may take.
     var isFree: (UInt16) -> Bool
 
-    /// This Mac's terminal, Keychain, `local.json`, LaunchAgent and ports.
+    /// This Mac's Keychain, `local.json`, LaunchAgent and ports.
     static var live: ServingEnvironment {
         ServingEnvironment(accountKeySaved: { Start.accountKeySaved() },
                            ownLivePort: LocalAPIPort.ownLivePort, installedPort: LocalAPIPort.installedJobPort,
@@ -288,7 +288,6 @@ enum StartServingResolver {
                         environment env: ServingEnvironment) throws -> StartServing {
         let saved = section ?? LocalSettings()
         var change = LocalSettingsChange()
-        var accountKeySaved: Bool?
         let (mode, source) = options.mode(saved: section)
         if options.savesModeFlag, mode != saved.mode { change.mode = mode }
         if source == .default, !options.solo {
@@ -311,10 +310,11 @@ enum StartServingResolver {
         }
 
         // This Mac's one port, for a local API only. Darkbloom network chooses, probes and saves none, so launchd's
-        // child without a mode flag (today's Darkbloom network) stays today's, byte for byte. A service's child (`--foreground`) serves on the port its arguments name, else `[local] port`, else the
-        // build's default.
+        // child without a mode flag (today's Darkbloom network) stays today's, byte for byte. A service's child
+        // (`--foreground`) serves on the port its arguments name, else `[local] port`, else the build's default.
         var port = options.port ?? saved.resolvedPort
         var portNote: String?
+        var accountKeySaved: Bool?
         if mode != .network, !options.foreground {
             let choice: LocalAPIPort.Choice
             do {

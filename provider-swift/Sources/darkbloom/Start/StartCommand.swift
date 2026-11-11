@@ -76,7 +76,8 @@ struct Start: AsyncParsableCommand {
             transform: Start.parseRoute)
     var route: LocalSettings.Route?
 
-    /// Asked how this Mac serves before no start asked; kept so that scripts which pass it still run (`chooseNote`).
+    /// Earlier builds asked how this Mac serves again; no start asks now. Kept, hidden, so scripts that pass it still
+    /// run: it only prints `chooseNote`.
     @Flag(help: .hidden)
     var choose = false
 

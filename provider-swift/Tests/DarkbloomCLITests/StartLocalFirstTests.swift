@@ -485,7 +485,8 @@ struct StartLocalFirstTests {
 
     @Test("contradicting flags are refused at parse", arguments: [
         ["--network", "--me-first"], ["--local", "--network"], ["--network", "--local-endpoint"],
-        ["--me-first", "--no-me-first"], ["--no-me-first", "--local"], ["--me-first-idle", "5", "--network"], ["--me-first-idle", "5", "--no-me-first"],
+        ["--me-first", "--no-me-first"], ["--no-me-first", "--local"], ["--me-first-idle", "5", "--network"],
+        ["--me-first-idle", "5", "--no-me-first"],
         ["--me-first-idle", "0"], ["--me-first-idle", "121"], ["--network", "--port", "9000"],
         ["--network", "--route", "my-macs"], ["--network", "--no-auth"], ["--route", "everywhere"],
         ["--foreground", "--route", "my-macs"], ["--foreground", "--no-me-first"],

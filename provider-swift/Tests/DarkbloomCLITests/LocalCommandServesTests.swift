@@ -49,6 +49,14 @@ struct LocalCommandServesTests {
         }
         #expect(Local.pairedLine == "This Mac is in a two-Mac cluster: `darkbloom cluster local` serves the pair on its "
             + "local API only.")
+        // --json and a paired Mac never read how this Mac serves alone.
+        func unread() -> Local.ServingNow {
+            Issue.record("read how this Mac serves")
+            return .nothing
+        }
+        #expect(Local.plan(json: true, paired: false, pairServesLocalOnly: false, serving: unread()) == .show)
+        #expect(Local.plan(json: false, paired: true, pairServesLocalOnly: false, serving: unread())
+            == .pointToClusterLocal)
     }
 
     @Test("the switch is asked only in a terminal, and only yes switches")

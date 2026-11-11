@@ -33,7 +33,7 @@ struct Local: AsyncParsableCommand {
         Darkbloom.ensureLogging()
         let pair = ClusterPairSummary.local()
         switch Self.plan(json: json, paired: pair.paired, pairServesLocalOnly: pair.localOnly,
-                         serving: json || pair.paired ? .nothing : Self.servingNow()) {
+                         serving: Self.servingNow()) {
         case .show:
             guard show(pair: pair) else { throw ExitCode.failure }
         case .pointToClusterLocal:
@@ -50,8 +50,8 @@ struct Local: AsyncParsableCommand {
                 guard shown else { throw ExitCode.failure }
                 return
             }
-            try await startOnlyMe(models: Self.switchModels(named: model, installed: LaunchAgent.installedServingJob()?.models),
-                                  pair: pair)
+            let models = Self.switchModels(named: model, installed: LaunchAgent.installedServingJob()?.models)
+            try await startOnlyMe(models: models, pair: pair)
         }
     }
 
@@ -235,11 +235,13 @@ struct Local: AsyncParsableCommand {
     }
 
     /// `--json` only reads. A paired Mac is the pair's (already local only: shown as it is). On a Mac alone: start Only
-    /// me where nothing serves, offer the switch where Darkbloom serves, and show Only me as it runs.
-    static func plan(json: Bool, paired: Bool, pairServesLocalOnly: Bool, serving: ServingNow) -> Plan {
+    /// me where nothing serves, offer the switch where Darkbloom serves, and show Only me as it runs. `serving` is read
+    /// only on a Mac alone without `--json`.
+    static func plan(json: Bool, paired: Bool, pairServesLocalOnly: Bool,
+                     serving: @autoclosure () -> ServingNow) -> Plan {
         if json { return .show }
         if paired { return pairServesLocalOnly ? .show : .pointToClusterLocal }
-        switch serving {
+        switch serving() {
         case .nothing: return .startOnlyMe
         case .onlyMe: return .show
         case .darkbloom: return .offerSwitch

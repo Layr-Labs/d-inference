@@ -2815,13 +2815,16 @@ retain priority (`provider-swift/Sources/ProviderCore/Inference/MTP/EngineV2MTPA
 `providerMTPVerificationPolicy`).
 When neither a global nor a per-model acceptance value is configured, serving
 defaults to typical acceptance for eligible sampled target-prefix rows, except
-on the owned Bonsai 9B candidate, the catalog `Qwen3.5-9B` and the catalog
-`gemma-4-26b-qat-4bit`, whose built-in rule is exact
-(`MTPAcceptancePolicy.builtInIsExact`; the 9B looped under typical acceptance
-in the 0.10.12 gate, see the Qwen 3.5/3.6 defaults below, and Gemma QAT drafted
-every answer of OpenRouter's 10-31 GPQA run, 30 % of which ended at the
-32,768-token cap). Exact keeps the model's output distribution; its tokens are
-not bit-identical to MTP off, since verify windows round differently.
+on the builds whose built-in rule is exact (`MTPAcceptancePolicy.builtInIsExact`):
+the owned Bonsai 9B candidate; the catalog `Qwen3.5-9B`, which looped under
+typical acceptance in the 0.10.12 gate (see the Qwen 3.5/3.6 defaults below);
+the catalog `gemma-4-26b-qat-4bit`, which drafted every answer of OpenRouter's
+10-31 GPQA run, 30 % of which ended at the 32,768-token cap; and every Qwen 3.8
+27B build (`EigenLabs/Qwen3.8-27B-4bit-mtp` and its head-less target,
+`ModelRuntimeRequirements.qwen38ConcreteModelIDs`), whose lone requests draft
+on a single Mac. Qwen 3.8 pairs never read this rule and were already exact.
+Exact keeps the model's output distribution; its tokens are not bit-identical
+to MTP off, since verify windows round differently.
 Under typical acceptance a draft is kept when the sampler-filtered target row
 gives it probability above `min(1, 0.2 * exp(-H))`, `H` the row's entropy in
 nats; the first rejected position and the bonus position still commit the keyed

@@ -160,6 +160,8 @@ struct GemmaToolConstraintTests {
             name: name, description: "Weather", parameters: parameters))
     }
 
+    /// Automatic requests declare their tools `strict`: without it, `auto`
+    /// returns calls as generated and these tests exercise its validator.
     private func request(
         choice: OpenAIToolChoice,
         tools: [OpenAITool]? = nil,
@@ -168,7 +170,11 @@ struct GemmaToolConstraintTests {
         OpenAIChatCompletionRequest(
             model: "gemma-4-test",
             messages: [.init(role: .user, content: .text("weather"))],
-            tools: tools ?? [tool()],
+            tools: (tools ?? [tool()]).map { declared in
+                var declared = declared
+                if case .mode(.auto) = choice { declared.function.strict = true }
+                return declared
+            },
             toolChoice: choice,
             parallelToolCalls: parallel,
             maxTokens: 128)

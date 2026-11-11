@@ -248,9 +248,9 @@ struct StreamedToolCallTests {
     /// the ingress normalizer fills in `type: "string"` for the templates.
     private static let gptOSSBody = #"""
         {"model":"gpt-oss-20b","messages":[{"role":"user","content":"Store it."}],"stream":true,
-         "tools":[{"type":"function","function":{"name":"set_value","STRICT"parameters":{"type":"object",
+         "tools":[{"type":"function","function":{"name":"set_value",STRICT"parameters":{"type":"object",
            "properties":{"value":{"description":"Any JSON value"}},"required":["value"]}}},
-          {"type":"function","function":{"name":"write_file","STRICT"parameters":{"type":"object",
+          {"type":"function","function":{"name":"write_file",STRICT"parameters":{"type":"object",
            "properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}}}]}
         """#
 

@@ -2865,6 +2865,34 @@ draft KV is never shared. This is prompt-prefix reuse, not persistence of an
 in-flight speculative round. The ordinary attention-only prefix index remains
 disabled for this hybrid model.
 
+On the Qwen 3.5/3.6 (also Qwen3.8-27B, which uses the same embedded head),
+Nemotron Super and native Qwen4 assistants (not the embedded Nemotron head
+above), a request the assistant cannot draft for still records its prompt
+history when its prompt can be cached
+([prefix-cache invariant 9](prefix-cache.md#invariants)). That covers a token
+constraint, logprobs, `logit_bias`, a penalty or a `stop` string, so it
+includes a Qwen 3.5/3.6 request with the card presence penalty (the 35B
+builds' default), which keeps it from speculating. Its prompt chunks run the
+MTP step's hidden-returning prefill, the forward a speculating prompt runs,
+followed by the same sampler call, and its checkpoints equal a speculating
+request's. It never drafts, verifies or seeds a carry, and `beginMTPPlan`
+releases its assistant state at the first plan after its prompt completes.
+Through 0.10.11
+such a request staged no checkpoint on these heads, so from 0.10.5, which gave
+the Qwen builds' default request the card penalty, those builds donated almost
+nothing. The opt-in is per head
+(`CBv2MTPPrefixCheckpointDrafter.checkpointsNonSpeculatingRows`); the rows are
+chosen by `EngineLoopV2.mtpRecordsPromptHistory`
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPPlanning.swift`).
+A step that holds such a prompt chunk is an MTP step: its prompt rows are not
+packed, the next step does not chain from it, and decode rows beside it take
+the MTP step's plain decode, which is distribution-exact. In the SDK's tests
+(`Qwen35CardDefaultCheckpointTests`) its tokens and logprobs equal ordinary
+decode's bit for bit; on real weights that is checked in the GPU validation, not
+by CI. `Qwen35CardDefaultDonationTests` covers the donation and an exact restore,
+including a restored request's own extended donation, on the provider's
+production assembly and encrypted store.
+
 ### Sampling parameters
 
 `EngineV2Translation.samplingParams(from:defaults:)`
@@ -2945,15 +2973,15 @@ the 9B, an M5 Ultra for the 35B):
 | `qwen3.5-35b-a3b`, `qwen3.6-35b-a3b-vl-mtp-mxfp8` (`qwen35CardDefaults`) | 1.5 | typical | `qwen3.5-35b-a3b` ran away under typical acceptance (5 of 19 everyday prompts, 8 of 12 loopers to 32,768, MTP running at concurrency 1) and under exact (2 of 12 loopers); the 3.6 build shares its architecture |
 | `Qwen3.5-9B` (`qwen35NineBCardDefaults`) | none | **exact** (`MTPAcceptancePolicy.builtInIsExact`) | ran away on 13 of 31 draws under typical acceptance and on 0 of 31 under exact, MTP running; the penalty-free body cached 8,192 tokens on the second send, the penalty body none |
 
-A row with a penalty neither speculates nor, on these builds, stages a prefix
-checkpoint ([prefix caching](prefix-cache.md#invariants), invariant 9), so the
-35B builds' requests that omit the penalty stay without MTP and without cache
-donation, the cost the gate accepted for loop safety. A request's own
+A row with a penalty does not speculate (`EngineLoopV2.mtpBasicEligible`), so
+the 35B builds' requests that omit the penalty stay without MTP, the cost the
+gate accepted for loop safety; they still stage prefix checkpoints
+([prefix caching](prefix-cache.md#invariants), invariant 9). A request's own
 `presence_penalty` always wins: `0` on a 35B build speculates under typical
 acceptance and donates checkpoints (the configuration that looped in the gate,
-now the caller's choice); a nonzero value on the 9B turns its MTP and cache
-donation off for that request. The coordinator forwards a build's registry
-runtime defaults for the fields a request omits
+now the caller's choice); a nonzero value on the 9B turns its MTP off for that
+request (it still donates checkpoints). The coordinator forwards a build's
+registry runtime defaults for the fields a request omits
 ([`requestRuntimeDefaultKeys`](https://github.com/Layr-Labs/darkbloom-platform/blob/c69380d91fd3f9e4ef3ff1e3775690d80adbbe57/coordinator/api/inference/request/model_runtime_defaults.go));
 on 2026-11-10 the registry set `temperature`, `top_p` and `top_k` for these
 builds and no `presence_penalty`, so the provider default above decides it.

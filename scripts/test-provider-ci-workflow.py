@@ -1386,7 +1386,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                         if setup_cache:
                             self.assertEqual(setup_cache, "${{ " + CACHE_GATE + " && 'npm' || '' }}")
         # At least these; Cluster GPU Tests is routed only where its shards ask.
-        self.assertLessEqual({"release-integrity", "docs", "frontend", "check", "warm", *BUILD_JOBS,
+        self.assertLessEqual({"release-integrity", "docs", "frontend", "desktop-package", "check", "warm", *BUILD_JOBS,
                               "test-provider", "test-cluster", "cluster-release-checks", "test-cluster-focused"},
                              set(routed))
         # The step itself: off only on a Darkbloom runner without the guest's

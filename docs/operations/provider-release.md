@@ -27,69 +27,68 @@ runs the resolve, build, qualification, signing, R2 staging and publication
 chain for one environment. To find the newest dev release, read
 `https://api.dev.darkbloom.dev/v1/releases/latest`.
 
-`ProviderCore.version` is prepared as `0.10.10`, a patch release over `v0.10.9`.
-It adds `darkbloom waitlist` and first-setup approval gates for Darkbloom
-Sandbox and `darkbloom cluster`, ported from #1742 onto `master` (the feature
-PR #1850). Nothing else changes from v0.10.9: the serving engine, the
-pair setup, the models, the toolchain (Xcode 27.2 / SDK 27.2 / Swift 6.4.2) and
-the MLX pins are v0.10.9's. Both Macs of a pair must run 0.10.10, and a pair on
-0.10.9 updates itself
+`ProviderCore.version` is prepared as `0.10.11`, a patch release over `v0.10.10`.
+Qwen3.8-27B pairs decode with their speculative assistant through Darkbloom
+(#1819, with #1718's parity work), a pair takes the long requests it can serve
+and reports its limits and measured speeds (#1844), and the tensor-parallel
+engine is faster with unchanged output (#1820, #1822, #1824, #1830, #1832,
+#1834, #1842). Chunked reads release memory as they go (#1836, #1829), and a
+pair's local API ends a failed stream with the single-Mac error chunk (#1839).
+The DevNet and production apps no longer share a pair on one Mac (#1846,
+#1857), a Qwen pair with the assistant prefills several prompt chunks together
+(#1854), the cluster setup quotes no speeds (#1858), Gemma tensor-parallel
+prefill can overlap its cable traffic (#1843, off by default), and a video
+whose reader fails once is decoded again (#1851). Both Macs of a pair must
+run 0.10.11, and a pair on 0.10.10 updates itself
 ([updating Darkbloom on the pair](../provider/two-mac-cluster.md#updating-darkbloom-on-the-pair)).
-See the [`v0.10.10` changelog entry](../../CHANGELOG.md) for the full scope.
+See the [`v0.10.11` changelog entry](../../CHANGELOG.md) for the full scope.
 
-Before tagging `v0.10.10`:
+Before tagging `v0.10.11`:
 
-- Confirm the tagged commit keeps the release toolchain: `mise.toml` has
-  `swift = "6.4.2"`, `release-provider.yml` sets
-  `DARKBLOOM_PROVIDER_TOOLCHAIN: release` and asserts
-  `build_sdk_version == '27.2'`, `scripts/check-date-comparisons.py` passes, and
-  the release build runs `scripts/check-provider-weak-imports.py`.
-- Confirm the pins `libs/mlx` and the nested `mlx` `72dffa2d`,
-  `libs/mlx-swift` `c633d221` and `libs/mlx-swift-lm` `32f5c744`, as v0.10.9.
-  The tag build's `metallib_hash` should equal v0.10.9's
-  `5b97893cc20e6e9651edf3284d970488af9a9bdd64820231e95fee760eec70ac`.
-- `PROD_CLUSTER_RUNTIME_ENABLED` is `true`, so this tag registers a cluster
-  runtime facts block. Run the release's facts step read-only on the exact tag
-  tree (`scripts/provider-cluster-runtime-facts.sh <app> darkbloom prod <new folder>`
-  on an unsigned app staged as the build job stages it). It must exit 0 and
-  match v0.10.9's block in models, grants and qualifications.
-- Catalog room: production holds 24 approvals from v0.10.8 and 24 from v0.10.9.
-  This release adds 2 per model of its block (24 for 12 models), so v0.10.8's
-  approvals are left out: pairs still on 0.10.8 stop serving through Darkbloom
-  until they update, and the coordinator logs `release cluster approvals
-  omitted` for v0.10.8.
+- Toolchain unchanged: `mise.toml` `swift = "6.4.2"`, `release-provider.yml`
+  sets `DARKBLOOM_PROVIDER_TOOLCHAIN: release` and asserts
+  `build_sdk_version == '27.2'`; `scripts/check-date-comparisons.py` passes; the
+  release build runs `scripts/check-provider-weak-imports.py`.
+- Pins: `libs/mlx` `72dffa2d` and `libs/mlx-swift` `c633d221` as v0.10.10;
+  `libs/mlx-swift-lm` moves to `7994762ef9` (fork `main` with #388, #389,
+  #390; Swift model code, no Metal kernels). The metallib comes from `libs/mlx`, so the tag build's
+  `metallib_hash` should equal v0.10.10's `5b97893c…70ac`; confirm against the
+  final DevNet build's row first.
+- Cluster runtime facts: run the release's facts step read-only on the exact tag
+  tree. Expect the same 12 models and grants, but each qualification's
+  `request_envelope` now carries its mode's limits (#1844), and Qwen3.8-27B's
+  tensor-parallel qualification names the assistant's evidence report and its
+  resource policy digest the declared assistant (#1819). Confirm with the
+  platform owner that production's coordinator stores these qualifications and
+  derives approvals from them, and that it accepts the slot's new
+  `request_limits` heartbeat field.
+- Catalog room: v0.10.10 and v0.10.11 hold 24 approvals each; v0.10.9's 24 are
+  left out (72 > 64). Pairs still on 0.10.9 stop serving through Darkbloom until
+  they update.
 - The tagged commit is on `master` and verified, holds `ProviderCore.version`
-  `0.10.10`, keeps the plain-build default `prod`, and its `changelog.d/` holds
+  `0.10.11`, keeps the plain-build default `prod`, and its `changelog.d/` holds
   only `README.md`.
 
 Roll out in this order; each step is a separate approval:
 
-1. Production platform: 0.10.10's registration needs nothing new. The waitlist
-   routes (darkbloom-platform #627) are independent: without them the first
-   setups go on as in 0.10.9. Confirm production's `/health` `build_commit`
-   and that no coordinator swap overlaps this release's publication.
-2. Merge into `master`, each squash-merged after its approval: the waitlist
-   feature PR, then this preparation. Let SDK 27 release preparation pass on
-   `master`.
+1. Production platform: confirm the coordinator accepts the new facts and
+   heartbeat field (above); if it needs a change, that deploy goes first.
+2. Merge into `master`, each squash-merged after its approval: the `dev` to
+   `master` release branch, then this preparation.
 3. Re-run the facts dry run on the tag tree.
-4. Tag `v0.10.10` on this preparation's squash commit
-   ([step 4](#4-tag-and-push-production-source)). After registration, check
-   `GET /v1/cluster/approvals` for `release/0.10.10/<model>/s<1|2>` beside
-   v0.10.9's, and that `release cluster approvals omitted` names v0.10.8.
-5. Pairs on 0.10.9 update themselves at their update slot, or at once with
-   `darkbloom update` on each Mac. Single Macs update by themselves.
+4. Tag `v0.10.11` on this preparation's squash commit. After registration, check
+   `release/0.10.11/<model>/s<1|2>` approvals beside v0.10.10's.
+5. Pairs on 0.10.10 update themselves; check that each serves, including a Qwen
+   pair through Darkbloom with the assistant.
 6. The platform snapshots its provider contracts from the tagged commit and
-   sets `LatestProviderVersion` to `0.10.10`.
+   sets `LatestProviderVersion` to `0.10.11`.
 
-Catalog changes, allowlist changes and model registration are separate
-approvals. This preparation tags, deploys and enables nothing.
-
+`v0.10.10` was [published on 2026-11-06](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.10)
+from `102ba6f74b0e4d8620768b5f6f11a49c13d3c571`,
 `v0.10.9` was [published on 2026-11-05](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.9)
 from `95cc1ca37533aa860f1948bde0d6ec9c36a6bd4a`, `v0.10.8` was
 [published on 2026-11-04](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.8)
-from `e8f3d53f6d49c66232ea4cd270b84c2aa4df01f0`, `v0.10.7` was
-[published on 2026-11-03](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.7)
-from `7512eeeae0682b120f3d86abbc712861bdbf2bda`. Publication does not establish
+from `e8f3d53f6d49c66232ea4cd270b84c2aa4df01f0`. Publication does not establish
 that every optional feature or environment has been activated.
 
 ## Prerequisites

@@ -623,11 +623,12 @@ only for a request of about the same size. Prefill frames over a growing
 history free temporaries that no later request reuses, so the cache kept them:
 the GLM-5.3 paged KV tests' process reached 18.5 GiB, of which at most 4.0 GiB
 was live, and Qwen's prefix-depth test kept 6.4 GiB, of which 0.7 GiB was live.
-The GLM-5.3 and prefix-depth tests bound the cache at 4 GiB, which holds one
-frame's temporaries (at 1 GiB the paged KV test took 2.4 times as long); the
+The GLM-5.3 paged KV, row invariance, depth invariance and window census
+tests and Qwen's prefix-depth test bound the cache at 4 GiB. That holds one
+frame's temporaries. At 1 GiB the paged KV test took 2.4 times as long. The
 Gemma 4 paged synthetic stages and the GLM-5.3 prefix SSD restore bound it at
-the 1 GiB of a ready Qwen tensor-parallel rank. The bound changes no result
-and no assertion. The shards' times did not change: shard 2 took 468 s
+1 GiB, the cache of a ready Qwen tensor-parallel rank. The bound changes no
+result and no assertion. The shards' times did not change: shard 2 took 468 s
 (median 469 s before), shard 5 453 s (458 s).
 
 | Lane | Jobs | Size | Used memory (GiB) | While sizes are off |

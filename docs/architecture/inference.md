@@ -3121,6 +3121,18 @@ window. The diagnostic contains only layer and dtype metadata
 The [runtime validation report](../reports/2026-09-05-paged-runtime-dtype.md)
 records tiny-model correctness and remaining release gates.
 
+### Native checkpoint defaults
+
+The generic slot factory resolves a slot's checkpoint precision through
+`PrefixCachePolicy.checkpointPrecision`. For `gemma-4-26b-qat-4bit`,
+`gpt-oss-20b`, `glm-5.3-flash` and the Bonsai 2 27B and 9B listings
+(`PrefixCachePolicy.defaultsToNativeCheckpoints`) native is the per-model
+default beneath the operator's own entry, so their complete checkpoints keep
+native rows and a cache hit continues the cold prefill; their per-model entry
+or `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` still selects a profile, and the
+global setting does not apply to them. Every other model resolves as before
+([precision architecture](kv-cache-quantization.md#native-execution-with-quantized-checkpoints)).
+
 ### Supported `model_type`s and quantization
 
 | `model_type` | Family | Notes |

@@ -55,7 +55,7 @@ extension OnboardingChecks {
     static func followingTheUltra(_ recorder: Recorder, status: [[String]], start: [ClusterOnboardingStartProgress?] = [],
                                   followSeconds: Double = 900, step: ClusterOnboardingLeaderStep? = .init(.starting)) -> ClusterOnboardingOperations {
         var made = operations(recorder, pairEvents: memberEvents, pairResult: .paired(role: .member, peerName: ultraName),
-                              pairServingResults: [.failure(.init([appleReason + ".", "Then choose Retry, or serve locally only now."]))],
+                              pairServingResults: [.failure(.init([appleReason + ".", "Then choose Retry."]))],
                               followSeconds: followSeconds)
         let looks = Recorder()
         made.leaderStatus = {

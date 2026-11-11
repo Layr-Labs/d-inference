@@ -273,7 +273,7 @@ struct ClusterStatusPlainTests {
         typealias S = ClusterPairSummary
         #expect(S.state(ofStatus: ["Serving Qwen 3.8 27B through Darkbloom on both Macs (tensor parallel)."], started: true, leaderMode: "cluster") == (.serving, nil))
         let refused = "Qwen 3.8 27B is not serving yet: The other Mac (Apple M4 Max, 128 GB) isn't verified by Apple yet; Darkbloom retries by itself at about 00:34. Don't restart either Mac until then."
-        #expect(S.state(ofStatus: [refused, "Then choose Retry, or serve locally only now."], started: true, leaderMode: nil)
+        #expect(S.state(ofStatus: [refused, "Then choose Retry."], started: true, leaderMode: nil)
             == (.notServing, "The other Mac (Apple M4 Max, 128 GB) isn't verified by Apple yet; Darkbloom retries by itself at about 00:34. Don't restart either Mac until then"))
         #expect(S.state(ofStatus: ["Qwen 3.8 27B is not serving yet: the coordinator paired both Macs."], started: true, leaderMode: nil) == (.loading, "the coordinator paired both Macs"))
         #expect(S.state(ofStatus: ["Stopped; last model Qwen 3.8 27B."], started: false, leaderMode: nil) == (.stopped, nil))
@@ -367,7 +367,7 @@ struct ClusterStatusPlainTests {
         var refused = pair(role: .member)
         refused.state = .notServing
         refused.reason = "The other Mac (Apple M5 Max, 128 GB) isn't verified by Apple yet; Darkbloom retries by itself at about 00:34. Don't restart either Mac until then"
-        refused.lines = ["Qwen 3.8 27B is not serving yet: \(refused.reason!).", "Then choose Retry, or serve locally only now."]
+        refused.lines = ["Qwen 3.8 27B is not serving yet: \(refused.reason!).", "Then choose Retry."]
         #expect(refused.clusterStatusLines == [
             "Cluster: this Mac (Mac Studio) follows · \(otherMac) leads",
             "Model: Qwen 3.8 27B · tensor parallel · M3 Ultra 50% / M5 Max 50%",

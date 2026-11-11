@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-10
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -2138,7 +2138,7 @@ elapsed nanoseconds. Numerics only — never tokens, text or hashes
 | Prompt-chunk attention | 128-query blocks (`DARKBLOOM_CBV2_ATTN_QUERY_BLOCK`; paged blocks other than Qwen4 QSA build an absolute mask), bounding the composed score tensor. A full-attention chunk with no window, softcap, vision span or bidirectional mask, whose head_dim MLX fuses (64/72/80/96/128; 256 on NAX from 1024 queries in bf16/fp16), is one `.causal` call on either KV backend (live packed paged KV keeps its own path); `DARKBLOOM_TTFT_FUSED_CAUSAL_PREFILL=0` restores blocks | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/AttentionV1.swift` (`usesFusedCausalPrefill`), `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedLayerCache.swift` (`prefillAttend`) |
 | `enablePrefixCache` | true when the slot has an effective SSD cache, enabled paged resident cache, or recurrent checkpoint-bank configuration, or complete SSD checkpoint store; engine capability gates still apply | `EngineV2Factory+Production.swift` (`assembleProductionBuild`), `EngineV2.swift` |
 | `requestTimeout` | 120 s legacy total wall, used only when `DARKBLOOM_CBV2_LEGACY_REQUEST_TIMEOUT` is affirmative | `EngineLoopV2.swift`, `CBv2EngineLoopConfig`; `EngineV2Factory+Configuration.swift` |
-| `stepTimeout` | 30 s | `CBv2EngineLoopConfig` |
+| `stepTimeout` | 30 s; 120 s (the prefill progress lease) for native MiMo, because a watchdog trip seals a native engine for good and a healthy MiMo prefill step can pass 30 s on an M3 Ultra | `CBv2EngineLoopConfig`; `MiMoV26StepWatchdog.swift` (`nativeMiMoLoopConfig`) |
 | `admissionLease`, `prefillProgressLease`, `decodeProgressLease`, `backpressureLease` | 120 s each | `CBv2EngineLoopConfig` |
 | `safetyCeilingDecodeFloorTPS` | 5 | `CBv2EngineLoopConfig` |
 

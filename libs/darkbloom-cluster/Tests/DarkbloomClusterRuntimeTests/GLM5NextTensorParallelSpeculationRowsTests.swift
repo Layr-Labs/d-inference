@@ -12,7 +12,7 @@ import Testing
 /// `round`. A synthetic serving-policy whole-model stage at the artifact's
 /// widths (five layers, NVFP4 dense MLPs and experts, affine Q4/g64 elsewhere)
 /// on one device: the agreement is the identity.
-@Suite(.serialized, .boundedBufferCache)
+@Suite(.serialized, .boundedBufferCache(gib: 4))
 struct GLM5NextTensorParallelSpeculationRowsTests {
     static let enabled = ProcessInfo.processInfo.environment["GLM53_ROW_INVARIANCE"] == "1"
 

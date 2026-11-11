@@ -16,9 +16,11 @@ import Testing
 /// cache of one test stays for the next. The cache is a reuse pool, so the
 /// bound changes no result.
 struct BoundedBufferCache: SuiteTrait, TestTrait, TestScoping {
-    static var bytes: Int {
+    static var readyRankBytes: Int {
         QwenTensorParallelLaunch.freedBufferCacheBytes(allocatorHeadroomBytes: QwenDenseStageLoadPolicy.allocatorHeadroomBytes)
     }
+
+    let bytes: Int
 
     /// Applied to a suite, the trait scopes each of its tests.
     var isRecursive: Bool { true }
@@ -26,7 +28,7 @@ struct BoundedBufferCache: SuiteTrait, TestTrait, TestScoping {
     func provideScope(for test: Test, testCase: Test.Case?,
                       performing function: @Sendable () async throws -> Void) async throws {
         let previous = Memory.cacheLimit
-        Memory.cacheLimit = min(previous, Self.bytes)
+        Memory.cacheLimit = min(previous, bytes)
         Memory.peakMemory = 0
         defer {
             let gib = Double(1 << 30)
@@ -41,6 +43,9 @@ struct BoundedBufferCache: SuiteTrait, TestTrait, TestScoping {
 }
 
 extension Trait where Self == BoundedBufferCache {
-    /// `BoundedBufferCache`.
-    static var boundedBufferCache: Self { Self() }
+    /// `BoundedBufferCache` at a ready rank's bound.
+    static var boundedBufferCache: Self { Self(bytes: Self.readyRankBytes) }
+
+    /// `BoundedBufferCache` at `gib` GiB.
+    static func boundedBufferCache(gib: Int) -> Self { Self(bytes: gib << 30) }
 }

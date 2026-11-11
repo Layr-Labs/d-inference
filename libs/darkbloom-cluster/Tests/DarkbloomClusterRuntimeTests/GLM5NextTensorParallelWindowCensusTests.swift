@@ -170,7 +170,7 @@ struct GLM5NextTensorParallelWindowCensusTests {
     /// of an M-row call against row r of a two-row call `=`, alone `1`, else
     /// `x`), and the KDA (layer 4) and DSA (layer 3) attention over the
     /// window schedules (classes per position, as `windowWidthCensus`).
-    @Test(.enabled(if: enabled), .boundedBufferCache)
+    @Test(.enabled(if: enabled), .boundedBufferCache(gib: 4))
     func sublayerCensus() throws {
         try Device.withDefaultDevice(.gpu) {
             let (stage, _) = try Paged.model()
@@ -254,7 +254,7 @@ struct GLM5NextTensorParallelWindowCensusTests {
     /// row r of an M-row product against row r of the two-row (`qmv_wide`)
     /// product (`=`) or the one-row (`qmv`, `1`), else `x`. Rows 2 through the
     /// vector limit less one are one class under `MLX_QMV_BATCH_INVARIANT=1`.
-    @Test(.enabled(if: enabled), .boundedBufferCache)
+    @Test(.enabled(if: enabled), .boundedBufferCache(gib: 4))
     func projectionRowCensus() throws {
         try Device.withDefaultDevice(.gpu) {
             // (name, input, output, mode): KDA fused inputs and output, DSA q_b

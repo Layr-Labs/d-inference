@@ -204,7 +204,7 @@ struct GLM5NextTensorParallelDepthInvarianceTests {
     /// straddles the dense-to-sparse switch (3,000 rows) prefills to the same
     /// hidden rows and caches with it on and off, so prompt-prefix entries
     /// and SSD records do not depend on it.
-    @Test(.enabled(if: enabled), .boundedBufferCache)
+    @Test(.enabled(if: enabled), .boundedBufferCache(gib: 4))
     func prefillIsTheSameWithAndWithoutTheSwitch() throws {
         try Device.withDefaultDevice(.gpu) {
             let (stage, _) = try Self.model(sharded: false)
@@ -228,7 +228,7 @@ struct GLM5NextTensorParallelDepthInvarianceTests {
     /// Default off: without padding a request's last round (window 0)
     /// verifies one row, as before; padded it verifies two and keeps one.
     /// Both keep the same tokens before it and leave the same cache length.
-    @Test(.enabled(if: enabled), .boundedBufferCache)
+    @Test(.enabled(if: enabled), .boundedBufferCache(gib: 4))
     func unpaddedLastRoundsStayOneRowWindows() throws {
         try Device.withDefaultDevice(.gpu) {
             let (stage, mtp) = try Paged.model()

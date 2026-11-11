@@ -102,8 +102,8 @@ def built(component):
 # jobs and the release build checks, then the 3 non-blocking GPU shards. No
 # lane is `required`: while sizes are off, every lane asks without a size.
 PLAN_LANES = {
-    "test-cluster-2": (requested("cluster", 2), "12x32", False),
-    "test-cluster-3": (requested("cluster", 2), "4x24", False),
+    "test-cluster-2": (requested("cluster", 2), "4x24", False),
+    "test-cluster-3": (requested("cluster", 2), "4x16", False),
     "test-cluster-focused": (requested("cluster", 2), "4x16", False),
     "test-provider-2": (requested("provider"), "4x24", False),
     "test-cluster-1": (requested("cluster"), "4x16", False),

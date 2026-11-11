@@ -5,13 +5,14 @@ import Testing
 
 /// The exact artifacts whose 4-bit (`balanced`) checkpoints moved restored
 /// answers off the cold ones save native checkpoints by default, so a cache
-/// hit continues the cold prefill. The operator's per-model setting and the
+/// hit continues the cold prefill. Gemma 4 26B QAT stays on the global
+/// setting until its larger native files are measured on the Macs that serve
+/// its hits. The operator's per-model setting and the
 /// process switch still select a profile; the global setting, which a saved
 /// provider.toml spells out as `balanced`, does not.
 struct NativeCheckpointDefaultTests {
     /// Each exact artifact ID with the `model_type` its config declares.
     static let nativeByDefault: [(id: String, type: String)] = [
-        ("gemma-4-26b-qat-4bit", "gemma4"),
         ("gpt-oss-20b", "gpt_oss"),
         ("glm-5.3-flash", "glm5_next"),
         (GLM5NextLocalQualification.modelID, "glm5_next"),
@@ -60,6 +61,7 @@ struct NativeCheckpointDefaultTests {
     /// SDK's defaults: only the exact qualified artifacts change.
     @Test func otherModelsKeepTheirCheckpointDefault() {
         for (id, type) in [("qwen3.5-35b-a3b", "qwen3_5_moe"), ("EigenLabs/Qwen3.8-27B-4bit-mtp", "qwen3_5"),
+                           ("gemma-4-26b-qat-4bit", "gemma4"), ("gemma-4-26b-qat-4bit", "gemma4_text"),
                            ("gemma-4-26b", "gemma4"), ("gemma-4-26b-8bit", "gemma4"),
                            ("openai/gpt-oss-20b", "gpt_oss"), ("gpt-oss-120b", "gpt_oss"),
                            ("ternary-bonsai-2-27b-future", "prism_hadamard_qwen35")] {

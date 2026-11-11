@@ -1155,17 +1155,20 @@ struct EngineV2KVBackendGateTests {
         #expect(outcome.completeLayout == CBv2CompleteCheckpointManifest.nativeQuantizedContiguousHistoricalLayout)
     }
 
-    /// Both release artifacts default to native checkpoints under the global
-    /// default `balanced` (`PrefixCachePolicy.defaultsToNativeCheckpoints`).
-    @Test("Historical paged targets construct native complete SSD checkpoints by default",
+    /// GPT-OSS defaults to native checkpoints under the global default
+    /// `balanced` (`PrefixCachePolicy.defaultsToNativeCheckpoints`); Gemma QAT
+    /// keeps the global `balanced`.
+    @Test("Historical paged targets construct complete SSD checkpoints by default",
           arguments: ["gpt-oss-20b", "gemma-4-26b-qat-4bit"])
     func historicalTargetDefaultCompleteSSD(modelID: String) async throws {
         let outcome = try await slotCacheOutcome(
             kvBackendConfig: "auto", modelID: modelID, environment: gateEnvironment())
+        let native = modelID == "gpt-oss-20b"
         #expect(outcome.kind == .paged)
         #expect(!outcome.legacyConstructionAttempted)
-        #expect(outcome.completeLayout == CBv2CompleteCheckpointManifest.historicalAttentionLayout)
-        #expect(outcome.livePrecision == .native && outcome.checkpointPrecision == .native)
+        #expect(outcome.completeLayout == (native ? CBv2CompleteCheckpointManifest.historicalAttentionLayout
+            : CBv2CompleteCheckpointManifest.nativeQuantizedHistoricalLayout))
+        #expect(outcome.livePrecision == .native && outcome.checkpointPrecision == (native ? .native : .balanced))
         #expect(outcome.cache)
         #expect(outcome.status.backend == .paged)
         #expect(outcome.status.state == .ready)
@@ -1188,7 +1191,7 @@ struct EngineV2KVBackendGateTests {
         } else {
             #expect(outcome.kind == .contiguous)
             #expect(outcome.cache)
-            #expect(outcome.completeLayout == CBv2CompleteCheckpointManifest.nativeContiguousHistoricalLayout)
+            #expect(outcome.completeLayout == CBv2CompleteCheckpointManifest.nativeQuantizedContiguousHistoricalLayout)
             #expect(outcome.status.state == .ready)
             #expect(outcome.status.reason == .ready)
         }

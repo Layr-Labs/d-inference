@@ -5,18 +5,19 @@ import MLXLMCommon
 
 extension PrefixCachePolicy {
     /// Exact artifacts whose complete checkpoints default to native precision:
-    /// Gemma 4 26B QAT, GPT-OSS 20B, GLM-5.3-Flash and the Bonsai 2 27B and 9B
-    /// listings. Under the provider-wide `balanced` default their older
-    /// attention rows (GLM: its latent rows) are stored at 4 bits, so a cache
-    /// hit restored approximate state and moved answers off the cold ones;
-    /// native restores continue the cold prefill (Gemma bit for bit up to
-    /// 32,768 tokens, GLM's text). Other builds and aliases keep the global
-    /// setting. Nemotron Super has its own default
-    /// (`NemotronSuperLocalPrefixCache.checkpointPrecision`) and Lightning the
-    /// SDK's (`PagedKVQuantizationPolicy.nativeCheckpointModelTypes`).
+    /// GPT-OSS 20B, GLM-5.3-Flash and the Bonsai 2 27B and 9B listings. Under
+    /// the provider-wide `balanced` default their older attention rows (GLM:
+    /// its latent rows) are stored at 4 bits, so a cache hit restored
+    /// approximate state and moved answers off the cold ones; native restores
+    /// continue the cold prefill (GLM's text). Gemma 4 26B QAT keeps the
+    /// global setting until its larger native files (×2.3) are measured
+    /// against the disk budgets of the Macs that serve its hits. Other builds
+    /// and aliases keep the global setting too. Nemotron Super has its own
+    /// default (`NemotronSuperLocalPrefixCache.checkpointPrecision`) and
+    /// Lightning the SDK's (`PagedKVQuantizationPolicy.nativeCheckpointModelTypes`).
     static func defaultsToNativeCheckpoints(modelId: String) -> Bool {
         switch modelId {
-        case "gemma-4-26b-qat-4bit", "gpt-oss-20b":
+        case "gpt-oss-20b":
             return true
         default:
             return GLM5NextCoordinatorServing.isManagedModelID(modelId)

@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-11-11
+> Last updated: 2026-11-10
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -27,88 +27,69 @@ runs the resolve, build, qualification, signing, R2 staging and publication
 chain for one environment. To find the newest dev release, read
 `https://api.dev.darkbloom.dev/v1/releases/latest`.
 
-`ProviderCore.version` is prepared as `0.10.12`, a patch release over `v0.10.11`.
-A running request that one Mac's memory refuses now ends alone in every pair
-mode, and the pair keeps serving (#1932, #1934, #1935); a Gemma 4 pair's
-pipeline serves the model's whole context again (#1933, with #1928's capacity
-tests); Gemma 4 and GLM-5.3-Flash pairs in tensor parallel serve as many
-requests at once as both Macs' memory holds (#1936, #1939, with #1940's
-per-lane parity check), and a pair estimates each request's first token before
-it takes it (#1936). A pair's API answers a typed 503 from the first request
-(#1929), the words real-Mac tests found are fixed (#1931), media decode faults
-carry their own reason (#1921), and the watchdog no longer counts a requested
-restart as a failed start (#1948), restores a provider job launchd lost (#1945)
-and lets a pair's leader back off while the other Mac is away (#1949). Selected
-models come back by themselves (#1609); `status` reports fan control (#1942),
-paid early ends (#1950) and older authorization reports (#1943); Gemma 4
-reasons with `tool_choice` `none` (#1941); the desktop app recommends models by
-chip (#1610); GPT-OSS repack tooling is added (#1562). A GLM-5.3-Flash heartbeat
-reports only the requests it holds (#1964), and Nemotron Super
-serves JSON, tools and WebP/GIF/BMP with media (#1922, #1962); a verbatim-repeating
-answer stops early as `length` (#2005); GLM answers a JSON format with media on one
-Mac (#2009). A request no
-longer waits forever behind the idle speed check (#1966), and a drain stops
-waiting for requests the coordinator abandoned (#1968). Qwen 3.5/3.6 requests that
-can't speculate save prefix checkpoints again (#1965), Lightning serves plain
-decode (#1969), the checkpoint export batches its rows (#1971), and Gemma 4's
-MTP upgrade no longer runs a forward on the serving model (#1985); a native MiMo step may run
-120 s before the watchdog seals the engine (#1989); `status` lists early-ended
-requests by cause, paid or unpaid (#1980), and `models catalog` names the models this
-Mac could add (#1957); Gemma 4 QAT (#1974) and Qwen 3.8 27B on
-single Macs (#1999) draft with exact MTP acceptance; Nemotron Super saves native-precision
-prefix checkpoints, so its cached answers equal cold ones (#2002); tool calls under `tool_choice: auto`
-return as generated, while strict, required and named tools stay checked (#2003). The SDK pin
-moves once more, to `ad8a5860e5` (mlx-swift-lm #378, #398, #399, #402: Gemma 4 admits
-deadline text beside an image row once its prompt is read). The SDK pin moves once to
-`libs/mlx-swift-lm` `093563be11`: Gemma 4's row-mapped NAX prefill on by default
-with compiled feed-forward graphs (#1608, #1611, #1614), Qwen 3.5 MTP prompts
-projecting only their last position (SDK #302), nullable tool parameters
-(#1944) and an opt-in early response before the checkpoint write (#1671, off). Both Macs of a pair must
-run 0.10.12, and a pair on 0.10.11 updates itself
+`ProviderCore.version` is prepared as `0.10.11`, a patch release over `v0.10.10`.
+Qwen3.8-27B pairs decode with their speculative assistant through Darkbloom
+(#1819, with #1718's parity work), a pair takes the long requests it can serve
+and reports its limits and measured speeds (#1844), and the tensor-parallel
+engine is faster with unchanged output (#1820, #1822, #1824, #1830, #1832,
+#1834, #1842). Chunked reads release memory as they go (#1836, #1829), and a
+pair's local API ends a failed stream with the single-Mac error chunk (#1839).
+The DevNet and production apps no longer share a pair on one Mac (#1846,
+#1857), a Qwen pair with the assistant prefills several prompt chunks together
+(#1854), the cluster setup quotes no speeds (#1858), Gemma tensor-parallel
+prefill can overlap its cable traffic (#1843, off by default), and a video
+whose reader fails once is decoded again (#1851). Both Macs of a pair must
+run 0.10.11, and a pair on 0.10.10 updates itself
 ([updating Darkbloom on the pair](../provider/two-mac-cluster.md#updating-darkbloom-on-the-pair)).
-See the [`v0.10.12` changelog entry](../../CHANGELOG.md) for the full scope.
+See the [`v0.10.11` changelog entry](../../CHANGELOG.md) for the full scope.
 
-Before tagging `v0.10.12`:
+Before tagging `v0.10.11`:
 
 - Toolchain unchanged: `mise.toml` `swift = "6.4.2"`, `release-provider.yml`
   sets `DARKBLOOM_PROVIDER_TOOLCHAIN: release` and asserts
   `build_sdk_version == '27.2'`; `scripts/check-date-comparisons.py` passes; the
   release build runs `scripts/check-provider-weak-imports.py`.
-- Pins: `libs/mlx` `72dffa2d` and `libs/mlx-swift` `c633d221` as v0.10.11, so
-  the tag build's `metallib_hash` should equal v0.10.11's `5b97893c…70ac`;
-  `libs/mlx-swift-lm` moves to fork `main` `ad8a5860e5` (Swift model code, no
-  Metal kernels). Confirm against the final DevNet build's row first.
+- Pins: `libs/mlx` `72dffa2d` and `libs/mlx-swift` `c633d221` as v0.10.10;
+  `libs/mlx-swift-lm` moves to `7994762ef9` (fork `main` with #388, #389,
+  #390; Swift model code, no Metal kernels). The metallib comes from `libs/mlx`, so the tag build's
+  `metallib_hash` should equal v0.10.10's `5b97893c…70ac`; confirm against the
+  final DevNet build's row first.
 - Cluster runtime facts: run the release's facts step read-only on the exact tag
-  tree. Expect the same models and grants as v0.10.11; Gemma 4's pipeline
-  qualification carries the whole context again (#1933). Parse the block with
-  the coordinator that ships with this release before tagging.
-- Catalog room: v0.10.11 and v0.10.12 hold 24 approvals each; v0.10.10's 24 are
-  left out (72 > 64). Pairs still on 0.10.10 stop serving through Darkbloom
-  until they update.
+  tree. Expect the same 12 models and grants, but each qualification's
+  `request_envelope` now carries its mode's limits (#1844), and Qwen3.8-27B's
+  tensor-parallel qualification names the assistant's evidence report and its
+  resource policy digest the declared assistant (#1819). Confirm with the
+  platform owner that production's coordinator stores these qualifications and
+  derives approvals from them, and that it accepts the slot's new
+  `request_limits` heartbeat field.
+- Catalog room: v0.10.10 and v0.10.11 hold 24 approvals each; v0.10.9's 24 are
+  left out (72 > 64). Pairs still on 0.10.9 stop serving through Darkbloom until
+  they update.
 - The tagged commit is on `master` and verified, holds `ProviderCore.version`
-  `0.10.12`, keeps the plain-build default `prod`, and its `changelog.d/` holds
+  `0.10.11`, keeps the plain-build default `prod`, and its `changelog.d/` holds
   only `README.md`.
 
 Roll out in this order; each step is a separate approval:
 
-1. Production platform: deploy the coordinator that ships with 0.10.12 (its
-   provider contracts snapshot this preparation's commit) first.
+1. Production platform: confirm the coordinator accepts the new facts and
+   heartbeat field (above); if it needs a change, that deploy goes first.
 2. Merge into `master`, each squash-merged after its approval: the `dev` to
    `master` release branch, then this preparation.
-3. Re-run the facts dry run on the tag tree and parse the block with the
-   deployed coordinator's parser.
-4. Tag `v0.10.12` on this preparation's squash commit. After registration, check
-   `release/0.10.12/<model>/s<1|2>` approvals beside v0.10.11's.
-5. Pairs on 0.10.11 update themselves; check that each serves, including a
-   Gemma 4 pair in the pipeline with a long prompt.
+3. Re-run the facts dry run on the tag tree.
+4. Tag `v0.10.11` on this preparation's squash commit. After registration, check
+   `release/0.10.11/<model>/s<1|2>` approvals beside v0.10.10's.
+5. Pairs on 0.10.10 update themselves; check that each serves, including a Qwen
+   pair through Darkbloom with the assistant.
+6. The platform snapshots its provider contracts from the tagged commit and
+   sets `LatestProviderVersion` to `0.10.11`.
 
-`v0.10.11` was [published on 2026-11-09](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.11)
-from `34c4a10d86aa72e823787cb9cccb5d6c850d540a`,
 `v0.10.10` was [published on 2026-11-06](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.10)
 from `102ba6f74b0e4d8620768b5f6f11a49c13d3c571`,
 `v0.10.9` was [published on 2026-11-05](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.9)
-from `95cc1ca37533aa860f1948bde0d6ec9c36a6bd4a`. Publication does not
-establish that every optional feature or environment has been activated.
+from `95cc1ca37533aa860f1948bde0d6ec9c36a6bd4a`, `v0.10.8` was
+[published on 2026-11-04](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.8)
+from `e8f3d53f6d49c66232ea4cd270b84c2aa4df01f0`. Publication does not establish
+that every optional feature or environment has been activated.
 
 ## Prerequisites
 

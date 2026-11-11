@@ -35,11 +35,24 @@ jobs:
     runs-on: ${{ fromJSON(needs.route.outputs.routes)['frontend'] }}
     timeout-minutes: 30
     steps:
+      # Before every cache step: a Darkbloom Sandbox that the plane gave no
+      # Darkbloom cache would reach GitHub's own Actions cache, so there every
+      # cache step is skipped (docs/developer/build.md#ci-caching).
+      - name: Choose this job's Actions cache
+        run: |
+          if [[ ${RUNNER_NAME:-} != darkbloom-* ]]; then
+            echo "Actions cache: this runner's own"
+          elif [[ -n ${DARKBLOOM_CACHE_URL:-} ]]; then
+            echo "Actions cache: the Darkbloom cache at $DARKBLOOM_CACHE_URL"
+          else
+            echo "CI_ACTIONS_CACHE=off" >> "$GITHUB_ENV"
+            echo "::notice title=Actions cache::The plane gave this Darkbloom Sandbox no cache, so every cache step is skipped."
+          fi
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '22'
-          cache: npm
+          cache: ${{ env.CI_ACTIONS_CACHE != 'off' && 'npm' || '' }}
           cache-dependency-path: desktop-app/package-lock.json
       - run: npm ci
         working-directory: desktop-app

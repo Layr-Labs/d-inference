@@ -116,17 +116,17 @@ struct GenerationLoopDetectorTests {
     }
 
     @Test("drafted deltas of several tokens are checked like single tokens")
-    func multiTokenDeltas() {
+    func multiTokenDeltas() throws {
         var stream = TokenStream(seed: 23)
         let tokens = stream.tokens(5_000) + Array(repeatElement(q63Block, count: 1_000).joined())
         var one = GenerationLoopDetector()
         var drafted = GenerationLoopDetector()
-        let single = feed(tokens, into: &one)
-        let multi = feed(tokens, into: &drafted, chunk: 5)
-        #expect(single?.period == 19)
-        #expect(multi?.period == 19)
-        #expect(multi!.generatedTokens >= single!.generatedTokens)
-        #expect(multi!.generatedTokens < single!.generatedTokens + 5)
+        let single = try #require(feed(tokens, into: &one))
+        let multi = try #require(feed(tokens, into: &drafted, chunk: 5))
+        #expect(single.period == 19)
+        #expect(multi.period == 19)
+        #expect(multi.generatedTokens >= single.generatedTokens)
+        #expect(multi.generatedTokens < single.generatedTokens + 5)
     }
 }
 

@@ -239,6 +239,12 @@ final class MiMoV26ManagedAudioProviderTests: XCTestCase {
             },tokenizerProvider:{ _ in .init(tokenizer:value.tokenizer,modelType:"mimo_v2") },
             availableModels:{ ["audio-fixture"] },mtpSlots:{ [] },
             modelTypeProvider:{ _ in "mimo_v2" })
+        // The engine delivers the stream's terminal event, then settles the
+        // request's one media reservation on a later engine-queue callback.
+        // The lease can join first, so wait for the settlement itself.
+        let removals = EventCounter()
+        value.transaction.setMediaReservationRemovalHookForTesting { removals.increment() }
+        let settled = removals.expectation(reaching:1,"media reservation settled")
         phase("sending authenticated media")
         try await app.test(.router) { client in
             try await client.execute(uri:"/v1/chat/completions",method:.post,
@@ -265,6 +271,7 @@ final class MiMoV26ManagedAudioProviderTests: XCTestCase {
         }
         await lease.joinFromOutside()
         phase("owner joined")
+        await fulfillment(of:[settled],timeout:10)
         XCTAssertGreaterThan(actual.stepCount,before)
         XCTAssertEqual(lease.snapshot().phase,.completed)
         XCTAssertEqual(value.transaction.managedMediaReservationCountForTesting,0)

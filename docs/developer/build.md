@@ -607,11 +607,13 @@ job's used memory times 1.25, on which the job takes at most 5% longer than on
 12 vCPUs. Used memory is app + wired + compressed, the peak that
 `scripts/ci-resource-sampler.py` recorded ([Build Once](#build-once)). The
 test jobs were sampled in the 20 full dev runs 42741850921 to 42921272802
-(2026-11-10, Blacksmith, 12 vCPUs and 48 GiB), and again after the cache
-bound below in run 42932309477 of pull request 1988. The build jobs and
-Cluster Release Build Checks were sampled in 12 runs of 2026-11-09 and
-2026-11-10 whose build was cold, on Blacksmith and on Darkbloom (12 vCPUs, 32
-GiB). The value is the largest of all samples. A lane that two shards share
+(2026-11-10, Blacksmith, 12 vCPUs and 48 GiB) and in the 4 pull request runs
+42905700276 to 42923410239 (Darkbloom, 12 vCPUs and 32 GiB). After the cache
+bound below, they were sampled in runs 42926131340, 42932309477 and
+42934886553 (both attempts) of pull request 1988, on Blacksmith and on
+Darkbloom. The build jobs and Cluster Release Build Checks were sampled in 12
+runs of 2026-11-09 and 2026-11-10 whose build was cold, on Blacksmith and on
+Darkbloom (12 vCPUs, 32 GiB). The value is the largest of all samples. A lane that two shards share
 asks for the size that holds the larger. The time on fewer vCPUs is the
 sampled time scaled to 4 and 8 vCPUs; for every test job the time scaled to
 4 vCPUs is at most 4.1% above the sampled time. The file cache (up to 22.3 GiB)
@@ -632,12 +634,13 @@ frame's temporaries. At 1 GiB the paged KV test took 2.4 times as long. The
 Gemma 4 paged synthetic stages and the GLM-5.3 prefix SSD restore bound it at
 1 GiB, the cache of a ready Qwen tensor-parallel rank. The bound changes no
 result and no assertion. The shards' times did not change: shard 2 took 468 s
-(median 469 s before), shard 5 453 s (458 s).
+on Blacksmith (median 469 s before) and 443 and 438 s on Darkbloom (464 s);
+shard 5 took 453 s on Blacksmith (458 s).
 
 | Lane | Jobs | Size | Used memory (GiB) | While sizes are off |
 |---|---|---|---|---|
-| `test-cluster-2` (runtime shards 2 and 3, the concurrent groups) | 2 | 4x24 | shard 2 13.86 (26.51 before the bound, in `glm53-paged-kv`); shard 3 9.11 (12.97 before, in `glm53-prefix-ssd`). Shard 3 alone would fit 4x16 | asks without a size |
-| `test-cluster-3` (runtime shards 4 and 5, the two halves of the Gemma 4 base suites) | 2 | 4x16 | shard 4 8.06 (9.11 before); shard 5 9.07 (15.33 before, in the Gemma 4 paged synthetic stages) | asks without a size |
+| `test-cluster-2` (runtime shards 2 and 3, the concurrent groups) | 2 | 4x24 | shard 2 14.64 (26.51 before the bound, in `glm53-paged-kv`); shard 3 10.71 (13.21 before, in `glm53-prefix-ssd`). Shard 3 alone would fit 4x16 | asks without a size |
+| `test-cluster-3` (runtime shards 4 and 5, the two halves of the Gemma 4 base suites) | 2 | 4x16 | shard 4 9.11 (no bound; 8.52 after); shard 5 10.23 (15.33 before, in the Gemma 4 paged synthetic stages) | asks without a size |
 | `test-cluster-focused` | 2 | 4x16 | 8.14, 7.80 | asks without a size |
 | `test-provider-2` | 1 | 4x24 | 13.03 (run 42754786821); 12.93 on Darkbloom in run 42932309477. The peak is one 5 s sample, 105 to 136 s into the job, while selections 4, 5 and 6 of 6 run together; no process of the runner user held it (the largest had 0.44 GiB). Most runs peak at 10 to 12 | asks without a size |
 | `test-cluster-1` | 1 | 4x16 | 11.99 | asks without a size |

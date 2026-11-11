@@ -45,17 +45,10 @@ extension EngineV2Factory {
 
     /// Observe the same loaded target and cache entry point used by serving.
     /// The native helper owns and releases its short request-local state.
-    ///
-    /// The probe is a forward, so each loaded target is probed once, before its
-    /// first engine serves it. Later constructions over it (the MTP assistant
-    /// upgrade's replacement, recovery) may run while an engine serves it on
-    /// another thread, and must not run a forward: a stateful compiled trace,
-    /// such as Gemma 4's compiled feed-forward on a thread whose compile cache
-    /// is cold, swaps the module's live parameters for primitive-less
-    /// placeholders while it traces, and a graph another thread builds
-    /// meanwhile fails its eval ("Attempting to eval an array without a
-    /// primitive"). Native KV types belong to the loaded weights, so they reuse
-    /// the first observation.
+    /// The probe is a forward, so it runs once per loaded target, before its first
+    /// engine; later constructions (MTP upgrade, recovery) reuse the observation and
+    /// run no forward on a target an engine may be serving (see "Multi-token
+    /// prediction" in docs/architecture/inference.md).
     static func probeNativeKVTypes(
         model: any LanguageModel, adapter: ProductionModelAdapter
     ) throws -> CBv2NativeKVTypeProbe.Result {
@@ -92,7 +85,7 @@ extension EngineV2Factory {
 /// Native KV types observed per loaded target. Entries hold the target weakly
 /// and match it by identity, so a reloaded target is a new module and is
 /// probed again.
-final class NativeKVTypeObservations: @unchecked Sendable {
+private final class NativeKVTypeObservations: @unchecked Sendable {
     static let shared = NativeKVTypeObservations()
 
     private struct Entry {

@@ -60,7 +60,7 @@ private final class OpenParameterTrace: @unchecked Sendable {
         traced = compile(inputs: [module]) { (arguments: [MLXArray]) -> [MLXArray] in
             entered.signal()
             // Bounded: a forward elsewhere waits for this trace's eval lock.
-            _ = release.wait(timeout: .now() + 3)
+            _ = release.wait(timeout: .now() + 1)
             return [arguments[0] + 1]
         }
         Thread { [self] in

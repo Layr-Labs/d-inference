@@ -31,7 +31,7 @@ struct StatusEndedEarlyLinesTests {
             "    4 paid for the work done: the requester left mid-answer",
             "    1 paid for the work done: stopped on this Mac (a drain or an add-on hold)",
             "    1 unpaid: another Mac answered first",
-            "    1 unpaid: this Mac lost its connection",
+            "    1 unpaid: the connection to the network dropped",
             Self.footer,
         ])
     }
@@ -60,7 +60,7 @@ struct StatusEndedEarlyLinesTests {
         #expect(try lines(served: 372, endedEarly: 3, byCause: counts) == [
             "Requests served since the daemon started (1h1m ago): 372  |  output tokens: 10255565",
             "  3 of them ended early:",
-            "    1 unpaid: this Mac lost its connection",
+            "    1 unpaid: the connection to the network dropped",
             "    2 stopped by the network: paid for the work done if the requester left mid-answer,",
             "      unpaid if another Mac answered first or this Mac started too late",
             Self.footer,

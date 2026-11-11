@@ -128,6 +128,16 @@ extension ProviderLoop {
         }
     }
 
+    /// The connection to the coordinator dropped.
+    internal func handleCoordinatorDisconnected() async {
+        modelSwitchTask?.cancel()
+        clearAutopilotControl()
+        logger.warning(.coordinatorDisconnected)
+        // Cancel all in-flight requests on disconnect -- the coordinator
+        // will not route responses for a dead connection.
+        await cancelAllInflight(cause: .connectionLost)
+    }
+
     /// `cause`: the connection dropped, or this Mac stops (a forced drain or
     /// a shutdown whose drain timed out).
     internal func cancelAllInflight(cause: InferenceEarlyEndCause = .stoppedOnThisMac) async {

@@ -28,6 +28,14 @@ struct CoordinatorCancelReasonTests {
         #expect(try cancel(#"{"type":"cancel","request_id":"r","paid":true}"#) == .init(requestId: "r"))
     }
 
+    /// `reason` and `paid` only say why: a wrongly typed one is dropped (a mistyped `paid` reads as unpaid), and the
+    /// cancel still stops the request.
+    @Test func aMistypedReasonOrPaidKeepsTheCancel() throws {
+        #expect(try cancel(#"{"type":"cancel","request_id":"r","reason":5,"paid":true}"#) == .init(requestId: "r"))
+        #expect(try cancel(#"{"type":"cancel","request_id":"r","reason":"client_gone_post","paid":"yes"}"#)
+            == .init(requestId: "r", reason: .init(code: "client_gone_post", paid: false)))
+    }
+
     @Test func theReasonRoundTrips() throws {
         let given = CoordinatorMessage.cancel(.init(requestId: "r", reason: .init(code: "late_content", paid: false)))
         let data = try JSONEncoder().encode(given)

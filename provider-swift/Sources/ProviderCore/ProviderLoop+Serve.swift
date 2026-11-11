@@ -353,12 +353,7 @@ extension ProviderLoop {
                     finishPlannedReconnect()
 
                 case .disconnected:
-                    modelSwitchTask?.cancel()
-                    clearAutopilotControl()
-                    logger.warning(.coordinatorDisconnected)
-                    // Cancel all in-flight requests on disconnect -- the coordinator
-                    // will not route responses for a dead connection.
-                    await cancelAllInflight(cause: .connectionLost)
+                    await handleCoordinatorDisconnected()
 
                 case .inferenceRequest(
                     let requestId, let ciphertext, let senderPublicKey,

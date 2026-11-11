@@ -3579,7 +3579,8 @@ representable JSON object (malformed, duplicate keys, a number that does not
 survive the round trip) are `invalid tool arguments`; an invalid or repeated
 tool name is `invalid tool declaration`; a required choice without tools or a
 named choice of an undeclared function is `invalid tool choice`; a JSON
-`response_format` with image or video input is `unsupported response format`;
+`response_format` with image or video input on a GLM-5.3-Flash cluster pair is
+`unsupported response format`;
 and render-time control rechecks keep
 `unsupported reasoning control` and `contradictory reasoning controls`.
 

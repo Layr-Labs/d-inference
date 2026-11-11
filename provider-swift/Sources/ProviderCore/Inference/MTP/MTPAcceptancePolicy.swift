@@ -54,9 +54,8 @@ public enum MTPAcceptancePolicy {
     /// - the catalog Gemma 4 26B QAT, whose assistant drafts most of its rows:
     ///   on OpenRouter's GPQA run of 10-31 every answer drafted under typical
     ///   acceptance and 30 % ended at the 32,768-token output cap;
-    /// - every Qwen 3.8 27B build: on one Mac a lone request drafts (105 of
-    ///   443 Mac requests in a half hour of 11-09). Its pairs never read this
-    ///   rule and were already exact.
+    /// - every Qwen 3.8 27B build: on one Mac a lone request drafts. Its pairs
+    ///   never read this rule and were already exact.
     /// Exact keeps each model's output distribution (not bit-identical to MTP
     /// off).
     static func builtInIsExact(modelID: String) -> Bool {

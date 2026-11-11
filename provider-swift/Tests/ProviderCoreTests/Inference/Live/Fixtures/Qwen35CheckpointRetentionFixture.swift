@@ -43,7 +43,7 @@ final class Qwen35CheckpointRetentionFixture: @unchecked Sendable {
     let root: URL
     let key = SymmetricKey(size: .bits256)
     /// Reads back what this fixture's stores wrote.
-    private(set) lazy var scan = CompleteCheckpointFixtureScan(root: root, key: key)
+    let scan: CompleteCheckpointFixtureScan
     let identity: CBv2CompleteCheckpointIdentity
     private var bridges: [EngineV2Bridge] = []
     private var stores: [SSDHybridCheckpointStore] = []
@@ -175,6 +175,7 @@ final class Qwen35CheckpointRetentionFixture: @unchecked Sendable {
         prompts = try Self.makePrompts(resolvedTokenizer)
         root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
             .appendingPathComponent("qwen35-checkpoint-retention-\(UUID().uuidString)")
+        scan = CompleteCheckpointFixtureScan(root: root, key: key)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     }
 

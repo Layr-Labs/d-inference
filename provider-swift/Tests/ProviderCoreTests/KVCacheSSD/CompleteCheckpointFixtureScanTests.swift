@@ -4,7 +4,7 @@ import Foundation
 import Testing
 @testable import ProviderCore
 
-/// Window 7 (11-10) stopped the Qwen cache validation on a live test's own manifest scan, not a restore. Its 32K
+/// A live Qwen cache validation once stopped on the test's own manifest scan, not a restore. Its 32K
 /// card donor wrote a ~1.31 GB Qwen3.5-9B checkpoint through a store with production's complete-checkpoint cap
 /// (7 GiB on a 48 GB+ Mac), and `Qwen35CheckpointRetentionFixture` authenticated the file under the general 1 GiB
 /// stage cap: "size overflow: streamed plaintext exceeds budget". Here the same asymmetry runs at a CPU size: a

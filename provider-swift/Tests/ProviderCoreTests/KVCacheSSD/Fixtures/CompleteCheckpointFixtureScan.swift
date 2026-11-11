@@ -10,8 +10,8 @@ import Testing
 /// A store writes a file up to its own `maxReadBytes` and restores it under the
 /// same cap (`SSDHybridCheckpointEnvelope`, `SSDHybridCheckpointStore+ChainRead`),
 /// so the scan reads under the largest cap of any store the fixture made. Under
-/// a smaller cap it would refuse a file the store wrote and can restore, as
-/// window 7's 32K Qwen3.5-9B checkpoint (~1.31 GB, production's 7 GiB cap) was
+/// a smaller cap it would refuse a file the store wrote and can restore, as a
+/// 32K-token Qwen3.5-9B checkpoint (~1.31 GB, production's 7 GiB cap) was
 /// refused under the general 1 GiB cap.
 final class CompleteCheckpointFixtureScan: @unchecked Sendable {
     let root: URL

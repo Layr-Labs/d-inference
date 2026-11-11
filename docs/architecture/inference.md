@@ -1988,12 +1988,16 @@ delivered (`StreamedGenerationUsage.cancelledTerminal`) and is counted for
 `provider-swift/Sources/ProviderCore/Inference/Engine/InferenceEarlyEnd.swift`).
 The first cancel of the request's `InferenceCancellationToken` names the cause:
 the coordinator's `cancel` with its optional `reason` and `paid`
-(`routeCoordinatorCancel`), a dropped connection (`cancelAllInflight`), or this
-Mac's own stop (`handleCancellation` with `localCause`). A cancel that lands
-after the engine finished the answer with `stop` or `length` ended nothing
-early: the bridge records that finish on the request's
-`EngineV2RequestUsageSignal` (`answerFinished`) before it yields the terminal
-events, and the frames loop then counts the request as served whole.
+(`routeCoordinatorCancel`), a dropped connection
+(`handleCoordinatorDisconnected`), or this Mac's own stop (`handleCancellation`
+with `localCause`; a local cancel that names no cause is never counted as
+paid). A paid stop
+(`InferenceEarlyEndCause.isPaid`) that lands after the engine finished the
+answer with `stop` or `length` is not counted: the bridge records that finish
+on the request's `EngineV2RequestUsageSignal` (`answerFinished`) before it
+yields the terminal events, and the coordinator pays the request as delivered.
+An unpaid stop counts wherever it lands: the frames loop may not have sent the
+finished answer yet, and nothing is paid for it.
 
 Decoded text keeps a character the tokenizer writes as `<0xHH>` tokens wherever it
 falls. swift-transformers' `ByteFallbackDecoder` releases those tokens only when a

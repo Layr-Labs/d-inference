@@ -2778,19 +2778,21 @@ Output includes:
     request's first-content deadline.
   - `unpaid: stopped by the network for another reason`: any other `reason`
     without `paid`.
-  - `unpaid: this Mac lost its connection`: the connection to the coordinator
-    dropped (`cancelAllInflight`).
+  - `unpaid: the connection to the network dropped`: this Mac's connection to
+    the coordinator dropped (`handleCoordinatorDisconnected`), on this Mac's
+    side or because the coordinator restarted.
   - `stopped by the network: paid for the work done if the requester left
     mid-answer, unpaid if another Mac answered first or this Mac started too
     late`: a `cancel` without a `reason`, from a coordinator that sends none
     ([protocol: `cancel`](../reference/protocol-messages.md#cancel)).
 
   A daemon from before these counts prints one note for all of them instead. A
-  cancel that arrives after the engine finished the answer on its own does not
-  count: the answer went out whole and is paid in full
-  (`EngineV2RequestUsageSignal.answerFinished`). Paid jobs are on the console's
-  Earnings page; the console's machine card adds these counters up across
-  restarts
+  paid stop (a `cancel` with `paid`, or this Mac's own stop) that arrives after
+  the engine finished the answer on its own does not count: it is paid as
+  delivered (`EngineV2RequestUsageSignal.answerFinished`). An unpaid stop, or a
+  `cancel` without a `reason`, counts whenever it arrives. Paid jobs are on the
+  console's Earnings page; the console's machine card adds these counters up
+  across restarts
   ([coordinator/registry/heartbeat.go](https://github.com/Layr-Labs/darkbloom-platform/blob/10b8b4fabad60e20961b1b74a8672be41c5a0a2d/coordinator/registry/heartbeat.go),
   `cumulativeDelta`)
   (`provider-swift/Sources/darkbloom/StatusCommand+ServedRequests.swift`).

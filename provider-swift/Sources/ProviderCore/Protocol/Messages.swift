@@ -2072,8 +2072,10 @@ extension CoordinatorMessage: Codable {
             ))
 
         case .cancel:
-            let reason = try container.decodeIfPresent(String.self, forKey: .reason) ?? ""
-            let paid = try container.decodeIfPresent(Bool.self, forKey: .paid) ?? false
+            // Diagnostic only: a mistyped reason or paid must never drop the
+            // cancel itself.
+            let reason = (try? container.decodeIfPresent(String.self, forKey: .reason)) ?? ""
+            let paid = (try? container.decodeIfPresent(Bool.self, forKey: .paid)) ?? false
             self = .cancel(Cancel(
                 requestId: try container.decode(String.self, forKey: .requestId),
                 reason: reason.isEmpty ? nil : CoordinatorCancelReason(code: reason, paid: paid)

@@ -39,7 +39,7 @@ extension Status {
             (counts.anotherMacFirst, "unpaid: another Mac answered first"),
             (counts.startedTooLate, "unpaid: this Mac started too late"),
             (counts.otherUnpaid, "unpaid: stopped by the network for another reason"),
-            (counts.connectionLost, "unpaid: this Mac lost its connection"),
+            (counts.connectionLost, "unpaid: the connection to the network dropped"),
         ]
         var lines = ["  \(total) of them ended early:"]
         for cause in causes where cause.count > 0 {

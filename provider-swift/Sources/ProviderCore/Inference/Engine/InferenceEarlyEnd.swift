@@ -23,6 +23,16 @@ public enum InferenceEarlyEndCause: Sendable, Equatable {
     /// This Mac stopped it: a forced drain, a shutdown or an add-on hold. The partial answer goes out on a live
     /// connection, and the coordinator settles it as a completion.
     case stoppedOnThisMac
+
+    /// The coordinator pays the partial answer this Mac sends after the stop. False when that is not known: a
+    /// cancel without a reason may or may not be paid.
+    var isPaid: Bool {
+        switch self {
+        case .stoppedOnThisMac: true
+        case .coordinatorCancel(let reason): reason?.paid == true
+        case .connectionLost: false
+        }
+    }
 }
 
 /// Served requests that ended early, by what stopped them. Each one is in exactly one count.

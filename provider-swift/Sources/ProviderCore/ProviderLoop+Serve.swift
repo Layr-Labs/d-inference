@@ -569,7 +569,7 @@ extension ProviderLoop {
         let drained = await waitForInflightDrain(timeout: Self.shutdownDrainTimeout)
         if !drained {
             logger.warning("Timed out waiting for active inference to drain; cancelling remaining requests")
-            await cancelAllInflight()
+            await cancelAllInflight(cause: .stoppedOnThisMac)
         }
         await coordinator.shutdown()
         guard await drainNativeMiMoOwners() else {

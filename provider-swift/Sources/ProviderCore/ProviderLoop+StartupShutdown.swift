@@ -52,7 +52,7 @@ extension ProviderLoop {
         await upgradeTask?.value
 
         let drained = await waitForInflightDrain(timeout: Self.shutdownDrainTimeout)
-        if !drained { await cancelAllInflight() }
+        if !drained { await cancelAllInflight(cause: .stoppedOnThisMac) }
         await coordinatorClient?.shutdown()
         guard await drainNativeMiMoOwners() else {
             writeDaemonState()

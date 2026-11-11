@@ -232,8 +232,8 @@ public final class EngineV2RequestUsageSignal: @unchecked Sendable {
     }
 
     /// The engine finished the answer on its own (stop or length), before any
-    /// cancel could. Recorded before the terminal events are yielded, so a
-    /// cancel that the frames loop sees after this found the answer whole.
+    /// cancel could. Recorded before the terminal events are yielded; the
+    /// frames loop may still be sending the answer when a cancel lands.
     func recordAnswerFinished() {
         lock.withLock { _answerFinished = true }
     }

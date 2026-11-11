@@ -77,7 +77,7 @@ extension ProviderLoop {
 
         if request.force {
             isShuttingDown = true
-            await cancelAllInflight()
+            await cancelAllInflight(cause: .stoppedOnThisMac)
             stopLocalEndpoint()
         }
         let finishDeadline = request.force ? ContinuousClock.now.advanced(by: .seconds(5)) : deadline

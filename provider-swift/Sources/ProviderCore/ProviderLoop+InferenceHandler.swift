@@ -1572,11 +1572,13 @@ extension ProviderLoop {
                 usageRecovered = true
             }
 
-            // A cancel that landed after the engine finished the answer on its
-            // own ended nothing early: the answer is whole.
-            let endedEarly = cancelledMidStream && !v2UsageSignal.answerFinished
-            if endedEarly {
-                providerStats.recordEndedEarly(token.endCause ?? .coordinatorCancel(nil))
+            // A paid stop that landed after the engine finished the answer on
+            // its own is not counted: it is paid as delivered. An unpaid stop
+            // counts whenever it lands: a finished engine is not a delivered
+            // answer, and the coordinator pays nothing for it.
+            let endCause = token.endCause ?? .coordinatorCancel(nil)
+            if cancelledMidStream && !(v2UsageSignal.answerFinished && endCause.isPaid) {
+                providerStats.recordEndedEarly(endCause)
             }
 
             // Update stats
@@ -1643,7 +1645,7 @@ extension ProviderLoop {
                 send: send)
 
             log.info(
-                "[\(requestId)] Complete\(endedEarly ? " (cancelled mid-stream, partial settle)" : ""): "
+                "[\(requestId)] Complete\(cancelledMidStream ? " (cancelled mid-stream, partial settle)" : ""): "
                 + "\(promptTokens) prompt + \(completionTokens) completion tokens")
         }
 

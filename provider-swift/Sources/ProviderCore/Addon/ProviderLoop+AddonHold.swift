@@ -284,7 +284,8 @@ extension ProviderLoop {
             guard ownsAddonHold(generation) else { return }
             // One that finished meanwhile needs nothing.
             guard inflightTasks[requestID] != nil || requestToModel[requestID] != nil else { continue }
-            await handleCancellation(requestId: requestID, receivedFromCoordinator: false)
+            await handleCancellation(
+                requestId: requestID, receivedFromCoordinator: false, localCause: .stoppedOnThisMac)
         }
     }
 

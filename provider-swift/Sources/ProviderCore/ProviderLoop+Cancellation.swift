@@ -18,10 +18,11 @@ extension ProviderLoop {
     // MARK: - Cancellation
 
     /// `localCause` says why this Mac cancels a request itself; a coordinator
-    /// cancel's cause is its reason (`routeCoordinatorCancel`).
+    /// cancel's cause is its reason (`routeCoordinatorCancel`). A local
+    /// cancel that names no cause is never counted as paid.
     internal func handleCancellation(
         requestId: String, receivedFromCoordinator: Bool = true,
-        localCause: InferenceEarlyEndCause = .stoppedOnThisMac,
+        localCause: InferenceEarlyEndCause? = nil,
         afterNativeCancellationAssociationErasureForTesting: (@Sendable () async -> Void)? = nil
     ) async {
         logger.info("Cancelling request: \(requestId)")
@@ -140,7 +141,7 @@ extension ProviderLoop {
 
     /// `cause`: the connection dropped, or this Mac stops (a forced drain or
     /// a shutdown whose drain timed out).
-    internal func cancelAllInflight(cause: InferenceEarlyEndCause = .stoppedOnThisMac) async {
+    internal func cancelAllInflight(cause: InferenceEarlyEndCause) async {
         let requestIds = Array(inflightTasks.keys)
         for requestId in requestIds {
             await handleCancellation(requestId: requestId, receivedFromCoordinator: false, localCause: cause)

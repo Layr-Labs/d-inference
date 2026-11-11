@@ -410,10 +410,9 @@ enum NemotronSuperLocalBridgeBuilder {
                 routingIdentity: routingIdentity)
             : nil
         let exactPrefixCheckpoints = prefixCache != nil || durable != nil
-        let checkpointPrecision = try EngineV2KVQuantizationPolicy.resolve(
-            modelType: "nemotron_h_omni", global: checkpointQuantizationConfig,
-            byModel: checkpointQuantizationConfigByModel, modelID: modelID,
-            environment: environment, purpose: .checkpoint)
+        let checkpointPrecision = try NemotronSuperLocalPrefixCache.checkpointPrecision(
+            global: checkpointQuantizationConfig, byModel: checkpointQuantizationConfigByModel,
+            modelID: modelID, environment: environment)
         let kvBackend = try NemotronSuperLocalKVBackend.resolve(environment: environment)
         try Task.checkCancellation()
         let assembly = try installed.withNativeSetup(construction: construction) { model in

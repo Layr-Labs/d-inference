@@ -74,6 +74,14 @@ enum NemotronSuperLocalPrefixCache {
         return routingIdentity
     }
 
+    /// The precision a durable store encodes its checkpoints at, from the
+    /// operator's checkpoint settings.
+    static func checkpointPrecision(global: String, byModel: [String: String], modelID: String,
+                                    environment: [String: String]) throws -> EngineV2KVQuantizationSelection {
+        try EngineV2KVQuantizationPolicy.resolve(modelType: "nemotron_h_omni", global: global,
+            byModel: byModel, modelID: modelID, environment: environment, purpose: .checkpoint)
+    }
+
     /// nil leaves the owner without a bank. The same bank serves both owners:
     /// the speculating owner's `NemotronSuperMTPAssistant` checkpoints its
     /// prompt history, so `hybridConfig`'s drafter gate stays off

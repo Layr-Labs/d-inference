@@ -1,0 +1,3 @@
+### `darkbloom status` says whether fan control is on
+
+- Fan control is opt-in (`sudo darkbloom fan enable`), and only `darkbloom fan status` said it was off, so a Mac with supported fans could serve hot under macOS automatic fan speed without anything in the normal flow saying so. `darkbloom status` now has a `Fan control (experimental)` line from the same report: the helper's mode when it runs; `off, macOS automatic` with the hottest GPU sensor and the enable command on supported hardware without the helper; and otherwise not answering, installed but not running (after `fan disable`, with no advice to enable), unsupported or unavailable. Fan control stays opt-in; nothing enables it.

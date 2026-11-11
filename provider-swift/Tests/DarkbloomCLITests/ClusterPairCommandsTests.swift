@@ -1527,12 +1527,19 @@ struct ClusterPairControlTests {
             }
         }
         let stdout = text(result?.standardOutputContent)
+        // The card `darkbloom cluster` ends without: the log, login, restart and the commands (`statusCardLines`).
+        let pair = servingPair()
+        let card = pair.statusCardLines(afterRestart: pair.startsAtLogin ? ClusterOnboardingRestart.thisMacLine() : nil)
+        #expect(card.first == "Logs: " + ClusterUserPaths.serviceLogShown && card.last == "  darkbloom cluster  Change the model")
         #expect(stdout.hasPrefix("""
             Cluster: this Mac (Mac Studio) leads · \(otherMac) follows
             Model: Qwen 3.8 27B · tensor parallel · M3 Ultra 50% / M5 Max 50%
             Serves: through Darkbloom
             ✓ Serving Qwen 3.8 27B through Darkbloom on both Macs (tensor parallel).
             Next: To stop or change it: `darkbloom cluster` on this Mac.
+
+            """ + card.joined(separator: "\n") + """
+
 
             \(BuildEnvironment.current.cliName) \(ProviderCore.version)
 
@@ -1566,7 +1573,8 @@ struct ClusterPairControlTests {
             }
         }
         let out = lines(result?.standardOutputContent)
-        let block = stoppedPair().clusterStatusLines
+        let pair = stoppedPair()
+        let block = pair.clusterStatusLines + pair.statusCardLines(afterRestart: pair.startsAtLogin ? ClusterOnboardingRestart.thisMacLine() : nil)
         #expect(Array(out.prefix(block.count)) == block, "\(out)")
         let said = out.dropFirst(block.count).first ?? ""
         #expect(said.hasPrefix("This Mac serves alone (single-Mac serving, process ")

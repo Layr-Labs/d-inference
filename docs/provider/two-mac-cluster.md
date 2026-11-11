@@ -286,12 +286,14 @@ same way.
 
 `darkbloom status` on a paired Mac starts with `darkbloom cluster status`'s
 lines (who leads, the model with its mode and split, how it serves, the
-outcome, the local API), then the rest of the card
-(`ClusterPairSummary.statusCardLines`):
+outcome with the test's time, the local API), then the rest of the card
+(`ClusterPairSummary.statusCardLines`; the restart line from this Mac's
+auto-login and FileVault settings, `ClusterOnboardingRestart.thisMacLine`):
 
 ```
 Logs: ~/.darkbloom/cluster-setup/service.log
 Starts by itself at login on this Mac.
+After a restart, this Mac serves again by itself.
 
   darkbloom stop     Stop both Macs
   darkbloom restart  Restart with the current model

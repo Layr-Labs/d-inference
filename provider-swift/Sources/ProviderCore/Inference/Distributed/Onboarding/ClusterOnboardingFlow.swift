@@ -358,10 +358,11 @@ public struct ClusterOnboardingModelChoice: Codable, Sendable, Equatable {
     /// or "pipeline"). Nil before it is planned (it has to reach a Mac first) and from an older build.
     public var split: String?
     /// The modes it runs on these Macs, the planner's first, each with its speed measured on this pair when one is
-    /// (it orders them, never shown); nil from an older leader (the list then shows `split` alone).
+    /// (never shown): the start loads `ClusterOnboardingMode.automaticIndex`'s, and `darkbloom cluster local` asks with it
+    /// tagged Recommended. Nil from an older leader.
     public var modes: [ClusterOnboardingMode]?
-    /// Which of `modes` suits these two Macs, and why, or why none can be said (`ClusterOnboardingModeAdvice.advise`):
-    /// made on the leading Mac with its plans, so both Macs' screens show the same. Nil from an older leader.
+    /// The earlier recommendation among `modes`, and why (`ClusterOnboardingModeAdvice.advise`), made on the leading Mac.
+    /// No screen shows it or follows it since the mode is chosen by `automaticIndex` (2026-11-11); nil from an older leader.
     public var modeAdvice: ClusterOnboardingModeAdvice?
 
     public init(title: String, lines: [String], blocker: String?, provision: ClusterOnboardingProvisionOffer? = nil, fitRemedy: String? = nil,
@@ -1858,12 +1859,6 @@ public enum ClusterOnboardingDriver {
     public static let startOverQuestion = "Unpair this Mac and pair the two Macs again? The Mac that leads then chooses the model."
     public static let startOverAnswers = ["Yes, start over", "No"]
 
-    /// A list line of an item and what it does, in a column (owner, 2026-11-04: "much clearer of what is what").
-    public static func menuLine(_ label: String, _ what: String) -> String {
-        label.count >= menuLabelWidth ? label + "  " + what : label.padding(toLength: menuLabelWidth, withPad: " ", startingAt: 0) + what
-    }
-    static let menuLabelWidth = 25
-
     /// Under the member's status.
     public static let memberRunsByItselfLine = "This Mac runs its part by itself."
 
@@ -2577,7 +2572,7 @@ public enum ClusterOnboardingDriver {
     /// failed test leaves the pair marked serving, so this is how `darkbloom cluster` tests again. Passed: the start's
     /// ending (`servedEnding`); failed: the start's ✗ block and its choices; a pair served only through Darkbloom has
     /// no local API on this Mac to test from, said plainly, then the pair's own status (from both Macs' reports).
-    static func testServing(_ title: String, mode: String?, pair: ClusterOnboardingResume, peer: String?, startOverRequest: ClusterOnboardingRequest?,
+    static func testServing(_ title: String, pair: ClusterOnboardingResume, peer: String?, startOverRequest: ClusterOnboardingRequest?,
                             _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> Int32 {
         while true {
             switch busy(console, "Sending a test request", operations.testRequest) {
@@ -2865,7 +2860,7 @@ public enum ClusterOnboardingDriver {
             // Tested, unless it isn't offered: a test on the local API would say ✓ for a pair Darkbloom never has (DevNet, 2026-11-04).
             let again = sameModel && mode == serving.servingMode
             if again, !notOffered {
-                return testServing(choice.title, mode: mode, pair: serving, peer: peer, startOverRequest: startOverRequest, operations, console)
+                return testServing(choice.title, pair: serving, peer: peer, startOverRequest: startOverRequest, operations, console)
             }
             let modeChange = sameModel && !again ? modeSwitchQuestion(model: choice.title, from: serving.servingMode, to: mode) : nil
             console.say("  " + (again ? replanQuestion(model: choice.title) : modeChange ?? switchQuestion(to: choice.title, from: currentTitle)))

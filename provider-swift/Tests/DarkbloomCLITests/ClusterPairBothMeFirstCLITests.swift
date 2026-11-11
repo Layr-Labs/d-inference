@@ -142,12 +142,15 @@ struct ClusterPairBothMeFirstCLITests {
         var pair = leader()
         pair.startsAtLogin = true
         let cli = ClusterPairSummary.cli
-        #expect(pair.statusCardLines == ["Logs: " + ClusterUserPaths.serviceLogShown, "Starts by itself at login on this Mac.", "",
-                                         "  \(cli) stop     Stop both Macs", "  \(cli) restart  Restart with the current model",
-                                         "  \(cli) cluster  Change the model"])
+        let restart = "After a restart, this Mac serves again by itself."
+        #expect(pair.statusCardLines(afterRestart: restart) == ["Logs: " + ClusterUserPaths.serviceLogShown,
+                                                                "Starts by itself at login on this Mac.", restart, "",
+                                                                "  \(cli) stop     Stop both Macs", "  \(cli) restart  Restart with the current model",
+                                                                "  \(cli) cluster  Change the model"])
         pair.startsAtLogin = false
-        #expect(pair.statusCardLines[1].hasPrefix("Doesn't start by itself at login on this Mac"))
-        #expect(ClusterPairSummary.notPaired.statusCardLines.isEmpty)
+        let off = pair.statusCardLines(afterRestart: restart)
+        #expect(off[1].hasPrefix("Doesn't start by itself at login on this Mac") && !off.contains(restart))
+        #expect(ClusterPairSummary.notPaired.statusCardLines().isEmpty)
         #expect(pair.clusterStatusLines.contains { $0.hasPrefix("Model: ") } && pair.clusterStatusLines.contains { $0.hasPrefix("Cluster: ") })
     }
 

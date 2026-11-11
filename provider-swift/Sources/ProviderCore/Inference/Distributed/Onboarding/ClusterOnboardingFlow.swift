@@ -1157,7 +1157,7 @@ public struct ClusterOnboardingReady: Codable, Sendable, Equatable {
     /// just serving successfully"): "Serving <model> on both Macs", through Darkbloom implied; served locally, where:
     /// ", on your local API at http://localhost:<port>". The rest is `darkbloom status`'s.
     public func endingTitle(model: String, scope: ClusterServingScope) -> String {
-        guard servesLocallyOnly(scope: scope) else { return Self.endingTitle(model: model) }
+        guard offered == nil, servesLocallyOnly(scope: scope) else { return Self.endingTitle(model: model) }
         return Self.endingTitle(model: model) + ", " + Self.localAPIWords(port: String(port), otherMac: !servesHere)
     }
 
@@ -1174,7 +1174,8 @@ public struct ClusterOnboardingReady: Codable, Sendable, Equatable {
         guard line.hasPrefix("Serving ") else { return nil }
         let text = String((line.hasSuffix(".") ? String(line.dropLast()) : line).dropFirst("Serving ".count))
         if let through = text.range(of: " through Darkbloom on both Macs") { return endingTitle(model: String(text[..<through.lowerBound])) }
-        guard let at = text.range(of: " at http://localhost:") else { return nil }
+        // Locally: the summary with `ClusterOnboardingDriver.servesWords`' " (local only)" (an earlier build's other words: nil).
+        guard text.hasSuffix(" (local only)"), let at = text.range(of: " at http://localhost:") else { return nil }
         var model = String(text[..<at.lowerBound])
         for marker in ClusterOnboardingDeployment.knownSplitMarkers where model.hasSuffix(" (\(marker))") { model = String(model.dropLast(marker.count + 3)) }
         let rest = text[at.upperBound...]
@@ -1423,9 +1424,6 @@ public struct ClusterOnboardingOperations: Sendable {
     public var useLinkPort: @Sendable (String) -> Void
     /// Right before the start: nil when choice `index` fits in the Macs' free memory now, else what frees it.
     public var recheckFit: @Sendable (_ index: Int) -> String?
-    /// What happens after a restart of this Mac, in one line for the end of the onboarding (nil: nothing to add,
-    /// because the service already said it will not start at login).
-    public var afterRestart: @Sendable () -> String?
     /// Saves a redacted diagnostics file; its lines say where.
     public var saveDiagnostics: @Sendable () -> Result<[String], ClusterOnboardingFailure>
     /// DEVELOPER ONLY: one loud line for the setup screen when a developer setting overrides the planner (a forced
@@ -1498,10 +1496,6 @@ public struct ClusterOnboardingOperations: Sendable {
     /// through Darkbloom then ends with that ✗, as the other Mac's window does from the same status. Not in `init`: only
     /// the live operations set it.
     public var notOfferedStatus: @Sendable () -> [String]? = { nil }
-    /// Whether the other Mac's cluster service starts by itself at login, as its status says
-    /// (`ClusterServiceStatus.startsAtLogin`); nil when it doesn't say (an older build, or no answer). The card says "on
-    /// both Macs" only with this and `serviceOutlivesWindow` (P2-11). Not in `init`: only the live operations set it.
-    public var otherMacStartsAtLogin: @Sendable () -> Bool? = { true }
     /// Single-Mac serving on either Mac (this Mac's provider instance lock; the other Mac's status), read right before
     /// the pair's parts start: empty when none runs or it can't be told. Not in `init`: only the live operations set it.
     public var soloServing: @Sendable () -> [ClusterOnboardingSoloServing] = { [] }
@@ -1552,7 +1546,6 @@ public struct ClusterOnboardingOperations: Sendable {
                 verifyTeardown: @escaping @Sendable () -> Result<[String], ClusterOnboardingFailure> = { .success([]) },
                 useLinkPort: @escaping @Sendable (String) -> Void = { _ in },
                 recheckFit: @escaping @Sendable (Int) -> String? = { _ in nil },
-                afterRestart: @escaping @Sendable () -> String? = { nil },
                 saveDiagnostics: @escaping @Sendable () -> Result<[String], ClusterOnboardingFailure> = { .failure(.init("No diagnostics file can be saved here.")) },
                 developerNotice: @escaping @Sendable () -> String? = { nil },
                 setScope: @escaping @Sendable (ClusterServingScope) -> Result<[String], ClusterOnboardingFailure>
@@ -1576,7 +1569,7 @@ public struct ClusterOnboardingOperations: Sendable {
         self.ensureService = ensureService; self.reachMembers = reachMembers; self.planModels = planModels
         self.adopt = adopt; self.serve = serve; self.waitReady = waitReady; self.testRequest = testRequest
         self.status = status; self.stop = stop; self.provision = provision; self.verifyTeardown = verifyTeardown
-        self.useLinkPort = useLinkPort; self.recheckFit = recheckFit; self.afterRestart = afterRestart; self.saveDiagnostics = saveDiagnostics
+        self.useLinkPort = useLinkPort; self.recheckFit = recheckFit; self.saveDiagnostics = saveDiagnostics
         self.developerNotice = developerNotice; self.setScope = setScope; self.register = register
         self.localNetwork = localNetwork; self.commandApp = commandApp; self.runAsAdministrator = runAsAdministrator
         self.serviceOutlivesWindow = serviceOutlivesWindow; self.remote = remote; self.thisMacName = thisMacName
@@ -2808,13 +2801,8 @@ public enum ClusterOnboardingDriver {
             let titles = choices.map(\.title)
             let lines = open.map { index -> String in
                 let line = choices[index].listLine(sameTitleElsewhere: titles.filter { $0 == choices[index].title }.count > 1)
-                // "Serving now" only when the status above says it serves (a pair offered and not formed doesn't), with
-                // the mode it serves in when the list holds another (planned while the parts held their memory).
-                let servingIn = serving?.servingMode.flatMap { raw in
-                    choices[index].modes?.contains { $0.mode == raw } == false ? " in " + ClusterOnboardingDeployment.modeWords(raw) : nil
-                }
-                let marked = index == current ? line + ((servingNow ?? (serving != nil)) && serving != nil
-                    ? " · serving now" + (servingIn ?? "") : " · last used") : line
+                // "Serving now" only when the status above says it serves (a pair offered and not formed doesn't).
+                let marked = index == current ? line + ((servingNow ?? (serving != nil)) && serving != nil ? " · serving now" : " · last used") : line
                 return marked + (choices[index].fitRemedy == nil ? "" : " · does not fit now")
                     + (choices[index].provision?.fitsOnDisk == false ? " · not enough free disk" : "")
             }
@@ -2852,14 +2840,15 @@ public enum ClusterOnboardingDriver {
             return 1
         }
         // How both Macs split it, chosen for the person (`ClusterOnboardingMode.automaticIndex`; owner, 2026-11-11: "don't
-        // even give the option to pick"). The model serving now keeps the mode it serves in, so choosing it again tests
-        // it; a stopped pair's last model started again for local serving keeps its mode (`keepMode`), as before.
-        // `darkbloom cluster local` alone asks, the automatic mode tagged Recommended and preselected, unless the model was
-        // named on the command line.
+        // even give the option to pick"). Through Darkbloom the model serving now keeps the mode it serves in, listed or
+        // not, so choosing it again tests it and never loads it again. Locally the list's mode it serves in, or a stopped
+        // pair's last mode (`keepMode`), is kept as before. `darkbloom cluster local` alone asks, the automatic mode tagged
+        // Recommended and preselected, unless the model was named on the command line.
         let automatic = choice.modes.flatMap { ClusterOnboardingMode.automaticIndex($0, throughDarkbloom: !scope.isLocalOnly, serving: serving != nil) }
         let keepsLocal = scope.isLocalOnly ? keepMode ?? pair?.servingMode : nil
         let keep = chosen == current ? serving?.servingMode ?? keepsLocal : model != nil ? keepsLocal : nil
         var mode = choice.modes.flatMap { modes in modes.first { $0.mode == keep }?.mode ?? automatic.map { modes[$0].mode } }
+        if !scope.isLocalOnly, chosen == current, let serving { mode = serving.servingMode }
         if model == nil, scope.isLocalOnly, let modes = choice.modes, modes.count > 1 {
             console.say("  " + modeQuestion(model: choice.title))
             let lines = modes.indices.map { index in { (room: Int?) in modeLine(modes[index], recommended: index == automatic, room: room) } }

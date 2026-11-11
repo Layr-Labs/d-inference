@@ -24,6 +24,8 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
     private let decorates: Bool
     /// The mark blooms and live work turns (never in a transcript).
     private let animates: Bool
+    /// A person is at this terminal: colour on, and not a CI run (`waitForExit`).
+    private let interactive: Bool
     /// The window's width in columns when the setup started (0 when unknown).
     private let startColumns: Int
     /// The window's width now: a window made narrower after the start must not wrap a live row, whose redraw climbs
@@ -84,6 +86,7 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
         startColumns = columns
         decorates = usesColor && ClusterOnboardingBrand.drawsBlocks(environment) && columns >= 40
         animates = decorates && environment["DARKBLOOM_NO_ANIMATION"] == nil && environment["CI"] == nil
+        interactive = usesColor && environment["CI"] == nil
         brand = ClusterOnboardingBrand.colour(environment)
         // Only a window that folds keeps a log: a plain transcript is the whole flow already.
         if decorates, let logFile, let handle = Self.openLog(logFile) {
@@ -168,9 +171,9 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
     }
 
     /// "Press Enter to exit." and the wait for Enter, q or Esc, where a person is at this interactive terminal (colour on,
-    /// so not `NO_COLOR`, `TERM=dumb` or a pipe); a closed input ends it too. The pair keeps serving.
+    /// so not `NO_COLOR`, `TERM=dumb` or a pipe, and not `CI`); a closed input ends it too. The pair keeps serving.
     public func waitForExit() {
-        guard usesColor, !closed else { return }
+        guard interactive, !closed else { return }
         settle()
         say("")
         say("\u{1B}[2m" + ClusterOnboardingDriver.exitLine + "\u{1B}[0m")

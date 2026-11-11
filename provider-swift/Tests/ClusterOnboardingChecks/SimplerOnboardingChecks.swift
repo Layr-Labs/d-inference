@@ -210,7 +210,7 @@ extension OnboardingChecks {
         let recorder = Recorder()
         var made = operations(recorder, resume: gemmaStopped, pairEvents: [], pairResult: .failed([]), choices: twoModes)
         made.servesBoth = { true }
-        let run = TerminalRun(made, environment: colourTerminal)
+        let run = TerminalRun(made, environment: colourTerminal, pressesEnterToExit: false)
         expect(run.waitFor(arrowHint), "enter: the list")
         run.type("\r")
         expect(run.waitFor(ClusterOnboardingDriver.exitLine), "enter: the line: \(run.text.suffix(600))")

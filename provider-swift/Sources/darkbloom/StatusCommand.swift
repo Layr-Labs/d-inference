@@ -39,7 +39,8 @@ struct Status: AsyncParsableCommand {
         let servingAlone = showsPair ? soloServingHere() : nil
         if showsPair {
             let live = await ClusterPairSummary.live(config: configOptions.config, bounded: ClusterPairCommands.printLine)
-            for line in live.clusterStatusLines + live.statusCardLines { print(line) }
+            let afterRestart = live.startsAtLogin ? ClusterOnboardingRestart.thisMacLine() : nil
+            for line in live.clusterStatusLines + live.statusCardLines(afterRestart: afterRestart) { print(line) }
             if let state = servingAlone { print(Self.servingAloneLine(pid: state.pid)) }
             print("")
         }

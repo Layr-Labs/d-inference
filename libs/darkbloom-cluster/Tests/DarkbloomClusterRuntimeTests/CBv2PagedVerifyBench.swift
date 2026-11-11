@@ -95,12 +95,27 @@ struct CBv2PagedVerifyBench {
     }
 
     @Test(.enabled(if: enabled)) func verifyAndPrefillAttention() throws {
+        // The freed-buffer cache of a ready Qwen tensor-parallel rank
+        // (`QwenTensorParallelLaunch.freedBufferCacheBytes`). MLX's default
+        // cache limit is its memory limit, and it reuses a freed buffer only
+        // for a request of about the same size. A prompt chunk's attention
+        // temporaries grow with the history, so the cache kept every one of
+        // them: the process reached 34.26 GiB on a 48 GiB runner (run
+        // 42917194201), almost all of it freed buffers.
+        let previousCacheLimit = Memory.cacheLimit
+        Memory.cacheLimit = QwenTensorParallelLaunch.freedBufferCacheBytes(
+            allocatorHeadroomBytes: QwenDenseStageLoadPolicy.allocatorHeadroomBytes)
+        defer { Memory.cacheLimit = previousCacheLimit; Memory.clearCache() }
+        let gib = Double(1 << 30)
         for paged in [true, false, true, false] {
+            Memory.peakMemory = 0
             let r = try Self.run(paged: paged)
             print("darkbloom-paged-bench \(paged ? "paged" : "contiguous") ctx=\(Self.context) layers=\(Self.layers)"
                 + " width=\(Self.width) prefill_s=\(String(format: "%.3f", r.prefill))"
                 + " window_ms=\(String(format: "%.3f", r.window * 1000))"
-                + " mq=\(ProcessInfo.processInfo.environment["DARKBLOOM_PAGED_MTP_MULTI_QUERY"] ?? "default")")
+                + " mq=\(ProcessInfo.processInfo.environment["DARKBLOOM_PAGED_MTP_MULTI_QUERY"] ?? "default")"
+                + " peak_active_gib=\(String(format: "%.2f", Double(Memory.peakMemory) / gib))"
+                + " cache_gib=\(String(format: "%.2f", Double(Memory.cacheMemory) / gib))")
         }
     }
 }

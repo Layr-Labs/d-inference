@@ -1476,9 +1476,8 @@ shared build recipe. The
 selected. A provider-only change runs 3 Macs (the provider build and the 2
 provider shards). A cluster change adds 12 Macs (the cluster build, the release
 build checks, 5 runtime shards, 2 focused shards and 3 GPU shards). Every
-Mac job but GPU shard 2 is routed; GPU shard 2 runs on Blacksmith
-([job sizes](build.md#job-sizes)). A change whose tree a successful run of the
-same workflow already tested runs no test job at all
+Mac job is routed ([job sizes](build.md#job-sizes)). A change whose tree a
+successful run of the same workflow already tested runs no test job at all
 (`scripts/ci-tested-tree.py`).
 
 CI runs the runtime test target (`DarkbloomClusterRuntimeTests`) on the
@@ -2105,8 +2104,8 @@ only the labels of that size. It also covers bad sizes, the macOS cap order and
 a `required` lane, which keeps its fallback without asking while sizes are off.
 It also pins each routed job's lanes (one per provider or cluster shard,
 matching the job's matrix), size, fallback, timeout and read-only permissions,
-and keeps release workflows and Cluster GPU Tests shard 2 on literal Blacksmith
-runners. No check contacts the real plane.
+and keeps release workflows on literal Blacksmith runners. No check contacts
+the real plane.
 
 Docs-impact tests retain provider, protocol, privacy, native capacity, cache,
 release/model publication and fixture mappings. Historical links need exact

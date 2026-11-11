@@ -149,14 +149,54 @@ SAVE_POLICY = ("  SAVE_CACHES: ${{ (github.event_name == 'push' && (github.ref =
                "&& github.ref == 'refs/heads/dev') }}\n")
 SAVE_CACHES = "env.SAVE_CACHES == 'true'"
 SAVE_INPUT = "inputs.save-caches == 'true'"
-VALIDATE_GIT = """if [ -d .git ] && ! { git rev-parse --verify -q HEAD >/dev/null &&
+VALIDATE_GIT = r"""[ -e .git ] || [ -L .git ] || exit 0
+# Checked before git reads it: a restored .git must be a directory
+# that runs nothing. No symbolic link, no hook but git's samples (here
+# or in a submodule) and no config that sets a hook directory or a
+# file system monitor or includes another file; git config --file
+# only parses. Names ignore case, as macOS does.
+if [ -L .git ] || [ ! -d .git ]; then
+  reason="it is not a directory"
+elif [ -n "$(find .git -type l 2>/dev/null || true)" ]; then
+  reason="it holds a symbolic link"
+elif [ -n "$(find .git -ipath '*/hooks/*' ! -type d ! -iname '*.sample' 2>/dev/null || true)" ]; then
+  reason="it holds a hook"
+elif [ -n "$(find .git \( -iname config -o -iname config.worktree \) ! -type d \
+    -exec git config --file {} --name-only --list \; 2>/dev/null |
+    grep -i -E '^(core\.(fsmonitor|hookspath)|include\.|includeif\.)' || true)" ]; then
+  reason="its config sets core.fsmonitor, core.hooksPath or an include"
+elif ! { git rev-parse --verify -q HEAD >/dev/null &&
     git fsck --connectivity-only --no-progress >/dev/null 2>&1; }; then
-  echo "::warning title=.git cache::git fsck rejected the restored .git; checking out without it."
-  rm -rf .git
+  reason="git fsck rejected it"
+else
+  exit 0
+fi
+echo "::warning title=.git cache::Discarded the restored .git ($reason); checking out without it."
+rm -rf .git"""
+# A Darkbloom Sandbox the plane gave no Darkbloom cache (no DARKBLOOM_CACHE_URL
+# from the guest) would reach GitHub's own Actions cache: there this first step
+# sets CI_ACTIONS_CACHE=off, and every cache step's condition starts with
+# CACHE_GATE (test_every_cache_step_is_skipped_on_darkbloom_without_its_cache).
+CACHE_GATE_STEP = "Choose this job's Actions cache"
+CACHE_GATE_RUN = """if [[ ${RUNNER_NAME:-} != darkbloom-* ]]; then
+  echo "Actions cache: this runner's own"
+elif [[ -n ${DARKBLOOM_CACHE_URL:-} ]]; then
+  echo "Actions cache: the Darkbloom cache at $DARKBLOOM_CACHE_URL"
+else
+  echo "CI_ACTIONS_CACHE=off" >> "$GITHUB_ENV"
+  echo "::notice title=Actions cache::The plane gave this Darkbloom Sandbox no cache, so every cache step is skipped."
 fi"""
+CACHE_GATE = "env.CI_ACTIONS_CACHE != 'off'"
+
+
+def gated(condition):
+    """`condition` with CACHE_GATE in front, inside its ${{ }} if it has one."""
+    if condition.startswith("${{ "):
+        return "${{ " + CACHE_GATE + " && " + condition[4:]
+    return CACHE_GATE + " && " + condition
 SPARSE_PATTERNS = ("/*", "!/docs/reports/evidence/**/*.gz", "!/landing/public/media/")
 GIT_CACHE_STEPS = ("Select today's .git cache", "Restore the newest saved .git",
-                   "Discard a damaged cached .git", None, "Save .git for later runs")
+                   "Discard a damaged or unsafe cached .git", None, "Save .git for later runs")
 
 
 def uses(step):
@@ -172,7 +212,7 @@ def checkout_options(step):
 def work_steps(job):
     """The steps besides the fixed path, the shared .git cache and checkout steps and the sampler."""
     return [step for step in step_blocks(job)
-            if field(step, "name", indent=6) not in (FIXED_PATH_STEP, *GIT_CACHE_STEPS, *SAMPLER_STEPS)]
+            if field(step, "name", indent=6) not in (CACHE_GATE_STEP, FIXED_PATH_STEP, *GIT_CACHE_STEPS, *SAMPLER_STEPS)]
 
 
 def continues_on_error(job):
@@ -632,13 +672,13 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         for step in (restore, save):
             self.assertEqual(field(step, "path", indent=10), cache)
         self.assertEqual(field(restore, "if"),
-                         "${{ !cancelled() && matrix.shard == 1 && steps.test-products.outcome == 'success' }}")
+                         gated("${{ !cancelled() && matrix.shard == 1 && steps.test-products.outcome == 'success' }}"))
         # A push saves once both parity steps verified every artifact; a pull
         # request or an exact hit saves nothing.
         self.assertEqual(field(save, "if"),
-                         "${{ !cancelled() && " + SAVE_CACHES + " && matrix.shard == 1 && "
-                         "steps.prompt-parity.outcome == 'success' && steps.nemotron-parity.outcome == 'success' && "
-                         "steps.prompt-fixture-cache.outputs.cache-hit != 'true' }}")
+                         gated("${{ !cancelled() && " + SAVE_CACHES + " && matrix.shard == 1 && "
+                               "steps.prompt-parity.outcome == 'success' && steps.nemotron-parity.outcome == 'success' && "
+                               "steps.prompt-fixture-cache.outputs.cache-hit != 'true' }}"))
         self.assertEqual(field(parity[1], "id"), "nemotron-parity")
         self.assertLess(steps.index(restore), steps.index(parity[0]))
         self.assertLess(steps.index(parity[1]), steps.index(save))
@@ -696,7 +736,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         audio_ready = LAST_SHARD_READY.replace(" }}", " && inputs.mimo_audio == 'true' }}")
         self.assertEqual(field(fixture, "if"), audio_ready)
         restore = next(s for s in steps if field(s, "id") == "mimo-audio-cache")
-        self.assertEqual(field(restore, "if"), audio_ready)
+        self.assertEqual(field(restore, "if"), gated(audio_ready))
         gate = next(s for s in steps if field(s, "name", indent=6) == "Run isolated native MiMo audio gate")
         self.assertIn("testNativeAudioRelease", run_command(gate))
         self.assertIn("run-nested-suite.sh", run_command(gate))
@@ -850,7 +890,8 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 self.assertEqual(field(download, "direction", indent=10), "download")
         for job_id in (*BUILD_JOBS, *PRODUCT_JOBS):
             with self.subTest(job=job_id):
-                first = step_blocks(self.jobs[job_id])[0]
+                gate, first = step_blocks(self.jobs[job_id])[:2]
+                self.assertEqual(field(gate, "name", indent=6), CACHE_GATE_STEP)
                 self.assertEqual(field(first, "name", indent=6), FIXED_PATH_STEP)
                 self.assertEqual(run_command(first), FIXED_PATH)
         for job_id in ("test-cluster-focused", "cluster-release-checks", "provider-test-gate"):
@@ -982,7 +1023,9 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         for job_id, job in checkouts.items():
             with self.subTest(job=job_id):
                 steps = step_blocks(job)
-                # The jobs of the test products first move to the fixed build path.
+                # Each first chooses its Actions cache; the jobs of the test
+                # products then move to the fixed build path.
+                self.assertEqual(field(steps.pop(0), "name", indent=6), CACHE_GATE_STEP)
                 if job_id in (*BUILD_JOBS, *PRODUCT_JOBS):
                     self.assertEqual(field(steps.pop(0), "name", indent=6), FIXED_PATH_STEP)
                 self.assertEqual([field(step, "name", indent=6) for step in steps[:5]], list(GIT_CACHE_STEPS))
@@ -995,6 +1038,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 # One entry per day and branch; restore the newest earlier day.
                 monthly = family + "${{ steps.git-day.outputs.month }}-"
                 self.assertEqual(field(restore, "uses"), CACHE_RESTORE)
+                self.assertEqual(field(restore, "if"), CACHE_GATE)
                 self.assertEqual(field(restore, "path", indent=10), ".git")
                 self.assertEqual(field(restore, "key", indent=10), family + "${{ steps.git-day.outputs.day }}")
                 self.assertIn(f"restore-keys: |\n            {monthly}\n            {family}\n", restore)
@@ -1013,12 +1057,12 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                            "docs": ["fetch-depth: 0", "filter: blob:none", "persist-credentials: false"]
                            }.get(job_id, ["submodules: recursive", "persist-credentials: false", *sparse])
                 self.assertEqual(checkout_options(checkout), options)
-                self.assertEqual(field(save, "if"), SAVE_CACHES + " && steps.git-cache.outputs.cache-hit != 'true'")
+                self.assertEqual(field(save, "if"), gated(SAVE_CACHES + " && steps.git-cache.outputs.cache-hit != 'true'"))
                 self.assertEqual(field(save, "uses"), CACHE_SAVE)
                 self.assertEqual(field(save, "path", indent=10), ".git")
                 self.assertEqual(field(save, "key", indent=10), "${{ steps.git-cache.outputs.cache-primary-key }}")
 
-    def test_git_validation_keeps_healthy_and_partial_clones_and_discards_damage(self):
+    def test_git_validation_keeps_healthy_and_partial_clones_and_discards_damaged_or_unsafe_ones(self):
         with tempfile.TemporaryDirectory() as work:
             def git(cwd, *args):
                 return subprocess.run(["git", "-C", str(cwd), "-c", "user.name=t", "-c", "user.email=t@t",
@@ -1042,13 +1086,45 @@ class ProviderCIWorkflowTests(unittest.TestCase):
             for pack in (loose / "pack").glob("*.pack"):
                 pack.unlink()
             Path(work, "empty").mkdir()
+            # A healthy .git that could run something at checkout: a hook, in
+            # the repository or in a submodule's .git/modules directory, under
+            # any case; a config that sets a hook directory or a file system
+            # monitor, or includes another file; a symbolic link; or a .git
+            # that is not a directory. Each is discarded before git reads it.
+            def write(path, text):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(text)
+            unsafe = {
+                "hook": lambda git_dir: write(git_dir / "hooks/post-checkout", "#!/bin/sh\ntouch ran\n"),
+                "submodule-hook": lambda git_dir: write(git_dir / "modules/sub/hooks/post-checkout", "#!/bin/sh\n"),
+                "hook-case": lambda git_dir: write(git_dir / "hooks/Post-Checkout", "#!/bin/sh\n"),
+                "fsmonitor": lambda git_dir: git(git_dir.parent, "config", "core.fsmonitor", "touch ran"),
+                "hooks-path": lambda git_dir: git(git_dir.parent, "config", "core.hooksPath", "/tmp"),
+                "submodule-hooks-path": lambda git_dir: write(git_dir / "modules/sub/config",
+                                                              "[core]\n\tHooksPath = /tmp\n"),
+                "include": lambda git_dir: git(git_dir.parent, "config", "include.path", "/tmp/other"),
+                "include-if": lambda git_dir: git(git_dir.parent, "config", "includeIf.gitdir:/.path", "/tmp/other"),
+                "symlink": lambda git_dir: (git_dir / "info").mkdir(exist_ok=True)
+                or (git_dir / "info/linked").symlink_to("/"),
+            }
+            for case, plant in unsafe.items():
+                git(work, "clone", "-q", f"file://{origin}", case)
+                plant(Path(work, case, ".git"))
+                cases[case] = False
+            Path(work, "git-file").mkdir()
+            Path(work, "git-file", ".git").write_text(f"gitdir: {Path(work, 'healthy', '.git')}\n")
+            cases["git-file"] = False
+            # A healthy clone keeps git's sample hooks, which never run.
+            write(Path(work, "healthy", ".git", "hooks", "post-checkout.sample"), "#!/bin/sh\ntouch ran\n")
             for case, kept in {**cases, "empty": False}.items():
                 with self.subTest(case=case):
                     result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", VALIDATE_GIT],
                                             cwd=Path(work, case), capture_output=True, text=True)
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual(Path(work, case, ".git").is_dir(), kept, result.stdout)
-                    self.assertEqual("::warning" in result.stdout, case == "damaged")
+                    self.assertFalse(Path(work, case, ".git").exists() and not kept, result.stdout)
+                    self.assertEqual("::warning" in result.stdout, not kept and case != "empty", result.stdout)
+                    self.assertFalse(Path(work, case, "ran").exists())
             self.assertTrue(tree)
 
     def test_sparse_checkouts_skip_only_evidence_tarballs_and_landing_media(self):
@@ -1252,10 +1328,93 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertEqual(field(save, "uses", indent=6), CACHE_SAVE)
         self.assertEqual(field(save, "key", indent=8), "${{ steps.spm-repos.outputs.cache-primary-key }}")
         self.assertEqual(field(save, "if", indent=6),
-                         "${{ !cancelled() && " + SAVE_INPUT + " && steps.timestamps.outcome == 'success' "
-                         "&& steps.spm-repos.outputs.cache-hit != 'true' }}")
+                         gated("${{ !cancelled() && " + SAVE_INPUT + " && steps.timestamps.outcome == 'success' "
+                               "&& steps.spm-repos.outputs.cache-hit != 'true' }}"))
         self.assertGreater(names.index("Save SwiftPM repositories"), names.index("Record timestamps for successfully built sources"))
 
+
+    def test_every_cache_step_is_skipped_on_darkbloom_without_its_cache(self):
+        # On a Darkbloom Sandbox the plane gave no Darkbloom cache, the guest
+        # sets no DARKBLOOM_CACHE_URL and actions/cache would read and write
+        # GitHub's own cache through the gateway (job 127018716621 saved .git
+        # and a 1.69 GiB Swift build to refs/heads/master). Every cache step in
+        # every workflow and action skips while CI_ACTIONS_CACHE is off; an
+        # unset value keeps the cache, so the Blacksmith-only release jobs keep
+        # theirs. Each routed job sets it first, before any cache step.
+        github = ROOT / ".github"
+        files = sorted([*github.glob("workflows/*.yml"), *github.glob("actions/*/action.yml")])
+        cache_steps = 0
+        for path in files:
+            text = path.read_text()
+            indent = 4 if path.name == "action.yml" else 6
+            for step in step_blocks(text, indent=indent):
+                if not re.search(r"(?m)^\s+(?:- )?uses: actions/cache(?:/restore|/save)?@", step):
+                    continue
+                cache_steps += 1
+                condition = field(step, "if", indent=indent + 2)
+                with self.subTest(file=path.name, step=field(step, "name", indent=indent)):
+                    self.assertIsNotNone(condition)
+                    self.assertTrue(condition.startswith(CACHE_GATE) or condition.startswith("${{ " + CACHE_GATE + " && "),
+                                    condition)
+        self.assertGreater(cache_steps, 30)
+        cache_users = (BUILD_ACTION, "./.github/actions/provider-release-build")
+        routed = []
+        for path in sorted(github.glob("workflows/*.yml")):
+            text = path.read_text()
+            if "\njobs:\n" not in text:
+                continue
+            # A workflow that pins CI_ACTIONS_CACHE off at its top (the release
+            # workflows) never uses a cache, so its routed jobs need no gate
+            # step; nothing in it may turn the cache back on.
+            code = re.sub(r"(?m)^\s*#.*\n", "", text)
+            pinned_off = re.search(r"(?m)^env:\n(?:  \S.*\n)*?  CI_ACTIONS_CACHE: 'off'\n", code) is not None
+            if pinned_off:
+                self.assertEqual(code.count("CI_ACTIONS_CACHE"), 1, path.name)
+            for job_id, job in job_blocks(text.split("\njobs:\n", 1)[1]).items():
+                steps = step_blocks(job)
+                users = [index for index, step in enumerate(steps)
+                         if "actions/cache" in (uses(step) or "") or uses(step) in cache_users
+                         or field(step, "cache", indent=10)]
+                runs_on = field(job, "runs-on", indent=4) or ""
+                if not users or "fromJSON(" not in runs_on:
+                    # A job on a literal Blacksmith label never runs on Darkbloom.
+                    self.assertTrue(not users or "darkbloom" not in runs_on, (path.name, job_id))
+                    continue
+                if pinned_off:
+                    self.assertNotIn(CACHE_GATE_STEP, [field(step, "name", indent=6) for step in steps])
+                    continue
+                routed.append(job_id)
+                with self.subTest(workflow=path.name, job=job_id):
+                    names = [field(step, "name", indent=6) for step in steps]
+                    self.assertEqual(names.count(CACHE_GATE_STEP), 1)
+                    gate = steps[names.index(CACHE_GATE_STEP)]
+                    self.assertEqual(run_command(gate), CACHE_GATE_RUN)
+                    self.assertIsNone(field(gate, "if"))
+                    self.assertLess(names.index(CACHE_GATE_STEP), users[0])
+                    for index in users:
+                        setup_cache = field(steps[index], "cache", indent=10)
+                        if setup_cache:
+                            self.assertEqual(setup_cache, "${{ " + CACHE_GATE + " && 'npm' || '' }}")
+        # At least these; Cluster GPU Tests is routed only where its shards ask.
+        self.assertLessEqual({"release-integrity", "docs", "frontend", "desktop-package", "check", "warm", *BUILD_JOBS,
+                              "test-provider", "test-cluster", "cluster-release-checks", "test-cluster-focused"},
+                             set(routed))
+        # The step itself: off only on a Darkbloom runner without the guest's
+        # cache URL.
+        for runner, cache_url, off in (("darkbloom-41", "", True), ("darkbloom-41", "http://127.0.0.1:3129/", False),
+                                       ("blacksmith-4vcpu-ubuntu-2404-abc", "", False),
+                                       ("GitHub Actions 7", "", False), ("", "", False)):
+            with self.subTest(runner=runner, cache_url=cache_url), tempfile.TemporaryDirectory() as work:
+                env_file = Path(work, "env")
+                env_file.touch()
+                env = {"PATH": os.environ["PATH"], "GITHUB_ENV": str(env_file), "RUNNER_NAME": runner}
+                if cache_url:
+                    env["DARKBLOOM_CACHE_URL"] = cache_url
+                result = subprocess.run(["bash", "-e", "-c", CACHE_GATE_RUN], env=env,
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(env_file.read_text(), "CI_ACTIONS_CACHE=off\n" if off else "")
+                self.assertEqual("::notice title=Actions cache::" in result.stdout, off)
 
 if __name__ == "__main__":
     unittest.main()

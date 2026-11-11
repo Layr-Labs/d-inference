@@ -28,6 +28,12 @@ permissions:
   contents: read
 
 env:
+  # No release job restores or saves an Actions cache. Any job of a run on this
+  # branch, a Darkbloom-routed one included, holds the run's cache token and
+  # can write any cache key of the branch's scope, and GitHub cannot limit a key
+  # to Blacksmith jobs. So every cache step of .github/actions/provider-release-build
+  # (gated on CI_ACTIONS_CACHE) is skipped, and the build compiles cold.
+  CI_ACTIONS_CACHE: 'off'
   # Release bytes build, qualify and sign with Xcode 27.2 only
   # (scripts/prepare-provider-release-toolchain.sh), as in release-provider.yml.
   DARKBLOOM_PROVIDER_TOOLCHAIN: release

@@ -61,6 +61,19 @@ jobs:
     runs-on: ${{ fromJSON(inputs.routes)['build-cluster'] }}
     timeout-minutes: 60
     steps:
+      # Before every cache step: a Darkbloom Sandbox that the plane gave no
+      # Darkbloom cache would reach GitHub's own Actions cache, so there every
+      # cache step is skipped (docs/developer/build.md#ci-caching).
+      - name: Choose this job's Actions cache
+        run: |
+          if [[ ${RUNNER_NAME:-} != darkbloom-* ]]; then
+            echo "Actions cache: this runner's own"
+          elif [[ -n ${DARKBLOOM_CACHE_URL:-} ]]; then
+            echo "Actions cache: the Darkbloom cache at $DARKBLOOM_CACHE_URL"
+          else
+            echo "CI_ACTIONS_CACHE=off" >> "$GITHUB_ENV"
+            echo "::notice title=Actions cache::The plane gave this Darkbloom Sandbox no cache, so every cache step is skipped."
+          fi
       # SwiftPM's products hold absolute paths, and Blacksmith and Darkbloom
       # check out to different paths. A job that builds or runs the test
       # products works at one fixed path: its workspace becomes a link to it,
@@ -82,6 +95,7 @@ jobs:
           echo "month=${day%-*}" >> "$GITHUB_OUTPUT"
           echo "actions/cache compressor: $(command -v zstd >/dev/null && echo zstd || echo gzip)"
       - name: Restore the newest saved .git
+        if: env.CI_ACTIONS_CACHE != 'off'
         id: git-cache
         uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
@@ -90,13 +104,32 @@ jobs:
           restore-keys: |
             git-v1-${{ runner.os }}-${{ steps.git-day.outputs.month }}-
             git-v1-${{ runner.os }}-
-      - name: Discard a damaged cached .git
+      - name: Discard a damaged or unsafe cached .git
         run: |
-          if [ -d .git ] && ! { git rev-parse --verify -q HEAD >/dev/null &&
+          [ -e .git ] || [ -L .git ] || exit 0
+          # Checked before git reads it: a restored .git must be a directory
+          # that runs nothing. No symbolic link, no hook but git's samples (here
+          # or in a submodule) and no config that sets a hook directory or a
+          # file system monitor or includes another file; git config --file
+          # only parses. Names ignore case, as macOS does.
+          if [ -L .git ] || [ ! -d .git ]; then
+            reason="it is not a directory"
+          elif [ -n "$(find .git -type l 2>/dev/null || true)" ]; then
+            reason="it holds a symbolic link"
+          elif [ -n "$(find .git -ipath '*/hooks/*' ! -type d ! -iname '*.sample' 2>/dev/null || true)" ]; then
+            reason="it holds a hook"
+          elif [ -n "$(find .git \( -iname config -o -iname config.worktree \) ! -type d \
+              -exec git config --file {} --name-only --list \; 2>/dev/null |
+              grep -i -E '^(core\.(fsmonitor|hookspath)|include\.|includeif\.)' || true)" ]; then
+            reason="its config sets core.fsmonitor, core.hooksPath or an include"
+          elif ! { git rev-parse --verify -q HEAD >/dev/null &&
               git fsck --connectivity-only --no-progress >/dev/null 2>&1; }; then
-            echo "::warning title=.git cache::git fsck rejected the restored .git; checking out without it."
-            rm -rf .git
+            reason="git fsck rejected it"
+          else
+            exit 0
           fi
+          echo "::warning title=.git cache::Discarded the restored .git ($reason); checking out without it."
+          rm -rf .git
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           submodules: recursive
@@ -104,7 +137,7 @@ jobs:
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
           sparse-checkout-cone-mode: false
       - name: Save .git for later runs
-        if: env.SAVE_CACHES == 'true' && steps.git-cache.outputs.cache-hit != 'true'
+        if: env.CI_ACTIONS_CACHE != 'off' && env.SAVE_CACHES == 'true' && steps.git-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
           path: .git
@@ -146,6 +179,19 @@ jobs:
     runs-on: ${{ fromJSON(inputs.routes)['build-provider'] }}
     timeout-minutes: 60
     steps:
+      # Before every cache step: a Darkbloom Sandbox that the plane gave no
+      # Darkbloom cache would reach GitHub's own Actions cache, so there every
+      # cache step is skipped (docs/developer/build.md#ci-caching).
+      - name: Choose this job's Actions cache
+        run: |
+          if [[ ${RUNNER_NAME:-} != darkbloom-* ]]; then
+            echo "Actions cache: this runner's own"
+          elif [[ -n ${DARKBLOOM_CACHE_URL:-} ]]; then
+            echo "Actions cache: the Darkbloom cache at $DARKBLOOM_CACHE_URL"
+          else
+            echo "CI_ACTIONS_CACHE=off" >> "$GITHUB_ENV"
+            echo "::notice title=Actions cache::The plane gave this Darkbloom Sandbox no cache, so every cache step is skipped."
+          fi
       # The fixed build path, as in build-cluster (scripts/ci-test-products.py).
       - name: Work at the fixed build path
         run: |
@@ -161,6 +207,7 @@ jobs:
           echo "month=${day%-*}" >> "$GITHUB_OUTPUT"
           echo "actions/cache compressor: $(command -v zstd >/dev/null && echo zstd || echo gzip)"
       - name: Restore the newest saved .git
+        if: env.CI_ACTIONS_CACHE != 'off'
         id: git-cache
         uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
@@ -169,13 +216,32 @@ jobs:
           restore-keys: |
             git-v1-${{ runner.os }}-${{ steps.git-day.outputs.month }}-
             git-v1-${{ runner.os }}-
-      - name: Discard a damaged cached .git
+      - name: Discard a damaged or unsafe cached .git
         run: |
-          if [ -d .git ] && ! { git rev-parse --verify -q HEAD >/dev/null &&
+          [ -e .git ] || [ -L .git ] || exit 0
+          # Checked before git reads it: a restored .git must be a directory
+          # that runs nothing. No symbolic link, no hook but git's samples (here
+          # or in a submodule) and no config that sets a hook directory or a
+          # file system monitor or includes another file; git config --file
+          # only parses. Names ignore case, as macOS does.
+          if [ -L .git ] || [ ! -d .git ]; then
+            reason="it is not a directory"
+          elif [ -n "$(find .git -type l 2>/dev/null || true)" ]; then
+            reason="it holds a symbolic link"
+          elif [ -n "$(find .git -ipath '*/hooks/*' ! -type d ! -iname '*.sample' 2>/dev/null || true)" ]; then
+            reason="it holds a hook"
+          elif [ -n "$(find .git \( -iname config -o -iname config.worktree \) ! -type d \
+              -exec git config --file {} --name-only --list \; 2>/dev/null |
+              grep -i -E '^(core\.(fsmonitor|hookspath)|include\.|includeif\.)' || true)" ]; then
+            reason="its config sets core.fsmonitor, core.hooksPath or an include"
+          elif ! { git rev-parse --verify -q HEAD >/dev/null &&
               git fsck --connectivity-only --no-progress >/dev/null 2>&1; }; then
-            echo "::warning title=.git cache::git fsck rejected the restored .git; checking out without it."
-            rm -rf .git
+            reason="git fsck rejected it"
+          else
+            exit 0
           fi
+          echo "::warning title=.git cache::Discarded the restored .git ($reason); checking out without it."
+          rm -rf .git
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           submodules: recursive
@@ -183,7 +249,7 @@ jobs:
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
           sparse-checkout-cone-mode: false
       - name: Save .git for later runs
-        if: env.SAVE_CACHES == 'true' && steps.git-cache.outputs.cache-hit != 'true'
+        if: env.CI_ACTIONS_CACHE != 'off' && env.SAVE_CACHES == 'true' && steps.git-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
           path: .git
@@ -243,6 +309,19 @@ jobs:
       matrix:
         shard: [1, 2]
     steps:
+      # Before every cache step: a Darkbloom Sandbox that the plane gave no
+      # Darkbloom cache would reach GitHub's own Actions cache, so there every
+      # cache step is skipped (docs/developer/build.md#ci-caching).
+      - name: Choose this job's Actions cache
+        run: |
+          if [[ ${RUNNER_NAME:-} != darkbloom-* ]]; then
+            echo "Actions cache: this runner's own"
+          elif [[ -n ${DARKBLOOM_CACHE_URL:-} ]]; then
+            echo "Actions cache: the Darkbloom cache at $DARKBLOOM_CACHE_URL"
+          else
+            echo "CI_ACTIONS_CACHE=off" >> "$GITHUB_ENV"
+            echo "::notice title=Actions cache::The plane gave this Darkbloom Sandbox no cache, so every cache step is skipped."
+          fi
       # The fixed build path, as in build-cluster (scripts/ci-test-products.py).
       - name: Work at the fixed build path
         run: |
@@ -258,6 +337,7 @@ jobs:
           echo "month=${day%-*}" >> "$GITHUB_OUTPUT"
           echo "actions/cache compressor: $(command -v zstd >/dev/null && echo zstd || echo gzip)"
       - name: Restore the newest saved .git
+        if: env.CI_ACTIONS_CACHE != 'off'
         id: git-cache
         uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
@@ -266,13 +346,32 @@ jobs:
           restore-keys: |
             git-v1-${{ runner.os }}-${{ steps.git-day.outputs.month }}-
             git-v1-${{ runner.os }}-
-      - name: Discard a damaged cached .git
+      - name: Discard a damaged or unsafe cached .git
         run: |
-          if [ -d .git ] && ! { git rev-parse --verify -q HEAD >/dev/null &&
+          [ -e .git ] || [ -L .git ] || exit 0
+          # Checked before git reads it: a restored .git must be a directory
+          # that runs nothing. No symbolic link, no hook but git's samples (here
+          # or in a submodule) and no config that sets a hook directory or a
+          # file system monitor or includes another file; git config --file
+          # only parses. Names ignore case, as macOS does.
+          if [ -L .git ] || [ ! -d .git ]; then
+            reason="it is not a directory"
+          elif [ -n "$(find .git -type l 2>/dev/null || true)" ]; then
+            reason="it holds a symbolic link"
+          elif [ -n "$(find .git -ipath '*/hooks/*' ! -type d ! -iname '*.sample' 2>/dev/null || true)" ]; then
+            reason="it holds a hook"
+          elif [ -n "$(find .git \( -iname config -o -iname config.worktree \) ! -type d \
+              -exec git config --file {} --name-only --list \; 2>/dev/null |
+              grep -i -E '^(core\.(fsmonitor|hookspath)|include\.|includeif\.)' || true)" ]; then
+            reason="its config sets core.fsmonitor, core.hooksPath or an include"
+          elif ! { git rev-parse --verify -q HEAD >/dev/null &&
               git fsck --connectivity-only --no-progress >/dev/null 2>&1; }; then
-            echo "::warning title=.git cache::git fsck rejected the restored .git; checking out without it."
-            rm -rf .git
+            reason="git fsck rejected it"
+          else
+            exit 0
           fi
+          echo "::warning title=.git cache::Discarded the restored .git ($reason); checking out without it."
+          rm -rf .git
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           submodules: recursive
@@ -280,7 +379,7 @@ jobs:
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
           sparse-checkout-cone-mode: false
       - name: Save .git for later runs
-        if: env.SAVE_CACHES == 'true' && steps.git-cache.outputs.cache-hit != 'true'
+        if: env.CI_ACTIONS_CACHE != 'off' && env.SAVE_CACHES == 'true' && steps.git-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
           path: .git
@@ -315,7 +414,7 @@ jobs:
       # uses an entry only if its bytes still have the pinned digest.
       - name: Restore verified MiMo metadata downloads
         id: mimo-metadata-cache
-        if: ${{ !cancelled() && steps.test-products.outcome == 'success' }}
+        if: ${{ env.CI_ACTIONS_CACHE != 'off' && !cancelled() && steps.test-products.outcome == 'success' }}
         uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
           path: /private/tmp/dinf-ci/mimo-metadata-cache
@@ -328,7 +427,7 @@ jobs:
           python3 scripts/prepare-mimo-prompt-fixtures.py --output "$RUNNER_TEMP/mimo-prompt-fixtures" --github-env "$GITHUB_ENV" --cache /private/tmp/dinf-ci/mimo-metadata-cache
           python3 scripts/prepare-mimo-image-http-fixtures.py --output "$RUNNER_TEMP/mimo-image-http-fixtures" --github-env "$GITHUB_ENV" --cache /private/tmp/dinf-ci/mimo-metadata-cache
       - name: Save verified MiMo metadata downloads
-        if: ${{ !cancelled() && env.SAVE_CACHES == 'true' && steps.mimo-prompt-fixtures.outcome == 'success' && steps.mimo-metadata-cache.outputs.cache-hit != 'true' }}
+        if: ${{ env.CI_ACTIONS_CACHE != 'off' && !cancelled() && env.SAVE_CACHES == 'true' && steps.mimo-prompt-fixtures.outcome == 'success' && steps.mimo-metadata-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
           path: /private/tmp/dinf-ci/mimo-metadata-cache
@@ -376,7 +475,7 @@ jobs:
       # still have the pinned size and digest, and downloads any other.
       - name: Restore verified prompt fixture downloads
         id: prompt-fixture-cache
-        if: ${{ !cancelled() && matrix.shard == 1 && steps.test-products.outcome == 'success' }}
+        if: ${{ env.CI_ACTIONS_CACHE != 'off' && !cancelled() && matrix.shard == 1 && steps.test-products.outcome == 'success' }}
         uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
           path: /private/tmp/dinf-ci/prompt-fixture-cache
@@ -413,7 +512,7 @@ jobs:
       # Both parity steps passed, so the cache holds every pinned artifact, and
       # only verified bytes were stored in it.
       - name: Save verified prompt fixture downloads
-        if: ${{ !cancelled() && env.SAVE_CACHES == 'true' && matrix.shard == 1 && steps.prompt-parity.outcome == 'success' && steps.nemotron-parity.outcome == 'success' && steps.prompt-fixture-cache.outputs.cache-hit != 'true' }}
+        if: ${{ env.CI_ACTIONS_CACHE != 'off' && !cancelled() && env.SAVE_CACHES == 'true' && matrix.shard == 1 && steps.prompt-parity.outcome == 'success' && steps.nemotron-parity.outcome == 'success' && steps.prompt-fixture-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
           path: /private/tmp/dinf-ci/prompt-fixture-cache
@@ -475,7 +574,7 @@ jobs:
       # The 1.87 GB codec is fetched only when the audio gate's inputs changed
       # (scripts/ci-component-paths.py MIMO_AUDIO) and on master pushes.
       - name: Restore pinned MiMo audio codec
-        if: ${{ !cancelled() && matrix.shard == strategy.job-total && steps.test-products.outcome == 'success' && inputs.mimo_audio == 'true' }}
+        if: ${{ env.CI_ACTIONS_CACHE != 'off' && !cancelled() && matrix.shard == strategy.job-total && steps.test-products.outcome == 'success' && inputs.mimo_audio == 'true' }}
         uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57
         id: mimo-audio-cache
         with:
@@ -486,7 +585,7 @@ jobs:
         if: ${{ !cancelled() && matrix.shard == strategy.job-total && steps.test-products.outcome == 'success' && inputs.mimo_audio == 'true' }}
         run: python3 scripts/prepare-mimo-audio-fixtures.py --cache /private/tmp/dinf-ci/mimo-audio-source --output "$RUNNER_TEMP/mimo-audio-fixtures" --github-env "$GITHUB_ENV"
       - name: Cache verified MiMo audio codec
-        if: ${{ !cancelled() && env.SAVE_CACHES == 'true' && matrix.shard == strategy.job-total && steps.mimo-audio-fixtures.outcome == 'success' && steps.mimo-audio-cache.outputs.cache-hit != 'true' }}
+        if: ${{ env.CI_ACTIONS_CACHE != 'off' && !cancelled() && env.SAVE_CACHES == 'true' && matrix.shard == strategy.job-total && steps.mimo-audio-fixtures.outcome == 'success' && steps.mimo-audio-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57
         with:
           path: /private/tmp/dinf-ci/mimo-audio-source
@@ -693,6 +792,19 @@ jobs:
           - {shard: 4, lane: test-cluster-3}
           - {shard: 5, lane: test-cluster-3}
     steps:
+      # Before every cache step: a Darkbloom Sandbox that the plane gave no
+      # Darkbloom cache would reach GitHub's own Actions cache, so there every
+      # cache step is skipped (docs/developer/build.md#ci-caching).
+      - name: Choose this job's Actions cache
+        run: |
+          if [[ ${RUNNER_NAME:-} != darkbloom-* ]]; then
+            echo "Actions cache: this runner's own"
+          elif [[ -n ${DARKBLOOM_CACHE_URL:-} ]]; then
+            echo "Actions cache: the Darkbloom cache at $DARKBLOOM_CACHE_URL"
+          else
+            echo "CI_ACTIONS_CACHE=off" >> "$GITHUB_ENV"
+            echo "::notice title=Actions cache::The plane gave this Darkbloom Sandbox no cache, so every cache step is skipped."
+          fi
       # The fixed build path, as in build-cluster (scripts/ci-test-products.py).
       - name: Work at the fixed build path
         run: |
@@ -708,6 +820,7 @@ jobs:
           echo "month=${day%-*}" >> "$GITHUB_OUTPUT"
           echo "actions/cache compressor: $(command -v zstd >/dev/null && echo zstd || echo gzip)"
       - name: Restore the newest saved .git
+        if: env.CI_ACTIONS_CACHE != 'off'
         id: git-cache
         uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
@@ -716,13 +829,32 @@ jobs:
           restore-keys: |
             git-v1-${{ runner.os }}-${{ steps.git-day.outputs.month }}-
             git-v1-${{ runner.os }}-
-      - name: Discard a damaged cached .git
+      - name: Discard a damaged or unsafe cached .git
         run: |
-          if [ -d .git ] && ! { git rev-parse --verify -q HEAD >/dev/null &&
+          [ -e .git ] || [ -L .git ] || exit 0
+          # Checked before git reads it: a restored .git must be a directory
+          # that runs nothing. No symbolic link, no hook but git's samples (here
+          # or in a submodule) and no config that sets a hook directory or a
+          # file system monitor or includes another file; git config --file
+          # only parses. Names ignore case, as macOS does.
+          if [ -L .git ] || [ ! -d .git ]; then
+            reason="it is not a directory"
+          elif [ -n "$(find .git -type l 2>/dev/null || true)" ]; then
+            reason="it holds a symbolic link"
+          elif [ -n "$(find .git -ipath '*/hooks/*' ! -type d ! -iname '*.sample' 2>/dev/null || true)" ]; then
+            reason="it holds a hook"
+          elif [ -n "$(find .git \( -iname config -o -iname config.worktree \) ! -type d \
+              -exec git config --file {} --name-only --list \; 2>/dev/null |
+              grep -i -E '^(core\.(fsmonitor|hookspath)|include\.|includeif\.)' || true)" ]; then
+            reason="its config sets core.fsmonitor, core.hooksPath or an include"
+          elif ! { git rev-parse --verify -q HEAD >/dev/null &&
               git fsck --connectivity-only --no-progress >/dev/null 2>&1; }; then
-            echo "::warning title=.git cache::git fsck rejected the restored .git; checking out without it."
-            rm -rf .git
+            reason="git fsck rejected it"
+          else
+            exit 0
           fi
+          echo "::warning title=.git cache::Discarded the restored .git ($reason); checking out without it."
+          rm -rf .git
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           submodules: recursive
@@ -730,7 +862,7 @@ jobs:
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
           sparse-checkout-cone-mode: false
       - name: Save .git for later runs
-        if: env.SAVE_CACHES == 'true' && steps.git-cache.outputs.cache-hit != 'true'
+        if: env.CI_ACTIONS_CACHE != 'off' && env.SAVE_CACHES == 'true' && steps.git-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
           path: .git
@@ -768,19 +900,30 @@ jobs:
     # ones and the benchmarks (scripts/cluster-test-plan.py). They run and
     # report whenever the cluster jobs run; a failure does not fail the
     # workflow. Shards 1 and 3 each run one half of the real-geometry rows
-    # check and read a lane of their own (provider-plan.yml). Shard 2 uses
-    # 42 GiB, more than any signed Darkbloom size, so it runs on Blacksmith
-    # without asking the route.
+    # check. Each shard reads a lane of its own (provider-plan.yml).
     name: Cluster GPU Tests (non-blocking, shard ${{ matrix.shard }})
     needs: build-cluster
     if: ${{ inputs.cluster == 'true' }}
-    runs-on: ${{ matrix.shard == 2 && 'blacksmith-12vcpu-macos-27' || fromJSON(inputs.routes)[format('test-cluster-gpu-{0}', matrix.shard)] }}
+    runs-on: ${{ fromJSON(inputs.routes)[format('test-cluster-gpu-{0}', matrix.shard)] }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         shard: [1, 2, 3]
     steps:
+      # Before every cache step: a Darkbloom Sandbox that the plane gave no
+      # Darkbloom cache would reach GitHub's own Actions cache, so there every
+      # cache step is skipped (docs/developer/build.md#ci-caching).
+      - name: Choose this job's Actions cache
+        run: |
+          if [[ ${RUNNER_NAME:-} != darkbloom-* ]]; then
+            echo "Actions cache: this runner's own"
+          elif [[ -n ${DARKBLOOM_CACHE_URL:-} ]]; then
+            echo "Actions cache: the Darkbloom cache at $DARKBLOOM_CACHE_URL"
+          else
+            echo "CI_ACTIONS_CACHE=off" >> "$GITHUB_ENV"
+            echo "::notice title=Actions cache::The plane gave this Darkbloom Sandbox no cache, so every cache step is skipped."
+          fi
       # The fixed build path, as in build-cluster (scripts/ci-test-products.py).
       - name: Work at the fixed build path
         run: |
@@ -796,6 +939,7 @@ jobs:
           echo "month=${day%-*}" >> "$GITHUB_OUTPUT"
           echo "actions/cache compressor: $(command -v zstd >/dev/null && echo zstd || echo gzip)"
       - name: Restore the newest saved .git
+        if: env.CI_ACTIONS_CACHE != 'off'
         id: git-cache
         uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
@@ -804,13 +948,32 @@ jobs:
           restore-keys: |
             git-v1-${{ runner.os }}-${{ steps.git-day.outputs.month }}-
             git-v1-${{ runner.os }}-
-      - name: Discard a damaged cached .git
+      - name: Discard a damaged or unsafe cached .git
         run: |
-          if [ -d .git ] && ! { git rev-parse --verify -q HEAD >/dev/null &&
+          [ -e .git ] || [ -L .git ] || exit 0
+          # Checked before git reads it: a restored .git must be a directory
+          # that runs nothing. No symbolic link, no hook but git's samples (here
+          # or in a submodule) and no config that sets a hook directory or a
+          # file system monitor or includes another file; git config --file
+          # only parses. Names ignore case, as macOS does.
+          if [ -L .git ] || [ ! -d .git ]; then
+            reason="it is not a directory"
+          elif [ -n "$(find .git -type l 2>/dev/null || true)" ]; then
+            reason="it holds a symbolic link"
+          elif [ -n "$(find .git -ipath '*/hooks/*' ! -type d ! -iname '*.sample' 2>/dev/null || true)" ]; then
+            reason="it holds a hook"
+          elif [ -n "$(find .git \( -iname config -o -iname config.worktree \) ! -type d \
+              -exec git config --file {} --name-only --list \; 2>/dev/null |
+              grep -i -E '^(core\.(fsmonitor|hookspath)|include\.|includeif\.)' || true)" ]; then
+            reason="its config sets core.fsmonitor, core.hooksPath or an include"
+          elif ! { git rev-parse --verify -q HEAD >/dev/null &&
               git fsck --connectivity-only --no-progress >/dev/null 2>&1; }; then
-            echo "::warning title=.git cache::git fsck rejected the restored .git; checking out without it."
-            rm -rf .git
+            reason="git fsck rejected it"
+          else
+            exit 0
           fi
+          echo "::warning title=.git cache::Discarded the restored .git ($reason); checking out without it."
+          rm -rf .git
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           submodules: recursive
@@ -818,7 +981,7 @@ jobs:
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
           sparse-checkout-cone-mode: false
       - name: Save .git for later runs
-        if: env.SAVE_CACHES == 'true' && steps.git-cache.outputs.cache-hit != 'true'
+        if: env.CI_ACTIONS_CACHE != 'off' && env.SAVE_CACHES == 'true' && steps.git-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
           path: .git
@@ -867,6 +1030,19 @@ jobs:
     runs-on: ${{ fromJSON(inputs.routes)['cluster-release-checks'] }}
     timeout-minutes: 60
     steps:
+      # Before every cache step: a Darkbloom Sandbox that the plane gave no
+      # Darkbloom cache would reach GitHub's own Actions cache, so there every
+      # cache step is skipped (docs/developer/build.md#ci-caching).
+      - name: Choose this job's Actions cache
+        run: |
+          if [[ ${RUNNER_NAME:-} != darkbloom-* ]]; then
+            echo "Actions cache: this runner's own"
+          elif [[ -n ${DARKBLOOM_CACHE_URL:-} ]]; then
+            echo "Actions cache: the Darkbloom cache at $DARKBLOOM_CACHE_URL"
+          else
+            echo "CI_ACTIONS_CACHE=off" >> "$GITHUB_ENV"
+            echo "::notice title=Actions cache::The plane gave this Darkbloom Sandbox no cache, so every cache step is skipped."
+          fi
       - name: Select today's .git cache
         id: git-day
         run: |
@@ -875,6 +1051,7 @@ jobs:
           echo "month=${day%-*}" >> "$GITHUB_OUTPUT"
           echo "actions/cache compressor: $(command -v zstd >/dev/null && echo zstd || echo gzip)"
       - name: Restore the newest saved .git
+        if: env.CI_ACTIONS_CACHE != 'off'
         id: git-cache
         uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
@@ -883,13 +1060,32 @@ jobs:
           restore-keys: |
             git-v1-${{ runner.os }}-${{ steps.git-day.outputs.month }}-
             git-v1-${{ runner.os }}-
-      - name: Discard a damaged cached .git
+      - name: Discard a damaged or unsafe cached .git
         run: |
-          if [ -d .git ] && ! { git rev-parse --verify -q HEAD >/dev/null &&
+          [ -e .git ] || [ -L .git ] || exit 0
+          # Checked before git reads it: a restored .git must be a directory
+          # that runs nothing. No symbolic link, no hook but git's samples (here
+          # or in a submodule) and no config that sets a hook directory or a
+          # file system monitor or includes another file; git config --file
+          # only parses. Names ignore case, as macOS does.
+          if [ -L .git ] || [ ! -d .git ]; then
+            reason="it is not a directory"
+          elif [ -n "$(find .git -type l 2>/dev/null || true)" ]; then
+            reason="it holds a symbolic link"
+          elif [ -n "$(find .git -ipath '*/hooks/*' ! -type d ! -iname '*.sample' 2>/dev/null || true)" ]; then
+            reason="it holds a hook"
+          elif [ -n "$(find .git \( -iname config -o -iname config.worktree \) ! -type d \
+              -exec git config --file {} --name-only --list \; 2>/dev/null |
+              grep -i -E '^(core\.(fsmonitor|hookspath)|include\.|includeif\.)' || true)" ]; then
+            reason="its config sets core.fsmonitor, core.hooksPath or an include"
+          elif ! { git rev-parse --verify -q HEAD >/dev/null &&
               git fsck --connectivity-only --no-progress >/dev/null 2>&1; }; then
-            echo "::warning title=.git cache::git fsck rejected the restored .git; checking out without it."
-            rm -rf .git
+            reason="git fsck rejected it"
+          else
+            exit 0
           fi
+          echo "::warning title=.git cache::Discarded the restored .git ($reason); checking out without it."
+          rm -rf .git
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           submodules: recursive
@@ -897,7 +1093,7 @@ jobs:
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
           sparse-checkout-cone-mode: false
       - name: Save .git for later runs
-        if: env.SAVE_CACHES == 'true' && steps.git-cache.outputs.cache-hit != 'true'
+        if: env.CI_ACTIONS_CACHE != 'off' && env.SAVE_CACHES == 'true' && steps.git-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
           path: .git
@@ -926,7 +1122,7 @@ jobs:
           echo "key=cluster-metadata-release-v1-$identity-$GITHUB_SHA" >> "$GITHUB_OUTPUT"
       - name: Restore cluster metadata build
         id: cluster-build-cache
-        if: ${{ steps.cluster-build-key.outcome == 'success' }}
+        if: ${{ env.CI_ACTIONS_CACHE != 'off' && steps.cluster-build-key.outcome == 'success' }}
         uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
           path: ${{ runner.temp }}/cluster-native-metadata
@@ -964,7 +1160,7 @@ jobs:
           python3 scripts/provider-release-cache.py snapshot-mtimes
           cp provider-swift/.build/provider-release-source-mtimes.json "$RUNNER_TEMP/cluster-native-metadata/"
       - name: Upload cluster metadata build cache
-        if: ${{ !cancelled() && env.SAVE_CACHES == 'true' && steps.capability-checks.outcome == 'success' && steps.cluster-build-cache.outputs.cache-hit != 'true' }}
+        if: ${{ env.CI_ACTIONS_CACHE != 'off' && !cancelled() && env.SAVE_CACHES == 'true' && steps.capability-checks.outcome == 'success' && steps.cluster-build-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
           path: ${{ runner.temp }}/cluster-native-metadata
@@ -1003,6 +1199,19 @@ jobs:
       matrix:
         shard: [1, 2]
     steps:
+      # Before every cache step: a Darkbloom Sandbox that the plane gave no
+      # Darkbloom cache would reach GitHub's own Actions cache, so there every
+      # cache step is skipped (docs/developer/build.md#ci-caching).
+      - name: Choose this job's Actions cache
+        run: |
+          if [[ ${RUNNER_NAME:-} != darkbloom-* ]]; then
+            echo "Actions cache: this runner's own"
+          elif [[ -n ${DARKBLOOM_CACHE_URL:-} ]]; then
+            echo "Actions cache: the Darkbloom cache at $DARKBLOOM_CACHE_URL"
+          else
+            echo "CI_ACTIONS_CACHE=off" >> "$GITHUB_ENV"
+            echo "::notice title=Actions cache::The plane gave this Darkbloom Sandbox no cache, so every cache step is skipped."
+          fi
       - name: Select today's .git cache
         id: git-day
         run: |
@@ -1011,6 +1220,7 @@ jobs:
           echo "month=${day%-*}" >> "$GITHUB_OUTPUT"
           echo "actions/cache compressor: $(command -v zstd >/dev/null && echo zstd || echo gzip)"
       - name: Restore the newest saved .git
+        if: env.CI_ACTIONS_CACHE != 'off'
         id: git-cache
         uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
@@ -1019,13 +1229,32 @@ jobs:
           restore-keys: |
             git-v1-${{ runner.os }}-${{ steps.git-day.outputs.month }}-
             git-v1-${{ runner.os }}-
-      - name: Discard a damaged cached .git
+      - name: Discard a damaged or unsafe cached .git
         run: |
-          if [ -d .git ] && ! { git rev-parse --verify -q HEAD >/dev/null &&
+          [ -e .git ] || [ -L .git ] || exit 0
+          # Checked before git reads it: a restored .git must be a directory
+          # that runs nothing. No symbolic link, no hook but git's samples (here
+          # or in a submodule) and no config that sets a hook directory or a
+          # file system monitor or includes another file; git config --file
+          # only parses. Names ignore case, as macOS does.
+          if [ -L .git ] || [ ! -d .git ]; then
+            reason="it is not a directory"
+          elif [ -n "$(find .git -type l 2>/dev/null || true)" ]; then
+            reason="it holds a symbolic link"
+          elif [ -n "$(find .git -ipath '*/hooks/*' ! -type d ! -iname '*.sample' 2>/dev/null || true)" ]; then
+            reason="it holds a hook"
+          elif [ -n "$(find .git \( -iname config -o -iname config.worktree \) ! -type d \
+              -exec git config --file {} --name-only --list \; 2>/dev/null |
+              grep -i -E '^(core\.(fsmonitor|hookspath)|include\.|includeif\.)' || true)" ]; then
+            reason="its config sets core.fsmonitor, core.hooksPath or an include"
+          elif ! { git rev-parse --verify -q HEAD >/dev/null &&
               git fsck --connectivity-only --no-progress >/dev/null 2>&1; }; then
-            echo "::warning title=.git cache::git fsck rejected the restored .git; checking out without it."
-            rm -rf .git
+            reason="git fsck rejected it"
+          else
+            exit 0
           fi
+          echo "::warning title=.git cache::Discarded the restored .git ($reason); checking out without it."
+          rm -rf .git
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           submodules: recursive
@@ -1033,7 +1262,7 @@ jobs:
           sparse-checkout: ${{ env.CHECKOUT_SPARSE }}
           sparse-checkout-cone-mode: false
       - name: Save .git for later runs
-        if: env.SAVE_CACHES == 'true' && steps.git-cache.outputs.cache-hit != 'true'
+        if: env.CI_ACTIONS_CACHE != 'off' && env.SAVE_CACHES == 'true' && steps.git-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
           path: .git

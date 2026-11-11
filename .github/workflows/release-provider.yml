@@ -113,6 +113,12 @@ permissions:
   actions: read     # download the unsigned artifact from this run
 
 env:
+  # No release job restores or saves an Actions cache. Any job of a run on this
+  # branch, a Darkbloom-routed one included, holds the run's cache token and
+  # can write any cache key of the branch's scope, and GitHub cannot limit a key
+  # to Blacksmith jobs. So every cache step of .github/actions/provider-release-build
+  # (gated on CI_ACTIONS_CACHE) is skipped, and the build compiles cold.
+  CI_ACTIONS_CACHE: 'off'
   DEVELOPER_ID: 'Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)'
   APPLE_TEAM_ID: 'SLDQ2GJ6TL'
   FAN_HELPER_NAME: 'darkbloom-fan-helper'

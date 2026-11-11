@@ -683,10 +683,35 @@ class ReleasePipelineTests(unittest.TestCase):
         # Qualification builds and tests on the release toolchain, as before.
         self.assertIn("  DARKBLOOM_PROVIDER_TOOLCHAIN: release\n", QUALIFY)
         self.assertIn("  MLX_METALLIB_DEPLOYMENT_TARGET: '26.2'\n", QUALIFY)
-        # Release builds restore the Metal library cache into signed bytes, so
-        # a qualification lane never saves it.
-        save = ACTION.split('- name: Save source-matched metallib cache\n', 1)[1].split('\n    - name:', 1)[0]
-        self.assertIn("if: inputs.lane == 'release' && steps.metallib-cache.outputs.cache-hit != 'true'", save)
+
+    def test_no_release_job_restores_or_saves_an_actions_cache(self):
+        # Any job of a run on a branch, a Darkbloom-routed one included, holds
+        # the run's cache token and can write any key of the branch's scope;
+        # GitHub cannot limit a key to Blacksmith jobs. So the release
+        # workflows pin CI_ACTIONS_CACHE off at their top, nothing turns it
+        # back on, and every cache step of the build action is gated on it.
+        for name, text in (('release-provider.yml', RELEASE), ('release-qualify.yml', QUALIFY)):
+            code = re.sub(r'(?m)^\s*#.*\n', '', text)
+            with self.subTest(workflow=name):
+                header = code.split('\njobs:\n', 1)[0]
+                self.assertRegex(header, r"(?m)^env:\n(?:  \S.*\n)*?  CI_ACTIONS_CACHE: 'off'\n")
+                self.assertEqual(code.count('CI_ACTIONS_CACHE'), 1)
+                self.assertNotIn('actions/cache', code)
+                self.assertNotRegex(code, r'(?m)^\s+cache(-dependency-path)?:')
+                self.assertIn('uses: ./.github/actions/provider-release-build', code)
+        steps = re.split(r'\n    - ', ACTION.split('\n  steps:\n', 1)[1])
+        cache_steps = [step for step in steps if re.search(r'(?m)^\s+uses: actions/cache(/restore|/save)?@', step)]
+        self.assertEqual(len(cache_steps), 6)
+        for step in cache_steps:
+            with self.subTest(step=step.split('\n', 1)[0]):
+                self.assertRegex(step, r"(?m)^      if: env\.CI_ACTIONS_CACHE != 'off'( && |$)")
+        # The other signing workflows restore no Actions cache either.
+        for name in ('release-desktop.yml', 'provider-signing-validation.yml', 'release-swift.yml',
+                     'release-dev-branch.yml'):
+            code = re.sub(r'(?m)^\s*#.*\n', '', (ROOT / '.github/workflows' / name).read_text())
+            with self.subTest(workflow=name):
+                self.assertNotIn('actions/cache', code)
+                self.assertNotRegex(code, r'(?m)^\s+cache(-dependency-path)?:')
 
     def test_cluster_helper_objects_share_the_release_swift_cache(self):
         # The native worker build reuses objects like the provider build; the

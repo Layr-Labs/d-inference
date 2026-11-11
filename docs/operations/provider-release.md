@@ -203,14 +203,21 @@ compilation and SDK qualification on separate `blacksmith-12vcpu-macos-27`
 runners with no signing/publication secrets. PR caches remain PR-scoped and do
 not seed `master`. Only pull-request runs can use Darkbloom Sandboxes, under
 [CI runner routing](../developer/build.md#ci-runner-routing); `master` and
-dispatched runs always use these Blacksmith runners.
+dispatched runs always use these Blacksmith runners. A pull-request run on a
+Darkbloom Sandbox that the plane gave no Darkbloom cache skips every cache step
+of `.github/actions/provider-release-build`, so it builds cold
+([CI caching](../developer/build.md#ci-caching)). The release workflows skip
+every cache step and always build cold: a routed job of the branch can write
+any cache key that a release would restore
+([release qualification on Darkbloom](../developer/build.md#release-qualification-on-darkbloom)).
+So the warmed caches speed up pull-request and CI builds only.
 
 The qualification lane prepares the bounded MiMo HTTP image fixtures before
 the full provider suite, including on cache hits. Keep that preparation as a
 separate step so its environment reaches the tests. See the
 [fixture recipe](../developer/test.md#mimo-regression-fixtures) for local runs.
 
-Inspect each **SDK 27 build cache** summary and actual restore key. Compatible
+In release preparation, inspect each **SDK 27 build cache** summary and actual restore key. Compatible
 prefix hits are useful even when the exact-hit output is false. Compiler, SDK,
 dependency, checkout-path, environment or recipe changes require new compatible
 products. The Metal compiler must execute successfully; a downloaded but

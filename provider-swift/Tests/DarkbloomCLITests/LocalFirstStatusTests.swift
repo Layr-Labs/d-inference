@@ -289,7 +289,7 @@ struct LocalFirstStatusTests {
                                    accountKeySaved: { Issue.record("Keychain read"); return true }).isEmpty)
         #expect(Local.servingLines(info: F.endpoint(), state: nil, route: nil, accountKeySaved: { true }).isEmpty)
         #expect(Local.notRunningHint == [
-            "Start one with:  darkbloom local                                (only you, on this Mac)",
+            "Start one with:  darkbloom local                                 (only you, on this Mac)",
             "             or: darkbloom start --local-endpoint --no-me-first  (Darkbloom and you)",
         ])
     }

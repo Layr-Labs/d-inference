@@ -1,18 +1,18 @@
 # The local API: an OpenAI-compatible server on your Mac
 
-> Last updated: 2026-11-10
+> Last updated: 2026-11-11
 
 Your Mac's models as an OpenAI-compatible HTTP server for your own tools,
-served two ways: **Only me** (`darkbloom start --local`: no coordinator, no
-earnings) or **Both, me first** (`darkbloom start --me-first`: beside the
-Darkbloom network, which pauses while you use it; `--no-me-first` keeps the two
-sharing the Mac). For anyone whose own tools should call the models this Mac
+served two ways: **Both**, the default (`darkbloom start`: beside the Darkbloom
+network, which keeps serving while you use the Mac; `--me-first` pauses it for
+you), or **Only me** (`darkbloom local` or `darkbloom start --local`: no
+coordinator, no earnings). For anyone whose own tools should call the models this Mac
 hosts. A request this Mac serves never leaves it and is never billed. With an
 account key saved, one it can't take can go on to your other Macs, free, and
 with `my-macs-first` to the Darkbloom network, billed
-([the local router](#when-this-mac-cant-take-a-request-the-local-router)). In a terminal,
-`darkbloom start` asks once which you want ([Use your Mac yourself,
-first](./local-first.md)); `darkbloom --opencode` also sets OpenCode up
+([the local router](#when-this-mac-cant-take-a-request-the-local-router)). A first
+`darkbloom start` serves Both and saves it, asking nothing ([Use your Mac
+yourself, first](./local-first.md)); `darkbloom --opencode` also sets OpenCode up
 ([Use it from OpenCode or Hermes](./local-first.md#use-it-from-opencode-or-hermes)).
 
 Chat completions accept `stop` as a string or string array and pass explicit
@@ -166,8 +166,8 @@ See [inference and logprob admission](../architecture/inference.md).
 4. Get the address and key:
 
    ```bash
-   darkbloom local          # address, key, how this Mac serves, a curl example
-   darkbloom local --json   # the raw ~/.darkbloom/local.json record
+   darkbloom local          # address, key, how this Mac serves, a curl example (starts Only me where nothing serves)
+   darkbloom local --json   # the raw ~/.darkbloom/local.json record (only reads)
    ```
 
    `Local` (`provider-swift/Sources/darkbloom/LocalCommand.swift`) reads the

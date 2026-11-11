@@ -192,7 +192,7 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | Command | Purpose | `--config` | Source (`provider-swift/Sources/darkbloom/…`) |
 |---|---|---|---|
 | `cache` | Inspect or set encrypted-cache storage and daily write limits | ✓ | `Cache/CacheCommand.swift` (`Cache`) |
-| `start` | Serve. Default: install and start the LaunchAgent; `--local` for Only me, with no coordinator. In a terminal, the first start asks how this Mac serves ([one question](#how-this-mac-serves-one-question)) | ✓ | `StartCommand.swift` (`Start`) |
+| `start` | Serve. Default: install and start the LaunchAgent; `--local` for Only me, with no coordinator. A first start asks nothing and serves Both, Darkbloom never paused, and saves that ([how this Mac serves](#how-this-mac-serves-no-question)) | ✓ | `StartCommand.swift` (`Start`) |
 | `schedule` | Edit, show or disable saved weekly availability and startup loading; never start/stop the service | ✓ | `Scheduling/ScheduleCommand.swift` (`AvailabilitySchedule`) |
 | `switch` | Gracefully replace hosted models in the running coordinator-connected provider, without restart or reconnect | | `SwitchCommand.swift` (`Switch`) |
 | `addon` | Debug add-on holds on the running provider: `status` (default), `hold`, `release` | | `AddonCommand.swift` (`Addon`) |
@@ -203,7 +203,7 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `status` | Config, hardware, schedule, live daemon state (including the coordinator's last `Trust: <level> / <status>` message), per-slot KV/MTP posture | ✓ | `StatusCommand.swift` (`Status`) |
 | `doctor` | Diagnostics (see [troubleshooting](./troubleshooting.md#doctor-checks)) | ✓ | `DoctorCommand.swift` (`Doctor`) |
 | `models` | `list`, `catalog`, `download`, `remove` | ✓ | `ModelsCommand.swift` (`Models`) |
-| `local` | Print the local API's address and key | | `LocalCommand.swift` (`Local`) |
+| `local` | Serve only you: start Only me where nothing serves, then print the local API's address and key; where Darkbloom serves, ask in a terminal before switching ([below](#darkbloom-local)) | | `LocalCommand.swift` (`Local`) |
 | `route` | Where your requests go when this Mac's local API can't take them: `this-mac`, `my-macs` or `my-macs-first` saves `[local] route` ([below](#darkbloom-route-this-mac-my-macs-my-macs-first)); `key` saves the account API key | ✓ | `RouteCommand.swift` (`Route`), `RouteChoiceCommand.swift` (`RouteChoiceFlow`) |
 | `cluster` | Set up two Macs to serve one model together ([guided setup](./two-mac-cluster.md)); `cluster local` serves without a coordinator. In a terminal, the first setup asks how the pair serves (**Only me (this pair, local)**, **Darkbloom network**, or **Both, me first**, preselected: the leader's local API beside Darkbloom, which pauses while you use it), saves the answer in `[local] mode`, and asks nothing without a terminal ([Both, me first](./two-mac-cluster.md#both-me-first-the-pairs-own-api-beside-darkbloom)). Run again on a paired Mac it works like `darkbloom start` (which opens the same screen there): both Macs, the cable and the status, then the pair's models with the current one preselected (Enter keeps it or starts it again), each with the modes it runs there, the recommended one first and no speed, **Change how the pair serves** (the three choices below; `cluster local`'s list keeps its line to switch to Darkbloom), and **Start over**; another model asks once before the serving one stops, and every start ends with the outcome, the pair's card and `darkbloom stop` / `restart` / `status` ([after setup](./two-mac-cluster.md#the-steps-once)). It offers **Start over** after one question (also when the other Mac does not answer over the cable: the screen then names that Mac and what to run there), and **Pair again** without it only when the saved pairing was made with another Secure Enclave key; both take the steps of `cluster pair --forget` (`ClusterUnpairing`), then pair ([pairing again](./two-mac-cluster.md#pairing-again)) | ✓ | `ClusterCommand.swift` (`Cluster`) |
 | `waitlist` | List the waitlists the coordinator offers and where the account stands (bare), or put the account on one and show where it stands (`waitlist cluster`, `waitlist sandbox`); waitlists are per account | ✓ | `Waitlist/WaitlistCommand.swift` (`Waitlist`) |
@@ -243,9 +243,9 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `--local-endpoint` | flag | `false` | Both, me first, the older flag: the local API beside Darkbloom, with me first on (Darkbloom requests pause while your local requests run and for `[local] me_first_idle_minutes` after) unless `--no-me-first` (`[local] me_first = false`); saved in `[local] mode`; mutually exclusive with `--local` |
 | `--me-first-idle <min>` | `UInt64?`, 1–120 | `[local] me_first_idle_minutes` (`2`) | Minutes with none of your requests before Darkbloom comes back; saved. Not `--idle-timeout` (model memory) |
 | `--route <route>` | `this-mac`, `my-macs`, `my-macs-first` | `[local] route` | Where your requests go when this Mac can't take them ([the local router](./direct-mode.md#when-this-mac-cant-take-a-request-the-local-router)); saved; needs an account key (`darkbloom route key`) |
-| `--choose` | flag | `false` | In a terminal: ask how this Mac serves again, although a choice is saved |
+| `--choose` | flag, **hidden** | `false` | Asks nothing (no start asks how this Mac serves): prints ``…`--choose` no longer asks: name how this Mac serves with --local, --network or --me-first, or run `darkbloom local` for local only.`` after the terms notice and serves as a plain start (`Start.chooseNote`); kept so scripts that pass it still run |
 | `--opencode`, `--hermes` | flag | `false` | Set OpenCode 2 or Hermes Agent up to use this Mac's local API ([below](#set-up-opencode-or-hermes)); not with `--network`, `--no-auth`, `--cluster-member`, `--distributed` or `--foreground` |
-| `--port <n>` | `UInt16?` | `[local] port`, else the port this Mac's local API already uses, else the first free port from `8001`; saved the first time | This Mac's local API port, for every local API it serves; a port named here is used and saved ([below](#how-this-mac-serves-one-question)) |
+| `--port <n>` | `UInt16?` | `[local] port`, else the port this Mac's local API already uses, else the first free port from `8001`; saved the first time | This Mac's local API port, for every local API it serves; a port named here is used and saved ([below](#how-this-mac-serves-no-question)) |
 | `--bind <addr>` | `String?` | `[local] bind`, else `127.0.0.1` | Local server bind address |
 | `--no-auth` | flag | `false` | Disable the local bearer-token check |
 | `--cluster-member` | flag | `false` | Register a control-only cluster member from the saved setup, in the foreground ([coordinator-paired member](../reference/configuration.md#coordinator-paired-member)). With `--local-endpoint --port <p> --bind <address>`, which the cluster service passes for Both, me first, the member that hosts the pair's slot also serves the pair's local API, which takes this Mac's own key and the pair's; any other member runs none (its cluster service passes its own port to that API). Refused with `--no-auth`, `--always-on` or `--supervise` |
@@ -257,62 +257,66 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `--force` | flag | `false` | Explicitly permit cancellation if the old provider cannot drain |
 | `--solo` | flag | `false` | On a Mac in a two-Mac cluster: start single-Mac serving on this Mac instead of the pair |
 
-#### How this Mac serves: one question
+#### How this Mac serves: no question
 
-A single-Mac `start` decides how this Mac serves (`StartServingResolver`,
+A single-Mac `start` decides how this Mac serves, and asks nothing about it, in
+a terminal or not (`StartServingResolver`,
 `provider-swift/Sources/darkbloom/Start/StartLocalFirst.swift`; for users:
 [Use your Mac yourself, first](./local-first.md)):
 
 1. A mode flag: `--local`, `--network`, `--me-first` or `--local-endpoint`.
-   It is saved in `[local] mode`, as the question's answer is
-   (`LocalFirstOptions.savesModeFlag`), so the background service, `restart`
-   and `update` serve it from now on; `--local --here` (one terminal session)
-   and the `--foreground` service save no mode. A plain `start --local` on one
-   Mac saves it.
+   It is saved in `[local] mode` (`LocalFirstOptions.savesModeFlag`), so the
+   background service, `restart` and `update` serve it from now on; `--local
+   --here` (one terminal session) and the `--foreground` service save no mode. A
+   plain `start --local` on one Mac saves it.
    **Beside `--solo`, every flag is for that start only**
    (`LocalFirstOptions.solo`): on a Mac in a pair `[local]` holds the pair's
-   settings, so a solo start saves no mode, no `--choose` answer (and asks no
-   route: the pair's serves), and refuses `--route`, `--me-first-idle`,
-   `--no-me-first`, and `--me-first` over a saved `me_first = false`, when one
-   would change the pair's value, before anything starts or is saved (exit 64,
-   ``… would change [local] route, which your pair reads too. …``,
-   `StartServingResolver.soloSettingsRefusal`). Only a new or named port is
-   saved: this Mac's one port, the pair's API's too.
-2. `--choose` (a terminal only): the question again.
-3. The saved choice, `[local] mode`, with or without a terminal, Only me
-   included: every choice serves in the background.
-4. In a terminal (stdin and stdout), the question, after the terms notice and
-   before the model picker:
+   settings, so a solo start saves no mode (nor the default's), and refuses
+   `--route`, `--me-first-idle`, `--no-me-first`, and `--me-first` over a saved
+   `me_first = false`, when one would change the pair's value, before anything
+   starts or is saved (exit 64, ``… would change [local] route, which your pair
+   reads too. …``, `StartServingResolver.soloSettingsRefusal`). Only a new or
+   named port is saved: this Mac's one port, the pair's API's too.
+2. The saved choice, `[local] mode`, Only me included: every choice serves in
+   the background. A saved Both keeps its pause as saved (`me_first` absent is
+   on, as before).
+3. Otherwise **the default: Both, Darkbloom never paused**
+   (`ServingModeSource.default`): the local API beside Darkbloom, and Darkbloom
+   keeps serving while you use it. It is saved as this Mac's choice, `mode =
+   "both"` and `me_first = false` (no `me_first` is written over a saved one, nor
+   with `--me-first-idle`, which keeps the pause on), so launchd's child, which
+   reads `[local]`, serves it, and a later default never changes the Mac. No
+   route is saved: with an account key your requests go to your other Macs
+   (free) when this Mac can't take them, else they stay on this Mac
+   (`LocalSettings.resolvedRoute`). Before the summary, once the start goes
+   ahead, one line (`StartServing.defaultLine`):
 
    ```text
-   How should this Mac serve?
-     1. Only me, on this Mac      Darkbloom never contacts this Mac. Your tools use this Mac's own API.
-     2. Darkbloom network         This Mac serves Darkbloom and earns while it runs.
-     3. Both, me first            This Mac serves Darkbloom while you aren't using it. When you use it,
-                                  Darkbloom traffic pauses until you've been idle for 2 minutes.
-   Choose 1, 2 or 3 [3]:
+   Serving Darkbloom and your local API at http://127.0.0.1:8001/v1 (`darkbloom local` for local only).
    ```
 
-   Enter takes the bracketed answer: the saved choice with `--choose`, else
-   **Both, me first**. For 1 or 3 with an account key saved, a follow-up asks
-   where your requests go when this Mac can't take them (`1. Only this Mac`,
-   `2. Only my Macs (free)`, `3. My Macs first (the network answers when they
-   can't; billed to your balance)`, `[2]`). The end of input, or three answers
-   that aren't 1, 2 or 3, print `Cancelled: nothing was saved or started.` and
-   exit 0.
-5. Otherwise (no terminal, no saved choice: the LaunchAgent, the desktop app,
-   scripts): today's behaviour, exactly. The Darkbloom network, no local port,
-   no Keychain look-up, nothing written, and the same LaunchAgent arguments.
+   Starts without a terminal take it too: scripts, agents, and the desktop app's
+   Start without its local API (`start --model <id>`), which on a Mac with no
+   saved choice served the Darkbloom network alone before 0.10.12.
+4. The `--foreground` service (launchd's child) never takes the default: its
+   arguments say how it serves, and without a mode flag it serves the Darkbloom
+   network exactly as before: no local port, no Keychain look-up, nothing
+   written (`ServingModeSource.today`). `restart`, `update`, login and the
+   watchdog restart an installed job as it is when nothing is saved, so an
+   updated Mac never opens a local port by itself.
+
+`--choose`, which asked the question earlier builds had, asks nothing: it
+prints `Start.chooseNote` after the terms notice and serves as a plain start.
 
 **The rule: the background service, `restart` and `update` always serve the
-saved choice.** The answer (or the mode flag), its follow-up and the local
+saved choice.** The mode (a flag's or the default's), `me_first` and the local
 API's port are written to `[local]` once the start goes ahead (after the model
 picker; for `--here`, once its server listens), so a cancelled or refused start
-saves nothing; "Only me" with `--schedule` or `--autopilot` is refused before
-saving. Every choice then serves in the background, with the same model picker
-(downloads included) and memory question:
+saves nothing; a saved "Only me" with `--schedule` or `--autopilot` is refused
+before saving. Every choice then serves in the background, with the same model
+picker (downloads included) and memory question:
 
-- **Darkbloom network** and **Both, me first** install the LaunchAgent with the
+- **Darkbloom network** and **Both** install the LaunchAgent with the
   arguments `--local-endpoint` has always used
   ([configuration](../reference/configuration.md#local-first-use-local)).
 - **Only me** installs the same LaunchAgent the app's local mode uses, `start
@@ -329,6 +333,7 @@ saving. Every choice then serves in the background, with the same model picker
   `Start.onlyMeModelsWithoutAsking`). With no model it can serve, it stops
   (exit 1) with ``No model to serve yet. See them: `darkbloom models catalog`.
   Get one: `darkbloom models download <id>`, then `darkbloom start`.``
+  `darkbloom local` starts it this way ([below](#darkbloom-local)).
 - **`--local --here`** serves Only me in this terminal (`runLocalStandalone`;
   Ctrl-C drains it) and saves no mode. When a background service runs, it says
   ``Darkbloom network serving stops while this runs; it starts again with
@@ -343,8 +348,9 @@ saving. Every choice then serves in the background, with the same model picker
 
 - **One port per Mac** (`LocalAPIPort.choose`,
   `provider-swift/Sources/ProviderCore/Config/LocalAPIPort.swift`): every local
-  API this Mac serves (the question's, a saved choice, `--me-first`, `--local`,
-  `--local-endpoint`, the desktop app's starts) takes the same port, so the
+  API this Mac serves (the default's, a saved choice, `--me-first`, `--local`,
+  `--local-endpoint`, `darkbloom local`, the desktop app's starts) takes the
+  same port, so the
   address the tools were given never moves:
   1. `--port <n>`: used as given, and saved when it isn't the saved port:
      ``Local API port: 8007 (saved, instead of 8005: tools set up for 8005 need
@@ -372,8 +378,8 @@ saving. Every choice then serves in the background, with the same model picker
 - **A local API that can't listen:** Only me stops (exit 1; for the background
   service, in its log):
   ``This Mac's local API couldn't listen on 127.0.0.1:8001: another program
-  may use port 8001. Free it, or run `darkbloom start --port 8002`.`` Both, me
-  first keeps serving Darkbloom, and `status` and `local` say why its local API
+  may use port 8001. Free it, or run `darkbloom start --port 8002`.`` Both
+  keeps serving Darkbloom, and `status` and `local` say why its local API
   isn't up ([`darkbloom status`](#darkbloom-status)). On a Mac in a two-Mac
   cluster, where `start` takes `--port` only with `--solo`, these lines name
   `darkbloom start --solo --port <n>` for single-Mac serving. The pair's own
@@ -384,26 +390,27 @@ saving. Every choice then serves in the background, with the same model picker
   (`--local`, `--network`, `--me-first`/`--local-endpoint`), for example ``
   `--local` and `--me-first` choose different ways to serve. Use one: --local
   (only you, on this Mac), --network (the Darkbloom network) or --me-first (both,
-  you first). ``; `--choose` with a mode flag; `--no-me-first` or
-  `--me-first-idle` with `--local` or `--network`; `--no-me-first` with
-  `--me-first-idle`; `--network` with `--route`, `--port`, `--bind` or
-  `--no-auth`; `--me-first-idle` outside 1–120; `--choose`, `--route`,
-  `--no-me-first` or `--me-first-idle` with `--foreground`. `--local` with
-  `--local-endpoint` is still refused after the terms notice (exit 1).
-  `--choose` without a terminal exits 64 and names the three flags.
+  you first). ``; `--no-me-first` or `--me-first-idle` with `--local` or
+  `--network`; `--no-me-first` with `--me-first-idle`; `--network` with
+  `--route`, `--port`, `--bind` or `--no-auth`; `--me-first-idle` outside
+  1–120; `--route`, `--no-me-first` or `--me-first-idle` with `--foreground`.
+  `--local` with `--local-endpoint` is still refused after the terms notice
+  (exit 1). `--choose` is never refused: it asks nothing.
 - **No terminal, no model list:** no start asks a question without a terminal
   (stdin). One that names no models (`--model`, `--all`) for **Darkbloom
-  network** or **Both, me first** would ask in the model picker, so it stops
+  network** or **Both** would ask in the model picker, so it stops
   before anything is stopped or started, in one line on standard error (exit
   64): ``Without a terminal, `darkbloom start` can't ask which models to serve:
   add --model <id> (`darkbloom models list` shows this Mac's models) or
   --all.`` **Only me** serves the models already on this Mac and needs none.
   On a paired Mac, `start --solo` says it before this Mac's part of the pair
   is touched (`Start.requireModelsNamedWithoutTerminal`).
-- **The summary** gains, with a local API:
+- **The summary** gains, with a local API (the default's here; with me first
+  on, `Serving: Both, me first — Darkbloom pauses while you use this Mac, back
+  after 2 idle minutes`):
 
   ```text
-    Serving: Both, me first — Darkbloom pauses while you use this Mac, back after 2 idle minutes
+    Serving: Both — Darkbloom keeps serving while you use this Mac (me first is off)
     Local:   http://127.0.0.1:8001/v1 — your requests: this Mac first, then your other Macs (free)
              (`darkbloom local` shows the key)
   ```
@@ -413,8 +420,8 @@ saving. Every choice then serves in the background, with the same model picker
   on this Mac)`, whatever the route, and the start doesn't ask the Keychain.
   No start screen prints the key: the banner of `--local --here` says
   ``API key:  `darkbloom local` shows it`` and where your requests go
-  (`Start.localServerBanner`). A
-  start that nothing chose (step 5) prints today's summary.
+  (`Start.localServerBanner`). The `--foreground` service without a mode flag
+  (step 4) prints today's summary.
 
 #### Set up OpenCode or Hermes
 
@@ -428,7 +435,7 @@ They run once, at `start`:
 1. **A local API already runs** (`local.json`, with a key, on the `--port` and
    `--bind` given, if any) and no option changes what serves (`--model`,
    `--all`, `--idle-timeout`, `--schedule`, `--autopilot`/`--no-autopilot`,
-   `--coordinator-url`, `--choose`, `--no-me-first`, `--me-first-idle`,
+   `--coordinator-url`, `--no-me-first`, `--me-first-idle`,
    `--route`): nothing starts. `Darkbloom already serves at
    http://127.0.0.1:8001/v1; setting up OpenCode for it.` (the URL the tools
    use, `local.json`'s `base_url`: `127.0.0.1` for an API on `0.0.0.0`;
@@ -1077,12 +1084,26 @@ cache precedence is specified in [model cache configuration](../reference/config
 
 | Flag | Type | Default | Effect |
 |---|---|---|---|
-| `--json` | flag | `false` | Print the raw `~/.darkbloom/local.json` record |
+| `--model <id>` | `[String]`, repeatable | `[]` | The models Only me serves when `local` starts it; without one, `start --local`'s (in a terminal the picker, without one the last selection), and a switch keeps the models Darkbloom's job served (`Local.switchModels`) |
+| `--json` | flag | `false` | Print the raw `~/.darkbloom/local.json` record; only reads: starts and switches nothing |
+
+`local` serves only you, and never stops Darkbloom by surprise (`Local.plan`,
+`Local.servingNow`, `provider-swift/Sources/darkbloom/LocalCommand.swift`). How
+this Mac serves now is read from the running provider (`DaemonState`), else the
+loaded LaunchAgent's job (launchd starts it again after a crash), else a live
+`local.json` (`start --local --here` in another terminal):
+
+| This Mac | `darkbloom local` |
+|---|---|
+| Serves nothing | Starts Only me in the background as `darkbloom start --local` does (terms notice, picker, drain, summary; saves `[local] mode = "local"`), waits for its API as `start --local --opencode` does (30 s plus `[backend] startup_preload_timeout_secs`), then prints the address and key |
+| Serves Darkbloom (network or Both) | Prints the address and key, or, with no local API, ``This Mac serves the Darkbloom network, with no local API.`` and `` `darkbloom start --local-endpoint --no-me-first` adds one beside Darkbloom.``; then, only in a terminal (stdin and stdout), asks `Switch this Mac to local only (stops serving Darkbloom)? [y/N]`. Only `y` or `yes` switches (Only me, as above, with the job's models; Darkbloom's accepted requests drain first); Enter, any other answer or the end of input keeps Darkbloom serving. Without a terminal it never asks or switches (exit 1 with no local API) |
+| Serves Only me | Prints the address and key |
+| Is in a two-Mac cluster | Prints what it always did, then ``This Mac is in a two-Mac cluster: `darkbloom cluster local` serves the pair on its local API only.`` (not when the pair already serves locally only); never starts, switches or stops anything |
 
 Exit 1 (and `{}` in JSON mode) when no live local server is recorded
 (`LocalEndpoint.readLiveInfo`, `provider-swift/Sources/ProviderCore/Server/LocalEndpoint.swift`);
-it then names both ways to start one, `start --me-first` (Darkbloom and you,
-you first) and `start --local` (only you, on this Mac). When the running
+it then names both ways to start one, `darkbloom local` (only you, on this Mac)
+and `start --local-endpoint --no-me-first` (Darkbloom and you). When the running
 provider's local API couldn't listen (`DaemonState.localAPIFailure`), it says
 why instead: ``The local API isn't up: port 8001 is in use (`darkbloom start
 --port 8002`).`` (`Local.notUpLine`), with the commands `status` names on a Mac
@@ -3039,11 +3060,11 @@ No line shows the key or a speed, and every problem names the next command:
 
 | Line | What it says |
 |---|---|
-| `mode` | How this Mac serves, in the start summary's words: what the running provider serves (`serving now`, read as `status` reads it), else `[local] mode` (`saved`); a saved choice the running provider doesn't serve is named with `` serves at the next `darkbloom start` ``. Only me's server is Only me from its first load: `(starting)` until its local API listens. Nothing saved and nothing running: ``not chosen yet: `darkbloom start` asks …``. On a paired Mac, the pair's way (**Only me (this pair)**, **Both, me first (this pair)** or **Darkbloom network (this pair)**, the start question's names) and the Mac that runs its API; before the pair has chosen, ``this Mac is paired, but how the pair serves isn't chosen yet`` (fix `darkbloom cluster`). A paired Mac serving alone (`start --solo`) is described by what it serves, with `(this Mac serves alone, not the pair)` |
-| `darkbloom network` | Only with **Only me**: ``not needed (Only me): the account, trust, App Attest and coordinator checks are skipped; `darkbloom start --choose` changes how this Mac serves`` (on a pair, `darkbloom cluster`; serving alone, `darkbloom start --solo --choose`) |
+| `mode` | How this Mac serves, in the start summary's words: what the running provider serves (`serving now`, read as `status` reads it), else `[local] mode` (`saved`); a saved choice the running provider doesn't serve is named with `` serves at the next `darkbloom start` ``. Only me's server is Only me from its first load: `(starting)` until its local API listens. Nothing saved and nothing running: ``not chosen yet: `darkbloom start` serves Darkbloom and your local API, Darkbloom never paused, and saves that (`darkbloom local`: only you)``. On a paired Mac, the pair's way (**Only me (this pair)**, **Both, me first (this pair)** or **Darkbloom network (this pair)**, the start question's names) and the Mac that runs its API; before the pair has chosen, ``this Mac is paired, but how the pair serves isn't chosen yet`` (fix `darkbloom cluster`). A paired Mac serving alone (`start --solo`) is described by what it serves, with `(this Mac serves alone, not the pair)` |
+| `darkbloom network` | Only with **Only me**: ``not needed (Only me): the account, trust, App Attest and coordinator checks are skipped; `darkbloom start --local-endpoint` (Darkbloom and you) or `--network` changes how this Mac serves`` (on a pair, `darkbloom cluster`; serving alone, `darkbloom start --solo --local-endpoint` … `changes how this Mac serves alone`) |
 | `address` | With a local API: ✓ `http://127.0.0.1:8001/v1 — up on port 8001` once it answers `GET /health` (2 s); ✗ when its process runs but the port doesn't answer; ✗ `<address> isn't up` with the address that couldn't listen, fix in `status`'s words (``port 8001 is in use (`darkbloom start --port 8002`)``, with `--solo` on a paired Mac serving alone); `— starting: it opens once its models are loaded` while Only me loads; ⚠ `— not running`, fix `` `darkbloom restart` starts it again as saved `` when the background service is installed, else `darkbloom start`. On a pair: ⚠ while it is stopped (`darkbloom start` starts the pair); on the Mac that doesn't run the pair's API, where it runs; on a Mac that passes the pair's API on through its own port and can't answer for it now, ⚠ in `status`'s words (`ClusterPairSummary.memberAPIDown`): ``http://127.0.0.1:8003/v1 on this Mac answers 503 for now. Your pair's other Mac (…) isn't reachable; …`` while that Mac is away (never `restart`), ``… The pair's API on your pair's other Mac (…) isn't answering yet; …`` while that API starts again (`memberAPIRestarting`), or the line for a port another program holds |
 | `key file` | ✓ the file the API's key is in (`~/.darkbloom/local_token`, `LocalEndpoint.keyFile`); ✗ when no file holds a running API's key, so tools that read it are refused; `none` for an API started with `--no-auth`, or before the first start |
-| `OpenCode`, `Hermes` | Darkbloom's provider in the tool's own config (`~/.config/opencode/opencode.jsonc` or `opencode.json`, `~/.hermes/config.yaml`, as `darkbloom --opencode` / `--hermes` choose them), read and judged as `start`'s notice judges it (`ToolAddress.readPointer`, `ToolAddress.miss`): `localhost`, `127.0.0.1` and `::1` are this Mac, and so is its `.local` name for an API on every address; another file that holds the same key is the same key; Hermes' `key_cmd` names a key file only as `/bin/cat <full path>`. ✓ `points here`; ⚠ `points at <address>, not this Mac's local API (…)`, or at the right address but another key file, or a provider block with no address (fix `darkbloom --opencode` / `--hermes`); ⚠ a config Darkbloom can't read, with why (not valid, larger than 4 MiB); `not set up` with the command that sets it up. With no local API (Darkbloom network), only a tool still pointing at one is shown (⚠, fix `darkbloom start --choose`; on a pair, `darkbloom cluster`) |
+| `OpenCode`, `Hermes` | Darkbloom's provider in the tool's own config (`~/.config/opencode/opencode.jsonc` or `opencode.json`, `~/.hermes/config.yaml`, as `darkbloom --opencode` / `--hermes` choose them), read and judged as `start`'s notice judges it (`ToolAddress.readPointer`, `ToolAddress.miss`): `localhost`, `127.0.0.1` and `::1` are this Mac, and so is its `.local` name for an API on every address; another file that holds the same key is the same key; Hermes' `key_cmd` names a key file only as `/bin/cat <full path>`. ✓ `points here`; ⚠ `points at <address>, not this Mac's local API (…)`, or at the right address but another key file, or a provider block with no address (fix `darkbloom --opencode` / `--hermes`); ⚠ a config Darkbloom can't read, with why (not valid, larger than 4 MiB); `not set up` with the command that sets it up. With no local API (Darkbloom network), only a tool still pointing at one is shown (⚠, fix ``…`darkbloom start --local-endpoint` (Darkbloom and you) or `darkbloom local` (only you)``; serving alone, `darkbloom start --solo --local`; on a pair, `darkbloom cluster`) |
 
 The ✗ lines of a running local API (its port doesn't answer; no file holds its
 key) name the command that starts it again as it serves now, never another way.
@@ -3651,11 +3672,13 @@ darkbloom unenroll --keep-serving [--no-open]
 
 ## `darkbloom local`
 
-Print the local API's address and key: the OpenAI-compatible server of
-**Only me** or **Both, me first** on this Mac.
+Serve only you, and print the local API's address and key: the
+OpenAI-compatible server of **Only me** or **Both** on this Mac. Where nothing
+serves it starts Only me first; where Darkbloom serves it asks, in a terminal
+only, before switching ([what it does on each Mac](#darkbloom-local)).
 
 ```bash
-darkbloom local [--json]
+darkbloom local [--model <id>]... [--json]
 ```
 
 `darkbloom local` reads `~/.darkbloom/local.json`, but only advertises it if the

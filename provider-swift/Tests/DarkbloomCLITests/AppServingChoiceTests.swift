@@ -94,14 +94,19 @@ struct AppServingChoiceTests {
         try await Self.on(saved) { mac in try mac.expectRestartAndUpdateKeep(served, "as saved") }
 
         // Start (the tray, Machines, Models): `start --model <id>` serves the saved mode and saves nothing; with none
-        // saved, the Darkbloom network, as before.
+        // saved, the default (Both, Darkbloom never paused), which is saved, so Restart and Update keep it from then on.
         try await Self.on(saved) { mac in
             let argv = try mac.argv("start")
             #expect(argv == ["start", "--model", Self.model, "--config", mac.config.path.path])
             let before = mac.config.bytes
             let serving = try mac.start(argv)
-            #expect(serving.mode == served && serving.change.isEmpty && mac.config.bytes == before, "Start")
-            try mac.expectRestartAndUpdateKeep(served, "Start")
+            if saved == nil {
+                #expect(serving.mode == .both && serving.source == .default && !serving.meFirst, "Start")
+                #expect(mac.config.local?.mode == .both && mac.config.local?.meFirst == false, "Start")
+            } else {
+                #expect(serving.mode == served && serving.change.isEmpty && mac.config.bytes == before, "Start")
+            }
+            try mac.expectRestartAndUpdateKeep(saved ?? .both, "Start")
         }
 
         // Studio's "Local only" (`desktop start-local`): Only me, saved, so Restart and Update keep it.

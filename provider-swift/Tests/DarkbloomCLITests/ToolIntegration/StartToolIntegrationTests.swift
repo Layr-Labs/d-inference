@@ -148,15 +148,17 @@ struct StartToolIntegrationTests {
             }
         }
         let expected = IntegrationEndpoint(baseURL: "http://127.0.0.1:8123/v1", keyFile: keyFile)
+        // `--choose` asks nothing now (`Start.chooseNote`), so it changes nothing that serves.
         for arguments in [["--opencode"], ["--hermes", "--local"], ["--opencode", "--me-first"],
-                          ["--opencode", "--port", "8123"], ["--opencode", "--bind", "127.0.0.1"]] {
+                          ["--opencode", "--port", "8123"], ["--opencode", "--bind", "127.0.0.1"],
+                          ["--opencode", "--choose"]] {
             #expect(try shortcut(arguments) == expected, "\(arguments)")
         }
         for arguments in [["--opencode", "--model", "fixture/model"], ["--opencode", "--all"],
                           ["--opencode", "--idle-timeout", "5"], ["--opencode", "--port", "9000"],
                           ["--opencode", "--bind", "0.0.0.0"], ["--opencode", "--route", "my-macs"],
                           ["--opencode", "--no-me-first"], ["--opencode", "--me-first-idle", "5"],
-                          ["--opencode", "--choose"], ["--opencode", "--coordinator-url", "ws://127.0.0.1:1/ws/provider"],
+                          ["--opencode", "--coordinator-url", "ws://127.0.0.1:1/ws/provider"],
                           ["--local"], []] {
             #expect(try shortcut(arguments) == nil, "\(arguments)")
         }

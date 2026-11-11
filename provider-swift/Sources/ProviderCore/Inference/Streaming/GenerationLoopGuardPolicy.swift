@@ -65,11 +65,12 @@ enum GenerationLoopGuardPolicy {
         thresholds: GenerationLoopDetector.Thresholds = .init()
     ) -> GenerationLoopGuard? {
         guard case .modelTypes(let enabled) = setting,
-              let modelType, enabled.contains(modelType.lowercased()) else { return nil }
+              let modelType = modelType?.lowercased(), enabled.contains(modelType) else { return nil }
         guard tokenConstraint == nil, !prepared.requiresToolCall,
               prepared.responseFormat == nil, prepared.glmResponseFormat == nil,
               request.responseFormat?.requiresJSONOutput != true else { return nil }
         var markers = genericToolCallMarkers
+        // MiMo parses calls even without declared tools (`ToolStreamPreparation`).
         if prepared.tools?.isEmpty == false || modelType == "mimo_v2" {
             // A parser that also reads a call without any tag (bare JSON, or a
             // function name then JSON) leaves no marker to stop at.

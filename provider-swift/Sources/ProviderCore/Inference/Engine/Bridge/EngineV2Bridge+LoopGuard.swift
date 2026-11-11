@@ -21,8 +21,9 @@ extension EngineV2Bridge {
             ownedEngine?.cancel(cbv2Id)
         }
         #if canImport(os)
+        // One line per stop: the model, its type, the period, the span and the tokens so far.
         Self.loopGuardLogger.notice(
-            "loop guard stopped \(id, privacy: .public): model \(self.modelId, privacy: .public) (\(modelType ?? "?", privacy: .public)), period \(detection.period) tokens repeated over the last \(detection.span), at \(detection.generatedTokens) generated tokens")
+            "loop guard stopped \(id, privacy: .public): \(self.modelId, privacy: .public) (\(modelType ?? "?", privacy: .public)) period \(detection.period) span \(detection.span) at \(detection.generatedTokens)")
         #endif
         var event = TelemetryEvent(
             source: .provider,

@@ -41,9 +41,12 @@ struct GenerationLoopDetector: Sendable {
     private var tail: [Int] = []
     private var nextCheck: Int
 
+    private let checkEvery: Int
+
     init(thresholds: Thresholds = Thresholds()) {
         self.thresholds = thresholds
-        self.nextCheck = max(thresholds.checkEvery, 1)
+        self.checkEvery = max(thresholds.checkEvery, 1)
+        self.nextCheck = checkEvery
     }
 
     /// Feed one delta's tokens (several when drafts were accepted).
@@ -54,8 +57,7 @@ struct GenerationLoopDetector: Sendable {
         let window = thresholds.window
         if tail.count > 2 * window { tail.removeFirst(tail.count - window) }
         guard generatedTokens >= nextCheck else { return nil }
-        let every = max(thresholds.checkEvery, 1)
-        nextCheck = (generatedTokens / every + 1) * every
+        nextCheck = (generatedTokens / checkEvery + 1) * checkEvery
         guard generatedTokens >= thresholds.minTokens else { return nil }
         return check()
     }

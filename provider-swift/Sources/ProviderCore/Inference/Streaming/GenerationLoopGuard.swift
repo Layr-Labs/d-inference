@@ -13,6 +13,7 @@ public struct GenerationLoopGuard: Sendable {
     private let carryLength: Int
     /// The end of the previous delta's text, so a marker split across deltas is seen.
     private var carry = ""
+    /// Set by a tool-call frame, or once the guard fired: it never fires again.
     private(set) var disarmed = false
 
     init(modelType: String, toolCallMarkers: [String],

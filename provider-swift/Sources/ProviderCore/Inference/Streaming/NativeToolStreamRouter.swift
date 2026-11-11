@@ -23,7 +23,9 @@ struct NativeToolStreamRouter {
     private var exposedCallCount = 0
     private var openCallIndex: Int?
     private var openCallName: String?
-    /// Every call exposed so far, each already validated.
+    /// Every call exposed so far whose frame parsed, each already accepted by
+    /// `ToolConstraintValidation` (which returns `auto` calls as generated
+    /// unless the request is `strict`).
     private(set) var completedToolCalls: [ToolCall] = []
 
     // Pass the same prepared schemas used by the handler: Flint's raw-string

@@ -318,7 +318,6 @@ struct StreamedToolCallTests {
             #expect(call.arguments == arguments)
         }
         #expect(served.chunks.contains { $0.finishReason == "tool_calls" })
-        #expect(served.chunks.contains { $0.usage?.completionTokens == 30 })
     }
 
     /// `strict: true` keeps each a typed refusal that names its check

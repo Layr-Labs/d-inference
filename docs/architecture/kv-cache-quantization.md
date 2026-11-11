@@ -9,6 +9,12 @@ execution remains available. This page explains the numerical and ownership
 contracts, not completed model qualification or a release. The
 [CLI reference](../provider/cli-reference.md#providertoml-keys-read-by-the-cli)
 owns the controls and their defaults.
+Nemotron Super's managed slot requests native checkpoints unless its own
+per-model entry or `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` selects a profile;
+the global setting does not apply to it
+(`NemotronSuperLocalPrefixCache.checkpointPrecision`). A native restore
+continues a cold prefill bit for bit, while `balanced` rows changed restored
+answers ([Super's checkpoints](../reference/ssd-kv-cache.md#complete-checkpoint-payload)).
 
 ## Context
 

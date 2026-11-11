@@ -562,6 +562,7 @@ the qualification hook's keys, for speculation and width
 | `DARKBLOOM_NEMOTRON_SUPER_MTP_DEPTH`, `_MTP_VERIFICATION`, `_PREFILL_CHUNK`, `_KV_BACKEND`, `_VIDEO_PRUNING` | depth `3,2,2,2,1` (`3,2,1,1,0` on an M5); the [builder defaults](../architecture/inference.md#context) otherwise | Kept when set in the provider process |
 | `DARKBLOOM_NEMOTRON_SUPER_DECODE_STEPS_BETWEEN_CHUNKS` | `4` (`NemotronSuperLocalPrefill.defaultDecodeStepsBetweenChunks`); `0`…`64`, any other value fails the load | Decode-only steps after each prompt chunk while requests decode; `0` is the rollback. Forwarded to the launchd provider job |
 | `DARKBLOOM_PREFIX_CACHE_MEMORY` | on for either owner when the grant holds every request's fixed bytes and the bank | An explicit value, `DARKBLOOM_PREFIX_CACHE` negative or `DARKBLOOM_CBV2_HYBRID_PREFIX_CACHE=0` keeps the bank off |
+| `backend.engine_v2_kv_checkpoint_quantization_by_model."nvidia-nemotron-3.5-super"`, `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` | absent: `native` (`NemotronSuperLocalPrefixCache.checkpointPrecision`) | Complete SSD checkpoints store native rows, so a restore continues a cold prefill bit for bit. The global `engine_v2_kv_checkpoint_quantization` does not apply to Super; Super's own entry or the switch selects a profile such as `balanced` ([layouts and sizes](ssd-kv-cache.md#complete-checkpoint-payload)) |
 
 ### Native MiMo V2.6 candidate
 

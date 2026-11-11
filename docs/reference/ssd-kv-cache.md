@@ -207,13 +207,21 @@ writes 904 MB. A full 262,144-token context checkpoint is about 5.0 GB, inside
 the 7 GiB large-memory staging cap.
 See the [GLM integration gates](../design/glm53-flash-native.md).
 
-The managed `nvidia-nemotron-3.5-super` slot writes
-`native-paged-affine-checkpoint-full-recurrent-mtp-v1` while it speculates and
-`native-paged-affine-checkpoint-full-recurrent-v1` target-only at the default
-`balanced` precision. Its 8 attention layers (2 KV heads × 128) shrink from
-8 KiB to 2.5 KiB per token past the exact 128-token band; the MTP history
-(1 KiB per token) and the fixed part (the FP32 SSM state, convolution state and
-MTP frontier, 173.9 MB) stay exact.
+The managed `nvidia-nemotron-3.5-super` slot writes `native-paged-full-recurrent-v1`
+by default (`NemotronSuperLocalPrefixCache.checkpointPrecision`), so a restore
+continues a cold prefill bit for bit. The global
+`engine_v2_kv_checkpoint_quantization` does not apply to Super; Super's own
+`engine_v2_kv_checkpoint_quantization_by_model` entry or
+`DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` still selects a profile. A profile such
+as `balanced` writes `native-paged-affine-checkpoint-full-recurrent-mtp-v1`
+while the slot speculates and `native-paged-affine-checkpoint-full-recurrent-v1`
+target-only. It shrinks the 8 attention layers (2 KV heads × 128) from 8 KiB to
+2.5 KiB per token past the exact 128-token band; the MTP history (1 KiB per
+token) and the fixed part (the FP32 SSM state, convolution state and MTP
+frontier, 173.9 MB) stay exact. Native files can be
+[delta checkpoints](#delta-complete-checkpoints) on the target-only owner. The
+speculating owner's MTP history (`[1, heads, rows, headDim]`) has no delta row
+layout, so it writes complete files.
 
 | `nvidia-nemotron-3.5-super` checkpoint (DBK3 file, measured on an M3 Ultra) | `native` | `balanced` |
 |---|---:|---:|

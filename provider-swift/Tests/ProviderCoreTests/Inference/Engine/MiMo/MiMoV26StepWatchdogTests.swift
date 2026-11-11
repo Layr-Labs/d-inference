@@ -6,8 +6,8 @@ import XCTest
 /// A native MiMo engine that trips the SDK's step watchdog is sealed for good
 /// (`fail(.stepWatchdog)` is write-once, so `engineStep` never runs again). A slow
 /// but healthy step must therefore never reach it. On an M5 Ultra a MiMo prefill
-/// step at about 130k tokens of context already takes 11.8 s, and production M3
-/// Ultras prefill MiMo three to four times slower.
+/// step at about 170k tokens of context takes 15.6 s, and production M3 Ultras
+/// prefill MiMo three to four times slower.
 final class MiMoV26StepWatchdogTests: XCTestCase {
     func testANativeMiMoStepMayRunAsLongAsThePrefillProgressLease() {
         let sdk = CBv2EngineLoopConfig()

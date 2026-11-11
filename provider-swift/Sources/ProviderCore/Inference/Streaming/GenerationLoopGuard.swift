@@ -5,7 +5,7 @@ import Foundation
 /// One row's loop guard. The detector watches the row's generated tokens; the
 /// guard is off for the rest of the row once its text shows a tool-call frame,
 /// so a call's arguments (a file of repeated lines, say) are never cut.
-struct GenerationLoopGuard: Sendable {
+public struct GenerationLoopGuard: Sendable {
     /// The served model's `model_type`, for the log line and the metric.
     let modelType: String
     private var detector: GenerationLoopDetector

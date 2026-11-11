@@ -363,10 +363,10 @@ struct GLM5NextMediaRoutingTests {
         #expect(capture.requests.isEmpty)
     }
 
-    /// Only the GLM text path withholds and validates a JSON answer or a forced
-    /// call, so media with either is refused before any media work.
-    @Test(arguments: ["json", "required", "named"])
-    func withheldOutputModesWithMediaAreRefusedBeforePreparation(mode: String) async throws {
+    /// Only the GLM text path withholds and validates a forced call, so media
+    /// with one is refused before any media work.
+    @Test(arguments: ["required", "named"])
+    func forcedToolChoiceWithMediaIsRefusedBeforePreparation(mode: String) async throws {
         let engine = GLMScriptedEngine()
         let bridge = EngineV2Bridge(
             engine: engine, modelId: "test/glm-stub", tokenizer: TokenizerHandle(GLMStubTokenizer()),
@@ -378,22 +378,96 @@ struct GLM5NextMediaRoutingTests {
                 return preparedSubmission()
             }, emitTelemetry: { _ in })
         var request = imageRequest()
-        if mode == "json" {
-            request.responseFormat = .jsonObject()
-        } else {
-            request.tools = [OpenAITool(function: .init(name: "ping", parameters: .object([
-                "type": .string("object"), "properties": .object([:]),
-            ])))]
-            request.toolChoice = mode == "required" ? .mode(.required) : .function(name: "ping")
-        }
-        let (refused, refusal): (String, InferenceRefusalReason) = mode == "json"
-            ? ("JSON response_format", .unsupportedResponseFormat)
-            : ("required/named tool_choice", .unsupportedForcedToolChoice)
+        request.tools = [OpenAITool(function: .init(name: "ping", parameters: .object([
+            "type": .string("object"), "properties": .object([:]),
+        ])))]
+        request.toolChoice = mode == "required" ? .mode(.required) : .function(name: "ping")
         await #expect(throws: MultiModelBatchSchedulerEngineError.invalidToolPayload(
-            "GLM5: \(refused) is not supported with image or video input", refusal: refusal)) {
+            "GLM5: required/named tool_choice is not supported with image or video input",
+            refusal: .unsupportedForcedToolChoice)) {
             _ = try await router(bridge: bridge, plumbing: plumbing).streamChatCompletion(request: request)
         }
         #expect(capture.requests.isEmpty && engine.submitted.isEmpty)
+    }
+
+    private static let colorSchema = OpenAIResponseFormat.jsonSchema(.init(name: "color", schema: .object([
+        "type": .string("object"),
+        "properties": .object(["color": .object(["type": .string("string")])]),
+        "required": .array([.string("color")]),
+    ])))
+
+    /// One Mac's media JSON request through the scheduler: the image prompt
+    /// ends in an open `<think>`, and the engine replays `chunks`.
+    private func serveMediaJSON(_ format: OpenAIResponseFormat, chunks: [String])
+        async -> (content: String, reasoning: String, prepared: Int, usage: EngineV2RequestUsageSignal, error: Error?)
+    {
+        let tokenizer = TokenizerHandle(GLMThinkMarkerTokenizer())
+        let bridge = EngineV2Bridge(engine: GLMReasoningScriptedEngine(chunks: chunks), modelId: "test/glm-stub",
+            tokenizer: tokenizer, eosTokenIds: [2], kvBytesPerToken: 0)
+        let capture = RequestCapture()
+        let plumbing = EngineV2VisionPlumbing(
+            prepare: { _, request, _ in
+                capture.record(request)
+                return .init(promptTokens: [1, 154854, 154854, 154828, 154841], spans: [.init(tokenOffset: 1, length: 2)],
+                    embeddings: [MLXArray.zeros([1, 2, 4])], spanKinds: [.image], attention: .causal,
+                    positionState: nil, mediaKind: .image)
+            }, emitTelemetry: { _ in })
+        let usage = EngineV2RequestUsageSignal()
+        let scheduler = MultiModelBatchSchedulerEngine(
+            registryProvider: { @Sendable in
+                ["test/glm-stub": .init(tokenizer: tokenizer, modelType: "glm5_next",
+                    container: stubContainer(), isVLM: true, engineV2Bridge: bridge)]
+            },
+            defaultMaxTokens: 64, engineV2Vision: plumbing, engineV2Usage: usage)
+        var request = imageRequest()
+        request.responseFormat = format
+        var content = "", reasoning = ""
+        do {
+            for try await event in try await scheduler.streamChatCompletion(request: request) {
+                switch event {
+                case .content(let text): content += text
+                case .parsed(let parsed):
+                    content += parsed.content
+                    reasoning += parsed.reasoningContent ?? ""
+                default: break
+                }
+            }
+            return (content, reasoning, capture.requests.count, usage, nil)
+        } catch {
+            return (content, reasoning, capture.requests.count, usage, error)
+        }
+    }
+
+    /// One Mac's media path withholds and validates a JSON answer as its text
+    /// path does: reasoning streams on its typed channel, and the answer leaves
+    /// once, after generation ends, without the reasoning or markers.
+    @Test(arguments: ["json_object", "json_schema"])
+    func jsonResponseFormatWithMediaIsWithheldUntilValid(format: String) async throws {
+        let served = await serveMediaJSON(format == "json_object" ? .jsonObject() : Self.colorSchema,
+            chunks: ["Look ", "</think>", #"{"color":"#, #""red"}"#])
+        #expect(served.error == nil, "\(String(describing: served.error))")
+        #expect(served.content == #"{"color":"red"}"#)
+        #expect(served.reasoning == "Look ")
+        #expect(served.prepared == 1)
+        // The withheld answer ends the pre-content interval as on the text path.
+        #expect(served.usage.firstWithheldOutputAt != nil)
+    }
+
+    /// An answer that is not the JSON asked for is a typed 422 with no content.
+    @Test(arguments: [
+        ("json_object", "GLM content is not a JSON object"),
+        ("json_schema", "GLM content does not satisfy the json_schema"),
+    ])
+    func invalidJSONAnswerWithMediaIsATyped422WithNoContent(format: String, message: String) async throws {
+        let served = await serveMediaJSON(format == "json_object" ? .jsonObject() : Self.colorSchema,
+            chunks: ["Look ", "</think>", "red"])
+        #expect(served.content.isEmpty)
+        let error = try #require(served.error as? MLXOpenAIServiceError)
+        guard case .invalidResponseFormatOutput(let actual) = error else {
+            Issue.record("unexpected \(error)"); return
+        }
+        #expect(actual == message)
+        #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 422)
     }
 
     /// Hidden reasoning is honored on the media path too: the reasoning after

@@ -3327,4 +3327,40 @@ struct EngineV2LoopGuardBridgeTests {
         #expect(ending.errors == ["request cancelled"])
         #expect(ending.infos.first?.reason == nil)
     }
+
+    @Test("a caller's cancel of a guarded row that never repeated still ends as cancelled")
+    func callerCancelOfAGuardedRow() async throws {
+        let engine = ScriptedCBv2Engine(script: .manual)
+        let bridge = makeBridge(engine: engine)
+        let stream = await bridge.submitTokenized(
+            promptTokens: [1, 2, 3, 4, 5], request: makeRequest(), requestId: "req-guarded-cancel",
+            loopGuard: loopGuard())
+        let engineId = try #require(await bridge._testEngineRequestId(for: "req-guarded-cancel"))
+        yieldLoop(engine, count: 200)
+        await bridge.cancel(requestId: "req-guarded-cancel")
+        engine.manualContinuation?.yield(
+            .finished(reason: .cancelled, usage: CBv2Usage(promptTokens: 5, completionTokens: 200)))
+        engine.manualContinuation?.finish()
+        let ending = await drain(stream)
+        #expect(engine.cancelled == [engineId])
+        #expect(ending.errors == ["request cancelled"])
+        #expect(ending.infos.first?.reason == nil)
+    }
+
+    @Test("an engine failure after the guard fired keeps its error")
+    func failureAfterTheStopKeepsItsError() async throws {
+        let engine = ScriptedCBv2Engine(script: .manual)
+        let bridge = makeBridge(engine: engine)
+        let stream = await bridge.submitTokenized(
+            promptTokens: [1, 2, 3, 4, 5], request: makeRequest(), requestId: "req-loop-fault",
+            loopGuard: loopGuard())
+        yieldLoop(engine, count: 4_200)
+        engine.manualContinuation?.yield(
+            .finished(reason: .error("engine fault"), usage: CBv2Usage(promptTokens: 5, completionTokens: 4_200)))
+        engine.manualContinuation?.finish()
+        let ending = await drain(stream)
+        #expect(engine.cancelled.count == 1)
+        #expect(ending.infos.isEmpty)
+        #expect(ending.errors == ["engine fault"])
+    }
 }

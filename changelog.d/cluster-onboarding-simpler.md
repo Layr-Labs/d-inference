@@ -1,0 +1,8 @@
+### Simpler two-Mac cluster setup
+
+- The first Mac's last line while it waits is set apart and stressed: "→ Now run `darkbloom cluster` on the other Mac" (`darkbloom cluster local` names its own command).
+- `darkbloom cluster` no longer asks how the pair serves: it always serves through Darkbloom with the leading Mac's local API beside it, and Darkbloom keeps serving while you use that API (`[local] me_first = false`, unless `me_first = true` was saved on purpose). A pair saved as Only me or as the Darkbloom network alone switches when `darkbloom cluster` runs and says so in one line; an update or restart never changes it. "Change how the pair serves" is gone from the menu; `darkbloom cluster local` stays the local-only command.
+- Where a pair can't serve through Darkbloom (no login, no approval), the screen says "To use the pair just for yourself, run `darkbloom cluster local`." instead of offering "Serve locally only".
+- `darkbloom cluster` chooses tensor parallel or pipeline by itself: tensor parallel unless it can't run on these Macs or this pair measured it slower. The model list no longer shows modes. `darkbloom cluster local` still asks, with the same choice tagged Recommended and preselected.
+- A start ends on one standout line, "✓ Serving <model> on both Macs" (locally: "…, on your local API at http://localhost:<port>"), and "`darkbloom status` for details", the same on both Macs. The pair's card (log, login, commands) is in `darkbloom status`.
+- On an interactive terminal, both Macs end with "Press Enter to exit." (q and Esc too); transcripts, pipes and agent runs never wait. The pair keeps serving.

@@ -38,9 +38,8 @@ struct Status: AsyncParsableCommand {
         let showsPair = pair.paired && !solo
         let servingAlone = showsPair ? soloServingHere() : nil
         if showsPair {
-            for line in await ClusterPairSummary.live(config: configOptions.config, bounded: ClusterPairCommands.printLine).clusterStatusLines {
-                print(line)
-            }
+            let live = await ClusterPairSummary.live(config: configOptions.config, bounded: ClusterPairCommands.printLine)
+            for line in live.clusterStatusLines + live.statusCardLines { print(line) }
             if let state = servingAlone { print(Self.servingAloneLine(pid: state.pid)) }
             print("")
         }

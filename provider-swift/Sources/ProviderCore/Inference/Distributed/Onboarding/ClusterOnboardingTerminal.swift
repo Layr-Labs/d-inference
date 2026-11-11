@@ -157,6 +157,29 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
 
     public var width: Int? { columns > 0 ? columns : nil }
 
+    /// The one thing to do on the other Mac, set apart by blank lines: in a colour terminal bold, its command in the
+    /// brand's colour; elsewhere the same plain line.
+    public func callout(_ line: String) {
+        say("")
+        guard usesColor else { say("  " + line); say(""); return }
+        let command = line.replacingOccurrences(of: "`[^`]+`", with: "\u{1B}[\(brand)m$0\u{1B}[39m", options: .regularExpression)
+        say("  \u{1B}[1m" + command + "\u{1B}[0m")
+        say("")
+    }
+
+    /// "Press Enter to exit." and the wait for Enter, q or Esc, where a person is at this interactive terminal (colour on,
+    /// so not `NO_COLOR`, `TERM=dumb` or a pipe); a closed input ends it too. The pair keeps serving.
+    public func waitForExit() {
+        guard usesColor, !closed else { return }
+        settle()
+        say("")
+        say("\u{1B}[2m" + ClusterOnboardingDriver.exitLine + "\u{1B}[0m")
+        while !closed {
+            guard let key = key(milliseconds: 250) else { continue }
+            if key == "\r" || key == "\n" || key == "q" || key == "Q" || key == "\u{1B}" { return }
+        }
+    }
+
     /// From the last live row back to the first.
     private static func up(_ rows: Int) -> String { rows > 1 ? "\u{1B}[\(rows - 1)A" : "" }
 

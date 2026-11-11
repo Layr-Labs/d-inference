@@ -83,7 +83,7 @@ import Darwin
         localAgainShowsTheMenu()
         menuKeysSwitchTheScope()
         // Local-first L5b (2026-11-07): the single-Mac start's three choices for a pair, Both, me first preselected.
-        bothMeFirstChecks()
+        simplerOnboardingChecks()
         localNamesTheModel()
         memberJoinsWithLocal()
         servingScopeValues()
@@ -971,7 +971,7 @@ import Darwin
             "  \u{2713} Paired. This Mac leads.",
             "  \(prompt(2))Qwen3.8-27B-4bit-mtp",
             "\u{2713} Serving Qwen3.8-27B-4bit-mtp through Darkbloom on both Macs (pipeline)",
-            "  " + ClusterOnboardingReady.offeredAPILine,
+            "  " + offeredAPILine,
             "  Test response in 0.61 s",
             "  " + ClusterOnboardingDriver.startNotice,
         ] {
@@ -1115,7 +1115,7 @@ import Darwin
         expect(text.contains("  Allow macOS permissions.\n"), "member: the approvals, word for word")
         // It follows the start (O8): what it waits for, the outcome, and whether the window may close, last.
         expect(text.contains("  " + ClusterOnboardingDriver.waitingForStartLine("Apple M5 Ultra, 256 GB") + "\n")
-            && text.hasSuffix("  Test response in 0.61 s\n" + ClusterOnboardingDriver.resultRule + "\n" + ClusterOnboardingDriver.closeWindowLine + "\n"),
+            && text.hasSuffix("  Test response in 0.61 s\n" + ClusterOnboardingDriver.resultRule + "\n" + "  " + ClusterOnboardingDriver.statusHint + "\n"),
                "member: what it waits for, the outcome, and whether the window may close, last: \(text)")
         expect(!text.contains("Run `darkbloom cluster` on the other Mac."), "member: never told to run anything on another Mac")
         expect(!text.contains("Found the other Mac"), "member: finding the leader stays on the live line")
@@ -1900,7 +1900,7 @@ import Darwin
             expect(run.finish() == 0, "\(label): exit 0 once paired")
             let text = run.text
             expect(text.contains("\n" + ClusterOnboardingDriver.joinedLocalLine + "\n  " + ClusterOnboardingDriver.waitingForStartLine("Apple M5 Ultra, 256 GB") + "\n")
-                && text.hasSuffix(ClusterOnboardingDriver.closeWindowLine + "\n"),
+                && text.hasSuffix("  " + ClusterOnboardingDriver.statusHint + "\n"),
                    "\(label): one line for the other Mac, `local` in it, then the start followed: \(text)")
             expect(text.components(separatedBy: ClusterOnboardingDriver.joinedLocalLine).count == 2, "\(label): no second instruction for the other Mac")
             expect(!text.contains("3/4") && !text.contains("Choose a model") && !text.contains("Change model"),
@@ -2688,7 +2688,7 @@ import Darwin
         expect(!text.contains("Nothing to do here"), "key changed (member): never Nothing to do here")
         expect(text.contains("  \u{2713} Paired. The other Mac leads.\n")
             && text.contains("  " + ClusterOnboardingDriver.waitingForStartLine("Apple M5 Ultra, 256 GB") + "\n")
-            && text.hasSuffix(ClusterOnboardingDriver.closeWindowLine + "\n"),
+            && text.hasSuffix("  " + ClusterOnboardingDriver.statusHint + "\n"),
                "key changed (member): joined, and the start followed: \(text)")
         expect(Array(recorder.all.prefix(5)) == ["unpair", "checkLink", "pair", "answer y", "ensureService"], "key changed (member): \(recorder.all)")
         transcript("member-key-changed-pairs-again", text, keys: run.keys)
@@ -3395,6 +3395,9 @@ import Darwin
         expect(N.title(reason: "r") == "Not serving: r.", "the outcome's title")
     }
 
+    /// The ✓ block's line of an earlier build's card for a pair offered with no local API.
+    static let offeredAPILine = "No local API: requests reach the pair through Darkbloom"
+
     static let offeredLogLine = "Notice: " + ClusterOnboardingReady.registeredNotice + " with an installed cluster approval"
 
     // MARK: - The end user's call (Dylan, 2026-11-03): a clear outcome, a sense of time, the reason with its time
@@ -3449,7 +3452,7 @@ import Darwin
         expect(run.waitFor(prompt(2)), "block: the list"); run.type("\r")
         expect(run.finish() == 0, "block: served")
         expect(run.text.contains(block("\u{2713}", "Serving Qwen3.8-27B-4bit-mtp through Darkbloom on both Macs (pipeline)",
-            [ClusterOnboardingReady.offeredAPILine, "Test response in 0.61 s"]) + "  Model:   "),
+            [offeredAPILine, "Test response in 0.61 s"]) + "  Model:   "),
                "block: through Darkbloom, then Done: \(run.text)")
         transcript("outcome-through-darkbloom", run.text, keys: run.keys)
 
@@ -3466,7 +3469,7 @@ import Darwin
         expect(offered.waitFor(prompt(2)), "block, offered: the list"); offered.type("\r")
         expect(offered.finish() == 0, "block, offered: served")
         expect(offered.text.contains(block("\u{2713}", "Serving Qwen3.8-27B-4bit-mtp through Darkbloom on both Macs (pipeline)",
-            [ClusterOnboardingReady.offeredAPILine, "Test response in 0.84 s"])), "block, offered: \(offered.text)")
+            [offeredAPILine, "Test response in 0.84 s"])), "block, offered: \(offered.text)")
 
         let refused = TerminalRun(operations(Recorder(), resume: leader, pairEvents: [], pairResult: .failed([]),
             readyResult: .success(offeredReady), pairServingResults: [.failure(.init(notVerifiedTimed))]))
@@ -3519,7 +3522,7 @@ import Darwin
         expect(served.waitFor(toDarkbloom), "menu, served: the list's scope line"); served.type("3")
         expect(served.finish() == 0, "menu, served: exit 0")
         expect(served.text.contains(block("\u{2713}", "Serving Qwen3.8-27B-4bit-mtp through Darkbloom on both Macs (pipeline)",
-            [ClusterOnboardingReady.offeredAPILine, "Test response in 0.84 s"])), "menu, served: the outcome block: \(served.text)")
+            [offeredAPILine, "Test response in 0.84 s"])), "menu, served: the outcome block: \(served.text)")
     }
 
     // MARK: - The DevNet traffic run (2026-11-04): the switch to Darkbloom kept the local plan, and both windows said ✓
@@ -3559,7 +3562,7 @@ import Darwin
             && !text.contains("the leading Mac's part starts again that way"), "switch plans: what it does: \(text)")
         expect(text.contains("  " + ClusterOnboardingReady.offeredLine(model: "Qwen 3.8 27B") + "\n"), "switch plans: offered: \(text)")
         expect(text.contains(block("\u{2713}", "Serving Qwen 3.8 27B through Darkbloom on both Macs (tensor parallel)",
-            [ClusterOnboardingReady.offeredAPILine, "Test response in 0.60 s"])), "switch plans: ✓ once the coordinator has the pair: \(text)")
+            [offeredAPILine, "Test response in 0.60 s"])), "switch plans: ✓ once the coordinator has the pair: \(text)")
         transcript("switch-to-darkbloom-plans-again", text, keys: run.keys)
     }
 
@@ -3629,7 +3632,7 @@ import Darwin
         expect(served.waitFor(prompt(2)), "taken: the list"); served.type("\r")
         expect(served.finish() == 0, "taken: served: \(served.text)")
         expect(served.text.contains(block("\u{2713}", "Serving Qwen3.8-27B-4bit-mtp through Darkbloom on both Macs (pipeline)",
-            [ClusterOnboardingReady.offeredAPILine, "Test response in 0.61 s"])) && taken.all.contains("pairServing"),
+            [offeredAPILine, "Test response in 0.61 s"])) && taken.all.contains("pairServing"),
                "taken: ✓ once the coordinator has the pair: \(served.text)")
     }
 
@@ -4041,11 +4044,11 @@ import Darwin
         typealias D = ClusterOnboardingDriver
         typealias M = ClusterOnboardingMode
         let gemma = switchChoices[1].modes!
-        expect(M.defaultIndex(gemma) == 1, "modes: the measured pipeline is the default")
-        expect(M.defaultIndex([M(mode: "tensor_parallel_v1", split: nil, measuredTokensPerSecond: nil), M(mode: "pipeline_v1", split: nil, measuredTokensPerSecond: nil)]) == 0,
-               "modes: none measured, the planner's first")
-        expect(M.defaultIndex([M(mode: "tensor_parallel_v1", split: nil, measuredTokensPerSecond: 88), M(mode: "pipeline_v1", split: nil, measuredTokensPerSecond: 48)]) == 0,
-               "modes: the fastest measured")
+        expect(M.automaticIndex(gemma, throughDarkbloom: true, serving: false) == 0, "modes: tensor parallel not measured yet: tensor parallel")
+        expect(M.automaticIndex([M(mode: "tensor_parallel_v1", split: nil, measuredTokensPerSecond: nil), M(mode: "pipeline_v1", split: nil, measuredTokensPerSecond: nil)],
+                                throughDarkbloom: true, serving: false) == 0, "modes: none measured, tensor parallel")
+        expect(M.automaticIndex([M(mode: "tensor_parallel_v1", split: nil, measuredTokensPerSecond: 88), M(mode: "pipeline_v1", split: nil, measuredTokensPerSecond: 48)],
+                                throughDarkbloom: true, serving: false) == 0, "modes: the fastest measured")
         expect(D.modeLine(gemma[1]) == D.menuLine("Pipeline", "each Mac runs its share of the layers (this Mac 6 layers / the other Mac 24 layers)"),
                "modes: pipeline in plain words: \(D.modeLine(gemma[1]))")
         expect(D.modeLine(gemma[0]) == D.menuLine("Tensor parallel", "both Macs work on every layer, each holding a share of it (this Mac 50% / the other Mac 50%)"),
@@ -4313,8 +4316,7 @@ import Darwin
         gemma.modeAdvice = ClusterOnboardingModeAdvice(mode: tp, reason: "the only one measured on these Macs so far")
         expect(gemma.listLine(sameTitleElsewhere: false) == "Gemma 4 26B · 15.6 GB · tensor parallel or pipeline",
                "the recommended mode first: \(gemma.listLine(sameTitleElsewhere: false))")
-        expect(ClusterOnboardingMode.defaultIndex(gemma.modes!, recommended: "pipeline_mtp_v1") == 0,
-               "a recommendation the list doesn't hold changes nothing")
+
         // Named on the command line (`darkbloom cluster local <model>`), so no question: the recommended mode loads.
         func named(_ choice: ClusterOnboardingModelChoice) -> [String] {
             let recorder = Recorder()
@@ -4693,7 +4695,7 @@ import Darwin
         let text = run.text
         expect(text.contains("  \u{2713} Paired. The other Mac leads.\n\n  " + ClusterOnboardingDriver.waitingForStartLine(leaderName) + "\n"),
                "follow ✓: what it waits for, right after pairing: \(text)")
-        expect(text.hasSuffix(block("\u{2713}", String(served.dropLast()), []) + ClusterOnboardingDriver.closeWindowLine + "\n"),
+        expect(text.hasSuffix(block("\u{2713}", String(served.dropLast()), []) + "  " + ClusterOnboardingDriver.statusHint + "\n"),
                "follow ✓: the outcome block, then the window may close: \(text)")
         expect(!text.contains("Done here"), "follow ✓: never Done here: \(text)")
         expect(recorder.all.filter { $0 == "status" }.count == 5 && !recorder.all.contains("testRequest"),
@@ -4706,7 +4708,7 @@ import Darwin
         expect(api.waitFor(codeQuestion), "follow ✓ API: the code"); api.type("y")
         expect(api.finish() == 0, "follow ✓ API: exit 0")
         expect(api.text.hasSuffix(block("\u{2713}", "Serving Qwen 3.8 27B (pipeline) at http://localhost:8000 on the other Mac (earning through Darkbloom)",
-            ["Test response in 0.61 s"]) + ClusterOnboardingDriver.closeWindowLine + "\n"), "follow ✓ API: tested, then the block: \(api.text)")
+            ["Test response in 0.61 s"]) + "  " + ClusterOnboardingDriver.statusHint + "\n"), "follow ✓ API: tested, then the block: \(api.text)")
         expect(local.all.filter { $0 == "status" }.count >= 2 && local.all.last == "testRequest", "follow ✓ API: tested: \(local.all)")
 
         // The leader offers the pair to Darkbloom after its test: no ✓ while its serving line says the check is pending;
@@ -4719,7 +4721,7 @@ import Darwin
         expect(pair.waitFor(codeQuestion), "follow offered: the code"); pair.type("y")
         expect(pair.finish() == 0, "follow offered: exit 0")
         expect(pair.text.contains("  " + ClusterOnboardingReady.offeredLine(model: "Qwen 3.8 27B") + "\n"), "follow offered: said in plain words: \(pair.text)")
-        expect(pair.text.hasSuffix(block("\u{2713}", String(served.dropLast()), []) + ClusterOnboardingDriver.closeWindowLine + "\n"),
+        expect(pair.text.hasSuffix(block("\u{2713}", String(served.dropLast()), []) + "  " + ClusterOnboardingDriver.statusHint + "\n"),
                "follow offered: the leader's ✓ block: \(pair.text)")
         expect(pair.text.components(separatedBy: "\u{2713} Serving").count == 2 && !offered.all.contains("testRequest") && !offered.all.contains("pairServing"),
                "follow offered: one ✓, the leader's, no wait of its own: \(offered.all)")
@@ -4742,7 +4744,7 @@ import Darwin
                "follow ✗: the honest ✗, then where to look: \(text)")
         expect(ClusterOnboardingDriver.retryOnLeaderLine(leaderName) == "Choose Retry on \(leaderNamed): its screen shows the choices.",
                "follow ✗: the leader by name")
-        expect(!text.contains("\u{2713} Serving") && !text.contains(ClusterOnboardingDriver.closeWindowLine), "follow ✗: never ✓: \(text)")
+        expect(!text.contains("\u{2713} Serving") && !text.contains(ClusterOnboardingDriver.statusHint), "follow ✗: never ✓: \(text)")
         transcript("member-follows-start-not-serving", text, keys: run.keys)
     }
 

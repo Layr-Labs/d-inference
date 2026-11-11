@@ -837,15 +837,20 @@ final class OnboardingLive: @unchecked Sendable {
         }.joined(separator: " / ")
     }
 
+    /// A mode's own plan: the listed one for its family, else its family plan; nil when none was made.
+    static func ownPlan(_ mode: ClusterSetupPlanSummary.Mode, listed: ClusterSetupPlanSummary,
+                        families: [ClusterSetupPlanSummary]) -> ClusterSetupPlanSummary? {
+        func family(_ raw: String) -> ClusterForcedMode? { ClusterGenerationMode(rawValue: raw).flatMap { m in ClusterForcedMode.allCases.first { $0.admits(m) } } }
+        return family(mode.mode).flatMap { f in ([listed] + families).first { family($0.mode) == f } }
+    }
+
     /// The mode question's recommendation (`ClusterOnboardingModeAdvice.advise`) from the plans the list made: each mode's
-    /// own plan (the listed one for its family, else its family plan) says whether it fits now and its predicted speed;
-    /// the mode says its measured speed (this build's, and an earlier build's), its requests at once and whether
-    /// Darkbloom serves it publicly.
+    /// own plan (`ownPlan`) says whether it fits now and its predicted speed; the mode says its measured speed (this
+    /// build's, and an earlier build's), its requests at once and whether Darkbloom serves it publicly.
     static func modeAdvice(_ modes: [ClusterSetupPlanSummary.Mode], listed: ClusterSetupPlanSummary, families: [ClusterSetupPlanSummary],
                            throughDarkbloom: Bool, serving: Bool) -> ClusterOnboardingModeAdvice? {
-        func family(_ raw: String) -> ClusterForcedMode? { ClusterGenerationMode(rawValue: raw).flatMap { m in ClusterForcedMode.allCases.first { $0.admits(m) } } }
         let options = modes.map { mode -> ClusterOnboardingModeAdvice.Option in
-            let own = family(mode.mode).flatMap { f in ([listed] + families).first { family($0.mode) == f } }
+            let own = ownPlan(mode, listed: listed, families: families)
             return .init(mode: mode.mode, planned: own != nil && !mode.shares.isEmpty, fitsNow: own?.fitsNow == true,
                          measuredTokensPerSecond: mode.servedDecodeTokensPerSecond,
                          earlierMeasuredTokensPerSecond: mode.earlierServedDecodeTokensPerSecond,
@@ -861,11 +866,16 @@ final class OnboardingLive: @unchecked Sendable {
     static func startsAtLogin(now: Bool?, setUp: Bool?) -> Bool? { now ?? setUp }
 
     /// A planned mode as the screen shows it: each Mac's share (`modeSplit`; `serving`: a model serves now), the decode
-    /// rate this pair served it at, the requests it serves at once, and the context it serves.
-    func screenMode(_ mode: ClusterSetupPlanSummary.Mode, serving: Bool) -> ClusterOnboardingMode {
-        .init(mode: mode.mode, split: Self.modeSplit(mode.shares, here: hereShort, there: thereShort, serving: serving),
-              measuredTokensPerSecond: mode.servedDecodeTokensPerSecond, concurrentRequests: mode.concurrentRequests,
-              contextTokens: mode.contextTokens, promptTokens: mode.promptTokens)
+    /// rate this pair served it at, the requests it serves at once, the context it serves, and, for the mode the setup
+    /// chooses (`ClusterOnboardingMode.automaticIndex`), whether its own plan (`ownPlan`) fits now and whether Darkbloom
+    /// serves it publicly.
+    func screenMode(_ mode: ClusterSetupPlanSummary.Mode, serving: Bool, listed: ClusterSetupPlanSummary,
+                    families: [ClusterSetupPlanSummary]) -> ClusterOnboardingMode {
+        let own = Self.ownPlan(mode, listed: listed, families: families)
+        return .init(mode: mode.mode, split: Self.modeSplit(mode.shares, here: hereShort, there: thereShort, serving: serving),
+                     measuredTokensPerSecond: mode.servedDecodeTokensPerSecond, concurrentRequests: mode.concurrentRequests,
+                     contextTokens: mode.contextTokens, promptTokens: mode.promptTokens,
+                     fitsNow: own.map { $0.fitsNow && !mode.shares.isEmpty } ?? false, publicTraffic: mode.publicTraffic)
     }
 
     /// `keeping`: the mode each model id keeps (`LiveContext.plan`); the service's re-plan after an update passes the
@@ -941,7 +951,7 @@ final class OnboardingLive: @unchecked Sendable {
                                 ? "Private unqualified image candidate; public traffic is prohibited." : plan.publicTraffic,
                              tensorParallelNote: plan.tensorParallelNote, validated: approved(option.model.artifactSHA256),
                              split: ClusterOnboardingDeployment.splitMarker(plan.mode),
-                             modes: plan.modes.map { $0.map { screenMode($0, serving: serving) } },
+                             modes: plan.modes.map { $0.map { screenMode($0, serving: serving, listed: plan, families: option.familyPlans ?? []) } },
                              modeAdvice: plan.modes.flatMap { Self.modeAdvice($0, listed: plan, families: option.familyPlans ?? [],
                                  throughDarkbloom: !planningScope(scope).isLocalOnly, serving: serving) })
             }
@@ -1656,8 +1666,7 @@ final class OnboardingLive: @unchecked Sendable {
     func localSetScope(_ scope: ClusterServingScope) -> Result<[String], ClusterOnboardingFailure> {
         guard let current = leadership else { return .failure(.init("\(Self.sentence(hereShort)) is not paired with a cluster.")) }
         let saved = scope.isLocalOnly ? "Saved on \(here): the cluster serves locally only and never contacts a coordinator."
-            : scope.addsLocalAPI ? "Saved on \(here): the cluster serves through Darkbloom, and on its local API with you first "
-                + "(Darkbloom pauses while you use it)."
+            : scope.addsLocalAPI ? "Saved on \(here): the cluster serves through Darkbloom, and on its local API."
             : "Saved on \(here): the cluster serves through Darkbloom (its leading Mac registers with the coordinator)."
         if current.scope == scope { return .success([saved]) }
         let startsBefore = rankZeroStarts()

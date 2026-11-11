@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-10
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -1429,9 +1429,8 @@ shared build recipe. The
 selected. A provider-only change runs 3 Macs (the provider build and the 2
 provider shards). A cluster change adds 12 Macs (the cluster build, the release
 build checks, 5 runtime shards, 2 focused shards and 3 GPU shards). Every
-Mac job but the 3 GPU shards is routed; the GPU shards run on Blacksmith
-([job sizes](build.md#job-sizes)). A change whose tree a successful run of the
-same workflow already tested runs no test job at all
+Mac job is routed ([job sizes](build.md#job-sizes)). A change whose tree a
+successful run of the same workflow already tested runs no test job at all
 (`scripts/ci-tested-tree.py`).
 
 CI runs the runtime test target (`DarkbloomClusterRuntimeTests`) on the
@@ -2054,11 +2053,12 @@ grants, HTTP errors, the single retry, timeouts, untrusted or plain-HTTP planes
 and hostile reply text. It covers [job sizes](build.md#job-sizes) both ways:
 while `DARKBLOOM_JOB_SHAPES` is not exactly `on`, CI's request is byte for byte
 the request without sizes; while it is on, each lane sends its size and takes
-only the labels of that size. It also covers bad sizes and the macOS cap order.
+only the labels of that size. It also covers bad sizes, the macOS cap order and
+a `required` lane, which keeps its fallback without asking while sizes are off.
 It also pins each routed job's lanes (one per provider or cluster shard,
 matching the job's matrix), size, fallback, timeout and read-only permissions,
-and keeps release workflows and Cluster GPU Tests on literal Blacksmith
-runners. No check contacts the real plane.
+and keeps release workflows on literal Blacksmith runners. No check contacts
+the real plane.
 
 Docs-impact tests retain provider, protocol, privacy, native capacity, cache,
 release/model publication and fixture mappings. Historical links need exact

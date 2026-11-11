@@ -1104,9 +1104,7 @@ final class MiMoV26NativeLoadTransaction: @unchecked Sendable {
         removalHook?()
     }
     /// Observation only: runs outside the lock after each settled reservation
-    /// leaves the map. The SDK's native retirement callback can settle a
-    /// reservation one engine-queue hop after the stream's terminal event, so
-    /// a joined lease does not prove the map is already empty. Test-only.
+    /// leaves the map. Test-only.
     func setMediaReservationRemovalHookForTesting(_ hook: (@Sendable () -> Void)?) {
         lock.withLock { mediaReservationRemovalHookForTesting = hook }
     }

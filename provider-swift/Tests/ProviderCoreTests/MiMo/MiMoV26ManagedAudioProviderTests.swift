@@ -301,7 +301,12 @@ final class MiMoV26ManagedAudioProviderTests: XCTestCase {
         let waveBody = Array("WAVEfmt ".utf8) + u32(16) + fmt
             + Array("data".utf8) + u32(UInt32(pcm.count)) + pcm
         let wave = Data(Array("RIFF".utf8) + u32(UInt32(waveBody.count)) + waveBody)
+        // Each request's media reservation settles on an engine-queue callback
+        // after its terminal event, so wait for that settlement, not the join.
+        let removals = EventCounter()
+        value.transaction.setMediaReservationRemovalHookForTesting { removals.increment() }
         for responses in [false, true] {
+            let settled = removals.expectation(reaching: responses ? 2 : 1, "media reservation settled")
             let messages: [[String: Any]] = [["role": "user", "content": [
                 ["type": "input_audio", "input_audio": ["format": "wav", "data": wave.base64EncodedString()]],
                 ["type": responses ? "input_text" : "text", "text": "describe"],
@@ -338,6 +343,7 @@ final class MiMoV26ManagedAudioProviderTests: XCTestCase {
                 }
             }
             await lease.joinFromOutside()
+            await fulfillment(of: [settled], timeout: 10)
             XCTAssertEqual(infos, 1)
             XCTAssertGreaterThan(actual.stepCount, before, "normal encoded-audio route must execute the real native engine")
             XCTAssertEqual(lease.snapshot().phase, .completed)

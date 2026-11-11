@@ -399,9 +399,10 @@ On the leader, the pair's model list follows, like `darkbloom start`'s picker:
 
 **Tensor parallel or pipeline is chosen for you**
 (`ClusterOnboardingMode.automaticIndex`): tensor parallel, unless it can't run
-on these Macs or this pair measured it slower; otherwise the fastest measured
-of the other modes, else the planner's first. `darkbloom cluster` asks nothing
-and never asks to switch a model's mode.
+on these Macs or this pair measured it slower; then the fastest of the modes
+measured faster than it. With no tensor parallel that can run, the planner's
+first mode that can. `darkbloom cluster` asks nothing and never asks to switch
+a model's mode.
 
 - **Can't run:** the model has no tensor-parallel plan here (Qwen 3.8 27B's
   pipeline would drop its media and logprobs, so it has only tensor parallel;
@@ -414,9 +415,11 @@ and never asks to switch a model's mode.
   this Darkbloom build (`ClusterServedModes`: at least 3 requests of 64 tokens or
   more). Not measured yet, or a link not measured yet (right after an update,
   or a new pair), is no reason: tensor parallel.
-- The model serving now keeps its mode when it is chosen again (a test, not a
-  reload). Every start (a new model, a stopped pair's last model, the switch to
-  Darkbloom) loads the chosen mode.
+- The pair's own model keeps the mode it last served in: chosen again while it
+  serves (a test, not a reload), started again on a stopped pair, or planned
+  again for a switch to Darkbloom. So a pair serving a pipeline never flips to
+  tensor parallel on a restart. The rule picks the mode for a new model (one
+  the pair hasn't served, or no mode recorded).
 
 `darkbloom cluster local` keeps the question, simplified: both modes, the one
 the same rule picks tagged **Recommended** and preselected, so Enter takes it.
@@ -467,11 +470,9 @@ with the model, so the pair loads it the same way.
 Choosing the model that serves sends one test request, the same as a start's,
 and changes nothing else; it passes with [the ending](#the-ending)'s ✓ line,
 and a failed test shows the ✗ block with **Retry**, **Change model** and
-**Diagnostics**. A pair served only through Darkbloom (saved by an earlier
-build or an agent's run) has no local API on this Mac to send a test from; the
-screen says so ("Already serving Qwen 3.8 27B through Darkbloom; this Mac has
-no local API to send a test from.") and shows the pair's status as both Macs
-report it. Choosing another while one serves asks once ("Switch to
+**Diagnostics**. A pair Darkbloom has (the status above says it serves) answers
+no test from this Mac's local API; it ends on the same ✓ line, hint and Enter
+(`testServing`). Choosing another while one serves asks once ("Switch to
 Gemma 4 26B? Qwen 3.8 27B stops serving on both Macs while Gemma 4 26B loads …",
 **No** by default), then says "✓ Stopped Qwen 3.8 27B on both Macs" and shows
 each Mac's load. The steps are headed **Model** and **Start**; the numbered "1/4
@@ -757,15 +758,19 @@ leads.").
 Mac beside it, and Darkbloom keeps serving while you use that API
 (`ClusterOnboardingOperations.servesBoth`, `ClusterServingChoice.both`).
 
-- **Saved:** as the run begins, on the leading Mac, `[local] mode = "both"` and
-  `[local] me_first = false` in its `provider.toml`
-  (`Cluster.Setup.saveServingChoice`). A `me_first = true` saved on purpose
-  (`darkbloom start --me-first`) stays, and the pair then pauses Darkbloom
-  while you use its API, as below. A pair that already serves Both with the
-  pause on keeps it until its next start, and the screen says so ("Darkbloom
-  keeps serving while you use the pair's local API from the pair's next start
-  (`darkbloom restart` starts it again now)."): the leading part reads `[local]`
-  when it starts.
+- **Saved:** on the leading Mac, `[local] mode = "both"` and, where no
+  `me_first` is saved, `[local] me_first = false` in its `provider.toml`
+  (`Cluster.Setup.saveServingChoice`), once the pair switches, starts or is
+  shown serving that way: before the parts start (they read it then). A run
+  that changes nothing (Cancel at the login check, q at the list, the other Mac
+  silent) saves nothing. A saved `me_first` stays as it is: `true` keeps the
+  pause on (below). A pair that already serves Both with the pause on keeps it
+  until its next start, and the screen says so ("Darkbloom keeps serving while
+  you use the pair's local API from the pair's next start (`darkbloom restart`
+  starts it again now).").
+- **The pause back on:** there is no flag for a pair (`darkbloom start
+  --me-first` serves this Mac alone and writes `me_first = true` only over a
+  saved `false`); set `me_first = true` under `[local]` in the leading Mac's `provider.toml`, then run `darkbloom restart`. `darkbloom cluster` keeps it.
 - **A pair saved another way** (Only me, or the Darkbloom network alone from an
   earlier build or an agent's run) switches when you run `darkbloom cluster` on
   the leading Mac, and the screen says so in one line ("This pair served only
@@ -774,10 +779,12 @@ Mac beside it, and Darkbloom keeps serving while you use that API
   ([switching](#switching-how-a-pair-serves)), a stopped one starts that way from
   the list. An update, a restart or the cluster service never change how a
   pair serves.
-- **Only in a terminal, and only `darkbloom cluster`** (and `darkbloom start` on
-  a paired Mac, which opens the same screen). `darkbloom cluster local` serves
-  **Only me** ([below](#serving-locally-only)). Without a terminal (an agent's
-  run, the cluster service) the pair serves as its setup says.
+- **Only in a terminal, and only `darkbloom cluster`.** `darkbloom start` on a
+  paired Mac opens the same screen but keeps how the pair is saved to serve
+  (`Cluster.Setup.keepsSavedServing`), with the list's switch between Darkbloom
+  and local only. `darkbloom cluster local` serves **Only me**
+  ([below](#serving-locally-only)). Without a terminal (an agent's run, the
+  cluster service) the pair serves as its setup says.
 - **Where the pair can't serve through Darkbloom** (no login, an account the
   waitlist hasn't approved, no approval for the model, a coordinator without
   cluster support), the screen says "To use the pair just for yourself, run
@@ -858,7 +865,7 @@ With **Both**:
 
 `darkbloom status` and `darkbloom cluster status` say it: `Serves: through
 Darkbloom, and on its local API`, the pair's line and its `Local API:` line.
-With `me_first = true`, on the Mac that runs the pair's API:
+With `me_first = true` (set by hand, above), on the Mac that runs the pair's API:
 
 ```text
 Serves: through Darkbloom, and on its local API with you first

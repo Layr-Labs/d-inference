@@ -1,6 +1,6 @@
 # Provider quickstart
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-11
 
 From a fresh Apple Silicon Mac to OpenCode or Hermes on this Mac's own models;
 then, if you want, to earning on the Darkbloom network. For anyone setting up a
@@ -138,8 +138,9 @@ client: `darkbloom local` prints the address, the key and a `curl` to try
 
 - **Switch later:** `darkbloom start --choose` asks how this Mac serves again,
   then goes on as above.
-- **Two Macs:** run `darkbloom cluster` on each Mac to pair them and choose
-  how the pair serves, then `darkbloom --opencode` on either Mac
+- **Two Macs:** run `darkbloom cluster` on each Mac to pair them (the pair
+  serves through Darkbloom with your local API beside it; `darkbloom cluster
+  local` serves it for you alone), then `darkbloom --opencode` on either Mac
   ([Two Macs as one provider](./two-mac-cluster.md)). The wait for your model
   and the line when a tool points elsewhere are for one Mac for now: on a pair
   that is still loading, run it again once the pair serves.

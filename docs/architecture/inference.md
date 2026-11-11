@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-11
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -1252,10 +1252,17 @@ Without a bank (the default) the builder keeps them in an
 `SSDHybridCheckpointStore` (`NemotronSuperLocalPrefixCache.durableIdentity`):
 the SDK's complete codec writes each chunk checkpoint's KV, conv/SSM state and
 the assistant's prompt history encrypted under the provider's cache root, at
-the slot's effective checkpoint precision (`engine_v2_kv_checkpoint_quantization`,
-`balanced` by default): older attention rows are coded, while the conv/SSM
-state and the assistant's history stay exact
-([checkpoint precision](kv-cache-quantization.md#native-execution-with-quantized-checkpoints)). The
+Super's checkpoint precision (`NemotronSuperLocalPrefixCache.checkpointPrecision`).
+That is native unless Super's own `engine_v2_kv_checkpoint_quantization_by_model`
+entry or `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` selects a profile; the global
+`engine_v2_kv_checkpoint_quantization` does not apply to Super. A native restore
+continues a cold prefill bit for bit. Under a profile such as `balanced`, older
+attention rows are coded while the conv/SSM state and the assistant's history
+stay exact
+([checkpoint precision](kv-cache-quantization.md#native-execution-with-quantized-checkpoints)),
+and on the pinned checkpoint that moved restored reasoning answers off the cold
+ones. A native checkpoint of 8,192 tokens is about 249 MB, against about 204 MB
+under `balanced`. The
 slot then advertises a durable capability (`prefix_cache_v2_models`), its
 checkpoints survive restarts within the store's TTL, and the coordinator's
 repeat hint gates their writes as for every other model. A durable checkpoint

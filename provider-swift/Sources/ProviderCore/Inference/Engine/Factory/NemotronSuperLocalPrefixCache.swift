@@ -74,12 +74,17 @@ enum NemotronSuperLocalPrefixCache {
         return routingIdentity
     }
 
-    /// The precision a durable store encodes its checkpoints at, from the
-    /// operator's checkpoint settings.
+    /// The precision a durable store encodes its checkpoints at: native, so a
+    /// restore continues a cold prefill bit for bit, unless the operator's
+    /// per-model setting for `modelID` or the process switch selects a
+    /// profile. Native is Super's per-model default, so the global setting
+    /// does not apply: `balanced` rows moved restored reasoning answers off
+    /// the cold ones on the pinned checkpoint.
     static func checkpointPrecision(global: String, byModel: [String: String], modelID: String,
                                     environment: [String: String]) throws -> EngineV2KVQuantizationSelection {
         try EngineV2KVQuantizationPolicy.resolve(modelType: "nemotron_h_omni", global: global,
-            byModel: byModel, modelID: modelID, environment: environment, purpose: .checkpoint)
+            byModel: [modelID: EngineV2KVQuantizationSelection.native.rawValue].merging(byModel) { $1 },
+            modelID: modelID, environment: environment, purpose: .checkpoint)
     }
 
     /// nil leaves the owner without a bank. The same bank serves both owners:

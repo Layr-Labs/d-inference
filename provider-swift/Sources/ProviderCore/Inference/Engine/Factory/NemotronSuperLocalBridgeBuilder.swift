@@ -363,9 +363,9 @@ enum NemotronSuperLocalBridgeBuilder {
     /// prefix reuse; with a `routingIdentity` its bank also advertises and
     /// proves its checkpoints to the coordinator, and without a bank its
     /// checkpoints are complete SSD checkpoints bound to it, encoded at the
-    /// effective profile of the operator's checkpoint precision
-    /// (`checkpointQuantizationConfig`, its per-model table and
-    /// `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION`, as for every other model).
+    /// effective profile of `NemotronSuperLocalPrefixCache.checkpointPrecision`:
+    /// native unless the per-model table (`checkpointQuantizationConfigByModel`)
+    /// or `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` selects a profile.
     /// Test seam: `completeCheckpointIdentity` replaces the store's runtime
     /// disk identity (binary, metallib and numerics), which a test process
     /// cannot compute.

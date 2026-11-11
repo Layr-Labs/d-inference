@@ -9,8 +9,9 @@ import Testing
 /// routed owner without a bank keeps its chunk checkpoints in an encrypted
 /// store: they restore within the owner and, after the owner is retired, in a
 /// new installation, engine and store on the same root and key (a restart).
-/// Native checkpoints restore exactly (the cold text); `balanced` ones, the
-/// default, code older attention rows and restore the same state every time.
+/// Native checkpoints, the default, restore exactly (the cold text);
+/// `balanced` ones code older attention rows and restore the same state every
+/// time.
 /// Lookups and publications carry the SSD tier, another scope never hits, and
 /// the store holds no shared-budget reservation.
 struct NemotronSuperDurablePrefixCacheTests {

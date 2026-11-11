@@ -921,6 +921,7 @@ these fields: [../architecture/request-outcome-observability.md](https://github.
 | `feasible_after_ms` | `int64` | `Int64?` | opt | duration forecast, never a wall clock; Swift omits 0 |
 | `capacity_seq` | `uint64` | `UInt64?` | opt | the snapshot the gate decided from; Swift omits 0 |
 | `profile` | `json.RawMessage` | `InferenceProfile?` | opt | same contract as `inference_complete`; the sanitizer passes it through as opaque bytes |
+| `tool_check` | — (not yet read) | `ToolNoncomplianceCheck?` | opt | only beside `error_reason` `tool_noncompliance`: the check that failed, closed (`provider-swift/Sources/ProviderCore/Inference/Engine/InferenceFailure.swift`): `undeclared_name`, `schema`, `malformed`, `diverged`, `unterminated`, `parallel`, `response_format`, `forced_choice`, `native_output`, `other`. Names the check only, never the tool or its arguments. Also on the provider's local failure log line. Today's coordinator ignores the key (`sanitizeProviderInferenceError` copies named fields only); keeping it on the route row is a coordinator change |
 | — (`CoordinatorCause`) | `json:"-"` | — | never on the wire | coordinator-synthetic only (`provider_disconnected`) |
 
 `media_memory_unavailable` is a retryable `capacity`/503 failure for media

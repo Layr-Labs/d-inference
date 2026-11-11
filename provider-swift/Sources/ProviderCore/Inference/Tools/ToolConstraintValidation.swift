@@ -51,12 +51,32 @@ enum ToolConstraintValidation {
                 throw violation("model did not emit the named tool call")
             }
         case .auto:
-            break
+            if prepared.returnsAutoCallsAsGenerated { return }
         }
 
         let allowed = prepared.allowedToolNames
         guard calls.allSatisfy({ allowed.contains($0.function.name) }) else {
             throw violation("model emitted an undeclared tool call")
+        }
+        if prepared.mode == .auto, let declared = prepared.declaredTools {
+            // `strict` auto holds a call to the caller's schema as sent. The
+            // ingress normalizer fills `type: "string"` into every typeless
+            // property for the chat templates (and the compiled subset infers
+            // the same), but a typeless property accepts any value: that type
+            // was never the caller's to enforce.
+            let byName = Dictionary(
+                declared.map { ($0.function.name, $0.function.parameters) },
+                uniquingKeysWith: { first, _ in first })
+            for call in calls {
+                guard let parameters = byName[call.function.name] else {
+                    throw violation("model emitted an undeclared tool call")
+                }
+                guard let schema = parameters else { continue }
+                guard validateJSONSchema(.object(call.function.arguments), schema: schema, depth: 0) else {
+                    throw violation("tool call arguments do not satisfy the declared schema")
+                }
+            }
+            return
         }
         if let schemas = prepared.compiledTools {
             let byName = Dictionary(

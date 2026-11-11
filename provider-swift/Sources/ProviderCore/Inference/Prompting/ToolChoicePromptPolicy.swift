@@ -33,6 +33,18 @@ enum ToolChoicePromptPolicy {
             case .none, .auto: false
             }
         }
+
+        /// `auto` without `strict` returns the model's calls as generated,
+        /// as OpenAI and vLLM do: an undeclared name, arguments off the
+        /// schema and streamed argument text that does not parse reach the
+        /// client instead of failing a response that has already started.
+        /// A function declared `strict: true` keeps every call of the request
+        /// validated, and a request that declares no tools never receives a
+        /// call. `parallel_tool_calls: false` holds either way.
+        var returnsAutoCallsAsGenerated: Bool {
+            guard mode == .auto, let tools, !tools.isEmpty else { return false }
+            return !tools.contains { $0.function.strict == true }
+        }
     }
 
     static func prepare(

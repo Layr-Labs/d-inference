@@ -2920,18 +2920,34 @@ read bare scalars and composites as raw strings. When the frame closes, the
 complete parse must agree with everything already exposed
 (`libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/ToolCallStreaming.swift`).
 `NativeToolStreamRouter` admits `parallel_tool_calls` cardinality at the first
-fragment and validates name and schema at frame close; the service renders
-OpenAI fragments (`index`, `id`, `type` and `function.name` first, then
-`function.arguments` pieces). A response that begins with a call therefore
-reaches its first content frame at the function name instead of the engine
-terminal, which also ends the frame loop's pre-content deadline check.
+fragment and, when the request is `strict` (below), validates name and schema
+at frame close; the service renders OpenAI fragments (`index`, `id`, `type`
+and `function.name` first, then `function.arguments` pieces). A response that
+begins with a call therefore reaches its first content frame at the function
+name instead of the engine terminal, which also ends the frame loop's
+pre-content deadline check.
+
+`auto` without `strict` returns the model's calls as generated, as OpenAI and
+vLLM do (`ToolChoicePromptPolicy.Prepared.returnsAutoCallsAsGenerated`): on
+every path and family (`ToolConstraintValidation.validate`), an undeclared
+function and arguments off the declared schema are returned instead of
+failing a response whose reasoning has already streamed. The request stays
+validated when any declared function sets `strict: true`, when it declares no
+tools (a call is then never returned), and for `required`, named and `none`
+choices; `parallel_tool_calls: false` holds either way. Strict `auto` checks
+each call against the caller's schema as sent
+(`Prepared.declaredTools`, from the body before ingress normalization
+(`ToolSchemaNormalization`) filled `type: "string"` into typeless properties
+for the templates), so a typeless property accepts any value. Every refusal that remains names its check on the error frame
+([`tool_check`](../reference/protocol-messages.md#inference_error)).
 
 | Case | Behavior |
 |---|---|
-| Undeclared or unresolvable name | Never exposed: completes in one piece with the existing validation or text fallback |
-| Parse failure, divergence or schema violation after exposure | Typed `tool_choice` violation on the stream |
+| Undeclared or unresolvable name | Never exposed early: completes in one piece, returned as generated (refused under `strict`), or the existing text fallback when it does not parse |
+| Parse failure or divergence after exposure | The arguments already sent stay as generated (OpenAI's raw `arguments` string) and the call closes; `finish_reason` is `tool_calls`. Under `strict`: typed `tool_choice` violation on the stream |
+| Schema violation after exposure | Returned as generated; under `strict`, typed `tool_choice` violation on the stream |
 | Call cut off by `max_tokens`, even when the end-of-generation parse of its partial frame fails or diverges | Fragments stop; `finish_reason` is `length` |
-| Required or named `tool_choice`, native-channel families, other formats, non-chat surfaces, `DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0` | Complete calls released at the engine terminal after validation |
+| Required or named `tool_choice`, native-channel families, other formats, non-chat surfaces, `DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0` | Complete calls released at the engine terminal after validation (for `auto`, as above) |
 
 The response hash adds one `tool_call` marker per fragment in wire order; a
 complete call encodes exactly as before

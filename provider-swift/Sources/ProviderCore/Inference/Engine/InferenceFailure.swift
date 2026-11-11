@@ -200,6 +200,9 @@ struct InferenceFailureLogger: Sendable {
         if let cause = failure.terminalCause {
             line += " terminal_cause=\(cause.rawValue)"
         }
+        if let check = failure.toolCheck {
+            line += " tool_check=\(check.rawValue)"
+        }
         return line
     }
 }

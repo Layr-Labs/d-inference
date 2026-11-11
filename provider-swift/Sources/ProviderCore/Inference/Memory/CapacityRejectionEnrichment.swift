@@ -76,6 +76,7 @@ enum CapacityRejectionEnrichment {
                 ?? failure.availableTokenBudget,
             feasibleAfterMs: feasibleAfterMs,
             capacitySeq: (published?.capacitySeq).flatMap { $0 != 0 ? $0 : nil }
-                ?? failure.capacitySeq)
+                ?? failure.capacitySeq,
+            toolCheck: failure.toolCheck)
     }
 }

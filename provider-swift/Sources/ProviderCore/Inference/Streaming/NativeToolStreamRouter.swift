@@ -22,6 +22,7 @@ struct NativeToolStreamRouter {
     private let streamedCallPolicy: ToolChoicePromptPolicy.Prepared?
     private var exposedCallCount = 0
     private var openCallIndex: Int?
+    private var openCallName: String?
     /// Every call exposed so far, each already validated.
     private(set) var completedToolCalls: [ToolCall] = []
 
@@ -196,7 +197,8 @@ struct NativeToolStreamRouter {
 
     /// Streamed calls are `auto` only. Each is validated (declared name,
     /// schema, cardinality) as soon as that is decidable: the cardinality at
-    /// its first fragment, the arguments when its frame closes.
+    /// its first fragment, the arguments when its frame closes. Without
+    /// `strict` only the cardinality is (`returnsAutoCallsAsGenerated`).
     private mutating func routeToolSegment(
         _ segment: ToolCallStreamSegment, prepared: ToolChoicePromptPolicy.Prepared
     ) throws -> [MLXServerGenerationEvent] {
@@ -206,6 +208,7 @@ struct NativeToolStreamRouter {
         case .callStarted(let name):
             let index = try admitCall(prepared)
             openCallIndex = index
+            openCallName = name
             return [.toolCallDelta(.init(index: index, name: name))]
         case .callArguments(let fragment):
             guard let index = openCallIndex, !fragment.isEmpty else { return [] }
@@ -217,9 +220,19 @@ struct NativeToolStreamRouter {
             completedToolCalls.append(call)
             return [.toolCallDelta(.init(index: index, arguments: remainder, completed: call))]
         case .callFailed(let failure):
-            openCallIndex = nil
-            throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(
-                "streamed tool call output was \(failure.rawValue)")
+            defer { openCallIndex = nil }
+            guard prepared.returnsAutoCallsAsGenerated, let index = openCallIndex, let name = openCallName
+            else {
+                throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(
+                    "streamed tool call output was \(failure.rawValue)")
+            }
+            // Its arguments already left exactly as generated: OpenAI's raw
+            // `arguments` string for JSON that does not parse. Only close the
+            // call, so the response finishes with `tool_calls`; the closing
+            // call's empty arguments are never sent, and a call that did not
+            // parse is not one of `completedToolCalls`.
+            return [.toolCallDelta(.init(index: index,
+                completed: ToolCall(function: .init(name: name, arguments: [String: MLXLMCommon.JSONValue]()))))]
         case .call(let call):
             // Never exposed (e.g. an undeclared name): validate before showing.
             try ToolConstraintValidation.validate([call], prepared: prepared)

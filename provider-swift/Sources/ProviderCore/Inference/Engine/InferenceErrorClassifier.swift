@@ -1,4 +1,5 @@
 import Foundation
+import MLXLMCommon
 import MLXLMServer
 
 // MARK: - Normalized inference-error classification (DAR-341)
@@ -56,8 +57,48 @@ func classifyTypedInferenceErrorReason(_ error: Error) -> InferenceErrorReason? 
 }
 
 /// The check behind a `tool_noncompliance` error, or nil for any other error.
+/// Type-driven like the reason above; within a tool-choice violation only the
+/// engine-authored text is read, and anything unrecognized is `other`.
 func classifyToolNoncomplianceCheck(_ error: Error) -> ToolNoncomplianceCheck? {
-    nil
+    if let serviceError = error as? MLXOpenAIServiceError {
+        switch serviceError {
+        case .invalidResponseFormatOutput: return .responseFormat
+        case .multipleToolCallsNotAllowed: return .parallel
+        default: return nil
+        }
+    }
+    guard let engineError = error as? MultiModelBatchSchedulerEngineError,
+        case .toolChoiceViolation(let message) = engineError
+    else { return nil }
+    return ToolNoncomplianceCheck(violation: message)
+}
+
+extension ToolNoncomplianceCheck {
+    /// Maps the fixed violation texts of `ToolConstraintValidation`,
+    /// `NativeToolStreamRouter` and the native output owners.
+    init(violation message: String) {
+        let streamed = "streamed tool call output was "
+        if message.hasPrefix(streamed),
+            let failure = ToolCallStreamFailure(rawValue: String(message.dropFirst(streamed.count)))
+        {
+            switch failure {
+            case .malformed: self = .malformed
+            case .diverged: self = .diverged
+            case .unterminated: self = .unterminated
+            }
+            return
+        }
+        switch message {
+        case "model emitted an undeclared tool call": self = .undeclaredName
+        case "tool call arguments do not satisfy the declared schema": self = .schema
+        case "parallel tool calls are disabled for this request": self = .parallel
+        case _ where message.hasPrefix("tool_choice none") || message.hasPrefix("model did not emit")
+            || message.hasPrefix("forced tool_choice"):
+            self = .forcedChoice
+        case _ where message.hasPrefix("native "): self = .nativeOutput
+        default: self = .other
+        }
+    }
 }
 
 /// Classify an inference `Error` into the shared normalized `error_reason`

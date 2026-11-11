@@ -30,7 +30,8 @@ extension ProviderLoop {
             statusCode: statusCode,
             errorReason: reason,
             terminalCause: terminal.cause,
-            attemptUsage: terminal.usage)
+            attemptUsage: terminal.usage,
+            toolCheck: reason == .toolNoncompliance ? classifyToolNoncomplianceCheck(error) ?? .other : nil)
     }
 
     /// The closed reason a client refusal inside the inference task logs: an

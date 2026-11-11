@@ -8,9 +8,11 @@ import MLXLMServer
 ///
 /// On by default for the families whose answers were seen repeating verbatim
 /// to their cap: Gemma 4, Qwen 3.5/3.6/3.8 (and Flash-Next), GPT-OSS,
-/// Nemotron 3.5 Lightning and Super, GLM-5.3 and MiMo. Off for every other
-/// family (diffusion Gemma, exact Flint, Bonsai, Qwen3-VL), for media requests
-/// (only the text path passes a guard), and for any request whose output is a
+/// Nemotron 3.5 Lightning, GLM-5.3 and MiMo. Super's `nemotron_h_omni` is
+/// listed, but its requests take the owner's own route, which passes no guard.
+/// Off for every other family (diffusion Gemma, exact Flint, Bonsai,
+/// Qwen3-VL), for media requests (only the scheduler's text path passes a
+/// guard), and for any request whose output is a
 /// constrained or JSON value: a token constraint, a forced tool call, or a JSON
 /// `response_format`.
 ///

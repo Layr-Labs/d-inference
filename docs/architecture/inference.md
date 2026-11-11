@@ -2709,8 +2709,12 @@ stops such a row early.
   as itself. A check reads at most the last 4,096 tokens and stops at the first
   mismatch for each period.
 - **Where:** the bridge's per-row pump (`EngineV2Bridge+Events.swift`), which
-  sees every generated token of every engine: single-Mac MLX slots, the
-  native GLM-5.3 and MiMo engines, Super and the cluster pairs.
+  sees every generated token of every engine, for the requests that take the
+  scheduler's text path (`MultiModelBatchSchedulerEngine.prepareCompletion`):
+  single-Mac MLX slots, the native GLM-5.3 and MiMo engines, and the cluster
+  pairs. **Super is not guarded:** its coordinator and local requests take the
+  owner's own route (`ProviderLoop+InferenceHandler`, `superOwner.chatEngine` →
+  `NemotronSuperLocalBinding.executeBridge`), which submits without a guard.
 - **On fire:** the pump cancels the row in the engine without the caller's
   cancel bookkeeping (`EngineV2Bridge.stopRepeatingRow`), and turns the
   engine's cancelled terminal into a `length` finish with the engine's usage:
@@ -2727,8 +2731,9 @@ stops such a row early.
   media requests.
 - **Models** (`GenerationLoopGuardPolicy`, by `model_type`): on by default
   for `gemma4`, `gemma4_text`, `qwen3_5`, `qwen3_5_moe`, `qwen4_exp`,
-  `qwen4_exp_text`, `gpt_oss`, `nemotron_h` (Lightning), `nemotron_h_omni`
-  (Super), `glm5_next` and `mimo_v2`. `DARKBLOOM_LOOP_GUARD=0` (or `off`)
+  `qwen4_exp_text`, `gpt_oss`, `nemotron_h` (Lightning), `glm5_next` and
+  `mimo_v2`. `nemotron_h_omni` (Super) is on the list but has no effect until
+  Super's route passes a guard. `DARKBLOOM_LOOP_GUARD=0` (or `off`)
   turns it off; a comma-separated list of `model_type`s replaces the default
   list.
 

@@ -15,22 +15,28 @@
 // Rules:
 // * Applied ONLY to fields the request omits. Explicit request values
 //   always win (`temperature: 0` still means greedy).
-// * `seed`, `logit_bias`, the frequency penalty and `max_tokens` are
-//   untouched; only a model-card default sets the presence penalty.
+// * `seed`, `logit_bias`, the frequency/presence penalties and `max_tokens`
+//   are untouched.
 // * Gated per model family with explicit admission, like
 //   `ToolChoiceEnforcementPolicy.nativeStructuredTarget`: the admitted Nemotron
 //   and owned Bonsai 9B listings, native Flint and the exact GLM-5.3-Flash
 //   identities (catalog `glm-5.3-flash` and the local qualification download)
 //   honor their artifact defaults.
-//   The catalog Qwen 3.5/3.6 builds ship no `generation_config.json`; they
-//   take their model cards' thinking-mode values (`qwen35CardDefaults`),
-//   whose presence penalty stops greedy decoding looping to `max_tokens`.
+//   The catalog Qwen 3.5/3.6 builds take their model cards' thinking-mode
+//   sampling values (`qwen35CardDefaults`) instead of the greedy decoding
+//   that looped to `max_tokens`. The 9B ships no `generation_config.json`;
+//   the 35B builds' files declare the same three values; none of these
+//   builds is admitted here, so no file is read for them.
 //   Every other model keeps the legacy defaults byte-for-byte.
 // * `do_sample: false` in the file means greedy (legacy), matching HF
 //   semantics; an absent or unreadable file is legacy.
 // * Resolved once at slot construction (like the stop-token set). The
 //   sampler is not part of prompt or cache identity, so prefix-cache and
-//   SSD checkpoint identity are unchanged.
+//   SSD checkpoint identity are unchanged. It still decides whether a row
+//   speculates: the engine drafts no row with a repetition, frequency or
+//   presence penalty (`EngineLoopV2.mtpBasicEligible`), and on a slot whose
+//   MTP head keeps the prompt history such a row captures no resident or SSD
+//   checkpoint either.
 
 import Foundation
 import MLXLMCommon
@@ -44,17 +50,15 @@ public struct EngineV2SamplingDefaults: Sendable, Equatable {
     public var topP: Float?
     public var topK: Int?
     public var repetitionPenalty: Float?
-    public var presencePenalty: Float?
 
     public init(
         temperature: Float? = nil, topP: Float? = nil, topK: Int? = nil,
-        repetitionPenalty: Float? = nil, presencePenalty: Float? = nil
+        repetitionPenalty: Float? = nil
     ) {
         self.temperature = temperature
         self.topP = topP
         self.topK = topK
         self.repetitionPenalty = repetitionPenalty
-        self.presencePenalty = presencePenalty
     }
 
     /// Legacy behavior: every omitted knob collapses to the contract's no-op
@@ -64,9 +68,12 @@ public struct EngineV2SamplingDefaults: Sendable, Equatable {
     public static let legacy = EngineV2SamplingDefaults()
 
     /// The model cards' thinking-mode values (the template default), shared by
-    /// these exact catalog builds and their `model_type`.
-    static let qwen35CardDefaults = EngineV2SamplingDefaults(
-        temperature: 1.0, topP: 0.95, topK: 20, presencePenalty: 1.5)
+    /// these exact catalog builds and their `model_type`, without the cards'
+    /// `presence_penalty` 1.5: these builds' MTP heads keep the prompt
+    /// history, so a default penalty would turn off MTP and the resident and
+    /// SSD prefix cache for every request that omits it. A request's own
+    /// penalty still applies.
+    static let qwen35CardDefaults = EngineV2SamplingDefaults(temperature: 1.0, topP: 0.95, topK: 20)
     static let qwen35CardModelTypes = [
         "Qwen3.5-9B": "qwen3_5",
         "qwen3.5-35b-a3b": "qwen3_5_moe",

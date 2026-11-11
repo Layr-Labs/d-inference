@@ -2603,7 +2603,7 @@ disabled for this hybrid model.
 | `top_p` | `topP` | artifact default, else `1.0` |
 | `top_k` | `topK` | artifact default, else `0` |
 | `repetition_penalty` | `repetitionPenalty` | artifact default, else `1.0` |
-| `frequency_penalty` / `presence_penalty` | `frequencyPenalty` / `presencePenalty` | `0`; `presence_penalty` takes a model-card default (catalog Qwen 3.5/3.6) |
+| `frequency_penalty` / `presence_penalty` | `frequencyPenalty` / `presencePenalty` | `0` |
 | `seed` | `seed`; also keys a stable engine request id | nil |
 | `logit_bias` | `logitBias` — string keys parsed to non-negative `Int`; invalid keys dropped and counted | `[:]` |
 | `logprobs` + `top_logprobs` | `topLogprobs = logprobs ? min(20, max(1, top_logprobs ?? 0)) : 0` | `0` |
@@ -2627,14 +2627,7 @@ recommends). The exact `prism-ml/Ternary-Bonsai-2-9B-mlx-2bit` and
 `EigenLabs/Ternary-Bonsai-2-9B-MLX-2bit` identities also require `model_type == prism_hadamard_qwen35` and honors its pinned artifact
 defaults (`temperature 1.0`, `top_p 0.95`, `top_k 20`, `do_sample true`). Its
 qualification requests explicitly supply `presence_penalty: 1.5`; that value
-is absent from the artifact and is not injected as a default. The catalog
-`Qwen3.5-9B`, `qwen3.5-35b-a3b` and `qwen3.6-35b-a3b-vl-mtp-mxfp8` builds
-(`EngineV2SamplingDefaults.qwen35CardModelTypes`, each bound to its `model_type`)
-ship no `generation_config.json`; omitted knobs take their model cards'
-thinking-mode values
-(`EngineV2SamplingDefaults.qwen35CardDefaults`: `temperature 1.0`, `top_p 0.95`,
-`top_k 20`, `presence_penalty 1.5`). Greedy decoding with no presence penalty
-made them repeat themselves until `max_tokens` (#1530). This request
+is absent from the artifact and is not injected as a default. This request
 policy enables native channels, nested reasoning and forced-media framing.
 These exact 9B identities separately default to paged attention and encrypted SSD
 prefix caching. Explicit operator selections, kill switches, native capability
@@ -2663,6 +2656,23 @@ head's artifact contract and unchanged base precision are documented in
 F16 and affine 4-bit/group-64 heads, preserving the original path for rollback.
 Actual model, cache and speed qualification
 remain separate from this automatic intent and validated loading path.
+
+The catalog `Qwen3.5-9B`, `qwen3.5-35b-a3b` and `qwen3.6-35b-a3b-vl-mtp-mxfp8`
+builds (`EngineV2SamplingDefaults.qwen35CardModelTypes`, each bound to its
+`model_type`) take their model cards' thinking-mode sampling values for omitted
+knobs (`EngineV2SamplingDefaults.qwen35CardDefaults`: `temperature 1.0`,
+`top_p 0.95`, `top_k 20`). The 9B ships no `generation_config.json`; the 35B
+builds' files declare the same three values; none of these builds is admitted
+to artifact defaults, so no file is read for them. Greedy decoding made them
+repeat themselves until `max_tokens` (#1530). The cards' `presence_penalty 1.5`
+is not a default: these builds' MTP heads keep the prompt history, and the
+engine neither drafts nor checkpoints a row with a penalty
+([prefix caching](prefix-cache.md#invariants)). A default penalty would turn
+off MTP and the resident and SSD prefix cache for every request that omits it,
+coordinator requests included: the coordinator adds only the registry's
+`temperature`, `top_p` and `top_k`, and no penalty unless the registry sets
+one. A request's own `presence_penalty` still applies.
+
 Other model identities keep the legacy defaults in the table byte-for-byte. `do_sample: false` or an absent/unreadable file is legacy. The
 sampler is not part of prompt or cache identity, so prefix-cache and SSD
 checkpoint identity do not change.

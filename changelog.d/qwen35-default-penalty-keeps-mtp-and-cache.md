@@ -1,0 +1,4 @@
+### Qwen 3.5/3.6 speculate and cache again
+
+- From 0.10.5 a request to the catalog `Qwen3.5-9B`, `qwen3.5-35b-a3b` or `qwen3.6-35b-a3b-vl-mtp-mxfp8` build that omitted `presence_penalty` got the model card's 1.5. The engine drafts no row with a penalty, and these builds' MTP heads keep the prompt history, so such a row also stages no resident or SSD prefix checkpoint. The coordinator adds only these builds' registry `temperature`, `top_p` and `top_k`, so every request whose client sent no penalty of its own ran without MTP and donated no checkpoint: on the two 35B builds OpenRouter's cached share of prompt tokens fell from 27–42% on 10-30 to 0% from 10-31, and production had no cache holders for them.
+- Omitted fields now take the cards' `temperature` 1.0, `top_p` 0.95 and `top_k` 20 only, which still replace the greedy decoding that looped to `max_tokens` (#1530). A request's own `presence_penalty` still applies.

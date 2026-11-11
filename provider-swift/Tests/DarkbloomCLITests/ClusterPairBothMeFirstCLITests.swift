@@ -127,6 +127,10 @@ struct ClusterPairBothMeFirstCLITests {
     /// does, and keeps serving locally only on every interface, as before.
     @Test func onlyPlainClusterServesBothAndClusterLocalIsUnchanged() throws {
         #expect(Cluster.Setup.servesBoth(request: .init()))
+        // `darkbloom start` in a terminal opens the same screen keeping how the pair is saved to serve (owner, 2026-11-11).
+        Cluster.Setup.$keepsSavedServing.withValue(true) {
+            #expect(!Cluster.Setup.servesBoth(request: .init()))
+        }
         let local = try Cluster.Local.parse([])
         #expect(local.onboardingRequest.scope == .localOnly(bind: "0.0.0.0"))
         #expect(!Cluster.Setup.servesBoth(request: local.onboardingRequest))

@@ -127,6 +127,8 @@ extension Cluster.Setup {
             let screens = (try? ClusterUserPaths()).map { ClusterSetupPaths(paths: $0).directory.appendingPathComponent("screens", isDirectory: true) }
             let console = ClusterOnboardingTerminal(input: STDIN_FILENO, output: STDOUT_FILENO,
                                                     logFile: screens.flatMap { ClusterOnboardingTerminal.screenLog(in: $0) })
+            // A window left at "Press Enter to exit." doesn't keep another `darkbloom cluster` or `start` out.
+            console.beforeExitWait = { instance.release() }
             defer { console.restore() }
             return ClusterOnboardingDriver.run(operations, console: console, request: request)
         }.value
@@ -134,9 +136,13 @@ extension Cluster.Setup {
         if code != 0 { throw ExitCode(code) }
     }
 
-    /// Plain `darkbloom cluster` (and `darkbloom start` on a paired Mac) serves the pair Both, with no question;
-    /// `darkbloom cluster local` names its scope, so its screens stay as they were.
-    static func servesBoth(request: ClusterOnboardingRequest) -> Bool { request.scope == nil }
+    /// `darkbloom start` in a terminal on a paired Mac opens this screen (`ClusterPairCommands.openScreen`) keeping how
+    /// the pair is saved to serve (owner, 2026-11-11): only an explicit `darkbloom cluster` switches it to Both.
+    @TaskLocal static var keepsSavedServing = false
+
+    /// Plain `darkbloom cluster` serves the pair Both, with no question; `darkbloom cluster local` names its scope, and
+    /// `darkbloom start` keeps the saved one (`keepsSavedServing`), so their screens stay as they were.
+    static func servesBoth(request: ClusterOnboardingRequest) -> Bool { request.scope == nil && !keepsSavedServing }
 
     /// The live operations, which serve Both where `servesBoth` says so and save how the pair serves in `[local]`. Only
     /// this screen sets them, and it runs only in a terminal (`entry`): every other caller of the operations (the

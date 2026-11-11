@@ -525,7 +525,8 @@ public struct ClusterOnboardingMode: Codable, Sendable, Equatable {
 
     /// The mode a start loads, chosen for the person (owner, 2026-11-11: "Default always tensor, pipeline as backup if it
     /// cannot"; "TP if measured faster (it should almost always be)"): tensor parallel unless it can't run on these Macs
-    /// or this pair measured it slower; otherwise the fastest measured of the others, else the planner's first.
+    /// or this pair measured it slower; then the fastest of the modes measured faster than it. With no tensor parallel
+    /// that can run, the planner's first mode that can.
     /// "Can't run": it doesn't fit in the Macs' free memory now while another mode does (`serving`: a model serves, and the
     /// start frees its memory first, so fitting now doesn't decide), or, `throughDarkbloom`, Darkbloom doesn't serve it
     /// publicly while it serves another. "Measured slower": with this build, on this pair, slower than another mode by more
@@ -2448,13 +2449,9 @@ public enum ClusterOnboardingDriver {
         // up is said first): the screen says so, with what to run there.
         let silent = !justPaired && resume.unsetCablePort == nil && !(answered ?? otherMacAnswers(operations, console))
         // Plain `darkbloom cluster` in a terminal serves Both (`servesBoth`), with no question: Darkbloom keeps serving
-        // while the owner uses the pair's local API, saved in this Mac's `[local]` as this run begins.
+        // while the owner uses the pair's local API. `[local]` says so once the pair switches, starts or is confirmed
+        // serving that way (`saveChoice`), never on a run that changes nothing.
         let both = request.scope == nil && operations.servesBoth() ? ClusterServingChoice.both.scope(keeping: resume.scope) : nil
-        if both != nil {
-            let said = operations.saveServingChoice(.both)
-            if case .failure(let failure) = said { for line in failure.lines { console.say("  " + line) } }
-            if case .success(let lines) = said, resume.serving, resume.scope == both { for line in lines { console.say("  " + line) } }
-        }
         // Serving, or stopped after a model was chosen: the pair's screen. Only a leader that never chose a model goes
         // straight to the choice (which first waits for the other Mac to answer).
         if !justPaired, resume.serving || resume.modelName != nil || silent {
@@ -2462,7 +2459,7 @@ public enum ClusterOnboardingDriver {
         }
         return chooseAndServe(operations, console, scope: request.scope ?? both ?? resume.scope, saveScope: request.scope != nil || both != nil,
                               model: request.model, privateImage: request.privateImageQualification,
-                              startOverRequest: justPaired ? nil : request, peer: resume.peerName)
+                              startOverRequest: justPaired ? nil : request, peer: resume.peerName, saveChoice: both != nil)
     }
 
     /// A set-up pair on the leading Mac, as `darkbloom start` works (owner, 2026-11-04: "make it similar to how normal
@@ -2496,12 +2493,12 @@ public enum ClusterOnboardingDriver {
         let switching = both.map { $0 != resume.scope } == true
         if switching {
             console.say("  " + switchToBothLine(from: resume.scope))
-            if resume.serving { return changeScope(to: both!, resume, startOverRequest: request, operations, console) }
+            if resume.serving { return changeScope(to: both!, resume, startOverRequest: request, operations, console, saveChoice: true) }
         }
         return chooseAndServe(operations, console, scope: both ?? resume.scope, saveScope: switching, privateImage: request.privateImageQualification,
                               startOverRequest: request, pair: resume, servingNow: servesNow(status),
                               notOffered: ClusterOnboardingReady.notOfferedLines(inStatus: status) != nil,
-                              peer: resume.peerName, heading: modelHeading)
+                              peer: resume.peerName, heading: modelHeading, saveChoice: both != nil)
     }
 
     /// The one line a pair saved another way says when `darkbloom cluster` serves it Both.
@@ -2572,20 +2569,31 @@ public enum ClusterOnboardingDriver {
     /// failed test leaves the pair marked serving, so this is how `darkbloom cluster` tests again. Passed: the start's
     /// ending (`servedEnding`); failed: the start's ✗ block and its choices; a pair served only through Darkbloom has
     /// no local API on this Mac to test from, said plainly, then the pair's own status (from both Macs' reports).
+    /// `saveChoice`: `darkbloom cluster` confirms the pair serving Both, so `[local]` says so once it is shown serving, with
+    /// what that changes (the pause ends at the pair's next start).
     static func testServing(_ title: String, pair: ClusterOnboardingResume, peer: String?, startOverRequest: ClusterOnboardingRequest?,
-                            _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> Int32 {
+                            saveChoice: Bool = false, _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> Int32 {
+        func served() -> Int32 {
+            if saveChoice {
+                let said: [String]
+                switch operations.saveServingChoice(ClusterServingChoice(scope: pair.scope)) {
+                case .success(let lines): said = lines
+                case .failure(let failure): said = failure.lines
+                }
+                for line in said { console.say("  " + line) }
+            }
+            // The same ending as a start's (the test's time is in `darkbloom status`).
+            let local = pair.scope.isLocalOnly ? operations.status().first.flatMap(ClusterOnboardingReady.endingTitle(inStatusLine:)) : nil
+            return servedEnding(local ?? ClusterOnboardingReady.endingTitle(model: title), operations, console)
+        }
         while true {
             switch busy(console, "Sending a test request", operations.testRequest) {
             case .success:
-                // The test passed: the same ending as a start's (the test's time is in `darkbloom status`).
-                let local = pair.scope.isLocalOnly ? operations.status().first.flatMap(ClusterOnboardingReady.endingTitle(inStatusLine:)) : nil
-                return servedEnding(local ?? ClusterOnboardingReady.endingTitle(model: title), operations, console)
+                return served()
             case .failure(let failure) where failure.lines.first == ClusterOnboardingReady.offeredTestLine:
-                // Both: the pair's API is the part's, which this screen sends no test to.
-                console.say(pair.scope.addsLocalAPI ? "Already serving \(title) through Darkbloom, and on its local API."
-                    : "Already serving \(title) through Darkbloom; this Mac has no local API to send a test from.")
-                unchangedEnding(operations, console)
-                return 0
+                // Darkbloom has the pair (the status above says it serves): no local API on this Mac to test from, and the
+                // same ending.
+                return served()
             case .failure(let failure):
                 switch notServing(failure.lines, scope: pair.scope, operations, console) {
                 case .retry:
@@ -2654,6 +2662,8 @@ public enum ClusterOnboardingDriver {
             return chooseAndServe(operations, console, scope: wanted, saveScope: true, model: model, startOverRequest: startOverRequest,
                                   peer: resume.peerName, keepMode: resume.servingMode, heading: startHeading, saveChoice: saveChoice)
         }
+        // `[local]` first: the leading part reads it as it starts again for the new scope.
+        if saveChoice { saveServingChoice(ClusterServingChoice(scope: wanted), operations, console) }
         switch busy(console, "Switching to " + ClusterServingChoice(scope: wanted).switching, { operations.setScope(wanted) }) {
         case .success: break
         case .failure(let failure):
@@ -2661,7 +2671,6 @@ public enum ClusterOnboardingDriver {
             console.say("Nothing changed.")
             return 1
         }
-        if saveChoice { saveServingChoice(ClusterServingChoice(scope: wanted), operations, console) }
         guard resume.serving else {
             guard let model = resume.modelName else {
                 console.say("Saved: the pair serves " + ClusterServingChoice(scope: wanted).serves + " from its next start.")
@@ -2835,13 +2844,13 @@ public enum ClusterOnboardingDriver {
             return 1
         }
         // How both Macs split it, chosen for the person (`ClusterOnboardingMode.automaticIndex`; owner, 2026-11-11: "don't
-        // even give the option to pick"). Through Darkbloom the model serving now keeps the mode it serves in, listed or
-        // not, so choosing it again tests it and never loads it again. Locally the list's mode it serves in, or a stopped
-        // pair's last mode (`keepMode`), is kept as before. `darkbloom cluster local` alone asks, the automatic mode tagged
-        // Recommended and preselected, unless the model was named on the command line.
+        // even give the option to pick") for a new model or plan. The pair's own model keeps the mode it served in (owner,
+        // 2026-11-11: no pipeline → tensor parallel flip when a stopped pair starts again; `keepMode` for a switch), and
+        // through Darkbloom the model serving now keeps it listed or not, so choosing it again tests it, never reloads it.
+        // `darkbloom cluster local` alone asks, the automatic mode tagged Recommended and preselected, unless the model was
+        // named on the command line.
         let automatic = choice.modes.flatMap { ClusterOnboardingMode.automaticIndex($0, throughDarkbloom: !scope.isLocalOnly, serving: serving != nil) }
-        let keepsLocal = scope.isLocalOnly ? keepMode ?? pair?.servingMode : nil
-        let keep = chosen == current ? serving?.servingMode ?? keepsLocal : model != nil ? keepsLocal : nil
+        let keep = chosen == current || model != nil ? keepMode ?? pair?.servingMode : nil
         var mode = choice.modes.flatMap { modes in modes.first { $0.mode == keep }?.mode ?? automatic.map { modes[$0].mode } }
         if !scope.isLocalOnly, chosen == current, let serving { mode = serving.servingMode }
         if model == nil, scope.isLocalOnly, let modes = choice.modes, modes.count > 1 {
@@ -2860,7 +2869,8 @@ public enum ClusterOnboardingDriver {
             // Tested, unless it isn't offered: a test on the local API would say ✓ for a pair Darkbloom never has (DevNet, 2026-11-04).
             let again = sameModel && mode == serving.servingMode
             if again, !notOffered {
-                return testServing(choice.title, pair: serving, peer: peer, startOverRequest: startOverRequest, operations, console)
+                return testServing(choice.title, pair: serving, peer: peer, startOverRequest: startOverRequest, saveChoice: saveChoice,
+                                   operations, console)
             }
             let modeChange = sameModel && !again ? modeSwitchQuestion(model: choice.title, from: serving.servingMode, to: mode) : nil
             console.say("  " + (again ? replanQuestion(model: choice.title) : modeChange ?? switchQuestion(to: choice.title, from: currentTitle)))
@@ -2930,7 +2940,8 @@ public enum ClusterOnboardingDriver {
         }
         // The adopt stopped the model that served (each Mac released its memory first).
         if let current = serving.flatMap({ $0.modelTitle ?? $0.modelName }) { console.say("  \(done) " + stoppedLine(current)) }
-        // After the adopt (which stopped a running model first), so the scope never restarts the old model.
+        // After the adopt (which stopped a running model first), so the scope never restarts the old model; `[local]`
+        // before the parts start, which read it then.
         if saveScope {
             switch operations.setScope(scope) {
             case .success: break
@@ -2938,8 +2949,8 @@ public enum ClusterOnboardingDriver {
                 for line in failure.lines { console.say("  " + line) }
                 return 1
             }
-            if saveChoice { saveServingChoice(ClusterServingChoice(scope: scope), operations, console) }
         }
+        if saveChoice { saveServingChoice(ClusterServingChoice(scope: scope), operations, console) }
         // Different versions, then single-Mac serving: neither ends by itself, so each is said before anything starts.
         guard clearVersionSplit(operations.versionSplit(), operations, console) else { return 1 }
         // Single-Mac serving on either Mac never ends by itself: said once, before anything starts, never waited for.

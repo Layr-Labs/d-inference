@@ -16,6 +16,14 @@ extension OnboardingChecks {
         withoutALoginTheHintNamesClusterLocal()
         theJoiningMacEndsTheSameWay()
         anInteractiveTerminalWaitsForEnter()
+        // The review of #2007 (2026-11-11): each of these failed, or let a mutant live, on b40ccc33dc.
+        aCancelledRunLeavesLocalAsItWas()
+        theServingOfferedPairEndsOnTheSameLine()
+        aServingNetworkPairSwitchesAtOnceAndSavesFirst()
+        aStoppedPairKeepsTheModeItLastServedIn()
+        ciNeverWaitsForEnter()
+        theScreenLockIsReleasedBeforeTheWait()
+        noTensorParallelTakesThePlannersFirstThatCanRun()
     }
 
     /// Gemma 4 26B on these Macs: both modes, neither measured yet.
@@ -219,5 +227,139 @@ extension OnboardingChecks {
         run.type("\r")
         expect(run.finish() == 0, "enter: Enter exits")
         expect(run.text.contains("\u{1B}[1;32m\u{2713} " + servingGemma + "\u{1B}[0m"), "enter: the ✓ line bold green")
+    }
+
+    /// Records `saveServingChoice` as the live operations' `[local]` write, with the line it says.
+    static func savesBoth(_ made: inout ClusterOnboardingOperations, _ recorder: Recorder, said: [String] = []) {
+        made.servesBoth = { true }
+        made.saveServingChoice = { choice in recorder.note("saveServingChoice \(choice.rawValue)"); return .success(said) }
+    }
+
+    /// MF1: `[local]` is written only once the pair switches or starts; a run that changes nothing (Cancel at the login
+    /// check, q at the list) leaves it as it was, and says "Nothing changed." truthfully.
+    static func aCancelledRunLeavesLocalAsItWas() {
+        var onlyMe = gemmaStopped
+        onlyMe.scope = .localOnly(bind: "0.0.0.0")
+        let recorder = Recorder()
+        var made = operations(recorder, resume: onlyMe, pairEvents: [], pairResult: .failed([]), choices: twoModes,
+                              missingLogins: [ClusterOnboardingMacName.this], loginSucceeds: false)
+        savesBoth(&made, recorder)
+        let run = TerminalRun(made)
+        expect(run.waitFor("  " + prompt(2)), "cancel: the list"); run.type("\r")
+        expect(run.waitFor("  1) Log in on this Mac\n  2) Cancel\n"), "cancel: the login check: \(run.text)"); run.type("2")
+        expect(run.finish() == 0 && run.text.hasSuffix("Nothing changed.\n"), "cancel: nothing changed: \(run.text)")
+        expect(!recorder.all.contains { $0.hasPrefix("saveServingChoice") || $0.hasPrefix("setScope") }, "cancel: [local] untouched: \(recorder.all)")
+
+        let quit = Recorder()
+        var left = operations(quit, resume: onlyMe, pairEvents: [], pairResult: .failed([]), choices: twoModes)
+        savesBoth(&left, quit)
+        let q = TerminalRun(left)
+        expect(q.waitFor("  " + prompt(2)), "q: the list"); q.type("q")
+        _ = q.finish()
+        expect(!quit.all.contains { $0.hasPrefix("saveServingChoice") }, "q: [local] untouched: \(quit.all)")
+        // A start saves it once it goes ahead: after the adopt, before the parts start (they read it).
+        let started = Recorder()
+        var start = operations(started, resume: onlyMe, pairEvents: [], pairResult: .failed([]), choices: twoModes)
+        savesBoth(&start, started)
+        let go = TerminalRun(start)
+        expect(go.waitFor("  " + prompt(2)), "start: the list"); go.type("\r")
+        expect(go.finish() == 0, "start: served")
+        let calls = started.all
+        let order = ["adopt 0", "saveServingChoice both", "serve"].map { calls.firstIndex(of: $0) }
+        expect(!order.contains(nil) && order == order.sorted { ($0 ?? 0) < ($1 ?? 0) }, "start: saved after the adopt, before the start: \(calls)")
+    }
+
+    /// MF2: Enter on the model a pair Darkbloom has serves (no local test from this Mac) ends on the same ✓ line, the hint
+    /// and the wait, and saves Both then, saying the pause ends at the pair's next start.
+    static func theServingOfferedPairEndsOnTheSameLine() {
+        var both = qwenServing
+        both.scope = .publicServingWithLocalAPI(bind: "0.0.0.0")
+        let recorder = Recorder()
+        let next = "Darkbloom keeps serving while you use the pair's local API from the pair's next start."
+        var made = operations(recorder, resume: both, pairEvents: [], pairResult: .failed([]), choices: switchChoices,
+                              testResult: .failure(.init([ClusterOnboardingReady.offeredTestLine])),
+                              statusLines: ["Serving Qwen 3.8 27B through Darkbloom on both Macs (tensor parallel)."])
+        savesBoth(&made, recorder, said: [next])
+        let run = TerminalRun(made)
+        expect(run.waitFor("  1) Qwen 3.8 27B · 16.3 GB · serving now\n"), "offered re-run: the list: \(run.text)"); run.type("\r")
+        expect(run.finish() == 0, "offered re-run: exit 0")
+        expect(run.text.hasSuffix("  " + next + "\n" + ending("Serving Qwen 3.8 27B on both Macs")) && !run.text.contains("Already serving")
+               && !run.text.contains("  darkbloom stop     Stop both Macs"), "offered re-run: the pause line, then the ✓ line and the hint: \(run.text)")
+        expect(recorder.all.contains("saveServingChoice both") && !recorder.all.contains { $0.hasPrefix("adopt") || $0.hasPrefix("setScope") },
+               "offered re-run: saved, nothing reloaded: \(recorder.all)")
+    }
+
+    /// m6: a serving pair saved for the Darkbloom network alone switches to Both at once, said in one line; `[local]` is
+    /// saved before the leading part starts again (it reads it then).
+    static func aServingNetworkPairSwitchesAtOnceAndSavesFirst() {
+        let recorder = Recorder()
+        var made = operations(recorder, resume: qwenServing, pairEvents: [], pairResult: .failed([]), choices: switchChoices,
+                              readyResult: .success(qwenOffered))
+        savesBoth(&made, recorder)
+        let run = TerminalRun(made)
+        expect(run.finish() == 0, "network to Both: exit 0, no key: \(run.text)")
+        expect(run.text.contains("  " + ClusterOnboardingDriver.switchToBothLine(from: .publicServing) + "\n")
+               && !run.text.contains("  1) Qwen"), "network to Both: one line, no list: \(run.text)")
+        let calls = recorder.all
+        let saved = calls.firstIndex(of: "saveServingChoice both"), switched = calls.firstIndex(of: "setScope both 0.0.0.0")
+        expect(saved != nil && switched != nil && saved! < switched!, "network to Both: saved, then switched: \(calls)")
+        expect(run.text.hasSuffix(ending("Serving Qwen 3.8 27B on both Macs")), "network to Both: the ✓ ending: \(run.text)")
+    }
+
+    /// m8 / the owner's decision: a stopped pair started again from the screen keeps the mode it last served in (no
+    /// pipeline → tensor parallel flip); the rule picks for other models.
+    static func aStoppedPairKeepsTheModeItLastServedIn() {
+        var piped = gemmaStopped
+        piped.servingMode = "pipeline_v1"
+        piped.scope = .publicServingWithLocalAPI(bind: "0.0.0.0")
+        let recorder = Recorder()
+        var made = operations(recorder, resume: piped, pairEvents: [], pairResult: .failed([]), choices: twoModes,
+                              statusLines: ["Stopped; last model Gemma 4 26B."])
+        savesBoth(&made, recorder)
+        let run = TerminalRun(made)
+        expect(run.waitFor("  1) Gemma 4 26B · 15.6 GB · last used\n"), "stopped: the list: \(run.text)"); run.type("\r")
+        expect(run.finish() == 0, "stopped: started")
+        expect(recorder.all.contains("useMode 0 pipeline_v1") && !recorder.all.contains("useMode 0 tensor_parallel_v1"),
+               "stopped: the mode it last served in: \(recorder.all)")
+    }
+
+    /// m1: `CI` set means no person at the terminal, colour or not: the run ends without waiting.
+    static func ciNeverWaitsForEnter() {
+        var made = operations(Recorder(), resume: gemmaStopped, pairEvents: [], pairResult: .failed([]), choices: twoModes)
+        made.servesBoth = { true }
+        let run = TerminalRun(made, environment: colourTerminal.merging(["CI": "true"]) { $1 }, pressesEnterToExit: false)
+        expect(run.waitFor(arrowHint), "CI: the list"); run.type("\r")
+        expect(run.finish() == 0 && !run.text.contains(ClusterOnboardingDriver.exitLine), "CI: no wait: \(run.text.suffix(300))")
+    }
+
+    /// SF2: the screen's lock is let go before "Press Enter to exit." waits, so another window's command isn't refused.
+    static func theScreenLockIsReleasedBeforeTheWait() {
+        var primary: Int32 = -1, secondary: Int32 = -1
+        var window = winsize(ws_row: 24, ws_col: 80, ws_xpixel: 0, ws_ypixel: 0)
+        precondition(openpty(&primary, &secondary, nil, nil, &window) == 0)
+        defer { close(primary); close(secondary) }
+        let released = Recorder()
+        let done = DispatchSemaphore(value: 0)
+        let terminal = secondary
+        Thread.detachNewThread {
+            let console = ClusterOnboardingTerminal(input: terminal, output: terminal, environment: colourTerminal)
+            console.beforeExitWait = { released.note("released") }
+            console.waitForExit()
+            console.restore()
+            done.signal()
+        }
+        let deadline = Date().addingTimeInterval(5)
+        while released.all.isEmpty, Date() < deadline { usleep(10_000) }
+        expect(released.all == ["released"] && done.wait(timeout: .now() + 0.3) == .timedOut, "lock: released while it waits")
+        _ = Darwin.write(primary, "\r", 1)
+        expect(done.wait(timeout: .now() + 5) == .success, "lock: Enter ends the wait")
+    }
+
+    /// m3: with no tensor-parallel mode that can run, the planner's first mode that can (docs say the same).
+    static func noTensorParallelTakesThePlannersFirstThatCanRun() {
+        typealias M = ClusterOnboardingMode
+        let modes = [M(mode: "pipeline_v1", split: nil, measuredTokensPerSecond: nil, fitsNow: false),
+                     M(mode: "pipeline_mtp_v1", split: nil, measuredTokensPerSecond: nil, fitsNow: true)]
+        expect(M.automaticIndex(modes, throughDarkbloom: true, serving: false) == 1, "no TP: the first that fits")
     }
 }

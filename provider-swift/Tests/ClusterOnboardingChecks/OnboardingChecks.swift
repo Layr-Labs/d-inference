@@ -3690,9 +3690,9 @@ import Darwin
             testResult: .failure(.init([ClusterOnboardingReady.offeredTestLine]))))
         expect(pair.waitFor(prompt(4)), "test again, no local API: the list"); pair.type("\r")
         expect(pair.finish() == 0, "test again, no local API: exit 0")
-        expect(pair.text.contains("Already serving Qwen 3.8 27B through Darkbloom; this Mac has no local API to send a test from.\n")
-            && pair.text.hasSuffix(servingBlock + "\n" + commandLines) && !pair.text.contains("\u{2717}"),
-               "test again, no local API: said plainly, then the pair's status and the commands: \(pair.text)")
+        // Darkbloom has the pair (the status above says it serves): no test from this Mac, and the start's ending (review MF2).
+        expect(!pair.text.contains("Already serving") && pair.text.hasSuffix(ending("Serving Qwen 3.8 27B on both Macs"))
+            && !pair.text.contains("\u{2717}"), "test again, no local API: the same ✓ ending: \(pair.text)")
         transcript("leader-already-serving-no-local-api", pair.text, keys: pair.keys)
     }
 

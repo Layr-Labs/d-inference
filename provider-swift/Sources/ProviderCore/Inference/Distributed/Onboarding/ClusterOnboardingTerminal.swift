@@ -170,10 +170,16 @@ public final class ClusterOnboardingTerminal: ClusterOnboardingConsole {
         say("")
     }
 
+    /// Run once right before "Press Enter to exit." waits: the screen lets go of what another command needs (its
+    /// `ClusterConsoleInstanceLock`), since the run is over and only the person's key is awaited.
+    public var beforeExitWait: (() -> Void)?
+
     /// "Press Enter to exit." and the wait for Enter, q or Esc, where a person is at this interactive terminal (colour on,
     /// so not `NO_COLOR`, `TERM=dumb` or a pipe, and not `CI`); a closed input ends it too. The pair keeps serving.
     public func waitForExit() {
         guard interactive, !closed else { return }
+        beforeExitWait?()
+        beforeExitWait = nil
         settle()
         say("")
         say("\u{1B}[2m" + ClusterOnboardingDriver.exitLine + "\u{1B}[0m")

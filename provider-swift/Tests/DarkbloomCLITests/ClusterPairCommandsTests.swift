@@ -1075,12 +1075,15 @@ struct ClusterPairControlTests {
             try await exitWithPair(servingPair(), actions: pairActions()) { _ in
                 try await ClusterPairCommands.$terminalForTesting.withValue(true) {
                     try await ClusterPairCommands.$screenForTesting.withValue({ config in
-                        print("screen: darkbloom cluster (config \(config ?? "default"))")
+                        print("screen: darkbloom cluster (config \(config ?? "default"))"
+                            + (Cluster.Setup.keepsSavedServing ? ", keeping how the pair serves" : ""))
                     }) { try await runCLICommand(Start.self, ["start"]) }
                 }
             }
         }
-        #expect(lines(result?.standardOutputContent) == [openingScreen, "screen: darkbloom cluster (config default)", ""])
+        // Only an explicit `darkbloom cluster` switches a pair to Both (owner, 2026-11-11): `start` keeps the saved way.
+        #expect(lines(result?.standardOutputContent)
+            == [openingScreen, "screen: darkbloom cluster (config default), keeping how the pair serves", ""])
         let calls = pairActionCalls(text(result?.standardErrorContent))
         #expect(calls.isEmpty, "\(calls)")
     }

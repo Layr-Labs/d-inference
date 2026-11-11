@@ -76,11 +76,14 @@ enum ClusterPairCommands {
         terminalForTesting ?? (isatty(STDIN_FILENO) == 1 && isatty(STDOUT_FILENO) == 1)
     }
 
-    /// `darkbloom start` in a terminal: exactly what `darkbloom cluster` runs on this Mac (the setup command's run path).
+    /// `darkbloom start` in a terminal: what `darkbloom cluster` runs on this Mac (the setup command's run path), keeping
+    /// how the pair is saved to serve (`Cluster.Setup.keepsSavedServing`).
     static func openScreen(config: String?) async throws {
-        if let screen = screenForTesting { return try await screen(config) }
-        var setup = try Cluster.Setup.parse(config.map { ["--config", $0] } ?? [])
-        try await setup.run()
+        try await Cluster.Setup.$keepsSavedServing.withValue(true) {
+            if let screen = screenForTesting { return try await screen(config) }
+            var setup = try Cluster.Setup.parse(config.map { ["--config", $0] } ?? [])
+            try await setup.run()
+        }
     }
 
     /// `darkbloom stop` (and `darkbloom cluster stop`): the pair stops on both Macs and is saved as stopped, so neither

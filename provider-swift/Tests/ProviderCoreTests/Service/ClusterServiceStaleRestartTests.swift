@@ -14,14 +14,18 @@ struct ClusterServiceStaleRestartTests {
         private var printedLabels: [String] = []
         private var kickedTargets: [String] = []
         private var saidLines: [String] = []
+        private var recordsAtKick: [ClusterServiceStaleRestart.Asked?] = []
         /// The pid `launchctl print` reports for the job; nil: the job is not loaded.
         let jobPID: Int32?
+        /// The service folder whose ask record each kick reads, as launchd would find it.
+        let directory: URL?
 
-        init(jobPID: Int32?) { self.jobPID = jobPID }
+        init(jobPID: Int32?, directory: URL? = nil) { self.jobPID = jobPID; self.directory = directory }
 
         var printed: [String] { lock.withLock { printedLabels } }
         var kicked: [String] { lock.withLock { kickedTargets } }
         var said: [String] { lock.withLock { saidLines } }
+        var recordedAtKick: [ClusterServiceStaleRestart.Asked?] { lock.withLock { recordsAtKick } }
 
         func print(_ label: String) -> LaunchctlControl.Output {
             lock.withLock { printedLabels.append(label) }
@@ -30,7 +34,13 @@ struct ClusterServiceStaleRestartTests {
                 + "\tpid = \(jobPID)\n\timmediate reason = speculative\n\tlast exit code = (never exited)\n}\n", stderr: "")
         }
 
-        func kick(_ target: String) { lock.withLock { kickedTargets.append(target) } }
+        func kick(_ target: String) {
+            let record = directory.flatMap {
+                ClusterSupervisionFiles.read(ClusterServiceStaleRestart.Asked.self,
+                                             from: $0.appendingPathComponent(ClusterServiceStaleRestart.fileName))
+            }
+            lock.withLock { kickedTargets.append(target); recordsAtKick.append(record) }
+        }
         func say(_ line: String) { lock.withLock { saidLines.append(line) } }
     }
 
@@ -44,11 +54,12 @@ struct ClusterServiceStaleRestartTests {
         return directory
     }
 
-    /// The supervisor's state file as the supervisor of `version` writes it while its service runs.
-    private func supervisor(_ directory: URL, version: String) {
+    /// The supervisor's state file as the supervisor of `version` writes it while its service runs (`service`), or
+    /// between a run that ended and the next (nil, as before a re-exec).
+    private func supervisor(_ directory: URL, version: String, service: Int32? = ClusterServiceStaleRestartTests.servicePID) {
         let state = ClusterMemberSupervisorState(supervisorPID: Self.supervisorPID, version: version, bootTime: 0,
-            phase: .running, budget: ClusterMemberRestartBudget(), current: .init(pid: Self.servicePID, startedAt: 10),
-            runs: 1, updatedAt: 10)
+            phase: service == nil ? .updating : .running, budget: ClusterMemberRestartBudget(),
+            current: service.map { .init(pid: $0, startedAt: 10) }, runs: 1, updatedAt: 10)
         #expect(ClusterSupervisionFiles.write(state, to: ClusterServiceAgent.supervisorStatePath(serviceDirectory: directory)))
     }
 
@@ -155,6 +166,133 @@ struct ClusterServiceStaleRestartTests {
         #expect(decide(once, now: 100_000 + ClusterServiceStaleRestart.onceEverySeconds + 1) == restart)
         // An ask for an earlier release says nothing about this one.
         #expect(decide(.init(from: "0.10.10", to: "0.10.11", supervisorPID: 1, at: 100_000), now: 100_060) == restart)
+    }
+
+    /// The order is the releases' (`SemanticVersion`), never the text's: as text, 0.10.9 sorts after 0.10.10 and 0.10.12,
+    /// and DevNet's build 99 after 100. W1's morning run is the first case: a supervisor on .176, the folded build's part.
+    @Test(arguments: [("0.10.12-dev.branch.176", "0.10.12-dev.branch.177", true),
+                      ("0.10.12-dev.branch.177", "0.10.12-dev.branch.176", false),
+                      ("0.10.12-dev.branch.99", "0.10.12-dev.branch.100", true),
+                      ("0.10.12-dev.branch.100", "0.10.12-dev.branch.99", false),
+                      ("0.10.9-dev.branch.80", "0.10.12-dev.branch.176", true),
+                      ("0.10.9", "0.10.10", true),
+                      ("0.10.10", "0.10.9", false),
+                      ("0.10.9", "0.10.12", true),
+                      ("0.10.12", "0.10.9", false),
+                      ("0.10.12-dev.branch.176", "0.10.12-dev.branch.176", false),
+                      ("0.10.12", "0.10.12", false)])
+    func theReleasesOrderDecides(supervisorVersion: String, partVersion: String, restarts: Bool) throws {
+        let directory = try serviceDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        supervisor(directory, version: supervisorVersion)
+        let launchd = Launchd(jobPID: Self.supervisorPID)
+        let decision = start(directory, thisVersion: partVersion, launchd: launchd)
+        #expect(decision == (restarts ? .restart(from: supervisorVersion, to: partVersion) : .nothing),
+                "\(supervisorVersion) -> \(partVersion)")
+        #expect(launchd.kicked.count == (restarts ? 1 : 0), "\(supervisorVersion) -> \(partVersion)")
+    }
+
+    @Test func aNewerInstalledReleaseAsksAgainWithinSixHours() throws {
+        let directory = try serviceDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        supervisor(directory, version: "0.10.11")
+        let launchd = Launchd(jobPID: Self.supervisorPID)
+        // The record is the installed release's: a service still on 0.10.11 when 0.10.13 is installed is asked again.
+        #expect(start(directory, thisVersion: "0.10.12", launchd: launchd) == .restart(from: "0.10.11", to: "0.10.12"))
+        #expect(start(directory, thisVersion: "0.10.13", now: 1_060, launchd: launchd) == .restart(from: "0.10.11", to: "0.10.13"))
+        #expect(start(directory, thisVersion: "0.10.13", now: 1_120, launchd: launchd) == .nothing)
+        #expect(launchd.kicked.count == 2)
+    }
+
+    @Test func itReadsItsOwnJobAndAsksOnlyOnceTheRecordIsOnDisk() throws {
+        let directory = try serviceDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        supervisor(directory, version: "0.10.11")
+        let launchd = Launchd(jobPID: Self.supervisorPID, directory: directory)
+        #expect(start(directory, thisVersion: "0.10.12", launchd: launchd) == .restart(from: "0.10.11", to: "0.10.12"))
+        #expect(launchd.printed == [ClusterServiceAgentPlan.label(executablePath: release)])
+        #expect(launchd.kicked == [jobTarget])
+        #expect(launchd.recordedAtKick == [.init(from: "0.10.11", to: "0.10.12", supervisorPID: Self.supervisorPID, at: 1_000)])
+    }
+
+    /// The record keeps the next part's start from asking again; a restart it can't record is not asked for.
+    @Test func anAskThatCannotBeRecordedIsNotMade() throws {
+        let directory = try serviceDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        supervisor(directory, version: "0.10.11")
+        // A folder where the record goes: the write's rename fails, as on a full or read-only disk.
+        try FileManager.default.createDirectory(at: directory.appendingPathComponent(ClusterServiceStaleRestart.fileName),
+                                                withIntermediateDirectories: false)
+        let launchd = Launchd(jobPID: Self.supervisorPID)
+        #expect(start(directory, thisVersion: "0.10.12", launchd: launchd) == .nothing)
+        #expect(launchd.kicked.isEmpty)
+        #expect(launchd.said.count == 1)
+        #expect(launchd.said.first?.contains("could not record the restart") == true)
+    }
+
+    /// Between a service run that ended and the next (the supervisor's last write before a re-exec) there is no service.
+    @Test func aSupervisorWithNoServiceRunningIsLeftAlone() throws {
+        let directory = try serviceDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        supervisor(directory, version: "0.10.11", service: nil)
+        let launchd = Launchd(jobPID: Self.supervisorPID)
+        #expect(start(directory, thisVersion: "0.10.12", launchd: launchd) == .nothing)
+        #expect(launchd.kicked.isEmpty)
+    }
+
+    /// `kickstart -k`: a plain `kickstart` does nothing to a job that runs.
+    @Test func theAskKillsTheRunningJobAndSaysWhenLaunchctlRefuses() async {
+        final class Seen: @unchecked Sendable {
+            let lock = NSLock()
+            var arguments: [[String]] = []
+            var lines: [String] = []
+        }
+        let seen = Seen()
+        let target = "gui/501/io.darkbloom.cluster-service.0123456789ab"
+        ClusterServiceStaleRestart.kickInBackground(target, say: { line in seen.lock.withLock { seen.lines.append(line) } },
+            run: { arguments in
+                seen.lock.withLock { seen.arguments.append(arguments) }
+                return .init(status: 113, stdout: "", stderr: "Could not find service in domain for user gui: 501\n")
+            })
+        let deadline = Date().addingTimeInterval(10)
+        while seen.lock.withLock({ seen.lines.isEmpty }), Date() < deadline { try? await Task.sleep(nanoseconds: 20_000_000) }
+        #expect(seen.lock.withLock { seen.arguments } == [["kickstart", "-k", target]])
+        #expect(seen.lock.withLock { seen.lines }
+                == ["could not restart this Mac's cluster service (Could not find service in domain for user gui: 501); "
+                    + "it runs the installed release after the next login"])
+    }
+
+    /// A `start` part runs under the AppKit host, which has taken SIGTERM and SIGINT for its own drain before
+    /// `Start.run()` (`ProviderSignalHandler`: ignored, read by dispatch sources). During the wait after the ask, the
+    /// service's stop must still end the part at once. Signals change process-wide state, so this runs in a child.
+    @Test func theServicesStopEndsAPartDuringTheWaitAlsoUnderTheHostsHandler() async {
+        await #expect(processExitsWith: .signal(SIGTERM)) {
+            var sources: [DispatchSourceSignal] = []
+            for number in [SIGTERM, SIGINT] {
+                signal(number, SIG_IGN)
+                let source = DispatchSource.makeSignalSource(signal: number, queue: .global())
+                source.setEventHandler {}
+                source.resume()
+                sources.append(source)
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) { _ = kill(getpid(), SIGTERM) }
+            ClusterServiceStaleRestart.waitForStop(seconds: 5)
+            withExtendedLifetime(sources) {}
+            exit(0)  // The wait ended and the stop never took.
+        }
+    }
+
+    /// A part that nothing stopped starts as before, with its own handlers back.
+    @Test func afterTheWaitThePartsOwnHandlersAreBack() async {
+        await #expect(processExitsWith: .success) {
+            signal(SIGTERM, SIG_IGN)
+            signal(SIGINT, SIG_IGN)
+            ClusterServiceStaleRestart.waitForStop(seconds: 0.1)
+            _ = kill(getpid(), SIGTERM)
+            _ = kill(getpid(), SIGINT)
+            usleep(300_000)
+            exit(0)
+        }
     }
 
     @Test func theJobsPidIsReadFromLaunchctlPrint() {

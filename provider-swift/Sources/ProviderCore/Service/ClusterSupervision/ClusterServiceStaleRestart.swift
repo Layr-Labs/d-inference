@@ -83,8 +83,14 @@ public enum ClusterServiceStaleRestart {
                                       executablePath: LaunchctlControl.currentExecutablePath(),
                                       thisVersion: ProviderCore.version, parentPID: getppid(),
                                       now: Date().timeIntervalSince1970, say: say)
-        if case .restart = decision { Thread.sleep(forTimeInterval: waitForStopSeconds) }
+        if case .restart = decision { waitForStop(seconds: waitForStopSeconds) }
         return decision
+    }
+
+    /// RED SEAM (test-only commit): today's wait, a plain sleep. The next commit gives SIGTERM and SIGINT their
+    /// default action during it.
+    static func waitForStop(seconds: Double) {
+        Thread.sleep(forTimeInterval: seconds)
     }
 
     static func restartIfStale(environment: [String: String], executablePath: String, thisVersion: String,
@@ -113,9 +119,11 @@ public enum ClusterServiceStaleRestart {
     }
 
     /// Not waited for: launchd stops this part with the service, and nothing that stop waits for may wait on launchctl.
-    static func kickInBackground(_ target: String, say: @escaping @Sendable (String) -> Void) {
+    static func kickInBackground(_ target: String, say: @escaping @Sendable (String) -> Void,
+                                 run: @escaping @Sendable ([String]) -> LaunchctlControl.Output
+                                     = { LaunchctlControl.run($0, captureStderr: true) }) {
         Thread.detachNewThread {
-            let result = LaunchctlControl.run(["kickstart", "-k", target], captureStderr: true)
+            let result = run(["kickstart", "-k", target])
             guard !result.succeeded else { return }
             say("could not restart this Mac's cluster service (\(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))); "
                 + "it runs the installed release after the next login")

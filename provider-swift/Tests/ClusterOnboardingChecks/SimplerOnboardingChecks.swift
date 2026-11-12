@@ -26,6 +26,8 @@ extension OnboardingChecks {
         noTensorParallelTakesThePlannersFirstThatCanRun()
         // The real-Mac proof of b250f13059 (M5U pair, 2026-11-11 W16.9): a stopped local pair flipped to tensor parallel.
         theModeQuestionPreselectsTheModeTheStoppedPairLastServedIn()
+        // The review of #2013 (2026-11-12, SF1–SF3): each kills a mutant the check above let live (k3, k4, k5).
+        onlyThePairsOwnModelKeepsItsMode()
     }
 
     /// Gemma 4 26B on these Macs: both modes, neither measured yet.
@@ -399,5 +401,61 @@ extension OnboardingChecks {
                "tensor parallel last: preselected as before: \(run.text)")
         run.type("q")
         _ = run.finish()
+    }
+
+    /// Only the pair's own model keeps the mode it last served in: a new model gets the rule (SF1, k3), `darkbloom cluster
+    /// local <model>` keeps the mode for the pair's own model and not another's (SF2, k4), and the re-run of a serving
+    /// Only-me pipeline pair preselects Pipeline and tests it without a reload (SF3, k5).
+    static func onlyThePairsOwnModelKeepsItsMode() {
+        let local = ClusterServingScope.localOnly(bind: "0.0.0.0")
+        var piped = gemmaStopped
+        piped.servingMode = "pipeline_v1"
+        piped.scope = local
+        var other = twoModes[0]
+        other.title = "Gemma 4 31B"
+        other.modelID = "gemma-4-31b-qat-4bit"
+        let twoModels = twoModes + [other]
+        let tpLine = "  2) Tensor parallel · Recommended · serves up to 8 requests at once · context 262,144 tokens\n"
+        let screens = [("start", ClusterOnboardingRequest()), ("cluster local", ClusterOnboardingRequest(scope: local))]
+
+        // SF1 (k3): a new model on a pair that last served pipeline gets the rule (tensor parallel), in both screens.
+        for (label, request) in screens {
+            let recorder = Recorder()
+            let run = TerminalRun(operations(recorder, resume: piped, pairEvents: [], pairResult: .failed([]), choices: twoModels,
+                                             statusLines: ["Stopped; last model Gemma 4 26B."]), request: request)
+            expect(run.waitFor("  2) Gemma 4 31B · 15.6 GB"), "SF1 \(label): the list: \(run.text)"); run.type("2")
+            expect(run.waitFor(tpLine + "  " + prompt(2, enter: 2)), "SF1 \(label): a new model: the rule's pick preselected: \(run.text)")
+            run.type("\r")
+            expect(run.finish() == 0, "SF1 \(label): started")
+            expect(recorder.all.contains("useMode 1 tensor_parallel_v1") && !recorder.all.contains("useMode 1 pipeline_v1"),
+                   "SF1 \(label): a new model takes tensor parallel: \(recorder.all)")
+        }
+
+        // SF2 (k4): `darkbloom cluster local <model>`: the pair's own model keeps its mode; another model gets the rule.
+        for (model, wanted) in [("gemma-4-26b-qat-4bit", "useMode 0 pipeline_v1"), ("gemma-4-31b-qat-4bit", "useMode 1 tensor_parallel_v1")] {
+            let recorder = Recorder()
+            let run = TerminalRun(operations(recorder, resume: piped, pairEvents: [], pairResult: .failed([]), choices: twoModels,
+                                             statusLines: ["Stopped; last model Gemma 4 26B."]),
+                                  request: ClusterOnboardingRequest(scope: local, model: model))
+            expect(run.finish() == 0, "SF2 \(model): started")
+            expect(!run.text.contains("How should both Macs split"), "SF2 \(model): no question")
+            expect(recorder.all.filter { $0.hasPrefix("useMode") } == [wanted], "SF2 \(model): \(wanted): \(recorder.all)")
+        }
+
+        // SF3 (k5): the re-run of a serving Only-me pipeline pair: the cursor on Pipeline, Enter tests it, nothing reloads.
+        var serving = piped
+        serving.serving = true
+        for (label, request) in screens {
+            let recorder = Recorder()
+            let run = TerminalRun(operations(recorder, resume: serving, pairEvents: [], pairResult: .failed([]), choices: twoModes,
+                                             statusLines: ["Serving Gemma 4 26B (pipeline) at http://localhost:8000 (local only)."]),
+                                  request: request)
+            expect(run.waitFor("  1) Gemma 4 26B · 15.6 GB"), "SF3 \(label): the list: \(run.text)"); run.type("\r")
+            expect(run.waitFor(tpLine + "  " + prompt(2)), "SF3 \(label): the serving mode preselected: \(run.text)")
+            run.type("\r")
+            expect(run.finish() == 0, "SF3 \(label): exit 0")
+            expect(recorder.all.contains("testRequest") && !recorder.all.contains { $0.hasPrefix("adopt") || $0.hasPrefix("useMode") },
+                   "SF3 \(label): tested, not reloaded: \(recorder.all)")
+        }
     }
 }

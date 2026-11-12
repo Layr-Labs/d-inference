@@ -1,10 +1,10 @@
 import Foundation
 
 /// Why the coordinator handler refused a request as a client error, before its
-/// inference task started or while its prompt was prepared. A closed, log-only
-/// vocabulary: the `inference_error` frame does not carry it, and no value
-/// holds request text. Public only because the public
-/// `MultiModelBatchSchedulerEngineError.invalidToolPayload` carries it.
+/// inference task started or while its prompt was prepared. A closed
+/// vocabulary: no value holds request text. The refusal's `inference_error`
+/// frame carries it as `refusal_reason`, beside its fixed `clientMessage` as
+/// `refusal_message`, and `darkbloom logs` names it.
 public enum InferenceRefusalReason: String, CaseIterable, Sendable, Equatable {
     // The sealed request.
     case missingSenderKey = "missing_sender_key"
@@ -39,6 +39,39 @@ public enum InferenceRefusalReason: String, CaseIterable, Sendable, Equatable {
     case unsupportedForcedToolChoice = "unsupported_forced_tool_choice"
     case requestExceedsContext = "request_exceeds_context"
     case unsupportedOutputControl = "unsupported_output_control"
+    case missingUserQuery = "missing_user_query"
+
+    /// One fixed sentence per reason, safe to show the requester: derived from
+    /// the reason alone, never from the request.
+    public var clientMessage: String {
+        switch self {
+        case .missingSenderKey: "The request is missing its sender key."
+        case .undecryptableRequest: "The request could not be decrypted."
+        case .reservedToolSchemaMetadata: "A tool schema uses a reserved metadata key."
+        case .malformedBody: "The request body is not a valid chat completion request."
+        case .invalidMessages: "A message is malformed or has an unsupported content part."
+        case .unsupportedMessageRole: "A message has an unsupported role."
+        case .invalidToolHistory: "A tool call in the conversation is malformed."
+        case .invalidToolArguments: "A tool call in the conversation has invalid arguments."
+        case .invalidToolDeclaration: "A declared tool is malformed or has an invalid name."
+        case .invalidToolChoice: "tool_choice is malformed or names an undeclared tool."
+        case .unsupportedResponseFormat: "response_format is malformed or not supported for this request."
+        case .invalidRequestField: "A request field has an invalid value."
+        case .unsupportedReasoningControl: "A reasoning control is not supported by this model."
+        case .contradictoryReasoningControls: "The reasoning controls contradict each other."
+        case .unsupportedToolType: "A declared tool type is not supported by this model."
+        case .invalidToolSchema: "A tool schema cannot be represented for this model."
+        case .unsupportedAudio: "Audio input is not supported by this model."
+        case .unansweredToolCall: "A tool call in the conversation has no tool result."
+        case .unmatchedToolResult: "A tool message does not answer a preceding assistant tool call."
+        case .nativeDelimiterInHistory: "The conversation contains this model's reserved tool-call markers."
+        case .nonTextContent: "This model accepts only text content here."
+        case .unsupportedForcedToolChoice: "The required or named tool_choice cannot be enforced for this request."
+        case .requestExceedsContext: "The request does not fit the model's context window."
+        case .unsupportedOutputControl: "An output control, such as logprobs, is not supported by this model."
+        case .missingUserQuery: "The conversation needs a user message that is more than a tool result."
+        }
+    }
 
     /// The reason a request was refused as a client error while its prompt was
     /// prepared or admitted to the engine, or nil when the refusal names none

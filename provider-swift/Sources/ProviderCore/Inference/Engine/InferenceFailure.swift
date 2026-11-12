@@ -126,6 +126,8 @@ public struct InferenceFailure: Sendable, Equatable {
     public let capacitySeq: UInt64?
     /// The check behind a `tool_noncompliance` reason; nil for every other one.
     public let toolCheck: ToolNoncomplianceCheck?
+    /// Why a client refusal refused the request; nil for every other failure.
+    public let refusal: InferenceRefusalReason?
 
     public init(
         code: InferenceFailureCode,
@@ -137,7 +139,8 @@ public struct InferenceFailure: Sendable, Equatable {
         availableTokenBudget: Int64? = nil,
         feasibleAfterMs: Int64? = nil,
         capacitySeq: UInt64? = nil,
-        toolCheck: ToolNoncomplianceCheck? = nil
+        toolCheck: ToolNoncomplianceCheck? = nil,
+        refusal: InferenceRefusalReason? = nil
     ) {
         self.code = code
         self.statusCode = statusCode
@@ -149,6 +152,7 @@ public struct InferenceFailure: Sendable, Equatable {
         self.feasibleAfterMs = feasibleAfterMs
         self.capacitySeq = capacitySeq
         self.toolCheck = toolCheck
+        self.refusal = refusal
     }
 
     public var message: String { code.message }
@@ -252,6 +256,7 @@ private extension ProviderOperationalMessage {
         case .unsupportedForcedToolChoice: .refusalUnsupportedForcedToolChoice
         case .requestExceedsContext: .refusalRequestExceedsContext
         case .unsupportedOutputControl: .refusalUnsupportedOutputControl
+        case .missingUserQuery: .refusalMissingUserQuery
         }
     }
 }

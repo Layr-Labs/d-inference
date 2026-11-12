@@ -113,7 +113,20 @@ enum GenerationLoopExitThinkingPolicy {
         logprobs: Bool,
         setting: Setting = current
     ) -> GenerationLoopExitThinking? {
-        nil
+        guard case .modelTypes(let enabled) = setting,
+              let modelType = modelType?.lowercased(), enabled.contains(modelType),
+              let markers = markersByModelType[modelType], !logprobs,
+              let close = tokenizer.convertTokenToId(markers.close),
+              tokenizer.convertIdToToken(close) == markers.close
+        else { return nil }
+        let tail = tokenizer.decode(
+            tokenIds: Array(promptTokens.suffix(ReasoningPromptProbe.tailTokenCount)),
+            skipSpecialTokens: false)
+        return GenerationLoopExitThinking(
+            openMarker: markers.open, closeMarker: markers.close,
+            exitTokens: [close], exitText: markers.close,
+            startsInside: endsInside(tail, open: markers.open, close: markers.close),
+            record: GenerationLoopExitRecord())
     }
 
     /// Whether `text` leaves the channel open: its last marker opens it.

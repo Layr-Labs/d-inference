@@ -458,6 +458,12 @@ Ultras (2026-11-04, DevNet), its tensor parallel served 8 requests at once with
 none refused, and each answered about 2.6 times faster (105.6 against 40.8
 tokens/s alone).
 
+A Gemma 4 pipeline serves one request at a time. It reads each prompt with one
+chunk of lookahead, which starts a long prompt's answer sooner. To serve
+several requests at once it would read each prompt one chunk at a time: on two
+M5 Ultras (2026-11-10), a long prompt alone then started its answer about 1.9
+times later. So the setup keeps the lookahead.
+
 While a model serves, a mode's split reads "decided when it loads": the list
 plans with that model's memory still taken, and the start stops it and plans
 again with its memory free. `darkbloom status` shows the split that loaded.
@@ -619,9 +625,9 @@ pair's model and split; a release's cluster runtime facts carry them for
 GLM-5.3-Flash and Qwen3.8-27B
 ([serving a pair](../reference/cluster-control-protocol.md#serving-a-pair)).
 A tensor-parallel pair registers like a pipeline one; its plan names no cut.
-A Gemma 4 pipeline pair whose plan prefills serially takes several requests at
-once; one planned with the one-chunk lookahead takes one at a time
-([Gemma pipeline lanes](../architecture/inference.md#gemma-pipeline-lanes)).
+A Gemma 4 pipeline pair is planned with the one-chunk lookahead and takes one
+request at a time; a setup saved with serial prefill and a width takes that
+many at once ([Gemma pipeline lanes](../architecture/inference.md#gemma-pipeline-lanes)).
 
 1. Run `darkbloom cluster` and choose a model, as in [the steps](#the-steps-once).
    After the Test stage passes, the leader reads the approvals the coordinator

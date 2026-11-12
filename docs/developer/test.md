@@ -3030,7 +3030,8 @@ layouts, optional bias, and prefill widths 511 and 512.
 opt-in leaves other block sizes batched. `BonsaiStagePreparationTests` in
 `libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/BonsaiStagePreparationTests.swift`
 requires every packed projection of both pair stages to ask for the per-row
-arithmetic.
+arithmetic, and `BonsaiRowArithmeticTests.aSingleMacLoaderBuildsBatchedProjections`
+requires the single-Mac loader's call (no `independentRows`) to stay batched.
 `Float16ConstantCastTests` covers repeated calls, parameter and descriptor
 replacement, compiled state replacement and ineligible policies.
 `BonsaiRowArithmeticTests` in

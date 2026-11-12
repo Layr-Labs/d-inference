@@ -3238,9 +3238,12 @@ stops such a row early.
   (`<|channel>` … `<channel|>`; the prompt's tail seeds the state) and records
   every token the row produces, the in-flight ones after its stop included. A
   detection inside the thought stops the row as above; the scheduler
-  (`prepareCompletion`) then holds the row's `length` terminal, waits for the
-  row's stream to end (its service allowance and KV reservation released), and
-  submits one continuation on the same bridge: the prompt, every generated
+  (`prepareCompletion`) then holds the row's `length` terminal, waits until the
+  row has released its serving slot (`EngineV2Bridge.waitForRowRelease`, as
+  model calibration waits: its pump's retirement cleanup and its whole-Mac
+  service charge; a row with a retirement handle, the coordinator's atomic
+  admission path, ends its stream before that; at most 5 s), and submits one
+  continuation on the same bridge: the prompt, every generated
   token and `<channel|>`, with `max_tokens` = the output the bridge resolved
   for the row minus the tokens produced minus 1, at most 8,192; the same
   sampling, stop strings and cache scope; and a loop guard without the exit, so
@@ -3250,12 +3253,16 @@ stops such a row early.
   finish reason. The continuation is an ordinary row, so exact MTP drafting
   stays on for it and its batch; a cancelled row donates no KV, so the
   continuation prefills the thought again (its prompt part can hit the prefix
-  cache). When the continuation cannot start (no budget left, the row closed
-  its thought itself, a refused submission, a failure before its first token, a
-  cancel), the held `length` terminal is delivered as before. Never with
+  cache). When the continuation cannot start (under 256 tokens of budget left,
+  the row closed its thought itself, the row did not release its slot in time,
+  a refused submission, a failure before its first token, a cancel), the held
+  `length` terminal is
+  delivered as before; a failure after its first token ends the answer there,
+  as `length` (only the client's cancel keeps its error). Never with
   logprobs or on a cluster pair. `DARKBLOOM_LOOP_EXIT_THINKING=0` (or `off`)
   turns it off; a comma-separated list keeps it to the listed `model_type`s
-  that have a marker. One `darkbloom.loop-guard.exit-thinking` line per ended
+  that have a marker. `darkbloom start` passes it, and `DARKBLOOM_LOOP_GUARD`,
+  to the launchd daemon (`LaunchAgent.inferencePassthroughEnvKeys`). One `darkbloom.loop-guard.exit-thinking` line per ended
   thought gives the outcome.
 
 ### Collected and streaming reasoning state

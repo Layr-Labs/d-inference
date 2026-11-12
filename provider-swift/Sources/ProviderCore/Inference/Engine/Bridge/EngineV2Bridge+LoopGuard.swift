@@ -28,14 +28,14 @@ extension EngineV2Bridge {
         #if canImport(os)
         // One line per stop: the model, its type, the period, the span and the tokens so far.
         Self.loopGuardLogger.notice(
-            "loop guard stopped \(id, privacy: .public): \(self.modelId, privacy: .public) (\(modelType ?? "?", privacy: .public)) period \(detection.period) span \(detection.span) at \(detection.generatedTokens)\(endsThought ? "; the thought ends and the answer continues" : "", privacy: .public)")
+            "loop guard stopped \(id, privacy: .public): \(self.modelId, privacy: .public) (\(modelType ?? "?", privacy: .public)) period \(detection.period) span \(detection.span) at \(detection.generatedTokens)\(endsThought ? "; it asks to end the thought and continue the answer" : "", privacy: .public)")
         #endif
         var event = TelemetryEvent(
             source: .provider,
             severity: .info,
             kind: .engineHealth,
             message: endsThought
-                ? "engine_v2: loop guard ended a repeating thought; the answer continues"
+                ? "engine_v2: loop guard stopped a repeating thought and asks to continue the answer"
                 : "engine_v2: loop guard ended a repeating answer as length"
         ).withFields([
             "component": .string("engine"),
@@ -52,9 +52,46 @@ extension EngineV2Bridge {
         emit(event)
     }
 
-    /// Waits until the row `requestId` has released its serving slot; false
-    /// when `bound` passes first.
+    /// Waits until the row `requestId` has released its serving slot: its pump
+    /// ran its retirement cleanup (service allowance, KV reservation) and the
+    /// whole-Mac budget no longer charges it, as model calibration waits
+    /// (`runModelCalibrationCell`). A row with a retirement handle (atomic
+    /// deadline admission, the coordinator's path) ends its client stream
+    /// before that, so a continuation submitted at once would still count the
+    /// stopped row and, on a full Mac, be refused
+    /// (`LoopExitThinkingContinuation`). False when `bound` passes first: a
+    /// wedged row may never retire.
     func waitForRowRelease(requestId: String, within bound: Duration) async -> Bool {
-        true
+        let pump = pumpTasks[requestId]
+        let budget = serviceBudget
+        let ownerID = serviceOwnerPrefix + ":" + requestId
+        return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            let once = ResumeOnce(continuation)
+            Task {
+                await pump?.value
+                await budget?.waitForRelease(ownerID: ownerID)
+                once.resume(true)
+            }
+            Task {
+                try? await Task.sleep(for: bound)
+                once.resume(false)
+            }
+        }
+    }
+}
+
+/// Resumes a continuation with the first of several racing results.
+private final class ResumeOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Bool, Never>?
+
+    init(_ continuation: CheckedContinuation<Bool, Never>) { self.continuation = continuation }
+
+    func resume(_ value: Bool) {
+        let pending = lock.withLock { () -> CheckedContinuation<Bool, Never>? in
+            defer { continuation = nil }
+            return continuation
+        }
+        pending?.resume(returning: value)
     }
 }

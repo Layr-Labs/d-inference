@@ -1127,24 +1127,36 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 // row's service allowance.
                 outputBudget: bridge.outputTokens(requested: base.maxTokens, promptTokens: promptTokens.count),
                 submit: { continuationPrompt, budget in
+                    // The stopped row's stream can end before it releases its
+                    // serving slot (a row with a retirement handle): until then
+                    // it still counts against the Mac's width.
+                    guard await bridge.waitForRowRelease(requestId: requestId, within: .seconds(5)) else {
+                        throw LoopExitThinkingContinuation.RowNotReleased()
+                    }
                     var next = base
                     next.maxTokens = budget
-                    return try await bridge.submitTokenized(
-                        promptTokens: continuationPrompt,
-                        request: Self.translate(
-                            openAIRequest: next, defaultMaxTokens: defaultMaxTokens,
-                            logitBias: sampling?.logitBias, seed: sampling?.seed,
-                            engineStopStrings: modelType != "flint"),
-                        requestId: continuationId,
-                        cacheScope: cacheScope,
-                        cacheEnabled: cacheEnabled,
-                        stopStringScope: stopStringScope,
-                        donationDemand: donationDemand,
-                        firstContentDeadline: nil,
-                        measurementPurpose: measurementPurpose,
-                        // A loop in the answer still ends it as `length`.
-                        loopGuard: GenerationLoopGuardPolicy.resolve(
-                            modelType: modelType, request: next, prepared: prepared, tokenConstraint: nil))
+                    // As model calibration submits: the request's prompt progress
+                    // has ended, and the owner's make-room hook is the row's.
+                    return try await LocalPrefillProgress.$current.withValue(nil) {
+                        try await MeFirstOwnerRequest.$makeRoom.withValue(nil) {
+                            try await bridge.submitTokenized(
+                                promptTokens: continuationPrompt,
+                                request: Self.translate(
+                                    openAIRequest: next, defaultMaxTokens: defaultMaxTokens,
+                                    logitBias: sampling?.logitBias, seed: sampling?.seed,
+                                    engineStopStrings: modelType != "flint"),
+                                requestId: continuationId,
+                                cacheScope: cacheScope,
+                                cacheEnabled: cacheEnabled,
+                                stopStringScope: stopStringScope,
+                                donationDemand: donationDemand,
+                                firstContentDeadline: nil,
+                                measurementPurpose: measurementPurpose,
+                                // A loop in the answer still ends it as `length`.
+                                loopGuard: GenerationLoopGuardPolicy.resolve(
+                                    modelType: modelType, request: next, prepared: prepared, tokenConstraint: nil))
+                        }
+                    }
                 },
                 cancelContinuation: { await bridge.cancel(requestId: continuationId) },
                 onOutcome: { outcome in

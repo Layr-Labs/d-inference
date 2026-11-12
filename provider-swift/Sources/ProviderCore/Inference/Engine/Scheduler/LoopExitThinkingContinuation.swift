@@ -9,18 +9,22 @@ import Logging
 /// any repeating row: the engine cancels it and its stream ends with a
 /// `length` terminal. When the guard asked to end the thought instead
 /// (`GenerationLoopExitRecord.requested`), this holds that terminal back, waits
-/// for the row's stream to finish (its engine resources are released by then),
-/// and submits one continuation: the same prompt, every token the row produced,
-/// then the family's end-of-thinking marker, with the output budget the row
-/// left (at most `GenerationLoopExitThinking.answerTokenLimit`). The client
-/// sees one answer: the thought, the marker, then the continuation's text, and
-/// one terminal whose usage is the original prompt and every token produced
-/// (the row's, the marker, the continuation's).
+/// for the row's stream to finish, and submits one continuation (its `submit`
+/// first waits for the row to release its serving slot:
+/// `EngineV2Bridge.waitForRowRelease`): the same prompt, every token the row
+/// produced, then the family's end-of-thinking marker, with the output budget
+/// the row left (at most `GenerationLoopExitThinking.answerTokenLimit`). The
+/// client sees one answer: the thought, the marker, then the continuation's
+/// text, and one terminal whose usage is the original prompt and every token
+/// produced (the row's, the marker, the continuation's).
 ///
-/// Anything that keeps the continuation from starting (no budget left, a row
-/// that closed its thought itself, a refused submission, a continuation that
-/// fails before its first token, a cancel) ends the answer exactly as before:
-/// the held `length` terminal.
+/// Anything that keeps the continuation from starting (under
+/// `minimumAnswerBudget` tokens of budget left, a row that closed its thought
+/// itself, a row that did not release its slot in time, a refused submission,
+/// a continuation that fails before its first token, a cancel) ends the answer
+/// exactly as before: the held `length` terminal. A continuation that fails
+/// after its first token ends the answer there, as `length`; only the client's
+/// cancel keeps its error.
 enum LoopExitThinkingContinuation {
     typealias Submit = @Sendable (_ promptTokens: [Int], _ maxTokens: Int) async throws
         -> AsyncStream<GenerationEvent>
@@ -31,19 +35,30 @@ enum LoopExitThinkingContinuation {
         case continued(continuationTokens: Int, finishReason: String?)
         /// It did not start: the request ended as `length`, as before.
         case endedAsLength(reason: String)
-        /// It started and then failed or was cancelled.
+        /// It started and then was cancelled.
         case failedAfterStart
+        /// It started and then failed: the answer ends there, as `length`.
+        case cutAfterStart(reason: String)
 
         var description: String {
             switch self {
             case .continued(let tokens, let reason): "continued: \(tokens) answer tokens, \(reason ?? "no reason")"
             case .endedAsLength(let reason): "ended as length: \(reason)"
-            case .failedAfterStart: "failed after the answer started"
+            case .failedAfterStart: "cancelled after the answer started"
+            case .cutAfterStart(let reason): "cut after the answer started: \(reason)"
             }
         }
     }
 
     static let logger = Logger(label: "darkbloom.loop-guard.exit-thinking")
+
+    /// The stopped row did not release its serving slot in time
+    /// (`EngineV2Bridge.waitForRowRelease`).
+    struct RowNotReleased: Error {}
+
+    /// Below this answer budget the re-prefill of the whole thought is not
+    /// worth it: the request ends as `length`, as before.
+    static let minimumAnswerBudget = 256
 
     /// The spliced stream and its cancel, which stops whichever row is running.
     static func splice(
@@ -117,7 +132,7 @@ enum LoopExitThinkingContinuation {
             return endAsLength("the row closed its thought itself")
         }
         let budget = min(outputBudget - held.completion - exit.exitTokens.count, exit.answerTokenLimit)
-        guard budget > 0 else { return endAsLength("no output budget left") }
+        guard budget >= minimumAnswerBudget else { return endAsLength("output budget left \(max(0, budget))") }
         guard !control.isCancelled, !Task.isCancelled else { return endAsLength("cancelled") }
         let continuation: AsyncStream<GenerationEvent>
         do {
@@ -132,6 +147,17 @@ enum LoopExitThinkingContinuation {
         // Tokens the client is billed for before the continuation's own.
         let carried = held.completion + exit.exitTokens.count
         var started = false
+        // The continuation's last reported completion, for a failure after it started.
+        var answerTokens = 0
+        // A failure after the answer started ends it as a cut `length`, as the
+        // guard's own stop would have; only a cancel keeps its error framing.
+        func endCut(_ reason: String, completion: Int) {
+            out.yield(.info(
+                promptTokens: held.prompt, completionTokens: carried + completion,
+                tokensPerSecond: held.tokensPerSecond, finishReason: "length"))
+            out.finish()
+            onOutcome?(.cutAfterStart(reason: reason))
+        }
         func start() {
             guard !started else { return }
             started = true
@@ -150,6 +176,12 @@ enum LoopExitThinkingContinuation {
                 // then its error: before its first token that is a failure.
                 guard reason != nil || started else { continue }
                 start()
+                answerTokens = completion
+                if reason == nil, !control.isCancelled {
+                    // Usage ahead of an error that is not the client's cancel:
+                    // held for the cut `length` below.
+                    continue
+                }
                 out.yield(.info(
                     promptTokens: held.prompt, completionTokens: carried + completion,
                     tokensPerSecond: tps, finishReason: reason))
@@ -158,17 +190,17 @@ enum LoopExitThinkingContinuation {
                 }
             case .error(let message):
                 guard started else { return endAsLength("continuation failed: \(message)") }
+                guard control.isCancelled else { return endCut(message, completion: answerTokens) }
                 out.yield(.error(message))
                 onOutcome?(.failedAfterStart)
-            case .terminal(let cause, let message, _, let completion):
+            case .terminal(let cause, _, _, let completion):
                 guard started else { return endAsLength("continuation ended: \(cause.rawValue)") }
-                out.yield(.terminal(
-                    cause: cause, message: message, promptTokens: held.prompt,
-                    completionTokens: carried + completion))
-                onOutcome?(.failedAfterStart)
+                return endCut(cause.rawValue, completion: completion)
             }
         }
-        if !started { return endAsLength("continuation ended before its first token") }
+        if !started {
+            return endAsLength(control.isCancelled ? "cancelled" : "continuation ended before its first token")
+        }
         out.finish()
     }
 

@@ -7,17 +7,21 @@ import Testing
 
 /// Client refusals through the production coordinator handler, before the
 /// inference task or while its prompt is prepared. Each writes one fixed public
-/// `darkbloom logs` line naming its reason and keeps its `inference_error`
-/// frame; none logs request text.
-@Suite("Client refusals log a fixed reason", .serialized)
+/// `darkbloom logs` line naming its reason and sends the same reason on its
+/// `inference_error` frame; none logs or sends request text.
+@Suite("Client refusals log and send a fixed reason", .serialized)
 struct InferenceRefusalLoggingTests {
     static let modelID = "test/glm5-refusals"
     static let requestID = "refusal-request-id"
-    /// Request text that must never reach a log line.
+    /// Request text that must never reach a log line or a frame.
     static let secret = "zq-private-7f3a"
     static let user = #""messages":[{"role":"user","content":"zq-private-7f3a"}]"#
     static let result = #"{"role":"tool","tool_call_id":"c1","content":"zq-private-7f3a"}"#
-    static let invalidRequest = InferenceFailure(code: .invalidRequest, statusCode: 400)
+
+    /// The `invalid_request` failure a refusal before the inference task sends.
+    static func invalidRequest(_ refusal: InferenceRefusalReason) -> InferenceFailure {
+        InferenceFailure(code: .invalidRequest, statusCode: 400, refusal: refusal)
+    }
 
     /// Controls GLM refuses, and chat bodies the decoder refuses.
     static let refusals: [(fields: [String], reason: InferenceRefusalReason)] = [
@@ -48,13 +52,14 @@ struct InferenceRefusalLoggingTests {
         ([user, #""stop":"#], .malformedBody),
     ]
 
-    @Test func everyRefusalLogsItsFixedReasonAndKeepsItsFrame() async throws {
+    @Test func everyRefusalLogsItsFixedReasonAndSendsIt() async throws {
         for (fields, reason) in Self.refusals {
             let logs = RefusalLogRecorder()
             let output = try await relay(fields, logs: logs)
             #expect(output.frames.isEmpty, "\(reason)")
-            #expect(errors(output) == [Self.invalidRequest], "\(reason)")
-            expectOneRefusalLine(logs, reason: reason, failure: Self.invalidRequest)
+            #expect(errors(output) == [Self.invalidRequest(reason)], "\(reason)")
+            expectOneRefusalLine(logs, reason: reason, failure: Self.invalidRequest(reason))
+            try expectReasonOnTheWire(output, reason)
         }
     }
 
@@ -92,14 +97,16 @@ struct InferenceRefusalLoggingTests {
          .unsupportedForcedToolChoice),
     ]
 
-    @Test func promptRefusalsLogTheirReasonAndKeepTheirFrame() async throws {
-        let refused = InferenceFailure(code: .invalidRequest, statusCode: 400, errorReason: .clientError)
+    @Test func promptRefusalsLogTheirReasonAndSendIt() async throws {
         for (fields, reason) in Self.promptRefusals {
+            let refused = InferenceFailure(
+                code: .invalidRequest, statusCode: 400, errorReason: .clientError, refusal: reason)
             let logs = RefusalLogRecorder()
             let output = try await relay(fields, logs: logs)
             #expect(output.frames.isEmpty, "\(reason)")
             #expect(errors(output) == [refused], "\(reason)")
             expectOneRefusalLine(logs, reason: reason, failure: refused)
+            try expectReasonOnTheWire(output, reason)
         }
     }
 
@@ -118,29 +125,123 @@ struct InferenceRefusalLoggingTests {
              .unansweredToolCall),
             (.invalidToolPayload("tool message has no preceding assistant tool_calls"), nil),
             (.toolChoiceViolation("model did not emit the required tool call"), nil),
-            (.missingUserQuery, nil),
+            (.missingUserQuery, .missingUserQuery),
         ]
         for (error, reason) in typed {
             #expect(InferenceRefusalReason(promptRefusal: error) == reason, "\(error)")
+            let failure = ProviderLoop.sanitizedInferenceFailure(from: error, phase: .streamStart)
+            #expect(failure.refusal == (failure.code == .invalidRequest ? reason : nil), "\(error)")
         }
         #expect(InferenceRefusalReason(promptRefusal: CancellationError()) == nil)
         let invalid = ProviderLoop.sanitizedInferenceFailure(from: MultiModelBatchSchedulerEngineError
             .advertisedContextExceeded, phase: .streamStart)
-        #expect(invalid.code == .invalidRequest)
-        #expect(ProviderLoop.promptRefusal(invalid, MultiModelBatchSchedulerEngineError.advertisedContextExceeded)
-            == .requestExceedsContext)
-        let capacity = InferenceFailure(code: .capacity, statusCode: 503, errorReason: .requestExceedsContext)
-        #expect(ProviderLoop.promptRefusal(capacity, MultiModelBatchSchedulerEngineError.advertisedContextExceeded)
-            == nil)
+        #expect(invalid.code == .invalidRequest && invalid.refusal == .requestExceedsContext)
+        let capacity = ProviderLoop.sanitizedInferenceFailure(from: MultiModelBatchSchedulerEngineError
+            .tokenBudgetExhausted("token_budget_exhausted: context length exceeded"), phase: .streamStart)
+        #expect(capacity.code == .capacity && capacity.refusal == nil)
     }
 
-    @Test func unsupportedAudioLogsItsReasonAndKeepsItsMediaFrame() async throws {
+    /// Qwen 3.5/3.6/3.8's message checks refuse a tool conversation before the
+    /// template renders (OR-REFUSALS §1); each names which check refused it.
+    @Test func qwenToolConversationRefusalsNameTheirCheck() throws {
+        let call: [String: any Sendable] = ["id": "c1", "type": "function",
+            "function": ["name": "f", "arguments": "{}"] as [String: any Sendable]]
+        let unnamed: [String: any Sendable] = ["id": "c1", "type": "function",
+            "function": ["arguments": "{}"] as [String: any Sendable]]
+        let cases: [(messages: [[String: any Sendable]], reason: InferenceRefusalReason)] = [
+            ([["role": "system", "content": Self.secret]], .missingUserQuery),
+            ([["role": "system", "content": Self.secret],
+              ["role": "user", "content": "<tool_response>\(Self.secret)</tool_response>"]], .missingUserQuery),
+            ([["role": "user", "content": Self.secret],
+              ["role": "tool", "tool_call_id": "c1", "content": Self.secret]], .unmatchedToolResult),
+            ([["role": "user", "content": Self.secret],
+              ["role": "assistant", "content": "", "tool_calls": [call] as [any Sendable]],
+              ["role": "user", "content": Self.secret],
+              ["role": "tool", "tool_call_id": "c1", "content": Self.secret]], .unmatchedToolResult),
+            ([["role": "user", "content": Self.secret],
+              ["role": "assistant", "content": "", "tool_calls": [unnamed] as [any Sendable]]], .invalidToolHistory),
+        ]
+        let context = ChatTemplateFixContext(modelId: "qwen3.6-35b-a3b-vl-mtp-mxfp8", modelType: "qwen3_5_moe")
+        for (messages, reason) in cases {
+            let error = try #require(throws: MultiModelBatchSchedulerEngineError.self) {
+                try ChatTemplateFixes.normalizeMessages(messages, context: context)
+            }
+            #expect(InferenceRefusalReason(promptRefusal: error) == reason, "\(reason)")
+            let failure = ProviderLoop.sanitizedInferenceFailure(from: error, phase: .streamStart)
+            #expect(failure == InferenceFailure(
+                code: .invalidRequest, statusCode: 400, errorReason: .clientError, refusal: reason), "\(reason)")
+            let frame = try Self.wireFrame(failure)
+            #expect(frame["error"] as? String == "Invalid inference request.", "the client-facing text is unchanged")
+            #expect(frame["refusal_reason"] as? String == reason.rawValue)
+            #expect(frame["refusal_message"] as? String == reason.clientMessage)
+        }
+    }
+
+    /// The other model families' history checks name theirs too.
+    @Test func otherHistoryChecksNameTheirCheck() throws {
+        func call(_ id: String) -> [String: any Sendable] {
+            ["id": id, "type": "function", "function": ["name": "f", "arguments": "{}"] as [String: any Sendable]]
+        }
+        let user: [String: any Sendable] = ["role": "user", "content": Self.secret]
+        let twoCalls: [String: any Sendable] = ["role": "assistant", "content": "",
+                                                "tool_calls": [call("c1"), call("c2")] as [any Sendable]]
+        let cases: [(context: ChatTemplateFixContext, messages: [[String: any Sendable]], reason: InferenceRefusalReason)] = [
+            (.init(modelType: "gpt_oss"), [user, ["role": "assistant", "content": "",
+                "tool_calls": [call("c1"), call("c1")] as [any Sendable]]], .invalidToolHistory),
+            (.init(modelType: "gpt_oss"), [user, twoCalls, ["role": "tool", "content": Self.secret]],
+             .unmatchedToolResult),
+            (.init(modelType: "gpt_oss"), [user, twoCalls, ["role": "tool", "tool_call_id": "c1", "content": "a"],
+                ["role": "tool", "tool_call_id": "c1", "content": "b"]], .unmatchedToolResult),
+            (.init(modelType: "gpt_oss"), [user, twoCalls, ["role": "tool", "tool_call_id": "c9", "content": "a"]],
+             .unmatchedToolResult),
+        ]
+        for (context, messages, reason) in cases {
+            let error = try #require(throws: MultiModelBatchSchedulerEngineError.self) {
+                try ChatTemplateFixes.normalizeMessages(messages, context: context)
+            }
+            #expect(InferenceRefusalReason(promptRefusal: error) == reason, "\(error)")
+        }
+    }
+
+    /// The reason rides the frame only when a refusal names one: every other
+    /// frame keeps its legacy bytes, and an unknown reason decodes to nil.
+    @Test func theReasonRidesTheFrameOnlyWhenNamed() throws {
+        let named = try Self.wireFrame(Self.invalidRequest(.missingUserQuery))
+        #expect(named["refusal_reason"] as? String == "missing_user_query")
+        #expect(named["refusal_message"] as? String
+            == "The conversation needs a user message that is more than a tool result.")
+        #expect(named["error"] as? String == "Invalid inference request.")
+        let bare = try Self.wireFrame(InferenceFailure(code: .invalidRequest, statusCode: 400))
+        #expect(bare["refusal_reason"] == nil && bare["refusal_message"] == nil)
+
+        let decoded = try ProviderProtocolCodec.decodeProviderMessage(from: try ProviderProtocolCodec
+            .encodeProviderMessage(.inferenceError(.init(requestId: "r", failure: Self.invalidRequest(.unmatchedToolResult)))))
+        guard case .inferenceError(let error) = decoded else { Issue.record("not an inference_error"); return }
+        #expect(error.refusalReason == .unmatchedToolResult)
+        var unknown = named
+        unknown["refusal_reason"] = "a_newer_reason"
+        let fromNewer = try ProviderProtocolCodec.decodeProviderMessage(
+            from: try JSONSerialization.data(withJSONObject: unknown))
+        guard case .inferenceError(let newer) = fromNewer else { Issue.record("not an inference_error"); return }
+        #expect(newer.refusalReason == nil)
+    }
+
+    /// Every message is one fixed sentence, distinct per reason.
+    @Test func everyReasonHasItsOwnClientMessage() {
+        let messages = InferenceRefusalReason.allCases.map(\.clientMessage)
+        #expect(Set(messages).count == messages.count)
+        #expect(messages.allSatisfy { !$0.isEmpty && $0.utf8.count <= 96 && $0.hasSuffix(".") })
+    }
+
+    @Test func unsupportedAudioLogsItsReasonAndSendsIt() async throws {
         let logs = RefusalLogRecorder()
         let audio = #""messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"zq-private-7f3a","format":"wav"}}]}]"#
         let output = try await relay([audio], logs: logs)
-        let media = InferenceFailure(code: .invalidMedia, statusCode: 400, errorReason: .clientError)
+        let media = InferenceFailure(code: .invalidMedia, statusCode: 400, errorReason: .clientError,
+                                     refusal: .unsupportedAudio)
         #expect(errors(output) == [media])
         expectOneRefusalLine(logs, reason: .unsupportedAudio, failure: media)
+        try expectReasonOnTheWire(output, .unsupportedAudio)
     }
 
     @Test func sealedRequestRefusalsLogTheirReason() async throws {
@@ -161,8 +262,8 @@ struct InferenceRefusalLoggingTests {
                 if case .inferenceError(_, let failure, _) = message { return failure }
                 return nil
             }
-            #expect(failures == [Self.invalidRequest], "\(reason)")
-            expectOneRefusalLine(logs, reason: reason, failure: Self.invalidRequest)
+            #expect(failures == [Self.invalidRequest(reason)], "\(reason)")
+            expectOneRefusalLine(logs, reason: reason, failure: Self.invalidRequest(reason))
         }
     }
 
@@ -206,6 +307,7 @@ struct InferenceRefusalLoggingTests {
         .unsupportedForcedToolChoice: "Inference failure: invalid request (unsupported forced tool choice)",
         .requestExceedsContext: "Inference failure: invalid request (request exceeds context)",
         .unsupportedOutputControl: "Inference failure: invalid request (unsupported output control)",
+        .missingUserQuery: "Inference failure: invalid request (missing user query)",
     ]
 
     @Test func everyReasonHasItsOwnPublicLine() {
@@ -240,6 +342,26 @@ struct InferenceRefusalLoggingTests {
             if case .inferenceError(_, let failure, _) = message { return failure }
             return nil
         }
+    }
+
+    /// The encoded `inference_error` frame of a failure.
+    static func wireFrame(_ failure: InferenceFailure) throws -> [String: Any] {
+        let data = try ProviderProtocolCodec.encodeProviderMessage(
+            .inferenceError(.init(requestId: requestID, failure: failure)))
+        #expect(!String(decoding: data, as: UTF8.self).contains(secret))
+        return try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
+    /// The one refusal frame names `reason` and its fixed message, and keeps
+    /// the legacy `error` text.
+    func expectReasonOnTheWire(_ output: ScriptedCoordinatorRelay.Output, _ reason: InferenceRefusalReason) throws {
+        let failures = errors(output)
+        #expect(failures.count == 1, "\(reason)")
+        guard let failure = failures.first else { return }
+        let frame = try Self.wireFrame(failure)
+        #expect(frame["refusal_reason"] as? String == reason.rawValue, "\(reason)")
+        #expect(frame["refusal_message"] as? String == reason.clientMessage, "\(reason)")
+        #expect(frame["error"] as? String == failure.code.message, "\(reason)")
     }
 
     /// Exactly one public line, the reason's, and its private twin with the

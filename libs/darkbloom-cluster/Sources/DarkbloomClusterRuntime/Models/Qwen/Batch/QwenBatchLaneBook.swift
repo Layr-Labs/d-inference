@@ -80,6 +80,16 @@ typealias QwenBatchLaneBook = ClusterBatchLaneBook<QwenResidentReservation>
 
 extension ClusterBatchLaneBook where Reservation == QwenResidentReservation {
     func allowances() -> [QwenResidentRequestAllowance] { reservations().map(\.allowance) }
+
+    /// What `lanes` lanes of `allowance`'s request charge here when all are held at once: the newest lane's whole
+    /// allowance and each other lane its state (`stateBytes`). A saved width is admitted at LOAD with it.
+    static func reservedBytes(lanes: Int, allowance: QwenResidentRequestAllowance) throws -> Int {
+        guard (1...QwenBatchWire.maximumLanes).contains(lanes) else {
+            throw ProbeError("Batch lanes are 1...\(QwenBatchWire.maximumLanes)")
+        }
+        return try QwenLongPrefillCheckedBytes.sum([allowance.reservedBytes,
+            QwenLongPrefillCheckedBytes.product([allowance.stateBytes, lanes - 1])])
+    }
 }
 
 /// The lanes one rank holds: reserved, started (waiting to join the loop),

@@ -36,6 +36,7 @@ import Foundation
             try checkRequestedContext(layouts.twentySeven, checks)
             try checkRequestScopes(inputs, golden: URL(fileURLWithPath: CommandLine.arguments[2]), checks)
             try checkBatchScopes(inputs, checks)
+            try checkPipelineWidths(golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
             try checkTensorBatchScopes(inputs, checks)
             try checkTensorRankQuotes(inputs, checks)
             try checkNativeBatchQuotes(golden: URL(fileURLWithPath: CommandLine.arguments[2]), checks)

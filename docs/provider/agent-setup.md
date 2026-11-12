@@ -1,6 +1,6 @@
 # Set up Darkbloom with an AI agent
 
-> Last updated: 2026-11-11
+> Last updated: 2026-11-12
 
 This page is a setup prompt for an AI agent. The agent installs Darkbloom,
 logs in with the person's help, makes one Mac (or two Macs joined by one
@@ -515,9 +515,13 @@ split works:
 1. **STOP**: read the list to the human and ask which model to serve. Enter
    selects the first line. Rule 5 applies: a `download` model is downloaded on
    the leader and then copied, so it takes its full size on each Mac.
-2. With `darkbloom cluster local` only, the screen then asks ``How should both
-   Macs split <model>?``: both modes, one tagged `Recommended` and selected;
-   Enter takes it. Pick it unless the human wants the other.
+2. With `darkbloom cluster local` (or `darkbloom start` in a terminal on an
+   Only-me pair) the screen then asks ``How should both Macs split <model>?``:
+   both modes, one tagged `Recommended`. The selected one is the mode the
+   pair's own model last served in, else the Recommended one. **Keep the
+   selected mode: press Enter.** Don't move to `Recommended` when it isn't
+   selected (that switches a pipeline pair to tensor parallel); choose another
+   mode only if the human asks.
 3. If the model still has to reach a Mac, a second list offers `Download`,
    `Copy to the other Mac (about N s)` or `Copy from the other Mac`, and
    `Cancel`. Enter selects the first. Progress is shown, and an interrupted
@@ -754,7 +758,7 @@ the pair's ✓ or ✗ status, then the pair's model list. The model serving now
   choices. A pair served only through Darkbloom has no
   local API on that Mac to test from, and the screen says so: use the
   [test request](#a-test-request-through-darkbloom) instead.
-- On a stopped pair, Enter starts the last model again.
+- On a stopped pair, Enter starts the last model again, in the mode it last served in.
 - Another model asks ``Switch to <model>? …`` once (**No** by default), then
   says `✓ Stopped <model> on both Macs`, shows each Mac's load and ends like a start.
 - A line that ends with ` · not enough free disk` is refused before anything stops.

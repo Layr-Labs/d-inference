@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-11
+> Last updated: 2026-11-12
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -200,7 +200,7 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `stop` | Drain accepted requests, then stop the LaunchAgent; `--uninstall` removes the provider, watchdog and desktop API agents and keeps every file | | `StopCommand.swift` (`Stop`) |
 | `uninstall` | Take Darkbloom off this Mac: remove everything, or everything but the models ([below](#darkbloom-uninstall)) | | `UninstallCommand.swift` (`Uninstall`) |
 | `restart` | Drain, restart with recorded configuration, and confirm fresh authorization | ✓ | `RestartCommand.swift` (`Restart`) |
-| `status` | Config, hardware, schedule, live daemon state (including the coordinator's last `Trust: <level> / <status>` message), per-slot KV/MTP posture | ✓ | `StatusCommand.swift` (`Status`) |
+| `status` | Config, hardware, schedule, live daemon state (including the coordinator's last `Trust: <level> / <status>` message and the answers in progress), per-slot KV/MTP posture; `--json` prints the answers in progress only | ✓ | `StatusCommand.swift` (`Status`) |
 | `doctor` | Diagnostics (see [troubleshooting](./troubleshooting.md#doctor-checks)) | ✓ | `DoctorCommand.swift` (`Doctor`) |
 | `models` | `list`, `catalog`, `download`, `remove` | ✓ | `ModelsCommand.swift` (`Models`) |
 | `local` | Serve only you: start Only me where nothing serves, then print the local API's address and key; where Darkbloom serves, ask in a terminal before switching ([below](#darkbloom-local)) | | `LocalCommand.swift` (`Local`) |
@@ -1301,8 +1301,9 @@ through Darkbloom** in this command's own list) serves through Darkbloom again,
 with the local API beside it. Its first Mac's wait ends on "→ Now run
 `darkbloom cluster local` on the other Mac". For a model that runs both ways it
 asks how both Macs split it: both modes, the one `darkbloom cluster` would
-choose tagged **Recommended** and preselected
-([tensor parallel or pipeline](./two-mac-cluster.md#tensor-parallel-or-pipeline)).
+choose tagged **Recommended**, preselected unless the pair's own model last
+served in the other mode, which is then preselected (a stopped pair keeps its
+mode; [tensor parallel or pipeline](./two-mac-cluster.md#tensor-parallel-or-pipeline)).
 It ends on "✓ Serving <model> on both Macs, on your local API at
 http://localhost:<port>". It saves nothing in `[local]` itself.
 The leader part then starts with `--no-coordinator`. Needs a terminal; exit 1
@@ -2881,6 +2882,27 @@ Output includes:
   [GLM-5.3-Flash GPU wired-memory limit](#glm-53-flash-gpu-wired-memory-limit).
 - App Attest serving authorization can remain visible through its unexpired lease, while MDM removal advice requires a matching fresh coordinator decision. The same distinction applies to both doctor summaries; see [provider authorization](../reference/provider-authorization.md).
 - `Last reported authorization: received <age> ago; not a fresh dispatch grant. …`: when no current decision is shown, an older `none` (a denial) or `legacy` report from the running daemon, as dated history. `darkbloom doctor` and `darkbloom verify` print it as `last reported authorization`, INFO for legacy and WARN for none, and still run the public attestation checks; `verify` fails on a WARN or FAIL, never on INFO. See [provider authorization](../reference/provider-authorization.md).
+- `Answers in progress: N`, under the serving lines, while the engines write
+  answers: one line each, longest first, with the model, the time since the
+  engine took it, output tokens so far (thinking included) and the current
+  rate (tokens since the previous sample, about every 2 s; `reading the
+  prompt` before the first token), then a short hash of its request ID (`#…`,
+  never the ID, the prompt or the answer), and
+  `Credits post when a paid answer finishes; requests to your own machine are free.`
+  The list includes your own local-API answers, which are free, and answers
+  that end unpaid (see the ended-early causes below); the engine's own
+  calibration and warmup probes are not listed. The served and token counters
+  below move only when an answer finishes, so a Mac writing a long answer
+  otherwise looks hung. The daemon samples its bridges' own counters each capacity tick
+  (`ProviderLoop.refreshRunningRequests`, `RunningRequestProgressTracker`) into
+  `running_requests` in the state file. On a two-Mac cluster the same lines sit
+  under the pair's block on the leading Mac, from the pair's part. Nemotron
+  Super's requests, which bypass the bridge, are not listed.
+  `darkbloom status --json` prints only these, as JSON (`schema` 1; `daemon`
+  `running`, `stale` or `not_running`; `pid`, `snapshot_age_seconds`,
+  `cluster_part`; `answers_in_progress` with `model`, `ref`,
+  `elapsed_seconds`, `output_tokens` and, after the first token,
+  `tokens_per_second`; `note`).
 - `Requests served since the daemon started (… ago)`: coordinator requests
   this daemon finished since it started, with output tokens only. The count
   restarts at zero when the daemon restarts or a scheduled availability window
@@ -3751,8 +3773,11 @@ prompt is prepared, writes one fixed public line: the failure category, then a
 reason from the closed `InferenceRefusalReason` set
 (`provider-swift/Sources/ProviderCore/Inference/Engine/InferenceRefusalReason.swift`).
 A private line pairs the request ID with the same reason; neither contains
-request text. The `inference_error` frame sent to the coordinator is the same
-as without the line. A prompt-time refusal takes its reason from the typed
+request text. The `inference_error` frame sent to the coordinator carries the
+same reason as `refusal_reason`, with one fixed sentence for it as
+`refusal_message` (`InferenceRefusalReason.clientMessage`); its `error` text is
+unchanged ([`inference_error`](../reference/protocol-messages.md#inference_error)).
+A prompt-time refusal takes its reason from the typed
 error (`InferenceRefusalReason.init(promptRefusal:)`): the `refusal` a prompt
 policy attaches to `MultiModelBatchSchedulerEngineError.invalidToolPayload`, or
 the error case itself. Other failures, and a client refusal that names no
@@ -3779,17 +3804,21 @@ reason, keep the bare category, such as `Inference failure: invalid request`
 | `Inference failure: invalid request (unsupported tool type)` | A GLM-5.3-Flash tool declaration whose type is not `function` | same |
 | `Inference failure: invalid request (invalid tool schema)` | A GLM-5.3-Flash tool schema holding a number it cannot represent exactly, or nested too deeply | same |
 | `Inference failure: invalid media (unsupported audio)` | Audio input to a model without native audio | `MediaIngest.rejectUnsupportedAudio` |
-| `Inference failure: invalid request (unanswered tool call)` | A GLM-5.3-Flash history call has no result before the next non-tool message or the end of the conversation | `GLM5NextPromptPolicy.validateHistory` |
-| `Inference failure: invalid request (unmatched tool result)` | A tool result names no pending call of the turn before it, repeats one, or carries `tool_calls` | same |
+| `Inference failure: invalid request (unanswered tool call)` | A GLM-5.3-Flash or Gemma 4 history call has no result before the next non-tool message or the end of the conversation | `GLM5NextPromptPolicy.validateHistory`; `Gemma4TurnStructure` |
+| `Inference failure: invalid request (unmatched tool result)` | A tool result names no pending call of the turn before it, repeats one, carries `tool_calls`, or follows no assistant `tool_calls` at all (every model), or a GPT-OSS result after split calls has no `tool_call_id` | same; `ChatTemplateFixes.validateGenericToolHistory`; `GPTOSSHarmonyTemplateFix`; `Gemma4TurnStructure` |
 | `Inference failure: invalid request (native delimiter in history)` | A history argument name or string value contains GLM tool-call delimiter text | `GLM5NextPromptPolicy.normalizedTextInput` |
 | `Inference failure: invalid request (non-text content)` | Image, video or other non-text content on GLM-5.3-Flash's text path | same |
 | `Inference failure: invalid request (unsupported forced tool choice)` | A required or named `tool_choice` the model cannot enforce: a schema outside the enforceable subset, or GLM-5.3-Flash image or video input | `ToolChoicePromptPolicy`; `MultiModelBatchSchedulerEngine` |
 | `Inference failure: invalid request (request exceeds context)` | The prompt alone fills the model's context window on one Mac (a larger `max_tokens` is cut to fit, not refused), or an output reservation is invalid | `EngineV2Bridge` (`promptExceedsContext`, `advertisedContextExceeded`) |
 | `Inference failure: invalid request (unsupported output control)` | An output control the model's engine cannot honor, such as logprobs on an engine without them | `EngineV2Bridge.nativeOutputControlRefusal` |
+| `Inference failure: invalid request (missing user query)` | No user turn is more than a `<tool_response>` wrapper, such as a system-only conversation, on Qwen 3.5, 3.6 and 3.8 and Ternary Bonsai 2, whose templates raise "No user query found in messages." | `Qwen35TemplateFix.validateUserQuery` |
 
 Prompt-time refusals also use the earlier reasons: a GLM-5.3-Flash history call
-with an empty or repeated ID, a bad function name or a non-assistant role is
-`invalid tool history`; history `arguments` that are not one exactly
+with an empty or repeated ID, a bad function name or a non-assistant role, a
+first history call without `function.name` on any model, a repeated GPT-OSS
+call ID and an inconsistent Gemma 4 tool-result owner are
+`invalid tool history`; required or named `tool_choice` with image or video
+input is `unsupported forced tool choice`; history `arguments` that are not one exactly
 representable JSON object (malformed, duplicate keys, a number that does not
 survive the round trip) are `invalid tool arguments`; an invalid or repeated
 tool name is `invalid tool declaration`; a required choice without tools or a
@@ -4010,7 +4039,7 @@ override `provider.toml` for one process, are in
 | `[backend] engine_v2_kv_checkpoint_quantization_by_model` | `{}` | Exact model-ID checkpoint request overrides the global setting; `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` overrides both. MiMo remains native before parsing. |
 | `[backend] engine_v2_kv_checkpoint_quantization_by_model."nvidia-nemotron-3.5-super"` | absent: `native` | Nemotron Super's managed slot gives its own entry a built-in `native` default, so a cache hit restores exactly what a cold prefill computes; the global `engine_v2_kv_checkpoint_quantization` does not apply to Super. An explicit entry or `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` selects a profile ([Super's durable checkpoints](../reference/ssd-kv-cache.md#complete-checkpoint-payload)). |
 | `[backend] mtp_mode` | `auto` | Written by `darkbloom beta enable|disable mtp` |
-| `[backend] mtp_acceptance` | unset (resolves to `typical`, delta `0.2`; `exact` for the Bonsai 9B candidate, `gemma-4-26b-qat-4bit` and `EigenLabs/Qwen3.8-27B-4bit-mtp` (with its head-less target `EigenLabs/Qwen3.8-27B-4bit`)) | `exact` / `typical` draft acceptance for eligible sampled target-prefix requests. `typical` keeps a draft when the target's filtered probability for it is above `min(1, 0.2 * exp(-H))` (`H` = the target row's entropy in nats); sampled output is approximate, not distribution-exact. Greedy requests never change. Native MiMo remains exact and does not apply this preference. This setting does not enable disabled MTP or widen eligibility. Parsing ignores case and surrounding whitespace; unknown values warn and resolve to `exact` (`provider-swift/Sources/ProviderCore/Inference/MTP/MTPAcceptancePolicy.swift`, `resolve`) |
+| `[backend] mtp_acceptance` | unset (resolves to `typical`, delta `0.2`; `exact` for the Bonsai 9B candidate, the catalog `Qwen3.5-9B`, `gemma-4-26b-qat-4bit` and `EigenLabs/Qwen3.8-27B-4bit-mtp` (with its head-less target `EigenLabs/Qwen3.8-27B-4bit`)) | `exact` / `typical` draft acceptance for eligible sampled target-prefix requests. `typical` keeps a draft when the target's filtered probability for it is above `min(1, 0.2 * exp(-H))` (`H` = the target row's entropy in nats); sampled output is approximate, not distribution-exact. Greedy requests never change. Native MiMo remains exact and does not apply this preference. This setting does not enable disabled MTP or widen eligibility. Parsing ignores case and surrounding whitespace; unknown values warn and resolve to `exact` (`provider-swift/Sources/ProviderCore/Inference/MTP/MTPAcceptancePolicy.swift`, `resolve`) |
 | `[backend] mtp_acceptance_by_model` | `{}` | Exact model ID to acceptance string; overrides `mtp_acceptance` for that model. An unknown override resolves to `exact`, not the global value. Same eligibility and native MiMo exclusion as above (`MTPAcceptancePolicy.resolve`) |
 | `[backend.model_autopilot] enabled` | `false` | Experimental cached-inventory enrollment/consent, not activation; nonempty verified inventory is required, and only a live lease enables residency control (`provider-swift/Sources/ProviderCore/Autopilot/ModelAutopilotSettings.swift`) |
 | `[backend.model_autopilot] min_dwell_seconds` | `1800` | Minimum residence before Autopilot replacement; runtime clamps to `60...86400` (`ModelAutopilotSettings.effectiveMinDwellSeconds`) |

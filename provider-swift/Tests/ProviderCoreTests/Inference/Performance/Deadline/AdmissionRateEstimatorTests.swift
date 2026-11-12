@@ -725,6 +725,108 @@ struct AdmissionRateEstimatorTests {
         #expect(!streak.expiresStaleEvidence(at: start + Streak.retryInterval - .seconds(1)))
         #expect(streak.expiresStaleEvidence(at: start + Streak.retryInterval))
     }
+
+    // MARK: - Only refusals that stale evidence explains count
+
+    /// Expects an immediate refusal. An admitted request is recorded as an
+    /// issue and ended, so shutdown never waits for it.
+    private func expectRefused(_ bridge: EngineV2Bridge, _ engine: PrefillScriptEngine, _ id: String,
+        tokens: Int = smallPrompt,
+        deadline: FirstContentDeadline = .init(relativeBudgetMilliseconds: 12_000)) async {
+        do {
+            let stream = try await submit(bridge, id, tokens: tokens, deadline: deadline)
+            Issue.record("\(id) was admitted")
+            try? await finish(stream, on: engine, tokens: tokens, prefillMilliseconds: nil)
+        } catch {
+            #expect(error as? PreContentDeadlineFailure == .deadlineUnreachable, "\(id): \(error)")
+        }
+    }
+
+    @Test("a full streak keeps refusing from the stale estimate and never submits a request unprojected")
+    func fullStreakNeverAdmitsUnprojected() async throws {
+        let (bridge, engine) = await slowBridge()
+        await refuse(bridge, "refused-1", "refused-2", "refused-3")
+        await expectRefused(bridge, engine, "small")
+        #expect(engine.deadlineAdmissions.count == 4)
+        #expect(engine.deadlineAdmissions.allSatisfy { $0.conservativePrefillTokensPerSecond == 50 })
+        #expect(engine.ordinarySubmissionCount == 0)
+        await bridge.shutdown()
+    }
+
+    @Test("after a full streak a late retry is refused at once")
+    func lateRetryRefusedAfterStreak() async throws {
+        let (bridge, engine) = await slowBridge()
+        await refuse(bridge, "refused-1", "refused-2", "refused-3")
+        // 300 ms left: out of time on any Mac. Unprojected, it would run here
+        // past its deadline and leave the coordinator no time for another Mac.
+        await expectRefused(bridge, engine, "late-retry", tokens: 800,
+            deadline: .init(relativeBudgetMilliseconds: 300))
+        #expect(engine.ordinarySubmissionCount == 0)
+        await bridge.shutdown()
+    }
+
+    @Test("refusals priced at a fresh rate do not count, so the aged estimate still prices the next request")
+    func freshRefusalsDoNotFillTheStreak() async throws {
+        let (bridge, engine) = bridge(fixes: true)
+        engine.setDeadlineBehavior(.reject)
+        // A correct rate measured 119 s ago: fresh while three long prompts are refused.
+        await bridge.applyRateObservation(observation("isolated_prefill", tps: 2_000,
+            at: ContinuousClock.now - .seconds(119), prompt: Self.smallPrompt),
+            requestID: "measured", calibration: false)
+        for id in ["long-1", "long-2", "long-3"] {
+            await expectRefused(bridge, engine, id, tokens: 60_000)
+        }
+        #expect(await bridge.deadlineRefusalStreak.refusals == 0)
+        try await Task.sleep(for: .milliseconds(1_500))
+        #expect(await bridge.isolatedPrefillEvidenceExpired())
+        await expectRefused(bridge, engine, "small", tokens: 800)
+        #expect(engine.deadlineAdmissions.count == 4)
+        #expect(engine.ordinarySubmissionCount == 0)
+        await bridge.shutdown()
+    }
+
+    @Test("late retries do not count")
+    func lateRetriesDoNotFillTheStreak() async throws {
+        let (bridge, engine) = await slowBridge()
+        for id in ["retry-1", "retry-2", "retry-3"] {
+            await expectRefused(bridge, engine, id, deadline: .init(relativeBudgetMilliseconds: 3_000))
+        }
+        #expect(engine.deadlineAdmissions.count == 3)
+        #expect(await bridge.deadlineRefusalStreak.refusals == 0)
+        await bridge.shutdown()
+    }
+
+    @Test("refusals priced at the calibration anchor do not count")
+    func anchoredRefusalsDoNotFillTheStreak() async throws {
+        let (bridge, engine) = bridge(fixes: true)
+        engine.setDeadlineBehavior(.reject)
+        await bridge.applyRateObservation(observation("isolated_prefill", tps: 50,
+            at: ContinuousClock.now - .seconds(300)), requestID: "calibration-cell", calibration: true)
+        for id in ["long-1", "long-2", "long-3"] {
+            await expectRefused(bridge, engine, id, tokens: 30_000)
+        }
+        #expect(engine.deadlineAdmissions.allSatisfy { $0.conservativePrefillTokensPerSecond == 50 })
+        #expect(await bridge.deadlineRefusalStreak.refusals == 0)
+        await bridge.shutdown()
+    }
+
+    @Test("a projected admission ends a partial streak")
+    func projectedAdmissionEndsPartialStreak() async throws {
+        let (bridge, engine) = await slowBridge()
+        await refuse(bridge, "refused-1", "refused-2")
+        #expect(await bridge.deadlineRefusalStreak.refusals == 2)
+        engine.setDeadlineBehavior(.admit)
+        let stream = try await submit(bridge, "projected")
+        #expect(engine.deadlineAdmissions.count == 3)
+        #expect(engine.ordinarySubmissionCount == 0)
+        // Ended before its prompt completed: it measured nothing.
+        try await finish(stream, on: engine, prefillMilliseconds: nil)
+        #expect(await bridge.isolatedPrefillEvidenceExpired())
+        engine.setDeadlineBehavior(.reject)
+        await refuse(bridge, "refused-3")
+        #expect(await bridge.deadlineRefusalStreak.refusals == 1)
+        await bridge.shutdown()
+    }
 }
 
 private extension EngineV2Bridge {

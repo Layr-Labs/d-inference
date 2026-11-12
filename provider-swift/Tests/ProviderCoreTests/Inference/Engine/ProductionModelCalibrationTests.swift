@@ -302,6 +302,50 @@ struct ProductionModelCalibrationTests {
         #expect(budget.serviceBudget.count == 0 && !budget.serviceBudget.idleCalibration.hasSession)
     }
 
+    @Test("three refusals on stale evidence re-run one solo probe, and the next request is priced from it")
+    func staleRefusalStreakRerunsTheProbe() async throws {
+        let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
+            .init(total: 8 << 30, active: 0, cache: 0, systemAvailable: 8 << 30)
+        }
+        let bridge = try await makeQwenBridge(modelID: "EigenLabs/Qwen3.8-27B-4bit-mtp", backend: "auto",
+            budget: budget)
+        let engine = try #require(await bridge.ownedEngine as? EngineV2)
+        // A finished bootstrap that left no anchor, and one slow serving sample five minutes old.
+        await bridge.markBootstrapCompletedTest()
+        await bridge.applyRateObservation(EngineRateObservation(phase: "isolated_prefill", tps: 50,
+            prompt: 1_000, context: 1_000, cache: "cold", overlap: .init(contended: false, peakRequests: 1),
+            at: .now - .seconds(300), postureEpoch: nil, aggregate: true), requestID: "slow", calibration: false)
+        #expect(!(await bridge.startModelCalibrationIfNeeded(requireNominalPosture: false)))
+        let request = ChatCompletionRequest(model: "EigenLabs/Qwen3.8-27B-4bit-mtp", messages: [], max_tokens: 8)
+        for index in 1...3 {
+            await #expect(throws: PreContentDeadlineFailure.deadlineUnreachable) {
+                _ = try await bridge.submitTokenized(promptTokens: Array(repeating: 5, count: 1_000),
+                    request: request, requestId: "refused-\(index)",
+                    firstContentDeadline: .init(relativeBudgetMilliseconds: 12_000))
+            }
+        }
+        let started = await bridge.startModelCalibrationIfNeeded(requireNominalPosture: false)
+        #expect(started)
+        if started { await bridge.awaitProductionCalibration() }
+        try await requireEngineIdle(engine, budget: budget)
+        #expect(!(await bridge.isolatedPrefillEvidenceExpired()))
+        let measured = await bridge._testIsolatedPrefillTps()
+        #expect(measured > 1_000, "\(measured)")
+        #expect(!(await bridge.startModelCalibrationIfNeeded(requireNominalPosture: false)))
+
+        let profile = RequestProfileBuilder()
+        let stream = try await bridge.submitTokenized(promptTokens: Array(repeating: 5, count: 1_000),
+            request: request, requestId: "priced", firstContentDeadline: .init(relativeBudgetMilliseconds: 12_000),
+            profile: profile)
+        for await _ in stream {}
+        let decision = profile.wireObject().deadlineDecision
+        #expect(decision?.verdict == .accepted)
+        #expect(decision?.projection == .bounded)
+        #expect(decision?.prefillTps == measured, "\(String(describing: decision))")
+        try await requireEngineIdle(engine, budget: budget)
+        await bridge.shutdown()
+    }
+
     /// The engine republishes the capacity gauges at its next step boundary,
     /// after the terminal the bridge retires on, so a finished warmup or
     /// calibration request can still count as active for a moment.
@@ -395,6 +439,7 @@ private struct CalibrationFixtureProcessor: UserInputProcessor {
 
 private extension EngineV2Bridge {
     func awaitProductionCalibration() async { await modelCalibration.task?.value }
+    func markBootstrapCompletedTest() { modelCalibration.bootstrapCompleted = true }
     func removePrefillRateCeilingTest() { prefillRateCeiling = .infinity }
     func shapeWarmupCompletedTest() -> Bool { modelCalibration.shapeWarmupWidth != nil }
     func shapeWarmupWidthTest() -> Int? { modelCalibration.shapeWarmupWidth }

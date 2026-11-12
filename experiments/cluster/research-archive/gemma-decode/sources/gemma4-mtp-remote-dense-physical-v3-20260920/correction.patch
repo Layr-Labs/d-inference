@@ -1,0 +1,109 @@
+--- a/Tests/run.py
++++ b/Tests/run.py
+@@ -7,11 +7,11 @@
+ from activation import sha
+ p=argparse.ArgumentParser(allow_abbrev=False);p.add_argument('--output',type=Path,required=True);a=p.parse_args()
+ assert a.output.is_absolute() and a.output.parent.resolve()==a.output.parent;a.output.mkdir(mode=0o700)
+-record=dict(schema='gemma4_remote_mtp_cpu_controls_v1',expectedMethods=16,modelExecuted=False,sshExecuted=False)
++record=dict(schema='gemma4_remote_mtp_cpu_controls_v1',expectedMethods=17,modelExecuted=False,sshExecuted=False)
+ with (a.output/'stdout').open('xb') as out,(a.output/'stderr').open('xb') as err:
+     invoke_controller(['/usr/bin/python3','-B',str(ROOT/'Tests/test_contract.py'),'-v'],out,err,record,timeout=30)
+ record['stdoutSHA256']=sha(a.output/'stdout');record['stderrSHA256']=sha(a.output/'stderr')
+ with (a.output/'receipt.json').open('x') as f:json.dump(record,f,indent=2);f.write('\n')
+ assert record['exitCode']==0 and record['reaped'] is True and record['groupAbsent'] is True
+-text=(a.output/'stderr').read_text();assert '\nRan 16 tests in ' in text and text.rstrip().endswith('OK')
++text=(a.output/'stderr').read_text();assert '\nRan 17 tests in ' in text and text.rstrip().endswith('OK')
+ print(json.dumps(record))
+--- a/Tests/test_contract.py
++++ b/Tests/test_contract.py
+@@ -1,5 +1,5 @@
+ """Synthetic CPU controls only. These fabricate no native or physical evidence."""
+-import copy,hashlib,json,sys,unittest
++import ast,copy,hashlib,json,re,sys,unittest
+ from pathlib import Path
+ ROOT=Path(__file__).resolve().parent.parent
+ sys.path[:0]=[str(ROOT),str(ROOT/'package')]
+@@ -51,6 +51,21 @@
+     return value,job,local,wrapper
+ 
+ class Contract(unittest.TestCase):
++    def test_every_executable_namespace_and_remote_body_agrees(self):
++        from deploy import REMOTE as installed,INSTALL
++        from remote_metadata import BODY
++        self.assertEqual(installed,str(REMOTE))
++        for body in [INSTALL,BODY]:
++            tree=ast.parse(body)
++            asserted=[node.value for statement in ast.walk(tree) if isinstance(statement,ast.Assert)
++                for node in ast.walk(statement.test) if isinstance(node,ast.Constant)
++                and isinstance(node.value,str) and node.value.startswith('/Users/developer/DarkbloomDev/gemma4-remote-mtp-')]
++            self.assertEqual(asserted,[installed])
++        manifest=json.loads((ROOT/'source-inputs.json').read_bytes())
++        for row in manifest['members']:
++            if row['path'].endswith('.py'):
++                literals=re.findall(r'/Users/developer/DarkbloomDev/gemma4-remote-mtp-[A-Za-z0-9-]+',(ROOT/row['path']).read_text())
++                self.assertTrue(all(value==installed for value in literals),row['path'])
+     def test_assistant_final_completion_is_97_not_intermediate_94(self):
+         rows=assistant_fixture();validate_result(*rows)
+         for count in [94,96,98,True,97.0]:
+--- a/deploy.py
++++ b/deploy.py
+@@ -11,7 +11,7 @@
+ from parent_settings import SSH
+ 
+ ROOT=Path(__file__).resolve().parent
+-REMOTE='/Users/developer/DarkbloomDev/gemma4-remote-mtp-dense-20260920-v2'
++REMOTE='/Users/developer/DarkbloomDev/gemma4-remote-mtp-dense-20260920-v3'
+ PRODUCT='GemmaResidentBenchmark'
+ SOURCES=Path('/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/bound/sources.json')
+ 
+@@ -24,7 +24,7 @@
+ INSTALL=r'''
+ import hashlib,json,os,pathlib,stat,sys,tarfile
+ root=pathlib.Path(sys.argv[1]);wanted=sys.argv[2]
+-assert root==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-remote-mtp-dense-20260920-v2')
++assert root==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-remote-mtp-dense-20260920-v3')
+ assert not root.exists() and root.parent.resolve()==root.parent
+ fs=os.statvfs(root.parent);assert fs.f_bavail*fs.f_frsize>7*1024**3
+ os.umask(0o077);root.mkdir(mode=0o700)
+--- a/package/gemma_inputs.py
++++ b/package/gemma_inputs.py
+@@ -3,7 +3,7 @@
+ import os
+ from pathlib import Path
+ 
+-REMOTE = Path('/Users/developer/DarkbloomDev/gemma4-remote-mtp-dense-20260920-v2')
++REMOTE = Path('/Users/developer/DarkbloomDev/gemma4-remote-mtp-dense-20260920-v3')
+ PRODUCT = 'GemmaResidentBenchmark'
+ 
+ def write_json(path, value):
+--- a/remote_metadata.py
++++ b/remote_metadata.py
+@@ -8,7 +8,7 @@
+ BODY=r'''
+ import hashlib,json,os,pathlib,sys,time
+ root=pathlib.Path(sys.argv[1]);package_sha,name,role,payload_sha=sys.argv[2:]
+-assert str(root)=='/Users/developer/DarkbloomDev/gemma4-remote-mtp-dense-20260920-v1'
++assert str(root)=='/Users/developer/DarkbloomDev/gemma4-remote-mtp-dense-20260920-v3'
+ assert role in ('target','assistant') and name and all(c.isalnum() or c in '-_' for c in name)
+ sys.path.insert(0,str(root))
+ from benchmark_package import verify,digest
+--- a/run_case.py
++++ b/run_case.py
+@@ -26,7 +26,7 @@
+ 
+ QUIESCENT=r'''
+ import json,pathlib,sys,time
+-root=pathlib.Path('/Users/developer/DarkbloomDev/gemma4-remote-mtp-dense-20260920-v1')
++root=pathlib.Path('/Users/developer/DarkbloomDev/gemma4-remote-mtp-dense-20260920-v3')
+ sys.path.insert(0,str(root))
+ from mtp_journal import device_directory,observe,require_empty
+ from target_processes import observe as processes
+@@ -37,7 +37,7 @@
+ CANCEL=r'''
+ import hashlib,json,os,pathlib,sys
+ job=pathlib.Path(sys.argv[1]);wanted=sys.argv[2]
+-assert job.name=='job.json' and job.parent.parent==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-remote-mtp-dense-20260920-v1/runs')
++assert job.name=='job.json' and job.parent.parent==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-remote-mtp-dense-20260920-v3/runs')
+ assert hashlib.sha256(job.read_bytes()).hexdigest()==wanted
+ path=job.parent/'cancellation.json'
+ value={'schema':'gemma4_benchmark_cancellation_v1','jobSHA256':wanted}

@@ -1,0 +1,40 @@
+{
+  "schema": "gemma4_dense_execution_composition_source_v1",
+  "members": [
+    {
+      "path": "HANDOFF.md",
+      "bytes": 2305,
+      "sha256": "071c10fc669230221236a17d8f8b658e4ede74a3530ab7b8bf4556c03c9712ae"
+    },
+    {
+      "path": "Runtime/Gemma4BenchmarkEntry.swift",
+      "bytes": 8984,
+      "sha256": "fa6e5356bc68c4fc35ebb5d30208ff76a42006d812988d10d635c8f453adaefc"
+    },
+    {
+      "path": "Runtime/Gemma4MTPDenseProjection.swift",
+      "bytes": 7146,
+      "sha256": "c738b5e6c0c7520ea033ce4dcc44b5bd400954a022e687ff41dcf9305ecea5d7"
+    },
+    {
+      "path": "compose.py",
+      "bytes": 5840,
+      "sha256": "cc276b31b0b2fafdd1e427b0e13763fd7fff11e5876d2e1eda997f2159166215"
+    },
+    {
+      "path": "expected-sources.json",
+      "bytes": 25484,
+      "sha256": "1b0c29d34923ec308a90a7313e984b0f1b5b585733174cd8233455869c224376"
+    },
+    {
+      "path": "integration.json",
+      "bytes": 11155,
+      "sha256": "143c7b945c8ec90d65da2afb82bbbfd1a5fde5394b45dadac670503250aaa1ba"
+    },
+    {
+      "path": "merge-proof.json",
+      "bytes": 9484,
+      "sha256": "6a5b7455c671296e7d0b6565da21ebe5b292ae362b209f15c5a4343c8303abf4"
+    }
+  ]
+}

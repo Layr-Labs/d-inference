@@ -1,0 +1,311 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullChannel.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullChannel.swift
+@@ -11,13 +11,22 @@
+     private(set) var sequence: UInt64 = 0
+     private var pending: Gemma4MTPPullRecord?
+     private var busy = false, failed = false
++    private let controlOperations: Gemma4MTPControlOperation?
++    // Only an original owner's scalar lifetime method, never a borrowed MLX
++    // error-context closure. Failure retention may safely retain that owner.
++    private let controlLifetimeCheck: (() throws -> Void)?
+ 
+-    init(collective: Collective, role: Role, targetRank: Int, scopeSHA256: String) throws {
++    init(collective: Collective, role: Role, targetRank: Int, scopeSHA256: String,
++         controlOperations: Gemma4MTPControlOperation? = nil,
++         controlLifetimeCheck: (() throws -> Void)? = nil) throws {
+         guard collective.size == 2, (0..<2).contains(targetRank),
+-              collective.rank == (role == .target ? targetRank : 1-targetRank) else {
++              collective.rank == (role == .target ? targetRank : 1-targetRank),
++              (controlOperations == nil) == (controlLifetimeCheck == nil),
++              Gemma4MTPPullRecord.byteCount == 16_384 else {
+             throw ProbeError("Remote MTP channel has the wrong original rank/group")
+         }
+         self.collective = collective; self.role = role; peer = 1-collective.rank; self.scopeSHA256 = scopeSHA256
++        self.controlOperations = controlOperations; self.controlLifetimeCheck = controlLifetimeCheck
+     }
+     func exchange(_ command: Gemma4MTPPullRecord, expecting: Gemma4MTPPullRecord.Kind,
+                   transfer: () throws -> Void = {}, check: () throws -> Void) throws -> Gemma4MTPPullRecord {
+@@ -54,12 +63,32 @@
+         busy = true
+     }
+     private func send(_ value: Gemma4MTPPullRecord, check: () throws -> Void) throws {
++        if let controlOperations, let controlLifetimeCheck {
++            try controlOperations.send(resourceCheck:check,lifetimeCheck:{
++                guard !self.failed, self.busy else { throw ProbeError("Remote MTP control owner is no longer active") }
++                try controlLifetimeCheck()
++            }) { checkpoint in
++                try collective.sendControlCompleted(value.encode(),to:peer,
++                    maximumBytes:Gemma4MTPPullRecord.byteCount,check:checkpoint.check)
++            }
++            return
++        }
+         try check()
+         try collective.sendControlCompleted(value.encode(), to: peer,
+             maximumBytes: Gemma4MTPPullRecord.byteCount, check: check)
+         try check()
+     }
+     private func receive(check: () throws -> Void) throws -> Gemma4MTPPullRecord {
++        if let controlOperations, let controlLifetimeCheck {
++            let data = try controlOperations.receive(resourceCheck:check,lifetimeCheck:{
++                guard !self.failed, self.busy else { throw ProbeError("Remote MTP control owner is no longer active") }
++                try controlLifetimeCheck()
++            }) { checkpoint in
++                try collective.receiveControlCompleted(byteCount:Gemma4MTPPullRecord.byteCount,
++                    from:peer,maximumBytes:Gemma4MTPPullRecord.byteCount,check:checkpoint.check)
++            }
++            return try Gemma4MTPPullRecord.decode(data)
++        }
+         try check()
+         let data = try collective.receiveControlCompleted(byteCount: Gemma4MTPPullRecord.byteCount,
+             from: peer, maximumBytes: Gemma4MTPPullRecord.byteCount, check: check)
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPCohortControl.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPCohortControl.swift
+@@ -9,14 +9,18 @@
+     }
+     private let group: Collective
+     private let scope: String
++    let controlOperations: Gemma4MTPControlOperation
+     private var sequence = 0, busy = false, failed = false
+-    init(group: Collective, input: Gemma4RemoteMTPInput) throws {
+-        guard group.transport == .jaccl, group.size == 2, group.rank == input.job.rank else {
++    init(group: Collective, input: Gemma4RemoteMTPInput, controlOperations: Gemma4MTPControlOperation) throws {
++        guard group.transport == .jaccl, group.size == 2, group.rank == input.job.rank,
++              PaddedControlFrame.byteCount == 16_384 else {
+             throw ProbeError("Remote MTP cohort requires its actual JACCL rank")
+         }
+         self.group = group; scope = input.scopeSHA256
++        self.controlOperations = controlOperations
+     }
+-    func checkpoint(_ phase: String, ordinal: Int, check: () throws -> Void) throws {
++    func checkpoint(_ phase: String, ordinal: Int, check: () throws -> Void,
++                    lifetimeCheck: () throws -> Void) throws {
+         guard !failed, !busy, sequence < 6,
+               (sequence == 0 && phase == "loaded" && ordinal == -1)
+                 || (sequence >= 1 && sequence <= 4 && phase == "request-retired" && ordinal == sequence-1)
+@@ -28,15 +32,24 @@
+             func value(_ rank: Int) -> Value { .init(schema:"gemma4_remote_mtp_cohort_control_v1",
+                 scopeSHA256:scope,phase:phase,ordinal:ordinal,senderRank:rank,sequence:sequence) }
+             func send() throws {
+-                try check()
+-                let frame = try PaddedControlFrame.encode(canonicalJSONData(value(group.rank)))
+-                try group.sendControlCompleted(frame,to:1-group.rank,maximumBytes:PaddedControlFrame.byteCount,check:check)
+-                try check()
++                try controlOperations.send(resourceCheck:check,lifetimeCheck:{
++                    guard !self.failed, self.busy else { throw ProbeError("Remote MTP cohort control is no longer active") }
++                    try lifetimeCheck()
++                }) { checkpoint in
++                    let frame = try PaddedControlFrame.encode(canonicalJSONData(value(group.rank)))
++                    try group.sendControlCompleted(frame,to:1-group.rank,
++                        maximumBytes:PaddedControlFrame.byteCount,check:checkpoint.check)
++                }
+             }
+             func receive() throws {
+-                let frame = try group.receiveControlCompleted(byteCount:PaddedControlFrame.byteCount,from:1-group.rank,
+-                    maximumBytes:PaddedControlFrame.byteCount,check:check)
+-                try check(); let bytes = try PaddedControlFrame.decode(frame)
++                let frame = try controlOperations.receive(resourceCheck:check,lifetimeCheck:{
++                    guard !self.failed, self.busy else { throw ProbeError("Remote MTP cohort control is no longer active") }
++                    try lifetimeCheck()
++                }) { checkpoint in
++                    try group.receiveControlCompleted(byteCount:PaddedControlFrame.byteCount,from:1-group.rank,
++                        maximumBytes:PaddedControlFrame.byteCount,check:checkpoint.check)
++                }
++                let bytes = try PaddedControlFrame.decode(frame)
+                 try validateWorkerJSON(bytes)
+                 let actual = try JSONDecoder().decode(Value.self,from:bytes)
+                 try QwenLayerStageGenerationWireJSON.requireExact(QwenLayerStageGenerationWireJSON.object(bytes),actual)
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkResourceOwner.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkResourceOwner.swift
+@@ -102,6 +102,20 @@
+         try guardMetrics.measure(.ownerGuard) {
+             try checkObservedResources(observation: observation, finishObservation: owned != nil)
+         }
++    }
++
++    /// Only scalar original-owner and attached-ledger lifetime state. This does
++    /// not admit allocations or refresh a resource revision; the fixed control
++    /// operation must run full fresh check() at entry and exit.
++    func checkControlLifetime() throws {
++        do {
++            guard (phase == .ready || phase == .request), !progress.failed,
++                  mtpAuxiliary == nil, let remote = mtpRemoteTarget,
++                  DispatchTime.now().uptimeNanoseconds < deadline else {
++                throw ProbeError("Gemma resource owner failed or expired")
++            }
++            try remote.checkControlLifetime()
++        } catch { phase = .failed; progress.poison(); throw error }
+     }
+ 
+     private func checkObservedResources(observation: Gemma4BenchmarkGuardObservation, finishObservation: Bool) throws {
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPTargetRuntime.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPTargetRuntime.swift
+@@ -58,7 +58,7 @@
+                 guard case .full(let full) = loaded.model else { throw ProbeError("Dense remote MTP requires the existing full target") }
+                 denseProjection = try Gemma4MTPDenseProjection(model:full,resources:extra,headPolicy:input.local.headPolicy)
+             } else { denseProjection = nil }
+-            try control.checkpoint("loaded",ordinal:-1,check:checked)
++            try control.checkpoint("loaded",ordinal:-1,check:checked,lifetimeCheck:owner.checkControlLifetime)
+             var samples: [Gemma4RemoteMTPSample] = []
+             for ordinal in benchmark.requests.indices {
+                 let request = try input.local.iteration(ordinal)
+@@ -69,7 +69,9 @@
+                         residualDType:benchmark.job.dtype,admitGeometry:owner.request,check:checked)
+                     releasedSession = session; lifetime.session = session
+                     let result = try Gemma4RemoteMTPDriver.execute(input:input,ordinal:ordinal,session:session,group:group,
+-                        resources:extra,lifetime:lifetime,sidecars:sidecars,denseProjection:denseProjection,check:checked)
++                        resources:extra,lifetime:lifetime,sidecars:sidecars,
++                        controlOperations:control.controlOperations,controlLifetimeCheck:owner.checkControlLifetime,
++                        denseProjection:denseProjection,check:checked)
+                     try owner.retiredRequest(session)
+                     try Gemma4MTPPullNativeFence.join(check:checked)
+                     lifetime.session = nil
+@@ -77,7 +79,7 @@
+                 }
+                 try Gemma4MTPPullNativeFence.join(check:checked)
+                 guard releasedSession == nil, lifetime.target == nil else { throw ProbeError("Remote MTP target request roots escaped retirement") }
+-                try control.checkpoint("request-retired",ordinal:ordinal,check:checked)
++                try control.checkpoint("request-retired",ordinal:ordinal,check:checked,lifetimeCheck:owner.checkControlLifetime)
+                 samples.append(sample)
+             }
+             guard samples.count == 4, Set(samples.map(\.selectedTokenIDsSHA256)).count == 1 else {
+@@ -92,7 +94,7 @@
+         try Gemma4MTPPullNativeFence.join(check:checked)
+         guard releasedModel == nil else { throw ProbeError("Remote MTP target model remains retained") }
+         Memory.clearCache(); try checked()
+-        try control.checkpoint("models-released",ordinal:-1,check:checked)
++        try control.checkpoint("models-released",ordinal:-1,check:checked,lifetimeCheck:owner.checkControlLifetime)
+         let extraReceipt = try extra.receipt(), receipt = try owner.completed()
+         return try canonicalJSONData(Gemma4RemoteMTPTargetReport(configuration:input.job,ordinaryJob:benchmark.job,
+             scopeSHA256:input.scopeSHA256,sourceLoad:result.0,samples:result.1,resources:receipt,
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkEntry.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkEntry.swift
+@@ -121,7 +121,8 @@
+                 report["collectiveReleased"] = remote != nil || input.job.rank != nil
+                 report["nativeCacheBytesAfterRelease"] = Memory.cacheMemory
+                 report["guardMetrics"] = try JSONSerialization.jsonObject(with: canonicalJSONData(guardMetrics.snapshot()))
+-                report["guardObservationPolicy"] = Gemma4BenchmarkGuardInvocation.schema
++                report["guardObservationPolicy"] = remote != nil && arguments[0] != "--qualify-remote-mtp"
++                    ? Gemma4MTPControlCounters.policy : Gemma4BenchmarkGuardInvocation.schema
+                 let result = try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys, .withoutEscapingSlashes])
+                 guard result.count <= 8_388_608 else { throw ProbeError("Gemma benchmark report exceeds8MiB") }
+                 return result
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPAuxiliaryOwner.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPAuxiliaryOwner.swift
+@@ -49,6 +49,18 @@
+             throw ProbeError("Assistant auxiliary scope failed or expired")
+         }
+     }
++    /// Scalar checks only for callbacks inside a separately admitted fixed
++    /// control operation. It never reads/caches OS or allocator observations.
++    func checkControlLifetime() throws {
++        do {
++            try requireLive()
++            guard budget.placement == .remoteAssistant, !primaryAttached,
++                  phase == .ready || phase == .complete, pending == nil,
++                  completed == budget.items.count, observedRevision == revision else {
++                throw ProbeError("Remote assistant control lacks its current completed owner")
++            }
++        } catch { poison(); throw error }
++    }
+     func attachToPrimary(deadline: UInt64, requestSHA256: String) throws {
+         guard phase == .source, !primaryAttached, budget.placement == .localTarget,
+               self.deadline == deadline, budget.requestSHA256 == requestSHA256 else {
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPAssistantRuntime.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPAssistantRuntime.swift
+@@ -51,13 +51,14 @@
+             lifetime.embedding = embedding; releasedEmbedding = embedding
+             try auxiliary.embeddingLoaded(embedding.receipt); try checked()
+             let conditioning = embedding.conditioning()
+-            try control.checkpoint("loaded",ordinal:-1,check:checked)
++            try control.checkpoint("loaded",ordinal:-1,check:checked,lifetimeCheck:auxiliary.checkControlLifetime)
+             var samples: [Gemma4RemoteMTPAssistantSample] = []
+             for ordinal in benchmark.requests.indices {
+                 weak var releasedService: Gemma4MTPPullAssistant?
+                 try autoreleasepool {
+                     let request = benchmark.requests[ordinal]
+-                    let channel = try Gemma4MTPPullChannel(collective:group,role:.assistant,targetRank:1,scopeSHA256:input.wireScope(ordinal))
++                    let channel = try Gemma4MTPPullChannel(collective:group,role:.assistant,targetRank:1,scopeSHA256:input.wireScope(ordinal),
++                        controlOperations:control.controlOperations,controlLifetimeCheck:auxiliary.checkControlLifetime)
+                     let service = try Gemma4MTPPullAssistant(channel:channel,scope:input.requestScope(ordinal),
+                         initialFrontier:request.promptCount+1,assistant:assistant.model,conditioning:conditioning,auxiliary:auxiliary)
+                     lifetime.service = service; releasedService = service
+@@ -68,7 +69,7 @@
+                 }
+                 try Gemma4MTPPullNativeFence.join(check:checked)
+                 guard releasedService == nil else { throw ProbeError("Remote MTP assistant service escaped its request") }
+-                try control.checkpoint("request-retired",ordinal:ordinal,check:checked)
++                try control.checkpoint("request-retired",ordinal:ordinal,check:checked,lifetimeCheck:auxiliary.checkControlLifetime)
+                 let request = benchmark.requests[ordinal]
+                 samples.append(try .init(ordinal:ordinal,requestID:request.requestID.uuidString.lowercased(),
+                     requestSHA256:request.fingerprint,wireScopeSHA256:input.wireScope(ordinal)))
+@@ -82,7 +83,7 @@
+         guard releasedAssistant == nil, releasedEmbedding == nil else { throw ProbeError("Remote MTP assistant or embedding remains retained") }
+         Memory.clearCache(); try checked()
+         let receipt = try auxiliary.completedAfterNativeFence(check:checked)
+-        try control.checkpoint("models-released",ordinal:-1,check:checked)
++        try control.checkpoint("models-released",ordinal:-1,check:checked,lifetimeCheck:auxiliary.checkControlLifetime)
+         return try canonicalJSONData(Gemma4RemoteMTPAssistantReport(configuration:input.job,scopeSHA256:input.scopeSHA256,
+             assistantLoad:result.0,embeddingLoad:result.1,samples:result.2,resources:receipt))
+     }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPRuntime.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPRuntime.swift
+@@ -24,7 +24,8 @@
+                     }
+                     try QwenResidentAllocatorPolicy.disableFreedBufferCache.configure(setCacheLimit:{Memory.cacheLimit=$0},check:fresh)
+                     Memory.clearCache(); try fresh()
+-                    let control = try Gemma4RemoteMTPCohortControl(group:group,input:input)
++                    let controlOperations = Gemma4MTPControlOperation(metrics:guardMetrics)
++                    let control = try Gemma4RemoteMTPCohortControl(group:group,input:input,controlOperations:controlOperations)
+                     let report: Data
+                     if input.job.rank == 1 {
+                         report = try Gemma4RemoteMTPTargetRuntime.execute(input,deadline:deadline,group:group,control:control,
+@@ -39,7 +40,13 @@
+                         throw ProbeError("Remote MTP native roots escaped successful cohort retirement")
+                     }
+                     lifetime.clearAfterSuccessfulFence()
+-                    return report
++                    guard var result = try JSONSerialization.jsonObject(with:report) as? [String:Any] else {
++                        throw ProbeError("Remote MTP control report is not an object")
++                    }
++                    result["controlResourceObservationPolicy"] = Gemma4MTPControlCounters.policy
++                    result["controlResourceMetrics"] = try JSONSerialization.jsonObject(with:
++                        canonicalJSONData(controlOperations.counters.snapshot()))
++                    return try JSONSerialization.data(withJSONObject:result,options:[.sortedKeys,.withoutEscapingSlashes])
+                 } catch {
+                     // Keep the original group and current model/request/protocol
+                     // roots until this failed bounded process exits. No success
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPDriver.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPDriver.swift
+@@ -5,6 +5,7 @@
+     static func execute(input: Gemma4RemoteMTPInput, ordinal: Int, session: Gemma4OwnedForwardSession,
+                         group: Collective, resources: Gemma4MTPRemoteTargetResources,
+                         lifetime: Gemma4RemoteMTPNativeLifetime, sidecars: Gemma4BenchmarkSidecars,
++                        controlOperations: Gemma4MTPControlOperation, controlLifetimeCheck: @escaping () throws -> Void,
+                         denseProjection: Gemma4MTPDenseProjection? = nil,
+                         check: () throws -> Void) throws -> Gemma4RemoteMTPSample {
+         let requestInput = try input.local.iteration(ordinal), request = requestInput.request
+@@ -51,7 +52,8 @@
+                 selected += try greedy(lastWindow!.logits,width:1)
+                 _ = try session.reconcileMTP(lastWindow!,keeping:1,check:checked)
+                 widths.append(1); accepts.append(0)
+-                let channel = try Gemma4MTPPullChannel(collective:group,role:.target,targetRank:1,scopeSHA256:input.wireScope(ordinal))
++                let channel = try Gemma4MTPPullChannel(collective:group,role:.target,targetRank:1,scopeSHA256:input.wireScope(ordinal),
++                    controlOperations:controlOperations,controlLifetimeCheck:controlLifetimeCheck)
+                 let target = try Gemma4MTPPullTarget(channel:channel,scope:input.requestScope(ordinal),
+                     requestSHA256:input.resourceRequestSHA256,initialFrontier:session.committedTokens,
+                     initialSeed:selected.last!,maximumInputFrontier:request.finalCommittedTokens)
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPRemoteTargetResources.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPRemoteTargetResources.swift
+@@ -57,6 +57,12 @@
+         try requireLive()
+         guard observedRevision == revision else { throw ProbeError("Remote target operation lacks its summed original-owner observation") }
+     }
++    /// Scalar revision/attachment/deadline validation only. No resource values
++    /// are cached here; the original owner freshly admits each control boundary.
++    func checkControlLifetime() throws {
++        do { try requireObserved() }
++        catch { poison(); throw error }
++    }
+     func requireSerialTargetHead() throws {
+         try requireObserved()
+         guard budget.serialTargetHead else {

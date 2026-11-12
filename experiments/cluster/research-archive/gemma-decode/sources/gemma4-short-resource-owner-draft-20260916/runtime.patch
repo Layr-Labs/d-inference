@@ -1,0 +1,480 @@
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4OrderedLoadProgress.swift
+@@ -0,0 +1,32 @@
++import Foundation
++
++/// Keep the currently authorized tensor in the remaining reserve until its
++/// materialization scope has ended. Authorization alone never advances progress.
++struct Gemma4OrderedLoadProgress {
++    let expected: [Gemma4SelectedTensor]
++    private(set) var completed = 0
++    private(set) var pending: Int?
++    private(set) var failed = false
++
++    mutating func begin(_ tensor: Gemma4SelectedTensor) throws {
++        guard !failed, pending == nil, expected.indices.contains(completed), matches(tensor, expected[completed]) else {
++            failed = true; throw ProbeError("Gemma ordered load authorization repeated or substituted")
++        }
++        pending = completed
++    }
++    mutating func finish(_ tensor: Gemma4SelectedTensor) throws {
++        guard !failed, pending == completed, expected.indices.contains(completed), matches(tensor, expected[completed]) else {
++            failed = true; throw ProbeError("Gemma ordered load completion differs")
++        }
++        completed += 1; pending = nil
++    }
++    mutating func requireFinished() throws {
++        guard !failed, pending == nil, completed == expected.count else {
++            failed = true; throw ProbeError("Gemma ordered load did not finish every tensor")
++        }
++    }
++    mutating func poison() { failed = true }
++    private func matches(_ a: Gemma4SelectedTensor, _ b: Gemma4SelectedTensor) -> Bool {
++        a.localName == b.localName && a.source == b.source && a.loadedDType == b.loadedDType
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RegisteredForwardEntry.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RegisteredForwardEntry.swift
+@@ -6,13 +6,15 @@
+ /// Concrete full/staged native entry for a separately admitted correctness
+ /// operation. The callbacks are obligations, not caller-asserted capacity:
+ /// no public CLI/SPI is added until a closed Gemma resource owner implements
+-/// all four gates and binds the actual probe/boundary terms.
++/// construction, ordered load, probe and request gates with actual boundary terms.
+ func withRegisteredGemma4Forward(
+     directory: URL, artifact: Gemma4ArtifactMetadata, cut: Int,
+     target: Gemma4ForwardTarget, request: QwenLayerStageGenerationRequest,
+     residualDType: DType,
+     admitConstruction: ([Gemma4SelectedTensor]) throws -> Void,
++    admitPrepared: (Gemma4PreparedForwardModel) throws -> Void,
+     beforeTensor: (Gemma4SelectedTensor) throws -> Void,
++    afterTensor: (Gemma4SelectedTensor) throws -> Void,
+     admitLoadedProbe: (Gemma4ForwardLoadReceipt) throws -> Void,
+     admitRequest: (CBv2RequestGeometry) throws -> Void,
+     probeInput: ((CBv2NativeKVTypeProbe.Phase, Int) throws -> MLXArray)? = nil,
+@@ -34,8 +36,9 @@
+                     let prepared = try Gemma4PreparedForwardModel.prepare(source: source,
+                         target: target, check: checked)
+                     retiredModel = prepared.model.module
++                    try admitPrepared(prepared); try checked()
+                     let loaded = try materializeRegisteredGemma4(prepared,
+-                        beforeTensor: beforeTensor, check: checked)
++                        beforeTensor: beforeTensor, afterTensor: afterTensor, check: checked)
+                     try admitLoadedProbe(loaded.receipt); try checked()
+                     let probe = try loaded.probe(incomingDType: loaded.model.isResidualConsumer ? residualDType : nil,
+                         incoming: probeInput, observeIngress: observeProbeOutput, check: checked)
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RegisteredMaterialization.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RegisteredMaterialization.swift
+@@ -36,6 +36,7 @@
+ /// owner; this low-level function does not mint execution authorization.
+ func materializeRegisteredGemma4(_ prepared: Gemma4PreparedForwardModel,
+     beforeTensor: (Gemma4SelectedTensor) throws -> Void,
++    afterTensor: (Gemma4SelectedTensor) throws -> Void,
+     check: () throws -> Void
+ ) throws -> Gemma4LoadedForwardModel {
+     try withoutActuallyEscaping(check) { borrowedCheck in
+@@ -82,6 +83,9 @@
+                         largestHostBytes = max(largestHostBytes, read.copiedBytes)
+                         try accounting.merge(part)
+                     }
++                    // The read/convert/update autorelease scope has ended. Only
++                    // this completion may retire the tensor's pending reserve.
++                    try checked(); try afterTensor(selected); try checked()
+                 }
+                 module.freeze(); try checked()
+                 let actual = module.parameters().flattened()
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ShortCorrectness.swift
+@@ -0,0 +1,57 @@
++import Foundation
++import MLX
++import MLXLMCommon
++
++struct Gemma4ShortCorrectnessOutput {
++    let data: Data
++    let resources: Gemma4ShortResourceReceipt
++}
++
++/// Root-run qualification only, inside the existing dedicated native process,
++/// device lease, resource watcher and parent lifetime. No serving API is added.
++func withRegisteredGemma4ShortCorrectness(
++    directory: URL, artifact: Gemma4ArtifactMetadata, target: Gemma4ForwardTarget,
++    request: QwenLayerStageGenerationRequest, residualDType: DType, deadline: UInt64,
++    probeInput: ((CBv2NativeKVTypeProbe.Phase, Int) throws -> MLXArray)? = nil,
++    observeProbeOutput: ((CBv2NativeKVTypeProbe.Phase, MLXArray) throws -> Void)? = nil,
++    check: () throws -> Void, body: (Gemma4OwnedForwardSession) throws -> Data
++) throws -> Gemma4ShortCorrectnessOutput {
++    try withoutActuallyEscaping(check) { borrowedCheck in
++        try MLX.withError { native in
++            func outerCheck() throws { try native.check(); try borrowedCheck(); try native.check() }
++            do {
++                try outerCheck()
++                // Keep the existing native defaults and arithmetic, but reject
++                // overrides that would invalidate this bounded initial scope.
++                let environment = ProcessInfo.processInfo.environment
++                _ = try QwenLongPrefillArithmeticEnvironment.admit(environment)
++                for name in ["MLX_QUANTIZED_CONSTANT_CACHE", "MLX_GEMMA4_FUSED_WEIGHTED_UNSORT",
++                    "MLX_GATHER_QMM_EXPERT_SLICES", "MLX_COMPILED_DECODE",
++                    "DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL", "DARKBLOOM_GEMMA4_PREFILL_TAIL_ROWS",
++                    "DARKBLOOM_GEMMA4_PREFILL_TAIL_MIN_CHUNK", "DARKBLOOM_GEMMA4_PREFILL_LAST_QUERY"] {
++                    guard environment[name] == nil else { throw ProbeError("Gemma initial correctness requires default " + name) }
++                }
++                try QwenResidentResourceEnvironment.require(); try outerCheck()
++                try QwenResidentAllocatorPolicy.disableFreedBufferCache.configure(
++                    setCacheLimit: { Memory.cacheLimit = $0 }, check: outerCheck)
++                Memory.clearCache(); try outerCheck()
++                let plan = try Gemma4LayerStagePlan(artifact: artifact, cut: Gemma4ShortResourceBudget.candidateCut)
++                let owner = try Gemma4ShortResourceOwner(plan: plan, target: target,
++                    request: request, residualDType: residualDType, deadline: deadline)
++                func checked() throws { try outerCheck(); try owner.check(); try outerCheck() }
++                let data = try withRegisteredGemma4Forward(directory: directory, artifact: artifact,
++                    cut: Gemma4ShortResourceBudget.candidateCut, target: target, request: request, residualDType: residualDType,
++                    admitConstruction: owner.construction, admitPrepared: owner.prepared, beforeTensor: owner.beforeTensor,
++                    afterTensor: owner.afterTensor, admitLoadedProbe: owner.loaded,
++                    admitRequest: owner.request, probeInput: probeInput, observeProbeOutput: observeProbeOutput,
++                    check: checked, body: { session in
++                        let value = try body(session)
++                        guard value.count <= 1_048_576 else { throw ProbeError("Gemma correctness result exceeds bounded metadata output") }
++                        return value
++                    })
++                try outerCheck()
++                return .init(data: data, resources: try owner.completed())
++            } catch { try native.check(); throw error }
++        }
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ShortResourceBudget.swift
+@@ -0,0 +1,144 @@
++import Foundation
++
++/// Named allocation requests, not a whole-process/native-workspace peak proof.
++/// A bound callback is metadata only; only the closed live owner can admit work.
++struct Gemma4ShortResourceBudget {
++    static let candidateCut = 10
++    static func requireCandidateCut(_ plan: Gemma4LayerStagePlan) throws {
++        guard plan.stages[0].sourceLayerEnd == candidateCut,
++              plan.stages[1].sourceLayerStart == candidateCut else {
++            throw ProbeError("Gemma initial operational owner requires the selected cut10 candidate")
++        }
++    }
++    struct ArrayTerm: Encodable { let name: String; let bytes: Int }
++    let selected: [Gemma4SelectedTensor]
++    let selectedBounds: [Int]
++    let namedArrays: [ArrayTerm]
++    let namedAllocationBounds: [Int]
++    let namedNativeBytes: Int
++    let hostEvidenceBytes: Int
++    let largestHostTensorBytes: Int
++    let largestNativeCopyBytes: Int
++    let persistentCastLogicalBytes: Int
++    let stateLogicalBytes: Int
++    let stateLayers: [LayerAttentionStateLayout.Layer]
++    let planSHA256: String
++    let requestSHA256: String
++
++    static func derive(plan: Gemma4LayerStagePlan, target: Gemma4ForwardTarget,
++        request: QwenLayerStageGenerationRequest, bound: (Int) throws -> Int
++    ) throws -> Self {
++        guard request.promptCount == 32, request.chunkSize == 16, request.outputCount == 2,
++              request.stopTokenIDs.isEmpty, request.maximumTokens == 34,
++              request.profile.identifier == "registered_gemma4_26b_forward_validation_v1",
++              request.profile.vocabularySize == 262_144, request.profile.hiddenSize == 2816,
++              request.profile.maximumPromptTokens == 8192, request.profile.maximumChunkTokens == 512,
++              request.profile.maximumOutputTokens == 128, request.profile.maximumContextTokens == 8320,
++              ["float16", "bfloat16", "float32"].contains(request.profile.activationDType) else {
++            throw ProbeError("Gemma short resource budget requires exact P32/C16/O2/no-stop geometry")
++        }
++        let selected = try Gemma4ForwardSelection.make(plan: plan, target: target)
++        let globals: [Int]
++        let ownsHead: Bool
++        switch target {
++        case .fullReference: globals = Array(0..<30); ownsHead = true
++        case .stage(let rank): globals = plan.stages[rank].layers.map(\.globalIndex); ownsHead = rank == 1
++        }
++        let sum = QwenLongPrefillCheckedBytes.sum
++        let product = QwenLongPrefillCheckedBytes.product
++        func rounded(_ bytes: Int) throws -> Int {
++            let value = try bound(bytes)
++            guard bytes > 0, value >= bytes else { throw ProbeError("Gemma native allocation bound is invalid") }
++            return value
++        }
++        var arrays: [ArrayTerm] = []
++        func add(_ name: String, _ shape: [Int], bytes: Int = 4) throws {
++            arrays.append(.init(name: name, bytes: try product(shape + [bytes])))
++        }
++        // The frozen source loader turns F16 into BF16. ConstantArrayCastCache
++        // retains one F32 cast per eligible projection parameter and stream.
++        // Embedding head conversions are temporary but receive the same charge.
++        var casts = 0
++        for item in selected where (item.localName.hasSuffix(".scales") || item.localName.hasSuffix(".biases"))
++            && ["float16", "bfloat16"].contains(item.source.layout.sourceDType) {
++            let embedding = item.localName.hasPrefix("language_model.model.embed_tokens.")
++            if embedding && !ownsHead { continue }
++            let bytes = try product(item.source.layout.shape + [4])
++            arrays.append(.init(name: (embedding ? "headCast:" : "constantCast:") + item.localName, bytes: bytes))
++            if !embedding { casts = try sum([casts, bytes]) }
++        }
++        let text = plan.artifact.text, m = request.chunkSize, n = request.maximumTokens
++        var state = 0, logicalSnapshot = 0
++        var stateLayers: [LayerAttentionStateLayout.Layer] = []
++        for global in globals {
++            let full = text.layerKinds[global] == .full
++            let heads = full ? text.fullKVHeads : text.slidingKVHeads
++            let dim = full ? text.fullHeadDimension : text.slidingHeadDimension
++            let slots = full ? n : text.slidingWindow
++            stateLayers.append(.init(globalIndex: global, kvHeads: heads, headDimension: dim,
++                window: full ? nil : text.slidingWindow, element: .float32))
++            let prefix = "layer\(global):"
++            // Each allocation is rounded independently. F32 is a supported
++            // element-size ceiling, not a prediction of the real probe dtype.
++            for name in ["keys", "values"] { try add(prefix + name, [slots, heads, dim]) }
++            state = try sum([state, product([2, slots, heads, dim, 4])])
++            logicalSnapshot = try sum([logicalSnapshot, product([2, n, heads, dim, 4])])
++            if !full {
++                for name in ["oldKeys", "oldValues"] { try add(prefix + name, [slots, heads, dim]) }
++                for name in ["chunkKeys", "chunkValues"] { try add(prefix + name, [slots - 1 + m, heads, dim]) }
++            }
++            for name in ["position", "capturedPosition", "queryPosition"] { try add(prefix + name, [1]) }
++            // Charge all selected layers concurrently; no async-eval interval
++            // or final-layer narrowing is treated as an allocation discount.
++            for name in ["input", "inputNorm", "oProjection", "postAttention", "attentionResidual",
++                         "sharedPreNorm", "sharedDown", "sharedPostNorm", "routerNorm", "sparsePreNorm",
++                         "weightedReduction", "sparsePostNorm", "branchSum", "postFFNNorm", "residualAdd", "layerScalarOutput"] {
++                try add(prefix + name, [m, text.hiddenSize])
++            }
++            for name in ["qProjection", "qNorm", "qRoPE", "attentionOutput", "attentionOutputCast"] {
++                try add(prefix + name, [m, text.queryHeads, dim])
++            }
++            for name in ["kProjection", "kNorm", "kRoPE", "vNorm"] { try add(prefix + name, [m, heads, dim]) }
++            for name in ["attentionKCopy", "attentionVCopy"] { try add(prefix + name, [n, heads, dim]) }
++            for name in ["attentionScores", "attentionProbabilities"] { try add(prefix + name, [text.queryHeads, m, n]) }
++            try add(prefix + "attentionMask", [m, n], bytes: 1)
++            for name in ["sharedGate", "sharedUp", "sharedGELU", "sharedProduct"] { try add(prefix + name, [m, 2112]) }
++            try add(prefix + "routerScale", [text.hiddenSize])
++            for name in ["routerScores", "routerPartition"] { try add(prefix + name, [m, 128]) }
++            for name in ["topKIndices", "topKValues", "topKSoftmax", "expertScaleGather", "topKWeights"] { try add(prefix + name, [m, 8]) }
++            for name in ["order", "inverseOrder", "inputGatherIndex", "sortedIndices"] { try add(prefix + name, [m * 8]) }
++            for name in ["sortedInput", "expertDown", "unsortedOutput", "weightedProduct"] { try add(prefix + name, [m * 8, text.hiddenSize]) }
++            for name in ["expertGate", "expertUp", "expertGELUProduct"] { try add(prefix + name, [m * 8, 704]) }
++        }
++        // Probe rows and the real request are sequential. Keeping three-token
++        // probe allocations in this ledger is conservative, not a second owner.
++        for global in globals {
++            let full = text.layerKinds[global] == .full
++            for name in ["probeKeys", "probeValues"] {
++                try add("layer\(global):" + name, [3, full ? text.fullKVHeads : text.slidingKVHeads,
++                    full ? text.fullHeadDimension : text.slidingHeadDimension])
++            }
++        }
++        if target == .fullReference || target == .stage(0) {
++            try add("inputIDs", [m])
++            try add("embeddingGatherWeight", [m, text.hiddenSize / 2], bytes: 1)
++            for name in ["embeddingGatherScales", "embeddingGatherBiases"] { try add(name, [m, text.hiddenSize / 64]) }
++            try add("embeddingDequantized", [m, text.hiddenSize])
++        }
++        for name in ["residual", "ownedResidualCopy", "boundaryExport"] { try add(name, [m, text.hiddenSize]) }
++        if ownsHead {
++            for name in ["logits", "float32Logits", "softcapTemporary", "samplingRow"] { try add(name, [262_144]) }
++        }
++        let allocations = try selected.map { try rounded($0.source.layout.byteCount) }
++        let host = selected.map { $0.source.layout.byteCount }.max()!
++        let namedBounds = try arrays.map { try rounded($0.bytes) }
++        let native = try sum(namedBounds)
++        let hostEvidence = try sum([logicalSnapshot, 2 * 262_144 * 4, 2 * m * text.hiddenSize * 4, 1_048_576])
++        return .init(selected: selected, selectedBounds: allocations, namedArrays: arrays, namedAllocationBounds: namedBounds,
++            namedNativeBytes: native, hostEvidenceBytes: hostEvidence,
++            largestHostTensorBytes: host, largestNativeCopyBytes: try rounded(host),
++            persistentCastLogicalBytes: casts, stateLogicalBytes: state,
++            stateLayers: stateLayers,
++            planSHA256: plan.fingerprint, requestSHA256: request.fingerprint)
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ShortResourceOwner.swift
+@@ -0,0 +1,185 @@
++import Foundation
++import MLX
++import MLXNN
++
++struct Gemma4ShortResourceReceipt: Encodable {
++    let policy = "registered_gemma4_short_operational_resources_v1"
++    let planSHA256: String, requestSHA256: String
++    let selectedTensorCount: Int, completedTensorCount: Int
++    let constructorParameterCount: Int, constructorUnmaterializedQuantizedParameterCount: Int
++    let constructorObservedActiveBytes: Int, constructorObservedNativePeakBytes: Int
++    let namedNativeReserveBytes: Int, hostEvidenceReserveBytes: Int
++    let persistentCastLogicalBytes: Int, stateLogicalBytes: Int
++    let selectedAllocationBounds: [Int]
++    let namedArrays: [Gemma4ShortResourceBudget.ArrayTerm]
++    let namedAllocationBounds: [Int]
++    let observationCount: Int, minimumActualFreeBytes: Int
++    let maximumObservedActiveBytes: Int, maximumObservedNativePeakBytes: Int
++    let actualAllocatorBoundsUsed = true
++    let operationalResourceChecksApplied = true
++    let reclaimableUsedForAdmission = false
++    let wholeProcessPeakBoundEstablished = false
++    let reserveTermsAreOperationalPolicy = true
++    let constructorGraphHeadroomRetainedThroughoutLoad = true
++    let newServingActivationFloorEstablished = false
++    let physicalProcessOrLeaseRetirementEstablished = false
++}
++
++/// Private operational qualification owner. Uses the existing direct native/OS
++/// readers and 6/4/2-GiB policy, never a supplied observation/capacity receipt.
++final class Gemma4ShortResourceOwner {
++    private enum Phase: Equatable { case source, constructing, loading, probing, request, complete, failed }
++    private var phase = Phase.source
++    private var progress: Gemma4OrderedLoadProgress
++    private let deadline: UInt64
++    let budget: Gemma4ShortResourceBudget
++    private var observations = 0, minimumFree = Int.max, maximumActive = 0, maximumPeak = 0
++    private var constructorCount = 0, constructorLazyQuantizedCount = 0
++    private var constructorActive = 0, constructorPeak = 0
++
++    init(plan: Gemma4LayerStagePlan, target: Gemma4ForwardTarget,
++         request: QwenLayerStageGenerationRequest, residualDType: DType, deadline: UInt64) throws {
++        let now = DispatchTime.now().uptimeNanoseconds
++        guard deadline > now, deadline - now <= 300_000_000_000 else {
++            throw ProbeError("Gemma correctness needs a fresh existing 300-second-or-shorter native lifetime")
++        }
++        try Gemma4ShortResourceBudget.requireCandidateCut(plan)
++        try Gemma4ForwardRequest.validate(request, dtype: residualDType)
++        try QwenResidentResourceEnvironment.require()
++        let budget = try Gemma4ShortResourceBudget.derive(plan: plan, target: target, request: request,
++            bound: QwenResidentResourceEnvironment.allocationBound)
++        self.budget = budget; self.deadline = deadline
++        progress = .init(expected: budget.selected)
++        try check()
++    }
++
++    func check() throws {
++        do {
++            guard phase != .failed, !progress.failed,
++                  DispatchTime.now().uptimeNanoseconds < deadline else {
++                throw ProbeError("Gemma resource owner failed or expired")
++            }
++            try QwenResidentResourceEnvironment.require()
++            let os = try QwenDenseStageLoadResources.requireInitial()
++            let native = QwenDenseStageLoadResources.observeNative()
++            guard native.activeBytes >= 0, native.cacheBytes == 0,
++                  native.peakBytes >= native.activeBytes, native.allocatorLimitBytes > 0 else {
++                throw ProbeError("Gemma dedicated owner requires valid native observations and zero freed-buffer cache")
++            }
++            let sum = QwenLongPrefillCheckedBytes.sum
++            let loading = phase == .source || phase == .constructing || phase == .loading
++            let remaining = loading ? try sum(Array(budget.selectedBounds.dropFirst(progress.completed))) : 0
++            let hasRead = loading && progress.completed < budget.selected.count
++            let host = hasRead ? budget.largestHostTensorBytes : 0
++            let copy = hasRead ? budget.largestNativeCopyBytes : 0
++            let scratch = hasRead ? CheckpointAlignedReadPlan.maximumScratchAllocationBytes : 0
++            let free = max(QwenDenseStageLoadPolicy.minimumActualFreeBytes,
++                try sum([remaining, host, copy, scratch, budget.namedNativeBytes,
++                    budget.hostEvidenceBytes, QwenDenseStageLoadPolicy.loadingHeadroomBytes]))
++            let allocator = try sum([native.activeBytes, native.cacheBytes, remaining, copy,
++                budget.namedNativeBytes, QwenDenseStageLoadPolicy.allocatorHeadroomBytes])
++            guard os.actualFreeBytes >= free, os.physicalMemoryBytes >= free,
++                  native.allocatorLimitBytes >= allocator else {
++                throw ProbeError("Gemma resources refused: completed=\(progress.completed)/\(budget.selected.count), pending=\(progress.pending.map(String.init) ?? "none"), actualFree=\(os.actualFreeBytes), requiredFree=\(free), active=\(native.activeBytes), cache=\(native.cacheBytes), requiredAllocator=\(allocator), allocatorLimit=\(native.allocatorLimitBytes)")
++            }
++            observations = try sum([observations, 1]); minimumFree = min(minimumFree, os.actualFreeBytes)
++            maximumActive = max(maximumActive, native.activeBytes); maximumPeak = max(maximumPeak, native.peakBytes)
++            guard DispatchTime.now().uptimeNanoseconds < deadline else { throw ProbeError("Gemma deadline expired during observation") }
++        } catch { phase = .failed; progress.poison(); throw error }
++    }
++
++    func construction(_ selected: [Gemma4SelectedTensor]) throws {
++        do {
++            guard phase == .source, selected.count == budget.selected.count,
++                  zip(selected, budget.selected).allSatisfy({ $0.0.localName == $0.1.localName && $0.0.source == $0.1.source }) else {
++                throw ProbeError("Gemma construction changed its closed selected inventory")
++            }
++            try check(); phase = .constructing
++        } catch { phase = .failed; progress.poison(); throw error }
++    }
++    func prepared(_ value: Gemma4PreparedForwardModel) throws {
++        do {
++            guard phase == .constructing, value.source.plan.fingerprint == budget.planSHA256 else {
++                throw ProbeError("Gemma constructor observation has no matching owner")
++            }
++            // Synchronize only already scheduled work. Buffer metadata never
++            // evaluates an unscheduled parameter or traverses its input graph.
++            Stream.gpu.synchronize(); Stream.cpu.synchronize(); try check()
++            let parameters = Dictionary(uniqueKeysWithValues: value.model.module.parameters().flattened())
++            guard parameters.count == budget.selected.count else { throw ProbeError("Gemma constructor coverage changed") }
++            let quantizedPaths = Set(budget.selected.filter { $0.localName.hasSuffix(".scales") }
++                .map { String($0.localName.dropLast(".scales".count)) })
++            var lazy = 0
++            for selected in budget.selected {
++                guard let parameter = parameters[selected.localName] else { throw ProbeError("Gemma constructor parameter missing") }
++                let parent = selected.localName.split(separator: ".").dropLast().joined(separator: ".")
++                if quantizedPaths.contains(parent) {
++                    guard case nil = try parameter.evaluatedBufferInfo() else {
++                        throw ProbeError("Gemma initialized quantization graph materialized before source replacement")
++                    }
++                    lazy += 1
++                }
++            }
++            constructorCount = parameters.count; constructorLazyQuantizedCount = lazy
++            constructorActive = Memory.activeMemory; constructorPeak = Memory.peakMemory
++            guard lazy > 0 else { throw ProbeError("Gemma constructor has no quantized placeholders") }
++            phase = .loading; try check()
++        } catch { phase = .failed; progress.poison(); throw error }
++    }
++    func beforeTensor(_ tensor: Gemma4SelectedTensor) throws {
++        do {
++            guard phase == .loading else { throw ProbeError("Gemma read outside loading phase") }
++            try progress.begin(tensor); try check()
++        } catch { phase = .failed; progress.poison(); throw error }
++    }
++    func afterTensor(_ tensor: Gemma4SelectedTensor) throws {
++        do {
++            guard phase == .loading else { throw ProbeError("Gemma completion outside loading phase") }
++            try progress.finish(tensor); try check()
++        } catch { phase = .failed; progress.poison(); throw error }
++    }
++    func loaded(_ receipt: Gemma4ForwardLoadReceipt) throws {
++        do {
++            guard phase == .loading, receipt.planSHA256 == budget.planSHA256,
++                  receipt.artifactSHA256 == Gemma4ArtifactMetadata.artifactAggregateSHA256,
++                  receipt.configurationSHA256 == Gemma4ArtifactMetadata.configurationSHA256,
++                  receipt.sourceTensorCount == 1697, receipt.selectedTensorCount == budget.selected.count,
++                  receipt.loadedTensorBytes == (try QwenLongPrefillCheckedBytes.sum(budget.selected.map { $0.source.layout.byteCount })),
++                  receipt.readAccounting.selectedBytes == receipt.loadedTensorBytes else {
++                throw ProbeError("Gemma actual load receipt differs from resource inventory")
++            }
++            try progress.requireFinished(); phase = .probing; try check()
++        } catch { phase = .failed; progress.poison(); throw error }
++    }
++    func request(_ geometry: CBv2RequestGeometry) throws {
++        do {
++            guard phase == .probing, let layout = geometry.attentionLayout,
++                  layout.maximumTokens == 34, layout.maximumChunkTokens == 16,
++                  geometry.recurrent.layers.isEmpty,
++                  layout.layers.count == budget.stateLayers.count,
++                  zip(layout.layers, budget.stateLayers).allSatisfy({
++                      $0.0.globalIndex == $0.1.globalIndex && $0.0.kvHeads == $0.1.kvHeads
++                        && $0.0.headDimension == $0.1.headDimension && $0.0.window == $0.1.window
++                        && $0.0.element.bytes <= $0.1.element.bytes
++                  }),
++                  geometry.kvCapacityBytes <= budget.stateLogicalBytes else {
++                throw ProbeError("Gemma observed request exceeds the closed short state ledger")
++            }
++            phase = .request; try check()
++        } catch { phase = .failed; progress.poison(); throw error }
++    }
++    func completed() throws -> Gemma4ShortResourceReceipt {
++        guard phase == .request else { throw ProbeError("Gemma resource owner did not complete a request") }
++        try check(); phase = .complete
++        return .init(planSHA256: budget.planSHA256, requestSHA256: budget.requestSHA256,
++            selectedTensorCount: budget.selected.count, completedTensorCount: progress.completed,
++            constructorParameterCount: constructorCount, constructorUnmaterializedQuantizedParameterCount: constructorLazyQuantizedCount,
++            constructorObservedActiveBytes: constructorActive, constructorObservedNativePeakBytes: constructorPeak,
++            namedNativeReserveBytes: budget.namedNativeBytes, hostEvidenceReserveBytes: budget.hostEvidenceBytes,
++            persistentCastLogicalBytes: budget.persistentCastLogicalBytes, stateLogicalBytes: budget.stateLogicalBytes,
++            selectedAllocationBounds: budget.selectedBounds,
++            namedArrays: budget.namedArrays, namedAllocationBounds: budget.namedAllocationBounds,
++            observationCount: observations, minimumActualFreeBytes: minimumFree,
++            maximumObservedActiveBytes: maximumActive, maximumObservedNativePeakBytes: maximumPeak)
++    }
++}

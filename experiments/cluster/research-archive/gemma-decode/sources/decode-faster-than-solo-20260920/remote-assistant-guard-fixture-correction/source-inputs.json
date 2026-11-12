@@ -1,0 +1,25 @@
+{
+  "schema": "gemma4_remote_guard_fixture_source_v1",
+  "members": [
+    {
+      "path": "GuardInvocationChecks.swift",
+      "bytes": 2671,
+      "sha256": "1957274a71a60a99b437443cf5dcd733260a703605c5bb016a8aa61a56557432"
+    },
+    {
+      "path": "HANDOFF.md",
+      "bytes": 632,
+      "sha256": "ef4e17238bf1c4a439db89eda5220290483d6d56c40c378709c7f950be76a585"
+    },
+    {
+      "path": "composition.json",
+      "bytes": 908,
+      "sha256": "73749211a7d7d2774e06fbf0770af0e618d48756e0a26041750af4e70f5ee8d3"
+    },
+    {
+      "path": "fixture.patch",
+      "bytes": 982,
+      "sha256": "d41c9681730bda222616267b2320dfdade37d735b5744e8a27951d2f11f3eccb"
+    }
+  ]
+}

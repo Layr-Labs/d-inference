@@ -1,0 +1,745 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Collective.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Collective.swift
+@@ -88,6 +88,24 @@
+         }
+     }
+ 
++    /// Closed seven-tensor Gemma snapshot experiment. Caller attaches the batch
++    /// to its original owner before entry and forbids concurrent MLX work.
++    func sendOwnedSnapshotBatch(_ batch: Gemma4MTPPullSnapshotBatch,
++                                capture: Gemma4OwnedMTPConditioning, to peer: Int,
++                                check: () throws -> Void) throws {
++        try withExtendedLifetime(self) {
++            try CollectivePointToPoint.sendOwnedSnapshotBatch(batch,capture:capture,
++                peer:peer,group:handle,rank:rank,size:size,check:check)
++        }
++    }
++    func receiveOwnedSnapshotBatch(_ batch: Gemma4MTPPullSnapshotBatch, from peer: Int,
++                                   check: () throws -> Void) throws {
++        try withExtendedLifetime(self) {
++            try CollectivePointToPoint.receiveOwnedSnapshotBatch(batch,
++                peer:peer,group:handle,rank:rank,size:size,check:check)
++        }
++    }
++
+     /// CPU-origin control bytes only; the shim constructs its own native array.
+     /// Completion retains CPU task/error fences and owned receive validation.
+     func sendControlCompleted(_ bytes: Data, to peer: Int, maximumBytes: Int,
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectivePointToPoint.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectivePointToPoint.swift
+@@ -172,3 +172,119 @@
+         }
+     }
+ }
++
++/// The only tensor path allowed to omit the seven INTERMEDIATE GPU fences.
++/// This is a closed seven-shape Gemma snapshot, never a generic fence switch.
++/// One original owner must forbid concurrent MLX work for the whole batch.
++extension CollectivePointToPoint {
++    static func sendOwnedSnapshotBatch(_ batch: Gemma4MTPPullSnapshotBatch,
++                                      capture: Gemma4OwnedMTPConditioning,
++                                      peer: Int, group: mlx_distributed_group,
++                                      rank: Int, size: Int, check: () throws -> Void) throws {
++        do {
++            try batch.begin()
++            guard batch.direction == .send, operationLock.try() else {
++                throw ProbeError("Owned snapshot send reentered or lacks exclusive transport")
++            }
++            defer { operationLock.unlock() }
++            try MLX.withError { native in
++                func checked() throws { try native.check(); try check(); try native.check() }
++                try checked()
++                try batch.prepare(capture,check:checked)
++                let communication = StreamOrDevice.cpu, gpu = StreamOrDevice.gpu
++                // Producers ONLY. Vector-evaluating network operations could
++                // reorder blocking sends/receives and is deliberately forbidden.
++                let contexts = batch.inputs.map(\.ctx)
++                let vector = contexts.withUnsafeBufferPointer { mlx_vector_array_new_data($0.baseAddress,$0.count) }
++                defer { mlx_vector_array_free(vector) }
++                try requireSuccess(mlx_eval(vector),operation:"snapshot producer evaluation",check:checked)
++                try snapshotBoundary(communication:communication,gpu:gpu,check:checked)
++                try batch.preparedAfterFence()
++                for index in 0..<7 {
++                    try batch.requireNext(index); try checked()
++                    try validatePeer(peer,group:group,rank:rank,size:size,check:checked)
++                    let geometry = batch.geometries[index], input = batch.inputs[index]
++                    try geometry.validateMetadata(input); try checked()
++                    let output = try snapshotArray(batch:batch,index:index,operation:"send",check:checked) { result in
++                        mlx_distributed_send(&result,input.ctx,Int32(peer),group,communication.ctx)
++                    }
++                    // Every C evaluation, CPU completion and the old post-GPU
++                    // check remains. Only that unrelated GPU wait is deferred.
++                    try complete(output,communication:communication,gpu:nil,check:checked)
++                    try geometry.validateMetadata(output); try checked()
++                    try batch.transferCompleted(index)
++                }
++                try snapshotBoundary(communication:communication,gpu:gpu,check:checked)
++                try batch.finishAfterFence()
++            }
++        } catch { batch.poison(); throw error }
++    }
++
++    static func receiveOwnedSnapshotBatch(_ batch: Gemma4MTPPullSnapshotBatch,
++                                         peer: Int, group: mlx_distributed_group,
++                                         rank: Int, size: Int, check: () throws -> Void) throws {
++        do {
++            try batch.begin()
++            guard batch.direction == .receive, operationLock.try() else {
++                throw ProbeError("Owned snapshot receive reentered or lacks exclusive transport")
++            }
++            defer { operationLock.unlock() }
++            try MLX.withError { native in
++                func checked() throws { try native.check(); try check(); try native.check() }
++                try checked()
++                let communication = StreamOrDevice.cpu, gpu = StreamOrDevice.gpu
++                try snapshotBoundary(communication:communication,gpu:gpu,check:checked)
++                try batch.preparedAfterFence()
++                for index in 0..<7 {
++                    try batch.requireNext(index); try checked()
++                    try validatePeer(peer,group:group,rank:rank,size:size,check:checked)
++                    let geometry = batch.geometries[index]
++                    let cShape = geometry.shape.map { Int32($0) }
++                    let output = try snapshotArray(batch:batch,index:index,operation:"receive",check:checked) { result in
++                        cShape.withUnsafeBufferPointer { dimensions in
++                            mlx_distributed_recv(&result,dimensions.baseAddress,dimensions.count,
++                                geometry.dtype.cmlxDtype,Int32(peer),group,communication.ctx)
++                        }
++                    }
++                    try complete(output,communication:communication,gpu:nil,check:checked)
++                    // No descriptor alias/reshape/concat has been made. Swift
++                    // references to this SAME MLXArray object do not add C roots.
++                    try geometry.validateOwnedReceive(output); try checked()
++                    try batch.transferCompleted(index)
++                }
++                try snapshotBoundary(communication:communication,gpu:gpu,check:checked)
++                // Recheck before any assembly or publication, with no C vector
++                // retaining these receive descriptors.
++                for (geometry,array) in zip(batch.geometries,batch.outputs) {
++                    try geometry.validateOwnedReceive(array); try checked()
++                }
++                try batch.finishAfterFence()
++            }
++        } catch { batch.poison(); throw error }
++    }
++
++    private static func snapshotArray(batch: Gemma4MTPPullSnapshotBatch, index: Int,
++                                      operation: String, check: () throws -> Void,
++                                      build: (inout mlx_array) -> Int32) throws -> MLXArray {
++        var result = mlx_array_new()
++        let status = build(&result)
++        // Transfer even a refused/empty C result to the existing owner's staging
++        // before observing C status or invoking a throwing resource callback.
++        let output = MLXArray(result)
++        try batch.retainOutput(output,index:index)
++        try requireSuccess(status,operation:"snapshot \(operation) graph construction",check:check)
++        return output
++    }
++
++    private static func snapshotBoundary(communication: StreamOrDevice, gpu: StreamOrDevice,
++                                         check: () throws -> Void) throws {
++        // Observe BOTH statuses even if the first fails. A failed boundary
++        // poisons this batch and leaves every retained root with its owner.
++        let gpuStatus = mlx_synchronize(gpu.ctx)
++        let cpuStatus = mlx_synchronize(communication.ctx)
++        try check()
++        guard gpuStatus == 0, cpuStatus == 0 else {
++            throw ProbeError("Owned snapshot boundary failed: GPU=\(gpuStatus), CPU=\(cpuStatus)")
++        }
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkEntry.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkEntry.swift
+@@ -122,7 +122,8 @@
+                 report["nativeCacheBytesAfterRelease"] = Memory.cacheMemory
+                 report["guardMetrics"] = try JSONSerialization.jsonObject(with: canonicalJSONData(guardMetrics.snapshot()))
+                 report["guardObservationPolicy"] = remote != nil && arguments[0] != "--qualify-remote-mtp"
+-                    ? Gemma4MTPControlCounters.policy : Gemma4BenchmarkGuardInvocation.schema
++                    ? (remote?.snapshotPolicy == .ownedBatch ? Gemma4MTPPullSnapshotPolicy.batchObservationPolicy
++                        : Gemma4MTPControlCounters.policy) : Gemma4BenchmarkGuardInvocation.schema
+                 let result = try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys, .withoutEscapingSlashes])
+                 guard result.count <= 8_388_608 else { throw ProbeError("Gemma benchmark report exceeds8MiB") }
+                 return result
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullChannel.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullChannel.swift
+@@ -8,6 +8,7 @@
+     let role: Role
+     let peer: Int
+     let scopeSHA256: String
++    let snapshotPolicy: Gemma4MTPPullSnapshotPolicy
+     private(set) var sequence: UInt64 = 0
+     private var pending: Gemma4MTPPullRecord?
+     private var busy = false, failed = false
+@@ -18,7 +19,8 @@
+ 
+     init(collective: Collective, role: Role, targetRank: Int, scopeSHA256: String,
+          controlOperations: Gemma4MTPControlOperation? = nil,
+-         controlLifetimeCheck: (() throws -> Void)? = nil) throws {
++         controlLifetimeCheck: (() throws -> Void)? = nil,
++         snapshotPolicy: Gemma4MTPPullSnapshotPolicy = .perTensor) throws {
+         guard collective.size == 2, (0..<2).contains(targetRank),
+               collective.rank == (role == .target ? targetRank : 1-targetRank),
+               (controlOperations == nil) == (controlLifetimeCheck == nil),
+@@ -27,6 +29,7 @@
+         }
+         self.collective = collective; self.role = role; peer = 1-collective.rank; self.scopeSHA256 = scopeSHA256
+         self.controlOperations = controlOperations; self.controlLifetimeCheck = controlLifetimeCheck
++        self.snapshotPolicy = snapshotPolicy
+     }
+     func exchange(_ command: Gemma4MTPPullRecord, expecting: Gemma4MTPPullRecord.Kind,
+                   transfer: () throws -> Void = {}, check: () throws -> Void) throws -> Gemma4MTPPullRecord {
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullQualification.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullQualification.swift
+@@ -36,7 +36,8 @@
+                     try checked()
+                     // Round every live receive/assembly and sender-pack term;
+                     // this is a finite fixture allowance, not a serving profile.
+-                    let plan = try Gemma4MTPPullTransferPlan(frontier:1031,hiddenDType:1)
++                    let plan = try Gemma4MTPPullTransferPlan(frontier:1031,
++                        hiddenDType:input.snapshotPolicy == .ownedBatch ? 3 : 1)
+                     let named = try QwenLongPrefillCheckedBytes.sum((plan.receiverRoots+plan.senderAdditional).map {
+                         try QwenResidentResourceEnvironment.allocationBound($0.bytes)
+                     })
+@@ -52,12 +53,12 @@
+                         try autoreleasepool { try Gemma4MTPPullQualificationFaults.frame(ordinal,input:input,group:group,check:checked) }
+                     }
+                     try roots.releaseCompleted(check:checked)
+-                    guard roots.capture == nil, roots.staging == nil, roots.batch == nil else { throw ProbeError("Tiny pull roots did not retire") }
++                    guard roots.capture == nil, roots.staging == nil, roots.batch == nil, roots.snapshotBatch == nil else { throw ProbeError("Tiny pull roots did not retire") }
+                     try Gemma4MTPPullQualificationSupport.barrier("all-fixture-roots-retired",input:input,group:group,check:checked)
+                     roots.group = nil
+                     Memory.clearCache(); try checked()
+-                    return try JSONSerialization.data(withJSONObject:[
+-                        "schema":"gemma4_remote_mtp_pull_qualification_v1","configuration":JSONSerialization.jsonObject(with:canonicalJSONData(input.job)),
++                    var report: [String:Any] = [
++                        "schema":"gemma4_remote_mtp_pull_qualification_v1","configuration":try JSONSerialization.jsonObject(with:canonicalJSONData(input.job)),
+                         "scopeSHA256":input.scopeSHA256,"role":input.job.role,"rank":group.rank,
+                         "passed":true,"groups":Gemma4MTPPullQualificationSupport.labels,"groupCount":5,
+                         "snapshotFrontiers":[3,1031,3],"completedSnapshotTransfers":21,"receiverRetainedRootLimit":9,
+@@ -70,7 +71,17 @@
+                         "originalProcessRetirementEstablished":false,"allFixtureRootsRetired":true,
+                         "nativeReserveBytes":reserve,"hostReserveBytes":host,"minimumActualFreeBytes":minimumFree,
+                         "peakExtraActiveBytes":peakExtra,"resourceObservations":observations,
+-                        "wholeProcessPeakBoundEstablished":false],options:[.sortedKeys,.withoutEscapingSlashes])
++                        "wholeProcessPeakBoundEstablished":false]
++                    if input.snapshotPolicy == .ownedBatch {
++                        report["schema"] = "gemma4_remote_mtp_owned_batch_qualification_v1"
++                        report["snapshotTransferPolicy"] = input.snapshotPolicy.rawValue
++                        report["injectedPreassemblyCheckFailure"] = true
++                        report["perSnapshotTransferCount"] = 7
++                        report["perSnapshotCheckedBoundaryCount"] = 2
++                        report["hiddenDTypesQualified"] = ["bfloat16","float16","float32"]
++                        report["noncontiguousFullHeadProducers"] = true
++                    }
++                    return try JSONSerialization.data(withJSONObject:report,options:[.sortedKeys,.withoutEscapingSlashes])
+                 } catch { roots.retainFailure(); throw error }
+             }
+         }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullQualificationFaults.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullQualificationFaults.swift
+@@ -6,23 +6,47 @@
+     private enum Injected: Error { case afterReceive }
+     static func receiveRetention(input: Gemma4RemoteMTPInput, group: Collective,
+                                  roots: Gemma4MTPPullQualificationRoots, check: () throws -> Void) throws {
+-        let plan = try Gemma4MTPPullTransferPlan(frontier:3,hiddenDType:1)
++        let hiddenDType = input.snapshotPolicy == .ownedBatch ? 3 : 1
++        let plan = try Gemma4MTPPullTransferPlan(frontier:3,hiddenDType:hiddenDType)
+         let wire = sha256(Data("receive-retention\n\(input.scopeSHA256)".utf8))
+-        let channel = try Gemma4MTPPullChannel(collective:group,role:group.rank == 1 ? .target : .assistant,targetRank:1,scopeSHA256:wire)
++        let channel = try Gemma4MTPPullChannel(collective:group,role:group.rank == 1 ? .target : .assistant,targetRank:1,scopeSHA256:wire,
++            snapshotPolicy:input.snapshotPolicy)
+         if group.rank == 1 {
+-            roots.capture = try Gemma4MTPPullQualificationSupport.capture(frontier:3,check:check)
++            roots.capture = try Gemma4MTPPullQualificationSupport.capture(frontier:3,hiddenDType:hiddenDType,
++                noncontiguousFull:input.snapshotPolicy == .ownedBatch,check:check)
+             eval(roots.capture!.evaluationRoots); try Gemma4MTPPullNativeFence.join(check:check)
+-            try Gemma4MTPPullSnapshot.send(roots.capture!,through:channel,plan:plan,check:check)
++            if input.snapshotPolicy == .ownedBatch {
++                roots.snapshotBatch = try Gemma4MTPPullSnapshotBatch(plan:plan,direction:.send)
++            }
++            try Gemma4MTPPullSnapshot.send(roots.capture!,through:channel,plan:plan,batch:roots.snapshotBatch,check:check)
+         } else {
+             let staging = Gemma4MTPPullReceiveStaging(); roots.staging = staging
+             do {
+-                roots.capture = try Gemma4MTPPullSnapshot.receive(through:channel,plan:plan,staging:staging,check:check)
++                roots.capture = try Gemma4MTPPullSnapshot.receive(through:channel,plan:plan,staging:staging,check:{
++                    try check()
++                    if input.snapshotPolicy == .ownedBatch, staging.snapshotBatch?.completed == true {
++                        // All seven native receives/CPU and GPU boundaries passed,
++                        // but NO concatenation or capture publication occurred.
++                        throw Injected.afterReceive
++                    }
++                })
+                 // A single deterministic check failure after all seven actual
+                 // receives. This does not inject a driver/GPU/transport failure.
+                 throw Injected.afterReceive
+             } catch Injected.afterReceive {
+-                guard !staging.isEmpty, let capture = roots.capture else { throw ProbeError("Failure discarded receive staging") }
+-                try Gemma4MTPPullQualificationSupport.requireContents(capture,check:check)
++                guard !staging.isEmpty else { throw ProbeError("Failure discarded receive staging") }
++                if input.snapshotPolicy == .ownedBatch {
++                    guard roots.capture == nil, let batch = staging.snapshotBatch, batch.completed,
++                          batch.outputs.count == 7 else { throw ProbeError("Preassembly failure discarded actual receive roots") }
++                    for (array,value) in zip(batch.outputs,[1,2,2,3,3,4,5]) {
++                        let exact = all(array .== value)
++                        eval(exact); try Gemma4MTPPullNativeFence.join(check:check)
++                        guard exact.item(Bool.self) else { throw ProbeError("Retained batch root differs after injected failure") }
++                    }
++                } else {
++                    guard let capture = roots.capture else { throw ProbeError("Failure discarded receive capture") }
++                    try Gemma4MTPPullQualificationSupport.requireContents(capture,check:check)
++                }
+                 try Gemma4MTPPullNativeFence.join(check:check)
+             }
+         }
+@@ -37,7 +61,8 @@
+         let scope = try input.requestScope(3)
+         let branch = AsyncMTPProposalLedger.BranchID(scope:scope,ordinal:0,snapshotFrontier:3,
+             initialSeedToken:7,snapshotSHA256:sha256(Data("tiny-native-fault".utf8)))
+-        let channel = try Gemma4MTPPullChannel(collective:group,role:group.rank == 1 ? .target : .assistant,targetRank:1,scopeSHA256:wire)
++        let channel = try Gemma4MTPPullChannel(collective:group,role:group.rank == 1 ? .target : .assistant,targetRank:1,scopeSHA256:wire,
++            snapshotPolicy:input.snapshotPolicy)
+         if group.rank == 1 {
+             let frame = Record(kind:.finish,sequence:ordinal == 0 ? 1 : 0,scopeSHA256:wire,branch:branch)
+             var bytes = try frame.encode()
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullQualificationPipeline.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullQualificationPipeline.swift
+@@ -7,26 +7,32 @@
+     static func run(_ ordinal: Int, input: Gemma4RemoteMTPInput, group: Collective,
+                     roots: Gemma4MTPPullQualificationRoots, check: () throws -> Void) throws {
+         let frontier = ordinal == 0 ? 3 : 1031, maximum = frontier+8
++        let hiddenDType = input.snapshotPolicy == .ownedBatch ? ordinal+1 : 1
+         let scope = try input.requestScope(ordinal)
+         let requestSHA = sha256(Data("tiny-pull-fixture-\(ordinal)\n\(input.scopeSHA256)".utf8))
+         let wire = Record.scopeFingerprint(scope,requestSHA256:requestSHA,initialFrontier:frontier,maximumInputFrontier:maximum)
+-        let snapshot = Record.captureFingerprint(scope:wire,ordinal:0,frontier:frontier,seed:7,hiddenDType:1)
+-        let plan = try Gemma4MTPPullTransferPlan(frontier:frontier,hiddenDType:1)
+-        let channel = try Gemma4MTPPullChannel(collective:group,role:group.rank == 1 ? .target : .assistant,targetRank:1,scopeSHA256:wire)
++        let snapshot = Record.captureFingerprint(scope:wire,ordinal:0,frontier:frontier,seed:7,hiddenDType:hiddenDType)
++        let plan = try Gemma4MTPPullTransferPlan(frontier:frontier,hiddenDType:hiddenDType)
++        let channel = try Gemma4MTPPullChannel(collective:group,role:group.rank == 1 ? .target : .assistant,targetRank:1,scopeSHA256:wire,
++            snapshotPolicy:input.snapshotPolicy)
+         if group.rank == 1 {
+             var ledger = try AsyncMTPProposalLedger(scope:scope,inputFrontier:frontier,seedToken:7,
+                 maximumDraftTokens:2,maximumInputFrontier:maximum,vocabularySize:262_144)
+             let branch = try ledger.startBranch(snapshotFrontier:frontier,snapshotSHA256:snapshot)
+             func command(_ kind: Record.Kind) -> Record { .init(kind:kind,sequence:channel.sequence,scopeSHA256:wire,branch:branch) }
+-            roots.capture = try Gemma4MTPPullQualificationSupport.capture(frontier:frontier,check:check)
++            roots.capture = try Gemma4MTPPullQualificationSupport.capture(frontier:frontier,hiddenDType:hiddenDType,
++                noncontiguousFull:input.snapshotPolicy == .ownedBatch,check:check)
+             eval(roots.capture!.evaluationRoots); try Gemma4MTPPullNativeFence.join(check:check)
+-            var seed = command(.seed); seed.frontier = frontier; seed.seed = 7; seed.hiddenDType = 1
++            if input.snapshotPolicy == .ownedBatch {
++                roots.snapshotBatch = try Gemma4MTPPullSnapshotBatch(plan:plan,direction:.send)
++            }
++            var seed = command(.seed); seed.frontier = frontier; seed.seed = 7; seed.hiddenDType = hiddenDType
+             let seeded = try channel.exchange(seed,expecting:.seeded,transfer:{
+-                try Gemma4MTPPullSnapshot.send(roots.capture!,through:channel,plan:plan,check:check)
++                try Gemma4MTPPullSnapshot.send(roots.capture!,through:channel,plan:plan,batch:roots.snapshotBatch,check:check)
+             },check:check)
+             guard seeded == seed.changingKind(.seeded) else { throw ProbeError("Qualifier seed response differs") }
+             // Retain actual sender roots through the exact seeded response.
+-            roots.capture = nil
++            roots.snapshotBatch = nil; roots.capture = nil
+             let grant = try ledger.grant(2)
+             var credit = command(.credit); credit.frontier = frontier; credit.seed = 7
+             credit.firstPosition = grant.firstPosition; credit.count = grant.count
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullQualificationSupport.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullQualificationSupport.swift
+@@ -6,6 +6,7 @@
+     var group: Collective?
+     var capture: Gemma4OwnedMTPConditioning?
+     var staging: Gemma4MTPPullReceiveStaging?
++    var snapshotBatch: Gemma4MTPPullSnapshotBatch?
+     var batch: MLXArray?
+     private static let lock = NSLock()
+     nonisolated(unsafe) private static var failed: Gemma4MTPPullQualificationRoots?
+@@ -20,7 +21,7 @@
+     }
+     func releaseCompleted(check: () throws -> Void) throws {
+         try Gemma4MTPPullNativeFence.join(check:check)
+-        capture = nil; batch = nil; staging?.installedAfterFence(); staging = nil
++        capture = nil; batch = nil; snapshotBatch = nil; staging?.installedAfterFence(); staging = nil
+         try Gemma4MTPPullNativeFence.join(check:check)
+     }
+ }
+@@ -30,13 +31,22 @@
+     static let labels = ["seven-roots-queued-fenced-pull-finish", "queued-work-cancelled-after-fence",
+         "post-receive-check-failure-retains-roots", "stale-sequence-refused", "nonzero-padding-refused"]
+     static func require(_ value: Bool, _ message: String) throws { guard value else { throw ProbeError(message) } }
+-    static func capture(frontier: Int, check: () throws -> Void) throws -> Gemma4OwnedMTPConditioning {
++    static func capture(frontier: Int, hiddenDType: Int = 1, noncontiguousFull: Bool = false,
++                        check: () throws -> Void) throws -> Gemma4OwnedMTPConditioning {
+         try check()
++        guard (1...3).contains(hiddenDType) else { throw ProbeError("Tiny hidden dtype differs") }
++        let dtype: DType = hiddenDType == 1 ? .bfloat16 : (hiddenDType == 2 ? .float16 : .float32)
++        func full(_ value: Int) -> MLXArray {
++            if noncontiguousFull {
++                return MLXArray.full([1,2,512,frontier],values:MLXArray(value),dtype:.bfloat16).transposed(0,1,3,2)
++            }
++            return MLXArray.full([1,2,frontier,512],values:MLXArray(value),dtype:.bfloat16)
++        }
+         // Integer-valued BF16 roots give an independent exact comparison after
+         // the actual seven transfers, including full-head concatenations.
+-        return .init(frontier:frontier,hidden:MLXArray.ones([1,1,2816],dtype:.bfloat16),
+-            fullKeys:MLXArray.full([1,2,frontier,512],values:MLXArray(2),dtype:.bfloat16),
+-            fullValues:MLXArray.full([1,2,frontier,512],values:MLXArray(3),dtype:.bfloat16),
++        return .init(frontier:frontier,hidden:MLXArray.ones([1,1,2816],dtype:dtype),
++            fullKeys:full(2),
++            fullValues:full(3),
+             slidingKeys:MLXArray.full([1,8,min(frontier,1024),256],values:MLXArray(4),dtype:.bfloat16),
+             slidingValues:MLXArray.full([1,8,min(frontier,1024),256],values:MLXArray(5),dtype:.bfloat16))
+     }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullSnapshot.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullSnapshot.swift
+@@ -3,12 +3,17 @@
+ /// The original service retains this across failed receive/concatenation fences.
+ final class Gemma4MTPPullReceiveStaging {
+     private var roots: [MLXArray] = []
+-    var isEmpty: Bool { roots.isEmpty }
++    private(set) var snapshotBatch: Gemma4MTPPullSnapshotBatch?
++    var isEmpty: Bool { roots.isEmpty && snapshotBatch == nil }
++    func attach(_ batch: Gemma4MTPPullSnapshotBatch) throws {
++        guard isEmpty, batch.direction == .receive else { throw ProbeError("Receive staging already owns native work") }
++        snapshotBatch = batch
++    }
+     func retain(_ array: MLXArray) throws {
+-        guard roots.count < 9 else { throw ProbeError("Remote MTP receive staging exceeded its exact nine roots") }
++        guard roots.count + (snapshotBatch?.outputs.count ?? 0) < 9 else { throw ProbeError("Remote MTP receive staging exceeded its exact nine roots") }
+         roots.append(array)
+     }
+-    func installedAfterFence() { roots.removeAll() }
++    func installedAfterFence() { roots.removeAll(); snapshotBatch = nil }
+ }
+ 
+ enum Gemma4MTPPullSnapshot {
+@@ -33,8 +38,18 @@
+         }
+     }
+     static func send(_ capture: Gemma4OwnedMTPConditioning, through channel: Gemma4MTPPullChannel,
+-                     plan: Gemma4MTPPullTransferPlan, check: () throws -> Void) throws {
++                     plan: Gemma4MTPPullTransferPlan, batch: Gemma4MTPPullSnapshotBatch? = nil,
++                     check: () throws -> Void) throws {
+         try validate(capture, plan: plan)
++        if channel.snapshotPolicy == .ownedBatch {
++            guard let batch, batch.plan.frontier == plan.frontier, batch.plan.hiddenDType == plan.hiddenDType else {
++                throw ProbeError("Owned snapshot send requires original-target staging")
++            }
++            try channel.collective.sendOwnedSnapshotBatch(batch,capture:capture,to:channel.peer,check:check)
++            guard batch.completed else { throw ProbeError("Snapshot send batch did not complete") }
++            return
++        }
++        guard batch == nil else { throw ProbeError("Legacy snapshot cannot borrow batch staging") }
+         // The caller has already admitted plan.senderAdditional and holds the
+         // original evaluated capture until the actual seeded response arrives.
+         let c = channel.collective, peer = channel.peer, limit = plan.maximumSingleTransferBytes
+@@ -55,6 +70,9 @@
+                         staging: Gemma4MTPPullReceiveStaging,
+                         check: () throws -> Void) throws -> Gemma4OwnedMTPConditioning {
+         guard staging.isEmpty else { throw ProbeError("Remote MTP receive staging has not retired") }
++        if channel.snapshotPolicy == .ownedBatch {
++            return try receiveBatch(through:channel,plan:plan,staging:staging,check:check)
++        }
+         return try MLX.withError { native in
+             func checked() throws { try native.check(); try check(); try native.check() }
+             let c = channel.collective, peer = channel.peer, limit = plan.maximumSingleTransferBytes
+@@ -87,6 +105,31 @@
+             try validate(capture,plan:plan); return capture
+         }
+     }
++    private static func receiveBatch(through channel: Gemma4MTPPullChannel, plan: Gemma4MTPPullTransferPlan,
++                                     staging: Gemma4MTPPullReceiveStaging,
++                                     check: () throws -> Void) throws -> Gemma4OwnedMTPConditioning {
++        let batch = try Gemma4MTPPullSnapshotBatch(plan:plan,direction:.receive)
++        try staging.attach(batch) // Before the first C graph or evaluation.
++        return try MLX.withError { native in
++            func checked() throws { try native.check(); try check(); try native.check() }
++            try channel.collective.receiveOwnedSnapshotBatch(batch,from:channel.peer,check:checked)
++            guard batch.completed, batch.outputs.count == 7 else { throw ProbeError("Snapshot receive batch did not complete") }
++            try checked()
++            // All seven receives were individually validated as owned, compact,
++            // zero-offset arrays BEFORE these two aliases/assemblies exist.
++            var full: [MLXArray] = []
++            for start in [1,3] {
++                let tensor = concatenated([batch.outputs[start],batch.outputs[start+1]],axis:1)
++                try staging.retain(tensor)
++                eval(tensor); try Gemma4MTPPullNativeFence.join(check:checked)
++                full.append(tensor)
++            }
++            let capture = Gemma4OwnedMTPConditioning(frontier:plan.frontier,hidden:batch.outputs[0],
++                fullKeys:full[0],fullValues:full[1],slidingKeys:batch.outputs[5],slidingValues:batch.outputs[6])
++            eval(capture.evaluationRoots); try Gemma4MTPPullNativeFence.join(check:checked)
++            try validate(capture,plan:plan); return capture
++        }
++    }
+     private static func validate(_ capture: Gemma4OwnedMTPConditioning, plan: Gemma4MTPPullTransferPlan) throws {
+         guard capture.frontier == plan.frontier, try typeCode(capture.hidden.dtype) == plan.hiddenDType,
+               capture.hidden.shape == [1,1,2816],
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullSnapshotBatch.swift
+@@ -0,0 +1,60 @@
++import MLX
++
++/// Attach to the ORIGINAL target/service before creating any graph. This object
++/// has no retry/reset/release method. On failure the original retirement path
++/// retains it, the capture and group. Success still waits for install/seeded ACK.
++final class Gemma4MTPPullSnapshotBatch {
++    enum Direction { case send, receive }
++    let direction: Direction
++    let plan: Gemma4MTPPullTransferPlan
++    let geometries: [CollectivePointToPointShape]
++    private(set) var inputs: [MLXArray] = []
++    private(set) var outputs: [MLXArray] = []
++    private(set) var progress = Gemma4MTPPullSnapshotBatchProgress()
++    // Set before ANY potentially throwing status/check after C construction.
++    private var pendingOutput: MLXArray?
++    var completed: Bool { progress.phase == .complete }
++
++    init(plan: Gemma4MTPPullTransferPlan, direction: Direction) throws {
++        self.plan = plan; self.direction = direction
++        let hidden: DType = plan.hiddenDType == 1 ? .bfloat16 : (plan.hiddenDType == 2 ? .float16 : .float32)
++        let shapes = [[1,1,2816]] + Array(repeating:[1,1,plan.frontier,512],count:4)
++            + Array(repeating:[1,8,min(plan.frontier,1024),256],count:2)
++        geometries = try shapes.enumerated().map { index, shape in
++            try CollectivePointToPointShape(shape:shape,dtype:index == 0 ? hidden : .bfloat16,
++                maximumBytes:plan.maximumSingleTransferBytes)
++        }
++        guard geometries.count == 7, plan.senderAdditional.count == 8, plan.receiverRoots.count == 9 else {
++            throw ProbeError("Owned snapshot batch has no exact seven-transfer allocation plan")
++        }
++    }
++    func begin() throws { try progress.begin() }
++    func prepare(_ capture: Gemma4OwnedMTPConditioning, check: () throws -> Void) throws {
++        guard direction == .send, progress.phase == .preparing, inputs.isEmpty else {
++            throw ProbeError("Owned snapshot producer preparation is out of turn")
++        }
++        // Retain each lazy slice before checking the native error box. The pinned
++        // Slice GPU implementation shares storage; CPU compact packs remain the
++        // original seven individually rounded senderAdditional terms.
++        inputs.append(capture.hidden); try check()
++        for tensor in [capture.fullKeys,capture.fullValues] {
++            for head in 0..<2 {
++                inputs.append(tensor[0...,head..<(head+1),0...,0...]); try check()
++            }
++        }
++        inputs.append(capture.slidingKeys); try check()
++        inputs.append(capture.slidingValues); try check()
++        guard inputs.count == geometries.count else { throw ProbeError("Snapshot producer count differs") }
++        for (shape,array) in zip(geometries,inputs) { try shape.validateMetadata(array) }
++    }
++    func preparedAfterFence() throws { try progress.preparedAfterFence() }
++    func requireNext(_ index: Int) throws { try progress.requireNext(index) }
++    func retainOutput(_ array: MLXArray, index: Int) throws {
++        pendingOutput = array
++        try progress.outputRetained(index)
++        outputs.append(array); pendingOutput = nil
++    }
++    func transferCompleted(_ index: Int) throws { try progress.transferCompleted(index) }
++    func finishAfterFence() throws { try progress.finishAfterFence() }
++    func poison() { progress.poison() }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullSnapshotPolicy.swift
+@@ -0,0 +1,53 @@
++import Foundation
++
++/// Explicit private experiment. Absence preserves all existing wire/scope bytes.
++enum Gemma4MTPPullSnapshotPolicy: String {
++    case perTensor = "gemma4_snapshot_per_tensor_v1"
++    case ownedBatch = "gemma4_owned_snapshot_batch_gpu_boundaries_v1"
++    static let batchObservationPolicy = "gemma4_remote_control_boundaries_owned_snapshot_v1"
++    init(requested: String?) throws {
++        if let requested {
++            guard requested == Self.ownedBatch.rawValue else {
++                throw Failure("Unsupported explicit snapshot transfer policy")
++            }
++            self = .ownedBatch
++        } else { self = .perTensor }
++    }
++    var scopeComponents: [String] { self == .perTensor ? [] : ["snapshotPolicy="+rawValue] }
++    struct Failure: Error { let reason: String; init(_ reason: String) { self.reason = reason } }
++}
++
++/// Scalar accounting for exactly seven ordered native transfers. Completion is
++/// set only after both actual boundary statuses and all seven CPU completions.
++/// It is not a release authority: roots remain with the original owner/ACK.
++struct Gemma4MTPPullSnapshotBatchProgress {
++    enum Phase: Equatable { case fresh, preparing, transferring, complete, failed }
++    private(set) var phase: Phase = .fresh
++    private(set) var retained = 0, completed = 0, boundaries = 0
++    mutating func begin() throws {
++        guard phase == .fresh else { throw failure() }
++        phase = .preparing
++    }
++    mutating func preparedAfterFence() throws {
++        guard phase == .preparing, retained == 0, completed == 0, boundaries == 0 else { throw failure() }
++        boundaries = 1; phase = .transferring
++    }
++    func requireNext(_ index: Int) throws {
++        guard phase == .transferring, (0..<7).contains(index), retained == index, completed == index else { throw failure() }
++    }
++    mutating func outputRetained(_ index: Int) throws {
++        try requireNext(index); retained += 1
++    }
++    mutating func transferCompleted(_ index: Int) throws {
++        guard phase == .transferring, (0..<7).contains(index), retained == index+1, completed == index else { throw failure() }
++        completed += 1
++    }
++    mutating func finishAfterFence() throws {
++        guard phase == .transferring, retained == 7, completed == 7, boundaries == 1 else { throw failure() }
++        boundaries = 2; phase = .complete
++    }
++    mutating func poison() { phase = .failed }
++    private func failure() -> Gemma4MTPPullSnapshotPolicy.Failure {
++        .init("Owned snapshot batch state/count differs; completion cannot authorize reuse")
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullTarget.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullTarget.swift
+@@ -18,6 +18,7 @@
+     private var activeWindow: AsyncMTPProposalLedger.Window?
+     // Retained until exact seeded ACK or actual original-owner retirement.
+     private var pendingCapture: Gemma4OwnedMTPConditioning?
++    private var pendingSnapshotBatch: Gemma4MTPPullSnapshotBatch?
+     private var highestProduced: Int
+     private var branchOrdinal: UInt64 = 0
+     private var failed = false, stopped = false
+@@ -39,7 +40,7 @@
+                 check: () throws -> Void) throws {
+         do {
+             try requireActive()
+-            guard ledger.canReseed, branch == nil, outstanding == nil, pendingCapture == nil,
++            guard ledger.canReseed, branch == nil, outstanding == nil, pendingCapture == nil, pendingSnapshotBatch == nil,
+                   session.committedTokens == ledger.inputFrontier else { throw ProbeError("Remote MTP reseed precedes exact branch retirement/frontier") }
+             let capture = try session.mtpConditioning(after:window,check:check)
+             let dtype = try Gemma4MTPPullSnapshot.typeCode(capture.hidden.dtype)
+@@ -53,12 +54,17 @@
+             var command = record(.seed,branch:id)
+             command.frontier = ledger.inputFrontier; command.seed = ledger.seedToken; command.hiddenDType = dtype
+             pendingCapture = capture
++            if channel.snapshotPolicy == .ownedBatch {
++                pendingSnapshotBatch = try Gemma4MTPPullSnapshotBatch(plan:plan,direction:.send)
++            }
+             let response = try withExtendedLifetime(capture) {
+                 try channel.exchange(command,expecting:.seeded,transfer:{
+-                    try Gemma4MTPPullSnapshot.send(capture,through:self.channel,plan:plan,check:check)
++                    try Gemma4MTPPullSnapshot.send(capture,through:self.channel,plan:plan,
++                        batch:self.pendingSnapshotBatch,check:check)
+                 },check:check)
+             }
+             try requireReply(response,command.changingKind(.seeded))
++            pendingSnapshotBatch = nil // Exact seeded response above; no early source release.
+             pendingCapture = nil
+             branchOrdinal += 1
+         } catch { failed = true; throw error }
+@@ -173,6 +179,7 @@
+         // The session may already be closed. Check both actual stream statuses
+         // again before releasing any failed transfer loan; no early-close inference.
+         try Gemma4MTPPullNativeFence.join(check:check)
++        pendingSnapshotBatch = nil // Both actual original-owner stream fences above.
+         pendingCapture = nil
+         if let activeWindow {
+             try ledger.targetAborted(activeWindow,evaluationCompleted:true,requestStateRetired:true)
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPAssistantRuntime.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPAssistantRuntime.swift
+@@ -58,7 +58,8 @@
+                 try autoreleasepool {
+                     let request = benchmark.requests[ordinal]
+                     let channel = try Gemma4MTPPullChannel(collective:group,role:.assistant,targetRank:1,scopeSHA256:input.wireScope(ordinal),
+-                        controlOperations:control.controlOperations,controlLifetimeCheck:auxiliary.checkControlLifetime)
++                        controlOperations:control.controlOperations,controlLifetimeCheck:auxiliary.checkControlLifetime,
++                        snapshotPolicy:input.snapshotPolicy)
+                     let service = try Gemma4MTPPullAssistant(channel:channel,scope:input.requestScope(ordinal),
+                         initialFrontier:request.promptCount+1,assistant:assistant.model,conditioning:conditioning,auxiliary:auxiliary)
+                     lifetime.service = service; releasedService = service
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPDriver.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPDriver.swift
+@@ -65,7 +65,8 @@
+                 primeTiming.targetExecutionNanoseconds = lastWindow!.executionNanoseconds
+                 widths.append(1); accepts.append(0)
+                 let channel = try Gemma4MTPPullChannel(collective:group,role:.target,targetRank:1,scopeSHA256:input.wireScope(ordinal),
+-                    controlOperations:controlOperations,controlLifetimeCheck:controlLifetimeCheck)
++                    controlOperations:controlOperations,controlLifetimeCheck:controlLifetimeCheck,
++                    snapshotPolicy:input.snapshotPolicy)
+                 let target = try Gemma4MTPPullTarget(channel:channel,scope:input.requestScope(ordinal),
+                     requestSHA256:input.resourceRequestSHA256,initialFrontier:session.committedTokens,
+                     initialSeed:selected.last!,maximumInputFrontier:request.finalCommittedTokens)
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPInput.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPInput.swift
+@@ -2,10 +2,12 @@
+ 
+ struct Gemma4RemoteMTPJob: Codable {
+     let schema: String, role: String
++    let snapshotPolicy: String?
+     let localMTPJob: String, localMTPJobSHA256: String
+     let targetNativeSHA256: String, assistantNativeSHA256: String, embeddingIdentitySHA256: String
+     var rank: Int { role == "target" ? 1 : 0 }
+     func validate() throws {
++        _ = try Gemma4MTPPullSnapshotPolicy(requested:snapshotPolicy)
+         guard schema == "gemma4_remote_mtp_cohort_job_v1", ["target","assistant"].contains(role),
+               [localMTPJobSHA256,targetNativeSHA256,assistantNativeSHA256,embeddingIdentitySHA256].allSatisfy(qwenStageWireIsSHA256),
+               localMTPJob.hasPrefix("/"), localMTPJob.utf8.count <= 2048, !localMTPJob.contains("\0"),
+@@ -23,6 +25,7 @@
+     let scopeSHA256: String
+     let denseProjectionEnabled: Bool
+     let verificationDepth: Gemma4RemoteMTPDepth
++    let snapshotPolicy: Gemma4MTPPullSnapshotPolicy
+     var benchmark: Gemma4BenchmarkInput { local.benchmark }
+     init(url: URL, denseProjectionEnabled: Bool = false,
+          headPolicy: Gemma4MTPDenseProjection.HeadPolicy = .serialM1) throws {
+@@ -41,6 +44,8 @@
+         }
+         self.job = job; self.local = local; self.denseProjectionEnabled = denseProjectionEnabled
+         self.verificationDepth = verificationDepth
++        let snapshotPolicy = try Gemma4MTPPullSnapshotPolicy(requested:job.snapshotPolicy)
++        self.snapshotPolicy = snapshotPolicy
+         // Local paths/role are intentionally excluded from the bilateral scope.
+         // Both exact local input files remain independently bound by parent jobs.
+         scopeSHA256 = sha256(Data((["gemma4_remote_mtp_cohort_v1",local.benchmark.job.membershipEpoch,
+@@ -49,7 +54,8 @@
+             local.benchmark.plan.fingerprint,local.benchmark.job.promptFileSHA256,
+             verificationDepth.scopeComponent,"buffer=5","targetRank=1","assistantRank=0",
+             "capture=\(local.job.captureEvidence)"]+local.benchmark.requests.map(\.fingerprint)
+-            + (local.targetProjectionPolicy.map { ["targetProjection="+$0] } ?? [])).joined(separator:"\n").utf8))
++            + (local.targetProjectionPolicy.map { ["targetProjection="+$0] } ?? [])
++            + snapshotPolicy.scopeComponents).joined(separator:"\n").utf8))
+     }
+     func requestScope(_ ordinal: Int) throws -> AsyncMTPProposalLedger.Scope {
+         guard benchmark.requests.indices.contains(ordinal), let epoch = UUID(uuidString:benchmark.job.membershipEpoch) else {
+@@ -86,6 +92,7 @@
+             "servingEnabled":false,"runtimeExecutionAuthorized":false,"numericalComparisonPerformed":false,
+             "physicalRetirementEstablished":false]
+         if let policy = local.targetProjectionPolicy { report["targetProjectionPolicy"] = policy }
++        if snapshotPolicy == .ownedBatch { report["snapshotTransferPolicy"] = snapshotPolicy.rawValue }
+         return try JSONSerialization.data(withJSONObject:report,options:[.sortedKeys,.withoutEscapingSlashes])
+     }
+ }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPRuntime.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPRuntime.swift
+@@ -43,9 +43,24 @@
+                     guard var result = try JSONSerialization.jsonObject(with:report) as? [String:Any] else {
+                         throw ProbeError("Remote MTP control report is not an object")
+                     }
+-                    result["controlResourceObservationPolicy"] = Gemma4MTPControlCounters.policy
+-                    result["controlResourceMetrics"] = try JSONSerialization.jsonObject(with:
+-                        canonicalJSONData(controlOperations.counters.snapshot()))
++                    if input.snapshotPolicy == .ownedBatch {
++                        result["snapshotTransferPolicy"] = input.snapshotPolicy.rawValue
++                    }
++                    guard var controlMetrics = try JSONSerialization.jsonObject(with:
++                        canonicalJSONData(controlOperations.counters.snapshot())) as? [String:Any] else {
++                        throw ProbeError("Remote MTP control counters are not an object")
++                    }
++                    if input.snapshotPolicy == .ownedBatch {
++                        // Control entry/exit counters and fences are unchanged;
++                        // the complete cohort now explicitly includes the new
++                        // snapshot completion/check chronology. Old readers fail.
++                        controlMetrics["schema"] = "gemma4_remote_control_resource_counters_owned_snapshot_v1"
++                        controlMetrics["policy"] = Gemma4MTPPullSnapshotPolicy.batchObservationPolicy
++                        controlMetrics["snapshotResourceCadenceChanged"] = true
++                        controlMetrics["nativeCompletionFencesChanged"] = true
++                        result["controlResourceObservationPolicy"] = Gemma4MTPPullSnapshotPolicy.batchObservationPolicy
++                    } else { result["controlResourceObservationPolicy"] = Gemma4MTPControlCounters.policy }
++                    result["controlResourceMetrics"] = controlMetrics
+                     return try JSONSerialization.data(withJSONObject:result,options:[.sortedKeys,.withoutEscapingSlashes])
+                 } catch {
+                     // Keep the original group and current model/request/protocol

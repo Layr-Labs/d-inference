@@ -1,0 +1,58 @@
+{
+  "schema": "gemma4_remote_mtp_qualification_sources_v1",
+  "sourceOnly": true,
+  "compilerExecuted": false,
+  "nativeExecuted": false,
+  "members": [
+    {
+      "path": "Entry/Gemma4BenchmarkEntry.before.swift.txt",
+      "bytes": 7650,
+      "sha256": "8c470ec15df205fd8cb34b72ccca2dbd7f3bd14830f668f74280c11a05722fd6"
+    },
+    {
+      "path": "Entry/Gemma4BenchmarkEntry.swift",
+      "bytes": 7905,
+      "sha256": "69335e23a7c30c182102bfdc9d565ecdd05041a8e4655df6f00e728c79c2bbba"
+    },
+    {
+      "path": "Entry/entry.patch",
+      "bytes": 1921,
+      "sha256": "4da11ca9efd2ea82f692458499028a058b8a557778ece4c8e66d8216e4517028"
+    },
+    {
+      "path": "HANDOFF.md",
+      "bytes": 3858,
+      "sha256": "bf1e78844c546c987d7404df51b9c2ef3bbe65596467448278fa0e6e9c96235b"
+    },
+    {
+      "path": "Runtime/Gemma4MTPPullQualification.swift",
+      "bytes": 5975,
+      "sha256": "06b65c66b6bb9717e4280491e1e7d8b3ee2f6bb3a21b00e4d33068d98cbb0794"
+    },
+    {
+      "path": "Runtime/Gemma4MTPPullQualificationFaults.swift",
+      "bytes": 4404,
+      "sha256": "ccab7745b1adbb635c3fb631888ec5fe33174d490a50208531857e2f49e43d1f"
+    },
+    {
+      "path": "Runtime/Gemma4MTPPullQualificationPipeline.swift",
+      "bytes": 7089,
+      "sha256": "6b7f337793f023689f7c0bb8b65c05a0bf7a3ab501590cc3c213fac8284e90a8"
+    },
+    {
+      "path": "Runtime/Gemma4MTPPullQualificationSupport.swift",
+      "bytes": 4043,
+      "sha256": "10a23a53c1590a4422b1c667e6bcd0b8f461db929f9792b64c002015e5167577"
+    },
+    {
+      "path": "compose.py",
+      "bytes": 2769,
+      "sha256": "1a3deb742b217c306ba6e597ede227fa1bc68d579ae07c19ce6c1ce5f0361d95"
+    },
+    {
+      "path": "integration.json",
+      "bytes": 2808,
+      "sha256": "7710fef4726569ab448a65109c295cb678632964e67885fe3eb0d567ac68e6b2"
+    }
+  ]
+}

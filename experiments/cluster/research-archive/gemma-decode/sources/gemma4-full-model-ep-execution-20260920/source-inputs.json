@@ -1,0 +1,409 @@
+{
+  "schema": "gemma4_full_model_ep_execution_source_v1",
+  "baseWorkspace": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/workspace",
+  "predecessor": "/Users/developer/DarkbloomDev/cluster-research/gemma4-full-model-ep-20260920/source-inputs.json",
+  "predecessorSHA256": "0551be93dca80120478b59b961dc241dca9ce97ce42bacfb340e0f5975094251",
+  "omitPredecessorOverlay": [
+    "Runtime/Gemma4BenchmarkResourceBudget.swift"
+  ],
+  "scope": "source_only_P32_C16_O2_full_and_two_full_state_expert_ranks",
+  "overlays": [
+    {
+      "candidate": "Runtime/Gemma4BenchmarkResourceBudget.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkResourceBudget.swift",
+      "sha256": "edbc4af31313031170aaa8f7b8f462c57c4951378b4260e2043ccdc34f0f1b20",
+      "bytes": 10736,
+      "original": "originals/Gemma4BenchmarkResourceBudget.swift",
+      "beforeSHA256": "f197d8efc8b1eebcae1a2df19484074c64741ca0d1c7fd6f467dd3903e4062e3",
+      "preimageStage": "qualifiedWorkspace"
+    },
+    {
+      "candidate": "Runtime/Gemma4ExpertCorrectnessDriver.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ExpertCorrectnessDriver.swift",
+      "sha256": "3814f8bc26496e207d4ddb5054c16f7640635c94a4146f1613f0a258cc5cc706",
+      "bytes": 4304,
+      "preimageStage": "absent"
+    },
+    {
+      "candidate": "Runtime/Gemma4ExpertCorrectnessEntry.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ExpertCorrectnessEntry.swift",
+      "sha256": "9f28f69477b9f04bbb1cd3e048d6e9218cba79142021e8f2de2bc11b287fd51b",
+      "bytes": 7964,
+      "preimageStage": "absent"
+    },
+    {
+      "candidate": "Runtime/Gemma4ExpertCorrectnessInput.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ExpertCorrectnessInput.swift",
+      "sha256": "175ca49fcdf89c46eb5b8c65e9796076fccdf2be54ec2f8b25d8e092b985c444",
+      "bytes": 5828,
+      "preimageStage": "absent"
+    },
+    {
+      "candidate": "Runtime/Gemma4ExpertCorrectnessReport.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ExpertCorrectnessReport.swift",
+      "sha256": "e675c067d963a5fae1b35413cf06d167f5dc2b9a8df9ab0b4b53ffcbd13503fe",
+      "bytes": 2821,
+      "preimageStage": "absent"
+    },
+    {
+      "candidate": "Runtime/Gemma4ExpertEncodingChecks.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ExpertEncodingChecks.swift",
+      "sha256": "3e131a0ffd020ac826da3f641b025a9e917b3d6db6664c1e1cae4ffb0d05c36a",
+      "bytes": 7608,
+      "preimageStage": "absent"
+    },
+    {
+      "candidate": "Runtime/Gemma4ExpertExchangeSchedule.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ExpertExchangeSchedule.swift",
+      "sha256": "4f641c379db2b0e337da5025e7ccb04672565b27940cde326863b4e50826d87d",
+      "bytes": 3402,
+      "preimageStage": "absent"
+    },
+    {
+      "candidate": "Runtime/Gemma4ExpertExecutionChecks.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ExpertExecutionChecks.swift",
+      "sha256": "889fda48ee01fccac3eca84db4531fd60b5d3f8d242baed7f44cd790f9634641",
+      "bytes": 7649,
+      "preimageStage": "absent"
+    },
+    {
+      "candidate": "Runtime/Gemma4ExpertMetadataChecks.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ExpertMetadataChecks.swift",
+      "sha256": "a4a7cf21341fb3d0b9d7bf6e7e4ad72327e5107fab23955dc740d7b17a11ceaa",
+      "bytes": 4752,
+      "original": "originals/Gemma4ExpertMetadataChecks.swift",
+      "beforeSHA256": "500e131b6b5f996b37a19379b41a1faaa04dc532d185a342490afe652354cef0",
+      "preimageStage": "after0551"
+    },
+    {
+      "candidate": "Runtime/Gemma4ExpertResourceTerms.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ExpertResourceTerms.swift",
+      "sha256": "673f23bb1f739d3d8e76f3ea0959a3b3fbe30db2f9685988655af9aa9910f50d",
+      "bytes": 4670,
+      "preimageStage": "absent"
+    },
+    {
+      "candidate": "Runtime/Gemma4ExpertWire.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ExpertWire.swift",
+      "sha256": "e060c6d98d41aeb61b1cec7f09a639277a577e689229a82d528206ab8a483c66",
+      "bytes": 9383,
+      "preimageStage": "absent"
+    },
+    {
+      "candidate": "Runtime/Gemma4ExpertWireCodec.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ExpertWireCodec.swift",
+      "sha256": "6b1565efe1542cb80c1fdeb35f92106fea6b84aa22df8cfa55642881b5bca209",
+      "bytes": 2526,
+      "preimageStage": "absent"
+    },
+    {
+      "candidate": "Runtime/Gemma4ExpertWirePayload.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ExpertWirePayload.swift",
+      "sha256": "6cb4a68e8bbe7d49f3fe9bc436579c14739c723bba89696eb6f2a115f2039c43",
+      "bytes": 3345,
+      "preimageStage": "absent"
+    },
+    {
+      "candidate": "Runtime/Gemma4RegisteredForwardEntry.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RegisteredForwardEntry.swift",
+      "sha256": "bb100dde32ad8a02ad7836deae7d0a67db96817e067917ad7f93b53d0a37f686",
+      "bytes": 4719,
+      "original": "originals/Gemma4RegisteredForwardEntry.swift",
+      "beforeSHA256": "40181b288dd7537b82e7cb15e85574eb4fd0aa4c06901863bc5dc424ff4b22f1",
+      "preimageStage": "qualifiedWorkspace"
+    },
+    {
+      "candidate": "Runtime/Gemma4ShortResourceBudget.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ShortResourceBudget.swift",
+      "sha256": "f0a6d85d08a9cee304f87fa039476d56ed3a4f4288ba1d728b75dd9c46678fb1",
+      "bytes": 9688,
+      "original": "originals/Gemma4ShortResourceBudget.swift",
+      "beforeSHA256": "5d58b543ac4e09e2b93c88443f286164cd7aa31c30d0126ae953d8720cae2f11",
+      "preimageStage": "after0551"
+    },
+    {
+      "candidate": "Runtime/Gemma4ShortResourceOwner.swift",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ShortResourceOwner.swift",
+      "sha256": "3a692413b51aed836573a4baef8c9a8a85c7806d5fc606d45e979f7e24978ab5",
+      "bytes": 12599,
+      "original": "originals/Gemma4ShortResourceOwner.swift",
+      "beforeSHA256": "43011820abe3ed7740655a4da25313fe0916a673c1164304d89712d1c5eeb22f",
+      "preimageStage": "qualifiedWorkspace"
+    },
+    {
+      "candidate": "Package.swift",
+      "destination": "libs/darkbloom-cluster-worker/Package.swift",
+      "sha256": "779c9254a674f5d410e05a17a744f8ff91e993ce57538ba3cfa40405ef298803",
+      "bytes": 5660,
+      "original": "originals/Package.swift",
+      "beforeSHA256": "4975784621a3a24bde9edb67bebf79e49949190b568a4d490202bfc666ce9652",
+      "preimageStage": "after0551"
+    },
+    {
+      "candidate": "Entry/Main.swift",
+      "destination": "libs/darkbloom-cluster-worker/Tests/GemmaExpertFullCorrectness/Main.swift",
+      "sha256": "705f9beecfb2a0a953bf621c49b48e9b480db3a9cd2c2248aa14fd2a72b7b25f",
+      "bytes": 473,
+      "preimageStage": "absent"
+    }
+  ],
+  "dependencies": [
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-full-model-ep-20260920/source-inputs.json",
+      "sha256": "0551be93dca80120478b59b961dc241dca9ce97ce42bacfb340e0f5975094251",
+      "bytes": 11427
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-full-model-ep-20260920/runtime.patch",
+      "sha256": "733bef506dda078559356b614c0e36d15507e242841d15779c181178a17e32a7",
+      "bytes": 52987
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-full-model-ep-20260920/Tests/check_source.py",
+      "sha256": "52727b852496220156982de0730135dfc3af701b2e3fc45b300a140278ba4fd5",
+      "bytes": 4057
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-full-model-ep-20260920/SDK/Gemma4Text.swift",
+      "sha256": "8b82122f7b0758d7efbc8b763738f9cb4cf9080deb8da4ca8209a8aa922a6ea2",
+      "bytes": 105893
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-full-model-ep-20260920/SDK/Gemma4ExpertParallelModel.swift",
+      "sha256": "63f1ed3a5fb61c3bcb1bfa1749cb4a0530c2d59884c1a3dccf146dc67ab8cc72",
+      "bytes": 7599
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/applied-fresh-guard-expert-prefill.json",
+      "sha256": "1dd0bfaf4fb7c9425eb631bfd45bfd25c4c3b2d87b7d9e9fd330acdb40fda33e",
+      "bytes": 10540
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-expert-prefill-bound-20260920/manifest.json",
+      "sha256": "96b09205616dc075d0efb09c6962a630f7e88ba14ee8a7b76e6613fe34b44a06",
+      "bytes": 3348
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertIDOwnership.swift",
+      "sha256": "27180d350d321bdf3cd9477a14b59ae821dc54108c490a3e3b2e25e8cb9e68f4",
+      "bytes": 4137
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertDispatchPlan.swift",
+      "sha256": "350bfc34545f540d66863c3b995b723c5b39952ade6e8e369af8b4a290697995",
+      "bytes": 4830
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisProjectionPolicy.swift",
+      "sha256": "973f19e23a461b2d9a637f7c4a938ebc98e4ffe1cbbfe233a6c0807e04033d38",
+      "bytes": 2803
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisQualificationLimits.swift",
+      "sha256": "5f5d0339660ca611757fb95b3ac83a09853c820b3dc9117e5dc05728fdf83372",
+      "bytes": 734
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/ExpertAxisRDMAResources.swift",
+      "sha256": "01d2fac5013557aea851ff2dd118bd760021700862547b18b372c30b71413a5a",
+      "bytes": 1447
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationAgreement.swift",
+      "sha256": "4ff030d6a92e4284dd20d3eaba57c7b7ff9dcd14fc328bb29d6a193882896230",
+      "bytes": 4060
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CheckpointAlignedReadAccounting.swift",
+      "sha256": "48249d16df9c8c4598b7cdd7660c49ad4420a613b7ad15ee06a21364a90abd3f",
+      "bytes": 5205
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ShortEvidence.swift",
+      "sha256": "3f27c5cfb7ea0a7609b05cfd7379f380fb0363162858076d7e451f96a0380f47",
+      "bytes": 3028
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ShortCapture.swift",
+      "sha256": "57255db7b1dd75e17208286164cddd3d04dd1c10364d680a19f84023593d8cf7",
+      "bytes": 3159
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ShortSidecars.swift",
+      "sha256": "594dd63121882c562032f570699afc2dd2200c3337681d54939a48806d1343b2",
+      "bytes": 4120
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ShortCheckInput.swift",
+      "sha256": "4464eccd4982107fda59095cebd5dadebfc3e2c1f8eaa00f1ef58bc4f3ed6724",
+      "bytes": 5565
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ForwardRequest.swift",
+      "sha256": "d23dc4887a9f6e42021b065dc59cb2b244ee154b59360f3a1478a029ec3c17d8",
+      "bytes": 4094
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/LayerAttentionStateLayout.swift",
+      "sha256": "4df3e03370eb98b4e9068759cf176f71fe221eab9cd52241a6d0cad69bf3000f",
+      "bytes": 4517
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/workspace/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenDenseStageLoadResources.swift",
+      "sha256": "a1ddaab9f875569542b4e17999a55e9afb928b83128d537379d922ab3b9b7bf4",
+      "bytes": 5483
+    }
+  ],
+  "files": [
+    {
+      "path": "Entry/Main.swift",
+      "bytes": 473,
+      "sha256": "705f9beecfb2a0a953bf621c49b48e9b480db3a9cd2c2248aa14fd2a72b7b25f"
+    },
+    {
+      "path": "HANDOFF.md",
+      "bytes": 7389,
+      "sha256": "9dbcea3c57f65fbf8c9d00f966de0d2fee6d7fa8ca3ef228493a2265f20b8c67"
+    },
+    {
+      "path": "Package.swift",
+      "bytes": 5660,
+      "sha256": "779c9254a674f5d410e05a17a744f8ff91e993ce57538ba3cfa40405ef298803"
+    },
+    {
+      "path": "Runtime/Gemma4BenchmarkResourceBudget.swift",
+      "bytes": 10736,
+      "sha256": "edbc4af31313031170aaa8f7b8f462c57c4951378b4260e2043ccdc34f0f1b20"
+    },
+    {
+      "path": "Runtime/Gemma4ExpertCorrectnessDriver.swift",
+      "bytes": 4304,
+      "sha256": "3814f8bc26496e207d4ddb5054c16f7640635c94a4146f1613f0a258cc5cc706"
+    },
+    {
+      "path": "Runtime/Gemma4ExpertCorrectnessEntry.swift",
+      "bytes": 7964,
+      "sha256": "9f28f69477b9f04bbb1cd3e048d6e9218cba79142021e8f2de2bc11b287fd51b"
+    },
+    {
+      "path": "Runtime/Gemma4ExpertCorrectnessInput.swift",
+      "bytes": 5828,
+      "sha256": "175ca49fcdf89c46eb5b8c65e9796076fccdf2be54ec2f8b25d8e092b985c444"
+    },
+    {
+      "path": "Runtime/Gemma4ExpertCorrectnessReport.swift",
+      "bytes": 2821,
+      "sha256": "e675c067d963a5fae1b35413cf06d167f5dc2b9a8df9ab0b4b53ffcbd13503fe"
+    },
+    {
+      "path": "Runtime/Gemma4ExpertEncodingChecks.swift",
+      "bytes": 7608,
+      "sha256": "3e131a0ffd020ac826da3f641b025a9e917b3d6db6664c1e1cae4ffb0d05c36a"
+    },
+    {
+      "path": "Runtime/Gemma4ExpertExchangeSchedule.swift",
+      "bytes": 3402,
+      "sha256": "4f641c379db2b0e337da5025e7ccb04672565b27940cde326863b4e50826d87d"
+    },
+    {
+      "path": "Runtime/Gemma4ExpertExecutionChecks.swift",
+      "bytes": 7649,
+      "sha256": "889fda48ee01fccac3eca84db4531fd60b5d3f8d242baed7f44cd790f9634641"
+    },
+    {
+      "path": "Runtime/Gemma4ExpertMetadataChecks.swift",
+      "bytes": 4752,
+      "sha256": "a4a7cf21341fb3d0b9d7bf6e7e4ad72327e5107fab23955dc740d7b17a11ceaa"
+    },
+    {
+      "path": "Runtime/Gemma4ExpertResourceTerms.swift",
+      "bytes": 4670,
+      "sha256": "673f23bb1f739d3d8e76f3ea0959a3b3fbe30db2f9685988655af9aa9910f50d"
+    },
+    {
+      "path": "Runtime/Gemma4ExpertWire.swift",
+      "bytes": 9383,
+      "sha256": "e060c6d98d41aeb61b1cec7f09a639277a577e689229a82d528206ab8a483c66"
+    },
+    {
+      "path": "Runtime/Gemma4ExpertWireCodec.swift",
+      "bytes": 2526,
+      "sha256": "6b1565efe1542cb80c1fdeb35f92106fea6b84aa22df8cfa55642881b5bca209"
+    },
+    {
+      "path": "Runtime/Gemma4ExpertWirePayload.swift",
+      "bytes": 3345,
+      "sha256": "6cb4a68e8bbe7d49f3fe9bc436579c14739c723bba89696eb6f2a115f2039c43"
+    },
+    {
+      "path": "Runtime/Gemma4RegisteredForwardEntry.swift",
+      "bytes": 4719,
+      "sha256": "bb100dde32ad8a02ad7836deae7d0a67db96817e067917ad7f93b53d0a37f686"
+    },
+    {
+      "path": "Runtime/Gemma4ShortResourceBudget.swift",
+      "bytes": 9688,
+      "sha256": "f0a6d85d08a9cee304f87fa039476d56ed3a4f4288ba1d728b75dd9c46678fb1"
+    },
+    {
+      "path": "Runtime/Gemma4ShortResourceOwner.swift",
+      "bytes": 12599,
+      "sha256": "3a692413b51aed836573a4baef8c9a8a85c7806d5fc606d45e979f7e24978ab5"
+    },
+    {
+      "path": "Tests/ExchangeScheduleChecks.swift",
+      "bytes": 3928,
+      "sha256": "872c41ada819881125bbc48061591fc66a8894c254065d00acf4cc520f826701"
+    },
+    {
+      "path": "Tests/check_source.py",
+      "bytes": 5426,
+      "sha256": "b9607c0a5e74e1ddd39ca667a02422129bbec2ecaa1cd1d2a24da4be384e88fc"
+    },
+    {
+      "path": "commands.json",
+      "bytes": 3112,
+      "sha256": "f0042d9a4dc593ba32bf30f8a362dd18996fe8e3e8100d523f477ce67992fc64"
+    },
+    {
+      "path": "job-template.json",
+      "bytes": 368,
+      "sha256": "46f7b1b294c9468c5015790dc9ed76cb994deb47f21217a23e4fd7dbc1d13891"
+    },
+    {
+      "path": "originals/Gemma4BenchmarkResourceBudget.swift",
+      "bytes": 10590,
+      "sha256": "f197d8efc8b1eebcae1a2df19484074c64741ca0d1c7fd6f467dd3903e4062e3"
+    },
+    {
+      "path": "originals/Gemma4ExpertMetadataChecks.swift",
+      "bytes": 4540,
+      "sha256": "500e131b6b5f996b37a19379b41a1faaa04dc532d185a342490afe652354cef0"
+    },
+    {
+      "path": "originals/Gemma4RegisteredForwardEntry.swift",
+      "bytes": 4451,
+      "sha256": "40181b288dd7537b82e7cb15e85574eb4fd0aa4c06901863bc5dc424ff4b22f1"
+    },
+    {
+      "path": "originals/Gemma4ShortResourceBudget.swift",
+      "bytes": 9345,
+      "sha256": "5d58b543ac4e09e2b93c88443f286164cd7aa31c30d0126ae953d8720cae2f11"
+    },
+    {
+      "path": "originals/Gemma4ShortResourceOwner.swift",
+      "bytes": 11819,
+      "sha256": "43011820abe3ed7740655a4da25313fe0916a673c1164304d89712d1c5eeb22f"
+    },
+    {
+      "path": "originals/Package.swift",
+      "bytes": 5345,
+      "sha256": "4975784621a3a24bde9edb67bebf79e49949190b568a4d490202bfc666ce9652"
+    },
+    {
+      "path": "runtime.patch",
+      "bytes": 76016,
+      "sha256": "de5772add114328e335eaa9923870ba16fbdbd25af2b423a90cb9fc3814fed42"
+    }
+  ]
+}

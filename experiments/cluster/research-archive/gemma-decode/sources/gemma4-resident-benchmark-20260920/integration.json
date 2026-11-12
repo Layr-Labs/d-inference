@@ -1,0 +1,134 @@
+{
+  "applyRequiresAllPreimagesBeforeAnyMutation": true,
+  "baseline": "/Users/developer/DarkbloomDev/cluster-research/gemma4-short-correctness-draft-20260916/build/workspace",
+  "compileRun": false,
+  "destinationOwnedByRoot": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/workspace",
+  "entries": [
+    {
+      "after": {
+        "bytes": 11263,
+        "sha256": "07758003deb548d531ff0cef5eaad7d6908f0dcfe7964a7e6c9343809587749f"
+      },
+      "before": null,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkDriver.swift",
+      "proposed": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkDriver.swift"
+    },
+    {
+      "after": {
+        "bytes": 3313,
+        "sha256": "d5503e5f3a0eaf8f335024b020d348d5688f6c9ed9f5dcf02906750b5db04c78"
+      },
+      "before": null,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkEntry.swift",
+      "proposed": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkEntry.swift"
+    },
+    {
+      "after": {
+        "bytes": 8803,
+        "sha256": "33b2dd5067c96cefdeb89510df24fb3f467b34918a1a882024351bd3a282d6f6"
+      },
+      "before": null,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkInput.swift",
+      "proposed": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkInput.swift"
+    },
+    {
+      "after": {
+        "bytes": 9362,
+        "sha256": "593bc7561d9fcf132f47288da11c1e778e98b31398741ab827488a9ff804d7a7"
+      },
+      "before": null,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkResourceBudget.swift",
+      "proposed": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkResourceBudget.swift"
+    },
+    {
+      "after": {
+        "bytes": 13810,
+        "sha256": "896e6872b339f3b61c77948dc2dadac80e3ea09b8fc9a5ca329a264e3b434e17"
+      },
+      "before": null,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkResourceOwner.swift",
+      "proposed": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkResourceOwner.swift"
+    },
+    {
+      "after": {
+        "bytes": 8934,
+        "sha256": "3c5c8fc2cb63757502dfa3ecc5b12990b481ba3282c59f1ad0aad5a9180bbf8a"
+      },
+      "before": null,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkRuntime.swift",
+      "proposed": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkRuntime.swift"
+    },
+    {
+      "after": {
+        "bytes": 4127,
+        "sha256": "f1a4ad42fece4379da063025fdb42826c2fc3647e7d19e400dac800b94e30360"
+      },
+      "before": null,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkSidecars.swift",
+      "proposed": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkSidecars.swift"
+    },
+    {
+      "after": {
+        "bytes": 5897,
+        "sha256": "0e7c9e5d9479b7b09c9c931d70fc9db511dca3407ac220143267985af71ab076"
+      },
+      "before": null,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkWire.swift",
+      "proposed": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkWire.swift"
+    },
+    {
+      "after": {
+        "bytes": 791,
+        "sha256": "546996ecc17d12b99174a95a75510f52959336da7567a6d7060a46ab75f09041"
+      },
+      "before": null,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkWireCodec.swift",
+      "proposed": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkWireCodec.swift"
+    },
+    {
+      "after": {
+        "bytes": 6754,
+        "sha256": "9165c767ff14ee6c6d79b7f9f11975847b5bc79ed5662976d02c515afe72e970"
+      },
+      "before": null,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkWirePayload.swift",
+      "proposed": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkWirePayload.swift"
+    },
+    {
+      "after": {
+        "bytes": 10510,
+        "sha256": "e79ec35cf051a8446be65178cf03de4df26c6d3cfc7291f60ba460a3520dc905"
+      },
+      "before": {
+        "bytes": 10333,
+        "sha256": "6840021ab22f477ef4c76ce1dc91ae60631d093758e0fa1ae8d757312fa5b299"
+      },
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4OwnedForwardSession.swift",
+      "proposed": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4OwnedForwardSession.swift"
+    },
+    {
+      "after": {
+        "bytes": 4468,
+        "sha256": "a722df087b729a2f7c9d96bf3bd81c12e647ae08ed447cae05f2540b67be57aa"
+      },
+      "before": {
+        "bytes": 4169,
+        "sha256": "9153fe51d0699221f91c191ccaaae0379cafafc87edf098a644f2ead9e2c6b6a"
+      },
+      "path": "libs/darkbloom-cluster-worker/Package.swift",
+      "proposed": "proposed/libs/darkbloom-cluster-worker/Package.swift"
+    },
+    {
+      "after": {
+        "bytes": 641,
+        "sha256": "1f562b0244f6cdf7de16b4ca484d53de19014e55e15bf0d209281c8790e80e56"
+      },
+      "before": null,
+      "path": "libs/darkbloom-cluster-worker/Tests/GemmaResidentBenchmark/Main.swift",
+      "proposed": "proposed/libs/darkbloom-cluster-worker/Tests/GemmaResidentBenchmark/Main.swift"
+    }
+  ],
+  "product": "GemmaResidentBenchmark",
+  "schema": "gemma4_resident_benchmark_source_integration_v1",
+  "sourceOnly": true
+}

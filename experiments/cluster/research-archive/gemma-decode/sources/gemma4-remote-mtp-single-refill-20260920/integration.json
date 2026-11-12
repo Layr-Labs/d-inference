@@ -1,0 +1,61 @@
+{
+  "baseSources": {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/build/remote-measurement-composition-1/sources.json",
+    "bytes": 90915,
+    "sha256": "9c764084bb1eeed46760267d844424908e22cdbb879f36223934b56054f91e50"
+  },
+  "files": [
+    {
+      "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPInput.swift",
+      "before": {
+        "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPInput.swift",
+        "bytes": 6522,
+        "sha256": "61418f1ddb568c9da112cc3e0daa5c36ea6323ab28c0aa254920968374fbeb81"
+      },
+      "source": {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-remote-mtp-single-refill-20260920/Runtime/Gemma4RemoteMTPInput.swift",
+        "bytes": 7207,
+        "sha256": "eb204aa714dcd0e03380042048a7daee5d919ab0a241aff40943cb05b4cb92cc"
+      }
+    },
+    {
+      "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullTarget.swift",
+      "before": {
+        "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullTarget.swift",
+        "bytes": 13578,
+        "sha256": "aff36e927b69979e4a57a23164b4fc9446d553f49487a5bd4fd8de983519d102"
+      },
+      "source": {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-remote-mtp-single-refill-20260920/Runtime/Gemma4MTPPullTarget.swift",
+        "bytes": 13895,
+        "sha256": "df9ca4fcf244bc262f04d13b425a52d058e552d5763ee46820085a94a738c27c"
+      }
+    },
+    {
+      "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPDriver.swift",
+      "before": {
+        "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPDriver.swift",
+        "bytes": 14617,
+        "sha256": "ee7e3c59ae773e2ddafa69fe592fe33e24aaf215d6292a89decda3cdc215e7f0"
+      },
+      "source": {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-remote-mtp-single-refill-20260920/Runtime/Gemma4RemoteMTPDriver.swift",
+        "bytes": 14686,
+        "sha256": "5a0cbb2dcf725a9de49807b640c27a497d2d8e50b113d4c3a7667fd5d3a8000e"
+      }
+    },
+    {
+      "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPRefillPolicy.swift",
+      "before": null,
+      "source": {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/gemma4-remote-mtp-single-refill-20260920/Runtime/Gemma4RemoteMTPRefillPolicy.swift",
+        "bytes": 1339,
+        "sha256": "b127ddd8e5f6f72f759286cb12ee8b70616bc4668b320356770bb95c89524952"
+      }
+    }
+  ],
+  "defaultChanged": false,
+  "exposedRefillOnly": true,
+  "lookaheadGrantChanged": false,
+  "nativeExecuted": false
+}

@@ -1,0 +1,954 @@
+--- /dev/null
++++ b/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4ExpertParallelModel.swift
+@@ -0,0 +1,135 @@
++import MLX
++import MLXLMCommon
++import MLXNN
++
++@_spi(ExpertParallel)
++public enum Gemma4ExpertParallelError: Error {
++    case invalidPartition, invalidInput, invalidCache, invalidExpertOutput, invalidNativeKV
++}
++
++/// Returns unweighted [tokens, global top-k slots, hidden] in the router's
++/// original slot order. The SDK retains the actual weights and applies the
++/// unchanged weightedExpertSum itself. No callback or request state is stored.
++@_spi(ExpertParallel)
++public typealias Gemma4ExpertUnweightedOperation =
++    (Int, MLXArray, MLXArray, MLXArray, SwitchGLU) throws -> MLXArray
++
++/// Both ranks retain the same full decoder topology. Only the sparse banks'
++/// expert axis differs. Construction is native work requiring the existing
++/// caller's load gate; this class creates no owner, stream, group, or permit.
++@_spi(ExpertParallel)
++public final class Gemma4ExpertParallelModel: Module {
++    public let configuration: Gemma4TextConfiguration
++    public let globalExpertIDs: [Int]
++    public let layerKinds: [CBv2LayerKind]
++    @ModuleInfo(key: "language_model") private var languageModel: Gemma4ExpertLanguageModel
++
++    public init(originalConfiguration: Gemma4Configuration, globalExpertIDs: [Int]) throws {
++        // Reuse the exact registered decoder/configuration validator. Its
++        // temporary metadata layout allocates no model or native arrays.
++        _ = try Gemma4LayerStageLayout(originalConfiguration: originalConfiguration,
++            rank: 0, sourceLayerRange: 0..<1)
++        let config = originalConfiguration.textConfig
++        guard !globalExpertIDs.isEmpty, globalExpertIDs.count < 128,
++              globalExpertIDs == globalExpertIDs.sorted(),
++              Set(globalExpertIDs).count == globalExpertIDs.count,
++              globalExpertIDs.allSatisfy({ (0..<128).contains($0) }) else {
++            throw Gemma4ExpertParallelError.invalidPartition
++        }
++        self.configuration = config; self.globalExpertIDs = globalExpertIDs
++        self.layerKinds = config.cbv2LayerKinds
++        self._languageModel.wrappedValue = try Gemma4ExpertLanguageModel(
++            configuration: config, localExpertCount: globalExpertIDs.count)
++        super.init()
++    }
++
++    public var loadedEmbeddingOutputDType: DType? {
++        guard let value = languageModel.model.embedTokens as? QuantizedEmbedding,
++              value.mode == .affine, value.bits == 4, value.groupSize == 64,
++              let biases = value.biases, value.scales.dtype == biases.dtype,
++              value.weight.dtype == .uint32,
++              [.float16, .bfloat16, .float32].contains(value.scales.dtype) else { return nil }
++        return value.scales.dtype
++    }
++
++    /// Graph construction over existing CBv2 rows; exactly the stage policy and
++    /// original decoder operation order. The owning session poisons/retires on
++    /// any throw, including a collective failure after a prior layer's KV write.
++    public func forward(tokens: [Int32], caches: [any CBv2AttendingLayerCache],
++                        phase: Gemma4LayerStagePhase,
++                        expertOperation: Gemma4ExpertUnweightedOperation) throws -> Gemma4LayerStageOutput {
++        guard (1...128).contains(tokens.count), phase == .prefill || tokens.count == 1,
++              tokens.allSatisfy({ $0 >= 0 && Int($0) < configuration.vocabSize }),
++              loadedEmbeddingOutputDType != nil else { throw Gemma4ExpertParallelError.invalidInput }
++        let legacy = caches.compactMap { $0 as? KVCache }
++        guard caches.count == layerKinds.count, legacy.count == caches.count,
++              zip(caches, layerKinds).allSatisfy({ $0.0.kind == $0.1 && $0.0.rows.count == 1 }),
++              Set(caches.map { ObjectIdentifier($0.rows[0]) }).count == caches.count,
++              Set(caches.map { $0.rows[0].absoluteOffset }).count == 1 else {
++            throw Gemma4ExpertParallelError.invalidCache
++        }
++        let input = MLXArray(tokens).reshaped([1, tokens.count])
++        var hidden = languageModel.model.embedTokens(input) * Float(configuration.hiddenSize).squareRoot()
++        var observations: [Gemma4LayerStageKVObservation] = []
++        for (index, layer) in languageModel.model.layers.enumerated() {
++            let policy = gemma4LayerPrefillPolicy(configuration, globalLayerIndex: index,
++                finalOutputLayerIndex: configuration.numHiddenLayers - 1, ownsFinalOutput: true,
++                schedulePrefill: phase == .prefill, isCBv2: true,
++                batchSize: hidden.dim(0), sequenceLength: hidden.dim(1), inputSequenceLength: tokens.count,
++                hasLastQueryCache: caches[index] is any CBv2LastQueryPrefillLayerCache)
++            let (output, kv, _) = try layer.callAsExpertParallel(hidden, cache: legacy[index],
++                outputTailRows: policy.outputTailRows, useLastQueryPrefill: policy.useLastQuery,
++                isExpertPrefill: policy.expertPrefill, expertOperation: expertOperation)
++            let kind = layerKinds[index]
++            let shape = [1, kind.kvHeads, tokens.count, kind.headDim]
++            guard kv.0.shape == shape, kv.1.shape == shape, kv.0.dtype == kv.1.dtype,
++                  [.float16, .bfloat16, .float32].contains(kv.0.dtype) else {
++                throw Gemma4ExpertParallelError.invalidNativeKV
++            }
++            observations.append(.init(localLayerIndex: index, globalLayerIndex: index,
++                keysDType: kv.0.dtype, valuesDType: kv.1.dtype, keysShape: kv.0.shape, valuesShape: kv.1.shape))
++            hidden = output
++            if policy.submitIntermediate {
++                asyncEval(hidden)
++                CBv2StepProfiler.recordEvent("v2.gemma4.prefill.chunk_eval")
++            }
++        }
++        return .init(residual: hidden, kvObservations: observations)
++    }
++
++    public func finalLogits(_ residual: MLXArray) throws -> MLXArray {
++        guard residual.ndim == 3, residual.dim(0) == 1, (1...128).contains(residual.dim(1)),
++              residual.dim(2) == configuration.hiddenSize, loadedEmbeddingOutputDType != nil,
++              [.float16, .bfloat16, .float32].contains(residual.dtype) else {
++            throw Gemma4ExpertParallelError.invalidInput
++        }
++        let normalized = languageModel.model.norm(residual)
++        let logits = languageModel.model.embedTokens.asLinear(normalized[0..., -1, 0...])
++        return gemma4CompiledLogitSoftcap(logits, MLXArray(configuration.finalLogitSoftcapping))
++    }
++}
++
++private final class Gemma4ExpertLanguageModel: Module {
++    @ModuleInfo(key: "model") var model: Gemma4ExpertTrunk
++    init(configuration: Gemma4TextConfiguration, localExpertCount: Int) throws {
++        self._model.wrappedValue = try Gemma4ExpertTrunk(configuration: configuration,
++            localExpertCount: localExpertCount)
++        super.init()
++    }
++}
++
++private final class Gemma4ExpertTrunk: Module {
++    @ModuleInfo(key: "embed_tokens") var embedTokens: Embedding
++    @ModuleInfo(key: "layers") var layers: [Gemma4DecoderLayer]
++    @ModuleInfo(key: "norm") var norm: RMSNorm
++    init(configuration: Gemma4TextConfiguration, localExpertCount: Int) throws {
++        self._embedTokens.wrappedValue = Embedding(embeddingCount: configuration.vocabSize,
++            dimensions: configuration.hiddenSize)
++        self._layers.wrappedValue = try (0..<configuration.numHiddenLayers).map {
++            try Gemma4DecoderLayer(expertParallelConfiguration: configuration,
++                layerIdx: $0, localExpertCount: localExpertCount)
++        }
++        self._norm.wrappedValue = RMSNorm(dimensions: configuration.hiddenSize, eps: configuration.rmsNormEps)
++        super.init()
++    }
++}
+--- a/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4Text.swift
++++ b/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4Text.swift
+@@ -1208,9 +1208,10 @@
+ 
+     init(
+         _ config: Gemma4TextConfiguration,
+-        fuseWeightedUnsort: Bool = false
++        fuseWeightedUnsort: Bool = false,
++        localExpertCount: Int? = nil
+     ) {
+-        let numExperts = config.numExperts ?? 1
++        let numExperts = localExpertCount ?? config.numExperts ?? 1
+         let moeIntermediate = config.moeIntermediateSize ?? config.intermediateSize
+         self.fuseWeightedUnsort = fuseWeightedUnsort
+ 
+@@ -1308,11 +1309,34 @@
+     @ModuleInfo(key: "layer_scalar") var layerScalar: MLXArray
+ 
+     let isMoE: Bool
+-
+-    public init(
++    private let expertParallelCount: Int?
++
++    public convenience init(
+         _ config: Gemma4TextConfiguration, layerIdx: Int, forceSharedKV: Bool = false,
+         fuseWeightedUnsort: Bool = false
+     ) {
++        self.init(config, layerIdx: layerIdx, forceSharedKV: forceSharedKV,
++            fuseWeightedUnsort: fuseWeightedUnsort, localExpertCount: nil)
++    }
++
++    /// Explicit private-fork constructor: only expert axis 0 is compacted.
++    /// Router and every nonexpert decoder module retain the original config.
++    @_spi(ExpertParallel)
++    public convenience init(expertParallelConfiguration config: Gemma4TextConfiguration,
++                            layerIdx: Int, localExpertCount: Int) throws {
++        guard gemma4SupportsProductionExpertTopology(config),
++              gemma4SupportsSafeExpertQMMQuantization(config),
++              (0..<config.numHiddenLayers).contains(layerIdx),
++              (1..<(config.numExperts ?? 0)).contains(localExpertCount) else {
++            throw Gemma4ExpertParallelError.invalidPartition
++        }
++        self.init(config, layerIdx: layerIdx, forceSharedKV: false,
++            fuseWeightedUnsort: false, localExpertCount: localExpertCount)
++    }
++
++    private init(_ config: Gemma4TextConfiguration, layerIdx: Int,
++                 forceSharedKV: Bool, fuseWeightedUnsort: Bool, localExpertCount: Int?) {
++        self.expertParallelCount = localExpertCount
+         self.config = config
+         self.layerIdx = layerIdx
+         self.layerType = config.layerTypes[layerIdx]
+@@ -1336,7 +1360,7 @@
+             self._router.wrappedValue = Gemma4Router(config)
+             self._experts.wrappedValue = Gemma4Experts(
+                 config,
+-                fuseWeightedUnsort: fuseWeightedUnsort)
++                fuseWeightedUnsort: fuseWeightedUnsort, localExpertCount: localExpertCount)
+             self._postFeedforwardLayernorm1.wrappedValue = RMSNorm(
+                 dimensions: config.hiddenSize, eps: config.rmsNormEps)
+             self._preFeedforwardLayernorm2.wrappedValue = RMSNorm(
+@@ -1371,6 +1395,57 @@
+         useLastQueryPrefill: Bool = false,
+         isExpertPrefill: Bool = false
+     ) -> (MLXArray, (MLXArray, MLXArray), Gemma4.PositionOffset) {
++        precondition(expertParallelCount == nil,
++            "Partitioned Gemma decoder requires the throwing expert-parallel entry")
++        return forwardWithExpertOperation(x, mask: mask, cache: cache, perLayerInput: perLayerInput,
++            sharedKV: sharedKV, positionOffset: positionOffset, v2SharedSource: v2SharedSource,
++            outputTailRows: outputTailRows, useLastQueryPrefill: useLastQueryPrefill,
++            isExpertPrefill: isExpertPrefill) { experts, input, ids, weights, prefill in
++            experts(input, topKIndices: ids, topKWeights: weights, isExpertPrefill: prefill)
++        }
++    }
++
++    /// Synchronous borrowed hook. A throw propagates before later layers and
++    /// before the caller's existing CBv2 state commit. It is never stored here.
++    @_spi(ExpertParallel)
++    public func callAsExpertParallel(
++        _ x: MLXArray, cache: KVCache,
++        outputTailRows: Int? = nil, useLastQueryPrefill: Bool = false,
++        isExpertPrefill: Bool = false,
++        expertOperation: Gemma4ExpertUnweightedOperation
++    ) throws -> (MLXArray, (MLXArray, MLXArray), Gemma4.PositionOffset) {
++        guard expertParallelCount != nil else { throw Gemma4ExpertParallelError.invalidPartition }
++        return try forwardWithExpertOperation(x, cache: cache,
++            outputTailRows: outputTailRows, useLastQueryPrefill: useLastQueryPrefill,
++            isExpertPrefill: isExpertPrefill) { experts, input, ids, weights, _ in
++                let (batch, rows, hidden) = (input.dim(0), input.dim(1), input.dim(2))
++                let topK = ids.dim(-1)
++                let unweighted = try expertOperation(self.layerIdx,
++                    input.reshaped(batch * rows, hidden), ids.reshaped(batch * rows, topK),
++                    weights.reshaped(batch * rows, topK), experts.switchGLU)
++                guard unweighted.shape == [batch * rows, topK, hidden],
++                      unweighted.dtype == input.dtype, weights.dtype == input.dtype else {
++                    throw Gemma4ExpertParallelError.invalidExpertOutput
++                }
++                // Exactly the original compiled reduction, in global top-k slot order.
++                return weightedExpertSum(unweighted, weights.reshaped(batch * rows, topK))
++                    .reshaped(batch, rows, hidden)
++            }
++    }
++
++    private func forwardWithExpertOperation(
++        _ x: MLXArray,
++        mask: MLXFast.ScaledDotProductAttentionMaskMode? = nil,
++        cache: KVCache? = nil,
++        perLayerInput: MLXArray? = nil,
++        sharedKV: (MLXArray, MLXArray)? = nil,
++        positionOffset: Gemma4.PositionOffset? = nil,
++        v2SharedSource: (any CBv2AttendingLayerCache)? = nil,
++        outputTailRows: Int? = nil,
++        useLastQueryPrefill: Bool = false,
++        isExpertPrefill: Bool = false,
++        expertOperation: (Gemma4Experts, MLXArray, MLXArray, MLXArray, Bool) throws -> MLXArray
++    ) rethrows -> (MLXArray, (MLXArray, MLXArray), Gemma4.PositionOffset) {
+         // Prompt-path narrowing (CBv2 only): attention and every K/V write
+         // still cover the full chunk; only the token-local work AFTER
+         // attention is restricted to the trailing rows CBv2 actually reads.
+@@ -1422,11 +1497,7 @@
+ 
+             let (topKIndices, topKWeights) = router(out)
+             var h2 = preFeedforwardLayernorm2(out)
+-            h2 = experts(
+-                h2,
+-                topKIndices: topKIndices,
+-                topKWeights: topKWeights,
+-                isExpertPrefill: isExpertPrefill)
++            h2 = try expertOperation(experts, h2, topKIndices, topKWeights, isExpertPrefill)
+             h2 = postFeedforwardLayernorm2(h2)
+ 
+             out = h1 + h2
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkResourceBudget.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkResourceBudget.swift
+@@ -42,6 +42,8 @@
+         let globals: [Int]
+         let ownsHead: Bool
+         switch target {
++        case .expertParallel:
++            throw ProbeError("Gemma EP requires a separately admitted replicated-state and expert-exchange budget")
+         case .fullReference: globals = Array(0..<30); ownsHead = true
+         case .stage(let rank): globals = plan.stages[rank].layers.map(\.globalIndex); ownsHead = rank == 1
+         }
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ExpertCollectiveContract.swift
+@@ -0,0 +1,65 @@
++import Foundation
++import MLX
++import MLXLMCommon
++
++/// Borrowed by the original state owner's forward closure. The implementation
++/// may evaluate/read real routes for correctness, but may not commit/retire
++/// cache state or mint an independent model/device owner.
++protocol Gemma4ExpertForwardOperation: AnyObject {
++    var partition: Gemma4ExpertPartition { get }
++    var binding: Gemma4ExpertInvocationBinding { get }
++    func unweighted(frame: QwenLayerStageFrame, layer: Int, input: MLXArray,
++                    globalIDs: MLXArray, weights: MLXArray, bank: SwitchGLU,
++                    check: () throws -> Void) throws -> MLXArray
++}
++
++struct Gemma4ExpertInvocationBinding: Codable, Equatable {
++    enum Purpose: String, Codable { case probe, request }
++    let purpose: Purpose
++    let requestID: UUID
++    let membershipEpoch: UUID
++    let requestSHA256: String
++    let artifactSHA256: String
++    let configurationSHA256: String
++    let rankBuildSHA256: [String]
++    let ownershipSHA256: String
++
++    func validate(partition: Gemma4ExpertPartition) throws {
++        guard [requestSHA256, artifactSHA256, configurationSHA256, ownershipSHA256]
++                .allSatisfy(qwenStageWireIsSHA256), rankBuildSHA256.count == 2,
++              rankBuildSHA256.allSatisfy(qwenStageWireIsSHA256),
++              ownershipSHA256 == sha256(try canonicalJSONData(partition.globalIDsByRank)) else {
++            throw ProbeError("Gemma EP invocation binding lacks exact request/build/ownership scope")
++        }
++    }
++}
++
++/// Rank-independent equality is mandatory before any output is accepted.
++/// This is identity metadata, not a source of clocks, trust, or admission.
++struct Gemma4ExpertLayerScope: Encodable, Equatable {
++    let binding: Gemma4ExpertInvocationBinding
++    let frame: QwenLayerStageFrame
++    let globalLayer: Int
++    let tokenCount: Int
++    let dtype: String
++    let routeSHA256: String
++    let inputSHA256: String
++    let weightsSHA256: String
++    let assignmentCounts: [Int]
++    let projectionPolicies: [ExpertAxisProjectionPolicy]
++}
++
++struct Gemma4ExpertPeerRows {
++    let scope: Gemma4ExpertLayerScope
++    let producerRank: Int
++    let array: MLXArray?
++}
++
++/// Implement on the already-owned Collective. Deterministic rank0-send-first,
++/// rank1-receive-first exchanges must use completed sends/receives and consumed
++/// ACKs; no weighted partials. A thrown exchange must poison that same group.
++/// The first slice intentionally supplies no second wire/group or owner.
++protocol Gemma4ExpertUnweightedExchange: AnyObject {
++    func exchange(scope: Gemma4ExpertLayerScope, localRank: Int,
++                  localRows: MLXArray?, check: () throws -> Void) throws -> Gemma4ExpertPeerRows
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ExpertCollectiveOperation.swift
+@@ -0,0 +1,103 @@
++import Foundation
++import MLX
++@_spi(ExpertParallel) import MLXLMCommon
++
++/// Correctness-first route boundary using actual CPU readback, never a claimed
++/// device-only dispatch or throughput result. No request/cache/device ownership.
++/// Caller must charge the complete <=128-token graph + host packet envelope and
++/// retain the exchange through the original session's retirement/cleanup.
++final class Gemma4ExpertCollectiveOperation: Gemma4ExpertForwardOperation {
++    let partition: Gemma4ExpertPartition
++    let binding: Gemma4ExpertInvocationBinding
++    private let exchange: any Gemma4ExpertUnweightedExchange
++
++    init(partition: Gemma4ExpertPartition, binding: Gemma4ExpertInvocationBinding,
++         exchange: any Gemma4ExpertUnweightedExchange) throws {
++        try binding.validate(partition: partition)
++        self.partition = partition; self.binding = binding; self.exchange = exchange
++    }
++
++    func unweighted(frame: QwenLayerStageFrame, layer: Int, input: MLXArray,
++                    globalIDs: MLXArray, weights: MLXArray, bank: SwitchGLU,
++                    check: () throws -> Void) throws -> MLXArray {
++        try check()
++        guard (0..<30).contains(layer), input.ndim == 2,
++              (1...128).contains(input.dim(0)), input.dim(1) == 2816,
++              input.dtype == .bfloat16, globalIDs.shape == [input.dim(0), 8],
++              globalIDs.dtype == .uint32, weights.shape == globalIDs.shape,
++              weights.dtype == input.dtype, !bank.hasFusedGateUp,
++              (1...128).contains(frame.tokenCount),
++              (input.dim(0) == frame.tokenCount || (layer == 29 && frame.phase == .prefill
++                && input.dim(0) < frame.tokenCount)) else {
++            throw ProbeError("Gemma EP actual decoder/router geometry exceeds its explicit envelope")
++        }
++        // The existing owner's MLX fault/deadline check is passed through every
++        // eval/read/transport boundary. Native errors retain outer precedence.
++        eval(input, globalIDs, weights); try check()
++        let flat = globalIDs.asArray(UInt32.self); try check()
++        let selected = (0..<input.dim(0)).map { row in
++            (0..<8).map { Int(flat[row * 8 + $0]) }
++        }
++        let ownership = try partition.ownership()
++        // Reuse the exact pure map and kernel policy. Unlike the standalone
++        // prepared primitive, do not create a second copy of global router IDs
++        // or unused peer index tensors: the real router arrays already exist.
++        let plan = try ExpertDispatchPlan(ownership: ownership, selectedGlobalIDs: selected,
++            maxAssignments: ExpertAxisQualificationLimits.maximumAssignments)
++        let policies = try (0..<2).map { rank in
++            try ExpertAxisProjectionPolicy(globalAssignments: plan.assignmentCount,
++                globalExperts: 128, ownedExperts: partition.globalIDsByRank[rank].count,
++                localAssignments: plan.assignmentCountsByRank[rank])
++        }
++        let policy = policies[partition.rank]
++        let assignments = plan.assignmentsByRank[partition.rank]
++        let padded = try policy.padded(assignments)
++        let local: MLXArray?
++        if padded.isEmpty { local = nil }
++        else {
++            let rows = MLXArray(padded.map { UInt32($0.tokenIndex) })
++            let ids = MLXArray(padded.map { UInt32($0.localExpertID) }).reshaped(padded.count, 1)
++            eval(rows, ids); try check()
++            let output = bank.callAsPartition(input.take(rows, axis: 0), ids,
++                sortAssignments: policy.sortAssignments, sortedProjection: policy.sortedProjection)
++                .reshaped(padded.count, 2816)
++            local = policy.paddedAssignments == 0 ? output : output[..<assignments.count, 0...]
++        }
++        if let local { eval(local); try check() }
++        let inputSHA = sha256(input.asData(access: .copy).data); try check()
++        let weightsSHA = sha256(weights.asData(access: .copy).data); try check()
++        let scope = Gemma4ExpertLayerScope(binding: binding, frame: frame, globalLayer: layer,
++            tokenCount: input.dim(0), dtype: String(describing: input.dtype),
++            routeSHA256: sha256(try canonicalJSONData(selected)), inputSHA256: inputSHA,
++            weightsSHA256: weightsSHA, assignmentCounts: plan.assignmentCountsByRank,
++            projectionPolicies: policies)
++        // Keep local storage through actual consumed ACK, as required by the
++        // existing completed-send + strict frame protocol. No fire-and-forget.
++        let peer = try withExtendedLifetime(local) {
++            try exchange.exchange(scope: scope, localRank: partition.rank, localRows: local, check: check)
++        }
++        try check()
++        guard peer.scope == scope, peer.producerRank == 1 - partition.rank else {
++            throw ProbeError("Gemma EP peer frame/route/input/weight/ownership identity differs")
++        }
++        var byRank: [MLXArray?] = [nil, nil]
++        byRank[partition.rank] = local; byRank[peer.producerRank] = peer.array
++        for rank in 0..<2 {
++            let count = plan.assignmentCountsByRank[rank]
++            if count == 0 {
++                guard case .none = byRank[rank] else { throw ProbeError("Gemma EP empty rank returned rows") }
++            } else {
++                guard let value = byRank[rank], value.shape == [count, 2816], value.dtype == input.dtype else {
++                    throw ProbeError("Gemma EP returned rows contain padding or wrong shape/type")
++                }
++            }
++        }
++        let order = MLXArray(try plan.reassemblyIndices(
++            returnedByRank: plan.assignmentsByRank).map(UInt32.init))
++        eval(order); try check()
++        let outputs = byRank.compactMap { $0 }
++        guard !outputs.isEmpty else { throw ProbeError("Gemma EP has no assignment outputs") }
++        let joined = outputs.count == 1 ? outputs[0] : concatenated(outputs, axis: 0)
++        return joined.take(order, axis: 0).reshaped(input.dim(0), 8, 2816)
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ExpertMetadataChecks.swift
+@@ -0,0 +1,67 @@
++import Foundation
++
++/// CPU metadata checks only. No constructor, eval, model payload, or Collective.
++public enum Gemma4ExpertMetadataChecks {
++    public static func run(directory: String) throws -> Data {
++        let root = URL(fileURLWithPath: directory, isDirectory: true)
++        func data(_ name: String) throws -> Data {
++            try BoundedProbeInput.data(root.appendingPathComponent(name), maximumBytes: 2_097_152)
++        }
++        let headers = try (1...3).map { index in
++            let name = String(format: "model-%05d-of-00003.safetensors", index)
++            return LayerStageCapturedTensorHeader(sourceFile: name, data: try data(name + ".header.json"))
++        }
++        let artifact = try Gemma4ArtifactMetadata.admit(configuration: data("config.json"),
++            manifest: data("manifest.json"), index: data("model.safetensors.index.json"), headers: headers)
++        let plan = try Gemma4LayerStagePlan(artifact: artifact, cut: 10)
++        let original = try Gemma4ForwardSelection.make(plan: plan, target: .fullReference)
++        var checks = 0
++        func require(_ value: Bool) throws {
++            guard value else { throw ProbeError("Gemma EP selected metadata control failed") }; checks += 1
++        }
++        func refuses(_ body: () throws -> Void) throws {
++            do { try body() } catch { checks += 1; return }
++            throw ProbeError("Gemma EP metadata control failed to refuse")
++        }
++        let maps = [[Array(0..<48), Array(48..<128)],
++                    [(0..<128).filter { $0 % 3 == 0 }, (0..<128).filter { $0 % 3 != 0 }]]
++        var reports: [[String: Any]] = []
++        for map in maps {
++            for rank in 0..<2 {
++                let partition = try Gemma4ExpertPartition(rank: rank, globalIDsByRank: map)
++                let selected = try Gemma4ForwardSelection.make(plan: plan, target: .expertParallel(partition))
++                try require(selected.count == 1339 && selected.map(\.localName) == original.map(\.localName))
++                var bytes = 0, replicated = 0, expert = 0
++                for (actual, before) in zip(selected, original) {
++                    try require(actual.source == before.source && actual.localName == before.localName
++                        && actual.sourceDType == before.sourceDType && actual.loadedDType == before.loadedDType)
++                    if Gemma4ExpertSelection.expertNames.contains(actual.localName) {
++                        try require(actual.selectedShape == [map[rank].count] + Array(before.selectedShape.dropFirst()))
++                        try require(actual.selection == .axis(0, partition.ownership().expertRanges(rank: rank)))
++                        expert += actual.selectedByteCount
++                    } else {
++                        try require(actual.selection == .all && actual.selectedShape == before.selectedShape
++                            && actual.selectedByteCount == before.selectedByteCount)
++                        replicated += actual.selectedByteCount
++                    }
++                    bytes += actual.selectedByteCount
++                }
++                try require(replicated == 1_621_321_788 && expert == map[rank].count * 30 * 3_345_408)
++                let item = selected.first { Gemma4ExpertSelection.expertNames.contains($0.localName) }!
++                var progress = Gemma4OrderedLoadProgress(expected: [item])
++                let wrong = try Gemma4SelectedTensor(source: item.source, localName: item.localName)
++                try refuses { try progress.begin(wrong) }
++                try require(progress.failed && progress.completed == 0 && progress.pending == nil)
++                let request = try Gemma4ForwardRequest.make(requestID: UUID(), tokens: Array(repeating: 0, count: 32),
++                    chunkSize: 16, outputCount: 2, stopTokenIDs: [], observedResidualDType: .bfloat16)
++                try refuses { _ = try Gemma4ShortResourceBudget.derive(plan: plan, target: .expertParallel(partition),
++                    request: request, bound: { $0 }) }
++                reports.append(["rank":rank, "ownedExperts":map[rank].count, "selectedBytes":bytes,
++                    "replicatedBytes":replicated, "expertBytes":expert, "partitionSHA256":partition.fingerprint])
++            }
++        }
++        return try JSONSerialization.data(withJSONObject: ["schema":"gemma4_expert_metadata_checks_v1",
++            "checks":checks, "ranks":reports, "modelConstructed":false, "payloadRead":false,
++            "nativeExecutionAuthorized":false], options:[.sortedKeys])
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ExpertPartition.swift
+@@ -0,0 +1,25 @@
++import Foundation
++
++/// Bounded global ownership, separate from any measured placement/capacity claim.
++/// Arbitrary increasing IDs support contiguous48/80 and interleaved43/85 alike.
++struct Gemma4ExpertPartition: Equatable, Sendable {
++    let rank: Int
++    let globalIDsByRank: [[Int]]
++    var ownedIDs: [Int] { globalIDsByRank[rank] }
++    var bindingText: String {
++        "gemma4_expert_axis0_v1|128|8|30|\(rank)|" + globalIDsByRank.map {
++            $0.map(String.init).joined(separator: ",")
++        }.joined(separator: "|")
++    }
++    init(rank: Int, globalIDsByRank: [[Int]]) throws {
++        guard globalIDsByRank.count == 2, (0...1).contains(rank),
++              globalIDsByRank.allSatisfy({ (1...127).contains($0.count) }) else {
++            throw ExpertDispatchError.invalidOwnership
++        }
++        _ = try ExpertIDOwnership(expertCount: 128, globalIDsByRank: globalIDsByRank)
++        self.rank = rank; self.globalIDsByRank = globalIDsByRank
++    }
++    func ownership() throws -> ExpertIDOwnership {
++        try .init(expertCount: 128, globalIDsByRank: globalIDsByRank)
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ExpertSelection.swift
+@@ -0,0 +1,38 @@
++import Foundation
++
++extension Gemma4ExpertPartition {
++    var fingerprint: String { sha256(Data(bindingText.utf8)) }
++}
++
++enum Gemma4ExpertSelection {
++    static let expertSuffixes = ["down_proj", "gate_proj", "up_proj"].flatMap { projection in
++        ["biases", "scales", "weight"].map { projection + "." + $0 }
++    }
++    static var expertNames: Set<String> {
++        Set((0..<30).flatMap { layer in expertSuffixes.map {
++            "language_model.model.layers.\(layer).experts.switch_glu.\($0)"
++        } })
++    }
++
++    static func make(plan: Gemma4LayerStagePlan, partition: Gemma4ExpertPartition) throws -> [Gemma4SelectedTensor] {
++        let original = try Gemma4ForwardSelection.make(plan: plan, target: .fullReference)
++        let expected = expertNames
++        let actual = Set(original.map(\.localName).filter { $0.contains(".experts.") })
++        guard actual == expected else { throw ProbeError("Gemma EP requires complete original split expert inventory") }
++        let selection = TensorSelection.axis(0, try partition.ownership().expertRanges(rank: partition.rank))
++        return try original.map { item in
++            guard expected.contains(item.localName) else { return item }
++            let suffix = String(item.localName.split(separator: ".").suffix(2).joined(separator: "."))
++            let packed = suffix.hasSuffix(".weight")
++            let divisor = packed ? 8 : 64
++            let shape = suffix.hasPrefix("down_proj.")
++                ? [128, 2816, 704 / divisor] : [128, 704, 2816 / divisor]
++            guard item.source.layout.shape == shape,
++                  item.source.layout.sourceDType == (packed ? "U32" : "BF16"),
++                  item.source.layout.byteCount == (try QwenLongPrefillCheckedBytes.product(shape + [packed ? 4 : 2])) else {
++                throw ProbeError("Gemma EP packed4/group64 source contract differs")
++            }
++            return try Gemma4SelectedTensor(source: item.source, localName: item.localName, selection: selection)
++        }
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ForwardModel.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ForwardModel.swift
+@@ -1,27 +1,30 @@
+ import Foundation
+ import MLX
+-import MLXLLM
++@_spi(ExpertParallel) import MLXLLM
+ import MLXLMCommon
+ import MLXNN
+ 
+ /// Both routes retain the original global decoder configuration. A selected
+-/// stage never constructs a compact Gemma config or slices an expert tensor.
++/// stage never constructs a compact Gemma config. Explicit EP keeps all global layers.
+ enum Gemma4ForwardModel {
+     case full(Gemma4Model)
+     case stage(Gemma4LayerStage)
++    case expertParallel(Gemma4ExpertParallelModel, Gemma4ExpertPartition)
+ 
+     var module: Module {
+-        switch self { case .full(let model): return model; case .stage(let model): return model }
++        switch self { case .full(let model): return model; case .stage(let model): return model; case .expertParallel(let model, _): return model }
+     }
+     var kinds: [CBv2LayerKind] {
+         switch self {
+         case .full(let model): return model.textModel.cbv2LayerKinds
++        case .expertParallel(let model, _): return model.layerKinds
+         case .stage(let model): return model.layout.layerKinds
+         }
+     }
+     var globals: [Int] {
+         switch self {
+         case .full(let model): return Array(model.textModel.cbv2LayerKinds.indices)
++        case .expertParallel(let model, _): return Array(model.layerKinds.indices)
+         case .stage(let model): return model.layout.globalLayerIndices
+         }
+     }
+@@ -34,6 +37,11 @@
+         return false
+     }
+ 
++    var expertPartition: Gemma4ExpertPartition? {
++        if case .expertParallel(_, let value) = self { return value }
++        return nil
++    }
++
+     func freshCaches() -> [any CBv2AttendingLayerCache] {
+         kinds.enumerated().map { CBv2LayerCache(layerIndex: $0.offset, kind: $0.element) }
+     }
+@@ -41,8 +49,30 @@
+     /// Native graph construction only. The shared state owner evaluates all
+     /// cache roots, checks the result, and commits the token frontier afterward.
+     func forward(tokens: [Int], residual: MLXArray?, frame: QwenLayerStageFrame,
+-                 caches: [any CBv2AttendingLayerCache], nativeTypes: [DType]?) throws -> MLXArray {
++                 caches: [any CBv2AttendingLayerCache], nativeTypes: [DType]?,
++                 expertOperation: (any Gemma4ExpertForwardOperation)? = nil,
++                 check: () throws -> Void = {}) throws -> MLXArray {
++        guard (expertOperation != nil) == (expertPartition != nil) else {
++            throw ProbeError("Gemma EP operation must match the explicitly partitioned model")
++        }
+         switch self {
++        case .expertParallel(let model, let partition):
++            guard case nil = residual, let expertOperation,
++                  expertOperation.partition == partition else {
++                throw ProbeError("Gemma EP operation/partition differs or residual ingress was supplied")
++            }
++            let output = try model.forward(tokens: tokens.map(Int32.init), caches: caches,
++                phase: frame.phase == .prefill ? .prefill : .decode) { layer, input, ids, weights, bank in
++                    try check()
++                    let result = try expertOperation.unweighted(frame: frame, layer: layer,
++                        input: input, globalIDs: ids, weights: weights, bank: bank, check: check)
++                    try check(); return result
++                }
++            if let nativeTypes { try output.requireKVDTypes(nativeTypes) }
++            if frame.phase == .prefill && !frame.finalPromptChunk {
++                return output.residual[0..., -1, 0..<1]
++            }
++            return try model.finalLogits(output.residual)
+         case .full(let model):
+             guard case nil = residual else { throw ProbeError("Full Gemma rejects residual ingress") }
+             let input = MLXArray(tokens.map(Int32.init)).reshaped([1, tokens.count])
+@@ -97,6 +127,14 @@
+                 throw ProbeError("Registered Gemma lacks original quantization")
+             }
+             policy = original
++        case .expertParallel(let partition):
++            model = .expertParallel(try Gemma4ExpertParallelModel(originalConfiguration: configuration,
++                globalExpertIDs: partition.ownedIDs), partition)
++            guard let original = try JSONDecoder().decode(BaseConfiguration.self,
++                from: source.artifact.originalConfiguration).perLayerQuantization else {
++                throw ProbeError("Registered Gemma EP lacks original quantization")
++            }
++            policy = original
+         case .stage(let rank):
+             guard source.plan.stages.indices.contains(rank) else { throw ProbeError("Unknown Gemma stage") }
+             let descriptor = source.plan.stages[rank]
+@@ -129,12 +167,12 @@
+             throw ProbeError("Registered Gemma constructor coverage differs from selected source")
+         }
+         for tensor in selected {
+-            guard let value = actual[tensor.localName], value.shape == tensor.source.layout.shape,
++            guard let value = actual[tensor.localName], value.shape == tensor.selectedShape,
+                   tensor.dtype.acceptsConstructor(nativeName: String(describing: value.dtype)) else {
+                 throw ProbeError("Registered Gemma constructor packed shape/class differs")
+             }
+         }
+-        let layout = selected.map { "\($0.localName):\($0.loadedDType):\($0.source.layout.shape)" }.sorted().joined(separator: "\n")
++        let layout = selected.map { "\($0.localName):\($0.loadedDType):\($0.selectedShape)" }.sorted().joined(separator: "\n")
+         return .init(source: source, target: target, model: model, selected: selected,
+             parameterLayoutSHA256: sha256(Data(layout.utf8)))
+     }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ForwardProbe.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ForwardProbe.swift
+@@ -25,11 +25,20 @@
+     func probe(incomingDType: DType? = nil,
+                incoming: ((CBv2NativeKVTypeProbe.Phase, Int) throws -> MLXArray)? = nil,
+                observeIngress: ((CBv2NativeKVTypeProbe.Phase, MLXArray) throws -> Void)? = nil,
++               expertOperation: (any Gemma4ExpertForwardOperation)? = nil,
+                check: () throws -> Void) throws -> Gemma4ForwardProbe {
+         guard model.isResidualConsumer == (incoming != nil),
+               model.isResidualConsumer == (incomingDType != nil),
+               incomingDType.map({ [.float16, .bfloat16, .float32].contains($0) }) ?? true else {
+             throw ProbeError("Gemma probe residual responsibility/type differs")
++        }
++        if let expertOperation {
++            guard expertOperation.binding.purpose == .probe,
++                  expertOperation.partition == model.expertPartition,
++                  expertOperation.binding.artifactSHA256 == receipt.artifactSHA256,
++                  expertOperation.binding.configurationSHA256 == receipt.configurationSHA256 else {
++                throw ProbeError("Gemma EP probe operation differs from actual model/source")
++            }
+         }
+         return try MLX.withError { native in
+             func checked() throws { try native.check(); try check(); try native.check() }
+@@ -56,7 +65,8 @@
+                                 tokenOffset: phase == .prefill ? 0 : 2, tokenCount: count,
+                                 finalPromptChunk: phase == .prefill)
+                             let output = try model.forward(tokens: Array(repeating: 0, count: count),
+-                                residual: residual, frame: frame, caches: bound, nativeTypes: nil)
++                                residual: residual, frame: frame, caches: bound, nativeTypes: nil,
++                                expertOperation: expertOperation, check: callbackChecked)
+                             try callbackChecked()
+                             if model.isIngressStage {
+                                 guard output.shape == [1, count, plan.artifact.text.hiddenSize],
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ForwardSelection.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ForwardSelection.swift
+@@ -3,22 +3,34 @@
+ enum Gemma4ForwardTarget: Equatable {
+     case fullReference
+     case stage(Int)
++    case expertParallel(Gemma4ExpertPartition)
+ }
+ 
+ struct Gemma4SelectedTensor {
+     let source: LayerStageSourceTensor
+     let localName: String
+     let dtype: Gemma4ForwardDType
++    let selection: TensorSelection
++    let selectedShape: [Int]
++    let selectedByteCount: Int
+     var sourceDType: String { dtype.nativeSourceName }
+     var loadedDType: String { dtype.nativeLoadedName }
+ 
+-    init(source: LayerStageSourceTensor, localName: String) throws {
++    init(source: LayerStageSourceTensor, localName: String, selection: TensorSelection = .all) throws {
+         self.source = source; self.localName = localName
+         dtype = try Gemma4ForwardDType(safetensorsName: source.layout.sourceDType)
++        self.selection = selection
++        selectedShape = try selection.resultShape(source.layout.shape)
++        let sourceElements = try QwenLongPrefillCheckedBytes.product(source.layout.shape)
++        guard sourceElements > 0, source.layout.byteCount % sourceElements == 0 else {
++            throw ProbeError("Gemma selected source byte width differs")
++        }
++        selectedByteCount = try QwenLongPrefillCheckedBytes.product(
++            selectedShape + [source.layout.byteCount / sourceElements])
+     }
+ }
+ 
+-/// One exact whole text inventory or one selected rank; never an expert slice.
++/// Original full/stage selection stays whole-tensor; explicit EP selects axis0 only.
+ enum Gemma4ForwardSelection {
+     static func make(plan: Gemma4LayerStagePlan, target: Gemma4ForwardTarget) throws -> [Gemma4SelectedTensor] {
+         let result: [Gemma4SelectedTensor]
+@@ -28,6 +40,8 @@
+             result = try plan.artifact.sources.filter { !excluded.contains($0.layout.canonicalName) }.map {
+                 try .init(source: $0, localName: $0.layout.canonicalName)
+             }
++        case .expertParallel(let partition):
++            result = try Gemma4ExpertSelection.make(plan: plan, partition: partition)
+         case .stage(let rank):
+             guard plan.stages.indices.contains(rank) else { throw ProbeError("Unknown Gemma stage") }
+             result = try plan.mappings.flatMap { mapping in
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4OrderedLoadProgress.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4OrderedLoadProgress.swift
+@@ -28,5 +28,7 @@
+     mutating func poison() { failed = true }
+     private func matches(_ a: Gemma4SelectedTensor, _ b: Gemma4SelectedTensor) -> Bool {
+         a.localName == b.localName && a.source == b.source && a.loadedDType == b.loadedDType
++            && a.selection == b.selection && a.selectedShape == b.selectedShape
++            && a.selectedByteCount == b.selectedByteCount
+     }
+ }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4OwnedForwardSession.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4OwnedForwardSession.swift
+@@ -12,6 +12,7 @@
+     private let state: CBv2OwnedRequestState
+     private let probe: Gemma4ForwardProbe
+     private let residualDType: DType
++    private let expertOperation: (any Gemma4ExpertForwardOperation)?
+     let request: QwenLayerStageGenerationRequest
+     private var schedule: QwenLayerStageGenerationSchedule
+ 
+@@ -21,6 +22,7 @@
+ 
+     init(loaded: Gemma4LoadedForwardModel, request: QwenLayerStageGenerationRequest,
+          probe: Gemma4ForwardProbe, residualDType: DType,
++         expertOperation: (any Gemma4ExpertForwardOperation)? = nil,
+          admitGeometry: (CBv2RequestGeometry) throws -> Void,
+          check: () throws -> Void) throws {
+         try check(); try Gemma4ForwardRequest.validate(request, dtype: residualDType)
+@@ -31,10 +33,23 @@
+               loaded.model.isResidualConsumer ? probe.incomingResidualDType == residualDType : true else {
+             throw ProbeError("Gemma model/probe/residual identity differs")
+         }
++        guard expertOperation?.partition == loaded.model.expertPartition else {
++            throw ProbeError("Gemma owned EP session requires its exact partition operation")
++        }
++        if let expertOperation {
++            guard expertOperation.binding.purpose == .request,
++                  expertOperation.binding.requestID == request.requestID,
++                  expertOperation.binding.requestSHA256 == request.fingerprint,
++                  expertOperation.binding.artifactSHA256 == loaded.receipt.artifactSHA256,
++                  expertOperation.binding.configurationSHA256 == loaded.receipt.configurationSHA256,
++                  request.chunkSize <= 128 else {
++                throw ProbeError("Gemma EP operation differs from actual admitted request/source")
++            }
++        }
+         let caches = loaded.model.freshCaches()
+         let geometry: CBv2RequestGeometry
+         switch loaded.target {
+-        case .fullReference:
++        case .fullReference, .expertParallel:
+             geometry = try .init(attentionKinds: loaded.model.kinds, caches: caches,
+                 observed: probe.observed, globalLayerIndices: loaded.model.globals,
+                 maximumTokens: request.maximumTokens, maximumChunkTokens: request.chunkSize)
+@@ -49,6 +64,7 @@
+         try admitGeometry(geometry); try check()
+         self.state = try .init(geometry: geometry, promptCount: request.promptCount, outputCount: request.outputCount)
+         self.loaded = loaded; self.request = request; self.probe = probe
++        self.expertOperation = expertOperation
+         self.residualDType = residualDType; schedule = .init(request: request)
+     }
+ 
+@@ -99,7 +115,8 @@
+                 try checked()
+                 let output = try state.run(tokenCount: tokens.count, observer: observer, check: checked, forward: { caches, _ in
+                     try self.loaded.model.forward(tokens: tokens, residual: incoming?.array,
+-                        frame: frame, caches: caches, nativeTypes: self.probe.observed.layerDTypes)
++                        frame: frame, caches: caches, nativeTypes: self.probe.observed.layerDTypes,
++                        expertOperation: self.expertOperation, check: checked)
+                 }, validateOutput: { array in
+                     let shape = self.loaded.model.isIngressStage ? [1, tokens.count, self.request.profile.hiddenSize]
+                         : [1, frame.phase == .prefill && !frame.finalPromptChunk ? 1 : self.request.profile.vocabularySize]
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RegisteredMaterialization.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RegisteredMaterialization.swift
+@@ -55,18 +55,18 @@
+                         guard let tensor = source.tensors[selected.source.layout.canonicalName] else {
+                             throw ProbeError("Verified Gemma source disappeared")
+                         }
+-                        let read = try tensor.read(.all)
++                        let read = try tensor.read(selected.selection)
+                         var array = read.array
+                         try checked()
+-                        guard array.shape == selected.source.layout.shape,
++                        guard array.shape == selected.selectedShape,
+                               String(describing: array.dtype) == selected.sourceDType else {
+                             throw ProbeError("Registered Gemma source array differs")
+                         }
+-                        // Registered artifact is already canonical split-expert
+-                        // storage. No whole-model sanitizer or slicing is needed.
++                        // The verified reader packs the selected expert axis0
++                        // ranges directly. No full-bank load or sanitizer fallback.
+                         if array.dtype == .float16 { array = array.asType(.bfloat16) }
+                         eval(array); Stream.gpu.synchronize(); try checked()
+-                        guard array.nbytes == selected.source.layout.byteCount,
++                        guard array.nbytes == selected.selectedByteCount,
+                               read.copiedBytes == array.nbytes,
+                               String(describing: array.dtype) == selected.loadedDType,
+                               let storage = try array.evaluatedBufferInfo(), storage.isUnique,
+@@ -90,7 +90,7 @@
+                 module.freeze(); try checked()
+                 let actual = module.parameters().flattened()
+                 let expectedBytes = try prepared.selected.reduce(0) {
+-                    try LayerAttentionStateLayout.sum($0, $1.source.layout.byteCount)
++                    try LayerAttentionStateLayout.sum($0, $1.selectedByteCount)
+                 }
+                 let layout = actual.map { "\($0.0):\($0.1.dtype):\($0.1.shape)" }.sorted().joined(separator: "\n")
+                 guard actual.count == prepared.selected.count,
+@@ -101,7 +101,7 @@
+                 }
+                 try source.checkpoint.checkUnchanged(); try checked()
+                 let target: String
+-                switch prepared.target { case .fullReference: target = "full-reference"; case .stage(let rank): target = "stage-\(rank)" }
++                switch prepared.target { case .fullReference: target = "full-reference"; case .expertParallel(let partition): target = "expert-rank-\(partition.rank):\(partition.fingerprint)"; case .stage(let rank): target = "stage-\(rank)" }
+                 let receipt = Gemma4ForwardLoadReceipt(
+                     artifactSHA256: source.checkpoint.aggregate,
+                     configurationSHA256: source.checkpoint.configurationSHA256,
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ShortResourceBudget.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ShortResourceBudget.swift
+@@ -41,6 +41,8 @@
+         let globals: [Int]
+         let ownsHead: Bool
+         switch target {
++        case .expertParallel:
++            throw ProbeError("Gemma EP requires a separately admitted replicated-state and expert-exchange budget")
+         case .fullReference: globals = Array(0..<30); ownsHead = true
+         case .stage(let rank): globals = plan.stages[rank].layers.map(\.globalIndex); ownsHead = rank == 1
+         }
+--- /dev/null
++++ b/libs/darkbloom-cluster-worker/Tests/GemmaExpertModelCheck/Main.swift
+@@ -0,0 +1,20 @@
++import Darwin
++import Foundation
++import DarkbloomClusterRuntime
++
++@main struct Main {
++    static func main() {
++        do {
++            let args = Array(CommandLine.arguments.dropFirst())
++            guard args.count == 2, args[0] == "--metadata" else {
++                throw Failure.arguments
++            }
++            let result = try Gemma4ExpertMetadataChecks.run(directory: args[1])
++            FileHandle.standardOutput.write(result + Data([10]))
++        } catch {
++            FileHandle.standardError.write(Data("gemma-expert-model-check: \(error)\n".utf8))
++            exit(1)
++        }
++    }
++    enum Failure: Error { case arguments }
++}
+--- a/libs/darkbloom-cluster-worker/Package.swift
++++ b/libs/darkbloom-cluster-worker/Package.swift
+@@ -7,6 +7,7 @@
+     name: "DarkbloomClusterWorker",
+     platforms: [.macOS("26.2")],
+     products: [
++        .executable(name: "GemmaExpertModelCheck", targets: ["GemmaExpertModelCheck"]),
+         .executable(name: "GemmaExpertAxisCheck", targets: ["GemmaExpertAxisCheck"]),
+         .executable(name: "GemmaExpertRDMACheck", targets: ["GemmaExpertRDMACheck"]),
+         .executable(name: "GemmaResidentBenchmark", targets: ["GemmaResidentBenchmark"]),
+@@ -25,6 +26,9 @@
+         .package(path: "../darkbloom-cluster"),
+     ],
+     targets: [
++        .executableTarget(name: "GemmaExpertModelCheck", dependencies: [
++            .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),
++        ], path: "Tests/GemmaExpertModelCheck"),
+         .executableTarget(name: "GemmaExpertAxisCheck", dependencies: [
+             .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),
+         ], path: "Tests/GemmaExpertAxisCheck"),

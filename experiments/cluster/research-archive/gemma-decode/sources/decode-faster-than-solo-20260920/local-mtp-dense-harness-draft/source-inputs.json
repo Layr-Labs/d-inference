@@ -1,0 +1,105 @@
+{
+  "schema": "gemma4_local_mtp_dense_harness_draft_v1",
+  "members": [
+    {
+      "path": "HANDOFF.md",
+      "bytes": 5919,
+      "sha256": "a21b020fae2baf27520b474431ca5d5699d21024239b8446f21a610403798008"
+    },
+    {
+      "path": "Tests/test_dense_contract.py",
+      "bytes": 3434,
+      "sha256": "bf8c1317b7cc835e830f5a89ae14395b270b9d02656671c40120e1d344a0790a"
+    },
+    {
+      "path": "base-inputs.json",
+      "bytes": 1071,
+      "sha256": "48df7c7b0fed8af3132fb130bdd3c608661884cf72b025d1aaaefdae35f60e5e"
+    },
+    {
+      "path": "binding-spec.json",
+      "bytes": 2444,
+      "sha256": "1122659b0959c86b4d60f5b6be6bd773826911002eeded25d58051805bd01890"
+    },
+    {
+      "path": "namespace-operation.patch",
+      "bytes": 8605,
+      "sha256": "1a5bd342997503c8085aa3dd4ddf85417e205f8e9e22e4161c716154b9ac6c3a"
+    },
+    {
+      "path": "prepare.py",
+      "bytes": 6131,
+      "sha256": "67f4dd6f3c1d97e6f22aaac16cfb011a7d21b28aa6bb727564821029275116a2"
+    },
+    {
+      "path": "proposed/compare.py",
+      "bytes": 12695,
+      "sha256": "0f3439325828527f095e8e8615f167e6db4f9edc4bb3acec8d0513ac1490ecfd"
+    },
+    {
+      "path": "proposed/deploy.py",
+      "bytes": 5043,
+      "sha256": "f26baa609289b77852650594b788ae00fbb11f3f606330061369ae441db67e8f"
+    },
+    {
+      "path": "proposed/numerical_compare.py",
+      "bytes": 27959,
+      "sha256": "f4cca74ba3836faf0ae519aefa890e9bb887430b23ee5a39b81e1f7f4ff9425c"
+    },
+    {
+      "path": "proposed/package/gemma_inputs.py",
+      "bytes": 570,
+      "sha256": "5b1f8d4a5c211d7be77606d166b935d355b5dc873a011c9aeaf063364805527f"
+    },
+    {
+      "path": "proposed/package/local_mtp_base_contract.py",
+      "bytes": 6949,
+      "sha256": "b5956e12a568e6e42bc4dcd53084a24dfaa8f3aef96ca3cc5139d19e0b85285d"
+    },
+    {
+      "path": "proposed/package/local_mtp_contract.py",
+      "bytes": 3103,
+      "sha256": "13d322ee360bd0316d20beb0e6561de7a561bcc2e34f5356c68492954c70d9f5"
+    },
+    {
+      "path": "proposed/package/native_gate.py",
+      "bytes": 4711,
+      "sha256": "6985411b10bfde152ac2625fb27a71ba2b1624515d5e91ba03a8250bc9e3e141"
+    },
+    {
+      "path": "proposed/package/run_benchmark.py",
+      "bytes": 9222,
+      "sha256": "90fc4e0b9ed5b7957b47b1d577f2c4a20c59e0c5a4238f769e643eb31ac5133c"
+    },
+    {
+      "path": "proposed/recorded_math.py",
+      "bytes": 3097,
+      "sha256": "f166a6a27c20021c30c62e6966e63583b9ecab955a3b23af64869cd821f25914"
+    },
+    {
+      "path": "proposed/remote_metadata.py",
+      "bytes": 4291,
+      "sha256": "b2ea001463fdfa8302a32ad9852658e0244c4e5c013673aba4a7b3f09bae6dad"
+    },
+    {
+      "path": "proposed/root_run.py",
+      "bytes": 4579,
+      "sha256": "f416a5eb07bdc205670ae62edb04371c83cb40822ae36a268f18f4b2731618ac"
+    },
+    {
+      "path": "proposed/run_case.py",
+      "bytes": 14820,
+      "sha256": "190c50ccaeb14368da54c53c48a89300674d95b152343cb6fceb54db04df776f"
+    },
+    {
+      "path": "proposed/snapshot.py",
+      "bytes": 1300,
+      "sha256": "46dfa5689fba4358412c6c4ce03a759ca71d5c30bcde9df995a46c4aad97873b"
+    },
+    {
+      "path": "required-native-sources.template.json",
+      "bytes": 26279,
+      "sha256": "d571b5a93ae5d88cc15e69e34cbae25d3ebefdf06b782ddca8ec7ce33baa6f25"
+    }
+  ]
+}

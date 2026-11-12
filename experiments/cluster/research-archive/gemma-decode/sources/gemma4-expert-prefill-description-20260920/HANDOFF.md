@@ -1,0 +1,3 @@
+# Expert prefill description correction
+
+Independent review of the frozen128-token extension found one unchanged metadata scalar: maximumAssignments still said264. This successor changes only that scalar to the shared1024-assignment limit. Source/argument validation remains unchanged. Apply alongside the96b092 prefill envelope before building the expert RDMA target. Require actual --describe and --check-arguments to report1024,8MiB payload and32MiB native/host reserves; no old native binding is accepted. Original freeze is preserved. No compiler, native or remote action occurred while staging.

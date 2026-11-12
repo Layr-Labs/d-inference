@@ -1,0 +1,18 @@
+{
+  "schema": "gemma4_unread_staging_overlay_v1",
+  "baseWorkspace": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/workspace",
+  "changes": [
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkResourceOwner.swift",
+      "beforeSHA256": "896e6872b339f3b61c77948dc2dadac80e3ea09b8fc9a5ca329a264e3b434e17",
+      "afterSHA256": "7e7d5a09c028447920c9743521b494cd7395eaed919d725d182c886adf184ef6",
+      "proposed": "Runtime/Gemma4BenchmarkResourceOwner.swift"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkUnreadStaging.swift",
+      "beforeSHA256": null,
+      "proposed": "Runtime/Gemma4BenchmarkUnreadStaging.swift",
+      "afterSHA256": "3ed8c65893ce55a40eb172e99b53ccc1b7db16dbee7a7d751c97a6024d0f760a"
+    }
+  ]
+}

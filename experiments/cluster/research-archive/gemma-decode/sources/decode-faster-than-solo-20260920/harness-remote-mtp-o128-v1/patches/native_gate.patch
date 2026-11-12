@@ -1,0 +1,37 @@
+--- a/package/native_gate.py
++++ b/package/native_gate.py
+@@ -42,7 +42,7 @@
+     a=p.parse_args(); path=Path(a.launch)
+     require(path.parent.parent.parent == REMOTE and path.name=='launch.json','Wrong launch path')
+     info=snapshot(path,16384);same(info['sha256'],a.launch_sha256,'launch pin');launch=parse(info['raw'])
+-    require(set(launch)=={'binary','job','environment','binaryIdentity','jobSHA256','nativeOperation','localMTPConfigSHA256'},'Launch fields')
++    require(set(launch)=={'binary','job','environment','binaryIdentity','jobSHA256','nativeOperation','localMTPConfigSHA256','remoteMTPConfigSHA256','role'},'Launch fields')
+     binary=Path(launch['binary']);same(binary,REMOTE/'bundle'/PRODUCT,'Exact executable')
+     require(binary.parent.resolve()==binary.parent,'Executable parent link')
+     s=binary.lstat();same(list((s.st_dev,s.st_ino,s.st_mode,s.st_size,s.st_mtime_ns,s.st_ctime_ns)),launch['binaryIdentity'],'Verified binary changed')
+@@ -51,7 +51,11 @@
+     same(snapshot(job,16384)['sha256'],launch['jobSHA256'],'Job changed before gate')
+     config=path.parent/'local-mtp.json'
+     same(snapshot(config,16384)['sha256'],launch['localMTPConfigSHA256'],'Local MTP config changed before gate')
+-    require(launch['nativeOperation'] in ('execute-solo','execute-local-mtp','qualify-mtp-conditioning'),'Native cohort operation')
++    remote=path.parent/'remote-mtp.json'
++    same(snapshot(remote,16384)['sha256'],launch['remoteMTPConfigSHA256'],'Remote config changed before gate')
++    require(launch['nativeOperation']=='execute-remote-mtp' and launch['role'] in ('assistant','target'),'Native operation/role')
++    wrapper=parse(snapshot(remote,16384)['raw'])
++    require(wrapper['role']==launch['role'] and wrapper['localMTPJob']==str(config),'Remote role/config path')
+     fd, record=acquire(device_directory())
+     try:
+         processes=observe(time.monotonic()+4)
+@@ -64,10 +68,8 @@
+         s2=binary.lstat();same((s2.st_dev,s2.st_ino,s2.st_mode,s2.st_size,s2.st_mtime_ns,s2.st_ctime_ns),tuple(launch['binaryIdentity']),'Executable changed before exec')
+         same(snapshot(config,16384)['sha256'],launch['localMTPConfigSHA256'],'Local MTP config changed before exec')
+         same(snapshot(job,16384)['sha256'],launch['jobSHA256'],'Job changed before exec')
+-        if launch['nativeOperation']=='execute-solo':
+-            arguments=[str(binary),'--execute',str(job)]
+-        else:
+-            arguments=[str(binary),'--'+launch['nativeOperation'],str(config)]
++        same(snapshot(remote,16384)['sha256'],launch['remoteMTPConfigSHA256'],'Remote config changed before exec')
++        arguments=[str(binary),'--execute-remote-mtp',str(remote)]
+         os.execve(str(binary),arguments,launch['environment'])
+     finally: os.close(fd)
+ 

@@ -1,0 +1,204 @@
+--- a/run_case.py
++++ b/run_case.py
+@@ -58,7 +58,7 @@
+ 
+ def prepare(name,count,cut,capture,chunk,policy,match,depth,operation):
+     assert count in (128,4096) and (cut,chunk,policy,match)==(7,64,'serial',None)
+-    assert depth in (1,2) and operation in ('execute-local-mtp','qualify-mtp-conditioning')
++    assert depth in (1,2) and operation in ('execute-solo','execute-local-mtp','qualify-mtp-conditioning')
+     directory=ROOT/'cases'/name;directory.mkdir(mode=0o700,parents=True)
+     requests=[str(uuid.uuid4()) for _ in range(4)]
+     common=dict(schema='gemma4_resident_benchmark_v1',modelDirectory='/Users/developer/DarkbloomDev/models/Gemma4-26B',
+@@ -66,7 +66,7 @@
+                 promptFileSHA256=digest(ROOT/'prompts'/f'prompt-{count}.json'),
+                 requestIDs=requests,membershipEpoch=str(uuid.uuid4()),
+                 buildIdentitySHA256=digest(ROOT/'deployment/bundle'/PRODUCT),residualDType='bfloat16',
+-                promptCount=count,chunkSize=chunk,outputCount=16,timeoutSeconds=300,captureEvidence=False,cut=cut)
++                promptCount=count,chunkSize=chunk,outputCount=16,timeoutSeconds=300,captureEvidence=capture if operation=='execute-solo' else False,cut=cut)
+     if match is not None:
+         assert match and all(c.isalnum() or c in '-_' for c in match)
+         prior=json.loads((ROOT/'cases'/match/'full.json').read_bytes())
+@@ -139,13 +139,13 @@
+                 records=values,restored=require_retired and bool(values) and values[-1].get('restored') is True)
+ 
+ def run(name,kind):
+-    assert kind=='solo', 'Tiny state qualification is full/48 only'
++    assert kind=='solo', 'Local target/assistant cohorts are full/48 only'
+     directory=ROOT/'cases'/name;out=directory/kind;out.mkdir(mode=0o700)
+     selected=[('full','darkbloom-48')] if kind=='solo' else [('stage0','darkbloom-24'),('stage1','darkbloom-48')]
+     package_sha=digest(ROOT/'deployment/package.json')
+     config=json.loads((directory/'local-mtp.json').read_bytes())
+     operation=json.loads((directory/'operation.json').read_bytes())['operation']
+-    assert operation in ('execute-local-mtp','qualify-mtp-conditioning')
++    assert operation in ('execute-solo','execute-local-mtp','qualify-mtp-conditioning')
+     for mode,host in selected:
+         raw=(directory/(mode+'.json')).read_bytes()
+         p=ssh(host,['/usr/bin/python3','-c',CREATE],input=json.dumps(dict(job=json.loads(raw),config=config)).encode(),timeout=15)
+@@ -235,7 +235,7 @@
+     p.add_argument('--match',help='Existing case with exactly the same workload and native build')
+     p.add_argument('--capture',action='store_true')
+     p.add_argument('--depth',type=int,choices=[1,2],default=2)
+-    p.add_argument('--native-operation',choices=['execute-local-mtp','qualify-mtp-conditioning'],default='execute-local-mtp')
++    p.add_argument('--native-operation',choices=['execute-solo','execute-local-mtp','qualify-mtp-conditioning'],default='execute-local-mtp')
+     a=p.parse_args()
+     assert a.name and all(c.isalnum() or c in '-_' for c in a.name)
+     if a.action=='prepare':prepare(a.name,a.prompt,a.cut,a.capture,a.chunk,a.policy,a.match,a.depth,a.native_operation);return 0
+--- a/root_run.py
++++ b/root_run.py
+@@ -26,7 +26,7 @@
+     p.add_argument('--case')
+     p.add_argument('--prompt',type=int,choices=[128,4096],default=4096)
+     p.add_argument('--depth',type=int,choices=[1,2],default=2)
+-    p.add_argument('--native-operation',choices=['execute-local-mtp','qualify-mtp-conditioning'],default='execute-local-mtp')
++    p.add_argument('--native-operation',choices=['execute-solo','execute-local-mtp','qualify-mtp-conditioning'],default='execute-local-mtp')
+     p.add_argument('--capture',action='store_true')
+     p.add_argument('--binary',type=Path);p.add_argument('--build-receipt',type=Path);p.add_argument('--sources',type=Path)
+     args=p.parse_args()
+--- a/package/native_gate.py
++++ b/package/native_gate.py
+@@ -51,7 +51,7 @@
+     same(snapshot(job,16384)['sha256'],launch['jobSHA256'],'Job changed before gate')
+     config=path.parent/'local-mtp.json'
+     same(snapshot(config,16384)['sha256'],launch['localMTPConfigSHA256'],'Local MTP config changed before gate')
+-    require(launch['nativeOperation'] in ('execute-local-mtp','qualify-mtp-conditioning'),'Native local MTP operation')
++    require(launch['nativeOperation'] in ('execute-solo','execute-local-mtp','qualify-mtp-conditioning'),'Native cohort operation')
+     fd, record=acquire(device_directory())
+     try:
+         processes=observe(time.monotonic()+4)
+@@ -63,7 +63,12 @@
+         write_json(path.parent/'gate.json',record)
+         s2=binary.lstat();same((s2.st_dev,s2.st_ino,s2.st_mode,s2.st_size,s2.st_mtime_ns,s2.st_ctime_ns),tuple(launch['binaryIdentity']),'Executable changed before exec')
+         same(snapshot(config,16384)['sha256'],launch['localMTPConfigSHA256'],'Local MTP config changed before exec')
+-        os.execve(str(binary),[str(binary),'--'+launch['nativeOperation'],str(config)],launch['environment'])
++        same(snapshot(job,16384)['sha256'],launch['jobSHA256'],'Job changed before exec')
++        if launch['nativeOperation']=='execute-solo':
++            arguments=[str(binary),'--execute',str(job)]
++        else:
++            arguments=[str(binary),'--'+launch['nativeOperation'],str(config)]
++        os.execve(str(binary),arguments,launch['environment'])
+     finally: os.close(fd)
+ 
+ 
+--- a/package/run_benchmark.py
++++ b/package/run_benchmark.py
+@@ -15,6 +15,7 @@
+ from worker_contract import WorkerSpec
+ from worker_processes import PipeWorkers, cleanup_error_text
+ from local_mtp_contract import validate_result
++from solo_contract import validate_result as validate_solo_result
+ 
+ def main():
+     parser=argparse.ArgumentParser(allow_abbrev=False)
+@@ -22,7 +23,7 @@
+     parser.add_argument('--job',type=Path,required=True)
+     parser.add_argument('--job-sha256',required=True)
+     parser.add_argument('--local-mtp-config-sha256',required=True)
+-    parser.add_argument('--native-operation',choices=['execute-local-mtp','qualify-mtp-conditioning'],required=True)
++    parser.add_argument('--native-operation',choices=['execute-solo','execute-local-mtp','qualify-mtp-conditioning'],required=True)
+     args=parser.parse_args(); os.umask(0o077)
+     started=time.monotonic(); deadline=started+315
+     require(args.job.parent.parent==REMOTE/'runs' and args.job.name=='job.json','Job path')
+@@ -33,11 +34,14 @@
+     require(job['schema']=='gemma4_resident_benchmark_v1' and job['mode']=='full', 'Job schema/mode')
+     require(job['timeoutSeconds']==300,'Native lifetime must fit parent fence')
+     require(job['promptCount'] in (128,4096) and (job['chunkSize'],job['outputCount'],job['cut'],job['prefillPolicy'])
+-            ==(64,16,7,'serial') and job['captureEvidence'] is False, 'Local MTP target scope')
++            ==(64,16,7,'serial') and type(job['captureEvidence']) is bool, 'Local target workload')
++    require(args.native_operation=='execute-solo' or job['captureEvidence'] is False, 'MTP ordinary job capture must stay false')
+     config_path=run/'local-mtp.json'
+     require(digest(config_path)==args.local_mtp_config_sha256,'Local MTP config identity')
+     config=parse(config_path.read_bytes())
+     require(config['benchmarkJob']==str(args.job) and config['benchmarkJobSHA256']==args.job_sha256,'Local MTP parent job identity')
++    require(type(config['captureEvidence']) is bool, 'Config evidence policy')
++    require(args.native_operation!='execute-solo' or job['captureEvidence'] is config['captureEvidence'], 'Solo job/config evidence policy')
+     require(job['outputDirectory']==str(run/'sidecars'),'Output path')
+     require(job['metadataDirectory']==str(REMOTE/'metadata'),'Metadata path')
+     require(job['modelDirectory']=='/Users/developer/DarkbloomDev/models/Gemma4-26B','Model path')
+@@ -92,7 +96,8 @@
+         def result(_,raw):
+             value=parse(raw)
+             require(isinstance(value,dict),'Native result must be an object')
+-            validate_result(value,job,config,args.local_mtp_config_sha256,args.native_operation)
++            if args.native_operation=='execute-solo':validate_solo_result(value,job)
++            else:validate_result(value,job,config,args.local_mtp_config_sha256,args.native_operation)
+             return value
+         record['result']=pipes.collect('benchmark',result)[0]
+         pipes.finish()
+--- /dev/null
++++ b/package/solo_contract.py
+@@ -0,0 +1,75 @@
++"""Closed ordinary full-role result. Model equality is checked after retirement."""
++import math
++import re
++from binding_common import require
++
++FLAGS = dict(modelReleased=True, nativeExecuted=True, runtimeServingEnabled=False,
++    encryptedRDMAEstablished=False, numericalComparisonPerformed=False,
++    physicalProcessOrLeaseRetirementEstablished=False, collectiveCreated=False, collectiveReleased=False)
++FIELDS = set(FLAGS) | {'schema','job','scopeSHA256','planSHA256','sourceLoad',
++    'loadStartedNanoseconds','loadCompletedNanoseconds','probeCompletedNanoseconds',
++    'samples','resources','files','measuredRequests','warmupRequests',
++    'nativeCacheBytesAfterRelease','guardMetrics','guardObservationPolicy'}
++SAMPLE_FLAGS = dict(requestStateRetired=True, evidenceOutsideTimedPath=True,
++    timingsAreSameProcess=True, clockAcrossHostsCompared=False,
++    durationIncludesResourceChecksAndSerialTransport=True, mtpEnabled=False, numericalComparisonPerformed=False)
++SAMPLE_FIELDS = set(SAMPLE_FLAGS) | {'ordinal','warmup','requestID','requestSHA256','binding',
++    'selectedTokenIDs','selectedTokenIDsSHA256','startedNanoseconds','firstLogitsNanoseconds',
++    'tokenAgreementNanoseconds','completedNanoseconds','prefillNanoseconds','decodeNanoseconds',
++    'prefillTokensPerSecond','decodeTokensPerSecond','frames','committedTokens','guardMetrics'}
++
++
++def integer(value, minimum=0):
++    return type(value) is int and minimum <= value < 2**64
++
++
++def validate_result(value, job):
++    require(type(value) is dict and set(value)==FIELDS, 'Solo result fields differ')
++    require(value['schema']=='gemma4_resident_benchmark_result_v1' and value['job']==job
++        and job['mode']=='full' and job['prefillPolicy']=='serial', 'Solo result input/operation differs')
++    require(type(job['captureEvidence']) is bool, 'Solo capture policy')
++    for key,wanted in FLAGS.items():require(value[key] is wanted, 'Wrong solo flag: '+key)
++    require(value['nativeCacheBytesAfterRelease']==0 and value['measuredRequests']==3
++        and value['warmupRequests']==1 and len(value['samples'])==4, 'Solo cohort/cache count')
++    for key in ('scopeSHA256','planSHA256'):
++        require(type(value[key]) is str and re.fullmatch('[0-9a-f]{64}',value[key]) is not None, 'Solo identity: '+key)
++    require(value['guardObservationPolicy']=='gemma4_invocation_fresh_observation_v1'
++        and value['guardMetrics']['schema']=='gemma4_guard_wall_counters_v1'
++        and value['guardMetrics']['overflow'] is False, 'Solo resource observation policy')
++    times=[value[k] for k in ('loadStartedNanoseconds','loadCompletedNanoseconds','probeCompletedNanoseconds')]
++    require(all(integer(x,1) for x in times) and times==sorted(times), 'Solo load/probe chronology')
++    rows=[]
++    for ordinal,sample in enumerate(value['samples']):
++        capture={'finalRow','finalState'} if job['captureEvidence'] else set()
++        require(type(sample) is dict and set(sample)==SAMPLE_FIELDS|capture, 'Solo sample fields differ')
++        for key,wanted in SAMPLE_FLAGS.items():require(sample[key] is wanted, 'Wrong solo sample flag: '+key)
++        require(sample['ordinal']==ordinal and sample['warmup'] is (ordinal==0)
++            and sample['requestID']==job['requestIDs'][ordinal], 'Solo request identity/order')
++        tokens=sample['selectedTokenIDs']
++        require(len(tokens)==16 and all(type(x) is int and 0<=x<262144 for x in tokens)
++            and sample['committedTokens']==job['promptCount']+15, 'Solo tokens/frontier')
++        rows.append(tokens)
++        for key in ('requestSHA256','selectedTokenIDsSHA256'):
++            require(type(sample[key]) is str and re.fullmatch('[0-9a-f]{64}',sample[key]) is not None, 'Solo request digest')
++        start,first,end=sample['startedNanoseconds'],sample['firstLogitsNanoseconds'],sample['completedNanoseconds']
++        agreements=sample['tokenAgreementNanoseconds']
++        require(all(integer(x,1) for x in [start,first,end,*agreements]) and len(agreements)==16
++            and start<first<=agreements[0]<agreements[-1]<=end and agreements==sorted(agreements), 'Solo actual clock chronology')
++        require(sample['prefillNanoseconds']==agreements[0]-start
++            and sample['decodeNanoseconds']==agreements[-1]-agreements[0], 'Solo timing boundaries')
++        for phase,count in [('prefill',job['promptCount']),('decode',15)]:
++            ns=sample[phase+'Nanoseconds'];tps=sample[phase+'TokensPerSecond']
++            require(integer(ns,1) and type(tps) in (int,float) and math.isfinite(tps) and tps>0
++                and math.isclose(tps,count*1e9/ns,rel_tol=1e-12), 'Solo same-clock throughput arithmetic')
++        require(len(sample['frames'])==(job['promptCount']+63)//64+15, 'Solo forward frame count')
++        if job['captureEvidence']:
++            require(sample['finalRow']['bytes']>0 and sample['finalState']['frontier']==job['promptCount']+15
++                and len(sample['finalState']['entries'])==90, 'Solo requested row/whole-state evidence')
++    require(all(x==rows[0] for x in rows), 'Solo fresh-state reproducibility')
++    require(job['captureEvidence'] or value['files']==[], 'Unrequested solo sidecars')
++    resources=value['resources']
++    require(resources['completedTensorCount']==resources['selectedTensorCount']==1339
++        and resources['minimumActualFreeBytes']>=6*1024**3 and resources['operationalResourceChecksApplied'] is True
++        and resources['actualAllocatorBoundsUsed'] is True and resources['newServingActivationFloorEstablished'] is False,
++        'Solo original resource admission')
++    return value

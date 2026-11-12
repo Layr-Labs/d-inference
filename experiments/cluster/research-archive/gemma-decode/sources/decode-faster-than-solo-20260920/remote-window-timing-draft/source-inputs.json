@@ -1,0 +1,88 @@
+{
+  "schema": "gemma4_remote_window_timing_source_freeze_v1",
+  "members": [
+    {
+      "path": "HANDOFF.md",
+      "bytes": 3874,
+      "sha256": "d189d763c6962db66a31a197e9172dba992e77ab099a0c2f78394624585e7e67"
+    },
+    {
+      "path": "Runtime/Gemma4MTPPullTarget.swift",
+      "bytes": 13578,
+      "sha256": "aff36e927b69979e4a57a23164b4fc9446d553f49487a5bd4fd8de983519d102"
+    },
+    {
+      "path": "Runtime/Gemma4RemoteMTPDriver.swift",
+      "bytes": 14617,
+      "sha256": "ee7e3c59ae773e2ddafa69fe592fe33e24aaf215d6292a89decda3cdc215e7f0"
+    },
+    {
+      "path": "Runtime/Gemma4RemoteMTPRequestEvidence.swift",
+      "bytes": 3532,
+      "sha256": "87786c1f8b96d8c52cd84704960c0d617d9eeb83b40f6f58ec784f63014a2b5d"
+    },
+    {
+      "path": "Runtime/Gemma4RemoteMTPWindowTiming.swift",
+      "bytes": 3423,
+      "sha256": "c13e10da29a4687baea2278e883434bfda697a3b71ac9d30ab23ef60fd362e5c"
+    },
+    {
+      "path": "Tests/TimingChecks.swift",
+      "bytes": 3810,
+      "sha256": "dda15337ca099fe0a230b00987020fb81f0b9c7ad779ac0245938e949d8708e1"
+    },
+    {
+      "path": "Tests/expected-checks.json",
+      "bytes": 288,
+      "sha256": "b9088d1dc9eec7614bd83dabedfb5e465b404cafff4446aa3692147040a2c646"
+    },
+    {
+      "path": "base-inputs.json",
+      "bytes": 945,
+      "sha256": "82516f517d478fa5fa716c882b1ff7e373803018ad25d72feb5b178742dec0fc"
+    },
+    {
+      "path": "commands.json",
+      "bytes": 1254,
+      "sha256": "b94bb7588160d021ffbb629c90cbd1d7b43f63c774664f02256d46f93442d85f"
+    },
+    {
+      "path": "compose.py",
+      "bytes": 5624,
+      "sha256": "784e600b58b5b9d2534f370097eb123d808b74d9ceab9a6a0e13be5ef7b62242"
+    },
+    {
+      "path": "expected-sources.json",
+      "bytes": 26757,
+      "sha256": "4cfe82385531e10d15a755093e3071eb8cad152715547314b9f706e7ce4ac3f7"
+    },
+    {
+      "path": "integration.json",
+      "bytes": 6208,
+      "sha256": "51840eb14deaba5500f8d42e232c0e325e5c0187a2c7ff05b1f4b166aca3f77e"
+    },
+    {
+      "path": "preimages/Gemma4MTPPullTarget.swift",
+      "bytes": 12658,
+      "sha256": "b04f5469f291ee5635c14b20b79e93759243861e9c1d0e5ee8aaed13d0e8428a"
+    },
+    {
+      "path": "preimages/Gemma4RemoteMTPDriver.swift",
+      "bytes": 9371,
+      "sha256": "6e4a324b710149b2c689ac42e690dba7fbf48c766d30a5b5535674e035f11d2d"
+    },
+    {
+      "path": "preimages/Gemma4RemoteMTPRequestEvidence.swift",
+      "bytes": 3482,
+      "sha256": "5759dac4ea19e99fe2d69f4403dabc9806d8c11b8086dab9b06700e63beaacbe"
+    },
+    {
+      "path": "runtime.patch",
+      "bytes": 15213,
+      "sha256": "53c182870193b16b3995577301b71c00619147e27a8b72d0485183afe50d000a"
+    }
+  ],
+  "sourceOnly": true,
+  "changes": 4,
+  "sourceMembers": 122
+}

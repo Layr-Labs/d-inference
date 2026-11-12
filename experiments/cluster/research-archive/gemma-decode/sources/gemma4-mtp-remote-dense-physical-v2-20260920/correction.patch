@@ -1,0 +1,218 @@
+--- a/Tests/run.py
++++ b/Tests/run.py
+@@ -7,11 +7,11 @@
+ from activation import sha
+ p=argparse.ArgumentParser(allow_abbrev=False);p.add_argument('--output',type=Path,required=True);a=p.parse_args()
+ assert a.output.is_absolute() and a.output.parent.resolve()==a.output.parent;a.output.mkdir(mode=0o700)
+-record=dict(schema='gemma4_remote_mtp_cpu_controls_v1',expectedMethods=11,modelExecuted=False,sshExecuted=False)
++record=dict(schema='gemma4_remote_mtp_cpu_controls_v1',expectedMethods=16,modelExecuted=False,sshExecuted=False)
+ with (a.output/'stdout').open('xb') as out,(a.output/'stderr').open('xb') as err:
+     invoke_controller(['/usr/bin/python3','-B',str(ROOT/'Tests/test_contract.py'),'-v'],out,err,record,timeout=30)
+ record['stdoutSHA256']=sha(a.output/'stdout');record['stderrSHA256']=sha(a.output/'stderr')
+ with (a.output/'receipt.json').open('x') as f:json.dump(record,f,indent=2);f.write('\n')
+ assert record['exitCode']==0 and record['reaped'] is True and record['groupAbsent'] is True
+-text=(a.output/'stderr').read_text();assert '\nRan 11 tests in ' in text and text.rstrip().endswith('OK')
++text=(a.output/'stderr').read_text();assert '\nRan 16 tests in ' in text and text.rstrip().endswith('OK')
+ print(json.dumps(record))
+--- a/Tests/test_contract.py
++++ b/Tests/test_contract.py
+@@ -3,10 +3,11 @@
+ from pathlib import Path
+ ROOT=Path(__file__).resolve().parent.parent
+ sys.path[:0]=[str(ROOT),str(ROOT/'package')]
+-from remote_mtp_contract import validate_inputs
++from remote_mtp_contract import validate_inputs,validate_result
+ from compare import completion_join
+ from gemma_inputs import REMOTE
+ from dense_contract import SUMMARY,target_summary,target_terms,metadata_policy,POLICY
++from embedding_contract import NAMES,ARTIFACT,CONFIGURATION
+ 
+ def fixtures():
+     run=REMOTE/'runs'/'fixture-target'
+@@ -23,7 +24,65 @@
+ 
+ def check(rows):return validate_inputs(rows[0],rows[1],rows[2],'c'*64,'d'*64,rows[3])
+ 
++def assistant_fixture():
++    job,local,wrapper,_=fixtures();wrapper['role']='assistant'
++    accounting=dict(schema='checkpoint_aligned_selected_read_v1',alignmentBytes=16384,
++        maximumScratchAllocationBytes=8404992,cacheBypassRequested=True,readAheadDisabledRequested=True,
++        fileCacheAbsenceEstablished=False,selectedBytes=415236096,requestedReadBytes=415285248,
++        returnedReadBytes=415285248,paddingReadBytes=49152,preadCalls=51,interruptedCalls=0,
++        shortEOFReads=0,largestScratchRequestBytes=8388608,largestScratchAllocationBytes=8404992)
++    embedding=dict(artifactSHA256=ARTIFACT,configurationSHA256=CONFIGURATION,
++        embeddingIdentitySHA256=wrapper['embeddingIdentitySHA256'],selectedNames=list(NAMES),
++        selectedTensorCount=3,loadedTensorBytes=415236096,largestHostTensorBytes=369098752,
++        readAccounting=accounting,resourceAdmissionEstablished=False)
++    value=dict(schema='gemma4_remote_mtp_assistant_cohort_v1',configuration=wrapper,targetRank=1,assistantRank=0,
++        warmupRequests=1,measuredRequests=3,modelReleased=True,nativeExecuted=True,collectiveCreated=True,
++        collectiveReleased=True,encryptedRDMAEstablished=False,numericalComparisonPerformed=False,
++        servingEnabled=False,physicalProcessOrLeaseRetirementEstablished=False,scopeSHA256='e'*64,
++        nativeCacheBytesAfterRelease=0,guardObservationPolicy='gemma4_invocation_fresh_observation_v1',
++        guardMetrics=dict(schema='gemma4_guard_wall_counters_v1'),fullTargetLoaded=False,
++        assistantLoad=dict(artifactSHA256='d8c5fae1f4b7a07376c9f0b92f3ec283ba276d57ec3b675d8cf758a79d73bd34',
++            tensorCount=94,tensorBytes=236114440,allActualParametersReplaced=True),embeddingLoad=embedding,
++        resources=dict(placement='remoteAssistant',completedItems=97,observationCount=100,
++            minimumActualFreeBytes=6*1024**3,servingFloorChanged=False,reclaimableUsedForAdmission=False),
++        samples=[dict(ordinal=i,requestID=request,requestSHA256='f'*64,wireScopeSHA256='a'*64,
++            originalServiceReleased=True,branchRootsReleased=True,targetTokensIndependentlyVerified=False,
++            physicalOwnerRetirementEstablished=False) for i,request in enumerate(job['requestIDs'])])
++    return value,job,local,wrapper
++
+ class Contract(unittest.TestCase):
++    def test_assistant_final_completion_is_97_not_intermediate_94(self):
++        rows=assistant_fixture();validate_result(*rows)
++        for count in [94,96,98,True,97.0]:
++            rows=assistant_fixture();rows[0]['resources']['completedItems']=count
++            with self.assertRaises(ValueError):validate_result(*rows)
++    def test_embedding_identity_substitution_is_refused(self):
++        for field in ['artifactSHA256','configurationSHA256','embeddingIdentitySHA256']:
++            rows=assistant_fixture();rows[0]['embeddingLoad'][field]='f'*64
++            with self.assertRaises(ValueError):validate_result(*rows)
++    def test_embedding_exact_selected_tensor_coverage(self):
++        for field,value in [('selectedNames',list(reversed(NAMES))),('selectedNames',NAMES[:2]),
++            ('selectedNames',[NAMES[0]]*3),('selectedTensorCount',2),('selectedTensorCount',True),
++            ('loadedTensorBytes',415236095),('largestHostTensorBytes',23068672)]:
++            rows=assistant_fixture();rows[0]['embeddingLoad'][field]=value
++            with self.assertRaises(ValueError):validate_result(*rows)
++    def test_embedding_read_policy_and_counters(self):
++        for field,value in [('schema','unqualified'),('selectedBytes',236114440),('selectedBytes',True),
++            ('requestedReadBytes',415236095),('returnedReadBytes',415236095),('paddingReadBytes',0),
++            ('preadCalls',0),('interruptedCalls',52),('shortEOFReads',52),('alignmentBytes',4096),
++            ('maximumScratchAllocationBytes',16777216),('largestScratchRequestBytes',8388609),
++            ('largestScratchAllocationBytes',8404993),('cacheBypassRequested',False),
++            ('readAheadDisabledRequested',False),('fileCacheAbsenceEstablished',True)]:
++            rows=assistant_fixture();rows[0]['embeddingLoad']['readAccounting'][field]=value
++            with self.assertRaises(ValueError):validate_result(*rows)
++    def test_embedding_missing_receipt_or_unearned_admission(self):
++        rows=assistant_fixture();del rows[0]['embeddingLoad']
++        with self.assertRaises(ValueError):validate_result(*rows)
++        for field,value in [('resourceAdmissionEstablished',True),('unknown',False)]:
++            rows=assistant_fixture();rows[0]['embeddingLoad'][field]=value
++            with self.assertRaises(ValueError):validate_result(*rows)
++        rows=assistant_fixture();rows[0]['embeddingLoad']['readAccounting']['unknown']=0
++        with self.assertRaises(ValueError):validate_result(*rows)
+     def test_only_exact_serial_head_policy_summary(self):
+         target_summary(dict(SUMMARY))
+         for field,value in [('policy','packed-head'),('expectedDenseModules',234),('expectedTiedHeads',2),('expectedTiedHeads',True),('gatheredOverrideEnabled',True),('singleRowOverrideEnabled',True),('wholeModelNumericsQualified',True)]:
+--- a/check_sources.py
++++ b/check_sources.py
+@@ -7,8 +7,19 @@
+  p=ROOT/row['path'];raw=p.read_bytes();assert not p.is_symlink() and len(raw)==row['bytes'] and hashlib.sha256(raw).hexdigest()==row['sha256'],row['path']
+  if p.suffix=='.py':ast.parse(raw,str(p))
+ lineage=json.loads((ROOT/'predecessor-inputs.json').read_bytes())
++for key in ('predecessorManifest','predecessorLineage'):
++ row=lineage[key];raw=Path(row['path']).read_bytes()
++ assert len(raw)==row['bytes'] and hashlib.sha256(raw).hexdigest()==row['sha256'],row['path']
+ for row in lineage['members']:
+  old=Path(row['source']).read_bytes();new=(ROOT/row['path']).read_bytes()
+  assert hashlib.sha256(old).hexdigest()==row['beforeSHA256'] and hashlib.sha256(new).hexdigest()==row['sha256']
+  if row.get('unchangedRequired'):assert old==new,row['path']
++required={row['path']:row for row in json.loads((ROOT/'required-native-sources.json').read_bytes())['requiredFiles']}
++producers=json.loads((ROOT/'receipt-producer-inputs.json').read_bytes())['members']
++for row in producers:
++ raw=Path(row['path']).read_bytes()
++ assert len(raw)==row['bytes'] and hashlib.sha256(raw).hexdigest()==row['sha256'],row['path']
++ if 'nativeSourcePath' in row:
++  actual=required[row['nativeSourcePath']]
++  assert (actual['bytes'],actual['sha256'])==(row['bytes'],row['sha256'])
+ print(json.dumps(dict(status='passed',members=len(m['members']),predecessorPins=len(lineage['members']),testsExecuted=False,nativeExecuted=False,remoteExecuted=False)))
+--- a/deploy.py
++++ b/deploy.py
+@@ -11,7 +11,7 @@
+ from parent_settings import SSH
+ 
+ ROOT=Path(__file__).resolve().parent
+-REMOTE='/Users/developer/DarkbloomDev/gemma4-remote-mtp-dense-20260920-v1'
++REMOTE='/Users/developer/DarkbloomDev/gemma4-remote-mtp-dense-20260920-v2'
+ PRODUCT='GemmaResidentBenchmark'
+ SOURCES=Path('/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/bound/sources.json')
+ 
+@@ -24,7 +24,7 @@
+ INSTALL=r'''
+ import hashlib,json,os,pathlib,stat,sys,tarfile
+ root=pathlib.Path(sys.argv[1]);wanted=sys.argv[2]
+-assert root==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-remote-mtp-dense-20260920-v1')
++assert root==pathlib.Path('/Users/developer/DarkbloomDev/gemma4-remote-mtp-dense-20260920-v2')
+ assert not root.exists() and root.parent.resolve()==root.parent
+ fs=os.statvfs(root.parent);assert fs.f_bavail*fs.f_frsize>7*1024**3
+ os.umask(0o077);root.mkdir(mode=0o700)
+--- a/package/gemma_inputs.py
++++ b/package/gemma_inputs.py
+@@ -3,7 +3,7 @@
+ import os
+ from pathlib import Path
+ 
+-REMOTE = Path('/Users/developer/DarkbloomDev/gemma4-remote-mtp-dense-20260920-v1')
++REMOTE = Path('/Users/developer/DarkbloomDev/gemma4-remote-mtp-dense-20260920-v2')
+ PRODUCT = 'GemmaResidentBenchmark'
+ 
+ def write_json(path, value):
+--- a/package/remote_mtp_contract.py
++++ b/package/remote_mtp_contract.py
+@@ -3,6 +3,7 @@
+ from binding_common import require
+ from gemma_inputs import REMOTE
+ from dense_contract import EMBEDDING_SHA256,target_summary,target_terms
++from embedding_contract import assistant_load_completion
+ 
+ def sha(raw):return hashlib.sha256(raw).hexdigest()
+ def digest(value):return type(value) is str and re.fullmatch('[0-9a-f]{64}',value) is not None
+@@ -64,7 +65,8 @@
+         resource=value['resources'];load=value['assistantLoad']
+         require(load['artifactSHA256']=='d8c5fae1f4b7a07376c9f0b92f3ec283ba276d57ec3b675d8cf758a79d73bd34'
+             and load['tensorCount']==94 and load['tensorBytes']==236114440 and load['allActualParametersReplaced'] is True,'Registered assistant load')
+-        require(resource['placement']=='remoteAssistant' and resource['completedItems']==94 and resource['observationCount']>0
++        assistant_load_completion(value)
++        require(resource['placement']=='remoteAssistant' and resource['observationCount']>0
+             and resource['minimumActualFreeBytes']>=6*1024**3 and resource['servingFloorChanged'] is False
+             and resource['reclaimableUsedForAdmission'] is False,'Assistant retained owner')
+     token_sets=[]
+--- /dev/null
++++ b/package/embedding_contract.py
+@@ -0,0 +1,45 @@
++"""Registered selected-embedding receipt, separate from physical admission."""
++from binding_common import require
++from dense_contract import EMBEDDING_SHA256
++
++NAMES=['language_model.model.embed_tokens.'+suffix for suffix in ('biases','scales','weight')]
++ARTIFACT='2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785'
++CONFIGURATION='29910322dd085f45c8f95c6c0f1611b20f722d6f6c8394321b34817e98a972fa'
++
++def embedding_load(value):
++    require(type(value) is dict and set(value)=={'artifactSHA256','configurationSHA256','embeddingIdentitySHA256',
++        'selectedNames','selectedTensorCount','loadedTensorBytes','largestHostTensorBytes','readAccounting',
++        'resourceAdmissionEstablished'},'Selected embedding receipt fields')
++    require(value['artifactSHA256']==ARTIFACT and value['configurationSHA256']==CONFIGURATION
++        and value['embeddingIdentitySHA256']==EMBEDDING_SHA256 and value['selectedNames']==NAMES,
++        'Registered selected embedding identity and ordered tensor names')
++    for key,expected in [('selectedTensorCount',3),('loadedTensorBytes',415236096),('largestHostTensorBytes',369098752)]:
++        require(type(value[key]) is int and value[key]==expected,'Selected embedding '+key)
++    require(value['resourceAdmissionEstablished'] is False,'Embedding receipt must not grant admission')
++    accounting=value['readAccounting']
++    counters=['selectedBytes','requestedReadBytes','returnedReadBytes','paddingReadBytes','preadCalls',
++        'interruptedCalls','shortEOFReads','largestScratchRequestBytes','largestScratchAllocationBytes']
++    require(type(accounting) is dict and set(accounting)==set(counters)|{'schema','alignmentBytes',
++        'maximumScratchAllocationBytes','cacheBypassRequested','readAheadDisabledRequested','fileCacheAbsenceEstablished'},
++        'Selected embedding read-accounting fields')
++    require(accounting['schema']=='checkpoint_aligned_selected_read_v1'
++        and type(accounting['alignmentBytes']) is int and accounting['alignmentBytes']==16384
++        and type(accounting['maximumScratchAllocationBytes']) is int and accounting['maximumScratchAllocationBytes']==8404992
++        and accounting['cacheBypassRequested'] is True and accounting['readAheadDisabledRequested'] is True
++        and accounting['fileCacheAbsenceEstablished'] is False,'Selected embedding read policy')
++    require(all(type(accounting[k]) is int and accounting[k]>=0 for k in counters),'Selected embedding read counter type')
++    require(accounting['selectedBytes']==415236096
++        and accounting['requestedReadBytes']>=accounting['returnedReadBytes']>=accounting['selectedBytes']
++        and accounting['paddingReadBytes']==accounting['returnedReadBytes']-accounting['selectedBytes']
++        and accounting['preadCalls']>=3
++        and accounting['interruptedCalls']<=accounting['preadCalls']
++        and accounting['shortEOFReads']<=accounting['preadCalls']
++        and 0<accounting['largestScratchRequestBytes']<=8388608
++        and accounting['largestScratchRequestBytes']<=accounting['largestScratchAllocationBytes']<=8404992,
++        'Selected embedding read accounting')
++
++def assistant_load_completion(value):
++    """The same original owner completes 94 assistant + three embedding reads."""
++    require(type(value['resources']['completedItems']) is int and value['resources']['completedItems']==97,
++        'Assistant owner must complete all 97 selected tensors')
++    embedding_load(value.get('embeddingLoad'))

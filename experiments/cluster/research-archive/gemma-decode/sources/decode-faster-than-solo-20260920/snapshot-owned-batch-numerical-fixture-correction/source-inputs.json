@@ -1,0 +1,35 @@
+{
+  "schema": "gemma4_owned_batch_fixture_correction_sources_v1",
+  "members": [
+    {
+      "path": "HANDOFF.md",
+      "bytes": 1268,
+      "sha256": "3c2feb67bc5ff5ae1470e15645f9411f9c97c0b8711a42c4e5e1bef911cf89f7"
+    },
+    {
+      "path": "Tests/test_join.py",
+      "bytes": 4549,
+      "sha256": "0f6d3e772b1d0eeef0a570ca043150ecaefab3d378ec2c3f738c25544e6b1e91"
+    },
+    {
+      "path": "fixture.patch",
+      "bytes": 2009,
+      "sha256": "dee0101645dfd2ac6be0993a9ece4215b99b4a7528f4bc8f08fa480dfdd2274a"
+    },
+    {
+      "path": "inputs.json",
+      "bytes": 1400,
+      "sha256": "cf5feb9f56f537e2f1d28e40cccfb7b685217acc95e09cbd80d853c579c1332d"
+    },
+    {
+      "path": "preimages/test_join.py",
+      "bytes": 4098,
+      "sha256": "3ade5243697544439c479b124f254772ceaddcb73afb373ed27f259b0d370c52"
+    },
+    {
+      "path": "run.py",
+      "bytes": 2408,
+      "sha256": "d5287ab4bb1cbe68fc92e1b2c3373339d0ef77f5c8c2beb845782a4c374098d7"
+    }
+  ]
+}

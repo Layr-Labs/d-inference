@@ -1,0 +1,28 @@
+--- a/Tests/Gemma4ShortBudgetCheck.swift
++++ b/Tests/Gemma4ShortBudgetCheck.swift
+@@ -37,6 +37,25 @@
+             budget.selected.count == row.selectedTensorCount
+             && budget.selected.reduce(0) { $0 + $1.source.layout.byteCount } == row.selectedLogicalBytes
+             && budget.largestHostTensorBytes == row.largestHostTensorBytes)
++        let firstDifference = zip(budget.namedArrays, arrays).enumerated().first {
++            $0.element.0.name != $0.element.1.name || $0.element.0.bytes != $0.element.1.bytes
++        }
++        if budget.namedArrays.count != row.namedArrayCount || arrays.count != row.namedArrayCount
++            || firstDifference != nil || budget.namedNativeBytes != row.namedLogicalBytes
++            || Set(budget.namedArrays.map(\.name)).count != budget.namedArrays.count {
++            var detail: [String: Any] = ["target": name, "actualCount": budget.namedArrays.count,
++                "expectedCount": row.namedArrayCount, "expectedArrayCount": arrays.count,
++                "actualTotal": budget.namedNativeBytes, "expectedTotal": row.namedLogicalBytes,
++                "uniqueActualCount": Set(budget.namedArrays.map(\.name)).count]
++            if let difference = firstDifference {
++                detail["firstDifferentIndex"] = difference.offset
++                detail["actualName"] = difference.element.0.name; detail["actualBytes"] = difference.element.0.bytes
++                detail["expectedName"] = difference.element.1.name; detail["expectedBytes"] = difference.element.1.bytes
++            }
++            let diagnostic = try JSONSerialization.data(withJSONObject: detail, options: [.sortedKeys])
++            guard diagnostic.count <= 4096 else { throw ProbeError("Ledger diagnostic exceeds bound") }
++            try FileHandle.standardError.write(contentsOf: diagnostic + Data([10]))
++        }
+         try checks.require(name + " all named logical arrays match independent metadata replay",
+             budget.namedArrays.count == row.namedArrayCount
+             && arrays.count == row.namedArrayCount

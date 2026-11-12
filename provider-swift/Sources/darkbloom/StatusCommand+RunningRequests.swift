@@ -27,31 +27,46 @@ extension Status {
     /// wedge bar), or `not_running`; a stopped daemon lists none.
     static func statusJSON(state: DaemonState?, alive: Bool, now: Double, heartbeatIntervalSecs: UInt64,
                            clusterPart: Bool) throws -> Data {
-        var document: [String: Any] = ["schema": 1, "version": ProviderCore.version]
-        var answers: [[String: Any]] = []
+        var document = AnswersInProgressDocument(daemon: "not_running")
         if let state, alive {
             let age = state.ageSeconds(now: now)
             let wedged = age > KVBackendPosture.wedgedAfterSeconds(heartbeatIntervalSecs: heartbeatIntervalSecs)
-            document["daemon"] = wedged ? "stale" : "running"
-            document["pid"] = Int(state.pid)
-            document["snapshot_age_seconds"] = tenths(age)
-            document["cluster_part"] = clusterPart
-            answers = (state.runningRequests ?? []).map { request in
-                var answer: [String: Any] = [
-                    "model": request.model, "ref": request.ref,
-                    "elapsed_seconds": tenths(request.elapsedSeconds + age),
-                    "output_tokens": request.outputTokens,
-                ]
-                if let rate = request.tokensPerSecond { answer["tokens_per_second"] = tenths(rate) }
-                return answer
+            document.daemon = wedged ? "stale" : "running"
+            document.pid = state.pid
+            document.snapshotAgeSeconds = tenths(age)
+            document.clusterPart = clusterPart
+            document.answersInProgress = (state.runningRequests ?? []).map { request in
+                .init(model: request.model, ref: request.ref, elapsedSeconds: tenths(request.elapsedSeconds + age),
+                      outputTokens: request.outputTokens, tokensPerSecond: request.tokensPerSecond.map(tenths))
             }
-        } else {
-            document["daemon"] = "not_running"
         }
-        document["answers_in_progress"] = answers
-        document["note"] = creditsLine
-        return try JSONSerialization.data(withJSONObject: document, options: [.prettyPrinted, .sortedKeys])
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try encoder.encode(document)
     }
 
+    /// One decimal, encoded as written (`JSONEncoder` prints a double's
+    /// shortest form, so 10.7 stays 10.7).
     private static func tenths(_ value: Double) -> Double { (value * 10).rounded() / 10 }
+}
+
+/// `status --json`, schema 1. Absent fields are omitted.
+private struct AnswersInProgressDocument: Encodable {
+    struct Answer: Encodable {
+        let model: String
+        let ref: String
+        let elapsedSeconds: Double
+        let outputTokens: Int
+        let tokensPerSecond: Double?
+    }
+
+    let schema = 1
+    let version = ProviderCore.version
+    var daemon: String
+    var pid: Int32?
+    var snapshotAgeSeconds: Double?
+    var clusterPart: Bool?
+    var answersInProgress: [Answer] = []
+    let note = Status.creditsLine
 }

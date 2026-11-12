@@ -20,6 +20,7 @@ extension OnboardingChecks {
         aStopDuringTheDownloadEndsTheJoiningMacsWaitAtOnce()
         aStopDuringTheDownloadKeepsThePairStopped()
         aStopFromAnywhereEndsTheLeadersLoadAtOnce()
+        thePairsOwnStopsNeverEndTheLeadersWait()
     }
 
     static func theCoordinatorsWaitNamesOnlyWhatTheMacsReportNow() {
@@ -101,8 +102,9 @@ extension OnboardingChecks {
         typealias P = ClusterOnboardingStartProgress
         let loading = "Loading Qwen 3.8 27B: 1 of 2 parts ready."
         let parts = P(.loading, parts: [.init(rank: 0, state: .ready), .init(rank: 1, state: .loading)])
-        let run = TerminalRun(followingWithStops([(["Stopped."], nil, 2), ([loading], parts, 2), ([loading], parts, 2),
-                                                  (["Stopped; last model Qwen 3.8 27B."], nil, 3)]))
+        let run = TerminalRun(followingWithStops([.init(["Stopped."], stops: 2), .init([loading], start: parts, stops: 2),
+                                                  .init([loading], start: parts, stops: 2),
+                                                  .init(["Stopped; last model Qwen 3.8 27B."], stops: 3)]))
         defer { run.release() }
         expect(run.waitFor(codeQuestion), "joining stop: the code"); run.type("y")
         let began = Date()
@@ -111,16 +113,26 @@ extension OnboardingChecks {
         expect(run.text.contains("Stopped (by `darkbloom cluster stop` on one of the Macs)"), "joining stop: the same line: \(run.text)")
     }
 
-    /// The Mac that joined a leader whose looks say each of `looks` in turn (the last one repeats): its status lines, its
-    /// start's progress, and how many stops a person asked for there (nil: a look that read none).
-    static func followingWithStops(_ looks: [(lines: [String], start: ClusterOnboardingStartProgress?, stops: Int?)])
-        -> ClusterOnboardingOperations {
+    /// One look of the joining Mac at the leading Mac's status: its lines, its start's progress, how many stops a person
+    /// asked for there (nil: a look that read none) and the step its screen published.
+    struct FollowLook: Sendable {
+        var lines: [String]
+        var start: ClusterOnboardingStartProgress?
+        var stops: Int?
+        var step: ClusterOnboardingLeaderStep?
+        init(_ lines: [String], start: ClusterOnboardingStartProgress? = nil, stops: Int? = nil, step: ClusterOnboardingLeaderStep? = nil) {
+            self.lines = lines; self.start = start; self.stops = stops; self.step = step
+        }
+    }
+
+    /// The Mac that joined a leader whose looks say each of `looks` in turn (the last one repeats).
+    static func followingWithStops(_ looks: [FollowLook]) -> ClusterOnboardingOperations {
         var made = operations(Recorder(), pairEvents: memberEvents, pairResult: .paired(role: .member, peerName: leaderName))
         let count = Recorder()
         made.leaderStatus = {
             count.note("look")
             let look = looks[min(count.all.count, looks.count) - 1]
-            return .init(lines: look.lines, step: nil, start: look.start, stopsAsked: look.stops)
+            return .init(lines: look.lines, step: look.step, start: look.start, stopsAsked: look.stops)
         }
         return made
     }
@@ -155,9 +167,11 @@ extension OnboardingChecks {
     /// The report (an external pair on 0.10.12, 2026-11-12 ~20:46Z): the leading Mac downloaded the chosen model and the
     /// joining Mac's screen ended about 20 s later with "Stopped (by `darkbloom cluster stop` on one of the Macs) …",
     /// though nobody ran it. Until both parts start, the leading Mac's status reads "Stopped." (`localStatus` says so while
-    /// `leadership.serving` is off, and only `localServe` turns it on) while its start publishes `downloading`, then
-    /// `copying`; it reads "Stopped; last model …" again while it stops both parts to register them. None of that is a
-    /// stop: the joining Mac follows the start to the leading Mac's outcome.
+    /// `leadership.serving` is off, and only `localServe` turns it on): through the download and the copy, which publish
+    /// their bytes, and through what comes before the start with nothing published (here a login after the download). It
+    /// reads "Stopped; last model …" again while it stops both parts to register them. Each stretch lasts over 20 s, so no
+    /// rule that takes "Stopped" held a while for a stop passes, whichever phases it leaves out. None of it is a stop: the
+    /// joining Mac follows the start to the leading Mac's outcome.
     static func aStatusThatReadsStoppedThroughADownloadIsNoStop() {
         typealias P = ClusterOnboardingStartProgress
         let served = "Serving Qwen 3.8 27B through Darkbloom on both Macs (pipeline)."
@@ -167,21 +181,20 @@ extension OnboardingChecks {
             let seconds = clock.seconds
             switch seconds {
             case ..<21:
-                // More than 20 s of "Stopped." beside the download's bytes.
                 return .init(lines: ["Stopped."], step: .init(.copy),
                              start: P(.downloading, done: Int64(seconds / 21 * 16_300_000_000), total: 16_300_000_000))
             case ..<22:
                 return .init(lines: ["Stopped."], step: .init(.copy), start: P(.copying, done: 8_000_000_000, total: 16_300_000_000))
-            case ..<22.5:
-                // Between the copy and the start (the plan again, the adopt): no figures any more, still "Stopped.".
-                return .init(lines: ["Stopped."], step: .init(.starting), start: nil)
-            case ..<23.5:
+            case ..<43:
+                // After the copy and before the start (a login asked on the leading Mac's screen): no figures, "Stopped.".
+                return .init(lines: ["Stopped."], step: .init(.login), start: nil)
+            case ..<44:
                 return .init(lines: ["Starting Qwen 3.8 27B."], step: .init(.starting),
                              start: P(.loading, parts: [.init(rank: 0, state: .starting), .init(rank: 1, state: .starting)]))
-            case ..<24.5:
+            case ..<45:
                 return .init(lines: ["Loading Qwen 3.8 27B: 1 of 2 parts ready."], step: .init(.starting),
                              start: P(.loading, parts: [.init(rank: 0, state: .ready), .init(rank: 1, state: .loading)]))
-            case ..<26:
+            case ..<66:
                 // The registration stops both parts, saves the approval on each Mac and starts them again as members.
                 return .init(lines: ["Stopped; last model Qwen 3.8 27B."], step: .init(.starting), start: P(.registering))
             default:
@@ -191,7 +204,7 @@ extension OnboardingChecks {
         let run = TerminalRun(made)
         defer { run.release() }
         expect(run.waitFor(codeQuestion), "download, no stop: the code"); run.type("y")
-        let code = run.finish(seconds: 50)
+        let code = run.finish(seconds: 90)
         let text = run.text
         expect(text.contains("4/4 Start"), "download, no stop: the joining Mac followed the start: \(text)")
         expect(!text.contains("Stopped (by `darkbloom cluster stop`"), "download, no stop: no stop line nobody asked for: \(text)")
@@ -200,8 +213,8 @@ extension OnboardingChecks {
         transcript("member-download-no-stop", text, keys: run.keys)
     }
 
-    /// What tells a stop: the leading Mac's count of the stops a person asked for, compared with the count before the start
-    /// began; never the words of its status.
+    /// What tells a stop: the leading Mac's count of the stops a person asked for, compared with the count when the start
+    /// began; never the words of its status. The start begins at the leading Mac's first step of it.
     static func aStopIsTheLeadersRecordNeverItsStatusWords() {
         let asked = ClusterOnboardingStopped.asked
         expect(!asked(nil, nil) && !asked(nil, 1) && !asked(1, nil) && !asked(1, 1) && !asked(2, 0),
@@ -219,6 +232,9 @@ extension OnboardingChecks {
         var remade = ClusterOnboardingFollowedStop()
         expect(!remade.look(3, begun: false) && !remade.look(0, begun: true) && remade.look(1, begun: true),
                "followed stop: a lower count (a record made again) is the one to compare with from then on")
+        let kinds: [ClusterOnboardingLeaderStep.Kind] = [.localNetwork, .reading, .tryAgain, .modelList, .copy, .login, .starting, .refused, .unknown]
+        let begun = kinds.filter { ClusterOnboardingLeaderStep($0).startBegun }
+        expect(begun == [.copy, .starting], "the start begins at the model's transfer or the start itself: \(begun)")
     }
 
     /// Someone runs `darkbloom cluster stop` while the leading Mac is still at its model list (nothing runs to stop): the
@@ -226,9 +242,12 @@ extension OnboardingChecks {
     static func aStopBeforeTheStartIsNoStopOfIt() {
         typealias P = ClusterOnboardingStartProgress
         let loading = P(.loading, parts: [.init(rank: 0, state: .ready), .init(rank: 1, state: .loading)])
-        let run = TerminalRun(followingWithStops([(["Stopped."], nil, nil), (["Stopped."], nil, 0), (["Stopped."], nil, 1),
-            (["Stopped."], nil, 1), (["Starting Qwen 3.8 27B."], loading, 1), (["Loading Qwen 3.8 27B: 1 of 2 parts ready."], loading, 1),
-            (["Serving Qwen 3.8 27B through Darkbloom on both Macs (pipeline)."], nil, 1)]))
+        let list = ClusterOnboardingLeaderStep(.modelList)
+        let run = TerminalRun(followingWithStops([.init(["Stopped."], step: list), .init(["Stopped."], stops: 0, step: list),
+            .init(["Stopped."], stops: 1, step: list), .init(["Stopped."], stops: 1, step: .init(.starting)),
+            .init(["Starting Qwen 3.8 27B."], start: loading, stops: 1, step: .init(.starting)),
+            .init(["Loading Qwen 3.8 27B: 1 of 2 parts ready."], start: loading, stops: 1),
+            .init(["Serving Qwen 3.8 27B through Darkbloom on both Macs (pipeline)."], stops: 1)]))
         defer { run.release() }
         expect(run.waitFor(codeQuestion), "stop before the start: the code"); run.type("y")
         expect(run.finish(seconds: 20) == 0, "stop before the start: the start's outcome, ✓: \(run.text)")
@@ -236,59 +255,86 @@ extension OnboardingChecks {
                "stop before the start: no stop line: \(run.text)")
     }
 
-    /// A real stop while the leading Mac downloads the model: the joining Mac ends at once with the leading Mac's line
-    /// (whose own screen keeps the pair stopped: `aStopDuringTheDownloadKeepsThePairStopped`).
+    /// A real stop while the leading Mac downloads the model, or while its screen asks how to get it there (the start's
+    /// first step, before any figure): the joining Mac ends at once with the leading Mac's line, whose own screen keeps
+    /// the pair stopped (`aStopDuringTheDownloadKeepsThePairStopped`).
     static func aStopDuringTheDownloadEndsTheJoiningMacsWaitAtOnce() {
         typealias P = ClusterOnboardingStartProgress
-        let run = TerminalRun(followingWithStops([(["Stopped."], nil, 0),
-            (["Stopped."], P(.downloading, done: 1_000_000_000, total: 16_300_000_000), 0),
-            (["Stopped."], P(.downloading, done: 2_000_000_000, total: 16_300_000_000), 0),
-            (["Stopped."], P(.downloading, done: 3_000_000_000, total: 16_300_000_000), 1)]))
-        defer { run.release() }
-        expect(run.waitFor(codeQuestion), "stop in the download: the code"); run.type("y")
-        let began = Date()
-        expect(run.finish(seconds: 20) == 1, "stop in the download: ended: \(run.text)")
-        expect(Date().timeIntervalSince(began) < 10, "stop in the download: at once: \(Date().timeIntervalSince(began)) s")
-        expect(run.text.contains("4/4 Start") && run.text.contains("Stopped (by `darkbloom cluster stop` on one of the Macs)"),
-               "stop in the download: the leading Mac's line: \(run.text)")
+        let copy = ClusterOnboardingLeaderStep(.copy)
+        for (label, during) in [("stop in the download", P(.downloading, done: 3_000_000_000, total: 16_300_000_000)), ("stop at the copy question", nil)] {
+            let run = TerminalRun(followingWithStops([.init(["Stopped."], stops: 0, step: .init(.modelList)),
+                .init(["Stopped."], start: during, stops: 0, step: copy), .init(["Stopped."], start: during, stops: 0, step: copy),
+                .init(["Stopped."], start: during, stops: 1, step: copy)]))
+            defer { run.release() }
+            expect(run.waitFor(codeQuestion), "\(label): the code"); run.type("y")
+            let began = Date()
+            expect(run.finish(seconds: 20) == 1, "\(label): ended: \(run.text)")
+            expect(Date().timeIntervalSince(began) < 10, "\(label): at once: \(Date().timeIntervalSince(began)) s")
+            expect(run.text.contains("Stopped (by `darkbloom cluster stop` on one of the Macs)"), "\(label): the leading Mac's line: \(run.text)")
+        }
     }
 
-    /// The leading Mac downloads a model no Mac has while someone runs `darkbloom cluster stop`: once the download is done
-    /// its screen ends with the stop line and starts nothing (before, it started both Macs as if nobody had stopped them).
+    /// The leading Mac downloads a model no Mac has while someone runs `darkbloom cluster stop`, or asks how to get it
+    /// there when they do: once the download is done its screen ends with the stop line and starts nothing (before, it
+    /// started both Macs as if nobody had stopped them).
     static func aStopDuringTheDownloadKeepsThePairStopped() {
-        let recorder = Recorder()
         let offer = ClusterOnboardingProvisionOffer(lines: ["This Mac: download from Darkbloom's catalog (16.3 GB)"],
                                                     downloadAlternative: false, leaderDownloads: true)
         let before = [ClusterOnboardingModelChoice(title: "Qwen3.8-27B-4bit-mtp", lines: ["16.3 GB · not on these Macs: downloaded from Darkbloom's catalog first"],
                                                    blocker: nil, provision: offer)]
         let after = [ClusterOnboardingModelChoice(title: "Qwen3.8-27B-4bit-mtp", lines: ["16.3 GB · pipeline · this Mac 32 layers / the other Mac 32 layers"],
                                                   blocker: nil)]
-        var made = operations(recorder, resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB"), pairEvents: [], pairResult: .failed([]),
-                              choices: before, replanned: after)
-        // Two stops counted on earlier days before the download; the one asked during it after.
-        made.stopsAsked = { recorder.all.contains("provision 0 copy") ? 3 : 2 }
-        let run = TerminalRun(made)
-        defer { run.release() }
-        expect(run.waitFor(prompt(1)), "leader stop in the download: the list"); run.type("\r")
-        expect(run.waitFor("  1) Download\n  2) Cancel\n"), "leader stop in the download: get it"); run.type("\r")
-        expect(run.finish(seconds: 10) == 1, "leader stop in the download: ended, not served: \(run.text)")
-        expect(run.text.hasSuffix("Stopped (by `darkbloom cluster stop` on one of the Macs): the pair isn't starting any more. "
-                                  + "Run `darkbloom cluster` on the leading Mac to start it again.\n"), "leader stop in the download: the line: \(run.text)")
-        expect(recorder.all.contains("provision 0 copy") && !recorder.all.contains("serve") && !recorder.all.contains("waitReady"),
-               "leader stop in the download: downloaded, nothing started: \(recorder.all)")
+        for atTheQuestion in [false, true] {
+            let label = atTheQuestion ? "leader stop at the copy question" : "leader stop in the download"
+            let recorder = Recorder(), stopped = Recorder()
+            var made = operations(recorder, resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB"), pairEvents: [], pairResult: .failed([]),
+                                  choices: before, replanned: after)
+            // Two stops counted on earlier days; one more asked at the question or during the download.
+            made.stopsAsked = { !stopped.all.isEmpty || (!atTheQuestion && recorder.all.contains("provision 0 copy")) ? 3 : 2 }
+            let run = TerminalRun(made)
+            defer { run.release() }
+            expect(run.waitFor(prompt(1)), "\(label): the list"); run.type("\r")
+            expect(run.waitFor("  1) Download\n  2) Cancel\n"), "\(label): get it")
+            if atTheQuestion { stopped.note("stop") }
+            run.type("\r")
+            expect(run.finish(seconds: 10) == 1, "\(label): ended, not served: \(run.text)")
+            expect(run.text.hasSuffix("Stopped (by `darkbloom cluster stop` on one of the Macs): the pair isn't starting any more. "
+                                      + "Run `darkbloom cluster` on the leading Mac to start it again.\n"), "\(label): the line: \(run.text)")
+            expect(recorder.all.contains("provision 0 copy") && !recorder.all.contains("serve") && !recorder.all.contains("waitReady"),
+                   "\(label): downloaded, nothing started: \(recorder.all)")
+        }
     }
 
-    /// A real stop while the parts load: the leading Mac's wait for them ends at once with the stop line (its parts are
-    /// stopped and nothing starts them again), never a ✗ after 15 minutes with Retry.
+    /// A real stop while the parts load: the leading Mac's screen ends at once with the stop line (its parts are stopped
+    /// and nothing starts them again), never a ✗ after 15 minutes with Retry. The wait itself goes on by itself (here it
+    /// would answer only after 20 s).
     static func aStopFromAnywhereEndsTheLeadersLoadAtOnce() {
         let recorder = Recorder()
-        let run = TerminalRun(operations(recorder, resume: .init(role: .leader, peerName: "Apple M5 Max, 128 GB"), pairEvents: [],
-                                         pairResult: .failed([]), readyResult: .failure(.stopped)))
+        var made = operations(recorder, resume: .init(role: .leader, peerName: "Apple M5 Max, 128 GB"), pairEvents: [], pairResult: .failed([]),
+                              readyReports: ["1 of 2 parts ready"], readyReportPause: 20_000_000)
+        made.stopsAsked = { recorder.all.contains("waitReady") ? 3 : 2 }
+        let run = TerminalRun(made)
         defer { run.release() }
         expect(run.waitFor(prompt(2)), "leader stop in the load: the list"); run.type("\r")
-        expect(run.finish(seconds: 10) == 1, "leader stop in the load: ended")
+        let began = Date()
+        expect(run.finish(seconds: 15) == 1, "leader stop in the load: ended")
+        expect(Date().timeIntervalSince(began) < 10, "leader stop in the load: at once, not when the wait answers: \(Date().timeIntervalSince(began)) s")
         expect(run.text.contains("Stopped (by `darkbloom cluster stop` on one of the Macs): the pair isn't starting any more."),
                "leader stop in the load: said plainly: \(run.text)")
         expect(!run.text.contains(notServingChoices) && !recorder.all.contains("testRequest"), "leader stop in the load: no Retry, no test: \(run.text)")
+    }
+
+    /// The leading Mac's own stops while the parts load (a part a model change or the registration stopped, the cluster
+    /// service's restart for an approval) count none: its wait goes on to the outcome.
+    static func thePairsOwnStopsNeverEndTheLeadersWait() {
+        let recorder = Recorder()
+        var made = operations(recorder, resume: .init(role: .leader, peerName: "Apple M5 Max, 128 GB"), pairEvents: [], pairResult: .failed([]),
+                              readyReports: ["1 of 2 parts ready", "2 of 2 parts ready"], readyReportPause: 1_500_000)
+        made.stopsAsked = { 2 }
+        let run = TerminalRun(made)
+        defer { run.release() }
+        expect(run.waitFor(prompt(2)), "own stops: the list"); run.type("\r")
+        expect(run.finish(seconds: 20) == 0, "own stops: served: \(run.text)")
+        expect(!run.text.contains("Stopped (by `darkbloom cluster stop`") && recorder.all.contains("testRequest"), "own stops: no stop line: \(run.text)")
     }
 }

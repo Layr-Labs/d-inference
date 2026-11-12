@@ -1515,10 +1515,14 @@ public struct ClusterOnboardingOperations: Sendable {
     /// Publishes how far the start is (`ClusterOnboardingStartProgress`) in the leading Mac's status, so the Mac that
     /// joined shows the same step; nil clears it. Not in `init`: only the live operations set it.
     public var publishStart: @Sendable (ClusterOnboardingStartProgress?) -> Void = { _ in }
-    /// How many stops a person asked for (`darkbloom stop`, `cluster stop` or `restart`, on either Mac), as the leading
-    /// Mac counts them (`ClusterSetupRecord.stopsAsked`); nil when that can't be read, and from an older build. Not in
-    /// `init`: only the live operations set it.
+    /// How many stops a person asked for (`darkbloom cluster stop`, and `darkbloom stop` or `restart` once the pair runs,
+    /// on either Mac), as the leading Mac counts them (`ClusterSetupRecord.stopsAsked`); nil when that can't be read, and
+    /// from an older build. Not in `init`: only the live operations set it.
     public var stopsAsked: @Sendable () -> Int? = { nil }
+    /// `serve`, unless a stop was asked since the count was `stopsBefore` (checked on the leading Mac under the lock its
+    /// start takes, so a stop that took the lock first is never undone): then a failure marked `stopped`. Nil: `serve`.
+    /// Not in `init`: only the live operations set it.
+    public var serveUnlessStopped: (@Sendable (_ stopsBefore: Int?) -> Result<[String], ClusterOnboardingFailure>)? = nil
     /// The rank this Mac's part runs in the saved setup (each screen names its own part "This Mac"); nil when unknown.
     /// Not in `init`: only the live operations set it.
     public var thisRank: @Sendable () -> Int? = { nil }
@@ -2894,10 +2898,15 @@ public enum ClusterOnboardingDriver {
         if privateImage, let line = choice.publicTraffic {
             console.say("  " + ClusterOnboardingMacName.sentence(line) + (line.hasSuffix(".") ? "" : "."))
         }
-        // The start begins here: a stop a person asks for from now on ends it before both Macs start (below).
-        let stopsBefore = operations.stopsAsked()
+        // The start begins with the first of its steps the Mac that joined sees (`ClusterOnboardingLeaderStep.startBegun`):
+        // a stop someone asks for from then on is the start's, on both Macs (`ClusterOnboardingStopped`).
+        var stopsBefore: Int?, begun = false
+        func begin(_ step: ClusterOnboardingLeaderStep.Kind) {
+            if !begun { (stopsBefore, begun) = (operations.stopsAsked(), true) }
+            operations.publishStep(.init(step))
+        }
         if let offer = choice.provision {
-            operations.publishStep(.init(.copy))
+            begin(.copy)
             switch provision(offer, title: choice.title, index: chosen!, operations, console) {
             case .stopped: return 0
             case .failed: return 1
@@ -2943,7 +2952,7 @@ public enum ClusterOnboardingDriver {
             console.say("Nothing changed.")
             return 1
         }
-        operations.publishStep(.init(.starting))
+        begin(.starting)
         switch busy(console, "Sending the setup to the other Mac", { operations.adopt(index) }) {
         case .success: break
         case .failure(let failure):
@@ -2969,17 +2978,23 @@ public enum ClusterOnboardingDriver {
         guard clearSoloServing(operations.soloServing(), operations, console) else { return 1 }
         // Stopped from anywhere since the start began (while the model downloaded or copied, say): the pair stays stopped
         // and this screen ends as the Mac that joined does, which reads the same stop (`ClusterOnboardingFollowedStop`).
-        if ClusterOnboardingStopped.asked(since: stopsBefore, now: operations.stopsAsked()) {
+        // The leading Mac checks again under the lock its start takes (`serveUnlessStopped`), for a stop that lands now.
+        let stopped = { () -> Int32 in
+            operations.publishStart(nil)
             console.say(ClusterOnboardingCommand.named(ClusterOnboardingStopped.line))
             return 1
         }
-        switch busy(console, "Starting both Macs", operations.serve) {
+        if ClusterOnboardingStopped.asked(since: stopsBefore, now: operations.stopsAsked()) { return stopped() }
+        let since = stopsBefore
+        switch busy(console, "Starting both Macs", { operations.serveUnlessStopped?(since) ?? operations.serve() }) {
         case .success: break
+        case .failure(let failure) where failure.stopped: return stopped()
         case .failure(let failure):
             for line in failure.lines { console.say("  " + line) }
             return 1
         }
-        return finishStart(title: choice.title, scope: scope, startOverRequest: startOverRequest, peer: peer, operations, console)
+        return finishStart(title: choice.title, scope: scope, startOverRequest: startOverRequest, peer: peer, stopsBefore: since,
+                           operations, console)
     }
 
     /// Serving through Darkbloom needs every Mac logged in: the coordinator pairs only Macs logged in to one account.
@@ -3026,15 +3041,18 @@ public enum ClusterOnboardingDriver {
     /// `registers`: a pair on the leader's API is registered with the coordinator after its test (a start, and the
     /// switch to Darkbloom, which is one; not the switch to local only or the serving model's Retry). `startOverRequest`: as `chooseAndServe`'s, kept for
     /// Change model, so a Mac paired before this run keeps its choices when the other Mac stops answering.
+    /// `stopsBefore`: the stops counted when the start began (`chooseAndServe`); nil reads them now. One more ends the
+    /// start's waits at once (`stopEnding`).
     static func finishStart(title: String, scope: ClusterServingScope, registers: Bool = true,
-                            startOverRequest: ClusterOnboardingRequest? = nil, peer: String? = nil,
+                            startOverRequest: ClusterOnboardingRequest? = nil, peer: String? = nil, stopsBefore: Int? = nil,
                             _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> Int32 {
         var mayRegister = registers
+        var stopsBefore = stopsBefore ?? operations.stopsAsked()
         // The screen's start marks itself until its test is answered (through Darkbloom, until the coordinator decides),
         // so the leading Mac publishes its outcome and the Mac that joined ends with the same.
         if registers { operations.markRegistrationPending() }
         while true {
-            let outcome = startOutcome(title: title, scope: scope, mayRegister: &mayRegister, operations, console)
+            let outcome = startOutcome(title: title, scope: scope, stopsBefore: stopsBefore, mayRegister: &mayRegister, operations, console)
             // The start's steps are over (left: they go on by themselves, and the published figures age out). A pair that
             // doesn't serve publishes its ✗ in their place below, with no gap between them where the Mac that joined would
             // read no start and show the status' ✗ without its next step.
@@ -3070,6 +3088,8 @@ public enum ClusterOnboardingDriver {
                     for line in failure.lines { console.say("  " + line) }
                     return 1
                 }
+                // Started again as the person chose here: a stop before it was asked of the start that ended.
+                stopsBefore = operations.stopsAsked()
                 continue
             case .soloServing(let serving):
                 guard clearSoloServing(serving, operations, console) else { return 1 }
@@ -3077,6 +3097,7 @@ public enum ClusterOnboardingDriver {
                     for line in failure.lines { console.say("  " + line) }
                     return 1
                 }
+                stopsBefore = operations.stopsAsked()
                 continue
             case .notServing(let lines):
                 // The start's outcome, published so the Mac that joined ends with the same ✗ and points to Retry here.
@@ -3098,6 +3119,7 @@ public enum ClusterOnboardingDriver {
                     }
                     // A start asks Darkbloom again for a pair that isn't offered (it may serve an approval now).
                     mayRegister = registers
+                    stopsBefore = operations.stopsAsked()
                     continue
                 case .changeModel: return chooseAndServe(operations, console, scope: scope, startOverRequest: startOverRequest, peer: peer,
                                                          heading: "Change model")
@@ -3141,10 +3163,10 @@ public enum ClusterOnboardingDriver {
     /// Waits for the started parts; a pair offered for pairing then for the coordinator to pair both Macs and load the
     /// model there (registered is not serving); a pair on the leader's API is tested, then registered with the
     /// coordinator when it serves a cluster approval (once per start: both parts then start again and are awaited).
-    static func startOutcome(title: String, scope: ClusterServingScope, mayRegister: inout Bool,
+    static func startOutcome(title: String, scope: ClusterServingScope, stopsBefore: Int?, mayRegister: inout Bool,
                              _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> StartOutcome {
         let ready: ClusterOnboardingReady
-        switch waitForParts(title: title, operations, console) {
+        switch waitForParts(title: title, stopsBefore: stopsBefore, operations, console) {
         case .success(let value)?: ready = value
         case .failure(let failure)? where failure.stopped: return .stopped
         case .failure(let failure)? where failure.versionSplit != nil: return .versionSplit(failure.versionSplit!)
@@ -3154,7 +3176,7 @@ public enum ClusterOnboardingDriver {
         }
         let tested: String?
         if ready.offered != nil {
-            switch awaitPairServing(title: title, operations, console) {
+            switch awaitPairServing(title: title, stopsBefore: stopsBefore, operations, console) {
             case .success(let test)?: tested = test
             case .failure(let failure)? where failure.stopped: return .stopped
             case .failure(let failure)?: return .notServing(failure.lines)
@@ -3171,7 +3193,9 @@ public enum ClusterOnboardingDriver {
             }
             if mayRegister, !scope.isLocalOnly {
                 mayRegister = false
-                if register(title: title, operations, console) { return startOutcome(title: title, scope: scope, mayRegister: &mayRegister, operations, console) }
+                if register(title: title, operations, console) {
+                    return startOutcome(title: title, scope: scope, stopsBefore: stopsBefore, mayRegister: &mayRegister, operations, console)
+                }
             }
             // Set to serve through Darkbloom, but not offered after the registration (the coordinator serves no approval
             // for it, or the check refused it): a pair on the leading Mac's API never earns, so this ends with ✗, never
@@ -3278,10 +3302,19 @@ public enum ClusterOnboardingDriver {
     /// A pair offered for pairing: waits for the coordinator to pair both Macs and both to load the model, its progress
     /// live; the pair's first request's time ("in 0.84 s"), or why it does not serve.
     /// Nil when the person left it (q or Esc): the pair keeps trying by itself (DevNet, 2026-11-05: q did nothing here).
-    static func awaitPairServing(title: String, _ operations: ClusterOnboardingOperations,
+    static func awaitPairServing(title: String, stopsBefore: Int?, _ operations: ClusterOnboardingOperations,
                                  _ console: ClusterOnboardingConsole) -> Result<String?, ClusterOnboardingFailure>? {
-        waitWithRows("Serving \(title) through Darkbloom", console, leaving: leaves, operations.pairServing)?
+        waitWithRows("Serving \(title) through Darkbloom", console, leaving: leaves, ending: stopEnding(since: stopsBefore, operations),
+                     operations.pairServing)?
             .map { $0.first.flatMap { $0.isEmpty ? nil : $0 } }
+    }
+
+    /// The start's waits end at once on a stop someone asked for since the start began (`stopsBefore`), as the leading Mac
+    /// counts them: the parts are stopped and nothing starts them again. The pair's own stops aren't counted (the
+    /// registration's, the cluster service's), so a wait goes on through them.
+    static func stopEnding<Success: Sendable>(since stopsBefore: Int?, _ operations: ClusterOnboardingOperations)
+        -> @Sendable () -> Result<Success, ClusterOnboardingFailure>? {
+        { ClusterOnboardingStopped.asked(since: stopsBefore, now: operations.stopsAsked()) ? .failure(.stopped) : nil }
     }
 
     /// How the pair serves, at the end of the serving line: nothing for a pair offered for pairing (its own line says
@@ -3312,9 +3345,10 @@ public enum ClusterOnboardingDriver {
 
     /// Waits for the started cluster's parts with their progress as the live rows.
     /// Nil when the person left it (q, Esc or Ctrl-C): the parts go on starting by themselves (P2-4: q was ignored).
-    static func waitForParts(title: String, _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole)
+    static func waitForParts(title: String, stopsBefore: Int?, _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole)
         -> Result<ClusterOnboardingReady, ClusterOnboardingFailure>? {
-        waitWithRows("Loading \(title) on both Macs", console, leaving: leaves, operations.waitReady)
+        waitWithRows("Loading \(title) on both Macs", console, leaving: leaves, ending: stopEnding(since: stopsBefore, operations),
+                     operations.waitReady)
     }
 
     /// Said when the person leaves the start's wait.
@@ -3329,8 +3363,11 @@ public enum ClusterOnboardingDriver {
         waitWithRows(title, console, leaving: { _ in false }, work)!
     }
 
-    /// The same, left (nil) at a key `leaving` takes; the work then goes on by itself.
+    /// The same, left (nil) at a key `leaving` takes; the work then goes on by itself. `ending`, asked about once a second
+    /// off the console's thread (it may ask the other Mac over the cable), ends the wait with the value it gives; the work
+    /// goes on by itself then too.
     static func waitWithRows<Value: Sendable>(_ title: String, _ console: ClusterOnboardingConsole, leaving: (Character) -> Bool,
+                                              ending: (@Sendable () -> Value?)? = nil,
                                               _ work: @escaping @Sendable (_ progress: @escaping @Sendable (String) -> Void) -> Value)
         -> Value? {
         let progress = ClusterOnboardingMailbox<String>()
@@ -3340,6 +3377,8 @@ public enum ClusterOnboardingDriver {
         var clock = ClusterOnboardingLoadRows(started: Date())
         // A plain window shows no live rows: each Mac's row is said once as it changes.
         var said = Set<String>()
+        let ends = ClusterOnboardingMailbox<Value?>()
+        var endAsking = false, endAsked = Date.distantPast
         while true {
             for line in progress.take() {
                 latest = line
@@ -3347,6 +3386,16 @@ public enum ClusterOnboardingDriver {
                 for row in line.components(separatedBy: "\n").dropFirst() where !row.isEmpty && said.insert(row).inserted { console.say("  " + row) }
             }
             if let value = finished.take().first { console.settle(); return value }
+            if let ending {
+                for end in ends.take() {
+                    endAsking = false
+                    if let end { console.settle(); return end }
+                }
+                if !endAsking, Date().timeIntervalSince(endAsked) >= 1 {
+                    (endAsking, endAsked) = (true, Date())
+                    Thread.detachNewThread { ends.post(ending()) }
+                }
+            }
             console.workingRows(clock.rows(title, report: latest, now: Date(), width: console.liveWidth))
             if let key = console.key(milliseconds: 120), leaving(key) { console.settle(); return nil }
         }

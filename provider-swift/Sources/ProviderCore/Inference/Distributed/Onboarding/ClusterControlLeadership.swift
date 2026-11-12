@@ -825,10 +825,15 @@ public struct ClusterControlRequest: Codable, Sendable, Equatable {
     /// `adopt`: the mode family chosen on the forwarding Mac's screen (a `ClusterForcedMode` raw value); nil keeps the
     /// listed plan's, and from an older build.
     public var mode: String?
-    public init(op: Operation, index: Int? = nil, model: String? = nil, scope: ClusterServingScope? = nil, mode: String? = nil) {
+    /// `serve`: the stops counted when the forwarding Mac's start began; the leading Mac doesn't serve once one more was
+    /// asked (`OnboardingLive.localServe(unlessStoppedSince:)`). Nil serves as before, and an older leader ignores it.
+    public var stopsBefore: Int?
+    public init(op: Operation, index: Int? = nil, model: String? = nil, scope: ClusterServingScope? = nil, mode: String? = nil,
+                stopsBefore: Int? = nil) {
         self.op = op; self.index = index; self.model = model; self.localOnly = scope.map(\.isLocalOnly); self.bind = scope?.localAPIBind
         self.localAPI = scope?.addsLocalAPI == true ? true : nil
         self.mode = mode
+        self.stopsBefore = stopsBefore
     }
 
     /// `scope`'s value; nil when it names none or an address the local API does not take.
@@ -864,6 +869,13 @@ public struct ClusterControlReply: Codable, Sendable, Equatable {
     /// `status`: how many stops a person asked for on the leading Mac (`ClusterSetupRecord.stopsAsked`, 0 before the
     /// first); nil from an older build. An older Mac ignores it.
     public var stopsAsked: Int? = nil
+}
+
+extension ClusterOnboardingLeaderStatus {
+    /// The leading Mac's status as its reply carries it, on the Mac that forwarded the `status` (`OnboardingLive.leaderStatus`).
+    public init(reply: ClusterControlReply) {
+        self.init(lines: reply.lines, step: reply.step, start: reply.start, stopsAsked: reply.stopsAsked)
+    }
 }
 
 public enum ClusterControlRouting {

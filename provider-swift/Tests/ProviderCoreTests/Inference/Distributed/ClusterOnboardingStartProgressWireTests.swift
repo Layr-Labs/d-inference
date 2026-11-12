@@ -22,39 +22,6 @@ struct ClusterOnboardingStartProgressWireTests {
         #expect(fromOlder.start == nil, "an older leader sends none")
     }
 
-    /// An external pair on 0.10.12 (2026-11-12): the joining Mac took the leading Mac's "Stopped" status for a stop 20 s
-    /// into a download nobody stopped. The status carries how many stops a person asked for; an older Mac ignores it, and
-    /// an older leader sends none, which never tells a stop.
-    @Test func theStatusCarriesTheStopsAskedForAndAnOlderMacIgnoresThem() throws {
-        var reply = ClusterControlReply(lines: ["Stopped; last model Qwen 3.8 27B."], failed: false, leaderID: "a")
-        reply.stopsAsked = 3
-        let data = try JSONEncoder().encode(reply)
-        #expect(try JSONDecoder().decode(ClusterControlReply.self, from: data) == reply, "round trip")
-        #expect(try JSONDecoder().decode(OlderReply.self, from: data).lines == reply.lines, "an older Mac reads the rest")
-        let fromOlder = try JSONDecoder().decode(ClusterControlReply.self, from: Data(#"{"lines":["Stopped."],"failed":false}"#.utf8))
-        #expect(fromOlder.stopsAsked == nil && !ClusterOnboardingStopped.asked(since: 0, now: fromOlder.stopsAsked),
-                "an older leader sends none: no stop")
-    }
-
-    /// Only a stop a person asked for (`OnboardingLive.stop`) is counted: the start's own stops (a model change, the
-    /// registration's restart) and the cluster service's are not. Each stops the pair the same way.
-    @Test func onlyAStopAPersonAskedForIsCounted() throws {
-        var record = ClusterSetupRecord()
-        record.leadership = ClusterOnboardingLeadership(role: "leader", leaderPin: "a", peerPin: "b", peerName: "Apple M5 Max, 128 GB",
-                                                        since: "2026-11-12T20:40:00Z")
-        record.leadership?.serving = true
-        let own = UUID()
-        OnboardingLive.stopping(&record, id: own, asked: false)
-        #expect(record.leadership?.serving == false && record.stopDrain?.id == own && record.stopsAsked == nil, "the start's own stop")
-        OnboardingLive.stopping(&record, id: UUID(), asked: true)
-        OnboardingLive.stopping(&record, id: UUID(), asked: true)
-        #expect(record.leadership?.serving == false && record.stopsAsked == 2, "each stop a person asked for, counted")
-        #expect(try JSONDecoder().decode(ClusterSetupRecord.self, from: JSONEncoder().encode(record)).stopsAsked == 2, "kept")
-        let older = try JSONDecoder().decode(ClusterSetupRecord.self, from: Data(
-            #"{"schema":"darkbloom_cluster_setup_wizard_v1","confirmed":[],"sent":[],"checks":[]}"#.utf8))
-        #expect(older.stopsAsked == nil, "an older record counts none")
-    }
-
     @Test func aLaterPhaseReadsAsUnknown() throws {
         let data = Data(#"{"lines":[],"failed":false,"start":{"phase":"warming","done":3,"later":true}}"#.utf8)
         let reply = try JSONDecoder().decode(ClusterControlReply.self, from: data)

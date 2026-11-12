@@ -47,6 +47,10 @@ public struct ClusterOnboardingLeaderStep: Codable, Sendable, Equatable {
     /// The refusal of every model because the two Macs run different builds.
     public var differentBuilds: Bool { kind == .refused && reason == Self.differentBuildsReason }
 
+    /// The leading Mac's start began at this step: a model was chosen, and its transfer (`copy`) or the start itself
+    /// (`starting`) is next. A stop someone asks for from then on is that start's, on both Macs (`ClusterOnboardingStopped`).
+    public var startBegun: Bool { kind == .copy || kind == .starting }
+
     /// What the leading Mac is doing, after "the other Mac: "; nil when there is nothing to say.
     public var words: String? {
         switch kind {

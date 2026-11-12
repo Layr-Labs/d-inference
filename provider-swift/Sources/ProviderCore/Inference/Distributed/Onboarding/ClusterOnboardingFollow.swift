@@ -198,8 +198,10 @@ extension ClusterOnboardingDriver {
         // The two Macs' versions, read on the looks' cadence: a split never clears by itself, so the wait ends at once.
         let splits = ClusterOnboardingMailbox<ClusterOnboardingVersionSplit?>()
         var splitAsking = false, splitAsked = Date.distantPast
-        // A stop a person asked for since the start began, by the leading Mac's record, never by its status' words.
-        var stops = ClusterOnboardingFollowedStop()
+        // A stop a person asked for since the start began, by the leading Mac's count, never by its status' words. The start
+        // began at its first step on the leading Mac (`ClusterOnboardingLeaderStep.startBegun`), as that Mac counts from
+        // there too, or at its first progress or started status.
+        var stops = ClusterOnboardingFollowedStop(), startBegan = false
         while true {
             if !splitAsking, Date().timeIntervalSince(splitAsked) >= timing.pollSeconds {
                 (splitAsking, splitAsked) = (true, Date())
@@ -274,7 +276,8 @@ extension ClusterOnboardingDriver {
                 // A stop from anywhere once the start began ends the wait at once, as on the leading Mac. Its status
                 // reading "Stopped" is none: it reads so through a download or copy of the model, until both parts start,
                 // and while the start stops them to register.
-                if stops.look(look.stopsAsked, begun: started != nil || start != nil) {
+                startBegan = startBegan || started != nil || start != nil || step?.startBegun == true
+                if stops.look(look.stopsAsked, begun: startBegan) {
                     console.settle()
                     console.say(ClusterOnboardingCommand.named(ClusterOnboardingStopped.line))
                     return 1

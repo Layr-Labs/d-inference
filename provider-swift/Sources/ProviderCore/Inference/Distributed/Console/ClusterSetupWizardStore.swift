@@ -126,11 +126,11 @@ public struct ClusterSetupRecord: Codable, Sendable, Equatable {
     public var lastTestFailure: String? = nil
     /// The approval set aside while the pair serves locally (`ApprovalSetAside`); nil otherwise.
     public var approvalSetAside: ApprovalSetAside? = nil
-    /// How many stops a person asked for while this Mac led (`darkbloom stop`, `cluster stop` or `restart` on either Mac,
-    /// which the leading Mac runs: `OnboardingLive.stop`). The leading Mac's status carries it
-    /// (`ClusterControlReply.stopsAsked`), so a screen that follows a start ends on a stop only when this grew since the
-    /// start began (`ClusterOnboardingFollowedStop`). The start's own stops (a model change, the registration's restart)
-    /// and the cluster service's never count. Nil before the first.
+    /// How many stops a person asked for while this Mac led (`darkbloom cluster stop` on either Mac, and `darkbloom stop`
+    /// or `restart` once the pair runs, which the leading Mac runs: `OnboardingLive.stop`). The leading Mac's status
+    /// carries it (`ClusterControlReply.stopsAsked`), so a screen that follows a start ends on a stop only when this grew
+    /// since the start began (`ClusterOnboardingFollowedStop`). The start's own stops (a model change, the registration's
+    /// restart) and the cluster service's never count. Nil before the first.
     public var stopsAsked: Int? = nil
 
     /// The cluster approval both Macs saved their setups without, and why (`ClusterApprovalCheck`): the leader checks

@@ -358,12 +358,14 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         dates = steps["Refuse back-deployed Date comparisons in provider source"]
         self.assertEqual(field(dates, "if"), "${{ !cancelled() }}")
         self.assertIn("python3 scripts/check-date-comparisons.py", run_command(dates).splitlines())
-        # The prompt fixture downloaders' self-tests need no Mac; dev runs them here.
+        # The prompt fixture downloaders' and the MiMo audio codec download's
+        # self-tests need no Mac; dev runs them here.
         fixtures = steps["Test the prompt fixture downloaders offline"]
         self.assertEqual(field(fixtures, "if"), "${{ !cancelled() }}")
         self.assertEqual(run_command(fixtures).splitlines(), ["python3 scripts/test-prepare-prompt-fixtures.py",
                                                               "python3 scripts/test-prepare-mimo-prompt-fixtures.py",
-                                                              "python3 scripts/test-prepare-mimo-image-http-fixtures.py"])
+                                                              "python3 scripts/test-prepare-mimo-image-http-fixtures.py",
+                                                              "python3 scripts/test-prepare-mimo-audio-fixtures.py"])
         # So do the GPT-OSS tools' CPU tests (Python 3.11+); the log names the Python that ran them.
         gptoss = steps["Test the GPT-OSS checkpoint and replay tools offline"]
         self.assertEqual(field(gptoss, "if"), "${{ !cancelled() }}")

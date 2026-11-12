@@ -98,12 +98,20 @@ struct NemotronSuperLocalHTTPAdmissionTests {
                 let held = await budget.outstandingReservedBytes()
                 #expect(held > baseline)
                 // Admission precedes the body's plan: even a request the plan
-                // would refuse gets the busy status without being decoded.
+                // would refuse gets the busy status without being decoded. Text
+                // gets it at once; an image first waits for the streaming image
+                // ahead of it, up to the stacked bound (a local request forwards
+                // no first-content budget), which this held image outlasts.
                 for (image, stream) in [(false, true), (false, false), (true, true), (true, false)] {
                     for contradictory in [false, true] {
                         let body = try superAdmissionBody(image: image, stream: stream, contradictory: contradictory)
+                        let start = ContinuousClock.now
                         try await client.execute(uri: "/v1/chat/completions", method: .post, headers: headers,
                             body: ByteBuffer(bytes: body)) { response in
+                            let waited = ContinuousClock.now - start
+                            #expect(image ? waited >= NemotronSuperServingPolicy.stackedMediaWait - .milliseconds(100)
+                                          : waited < .seconds(1),
+                                    "image \(image) stream \(stream) contradictory \(contradictory)")
                             #expect(response.status == .tooManyRequests,
                                     "image \(image) stream \(stream) contradictory \(contradictory)")
                             #expect(response.headers[.contentType] == "application/json")
@@ -211,6 +219,181 @@ struct NemotronSuperLocalHTTPAdmissionTests {
             _ = await budget.finishPendingLoad(lease)
             throw error
         }
+        await hook.drain()
+        try await owner.closeAfterDrain()
+        #expect(residency.snapshot.usedBytes == 0)
+        #expect(await budget.finishPendingLoad(lease))
+        #expect(await budget.outstandingReservedBytes() == 0)
+    }
+
+    /// SUPER-SLOT on the single-request owner (the default): an image that
+    /// arrives while another image's answer is streaming (held here before its
+    /// native terminal) waits for it, reserving nothing, and is served instead
+    /// of a 429 bounce. One request waits at a time: a third image is refused
+    /// at once, and so is a text request, which never waits mid-answer. After
+    /// that, behind a text answer, an image is refused at once again.
+    @Test(.timeLimit(.minutes(2))) func stackedImageWaitsForAStreamingImageAndIsServed() async throws {
+        let dimensions = NemotronRadioDimensions(width: 2, layers: 1, heads: 1,
+            channels: 3, patch: 16, positionSide: 32, prefix: 1, mlpWidth: 3)
+        let (installed, construction, residency) = try SuperInstalledFixture(radioDimensions: dimensions).make()
+        let budget = GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0,
+            memorySnapshot: { .init(total: 8 << 30, active: 0, cache: 0, systemAvailable: .max) })
+        let lease = try #require(await budget.claimPendingLoad(requestID: "super-http-stacked",
+            weightBytes: UInt64(installed.receipt.payloadBytes), minimumKVBytes: 2 << 30))
+        let tokenizer = TokenizerHandle(SuperRouteTokenizer())
+        let owner = try await NemotronSuperLocalBridgeBuilder.make(installed: installed,
+            tokenizer: tokenizer, eosTokenIDs: [31],
+            sizing: .init(weightsBytes: installed.receipt.payloadBytes, fp16KVBytesPerToken: 64,
+                maxContextLength: 1024, defaultMaxTokens: 2), kvBytesCapacity: 2 << 30,
+            kvBudget: budget, loadLease: lease, construction: construction, environment: [:])
+        let template = try #require(Data(base64Encoded: superImagePinnedTemplateBase64,
+                                        options: .ignoreUnknownCharacters))
+        let hook = try NemotronSuperLocalImageHTTP(owner: owner, templateBytes: template)
+        let token = "synthetic-super-stacked"
+        let tracker = LocalResponseTracker()
+        let gate = SuperHTTPTerminalGate(), textGate = SuperHTTPTerminalGate()
+        let baseline = await budget.outstandingReservedBytes()
+        // Holds each request's real pump after its content, before native
+        // terminal observation: the first image's answer is streaming.
+        await owner.bridge._testInstallCancelledSettlementHooks(
+            beforeNativeTerminal: { _ in await gate.hold() }, onSettlementWait: {})
+        let headers: HTTPFields = [.contentType: "application/json", .authorization: "Bearer " + token]
+        do {
+            try await superAdmissionApplication(hook: hook, token: token, tokenizer: tokenizer,
+                                                tracker: tracker).test(.live) { client in
+                let port = try #require(client.port)
+                let first = try SuperHTTPResetSocket(port: port, token: token,
+                    body: try superAdmissionBody(image: true, stream: true))
+                defer { first.close() }
+                #expect(try first.readUntilContent().contains("200 OK"))
+                try await superHTTPEventually("first image streaming, held before terminal") { await gate.entered }
+                let held = await budget.outstandingReservedBytes()
+                let stacked = try SuperHTTPResetSocket(port: port, token: token,
+                    body: try superAdmissionBody(image: true, stream: true))
+                defer { stacked.close() }
+                try await Task.sleep(for: .milliseconds(300))
+                for image in [true, false] {
+                    let start = ContinuousClock.now
+                    try await client.execute(uri: "/v1/chat/completions", method: .post, headers: headers,
+                        body: ByteBuffer(bytes: try superAdmissionBody(image: image, stream: true))) { response in
+                        #expect(response.status == .tooManyRequests, "image \(image)")
+                        #expect(ContinuousClock.now - start < .seconds(1), "image \(image) refused at once")
+                    }
+                }
+                // The waiting image has reserved nothing.
+                #expect(await budget.outstandingReservedBytes() == held)
+                await gate.release()
+                #expect(try stacked.readUntilContent().contains("200 OK"))
+                try await superHTTPEventually("idle again") {
+                    let reserved = await budget.outstandingReservedBytes()
+                    let active = await owner.bridge.activeRequestCount()
+                    return reserved == baseline && active == 0 && tracker.activeCount == 0
+                }
+                #expect(!(await gate.timedOut))
+                // Every request's progress was returned with its admission:
+                // behind a text answer an image does not wait.
+                await owner.bridge._testInstallCancelledSettlementHooks(
+                    beforeNativeTerminal: { _ in await textGate.hold() }, onSettlementWait: {})
+                let text = try SuperHTTPResetSocket(port: port, token: token,
+                    body: try superAdmissionBody(image: false, stream: true))
+                defer { text.close() }
+                #expect(try text.readUntilContent().contains("200 OK"))
+                try await superHTTPEventually("text held before terminal") { await textGate.entered }
+                let start = ContinuousClock.now
+                try await client.execute(uri: "/v1/chat/completions", method: .post, headers: headers,
+                    body: ByteBuffer(bytes: try superAdmissionBody(image: true, stream: true))) { response in
+                    #expect(response.status == .tooManyRequests)
+                    #expect(ContinuousClock.now - start < .seconds(1), "an image does not wait behind text")
+                }
+                await textGate.release()
+                try await superHTTPEventually("idle after the text request") {
+                    let reserved = await budget.outstandingReservedBytes()
+                    let active = await owner.bridge.activeRequestCount()
+                    return reserved == baseline && active == 0 && tracker.activeCount == 0
+                }
+                #expect(!(await textGate.timedOut))
+            }
+        } catch {
+            await gate.release()
+            await textGate.release()
+            try await owner.closeAfterDrain()
+            _ = await budget.finishPendingLoad(lease)
+            throw error
+        }
+        await hook.drain()
+        try await owner.closeAfterDrain()
+        #expect(residency.snapshot.usedBytes == 0)
+        #expect(await budget.finishPendingLoad(lease))
+        #expect(await budget.outstandingReservedBytes() == 0)
+    }
+
+    /// SUPER-SLOT on a batched owner, the production shape (the managed slot
+    /// serves up to 8 requests; images one at a time, at the image binding):
+    /// a second image that finds the binding busy with a streaming image waits
+    /// there only while the owner keeps a request slot free for text. At
+    /// width 2 it would hold the last one, so it is refused at once, reserving
+    /// nothing, and a text request beside the streaming image is served.
+    @Test(.timeLimit(.minutes(2))) func batchedOwnerKeepsATextSlotFreeBesideAStreamingImage() async throws {
+        let fixture = try SuperMTPInstalledFixture(radioDimensions: SuperMTPInstalledFixture.encodedImageTower).make()
+        let (installed, construction, residency) = (fixture.installed, fixture.construction, fixture.residency)
+        let budget = GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0,
+            memorySnapshot: { .init(total: 16 << 30, active: 0, cache: 0, systemAvailable: .max) })
+        let lease = try #require(await budget.claimPendingLoad(requestID: "super-http-batched-image",
+            weightBytes: UInt64(installed.receipt.payloadBytes), minimumKVBytes: 4 << 30))
+        let tokenizer = TokenizerHandle(SuperRouteTokenizer())
+        let owner = try await NemotronSuperLocalBridgeBuilder.make(installed: installed,
+            tokenizer: tokenizer, eosTokenIDs: [63],
+            sizing: .init(weightsBytes: installed.receipt.payloadBytes, fp16KVBytesPerToken: 64,
+                maxContextLength: 1024, defaultMaxTokens: 2), kvBytesCapacity: 4 << 30,
+            kvBudget: budget, loadLease: lease, construction: construction,
+            environment: [NemotronSuperLocalBridgeBuilder.maxConcurrentKey: "2"])
+        #expect(owner.maximumLocalRequests == 2)
+        let template = try #require(Data(base64Encoded: superImagePinnedTemplateBase64,
+                                        options: .ignoreUnknownCharacters))
+        let hook = try NemotronSuperLocalImageHTTP(owner: owner, templateBytes: template)
+        let token = "synthetic-super-batched-image"
+        let tracker = LocalResponseTracker()
+        let held = SuperHTTPHeldTerminals()
+        let baseline = await budget.outstandingReservedBytes()
+        await owner.bridge._testInstallPersistentTerminalGate { _ in await held.hold() }
+        let headers: HTTPFields = [.contentType: "application/json", .authorization: "Bearer " + token]
+        do {
+            try await superAdmissionApplication(hook: hook, token: token, tokenizer: tokenizer,
+                                                tracker: tracker).test(.live) { client in
+                let port = try #require(client.port)
+                let image = try SuperHTTPResetSocket(port: port, token: token,
+                    body: try superAdmissionBody(image: true, stream: true))
+                defer { image.close() }
+                #expect(try image.readUntilContent().contains("200 OK"))
+                try await superHTTPEventually("image streaming, held before terminal") { await held.count == 1 }
+                try await Task.sleep(for: .milliseconds(50))
+                let reserved = await budget.outstandingReservedBytes()
+                let start = ContinuousClock.now
+                try await client.execute(uri: "/v1/chat/completions", method: .post, headers: headers,
+                    body: ByteBuffer(bytes: try superAdmissionBody(image: true, stream: true))) { response in
+                    #expect(response.status == .tooManyRequests)
+                    #expect(ContinuousClock.now - start < .seconds(1), "refused at once")
+                }
+                #expect(await budget.outstandingReservedBytes() == reserved)
+                let text = try SuperHTTPResetSocket(port: port, token: token,
+                    body: try superAdmissionBody(image: false, stream: true))
+                defer { text.close() }
+                #expect(try text.readUntilContent().contains("200 OK"))
+                await held.release()
+                try await superHTTPEventually("idle again") {
+                    let reserved = await budget.outstandingReservedBytes()
+                    let active = await owner.bridge.activeRequestCount()
+                    return reserved == baseline && active == 0 && tracker.activeCount == 0
+                }
+                #expect(!(await held.timedOut))
+            }
+        } catch {
+            await held.release()
+            try await owner.closeAfterDrain()
+            _ = await budget.finishPendingLoad(lease)
+            throw error
+        }
+        await held.release()
         await hook.drain()
         try await owner.closeAfterDrain()
         #expect(residency.snapshot.usedBytes == 0)

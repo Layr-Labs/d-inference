@@ -252,9 +252,11 @@ extension NemotronSuperManagedSlotTests {
         #expect(await budget.outstandingReservedBytes() == 0)
     }
 
-    /// One image request runs at a time per owner: a second concurrent image
-    /// gets 429 before any response and holds nothing; a video that is not a
-    /// movie gets 400 from the shared inline ingest.
+    /// One image request runs at a time per owner. A second image that arrives
+    /// while the first streams gets 429 before any response and holds nothing
+    /// when its first-content budget leaves no room to wait for the first; with
+    /// room it waits for the first and is served (SUPER-SLOT). A video that is
+    /// not a movie gets 400 from the shared inline ingest.
     @Test(.timeLimit(.minutes(3)))
     func concurrentImageIsRefusedWith429AndInvalidVideoWith400() async throws {
         let fixture = try await Self.fixture(mode: .auto)
@@ -266,18 +268,28 @@ extension NemotronSuperManagedSlotTests {
         let recorder = Recorder(), consumer = NodeKeyPair.generate()
         let long = Array(repeating: "a", count: 300)
         let second = Box<(sse: String, terminal: OutboundMessage)>()
+        let third = Box<(sse: String, terminal: OutboundMessage)>()
         let first = try await Self.send(Self.imageBody(long, script: script, maxTokens: 300), to: loop,
                                         recorder: recorder, consumer: consumer) { id in
             while recorder.chunks(id).count < 3 { try? await Task.sleep(for: .milliseconds(1)) }
+            // 450 ms leave no room for the expected first chunk and the margin after a wait.
             if let body = try? Self.imageBody(nil, script: script, maxTokens: 2),
-               let result = try? await Self.send(body, to: loop, recorder: recorder, consumer: consumer) {
+               let result = try? await Self.send(body, to: loop, recorder: recorder, consumer: consumer,
+                   firstContentDeadline: FirstContentDeadline(relativeBudgetMilliseconds: 450)) {
                 second.set(result)
+            }
+            if let body = try? Self.imageBody(nil, script: script, maxTokens: 2),
+               let result = try? await Self.send(body, to: loop, recorder: recorder, consumer: consumer,
+                   firstContentDeadline: FirstContentDeadline(relativeBudgetMilliseconds: 30_000)) {
+                third.set(result)
             }
         }
         #expect(Self.usage(first.terminal)?.completionTokens == 300, "\(first.terminal)")
         let refused = try #require(second.value)
         #expect(Self.failure(refused.terminal)?.statusCode == 429, "\(refused.terminal)")
         #expect(refused.sse.isEmpty)
+        let waited = try #require(third.value)
+        #expect(Self.usage(waited.terminal) != nil, "\(waited.terminal)")
         #expect(await fixture.budget.reservationBytesSnapshot() == held)
         let video = try JSONSerialization.data(withJSONObject: ["model": Self.modelID, "stream": true,
             "max_tokens": 2, "messages": [["role": "user", "content": [

@@ -207,11 +207,53 @@ private func measuredProfileFixture() -> ServingPerformanceProfile {
     await explicit.shutdown()
 }
 
+/// W14/W8d.6: right after a start on a warm Mac the automatic width falls back
+/// to 4, and a local stream holding its head sits in both the active map and
+/// the pending set until its submit returns. Each request counts once, so a
+/// burst of four small streams is admitted and only a fifth is refused.
+@Test func heldLocalHeadsCountOnceAtTheFallbackWidth() async {
+    let budget = GlobalKVCacheBudget(memorySnapshot: {
+        .init(total: 64 << 30, active: 0, cache: 0, systemAvailable: 64 << 30)
+    })
+    let bridge = EngineV2Bridge(engine: ProfileContextSentinelEngine(), modelId: "generic-model",
+        tokenizer: TokenizerHandle(ProfileContextTokenizer()), eosTokenIds: [],
+        maxConcurrentRequests: 8, unqualifiedMaxConcurrentRequests: 4, kvBudget: budget)
+    #expect(await bridge.effectiveServingConcurrency(allowExpansion: false) == 4)
+    await bridge.profileTestHoldHeads(["first", "second"])
+    #expect(await bridge.acquireServiceAllowance(requestID: "third", allowExpansion: false))
+    await bridge.profileTestHoldHeads(["third"])
+    #expect(await bridge.acquireServiceAllowance(requestID: "fourth", allowExpansion: false))
+    await bridge.profileTestHoldHeads(["fourth"])
+    #expect(await bridge.acquireServiceAllowance(requestID: "fifth", allowExpansion: false) == false)
+    // An expanded posture still admits up to its own width.
+    #expect(await bridge.acquireServiceAllowance(requestID: "expanded", allowExpansion: true))
+    await bridge.profileTestReleaseHeads(["first", "second", "third", "fourth", "expanded"])
+    #expect(budget.serviceBudget.count == 0)
+    await bridge.shutdown()
+}
+
 private extension EngineV2Bridge {
     func profileTestAcquire(requestID: String, allowExpansion: Bool, pending: Int) -> Bool {
         pendingSubmissionIDs = Set((0..<pending).map { "pending-\($0)" })
         defer { pendingSubmissionIDs.removeAll() }
         return acquireServiceAllowance(requestID: requestID, allowExpansion: allowExpansion)
+    }
+
+    /// A streamed local request during its head hold: admitted to the engine
+    /// (`active`) while its submit has not returned (`pendingSubmissionIDs`).
+    func profileTestHoldHeads(_ ids: [String]) {
+        for id in ids {
+            active[id] = ActiveRequestState(promptTokens: 1, maxTokens: 1, submittedAt: .now)
+            pendingSubmissionIDs.insert(id)
+        }
+    }
+
+    func profileTestReleaseHeads(_ ids: [String]) {
+        for id in ids {
+            active.removeValue(forKey: id)
+            pendingSubmissionIDs.remove(id)
+            releaseServiceAllowance(requestID: id)
+        }
     }
 }
 

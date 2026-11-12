@@ -54,7 +54,7 @@ extension ProviderLoop {
             startupPreloadPendingModels: startupPreloadPendingModels,
             selectedModelRecovery: selectedModelRecoveryReport(),
             inferenceActive: state.inferenceActive,
-            runningRequests: nil,
+            runningRequests: runningRequests,
             requestWorkPending: DaemonWorkPosture.hasPendingRequest(
                 inflight: hasInflightWork, capacity: cap),
             loadTransitionActive: isLoadingAny || !modelsLoading.isEmpty

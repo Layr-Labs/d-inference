@@ -200,7 +200,7 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `stop` | Drain accepted requests, then stop the LaunchAgent; `--uninstall` removes the provider, watchdog and desktop API agents and keeps every file | | `StopCommand.swift` (`Stop`) |
 | `uninstall` | Take Darkbloom off this Mac: remove everything, or everything but the models ([below](#darkbloom-uninstall)) | | `UninstallCommand.swift` (`Uninstall`) |
 | `restart` | Drain, restart with recorded configuration, and confirm fresh authorization | ✓ | `RestartCommand.swift` (`Restart`) |
-| `status` | Config, hardware, schedule, live daemon state (including the coordinator's last `Trust: <level> / <status>` message), per-slot KV/MTP posture | ✓ | `StatusCommand.swift` (`Status`) |
+| `status` | Config, hardware, schedule, live daemon state (including the coordinator's last `Trust: <level> / <status>` message and the answers in progress), per-slot KV/MTP posture; `--json` prints the answers in progress only | ✓ | `StatusCommand.swift` (`Status`) |
 | `doctor` | Diagnostics (see [troubleshooting](./troubleshooting.md#doctor-checks)) | ✓ | `DoctorCommand.swift` (`Doctor`) |
 | `models` | `list`, `catalog`, `download`, `remove` | ✓ | `ModelsCommand.swift` (`Models`) |
 | `local` | Serve only you: start Only me where nothing serves, then print the local API's address and key; where Darkbloom serves, ask in a terminal before switching ([below](#darkbloom-local)) | | `LocalCommand.swift` (`Local`) |
@@ -2881,6 +2881,24 @@ Output includes:
   [GLM-5.3-Flash GPU wired-memory limit](#glm-53-flash-gpu-wired-memory-limit).
 - App Attest serving authorization can remain visible through its unexpired lease, while MDM removal advice requires a matching fresh coordinator decision. The same distinction applies to both doctor summaries; see [provider authorization](../reference/provider-authorization.md).
 - `Last reported authorization: received <age> ago; not a fresh dispatch grant. …`: when no current decision is shown, an older `none` (a denial) or `legacy` report from the running daemon, as dated history. `darkbloom doctor` and `darkbloom verify` print it as `last reported authorization`, INFO for legacy and WARN for none, and still run the public attestation checks; `verify` fails on a WARN or FAIL, never on INFO. See [provider authorization](../reference/provider-authorization.md).
+- `Answers in progress: N`, under the serving lines, while the engines write
+  answers: one line each, longest first, with the model, the time since the
+  engine took it, output tokens so far (thinking included) and the current
+  rate (tokens since the previous sample, about every 2 s; `reading the
+  prompt` before the first token), then a short hash of its request ID (`#…`,
+  never the ID, the prompt or the answer), and
+  `Credits post when an answer finishes.` The served and token counters below
+  move only when an answer finishes, so a Mac writing a long answer otherwise
+  looks hung. The daemon samples its bridges' own counters each capacity tick
+  (`ProviderLoop.refreshRunningRequests`, `RunningRequestProgressTracker`) into
+  `running_requests` in the state file. On a two-Mac cluster the same lines sit
+  under the pair's block on the leading Mac, from the pair's part. Nemotron
+  Super's requests, which bypass the bridge, are not listed.
+  `darkbloom status --json` prints only these, as JSON (`schema` 1; `daemon`
+  `running`, `stale` or `not_running`; `pid`, `snapshot_age_seconds`,
+  `cluster_part`; `answers_in_progress` with `model`, `ref`,
+  `elapsed_seconds`, `output_tokens` and, after the first token,
+  `tokens_per_second`; `note`).
 - `Requests served since the daemon started (… ago)`: coordinator requests
   this daemon finished since it started, with output tokens only. The count
   restarts at zero when the daemon restarts or a scheduled availability window

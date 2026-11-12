@@ -46,13 +46,41 @@ struct RunningRequestProgressTracker {
     /// At most this many answers are listed, longest first.
     static let maximumListed = 32
 
+    private var previous: [String: (tokens: Int, at: TimeInterval)] = [:]
+
     /// The running answers at `now` (monotonic seconds), longest first.
+    /// Requests that ended since the last call are forgotten.
     mutating func update(_ samples: [Sample], now: TimeInterval) -> [DaemonState.RunningRequest] {
-        []
+        var next: [String: (tokens: Int, at: TimeInterval)] = [:]
+        let running = samples.map { sample -> DaemonState.RunningRequest in
+            next[sample.id] = (sample.outputTokens, now)
+            return DaemonState.RunningRequest(
+                model: sample.model,
+                ref: Self.ref(sample.id),
+                elapsedSeconds: Self.seconds(sample.sinceAdmission),
+                outputTokens: sample.outputTokens,
+                tokensPerSecond: rate(sample, now: now))
+        }
+        previous = next
+        return Array(running.sorted { ($0.elapsedSeconds, $0.ref) > ($1.elapsedSeconds, $1.ref) }
+            .prefix(Self.maximumListed))
+    }
+
+    private func rate(_ sample: Sample, now: TimeInterval) -> Double? {
+        guard let sinceFirstToken = sample.sinceFirstToken else { return nil }
+        if let last = previous[sample.id], now - last.at >= 0.5, sample.outputTokens >= last.tokens {
+            return Double(sample.outputTokens - last.tokens) / (now - last.at)
+        }
+        let decoding = Self.seconds(sinceFirstToken)
+        return decoding >= 0.5 ? Double(sample.outputTokens) / decoding : nil
     }
 
     static func ref(_ requestID: String) -> String {
         SHA256.hash(data: Data(requestID.utf8)).prefix(4).map { String(format: "%02x", $0) }.joined()
     }
 
+    private static func seconds(_ duration: Duration) -> Double {
+        let components = duration.components
+        return max(0, Double(components.seconds) + Double(components.attoseconds) / 1e18)
+    }
 }

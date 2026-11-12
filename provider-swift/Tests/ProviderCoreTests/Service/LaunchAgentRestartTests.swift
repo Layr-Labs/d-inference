@@ -358,6 +358,56 @@ struct LaunchAgentEnvironmentTests {
             environment: LaunchAgent.passthroughEnvironment(from: [:])))
     }
 
+    @Test func forwardsTerminalBeforePublicationOptInToProviderJob() {
+        // The early terminal is off by default. launchd does not inherit the
+        // shell, so an installed provider takes the opt-in only if its plist
+        // carries it; the watchdog serves no request.
+        let key = SSDPrefixCachePolicy.terminalBeforePublicationFlag
+        #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))
+        #expect(!WatchdogAgent.passthroughEnvKeys.contains(key))
+        for value: String? in [nil, "", "1", " ON ", "true", "yes", "0", "off", "typo"] {
+            var foreground = ["UNRELATED_SECRET": "excluded"]
+            foreground[key] = value
+            let plist = LaunchAgent.makeServicePlist(
+                label: LaunchAgent.label, programArguments: ["/test/darkbloom", "start", "--foreground"],
+                logPath: "/test/provider.log", environment: foreground)
+            let launchd = plist["EnvironmentVariables"] as? [String: String] ?? [:]
+            #expect(launchd["UNRELATED_SECRET"] == nil)
+            #expect(SSDPrefixCachePolicy.terminalBeforePublication(environment: launchd)
+                == SSDPrefixCachePolicy.terminalBeforePublication(environment: foreground))
+        }
+        let optIn = LaunchAgent.passthroughEnvironment(from: [key: "1"])
+        #expect(optIn == [key: "1"])
+        #expect(SSDPrefixCachePolicy.terminalBeforePublication(environment: optIn))
+        #expect(!SSDPrefixCachePolicy.terminalBeforePublication(
+            environment: LaunchAgent.passthroughEnvironment(from: [:])))
+    }
+
+    @Test func forwardsGemmaRowMappedNAXRollbackWithoutInventingAnOverride() throws {
+        let key = "DARKBLOOM_GEMMA4_NAX_ROW_MAP"
+        #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))
+        #expect(!WatchdogAgent.passthroughEnvKeys.contains(key))
+        // The SDK owns parsing. Even explicit empty must survive: dropping it
+        // would enable the default route in the background provider instead.
+        for value: String? in [nil, "", "0", "1", " 0 ", "false"] {
+            var environment = ["UNRELATED_SECRET": "excluded"]
+            environment[key] = value
+            let expected = value.map { [key: $0] } ?? [:]
+            #expect(LaunchAgent.passthroughEnvironment(from: environment) == expected)
+            let plist = LaunchAgent.makeServicePlist(
+                label: LaunchAgent.label,
+                programArguments: ["/test/darkbloom", "start", "--foreground"],
+                logPath: "/test/provider.log", environment: environment)
+            let encoded = try PropertyListSerialization.data(
+                fromPropertyList: plist, format: .xml, options: 0)
+            let decoded = try #require(
+                try PropertyListSerialization.propertyList(from: encoded, format: nil)
+                    as? [String: Any])
+            let forwarded = decoded["EnvironmentVariables"] as? [String: String] ?? [:]
+            #expect(forwarded == expected)
+        }
+    }
+
     @Test func preservesMalformedNonEmptyControlsForRuntimeSecureDefault() {
         let out = LaunchAgent.passthroughEnvironment(from: [
             EngineV2Factory.maxPartialPrefillsKey: "not-an-integer",

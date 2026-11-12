@@ -96,7 +96,8 @@ struct DoctorLocalAPITests {
         let network = try #require(find("darkbloom network", in: lines))
         #expect(network.level == .info)
         #expect(network.message.hasPrefix("not needed (Only me): the account, trust, App Attest and coordinator checks are skipped"))
-        #expect(network.message.contains("`\(Self.cli) start --choose`"))
+        #expect(network.message.hasSuffix("; `\(Self.cli) start --local-endpoint` (Darkbloom and you) or `--network` "
+            + "changes how this Mac serves"))
         let address = try #require(find("address", in: lines))
         #expect(address.level == .warn)
         #expect(address.message == "http://127.0.0.1:8001/v1 — not running")
@@ -270,7 +271,7 @@ struct DoctorLocalAPITests {
         let openCode = try #require(find("OpenCode", in: lines))
         #expect(openCode.level == .warn)
         #expect(openCode.message.hasPrefix("points at http://127.0.0.1:8001/v1, but this Mac serves no local API"))
-        #expect(openCode.fix?.contains("`\(Self.cli) start --choose`") == true)
+        #expect(openCode.fix == "`\(Self.cli) start --local-endpoint` (Darkbloom and you) or `\(Self.cli) local` (only you)")
     }
 
     @Test func toolsPointingHereElsewhereOrAtAnotherKeyFile() throws {
@@ -342,7 +343,8 @@ struct DoctorLocalAPITests {
         #expect(!doctor.onlyMe)
         let lines = doctor.diagnostics
         #expect(lines.count == 1)
-        #expect(lines.first?.message.hasPrefix("not chosen yet: `\(Self.cli) start` asks how this Mac serves") == true)
+        #expect(lines.first?.message == "not chosen yet: `\(Self.cli) start` serves Darkbloom and your local API, "
+            + "Darkbloom never paused, and saves that (`\(Self.cli) local`: only you)")
     }
 
     @Test func theRunningProviderDecidesWhatServesNow() throws {
@@ -458,7 +460,8 @@ struct DoctorLocalAPITests {
         let lines = onlyMe.diagnostics
         #expect(find("mode", in: lines)?.message
             == "Only me, on this Mac — Darkbloom never contacts this Mac (this Mac serves alone, not the pair)")
-        let change = "`\(cli) start --solo --choose` changes how this Mac serves alone"
+        let change = "`\(cli) start --solo --local-endpoint` (Darkbloom and you) or `--network` changes how this Mac "
+            + "serves alone"
         #expect(find("darkbloom network", in: lines)?.message.hasSuffix(change) == true)
         #expect(find("address", in: lines)?.message == "http://127.0.0.1:8001/v1 — up on port 8001")
         // Only me alone, still loading.
@@ -543,6 +546,18 @@ struct DoctorLocalAPITests {
         let heldAddress = try #require(find("address", in: section(.init(saved: nil, pair: held)).diagnostics))
         #expect(heldAddress.level == .warn)
         #expect(heldAddress.message == heldWords)
+
+        // The pair's API on the other Mac doesn't listen for now (its part starts again): the relay answers 503 until it
+        // does, never "up" while it refuses every request.
+        var down = away
+        down.relayRankZeroAway = false
+        down.relayRankZeroAPIDown = true
+        let downWords = try #require(down.memberAPIRestarting)
+        #expect(downWords.hasPrefix("http://127.0.0.1:8002/v1 on this Mac answers 503 for now. The pair's API on "))
+        let downAddress = try #require(find("address", in: section(.init(saved: nil, live: Self.endpoint(pid: 777, port: 8002,
+            host: "0.0.0.0"), answers: true, keyFile: Self.keyFile, pair: down)).diagnostics))
+        #expect(downAddress.level == .warn)
+        #expect(downAddress.message == downWords)
     }
 
     @Test func noLineEverHoldsTheKeyOrASpeed() {

@@ -35,36 +35,91 @@ struct NemotronSuperLocalImageBindingTests {
                 == 16 * 1024 * 1024 + 3280)
     }
 
-    @Test func encodedBodyRejectsRemoteAndUnsupportedControls() throws {
-        for uri in ["https://example.invalid/image.png", "file:///tmp/image.png",
-                    "data:image/gif;base64,AA==", "data:image/jpg;base64,AA==", "data:image/png,abc",
+    private func parse(_ data: Data) throws -> NemotronSuperLocalImageBinding.EncodedBody {
+        try NemotronSuperLocalImageBinding.encodedBody(NemotronSuperRequestPlan(body: data))
+    }
+
+    @Test func encodedBodyRefusesRemoteMediaAndTakesTheTextRoutesControls() throws {
+        for uri in ["https://example.invalid/image.png", "file:///tmp/image.png", "data:image/png,abc",
                     "data:image/jpeg,abc"] {
             let data = try body(image: uri)
-            #expect(throws: NemotronSuperLocalImageBinding.Failure.unsupportedCapability) {
-                try NemotronSuperLocalImageBinding.parseEncodedBody(data)
+            #expect(throws: NemotronSuperLocalImageBinding.Failure.unsupportedMedia(.imageSource)) {
+                try parse(data)
             }
         }
+        // Controls are the request plan's, as on the text route.
         let unsupported = try body(image: "data:image/png;base64,AA==", extras: ["logprobs": true, "top_logprobs": 21])
-        #expect(throws: NemotronSuperLocalImageBinding.Failure.unsupportedCapability) {
-            try NemotronSuperLocalImageBinding.parseEncodedBody(unsupported)
-        }
-        let logprobs = try NemotronSuperLocalImageBinding.parseEncodedBody(
-            body(image: "data:image/png;base64,AQID", extras: ["logprobs": true, "top_logprobs": 3]))
+        #expect(throws: NemotronSuperRequestPlan.Failure.unsupportedControl) { try parse(unsupported) }
+        let logprobs = try parse(body(image: "data:image/png;base64,AQID",
+                                      extras: ["logprobs": true, "top_logprobs": 3]))
         #expect(logprobs.request.logprobs == true && logprobs.request.top_logprobs == 3)
-        let parsed = try NemotronSuperLocalImageBinding.parseEncodedBody(
-            body(image: "data:image/png;base64,AQID", extras: ["max_tokens": 7, "temperature": 0]))
+        // What the media route used to refuse and the text route serves.
+        let served = try parse(body(image: "data:image/png;base64,AQID", extras: [
+            "min_p": 0, "parallel_tool_calls": false, "response_format": ["type": "json_object"],
+            "tools": [["type": "function", "function": ["name": "lookup", "parameters": ["type": "object"]]]],
+            "tool_choice": "auto"]))
+        #expect(served.images == [Data([1, 2, 3])])
+        // Tools and the format are prompt instructions; the bridge gets neither.
+        #expect(served.request.tools == nil && served.request.response_format == nil && served.request.min_p == 0)
+        let parsed = try parse(body(image: "data:image/png;base64,AQID", extras: ["max_tokens": 7, "temperature": 0]))
         #expect(parsed.images == [Data([1, 2, 3])])
         #expect(parsed.request.max_tokens == 7 && parsed.request.temperature == 0)
         #expect(throws: NemotronSuperImageDecode.Failure.unsupportedEncoding) {
             try NemotronSuperLocalImageBinding.encodedPlan(parsed.images, contextLength: 64)
         }
         // The JPEG label is admitted too; content, not the label, then decides.
-        let jpegLabel = try NemotronSuperLocalImageBinding.parseEncodedBody(
-            body(image: "data:image/jpeg;base64,AQID"))
+        let jpegLabel = try parse(body(image: "data:image/jpeg;base64,AQID"))
         #expect(jpegLabel.images == [Data([1, 2, 3])])
         #expect(throws: NemotronSuperImageDecode.Failure.unsupportedEncoding) {
             try NemotronSuperLocalImageBinding.encodedPlan(jpegLabel.images, contextLength: 64)
         }
+    }
+
+    /// The decoder takes the format from the bytes, so an image part is
+    /// admitted under any `image/` media type, in any case (RFC 2045):
+    /// clients send `data:image/jpg`, which production refused as a 400. Only
+    /// the source is gated: an inline base64 `data:` URI whose media type is
+    /// an image.
+    @Test func encodedBodyTakesAnyImageLabelAndTheFormatFromTheBytes() throws {
+        let jpeg = try NemotronSuperImageFixtures.data("jpeg-420.jpeg")
+        for type in ["image/jpg", "image/JPEG", "Image/Jpg", "image/pjpeg", "image/x-png", "image/tiff",
+                     "image/jpeg;name=photo.jpg"] {
+            let parsed = try parse(body(image: "data:\(type);base64," + jpeg.base64EncodedString()))
+            #expect(parsed.images == [jpeg], "\(type)")
+            let plan = try NemotronSuperLocalImageBinding.encodedPlan(parsed.images, contextLength: 1024)
+            #expect(plan.images.map(\.quote.format) == [.jpeg], "\(type)")
+        }
+        for uri in ["data:image/;base64,AA==", "data:image;base64,AA==", "data:;base64,AA==",
+                    "data:application/octet-stream;base64,AA==", "data:video/mp4;base64,AA==",
+                    "data:text/plain;base64,AA==", "data:image/png;base64;x=y,AA==", "data:image/png;x;base64,AA==",
+                    "data:image/png ;base64,AA==", "data:image/p/ng;base64,AA==", " data:image/png;base64,AA==",
+                    "DATA:image/png;base64,AA==", "data:image/png;BASE64,AA==", "data:image/png;base64",
+                    "data:image/png;n=" + String(repeating: "x", count: 256) + ";base64,AA=="] {
+            #expect(throws: NemotronSuperLocalImageBinding.Failure.unsupportedMedia(.imageSource),
+                    "\(uri.prefix(48))") { try parse(body(image: uri)) }
+        }
+    }
+
+    /// Each media rule names its own refusal; none is a vague invalid input.
+    @Test func encodedBodyNamesEachMediaRule() throws {
+        let png: [String: Any] = ["type": "image_url", "image_url": ["url": "data:image/png;base64,AQID"]]
+        let mp4: [String: Any] = ["type": "video_url", "video_url": ["url": "data:video/mp4;base64,AAAA"]]
+        let audio: [String: Any] = ["type": "input_audio", "input_audio": ["data": "AAAA", "format": "wav"]]
+        let file: [String: Any] = ["type": "file", "file": ["file_id": "f"]]
+        let cases: [([[String: Any]], NemotronSuperLocalImageBinding.MediaRefusal)] = [
+            (Array(repeating: png, count: NemotronSuperServingPolicy.maximumImages + 1), .tooManyImages),
+            ([png, mp4], .imagesWithVideo), ([mp4, png], .imagesWithVideo), ([mp4, mp4], .secondVideo),
+            ([png, audio], .audio), ([png, file], .partType),
+        ]
+        for (parts, refusal) in cases {
+            let data = try JSONSerialization.data(withJSONObject: [
+                "model": NemotronSuperLocalBinding.modelID, "messages": [["role": "user", "content": parts]]])
+            #expect(throws: NemotronSuperLocalImageBinding.Failure.unsupportedMedia(refusal)) { try parse(data) }
+        }
+        let sixteen = try JSONSerialization.data(withJSONObject: [
+            "model": NemotronSuperLocalBinding.modelID, "messages": [["role": "user",
+                "content": Array(repeating: png, count: NemotronSuperServingPolicy.maximumImages)]]])
+        #expect(try parse(sixteen).images.count == NemotronSuperServingPolicy.maximumImages)
     }
 
     @Test func preparationQuoteChargesNormalizedInputsAndFeatures() throws {
@@ -116,9 +171,10 @@ struct NemotronSuperLocalImageBindingTests {
         let images = try owner.localImageBinding()
         let template = try #require(Data(base64Encoded: superImagePinnedTemplateBase64, options: .ignoreUnknownCharacters))
         let requestBody = try body(image: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAF0lEQVR4nGP4z8BAEiJN9aiGUQ1DSgMAkPn/Afnh+ngAAAAASUVORK5CYII=", extras: ["max_tokens": 2, "temperature": 0])
+        let plan = try NemotronSuperRequestPlan(body: requestBody)
         let baseline = await budget.outstandingReservedBytes()
         let completed = SuperOwnedImageEvents()
-        try await images.runEncoded(body: requestBody, templateBytes: template) { event in
+        try await images.runEncoded(body: requestBody, plan: plan, templateBytes: template) { event in
             _ = await completed.record(event)
         }
         #expect(await completed.errors.isEmpty)
@@ -126,12 +182,12 @@ struct NemotronSuperLocalImageBindingTests {
         #expect(await budget.outstandingReservedBytes() == baseline)
         let cancelled = SuperOwnedImageEvents()
         do {
-            try await images.runEncoded(body: requestBody, templateBytes: template) { event in
+            try await images.runEncoded(body: requestBody, plan: plan, templateBytes: template) { event in
                 if await cancelled.record(event) {
                     // This callback is an admitted-work latch: both entry points
                     // must reject before admission while the same request is live.
                     await #expect(throws: NemotronSuperLocalImageBinding.Failure.busy) {
-                        try await images.runEncoded(body: requestBody, templateBytes: template) { _ in
+                        try await images.runEncoded(body: requestBody, plan: plan, templateBytes: template) { _ in
                             Issue.record("busy encoded request emitted an event")
                         }
                     }
@@ -173,8 +229,9 @@ struct NemotronSuperLocalImageBindingTests {
         // The real ingress reservation is acquired then refunded after the
         // owned task rejects a URL, without touching vision execution.
         let remote = try body(image: "https://example.invalid/image.png")
-        await #expect(throws: NemotronSuperLocalImageBinding.Failure.unsupportedCapability) {
-            try await images.runEncoded(body: remote, templateBytes: Data([1])) { _ in
+        let remotePlan = try NemotronSuperRequestPlan(body: remote)
+        await #expect(throws: NemotronSuperLocalImageBinding.Failure.unsupportedMedia(.imageSource)) {
+            try await images.runEncoded(body: remote, plan: remotePlan, templateBytes: Data([1])) { _ in
                 Issue.record("rejected encoded request emitted an event")
             }
         }

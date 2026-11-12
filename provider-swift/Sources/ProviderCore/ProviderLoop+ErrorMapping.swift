@@ -21,24 +21,22 @@ extension ProviderLoop {
         let terminal = inferenceTerminalMetadata(from: error)
         let reason = errorReason ?? boundedInferenceErrorReason(
             from: error, terminalCause: terminal.cause)
+        let code = inferenceFailureCode(
+            from: error,
+            statusCode: statusCode,
+            phase: phase,
+            errorReason: reason)
         return InferenceFailure(
-            code: inferenceFailureCode(
-                from: error,
-                statusCode: statusCode,
-                phase: phase,
-                errorReason: reason),
+            code: code,
             statusCode: statusCode,
             errorReason: reason,
             terminalCause: terminal.cause,
-            attemptUsage: terminal.usage)
-    }
-
-    /// The closed reason a client refusal inside the inference task logs: an
-    /// `invalid_request` failure whose error names one
-    /// (`InferenceRefusalReason(promptRefusal:)`). Every other failure keeps its
-    /// bare category line.
-    static func promptRefusal(_ failure: InferenceFailure, _ error: any Error) -> InferenceRefusalReason? {
-        failure.code == .invalidRequest ? InferenceRefusalReason(promptRefusal: error) : nil
+            attemptUsage: terminal.usage,
+            toolCheck: reason == .toolNoncompliance ? classifyToolNoncomplianceCheck(error) ?? .other : nil,
+            // A client refusal inside the inference task: an `invalid_request`
+            // failure whose typed error names one. It is logged and sent on
+            // the frame; every other failure keeps its bare category.
+            refusal: code == .invalidRequest ? InferenceRefusalReason(promptRefusal: error) : nil)
     }
 
     /// Map rich in-process errors onto the bounded diagnostic vocabulary. The
@@ -154,6 +152,8 @@ extension ProviderLoop {
             switch mediaError {
             case .mediaTooLarge:
                 return .mediaTooLarge
+            case .unsupportedMedia:
+                return .unsupportedMedia
             case .malformedDataURI,
                 .base64DecodeFailed,
                 .percentDecodeFailed,
@@ -351,7 +351,8 @@ extension ProviderLoop {
                 .percentDecodeFailed,
                 .imageDecodeFailed,
                 .invalidURL,
-                .mediaTooLarge:
+                .mediaTooLarge,
+                .unsupportedMedia:
                 return 400
             }
         }

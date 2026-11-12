@@ -356,15 +356,16 @@ struct ResidentAdmissionGemma4Tests {
         #expect(throws: (any Error).self) { try admission.request(reservation(stops: [106, 1]), id: UUID(), now: Self.now) }
     }
 
-    /// The profile is the declared context, which tensor parallel serves; a
-    /// pipeline's stages serve the memory plan's request (the standard 32,768
-    /// + 32,768 tokens), as every family's do, and LOAD, every quote and the
-    /// planner size a pair for it, which both ranks agree on beside the profile.
-    @Test func theStagesServeTheMemoryPlanAndLoadSizesIt() throws {
+    /// Both modes serve the declared context; LOAD, every quote and the
+    /// planner size a pair for the memory plan's request (the standard 32,768
+    /// + 32,768 tokens), which both ranks agree on beside the profile. A
+    /// pipeline stage whose memory refuses a longer request while it runs ends
+    /// that request alone (`QwenStageAbort`), so its worker and pair serve on.
+    @Test func bothModesServeTheDeclaredContextAndLoadSizesTheMemoryPlan() throws {
         for model in Gemma4RegisteredModel.allCases {
             let admission = try Self.admit(model)
             let memory = try Gemma4ResidentAdapterDefinition.memoryProfile(specification: admission.specification)
-            #expect(admission.memoryProfile == memory && admission.servedProfile == memory)
+            #expect(admission.memoryProfile == memory && admission.servedProfile == admission.profile)
             #expect(memory.identifier == admission.profile.identifier && memory.fingerprint != admission.profile.fingerprint)
             #expect(memory.maximumPromptTokens == 32_768 && memory.maximumOutputTokens == 32_768
                 && memory.maximumContextTokens == 65_536 && memory.maximumChunkTokens == 512)
@@ -381,17 +382,73 @@ struct ResidentAdmissionGemma4Tests {
                 stopTokenIDs: [1, 106], outputCount: output, chunkSize: 512,
                 deadlineUptimeNanoseconds: Self.now + 1_000_000_000, capacityLimitBytes: 1, sampling: nil, prefixCache: nil)
         }
-        // A stage takes the memory plan's request and refuses a longer one alone, as Qwen's stages do.
-        try a.requireWithinServedProfile(reservation(prompt: 32_768, output: 32_768))
-        #expect(throws: (any Error).self) { try a.requireWithinServedProfile(reservation(prompt: 32_769, output: 1)) }
-        #expect(throws: (any Error).self) { try a.requireWithinServedProfile(reservation(prompt: 32_768, output: 32_769)) }
-        #expect(throws: (any Error).self) { try a.requireWithinServedProfile(reservation(prompt: 262_143, output: 1)) }
+        // A stage takes a reservation past the memory plan, up to the declared context, and no further.
+        try a.requireWithinServedProfile(reservation(prompt: 32_769, output: 32_768))
+        try a.requireWithinServedProfile(reservation(prompt: 262_143, output: 1))
+        #expect(throws: (any Error).self) { try a.requireWithinServedProfile(reservation(prompt: 262_144, output: 1)) }
+        #expect(throws: (any Error).self) { try a.requireWithinServedProfile(reservation(prompt: 16, output: 32_769)) }
         let fields = ["gemma4-resident-load-v1", identity.membershipEpoch.uuidString.lowercased(), identity.modelID,
             identity.configurationSHA256, identity.artifactSHA256, a.specification.manifestSHA256,
             a.plan.fingerprint, a.profile.fingerprint, a.arithmeticSHA256, a.jaccl.fingerprint,
             a.configuration.allocatorPolicy.rawValue] + identity.peers.flatMap { [$0.id, $0.buildSHA256] }
             + QwenResidentPrefillSelection.loadAgreementFields(a.configuration.prefillSchedule)
         #expect(try a.loadAgreementFingerprint() == sha256(try canonicalJSONData(fields + ["memory=" + a.memoryProfile.fingerprint])))
+    }
+
+    /// Each stage of a Gemma pipeline holds and covers the longest request it
+    /// serves, 262,144 tokens in 512-token chunks. Its KV host is bounded by
+    /// it (`QwenResidentRuntime.stageKVHostBound`, which `load` installs the
+    /// host with). READY's request capacity (`stageRequestCapacity`, which
+    /// `load` returns) is the larger of the memory plan's planned bytes and
+    /// one such request with its prompt's prefill, so it is at least what any
+    /// reservation charges: its allowance at its own length and chunk, and its
+    /// prompt's prefill. Every registered row, a sliding-only and a
+    /// full-attention stage on each rank, both prefill schedules.
+    @Test func eachStageHoldsAndCoversTheLongestRequestItServes() throws {
+        func bound(_ bytes: Int) -> Int { ((bytes + 16_383) / 16_384) * 16_384 }
+        for model in Gemma4RegisteredModel.allCases {
+            for cut in [1, 6, 15, 29] {
+                for rank in 0...1 {
+                    let a = try Self.admit(model, rank: rank, cut: cut)
+                    let host = QwenResidentRuntime.stageKVHostBound(a)
+                    #expect(host.maximumTokensPerRequest == 262_144 && host.maximumChunkTokens == 512)
+                    let decode = LayerStageDecodeShape(mode: .pipeline, rank: rank, speculativeTerms: nil)
+                    func allowance(_ tokens: Int, _ chunk: Int, _ shape: LayerStageDecodeShape = .plain) throws -> Int {
+                        try Gemma4ResidentLoadedStage.requestAllowance(specification: a.specification, plan: a.plan,
+                            rank: rank, maximumTokens: tokens, chunkSize: chunk, decode: shape, bound: bound).reservedBytes
+                    }
+                    for schedule in [ClusterPrefillSchedule.serial, .oneChunkLookahead] {
+                        func prefill(prompt: Int, chunk: Int) throws -> Int {
+                            try QwenResidentPrefillSelection.allowance(QwenResidentPrefillSelection.policy(schedule),
+                                rank: rank, promptCount: prompt, chunkSize: chunk, hiddenSize: a.profile.hiddenSize,
+                                elementBytes: qwenStageWireElementBytes(a.profile.activationDType), bound: bound)?.reservedBytes ?? 0
+                        }
+                        // What `load` plans: the memory plan's request and its prefill (Gemma has no hand-off).
+                        let memory = a.memoryProfile
+                        let planned = try allowance(memory.maximumContextTokens, memory.maximumChunkTokens)
+                            + prefill(prompt: memory.maximumPromptTokens, chunk: memory.maximumChunkTokens)
+                        var asked: [[Int]] = []
+                        let ready = try QwenResidentRuntime.stageRequestCapacity(a, rank: rank, schedule: schedule,
+                            plannedBytes: planned, bound: bound) { tokens, chunk in
+                            asked.append([tokens, chunk])
+                            return try Gemma4ResidentLoadedStage.requestAllowance(specification: a.specification,
+                                plan: a.plan, rank: rank, maximumTokens: tokens, chunkSize: chunk, decode: decode, bound: bound)
+                        }
+                        let longest = try allowance(262_144, 512, decode) + prefill(prompt: 262_143, chunk: 512)
+                        let label = "\(model) cut \(cut) rank \(rank) \(schedule)"
+                        #expect(asked == [[262_144, 512]], "\(label)")
+                        #expect(ready == max(planned, longest) && ready > planned, "\(label): READY \(ready)")
+                        for (prompt, output) in [(262_143, 1), (229_376, 32_768), (131_071, 1), (65_536, 32_768),
+                                                 (32_768, 32_768), (513, 1), (1, 1)] {
+                            let chunk = min(512, prompt)
+                            let charge = try allowance(prompt + output, chunk, decode) + prefill(prompt: prompt, chunk: 512)
+                            let lane = try allowance(prompt + output, chunk)
+                            #expect(charge <= ready && lane <= ready, "\(label): \(prompt) + \(output)")
+                        }
+                    }
+                }
+            }
+        }
     }
 
     @Test func ceilingsAndStateLedgerBelongToTheGeometry() throws {

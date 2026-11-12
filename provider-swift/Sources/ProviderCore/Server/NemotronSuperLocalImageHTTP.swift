@@ -142,27 +142,26 @@ private struct SuperHTTPEngine: MLXServerEngine {
             let logprobs = completeLogprobs?.produced ?? requested
             switch route {
             case .image(let images):
+                // The same plan as text: its tools, tool choice and response
+                // format reach the media prompt, and `output` validates the answer.
                 let body = self.body, template = self.template, cacheScope = self.cacheScope
                 execute = { onEvent in
-                    try await images.runEncoded(body: body, templateBytes: template,
+                    try await images.runEncoded(body: body, plan: plan, templateBytes: template,
                                                 cacheScope: cacheScope, logprobs: logprobs, onEvent: onEvent)
                 }
             case .text(let binding, let tokenizer):
                 // Rendered before headers: template and tool errors keep their status.
                 let tokens = try plan.textPromptTokens(body: body, templateBytes: template,
                                                        tokenizer: tokenizer.inner)
-                // translate keeps the request's max_tokens (nil: the bridge default).
-                let translated = MultiModelBatchSchedulerEngine.translate(
-                    openAIRequest: plan.request, defaultMaxTokens: 1,
-                    logprobs: plan.topLogprobs > 0 ? true : nil,
-                    topLogprobs: plan.topLogprobs > 0 ? plan.topLogprobs : nil)
+                let translated = plan.bridgeRequest
                 let cacheScope = self.cacheScope, usageSignal = self.usageSignal ?? EngineV2RequestUsageSignal()
                 let donationDemand = self.donationDemand
+                let loopGuard = plan.loopGuard()
                 textUsage = usageSignal
                 execute = { onEvent in
                     try await binding.run(request: translated, promptTokens: tokens,
                                           cacheScope: cacheScope, logprobs: logprobs, usageSignal: usageSignal,
-                                          donationDemand: donationDemand, onEvent: onEvent)
+                                          donationDemand: donationDemand, loopGuard: loopGuard, onEvent: onEvent)
                 }
             }
         } catch { throw SuperHTTPErrors.map(error, media: media) }
@@ -194,7 +193,12 @@ private struct SuperHTTPEngine: MLXServerEngine {
 }
 
 /// Outward errors never serialize foreign descriptions, which may contain
-/// prompt, media or tool data.
+/// prompt, media or tool data. Each refusal names its cause through its
+/// closed failure code: a request control or prompt fault is
+/// `invalid_request` on both routes (rendered text that names a media
+/// placeholder included); media this route does not serve is
+/// `unsupported_media`; media above a limit is `media_too_large`; only
+/// corrupt media is `invalid_media`.
 enum SuperHTTPErrors {
     static func map(_ error: Error, media: Bool) -> Error {
         if error is CancellationError { return error }
@@ -205,8 +209,18 @@ enum SuperHTTPErrors {
             case .busy: return MultiModelBatchSchedulerEngineError.queueFull("the Super image owner is busy")
             case .closed, .retainedFault:
                 return MultiModelBatchSchedulerEngineError.requestRejected("the Super image owner is unavailable")
-            case .wrongModel, .unsupportedCapability, .invalidInput:
-                return MultiModelBatchSchedulerEngineError.multimodalRejected("unsupported or invalid inline media request")
+            case .wrongModel, .unsupportedCapability:
+                return invalidRequest
+            case .unsupportedMedia(let refusal):
+                return MediaIngest.MediaError.unsupportedMedia(refusal.message)
+            case .placeholderText:
+                // Literal `<image>` text is a request fault on the text route too.
+                return invalidRequest
+            case .contextExceeded:
+                return MultiModelBatchSchedulerEngineError.promptExceedsContext(
+                    "the prompt with its image or video features does not fit this model's context window")
+            case .invalidInput:
+                return MultiModelBatchSchedulerEngineError.multimodalRejected("invalid inline media request")
             case .bodyTooLarge:
                 return MediaIngest.MediaError.mediaTooLarge("the inline media request exceeds the Super body bound")
             case .invalidFeatures:
@@ -221,7 +235,7 @@ enum SuperHTTPErrors {
             case .drained, .missingBridge:
                 return MultiModelBatchSchedulerEngineError.requestRejected("the Super owner is unavailable")
             case .wrongModel, .unsupportedCapability, .invalidTokens:
-                return invalidRequest(media: media)
+                return invalidRequest
             }
         }
         if error is NemotronSuperLocalBridgeBuilder.Failure {
@@ -237,38 +251,74 @@ enum SuperHTTPErrors {
                 return MultiModelBatchSchedulerEngineError.generationFailed("native output handling failed")
             }
         }
-        if let failure = error as? VideoReaderFailure, failure.isTransient {
-            return MultiModelBatchSchedulerEngineError.requestRejected(
-                "inline video decoder fault (\(failure)); retry on another provider")
+        // A transient decoder fault and a spent decode allowance are this
+        // machine's: another provider may decode the same movie.
+        if (error as? VideoReaderFailure)?.isTransient == true {
+            return MultiModelBatchSchedulerEngineError.mediaMemoryUnavailable
         }
-        if error as? NemotronSuperVideoDecode.Failure == .decodeAllowanceSpent {
-            return MultiModelBatchSchedulerEngineError.requestRejected(
-                "inline video decoder outlasted its decode allowance; retry on another provider")
+        if let failure = error as? NemotronSuperVideoDecode.Failure {
+            switch failure {
+            case .decodeAllowanceSpent:
+                return MultiModelBatchSchedulerEngineError.mediaMemoryUnavailable
+            case .unsupportedRepresentation:
+                return MediaIngest.MediaError.unsupportedMedia(
+                    "a video must be H.264 or HEVC in SDR, unmirrored, with one frame size")
+            case .limit:
+                return MediaIngest.MediaError.mediaTooLarge(
+                    "the video exceeds a frame size, frame count or decoded-pixel limit")
+            case .invalidVideo, .inconsistentFrames:
+                return MultiModelBatchSchedulerEngineError.multimodalRejected("the inline video could not be read")
+            }
         }
-        if error is VideoReaderFailure || error is NemotronSuperVideoDecode.Failure
-            || error is NemotronSuperVideoPreprocessing.Failure {
-            return MultiModelBatchSchedulerEngineError.multimodalRejected("unsupported or invalid inline video request")
+        if error as? NemotronSuperVideoPreprocessing.Failure == .invalidGeometry {
+            return MediaIngest.MediaError.unsupportedMedia(
+                "a video's frame size or aspect ratio is outside the model's frame grid")
         }
+        if error is VideoReaderFailure || error is NemotronSuperVideoPreprocessing.Failure {
+            return MultiModelBatchSchedulerEngineError.multimodalRejected("the inline video could not be read")
+        }
+        if let failure = error as? NemotronSuperImageDecode.Failure {
+            switch failure {
+            case .sizeLimit:
+                return MediaIngest.MediaError.mediaTooLarge("an image exceeds the per-image byte or pixel limit")
+            case .unsupportedEncoding:
+                return MediaIngest.MediaError.unsupportedMedia(NemotronSuperImageDecode.unsupportedEncodingMessage)
+            case .invalidHeader, .invalidRaster:
+                return MultiModelBatchSchedulerEngineError.multimodalRejected("an inline image is corrupt or truncated")
+            }
+        }
+        if let failure = error as? NemotronSuperImagePreprocessing.Failure {
+            switch failure {
+            case .workspaceLimit:
+                return MediaIngest.MediaError.mediaTooLarge("an image is too large to resize for the model")
+            case .invalidGeometry:
+                return MediaIngest.MediaError.unsupportedMedia(
+                    "an image's size or aspect ratio is outside the model's image grid")
+            default:
+                return MultiModelBatchSchedulerEngineError.multimodalRejected("invalid inline media request")
+            }
+        }
+        // Its own code: `media_too_large`, `unsupported_media` or `invalid_media`.
+        if error is MediaIngest.MediaError { return error }
         if case .unknownReasoningEffort(let field)? = error as? NemotronSuperPromptContract.Failure {
             return MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort(field)
         }
         if error as? NemotronSuperPromptContract.Failure == .conflictingReasoningEfforts {
             return MultiModelBatchSchedulerEngineError.conflictingReasoningEfforts
         }
-        if error is DecodingError || error is NemotronSuperImageDecode.Failure
-            || error is NemotronSuperImagePreprocessing.Failure || error is MediaIngest.MediaError
-            || error is NemotronSuperPromptContract.Failure || error is NemotronSuperRequestPlan.Failure
-            || error is NemotronSuperOrderedJSON.Failure || error is JinjaError {
-            return invalidRequest(media: media)
+        // The request's controls, tools and prompt: a request fault on both
+        // routes, whether or not the request carries media.
+        if error is DecodingError || error is NemotronSuperPromptContract.Failure
+            || error is NemotronSuperRequestPlan.Failure || error is NemotronSuperOrderedJSON.Failure
+            || error is JinjaError {
+            return invalidRequest
         }
         return MultiModelBatchSchedulerEngineError.generationFailed(
             media ? "native image execution failed" : "native text execution failed")
     }
 
-    private static func invalidRequest(media: Bool) -> Error {
-        media ? MultiModelBatchSchedulerEngineError.multimodalRejected("invalid inline media request")
-            : MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                "unsupported or contradictory Nemotron Super request")
+    private static var invalidRequest: Error {
+        MultiModelBatchSchedulerEngineError.invalidToolPayload("unsupported or contradictory Nemotron Super request")
     }
 }
 

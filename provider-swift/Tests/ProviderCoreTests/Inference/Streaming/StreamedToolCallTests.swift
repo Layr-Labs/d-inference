@@ -18,13 +18,19 @@ struct StreamedToolCallTests {
           "properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}}}]
         """
 
+    /// `strict` marks every declared function `strict: true`, which keeps
+    /// automatic calls validated.
     private static func request(
-        _ choice: OpenAIToolChoice? = nil, parallel: Bool? = nil, deltas: Bool = true
+        _ choice: OpenAIToolChoice? = nil, parallel: Bool? = nil, deltas: Bool = true, strict: Bool = false
     ) throws -> OpenAIChatCompletionRequest {
         var request = OpenAIChatCompletionRequest(
             model: "gemma-4-26b-qat-4bit",
             messages: [.init(role: .user, content: .text("Weather in Paris?"))],
-            tools: try JSONDecoder().decode([OpenAITool].self, from: Data(tools.utf8)),
+            tools: try JSONDecoder().decode([OpenAITool].self, from: Data(tools.utf8)).map { tool in
+                var tool = tool
+                if strict { tool.function.strict = true }
+                return tool
+            },
             toolChoice: choice, parallelToolCalls: parallel, stream: true,
             streamOptions: .init(includeUsage: true))
         request.streamToolCallDeltas = deltas
@@ -140,8 +146,8 @@ struct StreamedToolCallTests {
             == completed.function.arguments)
     }
 
-    @Test func schemaViolationIsRefusedWhenTheFrameCloses() throws {
-        var router = try Self.router(Self.request())
+    @Test func strictSchemaViolationIsRefusedWhenTheFrameCloses() throws {
+        var router = try Self.router(Self.request(strict: true))
         let text = Self.gemmaCall(#"location:<|"|>Paris<|"|>,unit:<|"|>kelvin<|"|>"#)
         var thrown: Error?
         var exposed: [ServerToolCallDelta] = []
@@ -164,8 +170,9 @@ struct StreamedToolCallTests {
         #expect(Self.deltas(events).isEmpty)
         #expect(events.compactMap { if case .content(let text) = $0 { text } else { nil } }.joined() == gemmaText)
 
-        // Harmony parses any name: the call completes unexposed and fails validation.
-        var harmony = try Self.router(Self.request(), modelType: "gpt_oss")
+        // Harmony parses any name: under `strict` the call completes
+        // unexposed and fails validation.
+        var harmony = try Self.router(Self.request(strict: true), modelType: "gpt_oss")
         let harmonyText = "<|start|>assistant to=functions.delete_everything<|channel|>commentary json"
             + #"<|message|>{"path":"/"}<|call|>"#
         var exposed: [ServerToolCallDelta] = []
@@ -177,6 +184,19 @@ struct StreamedToolCallTests {
         guard case .toolChoiceViolation? = thrown as? MultiModelBatchSchedulerEngineError else {
             Issue.record("expected a tool_choice violation, got \(String(describing: thrown))"); return
         }
+        let refusal = try #require(thrown)
+        #expect(classifyToolNoncomplianceCheck(refusal) == .undeclaredName)
+
+        // Without `strict` it leaves in one piece, as generated.
+        var automatic = try Self.router(Self.request(), modelType: "gpt_oss")
+        var returned: [MLXServerGenerationEvent] = []
+        for character in Self.characters(harmonyText) { returned += try automatic.process(character) }
+        let call = try #require(Self.deltas(returned).first)
+        #expect(Self.deltas(returned).count == 1)
+        #expect(call.name == "delete_everything")
+        #expect(try JSONDecoder().decode([String: MLXLMCommon.JSONValue].self, from: Data(call.arguments.utf8))
+            == ["path": .string("/")])
+        #expect(call.completed?.function.name == "delete_everything")
     }
 
     @Test func secondCallIsRefusedWhenParallelCallsAreDisabled() throws {
@@ -199,16 +219,144 @@ struct StreamedToolCallTests {
         #"<|tool_call>call:write_file{path:<|"|>a.py<|"|>,content:<|"|>def f(): return {"a": 1}"#,
     ])
     func truncatedCallEndsQuietlyOnlyAtTheTokenLimit(partial: String) throws {
-        var lengthRouter = try Self.router(Self.request())
-        for character in Self.characters(partial) { _ = try lengthRouter.process(character) }
-        #expect(try lengthRouter.finishToolCalls(truncated: true).isEmpty)
-        #expect(lengthRouter.completedToolCalls.isEmpty)
+        for strict in [false, true] {
+            var lengthRouter = try Self.router(Self.request(strict: strict))
+            for character in Self.characters(partial) { _ = try lengthRouter.process(character) }
+            #expect(try lengthRouter.finishToolCalls(truncated: true).isEmpty)
+            #expect(lengthRouter.completedToolCalls.isEmpty)
+        }
 
-        var stopRouter = try Self.router(Self.request())
+        var stopRouter = try Self.router(Self.request(strict: true))
         for character in Self.characters(partial) { _ = try stopRouter.process(character) }
         #expect(throws: MultiModelBatchSchedulerEngineError.self) {
             _ = try stopRouter.finishToolCalls(truncated: false)
         }
+
+        // Without `strict`, the call is closed with the arguments it streamed.
+        var automatic = try Self.router(Self.request())
+        var exposed: [ServerToolCallDelta] = []
+        for character in Self.characters(partial) { exposed += Self.deltas(try automatic.process(character)) }
+        let closing = Self.deltas(try automatic.finishToolCalls(truncated: false))
+        #expect(closing.count == 1 && closing.first?.index == 0 && closing.first?.completed != nil)
+        #expect(exposed.first?.name == "write_file")
+        #expect(automatic.completedToolCalls.isEmpty, "a call that did not parse never counts as validated")
+    }
+
+    // MARK: - GPT-OSS through the service
+
+    /// `set_value.value` declares no type, so any JSON value is valid there;
+    /// the ingress normalizer fills in `type: "string"` for the templates.
+    private static let gptOSSBody = #"""
+        {"model":"gpt-oss-20b","messages":[{"role":"user","content":"Store it."}],"stream":true,
+         "tools":[{"type":"function","function":{"name":"set_value",STRICT"parameters":{"type":"object",
+           "properties":{"value":{"description":"Any JSON value"}},"required":["value"]}}},
+          {"type":"function","function":{"name":"write_file",STRICT"parameters":{"type":"object",
+           "properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}}}]}
+        """#
+
+    private static func harmonyCall(_ name: String, _ arguments: String) -> String {
+        "<|channel|>analysis<|message|>Calling.<|end|>"
+            + "<|start|>assistant<|channel|>commentary to=functions.\(name) <|constrain|>json"
+            + "<|message|>" + arguments
+    }
+
+    /// One GPT-OSS chat stream: the generated text up to its `<|call|>` stop
+    /// token, then the engine terminal. Frames sent before any error, and the error.
+    private static func serveGPTOSS(_ text: String, strict: Bool) async throws
+        -> (chunks: [ProviderLoop.StreamChunkExtract], error: Error?)
+    {
+        var request = try ProviderLoop.decodeOpenAIRequest(Data(gptOSSBody
+            .replacingOccurrences(of: "STRICT", with: strict ? #""strict":true,"# : "").utf8))
+        request.reasoningParser = .harmony
+        let upstream = AsyncStream<GenerationEvent>.makeStream()
+        for chunk in Self.characters(text) { upstream.continuation.yield(.chunk(chunk)) }
+        upstream.continuation.yield(.info(promptTokens: 9, completionTokens: 30, tokensPerSecond: 0,
+            finishReason: nil))
+        upstream.continuation.finish()
+        var frames: [String] = []
+        do {
+            for try await frame in try await MLXOpenAIService(
+                engine: RoutedEngine(upstream: upstream.stream, modelType: "gpt_oss")
+            ).streamChatCompletionFrames(request: request) {
+                frames.append(frame)
+            }
+        } catch {
+            return (frames.compactMap(ProviderLoop.parseStreamChunk), error)
+        }
+        return (frames.compactMap(ProviderLoop.parseStreamChunk), nil)
+    }
+
+    private static func streamedCall(_ chunks: [ProviderLoop.StreamChunkExtract]) -> (name: String?, arguments: String) {
+        let deltas = chunks.flatMap { $0.toolCallsDelta ?? [] }
+        return (deltas.compactMap { $0.function?.name }.first,
+                deltas.compactMap { $0.function?.arguments }.joined())
+    }
+
+    /// Without `strict`, OpenAI and vLLM return GPT-OSS's call as generated:
+    /// a value the normalizer's inferred type would refuse, arguments off the
+    /// schema, JSON that does not parse (the raw `arguments` text) and an
+    /// undeclared function.
+    @Test(arguments: [
+        ("set_value", #"{"value":42}"#),
+        ("set_value", #"{"value":{"unit":"kg","amount":[1,2]}}"#),
+        ("set_value", #"{"value":[1,"two",null]}"#),
+        ("write_file", #"{"path":"fib.py"}"#),
+        ("write_file", #"{"path":"fib.py","content":"print(1)""#),
+        ("write_file", #"{"path":"fib.py","content":"print(1)"}}"#),
+        ("delete_everything", #"{"path":"/"}"#),
+    ])
+    func gptOSSAutoCallsReturnAsGenerated(name: String, arguments: String) async throws {
+        let served = try await Self.serveGPTOSS(Self.harmonyCall(name, arguments), strict: false)
+        #expect(served.error == nil, "\(String(describing: served.error))")
+        let call = Self.streamedCall(served.chunks)
+        #expect(call.name == name)
+        if name == "delete_everything" {
+            // An undeclared call is never exposed early; it leaves whole, re-encoded.
+            #expect(try JSONDecoder().decode([String: MLXLMCommon.JSONValue].self, from: Data(call.arguments.utf8))
+                == JSONDecoder().decode([String: MLXLMCommon.JSONValue].self, from: Data(arguments.utf8)))
+        } else {
+            #expect(call.arguments == arguments)
+        }
+        #expect(served.chunks.contains { $0.finishReason == "tool_calls" })
+    }
+
+    /// `strict: true` keeps each a typed refusal that names its check
+    /// (`AutoToolCallValidationTests` covers the typeless value under strict).
+    @Test(arguments: [
+        ("write_file", #"{"path":"fib.py"}"#, ToolNoncomplianceCheck.schema),
+        ("write_file", #"{"path":"fib.py","content":"print(1)""#, .unterminated),
+        ("delete_everything", #"{"path":"/"}"#, .undeclaredName),
+    ])
+    func gptOSSStrictCallsStayValidated(name: String, arguments: String, check: ToolNoncomplianceCheck)
+        async throws
+    {
+        let served = try await Self.serveGPTOSS(Self.harmonyCall(name, arguments), strict: true)
+        let error = try #require(served.error)
+        #expect(classifyToolNoncomplianceCheck(error) == check)
+        #expect(!served.chunks.contains { $0.finishReason != nil })
+    }
+
+    /// A turn without tools is unchanged: GPT-OSS's answer streams as content.
+    @Test func gptOSSWithoutToolsIsUnchanged() async throws {
+        var request = try ProviderLoop.decodeOpenAIRequest(Data(
+            #"{"model":"gpt-oss-20b","messages":[{"role":"user","content":"Hi"}],"stream":true}"#.utf8))
+        request.reasoningParser = .harmony
+        let upstream = AsyncStream<GenerationEvent>.makeStream()
+        let text = "<|channel|>analysis<|message|>Greet.<|end|><|start|>assistant<|channel|>final<|message|>Hello!"
+        for chunk in Self.characters(text) { upstream.continuation.yield(.chunk(chunk)) }
+        upstream.continuation.yield(.info(promptTokens: 9, completionTokens: 12, tokensPerSecond: 0,
+            finishReason: nil))
+        upstream.continuation.finish()
+        var chunks: [ProviderLoop.StreamChunkExtract] = []
+        for try await frame in try await MLXOpenAIService(
+            engine: RoutedEngine(upstream: upstream.stream, modelType: "gpt_oss")
+        ).streamChatCompletionFrames(request: request) {
+            if let chunk = ProviderLoop.parseStreamChunk(frame) { chunks.append(chunk) }
+        }
+        #expect(chunks.compactMap(\.contentDelta).joined().contains("Hello!"))
+        #expect(chunks.compactMap(\.reasoningDelta).joined().contains("Greet."))
+        #expect(chunks.allSatisfy { $0.toolCallsDelta == nil })
+        #expect(chunks.contains { $0.finishReason == "stop" })
     }
 
     // MARK: - Engine forwarder, service and provider frame parsing

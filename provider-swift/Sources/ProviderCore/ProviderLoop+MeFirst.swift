@@ -83,7 +83,8 @@ extension ProviderLoop {
             if let bridge, await bridge.hasAdmitted(darkbloomRequest: requestId) { continue }
             guard token.giveWay() else { continue }
             logger.info("Me first: Darkbloom request \(requestId) was still queued; it goes back to the network so your request can start")
-            await handleCancellation(requestId: requestId, receivedFromCoordinator: false)
+            await handleCancellation(
+                requestId: requestId, receivedFromCoordinator: false, localCause: .stoppedOnThisMac)
         }
     }
 

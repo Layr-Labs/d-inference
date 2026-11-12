@@ -22,12 +22,28 @@ enum ToolChoicePromptPolicy {
         /// automatic choice has `parallel_tool_calls: false`
         /// (`singleCallInstruction`), which the validator holds it to.
         var glm5PairPostValidation = false
+        /// The caller's declarations as sent, before ingress normalization
+        /// (`ToolSchemaNormalization`) filled in render types. Validation of
+        /// `auto` calls reads these; nil falls back to `tools`.
+        var declaredTools: [OpenAITool]? = nil
 
         var requiresToolCall: Bool {
             switch mode {
             case .required, .named: true
             case .none, .auto: false
             }
+        }
+
+        /// `auto` without `strict` returns the model's calls as generated,
+        /// as OpenAI and vLLM do: an undeclared name, arguments off the
+        /// schema and streamed argument text that does not parse reach the
+        /// client instead of failing a response that has already started.
+        /// A function declared `strict: true` keeps every call of the request
+        /// validated, and a request that declares no tools never receives a
+        /// call. `parallel_tool_calls: false` holds either way.
+        var returnsAutoCallsAsGenerated: Bool {
+            guard mode == .auto, let tools, !tools.isEmpty else { return false }
+            return !tools.contains { $0.function.strict == true }
         }
     }
 

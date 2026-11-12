@@ -156,7 +156,6 @@ extension QwenTensorParallelResidentRuntime {
         let allocator = try sum([Memory.activeMemory, Memory.cacheMemory, remaining, QwenDenseStageLoadPolicy.allocatorHeadroomBytes])
         // A memory refusal is typed, so a running lane's stop ends that lane alone (D6).
         do {
-            try ClusterMemoryFault.current.refuseIfDue()
             guard try batchResourceWatch.admits(os, bytes: free,
                 floor: entering ? QwenDenseStageLoadPolicy.loadingHeadroomBytes : QwenDenseStageLoadPolicy.minimumTrulyFreeBytes),
                 Memory.memoryLimit >= allocator else { throw ProbeError("Qwen TP batch exceeds its live memory allowance") }

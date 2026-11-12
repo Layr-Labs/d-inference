@@ -16,6 +16,7 @@ extension ProviderLoop {
             fingerprints: modelHashFingerprints)
         let previouslyPersistedSwitch = hasPersistedModelSwitch
         let previousFilter = operatorModelFilter
+        let previousSwitchFilter = enabledModelsAtLastSwitch
         var persistedReplacement: ProviderModelSelection.Replacement?
         var mutationStarted = false
         do {
@@ -29,6 +30,7 @@ extension ProviderLoop {
                 persistedReplacement = try ProviderModelSelection.stageReplacement(
                     models.map(\.id), configPath: path, fallbackConfig: loopConfig.config)
                 hasPersistedModelSwitch = true
+                enabledModelsAtLastSwitch = models.map(\.id)
             }
             // Discard only pre-commit state. The coordinator forces a current
             // desired snapshot after this ack; preserve arrivals during the wait.
@@ -54,6 +56,7 @@ extension ProviderLoop {
                 if let persistedReplacement {
                     try ProviderModelSelection.restore(persistedReplacement)
                     hasPersistedModelSwitch = previouslyPersistedSwitch
+                    enabledModelsAtLastSwitch = previousSwitchFilter
                 }
                 discardObsoleteModelPrefetches()
                 let rollbackID = try await client.replaceModelsAfterDrain(previous.models, drainID: drainID, timeout: .seconds(30))

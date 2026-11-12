@@ -3,39 +3,67 @@ import Foundation
 // What a relay answers when it can't pass a connection on to rank 0: never a connection that just closes, but what the
 // local API would answer that caller. While the cluster service finds rank 0's Mac away (`setAway`), at once; otherwise
 // when a connection to rank 0 fails. A caller with this Mac's key or the pair's gets a typed 503 in words that name the
-// pair's other Mac; one without gets the local API's own 401, and one the API takes without a key (a CORS preflight, a
-// liveness check) the 503 with no names, chip or memory. No unauthenticated caller learns the other Mac's hardware.
+// pair's other Mac and say what to do; one with another key in the local key format, which this Mac can't judge (the
+// other Mac's own), the same 503 without names; one with any other key, or none, the local API's own 401; and one the
+// API takes without a key (a CORS preflight, a liveness check) the 503 with no names, chip, memory or commands. No
+// unauthenticated caller learns the other Mac's hardware.
 extension ClusterLocalRelay {
-    /// The words of the relay's answers: one 503 per reason, and the local API's 401.
+    /// The words of the relay's answers: one 503 per reason, the two again without the other Mac's name, and the local
+    /// API's 401.
     public struct Refusals: Equatable, Sendable {
         /// Rank 0's Mac can't be reached (unplugged, asleep, gone): `unreachableCode`.
         public var unreachable: String
         /// Rank 0's Mac answers, but its API doesn't listen (it starts again): `notAnsweringCode`.
         public var notAnswering: String
+        /// The two without the other Mac's name, for a key this Mac can't judge (`Caller.otherKey`).
+        public var otherKeyUnreachable: String
+        public var otherKeyNotAnswering: String
         /// The local API's 401 message (`LocalAuthPolicy.unauthorizedBody`), which names its CLI's `local` command.
         public var unauthorized: String
 
-        public init(unreachable: String, notAnswering: String, unauthorized: String) {
+        public init(unreachable: String, notAnswering: String, otherKeyUnreachable: String, otherKeyNotAnswering: String,
+                    unauthorized: String) {
             self.unreachable = unreachable
             self.notAnswering = notAnswering
+            self.otherKeyUnreachable = otherKeyUnreachable
+            self.otherKeyNotAnswering = otherKeyNotAnswering
             self.unauthorized = unauthorized
         }
 
-        /// The words for a pair whose other Mac is `otherMac` (its name, when known), naming the commands of `cli`. While
-        /// that Mac is away this Mac's part keeps its serving lock, for up to `ClusterPairWatch.giveUpSeconds`, so
-        /// serving this Mac alone takes `stop` first.
+        /// The words for a pair whose other Mac is `otherMac` (its name, when known), naming the commands of `cli`: wait,
+        /// or serve this Mac alone (`servingAlone`).
         public static func pair(otherMac: String?, cli: String) -> Refusals {
-            let other = "Your pair's other Mac" + (otherMac.map { " (\($0))" } ?? "")
-            return Refusals(
-                unreachable: "\(other) isn't reachable; this Mac relays to it. Requests resume when it's back, or run "
-                    + "`\(cli) stop`, then `\(cli) start --solo`, to serve this Mac alone.",
-                notAnswering: "The pair's API on \(other.prefix(1).lowercased() + other.dropFirst()) isn't answering yet; "
-                    + "this Mac relays to it. Requests resume when it answers.",
-                unauthorized: "missing or invalid local API key — get it from `\(cli) local`")
+            func words(_ otherMac: String?) -> (unreachable: String, notAnswering: String) {
+                let other = "Your pair's other Mac" + (otherMac.map { " (\($0))" } ?? "")
+                let alone = ClusterLocalRelay.servingAlone(cli: cli)
+                return ("\(other) isn't reachable; this Mac relays to it. Requests resume when it's back" + alone,
+                        "The pair's API on \(other.prefix(1).lowercased() + other.dropFirst()) isn't answering yet; this Mac "
+                            + "relays to it. Requests resume when it answers" + alone)
+            }
+            let named = words(otherMac), unnamed = words(nil)
+            return Refusals(unreachable: named.unreachable, notAnswering: named.notAnswering,
+                            otherKeyUnreachable: unnamed.unreachable, otherKeyNotAnswering: unnamed.notAnswering,
+                            unauthorized: "missing or invalid local API key — get it from `\(cli) local`")
         }
 
         /// Before the cluster service gives the pair's words (and in the checks).
         public static let generic = pair(otherMac: nil, cli: "darkbloom")
+    }
+
+    /// After a 503's "Requests resume when …": how to serve this Mac alone instead, and exactly when `start --solo` by
+    /// itself is refused: while this Mac's part holds its serving lock, which it keeps while the pair runs here
+    /// (`ClusterPairWatch`: up to `giveUpSeconds` after the other Mac last answered over the cable). Hence `stop` first.
+    static func servingAlone(cli: String) -> String {
+        ", or run `\(cli) stop`, then `\(cli) start --solo`, to serve this Mac alone (`\(cli) start --solo` by itself is "
+            + "refused while this Mac's part of the pair holds its serving lock: up to \(Int(ClusterPairWatch.giveUpSeconds / 60)) "
+            + "minutes after the other Mac last answered over the cable)."
+    }
+
+    /// What a pair's own API answers a caller with a key while its pair doesn't serve (`ClusterPairAPIRefusal`): words
+    /// true on every Mac of the pair, and through a relay too, saying what to do as the relay's own 503s do.
+    public static func pairNotServing(cli: String) -> String {
+        "The pair's API takes no requests right now: the pair is starting or stopping. Requests resume when it serves"
+            + servingAlone(cli: cli)
     }
 
     /// The `code` of a 503 while rank 0's Mac can't be reached.
@@ -63,8 +91,13 @@ extension ClusterLocalRelay {
     enum Caller: Equatable {
         /// Its `Authorization` is `Bearer` with this Mac's own key or the pair's.
         case keyed
+        /// `Bearer` with a key in the local key format (`LocalEndpoint.isToken`) that is neither: the other Mac's own, which
+        /// rank 0's API takes on that Mac, or a wrong one. This Mac can't tell which.
+        case otherKey
         /// No key, where the local API takes none: a CORS preflight (`OPTIONS`), or a liveness check (`GET` or `HEAD` of
-        /// `/`, `/health` or `/v1/health`). A relay without keys knows no caller's, so every caller is this.
+        /// `/`, `/health` or `/v1/health`). The key is read first, so one of these that carries another key in the local
+        /// key format is `otherKey`, whose words name no Mac either. A relay without keys knows no caller's, so every
+        /// caller is this.
         case open
         /// Any other, which the local API answers 401.
         case unknown
@@ -91,17 +124,17 @@ extension ClusterLocalRelay {
         return Array(head.utf8) + Array(body)
     }
 
-    /// What the relay answers a request it can't pass on for `reason`, from `caller`: the 503 in `refusals`' words, in
-    /// words with no names, or the local API's 401.
+    /// What the relay answers a request it can't pass on for `reason`, from `caller`: the 503 in `refusals`' words, the
+    /// same without the other Mac's name, in words with no names or commands, or the local API's 401.
     static func answer(_ reason: Reason, to caller: Caller, refusals: Refusals) -> [UInt8] {
+        let words: (unreachable: String, notAnswering: String)
         switch caller {
-        case .keyed:
-            return refusal(code: reason.code, message: reason == .unreachable ? refusals.unreachable : refusals.notAnswering)
-        case .open:
-            return refusal(code: reason.code, message: reason == .unreachable ? unnamedUnreachable : unnamedNotAnswering)
-        case .unknown:
-            return unauthorized(message: refusals.unauthorized)
+        case .keyed: words = (refusals.unreachable, refusals.notAnswering)
+        case .otherKey: words = (refusals.otherKeyUnreachable, refusals.otherKeyNotAnswering)
+        case .open: words = (unnamedUnreachable, unnamedNotAnswering)
+        case .unknown: return unauthorized(message: refusals.unauthorized)
         }
+        return refusal(code: reason.code, message: reason == .unreachable ? words.unreachable : words.notAnswering)
     }
 
     /// Answers `client` instead of closing its connection, as the local API would answer it (`answer`, with `keys` to

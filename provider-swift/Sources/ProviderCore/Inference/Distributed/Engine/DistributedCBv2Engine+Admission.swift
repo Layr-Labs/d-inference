@@ -35,6 +35,7 @@ extension DistributedCBv2Engine {
         try validate(submitted)
         let request = resolvingSeed(submitted)
         admitting[request.id, default: 0] += 1
+        admittingPromptTokens += request.promptTokens.count
         publishCapacity()
         return .init(request: request, deadlineContext: deadlineContext, projected: projected, cancellation: cancellation)
     }
@@ -60,7 +61,7 @@ extension DistributedCBv2Engine {
             capacity = try onQueue { try prepareReservation(held) }
         } catch {
             onQueue {
-                releaseLane(held.request.id)
+                releaseLane(held)
                 publishCapacity()
             }
             throw error
@@ -102,7 +103,9 @@ extension DistributedCBv2Engine {
     /// once the request is in `actives` or refused, so that no snapshot shows
     /// its lane free in between.
     @discardableResult
-    private func releaseLane(_ id: CBv2RequestID) -> Bool {
+    private func releaseLane(_ held: Admitting) -> Bool {
+        let id = held.request.id
+        admittingPromptTokens -= held.request.promptTokens.count
         let cancelled = cancelledWhileAdmitting.contains(id)
         let count = admitting[id] ?? 0
         admitting[id] = count > 1 ? count - 1 : nil
@@ -116,7 +119,7 @@ extension DistributedCBv2Engine {
         capacity: Int, admissionStartedAt: ContinuousClock.Instant
     ) throws -> Admission {
         defer { publishCapacity() }
-        let cancelledMeanwhile = releaseLane(held.request.id)
+        let cancelledMeanwhile = releaseLane(held)
         let lease = try reserved.get()
         let request = held.request, deadlineContext = held.deadlineContext, cancellation = held.cancellation
         let deadline = deadlineContext.firstTokenDeadline

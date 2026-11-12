@@ -32,7 +32,7 @@ struct ClusterPairMediaRegistrationTests {
     /// The configuration scan declares vision for both GLM and Qwen whatever the placement.
     private static let scanned = ModelInfo(id: "EigenLabs/GLM-5.3-Flash-MLX-NVFP4-mtp", modelType: "glm5_next",
         sizeBytes: 181_800_000_000, estimatedMemoryGb: 170, weightHash: hash("9"), isVision: true, templateRenderOK: true,
-        nativeMediaTools: true)
+        nativeMediaTools: true, nativeMediaControls: true)
 
     @Test func theMediaContractIsThePlacedModesNotTheArtifacts() throws {
         let rows = try Self.rows()
@@ -52,17 +52,20 @@ struct ClusterPairMediaRegistrationTests {
         #expect(ClusterMemberPreparation.registeredModel(Self.scanned, capability: rows.qwen27, mode: .tensorParallel) == Self.scanned)
         for (capability, mode) in [(rows.glm, ClusterGenerationMode.pipeline), (rows.qwen27, .pipeline), (rows.qwen9, .tensorParallel)] {
             let registered = ClusterMemberPreparation.registeredModel(Self.scanned, capability: capability, mode: mode)
-            #expect(registered.isVision == nil && registered.nativeMediaTools == nil, "\(capability.runtimeModelID) \(mode)")
+            #expect(registered.isVision == nil && registered.nativeMediaTools == nil
+                && registered.nativeMediaControls == nil, "\(capability.runtimeModelID) \(mode)")
             // Everything else the scan read is registered as it was.
             var restored = registered
             restored.isVision = Self.scanned.isVision
             restored.nativeMediaTools = Self.scanned.nativeMediaTools
+            restored.nativeMediaControls = Self.scanned.nativeMediaControls
             #expect(restored == Self.scanned)
         }
         // A model the scan found text-only stays so in every mode.
         var text = Self.scanned
         text.isVision = nil
         text.nativeMediaTools = nil
+        text.nativeMediaControls = nil
         #expect(ClusterMemberPreparation.registeredModel(text, capability: rows.glm, mode: .tensorParallel) == text)
     }
 

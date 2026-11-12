@@ -154,6 +154,36 @@ struct Gemma4NativeContextTests {
         }
     }
 
+    /// A tensor-parallel rank holds and covers the longest request it serves:
+    /// its paged KV host is bounded by the profile's 262,144 tokens in
+    /// 512-token chunks (`hostBound`, which `load` builds the host with), and
+    /// READY's capacity (`capacityBytes`, which `load` returns) is at least
+    /// what any reservation or lane charges, at its own context, prompt and
+    /// chunk, with or without its capture. A profile within its memory plan
+    /// bounds the host by it.
+    @Test func aRankHoldsAndCoversTheLongestRequestItServes() throws {
+        for keeps in [true, false] {
+            let charge = try Self.charge(keepsPrefixes: keeps)
+            #expect(charge.hostBound.maximumTokens == 262_144 && charge.hostBound.chunkTokens == 512)
+            let ready = try charge.capacityBytes
+            for (prompt, output) in [(262_143, 1), (229_376, 32_768), (131_071, 1), (65_536, 32_768), (32_768, 32_768),
+                                     (40, 2), (1, 1)] {
+                for chunk in [512, 64, 1] {
+                    for capture in [keeps, false] {
+                        let bytes = try charge.budget(contextTokens: prompt + output, chunkTokens: chunk,
+                            promptTokens: prompt, keepsPrefixes: capture).requestBytes
+                        #expect(bytes <= ready, "\(prompt) + \(output), chunk \(chunk), capture \(capture)")
+                    }
+                }
+            }
+        }
+        let spec = try Gemma4RegisteredSpecification.registered(.twentySixBQAT4Bit)
+        let memory = try Gemma4ResidentAdapterDefinition.memoryProfile(specification: spec)
+        let within = try Gemma4TensorParallelRequestCharge(profile: memory, memory: memory, keepsPrefixes: true,
+            allocationBound: Self.bound)
+        #expect(within.hostBound.maximumTokens == 65_536 && within.hostBound.chunkTokens == 512)
+    }
+
     /// READY and each keep-warm answer report the longest context the
     /// reservation gate admits now: the request at its own context, the
     /// rank's reserve beside it and the loading headroom fit. Kept prefix

@@ -148,6 +148,49 @@ struct DoctorOperatorDiagnosisTests {
         }
     }
 
+    /// An older `legacy` or `none` report stays in the trust section as dated
+    /// history, before the trust level, and never as `serving authorization`
+    /// (`ProviderAuthorizationReadiness.lastReportedStatus`). Received just
+    /// now, the same report is the serving authorization instead.
+    @Test("an aged legacy or none report is the trust section's last reported authorization")
+    func agedReportIsTrustHistory() async {
+        await #expect(processExitsWith: .success) {
+            let sandbox = try CLICommandSandbox.enter()
+            defer { sandbox.remove() }
+            CoordinatorStub.install([
+                "/v1/releases/latest": .init(
+                    status: 200, body: CLICommandSandbox.releaseJSON(version: ProviderCore.version)),
+            ])
+            func diagnose(_ report: ProviderAuthorizationStatus, receivedAgo: Double) async throws -> [Diagnostic] {
+                sandbox.writeState(try DoctorCommandRunTests.reportedState(
+                    report, receivedAt: Date().timeIntervalSince1970 - receivedAgo))
+                return await DoctorRunner.buildOperatorDiagnosis(
+                    snapshot: try sandbox.snapshot(hardware: nil),
+                    coordinatorURL: CLICommandSandbox.coordinatorURL)
+            }
+            let reports: [(report: ProviderAuthorizationStatus, level: DiagnosticLevel, message: String)] = [
+                (DoctorCommandRunTests.legacyReport, .info, DoctorCommandRunTests.legacyHistory),
+                (DoctorCommandRunTests.deniedReport, .warn, DoctorCommandRunTests.deniedHistory),
+            ]
+            for (report, level, message) in reports {
+                let aged = try await diagnose(report, receivedAgo: DoctorCommandRunTests.agedReceiptSeconds)
+                let history = try #require(aged.firstIndex { $0.name == "last reported authorization" })
+                #expect(aged[history].section == .trust)
+                #expect(aged[history].level == level)
+                #expect(aged[history].message == message)
+                #expect(aged[history].fix == nil)
+                #expect(!aged.contains { $0.name == "serving authorization" })
+                // The trust level still follows it.
+                let trust = try #require(aged.firstIndex { $0.name == "trust level" })
+                #expect(history < trust)
+
+                let fresh = try await diagnose(report, receivedAgo: 0)
+                #expect(fresh.contains { $0.name == "serving authorization" })
+                #expect(!fresh.contains { $0.name == "last reported authorization" })
+            }
+        }
+    }
+
     @Test("a fresh self-signed daemon explains its trust level and an up-to-date version")
     func freshSelfSignedDaemon() async {
         await #expect(processExitsWith: .success) {

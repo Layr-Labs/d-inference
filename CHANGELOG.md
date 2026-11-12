@@ -8,9 +8,1248 @@ or console deployment, feature activation, model promotion or hardware
 qualification. Sections marked historical retain the original candidate's
 qualification, opt-in and deployment limits rather than claiming activation.
 
-## v0.10.10 — candidate (unpublished)
+## v0.10.12 — candidate (unpublished)
 
-Prepared on 2026-11-06; tagging and publication are separate steps.
+Prepared on 2026-11-12; tagging and publication are separate steps.
+
+### Upgrade and rollout notes
+
+- 0.10.12 makes two-Mac pairs sturdier and wider: a pair keeps serving when one of its Macs runs short of memory, a Gemma 4 pair's pipeline serves the model's whole context, and Gemma 4 and GLM-5.3-Flash pairs in tensor parallel serve more than one request at once where both Macs' memory holds them. The toolchain (Xcode 27.2, macOS 27.2 SDK), `libs/mlx` and `libs/mlx-swift` are 0.10.11's, so the GPU kernels (`mlx.metallib`) are unchanged; `libs/mlx-swift-lm` (Swift model code) moves to `ad8a5860e5`.
+- **Behaviour changes to read first:**
+  - **`darkbloom start` no longer asks how this Mac serves.** On a Mac with no saved choice it serves the Darkbloom network and this Mac's local API (Both), and Darkbloom keeps serving while you use the Mac; it saves that choice (`[local] mode = "both"`, `me_first = false`). Saved choices are never rewritten, so a Mac set to "Both, me first" keeps pausing. `darkbloom local` serves only you. Scripts and the desktop app's Start without its local API take the same default where nothing is saved (#2008).
+  - **`darkbloom cluster` is simpler:** it no longer asks how the pair serves (always through Darkbloom, with the leading Mac's local API beside it, never pausing for new setups), picks tensor parallel or pipeline by itself for a new model (a pair's own model keeps its last mode, also when a stopped pair starts again; #2013), ends on one line ("✓ Serving <model> on both Macs", details in `darkbloom status`), and on a terminal waits for "Press Enter to exit." `darkbloom cluster local` still asks, for a pair only you use (#2007).
+  - **Bonsai 2 27B on a single Mac reads prompts batched again, fast** (about 620 tokens per second on an M5 Max instead of about 100; 0.10.5 to 0.10.11 ran every prompt row through the one-row kernel). Requests that decode together on a single Mac are batched too, so an answer can depend on the requests beside it, as in 0.10.4 (accepted for this release). Pairs keep the per-row exact arithmetic, so both Macs compute the same bytes (#2022).
+  - **Qwen3.5-9B has no default presence penalty and drafts with exact MTP acceptance:** its requests speculate and cache their prompts again; in the 0.10.12 gate it ran away on none of 31 draws under exact acceptance (13 of 31 under typical). The 35B Qwen builds keep the card's 1.5. A request's own `presence_penalty` still wins (#1961, back in with the SDK's shared-event fix, #2021).
+  - **A pair keeps serving when one Mac runs short of memory partway through a request, in every pair mode** (tensor parallel and pipeline; Qwen 3.8 27B, Gemma 4, GLM-5.3-Flash, MiMo V2.6, GPT-OSS). That request alone ends, on both Macs, with one Mac's memory 503 (`request_exceeds_node_budget`); the next request is served. Before, the pair's worker exited and the pair was down for about a minute (0.10.11's known issue D6). Proven on the M5 Ultra pair with the real memory check.
+  - **A Gemma 4 pair's pipeline serves the model's whole context** again: prompts up to 262,143 tokens and answers up to 32,768, as in tensor parallel and on one Mac (0.10.11 capped it at 65,536). Each Mac's memory check still decides, request by request, whether a long one fits now.
+  - **More requests at once on a pair:** a Gemma 4 26B (QAT 4-bit) pair in tensor parallel serves 2 requests at once, and a GLM-5.3-Flash pair in tensor parallel the widest of 8, 6, 4 or 2 that both Macs hold beside the model (it said 8 on any two Macs before). Each Mac reserves that width when the model loads; if the memory isn't there at that moment, a GLM pair loads with fewer and takes more requests as memory allows.
+  - **A pair takes the requests whose first token it can deliver in time, and only those.** Once a pair had measured how fast it reads prompts, 0.10.11 could turn away every Darkbloom request as "deadline unreachable". It now estimates each request's first token from its own measured speed and the prompts it is still reading.
+  - **Typed refusals:** a pair's API that is starting or stopping answers every request, the first included, with a 503 `pair_api_unavailable` and `Retry-After: 10`; an image or video sent to a model that doesn't take it is refused with `unsupported_media`; a video or audio decode fault is a retryable 503 with the reason `media_memory_unavailable`, which no longer marks the Mac's token budget as full.
+  - **Updates and the watchdog:** a `darkbloom restart` (or `stop` then `start`) you run in the first 10 minutes after an update no longer counts as a failed start, so it can't roll the update back; a crash, a hang or a reboot still counts. The watchdog brings back a provider job that launchd lost while it was enabled, and says in `~/.darkbloom/watchdog.log` when something restarts the provider so often that a new release is never promoted.
+  - **Selected models come back by themselves:** a model you selected that didn't fit at start, or that an Autopilot operation unloaded, is retried when memory frees, never by evicting another selected model. Ten minutes after it began waiting, a model outside your selection that keeps it out only by serving Darkbloom requests finishes its requests and is unloaded. `darkbloom stop`, `restart` and `start` no longer need `--force` when a model's unload never finishes.
+- **A GLM-5.3-Flash Mac no longer reads as full while it serves nothing:** its heartbeat reports only the requests it holds, not the memory its engine keeps for reuse (which grew to 90–99 % and turned most GLM requests away from idle Macs), and a request waiting behind another's prompt counts once (#1964).
+- **Nemotron Super with images and video** serves JSON output (`json_object`, `json_schema`), tools and `tool_choice`, as with text, and takes WebP, GIF and BMP under any image label; other formats are refused as `unsupported_media` (#1922, #1962). The coordinator sends media with JSON or tools only to Super Macs on 0.10.12.
+- **No more stuck MiMo requests behind the idle speed check:** a request that arrives during the check stops waiting when cancelled, and after 30 s is refused as busy so Darkbloom sends it elsewhere; while the check is overdue the model reads `crashed` and gets no new requests (#1966). `darkbloom stop`, `restart` and `update` no longer wait out requests the coordinator already cancelled (at most 30 s after the cancel) (#1968).
+- **A MiMo slot whose engine stops stepping stops taking requests (#1967):** an engine whose native work failed reads `crashed` at once, and a native MiMo slot whose queue holds work with nothing running reads `crashed` after 30 s, so Darkbloom routes around it and the slot is retired.
+- **Gemma 4 26B QAT drafts with exact MTP acceptance** by default: each committed token is the model's own draw, so its outputs follow the model's distribution (exact in distribution, not bit-identical to decoding without MTP), at a speed cost of about 0–4 %. Only the catalog `gemma-4-26b-qat-4bit` changes; every other model keeps its rule, and `mtp_acceptance_by_model` with `"gemma-4-26b-qat-4bit" = "typical"` restores the old one (#1974).
+- **An answer that repeats itself word for word stops early, as `length`:** after about 2,000 repeated tokens instead of running to its output limit (up to 131,072 tokens), so the Mac is free sooner; only exact repetition counts, never in an answer's first 4,096 tokens, and tool calls and JSON answers are never cut. On by default, Nemotron Super's text requests included; `DARKBLOOM_LOOP_GUARD=0` turns it off (#2005, #2020; window 16).
+- **GLM-5.3-Flash answers a JSON `response_format` with an image or video on one Mac**, as its text JSON mode does; before, every such request was a 400 (#2009). A pair still refuses it.
+- **Qwen 3.5/3.6 requests that can't speculate cache their prompts again** (a penalty, a `stop` string, logprobs, `logit_bias` or a token constraint): they record the MTP head's prompt history and save the same prefix checkpoints a speculating request saves, so the 35B builds, which keep the card's penalty, cache again (#1965 with mlx-swift-lm #398; window 8b: exact, memory accounted and capped).
+- **Nemotron 3.5 Lightning serves plain decode under `mtp_mode = "auto"`:** its MTP head sped up only a lone request and halved decode beside a second one; plain decode keeps production's throughput (#1969, window 7).
+- **Drafting models no longer use up Metal shared events while several requests decode:** each decode step of two or more requests together left one event alive, and after roughly 15–50 minutes of such a stretch the provider could abort (`Failed to create Metal shared event`). This hit Qwen 3.8 by default, the Qwen 3.5/3.6 builds with `presence_penalty: 0`, Lightning and Qwen4 Flash-Next. Tokens and drafts are unchanged (mlx-swift-lm #404, #2021).
+- **Paged decode stays fast on a busy Mac:** freed KV pages no longer scatter new requests' pages over many segments, so decode keeps one attention pass per layer instead of slowing to 0.30–0.40× its fresh speed a few minutes into a busy run (the 9B in production); outputs are unchanged (mlx-swift-lm #403, #2021).
+- **A Gemma 4 pipeline checks its whole number of requests at load:** a setup that saves several requests at once (2, 4 or 8) serves that many only if each Mac holds them all beside the model, and refuses the load otherwise; one without a saved number serves one at a time (it served four unchecked). Pipelines set up by `darkbloom cluster` keep one chunk of lookahead and one request at a time (#1937 via #2015).
+- **Small local requests sent together are no longer refused as "memory" on a warm Mac:** at the fallback width (heat or Low Power Mode) a streamed request waiting for its first token counted twice, so the third or fourth of four got a 503 with most memory free (#2018).
+- **A media request this Mac's memory can't hold now is refused as `media_memory_unavailable`** (it was `capacity_busy`), so Darkbloom sends it to another Mac without counting this Mac as full (#2019).
+- **`darkbloom status` shows the answers in progress:** model, running time, output tokens, current speed and a short request hash (never the prompt or answer); `--json` has the same list. A Mac writing long answers no longer looks hung (#2017).
+- **A refused request tells the coordinator why:** the `inference_error` frame carries `refusal_reason` and a fixed `refusal_message` (no request text; the requester's error is unchanged), and Qwen tool conversations name the check that refused them (#2016).
+- **A stream that stores its prompt's checkpoint no longer waits for row-by-row coding:** the SSD checkpoint export reads rows in batches and codes them on up to four cores, so the end of a stream (and its terminal) comes much sooner; the checkpoint bytes are unchanged (#1971, window 7).
+- **Gemma 4's MTP assistant upgrade no longer races the serving engine:** attaching the assistant to a model that already serves reuses the KV types observed at load instead of running a forward, which could crash the provider ("Attempting to eval an array without a primitive") when a request arrived during the upgrade (#1985, window 8b).
+- **A long MiMo prefill no longer trips the engine watchdog:** a native MiMo step may run up to 120 s (the engine's prefill progress lease) before the watchdog seals the engine, instead of 30 s, so slower Macs (M3 Ultras take three to four times an M5 Ultra's 15.6 s at 170k tokens) finish long prompts; a step that never returns is still caught (#1989; window 8c: sealed at the limit under a 5 s override, a 170k prefill with no crash, identical output).
+- **`darkbloom status` lists early-ended requests by cause, paid or unpaid** (#1980). The causes are exact once the coordinator sends the reason, which it does from the coordinator update of 11-11. One known gap until platform #792 ships: an owner's own request stopped mid-answer shows as "paid".
+- **Nemotron Super's prompt cache restores exactly:** it saves native-precision prefix checkpoints, so an answer from a cached prompt is the answer the same prompt gets without the cache; checkpoint files are about 15 % larger, and older Super checkpoints are skipped and age out within 30 minutes (#2002; window 11: 3/3 prompts exact).
+- **Qwen 3.8 27B drafts with exact MTP acceptance on single Macs** (#1999): its outputs follow the model's distribution (exact in distribution, not bit-identical to decoding without MTP). It costs about 4–5 % decode speed while a Mac serves one Qwen 3.8 request at a time and nothing with several; pairs are unchanged (they were already exact). `mtp_acceptance_by_model` with `"EigenLabs/Qwen3.8-27B-4bit-mtp" = "typical"` restores the old rule (window 8d: acceptance 0.73 vs 0.89–0.90, text matches MTP-off, no loops).
+- **Gemma 4 no longer turns away text requests while an image request is being answered;** it still waits while the image is read in (mlx-swift-lm #402; window 12: text beside a decoding image admitted 16/16 within its deadline).
+- **Tool calls under `tool_choice: auto` come back as the model wrote them**, as with OpenAI, instead of failing the request; strict, required and named tools are still checked. A refusal's error frame names the check that failed (`tool_check`) (#2003; window 13).
+- **Faster first tokens and tool calls (the SDK, `libs/mlx-swift-lm` `093563be11`):** a Gemma 4 prompt's cold first token is about 7 % sooner on M5 Macs, with exactly the same output (row-mapped NAX prefill, on by default; `DARKBLOOM_GEMMA4_NAX_ROW_MAP=0` turns it off); a Qwen 3.5-family first token is 10–12 % sooner under MTP for requests that send `presence_penalty: 0`; a tool parameter declared nullable now takes `null`. An opt-in early response before the SSD checkpoint write finishes ships off by default (`DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION=1`).
+- **Smaller changes:** `darkbloom models catalog` ends by naming up to three models this Mac could select but hasn't downloaded, with their size (print only; `--json` unchanged; #1957); a pair's planner can't run out of stack (planning runs on its own 16 MiB thread); a pair's leading Mac backs off (30 s up to 10 min) while the other Mac is away and starts at once when it answers; `darkbloom status` says whether fan control is on, and keeps an older authorization denial visible (as do `doctor` and `verify`); truer words on a paired Mac after `cluster leave` and in `doctor`, and the split question names each mode's context; Gemma 4 reasons with `tool_choice` `none`; the desktop app recommends models from what Macs with the same chip earn.
+- **Known issues (none blocks this release):**
+  - On a Mac of 48 GB or less, a very long Gemma 4 pipeline request can get the memory 503 partway through its prompt (past about 190,000 tokens at 48 GB, about 85,000 at 36 GB), for that request alone.
+  - A GLM-5.3-Flash tensor-parallel request that ends at its first token for memory can leave its prompt's stored prefix on the other Mac until it is evicted; it is never served stale.
+  - After `darkbloom update --rollback` to 0.10.11, a Gemma 4 or GLM pair set up on 0.10.12 must run `darkbloom cluster` again: 0.10.11 can't read the saved width.
+- Pair owners: both Macs of a pair must run the same version; a pair on 0.10.11 updates itself at its slot, or at once with `darkbloom update` on each Mac. `darkbloom update --rollback` puts back 0.10.11.
+- Pairs still on 0.10.10 stop serving through Darkbloom once 0.10.12 registers, until they update (0.10.12 and 0.10.11 hold 24 pair approvals each, the coordinator keeps 64).
+- The registration keeps 0.10.11's fields; its cluster runtime facts change where the modes do: Gemma 4's pipeline qualification serves the whole context again, and the tensor-parallel widths follow each Mac's memory. Deploy the coordinator that ships with 0.10.12 first.
+- The 61 entries below are the pending fragments rendered verbatim, except where the release notes reword one; CI-only entries change no provider behaviour.
+
+### `status`, `doctor` and `verify` keep an older denial visible
+
+- A provider's last coordinator authorization was shown only while it was at most 10 seconds old. An App Attest lease already stayed visible until it expires, but an older `none` (a denial) or `legacy` report vanished from `darkbloom status`, `doctor` and `verify`, so a Mac the coordinator had denied could look healthy. Such a report now stays visible as dated history: `Last reported authorization: received 10m ago; not a fresh dispatch grant. …` in `status`, and a `last reported authorization` line in `doctor` and `verify`, INFO for legacy and WARN for a denial.
+- History never stands in for a current grant or the public proofs: it offers no MDM removal or migration, and `doctor` and `verify` still run the trust and public attestation checks after it. `darkbloom verify` now fails on a WARN or FAIL line, not on an INFO line.
+
+### Bonsai 2 27B processes prompts at full speed again on a single Mac
+
+- Since provider 0.10.5, a single Mac ran every prompt row of Bonsai 2 27B through the one-row kernel. That kept each row's arithmetic identical to decode, but made prompt processing 2.3 to 6 times slower than in 0.10.4: about 100 tokens per second on an M5 Max instead of 620, and about 76 to 96 instead of 220 on M1 to M4 Macs. Image and tool prompts of 1,000 to 2,000 tokens or more then missed their first-token deadline, and OpenRouter saw 429s.
+- Now a single Mac processes a Bonsai 2 27B prompt with one batched matrix multiply per projection again, as in 0.10.4 (TF32 on M5, FP32 elsewhere). Prompt rows are no longer bit-identical to the decode arithmetic, as before 0.10.5. A request decoding alone is unchanged. When several Bonsai 2 27B requests decode at once on one Mac, their rows share the batched kernels again, as in 0.10.4, so a request's exact output can depend on the requests decoding beside it.
+- Pairs keep the per-row arithmetic for prompt and decode rows, because both Macs must compute the same bytes. Their arithmetic receipt (`bonsai-fp32-row-arithmetic-v2`) is unchanged.
+- `libs/mlx-swift` moves to `1b3520fe94` (Layr-Labs/mlx-swift#70, on the fork's `release/provider-0.10.12` = the previous pin `c633d221d6`). Only Swift sources change there, so `mlx.metallib` is unchanged.
+
+### A stream that stores its prompt's checkpoint no longer waits for row-by-row coding
+
+- When a request's prompt checkpoint is written to the SSD prefix tier at a quantized checkpoint precision (`balanced`, the default), the response's terminal waits until the checkpoint is written. Writing it read the checkpoint's attention rows one row at a time and coded each on one CPU core. On GLM-5.3-Flash every read also rechecked the native binding, so on an M5 Ultra the stream stayed open 63 s after a 200k-token prompt's last token and 17 s after a 57k-token one; in production on 0.10.11, Gemma 4 26B requests with 4–32k-token prompts waited a median 1.2–1.6 s, GPT-OSS 20B 8–32k 1.7 s and GLM-5.3-Flash ≥ 128k 51 s, and the Mac kept the request's memory reserved meanwhile.
+- The export now reads a head's rows in batches of up to 256 KiB, codes each batch on up to four cores (a quarter of the Mac's active cores) and rotates eight lanes at a time. The checkpoint's bytes are unchanged, so restores and their answers are exactly as before. CPU coding cost per 512-wide row falls from about 3 µs to about 0.6 µs on an M5 Ultra.
+
+### CI: a Darkbloom Sandbox without the Darkbloom cache uses no Actions cache
+
+- On a Darkbloom Sandbox that the plane gave no Darkbloom cache, `actions/cache` read and wrote GitHub's own Actions cache through the gateway. A `master` push on 2026-11-05 (job 127018716621) saved `.git`, a 1.69 GiB Swift build, the SwiftPM repositories and a Metal library to the `refs/heads/master` scope; `dev` pushes on 2026-11-07 and 2026-11-09 saved `.git` to `refs/heads/dev`.
+- Each routed job that uses a cache now first runs `Choose this job's Actions cache`. On a runner named `darkbloom-*` without `DARKBLOOM_CACHE_URL` it sets `CI_ACTIONS_CACHE=off`, and every `actions/cache` step and `actions/setup-node` cache then skips. Darkbloom jobs with the plane's cache, Blacksmith and GitHub-hosted jobs, and the Blacksmith-only release workflows keep their caches.
+- A restored `.git` is now discarded, before any git command reads it, if it is not a directory, holds a symbolic link or any hook but git's samples (also in `.git/modules`), or has a config that sets `core.fsmonitor` or `core.hooksPath` or includes another file. This holds on every runner.
+
+### CI: every Cluster GPU Tests shard asks Darkbloom first
+
+- Each of the 3 Cluster GPU Tests shards now asks the Darkbloom plane for a sandbox on a lane of its own (`test-cluster-gpu-1`, `test-cluster-gpu-2`, `test-cluster-gpu-3`; 4x24 while sizes are on). Each falls back alone to `blacksmith-12vcpu-macos-27` when the plane does not grant it. A lane routes only when the approval's `lanes` names it; on 2026-11-10 it named `test-cluster-gpu-1` and `test-cluster-gpu-2` but not `test-cluster-gpu-3`.
+- Shard 2 no longer needs 42 GiB. The paged verify/prefill attention bench (`paged-verify-bench`) bounds MLX's freed-buffer cache to 1 GiB, as a ready Qwen tensor-parallel rank does. Before, the cache kept every prompt chunk's attention temporaries, and the bench's process reached 34.26 GiB. The bench also prints its peak active memory and cache size for each run.
+- A full CI run now asks for 15 macOS jobs instead of 14. The GPU lanes come last in the lane table, so the `DARKBLOOM_MACOS_LANES` cap drops them first.
+
+### CI: the cluster qualification checks build with the job's selected Xcode
+
+- `libs/darkbloom-cluster-worker/Tests/QualificationChecks/run.sh` now uses the Xcode and SDK the job's toolchain step selected (`PROVIDER_SDKROOT`), so it no longer fails on a runner whose default developer directory is the command-line tools (`SDK "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk" cannot be located`). Local runs keep `xcrun`'s own selection. CI only; no provider behaviour changes.
+
+### Provider CI: smaller job sizes for the cluster runtime shards
+
+- The cluster runtime tests that drove the shards' memory now run with MLX's freed-buffer cache bounded: 4 GiB for the GLM-5.3 paged KV, row invariance, depth invariance and window census tests and Qwen's prefix-depth test, 1 GiB for the Gemma 4 paged synthetic stages and the GLM-5.3 prefix SSD restore. MLX's default cache kept every prefill frame's temporaries, which no later request reuses. The bound changes no result, no assertion and no shard's time.
+- Peak used memory: Cluster Runtime Tests shard 2 from 26.51 to 14.64 GiB, shard 3 from 13.21 to 10.71, shard 5 from 15.33 to 11.48 (the largest sample before and after).
+- While `DARKBLOOM_JOB_SHAPES` is `on`, the lane of runtime shards 2 and 3 (`test-cluster-2`) asks for 4x24 instead of 12x32, and the lane of shards 4 and 5 (`test-cluster-3`) for 4x16 instead of 4x24. The other lanes keep their sizes; `docs/developer/build.md` (Job sizes) has each job's sampled memory from 20 full dev runs.
+
+### CI: the desktop review package asks Darkbloom first
+
+- The manually dispatched Desktop App job that builds the unsigned macOS review package (`unsigned-desktop-review`) now asks the Darkbloom plane for a sandbox Mac on lane `desktop-package`. It falls back to `blacksmith-12vcpu-macos-27` when the plane does not grant it.
+- The job is renamed from `review-package` to `desktop-package`, so that its lane has the job's name, as the lane of every unsharded routed job does.
+- Pull requests and pushes do not ask for this lane: the job runs only on manual dispatch.
+
+### Simpler two-Mac cluster setup
+
+- The first Mac's last line while it waits is set apart and stressed: "→ Now run `darkbloom cluster` on the other Mac" (`darkbloom cluster local` names its own command).
+- `darkbloom cluster` no longer asks how the pair serves: it always serves through Darkbloom with the leading Mac's local API beside it, and Darkbloom keeps serving while you use that API: once the pair switches, starts or is shown serving, the leading Mac saves `[local] mode = "both"` and, where no `me_first` is saved, `me_first = false` (a run that changes nothing saves nothing; a pair already serving Both with the pause on keeps it until its next start, and the screen says so). To have Darkbloom pause for you again, set `[local] me_first = true` on the leading Mac and run `darkbloom restart`. A pair saved as Only me or as the Darkbloom network alone switches when `darkbloom cluster` runs and says so in one line; `darkbloom start`, an update or a restart never changes how a pair serves. "Change how the pair serves" is gone from the menu; `darkbloom cluster local` stays the local-only command.
+- Where a pair can't serve through Darkbloom (no login, no approval), the screen says "To use the pair just for yourself, run `darkbloom cluster local`." instead of offering "Serve locally only".
+- `darkbloom cluster` chooses tensor parallel or pipeline by itself for a new model: tensor parallel unless it can't run on these Macs or this pair measured it slower. A pair's own model keeps the mode it last served in, also when a stopped pair starts again. The model list no longer shows modes. `darkbloom cluster local` still asks, with the same choice tagged Recommended and preselected (the pair's own model preselects the mode it last served in).
+- A start ends on one standout line, "✓ Serving <model> on both Macs" (locally: "…, on your local API at http://localhost:<port>"), and "`darkbloom status` for details", the same on both Macs. The pair's card (log, login, commands) is in `darkbloom status`.
+- On an interactive terminal, both Macs end with "Press Enter to exit." (q and Esc too); `NO_COLOR`, `TERM=dumb`, pipes, `CI` and runs without a terminal never wait, and the screen's lock is released first, so another `darkbloom cluster` or `start` isn't refused. The pair keeps serving.
+
+### A two-Mac pair takes the requests whose first token it can deliver in time, and only those
+
+- Once a pair had measured how fast it reads a prompt, it turned away every Darkbloom request as "deadline unreachable", even one it could serve at once. Darkbloom sends a first-content deadline with every request, and the pair estimated no first token at all.
+- Now the pair estimates each request's first token from its own measured prompt speed, behind the prompts it is still reading for the requests it already holds, since it reads them one after another. It takes a request whose first token comes in time and turns one away at once when it would not, so Darkbloom sends it to another Mac. Before, eight long prompts arriving together were all taken, and the last waited about a minute for its first token.
+
+### A pair's first answer after the other Mac's part stops is its typed 503, at once
+
+- When the part of the pair on the Mac that runs the pair's API stops or starts again (a stop, a restart, an update, a
+  crash) while that Mac stays on the cable, every request, the first one included, now gets a `503` with `code`
+  `pair_api_unavailable` and `Retry-After: 10` at once, on that Mac and through the other Mac's port alike. Before, the
+  first ones got `{"error":{"type":"invalid_request_error","message":"Provider capacity is temporarily unavailable."}}`
+  with no code, once after 19 seconds. The pair's API now answers "The pair's API takes no requests right now: the pair
+  is starting or stopping. Requests resume when it serves, …" while its pair doesn't serve, never holding a request until
+  it does, and a request made during the pair's warm-up request is refused at once instead of waiting for it.
+- Both `503`s a pair's other Mac answers (`pair_mac_unreachable` and `pair_api_unavailable`), and the pair's API's own,
+  now end the same way: "…, or run `darkbloom stop`, then `darkbloom start --solo`, to serve this Mac alone (`darkbloom
+  start --solo` by itself is refused while this Mac's part of the pair holds its serving lock: up to 15 minutes after
+  the other Mac last answered over the cable)."
+- Through the other Mac's port, a key it can't judge (another key in the local key format, such as the leading Mac's
+  own, which works through it while that Mac is there) gets the same `503` without the other Mac's name, instead of a
+  `401`. A missing key, one without `Bearer`, or one that isn't a local key still gets the `401`.
+- While the pair's API on the leading Mac starts again, the other Mac's port stays up and answers those `503`s, instead
+  of refusing connections until that API is back, and its `darkbloom status`, `darkbloom local` and `darkbloom doctor`
+  say "Local API: http://127.0.0.1:<port>/v1 on this Mac answers 503 for now." with the `503`'s words, instead of "not
+  listening on this Mac yet".
+- A local request waiting for one of the pair's lanes when a stop or an update begins gets the same `503`, instead of a
+  `429`. A request without a key that reaches the pair's API while it stops gets the API's `401`, instead of a `503`.
+
+### A pair's leading Mac starts its part less often while the other Mac is away
+
+- While the other Mac of a pair doesn't answer (asleep, off, its cable out), the leading Mac keeps its part ready for 10 minutes so the pair re-forms when that Mac is back. Its part can't form the pair meanwhile, and each start reads its share of the model and registers with the coordinator again. A part that ended was started again every 30 seconds (every 48 seconds for a MiMo leader whose other Mac slept). It now waits twice as long as the last time, from 30 seconds up to 10 minutes (30 seconds, then 1, 2 and 4 minutes), and starts at once when the other Mac answers. While the other Mac answers, a part that keeps ending starts again as before (6, 12, 24, then every 30 seconds).
+- `darkbloom cluster status` on the leading Mac says when, under the line that it waits for the other Mac: ``This Mac's part starts again in 4 min, or as soon as the other Mac answers: while the other Mac is away, each start waits twice as long as the last, up to 10 min.``
+
+### A stopped pair keeps its last mode on restart
+
+- `darkbloom cluster local`, and `darkbloom start` in a terminal on a pair that serves locally, preselect the mode the pair's own model last served in when its mode question comes up, so Enter starts a stopped pipeline pair as a pipeline again instead of switching it to tensor parallel. The **Recommended** tag stays on the automatic rule's pick; when the last mode is the recommended one, nothing changes. `darkbloom cluster local <its model>` starts the pair's own model in that mode too; a new model still gets the automatic rule.
+
+### Recommended models from Macs with the same chip
+
+The desktop app's "Recommended for your Mac" now ranks models by what Macs with
+the same chip earned per day from each model over the last 24 hours (the typical
+Mac first, then the average), when the coordinator publishes those figures in
+`/v1/stats` `model_earnings[].by_chip`. Network-wide 7-day totals favor models
+that many fast Macs serve, which can pay a slower Mac nothing. Without per-chip
+figures, or when they cover no model this Mac can serve, the ranking falls back
+to network totals as before.
+
+### Stopping no longer waits for requests the coordinator abandoned
+
+- Before, `darkbloom stop`, `restart` and `update` waited for every accepted request to finish, including requests the coordinator had already cancelled because their client left or their first token was late. A request stuck behind a stalled engine never finished, so the drain timed out after its full deadline and asked for `--force`.
+- Now a request the coordinator cancelled counts for at most 30 s after the cancel. Its answer has nobody to go to; if its task has not ended by then, the drain stops waiting for it. Memory and eviction still treat it as in flight until it ends, and a native MiMo slot still retires only after its last request.
+
+### A Gemma Mac decoding an image request accepts deadline text again
+
+- A Gemma 4 Mac refused every text request with a first-content deadline (`deadline_unreachable`, profile reason `multimodal_work`) while an image or video request was anywhere in its engine, including the image's whole decode, which is about 98 % of its time there. On OpenRouter this was 0.9–1.8 M refused attempts a day on 11-08..11-10, almost all on M5 Macs, and 16–59 K requests a day ended as 429s.
+- The SDK now refuses only while the image request still has prompt work (until it has sampled from its whole prompt). After that its decode is priced like any other decode row, so the text request is admitted when its first token fits the deadline. Image requests themselves, other models' media (all causal) and text-only engines are unchanged.
+
+### Gemma reasons with `tool_choice` `none`
+
+- A Gemma 4 request with `tool_choice` `none` and reasoning on could not open its thought: the sampler that keeps tool calls out also masked Gemma's reasoning delimiters, `<|channel>` and `<channel|>`. Such a request now reasons and answers as it does without `tool_choice`; before, it could repeat until it hit its output limit. Tool-call markers stay refused, and required or named `tool_choice` is unchanged.
+
+### A Gemma 4 pair's pipeline serves the model's whole context
+
+- A Gemma 4 26B pair in the pipeline now accepts prompts up to 262,143 tokens and up to 32,768 output tokens within 262,144, as in tensor parallel and on one Mac. Before, its pipeline served the 32,768 + 32,768-token request (65,536 tokens). A pipeline Mac whose memory refuses a running request ends only that request. Each Mac's memory gate still decides, request by request, whether a longer one fits now. With lanes (a setup that prefills serially), the gate decides when the request starts, and a long request can still be refused partway through its prompt when the Mac runs short.
+
+### A Gemma 4 pipeline checks its whole number of requests at load, and serves one at a time without one
+
+- A Gemma 4 pipeline set up by `darkbloom cluster` still reads each prompt with one chunk of lookahead and serves one
+  request at a time. Serving several at once needs it to read each prompt one chunk at a time, and on two M5 Ultras a
+  long prompt alone then started its answer about 1.9 times later, so the setup keeps the lookahead.
+- A pipeline whose setup saves one-chunk-at-a-time reading and a number of requests at once (2, 4 or 8) serves that
+  many. Each Mac now checks at load that the whole number fits beside the model, each request charged its whole state
+  at the standard request (32,768 prompt plus 32,768 output tokens), and refuses the load if it does not: "Resident
+  load refused: N requests at once, each of C context tokens, do not fit on rank R now". Before, the load checked one
+  request. A Qwen 3.5 or Gemma 4 pipeline widened automatically on a local pair is checked the same way.
+- A pipeline set up to read prompts a chunk at a time without a saved number now serves one request at a time. Before,
+  it served four, which nothing had checked its memory for.
+- Each request still gets exactly the tokens it gets alone. A request cancelled or refused for memory ends alone, and
+  the others keep running.
+
+### Gemma 4 tensor parallel serves 2 requests at once where both Macs' memory holds them
+
+- A Gemma 4 26B pair in tensor parallel served one request at a time. Through Darkbloom, every request beyond the
+  one it served was turned away as "at capacity".
+- Now the setup sizes the QAT 4-bit pair the way it sizes Qwen 3.8 27B's tensor parallel: it serves 2 requests at
+  once where both Macs can hold them now beside the model. Each request after the first is charged everything one
+  request holds at the standard request (32,768 prompt plus 32,768 output tokens), about 2.6 GB on each Mac, and each
+  Mac reserves that width when the model loads, the planner counting that reservation while the model is read.
+- Why 2: on two M5 Ultras every request got its own tokens at 2, 4 and 8 at once, but each request was served fastest
+  at 2 (77 tok/s each and 95.5 in all, against 48.5 and 96.2 at 4). The 8-bit model still serves one request at a
+  time; nothing has qualified its lanes yet.
+- The setup screen and the number the pair reports to Darkbloom are the same width. Where only one request fits,
+  the pair saves no width and serves one request at a time, as before.
+- Each request still gets exactly the tokens it gets alone. A request cancelled or refused for memory ends alone,
+  and the others keep running.
+
+### Gemma 4 compiled feed-forward dispatch
+
+Adopt the native SDK's shape-specialized feed-forward graph for eligible Gemma 4
+GPU decode and verification rows. A matched single-request M5 Max endpoint
+comparison with 8K cached context measured a further 2.5–3.2% decode-proxy gain
+over the prior dispatch change. Parameter updates, eager fallbacks and existing
+attention, MTP, admission, prefix-cache and SSD-write behavior are preserved.
+Broader concurrency and other-chip gains remain unqualified.
+
+### Gemma 4 native dispatch efficiency
+
+- Adopt the SDK's shared dense GeGLU reuse for eligible Gemma 4 models, preserving numerical expressions, parameter contracts, paged attention, prefix caching and SSD write policy. Gemma 4's decode command-buffer limits are unchanged by this entry.
+- An initial warm 8K, single-request endpoint screen on one M5 Max measured a 3.5–3.9% decode-proxy improvement with matching outputs, together with an earlier scoped command-buffer limit that has since been replaced, so the gain is not attributed to the GeGLU change alone. Broader concurrency, prefill, clustering and other hardware remain unmeasured; memory and admission safeguards are unchanged.
+
+### Gemma 4 row-mapped NAX prefill
+
+Adopt the native SDK's shared plain-greedy metadata shortcut and guarded Gemma 4
+row-mapped NAX prefill route, enabled by default within its existing hardware,
+shape and evaluation guards. Exact `DARKBLOOM_GEMMA4_NAX_ROW_MAP=0` restores the
+original graph, with the override forwarded when creating a LaunchAgent job.
+Same-app M5 Max comparisons in both orders measured 6–7% lower cold HTTP time to first generated
+frame for uncached 4K/8K single requests, with exact paired outputs. A longer
+warm decode control was neutral. These are not additive speedups or concurrency,
+other-chip or clustering claims; attention, MTP, admission, prefix caching and
+SSD-write policies are unchanged.
+
+### A GLM-5.3-Flash Mac no longer reads as full while it serves nothing
+
+- A GLM-5.3-Flash Mac's heartbeat now reports as used only the requests it holds, as its own admission charges them. It used to report the memory its engine keeps after every request and reuses for the next, which grew to 90–99 % of the budget, so Darkbloom turned most GLM requests away while the Mac sat idle. A GLM Mac can now take as many requests at once as its memory admits.
+- A GLM request waiting for another's prompt to finish is now counted once. It was counted twice on this Mac's own API, so a 256 GB M5 Ultra took two long requests at once instead of three.
+
+### GLM-5.3-Flash answers a JSON format with an image or video on one Mac
+
+- A GLM-5.3-Flash Mac now serves a JSON `response_format` (`json_object` or `json_schema`) together with image or video input. Before, it refused every such request with HTTP 400 `Invalid inference request.` (failure code `invalid_request`) before any media work.
+- It works as GLM's text JSON mode does: the instruction renders in the media prompt, reasoning streams on its own channel, and the answer is withheld until generation ends, then checked and exposed once. An answer that isn't the JSON asked for is a 422 with no content.
+- Still refused with 400: a required or named `tool_choice` with image or video input, and a JSON format with image or video input on a cluster pair (the pair's media routes don't withhold the answer).
+- Darkbloom's coordinator answers these requests itself, without dispatching, for Macs on earlier provider versions.
+
+### GLM-5.3-Flash tensor parallel serves as many requests at once as both Macs' memory holds
+
+- A GLM-5.3-Flash pair in tensor parallel served up to eight requests at once on any two Macs. Its load checked
+  memory for one request only, so a pair with room for fewer still told Darkbloom eight.
+- Now the setup sizes GLM the way it sizes Gemma 4 26B and Qwen 3.8 27B in tensor parallel. It saves the widest of 8,
+  6, 4 or 2 requests at once that both Macs can hold now beside the model, and each Mac reserves that width when the
+  model loads. Each request after the first is charged what it adds at the standard request (32,768 prompt plus
+  32,768 output tokens): about 9.7 GB.
+- The setup screen and the number the pair reports to Darkbloom are the same width. Where only one request fits, the
+  pair saves no width and serves one request at a time.
+- When a Mac has less memory free at load time than at setup, the pair still loads: each Mac reserves as many of the
+  saved requests as it can hold then, at least one, and takes the others as memory allows. On two M5 Ultras an
+  8-request pair whose Mac had other programs using 38.68 GiB did not load at all; it now loads with 6 reserved.
+- A pair set up before this version is planned again by itself after the update, as after every Darkbloom update,
+  and saves its width then.
+- Each request still gets exactly the tokens it gets alone.
+
+### Developer tooling
+
+- Add an offline GPT-OSS publisher checkpoint repacker that preserves MXFP4
+  experts and BF16 non-expert tensors, with source/output verification and
+  comparison receipts. Add frozen-request replay guards for paged attention,
+  effective prefix reuse and complete streams. These tools do not change the
+  registered model or establish candidate qualification.
+
+### A request no longer waits forever behind the idle speed check
+
+- Before, a request that arrived while the provider ran its idle speed check (MiMo repeats it whenever the Mac is idle) waited for the check to finish, with no time limit, and ignored its coordinator's cancel. If the check stopped making progress, every later request on the Mac was accepted and never started: the coordinator timed each one out, and `darkbloom stop` waited 600 s for them and gave up.
+- Now a cancelled request stops waiting at once, and any request stops waiting after 30 s and is refused as busy, so the coordinator sends it elsewhere. While the check is overdue the model reads `crashed` in the heartbeat, so no new requests are routed to it; it serves again as soon as the check finishes.
+
+### Nemotron 3.5 Lightning serves plain decode instead of its MTP head
+
+- Under the default `mtp_mode = "auto"` Lightning now serves plain decode instead of its embedded MTP head. The head speculates for one request only: beside a second request each step became a slower hidden-returning step, and production decode fell from about 110 to about 54 tok/s (11-09). It also charged about 45 KB of head state per context token, so a Lightning slot's token budget was about an eighth of its KV and many Macs could not admit one request with the default 32,768 output tokens. Plain decode commits a Metal command buffer every 100 operations instead of after almost every MoE layer. A single request at temperature 0 keeps the same output. Explicit `mtp_mode = "on"` keeps the head.
+- The gain is not universal, on an M3 Ultra: a single request at the artifact's default temperature 1.0 stays about even, text the head predicted very well (counting, repeats, tables) runs up to about 30% slower, and a row decoding beside another request's long prompt runs at about half the head's rate.
+- Sampled output follows the target's own distribution: the head's lossy `typical` acceptance no longer applies to Lightning.
+- Its complete checkpoints keep native rows by default, as they did beside the head, so a cache hit's output does not move. A global `balanced` in a saved `provider.toml` does not change that; `k4v4`, a per-model setting or the process switch do. Lightning's target-only artifact and explicit `mtp_mode = "off"` follow the same default.
+- Cache identity includes the MTP configuration, so a provider's existing Lightning checkpoints stop matching and age out within their 30-minute lifetime.
+
+### Small local requests sent together are no longer refused as "memory" on a warm Mac
+
+- While a Mac's heat or Low Power Mode holds a model to its fallback width (4 instead of the M5's 8, as often right after a start on a warm Mac), a streamed local-API request waiting for its first token counted twice. So the third or fourth of four small requests sent together got 503 "This Mac's memory can't hold this request right now" with most memory free. Each request now counts once, as the memory check already did; a fifth is still refused.
+
+### Answers that repeat themselves verbatim stop early, as `length`
+
+- An answer that starts repeating one block of text word for word now stops after about 2,000 repeated tokens instead of running to its output limit (up to 131,072 tokens, 25–40 minutes on one Mac). It ends like an answer cut at `max_tokens`: `finish_reason` is `length`, the usage counts the tokens produced, and the request is paid as usual. The Mac is free for the next request sooner.
+- Only exact repetition counts: the last 2,048 tokens or more must repeat one block of 8–512 tokens at least 8 times in a row, and never within an answer's first 4,096 tokens. A tool call, a JSON answer and a forced tool call are never cut.
+- On by default for Gemma 4, Qwen 3.5/3.6/3.8, GPT-OSS, Nemotron 3.5 Lightning and Super (text), GLM-5.3 and MiMo. `DARKBLOOM_LOOP_GUARD=0` turns it off.
+
+### A media decode refusal no longer marks the provider's token budget as full
+
+- A video or audio reader that fails twice with a decoder, hardware or interruption fault, and a Nemotron Super video whose decode allowance runs out, are still refused as a retryable 503 (failure code `capacity`). Their error reason is now `media_memory_unavailable`, not `capacity_busy`.
+- The coordinator still sends the request to another provider, up to its three capacity refusals. It no longer reads the refusal as a full token budget, so the provider's budget for the model is not clamped to zero for up to 5 minutes, and the provider gets no capacity strikes.
+
+### A slow MiMo step no longer stops the MiMo slot for good
+
+- Before, a native MiMo step that ran longer than 30 s, such as a prefill step deep into a long prompt on an M3 Ultra, made the engine's step watchdog seal the engine. The engine never took another step, even after the slow step finished, and the slot stopped serving until MiMo was reloaded.
+- Now a native MiMo step may run up to 120 s, the time the engine already allows a prefill to go without progress. A step that never finishes is still caught, after two minutes instead of 30 s. Other models keep 30 s.
+
+### Models catalog names the models this Mac could add
+
+- `darkbloom models catalog` now ends with the catalog models that are not downloaded and that this Mac could select: at most three rows with id and download size, larger first, then `darkbloom models download <id>` and `darkbloom switch`. The note is printed only when there is at least one such model.
+- A model is named when the `darkbloom start` picker would offer it to this Mac (required runtime capabilities present, not a hidden build or one replaced under a public alias), it is an active text model, its listed `min_ram_gb` is at most this Mac's memory, and it fits the provider's load budget alone. Free disk space, the memory reserve and memory in use at load time, the coordinator's minimum provider version and the provider's trust status are not checked, and the note says so.
+- The note only prints: nothing is downloaded, selected or saved, and no request is added. The table's catalog request now also asks for the public aliases (`include_aliases=1`); the `--json` request and output are unchanged.
+
+### Gemma 4 26B QAT drafts with exact MTP acceptance
+
+- The catalog `gemma-4-26b-qat-4bit` now uses exact draft acceptance by default: each token a speculating sampled request commits is the model's own draw, so its outputs follow the model's distribution (exact in distribution; the tokens are not bit-identical to decoding without MTP). Every other model keeps its built-in rule; the 8-bit Gemma builds draft only with `mtp_mode = "on"` and stay typical.
+- Its assistant drafts most Gemma rows, and typical acceptance keeps drafts the model would rarely have sampled; once a repetition starts the drafter predicts it and it is kept. On OpenRouter's GPQA run of 10-31 every Gemma answer drafted under typical acceptance and 30 % ran to the 32,768-token cap with no answer.
+- Exact keeps fewer drafts, so MTP speeds a Gemma stream up a little less: a speed cost of about 0–4 % (0.96x of typical at one request in the 10-07 measurements, 0.99–1.01x in the 11-10 M5 Ultra A/B). `mtp_acceptance_by_model` with `"gemma-4-26b-qat-4bit" = "typical"` restores the old rule.
+
+### Qwen 3.8 27B drafts with exact MTP acceptance on a single Mac
+
+- The catalog `EigenLabs/Qwen3.8-27B-4bit-mtp` (and its head-less target `EigenLabs/Qwen3.8-27B-4bit`) now uses exact draft acceptance by default: each token a speculating sampled request commits is the model's own draw, so Qwen 3.8's outputs follow its distribution (exact in distribution; the tokens are not bit-identical to decoding without MTP). This applies on every single-Mac path: network serving, Only me / `--local`, and both MTP upgrades. Qwen 3.8 pairs never used typical acceptance, and every other model keeps its built-in rule.
+- On a single Mac a lone Qwen 3.8 request drafts, and typical acceptance keeps drafts the model would rarely have sampled. On Qwen3.5-9B typical acceptance made long answers loop to the output cap (13 of 31 draws, against 0 of 31 under exact). Qwen 3.8's own production records point the same way, though they are observational: while the fleet moved from 0.9.17 (exact) to 0.9.18 (typical), Macs on typical ran long Qwen 3.8 answers to their `max_tokens` about 3.6 times as often on the same traffic. Since 11-09, every one of the 229 single-Mac Qwen 3.8 answers of 8,192 tokens or more that ended at their cap had drafted; none of the 33 long answers that never drafted did.
+- Exact keeps fewer drafts, so Qwen 3.8 decodes about 4–5 % slower on single Macs, all of it while a Mac serves one request at a time (a lone request runs at about 0.93x of typical in the 10-07 measurements). A Mac serving several requests at once is unchanged. `mtp_acceptance_by_model` with `"EigenLabs/Qwen3.8-27B-4bit-mtp" = "typical"` restores the old rule.
+
+### Drafting models no longer use up Metal shared events while several requests decode
+
+- While two or more requests decoded together on one model, each decode step left one Metal shared event alive. The count fell only when one request drafted alone or the requests ended. This hit Qwen 3.8 by default; the 9B, the 35B and Qwen 3.6 when a client sent `presence_penalty: 0`; Lightning; and Qwen4 Flash-Next. Two Qwen 3.8 requests added about 2,000 events a minute. Shared events are a finite system-wide pool. After roughly 15–50 minutes of such a stretch, the provider could abort with `Failed to create Metal shared event`.
+- The SDK now drops each finished step's event from the arrays the drafting history keeps. Tokens and drafts are unchanged, and no GPU work is added.
+
+### MTP assistant upgrade: no forward on the model while it serves
+
+- When a provider attaches the verified MTP assistant to a model that is already serving (the idle upgrade), building the replacement engine no longer runs a forward on that model. It reuses the KV types observed when the model was first loaded.
+- A forward from the preparing thread could race the serving engine. With Gemma 4's compiled feed-forward (mlx-swift-lm `093563be` and later), that race crashed the provider with `Attempting to eval an array without a primitive` when a request arrived during the upgrade, typically the first request after a start.
+
+### Nemotron Super serves JSON output, tools and its settings with images and video
+
+- An image or video request to Nemotron 3.5 Super now takes the same request plan as a text request. `response_format` (`json_object` and `json_schema`), `tools`, `tool_choice` (auto, none, required or a named function), `parallel_tool_calls` and `min_p: 0` are served with media. Before, the Mac refused every such request as `invalid_media` (400).
+- Tool calls and JSON answers with media are withheld and validated as for text: an invalid JSON answer or a broken forced tool choice returns 422, or ends a stream with an error event.
+- Nemotron Super now advertises `native_media_tools`, so the coordinator sends it forced tool choice with media and media in tool results. It also advertises `native_media_controls`, which a coordinator can require before it sends a Super request with media and a JSON response format or tools, so Macs without this release do not receive them.
+- A media-route refusal names its cause by its failure code. A request control that the text route also refuses (`logit_bias`, `n > 1`, `min_p` other than 0, `prompt_cache_key`, `top_logprobs` outside 0 to 20) is `invalid_request` (400), as are a prompt whose visual tokens do not fit the context and text that names `<image>` or `<video>`. Media the route does not serve (a label or encoding outside the image format reference, audio, more than 16 images, images with a video, a second video, a codec other than H.264 or HEVC) is `unsupported_media` (the coordinator answers 415). Media above a size, pixel or frame limit is `media_too_large` (the coordinator answers 413). Only corrupt media stays `invalid_media` (400). Before, all of these were `invalid_media` (400), a video's own frame and pixel limits included.
+
+### Nemotron Super's prompt cache now restores exactly
+
+- Nemotron Super's prompt cache now restores exactly: an answer from a cached prompt is the answer the same prompt gets without the cache. Super now saves its prompt checkpoints at native precision. Before, they used the provider-wide `balanced` default, which stores older attention rows at 4 bits.
+- Measured on the production weights on an M5 Ultra, with 3 reasoning prompts of about 8,600 tokens restored from an 8,192-token checkpoint: `balanced` checkpoints changed all 3 answers, and native checkpoints matched the uncached answers bit for bit in all 3, tokens and logprobs alike.
+- Checkpoints are larger. At 8,192 tokens one is about 249 MB instead of 204 MB, so about 15 % more is written per prompt; at 30,720 tokens it is about 457 MB instead of 285 MB. The SSD cache keeps its shared disk budget, so it holds fewer Super checkpoints.
+- Super's own per-model setting or the process switch still selects another precision. A global setting, even an explicit `k4v4`, `k8v4` or `k8v8`, no longer applies to Super. Existing Super checkpoints stop matching and age out within their 30-minute lifetime.
+
+### Nemotron Super takes WebP, GIF and BMP images, under any image label
+
+- Nemotron 3.5 Super now decodes WebP, GIF (the first frame) and BMP images as well as PNG and JPEG. The coordinator already fetched and inlined these formats; every Super Mac refused them.
+- ImageIO decodes them to the same RGB input as PNG and JPEG, under the same byte, pixel and resize limits, checked from the header before any pixel is decoded. A WebP's EXIF orientation is applied as for PNG and JPEG. Alpha is dropped; a fully transparent pixel reads as black.
+- Other formats (TIFF, HEIC and the rest) are still refused, now as `unsupported_media`.
+- An inline image is taken under any image label, in any case: the format comes from the bytes, so a JPEG sent as `data:image/jpg` (an alias some clients send) or `data:image/JPEG` is served. Before, only `data:image/png` and `data:image/jpeg` were taken, and every other label was refused as `invalid_media` (400). A label that is not an image, percent encoding or a remote URL is refused as `unsupported_media`.
+
+### A nullable tool parameter takes `null`
+
+- A tool parameter a client declares nullable (`"type": ["integer", "null"]`, or `anyOf` with a `null` branch) reaches the model's parser as `"nullable": true`, which the SDK ignored. A model's `null` for it, as Qwen 3.5-family XML calls write it, stayed the string `"null"`, failed the parameter's type, and the client got a tool error for a legal argument. It now becomes JSON `null` and passes validation for a nullable integer, number, boolean, object or array. A nullable string keeps the text `null`, and `enum`, `const` and combinators still apply.
+
+### Paged decode keeps one attention pass per layer on a busy Mac
+
+- Before, on the paged KV backend (the 9B, Qwen 3.6, gpt-oss-20b, the 35B, Gemma 4 and the other paged models), decode slowed while a Mac stayed busy and recovered only when the engine drained. Freed pages went back to the front of one shared free list, so new requests' pages spread over many segments, and the decode kernel, which binds at most 17 segments per pass, needed about one pass per 256 tokens of context per layer instead of one per layer. In production the 9B decoded at 0.40× its fresh speed 3–6 minutes into a busy run and 0.30× after 6 minutes.
+- Now each layer of a request takes its pages in runs of 16 consecutive pages, in as few segments as it can, and requests that start together take different segments. A CPU model of the allocator and the decode planner stays at one pass per layer through busy runs: Qwen 3.6 at 4 requests goes from about 930 passes per step to 10, the 9B under a production-like load from about 430 to 8.
+- Pages that the prefix cache still names are still reused last. Each attention partition is computed as before, so outputs are unchanged.
+
+### Truer words on a paired Mac, the split question names each mode's context, and refusals without a usage block
+
+- On the Mac that follows in a pair, `darkbloom doctor` now reads the pair as `darkbloom status` does, from the leading Mac's answer: it said "loading" for as long as the pair served. That Mac's own view (`status --solo`) says "started" there, since only the leading Mac's part knows whether the pair serves.
+- After `darkbloom cluster leave` on one Mac, the Mac left behind no longer says it leads and the other Mac follows: while the other Mac doesn't answer, `status`, `cluster status`, `doctor` and the cluster screen say "this Mac (…) is paired with the other Mac (…), which isn't answering". The cluster screen of a stopped pair whose other Mac is gone says it is stopped, as `cluster status` does, instead of "degraded: serving on this Mac alone … (its solo server is still loading)" with nothing running.
+- How both Macs split a model: each mode's line now says the context it serves, for example "context 262,144 tokens" for Qwen 3.8 27B's tensor parallel and "context 65,536 tokens, prompts up to 32,768" for its pipeline, and the recommendation puts context before speed ("the longest context here (262,144 tokens; the other serves 65,536)"). A mode that serves less is recommended only when it alone fits now.
+- An image or video sent to a model that doesn't take it, on one Mac's local API or a pair's, is now refused with the error code `unsupported_media` beside the same words.
+- On a Mac in a pair, every flag beside `--solo` is for that start only, and a solo start saves nothing in `[local]`, which holds the pair's settings, but this Mac's one port. A mode flag (`darkbloom start --solo --local`) or the answer to `--choose` serves that start, and `[local] mode`, the pair's answer, is no longer replaced; `--choose` asks no route. `--route`, `--me-first-idle`, `--no-me-first`, or `--me-first` over a pair whose pause is off, would change the pair's setting, so beside `--solo` each is refused before anything starts, naming it. A plain `darkbloom start --local` on one Mac still saves its choice.
+- `darkbloom local` names the file that holds the key it shows (`key file: ~/.darkbloom/local_token`), and on a pair's API also the pair's key file, whose key works there too.
+- A tool set up beside a paired Mac's solo server (the other Mac away) names its models "(this Mac)", not "(your pair)".
+- A terminal `darkbloom start` on a stopped pair says "Press Enter to start it …" only while the other Mac answers. The app's start page on a pair that was started but can't be seen serving from this Mac says Start serving "Makes sure the pair serves …".
+- A script's `darkbloom start` on a pair with no model says only how to choose one, without "starting the pair" first. On a serving pair whose cluster service runs from a terminal session, it again moves the service to its login agent, so the pair comes back after a restart, instead of saying "the pair already serves" and leaving it.
+- A refusal a command makes once it runs now ends with its own words, without the generic "Usage: darkbloom <subcommand> / See 'darkbloom --help' …" block; mistyped flags still get the usage. Ctrl-C on `darkbloom start --local --here` no longer prints the local server's "Server shutdown error: Already closed" and "Waiting on child channel" lines.
+
+### A pair Mac that runs short of memory ends only that request
+
+- When one Mac's memory refuses a request while it runs, both Macs now end that request alone and keep serving, in every pair mode: the pipeline (Qwen, Gemma 4, GLM, MiMo V2.6, GPT-OSS) and tensor parallel (Qwen 3.8 27B, Gemma 4, GLM, MiMo V2.6), one request or several. A local request that isn't streamed gets one Mac's memory 503, "This Mac's memory can't hold this request right now. …". A streamed one gets the tokens already sent, then an error chunk with `code` `request_exceeds_node_budget` and the same words. Darkbloom traffic gets `capacity` with `request_exceeds_node_budget`. Before, the refusing Mac's worker exited, the client got an untyped 500 and the pair stopped serving for about a minute.
+
+### A MiMo slot whose engine stops stepping stops taking requests
+
+- Before, a native MiMo slot whose engine had stopped stepping, with a request queued and nothing running, still reported itself idle for as long as it stayed that way, so the coordinator kept routing requests to it. Each was accepted and timed out without a word.
+- Now an engine whose native work failed and was sealed by the SDK reads `crashed` at once, on any model. A native MiMo slot whose queue holds work with nothing running and no step reads `crashed` after 30 s. Either way the coordinator routes around it, and the provider then retires the MiMo slot, recording "Native MiMo slot failed; confirmed retirement or process restart required" in `darkbloom status`.
+- Other models keep their existing wedge rules: on them a queue that waits with nothing running is usually healthy.
+
+### A media request a Mac can't hold now is refused as `media_memory_unavailable`
+
+- A media request that this Mac's memory can't hold right now is refused as a retryable 503 with the reason `media_memory_unavailable` (it was `capacity_busy`), so Darkbloom sends it to another Mac without counting this Mac's capacity as full.
+
+### Qwen3.5-9B speculates and caches again, with exact MTP acceptance; the 35B Qwen builds keep their penalty
+
+- Since 0.10.5 the catalog `Qwen3.5-9B`, `qwen3.5-35b-a3b` and `qwen3.6-35b-a3b-vl-mtp-mxfp8` builds have given a request that omits `presence_penalty` the model cards' 1.5. The engine drafts no row with a penalty, and these builds' MTP heads keep the prompt history, so through 0.10.11 such a row also staged no resident or SSD prefix checkpoint.
+- The 0.10.12 gate on the signed 0.10.11 decided each build. It ran temperature 1, `top_p` 0.95 and `top_k` 20 over #1652's four loopers and five tool transcripts at 32,768 tokens and nineteen everyday prompts at 8,192, three seeds each.
+  - **`qwen3.5-35b-a3b`:** without the penalty it ran away under typical MTP acceptance (8 of 12 loopers to 32,768, 5 of 19 everyday prompts) and under exact (2 of 12 loopers).
+  - **`Qwen3.5-9B`:** it ran away on 13 of 31 draws under typical acceptance and on none of 31 under exact.
+- **`Qwen3.5-9B`** now has no default presence penalty, and its built-in MTP acceptance is exact. Its requests speculate and stage prefix checkpoints: in the gate the penalty-free body cached 8,192 tokens on its second send, where the penalty body cached none. A `[backend] mtp_acceptance_by_model` or `mtp_acceptance` value still takes precedence.
+- **`qwen3.5-35b-a3b` and `qwen3.6-35b-a3b-vl-mtp-mxfp8`** (one architecture) keep the 1.5, so their requests that omit it still run without MTP; they now save prefix checkpoints (see the entry on Qwen 3.5/3.6 requests that cannot speculate).
+- A request's own `presence_penalty` always wins: `0` on a 35B build speculates under typical acceptance and donates checkpoints, and any nonzero value on the 9B turns MTP off for that request, which still saves prefix checkpoints.
+
+### Qwen 3.5/3.6 requests that cannot speculate save prefix checkpoints again
+
+- From 0.10.5 through 0.10.11 the `Qwen3.5-9B`, `qwen3.5-35b-a3b` and `qwen3.6-35b-a3b-vl-mtp-mxfp8` builds gave a request without a `presence_penalty` the model card's 1.5, and a request with a penalty cannot speculate. Their MTP head keeps each request's prompt history, and a request that could not speculate recorded none, so it saved no SSD or resident prefix checkpoint. A repeated prompt or the next turn of a conversation was prefilled again from the start, and the coordinator saw almost no cache holders for these builds.
+- Such a request now records the head's prompt history and saves the same checkpoints a speculating request saves. That covers the card's penalty (still the 35B builds' default), any other penalty, a `stop` string, logprobs, `logit_bias` and a token constraint. The penalty and its sampling are unchanged, and the request still never speculates.
+- The same holds on Qwen3.8-27B (the same embedded head) and on Nemotron 3.5 Super: a request with a `stop` string, logprobs, a penalty, `logit_bias` or a token constraint now saves prefix checkpoints too. Its prompt runs the prefill a speculating request's prompt runs, and its answer is unchanged.
+- A request that cannot speculate and restores one of these checkpoints answers exactly as without the cache, tokens and logprobs alike. A speculating request restores the same history its own prompt would record.
+- From the SDK pin `libs/mlx-swift-lm` at `505e6bd8` and later, which contain Layr-Labs/mlx-swift-lm#398 (it carries #397).
+
+### Qwen 3.5 MTP prompts project only their last position
+
+- With MTP active, every prompt chunk of a Qwen 3.5-family model (Qwen3.5-9B, Qwen3.5-35B-A3B, Qwen3.6,
+  Qwen3.8-27B and Bonsai 2 9B) went through the 248,320-way output head at every position, though only the last
+  row is used. The pinned SDK (mlx-swift-lm #302) now projects only the last position of the last chunk. On an
+  M3 Ultra, time to first token with MTP fell by about a tenth at 4K–16K prompt tokens on Qwen3.5-9B and
+  Qwen3.5-35B-A3B, with identical temperature-0 outputs. The first token's logits now equal the MTP-off path's
+  exactly. Requests where MTP does not run see no change.
+
+### A refused request tells the coordinator why
+
+- **The `inference_error` frame of a client refusal names its reason:**
+  `refusal_reason`, the closed reason `darkbloom logs` already names (such as
+  `missing_user_query`, `unmatched_tool_result` or `request_exceeds_context`),
+  and `refusal_message`, one fixed sentence for that reason. Neither carries
+  request text. The `error` text the requester gets is unchanged ("Invalid
+  inference request."); today's coordinator ignores both keys until it is
+  updated to record or forward them.
+- **Qwen 3.5/3.6/3.8 tool conversations name the check that refused them:** a
+  conversation with no real user turn is `missing_user_query`, and a `tool`
+  message with no assistant `tool_calls` before it is `unmatched_tool_result`
+  (before, both logged and sent no reason). The same history checks on every
+  model, GPT-OSS's and Gemma 4's included, name theirs, and required or named
+  `tool_choice` with image or video input is `unsupported_forced_tool_choice`.
+
+### Selected models recover their residency automatically
+
+- A model you selected explicitly (`enabled_models`, `preload_models`, the pinned `model` or Autopilot's selection) that the startup preload skipped or failed to load for memory, or left untried at the slot cap, is now retried automatically: after 30 s, backing off to every 10 minutes, at once after any unload or a saved `enabled_models` or Autopilot change, and when a placement hold, an idle threshold, a minimum dwell or a lease ends. Previously nothing retried it, so behind a busy model outside the selection it stayed cold until a restart. A model that loads but is then refused for memory three times (too little left to serve) waits for an unload or such a change instead of the backoff, since each of those retries loads the whole model. The queue lives in memory: after a restart only the startup preload queues a model again.
+- The same applies to a selected model an Autopilot operation unloads to load another model, for example Nemotron Super unloaded to place GLM-5.3-Flash: it waits from the moment it leaves residency, whether the operation then succeeds or fails, and comes back once the placement no longer protects GLM. An operation that only unloads models queues nothing.
+- A retry never evicts a selected model. Before loading it may unload only models outside the selection that no request could load straight back and whose memory makes the room, and only once such a model has no request in flight and no Autopilot hold, pin or per-model lease, has been resident for Autopilot's `min_dwell_seconds`, and has been idle (since its last request or its hold's expiry) for the longer of two minutes and `min_idle_seconds`. A model of the running daemon's selection, even one your saved filter dropped, is never evicted, so a recovery never alternates between two models. It waits while a live Autopilot lease manages residency, a drain runs, an add-on holds the Mac or you use the Mac under me first; one of these that begins while a retry unloads a model stops the retry before its load, and a hold that begins during the load cancels it.
+- `darkbloom status` prints `Retrying <model> when memory frees; next check in …` (or `next check after an unload or a configuration change`) with what blocked the last check, and `Configuration change needs a restart to apply: enabled_models adds/removes …` when the saved filter differs from the one the running selection applies: the filter the daemon started with, or the one the last `darkbloom switch` saved and applied, so a committed switch no longer asks for a restart.
+- `darkbloom stop`, `restart` and `start` no longer need `--force` when a model's native retirement never finishes: shutdown waits at most 15 s for each model's unload, so that model no longer keeps the process from exiting.
+- Policy (the owner kept it): ten minutes after the placement's hold ends or the selected model began waiting, whichever is later, and not before the placed model's minimum dwell or per-model lease ends, an adopted model outside the selection that keeps a waiting selected model out only by serving Darkbloom requests is released: it takes no new requests, finishes those in flight and is evicted. Holds, selected models, pins and a model one of your local requests is using are never released.
+
+### `darkbloom start` serves Both without a question; `darkbloom local` serves only you
+
+- `darkbloom start` no longer asks how this Mac serves, in a terminal or not. On a Mac with no choice saved it
+  serves the Darkbloom network and this Mac's local API, and Darkbloom keeps serving while you use the Mac; one
+  line says so (``Serving Darkbloom and your local API at http://127.0.0.1:8001/v1 (`darkbloom local` for local
+  only).``) and the choice is saved (`[local] mode = "both"`, `me_first = false`). With an account key saved, a
+  request this Mac can't take goes to your other Macs, free. Scripts and the desktop app's Start without its local
+  API take the same default where nothing is saved (they served the Darkbloom network alone before).
+- A saved choice is never changed: starts, `restart`, `update`, login and the watchdog serve it as saved, a pause
+  saved by the earlier question included. `--local`, `--network`, `--me-first`, `--no-me-first`, `--me-first-idle`
+  and `--local-endpoint` work as before. `--choose` asks nothing and says which commands to use.
+- `darkbloom local` starts Only me in the background where nothing serves, then prints the address and key. Where
+  Darkbloom serves, it prints them (or that there is no local API) and, only in a terminal, asks `Switch this Mac
+  to local only (stops serving Darkbloom)? [y/N]`; without a terminal it never switches. Where Darkbloom is stopped
+  but saved (network or Both), it says so and asks the same in a terminal only; without one it changes nothing
+  (exit 1). On a Mac in a two-Mac cluster it points to `darkbloom cluster local`. `--model <id>` names Only me's
+  models; `--json` only reads.
+- A plain `start` no longer reaches the Autopilot question, which only a Darkbloom network start asks: use
+  `--network` or `darkbloom autopilot enable`. The idle-memory question is skipped when standard output isn't a
+  terminal, as it already was for standard input.
+
+### `darkbloom status` shows the answers in progress
+
+- Under the serving block, `darkbloom status` lists each answer the Mac is
+  writing: the model, how long it has run, output tokens so far, its current
+  tokens per second and a short hash of its request (never the prompt, the
+  answer or the request ID), then "Credits post when a paid answer finishes;
+  requests to your own machine are free." A Mac writing two long answers no
+  longer looks hung while its served and token counters wait for them to
+  finish. The engine's own calibration and warmup probes are not listed. On a
+  two-Mac cluster the leading Mac lists the pair's answers under the pair.
+  `darkbloom status --json` prints the same list as JSON.
+- The daemon reads them from counters its engines already keep, once per
+  state-file write (about every 2 s), into `running_requests` in its state
+  file. Nemotron Super's answers are not listed yet.
+
+### `darkbloom status` says which requests that ended early are paid
+
+- The line under `Requests served` said that every request that ended early "may be unpaid". Many are paid: when the requester leaves mid-answer, the coordinator pays for the prompt and the output your Mac had already sent. `status` now lists those requests by what stopped them and whether they are paid, for example:
+  ```
+    7 of them ended early:
+      5 paid for the work done: the requester left mid-answer
+      1 unpaid: another Mac answered first
+      1 unpaid: the connection to the network dropped
+  ```
+  Your Mac knows itself when its connection dropped or when it stopped a request (a drain or an add-on hold). The other causes come with the coordinator's cancel from the coordinator update that sends them; until then those requests share one note: paid for the work done if the requester left mid-answer, unpaid if another Mac answered first or this Mac started too late.
+- With the coordinator update that sends the cause, a request whose answer had already finished when the requester left is no longer counted as ended early: it is paid as delivered. About 1 in 100 of the requests counted before were such answers. An unpaid stop still counts, finished answer or not.
+- The count now takes a line per cause, so a script that reads `status` line by line sees more lines.
+
+### `darkbloom status` says whether fan control is on
+
+- Fan control is opt-in (`sudo darkbloom fan enable`), and only `darkbloom fan status` said it was off, so a Mac with supported fans could serve hot under macOS automatic fan speed without anything in the normal flow saying so. `darkbloom status` now has a `Fan control (experimental)` line from the same report: the helper's mode when it runs; `off, macOS automatic` with the hottest GPU sensor and the enable command on supported hardware without the helper; and otherwise not answering, installed but not running (after `fan disable`, with no advice to enable), unsupported or unavailable. Fan control stays opt-in; nothing enables it.
+
+### Nemotron 3.5 Super answers that repeat themselves verbatim stop early too
+
+- Super's text requests now get the loop guard the other models have: an answer that starts repeating one block word for word stops about 2,000 repeated tokens in, as `finish_reason: "length"` with its usage, and is paid as usual. Super's requests take the owner's own route, which passed no guard before.
+- The same rules apply: never within the first 4,096 tokens; never for a JSON answer, a forced tool call, a tool call once it starts, or a request with images or video. `DARKBLOOM_LOOP_GUARD=0` turns it off for Super too.
+
+### Opt-in: answer before the checkpoint write finishes
+
+- A request that donates a complete SSD checkpoint ends its response only
+  after the checkpoint is durable, so the client waits for the write.
+  `DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION=1` (default off)
+  ends an unseeded donor's response as soon as the answer is complete. The
+  provider still holds the request's rows, KV reservation and service
+  allowance until the write settles, so other requests see no added
+  capacity. A follow-up that arrives before the write finishes can't use
+  that checkpoint yet: it restores an earlier one, if any, and prefills the
+  rest. Seeded requests keep the old order.
+- For an installed provider, set it in the shell for `darkbloom start`,
+  which writes it into the provider's launchd job; an ordinary `darkbloom
+  restart` keeps the saved value. Each such request that retires at least
+  1 ms after its answer is logged with that time, which for a donor is how
+  long its write held its capacity after the answer (`Early terminal: request
+  … retired N ms after its answer`). The 1 ms floor is a timing heuristic: on
+  a busy provider a request that wrote no checkpoint can be logged too. The
+  line is only in the provider log.
+
+### `tool_choice: auto` returns the model's tool calls as generated
+
+- With `tool_choice: auto` (or no `tool_choice`) and no function declared `strict: true`, the provider now returns the model's calls the way OpenAI and vLLM do. A call to a function the request did not declare, and arguments that do not match the declared schema, reach the client unchanged. When a streamed call's arguments are not valid JSON, the text already sent stays as the raw `arguments` string, the call is closed and the response finishes with `tool_calls`. Before, each of these failed the request with a 422 `tool_noncompliance` after its reasoning had streamed, so the client saw a 200 followed by an error and the coordinator could not send it elsewhere. This mostly affected GPT-OSS agent turns.
+- A function declared `strict: true` keeps the whole request validated, as do `required`, named and `none` tool choices, a request that declares no tools, and `parallel_tool_calls: false`. A call read from a frame that `max_tokens` cut off is still validated, since it may be missing arguments.
+- On a Mac's own API (`--local`) and for GLM-5.3-Flash, a strict request no longer refuses a valid value for a property that declares no type: the provider fills in `type: "string"` for such properties so the chat templates can render them, and it used to enforce that type too; strict calls are now checked against the schema as the caller sent it. Through Darkbloom's coordinator, strict requests to every other model still refuse a non-string value there, because the coordinator itself writes `type: "string"` into typeless properties before the request reaches the Mac.
+- A `tool_noncompliance` error frame now carries `tool_check`: which check failed (`undeclared_name`, `schema`, `malformed`, `diverged`, `unterminated`, `parallel`, `response_format`, `forced_choice`, `native_output` or `other`). The provider's local failure log line shows it too. It names the check only, never the tool or its arguments.
+
+### A restart you ask for after an update no longer rolls the update back
+
+- Until a new release has run for 10 minutes, three failed starts bring back the previous release and quarantine the new one. A `darkbloom restart` (or `stop` and then `start`) in those 10 minutes could count as one: the watchdog, started again by the command, looked at the provider the command had just replaced, saw no heartbeat from it, and counted a failed start, so a Mac restarted three times was rolled back and its release quarantined though nothing had failed. Now a provider that was asked to stop (by `darkbloom stop` or `restart`, or by its own restart into an update) records that before it exits, and the watchdog times the next provider's start from when that provider started: the restart is never a failed start. After a crash, a hang, a reboot, a `kill` or any other stop, whatever starts the provider again, its start is still timed from the update's launch, as before, so a release that crashes or hangs the Mac is still rolled back. A `--force` stop that has to kill the provider before it records its stop is timed from the update's launch too. A provider that sends no heartbeat in its first 5 minutes (longer with a raised `startup_preload_timeout_secs`) still counts too.
+- A new release is promoted only once one provider process has served it for 10 minutes. When something restarts the provider more often (a script, a cron job or a login item), the watchdog now says so in `~/.darkbloom/watchdog.log` after 5 restarts, then after 10, 20, 40 and so on.
+- On a `darkbloom cluster` Mac, a clean stop of the cluster service that its supervisor didn't ask for (`darkbloom cluster` replacing a service started from a terminal, a `kill`) no longer counts as a failed start either. A crash, an exit with an error, a service that stops beating and a release that fails its start check still do.
+
+### The watchdog brings back a provider job launchd lost
+
+- When launchd dropped the provider's job while it was enabled (booted out, not stopped with `darkbloom stop`), the watchdog treated it as stopped and nothing restarted it until someone ran `darkbloom start` (#1104). It now restarts it after the usual grace, when `auto_restart` is on, the installed job is the provider's own and enabled, and no provider process is still alive, under the same lock as `stop` and updates. A job you stopped stays stopped, and nothing changes for a Mac whose pair runs here or for a pair member's job.
+- A pending update is handled as on a crash: a confirmed failed start counts once, the verified rollback and its retry backoff apply, and no update is downloaded on this path. An uncertain `launchctl` result keeps the crash-loop protection without counting a restart.
+
+## v0.10.11
+
+Published 2026-11-09 ([release](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.11)).
+
+### Upgrade and rollout notes
+
+- 0.10.11 is a large release: **use your Mac yourself, first** (local-first), faster two-Mac pairs, longer answers on one Mac, and many pair fixes. The toolchain (Xcode 27.2, macOS 27.2 SDK) is 0.10.10's; `libs/mlx` and `libs/mlx-swift` are unchanged, `libs/mlx-swift-lm` moves (Swift model code only).
+- **Behaviour changes to read first:**
+  - **Macs serving with `--local-endpoint`, including the desktop app's "Alongside the network", now pause Darkbloom while you use their local API**, and take Darkbloom requests again 2 minutes after your last one (`me_first_idle_minutes`, 1 to 120). To keep sharing the Mac as before, add `me_first = false` under `[local]` in `~/.config/darkbloom/provider.toml`, then run `darkbloom restart`.
+  - **A pair paused for its owner keeps its base reward** on the coordinator that ships with 0.10.11 (darkbloom-platform#709 onwards), as a single Mac paused for you does; both stay connected and take no Darkbloom requests while paused. On coordinators before #709, both Macs of a paused pair lose it for the pause plus the idle minutes.
+  - **An unknown `reasoning_effort` is now refused** with a typed 400 (`invalid_reasoning_effort`, the field in `param`, the accepted names) on every model that reasons, including Qwen 3.5/3.6, Bonsai 2, Gemma 4, GPT-OSS and Nemotron Lightning, which used to accept it. Every standard value is accepted everywhere: `none`, `minimal`, `low`, `medium`, `high`, `xhigh` and `max`, each mapped to the model's nearest level. GPT-OSS reasons at every level, through OpenRouter too, once the Mac runs 0.10.11; a Mac still on 0.10.10 renders `high` as `medium` until it updates.
+  - **Cut, don't refuse:** on one Mac, a `max_tokens` larger than the prompt leaves is cut to the model's window, and the answer ends with `finish_reason: length` if it gets there. A request with no `max_tokens` may now write up to 32,768 tokens (it stopped at 8,192, or 4,096 on MiMo V2.6, Nemotron Super and GLM-5.3-Flash). Network requests change only where the coordinator undercounts the prompt: **OpenRouter requests that the coordinator undercounts on GLM-5.3-Flash, MiMo V2.6 and Nemotron Super are now served, cut to the window, instead of refused.**
+  - **A request this Mac's memory can't hold gets a 503 before any SSE header**, streamed or not, with a plain message ("This Mac's memory can't hold this request right now. Lower max_tokens or shorten the prompt …"), instead of HTTP 200 followed by an error.
+  - **One local API port and one key per Mac.** Every way of serving locally on a Mac uses the same saved port, so your tools' address never moves. A Mac updated from 0.10.10 whose local API serves on 8000 keeps 8000; a Mac with no local API takes the first free port from 8001. The key stays in `~/.darkbloom/local_token`.
+- **Use your Mac yourself, first.**
+  - The first `darkbloom start` in a terminal asks how this Mac serves: **Only me, on this Mac**, **Darkbloom network**, or **Both, me first** (pre-selected). The answer is saved; `darkbloom start --choose` asks again. **Starts without a terminal (the login service, the app, scripts) never ask:** without a saved choice they keep today's behaviour exactly.
+  - **Only me now runs as a background service**, like the other choices: it starts at login, restarts after a crash, updates itself, and keeps serving after you close Terminal. The app's "Local only" saves Only me, and "Alongside the network" saves Both, me first.
+  - **Me first gives way:** while you use the Mac, Darkbloom requests still queued on it go back to the network instead of making yours wait; requests already running finish.
+  - **`darkbloom --opencode` and `darkbloom --hermes`** (also `darkbloom start --opencode` / `--hermes`) set OpenCode 2 or Hermes Agent up to use your Mac, the way `ollama launch` does: the tool's config (never the key), a backup first, and a one-line undo. **Hermes needs v0.20.2 or later.** The installer now ends with `darkbloom --opencode` as the next command.
+  - **Routing: this Mac first, then your Macs.** `darkbloom route this-mac`, `my-macs` or `my-macs-first` saves where your requests go when this Mac can't take them. Your other Macs are free; **the paid Darkbloom network is used only if you opt in** with `my-macs-first` and an account key saved by `darkbloom route key`. Answers say who served them.
+  - **Pairs:** `darkbloom cluster` asks the same three questions for a pair. With **Both, me first**, every Mac of the pair has its own local address, and the whole pair pauses Darkbloom while you use it.
+  - **`darkbloom cluster leave`** leaves a pair in one command, from either Mac.
+  - **`darkbloom doctor`** opens with how this Mac serves you: the local API's address and port, whether it answers, and whether OpenCode and Hermes point at it. On a Mac set to Only me, it skips the checks Darkbloom serving needs.
+  - `darkbloom status` says in one line how the Mac or pair serves and whether Darkbloom is paused for you. No screen shows the local key or a speed.
+- **Pairs: faster, and fewer surprises.**
+  - Qwen 3.8 27B pairs decode with their speculative assistant through Darkbloom, and with the assistant they now prefill as fast as pairs without it. A Qwen pair takes `max_tokens` up to 65,536 and tells Darkbloom the requests it can serve, so larger ones go to single Macs instead of to a refusal. Qwen and Gemma 4 tensor-parallel decode and prefill are faster with unchanged output (Gemma 4 prefill nearly twice as fast).
+  - **Gemma 4 pairs:** in tensor parallel a pair serves the model's whole context (262,144 tokens: prompts up to 262,143, answers up to 32,768), with one Mac's `max_tokens` cut, its `context_length_exceeded` words and the memory 503 before any header (#1923, proven on real Macs at 64K and 128K and a full-window answer). In pipeline it serves 65,536 with prompts up to 32,768, as every model's pipeline does, and refuses a longer request at once with a typed 400 (`prompt_too_long` or `context_length_exceeded`); an oversized `max_tokens` is cut (#1930, proven on real Macs). Pipeline's whole context waits for 0.10.12.
+  - Pair fixes: a pair comes back by itself after an update; a memory re-plan keeps a stopped pair stopped; the Mac that follows no longer says a serving pair hasn't served; on a paired Mac `darkbloom start` starts the pair and `start --solo` serves the Mac alone; `darkbloom restart` on a stopped pair starts nothing; the app on a paired Mac offers **Start serving**; Apple's check during a start reads as progress, and both Macs show the pause.
+  - DevNet and production no longer share a pair on a Mac with both apps; production wins the GPU.
+- **Other fixes:** a video (and a MiMo V2.6 audio track) whose reader fails once is read again instead of refused, and a second hardware fault is a retryable 503; a Nemotron Super video that decodes too slowly on one Mac is retried elsewhere; chunked file reads and update hashes no longer hold everything in memory; the update check asks again instead of waiting a minute; a pair's local API ends a failed stream with the single-Mac error chunk; Gemma 4 thinks when asked to, and GPT-OSS reasons at the nearest of its three levels.
+- **Known issues in 0.10.11, fixed in 0.10.12 (none blocks this release):**
+  - When a pair's leading Mac is away, the first local request to the other Mac gets a 503 without an error code, and the later typed 503 doesn't mention `darkbloom start --solo`.
+  - After `darkbloom cluster leave` on the leading Mac, the other Mac's status and screen can say things that are no longer true until it leaves too.
+  - On the Mac that follows in a pair, `darkbloom doctor` can say the pair is "loading" while it serves.
+  - A Gemma 4 pair refuses an image with "Media input is not supported." but without an error code.
+  - An unknown `reasoning_effort` sent through the Darkbloom network comes back as an untyped error (the coordinator's, not the Mac's).
+  - A pair, in tensor parallel or pipeline mode, can restart once (about 1 minute; requests in flight fail) if one of its Macs runs out of memory partway through a long request. It is rare and has existed since October. Gemma's pipeline is now capped (#1930), which makes it rarer there; Gemma tensor parallel's whole context makes it possible on long Gemma requests, as it already was on Qwen tensor parallel.
+  - `darkbloom start --solo --local` saves Only me as this Mac's choice, so later starts without a flag serve Only me too.
+  - After an update, the pair setup's question about how a Gemma 4 pair splits the model can pre-select Pipeline ("faster here") without saying that Pipeline serves 65,536 tokens and tensor parallel 262,144.
+- Pair owners: both Macs of a pair must run the same version; a pair on 0.10.10 updates itself at its slot, or at once with `darkbloom update` on each Mac. `darkbloom update --rollback` puts back 0.10.10.
+- Pairs still on 0.10.9 stop serving through Darkbloom once 0.10.11 registers, until they update (0.10.11 and 0.10.10 hold 24 pair approvals each, the coordinator keeps 64).
+- The registration keeps 0.10.10's fields; its cluster runtime facts now carry each mode's request limits and the Qwen assistant's evidence, and the leader's heartbeat adds `request_limits`. A Mac or pair paused for its owner reports `draining` with `busy_reason: "owner"`, which the coordinator treats as a plain drain.
+- The 66 entries below are the pending fragments rendered verbatim; CI-only entries change no provider behaviour.
+
+### The app on a paired Mac offers Start serving, and its lines say what happened
+
+- On a Mac in a two-Mac pair, the app's Autopilot was a dead end. Onboarding's **Start serving with Autopilot** first downloaded a model, then showed three lines meant for the command line, and **Retry** showed them again. Autopilot chooses the models of one Mac, so on a paired Mac it is now refused before anything downloads, in words the app shows: the pair's state and what works there, for example "This Mac is in a pair, which is stopped; Autopilot isn't available for pairs yet. Use Start serving." The Autopilot page's model refresh is refused the same way.
+- The app now offers **Start serving** on a paired Mac, which starts the pair. Its onboarding says the pair's state and what Start serving does there, for example "This Mac is in a pair, which is stopped. Start serving starts it with <model>." ("This Mac serves in a pair …" only while it serves), and it starts the pair without naming a model or a local API of its own. When the pair has no model yet, the page offers no Start serving: it says to choose one with “darkbloom cluster” in Terminal on the Mac that leads the pair. The Mac tells the app it is in a pair, so even an app from before this offers the plain start there.
+- After the app's Start on a paired Mac, its last lines say what happened. When the app named another model, the pair "serves" its own model, or "was asked to start" with it and "isn't serving" when it doesn't serve yet. Before, it said "serves in a pair: started the pair" in both cases, and also for a pair that was already running. When the app asked for a local API that the pair doesn't give this Mac, it now says "No local API was added on this Mac", with where to change how the pair serves.
+- When the app's runtime refuses an action, the app's notice now shows only the refusal's own words, without "Error invoking remote method …" in front of them.
+- When a pair's other Mac isn't answering and this Mac's part was given up after 15 minutes, a start's `Next:` line and `cluster status --json`'s `next` now also name `darkbloom start --solo` to serve this Mac alone.
+
+### A MiMo V2.6 video whose audio reader fails once is decoded again, not refused
+
+- When the reader of the audio track (LPCM or AAC) of a MiMo V2.6 video fails after the metadata checks passed, the provider reads the track once more with a new reader over the same bytes. A valid clip that met one audio reader failure is now served with the same samples. Before, the provider refused it as `invalid_media` (400), and the coordinator did not send it to another provider.
+- When the audio reader fails again with a decoder, hardware or interruption fault, the provider refuses the request as a retryable 503, and the coordinator can send it to another provider. Any other second failure is still the deterministic `invalid_media` (400).
+- Each failed audio reader pass logs a WARN `engine_health` event `audio_reader_failed` with the reader status and the domain and code of its errors. It carries no media or prompt content.
+
+### Chunked file reads release each chunk
+
+- Before, a file read in chunks kept every chunk in memory until the thread that read it went idle. On macOS each chunk read returns an autoreleased buffer, and a Swift task or a Dispatch block does not release these buffers between chunks. Thus memory grew with the size of the file.
+- Now each chunk read releases its buffer before the next read. This applies to the model manifest hash in `darkbloom-publish`, the speculative-decoding store's artifact hash, the binary and file hashes, the metallib snapshot copy, the streamed SSD KV cache read, the cluster worker hash, the MTP benchmark weight hash and the App Attest worker's executable hash. It also applies to the output readers of desktop commands and sandbox commands.
+- The output readers of desktop commands and sandbox commands keep only the last 32 KiB of output. Before, the buffer that held these 32 KiB also kept all the earlier output. The stderr tail that the provider keeps for a failed helper process had the same problem, and it is fixed the same way. Its stderr reads also release each buffer.
+- The digests and the copied bytes do not change.
+
+### Provider CI: build once, test on small Macs
+
+- Each lane builds its debug test products once, on a 12 vCPU Blacksmith Mac: Build cluster test products and Build provider test products. The test jobs download the products and run them with `swift test --skip-build`; they compile no package. A test job refuses products of another commit or of another Swift, Xcode or SDK version, and warns when only their builds differ.
+- The jobs that build or run the products work at one fixed path, `/private/tmp/dinf`, because SwiftPM's products hold absolute paths and Blacksmith and Darkbloom check out to different paths.
+- The cluster tests start as soon as the cluster products are up. The worker capability and prefill schedule checks, which compile a release build, run in Cluster Release Build Checks on a 12 vCPU Blacksmith Mac. The `Provider Tests` gate requires it.
+- Refresh build caches is gone: a push whose tree a pull request run already tested runs the build jobs of the components it changed, without an upload.
+- Cluster Runtime Tests runs in 3 shards: the Gemma 4 base suites (592 of the base tests' 970 s) run in their own process on shard 3. Cluster Focused Checks runs in 2 shards: the runner scripts, and the stage metadata, provisioning and onboarding runners.
+- The provider shard weights are measured again, so the last selection no longer runs every suite the old weights missed. The last shard's audit warns when a serial suite has no weight.
+- Only the 7 blocking test shards ask Darkbloom for a Mac; the build jobs, Cluster Release Build Checks and Cluster GPU Tests use Blacksmith directly.
+- Every macOS job samples its memory and CPU use and prints the peaks; the samples upload as `resource-samples-*`. The sampler never fails a job. The products hand-off prints the archive size and the upload and download times.
+
+### Provider CI: the prompt parity fixtures come from a verified cache
+
+- Provider shard 1 restores the prompt artifacts that both Prompt Parity steps read (tokenizers, templates and configs of the 7 v1 contracts and the Nemotron contract, 104 MB) from an Actions cache keyed by the hash of their manifests. Pushes to `dev` and `master` save it after both parity steps pass; pull requests restore it and save nothing.
+- `scripts/prepare-prompt-fixtures.py --download-cache` (`PROMPT_PARITY_DOWNLOAD_CACHE` in both parity scripts) uses a cache entry only if it is a regular file with the pinned size and SHA-256. Any other entry is downloaded and replaced. A cache that cannot store an entry never fails the run. Contracts that share a tokenizer download it once.
+- A contract's download deadline is now 120 s plus its missing bytes at 128 KiB/s, at most 900 s, instead of a flat 120 s. The 17 MB Nemotron contract that timed out at under 142 KB/s in run 42330647893 now has 256 s.
+- For each contract the script prints how many artifacts came from the cache and how many bytes it downloaded, and how long that took.
+
+### Provider CI: the diagnostics and placement flow runners compile, and CI runs them
+
+- `provider-swift/Tests/ClusterDiagnosticsChecks/run.sh` and `provider-swift/Tests/ClusterPlacementChecks/run-flow.sh`
+  compile again. Since 2026-11-04 both stopped at `cannot find 'GLM5NextGPULimitEligibility' in scope`, and CI ran
+  neither, so nothing noticed.
+- Shard 1 of Cluster Focused Checks now runs both, after the pairing runner, which adds about a minute (49 s and 18 s
+  on CI). A change that breaks either fails that shard.
+- A change to `GLM5NextGPULimitEligibility.swift` alone now runs the cluster jobs too, as the other provider files
+  that the cluster runners compile do: the console, diagnostics and placement flow runners compile it.
+
+### CI runs every test of `dev` every hour
+
+- `.github/workflows/ci-dev-hourly.yml` runs from `master`'s schedule at minute 7 of every hour. It dispatches CI (dev) on `dev`, unless a dispatched run is still queued or in progress.
+- A dispatched CI (dev) run selects every component and never skips a tested tree: every provider and cluster shard, the focused and release build checks and the non-blocking GPU shards. It uses the lanes, sizes and caches of a push to `dev`, and saves caches as that push does, so the 1.87 GB MiMo audio codec stays cached on `dev`. Dispatched runs share one concurrency group: a new dispatch never cancels a running one.
+- When a job of a dispatched run fails, `Report hourly failures` comments on the open issue `Hourly full dev CI failures` (and opens it when none is open) with the run, the commit and the failed jobs.
+
+### Provider CI: per-job macOS sizes for Darkbloom Sandboxes
+
+- Each macOS CI lane can ask the Darkbloom plane for a size, `<vCPUs>x<GiB>`. The route job checks each size against this grammar and fails on a bad value before it sends a request.
+- Sizes are sent only when the repository variable `DARKBLOOM_JOB_SHAPES` is exactly `on`. While it is off, the route request is byte for byte the request without sizes, and every job keeps the runner it has today.
+- Each size comes from the job's sampled memory: the smallest signed size that holds 1.25 times its used memory (app + wired + compressed) without making the job more than 5% slower. While sizes are on, the 7 blocking test jobs ask for 4x16 (provider shard 1, cluster runtime shard 1, both Cluster Focused Checks shards), 4x24 (provider shard 2, cluster runtime shard 3) or 12x32 (cluster runtime shard 2, 29.3 GiB). Build cluster test products and Cluster Release Build Checks ask for 8x16 and Build provider test products for 12x32, on the `required` lanes `build-cluster`, `build-provider` and `cluster-release-checks`. A run that tests every component then asks for 10 macOS jobs. While sizes are off, the `required` jobs use `blacksmith-12vcpu-macos-27` without asking.
+- The 2 Cluster GPU Tests shards are not routed. Shard 2 uses 42 GiB, which no signed size holds, so both shards run on `blacksmith-12vcpu-macos-27`.
+- A sized lane uses a grant only when its labels end in the qualified label, such as `darkbloom-macos-arm64-4x24`. Otherwise it keeps `blacksmith-12vcpu-macos-27`.
+- For each lane, the route job's log and summary show the size asked, the runner, and the decision with its reason, such as `shape_not_signed`, `unavailable`, `unsupported_runner_class`, `image_not_available` or `lane_not_enabled`.
+- The `DARKBLOOM_MACOS_LANES` cap still keeps the critical-path test lanes first. The `required` lanes come after them.
+
+### Provider CI: smaller test products hand-off
+
+- The test products archive leaves out what no test step reads: every `.dSYM` bundle (the test bundle's own included), the host tools (the `-tool` macro and `Modules-tool`) and SwiftPM's bare clones in `.build/repositories`. The coverage report reads the coverage maps in the binaries, not DWARF, so it does not change. A stalled-test sample now names each frame's function and offset, but not its file and line.
+- zstd packs the archive at level 9 with a 2 GiB long-distance window, which stores repeated content such as the test bundle's metallib copies once. On the provider products of run 42318853015 the archive goes from 1,065 to 265 MiB. Unpacking needs the same window and about 2 GiB of memory.
+- The pack step also prints the size of the archived files.
+
+### Provider CI: the real-geometry rows check runs in two halves
+
+- Cluster GPU Tests shard 1 ran one test, `rowsEqualTheirSoloStepsAndWindowPositionsAtRealWidths`, for 18 to 19 min. It ended at 22 to 23 min of every run, after the `Provider Tests` gate, so it set the run's wall time.
+- `QwenTensorParallelRowsCheck.run` takes the halves of the check to run (`parts`, default both). The rows half checks the rows of 100 to 4,090 tokens: alone on a one- and an eight-lane host, beside rows that join and leave, while an assistant observes the cohort, and at every verify-window position. The segments half checks the rows of 4,000 to 4,600 tokens across KV segments. Each half compares only against the solo runs it makes itself and keeps its refusals: non-finite logits, reference logits that are not all distinct, a blind comparison (rows half), and rows within one KV segment (segments half). No row, width, step or window position is dropped.
+- `QwenTensorParallelRealGeometryRowsTests` runs each half as a test: `rowsEqualTheirSoloStepsAndWindowPositionsAtRealWidths` (rows) and the new `rowsAcrossKVSegmentsEqualTheirSoloStepsAtRealWidths` (segments). Each test checks its half's digest count on both ranks (200 and 136, the whole check's 336). `darkbloom-cluster-tp-check qwen-rows run` still runs the whole check.
+- Cluster GPU Tests has 3 shards. Shard 1 runs the rows half alone, the new shard 3 runs the segments half alone, and shard 2 does not change. All three run on `blacksmith-12vcpu-macos-27` and are not routed. A run that tests the cluster uses one more macOS job.
+
+### Provider CI: shorter cluster runtime shards
+
+- Cluster Runtime Tests runs in 5 shards instead of 3. The batch-session suite (672 s in one process) runs in two processes: its warm and SSD prefix tier tests in `base-batch-session-prefix-tiers`, its other tests in `base-batch-session`. Each runs beside one half of the Qwen GPU chain, on shards 2 and 3. The Gemma 4 base suites (610 s) run in two processes, each alone on its own shard: `Gemma4TensorParallelTests` on shard 4 and the other Gemma suites on shard 5. Every test still runs in exactly one selection.
+- The two new shards ask for no new lane: shards 2 and 3 share the lane `test-cluster-2`, and shards 4 and 5 share `test-cluster-3`, each requested for 2 jobs. A run that tests every component asks Darkbloom for 9 macOS jobs while job sizes are off (7 before).
+- The cluster plan audit checks that each Gemma suite runs whole in exactly one base selection of Gemma suites, and that each test of a split suite runs in exactly one of its selections.
+- The CI plan checks run in their own job, Check the CI plans, beside the test jobs. The `Provider Tests` gate requires that job and no longer runs the checks after the last test job.
+
+### Provider updates hash bundles in bounded memory; CI samples memory by class
+
+- An install, a verify or a rollback of the provider no longer keeps every byte it hashes in memory. Each 1 MiB read of the bundle hash and the file hash now releases its buffer before the next read. Before, a rollback test of the debug CLI held 15 GiB until its test process ended. The hashes are unchanged.
+- The CI resource sampler now records memory by class: app (with Metal buffers), wired, file cache, compressed and swap. It also records the physical footprint of each process, which includes Metal memory, the test selection each large process runs, and busy vCPUs from the host's CPU ticks. Each job's report and `summary.json` show the peaks, the three largest processes and the time the job would take on 4 and 8 vCPUs. The sampler stays report-only.
+
+### DevNet and production no longer share a pair
+
+- On a Mac with both the production app (`darkbloom`) and the DevNet app (`darkbloom-dev`), each app now keeps its own pairing, cluster setup, logs, cluster service and login job, each in its own folder (`~/.darkbloom` and `~/.darkbloom-dev`), and each app's pair uses its own ports on the cable. The DevNet app no longer reads the production app's pair, restarts its cluster service or removes its login job: `darkbloom-dev cluster pair --forget`, `darkbloom-dev cluster stop --service` and `darkbloom-dev uninstall` act on the DevNet app's pair only, and the production app's commands on its own only. This ends the 0.10.9 known limitation about the two apps on one Mac.
+- Only one app's pair runs on a Mac at a time. Both apps take one device lock (`~/Library/Application Support/io.darkbloom.cluster/native-device.lock`, an empty file in a folder neither app owns) while a pair's part, a member's preparation or a GLM model check uses the GPU. The other app's pair then waits: its status says which app holds the Mac's GPU, and it starts by itself within seconds of that app's pair stopping. A wait never counts as a failing pair, so production never falls back to serving on its local API because DevNet held the Mac. A DevNet pair can no longer push a production pair out of memory.
+- Production wins on a Mac both apps serve from. Production 0.10.10 and earlier take no lock, so the DevNet app also waits while a production serving process runs on that Mac (`darkbloom start`, a pair's part or its worker, read from the process list) or production's cluster service says its pair serves there (its published status, read only), and a running DevNet pair releases the GPU at once and stops once production starts serving there (say both start at login). So a waiting DevNet pair never takes the GPU while production's pair restarts, for example for its update. If production's status was written in the last two minutes but can't be read, the DevNet app waits too and says why. The DevNet app's single-Mac serving loads no model while production serves on that Mac either, so its requests go to other providers meanwhile. A cluster member run with the developer route `--always-on` waits for the other app's hold on the GPU without spending its restart budget. DevNet never tells you to stop production: production serves there, and its owner decides.
+- Providers with the production app alone see no other change: its files, its login job and its ports are the same as before, and its pair takes the device lock, which nothing else holds there.
+- After this update the DevNet app starts unpaired, even on a Mac where it had paired, and copies nothing from the production app: update the DevNet app on both Macs, then run `darkbloom-dev cluster` on both to pair it again. If the DevNet app was the last to pair on a Mac before this update, the production app's `darkbloom cluster` may say the Secure Enclave key changed: choose **Pair again** there.
+- The two apps still share the models and the cable port setup (one cable, one network setup). Uninstalling one app keeps the cable port setup while the other app is installed, so it asks for no password, and removes only its own pairing, cluster setup and cluster service; the other app's uninstall undoes the cable port setup later. `cluster link --remove` in one app now names the other app when that app still uses the port and asks first, even with `--yes`; without a terminal it changes nothing.
+- A model copy between the two Macs stages in the shared model store under its own app's name (production's `.darkbloom-incoming-…` as before, DevNet's `.darkbloom-incoming-dev-…`). A copy short of disk space frees only its own app's abandoned copies, never the other app's copy under way.
+
+### A pair's leader can take its owner's local requests beside Darkbloom
+
+- The member that hosts a pair's slot can now run the local OpenAI-compatible API while the pair serves through Darkbloom. Local and Darkbloom requests share the pair's one engine and its lanes: no second process or engine, and no extra copy of the stream. `darkbloom cluster` starts it when you choose **Both, me first** for the pair.
+- Only that member runs it, and always with a key. Any other member still refuses a local API.
+- While the pair isn't serving (it is forming, re-forming or stopped), a local request gets 503, as `darkbloom cluster local` answers, instead of a 500. A model the pair doesn't serve gets 404.
+- When every lane is busy, a local request waits its turn in a bounded queue, as on `darkbloom cluster local` (`DARKBLOOM_CLUSTER_QUEUE_WAITING`, default 64): 429 when the queue is full, 503 when it waited too long. A waiting request is woken when a lane frees and is never polled; Darkbloom requests never wait for it.
+- A local request that arrives while the pair runs its first test request waits until the pair opens, and gets 503 if the pair stops instead.
+
+### `darkbloom cluster leave`: leave a pair in one command
+
+- `darkbloom cluster leave`, on either Mac of a pair, stops this Mac's part (the pair stops on both Macs while the other Mac answers, then this Mac's cluster service leaves login) and forgets this Mac's pairing, the same steps `darkbloom uninstall`, **Start over** and `darkbloom cluster pair --forget` take. Leaving no longer takes four steps: `cluster pair --status`, reading a pin, `cluster pair --forget <pin>`, then `start`.
+- In a terminal it says what leaving does and asks `Leave the pair? [y/N]` (No by default); without a terminal it needs `--yes`. A part that doesn't stop leaves the Mac paired, and the command says so.
+- It ends with this Mac's next steps (`darkbloom start` serves it alone, or `darkbloom cluster` pairs it again), what the stop did to the other Mac and that it keeps its pairing until you run `darkbloom cluster leave` there, and how the two Macs pair again (`darkbloom cluster` on each, Start over on the other Mac).
+- It says only what happened to the other Mac: "stopped serving the pair too" only when it did, "wasn't asked to stop" when nobody asked it, and, when it didn't answer, that it may have left the pair already.
+- On the leading Mac, the forget step no longer says the other Mac's pair cache stays until `darkbloom cluster pair --forget <its 64-digit pin>` there, which was false once that Mac had left. When it isn't reached, it says "If that Mac is still paired, run `darkbloom cluster leave` there." `cluster pair --forget` and `uninstall` say the same.
+- While leaving, and in `darkbloom uninstall`, the stop no longer says "Run `darkbloom cluster` to serve again", "to start it again", or to stop the other Mac's service with `cluster stop --service`: the last lines say what to do next. `uninstall`'s summary says when the other Mac didn't answer.
+- The Mac left behind can't tell the other Mac having left from it being off: its `status`, `cluster status` and a `start`'s result now end "If the other Mac left the pair, `darkbloom cluster leave` here unpairs this Mac too." instead of saying `start` on either Mac starts the pair, and `darkbloom cluster` there offers Start over or `darkbloom cluster leave` for a Mac that left.
+
+### Both, me first for a pair, in `darkbloom cluster`
+
+- In a terminal, `darkbloom cluster` now asks how a pair serves, with the single-Mac start's three choices: **Only me
+  (this pair, local)**, which is `darkbloom cluster local`'s way, **Darkbloom network**, or **Both, me first**, which
+  is preselected. On a set-up pair, the list's **Change how the pair serves** asks again. The answer is saved in
+  `[local] mode` once the start goes ahead. `darkbloom cluster local` is unchanged and asks nothing.
+- With **Both, me first**, the Mac that runs the pair's first part also runs the pair's local API beside Darkbloom,
+  with the pair's key, on every network of that Mac. Its port is the first one from 8001 to 8020 free on both Macs,
+  never 8000 or the pair ports 47420–47423. Darkbloom pauses for the whole pair while you use it and comes back 2
+  minutes after your last request. The other Macs run no local API.
+- Without a terminal nothing is asked or saved. The login service and scripts keep serving each pair as its setup
+  says, and a pair set up before this build serves through Darkbloom with no local API, as before.
+- The question says that the pair's pause, route and account key are the leading Mac's. **Serve locally only** at the
+  login check after **Both, me first** saves no answer: the pair serves locally only, and **Only me** isn't saved.
+- `darkbloom status` and `darkbloom cluster status` say whether Darkbloom is paused for you, the pair's local address
+  (never its key), and that the other Macs are part of the pair. On the other Mac they say that `darkbloom local` on
+  the leading Mac shows the address and key. No line shows a speed.
+- Requests from other machines never use the paid network; they can use this Mac and your other Macs. A local API that
+  other machines reach (a pair's, or one started with `--bind`) passes their requests to your Macs only, even with
+  `route = "my-macs-first"`, and lists no network model to them. Programs on the Mac itself keep the route.
+- `darkbloom start --cluster-member` takes `--local-endpoint --port --bind` from the cluster service, never with
+  `--no-auth`.
+- A pair's local API without a cluster approval (its leader registered with the coordinator, or serving locally because
+  the coordinator couldn't take it) no longer asks the coordinator whether your other Macs serve a model before passing
+  your request on to them, as `cluster local` already didn't. The coordinator's count never includes that leader, so
+  with exactly one other Mac serving the model the request was refused as `this_mac_only` instead of going to that Mac.
+- With **Only me** saved, by `darkbloom cluster` for the pair or by `darkbloom start`, a `darkbloom start --solo`
+  without a terminal (a script) on a Mac whose pair doesn't run here is refused in one line, as on one Mac. This Mac's
+  part of the pair keeps running, and its saved start stays.
+
+### Every Mac of a pair answers locally in Both, me first
+
+- With **Both, me first**, every Mac of the pair now has its own local API address, as with **Only me**
+  (`darkbloom cluster local`), not only the Mac that runs the pair's API: each other Mac passes its own port to it over
+  the cable. `darkbloom local` there prints `http://127.0.0.1:<port>/v1` and the key to use, `darkbloom status` names
+  that address instead of pointing at the leading Mac, the setup's ✓ block prints this Mac's own address once its port
+  is up, and `darkbloom start --opencode` or `--hermes` there sets the tools up for it.
+- Each Mac's tools use that Mac's own key (`local_token`), with **Only me** and with **Both, me first**. The pair's API
+  takes its own Mac's key and the pair's key (`cluster_local_token`), which tools set up before keep working with; the
+  other Mac's port passes requests on with the pair's key.
+- A pair's local API now takes each Mac's own saved `[local] port`, as every other local API on that Mac does, with
+  **Only me** and with **Both, me first**: the Mac that runs the pair's API listens on its port, and each other Mac's
+  port passes requests to it, so the ports can differ, and each Mac keeps its own whichever Mac runs the pair's API.
+  Before, the pair's API took a port free on both Macs (Only me 8000 when free) and the other Mac took the same one. A
+  Mac with no saved port keeps the one its local API already uses, else takes the first free one from 8001, never 8000
+  or the pair ports 47420–47423, and saves it; a Mac updated from 0.10.10 keeps 8000. With the pair's API kept on its
+  own Mac (`--bind` loopback or one address), the other Mac passes nothing on, as before.
+- A saved port is never moved, a pair's included: when another program holds it, `darkbloom status` on that Mac names
+  the port and says to free it, or set another `[local] port` in `provider.toml`, then run `darkbloom restart`. For the
+  pair's API this replaces "`darkbloom restart` starts the pair's API on a free port".
+- While Darkbloom doesn't have a **Both, me first** pair (no approval yet), the pair answers on the leading Mac only,
+  and the other Mac passes nothing on: its `darkbloom status` says so, and never shows an address that resets every
+  connection.
+- While the Mac that runs the pair's API is away (unplugged, asleep), the other Mac's own port answers every request at
+  once with a `503` (`code` `pair_mac_unreachable`) that says so: "Your pair's other Mac (…) isn't reachable; this Mac
+  relays to it. Requests resume when it's back, or run `darkbloom stop`, then `darkbloom start --solo`, to serve this
+  Mac alone." That Mac counts as away once it hasn't answered over the cable for 12 seconds. Only a request with this
+  Mac's key or the pair's gets those words; any other gets the local API's usual `401`, or a `503` without names where
+  the API needs no key. With **Only me**, that port used to close each connection unanswered then, for up to 15 minutes.
+  `darkbloom status` and `darkbloom local` now say the same, and relaying resumes by itself within seconds of that Mac
+  answering again. A request while that Mac's API doesn't listen gets a `503` with `code` `pair_api_unavailable`.
+- On the other Mac, `darkbloom local` and `darkbloom start --opencode` say why it has no address for the pair (Darkbloom
+  doesn't have the pair yet, its port is held, or the leading Mac is away), as `darkbloom status` does: `local` no
+  longer prints the pair's key there, and `--opencode` says it at once instead of after a 30-second wait. While that
+  address is still starting, `local` says so beside the pair's key, instead of "No local server running."
+- The app's **Start serving** on the other Mac no longer says "No local API was added on this Mac" when the pair's API
+  is on every address: that Mac's relay gives it one. While the relay can't answer (the leading Mac away, Darkbloom not
+  having the pair, its port held), the app says `status`'s `Local API:` line instead. With the pair's API kept on the
+  leading Mac, **Only me** included, the line stands.
+- The solo server a pair falls back to when one Mac is away for 10 minutes takes that Mac's own saved `[local] port`
+  too, instead of 8000, so its tools keep their address.
+- A request on the other Mac's port pauses Darkbloom for the pair, as one on the leading Mac does, and never uses the
+  paid network: the pair's API sees it come from that Mac.
+- `darkbloom start --opencode` on a paired Mac waits up to 30 seconds for that Mac's local API after the pair starts,
+  and says at once when the pair serves only the Darkbloom network.
+
+### Me first for a pair: Darkbloom pauses while you use the pair
+
+- While you use a pair through its leader's local API, the pair takes no new Darkbloom requests. It takes them again
+  two minutes after your last request ends (`[local] me_first_idle_minutes`). `[local] me_first = false` keeps today's
+  shared serving.
+- Darkbloom requests already running finish, and nothing is cut. A request that races the pause goes to another Mac.
+  The pair keeps its session and its loaded model.
+- The leader decides for the pair: its heartbeat says `draining` with `busy_reason: "owner"`, which takes the whole
+  pair out of routing, your own `self` and `prefer` requests included. The other members don't change, and nothing
+  assumes two Macs.
+- The pair's base reward while it is paused depends on the coordinator. From
+  [darkbloom-platform#709](https://github.com/Layr-Labs/darkbloom-platform/pull/709) on, the pair keeps it, as a single
+  Mac does. On coordinators before #709, both Macs lose it for the pause plus the idle minutes, as for any pair drain.
+- It costs next to nothing: one heartbeat when the pause begins and one when it ends, an O(1) update per local
+  request, and an idle check on the member's existing 5-second beat.
+- `darkbloom cluster` starts the leader's local API when you choose **Both, me first** for the pair.
+
+### A pair takes the long requests it can serve and reports its speed
+
+- A Qwen 3.8 27B pair in tensor parallel now accepts `max_tokens` up to 65,536, the catalog's output limit and the value the coordinator gives a request that omits `max_tokens`. It accepted at most 32,768 before. In production, five 18,774-token prompts that asked for 65,536 were refused with 503 `request_exceeds_context`, although single Macs served requests of the same size. Prompts up to 262,143 tokens and the 262,144-token context are unchanged. Each Mac's memory gate still decides, request by request, whether a long request fits.
+- The leader's heartbeat now tells the coordinator which requests the cluster serves, for every Mac in it (`request_limits` on its slot): the prompt, output and context limits of the mode it runs, and the context that every Mac's memory admits now. A pipeline reports the 32,768 + 32,768-token request its Macs accept, and its leader refuses a longer request itself before asking either Mac.
+- The release's public envelope for each mode now carries those limits instead of 1,048,576 for prompt and output. For a model whose clusters serve the public, larger requests go to single Macs instead of to a refusal.
+- A pair's slot now reports measured prefill and decode speeds from the requests it serves, as a single Mac's slot does. A prompt is measured as it ran, up to its first token, so a prompt that ran alone counts as isolated even when another request joins its answer. Before, it reported none, so the coordinator could not predict a pair's first-token time and a free single Mac always took the request first. The warmup request a pair runs before it opens is not counted.
+- Providers no longer log an error every 30 seconds while connected. The coordinator's round-trip probe is a WebSocket ping that carries a counter, and the provider tried to read it as a message. On a pair leader, this showed up in the system log as an error of category `coordinator` with a hidden (`<private>`) message. It never affected serving.
+
+### The cluster setup quotes no speeds, and its recommendation follows the pair's measurements after an update
+
+- `darkbloom cluster`'s model list no longer shows tokens per second. It named each mode with the speed the pair
+  served it at ("Gemma 4 26B · tensor parallel 96 tok/s or pipeline (not measured on these Macs yet)"); it now
+  names the modes only ("Gemma 4 26B · 15.6 GB · tensor parallel or pipeline"), the one the mode question recommends
+  first. A model named on the command line (`darkbloom cluster local <model>`) starts in that mode too. The mode
+  question already quoted no speed.
+- After a Darkbloom update, until one of a model's modes has served with the new build, the mode question ranks the
+  modes by what the two Macs served with an earlier build that recorded how it served (through Darkbloom or locally,
+  with or without Qwen's tensor assistant). Builds record this from 0.10.11 on, so it first applies at the update
+  after 0.10.11: updating from 0.10.10, whose records don't say how they were served, the question still recommends
+  from the planner's prediction until a mode has served with 0.10.11. Once a mode has served with the new build, that
+  build's measurement decides, as before. On one DevNet pair the question said "Pipeline, faster here" for Gemma 4 26B
+  right after an update, although the pair had served tensor parallel faster before; from its earlier
+  tensor-parallel measurement it now recommends tensor parallel.
+- The developer setup wizard (`darkbloom cluster --wizard`) no longer shows predicted speeds on its model step or its
+  help, or a speed on its check's result. A test prompt sent from its last step still reports that request's speed.
+
+### A two-Mac pair's local API no longer cuts a failed stream short
+
+- When the provider rejects a streamed chat completion's output mid-generation on a pair (for example a named or required `tool_choice` the model answers with text, or a streamed tool call that fails validation), the leader's local API now ends the stream with the same error chunk (`finish_reason: "error"`) as one Mac. Before, the client could get HTTP 200 and the chunks already sent, then the connection closed with no error chunk. Some clients took that cut-short stream for a complete answer.
+
+### A pair comes back by itself after an update
+
+- After both Macs of a pair restart into an update, the leading Mac stops the pair once to set it up again for the new release, and again to save the release's cluster approval. When that stop failed (the other Mac didn't answer in time, or refused it because it had taken the lead for a moment while the leading Mac restarted), the pair stayed stopped on both Macs ("Stopped; last model …") until someone ran `darkbloom cluster`. Now a failed stop keeps the pair started, and the leading Mac tries again: the setup 10 minutes later, the approval at its next check, a minute later.
+- The leading Mac now sets the pair up after an update, and changes its cluster approval, only once the other Mac has confirmed that it leads (or hasn't answered for 30 seconds), as `darkbloom cluster` already did for a person's commands. While the other Mac doesn't answer, it doesn't stop the pair to change its approval, which needs both Macs; it changes it once the other Mac answers again.
+- A stop you make during these steps holds: neither step starts the pair again. `darkbloom stop` and `darkbloom start --solo` on a Mac where the pair doesn't run now wait, up to 10 minutes, for a cluster command that is running, as `darkbloom cluster stop` does. They say so at once, and if the command is still running after those 10 minutes, they say so and stop or start nothing.
+
+### `darkbloom --opencode` and `darkbloom --hermes`
+
+- `darkbloom --opencode` is `darkbloom start --opencode`, and `darkbloom --hermes` is `darkbloom start --hermes`;
+  both together work too. Any other `start` option goes with them, in any order (`darkbloom --opencode --me-first`,
+  `darkbloom --me-first --opencode`), and `start`'s errors and refusals apply. `darkbloom start --opencode` keeps
+  working; `--help`, `--version`, plain `darkbloom` and every subcommand are unchanged, and a mistyped flag
+  (`darkbloom --opencod`) gets the usual unknown-option error.
+- `darkbloom --help` shows the two shortcuts, one line each.
+- The lines that name the command say the short form: `darkbloom local`'s `tools:` line, the line `--port` prints
+  when it replaces a saved port, the refusals, the tool step's lines, the installer's closing lines, and the comment
+  above the `darkbloom` block in OpenCode's and Hermes' configs (a config set up before keeps its line).
+
+### Darkbloom watchdog reads any listing size and rescues partial strands
+
+- `.github/workflows/darkbloom-watchdog.yml` is now darkbloom-sandbox's template at `d6d257c2`, copied unchanged. The old copy passed the day's run and job listings to `jq` as command-line arguments. When the repository was busy they were larger than Linux allows for one argument, and the watchdog failed with `Argument list too long` (exit 126) before it checked any run. It now passes listings to `jq` through files and stdin.
+- A job's wait is timed from its own creation. Only a Darkbloom job of the run that got a runner within the wait holds the rescue back, so a run with one shard stranded while other shards ran is rescued too.
+- The watchdog sees only GitHub: a job that waits at the payer's concurrency or resource limit looks stranded to it. Set `DARKBLOOM_WATCHDOG_MINUTES` above such waits. The repository variables are unchanged.
+
+### `darkbloom doctor` knows how this Mac serves you
+
+- The report opens with a `LOCAL API` section: how this Mac serves (Only me, Darkbloom network or Both, me first; what runs now, else your saved choice), its local API's address, whether it answers and on which port, whether its key file is there (the key is never shown), and whether OpenCode and Hermes point at it, or somewhere else. Every problem names the next command: `darkbloom start`, or `darkbloom restart` for a stopped background service (it starts again as saved), the free port to use, or `darkbloom --opencode` / `--hermes` to point a tool here again.
+- A local API that stops answering is started again the way it serves now, never another way: Only me in a terminal with Ctrl-C there, then `darkbloom start --local --here` (`restart` never stops it, and would serve your saved choice); the background service with `darkbloom restart`; a service serving another way than your saved choice with `darkbloom start` and that way's flag.
+- On a Mac set to Only me, `doctor` no longer checks what Darkbloom serving needs: the account link, MDM, coordinator health and trust, App Attest, attestation readiness, coordinator traffic and billing are skipped, with one line that says they aren't needed. This holds while Only me loads its models too, which the section says ("starting"). `--coordinator <url>` still runs them. `darkbloom verify` is unchanged.
+- On a Mac in a two-Mac cluster, the section names the pair's way of serving and the Mac that runs the pair's API, or says the pair hasn't chosen yet. A paired Mac serving alone (`start --solo`) is described by what it serves, with `--solo` in its commands. A Mac whose own port passes the pair's API on, and can't now, says why in `status`'s words: with the other Mac away, its port answers 503 for now, and it says to wait, or to serve this Mac alone, never to restart.
+- OpenCode and Hermes are read and judged as `darkbloom start` judges them: `localhost` is this Mac, and another file holding the same key is the same key.
+
+### Gemma 4 thinks when asked to, and GPT-OSS reasons at the effort you send
+
+- Gemma 4 thinks for every reasoning effort but `none`, as `reasoning_effort` or `reasoning.effort` (it ignored the effort before, and its template doesn't think by default). An explicit thinking switch still wins.
+- GPT-OSS renders each effort at the nearest Harmony level: `none`, `minimal` and `low` as `low`; `medium` as `medium`; `high`, `xhigh` and `max` as `high`. `high` rendered `medium` before, and `minimal`, `xhigh` and `max` reached the template as sent. Every level works for GPT-OSS, through OpenRouter too, once the Mac runs this release; a Mac still on 0.10.10 renders `high` as `medium` until it updates.
+- **Rollout:** Darkbloom's coordinator with darkbloom-platform#721 (the same effort mapping and the typed 400 for an unknown effort) is deployed before this release is tagged; no auto-update hold is needed.
+- Darkbloom's coordinator maps every effort the way this provider does, and both check the same 446 cases and the same lists of model types (`fixtures/prompt-contract/v1/reasoning_effort_vectors.json`), so a model type added to one side only fails a test.
+
+### A Gemma 4 pair serves the model's whole context and answers a long request as one Mac does
+
+- A Gemma 4 26B pair now accepts prompts up to 262,143 tokens and up to 32,768 output tokens within 262,144, the model's declared context, in tensor parallel, as one Mac serving it does. Its pipeline keeps the 32,768 + 32,768-token request, as every model's pipeline does, so a longer request goes to tensor parallel or to one Mac. Before, it served 65,536. The pair is still loaded and planned for the 32,768 + 32,768-token request; each Mac's memory gate decides, request by request, whether a longer one fits now.
+- On any pair, a `max_tokens` above the output limit the pair serves, or above what the prompt leaves of its context, is cut to fit, as on one Mac, and the answer ends with `finish_reason: length` if it gets there. Before, it was refused with 400 `output_too_long`.
+- A prompt that fills the context a pair serves is refused with one Mac's 400, `context_length_exceeded`, and the words that name the window. A request both Macs' memory can't hold now gets one Mac's 503, "This Mac's memory can't hold this request right now. …". Both arrive before any SSE header. Before, a streamed request to the leader's local API in "Both, me first" got HTTP 200 and then "Response generation failed" (Gemma 4 26B on pair-2: prompts of about 40,600 and 58,000 tokens).
+- `/v1/models` on the leader and `darkbloom cluster local` list the context and output the pair serves, and default an omitted `max_tokens` within them.
+
+### Gemma tensor parallel prepares the next token while reading the last
+
+- For requests without sampling (temperature 0, no logprobs, no logit bias or penalties), a Gemma 4 pair now starts the next token's work on the GPU before it reads the token it just made, as GLM's pair already does. On GLM this took a token from 13.4 to 12.0 ms on two M5 Ultras; Gemma's gain has not been measured yet. The output is unchanged.
+
+### Gemma tensor parallel prepares the next token ahead for sampled requests too
+
+- Requests that sample (temperature above 0, with or without logprobs), and greedy requests with logit bias or penalties, now also start the next token's work on the GPU before the last token is read. Each token is still the exact draw for its position and seed, so the output is unchanged (except that a request that already fails because one Mac stopped on its own may stream one extra token first, as on GLM). Greedy requests that ask for logprobs keep the old order.
+
+### Gemma 4 tensor-parallel prefill can overlap its link traffic with compute (off by default)
+
+- A Gemma 4 pair in tensor parallel can now split each prompt chunk's work after attention into parts, so one part's results cross the cable while the next part computes. On a two-Mac pair's GPUs the results are bit-identical to the whole chunk (not on the CPU backend, and not with more than two Macs); since nothing enforces that at full size, it stays off. On two M5 Ultras, 4 parts prefilled a 9,651-token prompt at 1,196–1,208 tok/s instead of 1,064 (+13 %), with identical output. It stays off by default; the bench tool takes `--prompt-parts`.
+
+### Gemma 4 tensor-parallel prefill is nearly twice as fast
+
+- A Gemma 4 pair in tensor parallel computed each prompt chunk's experts one token at a time on each Mac. Each chunk's experts now run together, with every value unchanged. On two M5 Ultras a 9,651-token prompt prefilled at 1,066 tok/s instead of 569, with identical output.
+
+### The installer ends with `darkbloom --opencode`
+
+- The installer's last lines say that `darkbloom --opencode` asks how this Mac serves (Only me, Darkbloom network, or
+  Both, me first), then sets OpenCode up (`/models` → Darkbloom; `darkbloom --hermes` for Hermes), and that two Macs
+  pair with `darkbloom cluster` on each. The last line is the command to run next, with its full path so it works
+  before the shell picks up the new `PATH` line: `Next: ~/.darkbloom/bin/darkbloom --opencode`. Before, it listed
+  `doctor`, `models catalog`, `models download`, `login` and `start`.
+- `curl … | bash` prints these lines once the platform's copy of the installer is updated.
+
+### Link control reports the end of a superseded session
+
+- The listener did not report the end of a session that a newer session superseded. When the connector's record budget ran out, it said goodbye with `rekey` and dialed again at once. If its next session arrived before the listener's reader read the goodbye, the old session ended with no `disconnected` event. `testRecordBudgetRollsOverToFreshKeys` failed on master push run 42258366869 for this reason. Now a superseded session gives exactly one `disconnected` event, after the newer session's `connected`. The listener shuts down only the sending side of the superseded session, so its reader can still read the goodbye. The reason is `rekey` when the session ended as a rollover, and `superseded` for all other ends. Neither reason is a peer loss. When the edge stops, it also ends each superseded session that is still reading.
+- `testRecordBudgetRollsOverToFreshKeys` waits again for the listener's `.rekey` disconnect, and also for the connector's. A new test parks the listener's first reader until the connector's next session supersedes it, and requires exactly one `.rekey` for that session, after the second `connected`. Another new test requires one `.superseded` for a superseded session with no goodbye when the edge stops.
+- `testReconnectResumesExactlyOnceInOrder` waits for the client's resumed `.connected` event instead of reading the client log at once after a wait on the server log.
+
+### This Mac serves its model's whole window and holds every request to it
+
+- A request to this Mac's own API that names no `max_tokens` (curl, the OpenAI SDKs, any client that leaves it out) may now write up to 32,768 tokens, as on a pair. Before, it stopped at 8,192 tokens, or 4,096 on MiMo V2.6, Nemotron Super and GLM-5.3-Flash, which could cut a thinking model off before its answer. Diffusion Gemma keeps its generation config's own default. That default is cut to the context window the prompt leaves, so a long prompt without `max_tokens` is served until the window is full instead of being refused.
+- Every model is held to its window on this Mac: the context it advertises (GLM-5.3-Flash, MiMo V2.6, Nemotron Super), else its model's own (Gemma 4, Qwen 3.5, 3.6 and 3.8, GPT-OSS, Nemotron Lightning). A `max_tokens` larger than what the prompt leaves is cut to fit, on every model, and the answer ends with `finish_reason: length` if it gets there; before, a model that advertises a context refused it, so OpenCode and Hermes, which name a `max_tokens` on every request, were refused 32K to 65K tokens before GLM's, MiMo's or Super's window was full. Only a prompt that leaves no room is refused, with 400 `context_length_exceeded` and a message naming the window; before, on a model that advertises no context, it ran past the window.
+- This Mac's `/v1/models` lists each of its models' window as both `context_length` and `max_output_length`, so `darkbloom start --opencode` and `--hermes` write the model's own output limit instead of the catalog's. A pair's leader lists the context and output the pair serves, which it holds every request to.
+- This Mac's API now says which bound a request met. A request this Mac's memory can't hold now (on a paged slot, the default, one that can never fit; the rest queue) gets 503 before any SSE header, streamed or not, "This Mac's memory can't hold this request right now. Lower max_tokens or shorten the prompt (or send less media), or retry when this Mac's other requests finish."; before, a non-streamed one got "Provider capacity is temporarily unavailable.", and a streamed one HTTP 200 and then "Response generation failed".
+- Network requests (OpenRouter's included) change only where the coordinator's estimate undercounts the prompt, as it can for dense text: the coordinator refuses an estimated prompt plus `max_tokens` past the catalog's context (413) before any provider sees it, so only an undercounted request reaches a Mac with an oversized total. Such a request is now served, cut to the window and ending with `finish_reason: length`, instead of being refused with 400 on GLM-5.3-Flash, MiMo V2.6 and Nemotron Super, or running past the window on the other models; one whose prompt alone fills the window is refused with 400, as before on the first three.
+
+### Your own requests pause Darkbloom on your Mac
+
+- With the local API beside Darkbloom (`darkbloom start --local-endpoint`), the Mac stops taking Darkbloom requests
+  while one of your requests uses a model on it, and takes them again once none of your requests has run for 2 minutes
+  (`[local] me_first_idle_minutes`, 1 to 120). Before, your requests and Darkbloom's shared the Mac.
+- **This starts with this update on every Mac already serving with `--local-endpoint`**, including the desktop app's
+  "Alongside the network": it pauses Darkbloom while you use its local API. Darkbloom requests already running finish.
+- To keep sharing the Mac, set `me_first = false` under `[local]` in `provider.toml`
+  (`~/.config/darkbloom/provider.toml`), then restart serving (`darkbloom restart`).
+- Listing models, health checks, `/metrics` and the tokenizer utilities don't count, and neither do requests refused
+  before they hold a model (a model the Mac doesn't serve, a load that doesn't fit, a drain).
+- `darkbloom start --local` never connects to Darkbloom, so it has nothing to pause.
+
+### Me first: Darkbloom pauses while you use your Mac
+
+- The provider can pause Darkbloom requests while you use this Mac through its local API, and take them again once
+  none of your requests has run for the idle time (`[local] me_first_idle_minutes`, 2 minutes by default).
+- While paused the Mac stays connected, keeps its models loaded and keeps its uptime. Darkbloom requests already
+  running finish, and new ones go to other Macs. Heartbeats say `draining` with `busy_reason: "owner"`, which
+  coordinators treat as a plain drain.
+- It is event-driven: a heartbeat only when the pause begins or ends, one timer only while your idle time counts down,
+  and nothing at all when it is off.
+
+### Local-first settings in provider.toml
+
+- `provider.toml` takes a new `[local]` section for using your Mac yourself, beside or instead of Darkbloom: `mode`,
+  `me_first`, `me_first_idle_minutes` (default 2, from 1 to 120), `route`, `port` and `bind`. The provider reads and
+  checks it. Serving uses `mode`, `me_first` and `me_first_idle_minutes` for the local API beside Darkbloom; it does
+  not use `route`, `port` or `bind` yet.
+- Without `[local]`, nothing changes, except on a Mac serving with `--local-endpoint`: it now pauses Darkbloom while
+  you use its local API ("Your own requests pause Darkbloom on your Mac"). A value the section can't take stops the
+  provider at startup with one plain line that names the key, for example
+  `[local] me_first_idle_minutes must be a whole number of minutes from 1 to 120, not 0.`
+
+### One start screen: only me, the Darkbloom network, or both with me first
+
+- In a terminal, the first `darkbloom start` asks how this Mac serves: **Only me, on this Mac**, **Darkbloom
+  network**, or **Both, me first** (pre-selected: Darkbloom pauses while you use this Mac and comes back after 2 idle
+  minutes). With an account key saved, it also asks where your requests go when this Mac can't take them. The answer
+  is saved in `[local]` once the start goes ahead; later starts don't ask again, and `darkbloom start --choose` asks
+  again. See [Use your Mac yourself, first](docs/provider/local-first.md).
+- Starts without a terminal (the login service, the app, scripts) never ask. Without a saved choice, a plain start
+  keeps today's behaviour exactly: the Darkbloom network, no local port, nothing written. **Changed:**
+  `--local-endpoint`, which the desktop app's "Alongside the network" passes, now pauses Darkbloom while you use the
+  local API (below).
+- A saved **Only me** serves in a terminal. A start without one, such as the app's Start, is refused in one line
+  before anything stops or starts, naming `--local`, `--network` and `--me-first`.
+- New flags, for one start: `--network`, `--me-first`; saved settings: `--no-me-first`, `--me-first-idle <min>`,
+  `--route this-mac|my-macs|my-macs-first`. Contradicting flags such as `--local --me-first` are refused before
+  anything runs. On a paired Mac they need `--solo`, like the other single-Mac options.
+- **Changed:** `--local-endpoint` now means Both, me first: Darkbloom pauses while you use the local API.
+  `--local-endpoint --no-me-first` keeps the old shared serving. Its LaunchAgent arguments are unchanged.
+- A new local API takes the first free port from 8000 up, never 8000 itself (other local AI apps use it) or the
+  pair ports 47420–47423, saves it and says which; `--port` still picks one.
+- `darkbloom status` says how this Mac serves in one line (for example `Serving: you first — Darkbloom paused since
+  14:02 …`) and where your requests go, with whether an account key is saved. `darkbloom local` adds the same, and
+  names `start --me-first` beside `start --local`. With `--no-auth`, `start` and `status` say your requests stay on
+  this Mac. No start screen prints the local key (except `--local`'s own banner, as before), and no screen shows a
+  speed.
+- `darkbloom start`'s lines, such as its banner and `Listening on …`, now show at once when its output goes to a log
+  or a pipe (`start … > log`). Before, a start that serves held them until it stopped.
+
+### A streamed local request that can't get this Mac's memory is a 503 before any header
+
+- A streamed request to this Mac's API sends its response head once the engine admits it. One the engine queued for
+  memory and then couldn't admit, because its 120 s admission lease ran out or a full paged pool outlasted its
+  requeues, now gets HTTP 503 with "This Mac's memory can't hold this request right now. Lower max_tokens or shorten
+  the prompt (or send less media), or retry when this Mac's other requests finish.", before any SSE header. Before,
+  it got HTTP 200 and then "Response generation failed".
+- A request that isn't streamed and outlasts the admission lease gets the same words (they were "Provider capacity is
+  temporarily unavailable.").
+- The prompt progress comments start when the engine admits the request, so a queued request says nothing until then:
+  while the engine keeps it queued, its client gets no bytes, headers included, for up to the 120 s lease before its
+  503. Before, it got its head at once and a `: prefill in progress` comment every 5 seconds. A request the engine
+  admits at once gets its head within a few milliseconds.
+- A pair's API, Darkbloom's requests and a Nemotron Super request that asks for logprobs (its entries are spliced as
+  the stream is read) are unchanged. A request admitted and later preempted, and never admitted again, still ends a
+  streamed answer with an error event.
+
+### This Mac's model list says what each model takes, and a long prompt shows progress
+
+- This Mac's `/v1/models` lists each model's `input_modalities`: `["text", "image"]` for a model it serves with vision, and on a pair's leader the media the pair takes (`["text", "image", "video"]` for GLM-5.3-Flash and Qwen 3.8 27B in tensor parallel, `["text", "image"]` on the GLM and MiMo image candidates, `["text"]` on the other pairs). For a model this Mac or its pair serves, `darkbloom start --opencode` and `--hermes` give image input exactly when the list does, whatever Darkbloom's catalog says: MiMo V2.6, which the catalog lists as text only, gets it, also when the catalog can't be reached, and a Gemma 4 pair, which serves text alone, no longer gets image input its requests would be refused for (400). Your other Macs' and the network's models keep the catalog's. Reasoning still comes from the catalog.
+- A streamed request to this Mac's API, or to a pair's, gets an SSE comment every 5 seconds from the moment the engine admits it (on a pair's API, accepts it) until its first token: `: prefill in progress, <total> prompt tokens`, which OpenAI clients ignore. Before, a long prompt streamed nothing after its first chunk until its answer began (9 minutes for a 255K-token prompt on an M3 Ultra). `<total>` is the prompt's tokens as the engine counts them. Once an engine reports how much of the prompt it has computed, the comment gives that count instead (`: prefill <done>/<total> tokens`); today's engines report it only when the prompt is done. A prompt done within 5 seconds gets no comment. A request that isn't streamed gets nothing new: give its client a timeout of minutes for a long prompt.
+
+### This Mac's model list says which models reason
+
+- This Mac's `/v1/models`, and a pair's, lists `"supported_features": ["reasoning"]` for each model it serves that reasons, loaded or not, and `[]` for one that doesn't, by the model's type: the same table that takes every reasoning effort for a model and refuses one that is none of the names. Your other Macs' and the network's models keep the coordinator's `supported_features`, the catalog's.
+- `darkbloom start --opencode` offers reasoning for a model this Mac or its pair serves exactly when the list says so, whatever Darkbloom's catalog says, also when the catalog can't be reached. Qwen 3.8 27B, which the catalog lists without reasoning, now gets it; a model whose effort would be ignored no longer does. Hermes has no per-model reasoning setting in a provider's block and sends your effort to every model; the ones that reason take it and the others ignore it.
+
+### One local API port per Mac, and a local API that can't listen says why
+
+- Every local API this Mac serves takes the same port: Only me and Both, me first from the start question, a saved choice, `--me-first`, `--local`, `--local-endpoint` and the Darkbloom app's starts, its local mode included. The first one saves it as `[local] port`, and every later start uses it, so the address your tools were given (`http://127.0.0.1:<port>/v1`, with the key in `~/.darkbloom/local_token`) never moves. Before, `--local`, `--local-endpoint` and the app took 8000 while the start question took 8001.
+- A Mac whose local API already serves keeps that port and saves it: the running API's port, else the one its installed background service serves on. A Mac updated from 0.10.10, whose local API serves on 8000 (the app's setup, "Alongside the network", "Local only", `--local-endpoint`, `--local`), keeps 8000: ``Local API port: 8000 (saved; this Mac's local API already uses it).`` Only a Mac with no local API at all takes the first free port from 8001, never 8000 or 47420–47423.
+- A saved port always wins, and is never moved. `--port <n>` replaces it and is saved too: ``Local API port: 8007 (saved, instead of 8005: tools set up for 8005 need `darkbloom --opencode` or `--hermes` again).``
+- A Mac without `[local]` started without a terminal still serves exactly as before: the Darkbloom network, with no local API and no port.
+- When the local API of Both, me first can't listen, `darkbloom status` no longer reads "Darkbloom network only": it says ``Serving: Darkbloom and you, me first — the local API isn't up: port 8001 is in use (`darkbloom start --port 8002`)``, and `darkbloom local` says the same. Only me names the next free port the same way. On a Mac in a two-Mac cluster these lines name `darkbloom start --solo --port <n>`, or `darkbloom restart` for the pair's own API.
+- The app's local mode runs as launchd's `--foreground` service on that port, saves a new port only once the service started, and its log no longer shows the local key.
+
+### Local API: this Mac first, then your Macs
+
+- The local API (`start --local`, `--local-endpoint` and a pair's local API) now routes like the iPhone app. A request
+  this Mac can't take (it doesn't serve the model, its queue is full, or it is draining) goes on to your other Macs
+  (free) with `[local] route = "my-macs"`. With `"my-macs-first"` it goes to your Macs first and then the Darkbloom
+  network (billed), without waiting on a busy Mac of yours while another Mac can take it. When the network refuses it
+  for money (no balance, or the key's spend cap), it goes to your Macs only, free. Nothing leaves this Mac without a
+  saved account key, with `route = "this-mac"`, or with `--no-auth`.
+- `darkbloom route key` saves the account API key in this Mac's Keychain after one check with Darkbloom
+  (`--stdin` to pipe it in, `--remove` to remove it). The key is never printed, logged, or written to a file. ^C at
+  its hidden prompt gives the terminal its echo back.
+- The local API reads the key once and keeps it in memory; `route key` tells it when the key changes. It never waits on
+  a Keychain dialog to read the key: when the Keychain won't hand it over without asking (a locked keychain, or a new
+  local build), it says so once in its log and keeps requests on this Mac.
+- Tools keep one local URL and the local key. Their own route header is ignored. Answers say who served them
+  (`X-Darkbloom-Served-By: this-mac` or `darkbloom`), and the coordinator's errors come back as sent. A refusal on the
+  network route says why: no balance, or Darkbloom's own reason (a key's spend cap, for one). A client that disconnects
+  mid-stream stops the request at the coordinator too.
+- `/v1/models` lists this Mac's models, then your Macs' (and the network's with "My Macs first"), each once, with
+  `owned_by` and, when known, `context_length` and `max_output_length`. This Mac's models now say
+  `owned_by: "this-mac"` instead of `"local"`. A model this Mac serves is listed once, under its own id, even when your
+  Macs list it under its public alias, and a request for that alias is answered by this Mac.
+- A chat request that names only `max_completion_tokens` is served with that limit, as `max_tokens` is.
+- A request this Mac serves takes the same path as before, plus a few microseconds.
+
+### Me first: queued Darkbloom requests make room for yours
+
+- On a Mac that serves both with me first on, a request of yours that has to wait for this Mac's memory, or its room
+  for requests, no longer waits behind Darkbloom requests still queued here. Those go back to the network: they end
+  with the typed `capacity / 503 / draining` refusal, which doesn't count against this Mac. Each is served by another
+  Mac, or gets a retryable "busy" error (429) if the whole network is full. Darkbloom requests this Mac has started,
+  in their prompt or answering, still finish.
+- Your request then waits only for requests this Mac has started, Darkbloom's or your own, up to the engine's 120 s
+  admission lease, as before.
+- Nothing changes with `--no-me-first`, or on a pair.
+
+### The memory re-plan keeps a stopped pair stopped and a started one started
+
+- When a Mac's part of a pair is refused at load twice because its memory moved, the leading Mac plans the model again on the memory now. That re-plan could come due right after you stopped the pair with `darkbloom stop`, and then started it again. It now does nothing once the pair is stopped, as the leading Mac's steps after an update already do.
+- When that re-plan's own stop of the pair failed (the other Mac didn't answer, or a part didn't release in time), the pair stayed stopped on both Macs until someone ran `darkbloom cluster`. Now the pair stays started, and the re-plan can come due again.
+
+### metal-cpp from the Darkbloom sandbox image
+
+- `scripts/fetch-metallib.sh` uses the metal-cpp archive that Darkbloom's macOS sandbox images carry, when it is the archive the nested MLX core names and its SHA-256 matches the pin. The metallib build then makes no download from developer.apple.com, where downloads through the sandbox's egress ended early (`transfer closed with … bytes remaining`). Elsewhere, MLX's configure downloads the archive as before.
+- Changing the script changes the metallib cache key once: the first CI runs after this change rebuild the metallib.
+
+### MiMo image fixture downloads stay on their host
+
+`scripts/prepare-mimo-image-http-fixtures.py` now follows a redirect only to
+the scheme, host and port of the requested URL, for at most 10 redirects. curl
+no longer follows redirects itself, so the script never requests another
+origin. A redirect to another HTTPS host, another port or plain HTTP fails at
+once and is not retried. The provider test gate now runs the script's offline
+self-test on every run.
+
+### MiMo prompt fixture downloads follow only allowed redirects
+
+`scripts/prepare-mimo-prompt-fixtures.py` now follows a redirect only when the
+target keeps the scheme, host and port of the URL that redirected, or when
+`https://huggingface.co` redirects over HTTPS to a Hugging Face CDN host
+(`hf.co` or a name that ends in `.hf.co`), where the Hub serves
+`tokenizer.json`. Any other redirect (another host, another port or plain HTTP)
+fails at once, is not retried, and its target is never requested. Before, the
+script followed any redirect and refused only a final plain-HTTP URL. The
+prompt fixture downloaders now share this rule in `scripts/fixture_redirects.py`.
+
+### A Nemotron Super video that decodes too slowly on a provider is retried elsewhere
+
+- When the wait on the video decoder outlasts its decode allowance (5 s, then 2 ms a frame and 4 ns a coded pixel, at most 120 s of wall time), as on a slow or loaded Mac, Nemotron Super now refuses the request as a retryable 503 (failure code `capacity`), and the coordinator can send it to another provider. Before, the provider refused the valid video as `invalid_media` (400).
+- The video's own limits (frame size, frame grid, source frames, control markers, decoded pixels) are still `invalid_media` (400).
+
+### Only me serves in the background, and the background service always serves your saved choice
+
+- **Only me** now serves in the background, as Darkbloom network and Both, me first do: the provider LaunchAgent the Darkbloom app's local mode uses, on this Mac's one port. It starts again at login, the watchdog restarts it after a crash, and it updates itself (a check 5 minutes after it starts, then every 30 minutes; it lets your requests finish first). Closing the Terminal window no longer stops it; `darkbloom stop` does. `darkbloom start --local --here` serves in the Terminal window instead, for that session.
+- Only me gets the same **model list, downloads included**, and the same **memory question** as the other choices, and models idle past that setting are unloaded. When Darkbloom's catalog can't be reached, it serves the models already on the Mac. A Mac with no model it can serve ends with ``No model to serve yet. See them: `darkbloom models catalog`. Get one: `darkbloom models download <id>`, then `darkbloom start`.``
+- A start without a terminal (the app's Start, a script) now serves a saved Only me in the background, instead of refusing, and asks nothing: the models you last chose that are still on the Mac, else every one it can serve.
+- **The Darkbloom app's choices are saved too:** "Local only" saves Only me, and "Alongside the network" and the app's setup save Both, me first, so the app's Start, Restart and Update keep serving the last choice, as login and the watchdog do. A Mac whose app ran "Local only" before now updates itself there and unloads models idle past `idle_timeout_mins` (60 by default).
+- Only me reports itself alive from the start, while it loads its models, as Darkbloom network does: the watchdog never takes a first load longer than 5 minutes after an update for a failed start (three of which would roll the update back), `darkbloom stop` and `restart` during it drain it, and `darkbloom status` says `Serving: only you, on this Mac — starting: its local API opens once its models are loaded`.
+- **A mode flag saves the choice** (`--local`, `--network`, `--me-first`, `--local-endpoint`), as the start question does. The background service, `darkbloom restart` and `darkbloom update` always serve the saved choice: a service an earlier version or start left serving another way restarts as saved, and says so. Before, `start --me-first` on a Mac set to the Darkbloom network kept serving Both, me first after `restart` while the config said network.
+- `restart` and `update` wait for Only me's local API, never for coordinator authorization, and never stop Only me running in a terminal (`--here`): they say to press Ctrl-C there first.
+- Starting Only me where Darkbloom served says so: ``Darkbloom network serving stops: this Mac serves only you from now on (`darkbloom start --me-first` serves Darkbloom and you).`` `start --local --here` says what it stops, and on the way out that nothing serves now and how to serve again.
+
+### OpenCode and Hermes: the config writers for `--opencode` and `--hermes`
+
+- The writers that make OpenCode 2 and Hermes Agent ready to use Darkbloom as a provider, called by
+  `darkbloom --opencode` / `--hermes`.
+- OpenCode gets a `providers.darkbloom` block in its global `opencode.jsonc` (or an existing `opencode.json`): the
+  local endpoint at its live port from `local.json`, the models with their names, context and output limits and
+  capabilities, and `max_tokens` as the output-cap field (OpenCode otherwise sends `max_completion_tokens`, which the
+  engine ignores, so a long answer would stop at its 4,096-token default). Its default model is set only when no
+  global config file sets one: with both files, the owner's default in `opencode.json` stays in effect.
+- Hermes gets `providers.darkbloom` (`key_cmd`, `extra_body.max_tokens`, each model's context and vision) and
+  Darkbloom as its main model in `$HERMES_HOME/config.yaml` (`~/.hermes/config.yaml` by default), as `ollama launch`
+  and `omlx launch` make theirs. Models under Hermes' 64,000-token floor are left out, and none at or above it
+  refuses. A file in PyYAML's style, with lists at their key's indent as oMLX writes it, is edited and its lists kept.
+- Hermes needs v0.20.2 or later, which added `key_cmd` (an older Hermes sends no key); the start flag warns in one
+  line when the installed Hermes is older. An open Hermes bug (#124289) can drop `max_tokens` after a `/model … --provider <bare name>` switch, so
+  those turns get the engine's 4,096-token default.
+- Neither file ever holds the key: OpenCode reads it with `{file:~/.darkbloom/local_token}`, Hermes with
+  `key_cmd: /bin/cat …`. Every comment and key outside the `darkbloom` block stays (the block itself is rewritten
+  whole); a second run with the same models writes nothing; a change first backs the file up to
+  `~/.darkbloom/integrations/backups/` (five kept per file name), replaces it atomically and comes with an exact undo
+  command. A file Darkbloom can't edit safely (invalid, YAML anchors, several documents) is refused, unchanged.
+- `scripts/integrations/opencode-smoke.sh` runs the real OpenCode on the written config in a throwaway home against a
+  fake server.
+
+### The Mac that follows no longer says a serving pair hasn't served
+
+- On the Mac that follows in a two-Mac pair serving through Darkbloom, `darkbloom status` and `darkbloom cluster status` said ``The pair hasn't served for N min since it started (the other Mac answers). Run …`` from 15 minutes after every start, while the pair served, before the leading Mac's `✓ Serving …`. That Mac looked for the pair's serving line in its own log, but only the leading Mac's part writes it.
+- Because of that line, that Mac also treated the pair as not running there. `darkbloom start --solo` was allowed and stopped its part of a serving pair. The leading Mac's next lease then started the part again, and it waited behind single-Mac serving.
+- Now the Mac that follows counts its part as serving while it runs and the leading Mac answers, as the other parts do, and leaves whether the pair serves to the leading Mac's lines. It still says the pair hasn't served when its own part never ran in the first 15 minutes, and it still gives its part up when the leading Mac hasn't answered for 15 minutes.
+
+### A paired start says what it does, Apple's check reads as progress, and both Macs show the pause
+
+- A script's `darkbloom start` on a pair that already serves now says `…: the pair already serves.`, shows the result block and exits 0, without asking either Mac to start again. Before, it said "starting the pair".
+- `darkbloom start` in a terminal no longer says "starting the pair" before a screen where nothing starts until you choose. On the leading Mac of a stopped pair it says "Press Enter to start it with Qwen 3.8 27B (last used), or choose another model." (or "Choose its model to start it."), and otherwise "opening the pair's screen".
+- During a normal pair start, each Mac's new part waits about a minute for Apple's check (App Attest). Status and a script's start now say `… is not serving yet: checking both Macs with Apple.`, read as loading. Before, every healthy start said "This Mac isn't verified by Apple yet; … Don't restart either Mac until then." for both Macs. That warning now comes only once a Mac's part has run 2 minutes without the check, or its key-generation safeguard holds it back.
+- While a pair that serves Both, me first is paused for you, `darkbloom status` and `darkbloom cluster status` on the Mac that follows now say so under the pair's line too, with how long and when it comes back. Before, that Mac said only "✓ Serving … through Darkbloom". The leading Mac's status carries the pause, which the other Mac already asks for, so nothing new crosses the cable.
+- A pair with no model yet: a script's `darkbloom start`, and the app, now say to choose one with `darkbloom cluster` in a terminal on the Mac that leads the pair, which has the model list: ``No model was chosen for the pair yet: choose one with `darkbloom cluster` in a terminal on this Mac.`` Before, they said to run `darkbloom start` in a terminal, which on the Mac that follows opens a screen that can't choose one.
+- Pause times are said from now: "paused for 10 minutes", "back in about 2 minutes if you stay idle". Before, they were clock times in the Mac's own time zone, which no line named, such as "since 21:41" read over SSH at 05:41 UTC. This applies to one Mac's `Serving:` line and to the pair's `Pair:` line.
+
+### On a paired Mac, `darkbloom start` starts the pair and `start --solo` serves the Mac alone; no start asks without a terminal
+
+- On a Mac in a two-Mac cluster, plain `darkbloom start` now starts the pair whatever its state: in a terminal it opens the `darkbloom cluster` screen, and without one it starts the pair's saved model and waits until it serves. That includes a pair stopped with `darkbloom stop` and one whose other Mac isn't answering, as `darkbloom stop` and `darkbloom cluster status` already said. Since 0.10.9, a `start` without a terminal there (a script, or an agent following `cluster status`) served the Mac alone instead, and one in a terminal asked first.
+- `darkbloom start --solo` is the way to serve a paired Mac alone. It works whenever the pair doesn't run on that Mac, and is refused while it does (stop the pair first). Single-Mac options need `--solo` in every state of the pair: without it, `darkbloom start --model <id>` in a terminal and `darkbloom autopilot enable` start nothing and exit 64 at once with the reason, as they already did while the pair ran. They no longer serve the Mac alone while the pair is stopped.
+- The desktop app's **Start serving** has no `--solo`, so on a paired Mac it now starts the pair, as a plain `darkbloom start` does, in every state of the pair. It never serves that Mac alone and never waits for an answer. The pair serves its own model: when the app named another, the start ends with ``This Mac serves in a pair: started the pair with <the pair's model>; `darkbloom cluster` changes its model.``, which the app shows. Since 0.10.9 it served the Mac alone while the pair didn't run there, and was refused while the pair ran.
+- The lines that name the way back now say `darkbloom start` for the pair and `darkbloom start --solo` for serving alone: `darkbloom status` for a part that stopped because the other Mac stopped answering, the `Next:` line of `cluster status`, `restart` on a Mac where nothing serves, and the line `start --solo` prints. They no longer send you to `darkbloom cluster` to start the pair.
+- `darkbloom start --solo`, `restart` and `update` on a Mac with a leftover part of the pair now say that its saved start is cleared only once it is. They first say that they are stopping the leftover part. If a cluster command is running, they wait for it; when it is still running after 10 minutes, nothing is stopped or cleared, and they no longer say it was.
+- No start asks a question without a terminal. On pair-2, a start with `--opencode` that got no answer waited forever on "Serve on this Mac alone / Start the pair"; that question is gone. On a paired Mac, a start without a terminal, with or without `--opencode` or `--hermes`, starts the pair and reads nothing. Where a start can't go on without asking, it says in one line what to add.
+- A start for **Darkbloom network** or **Both, me first** that names no models (`--model <id>`, `--all`) can't pick them without a terminal. On any Mac it now says so in one line and stops (exit 64), before anything is stopped or started, instead of printing the numbered model list and waiting for an answer that may never come. **Only me** serves the models already on the Mac and is unchanged.
+- `darkbloom status` on a paired Mac now says plainly when the Mac serves alone instead of the pair: a line under the pair's block names single-Mac serving and its process, and its own `Daemon:`, `Serving:` and `Trust:` lines follow. Before, it said only "Single-Mac serving: running beside the pair" at the end, and the `Serving:` line needed `status --solo`.
+
+### Qwen 3.8 27B pairs with the assistant now prefill as fast as pairs without it
+
+- A Qwen pair in tensor parallel that decodes with its speculative assistant processed each 512-token prompt chunk one at a time, waiting for its link traffic after each. It now processes up to eight chunks together, as a pair without the assistant already did, so one chunk's link traffic overlaps the next chunk's compute, and assisted pairs prefill at the same rate as pairs without the assistant. Measured gains: about 1.25× on an M3 Ultra + M5 Max pair serving real requests through DevNet, and about 1.85× on two M5 Ultras with the bench tool (synthetic prompt tokens, real weights); the gain depends on the Macs and the prompt. The prompt's results and the assistant's state are unchanged.
+
+### Qwen3.8-27B pairs decode with their speculative assistant through Darkbloom
+
+- Two-Mac pairs that serve Qwen3.8-27B in tensor parallel through Darkbloom
+  now decode with the model's speculative assistant (depth 3), as local
+  clusters and single Macs already do. The guided setup plans it under the
+  default `mtp_mode = "auto"`. `mtp_mode = "off"` still plans the pair
+  without it. If the assistant cannot be planned, the pair is planned plain,
+  as before, and the setup screen and `darkbloom cluster status` say why in
+  one line.
+- On one pair, the same requests decoded with the assistant and without it
+  gave identical greedy, sampled and tool answers. Requests that ask for
+  logprobs, use penalties or a logit bias, or carry images decode one token a
+  step, as before. The evidence is in
+  `docs/reports/2026-11-05-qwen27-public-assistant.md`.
+- The release's cluster runtime facts name the assistant: the model's
+  serial-prefill tensor-parallel qualification rests on that report, and its
+  resource policy digest carries the build's declared assistant settings. A pair whose Macs run another
+  assistant is refused before any part stops.
+- Speed records from served requests now say whether the request came through
+  Darkbloom or the local API and whether the assistant decoded it. A plan uses
+  only the records served the way it will serve, so a local pair's assisted
+  speed no longer stands for the same pair through Darkbloom.
+
+### Every model that reasons takes every reasoning effort a client sends
+
+- `reasoning_effort` and `reasoning.effort` take `none`, `minimal`, `low`, `medium`, `high`, `xhigh` and `max` on every model that reasons, on one Mac, on a pair and through the coordinator. Each becomes the model's nearest level, the higher one between two: `minimal` its lowest, `max` its highest, `none` thinking off where the model can.
+- Qwen 3.8 27B (and the owned Flash-Next build) answered `high` and `max` with a 400 "Invalid inference request.", so Hermes, which sends the user's `max`, fell back to the user's other, paid provider. They now render `xhigh`, the template's highest level, and `minimal` renders `low`.
+- MiMo V2.6 thinks for every effort but `none` (it refused them all), Nemotron 3.5 Super renders `minimal` and `low` at its medium depth and `xhigh` and `max` at its default (it refused them), and DiffusionGemma and Flint take `max`.
+- An effort that is none of the names is refused on every model that reasons, also on Qwen 3.5 and 3.6, Bonsai 2, Gemma 4, GPT-OSS and Nemotron 3.5 Lightning, which rendered it. The local API answers 400 with code `invalid_reasoning_effort`, the field in `param`, and the accepted names. A model that doesn't reason ignores any effort.
+- Nemotron 3.5 Super reads both `reasoning_effort` and `reasoning.effort`, and refuses two that differ, even two names such as `high` and `max`. Its local API now answers that with the same 400 as an unknown name (code `invalid_reasoning_effort`, `param` naming both fields, and the accepted names), where it gave an untyped "Invalid inference request." Send one of them, or the same effort in both.
+
+### `darkbloom restart` on a stopped pair starts nothing
+
+- On a Mac in a two-Mac cluster whose pair is stopped, or doesn't run on that Mac, `darkbloom restart` and the app's Restart no longer start single-Mac serving that was stopped. Since 0.10.9 they started it whenever its launchd file was still on disk, and `darkbloom stop` keeps that file. So a Mac that served alone before it was paired began serving alone again with its old models, registered with the coordinator and held the Mac's serving lock, and the pair couldn't start until single-Mac serving was stopped again. Now a plain `restart` there restarts single-Mac serving only while it runs. With none running it changes nothing, exits 1, and says that `darkbloom start` starts the pair and `darkbloom start --solo` serves the Mac alone. `restart --solo` still starts single-Mac serving that is set up but stopped.
+- After a restart of single-Mac serving on such a Mac, `restart` no longer says "`darkbloom restart` restarts both Macs", which a restart there doesn't do. It says that `darkbloom start` starts the pair. Where the pair is started but its other Mac is gone, `restart` says the pair isn't running there instead of "This Mac serves in a two-Mac cluster".
+
+### `darkbloom route this-mac`, `my-macs` or `my-macs-first`
+
+- `darkbloom route this-mac`, `darkbloom route my-macs` and `darkbloom route my-macs-first` save where your requests go when this Mac's local API can't take them (`[local] route`), so the route no longer needs a hand edit of `provider.toml` or a whole `darkbloom start --route`. Each says what it means: `my-macs` sends them to your other Macs, free, and never to the network; `my-macs-first` sends them to your other Macs, then to the Darkbloom network, billed, and requests from other machines (your LAN or tailnet) never use the paid network.
+- `my-macs` and `my-macs-first` need your account API key: without one they save nothing, exit 1 and name `darkbloom route key`. They only ask whether a key is saved; no line shows a key.
+- A running local API uses a saved route from its next request, with no restart and no model reload: its router reads `[local] route` again when `provider.toml` changes (one `stat` by a request this Mac can't take or a model list; none for a request this Mac serves). The command says "Saved. Your local API uses it now.", or "It applies when your local API starts." with none running. A malformed edit keeps the last good route and is said once in the local API's log, with nothing from the file. So does a read that catches an editor saving the file in place (it empties the file before it writes it): only a whole file counts, so a saved `this-mac` never passes a request on while the file is saved.
+- `darkbloom route key` says the same when it saves or removes the key, which a running local API already read again from its next request. A key removed while the route passes requests on says that the next request this Mac can't take gets this Mac's own answer.
+- That answer now says why. A request this Mac can't take, with `my-macs` or `my-macs-first` saved and no account key, or after `darkbloom route key --remove` removed the key a running local API used, keeps this Mac's 404, 429 or 503. Its message says that this Mac doesn't serve the model (or can't take the request now), and that reaching your other Macs needs an account key (`darkbloom route key`), with code `account_key_needed`. The local API's log says it once, never with the key. Before, it was this Mac's plain "Requested model is unavailable." with nothing in the log.
+- In a two-Mac cluster, both commands say plainly that the leading Mac's route and key apply: the pair's local API runs there, and requests from the other Mac reach it from another machine, so with `my-macs-first` they never use the paid network, which both Macs now say. Their words are now true for each Mac. On the leading Mac, a removed key says that the pair passes nothing on until a key is saved there again, `route this-mac` says that the pair's local API passes nothing on, and the summary and `--no-auth` lines name this pair, not this Mac. The other Mac says only that the leading Mac's route decides what the pair passes on, and names `darkbloom route key`, or `darkbloom route key --remove`, to run on the leading Mac; refused for want of a key, it names the leading Mac first. A pair's local API without a local key (`--no-auth`) never claims to pass requests on.
+- `darkbloom route key`, with `[local] route = "this-mac"`, now names `darkbloom route my-macs` to use the key.
+
+### A simpler start: Autopilot only for the network, a picker that opens on what fits, no key on screen
+
+- The experimental Autopilot is for the Darkbloom network, so `darkbloom start` asks about it only when this Mac serves the Darkbloom network. Both, me first never asks and keeps your saved answer; `darkbloom autopilot enable`, `--autopilot` and `--no-autopilot` change it. Only me has no Autopilot: there, `darkbloom autopilot enable` says `Autopilot requires a network provider. Nothing was saved.`
+- The model picker opens with your last selection still on this Mac selected, else one downloaded model that fits with room to spare, else the smallest one that fits. It never pre-selects a model it would have to download, and no longer the biggest one that fits (it pre-selected a 176 GiB model on a test Mac).
+- No start screen prints the local key: `darkbloom start --local --here` now says ``API key:  `darkbloom local` shows it``, and where your requests go, instead of the key and `export OPENAI_API_KEY=…` lines.
+
+### One flag sets OpenCode or Hermes up: `--opencode` and `--hermes`
+
+- One flag sets OpenCode 2 or Hermes Agent up to use Darkbloom, as `ollama launch` and `omlx launch` do:
+  `darkbloom --opencode`, `darkbloom --hermes`, or both. If this Mac's local API already runs, nothing restarts;
+  otherwise `start` runs as usual and the tools are set up once its local API answers.
+- It prints the file it changed, the backup and a one-line undo, then where your requests go and the two variables
+  other OpenAI clients need (naming the key file, never the key). No line, and no tool file, holds the key.
+- A Hermes older than v0.20.2 is set up with one warning line: it can't read the key until `hermes update`.
+- A tool that isn't installed, OpenCode 1, Hermes without a 64K-context model, or a start that serves only the
+  Darkbloom network: a plain `✗` line, nothing written, and Darkbloom keeps serving. Refused with `--network` and
+  `--no-auth` (and with `--distributed`). Beside a running `--no-auth` local API, it says so and starts nothing.
+- Without Darkbloom's catalog (offline, or the coordinator down), a run again keeps each model's name, image support
+  and limits as they were set up, changes nothing, and says the catalog wasn't reachable. A model set up for the first
+  time then gets its ID and text input only, and one line says to run the start again online for its name and image
+  support.
+- A model that isn't loaded yet gets one line: run the start again once it is, to pick up its limits. See
+  [Use it from OpenCode or Hermes](docs/provider/local-first.md#use-it-from-opencode-or-hermes), which also
+  covers `OPENCODE_CONFIG_DIR` and Hermes profiles.
+
+### Qwen tensor-parallel decode wastes less time per token
+
+- A Qwen pair now hands each token's work to the GPU every eight layers instead of after every layer, so the GPU spends less time waking up and waiting. On two M5 Ultras a token took about 15 % less time for one request and about 13 % less for four at once. The output is unchanged.
+
+### `darkbloom --opencode` and `--hermes` say what happened to your default model, and where the models run
+
+- OpenCode: Darkbloom's model becomes OpenCode's default only when OpenCode has none: neither of its global config files sets one (`opencode.json`, `opencode.jsonc`; OpenCode 2 doesn't read OpenCode 1's `config.json`), and its TUI remembers no model you picked with `/models` (`~/.local/state/opencode/model.json`). Its own line says so, and how to go back for good: ``New OpenCode sessions now use Darkbloom's Qwen 3.8 27B. To go back, remove "model" from ~/.config/opencode/opencode.jsonc or run the Undo below.`` When a file sets one, nothing is written for it, and the line names it: ``Your default stays exo/llama-3.3-70b; pick Darkbloom with /models.`` When OpenCode remembers a pick: ``Pick Darkbloom once with /models; OpenCode remembers it.`` The `Undo:` line stays.
+- Hermes: Darkbloom still becomes the main model, and the line names the one it replaced: ``New Hermes chats now use Darkbloom's Qwen 3.8 27B (before: gpt-6-astra via opencodex). Switch back: hermes model``. Its headline matches OpenCode's (``✓ Hermes can use Darkbloom: 1 model.``).
+- A start with a tool flag beside a local API that already serves names the URL the tools use, not the address it listens on: ``Darkbloom already serves at http://127.0.0.1:8001/v1; setting up OpenCode for it.`` (it said `0.0.0.0:8001` for a pair's).
+- On a Mac whose local API is its pair's (the leading Mac's, or a member's relay), the tools name the pair's models ``Qwen 3.8 27B (your pair)``, not `(this Mac)`, for a pair of any size; a run again changes nothing. Hermes makes the pair's model its main one, as it does this Mac's, and a pair's models take their engine's word on image input and reasoning, as this Mac's do.
+
+### `darkbloom --opencode` and `--hermes` wait for your model, and starts say when a tool points elsewhere
+
+- Before it writes a tool's config, the start waits while this Mac still loads the models it started with, so OpenCode and Hermes get the limits this Mac gives each model instead of the catalog's. A terminal shows one live line, ``⠙ Loading Gemma 4 26B before setting up OpenCode… 42s``; without one, a line as it starts and one as it ends. It waits at most 10 minutes. A model still loading then, or one that didn't load, sets nothing up, and one line names the next step (`darkbloom status`, then `darkbloom --opencode` again). Ctrl-C stops the wait: nothing is written, and the start says so, also when the model finishes loading just then. Darkbloom keeps serving either way. On one Mac only for now: a pair's local API isn't waited for.
+- A model that isn't loading as the tools are set up (one unloaded when idle, or one that loads on a request) is named in one line: run `darkbloom --opencode` again once `darkbloom status` shows it loaded. That holds too when a route that dials out lists the catalog's limits for it.
+- A start without `--opencode` or `--hermes` never changes a tool's config. When OpenCode or Hermes is set up for another address than this Mac's local API (another port or `--bind`), or reads another key file, one line says so: ``OpenCode points at http://127.0.0.1:8001/v1, not this Mac's local API (http://127.0.0.1:8002/v1): `darkbloom --opencode` points it there.`` `localhost`, `127.0.0.1` and `::1` are this Mac, in any case, and so is its `.local` name for an API on every address. On one Mac only for now: a paired Mac's start doesn't say it.
+
+### The update check asks again instead of waiting a minute, and says what failed
+
+- The check for a new release sent one request to the coordinator and waited up to 60 seconds for its answer. When that connection stalled, `darkbloom update` failed after a minute with "download failed: update check failed: The request timed out", although nothing had been downloaded, and `--check-only` with "update check failed: …". Now each try waits at most 15 seconds, and a try that gets no answer, loses or can't open its connection, or can't resolve the coordinator's name is made again after 0.5 to 1, then 1 to 2 seconds: 3 tries, under a minute in all. An answer from the coordinator, an error included, is not asked again. Every automatic update (a single Mac's, a pair's, the watchdog's and the startup check) uses the same check.
+- A pair's automatic update, at its update slot or catching up with the other Mac, asks once more 1 to 2 minutes after a check without an answer, within the same slot, so one stalled minute no longer costs both Macs 30 minutes.
+- A check that still fails says what failed and what to do, on two lines, and points at the network only when no answer came: `Couldn't check for updates: api.darkbloom.dev didn't answer within 15 s (3 tries). Nothing was downloaded or changed.` and ``Run `darkbloom update` again in a minute. If it keeps failing, check this Mac's network connection.`` When the coordinator answered with an error or with no release this Mac can use, the second line says the network works; when the check failed on this Mac (its update record, its coordinator URL), it says so.
+- Each failed try is logged with how it connected (HTTP version, a new or reused connection, direct or through a proxy, the address) and the error's domain and code, so a stall leaves evidence in the provider's, the cluster service's or the watchdog's log.
+
+### A video whose decoder fails once is decoded again, not refused
+
+- When the video reader of GLM 5.3, MiMo V2.6, Qwen4 or Nemotron Super fails on a video that passed its metadata checks, the provider decodes the video once more with a new reader over the same bytes. A valid video that met one reader failure is now served with the same frames. Before, GLM refused it as `invalid_media` (400), and the coordinator did not send it to another provider.
+- When the reader fails again with a decoder, hardware or interruption fault, the provider refuses the request as a retryable 503, and the coordinator can send it to another provider. Any other second failure, such as a truncated video, is still the deterministic `invalid_media` (400). A Qwen4 video whose reader fails twice without such a fault is now `invalid_media` (400) too; before, every Qwen4 reader failure was a retryable 503.
+- Each failed reader pass logs a WARN `engine_health` event `video_reader_failed` with the reader status and the domain and code of its errors. It carries no media or prompt content.
+
+## v0.10.10
+
+Published 2026-11-06 ([release](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.10)).
 
 ### Upgrade and rollout notes
 

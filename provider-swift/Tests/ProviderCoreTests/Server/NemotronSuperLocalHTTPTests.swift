@@ -185,7 +185,6 @@ extension NemotronSuperLocalHTTPTests {
                                 try body(image: "data:image/jpeg;base64,AA==", stream: true),
                                 try body(image: png, extra: ["enable_thinking": false,
                                     "chat_template_kwargs": ["enable_thinking": true]]),
-                                try body(image: png, extra: ["response_format": ["type": "json_object"]]),
                                 ByteBuffer(string: "{")] {
                     try await client.execute(uri: "/v1/chat/completions", method: .post,
                         headers: headers, body: invalid) { response in

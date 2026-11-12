@@ -132,14 +132,15 @@ extension Start {
     /// Three-way menu (always ready / free after 60 min / custom window). Enter
     /// keeps the current policy. Persists only when the answer differs from the
     /// pinned config value, then returns the effective minutes. Non-TTY stdin
-    /// skips the prompt and keeps `current` (scripts never block here).
+    /// or stdout skips the prompt and keeps `current`: scripts never block here,
+    /// nor does `darkbloom local | …`, whose menu nobody would see.
     internal func promptIdleUnloadPolicy(
         current: UInt64,
         selectedModelIDs: [String],
         snapshot: RuntimeSnapshot,
         readInput: () -> String? = { readLine() }
     ) throws -> UInt64 {
-        guard isatty(STDIN_FILENO) != 0 else { return current }
+        guard isatty(STDIN_FILENO) != 0, isatty(STDOUT_FILENO) != 0 else { return current }
 
         // Resident footprint of the selection (upper bound: max_model_slots may
         // keep fewer resident). Unfiltered scan so a too-big-for-RAM model still

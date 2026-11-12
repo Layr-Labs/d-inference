@@ -1,6 +1,6 @@
 # Provider Serving Authorization
 
-> Last updated: 2026-10-27
+> Last updated: 2026-11-09
 
 Provider trust status reports external serving permission, not a guarantee of
 correct model output, physical uniqueness or secrecy from the executing process.
@@ -96,6 +96,31 @@ lease until its `expires_at` when its latest renewal arrived more than
 `none` and `legacy` decisions still require receipt within `snapshotMaxAge`.
 The lease duration remains the external coordinator's decision; see the
 [current status contract][platform-current].
+
+When neither shows a decision, an older `none` or `legacy` report stays visible
+as dated history, so a denial can't vanish 10 seconds after it arrived and leave
+a denied Mac looking healthy (`ProviderAuthorizationReadiness.lastReportedStatus`,
+`lastReportedSummary`; `DaemonState.lastReportedProviderAuthorization`). Every
+check above still applies except the receipt's age: the state-file write within
+`snapshotMaxAge`, the process and coordinator identity, `online`, protocol `1`,
+and a receipt after the process started and at most 2 seconds ahead. An older
+`app_attest` report, or a path it doesn't know, is never history.
+
+| Command | Line | Level |
+|---|---|---|
+| `darkbloom status` | `Last reported authorization: received <age> ago; not a fresh dispatch grant. <summary>` before the trust line | — |
+| `darkbloom doctor` | `last reported authorization`, in its coordinator checks (after the health check) and in the diagnosis's trust section, as `serving authorization` appears in both | INFO for `legacy`, WARN for `none` |
+| `darkbloom verify` | `last reported authorization`, after the coordinator health check | INFO for `legacy`, WARN for `none` |
+
+History is display only: it is never a dispatch grant, never offers MDM removal,
+changes no enrollment or migration and doesn't touch the coordinator's own
+per-request authorization. It never stands in for the public proofs: the trust
+level and the public attestation lookup still run after it, and `darkbloom
+verify` still fails on any warning or failure (an INFO line fails nothing).
+Code: `provider-swift/Sources/darkbloom/StatusCommand.swift`,
+`provider-swift/Sources/darkbloom/Diagnostics/DoctorRunner.swift`,
+`provider-swift/Sources/darkbloom/DoctorCommand.swift` (`buildCoordinatorDoctorChecks`)
+and `provider-swift/Sources/darkbloom/VerifyCommand.swift`.
 
 The serving summary takes that displayed lease and the strict removal decision
 separately (`ProviderAuthorizationReadiness.summary`). Status and both doctor

@@ -56,6 +56,12 @@ extension ClusterService {
         return lock.withLock { control.map { $0.leads && $0.mode(now: now) == .cluster } ?? false }
     }
 
+    /// Whether this Mac leads and a member of the plan doesn't answer (`ClusterControlNode.Mode.othersAway`).
+    func otherMacAway() -> Bool {
+        let now = Self.monotonicSeconds()
+        return lock.withLock { control?.mode(now: now).othersAway ?? false }
+    }
+
     /// The peer must retain its lease until a planned stop retires this Mac.
     /// Both wire booleans come from one atomic local-record snapshot.
     static func peerLeaseState(record: ClusterSetupRecord?, mode: ClusterControlNode.Mode,

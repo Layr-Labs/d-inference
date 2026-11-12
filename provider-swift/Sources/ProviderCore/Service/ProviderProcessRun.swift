@@ -11,6 +11,8 @@ public enum ProviderProcessRun {
         /// The run identity in the marker file.
         public var processStartMicros: UInt64?
         public var previousExit: AppAttestPreviousExit
+        /// Why the previous process stopped, when it stopped cleanly.
+        public var previousExitCause: ProviderRunMarker.ExitCause?
         public var startReason: AppAttestStartReason
     }
 
@@ -44,11 +46,14 @@ public enum ProviderProcessRun {
             watchdogRestartAt: WatchdogStateStore.read().lastRestartAt,
             launchedByLaunchd: ProviderStartReason.launchedByLaunchd(environment: environment),
             processStartMicros: processStartMicros))
+        let previousExitCause = ProviderRunMarker.previousExitCause(previous, processStartMicros: processStartMicros)
         let context = StartContext(processStartedAt: processStartMicros.map { Int64($0 / 1_000_000) },
                                    processStartMicros: processStartMicros,
                                    previousExit: ProviderRunMarker.previousExit(previous, processStartMicros: processStartMicros),
+                                   previousExitCause: previousExitCause,
                                    startReason: reason)
-        try? marker.markRunning(processStartMicros: processStartMicros, version: version, previousExit: context.previousExit)
+        try? marker.markRunning(processStartMicros: processStartMicros, version: version,
+                                previousExit: context.previousExit, previousExitCause: context.previousExitCause)
         state.lock.withLock {
             state.context = context
             state.marker = marker
@@ -82,7 +87,8 @@ public enum ProviderProcessRun {
             state.relaunchCause = nil
             guard let marker = state.marker else { return }
             try? marker.markRunning(processStartMicros: state.context?.processStartMicros, version: ProviderCore.version,
-                                    previousExit: state.context?.previousExit)
+                                    previousExit: state.context?.previousExit,
+                                    previousExitCause: state.context?.previousExitCause)
         }
     }
 }

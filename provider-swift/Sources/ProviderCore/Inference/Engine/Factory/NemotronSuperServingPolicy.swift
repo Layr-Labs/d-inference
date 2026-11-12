@@ -385,6 +385,36 @@ enum NemotronSuperServingPolicy {
     /// (SUPER-IMAGE-504) for a request this Mac would serve next.
     static let finishingWait: Duration = .seconds(1)
 
+    /// The longest a media request that finds the owner, or the image
+    /// binding, busy with media answers already streaming waits for its slot
+    /// instead of a 429 bounce: those answers end soon (production images:
+    /// first content to end p50 2.0 s, p90 4.1 s). One request waits at a
+    /// time, and only within its first-content budget (`stackedMediaWaitEnd`).
+    static let stackedMediaWait: Duration = .seconds(3)
+    /// Kept from a forwarded first-content budget after the wait and the
+    /// expected first chunk: the chunk's way to the coordinator.
+    static let stackedMediaWaitMargin: Duration = .milliseconds(500)
+    /// A media request's expected admission-to-first-chunk time before the
+    /// owner has measured one (`Owner.expectedMediaFirstChunk`).
+    static let unmeasuredMediaFirstChunk: Duration = .seconds(6)
+    /// Recent media first-chunk times an owner keeps.
+    static let mediaFirstChunkSamples = 8
+
+    /// When a media request arriving at `now` stops waiting for a busy slot:
+    /// `stackedMediaWait` later, or earlier so that `expectedFirstChunk` and
+    /// `stackedMediaWaitMargin` still fit before a forwarded first-content
+    /// deadline. Nil when no wait fits: the request is refused at once, as
+    /// before. A local request forwards no deadline.
+    static func stackedMediaWaitEnd(now: ContinuousClock.Instant = .now,
+                                    firstContentDeadline: ContinuousClock.Instant?,
+                                    expectedFirstChunk: Duration) -> ContinuousClock.Instant? {
+        var end = now + stackedMediaWait
+        if let firstContentDeadline {
+            end = min(end, firstContentDeadline - expectedFirstChunk - stackedMediaWaitMargin)
+        }
+        return end > now ? end : nil
+    }
+
     /// Decoder workspace `NemotronSuperImageDecode` quotes for its largest
     /// admitted raster (64 Mi pixels; JPEG at 16 bytes per pixel and axes to
     /// 65,500, PNG at 14 and axes to 131,072; 128 bytes per row) with its

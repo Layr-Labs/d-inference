@@ -341,6 +341,84 @@ extension NemotronSuperLocalImageBindingTests {
     }
 }
 
+extension NemotronSuperLocalImageBindingTests {
+    /// SUPER-SLOT: an image that arrives while the active image's answer is
+    /// streaming (held before its native terminal) waits until `stackedUntil`,
+    /// reserving nothing, and is served once that image finishes. Without a
+    /// bound it is still refused at once, and one request waits at a time.
+    @Test(.timeLimit(.minutes(1))) func stackedImageWaitsForAStreamingImage() async throws {
+        let (installed, construction, residency) = try SuperInstalledFixture().make()
+        let budget = GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0,
+            memorySnapshot: { .init(total: 8 << 30, active: 0, cache: 0, systemAvailable: .max) })
+        let lease = try #require(await budget.claimPendingLoad(requestID: "super-image-stacked",
+            weightBytes: UInt64(installed.receipt.payloadBytes), minimumKVBytes: 2 << 30))
+        let owner = try await NemotronSuperLocalBridgeBuilder.make(installed: installed,
+            tokenizer: TokenizerHandle(SuperSyntheticTokenizer()), eosTokenIDs: [31],
+            sizing: .init(weightsBytes: installed.receipt.payloadBytes, fp16KVBytesPerToken: 64,
+                maxContextLength: 64, defaultMaxTokens: 2), kvBytesCapacity: 2 << 30,
+            kvBudget: budget, loadLease: lease, construction: construction, environment: [:])
+        let images = try owner.localImageBinding()
+        let input = NemotronSuperLocalImageBinding.Input(promptTokens: [1, 18, 2],
+            normalizedImages: [MLXArray.zeros([1, 1, 4, 4])])
+        let request = ChatCompletionRequest(model: NemotronSuperLocalBinding.modelID,
+            messages: [], temperature: 0, max_tokens: 2)
+        let before = await budget.outstandingReservedBytes()
+        // Holds each image's real pump after its content, before its native terminal.
+        let gate = SuperHTTPTerminalGate()
+        await owner.bridge._testInstallCancelledSettlementHooks(
+            beforeNativeTerminal: { _ in await gate.hold() }, onSettlementWait: {})
+        let firstEvents = SuperOwnedImageEvents()
+        let first = Task {
+            try await images.run(request: request, input: input) { _ = await firstEvents.record($0) }
+            return await firstEvents.completions
+        }
+        do {
+            try await superHTTPEventually("first image streaming, held before terminal") {
+                let entered = await gate.entered
+                let chunks = await firstEvents.chunks
+                return entered && chunks > 0
+            }
+            try await Task.sleep(for: .milliseconds(50))
+            let held = await budget.outstandingReservedBytes()
+            // Without a bound: refused at once, as before.
+            await #expect(throws: NemotronSuperLocalImageBinding.Failure.busy) {
+                try await images.run(request: request, input: input) { _ in }
+            }
+            let stackedEvents = SuperOwnedImageEvents()
+            let stacked = Task {
+                try await images.run(request: request, input: input,
+                                     stackedUntil: ContinuousClock.now + .seconds(3)) { _ = await stackedEvents.record($0) }
+                return await stackedEvents.completions
+            }
+            try await Task.sleep(for: .milliseconds(200))
+            // One waits at a time: another bounded request is refused at once.
+            let start = ContinuousClock.now
+            await #expect(throws: NemotronSuperLocalImageBinding.Failure.busy) {
+                try await images.run(request: request, input: input,
+                                     stackedUntil: ContinuousClock.now + .seconds(3)) { _ in }
+            }
+            #expect(ContinuousClock.now - start < .milliseconds(500))
+            // The waiting image has reserved nothing.
+            #expect(await budget.outstandingReservedBytes() == held)
+            await gate.release()
+            #expect(try await first.value == [2])
+            #expect(try await stacked.value == [2])
+        } catch {
+            await gate.release()
+            _ = await first.result
+            try await owner.closeAfterDrain()
+            _ = await budget.finishPendingLoad(lease)
+            throw error
+        }
+        #expect(await budget.outstandingReservedBytes() == before)
+        #expect(!(await gate.timedOut))
+        try await owner.closeAfterDrain()
+        #expect(residency.snapshot.usedBytes == 0)
+        #expect(await budget.finishPendingLoad(lease))
+        #expect(await budget.outstandingReservedBytes() == 0)
+    }
+}
+
 /// Holds a request's settlement for `hold` once its answer has ended, and
 /// tells the test when that has begun.
 private actor SuperSettlementLatch {

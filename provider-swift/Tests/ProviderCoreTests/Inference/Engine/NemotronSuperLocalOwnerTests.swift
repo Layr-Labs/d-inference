@@ -70,37 +70,155 @@ struct NemotronSuperLocalOwnerTests {
 
 extension NemotronSuperLocalOwnerTests {
     /// SUPER-IMAGE-504: the full owner waits, bounded, for a request whose
-    /// answer has ended (only its settlement remains), and only for that.
+    /// answer has ended (only its settlement remains), and without a stacked
+    /// bound only for that.
     @Test func fullOwnerWaitsOnlyForARequestWhoseAnswerHasEnded() async throws {
         let (owner, _, residency, budget, lease) = try await Self.owner()
         #expect(owner.maximumLocalRequests == 1)
         #expect(owner.admitLocalRequest())
-        // Mid-answer: refused at once, as before.
+        let first = OwnerProgress(isMedia: true)
+        owner.noteLocalFirstChunk(first)
+        // Mid-answer: refused at once, as before, even behind a streaming image.
         var start = ContinuousClock.now
         #expect(await owner.admitLocalRequest(waitingUpTo: .seconds(1)) == false)
         #expect(ContinuousClock.now - start < .milliseconds(500))
         // Answer ended: the next request waits for the settlement, then is admitted.
-        owner.noteLocalAnswerEnded()
+        owner.noteLocalAnswerEnded(first)
         let settlement = Task {
             try? await Task.sleep(for: .milliseconds(200))
-            owner.finishLocalRequest(answerEnded: true)
+            owner.finishLocalRequest(first)
         }
         start = ContinuousClock.now
         #expect(await owner.admitLocalRequest(waitingUpTo: .seconds(1)))
         #expect(ContinuousClock.now - start >= .milliseconds(150))
         await settlement.value
         // Bounded: a settlement that outlasts the wait still refuses, after it.
-        owner.noteLocalAnswerEnded()
+        let second = OwnerProgress(isMedia: false)
+        owner.noteLocalAnswerEnded(second)
         start = ContinuousClock.now
         #expect(await owner.admitLocalRequest(waitingUpTo: .milliseconds(300)) == false)
         #expect(ContinuousClock.now - start >= .milliseconds(290))
-        owner.finishLocalRequest(answerEnded: true)
+        owner.finishLocalRequest(second)
         #expect(owner.admitLocalRequest())
         owner.finishLocalRequest()
         try await owner.closeAfterDrain()
         #expect(residency.snapshot.usedBytes == 0)
         #expect(await budget.finishPendingLoad(lease))
     }
+
+    /// SUPER-SLOT: a full owner holds a stacked media request until its bound
+    /// only while every admitted request is a media answer already streaming
+    /// (or ended). One request waits at a time and takes the next admission
+    /// before any newcomer; a refused or cancelled wait leaves no waiter.
+    @Test func fullOwnerHoldsOneStackedMediaRequestBehindStreamingImages() async throws {
+        let (owner, _, residency, budget, lease) = try await Self.owner()
+        let stacked: @Sendable (Duration) -> ContinuousClock.Instant = { ContinuousClock.now + $0 }
+        // Behind text, or an image not streaming yet: refused at once.
+        for media in [false, true] {
+            #expect(owner.admitLocalRequest())
+            let ahead = OwnerProgress(isMedia: media)
+            if !media { owner.noteLocalFirstChunk(ahead) }
+            let start = ContinuousClock.now
+            #expect(await owner.admitLocalRequest(waitingUpTo: .zero, stackedUntil: stacked(.seconds(3))) == false)
+            #expect(ContinuousClock.now - start < .milliseconds(500), "media \(media)")
+            owner.finishLocalRequest(ahead)
+        }
+        // Behind a streaming image: it waits, and is admitted when the image finishes.
+        #expect(owner.admitLocalRequest())
+        let image = OwnerProgress(isMedia: true)
+        owner.noteLocalFirstChunk(image)
+        let start = ContinuousClock.now
+        let waiting = Task { await owner.admitLocalRequest(waitingUpTo: .zero, stackedUntil: stacked(.seconds(3))) }
+        try await Task.sleep(for: .milliseconds(150))
+        // One waiter: another request is refused at once, whatever its bound.
+        #expect(await owner.admitLocalRequest(waitingUpTo: .seconds(1), stackedUntil: stacked(.seconds(3))) == false)
+        #expect(owner.admitLocalRequest() == false)
+        owner.finishLocalRequest(image)
+        // The freed admission goes to the waiting request, not to a newcomer.
+        #expect(await waiting.value)
+        #expect(ContinuousClock.now - start >= .milliseconds(150))
+        // Bounded: behind a streaming image that outlasts it, refused after the bound.
+        let next = OwnerProgress(isMedia: true)
+        owner.noteLocalFirstChunk(next)
+        var bounded = ContinuousClock.now
+        #expect(await owner.admitLocalRequest(waitingUpTo: .zero, stackedUntil: stacked(.milliseconds(300))) == false)
+        #expect(ContinuousClock.now - bounded >= .milliseconds(290))
+        // Cancelled, by its task or by its caller: the wait ends at once and leaves no waiter.
+        let cancelledTask = Task { await owner.admitLocalRequest(waitingUpTo: .zero, stackedUntil: stacked(.seconds(3))) }
+        try await Task.sleep(for: .milliseconds(100))
+        bounded = ContinuousClock.now
+        cancelledTask.cancel()
+        #expect(await cancelledTask.value == false)
+        #expect(ContinuousClock.now - bounded < .milliseconds(500))
+        let flag = WaitFlag()
+        let flagged = Task {
+            await owner.admitLocalRequest(waitingUpTo: .zero, stackedUntil: stacked(.seconds(3)),
+                                          cancelled: { flag.isSet })
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        bounded = ContinuousClock.now
+        flag.set()
+        #expect(await flagged.value == false)
+        #expect(ContinuousClock.now - bounded < .milliseconds(500))
+        // No waiter is left behind: the next stacked request waits again.
+        bounded = ContinuousClock.now
+        #expect(await owner.admitLocalRequest(waitingUpTo: .zero, stackedUntil: stacked(.milliseconds(200))) == false)
+        #expect(ContinuousClock.now - bounded >= .milliseconds(190))
+        owner.finishLocalRequest(next)
+        #expect(owner.admitLocalRequest())
+        owner.finishLocalRequest()
+        try await owner.closeAfterDrain()
+        #expect(residency.snapshot.usedBytes == 0)
+        #expect(await budget.finishPendingLoad(lease))
+    }
+
+    /// The owner expects the longest of its recent media first-chunk times,
+    /// and a conservative default before the first.
+    @Test func expectedMediaFirstChunkIsTheLongestRecentOne() async throws {
+        let (owner, _, residency, budget, lease) = try await Self.owner()
+        #expect(owner.expectedMediaFirstChunk == NemotronSuperServingPolicy.unmeasuredMediaFirstChunk)
+        owner.recordMediaFirstChunk(.seconds(2))
+        owner.recordMediaFirstChunk(.seconds(1))
+        #expect(owner.expectedMediaFirstChunk == .seconds(2))
+        for _ in 0..<NemotronSuperServingPolicy.mediaFirstChunkSamples {
+            owner.recordMediaFirstChunk(.milliseconds(1500))
+        }
+        #expect(owner.expectedMediaFirstChunk == .milliseconds(1500))
+        try await owner.closeAfterDrain()
+        #expect(residency.snapshot.usedBytes == 0)
+        #expect(await budget.finishPendingLoad(lease))
+    }
+
+    /// A stacked media request waits at most `stackedMediaWait`, and only as
+    /// long as its forwarded first-content budget still covers the expected
+    /// first chunk and the margin after the wait; otherwise not at all.
+    @Test func stackedMediaWaitFitsTheFirstContentBudget() {
+        let now = ContinuousClock.now
+        let bound = NemotronSuperServingPolicy.stackedMediaWait
+        func end(_ budget: Duration?, expected: Duration) -> ContinuousClock.Instant? {
+            NemotronSuperServingPolicy.stackedMediaWaitEnd(now: now, firstContentDeadline: budget.map { now + $0 },
+                                                           expectedFirstChunk: expected)
+        }
+        // A local request forwards no budget: the full bound.
+        #expect(end(nil, expected: .seconds(6)) == now + bound)
+        // An ample budget: the bound.
+        #expect(end(.seconds(10), expected: .seconds(2)) == now + bound)
+        // A tight one: what is left after the expected first chunk and the margin.
+        #expect(end(.seconds(4), expected: .seconds(2)) == now + .milliseconds(1500))
+        // None left: refused at once.
+        #expect(end(.milliseconds(2500), expected: .seconds(2)) == nil)
+        #expect(end(.seconds(2), expected: .seconds(2)) == nil)
+    }
+}
+
+private typealias OwnerProgress = NemotronSuperLocalBridgeBuilder.Owner.LocalRequestProgress
+
+/// A caller's cancellation flag for an admission wait.
+private final class WaitFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    var isSet: Bool { lock.withLock { value } }
+    func set() { lock.withLock { value = true } }
 }
 
 extension NemotronSuperLocalOwnerTests {

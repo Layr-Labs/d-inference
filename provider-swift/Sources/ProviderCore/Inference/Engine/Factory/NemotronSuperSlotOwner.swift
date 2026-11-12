@@ -56,14 +56,16 @@ final class NemotronSuperSlotOwner: Sendable {
     /// trusts schema metadata (see `NemotronSuperRequestPlan`). A `logprobs`
     /// request's entries leave on `logprobs`. The coordinator's `usageSignal`
     /// carries a text request's cache outcome to its receipts and usage; its
-    /// `donationDemand` gates a durable write.
+    /// `donationDemand` gates a durable write. A coordinator request's
+    /// `firstContentDeadline` bounds how long a stacked media request waits.
     func chatEngine(body: Data, hasMedia: Bool, cacheScope: String?,
                     trustsSchemaMetadata: Bool, logprobs: EngineV2LogprobsChannel? = nil,
                     usageSignal: EngineV2RequestUsageSignal? = nil,
-                    donationDemand: SSDCheckpointDonationDemand? = nil) -> any MLXServerEngine {
+                    donationDemand: SSDCheckpointDonationDemand? = nil,
+                    firstContentDeadline: FirstContentDeadline? = nil) -> any MLXServerEngine {
         chat.engine(body: body, hasMedia: hasMedia, cacheScope: cacheScope,
                     trustsSchemaMetadata: trustsSchemaMetadata, logprobs: logprobs, usageSignal: usageSignal,
-                    donationDemand: donationDemand)
+                    donationDemand: donationDemand, firstContentDeadline: firstContentDeadline)
     }
 
     /// The reference prompt length; see `NemotronSuperLocalImageHTTP`.

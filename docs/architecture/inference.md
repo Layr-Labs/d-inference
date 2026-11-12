@@ -739,9 +739,20 @@ at a time, like images). A request that arrives while the owner's request, or
 the binding's media request, has finished its answer and only its settlement
 remains (native retirement, the media charge's release) waits up to
 `NemotronSuperServingPolicy.finishingWait` (1 s) for it instead of a 429
-`queue_full` (`NemotronSuperLocalBridgeBuilder.Owner.admitLocalRequest(waitingUpTo:)`,
-`NemotronSuperLocalImageBinding.admit()`); one that arrives mid-answer is still
-refused at once. Under the ingress reservation `NemotronSuperVideoDecode.inspect`
+`queue_full` (`NemotronSuperLocalBridgeBuilder.Owner.admitLocalRequest(waitingUpTo:stackedUntil:cancelled:)`,
+`NemotronSuperLocalImageBinding.admit(stackedUntil:)`). A media request that
+arrives while every request ahead of it is a media answer already streaming
+(its first chunk has passed; images end about 2 s later) also waits, until
+`NemotronSuperServingPolicy.stackedMediaWaitEnd`: at most `stackedMediaWait`
+(3 s), and for a coordinator request only while its forwarded first-content
+deadline still covers the owner's expected media first-chunk time (the longest
+of its last `mediaFirstChunkSamples`, `Owner.expectedMediaFirstChunk`) and
+`stackedMediaWaitMargin`. A local request forwards no deadline and may wait the
+whole bound. One request waits at a time and takes the next admission before
+any newcomer; any other request, text mid-answer included, is still refused at
+once. A waiting request reserves nothing, so the previous request's media
+charge is released before it reserves; cancellation (a coordinator cancel or a
+local disconnect) ends the wait. Under the ingress reservation `NemotronSuperVideoDecode.inspect`
 runs the shared `MediaIngest.decodeVideo` checks (label, decoded bytes,
 container, duration, coded frame size up to
 `NemotronSuperServingPolicy.maximumVideoFramePixels` pixels in any shape),

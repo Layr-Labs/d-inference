@@ -412,7 +412,7 @@ actor SuperHTTPTerminalGate {
         // Independent bounded failsafe: transport/read assertion failures cannot
         // hold a native pump forever, even if the explicit catch cleanup fails.
         let timeout = Task {
-            do { try await Task.sleep(for: .seconds(20)) }
+            do { try await Task.sleep(for: .seconds(40)) }
             catch { return }
             self.release(timedOut: true)
         }

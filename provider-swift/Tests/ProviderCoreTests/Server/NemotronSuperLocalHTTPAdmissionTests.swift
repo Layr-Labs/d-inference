@@ -98,12 +98,20 @@ struct NemotronSuperLocalHTTPAdmissionTests {
                 let held = await budget.outstandingReservedBytes()
                 #expect(held > baseline)
                 // Admission precedes the body's plan: even a request the plan
-                // would refuse gets the busy status without being decoded.
+                // would refuse gets the busy status without being decoded. Text
+                // gets it at once; an image first waits for the streaming image
+                // ahead of it, up to the stacked bound (a local request forwards
+                // no first-content budget), which this held image outlasts.
                 for (image, stream) in [(false, true), (false, false), (true, true), (true, false)] {
                     for contradictory in [false, true] {
                         let body = try superAdmissionBody(image: image, stream: stream, contradictory: contradictory)
+                        let start = ContinuousClock.now
                         try await client.execute(uri: "/v1/chat/completions", method: .post, headers: headers,
                             body: ByteBuffer(bytes: body)) { response in
+                            let waited = ContinuousClock.now - start
+                            #expect(image ? waited >= NemotronSuperServingPolicy.stackedMediaWait - .milliseconds(100)
+                                          : waited < .seconds(1),
+                                    "image \(image) stream \(stream) contradictory \(contradictory)")
                             #expect(response.status == .tooManyRequests,
                                     "image \(image) stream \(stream) contradictory \(contradictory)")
                             #expect(response.headers[.contentType] == "application/json")

@@ -270,6 +270,99 @@ struct NemotronSuperLocalImageBindingTests {
     }
 }
 
+extension NemotronSuperLocalImageBindingTests {
+    /// SUPER-IMAGE-504: an image that arrives while the active image's answer
+    /// has ended, but its settlement has not (held here by the test seam),
+    /// waits for that settlement and is served instead of a `busy` bounce. Its
+    /// media charge is reserved only after the first one's is released. A
+    /// settlement that outlasts `finishingWait` still refuses, after the wait.
+    @Test(.timeLimit(.minutes(1))) func imageArrivingDuringSettlementWaitsInsteadOfBouncing() async throws {
+        let (installed, construction, residency) = try SuperInstalledFixture().make()
+        let budget = GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0,
+            memorySnapshot: { .init(total: 8 << 30, active: 0, cache: 0, systemAvailable: .max) })
+        let lease = try #require(await budget.claimPendingLoad(requestID: "super-image-settlement",
+            weightBytes: UInt64(installed.receipt.payloadBytes), minimumKVBytes: 2 << 30))
+        let owner = try await NemotronSuperLocalBridgeBuilder.make(installed: installed,
+            tokenizer: TokenizerHandle(SuperSyntheticTokenizer()), eosTokenIDs: [31],
+            sizing: .init(weightsBytes: installed.receipt.payloadBytes, fp16KVBytesPerToken: 64,
+                maxContextLength: 64, defaultMaxTokens: 2), kvBytesCapacity: 2 << 30,
+            kvBudget: budget, loadLease: lease, construction: construction, environment: [:])
+        let images = try owner.localImageBinding()
+        let input = NemotronSuperLocalImageBinding.Input(promptTokens: [1, 18, 2],
+            normalizedImages: [MLXArray.zeros([1, 1, 4, 4])])
+        let request = ChatCompletionRequest(model: NemotronSuperLocalBinding.modelID,
+            messages: [], temperature: 0, max_tokens: 2)
+        let before = await budget.outstandingReservedBytes()
+
+        // Back to back: the second image arrives during the first's 300 ms settlement.
+        let settlement = SuperSettlementLatch(hold: .milliseconds(300))
+        await images.setTestSettlement { await settlement.hold() }
+        let first = Task {
+            let events = SuperOwnedImageEvents()
+            try await images.run(request: request, input: input) { _ = await events.record($0) }
+            return await events.completions
+        }
+        await settlement.waitUntilHeld()
+        await images.setTestSettlement(nil)
+        let second = SuperOwnedImageEvents()
+        do {
+            try await images.run(request: request, input: input) { _ = await second.record($0) }
+        } catch {
+            Issue.record("the image that arrived during the settlement was refused: \(error)")
+        }
+        #expect(await second.completions == [2])
+        #expect(try await first.value == [2])
+        #expect(await budget.outstandingReservedBytes() == before)
+
+        // Bounded: a settlement longer than the wait still answers `busy`, after it.
+        let long = SuperSettlementLatch(hold: .milliseconds(1_800))
+        await images.setTestSettlement { await long.hold() }
+        let third = Task {
+            try await images.run(request: request, input: input) { _ in }
+        }
+        await long.waitUntilHeld()
+        await images.setTestSettlement(nil)
+        let start = ContinuousClock.now
+        await #expect(throws: NemotronSuperLocalImageBinding.Failure.busy) {
+            try await images.run(request: request, input: input) { _ in
+                Issue.record("a request refused after the wait emitted an event")
+            }
+        }
+        let waited = ContinuousClock.now - start
+        #expect(waited >= .milliseconds(950))
+        #expect(waited < .milliseconds(1_700))
+        try await third.value
+        #expect(await budget.outstandingReservedBytes() == before)
+
+        try await owner.closeAfterDrain()
+        #expect(residency.snapshot.usedBytes == 0)
+        #expect(await budget.finishPendingLoad(lease))
+        #expect(await budget.outstandingReservedBytes() == 0)
+    }
+}
+
+/// Holds a request's settlement for `hold` once its answer has ended, and
+/// tells the test when that has begun.
+private actor SuperSettlementLatch {
+    private let duration: Duration
+    private var held = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    init(hold: Duration) { duration = hold }
+
+    func hold() async {
+        held = true
+        for waiter in waiters { waiter.resume() }
+        waiters = []
+        try? await Task.sleep(for: duration)
+    }
+
+    func waitUntilHeld() async {
+        guard !held else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+}
+
 private actor SuperOwnedImageEvents {
     var chunks = 0
     var errors: [String] = []

@@ -7799,7 +7799,7 @@ decode step that carries several requests:
 
 | Where | Builder | `independentRows` | Calls of 2 rows | Calls of 3 or more rows |
 |---|---|---|---|---|
-| Single Mac | the SDK's `PrismHadamardCheckpoint.install` | false (default) | Per row: a decode step of two requests | One batched packed matmul: larger decode steps and every prompt chunk; TF32 (NAX) on M5, FP32 steel on M1 to M4, as in provider 0.10.4 and earlier |
+| Single Mac | the SDK's `PrismHadamardCheckpoint.install` | false (default) | Per row: a decode step of two requests | One batched packed matmul: larger decode steps and every prompt chunk, as in provider 0.10.4 and earlier. MLX runs it with its vector kernels below its vector limit and with its matrix kernels from it (TF32 NAX on M5, FP32 steel on M1 to M4) |
 | Pair stages, the reference check | `QwenPrismHadamardSource.install` | true | Per row | Per row |
 
 Per row is the singleton packed FP32 reduction for each row: a leading weight

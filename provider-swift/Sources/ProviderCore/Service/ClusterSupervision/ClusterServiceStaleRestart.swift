@@ -16,8 +16,8 @@ import Darwin
 /// compares the release its supervisor runs (`service-supervisor.json`) with its own. When the supervisor's is older,
 /// it asks launchd to restart the service's job (`launchctl kickstart -k`): the service stops its part as at a logout,
 /// keeping the pair's saved start, and the supervisor starts again from the installed binary. It asks once per
-/// installed release within `onceEverySeconds`, recorded in the service's folder (`fileName`), so a supervisor that
-/// still reported an older release afterwards would never be restarted in a loop.
+/// installed release within `onceEverySeconds`, and only once that is recorded in the service's folder (`fileName`), so
+/// a supervisor that still reported an older release afterwards would never be restarted in a loop.
 public enum ClusterServiceStaleRestart {
     /// The restart a part asked for, kept in the service's folder.
     public struct Asked: Codable, Equatable, Sendable {
@@ -74,9 +74,9 @@ public enum ClusterServiceStaleRestart {
     public static let waitForStopSeconds: Double = 20
 
     /// At the start of a cluster part: the check, and the restart when it is due. `say` gets a line when it asks, and
-    /// one more if launchctl refuses. After asking, the part starts nothing until the restart stops it (its service
-    /// stops it with SIGTERM, which ends a process that has set no handler yet), so it loads no model only to release
-    /// it again; past `waitForStopSeconds` it starts as before.
+    /// one more if launchctl refuses. After asking, the part starts nothing for `waitForStopSeconds` (`waitForStop`),
+    /// so the restart's stop of the service, which stops this part with SIGTERM, ends it before it loads a model only to
+    /// release it again. A part that is still running after the wait starts as before.
     @discardableResult
     public static func restartIfStale(say: @escaping @Sendable (String) -> Void) -> Decision {
         let decision = restartIfStale(environment: ProcessInfo.processInfo.environment,
@@ -87,10 +87,24 @@ public enum ClusterServiceStaleRestart {
         return decision
     }
 
-    /// RED SEAM (test-only commit): today's wait, a plain sleep. The next commit gives SIGTERM and SIGINT their
-    /// default action during it.
+    /// Sleeps `seconds` with SIGTERM and SIGINT at their default action, then gives them back what they had. A `start`
+    /// part runs under the AppKit host, which has already taken both for the provider's own drain before `Start.run()`
+    /// (`ProviderSignalHandler`: ignored, read by dispatch sources); a SIGTERM would only be noted there, and the part
+    /// would sleep the whole wait and carry on starting. With their default action the stop ends it at once, as it ends
+    /// `cluster link-follower`, which has set no handler yet.
     static func waitForStop(seconds: Double) {
+        var saved: [(number: Int32, action: sigaction)] = []
+        for number in [SIGTERM, SIGINT] {
+            var standard = sigaction()
+            standard.__sigaction_u.__sa_handler = SIG_DFL
+            var previous = sigaction()
+            if sigaction(number, &standard, &previous) == 0 { saved.append((number, previous)) }
+        }
         Thread.sleep(forTimeInterval: seconds)
+        for entry in saved {
+            var action = entry.action
+            sigaction(entry.number, &action, nil)
+        }
     }
 
     static func restartIfStale(environment: [String: String], executablePath: String, thisVersion: String,
@@ -110,8 +124,14 @@ public enum ClusterServiceStaleRestart {
                               jobPID: printed.succeeded ? jobPID(launchctlPrint: printed.stdout) : nil,
                               asked: ClusterSupervisionFiles.read(Asked.self, from: askedPath), now: now)
         guard case .restart(let from, let to) = decision else { return decision }
-        // Recorded before the ask: the restart ends this process too.
-        ClusterSupervisionFiles.write(Asked(from: from, to: to, supervisorPID: supervisor.supervisorPID, at: now), to: askedPath)
+        // Recorded before the ask, and asked only once recorded: the restart ends this process too, and the record is
+        // what keeps the next part's start from asking again.
+        guard ClusterSupervisionFiles.write(Asked(from: from, to: to, supervisorPID: supervisor.supervisorPID, at: now),
+                                            to: askedPath) else {
+            say("could not record the restart in \(askedPath.path), so this Mac's cluster service is not restarted: "
+                + "it still runs v\(from), and runs v\(to) after the next login")
+            return .nothing
+        }
         say("this Mac's cluster service still runs v\(from) while v\(to) is installed (its update did not restart it): "
             + "restarting it once (launchctl kickstart -k \(label)); it starts the pair again on v\(to)")
         kick(LaunchctlControl.target(label: label), say)

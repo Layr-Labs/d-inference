@@ -172,12 +172,18 @@ The rules each Mac applies to the other's progress are in
    installed release restarts the service's launchd job once, before it takes a
    request (`launchctl kickstart -k`;
    `provider-swift/Sources/ProviderCore/Service/ClusterSupervision/ClusterServiceStaleRestart.swift`):
-   only when its supervisor's state file names an earlier release, that
-   supervisor is the process launchd's job runs, and no part asked for this
-   release in the last 6 hours (`service-restart-asked.json`). The part's log
-   says `cluster part: this Mac's cluster service still runs v<earlier> while
-   v<installed> is installed …`. From 0.10.12, which also covers the update to
-   0.10.12: its parts run 0.10.12.
+   only when its supervisor's state file names an earlier release (compared as
+   releases: 0.10.9 is older than 0.10.12, and a DevNet build by its number),
+   the part's parent is the service that supervisor runs, that supervisor is the
+   process launchd's job runs, and no part asked for this release in the last 6
+   hours. It asks only once that is recorded (`service-restart-asked.json`); a
+   record it can't write means no restart. The part's log says `cluster part:
+   this Mac's cluster service still runs v<earlier> while v<installed> is
+   installed …`. It then starts nothing for up to 20 s, with SIGTERM and SIGINT
+   at their default action, so the service's stop ends it at once (a `start`
+   part otherwise takes both for its own drain); a part that nothing stopped
+   gets its handlers back and starts as before. From 0.10.12, which also covers
+   the update to 0.10.12: its parts run 0.10.12.
 5. A Mac whose partner has automatic updates off gives the slot's release up
    before downloading it. A Mac with automatic updates off reports `disabled`
    whenever no cycle runs on it, except for the minute after a cycle that

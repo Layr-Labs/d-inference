@@ -34,15 +34,15 @@ extension Status {
             let wedged = age > KVBackendPosture.wedgedAfterSeconds(heartbeatIntervalSecs: heartbeatIntervalSecs)
             document["daemon"] = wedged ? "stale" : "running"
             document["pid"] = Int(state.pid)
-            document["snapshot_age_seconds"] = (age * 10).rounded() / 10
+            document["snapshot_age_seconds"] = tenths(age)
             document["cluster_part"] = clusterPart
             answers = (state.runningRequests ?? []).map { request in
                 var answer: [String: Any] = [
                     "model": request.model, "ref": request.ref,
-                    "elapsed_seconds": ((request.elapsedSeconds + age) * 10).rounded() / 10,
+                    "elapsed_seconds": tenths(request.elapsedSeconds + age),
                     "output_tokens": request.outputTokens,
                 ]
-                if let rate = request.tokensPerSecond { answer["tokens_per_second"] = (rate * 10).rounded() / 10 }
+                if let rate = request.tokensPerSecond { answer["tokens_per_second"] = tenths(rate) }
                 return answer
             }
         } else {
@@ -52,4 +52,6 @@ extension Status {
         document["note"] = creditsLine
         return try JSONSerialization.data(withJSONObject: document, options: [.prettyPrinted, .sortedKeys])
     }
+
+    private static func tenths(_ value: Double) -> Double { (value * 10).rounded() / 10 }
 }

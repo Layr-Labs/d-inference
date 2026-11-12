@@ -971,6 +971,7 @@ final class MiMoV26NativeLoadTransaction: @unchecked Sendable {
                             guard let reservation = value as? MiMoV26ManagedMediaReservation else {
                                 throw MiMoV26NativeTransactionError.foreignOwner
                             }
+                            Thread.sleep(forTimeInterval: 0.3) // RED-FIRST EVIDENCE ONLY, never merged: a slower native retirement
                             try reservation.retireAfterNativeCompletion()
                             self.removeSettledMediaReservation(reservation)
                     }

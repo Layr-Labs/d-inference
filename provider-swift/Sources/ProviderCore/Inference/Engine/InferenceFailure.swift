@@ -126,6 +126,8 @@ public struct InferenceFailure: Sendable, Equatable {
     public let capacitySeq: UInt64?
     /// The check behind a `tool_noncompliance` reason; nil for every other one.
     public let toolCheck: ToolNoncomplianceCheck?
+    /// Why a client refusal refused the request; nil for every other failure.
+    public internal(set) var refusal: InferenceRefusalReason?
 
     public init(
         code: InferenceFailureCode,
@@ -137,7 +139,8 @@ public struct InferenceFailure: Sendable, Equatable {
         availableTokenBudget: Int64? = nil,
         feasibleAfterMs: Int64? = nil,
         capacitySeq: UInt64? = nil,
-        toolCheck: ToolNoncomplianceCheck? = nil
+        toolCheck: ToolNoncomplianceCheck? = nil,
+        refusal: InferenceRefusalReason? = nil
     ) {
         self.code = code
         self.statusCode = statusCode
@@ -149,6 +152,7 @@ public struct InferenceFailure: Sendable, Equatable {
         self.feasibleAfterMs = feasibleAfterMs
         self.capacitySeq = capacitySeq
         self.toolCheck = toolCheck
+        self.refusal = refusal
     }
 
     public var message: String { code.message }
@@ -179,16 +183,15 @@ struct InferenceFailureLogger: Sendable {
         self.publicSink = { _ in }
     }
 
+    /// A client refusal (`failure.refusal`), before the request's inference
+    /// task or while its prompt was prepared, publishes its fixed reason in
+    /// place of the bare failure category.
     func record(requestId: String, failure: InferenceFailure) {
-        publicSink(ProviderOperationalMessage(failureCode: failure.code))
-        privateSink(Self.privateLine(requestId: requestId, failure: failure))
-    }
-
-    /// A client refusal, before the request's inference task or while its
-    /// prompt was prepared. Its public line names the fixed reason in place of
-    /// the bare failure category; without a reason it is `record(requestId:failure:)`.
-    func record(requestId: String, failure: InferenceFailure, refusal: InferenceRefusalReason?) {
-        guard let refusal else { return record(requestId: requestId, failure: failure) }
+        guard let refusal = failure.refusal else {
+            publicSink(ProviderOperationalMessage(failureCode: failure.code))
+            privateSink(Self.privateLine(requestId: requestId, failure: failure))
+            return
+        }
         publicSink(ProviderOperationalMessage(refusal: refusal))
         privateSink(Self.privateLine(requestId: requestId, failure: failure) + " refusal=\(refusal.rawValue)")
     }
@@ -252,6 +255,7 @@ private extension ProviderOperationalMessage {
         case .unsupportedForcedToolChoice: .refusalUnsupportedForcedToolChoice
         case .requestExceedsContext: .refusalRequestExceedsContext
         case .unsupportedOutputControl: .refusalUnsupportedOutputControl
+        case .missingUserQuery: .refusalMissingUserQuery
         }
     }
 }

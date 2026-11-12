@@ -3752,8 +3752,11 @@ prompt is prepared, writes one fixed public line: the failure category, then a
 reason from the closed `InferenceRefusalReason` set
 (`provider-swift/Sources/ProviderCore/Inference/Engine/InferenceRefusalReason.swift`).
 A private line pairs the request ID with the same reason; neither contains
-request text. The `inference_error` frame sent to the coordinator is the same
-as without the line. A prompt-time refusal takes its reason from the typed
+request text. The `inference_error` frame sent to the coordinator carries the
+same reason as `refusal_reason`, with one fixed sentence for it as
+`refusal_message` (`InferenceRefusalReason.clientMessage`); its `error` text is
+unchanged ([`inference_error`](../reference/protocol-messages.md#inference_error)).
+A prompt-time refusal takes its reason from the typed
 error (`InferenceRefusalReason.init(promptRefusal:)`): the `refusal` a prompt
 policy attaches to `MultiModelBatchSchedulerEngineError.invalidToolPayload`, or
 the error case itself. Other failures, and a client refusal that names no
@@ -3780,17 +3783,21 @@ reason, keep the bare category, such as `Inference failure: invalid request`
 | `Inference failure: invalid request (unsupported tool type)` | A GLM-5.3-Flash tool declaration whose type is not `function` | same |
 | `Inference failure: invalid request (invalid tool schema)` | A GLM-5.3-Flash tool schema holding a number it cannot represent exactly, or nested too deeply | same |
 | `Inference failure: invalid media (unsupported audio)` | Audio input to a model without native audio | `MediaIngest.rejectUnsupportedAudio` |
-| `Inference failure: invalid request (unanswered tool call)` | A GLM-5.3-Flash history call has no result before the next non-tool message or the end of the conversation | `GLM5NextPromptPolicy.validateHistory` |
-| `Inference failure: invalid request (unmatched tool result)` | A tool result names no pending call of the turn before it, repeats one, or carries `tool_calls` | same |
+| `Inference failure: invalid request (unanswered tool call)` | A GLM-5.3-Flash or Gemma 4 history call has no result before the next non-tool message or the end of the conversation | `GLM5NextPromptPolicy.validateHistory`; `Gemma4TurnStructure` |
+| `Inference failure: invalid request (unmatched tool result)` | A tool result names no pending call of the turn before it, repeats one, carries `tool_calls`, or follows no assistant `tool_calls` at all (every model), or a GPT-OSS result after split calls has no `tool_call_id` | same; `ChatTemplateFixes.validateGenericToolHistory`; `GPTOSSHarmonyTemplateFix`; `Gemma4TurnStructure` |
 | `Inference failure: invalid request (native delimiter in history)` | A history argument name or string value contains GLM tool-call delimiter text | `GLM5NextPromptPolicy.normalizedTextInput` |
 | `Inference failure: invalid request (non-text content)` | Image, video or other non-text content on GLM-5.3-Flash's text path | same |
 | `Inference failure: invalid request (unsupported forced tool choice)` | A required or named `tool_choice` the model cannot enforce: a schema outside the enforceable subset, or GLM-5.3-Flash image or video input | `ToolChoicePromptPolicy`; `MultiModelBatchSchedulerEngine` |
 | `Inference failure: invalid request (request exceeds context)` | The prompt alone fills the model's context window on one Mac (a larger `max_tokens` is cut to fit, not refused), or an output reservation is invalid | `EngineV2Bridge` (`promptExceedsContext`, `advertisedContextExceeded`) |
 | `Inference failure: invalid request (unsupported output control)` | An output control the model's engine cannot honor, such as logprobs on an engine without them | `EngineV2Bridge.nativeOutputControlRefusal` |
+| `Inference failure: invalid request (missing user query)` | No user turn is more than a `<tool_response>` wrapper, such as a system-only conversation, on Qwen 3.5, 3.6 and 3.8 and Ternary Bonsai 2, whose templates raise "No user query found in messages." | `Qwen35TemplateFix.validateUserQuery` |
 
 Prompt-time refusals also use the earlier reasons: a GLM-5.3-Flash history call
-with an empty or repeated ID, a bad function name or a non-assistant role is
-`invalid tool history`; history `arguments` that are not one exactly
+with an empty or repeated ID, a bad function name or a non-assistant role, a
+first history call without `function.name` on any model, a repeated GPT-OSS
+call ID and an inconsistent Gemma 4 tool-result owner are
+`invalid tool history`; required or named `tool_choice` with image or video
+input is `unsupported forced tool choice`; history `arguments` that are not one exactly
 representable JSON object (malformed, duplicate keys, a number that does not
 survive the round trip) are `invalid tool arguments`; an invalid or repeated
 tool name is `invalid tool declaration`; a required choice without tools or a

@@ -1774,7 +1774,8 @@ struct EngineV2RequestRoutingTests {
                 Issue.record("expected forced multimodal tool choice rejection")
             } catch let error as MultiModelBatchSchedulerEngineError {
                 #expect(error == .invalidToolPayload(
-                    "inference-enforced tool_choice is not supported for multimodal requests"))
+                    "inference-enforced tool_choice is not supported for multimodal requests",
+                    refusal: .unsupportedForcedToolChoice))
             }
         }
         #expect(engine.submitted.isEmpty)

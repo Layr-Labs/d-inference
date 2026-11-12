@@ -3423,7 +3423,8 @@ The Qwen 3.5, 3.6 and 3.8 and Ternary Bonsai 2 templates (`qwen3_5`,
 `qwen3_5_moe`, `prism_hadamard_qwen35`) raise "No user query found in
 messages." when no user turn is more than a `<tool_response>` wrapper. Such
 histories are refused before rendering with the typed HTTP 400
-`missingUserQuery` instead of a provider-fault 500 `template_render`
+`missingUserQuery` (refusal reason `missing_user_query`) instead of a
+provider-fault 500 `template_render`
 (`provider-swift/Sources/ProviderCore/Inference/Prompting/Qwen35TemplateFixes.swift`,
 `validateUserQuery`).
 
@@ -4358,8 +4359,11 @@ evidence, not a change to the normal final-row contract or the near-tie rule
 10. A coordinator request refused as a client error, before its inference task
    or while its prompt is prepared, writes exactly one fixed public log line
    naming a closed `InferenceRefusalReason` and a private line pairing it with
-   the request ID, never request text; the refusal's `inference_error` frame is
-   unchanged. Prompt-time reasons ride on the typed error
+   the request ID, never request text; the refusal's `inference_error` frame
+   carries the same reason as `refusal_reason` and its fixed sentence as
+   `refusal_message`, with its `error` text unchanged (`InferenceFailure.refusal`,
+   set by the handler's `reject` and by `sanitizedInferenceFailure` for an
+   `invalid_request` failure). Prompt-time reasons ride on the typed error
    (`MultiModelBatchSchedulerEngineError.invalidToolPayload`'s `refusal`, or the
    error case), never on its message —
    `provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift`

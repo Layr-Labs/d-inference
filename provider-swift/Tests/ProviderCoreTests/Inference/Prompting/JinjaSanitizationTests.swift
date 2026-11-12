@@ -307,7 +307,8 @@ final class JinjaSanitizationTests: XCTestCase {
         ) { error in
             XCTAssertEqual(
                 error as? MultiModelBatchSchedulerEngineError,
-                .invalidToolPayload("tool message has no preceding assistant tool_calls"))
+                .invalidToolPayload(
+                    "tool message has no preceding assistant tool_calls", refusal: .unmatchedToolResult))
         }
     }
 

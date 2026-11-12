@@ -2081,6 +2081,19 @@ yields the terminal events, and the coordinator pays the request as delivered.
 An unpaid stop counts wherever it lands: the frames loop may not have sent the
 finished answer yet, and nothing is paid for it.
 
+While an answer runs, `darkbloom status` lists it (`Answers in progress`), since
+the served counters move only at its finish. Each capacity tick,
+`ProviderLoop.refreshRunningRequests` reads every bridge's active requests
+(`EngineV2Bridge.runningRequestSamples`: the admission and first-token instants
+and the output tokens `recordProgress` already counts per delta, so no
+per-token work is added), and `RunningRequestProgressTracker`
+(`provider-swift/Sources/ProviderCore/Service/DaemonRunningRequests.swift`)
+turns them into the daemon state's `running_requests`: model, elapsed, tokens
+so far, the rate since the previous sample, and a short hash of the request ID.
+A pair's leading Mac lists the pair's answers, since its part holds the pair's
+bridge. Nemotron Super's owner route bypasses the bridge, so its answers are not
+listed.
+
 Decoded text keeps a character the tokenizer writes as `<0xHH>` tokens wherever it
 falls. swift-transformers' `ByteFallbackDecoder` releases those tokens only when a
 later token arrives, so a decode ending in them drops them and shows nothing pending.

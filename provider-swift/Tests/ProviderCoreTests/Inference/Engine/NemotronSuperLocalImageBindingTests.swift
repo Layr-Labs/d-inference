@@ -359,9 +359,11 @@ extension NemotronSuperLocalImageBindingTests {
         let gate = SuperHTTPTerminalGate()
         await owner.bridge._testInstallCancelledSettlementHooks(
             beforeNativeTerminal: { _ in await gate.hold() }, onSettlementWait: {})
-        let firstEvents = SuperOwnedImageEvents()
+        let firstEvents = SuperOwnedImageEvents(), firstSample = ReservedBytesSample()
         let first = Task {
-            try await images.run(request: request, input: input) { _ = await firstEvents.record($0) }
+            try await images.run(request: request, input: input) { event in
+                if await firstEvents.record(event) { await firstSample.set(await budget.outstandingReservedBytes()) }
+            }
             return await firstEvents.completions
         }
         do {
@@ -413,9 +415,12 @@ extension NemotronSuperLocalImageBindingTests {
             await gate.release()
             #expect(try await first.value == [2])
             #expect(try await stacked.value == [2])
-            // It reserved only after the first image's charges were released.
-            let reservedAtFirstChunk = try #require(await sample.value)
-            #expect(reservedAtFirstChunk <= held)
+            // It reserved only after the first image's charges were released: at
+            // its first chunk the budget held what the identical first image's
+            // did at its own, not both.
+            let alone = try #require(await firstSample.value)
+            let stackedAtFirstChunk = try #require(await sample.value)
+            #expect(stackedAtFirstChunk <= alone)
         } catch {
             await gate.release()
             _ = await first.result

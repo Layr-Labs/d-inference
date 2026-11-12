@@ -1760,6 +1760,17 @@ does: a check 5 minutes after it starts, then every 30 minutes; it downloads
 while serving, lets your requests finish, then restarts into the release
 (`StandaloneServer+AutoUpdate`).
 
+On a `darkbloom cluster` Mac it asks the cluster service to restart into the
+release together with the other Mac. A pair that serves only on its local API,
+or a Mac whose cluster service serves alone, doesn't drain for that, so its
+service keeps the earlier release while the pair sets itself up again on the
+installed one. The first part the service starts from the installed release
+(`darkbloom start` or `darkbloom cluster link-follower`, started by the
+service) then restarts the service's launchd job once, before it takes a
+request, and says so in the part's log: `cluster part: this Mac's cluster
+service still runs v<earlier> while v<installed> is installed …`
+([the coordinated update](./cluster-always-on.md#the-pairs-coordinated-update)).
+
 Until an installed release is promoted (600 s of fresh heartbeats of it from one
 provider process), the watchdog counts a failed start for a crash (the job
 loaded and the provider gone through the restart grace) and for a provider that

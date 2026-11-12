@@ -1,0 +1,344 @@
+--- canonical/retry_inputs.py
++++ numerical/retry_inputs.py
+@@ -1,12 +1,14 @@
+-"""Compose the canonical producer correction over the exact native3 source union."""
++"""Exact canonical source union plus the frozen14 native numerical files."""
+ import importlib.util
+ import json
+ from pathlib import Path
+ 
+ BASE = Path(__file__).resolve().parent
+-OLD = BASE.parent / 'qwen9b-native-protected-scope-fixture-correction-20260917'
+-CORRECTION = BASE.parent / 'qwen9b-protected-canonical-description-correction-20260917'
+-spec = importlib.util.spec_from_file_location('protected_scope_retry_inputs', OLD / 'retry_inputs.py')
++OLD = BASE.parent / 'qwen9b-protected-canonical-build-20260917'
++NUMERICAL = BASE.parent / 'qwen9b-protected-numerical-evidence-draft-20260917'
++OLD_SHA = '23be7a1fa8ac6ca09a2aa37af289cf099304babd0b48627a1f2e44ce40d1ad8e'
++NUMERICAL_SHA = '948ef71c633789e321bcf4fc1e61a58bf96edd8578ee357fda07329c4149fb4d'
++spec = importlib.util.spec_from_file_location('canonical_retry_inputs', OLD / 'retry_inputs.py')
+ previous = importlib.util.module_from_spec(spec)
+ spec.loader.exec_module(previous)
+ prior = previous.prior
+@@ -14,36 +16,37 @@
+ 
+ def inputs():
+     prior.frozen(BASE)
+-    prior.frozen(OLD, 'b05141ec68aa28442cf931f2d853292c4d23a4dfb96f51aea5e4685311710d90')
+-    prior.frozen(CORRECTION, '9022cdfa9bd51a7d73439edaf822ae2ff77fa2bd062682b4f18a70ff402976e3')
+-    for row in json.loads((BASE / 'lineage.json').read_bytes())['evidence']:
+-        path = Path(row['path'])
+-        if path.is_symlink() or path.stat().st_size != row['bytes'] or sha(path) != row['sha256']:
+-            raise ValueError('Prior evidence changed')
++    prior.frozen(OLD, OLD_SHA)
++    prior.frozen(NUMERICAL, NUMERICAL_SHA)
+     value, ancestor, source, overlay, exclusions = previous.inputs()
+     result = dict(value)
+     result.update(previousCorrectionManifestSHA256=value['candidateManifestSHA256'],
+-                  candidateManifestSHA256=sha(BASE / 'manifest.json'),
+-                  canonicalProducerCorrectionSHA256=sha(CORRECTION / 'manifest.json'))
++                  candidateManifestSHA256=sha(BASE / 'manifest.json'), numericalSourceManifestSHA256=NUMERICAL_SHA)
+     return result, ancestor, source, overlay, exclusions
+ 
+ def expected(before=False):
+     inputs()
+     source, deps = previous.expected()
+-    if source != json.loads((OLD / 'source-snapshot-3.json').read_bytes())['members']:
+-        raise ValueError('Previous source snapshot is not its original reviewed union')
+-    if deps != json.loads((OLD / 'dependency-snapshot-3.json').read_bytes())['members']:
+-        raise ValueError('Previous dependency snapshot differs')
++    if source != json.loads((OLD / 'source-snapshot-4.json').read_bytes())['members'] or deps != json.loads((OLD / 'dependency-snapshot-4.json').read_bytes())['members']:
++        raise ValueError('Canonical source/dependency snapshot differs from original reviewed union')
+     by = {row['path']: row for row in source}
+-    rows = json.loads((CORRECTION / 'integration.json').read_bytes())['files']
+-    if (len(by), len(deps), len(rows)) != (3075, 9832, 2):
+-        raise ValueError('Unexpected source scope')
+-    for row in rows:
++    selected = json.loads((BASE / 'integration.json').read_bytes())['files']
++    original = json.loads((NUMERICAL / 'integration.json').read_bytes())['files']
++    native = [dict(r) for r in original if not r['path'].startswith('provider-swift/') and '/DarkbloomClusterRemote/' not in r['path']]
++    sink = 'libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/ResidentEvidenceSink.swift'
++    sink_row = next(r for r in native if r['path'] == sink)
++    preserved = BASE / 'originals/ResidentEvidenceSink.swift'
++    if sink_row['preimageSHA256'] is not None or sha(preserved) != 'cc34788d3fbd8409ff0ff086d6cb7d2dfb2a2ee860dfccb8a1fba5496aff6bfe':
++        raise ValueError('Explicit existing-sink preimage differs')
++    sink_row.update(preimageSHA256=sha(preserved), preimageSourcePath=str(preserved))
++    if selected != native or (len(by), len(deps), len(selected)) != (3076, 9832, 14):
++        raise ValueError('Numerical native scope differs')
++    for row in selected:
+         if by.get(row['path'], {}).get('sha256') != row['preimageSHA256']:
+-            raise ValueError('Exact producer preimage differs')
++            raise ValueError('Canonical native preimage differs: ' + row['path'])
+         path = Path(row['sourcePath'])
+-        if path.is_symlink() or sha(path) != row['proposedSHA256']:
+-            raise ValueError('Corrected producer changed')
+-        if not before:
+-            by[row['path']] = dict(path=row['path'], bytes=path.stat().st_size, sha256=row['proposedSHA256'])
++        if path.is_symlink() or path.stat().st_size != row['bytes'] or sha(path) != row['proposedSHA256']:
++            raise ValueError('Numerical source changed')
++        if not before: by[row['path']] = dict(path=row['path'], bytes=row['bytes'], sha256=row['proposedSHA256'])
++    if len(by) != (3076 if before else 3081): raise ValueError('Numerical source count differs')
+     return sorted(by.values(), key=lambda row: row['path']), deps
+--- canonical/verify_retry.py
++++ numerical/verify_retry.py
+@@ -1,13 +1,15 @@
+-"""Verify the complete original union plus exactly two canonical producer files."""
++"""Verify the exact canonical union plus fourteen numerical native source files."""
+ import json
+ import subprocess
+ from retry_inputs import BASE, OLD, WORKSPACE, SCRATCH, prior, expected, sha
++from bind_activation import activation
+ 
+ def verify(before=False, require_snapshots=True):
++    bound = activation()
+     source, deps = expected(before)
+     counts = {}
+-    for name, root, rows in [('source-snapshot-4.json', WORKSPACE, source),
+-                              ('dependency-snapshot-4.json', SCRATCH / 'checkouts', deps)]:
++    for name, root, rows in [('source-snapshot-5.json', WORKSPACE, source),
++                              ('dependency-snapshot-5.json', SCRATCH / 'checkouts', deps)]:
+         if prior.entries(root) != rows:
+             raise ValueError('Exact source inventory differs: ' + name)
+         if require_snapshots and json.loads((BASE / name).read_bytes())['members'] != rows:
+@@ -20,7 +22,7 @@
+         if head != row['pin']['state']['revision'] or head != row['head']:
+             raise ValueError('Dependency revision changed')
+     if not before:
+-        preserved = BASE / 'preparation-4/darkbloom-cluster-worker.native3'
+-        if preserved.is_symlink() or sha(preserved) != 'a0ecbb951d1bc3116758d8ef2c34eb4e2ed179dedcbcd54985869d467af14bac':
+-            raise ValueError('Preserved actual failed-metadata native changed')
++        preserved = BASE / 'preparation-5/darkbloom-cluster-worker.canonical4'
++        if preserved.is_symlink() or sha(preserved) != bound['canonicalNativeSHA256']:
++            raise ValueError('Preserved actual canonical native changed')
+     return counts
+--- canonical/prepare.py
++++ numerical/prepare.py
+@@ -1,10 +1,11 @@
+-"""Preserve the prior binary and replace one producer plus add its typed record file."""
++"""Preserve the canonical binary and all nine replaced native source preimages."""
+ import json
+ import os
+ import shutil
+ from pathlib import Path
+-from retry_inputs import BASE, CORRECTION, WORKSPACE, SCRATCH, sha, expected
++from retry_inputs import BASE, NUMERICAL, WORKSPACE, SCRATCH, sha, expected
+ from verify_retry import verify
++from bind_activation import activation
+ 
+ def save(path, value):
+     with path.open('x') as stream:
+@@ -12,57 +13,58 @@
+         stream.write('\n')
+ 
+ def main():
+-    output = BASE / 'preparation-4'
++    output = BASE / 'preparation-5'
+     output.mkdir(mode=0o700)
+     receipt = dict(status='failed', compilerExecuted=False, cacheCopied=False, remoteExecuted=False)
+     try:
+         receipt['before'] = verify(before=True, require_snapshots=False)
+         native = SCRATCH / 'arm64-apple-macosx/release/darkbloom-cluster-worker'
+-        digest = 'a0ecbb951d1bc3116758d8ef2c34eb4e2ed179dedcbcd54985869d467af14bac'
++        bound = activation()
++        digest = bound['canonicalNativeSHA256']
+         if native.is_symlink() or sha(native) != digest:
+-            raise ValueError('Actual native3 binary differs')
+-        # A single 45 MB binary is preserved; no build cache is cloned.
+-        with native.open('rb') as source, (output / 'darkbloom-cluster-worker.native3').open('xb') as target:
++            raise ValueError('Actual canonical native differs')
++        # Only the actual canonical binary is preserved; no build cache is cloned.
++        with native.open('rb') as source, (output / 'darkbloom-cluster-worker.canonical4').open('xb') as target:
+             shutil.copyfileobj(source, target, length=1024 * 1024)
+-        if sha(output / 'darkbloom-cluster-worker.native3') != digest:
++        if sha(output / 'darkbloom-cluster-worker.canonical4') != digest:
+             raise ValueError('Preserved binary differs')
+-        rows = json.loads((CORRECTION / 'integration.json').read_bytes())['files']
++        rows = json.loads((BASE / 'integration.json').read_bytes())['files']
+         for row in rows:
+             destination = WORKSPACE / row['path']
+             if row['preimageSHA256'] is None:
+                 if destination.exists() or destination.is_symlink():
+-                    raise ValueError('New typed record destination already exists')
++                    raise ValueError('New numerical source destination already exists')
+             else:
+                 if destination.is_symlink() or sha(destination) != row['preimageSHA256']:
+-                    raise ValueError('Producer preimage changed')
++                    raise ValueError('Numerical source preimage changed')
+                 backup = output / 'originals' / row['path']
+-                backup.parent.mkdir(parents=True)
++                backup.parent.mkdir(parents=True, exist_ok=True)
+                 with backup.open('xb') as target:
+                     target.write(destination.read_bytes())
+                 if sha(backup) != row['preimageSHA256']:
+-                    raise ValueError('Preserved producer preimage changed')
++                    raise ValueError('Preserved numerical preimage changed')
+         verify(before=True, require_snapshots=False)
+         for row in rows:
+             destination = WORKSPACE / row['path']
+-            temporary = destination.with_name(destination.name + '.canonical-new')
++            temporary = destination.with_name(destination.name + '.numerical-new')
+             with temporary.open('xb') as stream:
+                 stream.write(Path(row['sourcePath']).read_bytes())
+                 stream.flush()
+                 os.fsync(stream.fileno())
+             if sha(temporary) != row['proposedSHA256']:
+-                raise ValueError('Prepared producer bytes changed')
++                raise ValueError('Prepared numerical source bytes changed')
+             if row['preimageSHA256'] is None:
+                 os.link(temporary, destination)
+                 temporary.unlink()
+             else:
+                 if destination.is_symlink() or sha(destination) != row['preimageSHA256']:
+-                    raise ValueError('Producer changed before replacement')
++                    raise ValueError('Numerical preimage changed before replacement')
+                 os.replace(temporary, destination)
+         receipt['after'] = verify(require_snapshots=False)
+-        for name, rows in zip(('source-snapshot-4.json', 'dependency-snapshot-4.json'), expected()):
++        for name, rows in zip(('source-snapshot-5.json', 'dependency-snapshot-5.json'), expected()):
+             save(BASE / name, dict(members=rows))
+         verify()
+-        receipt.update(status='passed', snapshots={name: sha(BASE / name) for name in ('source-snapshot-4.json', 'dependency-snapshot-4.json')})
++        receipt.update(status='passed', activationSHA256=sha(BASE / 'activation-1/activation.json'), snapshots={name: sha(BASE / name) for name in ('source-snapshot-5.json', 'dependency-snapshot-5.json')})
+     finally:
+         save(output / 'receipt.json', receipt)
+     print(json.dumps(receipt, sort_keys=True))
+--- canonical/run_phase.py
++++ numerical/run_phase.py
+@@ -1,71 +1,47 @@
+-"""Single-slot, root-owned canonical correction checks and exact native packaging."""
++"""One explicit root-granted phase; retain all successful and failed outputs."""
+ import argparse
+-import hashlib
+ import json
+ import os
+-from pathlib import Path
++from retry_inputs import BASE, NUMERICAL, inputs, sha
++from bind_activation import activation, comparison
+ from check_process import run_owned
+ 
+-BASE = Path(__file__).resolve().parent
+-CORRECTION = BASE.parent / 'qwen9b-protected-canonical-description-correction-20260917'
++def main():
++    phases = ['controls','prepare','runtime','worker','capability','native','package']
++    parser=argparse.ArgumentParser(allow_abbrev=False);parser.add_argument('phase',choices=phases)
++    args=parser.parse_args(); inputs(); bound=activation()
++    if args.phase != 'controls':
++        path=BASE/('root-'+phases[phases.index(args.phase)-1]+'-5/receipt.json')
++        previous=json.loads(path.read_bytes())
++        if previous['status']!='passed' or previous['manifestSHA256']!=sha(BASE/'manifest.json') or previous['activationSHA256']!=sha(BASE/'activation-1/activation.json'):
++            raise ValueError('Matching previous phase must pass naturally')
++    output=BASE/('root-'+args.phase+'-5');output.mkdir(mode=0o700)
++    receipt=dict(status='failed',phase=args.phase,manifestSHA256=sha(BASE/'manifest.json'),
++        activationSHA256=sha(BASE/'activation-1/activation.json'),steps=[])
++    try:
++        if args.phase=='controls':
++            receipt['steps'].append(run_owned(['/usr/bin/python3','-B',str(NUMERICAL/'check_source.py')],output,'source',15))
++            receipt['qualifiedComparison']=comparison()
++            receipt['newComparatorExecution']=False
++        elif args.phase=='prepare':
++            receipt['steps'].append(run_owned(['/usr/bin/python3','-B',str(BASE/'prepare.py')],output,'preparation',120))
++            result=BASE/'preparation-5/receipt.json'
++            if json.loads(result.read_bytes())['status']!='passed': raise ValueError('Source preparation failed')
++            receipt['resultSHA256']=sha(result)
++        elif args.phase=='package':
++            receipt['steps'].append(run_owned(['/usr/bin/python3','-B',str(BASE/'package_native.py'),
++                'runtime-5','worker-5','capability-5','native-5','runtime-bundle-5'],output,'execution',180))
++            receipt['resultSHA256']=sha(BASE/'runtime-bundle-5/bundle.json')
++        else:
++            receipt['steps'].append(run_owned(['/usr/bin/python3','-B',str(BASE/'run_checks.py'),
++                args.phase,args.phase+'-5'],output,'execution',1100))
++            result=BASE/(args.phase+'-5/receipt.json')
++            if json.loads(result.read_bytes())['status']!='passed': raise ValueError('Actual phase failed')
++            receipt['resultSHA256']=sha(result)
++        inputs(); activation(); receipt['status']='passed'
++    finally:
++        with (output/'receipt.json').open('x') as stream:json.dump(receipt,stream,sort_keys=True,indent=2);stream.write('\n')
++    print(json.dumps(receipt,sort_keys=True))
+ 
+-def sha(path):
+-    return hashlib.sha256(path.read_bytes()).hexdigest()
+-
+-def freeze(directory, digest=None):
+-    if digest is not None and sha(directory / 'manifest.json') != digest:
+-        raise ValueError('Manifest changed')
+-    for row in json.loads((directory / 'manifest.json').read_bytes())['files']:
+-        path = directory / row['path']
+-        if path.is_symlink() or path.stat().st_size != row['bytes'] or sha(path) != row['sha256']:
+-            raise ValueError('Source changed: ' + row['path'])
+-
+-os.umask(0o077)
+-phases = ['controls', 'prepare', 'runtime', 'worker', 'capability', 'native', 'package']
+-parser = argparse.ArgumentParser(allow_abbrev=False)
+-parser.add_argument('phase', choices=phases)
+-args = parser.parse_args()
+-freeze(BASE)
+-freeze(CORRECTION, '9022cdfa9bd51a7d73439edaf822ae2ff77fa2bd062682b4f18a70ff402976e3')
+-if args.phase != 'controls':
+-    previous = BASE / ('root-' + phases[phases.index(args.phase) - 1] + '-4/receipt.json')
+-    prior = json.loads(previous.read_bytes())
+-    if prior['status'] != 'passed' or prior['manifestSHA256'] != sha(BASE / 'manifest.json'):
+-        raise ValueError('Previous actual phase did not pass on this source')
+-out = BASE / ('root-' + args.phase + '-4')
+-out.mkdir(mode=0o700)
+-receipt = dict(status='failed', phase=args.phase, manifestSHA256=sha(BASE / 'manifest.json'), steps=[])
+-try:
+-    if args.phase == 'controls':
+-        receipt['steps'].append(run_owned(['/usr/bin/python3', '-B', str(CORRECTION / 'check_source.py')], out, 'source', 15))
+-        commands = json.loads((CORRECTION / 'commands.json').read_bytes())
+-        (CORRECTION / 'checks-1').mkdir(mode=0o700)
+-        for name in ('compile', 'run'):
+-            receipt['steps'].append(run_owned(commands[name], out, name, commands[name + 'TimeoutSeconds']))
+-        expected = 'PASS 3 canonical description groups: actual policy17cc, 26-field native3 golden, independent lexical vector\n'
+-        if (out / 'run.stdout').read_text() != expected or (out / 'run.stderr').stat().st_size:
+-            raise ValueError('Actual canonical controls incomplete')
+-    elif args.phase == 'prepare':
+-        receipt['steps'].append(run_owned(['/usr/bin/python3', '-B', str(BASE / 'prepare.py')], out, 'preparation', 90))
+-        result = BASE / 'preparation-4/receipt.json'
+-        if json.loads(result.read_bytes())['status'] != 'passed':
+-            raise ValueError('Preparation failed')
+-        receipt['resultSHA256'] = sha(result)
+-    elif args.phase == 'package':
+-        receipt['steps'].append(run_owned(['/usr/bin/python3', '-B', str(BASE / 'package_native.py'),
+-            'runtime-4', 'worker-4', 'capability-4', 'native-4', 'runtime-bundle-4'], out, 'execution', 180))
+-        receipt['resultSHA256'] = sha(BASE / 'runtime-bundle-4/bundle.json')
+-    else:
+-        receipt['steps'].append(run_owned(['/usr/bin/python3', '-B', str(BASE / 'run_checks.py'), args.phase, args.phase + '-4'], out, 'execution', 1100))
+-        result = BASE / (args.phase + '-4/receipt.json')
+-        if json.loads(result.read_bytes())['status'] != 'passed':
+-            raise ValueError('Actual phase failed')
+-        receipt['resultSHA256'] = sha(result)
+-    freeze(BASE)
+-    freeze(CORRECTION, '9022cdfa9bd51a7d73439edaf822ae2ff77fa2bd062682b4f18a70ff402976e3')
+-    receipt['status'] = 'passed'
+-finally:
+-    with (out / 'receipt.json').open('x') as stream:
+-        json.dump(receipt, stream, indent=2, sort_keys=True)
+-        stream.write('\n')
+-print(json.dumps(receipt, sort_keys=True))
++if __name__=='__main__':
++    os.umask(0o077);main()
+--- canonical/run_checks.py
++++ numerical/run_checks.py
+@@ -29,8 +29,8 @@
+     out.mkdir(mode=0o700)
+     value, old, _, _, _ = inputs()
+     receipt = dict(phase=phase, status='started', steps=[], sourceManifestSHA256=value['candidateManifestSHA256'],
+-                   sourceSnapshotSHA256=sha(BASE / 'source-snapshot-4.json'),
+-                   dependencySnapshotSHA256=sha(BASE / 'dependency-snapshot-4.json'),
++                   sourceSnapshotSHA256=sha(BASE / 'source-snapshot-5.json'),
++                   dependencySnapshotSHA256=sha(BASE / 'dependency-snapshot-5.json'),
+                    modelExecuted=False, gpuExecuted=False, remoteExecuted=False,
+                    protectedTransportExecuted=False, servingEnabled=False)
+     print('Protected native build runner PID ' + str(os.getpid()) + ' phase ' + phase, flush=True)
+--- canonical/package_native.py
++++ numerical/package_native.py
+@@ -25,8 +25,8 @@
+             raise ValueError('A required actual phase did not pass')
+         if record.get('sourceManifestSHA256') != value['candidateManifestSHA256']:
+             raise ValueError('Tested source manifest differs')
+-        for filename, field in [('source-snapshot-4.json', 'sourceSnapshotSHA256'),
+-                                ('dependency-snapshot-4.json', 'dependencySnapshotSHA256')]:
++        for filename, field in [('source-snapshot-5.json', 'sourceSnapshotSHA256'),
++                                ('dependency-snapshot-5.json', 'dependencySnapshotSHA256')]:
+             if sha(BASE / filename) != record[field]:
+                 raise ValueError('Tested snapshot differs')
+         if not record['steps'] or any(step.get('exitCode') != 0 or not step.get('reaped') or

@@ -1,0 +1,42 @@
+{
+  "configurationOrParentPreparedHere": false,
+  "nativeWorkerSHA256": "a7c35b37c2ae2f80c320221ac9931bdd3f87d7e7cd67b2d5cfbc93a8eb043ad6",
+  "replacement": {
+    "newOwner": {
+      "bytes": 161440,
+      "path": "bundle/darkbloom-owner-qualification",
+      "sha256": "da5542b115279db5f3f6e0794d96cdaa54cff1d193bee8c9d4bb24edc870c8a8"
+    },
+    "oldOwnerSHA256": "1138c19529d0bc04fe7faf4e20916622854864cc4a855138bcd7a1fadc9d3967"
+  },
+  "rootOwnsRemoteDeploymentAndRun": true,
+  "schema": "private_qwen27b_owner_diagnostics_integration_v1",
+  "sourceReviewSHA256": "fc7295c171190758cc9e5b2a50fbb75c5758e801a6b37593d2b3f9fd71158bd2",
+  "unchangedFiles": [
+    {
+      "bytes": 164832,
+      "path": "libDarkbloomClusterBootstrap.dylib",
+      "sha256": "54d306268868669ac13f32fd11dee04fd1f0622114fbdb53fb29dbfac703e555"
+    },
+    {
+      "bytes": 449216,
+      "path": "libDarkbloomClusterProcess.dylib",
+      "sha256": "5ca5cbd4dffdcc907c389f3e3b5ed91f8366bc43160f508ca0d448eb2981351d"
+    },
+    {
+      "bytes": 450864,
+      "path": "libDarkbloomClusterProtocol.dylib",
+      "sha256": "357fe913bb6889f53439359a74952935fa99d088fcea4754f0f3588c58f6f1cb"
+    },
+    {
+      "bytes": 736448,
+      "path": "libDarkbloomClusterRemote.dylib",
+      "sha256": "d7f29a4878504481534a9c631be83dce83445324826082be57a9ae43dc309ef1"
+    },
+    {
+      "bytes": 253840,
+      "path": "owner-controller",
+      "sha256": "13311eeac86a019a7c187249fbe7393471e9e158821f5eaa8d5637f392851a74"
+    }
+  ]
+}

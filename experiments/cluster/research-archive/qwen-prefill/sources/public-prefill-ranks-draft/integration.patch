@@ -1,0 +1,909 @@
+--- a/experiments/cluster/runtime/stage_checks/README.md
++++ b/experiments/cluster/runtime/stage_checks/README.md
+@@ -2,9 +2,10 @@
+ 
+ `run_stage_checks.py` runs one fresh two-process cohort on one Mac through the
+ explicit MLX ring `loopback-test` backend. It provides a fixed no-model P2P check
+-and a bounded real-artifact whole-layer stage check. These are correctness
++and bounded real-artifact whole-layer stage checks. These are correctness
+ tools; they do not qualify throughput, a production scheduler, RDMA, or physical
+-two-machine execution. Lookahead is not exposed by this launcher.
++two-machine execution. Optional `prefill-ranks` exposes the bounded v3 serial
++and one-chunk prompt-lookahead policies with independently pinned baseline evidence.
+ 
+ ## Usage
+ 
+@@ -56,7 +57,7 @@
+ whole-process allocation guarantee for every admitted topology; constructors,
+ fusion caches, kernel workspaces, and allocator residency can differ.
+ 
+-Both commands observe macOS memory pressure and reported swap before, during,
++All commands observe macOS memory pressure and reported swap before, during,
+ and after execution. Pressure must stay at level 0–2 and reported swap must not
+ increase. Raw observations retain their printed precision. Failures retire the
+ whole cohort without clearing unrelated processes or retrying a request.
+@@ -79,7 +80,7 @@
+ 
+ ## What the receipt establishes
+ 
+-Stage validation binds the artifact/configuration, ordered storage commitment,
++The serialized `ranks` validation binds the artifact/configuration, ordered storage commitment,
+ exact request history and chunk/decode schedule, completed consumed ACKs,
+ residual/header hashes, global state namespace and shapes, source byte
+ conservation, and native full-vocabulary logit byte hashes. Stage-local layout
+@@ -93,7 +94,7 @@
+ zero, and checks its byte hash. A completed pair does not by itself establish
+ equality to an ordinary full-model forward.
+ 
+-To request a separate comparison, add both:
++For `ranks`, request a separate comparison by adding both:
+ 
+ ```sh
+ --baseline-jsonl INDEPENDENT_NATIVE_BASELINE_JSONL \
+@@ -120,11 +121,70 @@
+ the corresponding build receipt because they are not a reproducible-build
+ proof. Runtime imports come from the copied snapshot.
+ 
++## Optional v3 prefill ranks
++
++`prefill-ranks` invokes native `qwen-layer-stage-prefill-rank-check`. Its first
++public scope is exactly 65 prompt IDs, chunk 32, output one, no teacher,
++repeat one and zero warmups. It inherits the dense-Qwen artifact/loader limits
++above. The broader native 128/32 admission does not extend this launcher scope.
++It uses two local processes with an explicit fresh loopback epoch; SSH, JACCL,
++resident workers and multi-request serving are not exposed.
++
++```sh
++python3 experiments/cluster/run_stage_checks.py prefill-ranks \
++  --release RELEASE --runtime experiments/cluster/runtime --output NEW_OUTPUT \
++  --expected-binary-sha256 BINARY_SHA256 \
++  --model-dir LOCAL_MODEL --artifact-aggregate-sha256 ARTIFACT_SHA256 \
++  --tokens-file PROMPT_65_IDS_JSON --tokens-sha256 PROMPT_FILE_SHA256 \
++  --stage-prefill-policy serial_v1 --stage-logits-dtype bfloat16 \
++  --baseline-jsonl INDEPENDENT_NATIVE_BASELINE_JSONL \
++  --baseline-sha256 BASELINE_FILE_SHA256 \
++  --baseline-evidence-sha256 NATIVE_BASELINE_FINGERPRINT \
++  --timeout-seconds 180
++```
++
++`--stage-prefill-policy` is required: `serial_v1` or
++`prompt_lookahead_one_v1`. `--stage-logits-dtype` is also required:
++`float16`, `bfloat16`, or `float32`. The example dtype is not a default or a
++claim that all admitted artifacts have BF16 output. Admission reconstructs the
++saved baseline's native final-row bytes and requires its actual dtype to match.
++The source embedding activation dtype is independently taken from that same
++baseline's source identity; it is not inferred from the logits dtype.
++
++Both baseline pins are mandatory. `--baseline-sha256` hashes the exact JSONL
++file; `--baseline-evidence-sha256` pins the native `baseline.fingerprint`.
++The latter is recomputed from source identity, request fingerprint and all
++three frame/state/logit metadata fingerprints. The baseline must bind an
++independent request UUID with the identical 65 IDs and 32/32/1 schedule, the
++same artifact/configuration/plan and enabled source BF16 conversion policy.
++Its final vocabulary row and native dtype must be present. This checks supplied
++evidence integrity; it does not recreate that historical run or reverify its
++build, execution or model quality. Retain its original provenance and audit.
++
++Only this new command adds an initial **6 GiB actual-free** screen before
++source/bundle snapshots and artifact hashing. It records raw `vm_stat` and UTC.
++File caching during hashing can reduce actual free memory, so the screen does
++not promise 6 GiB remains at launch. The post-hash gate remains **8 GiB
++estimated reclaimable**, output storage and descriptor headroom. Memory
++pressure and zero-new-reported-swap are checked from before hashing through
++postflight. None of these screens guarantees whole-process memory usage.
++
++The v3 validator requires matching ready/final records, a closed version-three
++agreement with exact policy/dtypes/source/request bindings, equal peer
++agreements, verified source receipt identities, completed request retirement
++and released models. It retains the bounded native `execution` payload
++without interpreting its action trace, frame envelopes, selected token,
++final logit/state observations or timing arithmetic. Those require a separate
++independent audit. `baseline_admission` and outer validation can pass while
++`baseline_audit.performed` and `independent_numerical_action_timing_audit.performed`
++remain false. A launcher exit zero is not a numerical, throughput or physical
++transfer qualification. Existing P2P and v1 `ranks` validators are unchanged.
++
+ ## Implementation and tests
+ 
+ The thin public entry calls `cli.py`. Modules separate archive/provenance,
+ input retention, argument construction, resource observations, record framing,
+-cohort supervision, the P2P and stage namespaces, request identity, storage/state
++cohort supervision, separate P2P/v1/v3 namespaces, request identity, storage/state
+ validation, and the optional baseline comparison. Bundle, registered-artifact,
+ and native process-group ownership reuse the existing runtime.
+ 
+@@ -148,3 +208,7 @@
+ Four memory observations reported no additional swap. This integration run did
+ not exercise the public `ranks` command with a model. Its native evidence remains
+ separate from the earlier serialized-rank and lookahead records.
++
++The optional v3 public-command extension has only CPU/fake coverage until a
++separate integrated native run is recorded. Earlier private v3 serial and
++lookahead results remain separate evidence, with their original counts.
+--- a/experiments/cluster/runtime/stage_checks/cli.py
++++ b/experiments/cluster/runtime/stage_checks/cli.py
+@@ -4,29 +4,36 @@
+ import json
+ import signal
+ import uuid
+-from . import archive,baseline,configuration,inputs,p2p,ranks,supervision
++from . import archive,baseline,configuration,inputs,p2p,prefill,ranks,supervision
++from .prefill_resources import initial_free_screen
+ from .common import integer,require,sha
+ from .resources import MemoryGate,resource_preflight
+ 
+ 
+ def parser():
+     root=argparse.ArgumentParser(description=__doc__);commands=root.add_subparsers(dest='command',required=True)
+-    for name in ('p2p','ranks'):
++    for name in ('p2p','ranks','prefill-ranks'):
+         command=commands.add_parser(name)
+         for option in ('release','runtime','output'):command.add_argument('--'+option,type=Path,required=True)
+         command.add_argument('--expected-binary-sha256',required=True)
+         command.add_argument('--timeout-seconds',type=int,default=60 if name=='p2p' else 180)
+-        if name=='ranks':
++        if name!='p2p':
+             command.add_argument('--model-dir',type=Path,required=True)
+             command.add_argument('--artifact-aggregate-sha256',required=True)
+             command.add_argument('--tokens-file',type=Path,required=True)
+             command.add_argument('--tokens-sha256')
+-            command.add_argument('--teacher-tokens-file',type=Path)
+-            command.add_argument('--teacher-tokens-sha256')
+-            command.add_argument('--chunk-size',type=int,default=32)
++            if name=='ranks':
++                command.add_argument('--teacher-tokens-file',type=Path)
++                command.add_argument('--teacher-tokens-sha256')
++                command.add_argument('--chunk-size',type=int,default=32)
++            else:
++                command.set_defaults(teacher_tokens_file=None,teacher_tokens_sha256=None,chunk_size=32)
++                command.add_argument('--stage-prefill-policy',choices=prefill.POLICIES,required=True)
++                command.add_argument('--stage-logits-dtype',choices=('float16','bfloat16','float32'),required=True)
++                command.add_argument('--baseline-evidence-sha256',required=True)
+             command.add_argument('--minimum-reclaimable-gib',type=int,default=8)
+-            command.add_argument('--baseline-jsonl',type=Path)
+-            command.add_argument('--baseline-sha256')
++            command.add_argument('--baseline-jsonl',type=Path,required=name=='prefill-ranks')
++            command.add_argument('--baseline-sha256',required=name=='prefill-ranks')
+     return root
+ 
+ 
+@@ -35,12 +42,18 @@
+     integer(args.timeout_seconds,1,60 if args.command=='p2p' else 180)
+     runtime=args.runtime.resolve(strict=True);repository=runtime.parents[2];output=args.output.resolve()
+     require(not output.exists() and not output.is_relative_to(repository),'Output must be new and outside repository')
+-    if args.command=='ranks':require(not output.is_relative_to(args.model_dir.resolve()),'Output must be outside model')
++    if args.command!='p2p':require(not output.is_relative_to(args.model_dir.resolve()),'Output must be outside model')
++    if args.command=='prefill-ranks':
++        sha(args.baseline_sha256);sha(args.baseline_evidence_sha256)
+     output.mkdir(mode=0o700,parents=True);epoch=uuid.uuid4().hex;memory=None;old_handlers={};context=None;baseline_started=False
+     receipt=dict(kind='stage_checks_run',schema_version=1,mode=args.command,epoch=epoch,passed=False,
+         native_execution_attempted=False,throughput_qualification=False,physical_two_machine_execution=False,
+         baseline_audit=dict(performed=False))
+     try:
++        if args.command=='prefill-ranks':
++            initial=initial_free_screen();receipt['initial_free_screen']=initial
++            require(initial['passed'],'Initial actual-free screen refused before artifact hashing')
++            memory=MemoryGate()
+         launcher=archive.archive_launcher(output);sources=archive.archive_sources(runtime,output)
+         modules=archive.load_archived_runtime(output,epoch)
+         bundle_hash=modules['bundle'].snapshot(args.release.resolve(strict=True),output/'bundle')
+@@ -48,10 +61,12 @@
+         archive.verify_archive(modules,output,sources,bundle_hash,launcher)
+         context=inputs.prepare(args,output,epoch,modules['artifacts'])
+         archive.write_json(output/'context.json',context)
+-        if args.command=='ranks':
++        if args.command!='p2p':
+             preflight=resource_preflight(output,args.minimum_reclaimable_gib);receipt['preflight']=preflight
+             require(preflight['passed'],'Resource preflight refused; minimum screen is not a memory guarantee')
+-        memory=MemoryGate();hosts=modules['configuration'].loopback_addresses();cohort=[];configs=[]
++        if memory is None:memory=MemoryGate()
++        else:memory.observe()
++        hosts=modules['configuration'].loopback_addresses();cohort=[];configs=[]
+         for rank in (0,1):
+             directory=output/f'rank-{rank}';directory.mkdir(mode=0o700)
+             config=configuration.build(rank,epoch,context,output/'bundle',bundle_hash,hosts,args.timeout_seconds)
+@@ -63,7 +78,7 @@
+         def interrupted(signum,_frame):raise SystemExit(128+signum)
+         for signum in (signal.SIGTERM,signal.SIGINT,signal.SIGHUP):old_handlers[signum]=signal.signal(signum,interrupted)
+         receipt['native_execution_attempted']=True;archive.write_json(output/'receipt.json',receipt)
+-        namespace=p2p if args.command=='p2p' else ranks
++        namespace={'p2p':p2p,'ranks':ranks,'prefill-ranks':prefill}[args.command]
+         result,reports=supervision.run(cohort,epoch,context,namespace,args.timeout_seconds,
+             modules['processes'].start,modules['processes'].stop_processes,memory.observe)
+         receipt['cohort']=result;memory.observe()
+@@ -73,9 +88,12 @@
+             for rank,config in enumerate(configs):
+                 for name,value in config['input_files'].items():
+                     require((output/f'rank-{rank}'/name).read_bytes()==json.dumps(value).encode(),'Staged rank input bytes changed')
+-            if 'baseline_sha256'in context:
++            if args.command=='ranks' and 'baseline_sha256'in context:
+                 baseline_started=True
+                 receipt['baseline_audit']=baseline.compare(output/'inputs/baseline.jsonl',reports,context)
++        if args.command=='prefill-ranks':
++            receipt['baseline_admission']=context['baseline_admission']
++            receipt['independent_numerical_action_timing_audit']=dict(performed=False)
+         receipt['passed']=result['passed'];receipt['frozen_inputs_artifact_bundle_source_rechecked']=True
+     except BaseException as caught:
+         receipt['error']=type(caught).__name__+': '+str(caught);receipt['passed']=False
+--- a/experiments/cluster/runtime/stage_checks/configuration.py
++++ b/experiments/cluster/runtime/stage_checks/configuration.py
+@@ -4,6 +4,7 @@
+ 
+ 
+ def build(rank,epoch,context,bundle,bundle_hash,hosts,timeout):
++    require(context['mode'] in ('p2p','ranks','prefill-ranks'),'Unsupported stage check mode')
+     integer(rank,0,1);integer(timeout,1,60 if context['mode']=='p2p' else 180)
+     require(type(epoch)is str and re.fullmatch('[0-9a-f]{32}',epoch),'Invalid fresh cohort epoch')
+     require(isinstance(hosts,list) and len(hosts)==2,'Exactly two local endpoints are required')
+@@ -14,7 +15,8 @@
+         ports.append(integer(int(match[1]),1,65535))
+     require(len(set(ports))==2,'Loopback ports must differ')
+     environment={'MLX_RANK':str(rank)};files={'hosts.json':hosts}
+-    arguments=['--mode','stage-p2p-check' if context['mode']=='p2p' else 'qwen-layer-stage-rank-check']
++    mode={'p2p':'stage-p2p-check','ranks':'qwen-layer-stage-rank-check','prefill-ranks':'qwen-layer-stage-prefill-rank-check'}[context['mode']]
++    arguments=['--mode',mode]
+     config=dict(rank=rank,bundle=str(bundle),bundle_sha256=bundle_hash,persistent=False,
+                 timeout_seconds=timeout,environment=environment,environment_files={'MLX_HOSTFILE':'hosts.json'},input_files=files)
+     if context['mode']=='p2p':arguments+=['--synthetic']
+@@ -28,6 +30,13 @@
+         if request['teacherTokenIDs']:
+             files['teacher.json']=request['teacherTokenIDs'];arguments+=['--teacher-tokens-file','@rank/teacher.json']
+         config.update(model_directory=context['model'],artifact_aggregate_sha256=context['artifact'])
++        if context['mode']=='prefill-ranks':
++            from .prefill import validate_options
++            validate_options(context['stage_prefill_policy'],context['stage_logits_dtype'])
++            require(spec['promptCount']==65 and spec['chunkSize']==32 and spec['outputCount']==1
++                    and not request['teacherTokenIDs'],'Prefill launcher is fixed at65/32/1 without a teacher')
++            require(context['baseline_admission']['logits_dtype']==context['stage_logits_dtype'],'Unbound baseline logits dtype')
++            arguments+=['--stage-prefill-policy',context['stage_prefill_policy'],'--stage-logits-dtype',context['stage_logits_dtype']]
+     arguments+=['--transport','loopback-test','--epoch',epoch,'--timeout-seconds',str(timeout)]
+     config['arguments']=arguments
+     return config
+--- a/experiments/cluster/runtime/stage_checks/inputs.py
++++ b/experiments/cluster/runtime/stage_checks/inputs.py
+@@ -53,7 +53,7 @@
+     else:require(args.teacher_tokens_sha256 is None,'Teacher hash requires its file')
+     request,fingerprint=make_request(epoch,prompt,teacher,args.chunk_size,text['vocab_size'])
+     require(len(prompt)+len(teacher)+1<=min(text['max_position_embeddings'],32768),'Request exceeds native context admission')
+-    context=dict(mode='ranks',model=str(model),artifact=args.artifact_aggregate_sha256,
++    context=dict(mode=args.command,model=str(model),artifact=args.artifact_aggregate_sha256,
+         configuration=configuration,text=text,configuration_sha256=configuration_hash,
+         manifest_sha256=digest(raw_manifest),vocabulary=text['vocab_size'],request=request,
+         request_fingerprint=fingerprint)
+@@ -62,6 +62,14 @@
+         retain(args.baseline_jsonl,folder/'baseline.jsonl',64*1024**2,args.baseline_sha256)
+         context['baseline_sha256']=args.baseline_sha256
+     else:require(args.baseline_sha256 is None,'Baseline pin requires its file')
++    if args.command=='prefill-ranks':
++        from . import prefill,prefill_baseline
++        prefill.validate_options(args.stage_prefill_policy,args.stage_logits_dtype)
++        require(len(prompt)==65 and args.chunk_size==32 and not teacher,'Prefill launcher requires65/32/1 and no teacher')
++        require('baseline_sha256' in context,'Prefill requires a pinned baseline file')
++        context.update(stage_prefill_policy=args.stage_prefill_policy,stage_logits_dtype=args.stage_logits_dtype)
++        context['baseline_admission']=prefill_baseline.admit((folder/'baseline.jsonl').read_bytes(),context,
++            args.baseline_evidence_sha256,args.stage_logits_dtype)
+     return context
+ 
+ 
+--- /dev/null
++++ b/experiments/cluster/runtime/stage_checks/prefill.py
+@@ -0,0 +1,86 @@
++"""V3 outer admission only: request/source agreement, completion and retirement."""
++from .common import FLOATS,canonical,digest,envelope,exact,flags,integer,require,sha
++from . import request
++
++FLOW='bounded_prefill_measurement_v1'
++POLICIES=('serial_v1','prompt_lookahead_one_v1')
++READY='qwen_layer_stage_prefill_rank_ready'
++TERMINAL='qwen_layer_stage_prefill_rank_report'
++MAX_STDOUT=64*1024**2
++MAX_LINE=60*1024**2
++HASH_KEYS=('storageCommitmentSHA256','planFingerprint','producerStageFingerprint','consumerStageFingerprint',
++           'producerConstructionConfigurationSHA256','consumerConstructionConfigurationSHA256')
++
++
++def validate_options(policy,dtype):
++    require(policy in POLICIES,'Explicit supported stage prefill policy required')
++    require(dtype in FLOATS,'Explicit native logits dtype required')
++
++
++def agreement(record,epoch,context):
++    value=record['agreement'];require(isinstance(value,dict),'Missing v3 agreement')
++    baseline=context['baseline_admission'];recorded=context['request'];spec=recorded['request']
++    validate_options(context['stage_prefill_policy'],context['stage_logits_dtype'])
++    known=dict(version=3,flow=FLOW,schedulingPolicy=context['stage_prefill_policy'],epoch=epoch,
++        requestID=spec['requestID'],requestFingerprint=context['request_fingerprint'],
++        recordedRequestFingerprint=recorded['fingerprint'],promptCount=65,chunkSize=32,outputCount=1,
++        batchSize=1,frameCount=3,vocabularySize=context['vocabulary'],hiddenSize=context['text']['hidden_size'],
++        promptTokenIDsSHA256=digest(','.join(map(str,recorded['promptTokenIDs'])).encode()),
++        sourceConfigurationSHA256=context['configuration_sha256'],artifactAggregateSHA256=context['artifact'],
++        bf16ConversionEnabled=True,nativeDType=baseline['native_dtype'],logitsDType=context['stage_logits_dtype'],
++        selectionPolicy='mlx_argmax_all_axes_with_finite_guard_v1')
++    require(set(value)==set(known)|set(HASH_KEYS),'V3 agreement schema differs')
++    for key,expected in known.items():exact(value[key],expected,'V3 agreement differs: '+key)
++    for key in HASH_KEYS:sha(value[key])
++    exact(value['planFingerprint'],baseline['source']['planSHA256'],'V3 plan differs from pinned baseline')
++    require(record['agreementFingerprint']==digest(b'qwen-prefill-start-agreement-v1\n'+canonical(value)),
++            'V3 agreement fingerprint differs')
++
++
++def validate(record,rank,epoch,context):
++    kind=record.get('kind');require(kind in(READY,TERMINAL),'Wrong prefill evidence namespace')
++    envelope(record,kind,rank,epoch)
++    exact(record['flow'],FLOW,'Wrong prefill flow');exact(record['envelopeVersion'],3,'Wrong prefill envelope version')
++    agreement(record,epoch,context)
++    if kind==READY:
++        flags(record,modelsReadyAgreementValidated=True,freshRequestStateCreated=False);return
++    flags(record,completed=True,correctnessOnly=True,throughputMeasurementValid=False,modelForwardCompared=False,
++          physicalTransferQualified=False,allRequestStateRetired=True,modelReleased=True)
++    integer(record['conservativeStateAndBoundaryBytes'],1,512*1024**2)
++    request.validate(record['request'],context['request'])
++    source=record['sourceLoad'];require(isinstance(source,dict),'Missing verified stage source receipt')
++    baseline=context['baseline_admission']['source'];descriptor=record['agreement']
++    known=dict(schemaVersion=1,stageIndex=rank,verifiedAggregateSHA256=context['artifact'],
++        sourceConfigurationSHA256=context['configuration_sha256'],planSHA256=baseline['planSHA256'],
++        sourceParameterLayoutSHA256=baseline['sourceParameterLayoutSHA256'],bf16ConversionEnabled=True,
++        sourceModelTensorBytes=baseline['sourceModelTensorBytes'],embeddingActivationDType=descriptor['nativeDType'],
++        storageCommitmentSHA256=descriptor['storageCommitmentSHA256'],
++        stagePlanSHA256=descriptor['producerStageFingerprint' if rank==0 else 'consumerStageFingerprint'],
++        constructionConfigurationSHA256=descriptor['producerConstructionConfigurationSHA256' if rank==0 else 'consumerConstructionConfigurationSHA256'])
++    for key,value in known.items():exact(source[key],value,'Loaded source differs: '+key)
++    # Native executes and releases before this record. The independent auditor
++    # owns execution actions, selected token, final state/logits and timer math.
++    require(isinstance(record['execution'],dict) and record['execution'],'Missing opaque native execution evidence')
++
++
++def transition(first,terminal,context):
++    exact(first['agreement'],terminal['agreement'],'Ready/final agreement changed')
++    exact(first['agreementFingerprint'],terminal['agreementFingerprint'],'Ready/final fingerprint changed')
++
++
++def progress(readers,context):
++    if all(reader.rows for reader in readers):
++        a,b=(reader.rows[0] for reader in readers)
++        exact(a['agreement'],b['agreement'],'Peer ready agreement differs')
++        exact(a['agreementFingerprint'],b['agreementFingerprint'],'Peer ready fingerprint differs')
++
++
++def pair(records,context):
++    a,b=records
++    exact(a['agreement'],b['agreement'],'Peer final agreement differs')
++    exact(a['agreementFingerprint'],b['agreementFingerprint'],'Peer final fingerprint differs')
++    exact(a['request'],b['request'],'Peer recorded request differs')
++    return dict(namespace=TERMINAL,schema_version=1,envelope_version=3,outer_identity_and_completion_validated=True,
++        scheduling_policy=context['stage_prefill_policy'],baseline_evidence_sha256=context['baseline_admission']['evidence_sha256'],
++        numerical_audit_performed=False,action_wire_timing_audit_performed=False,
++        throughput_qualification=False,physical_transfer_qualification=False)
+--- /dev/null
++++ b/experiments/cluster/runtime/stage_checks/prefill_baseline.py
+@@ -0,0 +1,76 @@
++"""Admit pinned baseline identity and final native dtype, not a candidate audit."""
++from .common import FLOATS,canonical,digest,exact,flags,integer,parse,require,sha
++from .evidence import logit_bytes,state_entries
++from . import request
++
++
++def frame_fingerprint(value,step,context,final_dtype):
++    frame=step['frame'];tokens=frame['tokenOffset']+frame['tokenCount']
++    exact(value['frame'],frame,'Baseline frame coordinates differ')
++    exact(value['committedTokens'],tokens,'Baseline committed frontier differs')
++    final=frame['finalPromptChunk'];kind='logits' if final else 'evaluation_handle'
++    exact(value['outputKind'],kind,'Baseline output responsibility differs')
++    shape=[1,context['vocabulary'] if final else 1]
++    exact(value['outputShape'],shape,'Baseline output shape differs')
++    dtype=value['outputDType'];require(dtype in FLOATS,'Baseline output dtype is unsupported')
++    state=value['state'];exact(state['committedTokens'],tokens,'Baseline state frontier differs')
++    entries=state['entries'];require(isinstance(entries,list),'Missing baseline state entries')
++    half=context['text']['num_hidden_layers']//2
++    require(entries==sorted(entries,key=lambda x:(x['globalLayerIndex'],x['component'])),
++            'Baseline state entries must be ordered')
++    total=0
++    for rank in (0,1):
++        owned=[entry for entry in entries if rank*half<=integer(entry['globalLayerIndex'],0,2*half-1)<(rank+1)*half]
++        size,_=state_entries(owned,context['text'],rank,tokens);total+=size
++    exact(state['logicalByteCount'],total,'Baseline state byte total differs')
++    identities=[f"{x['globalLayerIndex']}|{x['component']}|{x['shape']}|{x['dtype']}|{x['byteCount']}|{x['sha256']}" for x in entries]
++    state_hash=digest('\n'.join(['cbv2-owned-state-v1',f'tokens={tokens}']+identities).encode())
++    exact(state['fingerprint'],state_hash,'Baseline state fingerprint differs')
++    if final:
++        require(dtype==final_dtype,'Explicit logits dtype differs from final baseline observation')
++        logits=value['logits'];require(logits['dtype']==dtype,'Baseline row/output dtype differs')
++        logit_bytes(logits,context['vocabulary'])
++        logit_hash=sha(logits['logicalBytesSHA256'])
++    else:
++        require(value.get('logits') is None,'Intermediate baseline unexpectedly captures logits')
++        logit_hash='no-logits'
++    coordinate=f"{frame['sequence']}|{frame['phase']}|{frame['tokenOffset']}|{frame['tokenCount']}|{str(final).lower()}"
++    return digest('\n'.join(['qwen-recorded-frame-v1',coordinate,f'tokens={tokens}',
++        f'{kind}|{shape}|{dtype}',state_hash,logit_hash]).encode())
++
++
++def admit(raw,context,expected_evidence,logits_dtype):
++    require(logits_dtype in FLOATS,'Explicit native logits dtype required')
++    require(digest(raw)==sha(context['baseline_sha256']),'Baseline file differs from explicit SHA256')
++    require(0<len(raw)<=64*1024**2,'Baseline exceeds its byte bound')
++    rows=[parse(line) for line in raw.splitlines() if line.strip()]
++    require(all(isinstance(row,dict) for row in rows),'Baseline JSONL must contain objects')
++    candidates=[row for row in rows if row.get('kind')=='qwen_layer_stage_baseline_checkpoint']
++    require(len(candidates)==1,'Exactly one pinned native baseline checkpoint is required')
++    flags(candidates[0],baselineModelReleasedBeforeStageLoading=True)
++    baseline=candidates[0]['baseline']
++    require(baseline['kind']=='qwen_layer_stage_recorded_baseline','Wrong baseline evidence namespace')
++    flags(baseline,correctnessOnly=True,throughputMeasurementValid=False,allRequestStateRetired=True)
++    old=baseline['request'];old_epoch=old['request']['requestID'].replace('-','')
++    expected,_=request.make_request(old_epoch,old['promptTokenIDs'],old['teacherTokenIDs'],
++                                    old['request']['chunkSize'],old['vocabularySize'])
++    request.validate(old,expected);request.baseline_history(old,context['request'])
++    source=baseline['source']
++    known=dict(artifactAggregateSHA256=context['artifact'],sourceConfigurationSHA256=context['configuration_sha256'],
++               bf16ConversionEnabled=True,layerCount=context['text']['num_hidden_layers'],vocabularySize=context['vocabulary'])
++    require(set(source)==set(known)|{'sourceParameterLayoutSHA256','planSHA256','embeddingActivationDType','sourceModelTensorBytes'},
++            'Baseline source identity schema differs')
++    for key,value in known.items():exact(source[key],value,'Baseline source differs: '+key)
++    for key in ('sourceParameterLayoutSHA256','planSHA256'):sha(source[key])
++    integer(source['sourceModelTensorBytes'],1,6*1024**3)
++    require(source['embeddingActivationDType'] in FLOATS,'Baseline native activation dtype is unsupported')
++    frames=baseline['frames'];require(isinstance(frames,list) and len(frames)==3,'Baseline needs exactly three prefill frames')
++    hashes=[frame_fingerprint(value,step,context,logits_dtype) for value,step in zip(frames,old['steps'])]
++    fingerprint=digest('\n'.join(['qwen-layer-stage-baseline-v1',old['fingerprint'],digest(canonical(source))]+hashes).encode())
++    require(fingerprint==sha(expected_evidence)==sha(baseline['fingerprint']),'Pinned native baseline evidence fingerprint differs')
++    final=frames[-1]['logits']
++    return dict(file_sha256=context['baseline_sha256'],evidence_sha256=fingerprint,source=source,
++        native_dtype=source['embeddingActivationDType'],logits_dtype=logits_dtype,
++        final_logit_sha256=final['logicalBytesSHA256'],final_state_sha256=frames[-1]['state']['fingerprint'],
++        final_frontier=65,baseline_history_and_evidence_bound=True,candidate_numerical_comparison_performed=False,
++        historical_build_or_execution_provenance_reverified=False)
+--- /dev/null
++++ b/experiments/cluster/runtime/stage_checks/prefill_resources.py
+@@ -0,0 +1,26 @@
++"""Initial v3 screen, before model hashing can change the file-cache mix."""
++from datetime import datetime,timezone
++import re
++import subprocess
++import time
++from .common import require
++
++
++def initial_free_screen(read=None):
++    if read is None:
++        read=lambda:subprocess.run(['/usr/bin/vm_stat'],check=True,capture_output=True,text=True,timeout=2).stdout
++    raw=read();require(type(raw)is str and len(raw)<=16384,'Invalid bounded vm_stat output')
++    page=re.search(r'page size of (\d+) bytes',raw)
++    require(page is not None and int(page[1])>0,'Invalid page size')
++    pages={}
++    for line in raw.splitlines()[1:]:
++        match=re.fullmatch(r'(.+?):\s+(\d+)\.',line)
++        if match:
++            require(match[1] not in pages,'Duplicate vm_stat page counter');pages[match[1]]=int(match[2])
++    free=pages['Pages free']*int(page[1])
++    reclaimable=sum(pages[key] for key in ('Pages free','Pages inactive','Pages speculative'))*int(page[1])
++    return dict(phase='before_source_bundle_snapshot_and_artifact_hashing',timestamp_utc=datetime.now(timezone.utc).isoformat(),
++        monotonic_seconds=time.monotonic(),vm_stat=raw,actual_free_bytes=free,required_actual_free_bytes=6*1024**3,
++        estimated_reclaimable_bytes=reclaimable,passed=free>=6*1024**3,
++        actual_free_formula='Pages free * page_size; excludes inactive/speculative/reclaimable pages',
++        guarantees_six_gib_free_at_native_launch=False)
+--- a/experiments/cluster/runtime/stage_checks/stream.py
++++ b/experiments/cluster/runtime/stage_checks/stream.py
+@@ -23,6 +23,9 @@
+             require(line and len(line)<=self.namespace.MAX_LINE and len(self.rows)<2,'Invalid line count/size')
+             row=parse(line.decode('utf8'));expected=self.namespace.READY if not self.rows else self.namespace.TERMINAL
+             require(row.get('kind')==expected,'Wrong ready/terminal order')
+-            self.namespace.validate(row,self.rank,self.epoch,self.context);self.rows.append(row)
++            self.namespace.validate(row,self.rank,self.epoch,self.context)
++            if self.rows and hasattr(self.namespace,'transition'):
++                self.namespace.transition(self.rows[0],row,self.context)
++            self.rows.append(row)
+         require(len(self.pending)<=self.namespace.MAX_LINE,'Partial line exceeds namespace bound')
+         if final:require(not self.pending and self.terminal is not None,'EOF without completed report')
+--- a/experiments/cluster/runtime/stage_checks/supervision.py
++++ b/experiments/cluster/runtime/stage_checks/supervision.py
+@@ -16,6 +16,7 @@
+         while True:
+             codes=[child.poll() for child in children]
+             for i,reader in enumerate(readers):reader.poll(final=codes[i]==0)
++            if hasattr(namespace,'progress'):namespace.progress(readers,context)
+             if any(code is not None and code!=0 for code in codes):reason='rank_failed';break
+             if clock()>=next_memory:memory();next_memory=clock()+1
+             if all(code is not None for code in codes):
+--- /dev/null
++++ b/experiments/cluster/stage_prefill_test_support.py
+@@ -0,0 +1,83 @@
++"""Small invented metadata and CPU values; no artifact or model payload fixture."""
++import copy
++import math
++from runtime.stage_checks.common import canonical,digest
++from runtime.stage_checks import prefill,request
++
++EPOCH='a'*32
++
++
++def context(policy='serial_v1',dtype='bfloat16'):
++    text=dict(num_hidden_layers=4,full_attention_interval=2,hidden_size=8,num_key_value_heads=1,head_dim=2,
++        linear_num_key_heads=1,linear_key_head_dim=2,linear_num_value_heads=1,linear_value_head_dim=2,linear_conv_kernel_dim=2)
++    recorded,fingerprint=request.make_request(EPOCH,[i%8 for i in range(65)],[],32,8)
++    source=dict(artifactAggregateSHA256='b'*64,sourceConfigurationSHA256='c'*64,sourceParameterLayoutSHA256='d'*64,
++        planSHA256='e'*64,bf16ConversionEnabled=True,embeddingActivationDType=dtype,sourceModelTensorBytes=2048,
++        layerCount=4,vocabularySize=8)
++    return dict(mode='prefill-ranks',artifact=source['artifactAggregateSHA256'],configuration_sha256=source['sourceConfigurationSHA256'],
++        model='/model-not-opened',text=text,vocabulary=8,request=recorded,request_fingerprint=fingerprint,
++        stage_prefill_policy=policy,stage_logits_dtype=dtype,baseline_admission=dict(source=source,native_dtype=dtype,
++        logits_dtype=dtype,evidence_sha256='f'*64))
++
++
++def baseline(ctx):
++    old,_=request.make_request('9'*32,ctx['request']['promptTokenIDs'],[],32,8)
++    dtype=ctx['stage_logits_dtype'];frames=[];frame_hashes=[]
++    for step in old['steps']:
++        frame=step['frame'];tokens=frame['tokenOffset']+frame['tokenCount'];final=frame['finalPromptChunk']
++        entries=[]
++        for layer in range(4):
++            specs=[('conv',[1,1,6],dtype),('ssm',[1,1,2,2],'float32')] if layer%2==0 else [
++                ('kv.keys',[1,1,tokens,2],dtype),('kv.position_offsets',[1],'int32'),('kv.values',[1,1,tokens,2],dtype)]
++            for component,shape,entry_dtype in specs:
++                size=math.prod(shape)*({'bfloat16':2,'float16':2,'float32':4,'int32':4}[entry_dtype])
++                entries.append(dict(globalLayerIndex=layer,component=component,shape=shape,dtype=entry_dtype,
++                                    byteCount=size,sha256=digest(bytes(size))))
++        state_hash=digest('\n'.join(['cbv2-owned-state-v1',f'tokens={tokens}']+[
++            f"{e['globalLayerIndex']}|{e['component']}|{e['shape']}|{e['dtype']}|{e['byteCount']}|{e['sha256']}" for e in entries]).encode())
++        state=dict(committedTokens=tokens,entries=entries,logicalByteCount=sum(e['byteCount'] for e in entries),fingerprint=state_hash)
++        shape=[1,8 if final else 1];kind='logits' if final else 'evaluation_handle'
++        value=dict(frame=frame,committedTokens=tokens,outputKind=kind,outputShape=shape,outputDType=dtype,state=state)
++        logit_hash='no-logits'
++        if final:
++            size=8*(4 if dtype=='float32' else 2);logit_hash=digest(bytes(size))
++            value['logits']=dict(shape=[1,8],dtype=dtype,byteCount=size,logicalBytesSHA256=logit_hash,values=[0]*8)
++        coordinate=f"{frame['sequence']}|prefill|{frame['tokenOffset']}|{frame['tokenCount']}|{str(final).lower()}"
++        frame_hashes.append(digest('\n'.join(['qwen-recorded-frame-v1',coordinate,f'tokens={tokens}',
++            f'{kind}|{shape}|{dtype}',state_hash,logit_hash]).encode()))
++        frames.append(value)
++    source=copy.deepcopy(ctx['baseline_admission']['source'])
++    fingerprint=digest('\n'.join(['qwen-layer-stage-baseline-v1',old['fingerprint'],digest(canonical(source))]+frame_hashes).encode())
++    value=dict(kind='qwen_layer_stage_recorded_baseline',correctnessOnly=True,throughputMeasurementValid=False,
++        request=old,source=source,frames=frames,fingerprint=fingerprint,allRequestStateRetired=True)
++    row=dict(kind='qwen_layer_stage_baseline_checkpoint',baselineModelReleasedBeforeStageLoading=True,baseline=value)
++    raw=canonical(row)+b'\n';ctx['baseline_sha256']=digest(raw)
++    return row,raw,fingerprint
++
++
++def rows(rank,ctx):
++    baseline=ctx['baseline_admission'];recorded=ctx['request'];source=baseline['source']
++    descriptor=dict(version=3,flow=prefill.FLOW,schedulingPolicy=ctx['stage_prefill_policy'],epoch=EPOCH,
++        requestID=recorded['request']['requestID'],requestFingerprint=ctx['request_fingerprint'],
++        recordedRequestFingerprint=recorded['fingerprint'],promptCount=65,chunkSize=32,outputCount=1,
++        batchSize=1,frameCount=3,vocabularySize=8,hiddenSize=8,
++        promptTokenIDsSHA256=digest(','.join(map(str,recorded['promptTokenIDs'])).encode()),
++        sourceConfigurationSHA256=ctx['configuration_sha256'],artifactAggregateSHA256=ctx['artifact'],
++        bf16ConversionEnabled=True,nativeDType=baseline['native_dtype'],logitsDType=ctx['stage_logits_dtype'],
++        selectionPolicy='mlx_argmax_all_axes_with_finite_guard_v1',
++        storageCommitmentSHA256='1'*64,planFingerprint=source['planSHA256'],
++        producerStageFingerprint='2'*64,consumerStageFingerprint='3'*64,
++        producerConstructionConfigurationSHA256='4'*64,consumerConstructionConfigurationSHA256='5'*64)
++    fingerprint=digest(b'qwen-prefill-start-agreement-v1\n'+canonical(descriptor))
++    ready=dict(kind=prefill.READY,schemaVersion=1,epoch=EPOCH,rank=rank,worldSize=2,transport='loopback-test',backend='ring',
++        flow=prefill.FLOW,envelopeVersion=3,modelsReadyAgreementValidated=True,freshRequestStateCreated=False,
++        agreementFingerprint=fingerprint,agreement=descriptor)
++    load=dict(schemaVersion=1,stageIndex=rank,verifiedAggregateSHA256=ctx['artifact'],sourceConfigurationSHA256=ctx['configuration_sha256'],
++        planSHA256=source['planSHA256'],sourceParameterLayoutSHA256=source['sourceParameterLayoutSHA256'],bf16ConversionEnabled=True,
++        sourceModelTensorBytes=2048,embeddingActivationDType=baseline['native_dtype'],storageCommitmentSHA256='1'*64,
++        stagePlanSHA256=('2' if rank==0 else '3')*64,constructionConfigurationSHA256=('4' if rank==0 else '5')*64)
++    terminal=dict(ready,kind=prefill.TERMINAL,completed=True,correctnessOnly=True,throughputMeasurementValid=False,
++        modelForwardCompared=False,physicalTransferQualified=False,allRequestStateRetired=True,modelReleased=True,
++        conservativeStateAndBoundaryBytes=4096,request=copy.deepcopy(recorded),sourceLoad=load,
++        execution={'explicitly_opaque_test_evidence':True})
++    return [ready,terminal]
+--- a/experiments/cluster/test_stage_checks_entry.py
++++ b/experiments/cluster/test_stage_checks_entry.py
+@@ -19,14 +19,14 @@
+             guard.start()
+             self.addCleanup(guard.stop)
+ 
+-    def test_public_help_exposes_only_p2p_and_serialized_stage_ranks(self):
++    def test_public_help_adds_explicit_prefill_ranks(self):
+         entry = Path(__file__).with_name('run_stage_checks.py')
+         output = io.StringIO()
+         with patch.object(sys, 'argv', [str(entry), '--help']), contextlib.redirect_stdout(output):
+             with self.assertRaises(SystemExit) as stopped:
+                 runpy.run_path(str(entry), run_name='__main__')
+         self.assertEqual(stopped.exception.code, 0)
+-        self.assertIn('{p2p,ranks}', output.getvalue())
++        self.assertIn('{p2p,ranks,prefill-ranks}', output.getvalue())
+         self.assertNotIn('lookahead', output.getvalue())
+ 
+     def test_snapshot_includes_exact_public_entry_and_runtime_module_sources(self):
+@@ -38,6 +38,9 @@
+             self.assertIn('run_stage_checks.py', names)
+             self.assertIn('cli.py', names)
+             self.assertIn('ranks.py', names)
++            self.assertIn('prefill.py', names)
++            self.assertIn('prefill_baseline.py', names)
++            self.assertIn('prefill_resources.py', names)
+             self.assertEqual((output / 'launcher/run_stage_checks.py').read_bytes(), entry.read_bytes())
+             for record in records:
+                 self.assertEqual(archive.digest(output / 'launcher' / record['path']), record['sha256'])
+--- /dev/null
++++ b/experiments/cluster/test_stage_checks_prefill.py
+@@ -0,0 +1,134 @@
++"""Pure/fake v3 option, baseline, agreement and initial-memory regressions."""
++import copy
++import io
++from pathlib import Path
++import tempfile
++import unittest
++from unittest.mock import patch
++from contextlib import redirect_stderr
++from runtime.stage_checks import cli,configuration,prefill,prefill_baseline
++from runtime.stage_checks.common import canonical,digest
++from runtime.stage_checks.prefill_resources import initial_free_screen
++from runtime.stage_checks.stream import Records
++from stage_prefill_test_support import EPOCH,baseline,context,rows
++
++
++class PrefillTests(unittest.TestCase):
++    def setUp(self):
++        for target in ('subprocess.Popen','subprocess.run','socket.socket'):
++            guard=patch(target,side_effect=AssertionError('No process/socket calls'));guard.start();self.addCleanup(guard.stop)
++        self.ctx=context()
++
++    def arguments(self):
++        return ['prefill-ranks','--release','/release','--runtime','/runtime','--output','/new-output',
++            '--expected-binary-sha256','a'*64,'--model-dir','/model','--artifact-aggregate-sha256','b'*64,
++            '--tokens-file','/tokens.json','--stage-prefill-policy','serial_v1','--stage-logits-dtype','bfloat16',
++            '--baseline-jsonl','/baseline.jsonl','--baseline-sha256','c'*64,'--baseline-evidence-sha256','d'*64]
++
++    def test_explicit_policy_dtype_and_both_baseline_pins_required(self):
++        args=self.arguments();parsed=cli.parser().parse_args(args)
++        self.assertEqual(parsed.chunk_size,32);self.assertIsNone(parsed.teacher_tokens_file)
++        for name in ('--stage-prefill-policy','--stage-logits-dtype','--baseline-jsonl','--baseline-sha256','--baseline-evidence-sha256'):
++            changed=args[:];index=changed.index(name);del changed[index:index+2]
++            with redirect_stderr(io.StringIO()),self.assertRaises(SystemExit):cli.parser().parse_args(changed)
++
++    def test_prefill_does_not_expose_larger_schedule_remote_or_worker_flags(self):
++        for extra in (['--chunk-size','16'],['--teacher-tokens-file','x'],['--host','host'],['--repeats','2'],
++                      ['--stage-prefill-policy','other'],['--stage-logits-dtype','uint32']):
++            with redirect_stderr(io.StringIO()),self.assertRaises(SystemExit):cli.parser().parse_args(self.arguments()+extra)
++
++    def test_argv_binds_each_policy_dtype_and_no_teacher(self):
++        for policy in prefill.POLICIES:
++            for dtype in ('float16','bfloat16','float32'):
++                ctx=context(policy,dtype)
++                cfg=configuration.build(1,EPOCH,ctx,'/bundle','a'*64,[['127.0.0.1:20001'],['127.0.0.1:20002']],180)
++                args=dict(zip(cfg['arguments'][::2],cfg['arguments'][1::2]))
++                self.assertEqual(args['--mode'],'qwen-layer-stage-prefill-rank-check')
++                self.assertEqual(args['--stage-prefill-policy'],policy);self.assertEqual(args['--stage-logits-dtype'],dtype)
++                self.assertEqual([args[x] for x in ('--prompt-tokens','--chunk-size','--decode-tokens')],['65','32','1'])
++                self.assertNotIn('--teacher-tokens-file',args);self.assertEqual(cfg['environment']['MLX_RANK'],'1')
++
++    def test_wrong_fixed_count_or_unbound_dtype_refused(self):
++        for field,value in [('promptCount',64),('chunkSize',16),('outputCount',2)]:
++            ctx=copy.deepcopy(self.ctx);ctx['request']['request'][field]=value
++            with self.assertRaises(ValueError):configuration.build(0,EPOCH,ctx,'/b','a'*64,[['127.0.0.1:2'],['127.0.0.1:3']],180)
++        ctx=copy.deepcopy(self.ctx);ctx['baseline_admission']['logits_dtype']='float32'
++        with self.assertRaises(ValueError):configuration.build(0,EPOCH,ctx,'/b','a'*64,[['127.0.0.1:2'],['127.0.0.1:3']],180)
++
++    def test_all_three_baseline_dtypes_admit_metadata_without_candidate_comparison(self):
++        for dtype in ('float16','bfloat16','float32'):
++            ctx=context(dtype=dtype);_,raw,pin=baseline(ctx)
++            value=prefill_baseline.admit(raw,ctx,pin,dtype)
++            self.assertEqual(value['evidence_sha256'],pin);self.assertEqual(value['final_frontier'],65)
++            self.assertFalse(value['candidate_numerical_comparison_performed'])
++
++    def test_baseline_raw_and_native_fingerprint_pins_are_independent(self):
++        _,raw,pin=baseline(self.ctx)
++        for bad_raw,bad_pin in [(raw+b' ',pin),(raw,'0'*64)]:
++            with self.assertRaises(ValueError):prefill_baseline.admit(bad_raw,self.ctx,bad_pin,'bfloat16')
++
++    def test_wrong_final_dtype_even_valid_file_pin_rejected(self):
++        _,raw,pin=baseline(self.ctx)
++        with self.assertRaises(ValueError):prefill_baseline.admit(raw,self.ctx,pin,'float32')
++
++    def test_baseline_rejects_source_history_retirement_and_state_changes(self):
++        original,_,pin=baseline(self.ctx)
++        for mutate in (lambda b:b['source'].__setitem__('artifactAggregateSHA256','0'*64),
++                       lambda b:b['request']['promptTokenIDs'].__setitem__(0,7),
++                       lambda b:b.__setitem__('allRequestStateRetired',False),
++                       lambda b:b['frames'][0]['state'].__setitem__('fingerprint','0'*64),
++                       lambda b:b['frames'][-1]['logits']['values'].__setitem__(0,1)):
++            row=copy.deepcopy(original);mutate(row['baseline']);raw=canonical(row)+b'\n';self.ctx['baseline_sha256']=digest(raw)
++            with self.assertRaises(ValueError):prefill_baseline.admit(raw,self.ctx,pin,'bfloat16')
++
++    def test_missing_or_duplicate_checkpoint_is_not_admitted(self):
++        row,raw,pin=baseline(self.ctx)
++        for value in (canonical({'kind':'other'})+b'\n',raw+raw):
++            self.ctx['baseline_sha256']=digest(value)
++            with self.assertRaises(ValueError):prefill_baseline.admit(value,self.ctx,pin,'bfloat16')
++
++    def test_opaque_execution_does_not_become_numeric_or_timing_pass(self):
++        finals=[]
++        for rank in (0,1):
++            ready,final=rows(rank,self.ctx)
++            prefill.validate(ready,rank,EPOCH,self.ctx);prefill.validate(final,rank,EPOCH,self.ctx)
++            prefill.transition(ready,final,self.ctx);finals.append(final)
++        result=prefill.pair(finals,self.ctx)
++        self.assertTrue(result['outer_identity_and_completion_validated'])
++        self.assertFalse(result['numerical_audit_performed']);self.assertFalse(result['throughput_qualification'])
++
++    def test_closed_agreement_rejects_changed_policy_bool_count_dtype_extra_or_hash(self):
++        original=rows(0,self.ctx)[0]
++        for key,value in [('schedulingPolicy','prompt_lookahead_one_v1'),('frameCount',True),('nativeDType','float32'),
++                          ('logitsDType','float32'),('unknown',1),('planFingerprint','0'*64)]:
++            row=copy.deepcopy(original);row['agreement'][key]=value
++            row['agreementFingerprint']=digest(b'qwen-prefill-start-agreement-v1\n'+canonical(row['agreement']))
++            with self.assertRaises(ValueError):prefill.validate(row,0,EPOCH,self.ctx)
++        row=copy.deepcopy(original);row['agreementFingerprint']='0'*64
++        with self.assertRaises(ValueError):prefill.validate(row,0,EPOCH,self.ctx)
++
++    def test_terminal_claims_source_and_frontier_rejected(self):
++        for mutate in (lambda r:r.__setitem__('throughputMeasurementValid',True),lambda r:r.__setitem__('modelReleased',False),
++                       lambda r:r['sourceLoad'].__setitem__('stageIndex',1),lambda r:r['request']['request'].__setitem__('outputCount',2),
++                       lambda r:r.__setitem__('execution',{})):
++            row=rows(0,self.ctx)[1];mutate(row)
++            with self.assertRaises(ValueError):prefill.validate(row,0,EPOCH,self.ctx)
++
++    def test_stream_rejects_ready_final_change_in_valid_stage_hash(self):
++        with tempfile.TemporaryDirectory() as temporary:
++            values=rows(0,self.ctx);values[1]['agreement']=copy.deepcopy(values[1]['agreement'])
++            values[1]['agreement']['consumerStageFingerprint']='0'*64
++            values[1]['agreementFingerprint']=digest(b'qwen-prefill-start-agreement-v1\n'+canonical(values[1]['agreement']))
++            path=Path(temporary);(path/'stdout.jsonl').write_bytes(b''.join(canonical(v)+b'\n' for v in values))
++            with self.assertRaisesRegex(ValueError,'Ready/final'):Records(path,0,EPOCH,self.ctx,prefill).poll(final=True)
++
++    def test_initial_free_is_before_hash_screen_not_reclaimable_or_launch_guarantee(self):
++        def raw(free):return f'Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free: {free}.\nPages inactive: 999999.\nPages speculative: 10.\n'
++        limit=6*1024**3//16384
++        self.assertFalse(initial_free_screen(lambda:raw(limit-1))['passed'])
++        record=initial_free_screen(lambda:raw(limit));self.assertTrue(record['passed'])
++        self.assertFalse(record['guarantees_six_gib_free_at_native_launch'])
++        self.assertEqual(record['actual_free_bytes'],6*1024**3)
++
++
++if __name__=='__main__':unittest.main()
+--- /dev/null
++++ b/experiments/cluster/test_stage_checks_prefill_flow.py
+@@ -0,0 +1,89 @@
++"""Fake whole-cohort fencing and pre-hash admission ordering for the new mode."""
++from contextlib import redirect_stdout
++import copy
++import io
++from pathlib import Path
++import tempfile
++import unittest
++from unittest.mock import patch
++from runtime.stage_checks import cli,prefill
++from runtime.stage_checks.common import canonical,digest
++from runtime.stage_checks.supervision import run
++from stage_prefill_test_support import EPOCH,context,rows
++from test_stage_checks_supervision import Child,Clock
++
++
++class PrefillFlowTests(unittest.TestCase):
++    def setUp(self):
++        for target in ('subprocess.Popen','subprocess.run','socket.socket'):
++            guard=patch(target,side_effect=AssertionError('No process/socket calls'));guard.start();self.addCleanup(guard.stop)
++        self.temporary=tempfile.TemporaryDirectory();self.addCleanup(self.temporary.cleanup)
++        self.base=Path(self.temporary.name);self.clock=Clock();self.ctx=context();self.children=[];self.stops=0
++        self.ranks=[]
++        for rank in (0,1):
++            path=self.base/str(rank);path.mkdir();self.ranks.append(dict(rank=rank,local=str(path)))
++
++    def execute(self,mutate=None,finish=(.1,.1),codes=(0,0)):
++        def start(rank):
++            i=rank['rank'];values=rows(i,self.ctx)
++            if mutate:values=mutate(i,values)
++            (Path(rank['local'])/'stdout.jsonl').write_bytes(b''.join(canonical(v)+b'\n' for v in values))
++            child=Child(i,self.clock,finish[i],codes[i]);self.children.append(child);return child
++        def stop(_ranks,children):
++            self.stops+=1
++            for child in children:
++                if child.poll()is None:child.finish=self.clock();child.code=-15
++        return run(self.ranks,EPOCH,self.ctx,prefill,1,start,stop,lambda:None,clock=self.clock,sleep=self.clock.sleep)
++
++    def test_valid_outer_pair_reaps_and_leaves_numeric_audit_false(self):
++        result,_=self.execute();self.assertTrue(result['passed']);self.assertEqual(self.stops,0)
++        self.assertFalse(result['validation']['numerical_audit_performed'])
++        self.assertTrue(all(child.waits==1 for child in self.children))
++
++    def test_ready_peer_mismatch_fences_before_terminal(self):
++        def mutate(rank,values):
++            if rank==1:
++                value=copy.deepcopy(values[0]);value['agreement']['producerStageFingerprint']='0'*64
++                value['agreementFingerprint']=digest(b'qwen-prefill-start-agreement-v1\n'+canonical(value['agreement']))
++                return [value]
++            return values[:1]
++        result,_=self.execute(mutate=mutate,finish=(10,10))
++        self.assertFalse(result['passed']);self.assertIn('Peer ready agreement',result['error']);self.assertEqual(self.stops,1)
++        self.assertTrue(all(child.poll()is not None and child.waits==1 for child in self.children))
++
++    def test_deadline_and_peer_exit_fence_both_owned_ranks(self):
++        result,_=self.execute(finish=(10,10));self.assertEqual(result['cancellation_reason'],'cohort_deadline')
++        self.assertEqual(self.stops,1);self.assertFalse(result['passed'])
++
++    def cli_args(self,output):
++        runtime=self.base/'repo/experiments/cluster/runtime';runtime.mkdir(parents=True,exist_ok=True)
++        return ['prefill-ranks','--runtime',str(runtime),'--output',str(output),'--release','/unused-release',
++            '--expected-binary-sha256','a'*64,'--model-dir','/model-not-opened','--artifact-aggregate-sha256','b'*64,
++            '--tokens-file','/not-read','--stage-prefill-policy','serial_v1','--stage-logits-dtype','bfloat16',
++            '--baseline-jsonl','/not-read','--baseline-sha256','c'*64,'--baseline-evidence-sha256','d'*64]
++
++    def test_refused_initial_free_does_not_snapshot_hash_or_spawn(self):
++        output=self.base/'refused'
++        with patch.object(cli,'initial_free_screen',return_value={'passed':False}), \
++             patch.object(cli.archive,'archive_launcher',side_effect=AssertionError('Must not snapshot')) as archive, \
++             patch.object(cli,'MemoryGate',side_effect=AssertionError('Must not create later gate')),redirect_stdout(io.StringIO()):
++            self.assertEqual(cli.main(self.cli_args(output)),1)
++        archive.assert_not_called()
++        from runtime.stage_checks.common import parse
++        record=parse((output/'receipt.json').read_bytes())
++        self.assertFalse(record['native_execution_attempted']);self.assertFalse(record['passed'])
++
++    def test_initial_free_and_swap_reference_precede_any_snapshot(self):
++        order=[]
++        class Gate:
++            samples=[]
++            def __init__(self):order.append('swap-reference')
++        def initial():order.append('actual-free');return {'passed':True}
++        def archive(_):order.append('snapshot');raise ValueError('Stop fake before file/archive work')
++        with patch.object(cli,'initial_free_screen',side_effect=initial),patch.object(cli,'MemoryGate',Gate), \
++             patch.object(cli.archive,'archive_launcher',side_effect=archive),redirect_stdout(io.StringIO()):
++            self.assertEqual(cli.main(self.cli_args(self.base/'ordered')),1)
++        self.assertEqual(order,['actual-free','swap-reference','snapshot'])
++
++
++if __name__=='__main__':unittest.main()
+--- /dev/null
++++ b/experiments/cluster/test_stage_checks_prefill_inputs.py
+@@ -0,0 +1,55 @@
++"""Small metadata-only input retention checks; payload verifier is injected."""
++import argparse
++from pathlib import Path
++import tempfile
++import unittest
++from unittest.mock import Mock,patch
++from runtime.stage_checks import inputs
++from runtime.stage_checks.common import canonical,digest
++from stage_prefill_test_support import EPOCH,baseline,context
++
++
++class PrefillInputTests(unittest.TestCase):
++    def setUp(self):
++        for target in ('subprocess.Popen','subprocess.run','socket.socket'):
++            guard=patch(target,side_effect=AssertionError('No process/socket calls'));guard.start();self.addCleanup(guard.stop)
++        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup);self.base=Path(self.temp.name)
++        self.model=self.base/'metadata';self.model.mkdir();self.ctx=context()
++        text=dict(self.ctx['text'],vocab_size=8,max_position_embeddings=32768)
++        config=canonical(dict(model_type='qwen3_5_text',**text));self.ctx['configuration_sha256']=digest(config)
++        self.ctx['baseline_admission']['source']['sourceConfigurationSHA256']=digest(config)
++        (self.model/'config.json').write_bytes(config)
++        manifest=dict(aggregate_sha256=self.ctx['artifact'],total_size_bytes=len(config),
++            files=[dict(path='config.json',sha256=digest(config))])
++        (self.model/'manifest.json').write_bytes(canonical(manifest))
++        self.prompt=self.base/'prompt.json';self.prompt.write_bytes(canonical(self.ctx['request']['promptTokenIDs']))
++        _,raw,pin=baseline(self.ctx);self.baseline=self.base/'baseline.jsonl';self.baseline.write_bytes(raw)
++        self.args=argparse.Namespace(command='prefill-ranks',model_dir=self.model,artifact_aggregate_sha256=self.ctx['artifact'],
++            tokens_file=self.prompt,tokens_sha256=digest(self.prompt.read_bytes()),teacher_tokens_file=None,
++            teacher_tokens_sha256=None,chunk_size=32,baseline_jsonl=self.baseline,baseline_sha256=digest(raw),
++            baseline_evidence_sha256=pin,stage_prefill_policy='serial_v1',stage_logits_dtype='bfloat16')
++        self.artifacts=Mock();self.artifacts.verify_model.return_value=None
++
++    def prepare(self,name):
++        output=self.base/name;output.mkdir()
++        return inputs.prepare(self.args,output,EPOCH,self.artifacts),output
++
++    def test_pinned_baseline_is_admitted_after_exact_metadata_retention(self):
++        value,output=self.prepare('good')
++        self.assertEqual(value['mode'],'prefill-ranks')
++        self.assertEqual(value['baseline_admission']['evidence_sha256'],self.args.baseline_evidence_sha256)
++        self.assertEqual((output/'inputs/baseline.jsonl').read_bytes(),self.baseline.read_bytes())
++        self.artifacts.verify_model.assert_called_once_with(self.model.resolve(),self.ctx['artifact'])
++
++    def test_baseline_wrong_pin_missing_pin_and_wrong_dtype_refuse(self):
++        for name,value in [('baseline_sha256','0'*64),('baseline_evidence_sha256','0'*64),('stage_logits_dtype','float32')]:
++            saved=getattr(self.args,name);setattr(self.args,name,value)
++            with self.assertRaises(ValueError):self.prepare(name)
++            setattr(self.args,name,saved)
++
++    def test_valid_native_but_not_public_prompt64_is_refused(self):
++        self.prompt.write_bytes(canonical([1]*64));self.args.tokens_sha256=digest(self.prompt.read_bytes())
++        with self.assertRaisesRegex(ValueError,'65/32/1'):self.prepare('too-short')
++
++
++if __name__=='__main__':unittest.main()

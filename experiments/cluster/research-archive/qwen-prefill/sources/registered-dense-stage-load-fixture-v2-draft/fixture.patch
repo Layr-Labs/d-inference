@@ -1,0 +1,13 @@
+--- a/fixtures/StageLoadCheck.swift
++++ b/fixtures/StageLoadCheck.swift
+@@ -18,9 +18,7 @@
+         accepted.append(name)
+     }
+     func reject(_ name: String, _ body: () throws -> Void) throws {
+-        var fakeReads = 0
+-        do { try body(); fakeReads += 1 } catch {
+-            guard fakeReads == 0 else { throw ProbeError("Stage load refusal followed a fake read") }
++        do { try body() } catch {
+             rejected.append(name); return
+         }
+         throw ProbeError("Stage load fixture admitted: " + name)

@@ -1,0 +1,51 @@
+--- a/QwenRegisteredGenerationReferenceLoading.swift
++++ b/QwenRegisteredGenerationReferenceLoading.swift
+@@ -45,6 +45,11 @@
+                     _ = try validatedQwenFeedForwardScaleTypes(model, layers: layers,
+                         isMoE: false, requireTwoWaySplit: false)
+                     try resources.prepared(prepared, storage: storage); try checked()
++                    // Reduce file-cache duplication during verified weight reads.
++                    // This requests the same descriptor-local cache policy and
++                    // bounded aligned reader used by selected-stage loading; its
++                    // scratch is included in this reference's free-memory ledger.
++                    try checkpoint.bypassTensorPayloadCache(); try checked()
+                     let receipt = try materializeVerifiedQwenDiagnostic(model: model, prepared: prepared,
+                         originalConfiguration: source.configuration, storage: storage, convertBF16: true,
+                         check: checked, beforeTensor: { name, tensor in
+--- a/QwenFullGenerationReferenceBudget.swift
++++ b/QwenFullGenerationReferenceBudget.swift
+@@ -11,6 +11,7 @@
+     let sourceByteCounts: [Int]
+     let allocationBounds: [Int]
+     let largestHostTensorBytes: Int
++    let payloadReadScratchBytes = CheckpointAlignedReadPlan.maximumScratchAllocationBytes
+     let stateBytes: Int
+     let fusionBytes: Int
+     let capturedRowsCPUBytes: Int
+@@ -76,8 +77,9 @@
+     func requiredActualFreeBytes(after count: Int) throws -> Int {
+         let remaining = try remainingAllocationBytes(after: count)
+         let host = count == allocationBounds.count ? 0 : largestHostTensorBytes
++        let scratch = count == allocationBounds.count ? 0 : payloadReadScratchBytes
+         return max(QwenDenseStageLoadPolicy.minimumActualFreeBytes,
+-            try QwenLongPrefillCheckedBytes.sum([remaining, host, host, requestReservedBytes,
++            try QwenLongPrefillCheckedBytes.sum([remaining, host, host, scratch, requestReservedBytes,
+                 QwenDenseStageLoadPolicy.loadingHeadroomBytes]))
+     }
+ 
+--- a/QwenFullGenerationReferenceCheck.swift
++++ b/QwenFullGenerationReferenceCheck.swift
+@@ -135,7 +135,12 @@
+     try require(try logical.remainingAllocationBytes(after: 0) == profile.sourceTensorBytes
+         && logical.remainingAllocationBytes(after: specification.tensorCount) == 0, "full source allocation conservation")
+     try require(try logical.requiredActualFreeBytes(after: 0) == max(6 * 1_073_741_824,
+-        profile.sourceTensorBytes + 2 * profile.largestSourceTensorBytes + logical.requestReservedBytes + 4 * 1_073_741_824), "load free formula")
++        profile.sourceTensorBytes + 2 * profile.largestSourceTensorBytes + 8 * 1_048_576 + 16_384
++        + logical.requestReservedBytes + 4 * 1_073_741_824), "load free formula includes bounded aligned-read scratch")
++    try require(logical.payloadReadScratchBytes == 8 * 1_048_576 + 16_384,
++        "aligned payload scratch has its own bounded host allowance")
++    try require(try logical.requiredActualFreeBytes(after: specification.tensorCount) == max(6 * 1_073_741_824,
++        logical.requestReservedBytes + 4 * 1_073_741_824), "completed load releases host buffers and payload scratch")
+     try require(try logical.requiredAllocatorBytes(after: specification.tensorCount, active: 100, cache: 200)
+         == 300 + logical.stateBytes + logical.fusionBytes + 1_489_920 + 2 * 1_073_741_824, "host row excluded from allocator requirement")
+     let padded = try budget(admission.request, admission.requirements, { $0 + 16_384 })

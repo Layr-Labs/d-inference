@@ -1,0 +1,11 @@
+{
+  "files": [
+    {
+      "bytes": 10306,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenProtectedEvidenceExport.swift",
+      "preimageSHA256": "194cf00057032e19da50a722f3ea7be6cfbdd06b10a560924a16f57f09ad37bc",
+      "proposedSHA256": "367dc5ab811e9188ba6bcb7889bdbfaa4ff2079efd0091caa4829ef42523981e",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen9b-protected-evidence-thunk-build-20260917/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenProtectedEvidenceExport.swift"
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+--- serial/prepare_packet.py
++++ lookahead/prepare_packet.py
+@@ -6,15 +6,15 @@
+ import sys
+ 
+ ROOT = Path(__file__).resolve().parent.parent
+-COMPARATOR = ROOT / 'qwen27b-cut16-numerical-audit-20260915'
+-COMPARATOR_SHA = 'f3757094f14cc479e761b83b2a988551250bd61a9dba1797e91c3e564f29aebe'
+-PARENT = ROOT / 'qwen27b-8k-serial-owner-qualification-20260915'
+-PARENT_SHA = 'c479d8277855431bf3acfd0a9310fcd23ada9ee6cf84c741323a24a625f9fcd2'
+-AGREEMENT_SHA = '5964b5f1e865fe2d12f3146ff600b0675db24d427ff979f8bde72c24b309172e'
++COMPARATOR = ROOT / 'qwen27b-8k-lookahead-owner-qualification-20260915/comparison'
++COMPARATOR_SHA = 'c1fd7ee6ba23b44e0ce6ce3d3c24d67c2aed659d247f77ca99270894f0c45dd4'
++PARENT = ROOT / 'qwen27b-8k-lookahead-owner-qualification-20260915'
++PARENT_SHA = 'f1df7e5da9c3da4a5e46f3b56b5aed70a5bf56745f517b7a43771f030dfe2b1a'
++AGREEMENT_SHA = '139e62dd37613fb914e5d0a05a005f4f9c9974359124216231577c6375152077'
+ SOURCE_ROLES = {
+     'prompt': ('inputs/prompt.ids.json', 'ee6caf0be6391e00ec41df930f0fd6351613969622cbb247b1b4bdaf69afe997', 256*1024),
+     'registered_request': ('inputs/request.json', 'd6813ee4697450a618c8027336e6925f94afe230e3e1a031135c3435fd03e57b', 64*1024),
+-    'registered_plan': ('provenance/recording-metadata.json', '4c22d847bb83991a37d83a9c97be94eb8152f5341c8deaa4b3bf6e677eb6eeeb', 64*1024),
++    'registered_plan': ('provenance/recording-metadata.json', '170597585cff54b59a33c038008fe266ed428b616443311f9f692abc075b325d', 64*1024),
+ }
+ 
+ 
+--- serial/read_sidecar_remote.py
++++ lookahead/read_sidecar_remote.py
+@@ -7,7 +7,7 @@
+ import stat
+ import subprocess
+ 
+-SIDECAR = '/Users/developer/DarkbloomDev/qwen27b-8k-serial-owner-validation-20260915/evidence/c7517799-2a77-49fa-af9c-2b4f662bf76c.json'
++SIDECAR = '/Users/developer/DarkbloomDev/qwen27b-8k-lookahead-owner-validation-20260915/evidence/c7517799-2a77-49fa-af9c-2b4f662bf76c.json'
+ JOURNAL = '/Users/developer/.darkbloom/cluster-device/native-device.lease'
+ 
+ 

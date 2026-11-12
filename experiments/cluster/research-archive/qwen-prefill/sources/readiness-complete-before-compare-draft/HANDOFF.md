@@ -1,0 +1,11 @@
+The shared readiness exchange currently compares inside receive. On a semantic mismatch, rank 1 throws before sending its own digest, leaving rank 0 waiting for that reply. The preserved V2 run and strict parent failure are not changed by this source proposal.
+
+Apply `runtime.patch` to the single existing `QwenLongPrefillReadinessExchange.swift`. The proposed file has SHA `a075b13f8606dcccd9459ba8140559af4d9d696bf9621c1b2d92838f333e210d`. Receive now returns only the copied CPU `[Int32]`. Rank 0 still sends then receives; rank 1 still receives then sends. After those operations and the existing final native/caller check, each rank compares once and uses its unchanged disagreement message.
+
+The material factories, material-construction point, legacy request and resident cohort domains, `[64]`/Int32/256-byte limits, array constructors, completed point-to-point operations and error checking remain in place. Both wrappers share the correction. No barrier, acknowledgment frame, sleep, retry, model operation, request state, CLI field or success DTO is introduced. A successful match returns the same digest.
+
+`CollectivePointToPoint.send` explicitly guarantees local completion and source-release eligibility, not peer consumption. This change removes deliberate semantic rejection before the reply; it does not prove that group teardown cannot race a peer receive. Transport errors, caller/native errors and failed peers still require the existing parent deadline and cleanup. The separate V3 launcher will accept mismatch only when both ranks naturally exit 1 with their exact semantic diagnostics before the deadline. Generic ring/peer-loss diagnostics remain failures.
+
+Four pure Python tests passed. They tie the source to the fixed operation order and enumerate admissible finite queued-message schedules: matching values complete on both ranks, differing values are sent before both comparisons, and the old rank-1 compare-before-send order strands rank 0. This is a CPU schedule model, not execution of Swift, MLX, sockets, native completion or teardown. Root owns compile and actual model-free match/mismatch qualification.
+
+Independent runtime source review by pipeline_stage_plan found no blocker and confirmed both wrapper domains and the completed-send limitation. No repository file, old package or actual candidate evidence was modified here.

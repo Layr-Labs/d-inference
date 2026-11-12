@@ -1,0 +1,164 @@
+--- a/experiments/cluster/inference/Sources/ClusterInference/Main.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/Main.swift
+@@ -25,6 +25,7 @@
+             try checkQwenLongPrefillPairCLI()
+             try checkQwenLongPrefillRankAdmission()
+             try checkQwenLongPrefillSoloCLI()
++            try checkQwenPrefillPhaseCLI()
+             try emitJSON(checkQwenLayerStageProfiledPrefillGeometry())
+             try checkQwenLayerStageProfiledCheckAdmission()
+             try checkQwenLayerStageSoloPrefillCLIAdmission()
+@@ -87,17 +88,27 @@
+         // Install MLX's error handler before calling Cmlx directly.
+         _ = MLXArray(0)
+         if let longReferenceAdmission, options.mode == .qwenLongPrefillSoloCheck {
+-            try MLX.withError { error in
+-                try emitJSON(runQwenLongPrefillSoloCheck(options: options,
+-                    admission: longReferenceAdmission, check: { try error.check() }))
+-            }
++            let report = try withQwenPrefillPhaseCapture(output: options.prefillPhaseTraceFile) { capture in
++                try MLX.withError { error in
++                    let result = try runQwenLongPrefillSoloCheck(options: options,
++                        admission: longReferenceAdmission, phaseCapture: capture, check: { try error.check() })
++                    try error.check()
++                    return result
++                }
++            }
++            try emitJSON(report)
+             return
+         }
+         if let longReferenceAdmission, options.mode == .qwenLongPrefillRankCheck {
+-            try MLX.withError { error in
+-                try emitJSON(runQwenLongPrefillRankCheck(options: options,
+-                    local: longReferenceAdmission, check: { try error.check() }))
+-            }
++            let report = try withQwenPrefillPhaseCapture(output: options.prefillPhaseTraceFile) { capture in
++                try MLX.withError { error in
++                    let result = try runQwenLongPrefillRankCheck(options: options,
++                        local: longReferenceAdmission, phaseCapture: capture, check: { try error.check() })
++                    try error.check()
++                    return result
++                }
++            }
++            try emitJSON(report)
+             return
+         }
+         if let longReferenceAdmission, options.mode == .qwenLongPrefillPairCheck {
+--- a/experiments/cluster/inference/Sources/ClusterInference/Options.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/Options.swift
+@@ -45,6 +45,7 @@
+     var soloReferenceSHA256: String?
+     var soloBaselineEvidenceSHA256: String?
+     var longPromptSHA256: String?
++    var prefillPhaseTraceFile: URL?
+     var localCorrectness = false
+     var expectedArtifactAggregateSHA256: String?
+     var modelDirectory: URL?
+@@ -78,6 +79,7 @@
+       [--stage-prefill-policy serial_v1|prompt_lookahead_one_v1 --stage-logits-dtype float16|bfloat16|float32]
+       [--solo-reference-file PATH --solo-reference-sha256 HEX64 --solo-baseline-evidence-sha256 HEX64]
+       [--long-prompt-sha256 HEX64] (explicit qwen-long-prefill reference, pair, rank or solo check)
++      [--prefill-phase-trace-file NEW_PATH] (optional CPU phases for long rank or solo check)
+       [--attention-output-precision native|float32]
+       [--ffn-output-precision native|float32] (dense Qwen only)
+       [--ffn-branch-precision native|float32|float32-through-norm] (Gemma only)
+@@ -259,6 +261,7 @@
+             case "--solo-reference-sha256": soloReferenceSHA256 = value
+             case "--solo-baseline-evidence-sha256": soloBaselineEvidenceSHA256 = value
+             case "--long-prompt-sha256": longPromptSHA256 = value
++            case "--prefill-phase-trace-file": prefillPhaseTraceFile = URL(fileURLWithPath: value)
+             case "--synthetic-dtype":
+                 guard ["float32", "bfloat16"].contains(value) else { throw ProbeError("Unsupported synthetic dtype") }
+                 syntheticDType = value; explicitSyntheticDType = true
+@@ -309,6 +312,9 @@
+         }
+         guard promptCount > 0, chunkSize > 0, decodeCount > 0, repeats > 0, warmups >= 0 else {
+             throw ProbeError("Counts must be positive (warmups may be zero)")
++        }
++        guard prefillPhaseTraceFile == nil || mode == .qwenLongPrefillRankCheck || mode == .qwenLongPrefillSoloCheck else {
++            throw ProbeError("Prefill phase traces require the explicit long rank or solo check")
+         }
+         guard mode == .qwenLongPrefillReference || mode == .qwenLongPrefillPairCheck || mode == .qwenLongPrefillRankCheck || mode == .qwenLongPrefillSoloCheck || longPromptSHA256 == nil else {
+             throw ProbeError("Long prompt SHA applies only to explicit registered long diagnostics")
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillRankCheck.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillRankCheck.swift
+@@ -3,7 +3,7 @@
+ import MLXNN
+ 
+ func runQwenLongPrefillRankCheck(options: Options,
+-    local: QwenRegistered9BLongPrefillReferenceAdmission, check: () throws -> Void
++    local: QwenRegistered9BLongPrefillReferenceAdmission, phaseCapture: QwenPrefillPhaseCapture? = nil, check: () throws -> Void
+ ) throws -> QwenLongPrefillRankReport {
+     try QwenLongPrefillRankAdmission.validateOptions(options)
+     let collective = try Collective(transport: options.transport)
+@@ -17,6 +17,12 @@
+                     originalConfiguration: local.configuration, plan: local.plan, stageIndex: collective.rank,
+                     expectedAggregateSHA256: local.resource.expectedArtifactAggregateSHA256)
+                 model = loaded.model; try checked()
++                let phaseRecorder: QwenPrefillPhaseRecorder?
++                if let phaseCapture {
++                    phaseRecorder = try phaseCapture.makeRecorder(identity: .init(
++                        requestFingerprint: local.request.fingerprint,
++                        profile: local.request.request.profile.rawValue, role: collective.rank == 0 ? .rank0 : .rank1))
++                } else { phaseRecorder = nil }
+                 let agreement = try qwenLongPrefillRankAgreement(loaded: loaded, local: local, options: options)
+                 memory.append(QwenStageMemoryObservation("stage_loaded_no_request_state"))
+                 let execution = try runQwenLongPrefillRankRequest(loaded: loaded, local: local,
+@@ -24,7 +30,7 @@
+                         try emitJSON(QwenLongPrefillRankReady(epoch: options.epoch!, rank: collective.rank,
+                             agreementFingerprint: agreement.fingerprint, agreement: agreement.descriptor,
+                             promptFileSHA256: local.promptFileSHA256))
+-                    }, check: checked)
++                    }, phaseRecorder: phaseRecorder, check: checked)
+                 memory.append(QwenStageMemoryObservation("stage_request_retired_weights_resident"))
+                 return (loaded.receipt, agreement, execution)
+             }
+@@ -39,6 +45,7 @@
+                 resourceAdmission: local.resource, execution: result.2, memory: memory)
+         }
+     } catch {
++        phaseCapture?.fail()
+         let primary = error
+         var cleanup: [String] = []
+         do {
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillSoloCheck.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLongPrefillSoloCheck.swift
+@@ -3,7 +3,7 @@
+ import MLXNN
+ 
+ func runQwenLongPrefillSoloCheck(options: Options,
+-    admission: QwenRegistered9BLongPrefillReferenceAdmission, check: () throws -> Void
++    admission: QwenRegistered9BLongPrefillReferenceAdmission, phaseCapture: QwenPrefillPhaseCapture? = nil, check: () throws -> Void
+ ) throws -> QwenLongPrefillSoloReport {
+     _ = try QwenLongPrefillSoloCLI.referenceOptions(options)
+     var memory = [QwenStageMemoryObservation("before_full_model_load")]
+@@ -16,6 +16,12 @@
+                     originalConfiguration: admission.configuration,
+                     expectedAggregateSHA256: admission.resource.expectedArtifactAggregateSHA256)
+                 model = loaded.model; try checked()
++                let phaseRecorder: QwenPrefillPhaseRecorder?
++                if let phaseCapture {
++                    phaseRecorder = try phaseCapture.makeRecorder(identity: .init(
++                        requestFingerprint: admission.request.fingerprint,
++                        profile: admission.request.request.profile.rawValue, role: .solo))
++                } else { phaseRecorder = nil }
+                 let result = try runQwenLongPrefillSoloRequest(loaded: loaded, admission: admission,
+                     onReady: {
+                         memory.append(QwenStageMemoryObservation("full_model_loaded_no_request_state"))
+@@ -24,7 +30,7 @@
+                             promptFileSHA256: admission.promptFileSHA256,
+                             arithmeticEnvironmentSHA256: admission.arithmeticEnvironmentSHA256,
+                             recordedRequestFingerprint: admission.request.fingerprint))
+-                    }, check: checked)
++                    }, phaseRecorder: phaseRecorder, check: checked)
+                 memory.append(QwenStageMemoryObservation("full_request_retired_weights_resident"))
+                 return result
+             }
+@@ -40,6 +46,7 @@
+                 resourceAdmission: admission.resource, execution: execution, memory: memory)
+         }
+     } catch {
++        phaseCapture?.fail()
+         let primary = error
+         var cleanup: [String] = []
+         do {

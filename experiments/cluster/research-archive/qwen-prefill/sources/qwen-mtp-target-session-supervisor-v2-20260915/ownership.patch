@@ -1,0 +1,84 @@
+--- a/package/worker_processes.py
++++ b/package/worker_processes.py
+@@ -71,19 +71,39 @@
+             self.check()
+ 
+     def _kill_groups(self):
++        # Serialize destructive signals with every leader reap. Once wait/poll
++        # releases that PID, it cannot authorize a signal to a reused PGID.
+         with self._lock:
+-            children = list(self.children)
+-        for child in children:
+-            if child.pid in self._fenced_groups:
+-                continue
+-            try:
+-                os.killpg(child.pid, signal.SIGKILL)
+-            except ProcessLookupError:
+-                self._fenced_groups.add(child.pid)
+-            except BaseException as error:
+-                self._note_cleanup_error('killpg:%s' % child.pid, error)
+-            else:
+-                self._fenced_groups.add(child.pid)
++            for child in self.children:
++                if child.pid in self._fenced_groups:
++                    continue
++                if child.returncode is not None:
++                    try:
++                        os.killpg(child.pid, 0)
++                    except ProcessLookupError:
++                        self._fenced_groups.add(child.pid)
++                    except BaseException as error:
++                        self._note_cleanup_error('reaped-group:%s' % child.pid, error)
++                    else:
++                        self._note_cleanup_error('reaped-group:%s' % child.pid,
++                            RuntimeError('Reaped leader cannot authorize a destructive group signal'))
++                    continue
++                try:
++                    os.killpg(child.pid, signal.SIGKILL)
++                except ProcessLookupError:
++                    self._fenced_groups.add(child.pid)
++                except BaseException as error:
++                    self._note_cleanup_error('killpg:%s' % child.pid, error)
++                else:
++                    self._fenced_groups.add(child.pid)
++
++    def _poll(self, child):
++        with self._lock:
++            return child.poll()
++
++    def _wait(self, child):
++        with self._lock:
++            return child.wait(timeout=1)
+ 
+     def _confirm_groups_absent(self):
+         with self._lock:
+@@ -137,7 +157,7 @@
+         raw = encoded(command)
+         for index, child in enumerate(self.children):
+             require(not self.writes[index], 'Previous worker command is still pending')
+-            require(child.poll() is None, 'Worker exited before command')
++            require(self._poll(child) is None, 'Worker exited before command')
+             self.writes[index].extend(raw)
+             self.selector.register(child.stdin, selectors.EVENT_WRITE, (index, 'stdin'))
+         # Outputs can arrive while another pipe is writing. Retain them, but do
+@@ -228,7 +248,7 @@
+     def finish(self):
+         while True:
+             require(not any(self.events.values()), 'Unexpected trailing worker event')
+-            if len(self.eof) == 2 * len(self.children) and all(child.poll() is not None for child in self.children):
++            if len(self.eof) == 2 * len(self.children) and all(self._poll(child) is not None for child in self.children):
+                 break
+             self.pump('shutdown-wait')
+         require(all(child.returncode == 0 for child in self.children), 'Worker exit was nonzero')
+@@ -254,9 +274,9 @@
+             if kill:
+                 self._kill_groups()
+             for child in self.children:
+-                if not attempt('reap:%s' % child.pid, lambda: child.wait(timeout=1)):
++                if not attempt('reap:%s' % child.pid, lambda: self._wait(child)):
+                     self._kill_groups()
+-                    attempt('reap-retry:%s' % child.pid, lambda: child.wait(timeout=1))
++                    attempt('reap-retry:%s' % child.pid, lambda: self._wait(child))
+                 for stream in ('stdin', 'stdout', 'stderr'):
+                     attempt('close-pipe:%s' % stream, getattr(child, stream).close)
+             if not kill:

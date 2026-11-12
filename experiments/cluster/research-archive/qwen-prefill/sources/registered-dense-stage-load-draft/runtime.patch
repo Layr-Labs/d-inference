@@ -1,0 +1,794 @@
+--- a/experiments/cluster/inference/Sources/ClusterInference/Main.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/Main.swift
+@@ -11,6 +11,10 @@
+ 
+     static func run() throws {
+         let arguments = Array(CommandLine.arguments.dropFirst())
++        if QwenDenseStageLoadCLI.isRequested(arguments) {
++            try QwenDenseStageLoadCLI(arguments: arguments).run()
++            return
++        }
+         if QwenDenseConstructorCLI.isRequested(arguments) {
+             try QwenDenseConstructorCLI(arguments: arguments).run()
+             return
+--- a/experiments/cluster/inference/Sources/ClusterInference/VerifiedQwenLayerStageLoading.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/VerifiedQwenLayerStageLoading.swift
+@@ -23,102 +23,122 @@
+             stage: plan.stages[stageIndex], check: { try error.check() })
+         let model = prepared.model, inventory = prepared.inventory
+         let inventories = [inventory, other].sorted { $0.summary.stageIndex < $1.summary.stageIndex }
+-        let coverage = inventories.flatMap(\.active)
+-        guard coverage.count == source.tensors.count,
+-              Set(coverage.map(\.sourceName)) == Set(source.tensors.map(\.sourceName)),
+-              coverage.reduce(0, { $0 + $1.byteCount }) == source.sourceBytes else {
+-            throw ProbeError("Layer-stage inventories do not exactly conserve canonical source storage")
+-        }
+-        let commitment = QwenLayerStageStorageCommitment(schemaVersion: 1,
+-            verifiedAggregateSHA256: source.prepared.checkpoint.aggregate,
+-            sourceConfigurationSHA256: sha256(originalConfiguration), planSHA256: plan.fingerprint,
+-            sourceTensorManifestSHA256: source.sourceTensorManifestSHA256,
+-            sourceModelTensorBytes: source.sourceBytes,
+-            largestSourceTensorBytes: source.largestSourceBytes,
+-            sourceTensorCount: source.prepared.sourceTensorCount,
+-            canonicalTensorCount: source.tensors.count,
+-            bf16ConversionEnabled: source.bf16ConversionEnabled,
+-            stages: inventories.map(\.summary))
+-        // All source/stage geometry, policies, inventory ownership and caps
+-        // have now passed. This is the first checkpoint tensor materialization.
+-        try source.prepared.checkpoint.checkUnchanged()
+-        var loadedBytes = 0, largestHostBytes = 0
+-        for entry in inventory.active {
+-            try autoreleasepool {
+-                guard let tensor = source.prepared.canonical[entry.sourceName] else {
+-                    throw ProbeError("Verified stage descriptor disappeared")
+-                }
+-                let read = try tensor.read(.all)
+-                let sanitized = model.sanitize(weights: [entry.localName: read.array])
+-                guard sanitized.count == 1, var array = sanitized[entry.localName],
+-                      array.shape == entry.shape,
+-                      String(describing: array.dtype) == entry.sourceDType else {
+-                    throw ProbeError("Stage sanitizer changed a canonical tensor: \(entry.localName)")
+-                }
+-                if source.bf16ConversionEnabled && array.dtype == .float16 {
+-                    array = array.asType(.bfloat16)
+-                }
+-                eval(array)
+-                // Match copySelectedTensor's settled ownership check: eval can
+-                // return before Metal completion handlers release their refs.
+-                Stream.gpu.synchronize()
+-                try error.check()
+-                guard array.nbytes == entry.byteCount, read.copiedBytes == entry.byteCount,
+-                      String(describing: array.dtype) == entry.loadedDType,
+-                      let buffer = try array.evaluatedBufferInfo(), buffer.isUnique,
+-                      buffer.dataOffset == 0, buffer.isRowContiguous, buffer.dataElements == array.size,
+-                      buffer.allocatedBytes >= array.nbytes,
+-                      buffer.allocatedBytes <= (try Memory.allocationFootprintUpperBound(byteCount: array.nbytes)) else {
+-                    throw ProbeError("Stage tensor is not an exact, independently owned compact allocation")
+-                }
+-                try model.update(parameters: ModuleParameters.unflattened([entry.localName: array]),
+-                    verify: [.noUnusedKeys, .shapeMismatch])
+-                try error.check()
+-                loadedBytes += read.copiedBytes
+-                largestHostBytes = max(largestHostBytes, read.largestHostTensorBytes)
+-            }
+-        }
+-        model.freeze()
+-        try error.check()
+-        // Freeze and parameter introspection do not evaluate unused placeholders
+-        // or constructor defaults. Each active parameter was evaluated above.
+-        let actual = Dictionary(uniqueKeysWithValues: model.parameters().flattened())
+-        let activeLayout = try inventory.active.map { entry -> String in
+-            guard let value = actual[entry.localName], value.shape == entry.shape,
+-                  String(describing: value.dtype) == entry.loadedDType else {
+-                throw ProbeError("Stage's resident active tensor layout differs")
+-            }
+-            return "\(entry.localName):\(value.dtype):\(value.shape)"
+-        }
+-        guard loadedBytes == inventory.summary.loadedTensorBytes,
+-              largestHostBytes == (inventory.active.map(\.byteCount).max() ?? 0),
+-              modelParameterLayout(model) == inventory.summary.parameterLayoutSHA256,
+-              qwenStageLayout(activeLayout) == inventory.summary.activeParameterLayoutSHA256,
+-              let kvTypes = (model as? any CBv2CompleteCheckpointKVTypeProviding)?.cbv2CompleteCheckpointKVDTypes,
+-              !kvTypes.isEmpty, kvTypes.allSatisfy({ $0 == source.activationDType }) else {
+-            throw ProbeError("Resident stage storage/layout or metadata activation dtype differs")
+-        }
+-        try source.prepared.checkpoint.checkUnchanged()
+-        let summary = inventory.summary
+-        let receipt = QwenLayerStageLoadReceipt(schemaVersion: 1, stageIndex: stageIndex,
+-            verifiedAggregateSHA256: commitment.verifiedAggregateSHA256,
+-            sourceConfigurationSHA256: commitment.sourceConfigurationSHA256,
+-            constructionConfigurationSHA256: summary.constructionConfigurationSHA256,
+-            planSHA256: plan.fingerprint, stagePlanSHA256: summary.stagePlanSHA256,
+-            sourceTensorManifestSHA256: source.sourceTensorManifestSHA256,
+-            sourceParameterLayoutSHA256: source.sourceParameterLayoutSHA256,
+-            parameterLayoutSHA256: summary.parameterLayoutSHA256,
+-            activeParameterLayoutSHA256: summary.activeParameterLayoutSHA256,
+-            activeMappingSHA256: summary.activeMappingSHA256,
+-            embeddingActivationDType: String(describing: source.activationDType),
+-            bf16ConversionEnabled: source.bf16ConversionEnabled,
+-            sourceModelTensorBytes: source.sourceBytes, loadedTensorBytes: loadedBytes,
+-            largestHostTensorBytes: largestHostBytes, activeTensors: inventory.active,
+-            inertModules: inventory.inert, inertTensorBytes: summary.inertTensorBytes,
+-            storageCommitment: commitment, storageCommitmentSHA256: sha256(try canonicalJSONData(commitment)))
+-        return LoadedQwenLayerStage(model: model, plan: plan, stageIndex: stageIndex,
+-            receipt: receipt, activationDType: source.activationDType, vocabularySize: source.vocabularySize)
+-        // Verified descriptors close after this scope. Resident arrays do not
+-        // retain them; source deletion/replacement must not affect a loaded stage.
++        let commitment = try qwenLayerStageStorageCommitment(source: source,
++            originalConfiguration: originalConfiguration, plan: plan, inventories: inventories)
++        return try materializeVerifiedQwenLayerStage(source: source, plan: plan, stageIndex: stageIndex,
++            model: model, inventory: inventory, commitment: commitment, check: { try error.check() })
+     }
+ }
++
++/// Shared conservation/commitment assembly; callers already admitted their source and inventories.
++func qwenLayerStageStorageCommitment(source: PreparedQwenLayerSource, originalConfiguration: Data,
++    plan: QwenLayerStagePlan, inventories: [QwenStagePreparedInventory]
++) throws -> QwenLayerStageStorageCommitment {
++    let coverage = inventories.flatMap(\.active)
++    guard coverage.count == source.tensors.count,
++          Set(coverage.map(\.sourceName)) == Set(source.tensors.map(\.sourceName)),
++          coverage.reduce(0, { $0 + $1.byteCount }) == source.sourceBytes else {
++        throw ProbeError("Layer-stage inventories do not exactly conserve canonical source storage")
++    }
++    return QwenLayerStageStorageCommitment(schemaVersion: 1,
++        verifiedAggregateSHA256: source.prepared.checkpoint.aggregate,
++        sourceConfigurationSHA256: sha256(originalConfiguration), planSHA256: plan.fingerprint,
++        sourceTensorManifestSHA256: source.sourceTensorManifestSHA256,
++        sourceModelTensorBytes: source.sourceBytes,
++        largestSourceTensorBytes: source.largestSourceBytes,
++        sourceTensorCount: source.prepared.sourceTensorCount,
++        canonicalTensorCount: source.tensors.count,
++        bf16ConversionEnabled: source.bf16ConversionEnabled,
++        stages: inventories.map(\.summary))
++}
++
++/// Common existing materialization sequence. Registered loading alone supplies
++/// a pre-read resource hook; legacy callers perform no extra sample or clock read.
++func materializeVerifiedQwenLayerStage(source: PreparedQwenLayerSource, plan: QwenLayerStagePlan,
++    stageIndex: Int, model: any LanguageModel, inventory: QwenStagePreparedInventory,
++    commitment: QwenLayerStageStorageCommitment, check: () throws -> Void,
++    beforeTensor: ((QwenStageActiveTensor) throws -> Void)? = nil
++) throws -> LoadedQwenLayerStage {
++    // All source/stage geometry, policies, inventory ownership and caps
++    // have now passed. This is the first checkpoint tensor materialization.
++    try source.prepared.checkpoint.checkUnchanged()
++    var loadedBytes = 0, largestHostBytes = 0
++    for entry in inventory.active {
++        try autoreleasepool {
++            guard let tensor = source.prepared.canonical[entry.sourceName] else {
++                throw ProbeError("Verified stage descriptor disappeared")
++            }
++            if let beforeTensor { try beforeTensor(entry) }
++            let read = try tensor.read(.all)
++            let sanitized = model.sanitize(weights: [entry.localName: read.array])
++            guard sanitized.count == 1, var array = sanitized[entry.localName],
++                  array.shape == entry.shape,
++                  String(describing: array.dtype) == entry.sourceDType else {
++                throw ProbeError("Stage sanitizer changed a canonical tensor: \(entry.localName)")
++            }
++            if source.bf16ConversionEnabled && array.dtype == .float16 {
++                array = array.asType(.bfloat16)
++            }
++            eval(array)
++            // Match copySelectedTensor's settled ownership check: eval can
++            // return before Metal completion handlers release their refs.
++            Stream.gpu.synchronize()
++            try check()
++            guard array.nbytes == entry.byteCount, read.copiedBytes == entry.byteCount,
++                  String(describing: array.dtype) == entry.loadedDType,
++                  let buffer = try array.evaluatedBufferInfo(), buffer.isUnique,
++                  buffer.dataOffset == 0, buffer.isRowContiguous, buffer.dataElements == array.size,
++                  buffer.allocatedBytes >= array.nbytes,
++                  buffer.allocatedBytes <= (try Memory.allocationFootprintUpperBound(byteCount: array.nbytes)) else {
++                throw ProbeError("Stage tensor is not an exact, independently owned compact allocation")
++            }
++            try model.update(parameters: ModuleParameters.unflattened([entry.localName: array]),
++                verify: [.noUnusedKeys, .shapeMismatch])
++            try check()
++            loadedBytes += read.copiedBytes
++            largestHostBytes = max(largestHostBytes, read.largestHostTensorBytes)
++        }
++    }
++    model.freeze()
++    try check()
++    // Freeze and parameter introspection do not evaluate unused placeholders
++    // or constructor defaults. Each active parameter was evaluated above.
++    let actual = Dictionary(uniqueKeysWithValues: model.parameters().flattened())
++    let activeLayout = try inventory.active.map { entry -> String in
++        guard let value = actual[entry.localName], value.shape == entry.shape,
++              String(describing: value.dtype) == entry.loadedDType else {
++            throw ProbeError("Stage's resident active tensor layout differs")
++        }
++        return "\(entry.localName):\(value.dtype):\(value.shape)"
++    }
++    guard loadedBytes == inventory.summary.loadedTensorBytes,
++          largestHostBytes == (inventory.active.map(\.byteCount).max() ?? 0),
++          modelParameterLayout(model) == inventory.summary.parameterLayoutSHA256,
++          qwenStageLayout(activeLayout) == inventory.summary.activeParameterLayoutSHA256,
++          let kvTypes = (model as? any CBv2CompleteCheckpointKVTypeProviding)?.cbv2CompleteCheckpointKVDTypes,
++          !kvTypes.isEmpty, kvTypes.allSatisfy({ $0 == source.activationDType }) else {
++        throw ProbeError("Resident stage storage/layout or metadata activation dtype differs")
++    }
++    try source.prepared.checkpoint.checkUnchanged()
++    let summary = inventory.summary
++    let receipt = QwenLayerStageLoadReceipt(schemaVersion: 1, stageIndex: stageIndex,
++        verifiedAggregateSHA256: commitment.verifiedAggregateSHA256,
++        sourceConfigurationSHA256: commitment.sourceConfigurationSHA256,
++        constructionConfigurationSHA256: summary.constructionConfigurationSHA256,
++        planSHA256: plan.fingerprint, stagePlanSHA256: summary.stagePlanSHA256,
++        sourceTensorManifestSHA256: source.sourceTensorManifestSHA256,
++        sourceParameterLayoutSHA256: source.sourceParameterLayoutSHA256,
++        parameterLayoutSHA256: summary.parameterLayoutSHA256,
++        activeParameterLayoutSHA256: summary.activeParameterLayoutSHA256,
++        activeMappingSHA256: summary.activeMappingSHA256,
++        embeddingActivationDType: String(describing: source.activationDType),
++        bf16ConversionEnabled: source.bf16ConversionEnabled,
++        sourceModelTensorBytes: source.sourceBytes, loadedTensorBytes: loadedBytes,
++        largestHostTensorBytes: largestHostBytes, activeTensors: inventory.active,
++        inertModules: inventory.inert, inertTensorBytes: summary.inertTensorBytes,
++        storageCommitment: commitment, storageCommitmentSHA256: sha256(try canonicalJSONData(commitment)))
++    return LoadedQwenLayerStage(model: model, plan: plan, stageIndex: stageIndex,
++        receipt: receipt, activationDType: source.activationDType, vocabularySize: source.vocabularySize)
++    // Verified descriptors close after this scope. Resident arrays do not
++    // retain them; source deletion/replacement must not affect a loaded stage.
++}
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenDenseSelectedStageLoading.swift
+@@ -0,0 +1,132 @@
++import Foundation
++import MLX
++import MLXNN
++
++/// File-private, live-observation-only permission for this one ordered load.
++/// No caller can construct it from a fabricated CPU snapshot or planning receipt.
++private final class QwenDenseStageLoadGate {
++    let budget: QwenDenseStageLoadBudget
++    private var next = 0, failed = false, finished = false
++    private var observations: [QwenDenseStageLoadResourceDecision] = []
++
++    init(budget: QwenDenseStageLoadBudget) throws {
++        self.budget = budget
++        let maximumBuffer = GPU.deviceInfo().maxBufferSize
++        guard maximumBuffer > 0, budget.allocationBounds.allSatisfy({ $0 <= maximumBuffer }),
++              budget.inertAllocationBound <= maximumBuffer else {
++            throw ProbeError("Selected-stage allocator bounds exceed this device's maximum buffer size")
++        }
++        try observe()
++    }
++
++    func observe() throws {
++        do {
++            guard !failed, !finished, observations.count < 4096 else {
++                throw ProbeError("Stage load gate is failed, consumed or exceeds its observation bound")
++            }
++            let os = try QwenDenseStageLoadResources.observeOS()
++            let native = QwenDenseStageLoadResources.observeNative()
++            let decision = try QwenDenseStageLoadPolicy.evaluate(budget: budget, ordinal: next,
++                os: os, native: native, now: DispatchTime.now().uptimeNanoseconds)
++            observations.append(decision)
++        } catch { failed = true; throw error }
++    }
++
++    func beforeRead(_ entry: QwenStageActiveTensor) throws {
++        do {
++            guard !failed, !finished else { throw ProbeError("Stage load gate was already consumed or failed") }
++            try budget.requireEntry(entry, ordinal: next)
++            try observe()
++            // A throw anywhere in the ensuing materializer poisons the whole
++            // load. Advancing here accounts for its newly resident buffer at
++            // the existing post-eval checks, before another read can begin.
++            next += 1
++        } catch { failed = true; throw error }
++    }
++
++    func finish() throws -> [QwenDenseStageLoadResourceDecision] {
++        do {
++            guard !failed, !finished, next == budget.active.count else {
++                throw ProbeError("Stage load did not consume its complete selected tensor inventory")
++            }
++            try observe(); finished = true
++            return observations
++        } catch { failed = true; throw error }
++    }
++
++    func fail() { failed = true }
++}
++
++struct QwenDenseSelectedStageLoadResult {
++    let receipt: QwenLayerStageLoadReceipt
++    let budget: QwenDenseStageLoadBudget
++    let resources: [QwenDenseStageLoadResourceDecision]
++    let memory: [QwenStageMemoryObservation]
++}
++
++/// Exactly one selected model is loaded and retired inside this function.
++/// The returned value contains CPU records only, never Loaded/model/arrays.
++func materializeQwenDenseSelectedStage(_ prepared: QwenDenseConstructorSource,
++    selection: QwenDenseStageLoadSelection, check: () throws -> Void
++) throws -> QwenDenseSelectedStageLoadResult {
++    let plan = selection.metadata.plan, index = selection.stageIndex
++    guard prepared.profile.model == selection.metadata.specification.model,
++          prepared.profile.configuration == selection.metadata.configuration,
++          prepared.profile.manifest == selection.metadata.manifest,
++          prepared.requirement.role == .sequentialPair,
++          prepared.requirement.planFingerprint == plan.fingerprint else {
++        throw ProbeError("Selected stage differs from the verified registered constructor source")
++    }
++    let selected = try QwenDenseStorageRequirement.derive(profile: prepared.profile, plan: plan,
++        role: index == 0 ? .stage0 : .stage1)
++    let other = try withRandomState(MLXRandom.RandomState(seed: 7)) {
++        try inspectOtherQwenLayerStage(source: prepared.source, stage: plan.stages[1 - index], check: check)
++    }
++    try validateObservedQwenDenseStage(other, source: prepared.validation, profile: prepared.profile,
++        requirement: prepared.requirement, plan: plan, stageIndex: 1 - index)
++    weak var retired: Module?
++    let result: QwenDenseSelectedStageLoadResult
++    do {
++        result = try autoreleasepool {
++            try withRandomState(MLXRandom.RandomState(seed: 7)) {
++                let value = try prepareQwenLayerStageModel(source: prepared.source, stage: plan.stages[index], check: check)
++                retired = value.model
++                try validateObservedQwenDenseStage(value.inventory, source: prepared.validation,
++                    profile: prepared.profile, requirement: prepared.requirement, plan: plan, stageIndex: index)
++                let inventories = [other, value.inventory].sorted { $0.summary.stageIndex < $1.summary.stageIndex }
++                let commitment = try qwenLayerStageStorageCommitment(source: prepared.source,
++                    originalConfiguration: selection.metadata.configuration, plan: plan, inventories: inventories)
++                let activeBounds = try value.inventory.active.map { try Memory.allocationFootprintUpperBound(byteCount: $0.byteCount) }
++                let inertBounds = try value.inventory.inert.flatMap(\.parameters).map { try Memory.allocationFootprintUpperBound(byteCount: $0.byteCount) }
++                let budget = try QwenDenseStageLoadBudget.derive(profile: prepared.profile, plan: plan,
++                    pair: prepared.requirement, selected: selected, source: prepared.validation, stageIndex: index,
++                    active: value.inventory.active, inert: value.inventory.inert, summary: value.inventory.summary,
++                    allocationBounds: activeBounds, inertAllocationBounds: inertBounds)
++                try check()
++                let gate = try QwenDenseStageLoadGate(budget: budget)
++                do {
++                    func checked() throws { try check(); try gate.observe(); try check() }
++                    let before = QwenStageMemoryObservation("before_selected_stage_payload_load")
++                    let loaded = try withoutActuallyEscaping(check) { borrowedCheck in
++                        try materializeVerifiedQwenLayerStage(source: prepared.source, plan: plan,
++                            stageIndex: index, model: value.model, inventory: value.inventory, commitment: commitment,
++                            check: checked, beforeTensor: { entry in
++                                try borrowedCheck(); try gate.beforeRead(entry); try borrowedCheck()
++                            })
++                    }
++                    try check()
++                    let observations = try gate.finish()
++                    return QwenDenseSelectedStageLoadResult(receipt: loaded.receipt, budget: budget,
++                        resources: observations, memory: [before, QwenStageMemoryObservation("selected_stage_payload_loaded")])
++                } catch { gate.fail(); throw error }
++            }
++        }
++    } catch {
++        let primary = error
++        guard retired == nil else { throw ProbeError("Selected stage load failed (\(primary)); model remained retained") }
++        throw primary
++    }
++    guard retired == nil else { throw ProbeError("Selected loaded stage model remained retained") }
++    try check()
++    return result
++}
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenDenseStageLoadBudget.swift
+@@ -0,0 +1,72 @@
++import Foundation
++
++/// Validated metadata and caller-supplied allocator bounds only. This type
++/// never samples resources or grants loading permission.
++struct QwenDenseStageLoadBudget: Encodable {
++    let model: QwenRegisteredDenseModel, stageIndex: Int
++    let profileFingerprint: String, planFingerprint: String
++    let pairRequirementFingerprint: String, selectedRequirementFingerprint: String
++    let activeMappingSHA256: String, active: [QwenStageActiveTensor]
++    let allocationBounds: [Int], inertAllocationBound: Int
++    let roundedResidentBytes: Int, largestHostTensorBytes: Int
++    let resourceAdmissionPerformed = false, forwardExecutionAuthorized = false
++
++    private init(profile: QwenRegisteredDenseModelProfile, plan: QwenLayerStagePlan,
++        pair: QwenDenseStorageRequirement, selected: QwenDenseStorageRequirement,
++        active: [QwenStageActiveTensor], summary: QwenStageStorageSummary,
++        bounds: [Int], inert: Int, rounded: Int
++    ) {
++        model = profile.model; stageIndex = summary.stageIndex
++        profileFingerprint = profile.fingerprint; planFingerprint = plan.fingerprint
++        pairRequirementFingerprint = pair.fingerprint; selectedRequirementFingerprint = selected.fingerprint
++        activeMappingSHA256 = summary.activeMappingSHA256; self.active = active
++        allocationBounds = bounds; inertAllocationBound = inert
++        roundedResidentBytes = rounded; largestHostTensorBytes = selected.largestHostTensorBytes
++    }
++
++    static func derive(profile: QwenRegisteredDenseModelProfile, plan: QwenLayerStagePlan,
++        pair: QwenDenseStorageRequirement, selected: QwenDenseStorageRequirement,
++        source: QwenDenseSourceReadPlan, stageIndex: Int, active: [QwenStageActiveTensor],
++        inert: [QwenStageInertModule], summary: QwenStageStorageSummary,
++        allocationBounds: [Int], inertAllocationBounds: [Int]
++    ) throws -> Self {
++        guard [0, 1].contains(stageIndex), pair.role == .sequentialPair,
++              selected.role.stageIndex == stageIndex,
++              plan.stages[0].sourceRange.upperBound == profile.geometry.layers / 2,
++              try QwenDenseStorageRequirement.derive(profile: profile, plan: plan, role: .sequentialPair).fingerprint == pair.fingerprint,
++              try QwenDenseStorageRequirement.derive(profile: profile, plan: plan, role: selected.role).fingerprint == selected.fingerprint else {
++            throw ProbeError("Stage load budget uses a different profile, default Plan or selected role")
++        }
++        try QwenDenseObservedStageValidation.validateRegistered(source: source, profile: profile,
++            requirement: pair, plan: plan, stageIndex: stageIndex, active: active, inert: inert, summary: summary)
++        let placeholders = inert.flatMap(\.parameters)
++        guard active.count == allocationBounds.count, placeholders.count == inertAllocationBounds.count,
++              zip(active, allocationBounds).allSatisfy({ $0.1 >= $0.0.byteCount }),
++              zip(placeholders, inertAllocationBounds).allSatisfy({ $0.1 >= $0.0.byteCount }),
++              summary.loadedTensorBytes == selected.selectedActiveBytes,
++              summary.inertTensorBytes == selected.selectedInertBytes,
++              active.map(\.byteCount).max() == selected.largestHostTensorBytes else {
++            throw ProbeError("Stage load allocator bounds or selected byte accounting differs")
++        }
++        let inertBound = try QwenLongPrefillCheckedBytes.sum(inertAllocationBounds)
++        let rounded = try QwenLongPrefillCheckedBytes.sum(allocationBounds + [inertBound])
++        return Self(profile: profile, plan: plan, pair: pair, selected: selected, active: active,
++            summary: summary, bounds: allocationBounds, inert: inertBound, rounded: rounded)
++    }
++
++    func remainingAllocationBytes(after count: Int) throws -> Int {
++        guard (0...active.count).contains(count) else { throw ProbeError("Invalid stage load progress") }
++        // Inert parameters remain lazy, but retain their conservative allowance.
++        return try QwenLongPrefillCheckedBytes.sum(Array(allocationBounds.dropFirst(count)) + [inertAllocationBound])
++    }
++
++    func requireEntry(_ entry: QwenStageActiveTensor, ordinal: Int) throws {
++        guard active.indices.contains(ordinal) else { throw ProbeError("Stage load permission was consumed") }
++        let expected = active[ordinal]
++        guard entry.sourceName == expected.sourceName, entry.localName == expected.localName,
++              entry.shape == expected.shape, entry.sourceDType == expected.sourceDType,
++              entry.loadedDType == expected.loadedDType, entry.byteCount == expected.byteCount else {
++            throw ProbeError("Stage load attempted a different or unordered tensor")
++        }
++    }
++}
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenDenseStageLoadCLI.swift
+@@ -0,0 +1,51 @@
++import Foundation
++
++/// Closed loading-only command. Metadata admission remains separate from the
++/// live one-stage gate; these parsed values confer no allocation permission.
++struct QwenDenseStageLoadCLI {
++    static let mode = "qwen-dense-stage-load-check"
++    let directory: URL, model: QwenRegisteredDenseModel, stageIndex: Int, timeoutSeconds: Int
++
++    static func isRequested(_ arguments: [String]) -> Bool {
++        arguments.indices.dropLast().contains { arguments[$0] == "--mode" && arguments[$0 + 1] == mode }
++    }
++
++    init(arguments: [String]) throws {
++        let allowed = Set(["--mode", "--model-dir", "--registered-dense-profile", "--stage-index", "--timeout-seconds"])
++        guard arguments.count == 10 else { throw ProbeError("Stage load requires exactly five named argument pairs") }
++        var values: [String: String] = [:]
++        for index in stride(from: 0, to: arguments.count, by: 2) {
++            let key = arguments[index], value = arguments[index + 1]
++            guard allowed.contains(key), values[key] == nil, !value.isEmpty else {
++                throw ProbeError("Stage load argument is unknown, duplicated or empty")
++            }
++            values[key] = value
++        }
++        guard Set(values.keys) == allowed, values["--mode"] == Self.mode,
++              let path = values["--model-dir"], path.hasPrefix("/"), !path.utf8.contains(0),
++              let rawModel = values["--registered-dense-profile"], let model = QwenRegisteredDenseModel(rawValue: rawModel),
++              let rawStage = values["--stage-index"], ["0", "1"].contains(rawStage), let stage = Int(rawStage),
++              let rawTimeout = values["--timeout-seconds"], !rawTimeout.isEmpty,
++              rawTimeout.utf8.allSatisfy({ (48...57).contains($0) }), let timeout = Int(rawTimeout),
++              (1...300).contains(timeout), String(timeout) == rawTimeout else {
++            throw ProbeError("Stage load mode, absolute directory, profile, selected stage or timeout differs")
++        }
++        directory = URL(fileURLWithPath: path, isDirectory: true)
++        self.model = model; stageIndex = stage; timeoutSeconds = timeout
++    }
++}
++
++struct QwenDenseStageLoadSelection {
++    let metadata: QwenDenseConstructorAdmission
++    let stageIndex: Int
++    let forwardExecutionAuthorized = false, resourceAdmissionPerformed = false
++
++    init(metadata: QwenDenseConstructorAdmission, stageIndex: Int) throws {
++        guard [0, 1].contains(stageIndex), metadata.plan.stages.count == 2,
++              metadata.plan.stages[0].sourceRange == 0..<(metadata.specification.layers / 2),
++              metadata.plan.stages[1].sourceRange == (metadata.specification.layers / 2)..<metadata.specification.layers else {
++            throw ProbeError("Stage load selects exactly one default registered half")
++        }
++        self.metadata = metadata; self.stageIndex = stageIndex
++    }
++}
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenDenseStageLoadEntry.swift
+@@ -0,0 +1,27 @@
++import Darwin
++import Foundation
++
++extension QwenDenseStageLoadCLI {
++    func run() throws {
++        alarm(UInt32(timeoutSeconds)); defer { alarm(0) }
++        let start = DispatchTime.now().uptimeNanoseconds
++        let limit = UInt64(timeoutSeconds) * 1_000_000_000
++        func checked() throws {
++            let now = DispatchTime.now().uptimeNanoseconds
++            guard now >= start, now - start < limit else { throw ProbeError("Selected-stage load exceeded its deadline") }
++        }
++        let metadata = try QwenDenseConstructorAdmission.admit(model: model,
++            configuration: BoundedProbeInput.data(directory.appendingPathComponent("config.json"), maximumBytes: 1_048_576),
++            manifest: BoundedProbeInput.data(directory.appendingPathComponent("manifest.json"), maximumBytes: 4_194_304),
++            environment: ProcessInfo.processInfo.environment)
++        let selection = try QwenDenseStageLoadSelection(metadata: metadata, stageIndex: stageIndex)
++        try checked()
++        let result = try runQwenDenseStageLoadProbe(directory: directory, selection: selection, check: checked)
++        try checked()
++        var data = try canonicalJSONData(result)
++        guard data.count < 8 * 1_048_576 else { throw ProbeError("Selected-stage load report exceeds 8 MiB") }
++        data.append(10)
++        try checked()
++        try FileHandle.standardOutput.write(contentsOf: data)
++    }
++}
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenDenseStageLoadPolicy.swift
+@@ -0,0 +1,83 @@
++import Foundation
++
++struct QwenDenseStageLoadOSObservation: Encodable {
++    let startedNanoseconds: UInt64, completedNanoseconds: UInt64
++    let timestampUTC: String
++    let physicalMemoryBytes: Int, pageSizeBytes: Int
++    let kernelFreePages: Int, freePages: Int, inactivePages: Int, speculativePages: Int
++    let actualFreeBytes: Int, estimatedReclaimableBytes: Int
++    let pressureLevel: Int, swapUsedBytes: Int
++}
++
++struct QwenDenseStageLoadNativeObservation: Encodable {
++    let activeBytes: Int, cacheBytes: Int, peakBytes: Int, allocatorLimitBytes: Int
++}
++
++struct QwenDenseStageLoadResourceDecision: Encodable {
++    let policy = "registered_dense_selected_stage_load_resources_v1"
++    let ordinal: Int, remainingAllocationBytes: Int
++    let requiredActualFreeBytes: Int, requiredAllocatorBytes: Int
++    let os: QwenDenseStageLoadOSObservation
++    let native: QwenDenseStageLoadNativeObservation
++    let reclaimableUsedForAdmission = false, wholeProcessMemorySafetyEstablished = false
++    let reserveTermsAreOperationalPolicy = true, forwardExecutionAuthorized = false
++}
++
++/// Pure decision checks. A passing caller-fabricated observation is not a grant;
++/// only the private native gate samples current resources and permits reads.
++enum QwenDenseStageLoadPolicy {
++    static let gib = 1_073_741_824
++    static let minimumActualFreeBytes = 6 * gib
++    static let loadingHeadroomBytes = 4 * gib
++    static let allocatorHeadroomBytes = 2 * gib
++    static let maximumObservationAgeNanoseconds: UInt64 = 1_000_000_000
++
++    static func requireInitial(_ os: QwenDenseStageLoadOSObservation, now: UInt64) throws {
++        try validateOS(os, now: now)
++        guard os.actualFreeBytes >= minimumActualFreeBytes else {
++            throw ProbeError("Selected-stage loading requires at least 6 GiB actual free memory")
++        }
++    }
++
++    static func evaluate(budget: QwenDenseStageLoadBudget, ordinal: Int,
++        os: QwenDenseStageLoadOSObservation, native: QwenDenseStageLoadNativeObservation, now: UInt64
++    ) throws -> QwenDenseStageLoadResourceDecision {
++        try requireInitial(os, now: now)
++        guard [native.activeBytes, native.cacheBytes, native.peakBytes].allSatisfy({ $0 >= 0 }),
++              native.allocatorLimitBytes > 0, native.peakBytes >= native.activeBytes else {
++            throw ProbeError("Invalid native allocator observation")
++        }
++        let remaining = try budget.remainingAllocationBytes(after: ordinal)
++        let host = ordinal == budget.active.count ? 0 : budget.largestHostTensorBytes
++        let sum = QwenLongPrefillCheckedBytes.sum
++        let freeRequired = max(minimumActualFreeBytes, try sum([remaining, host, host, loadingHeadroomBytes]))
++        let allocatorRequired = try sum([native.activeBytes, native.cacheBytes,
++            remaining, host, allocatorHeadroomBytes])
++        guard os.actualFreeBytes >= freeRequired, os.physicalMemoryBytes >= freeRequired,
++              native.allocatorLimitBytes >= allocatorRequired else {
++            throw ProbeError("Selected-stage loading exceeds current actual-free or allocator limits")
++        }
++        return .init(ordinal: ordinal, remainingAllocationBytes: remaining,
++            requiredActualFreeBytes: freeRequired, requiredAllocatorBytes: allocatorRequired, os: os, native: native)
++    }
++
++    private static func validateOS(_ os: QwenDenseStageLoadOSObservation, now: UInt64) throws {
++        guard os.startedNanoseconds <= os.completedNanoseconds, now >= os.completedNanoseconds,
++              os.completedNanoseconds - os.startedNanoseconds <= maximumObservationAgeNanoseconds,
++              now - os.completedNanoseconds <= maximumObservationAgeNanoseconds,
++              os.physicalMemoryBytes > 0, os.pageSizeBytes > 0,
++              [os.kernelFreePages, os.freePages, os.inactivePages, os.speculativePages, os.actualFreeBytes,
++               os.estimatedReclaimableBytes, os.swapUsedBytes].allSatisfy({ $0 >= 0 }),
++              (0...2).contains(os.pressureLevel), os.swapUsedBytes == 0 else {
++            throw ProbeError("Invalid, stale, pressured or swapped selected-stage resource observation")
++        }
++        let free = try QwenLongPrefillCheckedBytes.product([os.freePages, os.pageSizeBytes])
++        let pages = try QwenLongPrefillCheckedBytes.sum([os.freePages, os.inactivePages, os.speculativePages])
++        let reclaimable = try QwenLongPrefillCheckedBytes.product([pages, os.pageSizeBytes])
++        guard os.kernelFreePages == (try QwenLongPrefillCheckedBytes.sum([os.freePages, os.speculativePages])),
++              os.actualFreeBytes == free, os.estimatedReclaimableBytes == reclaimable,
++              free <= os.physicalMemoryBytes, reclaimable <= os.physicalMemoryBytes else {
++            throw ProbeError("Selected-stage VM counter accounting differs")
++        }
++    }
++}
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenDenseStageLoadProbe.swift
+@@ -0,0 +1,85 @@
++import Foundation
++import MLX
++import MLXLLM
++
++struct QwenDenseStageLoadReport: Encodable {
++    let kind = "qwen_dense_stage_load_report", schemaVersion = 1, completed = true
++    let model: QwenRegisteredDenseModel, stageIndex: Int
++    let profileFingerprint: String, arithmeticEnvironment: QwenLongPrefillArithmeticEnvironment.Receipt
++    let load: QwenLayerStageLoadReceipt, budget: QwenDenseStageLoadBudget
++    let initialResources: QwenDenseStageLoadOSObservation
++    let loadingResources: [QwenDenseStageLoadResourceDecision]
++    let releasedResources: QwenDenseStageLoadOSObservation
++    let memory: [QwenStageMemoryObservation], runtime: QwenDenseStageLoadRuntimeObservation
++    let selectedStagePayloadMaterialized = true, selectedParametersEvaluated = true
++    let selectedStageModelsLoaded = 1, fullCheckpointVerificationPasses = 1
++    let allConstructorModelsReleased = true, verifiedFileOwnerReleased = true, cacheClearCompleted = true
++    let actualLocalResourceAdmissionPerformed = true, parentProcessFencingIndependentlyRequired = true
++    let fullModelWeightsLoaded = false, forwardExecuted = false, requestStateCreated = false
++    let tensorValuesIndependentlyCompared = false, numericalParityEstablished = false
++    let providerEligibilityEstablished = false, forwardExecutionAuthorized = false
++    let wholeProcessMemorySafetyEstablished = false, throughputMeasurementValid = false
++}
++
++/// The only return is completed CPU evidence after the selected model and all
++/// verified file owners have left scope. External deadline/fencing remains required.
++func runQwenDenseStageLoadProbe(directory: URL, selection: QwenDenseStageLoadSelection,
++    check: () throws -> Void
++) throws -> QwenDenseStageLoadReport {
++    // Actual OS observation before hashing or any model/native construction.
++    let initial = try QwenDenseStageLoadResources.requireInitial()
++    try check()
++    weak var retiredFiles: VerifiedCheckpoint?
++    do {
++        return try MLX.withError { nativeError in
++            func checked() throws { try nativeError.check(); try check(); try nativeError.check() }
++            do {
++                try checked()
++                guard !_qwen35MTPEnabled else { throw ProbeError("Selected-stage load requires MTP disabled") }
++                let runtime = QwenDenseStageLoadRuntimeObservation()
++                try checked()
++                let result = try autoreleasepool {
++                    let admission = selection.metadata
++                    let checkpoint = try VerifiedCheckpoint(directory: directory,
++                        configurationData: admission.configuration,
++                        expectedAggregateSHA256: admission.specification.artifactSHA256,
++                        maximumPayloadBytes: admission.specification.manifestBytes,
++                        expectedManifestSHA256: admission.specification.manifestSHA256)
++                    retiredFiles = checkpoint
++                    try checked()
++                    let source = try prepareQwenDenseConstructorSource(checkpoint: checkpoint, admission: admission, check: checked)
++                    let loaded = try materializeQwenDenseSelectedStage(source, selection: selection, check: checked)
++                    try checkpoint.checkUnchanged(); try checked()
++                    return (source.profile.fingerprint, loaded)
++                }
++                Stream.gpu.synchronize(); Stream.cpu.synchronize(); try checked()
++                guard retiredFiles == nil else { throw ProbeError("Selected-stage load retained verified file owner") }
++                Memory.clearCache(); try checked()
++                let released = try QwenDenseStageLoadResources.requireInitial()
++                try checked()
++                return QwenDenseStageLoadReport(model: selection.metadata.specification.model,
++                    stageIndex: selection.stageIndex, profileFingerprint: result.0,
++                    arithmeticEnvironment: selection.metadata.arithmetic, load: result.1.receipt, budget: result.1.budget,
++                    initialResources: initial, loadingResources: result.1.resources, releasedResources: released,
++                    memory: result.1.memory + [QwenStageMemoryObservation("selected_stage_released_cache_cleared")], runtime: runtime)
++            } catch {
++                let primary = error
++                do { try nativeError.check() }
++                catch { throw ProbeError("Native selected-stage failure (\(error)); accompanying Swift failure: \(primary)") }
++                throw primary
++            }
++        }
++    } catch {
++        let primary = error
++        var cleanup: [String] = []
++        do {
++            try MLX.withError { error in
++                Stream.gpu.synchronize(); Stream.cpu.synchronize(); try error.check()
++                Memory.clearCache(); try error.check()
++            }
++        } catch { cleanup.append(String(describing: error)) }
++        if retiredFiles != nil { cleanup.append("verified file owner remained retained") }
++        if !cleanup.isEmpty { throw ProbeError("Selected-stage load failed (\(primary)); cleanup: \(cleanup.joined(separator: "; "))") }
++        throw primary
++    }
++}
+--- /dev/null
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenDenseStageLoadResources.swift
+@@ -0,0 +1,88 @@
++import Darwin
++import Foundation
++import MLX
++
++/// Direct local observations only: no subprocess, supplied receipt or permissive
++/// parse fallback. A Mach host right is released before returning a snapshot.
++enum QwenDenseStageLoadResources {
++    static func observeOS() throws -> QwenDenseStageLoadOSObservation {
++        let start = DispatchTime.now().uptimeNanoseconds
++        let host = mach_host_self()
++        var pageSize: vm_size_t = 0
++        var statistics = vm_statistics64_data_t()
++        var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64_data_t>.size / MemoryLayout<integer_t>.size)
++        let expectedCount = count
++        let pageStatus = host_page_size(host, &pageSize)
++        let status = withUnsafeMutablePointer(to: &statistics) { pointer in
++            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(expectedCount)) {
++                host_statistics64(host, HOST_VM_INFO64, $0, &count)
++            }
++        }
++        let released = mach_port_deallocate(mach_task_self_, host)
++        guard pageStatus == KERN_SUCCESS, status == KERN_SUCCESS, released == KERN_SUCCESS,
++              count == expectedCount, pageSize > 0, pageSize <= UInt(Int.max) else {
++            throw ProbeError("Cannot observe current selected-stage VM counters")
++        }
++        var pressure: Int32 = -1
++        var pressureSize = MemoryLayout<Int32>.size
++        guard sysctlbyname("kern.memorystatus_vm_pressure_level", &pressure, &pressureSize, nil, 0) == 0,
++              pressureSize == MemoryLayout<Int32>.size else {
++            throw ProbeError("Cannot observe current selected-stage memory pressure")
++        }
++        var swap = xsw_usage()
++        var swapSize = MemoryLayout<xsw_usage>.size
++        guard sysctlbyname("vm.swapusage", &swap, &swapSize, nil, 0) == 0,
++              swapSize == MemoryLayout<xsw_usage>.size, swap.xsu_used <= UInt64(Int.max) else {
++            throw ProbeError("Cannot observe current selected-stage swap")
++        }
++        let physical = ProcessInfo.processInfo.physicalMemory
++        guard physical <= UInt64(Int.max), statistics.free_count >= statistics.speculative_count else {
++            throw ProbeError("Invalid selected-stage physical/free-page accounting")
++        }
++        // Darwin vm_statistics64: speculative pages are included in free_count.
++        // Exclude them from actual free; include them once in diagnostic reclaimable.
++        let rawFree = Int(statistics.free_count), speculative = Int(statistics.speculative_count)
++        let free = rawFree - speculative, inactive = Int(statistics.inactive_count), page = Int(pageSize)
++        let freeBytes = try QwenLongPrefillCheckedBytes.product([free, page])
++        let reclaimablePages = try QwenLongPrefillCheckedBytes.sum([free, inactive, speculative])
++        let reclaimable = try QwenLongPrefillCheckedBytes.product([reclaimablePages, page])
++        return .init(startedNanoseconds: start, completedNanoseconds: DispatchTime.now().uptimeNanoseconds,
++            timestampUTC: ISO8601DateFormatter().string(from: Date()), physicalMemoryBytes: Int(physical),
++            pageSizeBytes: page, kernelFreePages: rawFree, freePages: free, inactivePages: inactive,
++            speculativePages: speculative, actualFreeBytes: freeBytes, estimatedReclaimableBytes: reclaimable,
++            pressureLevel: Int(pressure), swapUsedBytes: Int(swap.xsu_used))
++    }
++
++    static func observeNative() -> QwenDenseStageLoadNativeObservation {
++        .init(activeBytes: Memory.activeMemory, cacheBytes: Memory.cacheMemory,
++            peakBytes: Memory.peakMemory, allocatorLimitBytes: Memory.memoryLimit)
++    }
++
++    static func requireInitial() throws -> QwenDenseStageLoadOSObservation {
++        let value = try observeOS()
++        try QwenDenseStageLoadPolicy.requireInitial(value, now: DispatchTime.now().uptimeNanoseconds)
++        return value
++    }
++}
++
++struct QwenDenseStageLoadRuntimeObservation: Encodable {
++    let executableName: String?, mainBundleName: String, bundleIdentifier: String?
++    let executablePath: String?, mainBundlePath: String, mainBundleResourcePath: String?
++    let processID: Int32, operatingSystemVersion: String
++    let deviceArchitecture: String, deviceMemoryBytes: Int, maximumBufferBytes: Int
++    let recommendedWorkingSetBytes: UInt64
++    let binaryOrBundleHashVerifiedByNative = false, providerEligibilityEstablished = false
++    let recommendedWorkingSetUsedForAdmission = false
++
++    init() {
++        let device = GPU.deviceInfo()
++        executableName = Bundle.main.executableURL?.lastPathComponent
++        mainBundleName = Bundle.main.bundleURL.lastPathComponent; bundleIdentifier = Bundle.main.bundleIdentifier
++        executablePath = Bundle.main.executableURL?.path; mainBundlePath = Bundle.main.bundleURL.path
++        mainBundleResourcePath = Bundle.main.resourceURL?.path
++        processID = ProcessInfo.processInfo.processIdentifier
++        operatingSystemVersion = ProcessInfo.processInfo.operatingSystemVersionString
++        deviceArchitecture = device.architecture; deviceMemoryBytes = device.memorySize
++        maximumBufferBytes = device.maxBufferSize; recommendedWorkingSetBytes = device.maxRecommendedWorkingSetSize
++    }
++}

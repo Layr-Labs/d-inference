@@ -1,0 +1,15 @@
+--- before/QwenFullGenerationReferenceResources.swift
++++ after/QwenFullGenerationReferenceResources.swift
+@@ -46,7 +46,11 @@
+                 active: native.activeBytes, cache: native.cacheBytes)
+             guard os.actualFreeBytes >= free, os.physicalMemoryBytes >= free,
+                   native.allocatorLimitBytes >= allocator else {
+-                throw ProbeError("Full reference exceeds its actual-free or allocator allowance")
++                throw ProbeError("Full reference exceeds its actual-free or allocator allowance: "
++                    + "authorizedTensors=\(nextTensor)/\(budget.sourceNames.count) loaded=\(loaded) requestAdmitted=\(requestAdmitted) "
++                    + "actualFreeBytes=\(os.actualFreeBytes) requiredActualFreeBytes=\(free) "
++                    + "physicalMemoryBytes=\(os.physicalMemoryBytes) allocatorLimitBytes=\(native.allocatorLimitBytes) "
++                    + "requiredAllocatorBytes=\(allocator) activeBytes=\(native.activeBytes) cacheBytes=\(native.cacheBytes)")
+             }
+         }
+         observations = try QwenLongPrefillCheckedBytes.sum([observations, 1])

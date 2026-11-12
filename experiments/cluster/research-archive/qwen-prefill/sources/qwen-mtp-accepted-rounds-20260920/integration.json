@@ -1,0 +1,141 @@
+{
+  "schema": "qwen_mtp_accepted_overlay_v1",
+  "base": "/Users/developer/DarkbloomDev/cluster-research/qwen-mtp-target-session-build-guarded-20260915/workspace",
+  "files": [
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationHistoryOwner.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen-mtp-accepted-rounds-20260920/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationHistoryOwner.swift",
+      "beforeSHA256": null,
+      "sha256": "fce2843334403ce453825975d4a0fdc7125c388bd5d008342389f831dbfb8fec",
+      "bytes": 441
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationAgreement.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen-mtp-accepted-rounds-20260920/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationAgreement.swift",
+      "beforeSHA256": "4ff030d6a92e4284dd20d3eaba57c7b7ff9dcd14fc328bb29d6a193882896230",
+      "sha256": "54461fb74f74aecbdc168c983e1eeececdb0799894a91d711311bd79a216d190",
+      "bytes": 4315
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationDriver.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen-mtp-accepted-rounds-20260920/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationDriver.swift",
+      "beforeSHA256": "6f0fb2bd98ec5b63927e00bef3255109d1e2e431425cc8d32a5603902d219555",
+      "sha256": "3f920ef3e34ece8d0f2c0b86de6c31c74e9722fb6b6f70a744efba5b7b92184f",
+      "bytes": 19145
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationResult.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen-mtp-accepted-rounds-20260920/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageGenerationResult.swift",
+      "beforeSHA256": "253da3d4b24f74265f27ecc385e370815a6f643b43722ed45aacd66717595718",
+      "sha256": "00c8d40bef56b1b064ac864ce4e952c15c6633257040efa0108feed031efab33",
+      "bytes": 961
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenMTPAcceptedDriver.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen-mtp-accepted-rounds-20260920/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenMTPAcceptedDriver.swift",
+      "beforeSHA256": null,
+      "sha256": "660b2ce3dbcd506dbb46fdbbd902433531282c505673233548693a6d2447ee43",
+      "bytes": 18499
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenMTPAcceptedPolicy.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen-mtp-accepted-rounds-20260920/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenMTPAcceptedPolicy.swift",
+      "beforeSHA256": null,
+      "sha256": "5706fa0d416ed5075baf969fd253c64ea007483152be73c2aa0a18bfc4ea8acf",
+      "bytes": 865
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenMTPAcceptedResources.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen-mtp-accepted-rounds-20260920/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenMTPAcceptedResources.swift",
+      "beforeSHA256": null,
+      "sha256": "4bf0921874664b6ac160157d55dbd8bccf2b83d65c44014ef1496c59235e7d2a",
+      "bytes": 5363
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenMTPAcceptedRoundControl.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen-mtp-accepted-rounds-20260920/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenMTPAcceptedRoundControl.swift",
+      "beforeSHA256": null,
+      "sha256": "7d555256029cfa1931d846572707786dc23272fe0cd032f5ead81a8a9cb70c44",
+      "bytes": 7011
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenMTPAcceptedRuntime.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen-mtp-accepted-rounds-20260920/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenMTPAcceptedRuntime.swift",
+      "beforeSHA256": null,
+      "sha256": "1c81bf89df94d2103544dd22fe0b930296b0ac06f4cdf32c5706046568b4b18d",
+      "bytes": 7293
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenMTPAcceptedTransport.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen-mtp-accepted-rounds-20260920/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenMTPAcceptedTransport.swift",
+      "beforeSHA256": null,
+      "sha256": "461e48d16c5187e3a330a8cd3d7b2ff5e1117a92a3bbb6711fc5a7bd54933ac7",
+      "bytes": 7632
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenMTPAcceptedWire.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen-mtp-accepted-rounds-20260920/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenMTPAcceptedWire.swift",
+      "beforeSHA256": null,
+      "sha256": "d0eeb5a9b885077fd14cc49849ce5599195f4e3e59754c6b49e1b85f534fc96b",
+      "bytes": 4816
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMTPRequest.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen-mtp-accepted-rounds-20260920/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMTPRequest.swift",
+      "beforeSHA256": "76c9f1457a121b8e9d41d1f0a57e75e2ec930dcf0ef9cfc2a3375cffe336acb0",
+      "sha256": "aacd7249c777ddf98b09e486587b0aaf0238c27be25c5f2a8622175ae5bc66dc",
+      "bytes": 22413
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime+Load.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen-mtp-accepted-rounds-20260920/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime+Load.swift",
+      "beforeSHA256": "fb6865356dd8237ad461779ce6fca35d4fad259a0c96781b20a34cd0b5e6414d",
+      "sha256": "0648354b31fa1a465942e4efa4270794fd7181c6fd0a9e2dcfddb42e074eee43",
+      "bytes": 10315
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen-mtp-accepted-rounds-20260920/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime.swift",
+      "beforeSHA256": "fb9813496094ff296496daf40c4b656f9a54601d8954061f01f1e631c5b3ffd4",
+      "sha256": "5b82c3dd4c986b24cfb2e28955e8b33f8ddb60943117c1e922b9847976f4c3c7",
+      "bytes": 23159
+    },
+    {
+      "path": "libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/NativeWorkerRuntime.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen-mtp-accepted-rounds-20260920/proposed/libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/NativeWorkerRuntime.swift",
+      "beforeSHA256": "282c7049b00c735933d8b90c5f48d6cc619d96f598b88459305e72122aee1d29",
+      "sha256": "ded5543837ef40d1fde42ebaa06186d0d6e0be2bed77a0736580c8ec354dfd7f",
+      "bytes": 4148
+    },
+    {
+      "path": "libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/jaccl/lib/jaccl/mesh_impl.h",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen-mtp-accepted-rounds-20260920/proposed/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/jaccl/lib/jaccl/mesh_impl.h",
+      "beforeSHA256": "330d399b2af0b2614b87221a400a2e45abac1293804b36ef5a622e22a89adc7b",
+      "sha256": "3ea07df67aae3d0327f111de3b7673c8c76a6c2362682d4b085cd10a8d5847f5",
+      "bytes": 20306
+    },
+    {
+      "path": "libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/jaccl/lib/jaccl/rdma.h",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen-mtp-accepted-rounds-20260920/proposed/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/jaccl/lib/jaccl/rdma.h",
+      "beforeSHA256": "dbe318131a2d1daa3614b5a48c5be6a31fd8405ebfa394138172d9bb1b7d9f94",
+      "sha256": "726f94b96febd2ec294269872d6672bcaf0a4fc97ecbef9474bdf97b4e962498",
+      "bytes": 9691
+    },
+    {
+      "path": "libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/jaccl/lib/jaccl/ring_impl.h",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen-mtp-accepted-rounds-20260920/proposed/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/jaccl/lib/jaccl/ring_impl.h",
+      "beforeSHA256": "f16a493f34bc175c1541ee1a4b2a3a1e3d52c1c78d8942b1f8ed743be3d6a2bb",
+      "sha256": "1f71b26a8448f6ef46aafdae0d3ff760b72317cd3276a069b7d6b92024eb2a33",
+      "bytes": 27726
+    },
+    {
+      "path": "libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/jaccl/lib/jaccl/send_frame.h",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/qwen-mtp-accepted-rounds-20260920/proposed/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/jaccl/lib/jaccl/send_frame.h",
+      "beforeSHA256": null,
+      "sha256": "771846ae0406bc2203b37ec9620b3158405433fbe76421e315296670c3c590c7",
+      "bytes": 947
+    }
+  ],
+  "mainMutationAuthorized": false,
+  "privateOnly": true
+}

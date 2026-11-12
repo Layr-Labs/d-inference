@@ -1,0 +1,20 @@
+--- base/selected_source.py
++++ metadata/selected_source.py
+@@ -9,7 +9,7 @@
+ from stage_checks.common import canonical, digest, exact, integer, parse, require, sha
+ from stage_checks.long_profile import ARTIFACT, CONFIGURATION
+ 
+-SELECTED_CUT = 8
++SELECTED_CUT = 16
+ PINS = {
+     'selection/catalog.json': '906de56e50cde991a979743fb88b7db6bd8c93306a153a6af1fb761665cb75ee',
+     'selection/canonical-names.json': 'e741488b0b0a32fa17a179b0e2a8744fca4fc55ca0814917ff49527207d6cb4f',
+@@ -42,7 +42,7 @@
+ def derive(catalog, retained, names, controls, cut):
+     # Cut12 is accepted only by this pure recipe for the saved-control regression.
+     # The production job and load() below are fixed to SELECTED_CUT.
+-    require(type(cut) is int and cut in (8,12), 'Unsupported selected metadata cut')
++    require(type(cut) is int and cut in (4,8,12,16), 'Unsupported selected metadata cut')
+     exact(catalog['sourceConfigurationSHA256'], CONFIGURATION, 'Catalog configuration differs')
+     require(catalog['kind']=='qwen_layer_stage_candidate_catalog' and catalog['metadataOnly'] is True
+             and catalog['runtimeEligibilityEstablished'] is False, 'Catalog scope differs')

@@ -1,0 +1,49 @@
+--- before/run_physical.py
++++ after/run_physical.py
+@@ -16,10 +16,10 @@
+ 
+ BASE = Path(__file__).resolve().parent
+ ROOT = BASE.parent
+-REMOTE = '/Users/developer/DarkbloomDev/owner-native-mtp-probe-20260915'
++REMOTE = '/Users/developer/DarkbloomDev/owner-native-mtp-probe-clean-20260915'
+ OUTPUT = BASE / 'physical-1'
+ 
+-CONTROLLER = ROOT / 'qwen-resident-mtp-registered-probe-qualification-20260915/controller/owner-controller'
++CONTROLLER = BASE / 'controls/owner-controller'
+ 
+ 
+ class Monitor:
+--- before/parent_settings.py
++++ after/parent_settings.py
+@@ -1 +1 @@
+-SSH = ['/usr/bin/ssh', '-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', '-o', 'IdentitiesOnly=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'UserKnownHostsFile=/Users/developer/DarkbloomDev/cluster-research/qwen-resident-mtp-registered-probe-qualification-20260915/configuration/known_hosts', '-i', '/Users/developer/.ssh/id_ed25519_darkbloom_dev']
++SSH = ['/usr/bin/ssh', '-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', '-o', 'IdentitiesOnly=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'UserKnownHostsFile=/Users/developer/DarkbloomDev/cluster-research/qwen-resident-mtp-probe-clean-rerun-20260915/configuration/known_hosts', '-i', '/Users/developer/.ssh/id_ed25519_darkbloom_dev']
+--- before/install_new_tree.py
++++ after/install_new_tree.py
+@@ -1,4 +1,4 @@
+-"""Remote COPY/HASH only. Creates two exact NEW private trees; launches nothing."""
++"""Remote COPY/HASH only. Creates one exact NEW private owner tree; launches nothing."""
+ import hashlib
+ import json
+ import os
+@@ -7,8 +7,7 @@
+ import sys
+ import tarfile
+ 
+-ROOTS = {'owner': Path('/Users/developer/DarkbloomDev/owner-native-mtp-probe-20260915'),
+-         'runtime': Path('/Users/developer/DarkbloomDev/qwen-mtp-registered-probe-runtime-20260915')}
++ROOTS = {'owner': Path('/Users/developer/DarkbloomDev/owner-native-mtp-probe-clean-20260915')}
+ 
+ def require(value, message):
+     if not value: raise RuntimeError(message)
+--- before/deploy_copy_only.py
++++ after/deploy_copy_only.py
+@@ -19,7 +19,7 @@
+     for name, expected in freeze['files'].items():
+         if pin(BASE / name) != expected: raise RuntimeError('Frozen source changed: ' + name)
+     setup = json.loads((BASE / 'configuration/controller.json').read_bytes())
+-    output = BASE.parent / 'qwen-resident-mtp-registered-probe-deployment-20260915'
++    output = BASE.parent / 'qwen-resident-mtp-probe-clean-rerun-deployment-20260915'
+     output.mkdir(mode=0o700)
+     installer = (BASE / 'install_new_tree.py').read_text()
+     for rank, peer in enumerate(setup['peers']):

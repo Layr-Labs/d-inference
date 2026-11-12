@@ -1,0 +1,578 @@
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMTPLoadCheck.swift
+@@ -0,0 +1,104 @@
++import Foundation
++import MLX
++@_spi(Cluster) import MLXLLM
++import MLXNN
++
++/// Benchmark-only loading check. The enclosing executable must hold the shared
++/// cross-process device exclusion and enforce a hard lifetime. No Collective,
++/// session, token forward or request-history object is constructed here.
++@_spi(Benchmark) public enum QwenResidentMTPLoadCheck {
++    public static func run(configuration: QwenResidentLoadConfiguration,
++        onAdmitted: (Data) throws -> Void
++    ) throws -> Data {
++        guard configuration.rank == 1, configuration.stageCut == 4,
++              configuration.prefillSchedule == .serial,
++              configuration.allocatorPolicy == .disableFreedBufferCache else {
++            throw ProbeError("MTP selected-load check requires final rank1/cut4, serial and dedicated cache-off")
++        }
++        let control = QwenResidentControl(deadline: configuration.deadlineUptimeNanoseconds)
++        try control.check()
++        try QwenResidentResourceEnvironment.require()
++        let initial = try QwenDenseStageLoadResources.requireInitial()
++        let directory = configuration.modelDirectory
++        let admission = try QwenResidentAdmission(configuration: configuration,
++            configBytes: BoundedProbeInput.data(directory.appendingPathComponent("config.json"), maximumBytes: 1_048_576),
++            manifestBytes: BoundedProbeInput.data(directory.appendingPathComponent("manifest.json"), maximumBytes: 4_194_304),
++            environment: ProcessInfo.processInfo.environment, now: DispatchTime.now().uptimeNanoseconds,
++            read: { try BoundedProbeInput.data($0, maximumBytes: $1) })
++        let admitted = QwenResidentMTPLoadCheckAdmission(admission, initial: initial)
++        try control.check()
++        try QwenResidentProcessLease.shared.acquire()
++        // A failure keeps process admission closed. The dedicated process must
++        // exit and its external owner must fence it, even after local cleanup.
++        weak var retiredFiles: VerifiedCheckpoint?
++        weak var retiredTarget: Module?
++        weak var retiredAssistant: Qwen35InlineMTPAssistant?
++        let output = try QwenResidentMTPLoadPublication.run(body: {
++            try onAdmitted(try encode(admitted))
++            try control.check()
++            return try MLX.withError { nativeError in
++                func checked() throws { try nativeError.check(); try control.check(); try nativeError.check() }
++                do {
++                    try admission.jaccl.requireUnchanged(environment: ProcessInfo.processInfo.environment,
++                        read: { try BoundedProbeInput.data($0, maximumBytes: $1) })
++                    try QwenResidentResourceEnvironment.require(); try checked()
++                    try configuration.allocatorPolicy.configure(setCacheLimit: { Memory.cacheLimit = $0 }, check: checked)
++                    let before = QwenStageMemoryObservation("before_selected_mtp_load")
++                    let runtime = QwenDenseStageLoadRuntimeObservation()
++                    let payload = try autoreleasepool {
++                        let source = try PreparedQwenResidentMTPSource(admission: admission, check: checked)
++                        retiredFiles = source.target.source.prepared.checkpoint
++                        let value = try materializePreparedQwenResidentMTPAssets(admission, source: source, check: checked)
++                        retiredTarget = value.target.loaded.model; retiredAssistant = value.assistant
++                        try configuration.allocatorPolicy.prepareReady(
++                            synchronize: { Stream.gpu.synchronize(); Stream.cpu.synchronize() },
++                            snapshot: { .init(activeBytes: Memory.activeMemory, cachedBytes: Memory.cacheMemory,
++                                              peakBytes: Memory.peakMemory) },
++                            clearCache: { Memory.clearCache() }, check: checked)
++                        try QwenResidentResourceEnvironment.require(); try checked()
++                        let os = try QwenDenseStageLoadResources.requireInitial()
++                        try admission.jaccl.requireUnchanged(environment: ProcessInfo.processInfo.environment,
++                            read: { try BoundedProbeInput.data($0, maximumBytes: $1) })
++                        try checked()
++                        return QwenResidentMTPLoadCheckPayload(targetLoad: value.target.loaded.receipt,
++                            mtpLoad: value.receipt, loadedResources: os,
++                            loadedMemory: QwenStageMemoryObservation("selected_mtp_loaded"))
++                    }
++                    try checked()
++                    return (payload, before, runtime)
++                } catch { try nativeError.check(); throw error }
++            }
++        }, retire: {
++            // Cleanup never depends on the now possibly expired deadline or a
++            // failing resource screen. It uses a fresh native-error scope.
++            try MLX.withError { nativeError in
++                Stream.gpu.synchronize(); Stream.cpu.synchronize(); try nativeError.check()
++                Memory.clearCache(); try nativeError.check()
++                guard retiredTarget == nil, retiredAssistant == nil, retiredFiles == nil,
++                      Memory.cacheMemory == 0 else {
++                    throw ProbeError("MTP selected load retained a native owner, verified files or cached buffers")
++                }
++            }
++        }, prepare: { result in
++            let (payload, before, runtime) = result
++            try control.check(); try QwenResidentResourceEnvironment.require()
++            let released = try QwenDenseStageLoadResources.requireInitial()
++            let report = QwenResidentMTPLoadCheckReport(admission: admitted, payload: payload,
++                initialMemory: before, releasedMemory: QwenStageMemoryObservation("selected_mtp_released"),
++                releasedResources: released, runtime: runtime)
++            let bytes = try encode(report)
++            try control.check()
++            return bytes
++        })
++        QwenResidentProcessLease.shared.release()
++        return output
++    }
++
++    private static func encode<T: Encodable>(_ value: T) throws -> Data {
++        let bytes = try canonicalJSONData(value)
++        guard !bytes.isEmpty, bytes.count <= 8_388_608 else {
++            throw ProbeError("MTP selected-load CPU record exceeds 8 MiB")
++        }
++        return bytes
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMTPLoadCheckRecords.swift
+@@ -0,0 +1,73 @@
++import DarkbloomClusterProtocol
++import Foundation
++
++/// Benchmark projection only. The shared protocol values deliberately use
++/// their own closed codec and do not acquire Codable conformance here.
++struct QwenResidentMTPLoadCheckIdentity: Encodable {
++    struct Peer: Encodable { let id: String, buildSHA256: String }
++    let membershipEpoch: String, modelID: String
++    let artifactSHA256: String, configurationSHA256: String
++    let peers: [Peer]
++
++    init(_ value: ClusterWorkerIdentity) {
++        membershipEpoch = value.membershipEpoch.uuidString.lowercased()
++        modelID = value.modelID; artifactSHA256 = value.artifactSHA256
++        configurationSHA256 = value.configurationSHA256
++        peers = value.peers.map { .init(id: $0.id, buildSHA256: $0.buildSHA256) }
++    }
++}
++
++struct QwenResidentMTPLoadCheckAdmission: Encodable {
++    let schema = "qwen_resident_mtp_selected_load_check_v1"
++    let type = "admitted"
++    let identity: QwenResidentMTPLoadCheckIdentity
++    let rank: Int, stageCut: Int
++    let deadlineUptimeNanoseconds: UInt64
++    let manifestSHA256: String, planSHA256: String
++    let arithmetic: QwenLongPrefillArithmeticEnvironment.Receipt
++    let arithmeticSHA256: String
++    let jacclConfiguration: QwenResidentJACCLConfiguration.Receipt
++    let allocatorPolicy: String
++    let initialResources: QwenDenseStageLoadOSObservation
++    let collectiveInitialized = false, bilateralAdmissionPerformed = false
++    let selectedPayloadMaterialized = false, generationEnabled = false
++
++    init(_ admission: QwenResidentAdmission, initial: QwenDenseStageLoadOSObservation) {
++        let value = admission.configuration
++        identity = .init(value.identity); rank = value.rank; stageCut = value.stageCut
++        deadlineUptimeNanoseconds = value.deadlineUptimeNanoseconds
++        manifestSHA256 = admission.specification.manifestSHA256
++        planSHA256 = admission.plan.fingerprint
++        arithmetic = admission.arithmetic; arithmeticSHA256 = admission.arithmeticSHA256
++        jacclConfiguration = admission.jaccl.receipt
++        allocatorPolicy = value.allocatorPolicy.rawValue; initialResources = initial
++    }
++}
++
++struct QwenResidentMTPLoadCheckPayload: Encodable {
++    let targetLoad: QwenLayerStageLoadReceipt
++    let mtpLoad: QwenResidentMTPLoadReceipt
++    let loadedResources: QwenDenseStageLoadOSObservation
++    let loadedMemory: QwenStageMemoryObservation
++}
++
++struct QwenResidentMTPLoadCheckReport: Encodable {
++    let schema = "qwen_resident_mtp_selected_load_check_v1"
++    let type = "report", completed = true
++    let admission: QwenResidentMTPLoadCheckAdmission
++    let payload: QwenResidentMTPLoadCheckPayload
++    let initialMemory: QwenStageMemoryObservation
++    let releasedMemory: QwenStageMemoryObservation
++    let releasedResources: QwenDenseStageLoadOSObservation
++    let runtime: QwenDenseStageLoadRuntimeObservation
++    let targetOwnerReleased = true, assistantOwnerReleased = true
++    let verifiedFileOwnerReleased = true, cacheClearCompleted = true
++    let targetLoadReceiptPreserved = true
++    let additionalBuffersCheckedAtMaterialization = true
++    let collectiveInitialized = false, bilateralAdmissionPerformed = false
++    let forwardExecuted = false, requestStateCreated = false, generationEnabled = false
++    let tensorValuesIndependentlyCompared = false, numericalParityEstablished = false
++    let pairwiseBufferAddressesIndependentlyCompared = false
++    let providerEligibilityEstablished = false, throughputMeasurementValid = false
++    let parentProcessFencingIndependentlyRequired = true
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMTPLoadPublication.swift
+@@ -0,0 +1,29 @@
++import Foundation
++
++struct QwenResidentMTPLoadCleanupError: Error, CustomStringConvertible {
++    let primary: Error
++    let cleanup: Error
++    var description: String { "MTP selected load failed (\(primary)); cleanup failed (\(cleanup))" }
++}
++
++/// The body must return CPU values only. Retirement runs after both successful
++/// and failed bodies; encoding/publication is unreachable without retirement.
++/// It does not manufacture proof from the callbacks: the native owner supplies
++/// actual synchronization, weak-owner observations and cache checks.
++enum QwenResidentMTPLoadPublication {
++    static func run<Value, Output>(body: () throws -> Value,
++        retire: () throws -> Void, prepare: (Value) throws -> Output
++    ) throws -> Output {
++        let result: Result<Value, Error>
++        do { result = .success(try body()) }
++        catch { result = .failure(error) }
++        do { try retire() }
++        catch {
++            if case .failure(let primary) = result {
++                throw QwenResidentMTPLoadCleanupError(primary: primary, cleanup: error)
++            }
++            throw error
++        }
++        return try prepare(result.get())
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMTPLoading.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentMTPLoading.swift
+@@ -36,45 +36,7 @@
+         do {
+             return try autoreleasepool {
+                 let source = try PreparedQwenResidentMTPSource(admission: admission, check: checked)
+-                let loaded = try loadPreparedQwenResidentStage(admission, prepared: source.target,
+-                    additional: source.resources, check: checked)
+-                guard loaded.loaded.stageIndex == 1, loaded.loaded.plan.fingerprint == admission.plan.fingerprint else {
+-                    throw ProbeError("MTP target is not the admitted final stage")
+-                }
+-                let originalLayout = modelParameterLayout(loaded.loaded.model)
+-                let reader = QwenResidentMTPMaterializer(source: source)
+-                // Lazy defaults are individually replaced without eval(embedding).
+-                // This object is separate from the residual-ingress placeholder.
+-                let embedding = QuantizedEmbedding(embeddingCount: loaded.profile.vocabularySize,
+-                    dimensions: loaded.profile.geometry.hiddenSize, groupSize: 64, bits: 4, mode: .affine)
+-                for entry in source.placement.embedding {
+-                    let suffix = String(entry.name.dropFirst(QwenResidentMTPPlacement.embeddingRoot.count + 1))
+-                    let value = try reader.read(entry.name, shape: entry.shape,
+-                        packed: entry.sourceDType == "U32", check: checked)
+-                    try embedding.update(parameters: ModuleParameters.unflattened([suffix: value]),
+-                        verify: [.noUnusedKeys, .shapeMismatch])
+-                    try checked()
+-                }
+-                embedding.freeze()
+-                let names = Set(source.placement.head.map { String($0.name.dropFirst(4)) })
+-                let assistant = try Qwen35InlineMTPAssistant.loadVerifiedInline(
+-                    configuration: admission.configBytes, target: loaded.loaded.model,
+-                    inputEmbedding: embedding, parameterNames: names, verificationMode: .serialTarget,
+-                    read: { name, shape, dtype in
+-                        try reader.read("mtp." + name, shape: shape, packed: dtype == .uint32, check: checked)
+-                    }, check: checked)
+-                try reader.finish(); try checked()
+-                guard modelParameterLayout(loaded.loaded.model) == originalLayout,
+-                      let target = loaded.loaded.model as? any CBv2RecurrentMTPForwardable,
+-                      assistant.targetIdentity == target.cbv2MTPTargetIdentity else {
+-                    throw ProbeError("MTP loading changed target storage or bound another target")
+-                }
+-                return .init(target: loaded, assistant: assistant,
+-                    receipt: .init(placement: source.placement,
+-                        targetLoadReceiptSHA256: sha256(try canonicalJSONData(loaded.loaded.receipt)),
+-                        loadedTensorBytes: reader.loadedBytes,
+-                        allocatorReservedTensorBytes: source.resources.reservedTensorBytes,
+-                        sourceReadAccounting: reader.accounting))
++                return try materializePreparedQwenResidentMTPAssets(admission, source: source, check: checked)
+             }
+         } catch {
+             // Same recorded-native-fault precedence as the resident load owner.
+@@ -84,3 +46,49 @@
+     }
+ }
+ 
++
++/// Same materialization body with the verified descriptor owner supplied by the
++/// caller, so the loading-only probe can observe its retirement explicitly.
++func materializePreparedQwenResidentMTPAssets(_ admission: QwenResidentAdmission,
++    source: PreparedQwenResidentMTPSource, check: () throws -> Void
++) throws -> QwenResidentStageWithMTPAssets {
++    let loaded = try loadPreparedQwenResidentStage(admission, prepared: source.target,
++        additional: source.resources, check: check)
++    guard loaded.loaded.stageIndex == 1, loaded.loaded.plan.fingerprint == admission.plan.fingerprint else {
++        throw ProbeError("MTP target is not the admitted final stage")
++    }
++    let originalLayout = modelParameterLayout(loaded.loaded.model)
++    let reader = QwenResidentMTPMaterializer(source: source)
++    // Lazy defaults are individually replaced without eval(embedding).
++    // This object is separate from the residual-ingress placeholder.
++    let embedding = QuantizedEmbedding(embeddingCount: loaded.profile.vocabularySize,
++        dimensions: loaded.profile.geometry.hiddenSize, groupSize: 64, bits: 4, mode: .affine)
++    for entry in source.placement.embedding {
++        let suffix = String(entry.name.dropFirst(QwenResidentMTPPlacement.embeddingRoot.count + 1))
++        let value = try reader.read(entry.name, shape: entry.shape,
++            packed: entry.sourceDType == "U32", check: check)
++        try embedding.update(parameters: ModuleParameters.unflattened([suffix: value]),
++            verify: [.noUnusedKeys, .shapeMismatch])
++        try check()
++    }
++    embedding.freeze()
++    let names = Set(source.placement.head.map { String($0.name.dropFirst(4)) })
++    let assistant = try Qwen35InlineMTPAssistant.loadVerifiedInline(
++        configuration: admission.configBytes, target: loaded.loaded.model,
++        inputEmbedding: embedding, parameterNames: names, verificationMode: .serialTarget,
++        read: { name, shape, dtype in
++            try reader.read("mtp." + name, shape: shape, packed: dtype == .uint32, check: check)
++        }, check: check)
++    try reader.finish(); try check()
++    guard modelParameterLayout(loaded.loaded.model) == originalLayout,
++          let target = loaded.loaded.model as? any CBv2RecurrentMTPForwardable,
++          assistant.targetIdentity == target.cbv2MTPTargetIdentity else {
++        throw ProbeError("MTP loading changed target storage or bound another target")
++    }
++    return .init(target: loaded, assistant: assistant,
++        receipt: .init(placement: source.placement,
++            targetLoadReceiptSHA256: sha256(try canonicalJSONData(loaded.loaded.receipt)),
++            loadedTensorBytes: reader.loadedBytes,
++            allocatorReservedTensorBytes: source.resources.reservedTensorBytes,
++            sourceReadAccounting: reader.accounting))
++}
+--- a/libs/darkbloom-cluster-worker/Package.swift
++++ b/libs/darkbloom-cluster-worker/Package.swift
+@@ -7,6 +7,7 @@
+     name: "DarkbloomClusterWorker",
+     platforms: [.macOS("26.2")],
+     products: [
++        .executable(name: "MTPSelectedLoadCheck", targets: ["MTPSelectedLoadCheck"]),
+         .executable(name: "MTPFactoryCheck", targets: ["MTPFactoryCheck"]),
+         .executable(name: "darkbloom-cluster-worker", targets: ["DarkbloomClusterWorker"]),
+     ],
+@@ -16,6 +17,12 @@
+         .package(path: "../darkbloom-cluster"),
+     ],
+     targets: [
++        .executableTarget(name: "MTPSelectedLoadCheck", dependencies: [
++            .product(name: "DarkbloomClusterBootstrap", package: "darkbloom-cluster"),
++            .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),
++            .product(name: "DarkbloomClusterProtocol", package: "darkbloom-cluster"),
++            .product(name: "DarkbloomClusterProcess", package: "darkbloom-cluster"),
++        ], path: "Tests/MTPSelectedLoadCheck"),
+         .executableTarget(name: "MTPFactoryCheck", dependencies: [
+             .product(name: "MLX", package: "mlx-swift"),
+             .product(name: "MLXNN", package: "mlx-swift"),
+--- /dev/null
++++ b/libs/darkbloom-cluster-worker/Tests/MTPSelectedLoadCheck/SelectedLoadInput.swift
+@@ -0,0 +1,22 @@
++import Foundation
++
++/// The original worker's closed parser is copied exactly into this private
++/// executable; these additional restrictions apply only to the loading check.
++struct SelectedLoadInput {
++    enum Mode: String { case checkArguments = "check-arguments", load }
++    let mode: Mode
++    let worker: WorkerConfiguration
++
++    init(arguments: [String], now: UInt64) throws {
++        guard let first = arguments.first, let mode = Mode(rawValue: first) else {
++            throw WorkerFailure.invalid("Expected explicit check-arguments or load command")
++        }
++        let worker = try WorkerConfiguration(arguments: Array(arguments.dropFirst()), now: now)
++        guard worker.bootstrap == nil, worker.load.rank == 1, worker.load.stageCut == 4,
++              worker.load.prefillSchedule == .serial,
++              worker.load.allocatorPolicy == .disableFreedBufferCache else {
++            throw WorkerFailure.invalid("Loading check requires rank1/cut4, serial, cache-off and no bootstrap attachment")
++        }
++        self.mode = mode; self.worker = worker
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster-worker/Tests/MTPSelectedLoadCheck/SelectedLoadMain.swift
+@@ -0,0 +1,58 @@
++import Darwin
++@_spi(OwnerService) import DarkbloomClusterProcess
++@_spi(Benchmark) import DarkbloomClusterRuntime
++import Foundation
++
++@main enum SelectedLoadMain {
++    static func main() {
++        do {
++            let arguments = Array(CommandLine.arguments.dropFirst())
++            if arguments == ["clock"] {
++                // Same Swift clock as every native deadline check. Python's
++                // process-relative monotonic origin is not interchangeable.
++                print(DispatchTime.now().uptimeNanoseconds)
++                return
++            }
++            let value = try SelectedLoadInput(arguments: arguments,
++                now: DispatchTime.now().uptimeNanoseconds)
++            let configuration = value.worker.load
++            if value.mode == .checkArguments {
++                // Pure parsing only: no metadata/model read, exclusion, MLX
++                // operation, collective or payload-load invocation.
++                print("{\"argumentsAccepted\":true,\"modelLoaded\":false}")
++                return
++            }
++            let deadline = configuration.deadlineUptimeNanoseconds
++            signal(SIGPIPE, SIG_IGN)
++            signal(SIGALRM) { _ in Darwin._exit(124) }
++            let now = DispatchTime.now().uptimeNanoseconds
++            guard now < deadline, deadline - now <= 300_000_000_000 else {
++                throw WorkerFailure.invalid("Loading-check lifetime exhausted")
++            }
++            alarm(UInt32((deadline - now + 999_999_999) / 1_000_000_000))
++            let output = try SelectedLoadOutput(descriptor: STDOUT_FILENO, deadline: deadline)
++            let directory = FileManager.default.homeDirectoryForCurrentUser
++                .appendingPathComponent(".darkbloom/cluster-device", isDirectory: true)
++            let exclusion = try ClusterDeviceExclusion(directoryURL: directory)
++            let journal = try JSONSerialization.data(withJSONObject: [
++                "schema": "private_mtp_selected_load_owner_v1", "processID": getpid(),
++                "runID": configuration.identity.membershipEpoch.uuidString.lowercased(),
++                "deadlineUptimeNanoseconds": deadline,
++            ], options: [.sortedKeys])
++            try exclusion.recordNativeOwnership(journal)
++            let report = try QwenResidentMTPLoadCheck.run(configuration: configuration,
++                onAdmitted: { try output.write($0) })
++            // The SPI has already retired native values and encoded only CPU
++            // evidence. A failed/partial load never reaches journal resolution;
++            // the parent must fence it and explicitly recover sticky ownership.
++            try exclusion.resolveNativeOwnership()
++            try output.write(report)
++            withExtendedLifetime(exclusion) {}
++            alarm(0)
++        } catch {
++            let message = Data(("mtp-selected-load-check: \(error)\n").utf8.prefix(4096))
++            _ = message.withUnsafeBytes { Darwin.write(STDERR_FILENO, $0.baseAddress, $0.count) }
++            Darwin.exit(1)
++        }
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster-worker/Tests/MTPSelectedLoadCheck/SelectedLoadOutput.swift
+@@ -0,0 +1,47 @@
++import Darwin
++import Foundation
++
++/// Two bounded JSON lines only. A full stdout pipe cannot extend the absolute
++/// process lifetime. This is benchmark output, not the serving worker protocol.
++final class SelectedLoadOutput {
++    private let descriptor: Int32
++    private let deadline: UInt64
++    private var count = 0
++
++    init(descriptor: Int32, deadline: UInt64) throws {
++        self.descriptor = descriptor; self.deadline = deadline
++        let flags = fcntl(descriptor, F_GETFL)
++        guard flags >= 0, fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) == 0 else {
++            throw WorkerFailure.invalid("Cannot bound loading-check output")
++        }
++    }
++
++    func write(_ bytes: Data) throws {
++        guard count < 2, !bytes.isEmpty, bytes.count <= 8_388_608,
++              !bytes.contains(10), !bytes.contains(13) else {
++            throw WorkerFailure.invalid("Loading-check record count, framing or size differs")
++        }
++        var line = bytes; line.append(10)
++        var offset = 0
++        while offset < line.count {
++            let now = DispatchTime.now().uptimeNanoseconds
++            guard now < deadline else { throw WorkerFailure.invalid("Loading-check output deadline exceeded") }
++            let wrote = line.withUnsafeBytes {
++                Darwin.write(descriptor, $0.baseAddress!.advanced(by: offset), $0.count - offset)
++            }
++            if wrote > 0 { offset += wrote; continue }
++            if wrote < 0 && errno == EINTR { continue }
++            guard wrote < 0, errno == EAGAIN || errno == EWOULDBLOCK else {
++                throw WorkerFailure.invalid("Loading-check output failed")
++            }
++            var polled = pollfd(fd: descriptor, events: Int16(POLLOUT), revents: 0)
++            let wait = Int32(min(UInt64(100), (deadline - now + 999_999) / 1_000_000))
++            let ready = poll(&polled, 1, wait)
++            if ready < 0 && errno == EINTR { continue }
++            guard ready >= 0, polled.revents & Int16(POLLERR | POLLHUP | POLLNVAL) == 0 else {
++                throw WorkerFailure.invalid("Loading-check output pipe closed")
++            }
++        }
++        count += 1
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster-worker/Tests/MTPSelectedLoadCheck/WorkerBootstrapConfiguration.swift
+@@ -0,0 +1,31 @@
++import DarkbloomClusterBootstrap
++import Foundation
++
++struct WorkerBootstrapConfiguration {
++    static let names: Set<String> = ["--bootstrap-socket-path", "--bootstrap-owner-pid",
++        "--bootstrap-deadline-uptime-nanoseconds"]
++    let path: String
++    let ownerProcessID: Int32
++    let deadlineUptimeNanoseconds: UInt64
++
++    static func parse(_ fields: [String: String], now: UInt64, lifetime: UInt64) throws -> Self? {
++        let supplied = names.filter { fields[$0] != nil }
++        if supplied.isEmpty { return nil } // Legacy experimental native TCP bootstrap.
++        guard supplied.count == names.count, let path = fields["--bootstrap-socket-path"],
++              path.hasPrefix("/"), path.utf8.count < 104, !path.contains("\0"),
++              let pidText = fields["--bootstrap-owner-pid"], let pid = Int32(pidText),
++              pid > 1, String(pid) == pidText,
++              let deadlineText = fields["--bootstrap-deadline-uptime-nanoseconds"],
++              let deadline = UInt64(deadlineText), String(deadline) == deadlineText,
++              deadline > now, deadline <= lifetime else {
++            throw WorkerFailure.invalid("Bootstrap requires the complete bounded local attachment")
++        }
++        return .init(path: path, ownerProcessID: pid, deadlineUptimeNanoseconds: deadline)
++    }
++
++    func connect(epoch: UUID, rank: Int) throws -> ClusterBootstrapConnection {
++        try .connect(path: path, ownerProcessID: ownerProcessID,
++            identity: .init(membershipEpoch: epoch, rank: rank),
++            deadlineUptimeNanoseconds: deadlineUptimeNanoseconds)
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster-worker/Tests/MTPSelectedLoadCheck/WorkerConfiguration.swift
+@@ -0,0 +1,68 @@
++import DarkbloomClusterProtocol
++import DarkbloomClusterRuntime
++import Foundation
++
++enum WorkerFailure: Error { case invalid(String) }
++
++struct WorkerConfiguration {
++    let load: QwenResidentLoadConfiguration
++    let bootstrap: WorkerBootstrapConfiguration?
++
++    init(arguments: [String], now: UInt64) throws {
++        let names: Set<String> = ["--model-dir", "--rank", "--stage-cut", "--membership-epoch",
++            "--model-id", "--artifact-sha256", "--configuration-sha256", "--peer0-id",
++            "--peer0-build-sha256", "--peer1-id", "--peer1-build-sha256", "--deadline-uptime-nanoseconds"]
++        let optionalNames: Set<String> = ["--prefill-schedule"]
++        let counts = [names.count, names.count + 1, names.count + WorkerBootstrapConfiguration.names.count,
++                      names.count + WorkerBootstrapConfiguration.names.count + 1].map { $0 * 2 }
++        guard counts.contains(arguments.count) else {
++            throw WorkerFailure.invalid("Expected twelve worker pairs, optional prefill schedule and optional complete bootstrap triple")
++        }
++        var fields: [String: String] = [:]
++        for index in stride(from: 0, to: arguments.count, by: 2) {
++            let key = arguments[index], value = arguments[index + 1]
++            guard names.union(optionalNames).union(WorkerBootstrapConfiguration.names).contains(key), fields[key] == nil, !value.isEmpty, value.utf8.count <= 4096,
++                  !value.contains("\0") else { throw WorkerFailure.invalid("Unknown, duplicate or empty worker argument") }
++            fields[key] = value
++        }
++        guard names.allSatisfy({ fields[$0] != nil }) else { throw WorkerFailure.invalid("Missing worker argument") }
++        func integer(_ key: String) throws -> Int {
++            guard let value = Int(fields[key]!), String(value) == fields[key] else { throw WorkerFailure.invalid("Worker integer must be canonical") }
++            return value
++        }
++        func hash(_ key: String) throws -> String {
++            let value = fields[key]!
++            guard value.utf8.count == 64, value.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
++                throw WorkerFailure.invalid("Worker SHA256 must be lowercase hexadecimal")
++            }
++            return value
++        }
++        let rank = try integer("--rank"), cut = try integer("--stage-cut")
++        guard (0...1).contains(rank), [4, 8, 12, 16].contains(cut), fields["--model-dir"]!.hasPrefix("/"),
++              fields["--model-id"] == "registered_qwen35_9b",
++              let epoch = UUID(uuidString: fields["--membership-epoch"]!),
++              epoch.uuidString.lowercased() == fields["--membership-epoch"],
++              let deadline = UInt64(fields["--deadline-uptime-nanoseconds"]!),
++              String(deadline) == fields["--deadline-uptime-nanoseconds"],
++              deadline > now, deadline - now <= 300_000_000_000 else {
++            throw WorkerFailure.invalid("Worker requires registered9B, rank0|1, cut4|8|12|16 and a <=300-second local lifetime")
++        }
++        guard let prefillSchedule = ClusterPrefillSchedule(rawValue: fields["--prefill-schedule"] ?? ClusterPrefillSchedule.serial.rawValue) else {
++            throw WorkerFailure.invalid("Unknown worker prefill schedule")
++        }
++        bootstrap = try WorkerBootstrapConfiguration.parse(fields, now: now, lifetime: deadline)
++        let peers = try (0...1).map { index -> ClusterWorkerPeer in
++            let label = fields["--peer\(index)-id"]!
++            guard label.utf8.count <= 128, label.utf8.allSatisfy({ (33...126).contains($0) }) else {
++                throw WorkerFailure.invalid("Worker peer label is invalid")
++            }
++            return .init(id: label, buildSHA256: try hash("--peer\(index)-build-sha256"))
++        }
++        guard peers[0].id != peers[1].id else { throw WorkerFailure.invalid("Worker peers must be distinct") }
++        load = .init(identity: .init(membershipEpoch: epoch, modelID: fields["--model-id"]!,
++            artifactSHA256: try hash("--artifact-sha256"), configurationSHA256: try hash("--configuration-sha256"), peers: peers),
++            modelDirectory: URL(fileURLWithPath: fields["--model-dir"]!), rank: rank, stageCut: cut,
++            deadlineUptimeNanoseconds: deadline, allocatorPolicy: .disableFreedBufferCache,
++            prefillSchedule: prefillSchedule)
++    }
++}

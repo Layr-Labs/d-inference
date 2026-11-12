@@ -372,6 +372,14 @@ final class MiMoV26EncodedMediaIngressTests: XCTestCase {
         XCTAssertEqual(owners.acquisitions,5)
         XCTAssertEqual(actual.mtpMetricsSnapshot()?.draftedTokens,0,"media remains target-only")
         for lease in owners.all { await lease.joinFromOutside() }
+        // The bridge returns the terminal before the row's native retirement
+        // (`EngineV2Bridge+Events`), and the leases are host ownership only, so
+        // the media reservation settles on the engine queue just after. Wait
+        // for it; a leaked reservation still fails here.
+        let settled = ContinuousClock.now + .seconds(10)
+        while value.transaction.managedMediaReservationCountForTesting != 0, ContinuousClock.now < settled {
+            try await Task.sleep(for: .milliseconds(5))
+        }
         XCTAssertEqual(value.transaction.managedMediaReservationCountForTesting,0)
         try await drain(value,bundle,actual)
     }

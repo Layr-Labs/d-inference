@@ -13,6 +13,8 @@ extension OnboardingChecks {
         aStopFromAnywhereEndsTheLeadersWaitAtOnce()
         aStopFromAnywhereEndsTheJoiningMacsWait()
         theJoiningMacFollowsTheLeadersModelChange()
+        // An external pair on 0.10.12 (2026-11-12): the joining Mac said the stop line 20 s into a download nobody stopped.
+        aStatusThatReadsStoppedThroughADownloadIsNoStop()
     }
 
     static func theCoordinatorsWaitNamesOnlyWhatTheMacsReportNow() {
@@ -109,5 +111,66 @@ extension OnboardingChecks {
         run.type("q")
         expect(run.finish(seconds: 5) == 0, "model change: q leaves the follow")
         expect(!run.text.contains(ClusterOnboardingDriver.memberRunsByItselfLine), "model change: not the idle member screen: \(run.text)")
+    }
+
+    /// Seconds since it was first read: a scripted leader's start runs from the joining Mac's first look.
+    final class FirstLook: @unchecked Sendable {
+        private let lock = NSLock()
+        private var began: Date?
+        var seconds: Double {
+            lock.withLock {
+                let now = Date()
+                if began == nil { began = now }
+                return now.timeIntervalSince(began!)
+            }
+        }
+    }
+
+    /// The report (an external pair on 0.10.12, 2026-11-12 ~20:46Z): the leading Mac downloaded the chosen model and the
+    /// joining Mac's screen ended about 20 s later with "Stopped (by `darkbloom cluster stop` on one of the Macs) …",
+    /// though nobody ran it. Until both parts start, the leading Mac's status reads "Stopped." (`localStatus` says so while
+    /// `leadership.serving` is off, and only `localServe` turns it on) while its start publishes `downloading`, then
+    /// `copying`; it reads "Stopped; last model …" again while it stops both parts to register them. None of that is a
+    /// stop: the joining Mac follows the start to the leading Mac's outcome.
+    static func aStatusThatReadsStoppedThroughADownloadIsNoStop() {
+        typealias P = ClusterOnboardingStartProgress
+        let served = "Serving Qwen 3.8 27B through Darkbloom on both Macs (pipeline)."
+        var made = operations(Recorder(), pairEvents: memberEvents, pairResult: .paired(role: .member, peerName: leaderName))
+        let clock = FirstLook()
+        made.leaderStatus = {
+            let seconds = clock.seconds
+            switch seconds {
+            case ..<21:
+                // More than 20 s of "Stopped." beside the download's bytes.
+                return .init(lines: ["Stopped."], step: .init(.copy),
+                             start: P(.downloading, done: Int64(seconds / 21 * 16_300_000_000), total: 16_300_000_000))
+            case ..<22:
+                return .init(lines: ["Stopped."], step: .init(.copy), start: P(.copying, done: 8_000_000_000, total: 16_300_000_000))
+            case ..<22.5:
+                // Between the copy and the start (the plan again, the adopt): no figures any more, still "Stopped.".
+                return .init(lines: ["Stopped."], step: .init(.starting), start: nil)
+            case ..<23.5:
+                return .init(lines: ["Starting Qwen 3.8 27B."], step: .init(.starting),
+                             start: P(.loading, parts: [.init(rank: 0, state: .starting), .init(rank: 1, state: .starting)]))
+            case ..<24.5:
+                return .init(lines: ["Loading Qwen 3.8 27B: 1 of 2 parts ready."], step: .init(.starting),
+                             start: P(.loading, parts: [.init(rank: 0, state: .ready), .init(rank: 1, state: .loading)]))
+            case ..<26:
+                // The registration stops both parts, saves the approval on each Mac and starts them again as members.
+                return .init(lines: ["Stopped; last model Qwen 3.8 27B."], step: .init(.starting), start: P(.registering))
+            default:
+                return .init(lines: [served], step: .init(.starting), start: nil)
+            }
+        }
+        let run = TerminalRun(made)
+        defer { run.release() }
+        expect(run.waitFor(codeQuestion), "download, no stop: the code"); run.type("y")
+        let code = run.finish(seconds: 50)
+        let text = run.text
+        expect(text.contains("4/4 Start"), "download, no stop: the joining Mac followed the start: \(text)")
+        expect(!text.contains("Stopped (by `darkbloom cluster stop`"), "download, no stop: no stop line nobody asked for: \(text)")
+        expect(code == 0 && text.hasSuffix(ending("Serving Qwen 3.8 27B on both Macs")),
+               "download, no stop: the leading Mac's outcome, ✓: \(String(describing: code)) \(text)")
+        transcript("member-download-no-stop", text, keys: run.keys)
     }
 }

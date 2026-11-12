@@ -84,6 +84,8 @@ enum QwenPrismArithmeticContract {
     ]
     /// The family policy name remains stable; this source-bound addition
     /// changes the exact arithmetic receipt/hash only for the block1024 row.
+    /// It describes pair stages, which ask for the per-row arithmetic
+    /// (`QwenPrismHadamardSource.install`); a single Mac batches prompt rows.
     static let rowExactBindings = bindings.merging([
         "bonsai-fp32-row-arithmetic-v2": "affine2/group128/block1024 with stored F16 scales uses broadcast M=1 per FP32 row; singleton calls, signed transforms, grouped GDN layout and every other packed policy are unchanged",
     ]) { current, _ in current }

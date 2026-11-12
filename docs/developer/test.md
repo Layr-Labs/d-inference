@@ -3022,8 +3022,15 @@ existing request files must be regenerated into a fresh evidence directory.
 
 `HadamardLayerTests.testBonsaiFloat32RowsMatchSingletonPackedArithmetic` in
 `libs/mlx-swift/Tests/MLXTests/HadamardLayerTests.swift` compares multi-row
-FP32 calls with independently evaluated singleton calls, including grouped
-gated-delta layouts, optional bias, and prefill widths 511 and 512.
+FP32 calls of layers built with `independentRows: true` (pair stages) with
+independently evaluated singleton calls, including grouped gated-delta
+layouts, optional bias, and prefill widths 511 and 512.
+`testBonsaiFloat32RowsDefaultToOneBatchedPackedMatmul` compares the default
+(single Mac) with one batched `quantizedMM` over all rows, and checks that the
+opt-in leaves other block sizes batched. `BonsaiStagePreparationTests` in
+`libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/BonsaiStagePreparationTests.swift`
+requires every packed projection of both pair stages to ask for the per-row
+arithmetic.
 `Float16ConstantCastTests` covers repeated calls, parameter and descriptor
 replacement, compiled state replacement and ineligible policies.
 `BonsaiRowArithmeticTests` in

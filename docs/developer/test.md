@@ -726,10 +726,14 @@ long-prompt bucket below the floor, decode step-shape measurement and plumbing
 (including the first-token step's rows), rate and shape kept coupled across
 batch widths, the per-row charge kept for reviewed calibrations, a late
 older cold sample, and the refusal streak: three idle refusals over stale
-evidence admit the next request of at most 1,024 prompt tokens, whose prefill
-replaces the estimate, while a longer prompt, fresh evidence, an expired
-absolute deadline, a busy Mac, the kill switch and the retry interval keep
-refusing. In the SDK, the unit suite
+evidence, long prompts included, ask for one probe and submit no request
+unprojected (a late retry included); refusals at a fresh rate or a fresh
+prompt-size bucket, at the anchor, with under 5 seconds left, beside other
+work or with the kill switch off do not count; a projected admission ends a
+partial streak; and a started probe holds the next to its interval.
+`ProductionModelCalibrationTests.staleRefusalStreakRerunsTheProbe` runs that
+probe on a toy Qwen `EngineV2`: three real refusals re-run one solo cell, and
+the next request is priced from it. In the SDK, the unit suite
 `CBv2PerBatchDecodeChargeTests` pins per-step decode accounting, MTP-measured
 shape conversion, the mirrored MTP depth gates (batch gate and automatic
 envelope, with a driver check that the ceiling bounds every live plan depth)

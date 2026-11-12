@@ -978,13 +978,14 @@ serving Mac, so the same request can project differently on other hardware:
   (`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`,
   `IsolatedPrefillAdmissionRate.anchorFloorFraction`). Native engines keep
   their recovery probe instead.
-- Three consecutive refusals an ordinary engine made on an idle Mac from its
-  isolated prefill rate alone expire evidence older than 120 seconds
+- Three consecutive refusals that isolated prefill evidence older than 120
+  seconds explains on an idle Mac re-run the idle calibration probe once
   (`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`,
-  `DeadlineRefusalStreak`). The next request of at most 1,024 prompt tokens
-  that finds the Mac idle is submitted without a time projection and
-  remeasures the rate on that Mac, at that power and thermal state. A longer
-  prompt is still refused. A refusal for physical capacity never counts.
+  `DeadlineRefusalStreak`): one solo 512-token cell remeasures the rate on that
+  Mac, at that power and thermal state, when it is idle at nominal posture. No
+  customer request is admitted without a projection for it. A refusal for
+  physical capacity, at a fresh rate, at the anchor or with under 5 seconds
+  left never counts.
 
 The anchor, floor and refusal streak shape admission only. The published
 isolated rate, capacity wire fields and the external platform's memory

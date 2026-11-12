@@ -153,6 +153,71 @@ struct NemotronSuperLocalHTTPAdmissionTests {
         #expect(await budget.outstandingReservedBytes() == 0)
     }
 
+    /// SUPER-IMAGE-504 on the single-request owner (the default): an image or
+    /// a text request that arrives while an image's answer has ended, but its
+    /// settlement has not (held here 400 ms after its stream closed), waits for
+    /// that settlement and is served instead of a 429 bounce. Held before its
+    /// answer ends, the owner still refuses at once
+    /// (`busyOwnerRefusesWith429BeforeAnyResponse`).
+    @Test(.timeLimit(.minutes(2))) func requestDuringAnImagesSettlementWaitsAndIsServed() async throws {
+        let dimensions = NemotronRadioDimensions(width: 2, layers: 1, heads: 1,
+            channels: 3, patch: 16, positionSide: 32, prefix: 1, mlpWidth: 3)
+        let (installed, construction, residency) = try SuperInstalledFixture(radioDimensions: dimensions).make()
+        let budget = GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0,
+            memorySnapshot: { .init(total: 8 << 30, active: 0, cache: 0, systemAvailable: .max) })
+        let lease = try #require(await budget.claimPendingLoad(requestID: "super-http-settlement",
+            weightBytes: UInt64(installed.receipt.payloadBytes), minimumKVBytes: 2 << 30))
+        let tokenizer = TokenizerHandle(SuperRouteTokenizer())
+        let owner = try await NemotronSuperLocalBridgeBuilder.make(installed: installed,
+            tokenizer: tokenizer, eosTokenIDs: [31],
+            sizing: .init(weightsBytes: installed.receipt.payloadBytes, fp16KVBytesPerToken: 64,
+                maxContextLength: 1024, defaultMaxTokens: 2), kvBytesCapacity: 2 << 30,
+            kvBudget: budget, loadLease: lease, construction: construction, environment: [:])
+        let template = try #require(Data(base64Encoded: superImagePinnedTemplateBase64,
+                                        options: .ignoreUnknownCharacters))
+        let hook = try NemotronSuperLocalImageHTTP(owner: owner, templateBytes: template)
+        let images = try owner.localImageBinding()
+        let token = "synthetic-super-settlement"
+        let tracker = LocalResponseTracker()
+        let baseline = await budget.outstandingReservedBytes()
+        let headers: HTTPFields = [.contentType: "application/json", .authorization: "Bearer " + token]
+        do {
+            try await superAdmissionApplication(hook: hook, token: token, tokenizer: tokenizer,
+                                                tracker: tracker).test(.live) { client in
+                for nextIsImage in [true, false] {
+                    let settlement = SuperHTTPSettlementHold(duration: .milliseconds(400))
+                    await images.setTestSettlement { await settlement.hold() }
+                    let first = try SuperHTTPResetSocket(port: try #require(client.port), token: token,
+                        body: try superAdmissionBody(image: true, stream: true))
+                    defer { first.close() }
+                    #expect(try first.readUntilContent().contains("200 OK"))
+                    try await superHTTPEventually("the first image's settlement held") { await settlement.held }
+                    await images.setTestSettlement(nil)
+                    try await client.execute(uri: "/v1/chat/completions", method: .post, headers: headers,
+                        body: ByteBuffer(bytes: try superAdmissionBody(image: nextIsImage, stream: true))) { response in
+                        #expect(response.status == .ok, "next request is an image: \(nextIsImage)")
+                        #expect(String(buffer: response.body).contains("[DONE]"))
+                    }
+                    try await superHTTPEventually("idle again") {
+                        let reserved = await budget.outstandingReservedBytes()
+                        let active = await owner.bridge.activeRequestCount()
+                        return reserved == baseline && active == 0 && tracker.activeCount == 0
+                    }
+                }
+            }
+        } catch {
+            await images.setTestSettlement(nil)
+            try await owner.closeAfterDrain()
+            _ = await budget.finishPendingLoad(lease)
+            throw error
+        }
+        await hook.drain()
+        try await owner.closeAfterDrain()
+        #expect(residency.snapshot.usedBytes == 0)
+        #expect(await budget.finishPendingLoad(lease))
+        #expect(await budget.outstandingReservedBytes() == 0)
+    }
+
     /// A batched owner holds its configured requests in flight at once and
     /// refuses the next with 429 before headers, reserving nothing for it.
     @Test(.timeLimit(.minutes(2))) func batchedOwnerAdmitsItsRequestsAndRefusesTheNextWith429() async throws {
@@ -318,5 +383,19 @@ private actor SuperHTTPHeldTerminals {
         failsafe = nil
         for waiter in waiters { waiter.resume() }
         waiters = []
+    }
+}
+
+/// Holds one image's settlement for `duration` once its answer has ended
+/// (`NemotronSuperLocalImageBinding.setTestSettlement`).
+private actor SuperHTTPSettlementHold {
+    private let duration: Duration
+    private(set) var held = false
+
+    init(duration: Duration) { self.duration = duration }
+
+    func hold() async {
+        held = true
+        try? await Task.sleep(for: duration)
     }
 }

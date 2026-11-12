@@ -1915,7 +1915,9 @@ MoE Qwens, and standalone `CBv2NativeBlockEngine` slots run an excluded
 128-token warmup followed by two uncached solo probes
 of at most 512 prompt tokens and 32 output tokens. Completed calibration seeds
 prefill/decode evidence without requiring a customer job and runs once per loaded
-engine. A probe's prompt sample must pass the same filters as a serving sample
+engine. After its bootstrap an ordinary engine re-runs one of those solo probes
+only when three deadline refusals that stale evidence explains ask for it
+([deadlines](#deadlines), `DeadlineRefusalStreak`). A probe's prompt sample must pass the same filters as a serving sample
 (`EngineV2Bridge.classifyPrefillSample`): a computation window of at least 1 ms
 and a rate of at most 20,000 tokens per second (`maxPlausiblePrefillTps`). This
 ceiling is equal to the coordinator's
@@ -2515,8 +2517,9 @@ This removes the previous doubling of projected processing time; an EWMA is a
 point estimate and does not guarantee the next request's speed. Actual elapsed
 deadline expiry, queue/cache projection and physical admission still apply.
 
-Three estimator corrections shape those inputs;
-`DARKBLOOM_TTFT_ADMISSION_FIXES=0` restores the previous estimators
+Three estimator corrections and a refusal probe shape those inputs;
+`DARKBLOOM_TTFT_ADMISSION_FIXES=0` restores the previous estimators and turns
+the probe off with them
 (`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`).
 
 Decode is charged per batch step. The decode EWMA is a per-request rate, so
@@ -2574,6 +2577,47 @@ that floor, because the anchor comes from a short calibration cell
 `ModelCalibrationPolicy.startup`) that never certifies longer work; bucket
 evidence expires after 120 seconds. The published isolated rate is unchanged.
 A late older cold sample no longer restarts the combined prefill EWMA.
+
+A refusal admits nothing, so it measures nothing: those idle rules are the
+only way expired evidence that refuses is replaced, and with no anchor or off
+nominal posture they keep it for 30 minutes. Ordinary engines therefore count
+consecutive `deadline_unreachable` refusals that stale evidence explains
+(`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`,
+`DeadlineRefusalStreak`;
+`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Admission.swift`,
+`EngineV2Bridge.recordDeadlineRefusal`): the Mac was idle, the engine's bounded
+projection priced only this request's own prompt, the policy carried no
+reviewed calibration and no native-media rate, the isolated aggregate was
+older than the 120-second freshness window, no fresh prompt-size bucket for
+this prompt priced it, with an anchor the rate was below the anchor, and the
+request still had at least 5 seconds of its first-content budget
+(`DeadlineRefusalStreak.minimumRemainingBudget`). A refusal beside other work,
+from a fail-closed (unbounded) projection, physical capacity included, at a
+fresh rate or as a late retry never counts, and any engine admission ends the
+streak. After three, the next capacity tick that finds the Mac idle at nominal
+posture and on AC power re-runs the
+[startup calibration](#model-startup-calibration)'s probe once
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+ModelCalibration.swift`,
+`startModelCalibrationIfNeeded`; `ModelCalibrationPolicy.evidenceRefresh`): one
+uncached solo cell of 512 prompt tokens and 32 output tokens, without the
+shape warmup, under the bootstrap's rules. Foreground work on any model
+preempts it and a posture change discards it. Its cell replaces the stale
+aggregate and the anchor, so the next request is priced from it. A streak never
+submits a customer request without a projection. Starting the probe ends the
+streak and starts a 120-second interval (`DeadlineRefusalStreak.probeInterval`),
+so a loaded model probes at most once per interval, preempted or not. The
+provider logs one `info` line when the probe starts (`darkbloom.DeadlineRefusals`:
+the model, the refused rate, the evidence's age, the anchor and the last refused
+prompt's tokens); no wire field changes. Unlike the startup calibration, the
+probe is optional work, so it never runs on battery, Low Power Mode or not
+(`EngineV2Bridge.evidenceProbePermitted`, which reads the providing power source
+through `DeadlinePowerPolicyReader.activeSource` only once a probe is due); a full
+streak waits for AC power. Neither calibration has a user-activity gate.
+`DARKBLOOM_TTFT_REFUSAL_PROBE=0` (`DeadlineRefusalProbe`) turns the counting and
+the probe off and leaves the estimator corrections on. An anchored engine at
+nominal posture prices expired evidence at no less than its anchor, so its
+refusals do not count: the probe is for engines with no anchor and for posture
+that returned to nominal.
 
 An independent reviewed deadline profile carries
 `deadline_calibration`: prompt/context bands, actual cold/reused prefix

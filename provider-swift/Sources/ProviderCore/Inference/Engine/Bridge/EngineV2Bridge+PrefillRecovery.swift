@@ -11,6 +11,21 @@ extension EngineV2Bridge {
         return now > expiration
     }
 
+    /// An ordinary engine has no recovery probe of its own: a full streak of
+    /// refusals that stale evidence explains asks for one idle-calibration
+    /// probe while that evidence is still expired.
+    func staleEvidenceProbeDue(at now: ContinuousClock.Instant = .now) -> Bool {
+        admissionFixes && refusalProbe && !supportsPrefillRecoveryRetirement && deadlineProfile == nil
+            && deadlineRefusalStreak.permitsEvidenceProbe(at: now) && isolatedPrefillEvidenceExpired(at: now)
+    }
+
+    /// A due probe at nominal posture also needs AC power: the probe is
+    /// optional, so unlike the startup calibration it never runs on battery,
+    /// Low Power Mode or not. The power source is read only once one is due.
+    func evidenceProbePermitted(requireNominalPosture: Bool, at now: ContinuousClock.Instant = .now) -> Bool {
+        staleEvidenceProbeDue(at: now) && (!requireNominalPosture || evidenceProbeOnACPower())
+    }
+
     /// Recovery is deliberately smaller than ordinary serving. A busy Mac,
     /// media request or large prompt still requires the normal projection.
     func canRecoverPrefillEvidence(promptTokens: Int, maxOutputTokens: Int, deadline: FirstContentDeadline?,

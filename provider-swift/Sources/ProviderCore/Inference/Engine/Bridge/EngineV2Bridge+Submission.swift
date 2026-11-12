@@ -898,6 +898,7 @@ extension EngineV2Bridge {
                 switch result {
                 case .admitted(let stream, let projectedWork, let admittedAt, let retirement):
                     prefillEvidenceRecovery.admit(id)
+                    deadlineRefusalStreak.recordAdmission()
                     profile?.observeDeadlineDecision(
                         .accepted, work: projectedWork, deadline: firstContentDeadline)
                     if Task.isCancelled || pendingCancellationIDs.contains(id) {
@@ -980,6 +981,8 @@ extension EngineV2Bridge {
                 case .deadlineUnreachable(let projectedWork):
                     profile?.observeDeadlineDecision(
                         .deadlineUnreachable, work: projectedWork, deadline: firstContentDeadline)
+                    recordDeadlineRefusal(requestID: id, promptTokens: promptTokens.count,
+                        deadline: firstContentDeadline, policy: admission, work: projectedWork)
                     if Task.isCancelled || pendingCancellationIDs.contains(id) {
                         profile?.stopDeadlineContinuation(.cancelled)
                         // Refused at admission after a latched cancel: nothing
@@ -1024,6 +1027,7 @@ extension EngineV2Bridge {
                 } else {
                     events = try engine.submit(engineRequest)
                 }
+                deadlineRefusalStreak.recordAdmission()
                 profile?.observeDeadlineDecision(.accepted, deadline: firstContentDeadline)
                 if prefillEvidenceRecovery.owner == id {
                     do {
@@ -1059,6 +1063,7 @@ extension EngineV2Bridge {
             httpResponse?.applyPendingCancellation()
         } catch let cancellation as CBv2FirstTokenAdmissionCancellation {
             prefillEvidenceRecovery.admit(id)
+            deadlineRefusalStreak.recordAdmission()
             // This exception proves acceptance but carries no projected work.
             profile?.observeDeadlineDecision(
                 .accepted, deadline: firstContentDeadline, continuation: .cancelled)

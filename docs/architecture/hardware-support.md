@@ -978,9 +978,19 @@ serving Mac, so the same request can project differently on other hardware:
   (`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`,
   `IsolatedPrefillAdmissionRate.anchorFloorFraction`). Native engines keep
   their recovery probe instead.
+- Three consecutive refusals that isolated prefill evidence older than 120
+  seconds explains on an idle Mac re-run the idle calibration probe once
+  (`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`,
+  `DeadlineRefusalStreak`): one solo 512-token cell remeasures the rate on that
+  Mac, at that thermal state, when it is idle, at nominal posture and on AC
+  power (never on battery; `DARKBLOOM_TTFT_REFUSAL_PROBE=0` turns it off). No
+  customer request is admitted without a projection for it. A refusal for
+  physical capacity, at a fresh rate, at the anchor or with under 5 seconds
+  left never counts.
 
-The anchor and floor shape admission only. The published isolated rate,
-capacity wire fields and the external platform's memory contract are unchanged.
+The anchor, floor and refusal streak shape admission only. The published
+isolated rate, capacity wire fields and the external platform's memory
+contract are unchanged.
 
 ### Cross-repository agreement
 

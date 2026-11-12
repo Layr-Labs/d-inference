@@ -503,7 +503,20 @@ public enum MediaIngest {
     /// per image) independently of their pixel count, which the processor
     /// resizes away. The image analog of `maxVideosPerRequest`.
     public static let maxImagesPerRequest = resolveMaxCount(
-        env: "DARKBLOOM_MAX_IMAGES_PER_REQUEST", defaultCount: 16)
+        env: maxImagesEnvironmentKey, defaultCount: defaultMaxImagesPerRequest)
+
+    static let maxImagesEnvironmentKey = "DARKBLOOM_MAX_IMAGES_PER_REQUEST"
+    static let defaultMaxImagesPerRequest = 16
+
+    /// The image cap for one request to `model`.
+    static func imageCap(
+        forModel model: String?,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Int {
+        resolveMaxCount(
+            env: maxImagesEnvironmentKey, defaultCount: defaultMaxImagesPerRequest,
+            environment: environment)
+    }
 
     /// Max inline video parts per request — bounds the "many tiny valid MP4s"
     /// amplification (each video passes per-part checks, but the model samples

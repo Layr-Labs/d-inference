@@ -1237,6 +1237,69 @@ struct EngineV2VisionRoutingTests {
             })
     }
 
+    /// A media request this Mac can't hold now is refused before any decode
+    /// as `media_memory_unavailable`: the coordinator re-routes it without a
+    /// capacity strike, since it does not disprove this Mac's text capacity.
+    @Test("a vision request the media memory gate can't hold is media_memory_unavailable")
+    func mediaGateRefusalIsMediaMemoryUnavailable() async throws {
+        let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
+            GlobalKVCacheBudget.MemorySnapshot(
+                total: UnifiedMemoryCap.minimumReserveBytes + 64 * 1024 * 1024,
+                active: 0, cache: 0, systemAvailable: .max)
+        }
+        // About 1 GiB of KV for one image's 1,024 tokens, against a 64 MiB cap.
+        let gate = VisionMemoryGate(kvBudget: budget, fp16KVBytesPerToken: 1 << 20, contextLength: 4096)
+        let engine = VisionScriptedEngine(script: .stream([]))
+        let prepareCalls = PrepareCallCounter()
+        let plumbing = EngineV2VisionPlumbing(
+            prepare: { _, _, _ in
+                prepareCalls.increment()
+                throw MediaIngest.MediaError.imageDecodeFailed
+            },
+            emitTelemetry: { _ in })
+        let router = makeRoutingEngine(
+            container: makeStubContainer(), bridge: makeBridge(engine: engine, kvBudget: budget),
+            plumbing: plumbing, visionGate: gate)
+
+        do {
+            _ = try await router.streamChatCompletion(request: imageRequest())
+            Issue.record("expected mediaMemoryUnavailable throw")
+        } catch let error as MultiModelBatchSchedulerEngineError {
+            #expect(error == .mediaMemoryUnavailable)
+            #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 503)
+        }
+        #expect(prepareCalls.count == 0)
+        #expect(engine.submitted.isEmpty)
+        #expect(await budget.outstandingReservedBytes() == 0)
+    }
+
+    /// OR-REFUSALS §2: Qwen3.5-9B's production preparer takes 64 images. The
+    /// 65th is refused (`media_too_large`) before the processor or the tower
+    /// runs, naming the 9B's cap; at 16 the 17th was refused.
+    @Test("the production preparer applies Qwen3.5-9B's 64-image cap")
+    func qwen35NineBPreparerTakesItsOwnImageCap() async throws {
+        let engine = VisionScriptedEngine(script: .stream([]))
+        let bridge = makeBridge(engine: engine)
+        let container = makeStubContainer()
+        let router = MultiModelBatchSchedulerEngine(
+            registryProvider: { @Sendable in
+                ["Qwen3.5-9B": .init(
+                    tokenizer: TokenizerHandle(VisionStubTokenizer()), modelType: "qwen3_5",
+                    container: container, isVLM: true, engineV2Bridge: bridge)]
+            },
+            defaultMaxTokens: 64)
+        var request = imageRequest(
+            parts: [.text("Describe each page.")] + Array(repeating: .imageURL(tinyPNGDataURI), count: 65))
+        request.model = "Qwen3.5-9B"
+        do {
+            _ = try await router.streamChatCompletion(request: request)
+            Issue.record("expected the 65th image to be refused")
+        } catch let MediaIngest.MediaError.mediaTooLarge(detail) {
+            #expect(detail == "request has 65 images; cap is 64")
+        }
+        #expect(engine.submitted.isEmpty)
+    }
+
     @Test("MediaError out of construction keeps its deterministic 4xx (not a refusal)")
     func mediaErrorFromConstructionKeeps4xx() async throws {
         let engine = VisionScriptedEngine(script: .stream([]))

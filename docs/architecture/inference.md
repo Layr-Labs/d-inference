@@ -461,7 +461,7 @@ over the cable and ends with the same ✓/✗ block, bounded like the leader's s
   (`ClusterOnboardingLeaderStep.stopsBefore`), so both Macs compare with the same number. The Mac that joins ends once
   it grew (`ClusterOnboardingFollowedStop`; a look that read no count tells nothing), and so does the leading Mac: in
   the model's download or copy (what arrived stays, and the next start goes on from there), in its waits for the
-  parts and for the coordinator (`ClusterOnboardingDriver.stopEnding`, asked about once a second off the console's
+  parts and for the coordinator (`ClusterOnboardingDriver.endsOnStopAsked`, asked about once a second off the console's
   thread, `ClusterOnboardingLooker`), at its test, and before both Macs start (`startBothMacs`, also when the same start
   goes on after the single-Mac or version question). The leading Mac compares the count again under the command lock
   its start takes (`OnboardingLive.localServe(unlessStoppedSince:)`, `ClusterControlRequest.stopsBefore`), so a stop

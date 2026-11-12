@@ -14,18 +14,7 @@ struct ClusterOnboardingStopsAskedTests {
     /// The leading Mac of a pair the fixture saved, its pair started. Its cluster service runs no loop.
     private static func leader() throws -> (ClusterApprovalMacs, ClusterService) {
         let macs = try ClusterApprovalMacs(coordinatorURL: "ws://127.0.0.1:9/ws/provider")
-        let leader = macs.leader
-        let wizard = ClusterSetupOperations.LiveSettings(providerConfiguration: leader.provider,
-            darkbloomExecutable: URL(fileURLWithPath: "/usr/bin/true"), sessionArguments: [], pair: nil, dryRun: true,
-            version: "fixture")
-        let service = ClusterService(settings: .init(wizard: wizard, leaderArguments: [], followerArguments: []),
-            paths: leader.paths, recoveryGraceSeconds: 0.2, supervisionIntervalSeconds: 0.1,
-            powerAssertionReason: "Cluster stops asked test " + UUID().uuidString)
-        var leadership = ClusterOnboardingLeadership(role: "leader", leaderPin: leader.pin, peerPin: macs.follower.pin,
-            peerName: "fixture peer", since: "fixture")
-        leadership.serving = true; leadership.modelName = ClusterApprovalMacs.model
-        _ = try service.store.updateRecord { $0.leadership = leadership }
-        return (macs, service)
+        return (macs, try macs.startedLeaderService(powerAssertionReason: "Cluster stops asked test " + UUID().uuidString))
     }
 
     @Test func theStatusCarriesTheStopsAskedForAndAnOlderMacIgnoresThem() throws {

@@ -24,7 +24,9 @@ extension OnboardingChecks {
         aStopDuringTheTestEndsTheLeadersScreen()
         aStartRefusedForAStopEndsTheScreen()
         aStopDuringTheSoloQuestionKeepsThePairStopped()
+        aStopDuringTheVersionQuestionKeepsThePairStopped()
         retryIsANewStart()
+        theJoiningMacComparesWithTheLeadersCount()
     }
 
     static func theCoordinatorsWaitNamesOnlyWhatTheMacsReportNow() {
@@ -241,6 +243,13 @@ extension OnboardingChecks {
         var remade = ClusterOnboardingFollowedStop()
         expect(!remade.look(3, begun: false) && !remade.look(0, begun: true) && remade.look(1, begun: true),
                "followed stop: a lower count (a record made again) is the one to compare with from then on")
+        // The leading Mac's own count where its start's step carries it: both Macs count the same stops.
+        var shared = ClusterOnboardingFollowedStop()
+        expect(!shared.look(3, begun: false) && shared.look(3, begun: true, startStops: 2),
+               "followed stop: a stop between the leading Mac's count and this Mac's last look is the start's on both Macs")
+        var sharedLater = ClusterOnboardingFollowedStop()
+        expect(!sharedLater.look(nil, begun: true, startStops: 5) && !sharedLater.look(5, begun: true) && sharedLater.look(6, begun: true),
+               "followed stop: the step's count is kept once seen, and a look that read none tells nothing")
         let kinds: [ClusterOnboardingLeaderStep.Kind] = [.localNetwork, .reading, .tryAgain, .modelList, .copy, .login, .starting, .refused, .unknown]
         let begun = kinds.filter { ClusterOnboardingLeaderStep($0).startBegun }
         expect(begun == [.copy, .starting], "the start begins at the model's transfer or the start itself: \(begun)")
@@ -281,6 +290,16 @@ extension OnboardingChecks {
             expect(Date().timeIntervalSince(began) < 10, "\(label): at once: \(Date().timeIntervalSince(began)) s")
             expect(run.text.contains("Stopped (by `darkbloom cluster stop` on one of the Macs)"), "\(label): the leading Mac's line: \(run.text)")
         }
+    }
+
+    /// The leading Mac's start began at a count of 2, and a stop came before this Mac's first look: its step's count is the
+    /// one both Macs compare with, so this Mac ends as the leading Mac does.
+    static func theJoiningMacComparesWithTheLeadersCount() {
+        let run = TerminalRun(followingWithStops([.init(["Stopped."], stops: 3, step: .init(.copy, stopsBefore: 2))]))
+        defer { run.release() }
+        expect(run.waitFor(codeQuestion), "the leader's count: the code"); run.type("y")
+        expect(run.finish(seconds: 10) == 1 && run.text.contains("Stopped (by `darkbloom cluster stop` on one of the Macs)"),
+               "the leader's count: the stop before this Mac's first look is the start's: \(run.text)")
     }
 
     /// The leading Mac downloads a model no Mac has while someone runs `darkbloom cluster stop`, or asks how to get it
@@ -354,8 +373,9 @@ extension OnboardingChecks {
         defer { run.release() }
         expect(run.waitFor(prompt(2)), "refused start: the list"); run.type("\r")
         expect(run.finish(seconds: 10) == 1, "refused start: ended")
-        expect(run.text.hasSuffix(ClusterOnboardingStopped.line + "\n") && !recorder.all.contains("waitReady") && !recorder.all.contains("serve")
-               && recorder.all.contains("serveUnlessStopped 7"), "refused start: the stop line, nothing waited for: \(run.text) \(recorder.all)")
+        expect(run.text.hasSuffix(ClusterOnboardingStopped.line + "\n") && !run.text.contains("  " + ClusterOnboardingStopped.line)
+               && !recorder.all.contains("waitReady") && !recorder.all.contains("serve") && recorder.all.contains("serveUnlessStopped 7"),
+               "refused start: the stop's own ending, nothing waited for: \(run.text) \(recorder.all)")
     }
 
     /// A stop asked while the leading Mac's screen asks to stop single-Mac serving (found while the parts loaded): the
@@ -378,20 +398,43 @@ extension OnboardingChecks {
                "stop at the solo question: the stop line, not started again: \(run.text) \(recorder.all)")
     }
 
-    /// Retry after a ✗ is a new start (the joining Mac ended on that ✗): a stop asked before it is no stop of the new one.
-    static func retryIsANewStart() {
+    /// The same while the leading Mac's screen asks to check the versions again (a split found while the parts loaded).
+    static func aStopDuringTheVersionQuestionKeepsThePairStopped() {
         let recorder = Recorder(), stopped = Recorder()
-        var made = operations(recorder, resume: .init(role: .leader, peerName: "Apple M5 Max, 128 GB"), pairEvents: [], pairResult: .failed([]),
-                              readyResults: [.failure(.init("A part keeps ending the same way: boom")), .success(offeredReady)])
+        let split = ClusterOnboardingVersionSplit(thisVersion: "0.10.13", otherVersion: "0.10.12", other: m5MaxNamed)
+        var made = operations(recorder, resume: .init(role: .leader, peerName: m5Max), pairEvents: [], pairResult: .failed([]),
+                              readyResults: [.failure(split.failure), .success(offeredReady)])
         made.stopsAsked = { stopped.all.isEmpty ? 0 : 1 }
+        let run = TerminalRun(made)
+        defer { run.release() }
+        expect(run.waitFor(prompt(2)), "stop at the version question: the list"); run.type("\r")
+        expect(run.waitFor("  2) Leave\n"), "stop at the version question: check again, or leave: \(run.text)")
+        stopped.note("stop")
+        run.type("1")
+        expect(run.finish(seconds: 10) == 1, "stop at the version question: ended: \(run.text)")
+        expect(run.text.hasSuffix(ClusterOnboardingStopped.line + "\n") && recorder.all.filter({ $0 == "serve" }).count == 1,
+               "stop at the version question: the stop line, not started again: \(run.text) \(recorder.all)")
+    }
+
+    /// Retry after a ✗ is a new start (the joining Mac ended on that ✗): a stop asked before it is no stop of the new one,
+    /// and the new start's step says its own count, for a joining Mac that follows it now.
+    static func retryIsANewStart() {
+        let recorder = Recorder(), stopped = Recorder(), steps = Recorder()
+        // Each wait for the parts takes about 2.4 s: long enough for a count compared with the first start's to end it.
+        var made = operations(recorder, resume: .init(role: .leader, peerName: "Apple M5 Max, 128 GB"), pairEvents: [], pairResult: .failed([]),
+                              readyResults: [.failure(.init("A part keeps ending the same way: boom")), .success(offeredReady)],
+                              readyReportPause: 1_200_000)
+        made.stopsAsked = { stopped.all.isEmpty ? 0 : 1 }
+        made.publishStep = { step in steps.note("\(step?.kind.rawValue ?? "none") \(step?.stopsBefore.map(String.init) ?? "-")") }
         let run = TerminalRun(made)
         defer { run.release() }
         expect(run.waitFor(prompt(2)), "retry: the list"); run.type("\r")
         expect(run.waitFor(notServingItemLines), "retry: the ✗ and its choices: \(run.text)")
         stopped.note("stop")
         run.type("1")
-        expect(run.finish(seconds: 15) == 0, "retry: served: \(run.text)")
+        expect(run.finish(seconds: 20) == 0, "retry: served: \(run.text)")
         expect(!run.text.contains("Stopped (by `darkbloom cluster stop`"), "retry: no stop line from before it: \(run.text)")
+        expect(steps.all.suffix(1) == ["starting 1"], "retry: its step carries the count it began with: \(steps.all)")
     }
 
     /// A real stop while the parts load: the leading Mac's screen ends at once with the stop line (its parts are stopped

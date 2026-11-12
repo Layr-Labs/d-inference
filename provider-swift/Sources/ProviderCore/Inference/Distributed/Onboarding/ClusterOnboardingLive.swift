@@ -1456,10 +1456,10 @@ final class OnboardingLive: @unchecked Sendable {
     /// and both parts start again as cluster members.
     func localRegister() -> Result<[String], ClusterOnboardingFailure> {
         defer { clearRegistrationPending() }
-        guard leadership?.scope.isLocalOnly != true else { return .success([]) }
         // A pair stopped since it was started (a stop someone asked for during its test took the command lock first, or
         // single-Mac serving took this Mac back) is neither registered nor started again: the stop stands.
-        guard leadership?.serving == true else { return .success([]) }
+        let leadership = self.leadership
+        guard leadership?.scope.isLocalOnly != true, leadership?.serving == true else { return .success([]) }
         let providerConfiguration = settings.service.wizard.providerConfiguration
         guard let saved = try? ClusterApprovalAttachment.savedSetup(paths: context.paths, providerConfiguration: providerConfiguration),
               let fetched = ClusterApprovalFetch.fetchBlocking(providerConfiguration: providerConfiguration),
@@ -2236,7 +2236,7 @@ final class OnboardingLive: @unchecked Sendable {
 
     /// A pair offered for pairing: waits until the coordinator paired both Macs, both loaded the model and the pair
     /// answered its first request (rank 0's part says so), or a reason the Macs know held (`pairLook`). A stop someone
-    /// asks for ends the screen's wait at once (`ClusterOnboardingDriver.stopEnding`); the pair's own stops (the cluster
+    /// asks for ends the screen's wait at once (`ClusterOnboardingDriver.endsOnStopAsked`); the pair's own stops (the cluster
     /// service's approval change) don't, so this wait goes on through them.
     func pairServing(_ progress: @escaping @Sendable (String) -> Void) -> Result<[String], ClusterOnboardingFailure> {
         var wait = ClusterOnboardingPairWait(started: Date().timeIntervalSince1970, bound: Self.pairServingSeconds,

@@ -9,8 +9,10 @@ import MLXVLM
 /// manufactured; on a speculating owner the engine runs the request
 /// target-only. A prefix identity is derived only from the request's own
 /// evaluated features, and only with a cache scope. One media request runs
-/// at a time. The load owner retains this actor and drains it before
-/// retiring its bridge.
+/// at a time: a request that arrives while the active one's answer has
+/// already ended waits up to `NemotronSuperServingPolicy.finishingWait` for
+/// its settlement instead of being refused (`admit()`). The load owner
+/// retains this actor and drains it before retiring its bridge.
 actor NemotronSuperLocalImageBinding {
     enum Failure: Error, Equatable {
         case closed, busy, wrongModel, invalidInput, capacity, retainedFault
@@ -67,11 +69,39 @@ actor NemotronSuperLocalImageBinding {
         let normalizedImages: [MLXArray]
     }
 
+    /// Set once a request's answer has ended: its engine stream closed, or the
+    /// request was cancelled. Its native settlement and charge release follow.
+    final class AnswerEnded: @unchecked Sendable {
+        private let lock = NSLock()
+        private var ended = false
+        #if DEBUG
+        /// TEST SEAM: runs once the answer has ended, as a slow settlement would.
+        var testSettlement: (@Sendable () async -> Void)?
+        #endif
+
+        var isEnded: Bool { lock.withLock { ended } }
+
+        func markEnded() async {
+            lock.withLock { ended = true }
+            #if DEBUG
+            await testSettlement?()
+            #endif
+        }
+
+        func markCancelled() { lock.withLock { ended = true } }
+    }
+
     private let owner: NemotronSuperLocalBridgeBuilder.Owner
     private let gate: VisionMemoryGate
     private var closing = false
     private var active: Task<Void, Error>?
+    private var activeAnswer: AnswerEnded?
     private var cancelActive: (@Sendable () -> Void)?
+    #if DEBUG
+    private var testSettlement: (@Sendable () async -> Void)?
+    /// TEST SEAM: the next requests' answers run `hook` once they end.
+    func setTestSettlement(_ hook: (@Sendable () async -> Void)?) { testSettlement = hook }
+    #endif
 
     /// Only the exact installed Owner creates this binding. There is no API
     /// accepting independently supplied installed model and bridge handles.
@@ -88,8 +118,7 @@ actor NemotronSuperLocalImageBinding {
     /// for text (nil: none).
     func run(request: ChatCompletionRequest, input: Input, cacheScope: String? = nil,
              onEvent: @escaping @Sendable (GenerationEvent) async -> Void) async throws {
-        guard !closing else { throw Failure.closed }
-        guard active == nil else { throw Failure.busy }
+        try await admit()
         guard request.model == owner.modelID else { throw Failure.wrongModel }
         guard request.tools == nil, request.tool_choice == nil, request.response_format == nil,
             request.logprobs != true, request.top_logprobs == nil, request.prompt_cache_key == nil
@@ -99,7 +128,7 @@ actor NemotronSuperLocalImageBinding {
         // The bridge owns a second reservation under its request ID. Sharing
         // that key would make its KV admission look like a duplicate claim.
         let mediaReservationID = id + "-media"
-        let owner = self.owner, gate = self.gate
+        let owner = self.owner, gate = self.gate, answer = makeAnswerEnded()
         let task = Task<Void, Error> {
             try Task.checkCancellation()
             guard await gate.reserve(requestId: mediaReservationID, mediaDecodeBytes: quote.totalBytes, kvTokens: 0)
@@ -107,9 +136,10 @@ actor NemotronSuperLocalImageBinding {
             try await Self.prepareAndExecute(owner: owner, prepare: { construction in
                 try owner.prepareLocalImage(input, maximumFeatureBytes: quote.featureBytes,
                                             construction: construction)
-            }, request: request, requestID: id, cacheScope: cacheScope, logprobs: nil, onEvent: onEvent)
+            }, request: request, requestID: id, cacheScope: cacheScope, logprobs: nil, answer: answer,
+               onEvent: onEvent)
         }
-        try await settle(task, reservations: [mediaReservationID])
+        try await settle(task, reservations: [mediaReservationID], answer: answer)
     }
     #endif
 
@@ -127,12 +157,11 @@ actor NemotronSuperLocalImageBinding {
     func runEncoded(body: Data, plan: NemotronSuperRequestPlan, templateBytes: Data,
                     cacheScope: String? = nil, logprobs: EngineV2LogprobsChannel? = nil,
                     onEvent: @escaping @Sendable (GenerationEvent) async -> Void) async throws {
-        guard !closing else { throw Failure.closed }
-        guard active == nil else { throw Failure.busy }
+        try await admit()
         let headerBytes = try Self.encodedHeaderQuote(bodyBytes: body.count, templateBytes: templateBytes.count)
         let id = "super-local-encoded-" + UUID().uuidString
         let ingressID = id + "-ingress", mediaID = id + "-media"
-        let owner = self.owner, gate = self.gate
+        let owner = self.owner, gate = self.gate, answer = makeAnswerEnded()
         let task = Task<Void, Error> {
             try Task.checkCancellation()
             // Before JSON/base64/header expansion, using the real shared ledger.
@@ -144,7 +173,7 @@ actor NemotronSuperLocalImageBinding {
                 try await VideoReaderFailureReport.reporting(to: { TelemetryClient.shared.emit($0) }) {
                     try await Self.executeEncodedVideo(video, plan: plan, body: body, templateBytes: templateBytes,
                         request: parsed.request, owner: owner, gate: gate, mediaID: mediaID, requestID: id,
-                        cacheScope: cacheScope, logprobs: logprobs, onEvent: onEvent)
+                        cacheScope: cacheScope, logprobs: logprobs, answer: answer, onEvent: onEvent)
                 }
                 return
             }
@@ -172,10 +201,10 @@ actor NemotronSuperLocalImageBinding {
                 return try owner.prepareLocalImage(input, maximumFeatureBytes: imagePlan.featureBytes,
                                                    construction: construction)
             }, request: parsed.request, requestID: id, cacheScope: cacheScope, logprobs: logprobs,
-               onEvent: onEvent)
+               answer: answer, onEvent: onEvent)
         }
         // No suspension precedes installing active: includes both admissions.
-        try await settle(task, reservations: [ingressID, mediaID])
+        try await settle(task, reservations: [ingressID, mediaID], answer: answer)
     }
 
     /// One inline video under the ingress reservation: its compressed samples
@@ -189,7 +218,7 @@ actor NemotronSuperLocalImageBinding {
         body: Data, templateBytes: Data,
         request: ChatCompletionRequest, owner: NemotronSuperLocalBridgeBuilder.Owner, gate: VisionMemoryGate,
         mediaID: String, requestID: String, cacheScope: String?, logprobs: EngineV2LogprobsChannel?,
-        onEvent: @escaping @Sendable (GenerationEvent) async -> Void) async throws {
+        answer: AnswerEnded, onEvent: @escaping @Sendable (GenerationEvent) async -> Void) async throws {
         let video = try await NemotronSuperVideoDecode.inspect(uri)
         let prompt = try owner.localVideoPrompt(plan: requestPlan, body: body, templateBytes: templateBytes,
                                                 labels: video.labels)
@@ -204,12 +233,13 @@ actor NemotronSuperLocalImageBinding {
                 try owner.prepareLocalVideo(frames, prompt: prompt, maximumFeatureBytes: plan.featureBytes,
                                             construction: construction)
             }
-        }, request: request, requestID: requestID, cacheScope: cacheScope, logprobs: logprobs, onEvent: onEvent)
+        }, request: request, requestID: requestID, cacheScope: cacheScope, logprobs: logprobs, answer: answer,
+           onEvent: onEvent)
     }
 
     /// Cleanup coordinator holds no image arrays. Actual work task completion
     /// drops its captures before refund. drain awaits this same cleanup task.
-    private func settle(_ work: Task<Void, Error>, reservations: [String]) async throws {
+    private func settle(_ work: Task<Void, Error>, reservations: [String], answer: AnswerEnded) async throws {
         let owner = self.owner, gate = self.gate
         let cleanup = Task<Void, Error> {
             let result = await work.result
@@ -219,11 +249,36 @@ actor NemotronSuperLocalImageBinding {
             try result.get()
         }
         active = cleanup
-        cancelActive = { work.cancel() }
-        defer { active = nil; cancelActive = nil }
+        activeAnswer = answer
+        cancelActive = { answer.markCancelled(); work.cancel() }
+        defer { active = nil; activeAnswer = nil; cancelActive = nil }
         try await withTaskCancellationHandler {
             try await cleanup.value
-        } onCancel: { work.cancel() }
+        } onCancel: { answer.markCancelled(); work.cancel() }
+    }
+
+    /// Admits one media request at a time (SUPER-IMAGE-504: an instant
+    /// `busy` is a coordinator bounce). While the active request's answer has
+    /// ended and only its settlement remains, a new request waits up to
+    /// `NemotronSuperServingPolicy.finishingWait` for it, so the active one's
+    /// charge is released before this one reserves; one that arrives
+    /// mid-answer is refused at once, as before.
+    private func admit() async throws {
+        guard !closing else { throw Failure.closed }
+        let deadline = ContinuousClock.now + NemotronSuperServingPolicy.finishingWait
+        while !closing, active != nil, activeAnswer?.isEnded == true, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        guard !closing else { throw Failure.closed }
+        guard active == nil else { throw Failure.busy }
+    }
+
+    private func makeAnswerEnded() -> AnswerEnded {
+        let answer = AnswerEnded()
+        #if DEBUG
+        answer.testSettlement = testSettlement
+        #endif
+        return answer
     }
 
     /// `prepare` builds the evaluated submission in `construction`; a
@@ -231,7 +286,7 @@ actor NemotronSuperLocalImageBinding {
     private static func prepareAndExecute(owner: NemotronSuperLocalBridgeBuilder.Owner,
         prepare: (NativeConstructionScope) async throws -> EngineV2VisionPrefill.PreparedSubmission,
         request: ChatCompletionRequest, requestID: String, cacheScope: String?,
-        logprobs: EngineV2LogprobsChannel?,
+        logprobs: EngineV2LogprobsChannel?, answer: AnswerEnded,
         onEvent: @escaping @Sendable (GenerationEvent) async -> Void) async throws {
         let construction = NativeConstructionScope()
         let activity = owner.imageServiceBudget.beginUnboundedActivity()
@@ -242,7 +297,7 @@ actor NemotronSuperLocalImageBinding {
             try Task.checkCancellation()
             try await execute(bridge: owner.bridge, prepared: prepared,
                 cacheScope: owner.prefixBankBytes > 0 ? cacheScope : nil,
-                request: request, requestID: requestID, logprobs: logprobs, onEvent: onEvent)
+                request: request, requestID: requestID, logprobs: logprobs, answer: answer, onEvent: onEvent)
         } catch {
             if construction.snapshot.isRetainedFault {
                 owner.quarantineLocalImage(construction: construction, activity: activity)
@@ -512,7 +567,7 @@ actor NemotronSuperLocalImageBinding {
     private static func execute(bridge: EngineV2Bridge,
         prepared: EngineV2VisionPrefill.PreparedSubmission, cacheScope: String?,
         request: ChatCompletionRequest, requestID: String, logprobs: EngineV2LogprobsChannel?,
-        onEvent: @escaping @Sendable (GenerationEvent) async -> Void
+        answer: AnswerEnded, onEvent: @escaping @Sendable (GenerationEvent) async -> Void
     ) async throws {
         let usage = EngineV2RequestUsageSignal()
         let identity = cacheScope == nil ? nil : try prepared.hybridPrefixIdentity()
@@ -529,6 +584,9 @@ actor NemotronSuperLocalImageBinding {
                 if case .logprobs(let entries) = event { logprobs?.append(entries); continue }
                 await onEvent(event)
             }
+            // The stream closes before the row's native retirement
+            // (`EngineV2Bridge` pump): only settlement remains.
+            await answer.markEnded()
             if Task.isCancelled { await bridge.cancel(requestId: requestID) }
             await usage.waitForTerminalObservation()
         } onCancel: { Task { await bridge.cancel(requestId: requestID) } }

@@ -39,6 +39,8 @@ enum NemotronSuperLocalBridgeBuilder {
         private var videoFaultArrays: [MLXArray] = []
         private var quarantine: Owner?
         private var localRequestsAdmitted = 0
+        /// Admitted requests whose answer has ended (`noteLocalAnswerEnded`).
+        private var localAnswersEnded = 0
         let speculates: Bool
         /// Requests the bridge serves at once; one unless batched decode is on.
         let maximumLocalRequests: Int
@@ -139,7 +141,36 @@ enum NemotronSuperLocalBridgeBuilder {
             }
         }
 
-        func finishLocalRequest() { lock.withLock { localRequestsAdmitted -= 1 } }
+        /// As `admitLocalRequest()`, but while the owner is full and every
+        /// admitted request's answer has already ended (only settlement is
+        /// left), waits up to `limit` for one to finish instead of refusing.
+        func admitLocalRequest(waitingUpTo limit: Duration) async -> Bool {
+            let deadline = ContinuousClock.now + limit
+            while true {
+                let (admitted, finishing): (Bool, Bool) = lock.withLock {
+                    guard localRequestsAdmitted < maximumLocalRequests else {
+                        return (false, localAnswersEnded >= localRequestsAdmitted)
+                    }
+                    localRequestsAdmitted += 1
+                    return (true, false)
+                }
+                if admitted { return true }
+                guard finishing, !Task.isCancelled, ContinuousClock.now < deadline else { return false }
+                try? await Task.sleep(for: .milliseconds(5))
+            }
+        }
+
+        /// One admitted request's answer has ended (its terminal reached the
+        /// HTTP relay); its settlement and `finishLocalRequest` follow.
+        func noteLocalAnswerEnded() { lock.withLock { localAnswersEnded += 1 } }
+
+        /// `answerEnded`: the request was counted by `noteLocalAnswerEnded()`.
+        func finishLocalRequest(answerEnded: Bool = false) {
+            lock.withLock {
+                localRequestsAdmitted -= 1
+                if answerEnded { localAnswersEnded -= 1 }
+            }
+        }
 
         private var acceptsLocalWork: Bool {
             lock.withLock { closing == nil && imageFaults.isEmpty && installed != nil }

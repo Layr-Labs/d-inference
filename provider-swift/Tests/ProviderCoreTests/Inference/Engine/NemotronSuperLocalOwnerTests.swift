@@ -69,6 +69,41 @@ struct NemotronSuperLocalOwnerTests {
 }
 
 extension NemotronSuperLocalOwnerTests {
+    /// SUPER-IMAGE-504: the full owner waits, bounded, for a request whose
+    /// answer has ended (only its settlement remains), and only for that.
+    @Test func fullOwnerWaitsOnlyForARequestWhoseAnswerHasEnded() async throws {
+        let (owner, _, residency, budget, lease) = try await Self.owner()
+        #expect(owner.maximumLocalRequests == 1)
+        #expect(owner.admitLocalRequest())
+        // Mid-answer: refused at once, as before.
+        var start = ContinuousClock.now
+        #expect(await owner.admitLocalRequest(waitingUpTo: .seconds(1)) == false)
+        #expect(ContinuousClock.now - start < .milliseconds(500))
+        // Answer ended: the next request waits for the settlement, then is admitted.
+        owner.noteLocalAnswerEnded()
+        let settlement = Task {
+            try? await Task.sleep(for: .milliseconds(200))
+            owner.finishLocalRequest(answerEnded: true)
+        }
+        start = ContinuousClock.now
+        #expect(await owner.admitLocalRequest(waitingUpTo: .seconds(1)))
+        #expect(ContinuousClock.now - start >= .milliseconds(150))
+        await settlement.value
+        // Bounded: a settlement that outlasts the wait still refuses, after it.
+        owner.noteLocalAnswerEnded()
+        start = ContinuousClock.now
+        #expect(await owner.admitLocalRequest(waitingUpTo: .milliseconds(300)) == false)
+        #expect(ContinuousClock.now - start >= .milliseconds(290))
+        owner.finishLocalRequest(answerEnded: true)
+        #expect(owner.admitLocalRequest())
+        owner.finishLocalRequest()
+        try await owner.closeAfterDrain()
+        #expect(residency.snapshot.usedBytes == 0)
+        #expect(await budget.finishPendingLoad(lease))
+    }
+}
+
+extension NemotronSuperLocalOwnerTests {
     /// `latentMoE` stages the MTP fixture's latent-MoE target, the layout the
     /// row-exact batched decode supports, without loading its head.
     private static func owner(kvBytesCapacity: Int = 2 << 30,

@@ -1273,10 +1273,10 @@ struct EngineV2VisionRoutingTests {
         #expect(await budget.outstandingReservedBytes() == 0)
     }
 
-    /// OR-REFUSALS §2: Qwen3.5-9B's production preparer takes 64 images. The
-    /// 65th is refused (`media_too_large`) before the processor or the tower
-    /// runs, naming the 9B's cap; at 16 the 17th was refused.
-    @Test("the production preparer applies Qwen3.5-9B's 64-image cap")
+    /// The production preparer applies the request model's image cap: the
+    /// 9B's 17th image is refused (`media_too_large`) before the processor or
+    /// the tower runs (0.10.12 keeps the 9B at 16).
+    @Test("the production preparer applies Qwen3.5-9B's image cap")
     func qwen35NineBPreparerTakesItsOwnImageCap() async throws {
         let engine = VisionScriptedEngine(script: .stream([]))
         let bridge = makeBridge(engine: engine)
@@ -1289,13 +1289,13 @@ struct EngineV2VisionRoutingTests {
             },
             defaultMaxTokens: 64)
         var request = imageRequest(
-            parts: [.text("Describe each page.")] + Array(repeating: .imageURL(tinyPNGDataURI), count: 65))
+            parts: [.text("Describe each page.")] + Array(repeating: .imageURL(tinyPNGDataURI), count: 17))
         request.model = "Qwen3.5-9B"
         do {
             _ = try await router.streamChatCompletion(request: request)
-            Issue.record("expected the 65th image to be refused")
+            Issue.record("expected the 17th image to be refused")
         } catch let MediaIngest.MediaError.mediaTooLarge(detail) {
-            #expect(detail == "request has 65 images; cap is 64")
+            #expect(detail == "request has 17 images; cap is 16")
         }
         #expect(engine.submitted.isEmpty)
     }

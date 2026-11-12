@@ -3594,8 +3594,8 @@ the owner's go.
 - **Media caps** (`provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift`):
   `maxImagePixels` 100 Mpx, `maxRequestImagePixels` 384 Mpx,
   `maxMediaDecodedBytes` 25 MiB, `maxVideoDurationSeconds` 600,
-  `maxImagesPerRequest` 16 (64 for Qwen3.5-9B, `imageCap(forModel:)`;
-  `DARKBLOOM_MAX_IMAGES_PER_REQUEST` sets one cap for every model),
+  `maxImagesPerRequest` 16 (per model through `imageCap(forModel:)`, no model
+  above 16 yet; `DARKBLOOM_MAX_IMAGES_PER_REQUEST` sets one cap for every model),
   `maxVideosPerRequest` 8, `maxRequestVideoFramePixels` 384 Mpx;
   `decodeOverheadFactor = 4`.
 - **Media memory gate.** The scheduler's `VisionMemoryGate` reserves a media

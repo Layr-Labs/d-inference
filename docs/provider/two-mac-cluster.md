@@ -431,12 +431,12 @@ keeps that mode. No sentence explains it and no line quotes a speed:
 ```text
   How should both Macs split Gemma 4 26B?
   1) Pipeline · serves one request at a time · context 65,536 tokens, prompts up to 32,768
-  2) Tensor parallel · Recommended · serves up to 8 requests at once · context 262,144 tokens
+  2) Tensor parallel · Recommended · serves up to 2 requests at once · context 262,144 tokens
   Choose 1-2 (enter = 2):
 ```
 
 In a narrow window a line keeps the mode, the tag and the short words
-("serves up to 8 at once · context 262,144"). A model named on the command line
+("serves up to 2 at once · context 262,144"). A model named on the command line
 (`darkbloom cluster local <model>`) loads without the question: the pair's own
 model in the mode it last served in, any other model in the recommended mode. On a serving pair, choosing its model in another mode asks first
 ("Switch Gemma 4 26B from tensor parallel to pipeline? …").

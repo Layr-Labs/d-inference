@@ -716,26 +716,25 @@ func vlmBuildUserInputCapsImageCount() async throws {
     }
 }
 
-/// OR-REFUSALS §2: an OpenRouter client sends Qwen3.5-9B 17–61 images a
-/// request, mostly 60. The 9B's own cap is 64; every other model keeps 16, and
-/// the operator's override still applies to every model.
-@Test("the image cap is per model: 64 for Qwen3.5-9B, 16 for every other model")
+/// The image cap is per model (`imageCap(forModel:)`); in 0.10.12 every model,
+/// Qwen3.5-9B included, has 16, and the operator's override applies to every model.
+@Test("the image cap is per model: 16 for every model in 0.10.12")
 func vlmImageCapPerModel() {
-    #expect(MediaIngest.imageCap(forModel: "Qwen3.5-9B", environment: [:]) == 64)
-    for model in ["qwen3.6-35b-a3b-vl-mtp-mxfp8", "qwen3.5-35b-a3b", "qwen3.5-9b", "vlm", nil] as [String?] {
+    #expect(MediaIngest.modelMaxImagesPerRequest.isEmpty)
+    for model in ["Qwen3.5-9B", "qwen3.6-35b-a3b-vl-mtp-mxfp8", "qwen3.5-35b-a3b", "qwen3.5-9b", "vlm", nil] as [String?] {
         #expect(MediaIngest.imageCap(forModel: model, environment: [:]) == 16)
     }
     let key = "DARKBLOOM_MAX_IMAGES_PER_REQUEST"
     #expect(MediaIngest.imageCap(forModel: "Qwen3.5-9B", environment: [key: "8"]) == 8)
     #expect(MediaIngest.imageCap(forModel: "vlm", environment: [key: "32"]) == 32)
     // An unusable override keeps each model's own default.
-    #expect(MediaIngest.imageCap(forModel: "Qwen3.5-9B", environment: [key: "0"]) == 64)
+    #expect(MediaIngest.imageCap(forModel: "Qwen3.5-9B", environment: [key: "0"]) == 16)
     #expect(MediaIngest.imageCap(forModel: "vlm", environment: [key: "many"]) == 16)
 }
 
 /// The vision prefill builds its input without an explicit cap
 /// (`EngineV2VisionPrefill.prepare`), so the request's model decides it.
-@Test("a Qwen3.5-9B request takes 60 and 64 images; its 65th and another model's 17th are refused")
+@Test("a Qwen3.5-9B request takes 16 images; its 17th and another model's 17th are refused")
 func vlmBuildUserInputUsesTheModelsImageCap() async throws {
     func request(model: String, images: Int) -> OpenAIChatCompletionRequest {
         OpenAIChatCompletionRequest(
@@ -746,13 +745,12 @@ func vlmBuildUserInputUsesTheModelsImageCap() async throws {
                         + (0 ..< images).map { _ in OpenAIContentPart.imageURL(tinyPNGDataURI) }))
             ])
     }
-    _ = try await MediaIngest.buildUserInput(from: request(model: "Qwen3.5-9B", images: 60))
-    _ = try await MediaIngest.buildUserInput(from: request(model: "Qwen3.5-9B", images: 64))
+    _ = try await MediaIngest.buildUserInput(from: request(model: "Qwen3.5-9B", images: 16))
     do {
-        _ = try await MediaIngest.buildUserInput(from: request(model: "Qwen3.5-9B", images: 65))
-        Issue.record("expected the 65th image to be refused")
+        _ = try await MediaIngest.buildUserInput(from: request(model: "Qwen3.5-9B", images: 17))
+        Issue.record("expected the 17th image to be refused")
     } catch let MediaIngest.MediaError.mediaTooLarge(detail) {
-        #expect(detail == "request has 65 images; cap is 64")
+        #expect(detail == "request has 17 images; cap is 16")
     }
     await expectMediaTooLarge {
         _ = try await MediaIngest.buildUserInput(
@@ -761,7 +759,7 @@ func vlmBuildUserInputUsesTheModelsImageCap() async throws {
     // An explicit cap still wins (the pair's Qwen media path passes its own).
     await expectMediaTooLarge {
         _ = try await MediaIngest.buildUserInput(
-            from: request(model: "Qwen3.5-9B", images: 17), maxImagesPerRequest: 16)
+            from: request(model: "Qwen3.5-9B", images: 9), maxImagesPerRequest: 8)
     }
 }
 

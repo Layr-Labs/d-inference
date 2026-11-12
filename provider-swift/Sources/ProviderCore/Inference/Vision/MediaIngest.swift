@@ -512,12 +512,9 @@ public enum MediaIngest {
     static let maxImagesEnvironmentKey = "DARKBLOOM_MAX_IMAGES_PER_REQUEST"
     static let defaultMaxImagesPerRequest = 16
 
-    /// Image-count defaults above 16, by served model id. Qwen3.5-9B: an
-    /// OpenRouter client sends 17–61 images (mostly 60, ~7.4 MB) a request.
-    /// Memory stays bounded: the aggregate-pixel and per-part caps bound
-    /// decode, the vision gate reserves 1,024 KV tokens per image before any
-    /// work, and the tower runs one image at a time.
-    static let modelMaxImagesPerRequest: [String: Int] = ["Qwen3.5-9B": 64]
+    /// Image-count defaults above 16, by served model id. None in 0.10.12:
+    /// Qwen3.5-9B's 64 waits on its first-token check with 60 images.
+    static let modelMaxImagesPerRequest: [String: Int] = [:]
 
     /// The image cap for one request to `model`: the
     /// `DARKBLOOM_MAX_IMAGES_PER_REQUEST` override when set (every model), else

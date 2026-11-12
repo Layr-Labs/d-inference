@@ -110,6 +110,9 @@ extension ProviderLoop {
             startModelRevisionMonitor()
         }
 
+        // Registered before the local endpoint stops so its final records are saved too.
+        defer { usageHistory.flush() }
+
         // Unified mode: also expose a local OpenAI endpoint off the same loaded
         // models. It starts after the bounded metadata prewarm, but still before
         // the coordinator connection, so local serving keeps coordinator

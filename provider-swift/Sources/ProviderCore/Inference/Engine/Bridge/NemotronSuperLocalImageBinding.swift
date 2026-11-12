@@ -9,8 +9,10 @@ import MLXVLM
 /// manufactured; on a speculating owner the engine runs the request
 /// target-only. A prefix identity is derived only from the request's own
 /// evaluated features, and only with a cache scope. One media request runs
-/// at a time. The load owner retains this actor and drains it before
-/// retiring its bridge.
+/// at a time: a request that arrives while the active one's answer has
+/// already ended waits up to `NemotronSuperServingPolicy.finishingWait` for
+/// its settlement instead of being refused (`admit()`). The load owner
+/// retains this actor and drains it before retiring its bridge.
 actor NemotronSuperLocalImageBinding {
     enum Failure: Error, Equatable {
         case closed, busy, wrongModel, invalidInput, capacity, retainedFault
@@ -255,8 +257,18 @@ actor NemotronSuperLocalImageBinding {
         } onCancel: { answer.markCancelled(); work.cancel() }
     }
 
-    /// Admits one media request at a time.
+    /// Admits one media request at a time (SUPER-IMAGE-504: an instant
+    /// `busy` is a coordinator bounce). While the active request's answer has
+    /// ended and only its settlement remains, a new request waits up to
+    /// `NemotronSuperServingPolicy.finishingWait` for it, so the active one's
+    /// charge is released before this one reserves; one that arrives
+    /// mid-answer is refused at once, as before.
     private func admit() async throws {
+        guard !closing else { throw Failure.closed }
+        let deadline = ContinuousClock.now + NemotronSuperServingPolicy.finishingWait
+        while !closing, active != nil, activeAnswer?.isEnded == true, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
         guard !closing else { throw Failure.closed }
         guard active == nil else { throw Failure.busy }
     }

@@ -378,6 +378,13 @@ enum NemotronSuperServingPolicy {
     static let maximumImages = 16
     static let pinnedTemplateBytes = 12_927
 
+    /// How long a request waits for the owner's request, or the image binding's
+    /// media request, once that request's answer has ended and only its
+    /// settlement remains (native retirement, the media charge's release).
+    /// That normally takes moments; a refusal meanwhile is a coordinator bounce
+    /// (SUPER-IMAGE-504) for a request this Mac would serve next.
+    static let finishingWait: Duration = .seconds(1)
+
     /// Decoder workspace `NemotronSuperImageDecode` quotes for its largest
     /// admitted raster (64 Mi pixels; JPEG at 16 bytes per pixel and axes to
     /// 65,500, PNG at 14 and axes to 131,072; 128 bytes per row) with its

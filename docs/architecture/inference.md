@@ -735,7 +735,13 @@ remain required.
 
 The same binding serves one inline video as the only media of a request
 (`data:video/mp4;base64,` or `data:video/quicktime;base64,`; one media request
-at a time, like images). Under the ingress reservation `NemotronSuperVideoDecode.inspect`
+at a time, like images). A request that arrives while the owner's request, or
+the binding's media request, has finished its answer and only its settlement
+remains (native retirement, the media charge's release) waits up to
+`NemotronSuperServingPolicy.finishingWait` (1 s) for it instead of a 429
+`queue_full` (`NemotronSuperLocalBridgeBuilder.Owner.admitLocalRequest(waitingUpTo:)`,
+`NemotronSuperLocalImageBinding.admit()`); one that arrives mid-answer is still
+refused at once. Under the ingress reservation `NemotronSuperVideoDecode.inspect`
 runs the shared `MediaIngest.decodeVideo` checks (label, decoded bytes,
 container, duration, coded frame size up to
 `NemotronSuperServingPolicy.maximumVideoFramePixels` pixels in any shape),

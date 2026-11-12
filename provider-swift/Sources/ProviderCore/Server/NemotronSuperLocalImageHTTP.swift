@@ -117,13 +117,16 @@ private struct SuperHTTPEngine: MLXServerEngine {
         guard request.model == owner.modelID else { throw unsupported() }
         // The owner admits its configured concurrency before the request plan
         // decodes the body, the prompt is rendered or media is reserved, so a
-        // busy owner refuses at once. Every exit before the task takes it over
-        // returns it.
-        guard owner.admitLocalRequest() else {
+        // busy owner refuses at once, unless every admitted request's answer
+        // has ended: then this one waits briefly for a settlement instead of
+        // bouncing (`NemotronSuperServingPolicy.finishingWait`). Every exit
+        // before the task takes it over returns it.
+        guard await owner.admitLocalRequest(waitingUpTo: NemotronSuperServingPolicy.finishingWait) else {
             throw MultiModelBatchSchedulerEngineError.queueFull("the Super owner is busy")
         }
         var admissionTransferred = false
         defer { if !admissionTransferred { owner.finishLocalRequest() } }
+        let answered = SuperAnswerEnded()
         let media = if case .text = route { false } else { true }
         let output: NemotronSuperLocalOutput
         let completeLogprobs: NemotronSuperCompleteLogprobs?
@@ -167,11 +170,12 @@ private struct SuperHTTPEngine: MLXServerEngine {
         } catch { throw SuperHTTPErrors.map(error, media: media) }
         let pair = AsyncThrowingStream<MLXServerGenerationEvent, Error>.makeStream(bufferingPolicy: .bufferingOldest(64))
         let relay = SuperImageHTTPRelay(continuation: pair.continuation, output: output, logprobs: completeLogprobs,
-                                        usageSignal: textUsage)
+                                        usageSignal: textUsage,
+                                        onAnswerEnded: { if answered.mark() { owner.noteLocalAnswerEnded() } })
         let scope = LocalRequestCancellation.current
         let task = Task {
             let registration = scope?.register { relay.cancel() }
-            defer { registration?.remove(); owner.finishLocalRequest() }
+            defer { registration?.remove(); owner.finishLocalRequest(answerEnded: answered.isMarked) }
             do {
                 try Task.checkCancellation()
                 try await execute { event in await relay.accept(event) }
@@ -343,15 +347,19 @@ actor SuperImageHTTPRelay {
     /// Where the engine recorded the request's reused prompt tokens before
     /// its terminal usage; nil reports none.
     private let usageSignal: EngineV2RequestUsageSignal?
+    /// Told once, when the engine's terminal usage arrives: the answer has
+    /// ended and only its settlement remains.
+    private let onAnswerEnded: (@Sendable () -> Void)?
     private nonisolated let cancellation = SuperImageHTTPCancellation()
 
     init(continuation: AsyncThrowingStream<MLXServerGenerationEvent, Error>.Continuation,
          output: NemotronSuperLocalOutput, logprobs: NemotronSuperCompleteLogprobs? = nil,
-         usageSignal: EngineV2RequestUsageSignal? = nil) {
+         usageSignal: EngineV2RequestUsageSignal? = nil, onAnswerEnded: (@Sendable () -> Void)? = nil) {
         self.continuation = continuation
         self.output = output
         self.logprobs = logprobs
         self.usageSignal = usageSignal
+        self.onAnswerEnded = onAnswerEnded
     }
     nonisolated func installCancellation(_ action: @escaping @Sendable () -> Void) { cancellation.install(action) }
     nonisolated func cancel() { cancellation.cancel() }
@@ -390,6 +398,7 @@ actor SuperImageHTTPRelay {
                 promptTime: (firstChunkAt ?? Date()).timeIntervalSince(startedAt),
                 generationTime: firstChunkAt.map { Date().timeIntervalSince($0) } ?? 0,
                 stopReason: reason ?? "stop", cachedPromptTokens: usageSignal?.prefixCacheHitTokens ?? 0)
+            onAnswerEnded?()
         case .error(let message):
             failure = MultiModelBatchSchedulerEngineError.fromSchedulerMessage(message)
         case .terminal(let cause, let message, let prompt, let completion):
@@ -434,6 +443,15 @@ actor SuperImageHTTPRelay {
             }
         }
     }
+}
+
+/// One request's answer has ended (`SuperImageHTTPRelay`'s terminal usage).
+private final class SuperAnswerEnded: @unchecked Sendable {
+    private let lock = NSLock()
+    private var ended = false
+    var isMarked: Bool { lock.withLock { ended } }
+    /// True the first time only.
+    func mark() -> Bool { lock.withLock { defer { ended = true }; return !ended } }
 }
 
 private final class SuperImageHTTPCancellation: @unchecked Sendable {

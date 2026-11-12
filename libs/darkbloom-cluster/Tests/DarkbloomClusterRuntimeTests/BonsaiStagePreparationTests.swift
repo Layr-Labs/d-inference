@@ -145,12 +145,12 @@ struct BonsaiStagePreparationTests {
             // The model: the SDK's dense class with the SDK's packed modules.
             #expect(own.model is Qwen35Model && !(own.model is any PrismHadamardLoading))
             let leaves = Dictionary(uniqueKeysWithValues: own.model.leafModules().flattened())
-            let projections = leaves.values.filter { $0 is HadamardQuantizedLinear }.count
-            #expect(projections == (layers - layers / 4) * 3 + (layers / 4) * 4 + layers * 3 + rank)
+            let projections = leaves.values.compactMap { $0 as? HadamardQuantizedLinear }
+            #expect(projections.count == (layers - layers / 4) * 3 + (layers / 4) * 4 + layers * 3 + rank)
             // Both machines keep the singleton FP32 arithmetic for every
             // prompt row (the receipt's `bonsai-fp32-row-arithmetic-v2`); a
             // single Mac's SDK loader batches them.
-            #expect(leaves.values.compactMap { $0 as? HadamardQuantizedLinear }.allSatisfy(\.independentRows))
+            #expect(projections.allSatisfy { $0.independentRows })
             #expect((leaves["language_model.model.embed_tokens"] is HadamardQuantizedEmbedding) == (rank == 0))
             #expect((leaves["language_model.lm_head"] is HadamardQuantizedLinear) == (rank == 1))
             // The two small gated-delta projections stay plain, so the decoder fuses nothing.

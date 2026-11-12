@@ -7789,24 +7789,47 @@ change attention arithmetic or the cached frontier. See
 
 ## Bonsai 27B packed FP32 rows
 
-The registered Bonsai 27B signed-Hadamard pack preserves the singleton packed
-FP32 reduction for each input row. `HadamardQuantizedLinear.callAsFunction` in
-`libs/mlx-swift/Source/MLXNN/Hadamard.swift` selects this path only for FP32
-multi-row input, affine2/group128, block1024 and stored F16 scales. The signed
-transform and grouped gated-delta layout are unchanged. A leading weight
-dimension keeps the packed projection at M=1 per row, avoiding the
-architecture-dependent TF32 matrix projection without unpacking weights.
-Singleton calls, other packs, ordinary affine modules and global arithmetic
-switches retain their existing paths.
+The registered Bonsai 27B signed-Hadamard pack (FP32 multi-row input,
+affine2/group128, block1024 and stored F16 scales) computes multi-row calls one
+of two ways. `HadamardQuantizedLinear.callAsFunction` in
+`libs/mlx-swift/Source/MLXNN/Hadamard.swift` picks the way from the layer's
+`independentRows`, which the code that builds the layer sets. A call has more
+than one row for a prompt chunk, and for a decode step that carries several
+requests:
+
+| Where | Builder | `independentRows` | Multi-row calls |
+|---|---|---|---|
+| Single Mac | the SDK's `PrismHadamardCheckpoint.install` | false (default) | One batched packed matmul: TF32 (NAX) on M5, FP32 steel on M1 to M4, as in provider 0.10.4 and earlier. |
+| Pair stages, the reference check | `QwenPrismHadamardSource.install` | true | The singleton packed FP32 reduction per row. A leading weight dimension keeps each projection at M=1, so both machines compute the bytes of separate singleton calls on any chip. |
+
+On a single Mac, prompt rows are therefore not bit-identical to the singleton
+decode arithmetic. In exchange, prefill is several times faster: provider
+0.10.4 measured 2.3 to 6 times the per-row path's rate. Concurrent decode is
+batched too. The SDK's per-row decode seam (`Qwen35BatchDecodeProjection`)
+runs only where `Qwen35BatchDecodeScope` is enabled, and only cluster sessions
+enable it. So a decode step with several requests takes one batched matmul,
+and which kernel runs (TF32 on M5 once the step is wide enough) depends on how
+many rows share the step. A request's exact output can therefore depend on the
+requests decoding beside it. Both were so in provider 0.10.4 and earlier, and
+are accepted for the prompt speed. A request decoding alone (one row) is
+unchanged.
+The signed transform and the grouped gated-delta layout are the same in both
+ways. So are singleton calls, other packs, ordinary affine modules and global
+arithmetic switches.
 
 `QuantizedLinear.constantCachedForward` in
-`libs/mlx-swift/Source/MLXNN/Quantized.swift` reuses the existing exact F16-to-F32
-constant caches; the row layout adds no persistent weight or constant copy.
-The registered block4096 Bonsai 9B pack retains its original arithmetic.
+`libs/mlx-swift/Source/MLXNN/Quantized.swift` reuses the existing exact
+F16-to-F32 constant caches in both ways. The row layout adds no persistent
+weight or constant copy. The registered block4096 Bonsai 9B pack keeps its
+original arithmetic.
+
 `QwenResidentArithmeticPolicy.prismHadamardRows` adds the
-`bonsai-fp32-row-arithmetic-v2` binding only to the 27B receipt. The family policy
-name remains stable while the exact arithmetic SHA changes, so mixed old/new
-ranks refuse the load agreement before reading stage weights.
+`bonsai-fp32-row-arithmetic-v2` binding only to the 27B receipt. The receipt
+describes pair stages, and their arithmetic did not change when single Macs
+went back to batching, so the receipt's bytes did not change either. The family
+policy name is stable while the exact arithmetic SHA differs from the 9B's.
+Ranks with different receipts refuse the load agreement before reading stage
+weights.
 
 Independent singleton comparisons and cross-chip projection diagnostics do not
 replace full-artifact qualification. Preserve earlier solo/pair reports and

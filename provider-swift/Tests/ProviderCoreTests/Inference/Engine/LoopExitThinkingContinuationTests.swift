@@ -26,6 +26,13 @@ struct LoopExitThinkingContinuationTests {
 
     private struct Refused: Error {}
 
+    private final class Seen: @unchecked Sendable {
+        private let lock = NSLock()
+        private var events = 0
+        func add() { lock.withLock { events += 1 } }
+        var count: Int { lock.withLock { events } }
+    }
+
     private func stream(_ events: [GenerationEvent], finish: Bool = true) -> AsyncStream<GenerationEvent> {
         let (stream, continuation) = AsyncStream<GenerationEvent>.makeStream()
         events.forEach { continuation.yield($0) }
@@ -165,6 +172,38 @@ struct LoopExitThinkingContinuationTests {
         #expect(calls.submits.isEmpty)
     }
 
+    @Test("under 256 tokens of budget left, the thought is not prefilled again for an answer")
+    func smallBudget() async {
+        let calls = Calls()
+        let first = stream([.info(promptTokens: 5, completionTokens: 4_200, tokensPerSecond: 10, finishReason: "length")])
+        let out = await drain(splice(
+            first: first, exit: exit(requested: true, tokens: thought), outputBudget: 4_200 + 1 + 255, calls: calls
+        ) { self.stream([.chunk("never")]) }.events)
+        #expect(out == ["info:5/4200/length"])
+        #expect(calls.submits.isEmpty)
+    }
+
+    @Test("a client that leaves during the answer cancels the continuation")
+    func consumerLeaves() async throws {
+        let calls = Calls()
+        let (answer, answerContinuation) = AsyncStream<GenerationEvent>.makeStream()
+        let first = stream([.info(promptTokens: 5, completionTokens: 4_200, tokensPerSecond: 10, finishReason: "length")])
+        let spliced = splice(first: first, exit: exit(requested: true, tokens: thought), calls: calls) { answer }
+        answerContinuation.yield(.chunk("A"))
+        let seen = Seen()
+        // The client's task is cancelled while it waits for more of the answer.
+        let consumer = Task { for await _ in spliced.events { seen.add() } }
+        let limit = ContinuousClock.now + .seconds(2)
+        while seen.count < 2, ContinuousClock.now < limit { try await Task.sleep(for: .milliseconds(5)) }
+        #expect(seen.count == 2)
+        consumer.cancel()
+        while calls.cancels.continuation == 0, ContinuousClock.now < limit {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(calls.cancels.continuation == 1)
+        answerContinuation.finish()
+    }
+
     @Test("a row that ended any other way is not continued")
     func otherEndings() async {
         for ending: GenerationEvent in [
@@ -191,22 +230,29 @@ struct LoopExitThinkingContinuationTests {
         #expect(out == ["chunk:<channel|>", "info:5/4201/stop"])
     }
 
-    @Test("a failure after the answer started keeps its usage and its error")
+    @Test("a failure after the answer started ends it as a paid length, as the guard's stop would")
     func failureAfterStart() async {
         let calls = Calls()
         let first = stream([.info(promptTokens: 5, completionTokens: 4_200, tokensPerSecond: 10, finishReason: "length")])
+        // Not the client's cancel (a teardown, a capacity error): the usage before the error is kept.
         let out = await drain(splice(first: first, exit: exit(requested: true, tokens: thought), calls: calls) {
             self.stream([.chunk("A"), .info(promptTokens: 4_206, completionTokens: 3, tokensPerSecond: 0, finishReason: nil),
                          .error("request cancelled")])
         }.events)
-        #expect(out == ["chunk:<channel|>", "chunk:A", "info:5/4204/nil", "error:request cancelled"])
+        #expect(out == ["chunk:<channel|>", "chunk:A", "info:5/4204/length"])
+
+        let capacity = await drain(splice(first: stream([.info(promptTokens: 5, completionTokens: 4_200,
+                tokensPerSecond: 10, finishReason: "length")]), exit: exit(requested: true, tokens: thought), calls: Calls()) {
+            self.stream([.chunk("A"), .error("token_budget_exhausted: KV capacity exhausted")])
+        }.events)
+        #expect(capacity == ["chunk:<channel|>", "chunk:A", "info:5/4201/length"])
 
         let terminal = await drain(splice(first: stream([.info(promptTokens: 5, completionTokens: 4_200,
                 tokensPerSecond: 10, finishReason: "length")]), exit: exit(requested: true, tokens: thought), calls: Calls()) {
             self.stream([.chunk("A"), .terminal(cause: .decodeStall, message: "stalled", promptTokens: 4_206,
                                                 completionTokens: 2)])
         }.events)
-        #expect(terminal == ["chunk:<channel|>", "chunk:A", "terminal:\(InferenceTerminalCause.decodeStall.rawValue)/5/4203"])
+        #expect(terminal == ["chunk:<channel|>", "chunk:A", "info:5/4203/length"])
     }
 
     @Test("a cancel before the continuation starts keeps it from starting")

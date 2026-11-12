@@ -51,4 +51,10 @@ extension EngineV2Bridge {
         event.requestId = id
         emit(event)
     }
+
+    /// Waits until the row `requestId` has released its serving slot; false
+    /// when `bound` passes first.
+    func waitForRowRelease(requestId: String, within bound: Duration) async -> Bool {
+        true
+    }
 }

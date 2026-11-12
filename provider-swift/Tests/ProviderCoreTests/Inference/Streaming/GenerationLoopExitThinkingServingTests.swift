@@ -89,6 +89,112 @@ private final class ThoughtLoopCBv2Engine: CBv2Engine, @unchecked Sendable {
     func shutdown() async {}
 }
 
+/// A retirement the engine holds until it releases it.
+private final class RetirementGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var released = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    var retirement: CBv2RequestRetirement { CBv2RequestRetirement { await self.wait() } }
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            let now = lock.withLock { () -> Bool in
+                if released { return true }
+                waiters.append(continuation)
+                return false
+            }
+            if now { continuation.resume() }
+        }
+    }
+
+    func release() {
+        let pending = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+            released = true
+            defer { waiters.removeAll() }
+            return waiters
+        }
+        pending.forEach { $0.resume() }
+    }
+}
+
+/// The coordinator's path: the row is admitted atomically against its
+/// first-content deadline, so its stream ends before its retirement, which this
+/// engine holds 50 ms past the stop. The continuation (no deadline) is an
+/// ordinary submission: it answers "Answer: B" and stops.
+private final class AdmittedThoughtLoopEngine: CBv2Engine, @unchecked Sendable {
+    private let lock = NSLock()
+    private var submitted: [CBv2Request] = []
+    private var continuations: [CBv2RequestID: AsyncStream<CBv2Event>.Continuation] = [:]
+    private var produced: [CBv2RequestID: Int] = [:]
+    private var gates: [CBv2RequestID: RetirementGate] = [:]
+
+    var requests: [CBv2Request] { lock.withLock { submitted } }
+
+    func submit(
+        _ request: CBv2Request, firstTokenDeadline: CBv2FirstTokenDeadlineAdmission
+    ) async throws -> CBv2FirstTokenDeadlineResult {
+        let gate = RetirementGate()
+        lock.withLock { gates[request.id] = gate }
+        return .admitted(
+            stream: start(request),
+            projectedWork: .bounded(
+                work: .init(prefillTokens: request.promptTokens.count, decodeTokens: 0, scheduledSteps: 1, mixedSteps: 0),
+                serviceDuration: .milliseconds(1)),
+            admittedAt: .now, retirement: gate.retirement)
+    }
+
+    func submit(_ request: CBv2Request) throws -> AsyncStream<CBv2Event> { start(request) }
+
+    private func start(_ request: CBv2Request) -> AsyncStream<CBv2Event> {
+        let (stream, continuation) = AsyncStream<CBv2Event>.makeStream()
+        let first = lock.withLock {
+            submitted.append(request)
+            continuations[request.id] = continuation
+            return submitted.count == 1
+        }
+        func emit(_ text: String) {
+            let tokens = GemmaThoughtTestTokenizer.tokens(text)
+            lock.withLock { produced[request.id, default: 0] += tokens.count }
+            continuation.yield(.delta(text: text, tokens: tokens, logprobs: nil))
+        }
+        if first {
+            emit("<|channel>")
+            emit("thought\n")
+            let clause = Array("Wait, the carbon count is 19. ")
+            for position in 0..<4_200 { emit(String(clause[position % clause.count])) }
+        } else {
+            for character in "Answer: B" { emit(String(character)) }
+            finish(request.id, .stop)
+        }
+        return stream
+    }
+
+    private func finish(_ id: CBv2RequestID, _ reason: CBv2FinishReason) {
+        let (continuation, prompt, completion, gate) = lock.withLock {
+            defer { continuations[id] = nil }
+            return (continuations[id], submitted.first { $0.id == id }?.promptTokens.count ?? 0, produced[id] ?? 0,
+                    gates[id])
+        }
+        continuation?.yield(.finished(
+            reason: reason, usage: CBv2Usage(promptTokens: prompt, completionTokens: completion)))
+        continuation?.finish()
+        // The row's engine resources retire a little after its terminal.
+        Task {
+            try? await Task.sleep(for: .milliseconds(50))
+            gate?.release()
+        }
+    }
+
+    func cancel(_ id: CBv2RequestID) { finish(id, .cancelled) }
+
+    func capacity() -> CBv2CapacitySnapshot {
+        .init(activeRequests: 0, waitingRequests: 0, kvBytesInUse: 0, kvBytesCapacity: 0, activeTokens: 0)
+    }
+
+    func shutdown() async {}
+}
+
 @Suite("Loop guard: a repeating thought ends in an answer (scheduler text path)")
 struct GenerationLoopExitThinkingServingTests {
     private let modelID = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
@@ -99,18 +205,18 @@ struct GenerationLoopExitThinkingServingTests {
         var reasoning = ""
         var info: ServerGenerationInfo?
         var error: (any Error)?
-        /// The `ends_thought` field of each loop-guard telemetry event.
-        var loopGuardStops: [Bool] = []
+        /// The `ends_thought` field of each loop-guard telemetry event (nil: the field is missing).
+        var loopGuardStops: [Bool?] = []
     }
 
     private final class TelemetrySink: @unchecked Sendable {
         private let lock = NSLock()
         private var received: [TelemetryEvent] = []
         func add(_ event: TelemetryEvent) { lock.withLock { received.append(event) } }
-        var loopGuardStops: [Bool] {
+        var loopGuardStops: [Bool?] {
             lock.withLock {
                 received.filter { $0.fields?["operation"]?.description == "engine_v2_loop_guard" }
-                    .map { $0.fields?["ends_thought"]?.value as? Bool ?? false }
+                    .map { $0.fields?["ends_thought"]?.value as? Bool }
             }
         }
     }
@@ -127,6 +233,13 @@ struct GenerationLoopExitThinkingServingTests {
         let scheduler = MultiModelBatchSchedulerEngine(registryProvider: {
             [id: .init(tokenizer: tokenizer, modelType: modelType, engineV2Bridge: bridge)]
         })
+        var outcome = try await consume(scheduler, maxTokens: maxTokens)
+        await bridge.shutdown()
+        outcome.loopGuardStops = telemetry.loopGuardStops
+        return outcome
+    }
+
+    private func consume(_ scheduler: MultiModelBatchSchedulerEngine, maxTokens: Int) async throws -> Outcome {
         let request = try JSONDecoder().decode(OpenAIChatCompletionRequest.self, from: Data("""
         {"model":"\(modelID)","messages":[{"role":"user","content":"hi"}],"reasoning_parser":"gemma4",\
         "max_tokens":\(maxTokens)}
@@ -148,8 +261,6 @@ struct GenerationLoopExitThinkingServingTests {
             }
         } catch { outcome.error = error }
         parser.finish().forEach(apply)
-        await bridge.shutdown()
-        outcome.loopGuardStops = telemetry.loopGuardStops
         return outcome
     }
 
@@ -202,6 +313,56 @@ struct GenerationLoopExitThinkingServingTests {
         #expect(outcome.info?.completionTokens == 4_209)
         #expect(outcome.content.isEmpty)
         #expect(outcome.loopGuardStops == [true])
+    }
+
+    @Test("the bridge reports a row's serving slot released only after its pump's cleanup")
+    func waitForRowRelease() async throws {
+        let engine = ThoughtLoopCBv2Engine(loopInsideThought: true, loopTokens: 64)
+        let bridge = EngineV2Bridge(engine: engine, modelId: modelID, tokenizer: Self.tokenizer,
+            eosTokenIds: [GemmaThoughtTestTokenizer.turnClose, GemmaThoughtTestTokenizer.eos], defaultMaxTokens: 64,
+            maxConcurrentRequests: 1)
+        let request = MultiModelBatchSchedulerEngine.translate(
+            openAIRequest: try JSONDecoder().decode(OpenAIChatCompletionRequest.self, from: Data("""
+            {"model":"\(modelID)","messages":[{"role":"user","content":"hi"}],"max_tokens":256}
+            """.utf8)), defaultMaxTokens: 64)
+        let stream = await bridge.submitTokenized(
+            promptTokens: GemmaThoughtTestTokenizer.tokens("<|turn>user\nhi<turn|>\n<|turn>model\n"),
+            request: request, requestId: "row-1")
+        // The row still runs: its slot is still held.
+        #expect(await bridge.waitForRowRelease(requestId: "row-1", within: .milliseconds(50)) == false)
+        await bridge.cancel(requestId: "row-1")
+        for await _ in stream {}
+        #expect(await bridge.waitForRowRelease(requestId: "row-1", within: .seconds(5)))
+        await bridge.shutdown()
+    }
+
+    @Test("on a full Mac, a row admitted against its deadline still gets its continuation once it retires")
+    func fullMacAtomicAdmission() async throws {
+        let engine = AdmittedThoughtLoopEngine()
+        let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
+            .init(total: 8 << 30, active: 0, cache: 0, systemAvailable: 8 << 30)
+        }
+        // Every whole-Mac slot is busy but the one this request takes.
+        let width = ServingPerformanceProfiles.legacyWholeMacConcurrency
+        for slot in 0..<(width - 1) {
+            #expect(budget.serviceBudget.acquire(ownerID: "busy-\(slot)", concurrency: width))
+        }
+        let bridge = EngineV2Bridge(engine: engine, modelId: modelID, tokenizer: Self.tokenizer,
+            eosTokenIds: [GemmaThoughtTestTokenizer.turnClose, GemmaThoughtTestTokenizer.eos], defaultMaxTokens: 64,
+            maxConcurrentRequests: 1, prefillDeadlineMode: .enforce, kvBytesPerToken: 4_000, kvBudget: budget)
+        await bridge.setMeasurementActivity(EngineMeasurementActivity())
+        await bridge.updatePrefillTpsEwma(2_000, isolated: true)
+        let id = modelID
+        let tokenizer = Self.tokenizer
+        let scheduler = MultiModelBatchSchedulerEngine(
+            registryProvider: { [id: .init(tokenizer: tokenizer, modelType: "gemma4", engineV2Bridge: bridge)] },
+            firstContentDeadline: FirstContentDeadline(relativeBudgetMilliseconds: 60_000))
+        let outcome = try await consume(scheduler, maxTokens: 8_192)
+        await bridge.shutdown()
+        #expect(outcome.error == nil)
+        #expect(engine.requests.count == 2)
+        #expect(outcome.info?.stopReason == "stop")
+        #expect(outcome.content == "Answer: B")
     }
 
     @Test("a family without the exit keeps today's length")

@@ -228,6 +228,14 @@ struct GenerationLoopExitThinkingTests {
         #expect(resolve("gemma4", prompt: Self.prompt)?.startsInside == false)
     }
 
+    @Test("darkbloom start passes the loop guard's and the exit's switches to the launchd daemon")
+    func launchdPassthrough() {
+        for key in [GenerationLoopExitThinkingPolicy.environmentKey, GenerationLoopGuardPolicy.environmentKey] {
+            #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key), "\(key)")
+            #expect(LaunchAgent.passthroughEnvironment(from: [key: "0"])[key] == "0", "\(key)")
+        }
+    }
+
     @Test("the guard's policy carries the exit to the guard")
     func guardPolicyCarriesTheExit() throws {
         let request = OpenAIChatCompletionRequest(

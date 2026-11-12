@@ -712,6 +712,18 @@ struct AdmissionRateEstimatorTests {
         }
     }
 
+    /// The bridge retires a request after its stream ends, on its own actor hop.
+    private func waitForRetirement(_ bridge: EngineV2Bridge) async throws {
+        let until = ContinuousClock.now + .seconds(5)
+        while true {
+            let active = await bridge._testActiveRequestIds()
+            let pending = await bridge._testPendingSubmissionCount()
+            if active.isEmpty && pending == 0 { return }
+            try #require(ContinuousClock.now < until, "never retired: active \(active), pending \(pending)")
+            try await Task.sleep(for: .milliseconds(1))
+        }
+    }
+
     @Test("a full streak keeps refusing from the stale estimate and never submits a request unprojected")
     func fullStreakNeverAdmitsUnprojected() async throws {
         let (bridge, engine) = await slowBridge()
@@ -790,8 +802,10 @@ struct AdmissionRateEstimatorTests {
         let stream = try await submit(bridge, "projected")
         #expect(engine.deadlineAdmissions.count == 3)
         #expect(engine.ordinarySubmissionCount == 0)
-        // Ended before its prompt completed: it measured nothing.
+        // Ended before its prompt completed: it measured nothing. A refusal
+        // counts only on an idle Mac, so the next one waits for its retirement.
         try await finish(stream, on: engine, prefillMilliseconds: nil)
+        try await waitForRetirement(bridge)
         #expect(await bridge.isolatedPrefillEvidenceExpired())
         engine.setDeadlineBehavior(.reject)
         await refuse(bridge, "refused-3")

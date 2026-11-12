@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-11
+> Last updated: 2026-11-12
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -4817,24 +4817,27 @@ away; mixed pairs are first-class).
   0.10.10's never count, so the update from 0.10.10 to 0.10.11 still ranks by
   the planner's predictions until a mode serves with 0.10.11. No safe scope can
   be read from a record that names none: equal tensor-parallel shares serve
-  through Darkbloom and locally alike. The mode question ranks the modes by this
-  build's figures, else, while this build has served none of them (every
-  update starts there), by the other builds', else by the planner's
-  predictions (`ClusterOnboardingModeAdvice.advise`). The planner itself still
-  reads only this build's records. The list puts the recommended mode first,
-  and a model named on the command line starts in it
-  (`ClusterOnboardingMode.defaultIndex`), so neither contradicts the
-  recommendation. No screen quotes these figures (owner, 2026-11-05: "the
-  model and mode choice never quote tok/s"): the model list names the modes
-  (`ClusterOnboardingMode.listWords`);
-  the recommendation and the mode lines say why in words; a re-plan's "Planned
+  through Darkbloom and locally alike. The setup chooses a new model's mode with
+  `ClusterOnboardingMode.automaticIndex` (tensor parallel unless it can't run
+  or this build measured it slower); `ClusterOnboardingModeAdvice.advise`
+  still ranks the modes by this build's figures, else the other builds', else
+  the planner's predictions, but no screen shows or follows it since 0.10.12.
+  The planner itself still reads only this build's records. No screen quotes
+  these figures (owner, 2026-11-05: "the model and mode choice never quote
+  tok/s"): the model list names no mode; `darkbloom cluster local`'s mode lines
+  say what each serves in words; a re-plan's "Planned
   in the mode chosen" line gives the size, mode and shares
   (`ClusterOnboardingDeployment.choiceLine`); and the six-step developer
   wizard's model step and check show no speed (`ClusterSetupContent`).
 - **The current model:** on a set-up pair the list preselects the model serving
   now (or the last one used); it keeps the mode the saved setup served in when
   the plan still lists it (`keepMode`, from `ClusterOnboardingResume.servingMode`),
-  so Enter keeps it or starts it again.
+  so Enter keeps it or starts it again. Where the mode question shows
+  (`darkbloom cluster local`, `darkbloom start` on an Only-me pair) its cursor is
+  on that mode while the Recommended tag stays on `automaticIndex`'s pick, and
+  `cluster local` on a stopped pair carries the pair in (`chooseAndServe`'s
+  `last:`), so `darkbloom cluster local <its model>` keeps the mode too; a new
+  model gets the rule.
 - **What a model's contract allows:** a family the model's features don't admit
   is never offered, and a chosen or developer-forced one is refused in the
   contract's words before any quote applies (`ClusterPlacementFlow.decide`):

@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-11-11
+> Last updated: 2026-11-12
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -437,8 +437,8 @@ keeps that mode. No sentence explains it and no line quotes a speed:
 
 In a narrow window a line keeps the mode, the tag and the short words
 ("serves up to 8 at once · context 262,144"). A model named on the command line
-(`darkbloom cluster local <model>`) loads the recommended mode without the
-question. On a serving pair, choosing its model in another mode asks first
+(`darkbloom cluster local <model>`) loads without the question: the pair's own
+model in the mode it last served in, any other model in the recommended mode. On a serving pair, choosing its model in another mode asks first
 ("Switch Gemma 4 26B from tensor parallel to pipeline? …").
 
 The modes:

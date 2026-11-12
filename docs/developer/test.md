@@ -3026,11 +3026,15 @@ independently evaluated singleton calls, including grouped gated-delta
 layouts, optional bias, and prefill widths 511 and 512.
 `testBonsaiFloat32RowsDefaultToOneBatchedPackedMatmul` compares the default
 (single Mac) with one batched `quantizedMM` over all rows, and checks that the
-opt-in leaves other block sizes batched. `BonsaiStagePreparationTests` in
+opt-in leaves other block sizes batched. `testSingleMacRowsBatchFromTheThreshold`
+checks the single-Mac threshold for decode-shaped `[B, 1, H]` and prompt-shaped
+`[1, S, H]` calls: separate singleton calls below `minimumBatchedRows` (12),
+one batched `quantizedMM` from 12 rows on. `BonsaiStagePreparationTests` in
 `libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/BonsaiStagePreparationTests.swift`
 requires every packed projection of both pair stages to ask for the per-row
 arithmetic, and `BonsaiRowArithmeticTests.aSingleMacLoaderBuildsBatchedProjections`
-requires the single-Mac loader's call (no `independentRows`) to stay batched.
+requires the single-Mac loader's call (no `independentRows`) to keep the
+default, which batches calls of 12 or more rows.
 `Float16ConstantCastTests` covers repeated calls, parameter and descriptor
 replacement, compiled state replacement and ineligible policies.
 `BonsaiRowArithmeticTests` in

@@ -7793,26 +7793,34 @@ The registered Bonsai 27B signed-Hadamard pack (FP32 multi-row input,
 affine2/group128, block1024 and stored F16 scales) computes multi-row calls one
 of two ways. `HadamardQuantizedLinear.callAsFunction` in
 `libs/mlx-swift/Source/MLXNN/Hadamard.swift` picks the way from the layer's
-`independentRows`, which the code that builds the layer sets. A call has more
-than one row for a prompt chunk, and for a decode step that carries several
-requests:
+`independentRows`, which the code that builds the layer sets, and from the
+call's row count. A call has more than one row for a prompt chunk, and for a
+decode step that carries several requests:
 
-| Where | Builder | `independentRows` | Multi-row calls |
-|---|---|---|---|
-| Single Mac | the SDK's `PrismHadamardCheckpoint.install` | false (default) | One batched packed matmul: TF32 (NAX) on M5, FP32 steel on M1 to M4, as in provider 0.10.4 and earlier. |
-| Pair stages, the reference check | `QwenPrismHadamardSource.install` | true | The singleton packed FP32 reduction per row. A leading weight dimension keeps each projection at M=1, so both machines compute the bytes of separate singleton calls on any chip. |
+| Where | Builder | `independentRows` | Calls of 2 to 11 rows | Calls of 12 or more rows |
+|---|---|---|---|---|
+| Single Mac | the SDK's `PrismHadamardCheckpoint.install` | false (default) | Per row: a decode step of up to 11 requests, a tiny prompt, a prompt chunk's tail | One batched packed matmul: TF32 (NAX) on M5, FP32 steel on M1 to M4, as in provider 0.10.4 and earlier |
+| Pair stages, the reference check | `QwenPrismHadamardSource.install` | true | Per row | Per row |
 
-On a single Mac, prompt rows are therefore not bit-identical to the singleton
-decode arithmetic. In exchange, prefill is several times faster: provider
-0.10.4 measured 2.3 to 6 times the per-row path's rate. Concurrent decode is
-batched too. The SDK's per-row decode seam (`Qwen35BatchDecodeProjection`)
-runs only where `Qwen35BatchDecodeScope` is enabled, and only cluster sessions
-enable it. So a decode step with several requests takes one batched matmul,
-and which kernel runs (TF32 on M5 once the step is wide enough) depends on how
-many rows share the step. A request's exact output can therefore depend on the
-requests decoding beside it. Both were so in provider 0.10.4 and earlier, and
-are accepted for the prompt speed. A request decoding alone (one row) is
-unchanged.
+Per row is the singleton packed FP32 reduction for each row: a leading weight
+dimension keeps each projection at M=1, so a pair's two machines compute the
+bytes of separate singleton calls on any chip. The single-Mac threshold is
+`HadamardQuantizedLinear.minimumBatchedRows` (12), chosen for speed. Below it,
+MLX would multiply the 27B's projections (all wider than 4,096) with its
+vector kernels anyway (its vector limit for them is 12 on Ultras and 6 to 13
+elsewhere), and the per-row path measured faster: steady two-request decode on
+an M5 Ultra ran 78.4 tokens per second per-row against 71.5 batched. From
+it, the matrix kernel's weight reuse makes prefill 6.4 to 7.0 times faster
+than per-row.
+
+On a single Mac, prompt rows from 12 on are therefore not bit-identical to the
+singleton decode arithmetic. A request's exact output can also still depend
+on the requests decoding beside it. The SDK's per-row decode seam
+(`Qwen35BatchDecodeProjection`) runs only where `Qwen35BatchDecodeScope` is
+enabled, and only cluster sessions enable it. So on a single Mac the 27B's two
+small plain FP32 gated-delta projections (`in_proj_a`, `in_proj_b`) take one
+matmul over a decode step's rows, as they did in provider 0.10.11, and a decode
+step of 12 or more requests batches its packed projections too.
 The signed transform and the grouped gated-delta layout are the same in both
 ways. So are singleton calls, other packs, ordinary affine modules and global
 arithmetic switches.

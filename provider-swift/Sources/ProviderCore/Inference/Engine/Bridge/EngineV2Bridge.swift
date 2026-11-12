@@ -386,8 +386,8 @@ public actor EngineV2Bridge {
     /// Latest published calibration-cell isolated rate: measured idle at
     /// nominal posture with caching off. Anchors admission's isolated rate.
     var calibratedIsolatedPrefillTps: Double?
-    /// Deadline refusals since the last admission that only the isolated
-    /// prefill rate explains. A full streak expires stale evidence.
+    /// Deadline refusals since the last admission that stale isolated prefill
+    /// evidence explains. A full streak re-runs the idle calibration probe.
     var deadlineRefusalStreak = DeadlineRefusalStreak()
     /// Prompt samples faster than this are dropped, calibration cells
     /// included. Equal to the coordinator's bound on published prefill rates.

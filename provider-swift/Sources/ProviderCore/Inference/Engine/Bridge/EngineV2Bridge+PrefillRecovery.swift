@@ -11,6 +11,14 @@ extension EngineV2Bridge {
         return now > expiration
     }
 
+    /// An ordinary engine has no recovery probe of its own: a full streak of
+    /// refusals that stale evidence explains asks for one idle-calibration
+    /// probe while that evidence is still expired.
+    func staleEvidenceProbeDue(at now: ContinuousClock.Instant = .now) -> Bool {
+        admissionFixes && !supportsPrefillRecoveryRetirement && deadlineProfile == nil
+            && deadlineRefusalStreak.permitsEvidenceProbe(at: now) && isolatedPrefillEvidenceExpired(at: now)
+    }
+
     /// Recovery is deliberately smaller than ordinary serving. A busy Mac,
     /// media request or large prompt still requires the normal projection.
     func canRecoverPrefillEvidence(promptTokens: Int, maxOutputTokens: Int, deadline: FirstContentDeadline?,

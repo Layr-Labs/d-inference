@@ -981,7 +981,8 @@ extension EngineV2Bridge {
                 case .deadlineUnreachable(let projectedWork):
                     profile?.observeDeadlineDecision(
                         .deadlineUnreachable, work: projectedWork, deadline: firstContentDeadline)
-                    recordDeadlineRefusal(requestID: id, policy: admission, work: projectedWork)
+                    recordDeadlineRefusal(requestID: id, promptTokens: promptTokens.count,
+                        deadline: firstContentDeadline, policy: admission, work: projectedWork)
                     if Task.isCancelled || pendingCancellationIDs.contains(id) {
                         profile?.stopDeadlineContinuation(.cancelled)
                         // Refused at admission after a latched cancel: nothing

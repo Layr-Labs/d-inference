@@ -114,44 +114,49 @@ enum IsolatedPrefillAdmissionRate {
     }
 }
 
-/// Consecutive `deadline_unreachable` refusals an ordinary engine made on an
-/// idle Mac from its isolated prefill rate alone, with nothing admitted in
-/// between. A refusal measures nothing, so expired evidence that refuses is
-/// never replaced: with no calibration anchor, with an anchor that is itself
-/// slow, or off nominal posture, `IsolatedPrefillAdmissionRate` keeps it for
-/// thirty minutes.
+/// Consecutive `deadline_unreachable` refusals that stale isolated prefill
+/// evidence explains on an idle Mac, with nothing admitted in between. A
+/// refusal measures nothing, so expired evidence that refuses is never
+/// replaced: with no calibration anchor, or off nominal posture,
+/// `IsolatedPrefillAdmissionRate` keeps it for thirty minutes.
 ///
-/// After `threshold` such refusals the caller stops projecting from evidence
-/// older than `EnginePerformanceMeasurements.freshness` for the next request
-/// of at most `PrefillEvidenceRecovery.maximumPromptTokens` prompt tokens
-/// that finds the Mac idle. That request is submitted like one with no
-/// measured rate (its absolute deadline still applies) and its isolated
-/// prefill replaces the expired estimate. A longer prompt is still refused
-/// from the expired evidence and leaves the streak full: unprojected, it
-/// could hold a slow Mac until its deadline. Fresh evidence always refuses
-/// as measured. A Mac that really is too slow may end the admitted request
-/// before it measures anything; `retryInterval` holds it to one such
-/// admission per interval.
+/// A full streak asks for one idle-calibration probe
+/// (`ModelCalibrationPolicy.evidenceRefresh`), never for a customer request
+/// submitted unprojected. The probe runs only on an idle Mac at nominal
+/// posture, any request preempts it, and its measurement replaces the stale
+/// estimate and the anchor. `probeInterval` holds a Mac and model to one
+/// probe per interval, whatever the probe goes on to measure.
 struct DeadlineRefusalStreak {
     /// One refusal can be one long prompt and two a client's retry of it.
     static let threshold = 3
-    static let retryInterval = EnginePerformanceMeasurements.freshness
+    static let probeInterval = EnginePerformanceMeasurements.freshness
+    /// A request refused with less first-content budget left is a late retry:
+    /// out of time on any Mac, so its refusal says nothing about the estimate.
+    /// A first attempt has at least 9 s.
+    static let minimumRemainingBudget: Duration = .seconds(5)
 
     private(set) var refusals = 0
-    private var retryAfter: ContinuousClock.Instant?
+    /// The newest counted refusal's rate and prompt, for the log line.
+    private(set) var lastRefusal: (tokensPerSecond: Double, promptTokens: Int)?
+    private var probeAfter: ContinuousClock.Instant?
 
-    mutating func recordRefusal() {
+    mutating func recordRefusal(tokensPerSecond: Double, promptTokens: Int) {
         refusals = min(refusals + 1, Self.threshold)
+        lastRefusal = (tokensPerSecond, promptTokens)
     }
 
-    func expiresStaleEvidence(at now: ContinuousClock.Instant = .now) -> Bool {
-        refusals >= Self.threshold && (retryAfter.map { now >= $0 } ?? true)
+    func permitsEvidenceProbe(at now: ContinuousClock.Instant = .now) -> Bool {
+        refusals >= Self.threshold && (probeAfter.map { now >= $0 } ?? true)
     }
 
-    /// Any engine admission ends the streak. One that ends a full streak
-    /// starts the retry interval whether or not it goes on to measure.
-    mutating func recordAdmission(at now: ContinuousClock.Instant = .now) {
-        if refusals >= Self.threshold { retryAfter = now.advanced(by: Self.retryInterval) }
+    /// Any engine admission ends the streak.
+    mutating func recordAdmission() {
         refusals = 0
+    }
+
+    /// A started probe ends the streak and starts the interval.
+    mutating func recordProbe(at now: ContinuousClock.Instant = .now) {
+        refusals = 0
+        probeAfter = now.advanced(by: Self.probeInterval)
     }
 }

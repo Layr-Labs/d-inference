@@ -102,23 +102,11 @@ extension EngineV2Bridge {
                 macIdle: macIdle(except: requestID),
                 nominalPosture: calibrationPosturePermitsWork())
         }
-        let shapeRate = promptTokens > 0
-            ? performanceMeasurements.freshIsolatedPrefillRate(promptTokens: promptTokens) : nil
-        if let shapeRate { prefillRate = prefillRate.map { min($0, shapeRate) } ?? shapeRate }
+        if promptTokens > 0, let shapeRate = performanceMeasurements.freshIsolatedPrefillRate(promptTokens: promptTokens) {
+            prefillRate = prefillRate.map { min($0, shapeRate) } ?? shapeRate
+        }
         let calibration = requestID.flatMap {
             calibratedDeadlinePolicy(requestID: $0, promptTokens: promptTokens, promptWork: promptWork)
-        }
-        if admissionFixes, !supportsPrefillRecoveryRetirement, calibration == nil, !nativeMedia,
-            promptTokens <= PrefillEvidenceRecovery.maximumPromptTokens,
-            deadlineRefusalStreak.expiresStaleEvidence(), isolatedPrefillEvidenceExpired(),
-            shapeRate == nil, macIdle(except: requestID) {
-            // Refusals measure nothing, so expired evidence that keeps refusing
-            // an idle Mac is treated like none: absolute expiry only, and this
-            // request's isolated prefill replaces it. A fresh prompt-size
-            // bucket is a current measurement and still refuses. As for the
-            // native recovery probe, only a small prompt runs unprojected: a
-            // long one could hold a slow Mac until its deadline.
-            return nil
         }
         guard prefillRate != nil || calibration != nil || nativeMedia else { return nil }
         // The decode EWMA is a per-request rate: charge one measured step per
@@ -146,20 +134,28 @@ extension EngineV2Bridge {
         return serviceBudget?.isIdle(except: requestID.map { serviceOwnerPrefix + ":" + $0 }) ?? true
     }
 
-    /// Count a refusal toward `deadlineRefusalStreak` only when the isolated
-    /// prefill rate alone explains it: an ordinary engine on an idle Mac
-    /// priced nothing but this request's own prompt. Queue or decode work,
-    /// a reviewed calibration, native media and every fail-closed (unbounded)
-    /// projection are refusals a new prefill measurement would not change.
-    func recordDeadlineRefusal(
-        requestID: String, policy: CBv2FirstTokenDeadlineAdmission, work: CBv2FirstTokenProjectedWork
-    ) {
+    /// Count a refusal toward `deadlineRefusalStreak` only when stale isolated
+    /// prefill evidence explains it: an ordinary engine on an idle Mac priced
+    /// nothing but this request's own prompt, from an aggregate older than
+    /// `EnginePerformanceMeasurements.freshness` that no fresh prompt-size
+    /// bucket tightened and, with a calibration anchor, below that anchor; and
+    /// the request still had `DeadlineRefusalStreak.minimumRemainingBudget`.
+    /// Queue or decode work, a reviewed calibration, native media, fail-closed
+    /// (unbounded) projections, a fresh rate and a late retry are refusals a
+    /// new prefill measurement would not change.
+    func recordDeadlineRefusal(requestID: String, promptTokens: Int, deadline: FirstContentDeadline?,
+        policy: CBv2FirstTokenDeadlineAdmission, work: CBv2FirstTokenProjectedWork) {
         guard admissionFixes, !supportsPrefillRecoveryRetirement,
             policy.calibration == nil, policy.nativeTargetPrefill == nil,
             case .bounded(let projected, _) = work, projected.decodeTokens == 0,
+            let rate = policy.conservativePrefillTokensPerSecond,
+            rate < (calibratedIsolatedPrefillTps ?? .infinity),
+            isolatedPrefillEvidenceExpired(),
+            performanceMeasurements.freshIsolatedPrefillRate(promptTokens: promptTokens) == nil,
+            let deadline, deadline.remainingDuration() >= DeadlineRefusalStreak.minimumRemainingBudget,
             macIdle(except: requestID)
         else { return }
-        deadlineRefusalStreak.recordRefusal()
+        deadlineRefusalStreak.recordRefusal(tokensPerSecond: rate, promptTokens: promptTokens)
     }
 
     /// Move post-commit cancellation cleanup out of the cancelling task. The

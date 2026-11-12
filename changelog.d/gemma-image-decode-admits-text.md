@@ -1,0 +1,4 @@
+### A Gemma Mac decoding an image request accepts deadline text again
+
+- A Gemma 4 Mac refused every text request with a first-content deadline (`deadline_unreachable`, profile reason `multimodal_work`) while an image or video request was anywhere in its engine, including the image's whole decode, which is about 98 % of its time there. On OpenRouter this was 0.9–1.8 M refused attempts a day on 11-08..11-10, almost all on M5 Macs, and 16–59 K requests a day ended as 429s.
+- The SDK now refuses only while the image request still has prompt work (until it has sampled from its whole prompt). After that its decode is priced like any other decode row, so the text request is admitted when its first token fits the deadline. Image requests themselves, other models' media (all causal) and text-only engines are unchanged.

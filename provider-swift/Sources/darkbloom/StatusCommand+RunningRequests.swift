@@ -2,7 +2,9 @@ import Foundation
 import ProviderCore
 
 extension Status {
-    static let creditsLine = "Credits post when an answer finishes."
+    /// Under the list: when credit comes, and that not every listed answer
+    /// earns it (the owner's own local-API answers are free).
+    static let creditsLine = "Credits post when a paid answer finishes; requests to your own machine are free."
 
     /// The answers this Mac (or its pair) is writing now, under the serving
     /// block. The served and token counters move only when an answer

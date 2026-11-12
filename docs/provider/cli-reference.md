@@ -2887,9 +2887,12 @@ Output includes:
   rate (tokens since the previous sample, about every 2 s; `reading the
   prompt` before the first token), then a short hash of its request ID (`#…`,
   never the ID, the prompt or the answer), and
-  `Credits post when an answer finishes.` The served and token counters below
-  move only when an answer finishes, so a Mac writing a long answer otherwise
-  looks hung. The daemon samples its bridges' own counters each capacity tick
+  `Credits post when a paid answer finishes; requests to your own machine are free.`
+  The list includes your own local-API answers, which are free, and answers
+  that end unpaid (see the ended-early causes below); the engine's own
+  calibration and warmup probes are not listed. The served and token counters
+  below move only when an answer finishes, so a Mac writing a long answer
+  otherwise looks hung. The daemon samples its bridges' own counters each capacity tick
   (`ProviderLoop.refreshRunningRequests`, `RunningRequestProgressTracker`) into
   `running_requests` in the state file. On a two-Mac cluster the same lines sit
   under the pair's block on the leading Mac, from the pair's part. Nemotron

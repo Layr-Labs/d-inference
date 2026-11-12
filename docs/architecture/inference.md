@@ -2086,7 +2086,9 @@ the served counters move only at its finish. Each capacity tick,
 `ProviderLoop.refreshRunningRequests` reads every bridge's active requests
 (`EngineV2Bridge.runningRequestSamples`: the admission and first-token instants
 and the output tokens `recordProgress` already counts per delta, so no
-per-token work is added), and `RunningRequestProgressTracker`
+per-token work is added; the engine's own calibration, shape-warmup and
+shader-cache probes and a pair's warmup canary are skipped), and
+`RunningRequestProgressTracker`
 (`provider-swift/Sources/ProviderCore/Service/DaemonRunningRequests.swift`)
 turns them into the daemon state's `running_requests`: model, elapsed, tokens
 so far, the rate since the previous sample, and a short hash of the request ID.

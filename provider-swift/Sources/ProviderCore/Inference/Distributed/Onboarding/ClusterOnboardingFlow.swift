@@ -532,7 +532,7 @@ public struct ClusterOnboardingMode: Codable, Sendable, Equatable {
     /// publicly while it serves another. "Measured slower": with this build, on this pair, slower than another mode by more
     /// than `ClusterOnboardingModeAdvice.sameSpeed`. Not measured yet, or a link not measured yet, is no reason: tensor
     /// parallel. Nil only for no modes. `darkbloom cluster` loads it without a question; `darkbloom cluster local` asks,
-    /// with this mode marked Recommended and preselected.
+    /// with this mode marked Recommended (preselected unless the pair's own model last served in another mode).
     public static func automaticIndex(_ modes: [ClusterOnboardingMode], throughDarkbloom: Bool, serving: Bool) -> Int? {
         guard !modes.isEmpty else { return nil }
         var open = Array(modes.indices)
@@ -2477,7 +2477,7 @@ public enum ClusterOnboardingDriver {
             if request.model != nil || !resume.serving {
                 return chooseAndServe(operations, console, scope: wanted, saveScope: true, model: request.model,
                                       privateImage: request.privateImageQualification, startOverRequest: request,
-                                      peer: resume.peerName, heading: request.model == nil ? modelHeading : startHeading)
+                                      peer: resume.peerName, heading: request.model == nil ? modelHeading : startHeading, last: resume)
             }
             if wanted != resume.scope { return changeScope(to: wanted, resume, startOverRequest: request, operations, console) }
         }
@@ -2714,13 +2714,14 @@ public enum ClusterOnboardingDriver {
     /// Mac, for the ending. `keepMode`: the mode the current model served in, kept when listed. `heading`: nil in the
     /// first setup (its numbered steps); else the list's heading and then "Start", or "Start" alone for a model started
     /// again (UX audit P6). `saveChoice`: the way it then serves is also saved as the person's choice (`[local]`), with
-    /// the scope after the adopt.
+    /// the scope after the adopt. `last`: the stopped pair `darkbloom cluster local` starts from a list without the pair's
+    /// own lines, so its last model keeps the mode it served in as `pair`'s does.
     static func chooseAndServe(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole,
                                scope: ClusterServingScope = .publicServing, saveScope: Bool = false, model: String? = nil,
                                privateImage: Bool = false, startOverRequest: ClusterOnboardingRequest? = nil,
                                pair: ClusterOnboardingResume? = nil, servingNow: Bool? = nil, notOffered: Bool = false,
                                peer: String? = nil, keepMode: String? = nil, heading: String? = nil,
-                               saveChoice: Bool = false) -> Int32 {
+                               saveChoice: Bool = false, last: ClusterOnboardingResume? = nil) -> Int32 {
         let serving = pair?.serving == true ? pair : nil
         console.heading(heading ?? "3/4 Model")
         var reached: [ClusterOnboardingMachine]?
@@ -2847,16 +2848,21 @@ public enum ClusterOnboardingDriver {
         // even give the option to pick") for a new model or plan. The pair's own model keeps the mode it served in (owner,
         // 2026-11-11: no pipeline → tensor parallel flip when a stopped pair starts again; `keepMode` for a switch), and
         // through Darkbloom the model serving now keeps it listed or not, so choosing it again tests it, never reloads it.
-        // `darkbloom cluster local` alone asks, the automatic mode tagged Recommended and preselected, unless the model was
-        // named on the command line.
+        // `darkbloom cluster local` (and `darkbloom start` on a local pair) alone asks, the automatic mode tagged Recommended,
+        // the kept mode preselected, unless the model was named on the command line.
         let automatic = choice.modes.flatMap { ClusterOnboardingMode.automaticIndex($0, throughDarkbloom: !scope.isLocalOnly, serving: serving != nil) }
-        let keep = chosen == current || model != nil ? keepMode ?? pair?.servingMode : nil
+        let previous = pair ?? last
+        let lastUsed = previous?.modelName.flatMap { name in open.first { names($0, name) } }
+        let keep = chosen == lastUsed ? keepMode ?? previous?.servingMode : model != nil ? keepMode : nil
         var mode = choice.modes.flatMap { modes in modes.first { $0.mode == keep }?.mode ?? automatic.map { modes[$0].mode } }
         if !scope.isLocalOnly, chosen == current, let serving { mode = serving.servingMode }
         if model == nil, scope.isLocalOnly, let modes = choice.modes, modes.count > 1 {
             console.say("  " + modeQuestion(model: choice.title))
+            // The tag on the rule's pick; the cursor on the mode the pair's own model last served in, else on the tag
+            // (the real-Mac proof, W16.9: a stopped pipeline pair's Enter took tensor parallel).
             let lines = modes.indices.map { index in { (room: Int?) in modeLine(modes[index], recommended: index == automatic, room: room) } }
-            guard let picked = console.chooseFitting(lines, selected: automatic ?? 0, abandon: { false }) else {
+            let preselected = mode.flatMap { kept in modes.firstIndex { $0.mode == kept } } ?? automatic ?? 0
+            guard let picked = console.chooseFitting(lines, selected: preselected, abandon: { false }) else {
                 console.say("Nothing changed.")
                 if pair != nil { unchangedEnding(operations, console) }
                 return 0

@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-11-11
+> Last updated: 2026-11-12
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -60,7 +60,7 @@ prefix checkpoints, so its cached answers equal cold ones (#2002); tool calls un
 return as generated, while strict, required and named tools stay checked (#2003).
 `darkbloom start` serves Both without a question and `darkbloom local` serves only you
 (#2008); `darkbloom cluster` sets a pair up without the serving question and picks
-the mode itself (#2007). The SDK pin
+the mode itself (#2007). Also: a stopped pair keeps its last mode (#2013); a Gemma 4 pipeline checks its whole number of requests at load (#1937 via #2015); a refusal's error frame names its reason (#2016); `status` shows the answers in progress (#2017); a held local stream counts once at the fallback width (#2018); a media request a Mac can't hold is `media_memory_unavailable` (#2019); Super's text route gets the loop guard (#2020); the SDK fixes the drafting shared-event leak and keeps paged decode at one pass per layer (#2021: mlx-swift-lm #403, #404), and Qwen3.5-9B drops the default penalty with exact acceptance (#1961); a single Mac reads Bonsai 2 27B prompts batched again; pairs keep per-row arithmetic (#2022). The SDK pin
 moves once more, to `ad8a5860e5` (mlx-swift-lm #378, #398, #399, #402: Gemma 4 admits
 deadline text beside an image row once its prompt is read). The SDK pin moves once to
 `libs/mlx-swift-lm` `093563be11`: Gemma 4's row-mapped NAX prefill on by default
@@ -77,10 +77,9 @@ Before tagging `v0.10.12`:
   sets `DARKBLOOM_PROVIDER_TOOLCHAIN: release` and asserts
   `build_sdk_version == '27.2'`; `scripts/check-date-comparisons.py` passes; the
   release build runs `scripts/check-provider-weak-imports.py`.
-- Pins: `libs/mlx` `72dffa2d` and `libs/mlx-swift` `c633d221` as v0.10.11, so
-  the tag build's `metallib_hash` should equal v0.10.11's `5b97893c…70ac`;
-  `libs/mlx-swift-lm` moves to fork `main` `ad8a5860e5` (Swift model code, no
-  Metal kernels). Confirm against the final DevNet build's row first.
+- Pins: `libs/mlx` `72dffa2d` as v0.10.11 and `libs/mlx-swift` moves to `1b3520fe94` (mlx-swift #70: Swift sources only), so the tag
+  build's `metallib_hash` should equal v0.10.11's `5b97893c…70ac`;
+  `libs/mlx-swift-lm` moves to fork `main` `44ab17555f` (#403, #404 on top of `ad8a5860e5`) (Swift model code, no Metal kernels). Confirm against the final DevNet build's row first.
 - Cluster runtime facts: run the release's facts step read-only on the exact tag
   tree. Expect the same models and grants as v0.10.11; Gemma 4's pipeline
   qualification carries the whole context again (#1933). Parse the block with

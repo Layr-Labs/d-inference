@@ -686,6 +686,11 @@ public actor ProviderLoop {
     /// stage. Removed on every exit path (early reject, finish, cancel-all).
     internal var inflightProfiles: [String: RequestProfileBuilder] = [:]
 
+    /// The answers the engines are writing, for `darkbloom status`; sampled
+    /// each capacity tick (`refreshRunningRequests`).
+    internal var runningRequestTracker = RunningRequestProgressTracker()
+    internal var runningRequests: [DaemonState.RunningRequest] = []
+
     /// Last kernel memory-pressure level reported by `MemoryPressureMonitor`
     /// (heartbeat `backend_capacity.telemetry.memory_pressure_level`).
     /// Written from the monitor's dispatch queue, read on the actor — hence

@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-11
+> Last updated: 2026-11-12
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -245,10 +245,12 @@ never negative), `rankN_weights_bytes`, `rankN_fit` and `rankN_device`.
 Existing per-request
 admission and LOAD safeguards remain authoritative. GLM, private-image and
 coordinator-installed native-member sessions do not use this
-automatic policy. A serial-prefill Gemma 4 pipeline, coordinator-installed or
-local, starts at its installed default width
-([Gemma pipeline lanes](#gemma-pipeline-lanes)); on a local pair this policy
-can still widen it. Explicit diagnostic mode or lane settings retain their choice.
+automatic policy. A Gemma 4 pipeline, coordinator-installed or local, starts at
+the width its setup saved with serial prefill, else at one lane: a guided
+setup keeps the one-chunk lookahead and saves none
+([Gemma pipeline lanes](#gemma-pipeline-lanes)). On a local pair this policy
+can still widen it. Explicit diagnostic mode or lane settings retain their
+choice.
 
 A stage's resident prefix tier takes half the room that LOAD measures beside
 its quote, in 256 MiB steps, up to a ceiling of a thirty-second of the Mac's
@@ -2081,6 +2083,21 @@ yields the terminal events, and the coordinator pays the request as delivered.
 An unpaid stop counts wherever it lands: the frames loop may not have sent the
 finished answer yet, and nothing is paid for it.
 
+While an answer runs, `darkbloom status` lists it (`Answers in progress`), since
+the served counters move only at its finish. Each capacity tick,
+`ProviderLoop.refreshRunningRequests` reads every bridge's active requests
+(`EngineV2Bridge.runningRequestSamples`: the admission and first-token instants
+and the output tokens `recordProgress` already counts per delta, so no
+per-token work is added; the engine's own calibration, shape-warmup and
+shader-cache probes and a pair's warmup canary are skipped), and
+`RunningRequestProgressTracker`
+(`provider-swift/Sources/ProviderCore/Service/DaemonRunningRequests.swift`)
+turns them into the daemon state's `running_requests`: model, elapsed, tokens
+so far, the rate since the previous sample, and a short hash of the request ID.
+A pair's leading Mac lists the pair's answers, since its part holds the pair's
+bridge. Nemotron Super's owner route bypasses the bridge, so its answers are not
+listed.
+
 Decoded text keeps a character the tokenizer writes as `<0xHH>` tokens wherever it
 falls. swift-transformers' `ByteFallbackDecoder` releases those tokens only when a
 later token arrives, so a decode ending in them drops them and shows nothing pending.
@@ -2197,6 +2214,22 @@ idleness and clears while request admission waits
 (`WholeMacServiceBudget.performIfIdle`).
 `DARKBLOOM_TTFT_SEGMENT_RETENTION=0` and `DARKBLOOM_TTFT_IDLE_CACHE_SWEEP=0`
 restore the previous behavior ([configuration](../reference/configuration.md)).
+
+Page placement keeps a busy pool's segmented decode at one pass per layer. The
+decode binds at most 17 segments per pass
+(`PagedSegmentDispatchPlan.maximumBindings`), so a layer whose partitions touch
+more segments needs more passes, issued one after another. A group's free pages
+form two tiers (`PagedKVFreePages`): pages that a prefix-cache alias still names
+wait in eviction order and are reused only when no other page is free; every
+other free page is placed by address. Each segment's usable pages split into
+runs of 16 pages, one 256-token partition. A request's layer continues in the
+run of its last page, then takes a free run in the same segment, then one in the
+segment with the most free runs, so requests that start together use different
+segments; only when no run is free does it take the lowest free page. Before, a
+retired request's pages went to the front of one shared free list and the next
+requests filled those holes across many segments, which took about one pass per
+partition once a busy engine had retired its first requests
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVFreePages.swift`).
 
 Resident publication uses a submission-unique `prefixCacheReceiptID`; the
 sampling engine ID can repeat after a seeded request completes. The bridge
@@ -2827,7 +2860,9 @@ retain priority (`provider-swift/Sources/ProviderCore/Inference/MTP/EngineV2MTPA
 When neither a global nor a per-model acceptance value is configured, serving
 defaults to typical acceptance for eligible sampled target-prefix rows, except
 on the builds whose built-in rule is exact (`MTPAcceptancePolicy.builtInIsExact`):
-the owned Bonsai 9B candidate; the catalog `gemma-4-26b-qat-4bit`, which drafted every answer of OpenRouter's
+the owned Bonsai 9B candidate; the catalog `Qwen3.5-9B`, which looped under
+typical acceptance in the 0.10.12 gate (see the Qwen 3.5/3.6 defaults below);
+the catalog `gemma-4-26b-qat-4bit`, which drafted every answer of OpenRouter's
 10-31 GPQA run, 30 % of which ended at the 32,768-token cap; and every Qwen 3.8
 27B build (`EigenLabs/Qwen3.8-27B-4bit-mtp` and its head-less target,
 `ModelRuntimeRequirements.qwen38ConcreteModelIDs`), whose lone requests draft
@@ -2892,6 +2927,17 @@ fence and native completion tracking keep MTP steps
 `DARKBLOOM_TTFT_QWEN_MTP_CHAINED` and `DARKBLOOM_TTFT_QWEN_MTP_CARRY`
 (`CBv2MTPConfig.envOrdinaryDecodeHistory`, `envPrefillCarry`; see
 [`../reference/configuration.md`](../reference/configuration.md)).
+Assistant history keeps lazy views of each committed step's token and hidden
+arrays until a draft round reads them. This applies to the Qwen 3.5-family
+backlog, the Qwen4 Flash-Next backlog and Lightning's `pendingHidden`.
+`asyncEval` leaves its completion event (an `MTLSharedEvent`, from a finite
+system-wide pool) on every array it evaluated, until the array is waited on or
+read again. So while rows stayed batch-gated, each step kept one event alive.
+After a step's readback, the engine now drops the fired event from those arrays
+in both history paths (`finalizeMTPOrdinaryHistory` and `finalizeMTPRound`;
+`CBv2MTPHistoryEvents.release` in
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/CBv2MTPHistoryEvents.swift`).
+The call does not block and changes no value or evaluation.
 
 Complete SSD recurrent reuse with a persistent MTP assistant requires the
 serializable `CBv2MTPPrefixCheckpointCoding` contract. The Qwen implementation
@@ -2952,7 +2998,7 @@ production assembly and encrypted store.
 | `top_p` | `topP` | artifact default, else `1.0` |
 | `top_k` | `topK` | artifact default, else `0` |
 | `repetition_penalty` | `repetitionPenalty` | artifact default, else `1.0` |
-| `frequency_penalty` / `presence_penalty` | `frequencyPenalty` / `presencePenalty` | `0`; `presence_penalty` takes a model-card default (catalog Qwen 3.5/3.6) |
+| `frequency_penalty` / `presence_penalty` | `frequencyPenalty` / `presencePenalty` | `0`; `presence_penalty` takes a model-card default on the catalog 35B Qwen 3.5/3.6 builds (`Qwen3.5-9B` has none) |
 | `seed` | `seed`; also keys a stable engine request id | nil |
 | `logit_bias` | `logitBias` — string keys parsed to non-negative `Int`; invalid keys dropped and counted | `[:]` |
 | `logprobs` + `top_logprobs` | `topLogprobs = logprobs ? min(20, max(1, top_logprobs ?? 0)) : 0` | `0` |
@@ -2976,14 +3022,7 @@ recommends). The exact `prism-ml/Ternary-Bonsai-2-9B-mlx-2bit` and
 `EigenLabs/Ternary-Bonsai-2-9B-MLX-2bit` identities also require `model_type == prism_hadamard_qwen35` and honors its pinned artifact
 defaults (`temperature 1.0`, `top_p 0.95`, `top_k 20`, `do_sample true`). Its
 qualification requests explicitly supply `presence_penalty: 1.5`; that value
-is absent from the artifact and is not injected as a default. The catalog
-`Qwen3.5-9B`, `qwen3.5-35b-a3b` and `qwen3.6-35b-a3b-vl-mtp-mxfp8` builds
-(`EngineV2SamplingDefaults.qwen35CardModelTypes`, each bound to its `model_type`)
-ship no `generation_config.json`; omitted knobs take their model cards'
-thinking-mode values
-(`EngineV2SamplingDefaults.qwen35CardDefaults`: `temperature 1.0`, `top_p 0.95`,
-`top_k 20`, `presence_penalty 1.5`). Greedy decoding with no presence penalty
-made them repeat themselves until `max_tokens` (#1530). This request
+is absent from the artifact and is not injected as a default. This request
 policy enables native channels, nested reasoning and forced-media framing.
 These exact 9B identities separately default to paged attention and encrypted SSD
 prefix caching. Explicit operator selections, kill switches, native capability
@@ -3025,21 +3064,17 @@ the 9B, an M5 Ultra for the 35B):
 
 | Build | Omitted `presence_penalty` | Built-in MTP acceptance | The gate without the penalty |
 |---|---|---|---|
-| `Qwen3.5-9B`, `qwen3.5-35b-a3b`, `qwen3.6-35b-a3b-vl-mtp-mxfp8` (`qwen35CardDefaults`) | 1.5 | typical | `qwen3.5-35b-a3b` ran away under typical acceptance (5 of 19 everyday prompts, 8 of 12 loopers to 32,768, MTP running at concurrency 1) and under exact (2 of 12 loopers); the 3.6 build shares its architecture |
-
-The 9B ran away on 13 of 31 draws under typical acceptance and on 0 of 31
-under exact without the penalty, but it keeps the penalty and typical
-acceptance in 0.10.12: with two or more batched penalty-free 9B rows, live
-Metal shared events grew by about one per decode step until the provider
-crashed (10 to 60 minutes of sustained concurrency, 2026-11-11).
+| `qwen3.5-35b-a3b`, `qwen3.6-35b-a3b-vl-mtp-mxfp8` (`qwen35CardDefaults`) | 1.5 | typical | `qwen3.5-35b-a3b` ran away under typical acceptance (5 of 19 everyday prompts, 8 of 12 loopers to 32,768, MTP running at concurrency 1) and under exact (2 of 12 loopers); the 3.6 build shares its architecture |
+| `Qwen3.5-9B` (`qwen35NineBCardDefaults`) | none | **exact** (`MTPAcceptancePolicy.builtInIsExact`) | ran away on 13 of 31 draws under typical acceptance and on 0 of 31 under exact, MTP running; the penalty-free body cached 8,192 tokens on the second send, the penalty body none |
 
 A row with a penalty does not speculate (`EngineLoopV2.mtpBasicEligible`), so
-these builds' requests that omit the penalty stay without MTP, the cost the
+the 35B builds' requests that omit the penalty stay without MTP, the cost the
 gate accepted for loop safety; they still stage prefix checkpoints
 ([prefix caching](prefix-cache.md#invariants), invariant 9). A request's own
-`presence_penalty` always wins: `0` speculates under typical acceptance and
-donates checkpoints (the configuration that looped in the gate, now the
-caller's choice). The coordinator forwards a build's
+`presence_penalty` always wins: `0` on a 35B build speculates under typical
+acceptance and donates checkpoints (the configuration that looped in the gate,
+now the caller's choice); a nonzero value on the 9B turns its MTP off for that
+request (it still donates checkpoints). The coordinator forwards a build's
 registry runtime defaults for the fields a request omits
 ([`requestRuntimeDefaultKeys`](https://github.com/Layr-Labs/darkbloom-platform/blob/c69380d91fd3f9e4ef3ff1e3775690d80adbbe57/coordinator/api/inference/request/model_runtime_defaults.go));
 on 2026-11-10 the registry set `temperature`, `top_p` and `top_k` for these
@@ -3094,9 +3129,11 @@ stops such a row early.
   sees every generated token of every engine, for the requests that take the
   scheduler's text path (`MultiModelBatchSchedulerEngine.prepareCompletion`):
   single-Mac MLX slots, the native GLM-5.3 and MiMo engines, and the cluster
-  pairs. **Super is not guarded:** its coordinator and local requests take the
-  owner's own route (`ProviderLoop+InferenceHandler`, `superOwner.chatEngine` →
-  `NemotronSuperLocalBinding.executeBridge`), which submits without a guard.
+  pairs. Super's coordinator and local text requests take the owner's own
+  route (`ProviderLoop+InferenceHandler`, `superOwner.chatEngine` →
+  `NemotronSuperLocalImageHTTP` → `NemotronSuperLocalBinding.executeBridge`),
+  which resolves the same guard from its request plan
+  (`NemotronSuperRequestPlan.loopGuard()`) and passes it to the same pump.
 - **On fire:** the pump cancels the row in the engine without the caller's
   cancel bookkeeping (`EngineV2Bridge.stopRepeatingRow`), and turns the
   engine's cancelled terminal into a `length` finish with the engine's usage:
@@ -3113,11 +3150,10 @@ stops such a row early.
   media requests.
 - **Models** (`GenerationLoopGuardPolicy`, by `model_type`): on by default
   for `gemma4`, `gemma4_text`, `qwen3_5`, `qwen3_5_moe`, `qwen4_exp`,
-  `qwen4_exp_text`, `gpt_oss`, `nemotron_h` (Lightning), `glm5_next` and
-  `mimo_v2`. `nemotron_h_omni` (Super) is on the list but has no effect until
-  Super's route passes a guard. `DARKBLOOM_LOOP_GUARD=0` (or `off`)
-  turns it off; a comma-separated list of `model_type`s replaces the default
-  list.
+  `qwen4_exp_text`, `gpt_oss`, `nemotron_h` (Lightning), `nemotron_h_omni`
+  (Super, text only), `glm5_next` and `mimo_v2`. `DARKBLOOM_LOOP_GUARD=0`
+  (or `off`) turns it off; a comma-separated list of `model_type`s replaces
+  the default list.
 
 ### Collected and streaming reasoning state
 
@@ -3423,7 +3459,8 @@ The Qwen 3.5, 3.6 and 3.8 and Ternary Bonsai 2 templates (`qwen3_5`,
 `qwen3_5_moe`, `prism_hadamard_qwen35`) raise "No user query found in
 messages." when no user turn is more than a `<tool_response>` wrapper. Such
 histories are refused before rendering with the typed HTTP 400
-`missingUserQuery` instead of a provider-fault 500 `template_render`
+`missingUserQuery` (refusal reason `missing_user_query`) instead of a
+provider-fault 500 `template_render`
 (`provider-swift/Sources/ProviderCore/Inference/Prompting/Qwen35TemplateFixes.swift`,
 `validateUserQuery`).
 
@@ -3557,8 +3594,16 @@ the owner's go.
 - **Media caps** (`provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift`):
   `maxImagePixels` 100 Mpx, `maxRequestImagePixels` 384 Mpx,
   `maxMediaDecodedBytes` 25 MiB, `maxVideoDurationSeconds` 600,
-  `maxImagesPerRequest` 16, `maxVideosPerRequest` 8,
-  `maxRequestVideoFramePixels` 384 Mpx; `decodeOverheadFactor = 4`.
+  `maxImagesPerRequest` 16 (per model through `imageCap(forModel:)`, no model
+  above 16 yet; `DARKBLOOM_MAX_IMAGES_PER_REQUEST` sets one cap for every model),
+  `maxVideosPerRequest` 8, `maxRequestVideoFramePixels` 384 Mpx;
+  `decodeOverheadFactor = 4`.
+- **Media memory gate.** The scheduler's `VisionMemoryGate` reserves a media
+  request's decode memory and its KV (1,024 tokens per image) before any
+  decode. A reservation that doesn't fit is refused as a retryable 503 with
+  the reason `media_memory_unavailable`, as MiMo's media reservation is, so
+  the coordinator sends the request elsewhere without a capacity strike or a
+  budget clamp.
 - **A failed video or audio reader decodes again once.** An `AVAssetReader` can
   fail on a valid clip. When a reader pass of the GLM 5.3, MiMo V2.6, Qwen4 or
   Nemotron Super video decoder, or of the MiMo V2.6 audiovisual decoder's audio
@@ -4358,8 +4403,11 @@ evidence, not a change to the normal final-row contract or the near-tie rule
 10. A coordinator request refused as a client error, before its inference task
    or while its prompt is prepared, writes exactly one fixed public log line
    naming a closed `InferenceRefusalReason` and a private line pairing it with
-   the request ID, never request text; the refusal's `inference_error` frame is
-   unchanged. Prompt-time reasons ride on the typed error
+   the request ID, never request text; the refusal's `inference_error` frame
+   carries the same reason as `refusal_reason` and its fixed sentence as
+   `refusal_message`, with its `error` text unchanged (`InferenceFailure.refusal`,
+   set by the handler's `reject` and by `sanitizedInferenceFailure` for an
+   `invalid_request` failure). Prompt-time reasons ride on the typed error
    (`MultiModelBatchSchedulerEngineError.invalidToolPayload`'s `refusal`, or the
    error case), never on its message —
    `provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift`
@@ -4874,24 +4922,27 @@ away; mixed pairs are first-class).
   0.10.10's never count, so the update from 0.10.10 to 0.10.11 still ranks by
   the planner's predictions until a mode serves with 0.10.11. No safe scope can
   be read from a record that names none: equal tensor-parallel shares serve
-  through Darkbloom and locally alike. The mode question ranks the modes by this
-  build's figures, else, while this build has served none of them (every
-  update starts there), by the other builds', else by the planner's
-  predictions (`ClusterOnboardingModeAdvice.advise`). The planner itself still
-  reads only this build's records. The list puts the recommended mode first,
-  and a model named on the command line starts in it
-  (`ClusterOnboardingMode.defaultIndex`), so neither contradicts the
-  recommendation. No screen quotes these figures (owner, 2026-11-05: "the
-  model and mode choice never quote tok/s"): the model list names the modes
-  (`ClusterOnboardingMode.listWords`);
-  the recommendation and the mode lines say why in words; a re-plan's "Planned
+  through Darkbloom and locally alike. The setup chooses a new model's mode with
+  `ClusterOnboardingMode.automaticIndex` (tensor parallel unless it can't run
+  or this build measured it slower); `ClusterOnboardingModeAdvice.advise`
+  still ranks the modes by this build's figures, else the other builds', else
+  the planner's predictions, but no screen shows or follows it since 0.10.12.
+  The planner itself still reads only this build's records. No screen quotes
+  these figures (owner, 2026-11-05: "the model and mode choice never quote
+  tok/s"): the model list names no mode; `darkbloom cluster local`'s mode lines
+  say what each serves in words; a re-plan's "Planned
   in the mode chosen" line gives the size, mode and shares
   (`ClusterOnboardingDeployment.choiceLine`); and the six-step developer
   wizard's model step and check show no speed (`ClusterSetupContent`).
 - **The current model:** on a set-up pair the list preselects the model serving
   now (or the last one used); it keeps the mode the saved setup served in when
   the plan still lists it (`keepMode`, from `ClusterOnboardingResume.servingMode`),
-  so Enter keeps it or starts it again.
+  so Enter keeps it or starts it again. Where the mode question shows
+  (`darkbloom cluster local`, `darkbloom start` on an Only-me pair) its cursor is
+  on that mode while the Recommended tag stays on `automaticIndex`'s pick, and
+  `cluster local` on a stopped pair carries the pair in (`chooseAndServe`'s
+  `last:`), so `darkbloom cluster local <its model>` keeps the mode too; a new
+  model gets the rule.
 - **What a model's contract allows:** a family the model's features don't admit
   is never offered, and a chosen or developer-forced one is refused in the
   contract's words before any quote applies (`ClusterPlacementFlow.decide`):
@@ -6055,8 +6106,8 @@ it alone:
   one-chunk lookahead (the default) serves one request at a time: its
   prompt capture is charged and capped, and its running check asks only for
   what the request still needs (`requireContinuing`). One whose setup
-  prefills serially serves four lanes, and a long lane needs more than its
-  reservation asked. The lanes' running check
+  prefills serially serves the width it saved (one lane without a width), and
+  a long lane needs more than its reservation asked. The lanes' running check
   (`QwenResidentRuntime+Batch.swift`, `memoryRefused`) asks on every pass for
   the first lane's whole charge, the others' state and the loading headroom,
   with no credit for what the lanes already allocated (tensor parallel's
@@ -7250,24 +7301,94 @@ qualification; those checks remain required.
 
 ### Gemma pipeline lanes
 
-A Gemma 4 pipeline whose saved setup prefills serially serves
-`DistributedInstalledPlan.gemma4PipelineBatchLanes` (4) requests at once,
-coordinator-registered pairs included. Every other pipeline lane adapter keeps
-the default of one (`DistributedInstalledPlan.defaultBatchLanes`). A saved
-width or the owner's `DARKBLOOM_CLUSTER_BATCH_LANES` still overrides the
-default.
+A Gemma 4 pipeline serves several requests at once (lanes) only with serial
+prefill, since lanes read prompts one frame at a time. Guided placement keeps
+the one-chunk lookahead and serves one request at a time (owner, 2026-11-10):
+`darkbloom cluster` and `darkbloom cluster plan` keep the placement chosen for
+one request (`ClusterPlacementFlow.decide`), which for a layer split takes the
+lookahead where the model has it (`ClusterPrefillSchedule.planned`), and save
+no width. On the M5 Ultra pair (2026-11-10), serial prefill gave every lane its
+request's solo tokens at 1, 2, 4 and 8 lanes, and 8 lanes served 182.3
+tokens/s in all against 48.2 at one. But a lone prompt's first token came 1.84
+to 1.94 times later at 8K to 64K tokens than with the lookahead.
+
+A Gemma pipeline serves a width (`batchLanes`) only where its setup chooses
+serial prefill and saves one:
+
+- both Macs' setups saved with `serial_v1` and a width of 2, 4 or 8
+  (`ClusterConfiguration.validate`), until the pair is planned again;
+- a local pair's [automatic replacement](#automatic-local-cluster-batching)
+  under queued requests, which plans its width with serial prefill
+  (`ClusterPlacementBatchScope`).
+
+LOAD admits a saved width whole (`QwenResidentRuntime`'s load). Every lane at
+the memory plan's request is charged as the lane book charges lanes held at
+once: the newest lane's whole allowance, and each other lane its state
+(`QwenBatchLaneBook.reservedBytes`).
+
+- A Mac that cannot hold that now refuses the load: "Resident load refused: N
+  requests at once, each of C context tokens, do not fit on rank R now".
+- Each lane is still admitted against live memory when it is reserved.
+- Each rank logs `darkbloom-resident-lanes-v1 rank=… lanes=… context=…
+  reserved=…`.
+- The check is the runtime's, not Gemma's alone: every pipeline stage the Qwen
+  resident runtime serves with lanes is admitted this way, a Qwen 3.5 row's
+  width saved by an automatic replacement included. That width was priced at
+  the same request (`ClusterPlacementBatchScope`).
+
+A Gemma setup saved without a width serves one request at a time under either
+schedule, as every pipeline lane adapter does
+(`DistributedInstalledPlan.defaultBatchLanes`): nothing priced a width for it.
+Until 0.10.12 a serial one defaulted to four lanes. A saved width or the
+owner's `DARKBLOOM_CLUSTER_BATCH_LANES` overrides the default.
+
+Guided placement sizes the plain pipeline only for a family listed in
+`ClusterPlacementPipelineWidth.qualifiedLanesByFamily`, up to its entry. No
+family is listed; listing Gemma 4 (`.gemma4LayerStage: 8`) sizes its guided
+setups again:
+
+1. The placement is chosen for one request: its mode, its leader and, for a
+   layer split, the one-chunk lookahead.
+2. When that is the plain pipeline, `ClusterPlacementPipelineWidth.size`
+   plans it again at 8, 4 and 2 lanes in turn, up to the family's entry. Each
+   plan keeps the same leader, uses serial prefill, and takes the cut that
+   serves fastest at that width.
+   - Each lane is priced at the standard request, whatever request the speed
+     is predicted for (`ClusterPlacementPolicy.pipelineLanes`).
+   - Every rank holds each lane's whole state: the layout's whole-model
+     request charge, or the rank's own state where that is larger. Beside it
+     sits one prompt frame's transient at that context, since lanes read
+     prompts one frame at a time.
+   - The first width both Macs admit now (`ClusterPlacementCandidate.admitted`)
+     is saved, with `serial_v1`. The plan keeps the reasons its mode was
+     chosen for one request, and predicts one request's speed with serial
+     prefill.
+3. When no wider width fits, the placement chosen for one request stands: no
+   width, the one-chunk lookahead, and one request at a time.
+
+Pipeline widths are 2, 4 and 8 (`ClusterPlacementBatchScope.pipelineWidths`),
+so a pair that fits six but not eight saves four.
 
 | Property | Basis |
 |---|---|
 | A lane costs no request its own tokens | Decode rows keep their one-request arithmetic ([batch decode](#gemma-ordinary-batch-decode-arithmetic)); each prompt frame runs alone on its request's own chunk grid (`QwenBatchSettings`) |
-| Memory | No load-time allocation; each lane is admitted against live memory and the activation floor is unchanged ([Gemma paged cluster lanes](hardware-support.md#gemma-paged-cluster-lanes)) |
+| Memory | LOAD admits the width whole at the memory plan's request, then each lane is admitted against live memory. Nothing is allocated at load for the width, and the activation floor is unchanged ([Gemma paged cluster lanes](hardware-support.md#gemma-paged-cluster-lanes)) |
 | Cancellation | A cancelled lane retires alone (`DistributedInstalledPlan.lanesRetireAlone`) |
-| One-chunk lookahead | Lanes prefill serially, so a setup that saved `one_chunk_lookahead_v1` keeps its schedule and one lane, as a planned batch width requires serial prefill (`ClusterConfiguration`) |
+| One-chunk lookahead | Lanes prefill serially: a width is saved only with `serial_v1`, and a setup saved with `one_chunk_lookahead_v1` keeps its schedule and one lane (`ClusterConfiguration`). With serial prefill, a long prompt alone starts its answer later than with the lookahead |
 
 Both owners derive the width from the same saved setup and bind it into the
-load agreement (`Gemma4BatchArithmeticAgreement`). The width is not qualified
-on hardware: multi-lane joining, cancellation and output agreement on the
-real pair remain separate checks, as for every pipeline lane adapter.
+load agreement (`Gemma4BatchArithmeticAgreement`).
+
+A pair saved for coordinator pairing keeps its width for the life of the setup,
+as a [Qwen TP width](#qwen-tensor-parallel-saved-width) does: no approval
+digest names a width. The approval does name the prefill schedule. The re-plan
+after an update plans the pair as guided placement does, so a pair approved
+with the one-chunk lookahead keeps the lookahead, one lane and its approval.
+
+Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementPipelineWidth.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementPlanner.swift` (`requirement`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Resident/QwenResidentRuntime+Load.swift`
+and `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Batch/QwenBatchLaneBook.swift`.
 
 ### Gemma routed-expert prior
 
@@ -7668,24 +7789,47 @@ change attention arithmetic or the cached frontier. See
 
 ## Bonsai 27B packed FP32 rows
 
-The registered Bonsai 27B signed-Hadamard pack preserves the singleton packed
-FP32 reduction for each input row. `HadamardQuantizedLinear.callAsFunction` in
-`libs/mlx-swift/Source/MLXNN/Hadamard.swift` selects this path only for FP32
-multi-row input, affine2/group128, block1024 and stored F16 scales. The signed
-transform and grouped gated-delta layout are unchanged. A leading weight
-dimension keeps the packed projection at M=1 per row, avoiding the
-architecture-dependent TF32 matrix projection without unpacking weights.
-Singleton calls, other packs, ordinary affine modules and global arithmetic
-switches retain their existing paths.
+The registered Bonsai 27B signed-Hadamard pack (FP32 multi-row input,
+affine2/group128, block1024 and stored F16 scales) computes multi-row calls one
+of two ways. `HadamardQuantizedLinear.callAsFunction` in
+`libs/mlx-swift/Source/MLXNN/Hadamard.swift` picks the way from the layer's
+`independentRows`, which the code that builds the layer sets. A call has more
+than one row for a prompt chunk, and for a decode step that carries several
+requests:
+
+| Where | Builder | `independentRows` | Multi-row calls |
+|---|---|---|---|
+| Single Mac | the SDK's `PrismHadamardCheckpoint.install` | false (default) | One batched packed matmul: TF32 (NAX) on M5, FP32 steel on M1 to M4, as in provider 0.10.4 and earlier. |
+| Pair stages, the reference check | `QwenPrismHadamardSource.install` | true | The singleton packed FP32 reduction per row. A leading weight dimension keeps each projection at M=1, so both machines compute the bytes of separate singleton calls on any chip. |
+
+On a single Mac, prompt rows are therefore not bit-identical to the singleton
+decode arithmetic. In exchange, prefill is several times faster: provider
+0.10.4 measured 2.3 to 6 times the per-row path's rate. Concurrent decode is
+batched too. The SDK's per-row decode seam (`Qwen35BatchDecodeProjection`)
+runs only where `Qwen35BatchDecodeScope` is enabled, and only cluster sessions
+enable it. So a decode step with several requests takes one batched matmul,
+and which kernel runs (TF32 on M5 once the step is wide enough) depends on how
+many rows share the step. A request's exact output can therefore depend on the
+requests decoding beside it. Both were so in provider 0.10.4 and earlier, and
+are accepted for the prompt speed. A request decoding alone (one row) is
+unchanged.
+The signed transform and the grouped gated-delta layout are the same in both
+ways. So are singleton calls, other packs, ordinary affine modules and global
+arithmetic switches.
 
 `QuantizedLinear.constantCachedForward` in
-`libs/mlx-swift/Source/MLXNN/Quantized.swift` reuses the existing exact F16-to-F32
-constant caches; the row layout adds no persistent weight or constant copy.
-The registered block4096 Bonsai 9B pack retains its original arithmetic.
+`libs/mlx-swift/Source/MLXNN/Quantized.swift` reuses the existing exact
+F16-to-F32 constant caches in both ways. The row layout adds no persistent
+weight or constant copy. The registered block4096 Bonsai 9B pack keeps its
+original arithmetic.
+
 `QwenResidentArithmeticPolicy.prismHadamardRows` adds the
-`bonsai-fp32-row-arithmetic-v2` binding only to the 27B receipt. The family policy
-name remains stable while the exact arithmetic SHA changes, so mixed old/new
-ranks refuse the load agreement before reading stage weights.
+`bonsai-fp32-row-arithmetic-v2` binding only to the 27B receipt. The receipt
+describes pair stages, and their arithmetic did not change when single Macs
+went back to batching, so the receipt's bytes did not change either. The family
+policy name is stable while the exact arithmetic SHA differs from the 9B's.
+Ranks with different receipts refuse the load agreement before reading stage
+weights.
 
 Independent singleton comparisons and cross-chip projection diagnostics do not
 replace full-artifact qualification. Preserve earlier solo/pair reports and

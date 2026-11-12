@@ -61,15 +61,17 @@ extension EngineV2Bridge {
         let effectiveDeadlineProfile = currentDeadlineProfile(allowQualifiedPosture: expansionAllowed)
         // A suspended submission already owns its allowance. Count its ID once
         // even while terminal handling also retains it in the active map.
+        let pendingOnlyCount = pendingSubmissionIDs.count(where: { active[$0] == nil })
         if usesMemoryLimitedConcurrency {
-            let pendingOnlyCount = pendingSubmissionIDs.count(where: { active[$0] == nil })
             let occupiedConcurrency = max(activeRequestCount(), active.count + pendingOnlyCount)
             if occupiedConcurrency >= effectiveServingConcurrency(allowExpansion: expansionAllowed) {
                 return false
             }
         }
+        // The same once-per-ID count: a local stream holding its head
+        // (`holdHeadUntilAdmitted`) is in both sets until its submit returns.
         if hasPostureGatedWidth, !expansionAllowed,
-            active.count + pendingSubmissionIDs.count >= unqualifiedMaxConcurrentRequests {
+            active.count + pendingOnlyCount >= unqualifiedMaxConcurrentRequests {
             return false
         }
         let work: WholeMacServiceBudget.Work? = promptTokens.flatMap { prompt in maxOutputTokens.map { output in

@@ -243,9 +243,11 @@ extension ProviderLoop {
         let lookupReceiptFinalizer = PrefixCacheLookupReceiptFinalizer(
             callback: receiptCallbacks.lookup)
         // Each refusal before the inference task logs its fixed reason publicly,
-        // so `darkbloom logs` accounts for it; the frame carries no reason.
+        // so `darkbloom logs` accounts for it, and sends it on its frame.
         func reject(_ failure: InferenceFailure, refusal: InferenceRefusalReason) {
-            InferenceFailureLogger(logger: logger).record(requestId: requestId, failure: failure, refusal: refusal)
+            var failure = failure
+            failure.refusal = refusal
+            InferenceFailureLogger(logger: logger).record(requestId: requestId, failure: failure)
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceError(requestId: requestId, failure: failure, profile: profile),
                 fallbackFailure: .policy,
@@ -1090,10 +1092,7 @@ extension ProviderLoop {
                     from: error,
                     phase: .streamStart,
                     errorReason: reason)
-                InferenceFailureLogger(logger: log).record(
-                    requestId: requestId,
-                    failure: failure,
-                    refusal: Self.promptRefusal(failure, error))
+                InferenceFailureLogger(logger: log).record(requestId: requestId, failure: failure)
                 GLM5NextWiredLimitNotice.report(error, modelID: modelId)
                 // Classify HERE, where the real `Error` (and its rich
                 // `String(describing:)` text) is in scope. For a Harmony
@@ -1399,10 +1398,7 @@ extension ProviderLoop {
                     let failure = Self.sanitizedInferenceFailure(
                         from: error,
                         phase: .generation)
-                    InferenceFailureLogger(logger: log).record(
-                        requestId: requestId,
-                        failure: failure,
-                        refusal: Self.promptRefusal(failure, error))
+                    InferenceFailureLogger(logger: log).record(requestId: requestId, failure: failure)
                     GLM5NextWiredLimitNotice.report(error, modelID: modelId)
                     if Self.hasVisibleStreamOutput(
                         contentFrameCount: contentFrameCount,

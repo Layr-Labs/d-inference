@@ -454,6 +454,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// spawn, preparation start and end. No request content.
     static let promptPrepLogger = Logger(label: "darkbloom.request.prep")
 
+    /// The vision memory gate's refusals: the projected media decode and KV
+    /// tokens only. No request content.
+    static let mediaGateLogger = Logger(label: "darkbloom.media.gate")
+
     static func promptPrepMetadata(promptTokens: Int, timing: ProviderPromptContractPipeline.PrepTiming)
         -> Logger.Metadata
     {
@@ -643,7 +647,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             else {
                 await releaseBox.fire()
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                    "inference-enforced tool_choice is not supported for multimodal requests")
+                    "inference-enforced tool_choice is not supported for multimodal requests",
+                    refusal: .unsupportedForcedToolChoice)
             }
             // Media is decoded exactly once by EngineV2VisionPrefill.prepare
             // below, still synchronously inside this async-throws call before
@@ -705,10 +710,12 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             }
             if !mediaReserved {
                 await releaseBox.fire()
-                let mib = projectedBytes / (1024 * 1024)
-                throw MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(
-                    "insufficient global kv cache headroom for vision request "
-                    + "(media decode ~\(mib) MiB + generation KV) — retry after capacity frees")
+                // This request's media does not fit this Mac now. That does not
+                // disprove its text capacity, so the coordinator re-routes it
+                // without a capacity strike (`media_memory_unavailable`).
+                Self.mediaGateLogger.notice("vision request refused by the media memory gate", metadata: [
+                    "media_decode_mib": "\(projectedBytes / (1024 * 1024))", "kv_tokens": "\(kvTokens)"])
+                throw MultiModelBatchSchedulerEngineError.mediaMemoryUnavailable
             }
             // MEDIA → ENGINE V2: image, video, and mixed requests use the
             // wrapper's vision tower/projector, then prefill its same owned
@@ -1217,7 +1224,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             || ToolChoiceEnforcementPolicy.supportsForcedMedia(
                 context: .init(modelId: request.model, modelType: modelType), nativeWrapperLoaded: false) else {
             throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                "inference-enforced tool_choice is not supported for multimodal requests")
+                "inference-enforced tool_choice is not supported for multimodal requests",
+                refusal: .unsupportedForcedToolChoice)
         }
         let host: DistributedGLMMediaIngress.Prepared
         do {
@@ -1291,7 +1299,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // standalone serving. They do not require a native token constraint.
         guard prepared.mode == .auto || prepared.mode == .none else {
             throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                "inference-enforced tool_choice is not supported for multimodal requests")
+                "inference-enforced tool_choice is not supported for multimodal requests",
+                refusal: .unsupportedForcedToolChoice)
         }
         var visionRequest = request
         visionRequest.tools = prepared.tools

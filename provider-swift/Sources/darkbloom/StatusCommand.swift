@@ -16,7 +16,14 @@ struct Status: AsyncParsableCommand {
     @Flag(help: "On a Mac in a two-Mac cluster: show single-Mac serving on this Mac (the provider service) instead of the pair.")
     var solo = false
 
+    @Flag(help: "Print the running provider's answers in progress as JSON (model, elapsed, tokens, tok/s), and nothing else.")
+    var json = false
+
     mutating func run() async throws {
+        if json {
+            try printAnswersInProgressJSON()
+            return
+        }
         // Asked first, so the add-on answers while the banner and the config
         // load run; bounded, so the add-on can never hold up or fail status.
         let sandboxLine = Task.detached {
@@ -41,6 +48,7 @@ struct Status: AsyncParsableCommand {
             let live = await ClusterPairSummary.live(config: configOptions.config, bounded: ClusterPairCommands.printLine)
             let afterRestart = live.startsAtLogin ? ClusterOnboardingRestart.thisMacLine() : nil
             for line in live.clusterStatusLines + live.statusCardLines(afterRestart: afterRestart) { print(line) }
+            for line in Self.pairRunningRequestLines(servingAlone: servingAlone) { print(line) }
             if let state = servingAlone { print(Self.servingAloneLine(pid: state.pid)) }
             print("")
         }
@@ -120,6 +128,27 @@ struct Status: AsyncParsableCommand {
         }
     }
 
+    /// Under the pair's block: the answers the pair is writing, from the state its provider part writes on the leading
+    /// Mac. None while this Mac serves alone (its own lines list them) or the part isn't running here.
+    static func pairRunningRequestLines(servingAlone: DaemonState?) -> [String] {
+        guard servingAlone == nil, let state = DaemonStateFile.read(), daemonProcessAlive(pid: state.pid),
+              ServiceDrain.soloProviderState(state) == nil
+        else { return [] }
+        return runningRequestLines(state: state, now: Date().timeIntervalSince1970)
+    }
+
+    /// `status --json`: the provider that writes this Mac's state file (single-Mac serving, or a pair's part).
+    private func printAnswersInProgressJSON() throws {
+        let heartbeat = try loadRuntimeConfiguration(configPath: configOptions.config).config.coordinator
+            .heartbeatIntervalSecs
+        let state = DaemonStateFile.read()
+        let data = try Self.statusJSON(
+            state: state, alive: state.map { daemonProcessAlive(pid: $0.pid) } ?? false,
+            now: Date().timeIntervalSince1970, heartbeatIntervalSecs: heartbeat,
+            clusterPart: state.map { ServiceDrain.soloProviderState($0) == nil } ?? false)
+        print(String(decoding: data, as: UTF8.self))
+    }
+
     /// On a Mac in a cluster: single-Mac serving that runs here (`start --solo`), never the cluster's own part; nil when
     /// none runs.
     private func soloServingHere() -> DaemonState? {
@@ -183,6 +212,7 @@ struct Status: AsyncParsableCommand {
                                       server: .of(state, paired: pair.paired)) {
             print(line)
         }
+        for line in Self.runningRequestLines(state: state, now: now) { print(line) }
         if state.autopilotPhase != nil {
             let fresh = Autopilot.Status.snapshotIsFresh(state,
                 heartbeatIntervalSecs: config.coordinator.heartbeatIntervalSecs, now: now)

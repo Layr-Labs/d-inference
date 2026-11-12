@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-11-11
+> Last updated: 2026-11-12
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -423,19 +423,22 @@ a model's mode.
 
 `darkbloom cluster local` keeps the question, simplified: both modes, the one
 the same rule picks tagged **Recommended** and preselected, so Enter takes it.
-No sentence explains it and no line quotes a speed:
+For the pair's own model (the one it serves or last served, also when
+`darkbloom start` in a terminal starts a stopped pair) the cursor is on the
+mode it last served in instead, the tag staying on the rule's pick, so Enter
+keeps that mode. No sentence explains it and no line quotes a speed:
 
 ```text
   How should both Macs split Gemma 4 26B?
   1) Pipeline · serves one request at a time · context 65,536 tokens, prompts up to 32,768
-  2) Tensor parallel · Recommended · serves up to 8 requests at once · context 262,144 tokens
+  2) Tensor parallel · Recommended · serves up to 2 requests at once · context 262,144 tokens
   Choose 1-2 (enter = 2):
 ```
 
 In a narrow window a line keeps the mode, the tag and the short words
-("serves up to 8 at once · context 262,144"). A model named on the command line
-(`darkbloom cluster local <model>`) loads the recommended mode without the
-question. On a serving pair, choosing its model in another mode asks first
+("serves up to 2 at once · context 262,144"). A model named on the command line
+(`darkbloom cluster local <model>`) loads without the question: the pair's own
+model in the mode it last served in, any other model in the recommended mode. On a serving pair, choosing its model in another mode asks first
 ("Switch Gemma 4 26B from tensor parallel to pipeline? …").
 
 The modes:
@@ -457,6 +460,12 @@ other request waits about 6 s and is then refused as "at capacity". On two M5
 Ultras (2026-11-04, DevNet), its tensor parallel served 8 requests at once with
 none refused, and each answered about 2.6 times faster (105.6 against 40.8
 tokens/s alone).
+
+A Gemma 4 pipeline serves one request at a time. It reads each prompt with one
+chunk of lookahead, which starts a long prompt's answer sooner. To serve
+several requests at once it would read each prompt one chunk at a time: on two
+M5 Ultras (2026-11-10), a long prompt alone then started its answer about 1.9
+times later. So the setup keeps the lookahead.
 
 While a model serves, a mode's split reads "decided when it loads": the list
 plans with that model's memory still taken, and the start stops it and plans
@@ -619,9 +628,9 @@ pair's model and split; a release's cluster runtime facts carry them for
 GLM-5.3-Flash and Qwen3.8-27B
 ([serving a pair](../reference/cluster-control-protocol.md#serving-a-pair)).
 A tensor-parallel pair registers like a pipeline one; its plan names no cut.
-A Gemma 4 pipeline pair whose plan prefills serially takes several requests at
-once; one planned with the one-chunk lookahead takes one at a time
-([Gemma pipeline lanes](../architecture/inference.md#gemma-pipeline-lanes)).
+A Gemma 4 pipeline pair is planned with the one-chunk lookahead and takes one
+request at a time; a setup saved with serial prefill and a width takes that
+many at once ([Gemma pipeline lanes](../architecture/inference.md#gemma-pipeline-lanes)).
 
 1. Run `darkbloom cluster` and choose a model, as in [the steps](#the-steps-once).
    After the Test stage passes, the leader reads the approvals the coordinator

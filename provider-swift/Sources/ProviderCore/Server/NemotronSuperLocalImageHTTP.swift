@@ -156,11 +156,12 @@ private struct SuperHTTPEngine: MLXServerEngine {
                 let translated = plan.bridgeRequest
                 let cacheScope = self.cacheScope, usageSignal = self.usageSignal ?? EngineV2RequestUsageSignal()
                 let donationDemand = self.donationDemand
+                let loopGuard = plan.loopGuard()
                 textUsage = usageSignal
                 execute = { onEvent in
                     try await binding.run(request: translated, promptTokens: tokens,
                                           cacheScope: cacheScope, logprobs: logprobs, usageSignal: usageSignal,
-                                          donationDemand: donationDemand, onEvent: onEvent)
+                                          donationDemand: donationDemand, loopGuard: loopGuard, onEvent: onEvent)
                 }
             }
         } catch { throw SuperHTTPErrors.map(error, media: media) }

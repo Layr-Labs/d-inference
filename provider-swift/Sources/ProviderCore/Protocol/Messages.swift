@@ -505,6 +505,11 @@ public enum ProviderMessage: Sendable, Equatable {
         /// vocabulary). Omitted on the wire when nil, so every other frame
         /// keeps its legacy bytes.
         public let toolCheck: ToolNoncomplianceCheck?
+        /// Why a client refusal refused the request (closed vocabulary), sent
+        /// as `refusal_reason` with its fixed `refusal_message`. Omitted on
+        /// the wire when nil, so every other frame keeps its legacy bytes; the
+        /// legacy `error` text is unchanged either way.
+        public let refusalReason: InferenceRefusalReason?
 
         public init(
             requestId: String,
@@ -523,6 +528,7 @@ public enum ProviderMessage: Sendable, Equatable {
             self.capacitySeq = failure.capacitySeq
             self.profile = profile
             self.toolCheck = failure.toolCheck
+            self.refusalReason = failure.refusal
         }
 
         /// Decoder-only compatibility path. Discards the legacy free-form
@@ -540,7 +546,8 @@ public enum ProviderMessage: Sendable, Equatable {
             feasibleAfterMs: Int64?,
             capacitySeq: UInt64?,
             profile: InferenceProfile?,
-            toolCheck: ToolNoncomplianceCheck?
+            toolCheck: ToolNoncomplianceCheck?,
+            refusalReason: InferenceRefusalReason?
         ) {
             self.requestId = decodedRequestId
             self.failureCode = failureCode
@@ -554,6 +561,7 @@ public enum ProviderMessage: Sendable, Equatable {
             self.capacitySeq = capacitySeq
             self.profile = profile
             self.toolCheck = toolCheck
+            self.refusalReason = refusalReason
         }
     }
 
@@ -1007,6 +1015,8 @@ extension ProviderMessage: Codable {
         case feasibleAfterMs = "feasible_after_ms"
         case capacitySeq = "capacity_seq"
         case toolCheck = "tool_check"
+        case refusalReason = "refusal_reason"
+        case refusalMessage = "refusal_message"
         // CapacityQuote
         case quoteId = "quote_id"
         case admissibleNow = "admissible_now"
@@ -1197,6 +1207,8 @@ extension ProviderMessage: Codable {
             }
             try container.encodeIfPresent(e.profile?.saturatedToWireRanges(), forKey: .profile)
             try container.encodeIfPresent(e.toolCheck?.rawValue, forKey: .toolCheck)
+            try container.encodeIfPresent(e.refusalReason?.rawValue, forKey: .refusalReason)
+            try container.encodeIfPresent(e.refusalReason?.clientMessage, forKey: .refusalMessage)
 
         case .attestationResponse(let a):
             try container.encode(TypeValue.attestationResponse, forKey: .type)
@@ -1479,7 +1491,11 @@ extension ProviderMessage: Codable {
                 profile: try container.decodeIfPresent(InferenceProfile.self, forKey: .profile),
                 // Unknown values decode to nil, like terminal_cause.
                 toolCheck: (try container.decodeIfPresent(String.self, forKey: .toolCheck))
-                    .flatMap(ToolNoncomplianceCheck.init(rawValue:))
+                    .flatMap(ToolNoncomplianceCheck.init(rawValue:)),
+                // Unknown values decode to nil; `refusal_message` is derived
+                // from the reason, never decoded.
+                refusalReason: (try container.decodeIfPresent(String.self, forKey: .refusalReason))
+                    .flatMap(InferenceRefusalReason.init(rawValue:))
             ))
 
         case .attestationResponse:

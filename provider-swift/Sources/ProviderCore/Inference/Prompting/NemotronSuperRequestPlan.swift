@@ -43,7 +43,7 @@ struct NemotronSuperRequestPlan: Sendable {
         guard contentParts <= Self.maximumContentParts else { throw Failure.tooManyContentParts }
         topLogprobs = try Self.validateWireControls(body: body, request: decoded, modelID: modelID)
         let prepared = try ToolChoicePromptPolicy.prepare(decoded,
-            modelType: "nemotron_h_omni", allowInternalSchemaMetadata: trustsSchemaMetadata)
+            modelType: Self.modelType, allowInternalSchemaMetadata: trustsSchemaMetadata)
         var rendered = decoded
         rendered.messages = prepared.messages
         rendered.tools = prepared.tools
@@ -52,7 +52,21 @@ struct NemotronSuperRequestPlan: Sendable {
         controls = try NemotronSuperPromptContract.controls(body: body)
     }
 
+    /// Super's `model_type`.
+    static let modelType = "nemotron_h_omni"
+
     var hasMedia: Bool { MediaIngest.hasMedia(request) }
+
+    /// The text request's loop guard: the scheduler's text path policy
+    /// (`GenerationLoopGuardPolicy`), so the same model list, exclusions and
+    /// `DARKBLOOM_LOOP_GUARD` switch. Media requests get none, as there.
+    func loopGuard(
+        setting: GenerationLoopGuardPolicy.Setting = GenerationLoopGuardPolicy.current
+    ) -> GenerationLoopGuard? {
+        guard !hasMedia else { return nil }
+        return GenerationLoopGuardPolicy.resolve(modelType: Self.modelType, request: request,
+            prepared: toolPolicy, tokenConstraint: nil, setting: setting)
+    }
 
     /// The request the bridge executes, for text and media alike. `translate`
     /// keeps the request's `max_tokens` (nil: the bridge default) and drops

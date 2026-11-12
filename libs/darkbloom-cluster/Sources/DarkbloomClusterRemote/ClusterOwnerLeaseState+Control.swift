@@ -84,13 +84,18 @@ extension ClusterOwnerLeaseState {
                         && (requests[requestID]?.cancelled == false || laneRetired),
                         "Clean retirement requires an uncancelled started request")
         }
+        // A started request (or lane) both ranks ended alone, after a rank's
+        // memory refused it while it ran, leaves the worker available (D6).
+        if retirement == .aborted {
+            try require(requests[requestID]?.phase == .running, "An aborted retirement requires a started request")
+        }
         // A reservation the leader cancelled before it started (the pair's
         // other rank refused the request) is given back by the native worker,
         // which stays available. Any other abnormal retirement poisons the
         // native session's epoch; resource release cannot make it ready again.
         let givenBack = retirement == .cancelled && requests[requestID]?.cancelled == true
             && (requests[requestID]?.phase == .admitted || laneRetired)
-        if retirement != .clean && !givenBack { quarantine() }
+        if retirement != .clean && retirement != .aborted && !givenBack { quarantine() }
         requests[requestID]?.phase = .retired
         if lanes > 1 {
             retiredRecently.append(requestID)

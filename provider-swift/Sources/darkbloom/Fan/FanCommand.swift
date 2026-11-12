@@ -62,6 +62,18 @@ extension Fan {
         var json = false
 
         mutating func run() async throws {
+            let report = Self.report()
+            if json {
+                try printJSON(report)
+                return
+            }
+            Self.print(report)
+        }
+
+        /// The helper's install and load state, its own status when it is
+        /// running, and the read-only SMC diagnostic. `darkbloom status`
+        /// summarizes the same report in one line (`Status.fanControlLine`).
+        static func report() -> FanStatusReport {
             let manager = FanServiceManager()
             let diagnostic = Self.diagnosticReport()
             let loaded = manager.isLoaded()
@@ -79,7 +91,7 @@ extension Fan {
                 helper = nil
                 helperError = nil
             }
-            let report = FanStatusReport(
+            return FanStatusReport(
                 capability: Fan.packagedCapability,
                 installed: manager.isInstalled(),
                 loaded: loaded,
@@ -87,11 +99,6 @@ extension Fan {
                 helperError: helperError,
                 diagnostic: diagnostic
             )
-            if json {
-                try printJSON(report)
-                return
-            }
-            Self.print(report)
         }
 
         static func diagnosticReport(

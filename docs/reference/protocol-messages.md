@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-10
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon in
@@ -373,7 +373,8 @@ Go `ModelInfo` · Swift `ModelInfo` (`Types.swift`).
 | `model_type` | `string` | `String?` | req in Go | |
 | `quantization` | `string` | `String?` | req in Go | |
 | `weight_hash` | `string` | `String?` | opt | SHA-256 of the weight files |
-| `is_vision` | `bool` | `Bool?` | opt | v0.6.0+; Swift encodes only `true`; absent decodes `false` → never selected for media. A cluster member sends it (and `native_media_tools`) only when its pair's placed mode serves a media contract, GLM-5.3-Flash or Qwen3.8 27B in tensor parallel, whatever the artifact declares; that slot is published only while READY reports the contract (`provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterMemberPreparation.swift`, `registeredModel`, `requireRegisteredMedia`) |
+| `is_vision` | `bool` | `Bool?` | opt | v0.6.0+; Swift encodes only `true`; absent decodes `false` → never selected for media. A cluster member sends it (and `native_media_tools`, `native_media_controls`) only when its pair's placed mode serves a media contract, GLM-5.3-Flash or Qwen3.8 27B in tensor parallel, whatever the artifact declares; that slot is published only while READY reports the contract (`provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterMemberPreparation.swift`, `registeredModel`, `requireRegisteredMedia`) |
+| `native_media_controls` | `bool` | `Bool?` | opt | Per-model support for a JSON `response_format` and non-empty `tools` together with image or video input; absent/false is ineligible. Advertised only for the managed Nemotron Super serving identity with `is_vision` and a template that renders (`ToolChoiceEnforcementPolicy.advertisesNativeMediaControls`); a cluster member drops it with `is_vision`. Carried by registration and `models_update`; Swift omits nil and preserves explicit false. A coordinator with platform [#729](https://github.com/Layr-Labs/darkbloom-platform/pull/729) (on platform `dev`, not yet in production) sends such Nemotron Super requests only to a Mac that advertises it; one without #729 sends them to any Super Mac, and a Mac without this build refuses them. See [coordinator/registry/native_media_tools.go](https://github.com/Layr-Labs/darkbloom-platform/blob/820c2755a85b9a9e7b033ea488d2f8d53a0d57a6/coordinator/registry/native_media_tools.go) (`BuildNeedsNativeMediaControls`, `providerAdvertisesNativeMediaControlsLocked`) |
 | `native_media_tools` | `bool` | `Bool?` | opt | Per-model forced-media/tool-result-media support; absent/false is ineligible. Requires `is_vision` and matching `tool_constraint_protocol`/`tool_constraint_models`. Carried by registration and `models_update`; Swift omits nil and preserves explicit false. See [coordinator/registry/native_media_tools.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/native_media_tools.go) (`providerSupportsNativeMediaToolsLocked`) |
 | `template_render_ok` | `*bool` | `Bool?` | ptr | 0.6.5+; **explicit `false` survives the wire** and excludes the model from tool requests; absent = no opinion |
 | `tool_constraint_template_hash` | `string` | `String?` | opt | binds grammar capability to the loaded template bytes |
@@ -556,9 +557,9 @@ The first three are what the cluster serves in its generation mode
 (`DistributedResidentExecutionProfile.served`,
 `ClusterModelFeaturePolicy.servedProfile`). In tensor parallel, that is the
 worker's whole profile: for Qwen3.8 27B, 262,143 prompt tokens, 65,536 output
-tokens and a 262,144-token context; for Gemma 4 26B, 262,143 prompt tokens,
-32,768 output tokens and a 262,144-token context. In any other mode, a pipeline
-included, it is the memory plan's request: 32,768 prompt and
+tokens and a 262,144-token context. Gemma 4 26B serves its whole profile in the
+pipeline too: 262,143 prompt tokens, 32,768 output tokens and a 262,144-token
+context. In any other mode, it is the memory plan's request: 32,768 prompt and
 32,768 output tokens in a 65,536-token context, and the pipeline's ranks refuse
 any reservation beyond it. The leader refuses a prompt outside these limits
 before it asks any rank, and cuts a larger `max_tokens` to fit.
@@ -921,6 +922,9 @@ these fields: [../architecture/request-outcome-observability.md](https://github.
 | `feasible_after_ms` | `int64` | `Int64?` | opt | duration forecast, never a wall clock; Swift omits 0 |
 | `capacity_seq` | `uint64` | `UInt64?` | opt | the snapshot the gate decided from; Swift omits 0 |
 | `profile` | `json.RawMessage` | `InferenceProfile?` | opt | same contract as `inference_complete`; the sanitizer passes it through as opaque bytes |
+| `tool_check` | — (not yet read) | `ToolNoncomplianceCheck?` | opt | only beside `error_reason` `tool_noncompliance`: the check that failed, closed (`provider-swift/Sources/ProviderCore/Inference/Engine/InferenceFailure.swift`): `undeclared_name`, `schema`, `malformed`, `diverged`, `unterminated`, `parallel`, `response_format`, `forced_choice`, `native_output`, `other`. Names the check only, never the tool or its arguments. Also on the provider's local failure log line. Today's coordinator ignores the key (`sanitizeProviderInferenceError` copies named fields only); keeping it on the route row is a coordinator change |
+| `refusal_reason` | — (not yet read) | `InferenceRefusalReason?` | opt | only on a client refusal (before the inference task, or while the prompt is prepared): why it refused, closed (`provider-swift/Sources/ProviderCore/Inference/Engine/InferenceRefusalReason.swift`), the same reason as the provider's [refusal line](../provider/cli-reference.md#refusal-lines), such as `missing_user_query`, `unmatched_tool_result`, `invalid_tool_history` or `request_exceeds_context`. Never request text. Today's coordinator ignores the key (`sanitizeProviderInferenceError` copies named fields only), so the requester's error is unchanged; recording it (for example on the route or rejection row) is a coordinator change that reads this key. Unknown values decode to nil |
+| `refusal_message` | — (not yet read) | computed `String` (`InferenceRefusalReason.clientMessage`) | opt | beside `refusal_reason` only: one fixed sentence per reason, derived from the reason alone, safe to show the requester if the coordinator chooses to forward it. Never decoded |
 | — (`CoordinatorCause`) | `json:"-"` | — | never on the wire | coordinator-synthetic only (`provider_disconnected`) |
 
 `media_memory_unavailable` is a retryable `capacity`/503 failure for media
@@ -928,8 +932,12 @@ preparation, not a text/KV-budget observation. It carries no capacity enrichment
 fields, does not strike model-wide capacity or health trackers, and still uses
 the bounded failover budget. A contradictory native `terminal_cause` retains
 normal terminal handling instead of this exemption. The provider emits it
-through `MiMoV26EncodedMediaIngress.outwardFailure`; the coordinator enforces
-the contract in `sanitizeProviderInferenceError`.
+(`MultiModelBatchSchedulerEngineError.mediaMemoryUnavailable`) for a refused
+media reservation, for a video or audio reader that failed twice with a
+transient decoder fault (`EngineV2VisionPrefill.constructionRefusal`,
+`MiMoV26EncodedMediaIngress.outwardFailure`, `SuperHTTPErrors.map`), and for a
+spent Nemotron Super decode allowance (`SuperHTTPErrors.map`). The coordinator
+enforces the contract in `sanitizeProviderInferenceError`.
 
 A GLM slot refusal is a pre-stream `capacity`/503 failure with `error_reason`
 `token_budget_exhausted`, enriched like other capacity rejections
@@ -1376,8 +1384,18 @@ See the [integration gates](../design/glm53-flash-native.md).
 
 ### `cancel`
 
-Go `CancelMessage` · Swift `Cancel`. `request_id` (req). Sent on the strict
-control lane.
+Go `CancelMessage` · Swift `Cancel`. Sent on the strict control lane.
+
+| Field | Go | Swift | Presence | Notes |
+|---|---|---|---|---|
+| `request_id` | `string` | `String` | req | |
+| `reason` | `string` | `CoordinatorCancelReason.code` | opt | The coordinator's cancel cause: `client_gone_post`, `client_gone_pre`, `hedge_loser`, `first_chunk_timeout`, `late_content`, `stream_timeout`, `overflow`, `pair_ended`, `stray_chunk`. Absent from coordinators before the field; Swift reads absent, empty or not a string as no reason, and still applies the cancel |
+| `paid` | `bool` | `CoordinatorCancelReason.paid` | opt | True when the coordinator settles, and pays for, the partial `inference_complete` the provider sends after this cancel (today: a requester who left mid-answer, whose billing record waits 30 s). Read only with a `reason`; absent or not a boolean is false |
+
+The provider counts each request that ended early under its cause for
+`darkbloom status` (`EndedEarlyCounts`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/InferenceEarlyEnd.swift`).
+A provider from before these fields ignores them, as it ignores any unknown key.
 
 ### `attestation_challenge`
 

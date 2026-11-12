@@ -226,12 +226,28 @@ enum SSDPrefixCachePolicy {
         !["0", "false", "no", "off"].contains(environment[incrementalCheckpointsFlag]?.trimmingCharacters(in: .whitespaces).lowercased())
     }
 
+    /// Deliver a donor's response before its complete checkpoint is durable
+    /// (default off). Rows, the service allowance and the KV reservation are
+    /// still held until the write finishes; only the client stops waiting.
+    static let terminalBeforePublicationFlag = "DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION"
+
+    static func terminalBeforePublication(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        isOptedIn(terminalBeforePublicationFlag, environment: environment)
+    }
+
     static func strictFsync(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Bool {
-        let v = environment[strictFsyncFlag]?
-            .trimmingCharacters(in: .whitespaces).lowercased()
-        return v == "1" || v == "true" || v == "yes" || v == "on"
+        isOptedIn(strictFsyncFlag, environment: environment)
+    }
+
+    /// An off-by-default flag is on only for 1, true, yes or on, in any case
+    /// and with surrounding spaces or tabs.
+    private static func isOptedIn(_ flag: String, environment: [String: String]) -> Bool {
+        let value = environment[flag]?.trimmingCharacters(in: .whitespaces).lowercased()
+        return ["1", "true", "yes", "on"].contains(value)
     }
 
     // MARK: - Write-behind bounds

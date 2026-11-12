@@ -1,6 +1,6 @@
 # Owner pause ("me first")
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-11
 
 How a provider that serves Darkbloom and its owner from one Mac stops taking
 Darkbloom work while the owner uses the Mac through its local API, and returns
@@ -79,14 +79,15 @@ which reads `[local]` from the loaded config through
 | Provider | Me first |
 |---|---|
 | Both, me first (`start --me-first` or `--local-endpoint`): the local API beside the coordinator | On, mode `both`, unless `[local] me_first = false`; idle `me_first_idle_minutes` (default `2`) |
-| The same with `[local] me_first = false`, or a saved `mode` other than `both` | Off: local and Darkbloom requests share the Mac, and the heartbeat is unchanged |
-| Darkbloom network (plain `start`, `--network`), and a cluster member without the pair's slot | Off: no local API |
+| The same with `[local] me_first = false` (what a plain `start` saves from 0.10.12 on a Mac with no choice saved: Both, Darkbloom never paused), or a saved `mode` other than `both` | Off: local and Darkbloom requests share the Mac, and the heartbeat is unchanged |
+| Darkbloom network (`--network`, or launchd's child without a mode flag), and a cluster member without the pair's slot | Off: no local API |
 | A pair's leader with its local API beside Darkbloom | See [pairs](#pairs) |
 | Only me (`start --local`, `StandaloneServer`) | None: no coordinator, so no `ProviderLoop` and nothing to pause |
 
-With no `[local]` section it is on, so a Mac that already served with
-`--local-endpoint` before this change pauses from its first start after the
-update. That includes the desktop app's "Alongside the network" (Both, me
+With no `me_first` saved it is on, so a Mac that already served with
+`--local-endpoint` (or that 0.10.11's start question saved as Both, me first)
+pauses as before after an update; only a Mac with no choice saved gets `me_first
+= false` from the default (`StartServingResolver.resolve`). That includes the desktop app's "Alongside the network" (Both, me
 first), which starts the provider with `--local-endpoint`. To turn it off,
 start once with `--no-me-first`, which saves `me_first = false` under `[local]`
 in `provider.toml` (`~/.config/darkbloom/provider.toml`): the setting is read
@@ -206,7 +207,7 @@ sequenceDiagram
 
 | Concern | Behaviour |
 |---|---|
-| Turning it on | `darkbloom cluster` starts the leader's local API when the person chooses Both, me first: the cluster service adds `--local-endpoint --port --bind` to the rank-0 part (`ClusterLocalServing.memberArguments`). `prepareClusterMemberControl` calls `enableClusterPairMeFirstIfConfigured` once `run()` admits the leader's local API, before the API can take a request. It is on unless `[local]` says `me_first = false`, with `[local]`'s idle time. Whatever single-Mac `mode` `[local]` saved, a leader's local API beside Darkbloom serves both |
+| Turning it on | `darkbloom cluster` starts the leader's local API when it serves the pair Both (`ClusterServingChoice.both`, no question since 0.10.12; it saves `[local] me_first = false` where none is saved, so the pause stays off unless `me_first = true` is set by hand): the cluster service adds `--local-endpoint --port --bind` to the rank-0 part (`ClusterLocalServing.memberArguments`). `prepareClusterMemberControl` calls `enableClusterPairMeFirstIfConfigured` once `run()` admits the leader's local API, before the API can take a request. It is on unless `[local]` says `me_first = false`, with `[local]`'s idle time. Whatever single-Mac `mode` `[local]` saved, a leader's local API beside Darkbloom serves both |
 | The owner's use | `noteClusterPairLocalUse` forwards to `noteLocalUse` once per local request: from when it starts waiting for one of the pair's lanes, or takes one at once, until it leaves without one or releases it. So the pause begins before the request can wait behind Darkbloom work, and a request refused while the pair isn't serving never counts. A request on another Mac's own port is one of these too: that Mac's relay passes it to the leader's local API ([inference](inference.md#the-pairs-leader-takes-local-requests-beside-darkbloom)), so the pair pauses for it the same way |
 | Heartbeat | The leader's: `draining` with `busy_reason: owner`, beside its unchanged `cluster_session` |
 | Racing dispatches | The leader's client forwards them while the slot exists, and `rejectIfDraining` refuses them with `capacity / 503 / draining` before they reach the pair |

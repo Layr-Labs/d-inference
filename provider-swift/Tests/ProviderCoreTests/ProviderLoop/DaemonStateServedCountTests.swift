@@ -2,8 +2,8 @@ import Foundation
 import Testing
 @testable import ProviderCore
 
-/// `darkbloom status` can only say how many served requests ended early on a
-/// cancel if the daemon writes that count beside the served totals.
+/// `darkbloom status` can only say how many served requests ended early, and
+/// what stopped them, if the daemon writes those counts beside the served totals.
 @Suite("Daemon state served counts")
 struct DaemonStateServedCountTests {
     private func makeLoop() throws -> ProviderLoop {
@@ -31,7 +31,7 @@ struct DaemonStateServedCountTests {
         let stats = await loop.stats
         for _ in 0..<3 { stats.incrementRequestsServed() }
         stats.addTokensGenerated(120)
-        stats.incrementCancellationsPartialComplete()
+        stats.recordEndedEarly(.connectionLost)
 
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("daemon-state-served-\(UUID().uuidString)", isDirectory: true)
@@ -44,7 +44,10 @@ struct DaemonStateServedCountTests {
         #expect(written["requests_served"] as? Int == 3)
         #expect(written["tokens_generated"] as? Int == 120)
         #expect(written["cancellations_partial_complete"] as? Int == 1)
-        #expect(DaemonStateFile.read(from: file)?.stats.cancellationsPartialComplete == 1)
+        #expect((written["ended_early"] as? [String: Any])?["connection_lost"] as? Int == 1)
+        let read = DaemonStateFile.read(from: file)?.stats
+        #expect(read?.cancellationsPartialComplete == 1)
+        #expect(read?.endedEarly?.connectionLost == 1 && read?.endedEarly?.total == 1)
     }
 
     /// The Models page reads what the live registration carries from here.

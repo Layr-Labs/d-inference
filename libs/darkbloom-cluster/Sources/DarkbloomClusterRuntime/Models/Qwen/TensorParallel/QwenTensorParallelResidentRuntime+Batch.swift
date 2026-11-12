@@ -154,9 +154,14 @@ extension QwenTensorParallelResidentRuntime {
         let os = try QwenDenseStageLoadResources.observeOS()
         let free = try sum([remaining, host, entering ? QwenDenseStageLoadPolicy.loadingHeadroomBytes : 0])
         let allocator = try sum([Memory.activeMemory, Memory.cacheMemory, remaining, QwenDenseStageLoadPolicy.allocatorHeadroomBytes])
-        guard try batchResourceWatch.admits(os, bytes: free,
-            floor: entering ? QwenDenseStageLoadPolicy.loadingHeadroomBytes : QwenDenseStageLoadPolicy.minimumTrulyFreeBytes),
-            Memory.memoryLimit >= allocator else { throw ProbeError("Qwen TP batch exceeds its live memory allowance") }
+        // A memory refusal is typed, so a running lane's stop ends that lane alone (D6).
+        do {
+            guard try batchResourceWatch.admits(os, bytes: free,
+                floor: entering ? QwenDenseStageLoadPolicy.loadingHeadroomBytes : QwenDenseStageLoadPolicy.minimumTrulyFreeBytes),
+                Memory.memoryLimit >= allocator else { throw ProbeError("Qwen TP batch exceeds its live memory allowance") }
+        } catch {
+            throw QwenResidentMemoryRefusal(message: String(describing: error))
+        }
     }
 
     public func serveBatch(host: QwenBatchServingHost) throws {
@@ -237,13 +242,19 @@ extension QwenTensorParallelResidentRuntime {
                 recordedRequestFingerprint: sha256(Data("qwen-tp-batch|\(loadAgreement)|\(batchOrdinal)".utf8)))) {
                 try MLX.withError { error in
                     var lastResourceCheck: UInt64 = 0
-                    try driver.serve(host: host, retiredSelection: retiredSelection, check: {
-                        try error.check(); try self.control.check()
+                    try driver.serve(host: host, retiredSelection: retiredSelection, memoryRefused: {
+                        // The lanes' live check, at a step boundary: a memory refusal
+                        // stops one lane alone (D6); any other refusal still fails the batch.
                         let now = DispatchTime.now().uptimeNanoseconds
-                        if lastResourceCheck == 0 || now - lastResourceCheck >= 250_000_000 {
-                            try self.yieldingPrefixMemory { try self.requireBatchMemory() }; lastResourceCheck = now
+                        guard lastResourceCheck == 0 || now - lastResourceCheck >= 250_000_000 else { return false }
+                        lastResourceCheck = now
+                        do { try self.yieldingPrefixMemory { try self.requireBatchMemory() }; return false }
+                        catch let refusal as QwenResidentMemoryRefusal {
+                            log("darkbloom-tp-batch-v1 rank=\(self.collective.rank) memory-refused: \(refusal.message)")
+                            return true
                         }
-                        try error.check()
+                    }, check: {
+                        try error.check(); try self.control.check(); try error.check()
                     })
                 }
             }

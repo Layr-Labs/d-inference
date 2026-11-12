@@ -1,6 +1,6 @@
 # Build The Provider And Landing
 
-> Last updated: 2026-11-11
+> Last updated: 2026-11-12
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. Backend, sidecar, console and admin builds
@@ -332,10 +332,13 @@ the component classifier, the tested-change lookup, the route and the workflow
 pins. It also runs the offline self-tests of the prompt fixture downloaders
 (`scripts/test-prepare-prompt-fixtures.py`,
 `scripts/test-prepare-mimo-prompt-fixtures.py`,
-`scripts/test-prepare-mimo-image-http-fixtures.py`) and the Date comparison
-checks. It needs no Mac and no test result, so it runs from the start of the
-run, and the gate fails unless it succeeded. `dev` has no Release Integrity,
-so these run there too.
+`scripts/test-prepare-mimo-image-http-fixtures.py`) and of the MiMo audio codec
+download (`scripts/test-prepare-mimo-audio-fixtures.py`), the GPT-OSS checkpoint and
+replay tools' CPU tests (`scripts/test_gptoss_checkpoint.py`,
+`scripts/test_gptoss_replay.py`; Python 3.11+) and the Date comparison checks.
+It needs no Mac and no test result, so it runs from the start of the run, and
+the gate fails unless it succeeded. `dev` has no Release Integrity, so these
+run there too.
 
 | Workflow | Runs for | Jobs |
 |---|---|---|
@@ -393,7 +396,7 @@ every job asks without a size ([Job sizes](#job-sizes)).
 |---|---|---|---|
 | `build-cluster` (Build cluster test products) | routed | - | Builds the cluster lane (`.github/actions/provider-ci-build`), uploads `cluster-test-products` |
 | `build-provider` (Build provider test products) | routed | - | Builds the provider lane, uploads `provider-test-products` |
-| `cluster-release-checks` (Cluster Release Build Checks) | routed | - | Compiles the release build of the worker capability and prefill schedule checks, and runs them |
+| `cluster-release-checks` (Cluster Release Build Checks) | routed | - | Compiles the release build of the worker capability and prefill schedule checks, and runs them; then the worker package's request lifecycle tests, in a debug build of their own |
 | `test-provider`, shards 1 and 2 | routed | `build-provider` | The provider selections, Prompt Parity, the native gates, the audit and coverage |
 | `test-cluster`, shards 1 to 5 | routed | `build-cluster` | The blocking cluster selections |
 | `test-cluster-gpu`, shards 1 to 3 | routed, a lane per shard | `build-cluster` | The non-blocking cluster GPU selections |
@@ -1012,6 +1015,10 @@ passes do not qualify the shipping provider, MTP speed or full image support.
 
 ## Related
 
+- [Prepare a publisher-precision GPT-OSS checkpoint](gptoss-checkpoint.md): the
+  converter uses Python's standard library (Python 3.11+) and needs no native
+  build; large checkpoint reads and writes still require a separate resource
+  window.
 - [Provider and SDK tests](test.md)
 - [Native ownership](navigation.md)
 - [Serving-performance qualification](serving-performance-qualification.md)

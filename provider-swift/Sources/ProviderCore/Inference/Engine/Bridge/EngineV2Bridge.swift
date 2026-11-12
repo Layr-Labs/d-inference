@@ -369,6 +369,13 @@ public actor EngineV2Bridge {
     var observedDecodeStep = MeasuredDecodeStep()
     /// `DeadlineAdmissionFixes`, resolved once per bridge.
     let admissionFixes: Bool
+    /// `DeadlineRefusalProbe`, resolved once per bridge.
+    let refusalProbe: Bool
+    /// Whether the Mac draws from AC power now. The refusal streak's probe is
+    /// optional work, so unlike the startup calibration it never runs on battery.
+    let evidenceProbeOnACPower: @Sendable () -> Bool
+    /// `SSDPrefixCachePolicy.terminalBeforePublication`, resolved once per bridge.
+    let terminalBeforeCheckpointPublication: Bool
     /// Cold-prefill throughput from completed prompt computation, independent
     /// of answer success. Engine timings exclude queueing and output delivery;
     /// cache-reuse samples remain in their separate workload buckets.
@@ -384,6 +391,9 @@ public actor EngineV2Bridge {
     /// Latest published calibration-cell isolated rate: measured idle at
     /// nominal posture with caching off. Anchors admission's isolated rate.
     var calibratedIsolatedPrefillTps: Double?
+    /// Deadline refusals since the last admission that stale isolated prefill
+    /// evidence explains. A full streak re-runs the idle calibration probe.
+    var deadlineRefusalStreak = DeadlineRefusalStreak()
     /// Prompt samples faster than this are dropped, calibration cells
     /// included. Equal to the coordinator's bound on published prefill rates.
     /// Tests of toy-weight models, which prefill near it, remove it, so
@@ -464,6 +474,9 @@ public actor EngineV2Bridge {
             !ProcessInfo.processInfo.isLowPowerModeEnabled && ProcessInfo.processInfo.thermalState == .nominal
         },
         admissionFixes: Bool? = nil,
+        refusalProbe: Bool? = nil,
+        evidenceProbeOnACPower: (@Sendable () -> Bool)? = nil,
+        terminalBeforeCheckpointPublication: Bool? = nil,
         glm5NextNativeOwner: GLM5NextNativeOperationOwner? = nil,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil
     ) {
@@ -477,6 +490,10 @@ public actor EngineV2Bridge {
         self.modelId = modelId
         self.calibrationPosturePermitsWork = calibrationPosturePermitsWork
         self.admissionFixes = admissionFixes ?? DeadlineAdmissionFixes.enabled
+        self.refusalProbe = refusalProbe ?? DeadlineRefusalProbe.enabled
+        self.evidenceProbeOnACPower = evidenceProbeOnACPower ?? { DeadlinePowerPolicyReader.activeSource() == "ac" }
+        self.terminalBeforeCheckpointPublication =
+            terminalBeforeCheckpointPublication ?? SSDPrefixCachePolicy.terminalBeforePublication()
         self.usesNativeBlockTiming = engine is CBv2NativeBlockEngine
         self.promptReportedAtFinish = engine is DistributedCBv2Engine
         self.tokenizer = tokenizer

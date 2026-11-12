@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-11-10
+> Last updated: 2026-11-12
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -58,6 +58,20 @@ IDs or changed manifest/tokenizer files. It reads no model weights and runs no
 GPU work. `QualificationChecks/run.sh` also covers Bonsai 9B's own profile,
 structural cuts, arithmetic environment, context limits and lane cancellation.
 Its timeout row uses conservative estimates until hardware rates are measured.
+
+`QualificationChecks/run.sh` also drives the pair driver's batch phase end to
+end through two fake workers (`PairCheckFakeWorker`) that serve batch lanes in
+tensor parallel or the pipeline and send logprobs when a request asks: each
+request alone, then a wave of two (`PairDriverTests`). A wave's tokens are
+compared with the requests' alone; with `--batch-logprobs` each token's logprob
+bit patterns are recorded and compared too, a lane that drifts by one ulp with
+its tokens unchanged fails the run, and a cancelled lane matches as far as it
+got. A pipeline wave whose tokens drift fails only a run with
+`--batch-require-parity yes`
+([lane parity](../provider/cli-reference.md#pair-batch-lane-parity)). CI runs
+this runner in shard 2 of Cluster Focused Checks (step `Run cluster
+qualification checks`). These fakes establish the driver's comparison, not any
+runtime's lane parity on real Macs.
 
 Automatic local batching's CPU checks run with
 `provider-swift/Tests/ClusterInstalledSessionChecks/run.sh` and
@@ -575,9 +589,11 @@ Ordinary fixtures use symmetric 128-context geometry; the separate complete-pref
 process uses `--asymmetric` for K64/V128 and 1,024-context geometry.
 `scripts/prepare-mimo-audio-fixtures.py` prepares hash-pinned public inputs
 including the genuine audio codec. The script downloads only the files that its
-cache directory lacks. It retries a failed download up to 5 times and ends an
-attempt that stays below 100 KB/s for 60 s. It keeps a file only when the size
-and SHA-256 match. Keep these output directories isolated from
+cache directory lacks. It makes up to 8 attempts per file, each resuming the
+partial download (`curl --continue-at -`) and ending when it stays below
+100 KB/s for 60 s, after 900 s, or when the 45-minute budget runs out; a server
+that ignores the range request makes the next attempt start over. It keeps a
+file only when the size and SHA-256 match, and deletes a mismatched one. Keep these output directories isolated from
 the ordinary regression inputs. Audio gates exercise PCM8 and AAC-video with a
 small target, not full-model quality or peak memory. Release-only builds do not
 provision test fixtures or opt into native qualification.
@@ -710,8 +726,20 @@ lockouts through the bridge and the real submission path, another model's
 lease or device activity on a shared whole-Mac service budget, a fresh
 long-prompt bucket below the floor, decode step-shape measurement and plumbing
 (including the first-token step's rows), rate and shape kept coupled across
-batch widths, the per-row charge kept for reviewed calibrations, and a late
-older cold sample. In the SDK, the unit suite
+batch widths, the per-row charge kept for reviewed calibrations, a late
+older cold sample, and the refusal streak: three idle refusals over stale
+evidence, long prompts included, ask for one probe and submit no request
+unprojected (a late retry included); refusals at a fresh rate or a fresh
+prompt-size bucket, at the anchor, with under 5 seconds left, beside other
+work or with either switch off do not count; a projected, an unprojected and
+an accepted-then-cancelled admission each end a partial streak; a started probe
+holds the next to its interval; and on battery a full streak waits for AC
+power.
+`ProductionModelCalibrationTests.staleRefusalStreakRerunsTheProbe` runs that
+probe on a toy Qwen `EngineV2`: three real refusals re-run one solo cell whose
+rate becomes the anchor (at least twice the stale rate, not an absolute bar:
+CI VMs differ), starting it sets the interval, and the next request is priced
+from it. In the SDK, the unit suite
 `CBv2PerBatchDecodeChargeTests` pins per-step decode accounting, MTP-measured
 shape conversion, the mirrored MTP depth gates (batch gate and automatic
 envelope, with a driver check that the ceiling bounds every live plan depth)
@@ -1159,6 +1187,30 @@ This is not real Apple service validation. Physical smoke is optional for normal
 publication; official-build registration and runtime Apple authorization remain
 distinct. See [release](../operations/provider-release.md).
 
+## Absent Provider Job Recovery
+
+`AbsentProviderRecoveryIntegrationTests` drives the absent-job `handleTick`
+adapter with real temporary plist, journal and watchdog-state files and the real
+lifecycle lock. Only command execution, paths, time and whether the pair runs
+here are injected; bootstrap is intercepted and code-signature verification
+stays on. The fixtures cover saved grace, lock ownership at issuance, a
+deliberate stop, the opt-out, a cluster member's job, a pair that starts on this
+Mac at each of the tick's three samples, a competing session, candidate failure
+attribution and backoff expiry, a missing-predecessor refusal, uncertain launch
+intent and loaded reconciliation, persistence failures before and after the
+command, and a corrupt journal. The rollback error-handler fixture reloads real
+persisted committed state without resurrecting a stale candidate; it does not
+perform the signed bundle exchange. These tests install no bundle and never
+touch launchd.
+
+```bash
+swift test --skip-build --no-parallel \
+  --filter 'AbsentProviderRecoveryTests|AbsentProviderRecoveryAdapterTests|AbsentProviderRecoveryIntegrationTests'
+```
+
+Run them with the existing watchdog, state and crash-guard suites when changing
+this path.
+
 ## Watchdog Launch Evidence
 
 `WatchdogRecoveryIntegrationTests` exercises
@@ -1169,7 +1221,7 @@ are injected; no model or MLX kernel runs.
 
 ```bash
 swift test --skip-build --no-parallel \
-  --filter 'unprovenLaunchEvidencePreservesIntent|prelaunchHealthObservationRetainsIntent|partialLaunchEvidenceRequiresComparison|interruptedLaunchReceiptTimesOut|unprovenLaunchIntentDoesNotTimeOut|interruptedLaunchReceiptPromotes'
+  --filter 'unprovenLaunchEvidencePreservesIntent|prelaunchHealthObservationRetainsIntent|partialLaunchEvidenceRequiresComparison|interruptedLaunchReceiptTimesOut|unprovenLaunchIntentDoesNotTimeOut|interruptedLaunchReceiptPromotes|requestedRestart|crashAfterARequestedRestartStillCounts|crashLoopRestartedFromOutsideStillRollsBack|rebootAfterAHangIsAFailedStart|stopNobodyAskedForIsAFailedStart|restartsBeforePromotionAreLogged'
 ```
 
 It covers missing and partial baseline evidence, intent retention before
@@ -1177,6 +1229,29 @@ restart, later positive run-count or process-identity evidence, the startup
 timeout, one-time failure accounting and heartbeat promotion. It does not run
 native launchd, the controller cancellation interleaving or a signed release
 installation.
+
+The same suite covers restarts before promotion. The launch snapshot names a
+provider process started 7 minutes after the update and only that process
+lives, while the daemon state is still the replaced process's; the run marker
+(`provider-run.json`) is injected, as the replaced process left it or as the new
+process rewrote it.
+After a stop on request (`lifecycle_command`, `update`, `stall_restart`;
+`requestedRestartIsNotAFailedStart`,
+`requestedRestartWithoutAHeartbeatIsAFailedStart`,
+`requestedRestartDefersTheDownPathInsideItsOwnWindow`), the re-armed watchdog's
+first check must not count a failed start, with two already recorded; the new
+process is promoted 180 s after its first heartbeat, is a failed start only 300 s
+after its own start without one, and keeps the down path's grace for a long
+preload from its own start. After any other end (a crash, a hang or a SIGKILL
+leaves the record `running`, another SIGTERM records `shutdown`, or no record;
+`stopNobodyAskedForIsAFailedStart`, `crashAfterARequestedRestartStillCounts`,
+`crashLoopRestartedFromOutsideStillRollsBack`, `rebootAfterAHangIsAFailedStart`)
+the window stays the launch's whatever started the new process: three crashes
+restarted from outside the watchdog roll the release back, and the start at
+login after a hang is a failed start.
+`restartsBeforePromotionAreLogged` restarts a pending release every 122 s with a
+fresh heartbeat from each process: it is never promoted or charged, and the
+watchdog logs one warning at the fifth restart and one at the tenth.
 
 ## Cluster Pair Coordinated Update
 
@@ -1219,8 +1294,10 @@ re-exec, and the supervisor serves again from the restored binary; a release
 that answers is re-executed into as before; a restored predecessor that cannot
 start is not re-executed into. A supervisor with automatic updates off still
 checks for a rollback of the other Mac to follow, reports its own quarantine in
-its progress, and restarts into the restored release. The re-exec is observed,
-never performed.
+its progress, and restarts into the restored release. A candidate's service that
+three SIGTERMs from outside the supervisor stop cleanly (exit 0) is not rolled
+back, while three crashes (SIGKILL) or three stops by the liveness guard (a
+service that never beats) are. The re-exec is observed, never performed.
 `UpdateRecoveryReconcileTests`
 (`provider-swift/Tests/ProviderCoreTests/Update/UpdateRecoveryReconcileTests.swift`)
 rebuilds a Mac whose app was installed outside the updater over a stale update
@@ -1367,6 +1444,62 @@ run each implementation's checks in its owner repo.
 The [immutable platform test guide](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/developer/test.md)
 is historical context, not the current backend source authority.
 
+### A memory refusal on a real pair (dev memory fault)
+
+A dev or DevNet install can make one rank's memory read as taken while the
+next request runs, so a real pair can prove that a memory refusal ends that
+request alone, in every mode (D6). Both workers keep running, the client gets
+the memory 503 (or, once a stream has started, an error chunk with `code`
+`request_exceeds_node_budget`), and the pair serves the next request at once.
+
+- **Where.** The file `cluster-setup/memory-fault` in the dev install's home,
+  `~/.darkbloom-dev/cluster-setup/memory-fault`, on the Mac whose rank should
+  refuse. Rank 0 is the Mac that leads (`darkbloom-dev cluster status` names
+  it), rank 1 the other. Only a worker in a dev or DevNet install
+  (`~/.darkbloom-dev`) reads it; a production install never does
+  (`ClusterMemoryFault.permitted`, pinned by
+  `TensorParallelMemoryAbortTests.theMemoryFaultIsInertInAProductionInstallAndOneShotInADevOne`).
+- **What.** One integer N ≥ 1: from that request's Nth pass of the rank's host
+  memory gate on, for the rest of the request, the gate reads the Mac's memory
+  as taken. A running request's gate passes at most every 250 ms: a pipeline
+  stage checks at its first frame and then before each message it owes its
+  peer; a tensor-parallel rank checks after each token it commits; a batch
+  checks at its step boundaries. So `1` refuses at the first check (a
+  pipeline's first prompt frame, a tensor pair's first token), and `40` about
+  10 s into the request.
+- **When.** The worker reads the file when the next request starts on that Mac
+  and deletes it, so it fires once; a running pair needs no restart. The
+  request's end disarms it. With lanes (GLM tensor parallel's default eight,
+  for example), every pass of that rank's gate counts while it is armed: the
+  lanes' step checks, and another lane's reservation, which then reads the
+  memory as taken and is refused at reservation (the pair's 503), as any
+  memory refusal there is. A step check's refusal ends the newest running
+  lane, normally the armed one.
+- **How.** The fault changes only the sample the gate judges
+  (`ClusterMemoryFault.reading`, in `QwenDenseStageLoadWatch.admits`): no free
+  page and no file cache, as on a Mac whose memory another process has taken
+  (`withMemoryTaken`). The policy refuses it with its own sentence, so the
+  first check that judges it throws, exactly as for a real reading: a gate's
+  typed check, or any check outside it, which would end the worker on a real
+  Mac too. Pinned by `TensorParallelMemoryAbortTests.anArmedFaultIsTheReadingEveryCheckJudges`;
+  `RealMemoryRefusalTests` shows the same refusals on a taken reading with no
+  fault. The worker logs `darkbloom-memory-fault-v1 … armed_check=N`, then
+  `darkbloom-memory-fault-v1 … memory=taken` at the Nth pass, then
+  `darkbloom-stage-abort-v1` (pipeline), `finish=aborted … reason=memory`
+  (tensor parallel) or `memory-refused` (a batch).
+
+On the refusing rank's Mac, for example to refuse at the third check:
+
+```bash
+mkdir -p ~/.darkbloom-dev/cluster-setup
+printf '3\n' > ~/.darkbloom-dev/cluster-setup/memory-fault
+```
+
+Then send one request long enough to reach that check. The file is gone once
+the request starts; the answer is the 503 or the typed error chunk; both
+workers' processes are the same before and after; and the next request is
+served.
+
 ### Two-Mac Cluster Checks
 
 The coordinator-wire vectors
@@ -1394,8 +1527,14 @@ CI (`.github/workflows/provider-tests.yml`) runs them in three places. The job
 [Job sizes](build.md#job-sizes)) runs
 `libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh` and
 `libs/darkbloom-cluster/Tests/PrefillScheduleChecks/run.sh`, which compile a
-release build of the cluster runtime. Shard 2 of `test-cluster-focused`
-(Cluster Focused Checks) runs
+release build of the cluster runtime, and
+`libs/darkbloom-cluster-worker/Tests/LifecycleChecks/run.sh`: the worker
+package's own request lifecycle tests (`WorkerTests` and `WorkerLaneTests`, the
+worker coordinator over its real pipes with a fake runtime, in a debug build
+with `DARKBLOOM_WORKER_TEST_JOBS` jobs, 4 by default and 12 in CI), among them
+a running request that a rank's memory refused ending alone while the worker
+serves the next. No other job runs that package's tests. Shard 2 of
+`test-cluster-focused` (Cluster Focused Checks) runs
 `libs/darkbloom-cluster/Tests/StageMetadataChecks/run.py`,
 `libs/darkbloom-cluster/Tests/GPTOSSStageChecks/run.sh`,
 `libs/darkbloom-cluster/Tests/NemotronStageChecks/run.sh`,
@@ -2300,6 +2439,9 @@ Nemotron Super image fixtures and their goldens are generated by
 [README](../../scripts/nemotron-qualification/README.md)). PNG must match Pillow
 byte for byte and the final tensors bitwise; JPEG uses the bounds in the
 [image format reference](../reference/nemotron-super-image-formats.md).
+`NemotronSuperImageIOFormatTests` decodes WebP, GIF and BMP made from the PNG
+fixtures (the three WebP files with `cwebp`, the others in the test) to the same
+RGB8, and every sample layout ImageIO returns.
 Regenerated fixtures must be byte-identical unless a pinned reference changes.
 
 The three Nemotron Super reference clips in
@@ -2374,8 +2516,34 @@ Each passes the relay's inbound decode, the request plan, the pinned template
 and the output parser, and a compliant response validates streamed and
 complete. CPU only; it does not load a model or measure answer quality.
 
+## GPT-OSS checkpoint and replay tools
+
+Run the bounded CPU fixtures without MLX, real checkpoint payloads or a server.
+They need Python 3.11 or later (`hashlib.file_digest`,
+`unittest.TestCase.enterContext`); macOS's `/usr/bin/python3` 3.9 fails them:
+
+```bash
+python3 -m unittest discover -s scripts -p 'test_gptoss_*.py' -v
+```
+
+The tests cover byte-exact expert row mapping, packed nibble order, BF16
+preservation, inventory/offset validation, independent output readback, source
+hash refusals, sampled affine reconstruction and immutable input files. Replay
+tests reject ineffective cache hits, incomplete streams, early fixed-work stops
+and missing paged/cache-ready telemetry. They also pin the local-only network
+rule: any endpoint but a bare `http://` loopback URL is refused before any
+request, and the replay's own opener neither uses an environment HTTP proxy nor
+follows a redirect (answered in memory, with no socket). They do not execute
+GPU kernels or qualify a full model. Follow
+[artifact preparation](gptoss-checkpoint.md) for the separate source
+verification, full conversion and matched serving experiments.
+
+CI runs the same command on every run in the `ci-plan-checks` job (Check the CI
+plans) of `provider-tests.yml`, on the `ubuntu-24.04` runner's Python 3.12.
+
 ## Related
 
+- [GPT-OSS artifact preparation and replay](gptoss-checkpoint.md)
 - [Build](build.md)
 - [Serving-performance qualification](serving-performance-qualification.md)
 - [Historical references](historical-references.md)
@@ -2593,12 +2761,13 @@ record declares tensor parallel's rounds, and the status then reports the head
 as decoding. `InstalledBatchLanesCheck.swift` launches a real child
 with the fixed owner arguments and checks its exact environment, supported
 lane widths, out-of-range rejection, malformed-override parity even with an
-eight-lane family default, admission/owner/native parity, unsupported
+eight-lane saved width, admission/owner/native parity, unsupported
 mode and image gates, and both member ranks. No model, GPU or real service is
-started. The checks preserve the singleton and GLM tensor-parallel defaults
-and the serial-prefill Gemma 4 pipeline's default lanes
-(`DistributedInstalledPlan.gemma4PipelineBatchLanes`), which reach the rank,
-while a Gemma setup saved with the one-chunk lookahead keeps one lane;
+started. The checks preserve the singleton default: a Gemma 4 pipeline saved
+without a width serves one lane under either schedule and names none to its
+rank, while a width saved with serial prefill reaches the rank, and a Gemma 4
+or GLM tensor-parallel setup's saved width (2, 4, 6 or 8) reaches its owner
+and its rank, while one saved without a width serves one request at a time;
 `DistributedInstalledLanesTests` covers the same rules for every adapter and
 schedule. Actual multi-lane output, encrypted transport and retirement still require
 qualification on both Macs. The same real-child checks pass canonical local
@@ -2738,6 +2907,21 @@ cd provider-swift
 swift test --filter DistributedAutomaticBatchPlannerTests
 ```
 
+### Planning stack checks
+
+`ClusterPlacementTensorWidthTests.decideLendsItsCallerLittleStack` and
+`DistributedAutomaticBatchPlannerTests.theGuidedStepLendsItsCallerLittleStack`
+measure how much of its caller's stack each planning entry point uses:
+`ClusterPlacementFlow.decide` planning the 27B's widest tensor-parallel width,
+and the guided step (`ClusterSetupPlanning.decide`) planning its tensor
+parallel. `stackUsed` runs the call on a thread whose 16 MiB stack it fills with
+a pattern first, and the lowest byte that changed gives the depth, so a planner
+that grows too deep fails the check instead of killing the test process with
+SIGBUS. The budget is 128 KiB of a caller's 512 KiB
+(`planningCallerStackBudget`). Planning runs on its own stack
+([planning stack](../architecture/inference.md#planning-stack)); before it did,
+a debug build's checks measured 414 and 694 KiB.
+
 `DistributedLocalServerBatchReplacementTests` exercises the real host, bridge and loopback listener with fabricated model-free sessions. It covers widths two/four/eight, owner ACK before preparation, preserved pending response and listener, disconnect during loading, original queue expiry, failed-start release before fresh rollback, changed request-contract refusal, unresolved cleanup, stop during deferred factory preparation, and rejection of an unexpected actual lane count. A blocked read-only planner
 also reproduces a short burst draining before its proposal returns: the next
 real burst consumes the retained intent without a second planning call. Tests
@@ -2851,8 +3035,20 @@ existing request files must be regenerated into a fresh evidence directory.
 
 `HadamardLayerTests.testBonsaiFloat32RowsMatchSingletonPackedArithmetic` in
 `libs/mlx-swift/Tests/MLXTests/HadamardLayerTests.swift` compares multi-row
-FP32 calls with independently evaluated singleton calls, including grouped
-gated-delta layouts, optional bias, and prefill widths 511 and 512.
+FP32 calls of layers built with `independentRows: true` (pair stages) with
+independently evaluated singleton calls, including grouped gated-delta
+layouts, optional bias, and prefill widths 511 and 512.
+`testBonsaiFloat32RowsDefaultToOneBatchedPackedMatmul` compares the default
+(single Mac) with one batched `quantizedMM` over all rows, and checks that the
+opt-in leaves other block sizes batched. `testSingleMacRowsBatchFromTheThreshold`
+checks the single-Mac threshold for decode-shaped `[B, 1, H]` and prompt-shaped
+`[1, S, H]` calls: separate singleton calls below `minimumBatchedRows` (3),
+that is at two rows, and one batched `quantizedMM` from three rows on. `BonsaiStagePreparationTests` in
+`libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/BonsaiStagePreparationTests.swift`
+requires every packed projection of both pair stages to ask for the per-row
+arithmetic, and `BonsaiRowArithmeticTests.aSingleMacLoaderBuildsBatchedProjections`
+requires the single-Mac loader's call (no `independentRows`) to keep the
+default, which batches calls of three or more rows.
 `Float16ConstantCastTests` covers repeated calls, parameter and descriptor
 replacement, compiled state replacement and ineligible policies.
 `BonsaiRowArithmeticTests` in
@@ -3186,6 +3382,21 @@ It proves metadata accounting without reading or qualifying weight payloads.
 Full-artifact TP batching, RDMA, media, warm-prefix and throughput checks remain
 separate hardware gates.
 
+### Pipeline width checks
+
+A Gemma 4 pipeline's width ([Gemma pipeline lanes](../architecture/inference.md#gemma-pipeline-lanes))
+is checked from the planner to LOAD, on constructed Macs and metadata only:
+
+| Check | Run | What it proves |
+|---|---|---|
+| `PipelineWidthChecks.swift` | `libs/darkbloom-cluster/Tests/PlacementChecks/run.sh` | On Gemma 4's golden layout, `ClusterPlacementPolicy.pipelineLanes` adds each further lane's whole request state at the planned request to every rank's need, and nothing else, whatever request the speed is predicted for. One request plans byte for byte as before. A width is refused beside any other mode, beside the one-chunk lookahead, or for a family that admits requests only on arrival (GLM's pipeline) |
+| `PlacementSetupCheck.gemmaPipelineWidths` | `provider-swift/Tests/ClusterPlacementChecks/run.sh` | Through the guided step's own decision, two M5 Ultra 256 GB keep the one-chunk lookahead and save no width on both Macs, and so does every free memory level the sizing is checked at. The sizing itself (`ClusterPlacementPipelineWidth.size`) at a cap of eight saves 8, 4 or 2 with serial prefill as free memory falls, or, where one request fits, no width and the lookahead. The Mac with less free memory decides |
+| `ClusterPlacementPipelineWidthTests` | `ProviderCoreTests` | The same on a constructed layout: a guided Gemma 4 pipeline keeps the lookahead at every memory level, and the setup screen's number (`ClusterSetupPlanning.loads`) is one, as `DistributedInstalledPlan.batchLanes` is. The sizing at a cap of eight, as above. A Qwen 3.5 9B pipeline saves no width |
+| `QwenBatchLaneBookTests.testLoadChargesASavedWidthAsTheBookChargesItsLanes` | `DarkbloomClusterRuntimeTests` | LOAD's charge for a width is what the lane book charges that many lanes held at once |
+
+None of them is a hardware result. Output agreement, memory and a lone long
+prompt's time to its first token on the real pair are separate checks.
+
 ### Qwen27 TP warm-prefix checks
 
 `QwenTensorParallelBatchPrefixTests` checks original-grid boundaries, bilateral
@@ -3291,6 +3502,30 @@ or the check fails rather than passing on a host that caches nothing.
 
 Sources: `provider-swift/Tests/ProviderCoreTests/Inference/Distributed/ClusterServicePartStartCacheTests.swift`
 and `libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/CheckpointPayloadCacheCheck.swift`.
+
+### A part whose other Mac is away
+
+`ClusterServicePartRestartTests` runs the actual service loop for the leading
+Mac's part (pairing moved away, so nothing answers; the part is `/usr/bin/true`,
+which ends at once) with a control node whose other member was last heard past
+its time-to-live, inside a one-hour absence grace. The part's first restart must
+wait at least 30 s and the status must say the other Mac's answer ends the wait
+(`restartWaitsForOtherMac`); once the other Mac's answer is applied to the node,
+the part must start again within 3 s. With no grace and the model held alone,
+the leader serves alone: once its solo server (`solo:`), which also ends at
+once, has ended, the status must say it starts again within the ordinary 6 s,
+without the flag, though the other Mac is still away. The suite also checks the
+restart waits
+(`ClusterControlPartChoice.restartBackoff`: 6, 12, 24, then 30 s while the
+other Mac answers; 30 s doubling to 10 min while it doesn't), the modes that
+count as the other Mac away, and the leader's status line
+(`OnboardingLive.partWaitLine`). `Tests/ClusterControlChecks/run.sh` checks the
+same waits, modes and line with plain `swiftc`. Run it from `provider-swift`
+with `swift test --filter ClusterServicePartRestartTests`; it gives its service
+a power-assertion name of its own.
+
+Sources: `provider-swift/Tests/ProviderCoreTests/Inference/Distributed/ClusterServicePartRestartTests.swift`
+and `provider-swift/Tests/ClusterControlChecks/ControlChecks.swift`.
 
 ### Cluster service listeners after pairing again
 

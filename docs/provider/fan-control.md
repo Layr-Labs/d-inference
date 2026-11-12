@@ -1,6 +1,6 @@
 # Fan control (experimental)
 
-> Last updated: 2026-10-12
+> Last updated: 2026-11-09
 
 Hold the fans of an Apple Silicon Mac at a fixed speed while the provider is
 serving and the GPU is hot, so thermal throttling does not cut decode
@@ -139,6 +139,10 @@ darkbloom fan status --json
 sudo launchctl print system/io.darkbloom.fan | head
 ```
 
+`darkbloom status` summarizes the same state on its `Fan control (experimental)`
+line (`provider-swift/Sources/darkbloom/StatusCommand+FanControl.swift`,
+`Status.fanControlLine`).
+
 With the provider serving and the GPU above threshold for a few seconds,
 `mode` moves from `waiting_for_temperature` to `manual` and the fan RPM column
 rises to the configured percentage. Stop the provider (`darkbloom stop`); once
@@ -170,6 +174,7 @@ the new app bundle.
 | `fan: signed fan helper was not found; reinstall Darkbloom` | CLI not running from `Darkbloom.app/Contents/MacOS`, or the helper is missing from the bundle | Reinstall with `scripts/install.sh`; use `~/.darkbloom/bin/darkbloom` |
 | `fan: fan helper signature verification failed` | Helper not signed by Team `SLDQ2GJ6TL` | Reinstall from the official release |
 | `fan: fan control is unavailable: …` / `supported: false` | No SMC fans or valid GPU sensors | Check `fan diagnose`; permanently unsupported hardware cannot use fan control. An enabled helper retries an unusable startup inventory every 30 seconds while awake. |
+| GPU runs hot under macOS automatic fan speed; `darkbloom status` shows `Fan control (experimental): off` | Fan control is opt-in and the helper was never enabled | `sudo darkbloom fan enable` |
 | Fans never engage although the GPU is hot | No provider lease (`fan status` shows `waiting_for_provider`): the daemon is not running, or fewer than 3 consecutive samples were above threshold | `darkbloom status`; `darkbloom restart` |
 | `fan status` mode `error` or `safety_override` | SMC write refused or reading failed | `sudo darkbloom fan disable`, check `fan diagnose`, re-enable |
 | Fan control stops after an update | Helper is not replaced by the unprivileged updater | `sudo darkbloom fan enable` |

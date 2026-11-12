@@ -36,6 +36,9 @@ public final class AtomicProviderStats: Sendable {
     private let _cancelStagePostTerminalTotal = ManagedAtomic<UInt64>(0)
     private let _tokensAfterCancelTotal = ManagedAtomic<UInt64>(0)
     private let _cancelAbortNsSum = ManagedAtomic<UInt64>(0)
+    // Local to `darkbloom status`: the requests that ended early, by cause
+    // (`cancellationsPartialComplete` is their total).
+    private let _endedEarly = LockedEndedEarlyCounts()
 
     public init() {}
 
@@ -152,6 +155,15 @@ public final class AtomicProviderStats: Sendable {
     public func incrementCancellationsPartialComplete() {
         _cancellationsPartialComplete.add(1)
     }
+
+    /// A served request ended early: counted in `cancellationsPartialComplete`
+    /// and, by `cause`, in `endedEarly`.
+    public func recordEndedEarly(_ cause: InferenceEarlyEndCause) {
+        _endedEarly.add(cause)
+        _cancellationsPartialComplete.add(1)
+    }
+
+    public var endedEarly: EndedEarlyCounts { _endedEarly.counts }
 
     public func incrementGenerationErrorsAfterOutput() {
         _generationErrorsAfterOutput.add(1)
@@ -536,6 +548,15 @@ internal final class OSAllocatedUnfairLock: @unchecked Sendable {
         defer { os_unfair_lock_unlock(_lock) }
         return body()
     }
+}
+
+/// `EndedEarlyCounts` behind the unfair lock, for `AtomicProviderStats`.
+internal final class LockedEndedEarlyCounts: @unchecked Sendable {
+    private let lock = OSAllocatedUnfairLock()
+    private var value = EndedEarlyCounts()
+
+    func add(_ cause: InferenceEarlyEndCause) { lock.withLock { value.add(cause) } }
+    var counts: EndedEarlyCounts { lock.withLock { value } }
 }
 
 // MARK: - PongTracker (thread-safe timestamp for ping/pong timeout)

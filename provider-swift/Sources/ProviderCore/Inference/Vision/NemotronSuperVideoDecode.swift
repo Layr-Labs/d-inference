@@ -28,6 +28,7 @@ enum NemotronSuperVideoDecode {
         /// The wait on the decoder outlasted the plan's `decodeAllowance`.
         /// The allowance is wall time on this machine, so a valid movie on a
         /// slow or loaded machine can spend it; another provider may decode it.
+        /// Refused as `mediaMemoryUnavailable` (`SuperHTTPErrors.map`).
         case decodeAllowanceSpent
         /// Decoded frames disagree with the inspected track.
         case inconsistentFrames
@@ -52,7 +53,10 @@ enum NemotronSuperVideoDecode {
     /// frames of `codedPixels`: five seconds, then 2 ms a frame and 4 ns a
     /// coded pixel (ten times the 0.2 ms a frame and 0.4 ns a pixel an M3
     /// Ultra measured decoding H.264 and HEVC to BGRA), at most
-    /// `maximumDecodeAllowance`. Normalization and the tower do not count.
+    /// `maximumDecodeAllowance`. The cap lowers that margin for the largest
+    /// movies: for 18,000 frames of 1,920 x 1,088 (`maximumDecodedPixels`) an
+    /// idle M3 Ultra needs about 18.6 s, so 120 s is about 6.4 times that, not
+    /// 10 times. Normalization and the tower do not count.
     /// This is wall time, so a loaded machine spends it faster than the
     /// decoder's work alone does.
     static func decodeAllowance(frames: Int, codedPixels: Int) -> Duration {

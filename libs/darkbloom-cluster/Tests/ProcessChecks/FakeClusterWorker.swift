@@ -149,6 +149,17 @@ import DarkbloomClusterSecurity
                     if behavior == "chatty" {
                         for _ in 0..<48 { try FileHandle.standardError.write(contentsOf: Data(repeating: 121, count: 24_576)); usleep(300_000) }
                     }
+                    // "abort-once": the first request ends on both ranks for rank
+                    // 1's memory (D6), rank 1 at once, rank 0 at its first answered
+                    // token; every later request runs normally.
+                    if behavior == "abort-once", reservations == 1, rank == 1 {
+                        try emit(.aborted(.init(reason: .memory, rank: 1))); try emit(.retired(.aborted)); continue
+                    }
+                    // "abort-mismatch": rank 1 names another refusing rank than
+                    // rank 0's "abort-once" does; the owner must not take it.
+                    if behavior == "abort-mismatch", reservations == 1, rank == 1 {
+                        try emit(.aborted(.init(reason: .memory, rank: 0))); try emit(.retired(.aborted)); continue
+                    }
                     if rank == 1 {
                         if behavior == "telemetry" {
                             try emit(.requestTelemetry(.init(handoffNanoseconds: 81_000_000, handoffBytes: 1_000, mtpDrafted: 10, mtpAccepted: 8)))
@@ -165,6 +176,9 @@ import DarkbloomClusterSecurity
                         try emit(.committedToken(ordinal: 0, tokenID: 9, committedTokens: reservation!.promptTokenIDs.count)); selected = 1
                     }
                 case .tokenDecision(_, let decision):
+                    if behavior == "abort-once", reservations == 1 {
+                        try emit(.aborted(.init(reason: .memory, rank: 1))); try emit(.retired(.aborted)); continue
+                    }
                     let last = 8 + selected
                     let reason: ClusterWorkerFinishReason? = reservation!.stopTokenIDs.contains(last) ? .eos
                         : selected == reservation!.outputCount ? .length : decision == .cleanStop ? .clientStop : nil

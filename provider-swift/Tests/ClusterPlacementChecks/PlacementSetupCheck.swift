@@ -618,8 +618,8 @@ import Foundation
     /// tensor-parallel plan as the family states it (every rank holds it whole; 2 GiB standing in for its request
     /// bytes, which the family computes with MLX), and the recorded M5 Ultra profile with its measured index on both
     /// Macs. A new pair plans tensor parallel on equal shares before any load measured the link, and so does every
-    /// plan after the first load's keyed probe; both setups save tensor parallel with no shares, which the
-    /// provider serves with eight lanes (`DistributedInstalledPlan.tensorParallelBatchLanes`).
+    /// plan after the first load's keyed probe; both setups save tensor parallel with no shares, and the widest width
+    /// both Macs admit now under GLM's lane charge (`ClusterPlacementTensorWidth`), which the provider serves.
     static func glmTensorParallelPair() throws {
         let golden = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
@@ -672,17 +672,41 @@ import Foundation
             pointToPointSmallMicroseconds: 167, pointToPointLargeBytes: 4 << 20, pointToPointLargeMicroseconds: 2_622,
             allSumSmallBytes: 20_480, allSumSmallMicroseconds: 38, allSumLargeBytes: 10_485_760, allSumLargeMicroseconds: 1_296),
             measuredUTC: "2026-10-25T09:00:00Z")!
+        // As the plan tool now states it, each lane after the first adds GLM's lane charge at the memory plan's request
+        // (`ClusterTensorParallelFamilyPlan.laneBytes`); 9 GiB stands in here for the one it computes from the
+        // allocator's bounds. A layout without one (an earlier plan tool's) prices no width.
+        let lane = 9 * gib
+        var charged: ClusterModelLayout?
+        if var object = try JSONSerialization.jsonObject(with: layout.encoded()) as? [String: Any],
+           var tensor = object["tensorParallel"] as? [String: Any], var family = tensor["family"] as? [String: Any] {
+            family["laneBytes"] = lane; tensor["family"] = family; object["tensorParallel"] = tensor
+            charged = try? ClusterModelLayout.decode(JSONSerialization.data(withJSONObject: object))
+        }
+        require("glm pair: a layout that states GLM's lane charge is read", charged != nil)
         for (name, link) in [("a new pair, before any load measured the link", ClusterLinkCosts.unmeasured),
                              ("after the first load's keyed probe", measured)] {
-            let decided = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "ultra-a",
-                localProfile: m5, peerProfile: m5, layout: layout, link: link, environment: [:], benchDebugBuild: false)
-            let chosen = decided.result.chosen
-            let saved = try decided.setup.map { setup in try setup.configurations.values.map {
-                try ClusterConfigurationCodec.decode($0, capability: capability, capabilitySHA256: description.capabilitySHA256) } } ?? []
+            func decide(_ layout: ClusterModelLayout) throws
+                -> (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?, saved: [ClusterConfiguration]) {
+                let decided = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "ultra-a",
+                    localProfile: m5, peerProfile: m5, layout: layout, link: link, environment: [:], benchDebugBuild: false)
+                let saved = try decided.setup.map { setup in try setup.configurations.values.map {
+                    try ClusterConfigurationCodec.decode($0, capability: capability, capabilitySHA256: description.capabilitySHA256) } } ?? []
+                return (decided.lines, decided.result, decided.setup, saved)
+            }
+            let plain = try decide(layout), chosen = plain.result.chosen
             require("glm pair, 2x M5 Ultra 256 GB, \(name): tensor parallel 1:1 with the NextN layer on both ranks, both setups saved so",
                 chosen?.mode == .tensorParallel && chosen?.tensorShares == nil && chosen?.ranks.count == 2
-                    && chosen?.ranks.allSatisfy({ $0.fit == .now }) == true && saved.count == 2
-                    && saved.allSatisfy { $0.selectedGenerationMode == .tensorParallel && $0.tensorShares == nil && $0.batchLanes == nil })
+                    && chosen?.ranks.allSatisfy({ $0.fit == .now }) == true && plain.saved.count == 2
+                    && plain.saved.allSatisfy { $0.selectedGenerationMode == .tensorParallel && $0.tensorShares == nil && $0.batchLanes == nil })
+            // The widest of 8, 6, 4 and 2 whose lane charges both Macs admit now beside one request's need.
+            let one = chosen?.ranks.map(\.needBytes).max() ?? .max
+            let fits = [8, 6, 4, 2].first { one + ($0 - 1) * lane <= m5.memory.admissibleNowBytes }
+            guard let charged else { continue }
+            let sized = try decide(charged), wide = sized.result.chosen
+            require("glm pair, 2x M5 Ultra 256 GB, \(name): with GLM's lane charge both setups save \(fits.map(String.init) ?? "no width") requests at once (8 on these Macs), each lane after the first adding it to every rank's need",
+                fits == 8 && wide?.mode == .tensorParallel && wide?.tensorShares == nil && sized.saved.count == 2
+                    && sized.saved.allSatisfy { $0.selectedGenerationMode == .tensorParallel && $0.batchLanes == fits }
+                    && wide?.ranks.map(\.needBytes).max() == one + 7 * lane)
         }
         // Feature parity is the fastest-plan families' rule (`ClusterModeParity`): a GLM record declaring a tensor-parallel
         // gap (a hypothetical one: no prompt prefix) plans exactly what production does, line for line.
@@ -1303,6 +1327,93 @@ import Foundation
                 && planned.result.tensorParallel?.evidence == .measured)
     }
 
+    /// Gemma 4's pipeline through the guided step, as the setup's pipeline question plans it (the person chose the
+    /// pipeline): in 0.10.12 the plan chosen for one request stands however many lanes both Macs could hold (owner,
+    /// 2026-11-10): the one-chunk lookahead, no width, one request at a time. The sizing a guided setup no longer runs
+    /// (`ClusterPlacementPipelineWidth.size`) still plans the plain pipeline at the widest of 8, 4 and 2 requests at once
+    /// that both Macs admit now, each lane after the first charged its whole state at the planned request on every rank,
+    /// with serial prefill; where only one request fits it leaves the plan alone, and the smaller Mac decides.
+    static func gemmaPipelineWidths(description base: [String: Any]) throws {
+        func saved(_ decided: (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?),
+                   _ record: (layout: ClusterModelLayout, capability: ClusterRuntimeCapability, description: ClusterPairDescription))
+            throws -> [ClusterConfiguration] {
+            try decided.setup.map { setup in try setup.configurations.keys.sorted().map {
+                try ClusterConfigurationCodec.decode(setup.configurations[$0]!, capability: record.capability,
+                    capabilitySHA256: record.description.capabilitySHA256)
+            } } ?? []
+        }
+        func lookaheadAlone(_ decided: (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?),
+                            _ configurations: [ClusterConfiguration]) -> Bool {
+            decided.result.chosen?.mode == .pipeline && decided.result.chosen?.prefillSchedule == .oneChunkLookahead
+                && configurations.count == 2 && configurations.allSatisfy {
+                    $0.batchLanes == nil && $0.selectedPrefillSchedule == .oneChunkLookahead && $0.selectedGenerationMode == .pipeline
+                }
+                && !decided.lines.contains { $0 == "Concurrent request memory" || $0.hasPrefix("  Lanes read each prompt") }
+        }
+        require("Gemma pipeline width: no family's guided pipeline saves a width in 0.10.12",
+            ClusterPlacementPipelineWidth.qualifiedLanes(adapter: .gemma4LayerStage, hasPrivateImages: false) == 1)
+        // Two M5 Ultra 256 GB with the pair's measured link: the lookahead and one request at a time.
+        let ultras = try indexedUltras(), golden = try gemma(features: gemmaFeatures, description: base)
+        let alone = try aloneSpeed(golden.layout, prefill: 7_000, decode: 90)
+        let wide = try ClusterPlacementFlow.decide(description: golden.description, capability: golden.capability,
+            localMemberID: "mac-one", localProfile: ultras.local, peerProfile: ultras.peer, layout: golden.layout,
+            measurements: [alone], link: ultras.link, chosenMode: .pipeline, environment: [:], benchDebugBuild: false)
+        require("Gemma pipeline width: 2x M5 Ultra 256 GB keep the one-chunk lookahead and save no width, both Macs alike, and the plan says nothing of lanes",
+            lookaheadAlone(wide, try saved(wide, golden)))
+
+        // One cut only, and a whole-model charge of 4 GiB a request at the planned request, so the width alone moves each
+        // rank's need: by 4 GiB a lane after the first, on both ranks.
+        let lane = 4 * gib
+        let charged = try gemma(features: gemmaFeatures, description: base) { object in
+            object["admittedCuts"] = [15]; object["requestChargeEveryRankBytes"] = lane
+            object["requestChargeEveryRankBytesPerToken"] = nil
+        }
+        func macs(_ free: Int, _ peerFree: Int) throws -> [ClusterPlacementDevice] {
+            [try device("mac-one", physicalGiB: 256, freeGiB: free / gib, prefill: 7_000, decode: 90),
+             try device("mac-two", physicalGiB: 256, freeGiB: peerFree / gib, prefill: 7_000, decode: 90)]
+        }
+        func decide(free: Int) throws -> (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?) {
+            let pair = try macs(free, free)
+            return try ClusterPlacementFlow.decide(description: charged.description, capability: charged.capability,
+                localMemberID: "mac-one", localProfile: pair[0].profile, peerProfile: pair[1].profile, layout: charged.layout,
+                chosenMode: .pipeline, environment: [:], benchDebugBuild: false)
+        }
+        // One request with serial prefill on these Macs, as the planner prices it: the largest rank's need.
+        var serial = ClusterPlacementPolicy(); serial.modes = [.pipeline]; serial.schedules = [.serial]
+        guard let one = try ClusterPlacementPlanner.plan(devices: macs(200 * gib, 200 * gib), layout: charged.layout,
+                                                         policy: serial).chosen?.ranks.map(\.needBytes).max() else {
+            return require("Gemma pipeline width: one serial request is placed on two 256 GB Macs", false)
+        }
+        func need(_ lanes: Int) -> Int { one + (lanes - 1) * lane }
+        // Free memory half a lane above each width's need, and below the next width's.
+        let levels = [(200 * gib, 8), (need(4) + lane / 2, 4), (need(2) + lane / 2, 2), (need(1) + lane / 2, nil)] as [(Int, Int?)]
+        for (free, _) in levels {
+            let decided = try decide(free: free)
+            require("Gemma pipeline width: \(free / gib) GiB free on both Macs keeps the lookahead and saves no width",
+                lookaheadAlone(decided, try saved(decided, charged)))
+        }
+        // The sizing itself at a cap of eight, what a family `qualifiedLanes` lists gets.
+        func sized(free: Int, peerFree: Int? = nil) throws -> (lanes: Int?, result: ClusterPlacementResult) {
+            let pair = try macs(free, peerFree ?? free)
+            var policy = ClusterPlacementPolicy(); policy.modes = [.pipeline]
+            var result = try ClusterPlacementPlanner.plan(devices: pair, layout: charged.layout, policy: policy)
+            var lanes: Int?
+            try ClusterPlacementPipelineWidth.size(&result, devices: pair, layout: charged.layout, policy: policy,
+                link: .unmeasured, maximumLanes: 8, lanes: &lanes)
+            return (lanes, result)
+        }
+        for (free, expected) in levels {
+            let width = try sized(free: free)
+            let schedule: ClusterPrefillSchedule = expected == nil ? .oneChunkLookahead : .serial
+            let largest = width.result.chosen?.ranks.map(\.needBytes).max()
+            require("Gemma pipeline width at a cap of eight: \(free / gib) GiB free on both Macs sizes \(expected.map(String.init) ?? "no width") with \(schedule.rawValue), each lane after the first charged 4 GiB on every rank",
+                width.lanes == expected && width.result.chosen?.mode == .pipeline && width.result.chosen?.prefillSchedule == schedule
+                    && (expected.map { largest == need($0) } ?? true))
+        }
+        require("Gemma pipeline width at a cap of eight: both Macs must admit it, so the Mac with less free memory decides (four lanes)",
+            try sized(free: 200 * gib, peerFree: need(4) + lane / 2).lanes == 4)
+    }
+
     /// Feature parity's record and refusals: per-mode features cross the capability codec canonically and a record
     /// without them keeps its bytes; a fastest-plan family whose record declares none holds tensor parallel back;
     /// where only tensor parallel fits and it drops a feature, the plan refuses and saves nothing (owner, 2026-11-01),
@@ -1500,6 +1611,7 @@ import Foundation
         try ownerPilot(description: descriptionObject)
         try mimoFastestPlanLines(description: descriptionObject)
         try gemmaEvidenceLines(description: descriptionObject)
+        try gemmaPipelineWidths(description: descriptionObject)
         try featureParity(description: descriptionObject)
         try benchCap(layout: layout, description: description, capability: capability, slowTwo: slowTwo)
         try forcedMode(layout: layout, description: description, capability: capability, slowTwo: slowTwo)

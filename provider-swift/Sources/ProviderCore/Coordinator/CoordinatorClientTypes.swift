@@ -119,7 +119,8 @@ public enum CoordinatorEvent: Sendable {
         serviceReservationID: String? = nil,
         promptWork: PromptWork? = nil
     )
-    case cancel(requestId: String)
+    /// `reason` is nil from a coordinator that sends none.
+    case cancel(requestId: String, reason: CoordinatorCancelReason? = nil)
     case attestationChallenge(nonce: String, timestamp: String)
     case codeAttestationResumeChallenge(EncryptedPayload)
     case appAttestShadow(AppAttestShadowPayload, reply: AppAttestShadowReply)

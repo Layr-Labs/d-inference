@@ -10,6 +10,15 @@ protocol QwenBatchCancellableSession: AnyObject {
 
 extension QwenLayerStageSession: QwenBatchCancellableSession {}
 
+/// Which lane a rank's memory refusal stops (D6): the newest one still
+/// running, the highest join order, never one already stopping; nil when
+/// every lane is. The other lanes never stop for it.
+enum QwenBatchMemoryStop {
+    static func lane(orders: [UUID: Int], stopping: Set<UUID>) -> UUID? {
+        orders.filter { !stopping.contains($0.key) }.max { $0.value < $1.value }?.key
+    }
+}
+
 enum QwenBatchCancellation {
     static func requested(ownerCancelled: Bool, deadline: UInt64, now: UInt64) -> Bool {
         ownerCancelled || now >= deadline
@@ -30,6 +39,12 @@ enum QwenBatchCancellation {
             }
         }
         return result
+    }
+
+    /// The lanes a reply's memory mask names (`QwenBatchWire.Reply.memoryMask`),
+    /// held to the same running lanes of the same header.
+    static func peerMemoryStops(mask: Int, slots: [QwenBatchWire.Slot]) throws -> Set<UUID> {
+        try peerRequests(mask: mask, slots: slots)
     }
 
     /// Try every session even if an earlier native retirement fails. Failure

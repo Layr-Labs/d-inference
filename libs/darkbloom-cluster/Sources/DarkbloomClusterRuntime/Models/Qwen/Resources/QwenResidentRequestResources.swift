@@ -124,8 +124,9 @@ struct QwenResidentRequestAllowance {
         } catch {
             // Name the context the refusal was for: the gate's own sentence
             // names the bytes; the operator needs the tokens to act on it.
-            guard contextTokens > 0 else { throw error }
-            throw ProbeError("A request of \(contextTokens) context tokens (prompt plus output) on this rank: \(error)")
+            guard contextTokens > 0 else { throw QwenResidentMemoryRefusal(message: String(describing: error)) }
+            throw QwenResidentMemoryRefusal(message:
+                "A request of \(contextTokens) context tokens (prompt plus output) on this rank: \(error)")
         }
     }
 }

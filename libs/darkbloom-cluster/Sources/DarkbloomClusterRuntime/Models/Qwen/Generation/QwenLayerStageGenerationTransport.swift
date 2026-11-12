@@ -1,13 +1,25 @@
+import DarkbloomClusterProtocol
 import DarkbloomClusterSecurity
 import Foundation
 import MLX
 
 /// One residual in flight. All native IO uses the existing completed Collective
 /// helpers. A failure poisons this transport; the owner must fence both ranks.
+///
+/// A stop (D6) does not: with `abort`, each message this rank owes its peer
+/// is first a stop point. When the latch is set the message's own record
+/// carries the stop marker instead (`QwenStageAbortWire`), the peer answers
+/// with one confirmation, and `QwenStageAborted` is thrown with the record
+/// streams still aligned. Every receive recognizes the peer's marker the same
+/// way, confirms it and throws. Both ranks then retire the request together
+/// (`exchangeAbortRetirement`) and the collectives serve the next request.
 final class QwenLayerStageGenerationTransport {
     let agreement: QwenLayerStageGenerationAgreement
     let collective: Collective
     private(set) var isFailed = false
+    /// The request ended on both ranks alone; only the abort's retirement exchange remains.
+    private(set) var isAborted = false
+    private let abort: QwenStageAbort?
     private var inOperation = false
     struct BoundaryTicket {
         let packet: QwenLayerStageGenerationBoundaryPacket
@@ -22,11 +34,82 @@ final class QwenLayerStageGenerationTransport {
         .request(type, requestID: agreement.request.requestID, agreementFingerprint: agreement.fingerprint, label)
     }
 
-    init(agreement: QwenLayerStageGenerationAgreement, collective: Collective) throws {
+    init(agreement: QwenLayerStageGenerationAgreement, collective: Collective, abort: QwenStageAbort? = nil) throws {
         guard collective.size == 2, (0...1).contains(collective.rank) else {
             throw ProbeError("Generation transport requires two initialized ranks")
         }
-        self.agreement = agreement; self.collective = collective
+        guard abort.map({ $0.rank == collective.rank }) ?? true else {
+            throw ProbeError("Generation stop latch belongs to another rank")
+        }
+        self.agreement = agreement; self.collective = collective; self.abort = abort
+    }
+
+    // MARK: Stop (D6)
+
+    /// A stop point a driver takes before a forward whose result is the next
+    /// message it owes (rank 0's boundary at a frame's start): when the latch
+    /// is set, the marker goes in that message's slot and the forward is skipped.
+    func stopIfLatched(owing slot: QwenStageAbortSlot, check: () throws -> Void) throws {
+        try operation { try stop(at: slot, check: check) }
+    }
+
+    /// The latch alone, without sending: a driver skips work it would only
+    /// throw away (rank 0's lookahead chunk while a boundary is still owed).
+    func stopLatched() throws -> Bool { try abort?.poll() ?? false }
+
+    /// Both ranks confirm they retired an aborted request, as a clean finish's
+    /// retirement exchange does, bound to the abort: rank 0 sends first.
+    func exchangeAbortRetirement(_ aborted: QwenStageAborted, check: () throws -> Void) throws {
+        guard isAborted, !isFailed, !inOperation else {
+            isFailed = true; throw ProbeError("Generation abort retirement needs an aborted transport")
+        }
+        inOperation = true; defer { inOperation = false }
+        do {
+            let fingerprint = try QwenStageAbortWire.retirementFingerprint(agreement: agreement, abort: aborted.abort)
+            let actual: [Int32]
+            if rank == 0 {
+                try sendAck(.requestRetired, fingerprint, check: check)
+                actual = try receiveAckValues(type: .requestRetired, check: check)
+            } else {
+                actual = try receiveAckValues(type: .requestRetired, check: check)
+                try sendAck(.requestRetired, fingerprint, check: check)
+            }
+            try QwenLayerStageGenerationAcknowledgement.validate(actual, agreement: agreement,
+                phase: .requestRetired, packetFingerprint: fingerprint, rank: 1 - rank)
+        } catch { isFailed = true; throw error }
+    }
+
+    /// When the latch is set: the marker in `slot`, then the peer's confirmation.
+    private func stop(at slot: QwenStageAbortSlot, check: () throws -> Void) throws {
+        guard let abort, try abort.poll(), let value = abort.latched else { return }
+        switch slot {
+        case .data(let type, let label):
+            _ = try collective.sendCompleted(MLXArray([QwenStageAbortWire.lengthMarker]), to: 1 - rank, maximumBytes: 4,
+                scope: record(type, label).part("length"), check: check)
+        case .acknowledgement:
+            _ = try collective.sendCompleted(MLXArray(try QwenStageAbortWire.acknowledgement(agreement: agreement, rank: rank)),
+                to: 1 - rank, maximumBytes: 256, scope: record(.acknowledgement, "ack"), check: check)
+        case .frame(let frameBytes, let type, let label):
+            try sendFrame(try QwenStageAbortWire.packet(agreement: agreement, abort: value), frameBytes: frameBytes,
+                record: record(type, label), check: check)
+        case .compactBoundary:
+            try sendFrame(try QwenStageAbortWire.packet(agreement: agreement, abort: value), frameBytes: compactBoundaryFrameBytes,
+                record: record(.residualPayload, "compact-boundary"), check: check)
+        }
+        let confirmation = try collective.receiveCompleted(shape: [64], dtype: .int32, from: 1 - rank, maximumBytes: 256,
+            scope: record(.acknowledgement, "abort"), check: check).asArray(Int32.self)
+        guard confirmation == (try QwenStageAbortWire.confirmation(agreement: agreement, rank: 1 - rank)) else {
+            throw ProbeError("Generation peer did not confirm this rank's stop")
+        }
+        throw QwenStageAborted(abort: value, local: true)
+    }
+
+    /// The peer stopped in the slot this rank was receiving: one confirmation, then the abort.
+    private func peerStopped(_ value: ClusterWorkerAbort, check: () throws -> Void) throws -> Never {
+        guard value.rank == 1 - rank else { throw ProbeError("Generation stop marker names this rank") }
+        _ = try collective.sendCompleted(MLXArray(try QwenStageAbortWire.confirmation(agreement: agreement, rank: rank)),
+            to: 1 - rank, maximumBytes: 256, scope: record(.acknowledgement, "abort"), check: check)
+        throw QwenStageAborted(abort: value, local: false)
     }
     func retire() { isFailed = true; pendingBoundaryFingerprint = nil }
 
@@ -44,6 +127,7 @@ final class QwenLayerStageGenerationTransport {
                                check: () throws -> Void) throws -> BoundaryTicket {
         try operation {
             guard rank == 0 else { throw ProbeError("Only generation rank0 sends residuals") }
+            try stop(at: .boundaryHeader, check: check)
             let expected = packet.content.expectation, source = agreement.descriptor
             guard boundary.requestFingerprint == expected.requestFingerprint,
                   boundary.sourceConfigurationSHA256 == source.sourceConfigurationSHA256,
@@ -90,6 +174,7 @@ final class QwenLayerStageGenerationTransport {
             let packet = try QwenLayerStageGenerationBoundaryPacket.decode(
                 receiveData(maximumBytes: QwenLayerStageGenerationBoundaryPacket.maximumEncodedBytes,
                     record: record(.residualHeader, "boundary"), check: check), expected: expected)
+            try stop(at: .acknowledgement, check: check)
             try sendAck(.boundaryReady, packet.fingerprint, check: check)
             let dtype: DType
             switch expected.dtype {
@@ -111,6 +196,8 @@ final class QwenLayerStageGenerationTransport {
                 hidden: agreement.request.profile.hiddenSize, dtype: dtype,
                 residualStreams: agreement.request.profile.residualStreams ?? 1)
             try check()
+            // Stopping now skips this rank's forward: the marker is the consumed acknowledgement.
+            try stop(at: .acknowledgement, check: check)
             let result = try consume(boundary, packet)
             try check()
             try sendAck(.boundaryConsumed, packet.fingerprint, check: check)
@@ -121,6 +208,7 @@ final class QwenLayerStageGenerationTransport {
     func sendToken(_ packet: QwenLayerStageGenerationTokenPacket, check: () throws -> Void) throws {
         try operation {
             guard rank == 1 else { throw ProbeError("Only generation rank1 selects target tokens") }
+            try stop(at: .data(.targetToken, "token"), check: check)
             try sendData(packet.encoded(), maximumBytes: 4096, record: record(.targetToken, "token"), check: check)
             try receiveAck(.tokenAccepted, packet.fingerprint, from: 0, check: check)
         }
@@ -137,12 +225,15 @@ final class QwenLayerStageGenerationTransport {
     func acknowledgeToken(_ packet: QwenLayerStageGenerationTokenPacket, check: () throws -> Void) throws {
         try operation {
             guard rank == 0 else { throw ProbeError("Only generation rank0 acknowledges returned tokens") }
+            try stop(at: .acknowledgement, check: check)
             try sendAck(.tokenAccepted, packet.fingerprint, check: check)
         }
     }
     func sendDecision(_ packet: QwenLayerStageGenerationDecisionPacket, check: () throws -> Void) throws {
         try operation {
             guard rank == 0 else { throw ProbeError("Only request owner sends generation decisions") }
+            // A decision that ends the request anyway is sent as it is.
+            if packet.content.decision == .proceed { try stop(at: .data(.generationDecision, "decision"), check: check) }
             try sendData(packet.encoded(), maximumBytes: 4096, record: record(.generationDecision, "decision"), check: check)
             try receiveAck(.decisionAccepted, packet.fingerprint, from: 1, check: check)
         }
@@ -158,6 +249,7 @@ final class QwenLayerStageGenerationTransport {
     func acknowledgeDecision(_ packet: QwenLayerStageGenerationDecisionPacket, check: () throws -> Void) throws {
         try operation {
             guard rank == 1 else { throw ProbeError("Only generation rank1 acknowledges decisions") }
+            if packet.content.decision == .proceed { try stop(at: .acknowledgement, check: check) }
             try sendAck(.decisionAccepted, packet.fingerprint, check: check)
         }
     }
@@ -200,6 +292,7 @@ final class QwenLayerStageGenerationTransport {
                              check: () throws -> Void) throws {
         try operation {
             guard rank == 0, agreement.compactDecode else { throw ProbeError("Only compact-decode rank0 sends combined residuals") }
+            try stop(at: .compactBoundary, check: check)
             let expected = packet.content.expectation, source = agreement.descriptor
             guard expected.frame.phase == .decode,
                   boundary.requestFingerprint == expected.requestFingerprint,
@@ -277,6 +370,7 @@ final class QwenLayerStageGenerationTransport {
     func sendCompactToken(_ packet: QwenLayerStageGenerationTokenPacket, check: () throws -> Void) throws {
         try operation {
             guard rank == 1, agreement.compactDecode else { throw ProbeError("Only compact-decode rank1 selects target tokens") }
+            try stop(at: .frame(frameBytes: Self.compactControlFrameBytes, .targetToken, "compact-token"), check: check)
             try sendFrame(try packet.encoded(), frameBytes: Self.compactControlFrameBytes, record: record(.targetToken, "compact-token"), check: check)
         }
     }
@@ -294,6 +388,9 @@ final class QwenLayerStageGenerationTransport {
     func sendCompactDecision(_ packet: QwenLayerStageGenerationDecisionPacket, check: () throws -> Void) throws {
         try operation {
             guard rank == 0, agreement.compactDecode else { throw ProbeError("Only the request owner sends generation decisions") }
+            if packet.content.decision == .proceed {
+                try stop(at: .frame(frameBytes: Self.compactControlFrameBytes, .generationDecision, "compact-decision"), check: check)
+            }
             try sendFrame(try packet.encoded(), frameBytes: Self.compactControlFrameBytes,
                 record: record(.generationDecision, "compact-decision"), check: check)
             try receiveAck(.decisionAccepted, packet.fingerprint, from: 1, check: check)
@@ -319,6 +416,7 @@ final class QwenLayerStageGenerationTransport {
                      check: () throws -> Void) throws {
         try operation {
             guard rank == 0, agreement.phaseSplit != nil else { throw ProbeError("Only phase-split rank0 hands state over") }
+            try stop(at: .frame(frameBytes: QwenPhaseSplitHandoffHeader.frameBytes, .handoffHeader, "handoff"), check: check)
             let header = sender.header
             try sendFrame(try header.encoded(), frameBytes: QwenPhaseSplitHandoffHeader.frameBytes,
                 record: record(.handoffHeader, "handoff"), check: check)
@@ -353,6 +451,7 @@ final class QwenLayerStageGenerationTransport {
                 throw error
             }
             guard let header = intake.receiver.header else { throw ProbeError("Hand-off header was not retained") }
+            try stop(at: .acknowledgement, check: check)
             try sendAck(.handoffReady, header.fingerprint, check: check)
             let state = record(.handoffState, header.fingerprint)
             var index = 0
@@ -385,7 +484,10 @@ final class QwenLayerStageGenerationTransport {
             if live { try sendAck(.handoffRefused, agreement.fingerprint, check: check) }
             return
         }
-        try operation { try sendAck(.handoffAccepted, header.fingerprint, check: check) }
+        try operation {
+            try stop(at: .acknowledgement, check: check)
+            try sendAck(.handoffAccepted, header.fingerprint, check: check)
+        }
     }
 
     /// Rank 1: one batch of tokens it selected alone. It does not wait for
@@ -394,6 +496,7 @@ final class QwenLayerStageGenerationTransport {
     func sendRelay(_ packet: QwenPhaseSplitRelayPacket, check: () throws -> Void) throws {
         try operation {
             guard rank == 1 else { throw ProbeError("Only phase-split rank1 relays tokens") }
+            try stop(at: .frame(frameBytes: QwenPhaseSplitRelayPacket.frameBytes, .tokenRelay, "relay"), check: check)
             try sendFrame(try packet.encoded(), frameBytes: QwenPhaseSplitRelayPacket.frameBytes,
                 record: record(.tokenRelay, "relay"), check: check)
         }
@@ -425,6 +528,10 @@ final class QwenLayerStageGenerationTransport {
     func sendRelayDecision(_ packet: QwenPhaseSplitRelayDecisionPacket, check: () throws -> Void) throws {
         try operation {
             guard rank == 0 else { throw ProbeError("Only the request owner answers relayed tokens") }
+            if packet.content.decision == .proceed {
+                try stop(at: .frame(frameBytes: QwenPhaseSplitRelayDecisionPacket.frameBytes, .relayDecision, "relay-decision"),
+                    check: check)
+            }
             try sendFrame(try packet.encoded(), frameBytes: QwenPhaseSplitRelayDecisionPacket.frameBytes,
                 record: record(.relayDecision, "relay-decision"), check: check)
         }
@@ -434,6 +541,7 @@ final class QwenLayerStageGenerationTransport {
     func sendAlonePrompt(_ packet: QwenAlonePromptPacket, check: () throws -> Void) throws {
         try operation {
             guard rank == 1 else { throw ProbeError("Only the decoding rank serves a request alone") }
+            try stop(at: .frame(frameBytes: QwenAlonePromptPacket.frameBytes, .tokenRelay, "alone-prompt"), check: check)
             try sendFrame(try packet.encoded(), frameBytes: QwenAlonePromptPacket.frameBytes,
                 record: record(.tokenRelay, "alone-prompt"), check: check)
         }
@@ -459,7 +567,23 @@ final class QwenLayerStageGenerationTransport {
         let data = try collective.receiveCompleted(shape: [frameBytes], dtype: .uint8, from: 1 - rank,
             maximumBytes: frameBytes, scope: scope, check: check).asData().data
         try check()
-        return try QwenControlFrame.decode(data, frameBytes: frameBytes)
+        let body = try QwenControlFrame.decode(data, frameBytes: frameBytes)
+        if let stopped = try QwenStageAbortWire.abort(in: body, agreement: agreement) { try peerStopped(stopped, check: check) }
+        return body
+    }
+
+    /// A fixed control frame of another protocol over this request's records
+    /// (a pipeline MTP round's frames), with the same stop point and marker.
+    func sendControlFrame(_ body: Data, frameBytes: Int, type: ClusterRecordType, label: String,
+                          stopPoint: Bool, check: () throws -> Void) throws {
+        try operation {
+            if stopPoint { try stop(at: .frame(frameBytes: frameBytes, type, label), check: check) }
+            try sendFrame(body, frameBytes: frameBytes, record: record(type, label), check: check)
+        }
+    }
+    func receiveControlFrame(frameBytes: Int, type: ClusterRecordType, label: String,
+                             check: () throws -> Void) throws -> Data {
+        try operation { try receiveFrame(frameBytes: frameBytes, record: record(type, label), check: check) }
     }
     private func receiveHandoffAck(_ phase: QwenLayerStageGenerationAcknowledgement.Phase, _ fingerprint: String,
                                    check: () throws -> Void) throws {
@@ -486,6 +610,7 @@ final class QwenLayerStageGenerationTransport {
                              check: () throws -> Void) throws -> Data {
         let length = try collective.receiveCompleted(shape: [1], dtype: .uint32, from: 1 - rank,
             maximumBytes: 4, scope: scope.part("length"), check: check).item(UInt32.self)
+        if length == QwenStageAbortWire.lengthMarker { try peerStopped(.init(reason: .memory, rank: 1 - rank), check: check) }
         guard length > 0, Int(length) <= maximumBytes else { throw ProbeError("Generation received control byte cap") }
         let data = try collective.receiveCompleted(shape: [Int(length)], dtype: .uint8, from: 1 - rank,
             maximumBytes: maximumBytes, scope: scope.part("body"), check: check).asData().data
@@ -504,7 +629,11 @@ final class QwenLayerStageGenerationTransport {
     private func receiveAckValues(type: ClusterRecordType, check: () throws -> Void) throws -> [Int32] {
         let actual = try collective.receiveCompleted(shape: [64], dtype: .int32, from: 1 - rank,
             maximumBytes: 256, scope: record(type, "ack"), check: check).asArray(Int32.self)
-        try check(); return actual
+        try check()
+        if type == .acknowledgement, actual == (try QwenStageAbortWire.acknowledgement(agreement: agreement, rank: 1 - rank)) {
+            try peerStopped(.init(reason: .memory, rank: 1 - rank), check: check)
+        }
+        return actual
     }
     private func receiveAck(_ phase: QwenLayerStageGenerationAcknowledgement.Phase, _ fingerprint: String,
                             from peer: Int, check: () throws -> Void) throws {
@@ -512,11 +641,17 @@ final class QwenLayerStageGenerationTransport {
             agreement: agreement, phase: phase, packetFingerprint: fingerprint, rank: peer)
     }
     private func operation<T>(allowPendingBoundary: Bool = false, _ body: () throws -> T) throws -> T {
-        guard !inOperation, !isFailed, allowPendingBoundary || pendingBoundaryFingerprint == nil else {
-            isFailed = true; throw ProbeError("Generation transport is failed, reentered or has pending consumption")
+        guard !inOperation, !isFailed, !isAborted, allowPendingBoundary || pendingBoundaryFingerprint == nil else {
+            isFailed = true; throw ProbeError("Generation transport is failed, aborted, reentered or has pending consumption")
         }
         inOperation = true; defer { inOperation = false }
         do { let result = try body(); guard !isFailed else { throw ProbeError("Generation transport was poisoned") }; return result }
+        catch let stopped as QwenStageAborted {
+            // Both ranks are at the same point of the record stream: nothing
+            // owed is in flight, so this is not a failure of the transport.
+            isAborted = true; pendingBoundaryFingerprint = nil
+            throw stopped
+        }
         catch { isFailed = true; throw error }
     }
 }

@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-12
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -245,10 +245,12 @@ never negative), `rankN_weights_bytes`, `rankN_fit` and `rankN_device`.
 Existing per-request
 admission and LOAD safeguards remain authoritative. GLM, private-image and
 coordinator-installed native-member sessions do not use this
-automatic policy. A serial-prefill Gemma 4 pipeline, coordinator-installed or
-local, starts at its installed default width
-([Gemma pipeline lanes](#gemma-pipeline-lanes)); on a local pair this policy
-can still widen it. Explicit diagnostic mode or lane settings retain their choice.
+automatic policy. A Gemma 4 pipeline, coordinator-installed or local, starts at
+the width its setup saved with serial prefill, else at one lane: a guided
+setup keeps the one-chunk lookahead and saves none
+([Gemma pipeline lanes](#gemma-pipeline-lanes)). On a local pair this policy
+can still widen it. Explicit diagnostic mode or lane settings retain their
+choice.
 
 A stage's resident prefix tier takes half the room that LOAD measures beside
 its quote, in 256 MiB steps, up to a ceiling of a thirty-second of the Mac's
@@ -708,10 +710,12 @@ owner, holds its own media reservations (its prompt's KV pages are charged
 like text's, by the engine's process-memory owner), and cancels/drains
 through terminal retirement. Synthetic tests exercise image cancellation, reuse
 and close. It does not manufacture a shared native lease; the managed slot's
-chat route is its only production caller. The CPU `NemotronSuperImageDecode` sniffs PNG or JPEG content and
+chat route is its only production caller. The CPU `NemotronSuperImageDecode` sniffs PNG, JPEG, WebP, GIF or BMP content and
 reproduces the reference loader's RGB8 conversion: PNG of every colour type and
 bit depth is decoded in-process and matches Pillow exactly, while JPEG samples
-come from ImageIO within test-enforced bounds. Container limits are checked
+come from ImageIO within test-enforced bounds. WebP, GIF (frame 0) and BMP
+come from ImageIO (`NemotronSuperImageIORaster`), read without colour
+management with alpha dropped. Container limits are checked
 before any raster buffer exists, and the SDK resize is bitwise equal to CPU
 PyTorch on the golden fixtures; see the
 [image format reference](../reference/nemotron-super-image-formats.md).
@@ -719,18 +723,46 @@ Its quote alone is not admission. The exact-owner `runEncoded` boundary charges
 ingress before JSON/base64/header inspection and media before decode. The media
 charge adds the SDK's shape-derived tower and projector working-memory bound for
 the largest image, which preparation evaluates one at a time; the global
-activation reserve is unchanged. It only accepts `data:image/png;base64,` and
-`data:image/jpeg;base64,` URIs, whose content selects the format, and uses the
-owned tokenizer. Native input arrays are constructed in a separate retained,
+activation reserve is unchanged. It only accepts inline base64 URIs under an
+image media type, `data:image/<subtype>[;attribute=value]...;base64,` in any
+case (`isInlineBase64Image`; `image/jpg` included), whose content selects the
+format, and uses the owned tokenizer. Native input arrays are constructed in a separate retained,
 fenced epoch before tower preparation. Synthetic RGB tests cover generation,
 cancellation, busy rejection and release after task completion; loopback HTTP
-tests serve PNG and JPEG variants through the tiny synthetic owner. Actual
+tests serve PNG, JPEG, WebP, GIF and BMP variants through the tiny synthetic owner. Actual
 tokenizer parity, RADIO peak workspace and full-checkpoint image qualification
 remain required.
 
 The same binding serves one inline video as the only media of a request
 (`data:video/mp4;base64,` or `data:video/quicktime;base64,`; one media request
-at a time, like images). Under the ingress reservation `NemotronSuperVideoDecode.inspect`
+at a time, like images). A request that arrives while the owner's request, or
+the binding's media request, has finished its answer and only its settlement
+remains (native retirement, the media charge's release) waits up to
+`NemotronSuperServingPolicy.finishingWait` (1 s) for it instead of a 429
+`queue_full` (`NemotronSuperLocalBridgeBuilder.Owner.admitLocalRequest(waitingUpTo:stackedUntil:cancelled:)`,
+`NemotronSuperLocalImageBinding.admit(stackedUntil:)`). The managed slot's owner
+admits up to eight requests at once (`loadPlan`, halved by the load fit), so its
+media requests meet the binding's one-at-a-time limit long before the owner's
+request limit. A media request that
+arrives while the media request ahead of it is already streaming its answer
+(its first chunk has passed; images end about 2 s later), at the binding, or at
+a full single-request owner whose request is such an answer (a wider owner
+leaves this wait to the binding), also waits, until
+`NemotronSuperServingPolicy.stackedMediaWaitEnd`: at most `stackedMediaWait`
+(3 s), and for a coordinator request only while its forwarded first-content
+deadline still covers the owner's expected media first-chunk time (the longest
+of its last `mediaFirstChunkSamples` (64), each measured from the image binding's
+admission, so earlier waits do not inflate it, and never below
+`minimumExpectedMediaFirstChunk` (6 s), so fast recent ones cannot shorten the
+wait a slow image needs; `Owner.expectedMediaFirstChunk`) and
+`stackedMediaWaitMargin`. A local request forwards no deadline and may wait the
+whole bound. At the binding it waits only while the owner keeps a request
+slot free besides its own (`Owner.hasFreeLocalAdmission`), so a waiting image
+never takes the slot a text request would get. One request waits at a time and
+takes the next admission before any newcomer; any other request, text
+mid-answer included, is still refused at once. A waiting request reserves nothing, so the previous request's media
+charge is released before it reserves; cancellation (a coordinator cancel or a
+local disconnect) ends the wait. Under the ingress reservation `NemotronSuperVideoDecode.inspect`
 runs the shared `MediaIngest.decodeVideo` checks (label, decoded bytes,
 container, duration, coded frame size up to
 `NemotronSuperServingPolicy.maximumVideoFramePixels` pixels in any shape),
@@ -764,8 +796,8 @@ image's charge. As for images, a body over
 `NemotronSuperServingPolicy.maximumEncodedBodyBytes` (40 MiB, which holds one
 part at the shared 25 MiB inline-media cap as base64 and every body the
 provider's transports deliver) returns `media_too_large`, a video prompt over
-the context returns the invalid-media 400, and a charge the shared budget
-cannot hold returns the media-memory 503. The owner lock covers
+the context returns `invalid_request` (400, `promptExceedsContext`), and a
+charge the shared budget cannot hold returns the media-memory 503. The owner lock covers
 only the admission check while the video prompt is decoded and rendered.
 `NemotronSuperVideoDecode.Frames` decodes the movie in order as the batch needs
 frames: AVFoundation decodes every frame up to the last sampled one to BGRA,
@@ -777,14 +809,19 @@ the reader's one cancellation, runs in order on the reader's own serial queue
 while the pulling thread waits for the sample, so the reader is never
 cancelled during a read. Waiting on the decoder is bounded by
 `NemotronSuperVideoDecode.decodeAllowance` (5 s, then 2 ms a frame and 4 ns a
-coded pixel, at most `maximumDecodeAllowance`, 120 s): when it is spent the
+coded pixel, at most `maximumDecodeAllowance`, 120 s). The per-frame and
+per-pixel terms are 10 times what an idle M3 Ultra measured, but the 120 s cap
+lowers the margin for the largest movies: 18,000 frames of 1,920 x 1,088 need
+about 18.6 s on an idle M3 Ultra, so the cap is about 6.4 times that. When the
+allowance is spent the
 wait ends and the video is refused with `decodeAllowanceSpent`. The allowance
 is wall time, so a loaded machine spends it faster than the decoder's work
 alone. A spent allowance stops the reader; it is not a reader failure and is
 not decoded again. Because the movie's work is already bounded by the plan's
 decoded pixels, a spent allowance is this provider's fault: it refuses as a
-retryable 503 (failure code `capacity`), so the coordinator can send the
-request to another provider.
+retryable 503 (failure code `capacity`, error reason
+`media_memory_unavailable`), so the coordinator can send the request to
+another provider without a capacity strike or a budget clamp.
 Cancelling the request, as the binding's `drain` does, ends the wait
 at once. Either way the reader is cancelled once the read in progress
 returns, and that read's sample is dropped.
@@ -799,11 +836,43 @@ batch's last tubelet, since a token scores only against the same position of
 the previous tubelet; the host scores then select the kept rows, the same rows
 EVS selects over the whole video. Each tubelet's kept rows are substituted
 at its `<image>` run as a causal span with `mediaKind` `video`. A tubelet whose
-rows were all pruned keeps its label and wrappers and has no span. Invalid,
-oversized or undecodable videos map to the invalid-media 400; a spent decode
-allowance maps to the retryable 503. AVFoundation's
+rows were all pruned keeps its label and wrappers and has no span. A codec or
+frame layout the route does not serve maps to `unsupported_media`, a video
+above a frame, frame-count or decoded-pixel limit to `media_too_large`, and an
+unreadable movie to `invalid_media`; a spent decode allowance maps to the
+retryable 503. AVFoundation's
 BGRA conversion differs from FFmpeg's at chroma edges, so frames are close to,
 not equal to, the reference loader's.
+
+Image and video requests take the same request plan as text
+(`NemotronSuperRequestPlan`): the prompt renders the plan's messages, with the
+tool-choice and response-format instructions, its declared tools and its
+controls (`imagePromptTokens`, `videoPrompt`), the bridge runs the plan's
+`bridgeRequest`, and `NemotronSuperLocalOutput` withholds and validates tool
+calls and JSON answers as for text. So `response_format` (`json_object`,
+`json_schema`), `tools`, `tool_choice` (auto, none, required, a named
+function), `parallel_tool_calls` and `min_p: 0` are served with media, and
+every control the text route refuses is refused with media in the same way
+(`invalid_request`). Super therefore advertises `native_media_tools`
+(`ToolChoiceEnforcementPolicy.advertisesNativeMediaTools`), and the coordinator
+routes forced tool choice with media, and media in tool results, to it. It also
+advertises `native_media_controls` (`advertisesNativeMediaControls`): a
+coordinator with platform
+[#729](https://github.com/Layr-Labs/darkbloom-platform/pull/729) (on platform
+`dev`, not yet in production) sends a Super request with image or video and a
+JSON response format or tools only to a Mac that advertises it
+([`BuildNeedsNativeMediaControls`](https://github.com/Layr-Labs/darkbloom-platform/blob/820c2755a85b9a9e7b033ea488d2f8d53a0d57a6/coordinator/registry/native_media_tools.go)).
+Without #729 such requests reach any Super Mac, and a Mac without this build
+refuses them.
+`NemotronSuperLocalImageBinding.encodedBody` keeps only the media rules. Each
+refusal names its cause by its failure code (`SuperHTTPErrors.map`):
+
+| Cause | Failure code |
+|---|---|
+| A request control, tool or prompt fault, a prompt with its visual tokens beyond the context, or rendered text (message, tool declaration, response-format instruction) that names `<image>` or `<video>` | `invalid_request` |
+| A media label or source the route does not take, audio, a content part that is not text, image or video, more than 16 images, images with a video, a second video, an image encoding or geometry the decoder does not serve, a video codec, frame layout or frame geometry it does not serve | `unsupported_media` (`MediaIngest.MediaError.unsupportedMedia`) |
+| An image above the byte, pixel or resize-workspace limit, a body above the owner's bound, a video above a frame, frame-count or decoded-pixel limit | `media_too_large` |
+| Corrupt or truncated media | `invalid_media` |
 
 SDK installation now holds resident plus bounded staging reservations across
 sequential exclusive construction epochs. Completed fences release temporary
@@ -1252,10 +1321,17 @@ Without a bank (the default) the builder keeps them in an
 `SSDHybridCheckpointStore` (`NemotronSuperLocalPrefixCache.durableIdentity`):
 the SDK's complete codec writes each chunk checkpoint's KV, conv/SSM state and
 the assistant's prompt history encrypted under the provider's cache root, at
-the slot's effective checkpoint precision (`engine_v2_kv_checkpoint_quantization`,
-`balanced` by default): older attention rows are coded, while the conv/SSM
-state and the assistant's history stay exact
-([checkpoint precision](kv-cache-quantization.md#native-execution-with-quantized-checkpoints)). The
+Super's checkpoint precision (`NemotronSuperLocalPrefixCache.checkpointPrecision`).
+That is native unless Super's own `engine_v2_kv_checkpoint_quantization_by_model`
+entry or `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` selects a profile; the global
+`engine_v2_kv_checkpoint_quantization` does not apply to Super. A native restore
+continues a cold prefill bit for bit. Under a profile such as `balanced`, older
+attention rows are coded while the conv/SSM state and the assistant's history
+stay exact
+([checkpoint precision](kv-cache-quantization.md#native-execution-with-quantized-checkpoints)),
+and on the pinned checkpoint that moved restored reasoning answers off the cold
+ones. A native checkpoint of 8,192 tokens is about 249 MB, against about 204 MB
+under `balanced`. The
 slot then advertises a durable capability (`prefix_cache_v2_models`), its
 checkpoints survive restarts within the store's TTL, and the coordinator's
 repeat hint gates their writes as for every other model. A durable checkpoint
@@ -1564,6 +1640,18 @@ throws `MultiModelBatchSchedulerEngineError.tokenBudgetExhausted`
 answers 503 with the fixed capacity message before response headers
 (`CORSResponder`), and the coordinator receives a pre-stream `inference_error`
 503 with `failure_code` `capacity` and `error_reason` `token_budget_exhausted`.
+The gate charges each request once, at its prompt plus `max_tokens` beside its
+fixed bytes (`EngineV2Bridge.glm5NextCommittedBytes`). A request is in `active`
+from the engine's acceptance but keeps its gate reservation until
+`submitTokenized` returns, which a streamed local request does once the engine
+starts it, so the larger of its two figures counts. Counting it twice left a
+256 GB M5 Ultra two 57k/16k requests instead of three (M5U window 3, 11-10). The
+engine ledger and the process-memory owner still refuse what does not fit.
+The heartbeat's `active_token_budget_used` reports what that gate charges, the
+held requests and gate reservations (`EngineV2Bridge.heartbeatCommittedBytes`).
+The engine's reserved bytes also keep the paged pool's retained segments after
+every request retires, which the engine reuses, so reporting them read an idle
+GLM slot as 90–99 % full and the coordinator turned its requests away.
 The engine's activation check prices step scratch for every row at the full
 context against the same capacity, so the protected scheduler's running-row
 cap is the largest value that check admits
@@ -1689,7 +1777,11 @@ streams on a separate typed channel, and the answer is withheld until
 generation ends, then decoded and checked (`json_schema` against the caller's
 schema, through the shared compiled subset when the schema fits it) before it
 is exposed; invalid output is a 422 with no
-content (`GLM5NextResponseFormat`, `GLM5NextResponseFormatOutput`). Forced
+content (`GLM5NextResponseFormat`, `GLM5NextResponseFormatOutput`). One Mac
+serves it with image or video input the same way: the instruction turn renders
+in the media prompt (`EngineV2VisionPrefill.glm5NextUserInput`), and the media
+path routes reasoning to the typed channel and records the withheld answer as
+the text path does; a cluster pair refuses that combination with 400. Forced
 `tool_choice` (required or a named function) is structured post-validation, as
 on Qwen 3.5/3.8 and Nemotron: the forcing instruction renders, the native GLM
 parser withholds the call until end of stream, and `ToolConstraintValidation`
@@ -1790,7 +1882,18 @@ architecture and explicit operator caps. A reservation is released only after
 engine retirement, not when a caller merely requests cancellation. Atomic
 deadline admission passes its retirement acknowledgement to the event pump;
 an early terminal returns to the caller while the service and KV reservations
-remain owned until that acknowledgement completes.
+remain owned until that acknowledgement completes. With
+`DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION`, an unseeded request on
+the ordinary path also submits through `EngineV2.submitWithRetirement` and sets
+`CBv2Request.terminalPrecedesCheckpointPublication`: its client terminal no longer
+waits for its complete-checkpoint write, while the service and KV reservations,
+staging and the ready receipt are released at retirement, after that write
+settles (`EngineV2Bridge+Submission.swift`). Seeded requests keep the default
+order because their sampling reuses a stable engine ID. The pump times each
+such request from its terminal to its retirement; one that retires at least
+1 ms after its answer is marked with that time in the provider log and an
+`engine_health` event (`EngineV2Bridge.noteRetirementAfterTerminal`,
+[early-terminal marker](../reference/telemetry-schema.md#provider-early-terminal)).
 
 For queued native requests, `CBv2NativeBlockEngine.pump` makes one cancellation
 decision for both `finishWaiting` and queue removal, so a concurrent cancellation
@@ -1819,7 +1922,15 @@ An uncancelled calibration retirement schedules the next eligible resident
 slot immediately; the process-wide owner still permits only one session at a
 time. That successor scheduling runs after the session's retirement, outside
 the task a preempting customer request waits for; a preempted session schedules
-no successor. Ordinary and native MiMo load
+no successor. That wait is bounded
+(`provider-swift/Sources/ProviderCore/Inference/Performance/IdleCalibrationCoordinator.swift`,
+`admitForeground`): it ends when the session retires, when the waiting request
+is cancelled, or after `retirementBound` (30 s). A probe whose engine stopped
+stepping never retires, and an unbounded wait held every later request on the
+Mac accepted and never started. Past the bound the request is refused as
+retriable capacity (`token_budget_exhausted: the idle calibration probe did not
+retire`) before any reservation, and the slot that owns the session reads
+`crashed` until the session retires (`isOverdue`). Ordinary and native MiMo load
 completion share a handoff that releases the finished construction activity and
 offers the newly loaded slot first,
 while keeping the load-transition gate closed. It rechecks cancellation and
@@ -1831,7 +1942,9 @@ MoE Qwens, and standalone `CBv2NativeBlockEngine` slots run an excluded
 128-token warmup followed by two uncached solo probes
 of at most 512 prompt tokens and 32 output tokens. Completed calibration seeds
 prefill/decode evidence without requiring a customer job and runs once per loaded
-engine. A probe's prompt sample must pass the same filters as a serving sample
+engine. After its bootstrap an ordinary engine re-runs one of those solo probes
+only when three deadline refusals that stale evidence explains ask for it
+([deadlines](#deadlines), `DeadlineRefusalStreak`). A probe's prompt sample must pass the same filters as a serving sample
 (`EngineV2Bridge.classifyPrefillSample`): a computation window of at least 1 ms
 and a rate of at most 20,000 tokens per second (`maxPlausiblePrefillTps`). This
 ceiling is equal to the coordinator's
@@ -1982,6 +2095,44 @@ submits the frame. `SendHandle` and `ChunkSender` persist across reconnects,
 so an old request's frame processed after a replacement sink binds still
 passes this check; it does not enforce request-to-session identity.
 
+A coordinator request stopped after it sent output settles with the usage it
+delivered (`StreamedGenerationUsage.cancelledTerminal`) and is counted for
+`darkbloom status` under what stopped it (`EndedEarlyCounts`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/InferenceEarlyEnd.swift`).
+The first cancel of the request's `InferenceCancellationToken` names the cause:
+the coordinator's `cancel` with its optional `reason` and `paid`
+(`routeCoordinatorCancel`), a dropped connection
+(`handleCoordinatorDisconnected`), or this Mac's own stop (`handleCancellation`
+with `localCause`; a local cancel that names no cause is never counted as
+paid). A paid stop
+(`InferenceEarlyEndCause.isPaid`) that lands after the engine finished the
+answer with `stop` or `length` is not counted: the bridge records that finish
+on the request's `EngineV2RequestUsageSignal` (`answerFinished`) before it
+yields the terminal events, and the coordinator pays the request as delivered.
+An unpaid stop counts wherever it lands: the frames loop may not have sent the
+finished answer yet, and nothing is paid for it.
+
+While an answer runs, `darkbloom status` lists it (`Answers in progress`), since
+the served counters move only at its finish. Each capacity tick,
+`ProviderLoop.refreshRunningRequests` reads every bridge's active requests
+(`EngineV2Bridge.runningRequestSamples`: the admission and first-token instants
+and the output tokens `recordProgress` already counts per delta, so no
+per-token work is added; the engine's own calibration, shape-warmup and
+shader-cache probes and a pair's warmup canary are skipped), and
+`RunningRequestProgressTracker`
+(`provider-swift/Sources/ProviderCore/Service/DaemonRunningRequests.swift`)
+turns them into the daemon state's `running_requests`: model, elapsed, tokens
+so far, the rate since the previous sample, and a short hash of the request ID.
+A Mac that serves only you lists them as well: the standalone server samples
+its resident slots' bridges the same way, at most every 2 s, into the state it
+writes every 250 ms
+(`provider-swift/Sources/ProviderCore/Server/StandaloneServer+RunningRequests.swift`,
+`runningRequestsForState`). A pair's leading Mac lists the pair's answers when
+the pair serves through Darkbloom, since its part holds the pair's bridge; a
+pair that serves only on its local API (`DistributedLocalServer`) writes no
+state file, so it lists none. Nemotron Super's owner route bypasses the bridge,
+so its answers are not listed.
+
 Decoded text keeps a character the tokenizer writes as `<0xHH>` tokens wherever it
 falls. swift-transformers' `ByteFallbackDecoder` releases those tokens only when a
 later token arrives, so a decode ending in them drops them and shows nothing pending.
@@ -2064,10 +2215,19 @@ reaches a destination
 A donor's stream retires only after its complete checkpoint is published
 (`EngineLoopV2.finishAfterCompletePrefixPublication`), so export time is added
 to the donating response's end. At a quantized checkpoint precision, export
-encodes each older attention row on the CPU with one prepared row encoder per
-segment read, which writes the scalar codec's exact bytes
-([conversion](../reference/ssd-kv-cache.md#complete-checkpoint-payload),
+encodes each older attention row on the CPU and writes the scalar codec's exact
+bytes ([conversion](../reference/ssd-kv-cache.md#complete-checkpoint-payload),
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/NativeQuantizedCheckpointTensorSource.swift`).
+It reads a head's consecutive native rows from the source in batches of up to
+256 KiB (`CBv2NativeCheckpointRowCodec.exportBatchBytes`), so a read's fixed
+cost is paid per batch: under GLM-5.3-Flash's native profile each read
+revalidates the publication's native binding. With one read per row, a
+200k-token prompt's stream on an M5 Ultra stayed open 63 s after its last
+token, about 28 µs per coded row, of which coding took about 3 µs. Each batch is coded on up to four cores
+(`exportCodingWorkers`, a quarter of the active ones), one prepared encoder
+per core, and the encoder rotates eight lanes at a time with the scalar
+butterflies' additions in the same order, so the bytes and the first refused
+row are those of coding row by row (`CBv2NativeCheckpointBatchCoding`).
 
 Segmented paged admission no longer waits for queued GPU work. A released row's
 free 64 MiB segments are parked per pool, up to `min(2 GiB, slot grant / 8)`,
@@ -2089,6 +2249,22 @@ idleness and clears while request admission waits
 (`WholeMacServiceBudget.performIfIdle`).
 `DARKBLOOM_TTFT_SEGMENT_RETENTION=0` and `DARKBLOOM_TTFT_IDLE_CACHE_SWEEP=0`
 restore the previous behavior ([configuration](../reference/configuration.md)).
+
+Page placement keeps a busy pool's segmented decode at one pass per layer. The
+decode binds at most 17 segments per pass
+(`PagedSegmentDispatchPlan.maximumBindings`), so a layer whose partitions touch
+more segments needs more passes, issued one after another. A group's free pages
+form two tiers (`PagedKVFreePages`): pages that a prefix-cache alias still names
+wait in eviction order and are reused only when no other page is free; every
+other free page is placed by address. Each segment's usable pages split into
+runs of 16 pages, one 256-token partition. A request's layer continues in the
+run of its last page, then takes a free run in the same segment, then one in the
+segment with the most free runs, so requests that start together use different
+segments; only when no run is free does it take the lowest free page. Before, a
+retired request's pages went to the front of one shared free list and the next
+requests filled those holes across many segments, which took about one pass per
+partition once a busy engine had retired its first requests
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVFreePages.swift`).
 
 Resident publication uses a submission-unique `prefixCacheReceiptID`; the
 sampling engine ID can repeat after a seeded request completes. The bridge
@@ -2138,12 +2314,157 @@ elapsed nanoseconds. Numerics only — never tokens, text or hashes
 | Prompt-chunk attention | 128-query blocks (`DARKBLOOM_CBV2_ATTN_QUERY_BLOCK`; paged blocks other than Qwen4 QSA build an absolute mask), bounding the composed score tensor. A full-attention chunk with no window, softcap, vision span or bidirectional mask, whose head_dim MLX fuses (64/72/80/96/128; 256 on NAX from 1024 queries in bf16/fp16), is one `.causal` call on either KV backend (live packed paged KV keeps its own path); `DARKBLOOM_TTFT_FUSED_CAUSAL_PREFILL=0` restores blocks | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/AttentionV1.swift` (`usesFusedCausalPrefill`), `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedLayerCache.swift` (`prefillAttend`) |
 | `enablePrefixCache` | true when the slot has an effective SSD cache, enabled paged resident cache, or recurrent checkpoint-bank configuration, or complete SSD checkpoint store; engine capability gates still apply | `EngineV2Factory+Production.swift` (`assembleProductionBuild`), `EngineV2.swift` |
 | `requestTimeout` | 120 s legacy total wall, used only when `DARKBLOOM_CBV2_LEGACY_REQUEST_TIMEOUT` is affirmative | `EngineLoopV2.swift`, `CBv2EngineLoopConfig`; `EngineV2Factory+Configuration.swift` |
-| `stepTimeout` | 30 s | `CBv2EngineLoopConfig` |
+| `stepTimeout` | 30 s; 120 s (the prefill progress lease) for native MiMo, because a watchdog trip seals a native engine for good and a healthy MiMo prefill step can pass 30 s on an M3 Ultra | `CBv2EngineLoopConfig`; `MiMoV26PrefillProfile.swift` (`nativeMiMoLoopConfig`) |
 | `admissionLease`, `prefillProgressLease`, `decodeProgressLease`, `backpressureLease` | 120 s each | `CBv2EngineLoopConfig` |
 | `safetyCeilingDecodeFloorTPS` | 5 | `CBv2EngineLoopConfig` |
 
 Environment variables are named here, never defaulted; defaults live in
 [`../reference/configuration.md`](../reference/configuration.md).
+
+### Gemma 4 native dispatch
+
+The pinned SDK reduces Gemma 4 dispatch overhead in the shared text tower.
+`Gemma4MLP` uses the existing compiled GeGLU product for matching GPU
+FP16/BF16/FP32 inputs; CPU execution, mixed dtypes and disabled compiled decode
+retain the prior expression. The intermediate dtype and model parameter names,
+quantization, loaders and adapter paths are preserved. Sources:
+`libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4Text.swift`
+(`gemma4GeluProduct`), `libs/mlx-swift-lm/Libraries/MLXLMCommon/SwitchLayers.swift`
+(`compiledGeGLU`).
+
+This change does not alter command-buffer submission: Gemma 4's decode limits
+are the separate [operation-count policy](#gemma-decode-command-buffers).
+Step-width, admission and memory-pressure checks, paged attention, prefix
+caching and SSD write policy are unchanged. See the
+[hardware and memory qualification](hardware-support.md#gemma-4-dispatch-qualification)
+for the measured memory scope.
+
+An [initial endpoint A/B/B/A screen](https://github.com/Layr-Labs/mlx-swift-lm/blob/a63b4c69b73f05ff3e08ed51d22bcbb60a2a1447/docs/benchmarks/gemma4-lossless-dispatch-2026-10-25/README.md) of
+`gemma-4-26b-qat-4bit` on one M5 Max measured a 3.45% and 3.90% improvement in
+the two paired orderings of the HTTP decode proxy: approximately 99.2–99.6 to
+103.0–103.1 tok/s. Each leg used two fixed single-request prompts with 8,192
+cached tokens and 256 completion tokens, with exact MTP acceptance in both arms.
+Outputs and completion usage matched; the same candidate passed 12 endpoint
+capability smokes. That candidate also carried an earlier scoped command-buffer
+limit (100 operations or 512 M distinct input elements, production geometry
+only), which the operation-count policy has since replaced. The measurement
+therefore does not isolate the GeGLU product, and it establishes no prefill,
+broader-concurrency or sustained-load gain. The shared tower serves
+text and VLM callers. Downstream clustering integration requires merging the
+shared-layer change with its stage-specific projection policies and separately
+qualifying command-buffer integration; updating its SDK pin alone is insufficient.
+Clustering and non-M5 performance are unmeasured.
+
+### Gemma 4 compiled feed-forward dispatch
+
+The pinned SDK also reuses a shape-specialized graph for the existing Gemma 4
+feed-forward expression. Eligible stock evaluation-mode MoE layers pass their
+live parameter arrays as explicit compiled state, preserving the original input
+geometry, routing, arithmetic order and output dtype. Child-module identity
+changes invalidate the old trace; direct parameter updates and checkpoint
+materialization remain visible without a second parameter tree. Sources:
+`libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4Text.swift`
+(`feedforward`, `feedforwardCompilationState`),
+`libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4CompiledFeedforward.swift`
+(`Gemma4CompiledFeedforwardCache`).
+
+The path requires GPU BF16 inputs, sequence width 1 or 2, batch size 1–7, and
+`B * S * topK < 64`. Expert banks must be affine4/group64; dense and router
+projections may be affine4 or affine8/group64. Scheduled prefill, CPU execution,
+training, adapters or custom children, fused expert layouts, unsupported formats
+and active component diagnostics retain the eager expression. The default follows
+the existing compiled-decode setting; `MLX_COMPILED_DECODE=0` or
+`DARKBLOOM_GEMMA4_COMPILED_FEEDFORWARD=0` disables this holder. Attention, PLE,
+layer scalars, MTP acceptance/depth, admission, paged KV, prefix caching and SSD
+writes remain outside the change.
+
+An [incremental endpoint A/B/B/A comparison](https://github.com/Layr-Labs/mlx-swift-lm/blob/221304cd52fdd701b41edeae4ed0e4070855983e/docs/benchmarks/gemma4-compiled-feedforward-2026-10-26/README.md)
+of `gemma-4-26b-qat-4bit` on one M5 Max measured 2.5–3.2% faster HTTP decode
+proxy over the prior dispatch change: 102.19 to 105.43 tok/s in one ordering and
+102.94 to 105.48 in the reverse pairing. Each leg used the same two single-request
+prompts, 8,192 cached tokens and 256 completion tokens, with natural adaptive MTP
+and exact acceptance. Outputs and usage matched in both paired orderings and
+same-arm controls. The separate C4 comparison was rejected because 7 of 8
+same-arm outputs differed in both A/A and B/B; it establishes no concurrency gain.
+An initial capability run had one reasoning-output variant; three immediate
+repeats and a later full 12-case run matched the baseline. Those initial and
+repeat results are retained, with no established attribution for the variation.
+
+The SDK report records 11 focused tests in each feature mode and 690 exact
+within-shape comparisons using original checkpoint tensors across all 30 layers.
+These do not prove every complete-model trajectory. See the
+[resource-lifetime qualification](hardware-support.md#gemma-4-compiled-feed-forward-qualification)
+for memory scope. Cold prefill, other chips and clustering remain unmeasured.
+Clustering adoption also requires merging its separate projection policies and
+qualifying trace identity and evaluation modes; changing its SDK pin is insufficient.
+
+### Gemma 4 row-mapped NAX prefill
+
+The pinned SDK enables a guarded route for the sorted Gemma 4 expert gate/up
+products. Each NAX product reads the original token row through the existing
+sorted assignment map, avoiding the expanded activation gather. Gate and up
+remain separate outputs with the same K16 MMA sequence, FP32 accumulation and
+BF16 dequantization/stores; GeGLU, down projection and weighted reduction retain
+their original expressions. Sources:
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/SwitchLayers.swift`
+(`callAndWeightedReduce`),
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/Gemma4RowMappedNAX.swift`
+(`tryPair`, `supportsDownProjection`),
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/Gemma4RowMappedNAXKernel.swift` (`pair`).
+
+The route requires stock evaluation-mode Gemma GeGLU, H2816/F704/E128/topK8,
+BF16 activations, affine4/group64 expert banks and 64–2048 production-prefill
+tokens. NAX must be available on the default GPU stream and every participating
+array must be ordinary and untraced. Unsupported shapes, custom children or
+adapters, training, transformations, CPU and custom-stream execution retain the
+complete original graph. Parameters remain live inputs; no parameter or row-map
+cache is introduced. One-token tails and decode remain outside this route.
+
+The route is enabled by default within those guards. Exact
+`DARKBLOOM_GEMMA4_NAX_ROW_MAP=0` restores the original graph; unset or exact `1`
+enables the guarded route, while other explicit values leave it disabled.
+The provider forwards this override when creating its LaunchAgent environment.
+See the [process setting and rollback](../reference/configuration.md#gemma-4-row-mapped-nax).
+No new CLI command or `provider.toml` setting is added.
+
+[Same-artifact endpoint comparisons](https://github.com/Layr-Labs/mlx-swift-lm/blob/0cada65a3ff7eb338ef9d827ce551a49d6c08831/docs/benchmarks/gemma4-row-mapped-nax-2026-10-26/README.md) on one M5 Max with 128GB memory
+measured about 6–7% lower cold HTTP time to first generated frame for
+`gemma-4-26b-qat-4bit`, at concurrency 1 with 4K/8K prompts and 32 completion
+tokens. Four independent prompts per context in each execution order produced
+16 exact paired outputs/usage, all with zero reported cached tokens. Both
+orders, first-use rows and full response tails are retained. TTFT includes
+request processing and scheduling; it is not an isolated engine-prefill timer.
+The longer 8K/256-token ABBA control passed all A/B and same-arm exact comparisons;
+its roughly 114 tok/s HTTP decode proxies differed by only 0.3–0.4%, treated as
+neutral rather than an attributed decode gain. These figures are not additive
+to the earlier dispatch or feed-forward measurements.
+
+The SDK report preserves 24 native tests across eight fresh processes, including
+four fixed-shape full-model runs with 1,915 native tensor/frontier records each,
+and the original-checkpoint bank checks. The four HTTP capability suites passed
+12 functional cases each. Their initial disabled reasoning-output variant is
+retained; later OFF/ON suites matched the original output, with no established
+cause for the variation. These bounded checks do not prove universal numerical
+equivalence. Native plans used the retained serving TF32 posture; the separate
+CI policy and local opt-in test requirements remain explicit in the report.
+
+This SDK pin also includes the shared plain-greedy metadata shortcut from
+[the preceding SDK change](https://github.com/Layr-Labs/mlx-swift-lm/blob/57ead88e24b93c230cb062e4b5ad1998cc9b422d/docs/benchmarks/gemma4-greedy-metadata-2026-10-26/README.md). Rows without bias, penalties or requested
+logprobs avoid unused parameter/history arrays; an all-greedy batch omits its
+unused mask. Hard constraints, request identity, RNG state and nonidentity
+sampling paths retain their existing behavior. Sources:
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/LogitsPipelineV2.swift`
+(`setRows`) and
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SamplerV2.swift`
+(`setRows`). Its separate measured result is not a new incremental gain for
+this provider pin.
+
+See [resource qualification](hardware-support.md#gemma-4-row-mapped-nax-qualification)
+for allocation and admission scope. Other chips, concurrency and clustering
+remain unmeasured. Clustering requires merging its separate SDK projection
+changes and qualifying the stock-module, evaluation, stream and explicit-prefill
+contracts; changing its SDK pin alone is insufficient. Paged attention, prefix
+caching, SSD writes, MTP depth/acceptance and admission policies are unchanged.
 
 ### Prompt geometry
 
@@ -2229,8 +2550,9 @@ This removes the previous doubling of projected processing time; an EWMA is a
 point estimate and does not guarantee the next request's speed. Actual elapsed
 deadline expiry, queue/cache projection and physical admission still apply.
 
-Three estimator corrections shape those inputs;
-`DARKBLOOM_TTFT_ADMISSION_FIXES=0` restores the previous estimators
+Three estimator corrections and a refusal probe shape those inputs;
+`DARKBLOOM_TTFT_ADMISSION_FIXES=0` restores the previous estimators and turns
+the probe off with them
 (`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`).
 
 Decode is charged per batch step. The decode EWMA is a per-request rate, so
@@ -2288,6 +2610,47 @@ that floor, because the anchor comes from a short calibration cell
 `ModelCalibrationPolicy.startup`) that never certifies longer work; bucket
 evidence expires after 120 seconds. The published isolated rate is unchanged.
 A late older cold sample no longer restarts the combined prefill EWMA.
+
+A refusal admits nothing, so it measures nothing: those idle rules are the
+only way expired evidence that refuses is replaced, and with no anchor or off
+nominal posture they keep it for 30 minutes. Ordinary engines therefore count
+consecutive `deadline_unreachable` refusals that stale evidence explains
+(`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`,
+`DeadlineRefusalStreak`;
+`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Admission.swift`,
+`EngineV2Bridge.recordDeadlineRefusal`): the Mac was idle, the engine's bounded
+projection priced only this request's own prompt, the policy carried no
+reviewed calibration and no native-media rate, the isolated aggregate was
+older than the 120-second freshness window, no fresh prompt-size bucket for
+this prompt priced it, with an anchor the rate was below the anchor, and the
+request still had at least 5 seconds of its first-content budget
+(`DeadlineRefusalStreak.minimumRemainingBudget`). A refusal beside other work,
+from a fail-closed (unbounded) projection, physical capacity included, at a
+fresh rate or as a late retry never counts, and any engine admission ends the
+streak. After three, the next capacity tick that finds the Mac idle at nominal
+posture and on AC power re-runs the
+[startup calibration](#model-startup-calibration)'s probe once
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+ModelCalibration.swift`,
+`startModelCalibrationIfNeeded`; `ModelCalibrationPolicy.evidenceRefresh`): one
+uncached solo cell of 512 prompt tokens and 32 output tokens, without the
+shape warmup, under the bootstrap's rules. Foreground work on any model
+preempts it and a posture change discards it. Its cell replaces the stale
+aggregate and the anchor, so the next request is priced from it. A streak never
+submits a customer request without a projection. Starting the probe ends the
+streak and starts a 120-second interval (`DeadlineRefusalStreak.probeInterval`),
+so a loaded model probes at most once per interval, preempted or not. The
+provider logs one `info` line when the probe starts (`darkbloom.DeadlineRefusals`:
+the model, the refused rate, the evidence's age, the anchor and the last refused
+prompt's tokens); no wire field changes. Unlike the startup calibration, the
+probe is optional work, so it never runs on battery, Low Power Mode or not
+(`EngineV2Bridge.evidenceProbePermitted`, which reads the providing power source
+through `DeadlinePowerPolicyReader.activeSource` only once a probe is due); a full
+streak waits for AC power. Neither calibration has a user-activity gate.
+`DARKBLOOM_TTFT_REFUSAL_PROBE=0` (`DeadlineRefusalProbe`) turns the counting and
+the probe off and leaves the estimator corrections on. An anchored engine at
+nominal posture prices expired evidence at no less than its anchor, so its
+refusals do not count: the probe is for engines with no anchor and for posture
+that returned to nominal.
 
 An independent reviewed deadline profile carries
 `deadline_calibration`: prompt/context bands, actual cold/reused prefix
@@ -2373,6 +2736,25 @@ See `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/Deadline/Engine
 `provider-swift/Sources/ProviderCore/Inference/Performance/Profiles/ServingMTPConfiguration.swift`
 and `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/DeadlineAdmission/CalibratedFirstContentV2.swift`.
 
+A two-Mac pair projects a request's first token itself
+(`DistributedPipeExecutionOwner.projectFirstToken`): its whole prompt at the
+bridge's prefill rate, which for a pair is the pair's own, measured end to end
+from both ranks' reservation to the first committed token
+(`DistributedCBv2Engine.timing`), so it carries the transfer and control costs
+a rank's own compute would leave out. The ranks prefill one prompt at a time,
+so the engine adds the prompt of every request holding a lane that has not
+given its first token (`DistributedCBv2Engine.behindPendingPrefill`). A burst
+of long prompts therefore takes only the lanes whose first token meets its
+deadline, and the rest are refused `deadline_unreachable` at once, for the
+coordinator to place elsewhere. Other lanes' decode steps between prompt
+chunks are not charged, and a request's images or video are priced as text
+tokens at that rate, the vision tower's time aside. Without a measured rate the
+bridge builds no deadline admission, so the request is admitted unprojected; an
+admission without a prefill rate is refused. Until 0.10.12 the owner projected
+nothing (unbounded), so
+once a pair's bridge had measured its prefill (0.10.11), every request carrying
+a first-content budget was refused, a lone one too.
+
 `WedgeMonitor.suspectStallSeconds =
 10` flags a stalled slot
 (`provider-swift/Sources/ProviderCore/Inference/Engine/WedgeMonitor.swift`):
@@ -2387,7 +2769,28 @@ That allowance is the one the pair's engine arms (its first-token deadline, or
 its request deadline when the coordinator sent no budget), tracked by request
 id: it leaves with its own request's first token or end, and an entry whose
 request left the bridge never counts. The `step_wedge` telemetry still reports
-the plain rule. A hung pair is ended
+the plain rule.
+
+A slot also reads `crashed` when its engine has stopped
+(`EngineV2Bridge.engineStopped`, `EngineV2Bridge+Liveness.swift`). A request
+stuck behind a stopped engine never registers as an admit, so the rule above
+cannot see it, and such a slot read `idle` while the coordinator kept routing
+to it.
+- **A sealed native fault, any slot.** When native work fails, the SDK seals
+  the engine's native shutdown state `incomplete` and its step loop never runs
+  again (`EngineV2.nativeCompletionFault`). The slot reads `crashed` at once,
+  and the recovery driver acts on it at its next tick.
+- **A stalled queue, native MiMo only.** The engine holds waiting requests, runs
+  none and its step counter stands still (`WedgeMonitor.sampleQueue`, sampled on
+  every heartbeat). After `WedgeMonitor.suspectQueueStallSeconds` (30 s) the
+  slot reads `crashed`; after `EngineV2Bridge.recoveryStallSeconds` (120 s) the
+  recovery driver retires it. A step, a running row or an empty queue restarts
+  the measurement. Other engines are left out: in 7 days of production the same
+  queue held a minute or more about 360 times on 11 models, nearly always ending
+  by itself (vision encoding counts as waiting; a plan with nothing to assign
+  takes no step), and on MiMo only once, when its engine had stopped.
+
+A hung pair is ended
 first by the engine's first-token and request deadlines, which fail the request
 and cancel its lease, and by the cluster's fencing of a rank that does not
 retire a cancelled lane within 30 s, which withdraws the pair's capacity.
@@ -2397,7 +2800,7 @@ retire a cancelled lane within 30 s, which withdraws the pair's capacity.
 | Target | Drafter | Activation |
 |---|---|---|
 | Qwen3.5 family (`qwen3_5`, `qwen3_5_moe`) | Embedded head (`Qwen35InlineMTPAssistant`, request-stateful) | `mtp_mode = "auto"` (default) when the checkpoint declares the embedded artifact |
-| Nemotron 3.5 Lightning (`nemotron_h`) | Embedded head (`NemotronH35MTPAssistant`, request-stateful) | The MTP artifact must retain the embedded module and declare it; the non-MTP artifact remains target-only |
+| Nemotron 3.5 Lightning (`nemotron_h`) | Embedded head (`NemotronH35MTPAssistant`, request-stateful) | Explicit `mtp_mode = "on"` only: the MTP artifact must retain the embedded module and declare it, and the non-MTP artifact remains target-only. Under `auto` it serves plain decode, which commits every 100 operations with no input-size bound (`NemotronH35DecodeCommandBuffers`). The head speculates for one row only (`maximumSpeculativeBatch` 1) and charges about 45 KB of head state per context token, so beside it a second request halved decode and the slot's token budget was about an eighth of its KV. Plain decode keeps the same outputs for a single request at temperature 0, and its complete checkpoints keep the native rows they stored beside the head. On an M3 Ultra the gain is largest with several rows at once; at one row and the artifact's default temperature 1.0 it stays about even, text the head predicted very well runs up to about 30% slower, and a row decoding beside a long prefill runs at about half the head's rate |
 | Gemma 4 | Separate assistant checkpoint (`Gemma4AssistantDraftModel`, stateless) | Defaults to `auto` for exact `gemma-4-26b-qat-4bit`; other Gemma IDs require `on`. `SpecDecArtifactFunnel` resolves the catalog-declared `spec_dec` artifact, with `mtp_drafter_path` as a directory override |
 
 The shared `MTPMode.enablesMTP` policy receives the exact model ID from both
@@ -2419,6 +2822,25 @@ regrowing survivor KV grants under the reslice/load gate. Network capacity quote
 refresh at staging changes and reject snapshots from older staging generations.
 Reservations follow the load generation, so delayed cleanup cannot release a
 new candidate's budget.
+
+The replacement runs no forward on the retained target while the original
+engine serves it. Backend construction needs the target's native KV types, which
+a short prefill/decode probe observes; that probe runs once per loaded target,
+before its first engine, and later constructions over the same target (this
+replacement, liveness recovery) reuse the observation. A forward from the
+preparing thread would race the serving engine: a stateful compiled trace, such
+as Gemma 4's compiled feed-forward on a thread whose compile cache is cold,
+swaps the module's live parameters for primitive-less placeholders while it
+traces, and a graph the engine builds meanwhile fails its next eval with
+`Attempting to eval an array without a primitive`
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+NativeKVTypes.swift`,
+`probeNativeKVTypes`, `NativeKVTypeObservations`). The observation is keyed by
+the target module's identity and layer kinds, so a target that construction wraps anew each time
+(Qwen 3.5 VLM text extraction, Nemotron Super adapters) is still probed on every
+rebuild; that is harmless today because their forwards have no stateful compiled
+trace. The invariant is that only one forward runs on a loaded target at a time:
+any later work that needs a forward on a served target (a warmup, probe or
+diagnostic) must go through its engine.
 
 Once preparation succeeds, network providers keep serving during a random delay
 from `UpdateJitter.delay`, using the existing
@@ -2513,10 +2935,21 @@ verification remains available as a diagnostic oracle; drafter-required modes
 retain priority (`provider-swift/Sources/ProviderCore/Inference/MTP/EngineV2MTPAssistant.swift`,
 `providerMTPVerificationPolicy`).
 When neither a global nor a per-model acceptance value is configured, serving
-defaults to typical acceptance for eligible sampled target-prefix rows:
-a draft is kept when the sampler-filtered target row gives it probability above
-`min(1, 0.2 * exp(-H))`, `H` the row's entropy in nats; the first rejected
-position and the bonus position still commit the keyed target sample. Output
+defaults to typical acceptance for eligible sampled target-prefix rows, except
+on the builds whose built-in rule is exact (`MTPAcceptancePolicy.builtInIsExact`):
+the owned Bonsai 9B candidate; the catalog `Qwen3.5-9B`, which looped under
+typical acceptance in the 0.10.12 gate (see the Qwen 3.5/3.6 defaults below);
+the catalog `gemma-4-26b-qat-4bit`, which drafted every answer of OpenRouter's
+10-31 GPQA run, 30 % of which ended at the 32,768-token cap; and every Qwen 3.8
+27B build (`EigenLabs/Qwen3.8-27B-4bit-mtp` and its head-less target,
+`ModelRuntimeRequirements.qwen38ConcreteModelIDs`), whose lone requests draft
+on a single Mac. Qwen 3.8 pairs never read this rule and were already exact.
+Exact keeps the model's output distribution; its tokens are not bit-identical
+to MTP off, since verify windows round differently.
+Under typical acceptance a draft is kept when the sampler-filtered target row
+gives it probability above `min(1, 0.2 * exp(-H))`, `H` the row's entropy in
+nats; the first rejected position and the bonus position still commit the keyed
+target sample. Output
 is approximate, not distribution-exact for the target. Greedy rows keep the exact
 walk. Explicit `"exact"` opts out; invalid values warn and safely resolve to
 exact, including an invalid per-model override rather than falling back to the
@@ -2571,6 +3004,17 @@ fence and native completion tracking keep MTP steps
 `DARKBLOOM_TTFT_QWEN_MTP_CHAINED` and `DARKBLOOM_TTFT_QWEN_MTP_CARRY`
 (`CBv2MTPConfig.envOrdinaryDecodeHistory`, `envPrefillCarry`; see
 [`../reference/configuration.md`](../reference/configuration.md)).
+Assistant history keeps lazy views of each committed step's token and hidden
+arrays until a draft round reads them. This applies to the Qwen 3.5-family
+backlog, the Qwen4 Flash-Next backlog and Lightning's `pendingHidden`.
+`asyncEval` leaves its completion event (an `MTLSharedEvent`, from a finite
+system-wide pool) on every array it evaluated, until the array is waited on or
+read again. So while rows stayed batch-gated, each step kept one event alive.
+After a step's readback, the engine now drops the fired event from those arrays
+in both history paths (`finalizeMTPOrdinaryHistory` and `finalizeMTPRound`;
+`CBv2MTPHistoryEvents.release` in
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/CBv2MTPHistoryEvents.swift`).
+The call does not block and changes no value or evaluation.
 
 Complete SSD recurrent reuse with a persistent MTP assistant requires the
 serializable `CBv2MTPPrefixCheckpointCoding` contract. The Qwen implementation
@@ -2592,6 +3036,34 @@ draft KV is never shared. This is prompt-prefix reuse, not persistence of an
 in-flight speculative round. The ordinary attention-only prefix index remains
 disabled for this hybrid model.
 
+On the Qwen 3.5/3.6 (also Qwen3.8-27B, which uses the same embedded head),
+Nemotron Super and native Qwen4 assistants (not the embedded Nemotron head
+above), a request the assistant cannot draft for still records its prompt
+history when its prompt can be cached
+([prefix-cache invariant 9](prefix-cache.md#invariants)). That covers a token
+constraint, logprobs, `logit_bias`, a penalty or a `stop` string, so it
+includes a Qwen 3.5/3.6 request with the card presence penalty (the 35B
+builds' default), which keeps it from speculating. Its prompt chunks run the
+MTP step's hidden-returning prefill, the forward a speculating prompt runs,
+followed by the same sampler call, and its checkpoints equal a speculating
+request's. It never drafts, verifies or seeds a carry, and `beginMTPPlan`
+releases its assistant state at the first plan after its prompt completes.
+Through 0.10.11
+such a request staged no checkpoint on these heads, so from 0.10.5, which gave
+the Qwen builds' default request the card penalty, those builds donated almost
+nothing. The opt-in is per head
+(`CBv2MTPPrefixCheckpointDrafter.checkpointsNonSpeculatingRows`); the rows are
+chosen by `EngineLoopV2.mtpRecordsPromptHistory`
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPPlanning.swift`).
+A step that holds such a prompt chunk is an MTP step: its prompt rows are not
+packed, the next step does not chain from it, and decode rows beside it take
+the MTP step's plain decode, which is distribution-exact. In the SDK's tests
+(`Qwen35CardDefaultCheckpointTests`) its tokens and logprobs equal ordinary
+decode's bit for bit; on real weights that is checked in the GPU validation, not
+by CI. `Qwen35CardDefaultDonationTests` covers the donation and an exact restore,
+including a restored request's own extended donation, on the provider's
+production assembly and encrypted store.
+
 ### Sampling parameters
 
 `EngineV2Translation.samplingParams(from:defaults:)`
@@ -2603,7 +3075,7 @@ disabled for this hybrid model.
 | `top_p` | `topP` | artifact default, else `1.0` |
 | `top_k` | `topK` | artifact default, else `0` |
 | `repetition_penalty` | `repetitionPenalty` | artifact default, else `1.0` |
-| `frequency_penalty` / `presence_penalty` | `frequencyPenalty` / `presencePenalty` | `0`; `presence_penalty` takes a model-card default (catalog Qwen 3.5/3.6) |
+| `frequency_penalty` / `presence_penalty` | `frequencyPenalty` / `presencePenalty` | `0`; `presence_penalty` takes a model-card default on the catalog 35B Qwen 3.5/3.6 builds (`Qwen3.5-9B` has none) |
 | `seed` | `seed`; also keys a stable engine request id | nil |
 | `logit_bias` | `logitBias` — string keys parsed to non-negative `Int`; invalid keys dropped and counted | `[:]` |
 | `logprobs` + `top_logprobs` | `topLogprobs = logprobs ? min(20, max(1, top_logprobs ?? 0)) : 0` | `0` |
@@ -2627,14 +3099,7 @@ recommends). The exact `prism-ml/Ternary-Bonsai-2-9B-mlx-2bit` and
 `EigenLabs/Ternary-Bonsai-2-9B-MLX-2bit` identities also require `model_type == prism_hadamard_qwen35` and honors its pinned artifact
 defaults (`temperature 1.0`, `top_p 0.95`, `top_k 20`, `do_sample true`). Its
 qualification requests explicitly supply `presence_penalty: 1.5`; that value
-is absent from the artifact and is not injected as a default. The catalog
-`Qwen3.5-9B`, `qwen3.5-35b-a3b` and `qwen3.6-35b-a3b-vl-mtp-mxfp8` builds
-(`EngineV2SamplingDefaults.qwen35CardModelTypes`, each bound to its `model_type`)
-ship no `generation_config.json`; omitted knobs take their model cards'
-thinking-mode values
-(`EngineV2SamplingDefaults.qwen35CardDefaults`: `temperature 1.0`, `top_p 0.95`,
-`top_k 20`, `presence_penalty 1.5`). Greedy decoding with no presence penalty
-made them repeat themselves until `max_tokens` (#1530). This request
+is absent from the artifact and is not injected as a default. This request
 policy enables native channels, nested reasoning and forced-media framing.
 These exact 9B identities separately default to paged attention and encrypted SSD
 prefix caching. Explicit operator selections, kill switches, native capability
@@ -2663,6 +3128,35 @@ head's artifact contract and unchanged base precision are documented in
 F16 and affine 4-bit/group-64 heads, preserving the original path for rollback.
 Actual model, cache and speed qualification
 remain separate from this automatic intent and validated loading path.
+
+The catalog `Qwen3.5-9B`, `qwen3.5-35b-a3b` and `qwen3.6-35b-a3b-vl-mtp-mxfp8`
+builds (`EngineV2SamplingDefaults.qwen35CardModelTypes`, each bound to its
+`model_type`) take their model cards' thinking-mode values for omitted knobs:
+`temperature 1.0`, `top_p 0.95`, `top_k 20`. Greedy decoding made them repeat
+themselves until `max_tokens` (#1530). The cards' `presence_penalty 1.5` is a
+per-build default, set by the 0.10.12 gate on the signed 0.10.11 (temperature 1
+/ 0.95 / 20; #1652's four loopers and five tool transcripts at 32,768 tokens and
+nineteen everyday prompts at 8,192, three seeds each; the Studio M3 Ultra for
+the 9B, an M5 Ultra for the 35B):
+
+| Build | Omitted `presence_penalty` | Built-in MTP acceptance | The gate without the penalty |
+|---|---|---|---|
+| `qwen3.5-35b-a3b`, `qwen3.6-35b-a3b-vl-mtp-mxfp8` (`qwen35CardDefaults`) | 1.5 | typical | `qwen3.5-35b-a3b` ran away under typical acceptance (5 of 19 everyday prompts, 8 of 12 loopers to 32,768, MTP running at concurrency 1) and under exact (2 of 12 loopers); the 3.6 build shares its architecture |
+| `Qwen3.5-9B` (`qwen35NineBCardDefaults`) | none | **exact** (`MTPAcceptancePolicy.builtInIsExact`) | ran away on 13 of 31 draws under typical acceptance and on 0 of 31 under exact, MTP running; the penalty-free body cached 8,192 tokens on the second send, the penalty body none |
+
+A row with a penalty does not speculate (`EngineLoopV2.mtpBasicEligible`), so
+the 35B builds' requests that omit the penalty stay without MTP, the cost the
+gate accepted for loop safety; they still stage prefix checkpoints
+([prefix caching](prefix-cache.md#invariants), invariant 9). A request's own
+`presence_penalty` always wins: `0` on a 35B build speculates under typical
+acceptance and donates checkpoints (the configuration that looped in the gate,
+now the caller's choice); a nonzero value on the 9B turns its MTP off for that
+request (it still donates checkpoints). The coordinator forwards a build's
+registry runtime defaults for the fields a request omits
+([`requestRuntimeDefaultKeys`](https://github.com/Layr-Labs/darkbloom-platform/blob/c69380d91fd3f9e4ef3ff1e3775690d80adbbe57/coordinator/api/inference/request/model_runtime_defaults.go));
+on 2026-11-10 the registry set `temperature`, `top_p` and `top_k` for these
+builds and no `presence_penalty`, so the provider default above decides it.
+
 Other model identities keep the legacy defaults in the table byte-for-byte. `do_sample: false` or an absent/unreadable file is legacy. The
 sampler is not part of prompt or cache identity, so prefix-cache and SSD
 checkpoint identity do not change.
@@ -2692,6 +3186,51 @@ order, reasoning tokens included, so a response that ends while reasoning still
 carries them. The local API returns GLM's entries through the ordered stream
 instead: content chunks carry them, and a reply that ends while reasoning carries
 none.
+
+### Loop guard
+
+An answer that starts repeating one block verbatim repeats it until its output
+cap: the slot stays busy for the rest of the cap (up to 131,072 tokens) and the
+answer is wrong anyway. `GenerationLoopGuard`
+(`provider-swift/Sources/ProviderCore/Inference/Streaming/GenerationLoopGuard.swift`)
+stops such a row early.
+
+- **Detection** (`GenerationLoopDetector`): exact token periodicity, no
+  semantics. Every 64 generated tokens, once at least 4,096 were generated,
+  the row fires when its last `span` tokens repeat a block of `p` tokens back to
+  back, with 8 ≤ `p` ≤ 512, `span` ≥ 2,048 and `span` ≥ 8 × `p`. A shorter
+  period (a single repeated token) is found through its multiples and reported
+  as itself. A check reads at most the last 4,096 tokens and stops at the first
+  mismatch for each period.
+- **Where:** the bridge's per-row pump (`EngineV2Bridge+Events.swift`), which
+  sees every generated token of every engine, for the requests that take the
+  scheduler's text path (`MultiModelBatchSchedulerEngine.prepareCompletion`):
+  single-Mac MLX slots, the native GLM-5.3 and MiMo engines, and the cluster
+  pairs. Super's coordinator and local text requests take the owner's own
+  route (`ProviderLoop+InferenceHandler`, `superOwner.chatEngine` →
+  `NemotronSuperLocalImageHTTP` → `NemotronSuperLocalBinding.executeBridge`),
+  which resolves the same guard from its request plan
+  (`NemotronSuperRequestPlan.loopGuard()`) and passes it to the same pump.
+- **On fire:** the pump cancels the row in the engine without the caller's
+  cancel bookkeeping (`EngineV2Bridge.stopRepeatingRow`), and turns the
+  engine's cancelled terminal into a `length` finish with the engine's usage:
+  `finish_reason: "length"`, the tokens produced, no error frame, paid like
+  any completion. It logs one line (category `engine_v2_loop_guard`: model,
+  `model_type`, period, span, tokens) and emits an `engine_v2_loop_guard`
+  engine-health event with the same fields. To the coordinator it is a
+  `length` finish below the request's bound.
+- **Never on:** the first 4,096 tokens; a request with a token constraint, a
+  forced tool call or a JSON `response_format`; the rest of a row once its text
+  shows a tool-call frame (`<tool_call>`, `<|tool_call>`, `<function=`,
+  `to=functions.`, `<start_function_call>` and the request parser's own tags);
+  a request with tools whose parser also reads untagged calls (bare JSON);
+  media requests.
+- **Models** (`GenerationLoopGuardPolicy`, by `model_type`): on by default
+  for `gemma4`, `gemma4_text`, `qwen3_5`, `qwen3_5_moe`, `qwen4_exp`,
+  `qwen4_exp_text`, `gpt_oss`, `nemotron_h` (Lightning), `nemotron_h_omni`
+  (Super, text only), `glm5_next` and `mimo_v2`. `DARKBLOOM_LOOP_GUARD=0`
+  (or `off`) turns it off; a comma-separated list of `model_type`s replaces
+  the default list.
 
 ### Collected and streaming reasoning state
 
@@ -2781,6 +3320,22 @@ Responses continuation reconstructs input history before tokenization; it does
 not restore native KV state or grant model capacity. Its application-local
 history LRU and the SDK response-object store have different retention rules;
 see [Responses continuation and retention](../provider/direct-mode.md#responses-continuation-and-retention).
+
+### Gemma with `tool_choice` `none`
+
+On a pinned Gemma 4 prompt contract, `tool_choice` `none` samples under
+`GemmaNoToolTokenConstraint`, which refuses the tool-call markers
+(`<|tool_call>`, `<start_function_call>`) anywhere in the output, even split
+across tokens. `GemmaTokenVocabulary` keeps Gemma 4's reasoning delimiters,
+`<|channel>` and `<channel|>`, in a set of their own
+(`noToolReasoningDelimiterTokenIDs`), outside the byte pieces the structured
+tool grammar reads. The no-tool automaton allows them only at its neutral
+state, where no marker is partial, so a request with reasoning on opens and
+closes its thought as it would without the constraint, and a marker can't be
+spliced across a boundary the reasoning parser later hides. Required and named
+`tool_choice` grammars and the other families are unchanged
+(`provider-swift/Sources/ProviderCore/Inference/Tools/GemmaNoToolTokenConstraint.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Tools/GemmaTokenVocabulary.swift`).
 
 ### Constrained Qwen JSON answers
 
@@ -2878,6 +3433,21 @@ Resolution happens before submit so a bad parser name never orphans a request.
 
 `.kimiK2` and `.minimaxM2` exist but are selectable only explicitly.
 
+Every parsed call's arguments are read by the declared parameter types
+(`ToolCallProcessor`, `ToolArgumentNormalization.normalize`): textual values,
+such as Qwen XML parameters, become numbers, booleans, objects or arrays where
+the schema allows exactly one reading, and a string parameter keeps its text,
+`null` included. A parameter the client declares nullable
+(`"type": ["integer", "null"]`, or `anyOf` with a `null` branch) reaches the SDK
+as `"nullable": true` beside one type (`ToolSchemaNormalization`). The SDK adds
+null to that node's types, so a model's `null` (also `none` or `nil`) becomes
+JSON null, and its `ToolSchemaValidator` lets null through that node's type
+check while `enum`, `const` and combinators still apply; the provider's own
+validator already accepts null there (`ToolConstraintValidation`). Sources:
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/ToolArgumentNormalization.swift`
+(`declaredTypes`),
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/ToolSchemaValidator.swift`.
+
 Required/named `tool_choice` on a Qwen 3.5-family checkpoint accepts its
 inferred `.qwen35` parser or `.xmlFunction`. The coordinator routes those
 requests only to builds listed in `tool_constraint_models`, which
@@ -2920,18 +3490,40 @@ read bare scalars and composites as raw strings. When the frame closes, the
 complete parse must agree with everything already exposed
 (`libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/ToolCallStreaming.swift`).
 `NativeToolStreamRouter` admits `parallel_tool_calls` cardinality at the first
-fragment and validates name and schema at frame close; the service renders
-OpenAI fragments (`index`, `id`, `type` and `function.name` first, then
-`function.arguments` pieces). A response that begins with a call therefore
-reaches its first content frame at the function name instead of the engine
-terminal, which also ends the frame loop's pre-content deadline check.
+fragment and, when the request is `strict` (below), validates name and schema
+at frame close; the service renders OpenAI fragments (`index`, `id`, `type`
+and `function.name` first, then `function.arguments` pieces). A response that
+begins with a call therefore reaches its first content frame at the function
+name instead of the engine terminal, which also ends the frame loop's
+pre-content deadline check.
+
+`auto` without `strict` returns the model's calls as generated, as OpenAI and
+vLLM do (`ToolChoicePromptPolicy.Prepared.returnsAutoCallsAsGenerated`): on
+every path and family (`ToolConstraintValidation.validate`), an undeclared
+function and arguments off the declared schema are returned instead of
+failing a response whose reasoning has already streamed. The request stays
+validated when any declared function sets `strict: true`, when it declares no
+tools (a call is then never returned), and for `required`, named and `none`
+choices; `parallel_tool_calls: false` holds either way, and a call parsed from
+a frame that `max_tokens` cut off is still validated (it may be missing
+arguments). Strict `auto` checks
+each call against the caller's schema as sent
+(`Prepared.declaredTools`, from the body before ingress normalization
+(`ToolSchemaNormalization`) filled `type: "string"` into typeless properties
+for the templates), so a typeless property accepts any value. That holds for
+requests to the Mac's own API and for GLM-5.3-Flash: for every other model the
+coordinator writes `type: "string"` into typeless properties before
+forwarding, so through it a strict request still refuses a non-string value
+there. Every refusal that remains names its check on the error frame
+([`tool_check`](../reference/protocol-messages.md#inference_error)).
 
 | Case | Behavior |
 |---|---|
-| Undeclared or unresolvable name | Never exposed: completes in one piece with the existing validation or text fallback |
-| Parse failure, divergence or schema violation after exposure | Typed `tool_choice` violation on the stream |
+| Undeclared or unresolvable name | Never exposed early: completes in one piece, returned as generated (refused under `strict`), or the existing text fallback when it does not parse |
+| Parse failure or divergence after exposure | The arguments already sent stay as generated (OpenAI's raw `arguments` string) and the call closes; `finish_reason` is `tool_calls`. Under `strict`: typed `tool_choice` violation on the stream |
+| Schema violation after exposure | Returned as generated; under `strict`, typed `tool_choice` violation on the stream |
 | Call cut off by `max_tokens`, even when the end-of-generation parse of its partial frame fails or diverges | Fragments stop; `finish_reason` is `length` |
-| Required or named `tool_choice`, native-channel families, other formats, non-chat surfaces, `DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0` | Complete calls released at the engine terminal after validation |
+| Required or named `tool_choice`, native-channel families, other formats, non-chat surfaces, `DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0` | Complete calls released at the engine terminal after validation (for `auto`, as above) |
 
 The response hash adds one `tool_call` marker per fragment in wire order; a
 complete call encodes exactly as before
@@ -2944,7 +3536,8 @@ The Qwen 3.5, 3.6 and 3.8 and Ternary Bonsai 2 templates (`qwen3_5`,
 `qwen3_5_moe`, `prism_hadamard_qwen35`) raise "No user query found in
 messages." when no user turn is more than a `<tool_response>` wrapper. Such
 histories are refused before rendering with the typed HTTP 400
-`missingUserQuery` instead of a provider-fault 500 `template_render`
+`missingUserQuery` (refusal reason `missing_user_query`) instead of a
+provider-fault 500 `template_render`
 (`provider-swift/Sources/ProviderCore/Inference/Prompting/Qwen35TemplateFixes.swift`,
 `validateUserQuery`).
 
@@ -3078,8 +3671,16 @@ the owner's go.
 - **Media caps** (`provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift`):
   `maxImagePixels` 100 Mpx, `maxRequestImagePixels` 384 Mpx,
   `maxMediaDecodedBytes` 25 MiB, `maxVideoDurationSeconds` 600,
-  `maxImagesPerRequest` 16, `maxVideosPerRequest` 8,
-  `maxRequestVideoFramePixels` 384 Mpx; `decodeOverheadFactor = 4`.
+  `maxImagesPerRequest` 16 (per model through `imageCap(forModel:)`, no model
+  above 16 yet; `DARKBLOOM_MAX_IMAGES_PER_REQUEST` sets one cap for every model),
+  `maxVideosPerRequest` 8, `maxRequestVideoFramePixels` 384 Mpx;
+  `decodeOverheadFactor = 4`.
+- **Media memory gate.** The scheduler's `VisionMemoryGate` reserves a media
+  request's decode memory and its KV (1,024 tokens per image) before any
+  decode. A reservation that doesn't fit is refused as a retryable 503 with
+  the reason `media_memory_unavailable`, as MiMo's media reservation is, so
+  the coordinator sends the request elsewhere without a capacity strike or a
+  budget clamp.
 - **A failed video or audio reader decodes again once.** An `AVAssetReader` can
   fail on a valid clip. When a reader pass of the GLM 5.3, MiMo V2.6, Qwen4 or
   Nemotron Super video decoder, or of the MiMo V2.6 audiovisual decoder's audio
@@ -3091,7 +3692,10 @@ the owner's go.
   gives the same frames or samples. A second failure with an AVFoundation or
   VideoToolbox decoder, hardware or interruption code
   (`VideoReaderFailure.isTransient`) refuses as a retryable 503 (failure code
-  `capacity`), so the coordinator can send the request to another provider.
+  `capacity`, error reason `media_memory_unavailable`), so the coordinator can
+  send the request to another provider. The reason is health-neutral at the
+  coordinator: the re-route counts toward its three capacity refusals, but the
+  provider gets no capacity strike and no budget clamp.
   Any other second failure is the media's `invalid_media` 400. Each failed pass
   emits a WARN `engine_health` event, operation `video_reader_failed` for a
   video track and `audio_reader_failed` for an audio track, with `retrying`,
@@ -3141,7 +3745,7 @@ Quantization is detected by name, in order: `4bit`|`q4`|`int4` → `4bit`;
 (`provider-swift/Sources/ProviderCore/Models/ModelScanner+Discovery.swift`,
 `detectQuantization`). Weight precision is independent of live KV and checkpoint
 precision. `EngineV2KVQuantizationPolicy` defaults to native live execution and
-separately requests balanced checkpoint storage. Native `auto` backend selection
+separately requests balanced checkpoint storage (native for `nemotron_h`). Native `auto` backend selection
 is unchanged; storage compression never forces paging. Eligible native paged
 and contiguous checkpoints encode older attention rows and restore into native
 state, preserving exact recent and recurrent/auxiliary state. Older reconstructed
@@ -3231,8 +3835,9 @@ the request's real retirement; a failed evaluation retains all fault roots.
 This prevents the ownership registry from keeping every old layer output alive.
 
 A refused media reservation maps to the typed `media_memory_unavailable`
-reason (`MiMoV26EncodedMediaIngress.outwardFailure`). It leaves a healthy text
-engine and its routing budget available. Failed required native completion
+reason (`MiMoV26EncodedMediaIngress.outwardFailure`), and so does an audio or
+video reader that failed twice with a transient decoder fault. It leaves a
+healthy text engine and its routing budget available. Failed required native completion
 still retains and quarantines the actual owner; it is not reclassified as a
 recoverable media refusal.
 
@@ -3875,8 +4480,11 @@ evidence, not a change to the normal final-row contract or the near-tie rule
 10. A coordinator request refused as a client error, before its inference task
    or while its prompt is prepared, writes exactly one fixed public log line
    naming a closed `InferenceRefusalReason` and a private line pairing it with
-   the request ID, never request text; the refusal's `inference_error` frame is
-   unchanged. Prompt-time reasons ride on the typed error
+   the request ID, never request text; the refusal's `inference_error` frame
+   carries the same reason as `refusal_reason` and its fixed sentence as
+   `refusal_message`, with its `error` text unchanged (`InferenceFailure.refusal`,
+   set by the handler's `reject` and by `sanitizedInferenceFailure` for an
+   `invalid_request` failure). Prompt-time reasons ride on the typed error
    (`MultiModelBatchSchedulerEngineError.invalidToolPayload`'s `refusal`, or the
    error case), never on its message —
    `provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift`
@@ -3904,14 +4512,15 @@ evidence, not a change to the normal final-row contract or the near-tie rule
 | Model advertised, capacity quotes rejected with reason `template` | Scan-time render check failed (`template_render_ok = false`) | `TemplateRenderCheck.swift`, `provider-swift/Sources/ProviderCore/Coordinator/CapacityQuoteEngine.swift` (`reject(.template)`) |
 | Image rejected | Over `MediaIngest` caps or over the N² tower budget | `MediaIngest.swift`, `VisionTowerBudget.swift` |
 | `video_reader_failed` or `audio_reader_failed` WARN event, `retrying: true`, and the request served | A video or audio reader pass failed and the second pass decoded the track; `reader_error` names the reader's error codes | `libs/mlx-swift-lm/Libraries/MLXLMCommon/VideoReaderFailure.swift` (`VideoReaderRetry`), `VideoReaderFailureReport.swift` |
-| Video refused after two `video_reader_failed` or `audio_reader_failed` events (503 `capacity` or 400 `invalid_media`) | Both reader passes failed: 503 for a transient decoder, hardware or interruption code, 400 otherwise | `EngineV2VisionPrefill.swift` (`clientFault(for:)`), `EngineV2GLM5NextMediaPrefill.swift` (`glm5NextInputError`), `MiMoV26EncodedMediaIngress.swift` (`outwardFailure`), `NemotronSuperLocalImageHTTP.swift` (`SuperHTTPErrors.map`) |
-| Nemotron Super video refused with 503 `capacity` and no `video_reader_failed` event | The wait on the decoder outlasted `decodeAllowance` (wall time; a slow or loaded Mac), `NemotronSuperVideoDecode.Failure.decodeAllowanceSpent` | `NemotronSuperVideoDecode.swift` (`decodeAllowance`, `SerialReader.earlyEnd`), `NemotronSuperLocalImageHTTP.swift` (`SuperHTTPErrors.map`) |
+| Video refused after two `video_reader_failed` or `audio_reader_failed` events (503 `capacity` with `media_memory_unavailable`, or 400 `invalid_media`) | Both reader passes failed: 503 for a transient decoder, hardware or interruption code, 400 otherwise | `EngineV2VisionPrefill.swift` (`clientFault(for:)`, `constructionRefusal(for:mediaKind:)`), `EngineV2GLM5NextMediaPrefill.swift` (`glm5NextInputError`), `MiMoV26EncodedMediaIngress.swift` (`outwardFailure`), `NemotronSuperLocalImageHTTP.swift` (`SuperHTTPErrors.map`) |
+| Nemotron Super video refused with 503 `capacity` (`media_memory_unavailable`) and no `video_reader_failed` event | The wait on the decoder outlasted `decodeAllowance` (wall time; a slow or loaded Mac), `NemotronSuperVideoDecode.Failure.decodeAllowanceSpent` | `NemotronSuperVideoDecode.swift` (`decodeAllowance`, `SerialReader.earlyEnd`), `NemotronSuperLocalImageHTTP.swift` (`SuperHTTPErrors.map`) |
 | `missingUserQuery` (400) | Qwen 3.5/3.6/3.8 or Bonsai 2 history with no user turn beyond `<tool_response>` wrappers | `provider-swift/Sources/ProviderCore/Inference/Prompting/Qwen35TemplateFixes.swift` (`validateUserQuery`) |
 | `Inference failure: invalid request (<reason>)` in `darkbloom logs` (400) | The sealed request, its body decode or the model's native controls refused it before the inference task, or a prompt policy or engine admission refused it while its prompt was prepared; the reason is the closed [refusal line](../provider/cli-reference.md#refusal-lines) | `provider-swift/Sources/ProviderCore/Inference/Engine/InferenceRefusalReason.swift` (`InferenceRefusalReason`, `init(promptRefusal:)`); `provider-swift/Sources/ProviderCore/Inference/Prompting/ProviderPromptContractPipeline.swift` (`nativeControlsRefusal`) |
 | Load refused: `pagedUnavailable` (503) | Explicit `engine_v2_kv_backend = paged` and the paged pool/kernels failed | `EngineV2Factory+BackendPreparation.swift` — see [`prefix-cache.md`](prefix-cache.md) |
 | Cold load refused with the ordinary slot (503) or insufficient-memory error although an idle model is resident | That slot holds an unexpired Autopilot placement hold: held slots are excluded from eviction (`ProviderLoop.evictableModelSlots`, `autopilotHoldsModel`) and their weights get no `free_for_load_gb` reclaim credit (`autopilotHeldWeightBytes`); the refusal's `Not evictable:` list names it with the hold's UTC expiry; see [Autopilot placements](model-autopilot.md#placements-after-an-operation) | `provider-swift/Sources/ProviderCore/Autopilot/ProviderLoop+AutopilotPlacement.swift`, `provider-swift/Sources/ProviderCore/ProviderLoop+EvictionExclusions.swift` |
 | Load refused (503), or a running load ends before it installs a slot | An [add-on hold](addon-hold.md) is active: no load takes the load gate, and one already running stops at its next check (after hashing, after the weight load or before install; the managed Super and native MiMo loads before their weights and at publication) | `provider-swift/Sources/ProviderCore/Addon/ProviderLoop+AddonHold.swift` (`addonHoldLoadRefusal`), `provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift` (`ensureModelLoaded`), `provider-swift/Sources/ProviderCore/MiMo/ProviderLoop+NativeMiMo.swift` (`requireNativeMiMoPublication`) |
 | Slot flagged wedged | No engine progress for `suspectStallSeconds = 10`; a two-Mac pair only once a request is 40 s past its own first-token allowance | `WedgeMonitor.swift` |
+| A pair's request ends mid-generation with 503 or a `request_exceeds_node_budget` error chunk; both workers keep serving, and their logs show `darkbloom-stage-abort-v1` | A pipeline stage's running memory check refused it; both ranks ended that request alone ([a pipeline stage's memory refusal](#a-pipeline-stages-memory-refusal-ends-that-request-alone)) | `QwenStageAbort.swift`, `WorkerCoordinator.swift`, `DistributedPipeExecutionOwner.swift` |
 | Provider exits with `Trace/BPT trap: 5`; its log shows `[metal::Device] Unable to build metal library from source` | MLX compiled a Metal kernel at runtime and the compile failed. mlx-swift builds MLX's JIT kernel path, and the release metallib holds no NAX attention kernels, so on M5 GPUs fused attention compiles on the Mac when a shape is first used; MLX throws on a failed compile and the Swift error handler stops the process. 0.10.2 failed this way for full attention with head dim 256 or 512 and at least 1,024 query tokens (`attention_nax_dsplit`), fixed in 0.10.3. Check an MLX pin change that touches `jit_kernels.cpp` or the NAX kernels on an M5 with a long Gemma 4 or Qwen prompt | `libs/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/jit_kernels.cpp`, `device.cpp` (`build_library_`) |
 | Provider crashes in a loop on a pre-release macOS 27.2 build (for example 26B5091g); the crash report shows a call to address 0 | The build was made with SDK 27.2 and compares Dates with `>=` or `<=`. SDK 27.2 back-deploys these two operators: Swift 6.4.2 calls them through weak Foundation imports behind an OS version check. These macOS builds pass the check but do not export the symbols. DevNet build `0.10.6-dev.branch.87` crashed this way. The cluster service's timed checks (memory replan, member sync, update and approval checks, part restart backoff, supervision wait, model manifest repair retry and deadline) compare with `timeIntervalSince(_:)` and keep the same thresholds. `scripts/check-date-comparisons.py` (the `Provider Tests` gate and Release Integrity) refuses the pattern in shipped source. To fix a hit, write `a.timeIntervalSince(b) >= 0` for `a >= b` and `a.timeIntervalSince(b) <= 0` for `a <= b`; `<`, `>` and `==` are safe. The release lane runs `scripts/check-provider-weak-imports.py` on the built binaries. A failure means a binary still imports `Date.>=` or `Date.<=`; the check names the calling functions. See the [build guide](../developer/build.md#sdk-27-release-builds-and-caches) | `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterService.swift`, `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterModelProvisioningStore.swift`; `scripts/check-date-comparisons.py`, `scripts/check-provider-weak-imports.py` |
 
@@ -4284,6 +4893,23 @@ for its missing follower and ends again. The rule applies only while this Mac
 leads and runs the cluster, and never to serving alone (`solo:`); a Mac that
 doesn't answer reports nothing, so its absence follows the control lease.
 
+## A part that waits for the other Mac
+
+The cluster service starts this Mac's part again after it ends, after a restart
+backoff (`ClusterControlPartChoice.restartBackoff`): 3 s after a run of 2
+minutes or more, otherwise twice the last wait, from 6 s up to 30 s. While the
+control leader has a member of the plan absent past the lease's time-to-live
+(`ClusterControlNode.Mode.othersAway`: `waiting`, `alone`, `cannotServe`), the
+pair's part (`cluster:`) can't form the pair, so its wait keeps doubling from
+30 s up to 10 minutes, whatever the run's length. Inside the absence grace the
+part stays wanted, and each start reads its share of the model and registers it
+again: a MiMo leader whose follower slept started it every 48 s (2026-11-09).
+Once the other Mac answers again (`ClusterService.otherMacAway`) the wait ends
+and the part starts at the next tick. A solo server's restarts keep the ordinary
+backoff. The status carries the wait (`restartInSeconds`) and, when it grew for
+the absence, `restartWaitsForOtherMac`; the leader's `cluster status` then says
+when the part starts again (`OnboardingLive.partWaitLine`).
+
 ## Cluster service listeners follow the cable and the pairing
 
 Each Mac's cluster service answers the other Mac on two listeners: the setup
@@ -4373,24 +4999,27 @@ away; mixed pairs are first-class).
   0.10.10's never count, so the update from 0.10.10 to 0.10.11 still ranks by
   the planner's predictions until a mode serves with 0.10.11. No safe scope can
   be read from a record that names none: equal tensor-parallel shares serve
-  through Darkbloom and locally alike. The mode question ranks the modes by this
-  build's figures, else, while this build has served none of them (every
-  update starts there), by the other builds', else by the planner's
-  predictions (`ClusterOnboardingModeAdvice.advise`). The planner itself still
-  reads only this build's records. The list puts the recommended mode first,
-  and a model named on the command line starts in it
-  (`ClusterOnboardingMode.defaultIndex`), so neither contradicts the
-  recommendation. No screen quotes these figures (owner, 2026-11-05: "the
-  model and mode choice never quote tok/s"): the model list names the modes
-  (`ClusterOnboardingMode.listWords`);
-  the recommendation and the mode lines say why in words; a re-plan's "Planned
+  through Darkbloom and locally alike. The setup chooses a new model's mode with
+  `ClusterOnboardingMode.automaticIndex` (tensor parallel unless it can't run
+  or this build measured it slower); `ClusterOnboardingModeAdvice.advise`
+  still ranks the modes by this build's figures, else the other builds', else
+  the planner's predictions, but no screen shows or follows it since 0.10.12.
+  The planner itself still reads only this build's records. No screen quotes
+  these figures (owner, 2026-11-05: "the model and mode choice never quote
+  tok/s"): the model list names no mode; `darkbloom cluster local`'s mode lines
+  say what each serves in words; a re-plan's "Planned
   in the mode chosen" line gives the size, mode and shares
   (`ClusterOnboardingDeployment.choiceLine`); and the six-step developer
   wizard's model step and check show no speed (`ClusterSetupContent`).
 - **The current model:** on a set-up pair the list preselects the model serving
   now (or the last one used); it keeps the mode the saved setup served in when
   the plan still lists it (`keepMode`, from `ClusterOnboardingResume.servingMode`),
-  so Enter keeps it or starts it again.
+  so Enter keeps it or starts it again. Where the mode question shows
+  (`darkbloom cluster local`, `darkbloom start` on an Only-me pair) its cursor is
+  on that mode while the Recommended tag stays on `automaticIndex`'s pick, and
+  `cluster local` on a stopped pair carries the pair in (`chooseAndServe`'s
+  `last:`), so `darkbloom cluster local <its model>` keeps the mode too; a new
+  model gets the rule.
 - **What a model's contract allows:** a family the model's features don't admit
   is never offered, and a chosen or developer-forced one is refused in the
   contract's words before any quote applies (`ClusterPlacementFlow.decide`):
@@ -4461,9 +5090,9 @@ away; mixed pairs are first-class).
   while a model serves or when no plan was made for it (`OnboardingLive.adoption`).
 - **The scope a plan is for:** `chooseAndServe` names the scope before it plans
   the list (`ClusterOnboardingOperations.planScope`, `OnboardingLive.usePlanningScope`,
-  carried in `ClusterControlRequest.scope`); a start whose scope changes before
-  it adopts (the login check's "Serve locally only") is planned again for that
-  scope, and the same model is adopted from the new plan.
+  carried in `ClusterControlRequest.scope`), and the start adopts from that list;
+  the login check offers no other scope (`ClusterOnboardingDriver.localPairHint`
+  names `darkbloom cluster local` instead).
 - **Forwarded choices:** a choice the other Mac forwards to the control leader
   (`ClusterControlRequest`: op, index, model, scope and the mode family chosen
   on that Mac's screen, `OnboardingLive.adoptRequest`) is adopted in that family;
@@ -5159,11 +5788,12 @@ driver and checks each against itself alone.
 ### Resident runtime
 
 `Gemma4TensorParallelResidentRuntime` serves over a keyed, authenticated data
-plane, and every collective is the sealed all-sum. By default it serves one
-request at a time. With batch lanes (`DARKBLOOM_CLUSTER_BATCH_LANES`, bound
-into the load agreement) it serves several through the shared batch driver
-(`QwenTensorParallelBatchDriver`, with a Gemma executor), which carries joins,
-stops, cancellations and retirements.
+plane, and every collective is the sealed all-sum. It serves the width its
+setup saved ([tensor-parallel lane widths](#tensor-parallel-lane-widths)) as
+batch lanes (`DARKBLOOM_CLUSTER_BATCH_LANES`, bound into the load agreement),
+through the shared batch driver (`QwenTensorParallelBatchDriver`, with a Gemma
+executor), which carries joins, stops, cancellations and retirements. A setup
+saved without a width serves one request at a time.
 
 - Load. `Gemma4TensorParallelVerifiedLoad` first verifies the whole artifact,
   as a pipeline load does (`prepareGemma4ResidentSource`). It then checks both
@@ -5258,9 +5888,13 @@ layer where that is more: a step is submitted layer by layer in 100-operation
 buffers, so several layers' temporaries are alive at once. Only requests
 shorter than 30 tokens, prompt and output together, pay more (at most about
 6.2 MB a rank); the LOAD quote is unchanged. The prefix memory tier lives in
-measured free room and is not charged. A lane is gated with every held lane's
-charge, the new one and the rank's reserve. Speculative decoding, media and a
-measured activation floor are not built yet.
+measured free room, measured beside every lane's charge, and is not charged. A
+lane is gated with every held lane's charge, the new one and the rank's
+reserve. LOAD reserves the saved width: the allowance (one request and the
+rank's reserve) and one more request's whole charge for each lane after the
+first (`Gemma4TensorParallelRequestBudget.reservedBytes(lanes:)`), the figure
+the planner priced the width at. Speculative decoding, media and a measured
+activation floor are not built yet.
 
 ### Gemma tensor-parallel placement
 
@@ -5381,7 +6015,7 @@ pipeline, and no size fits tensor parallel alone (a planner scan on 2026-11-01,
 the measured 29 µs link) [INFERENCE: the checks' device model, not measured
 Macs]. The tensor-parallel-first families (Qwen, GLM) declare no features and
 are not gated. Applied to them, the rule would leave GLM unchanged (its tensor parallel
-keeps prompt-prefix and SSD reuse and adds rounds, eight lanes, images, video
+keeps prompt-prefix and SSD reuse and adds rounds, up to eight lanes, images, video
 and logprobs) but would move Qwen3.5 9B from tensor parallel to its
 speculative pipeline, which its records credit 1.74x: Qwen tensor parallel
 decodes in rounds only with the explicitly quoted assistant
@@ -5493,9 +6127,9 @@ See [focused Gemma 4 tensor-parallel checks](../developer/test.md#focused-gemma-
 
 ### Gemma 4 native context on a pair
 
-A Gemma 4 26B pair in tensor parallel serves the model's declared context, as
-one Mac serving it does: prompts up to 262,143 tokens and up to 32,768 output
-tokens (the catalog's `max_output_length`) within 262,144
+A Gemma 4 26B pair serves the model's declared context, as one Mac serving it
+does, in tensor parallel and in the pipeline: prompts up to 262,143 tokens and
+up to 32,768 output tokens (the catalog's `max_output_length`) within 262,144
 (`Gemma4ResidentAdapterDefinition.contextLimits`,
 `QwenResidentContextLimits.Ceiling.native`). Before, the pair advertised
 65,536. On pair-2 (2026-11-08) a streamed prompt longer than 32,768 tokens to
@@ -5521,30 +6155,69 @@ it alone:
   and every keep-warm answer while no request or lane is held, carry the
   longest context the reservation gate admits now (`servingContextTokens`,
   `refreshServingContext`; kept prefix entries count as room). The paged
-  host's bound is the profile's; pages grow with each request.
-- Pipeline: the memory plan's request, as for every family. The adapter says
-  whether its stages serve the whole profile
-  (`ClusterRuntimeAdapter.pipelineServesWholeProfile`, false for every
-  adapter), and the worker's stages (`LayerStageResidentAdmission.servedProfile`)
-  and the provider (`ClusterModelFeaturePolicy.servedProfile`) both read that
-  one rule, so a pair never advertises a context its ranks refuse. A Gemma
-  pipeline served its whole profile in `dev` before 0.10.11. On pair-2 a 128K
-  request then failed the M5 Max stage's running-request memory check
-  mid-prefill (594 MiB compressed, so no file cache counted). A pipeline stage
-  whose check refuses a running request ends its worker
-  (`QwenResidentRequestExecution.run`'s check, the worker coordinator's
-  failure path), so the client got a 500 and the pair stopped serving for
-  about a minute (journey 3, D6). Tensor parallel's ranks end such a request
-  alone, so a longer Gemma request goes there. Each stage charges the whole
-  model's ledger (`Gemma4StateBudget`) at the request's context: 2.0 GB, plus
-  one prompt frame's 2.2 GB on a stage with a full-attention layer, at the
-  standard request.
+  host's bound is the profile's (`hostBound`); pages grow with each request.
+- Pipeline: the adapter says whether its stages serve the whole profile
+  (`ClusterRuntimeAdapter.pipelineServesWholeProfile`; the memory plan for
+  every other adapter). The worker's stages
+  (`LayerStageResidentAdmission.servedProfile`) and the provider
+  (`ClusterModelFeaturePolicy.servedProfile`) both read that one rule, so a
+  pair never advertises a context its ranks refuse. Gemma's pipeline serves
+  its whole profile. Each stage charges the whole model's ledger
+  (`Gemma4StateBudget`) at the request's context and, on a stage with a
+  full-attention layer, one prompt frame's FP32 scores over the whole
+  context: 6.4 GB and 8.6 GB at 262,144 tokens, against 2.0 GB and 2.2 GB at
+  the standard request. Its lookahead frame does not grow with the prompt.
+  READY's capacity covers the longest request
+  (`QwenResidentRuntime.stageRequestCapacity`: the larger of the memory plan's
+  planned bytes and one 262,144-token request with its prompt's prefill), each
+  stage's KV host is bounded by that request, 262,144 tokens in 512-token
+  chunks (`stageKVHostBound`), and each stage's serving context is searched up
+  to 262,144; the pair serves the smaller of its two stages' contexts. `load`
+  takes a stage's READY capacity and host bound from these functions, and a
+  tensor-parallel rank's from `capacityBytes` and `hostBound`, so the tests pin
+  them per stage and per rank
+  (`ResidentAdmissionGemma4Tests.eachStageHoldsAndCoversTheLongestRequestItServes`,
+  `Gemma4NativeContextTests.aRankHoldsAndCoversTheLongestRequestItServes`).
+  A pipeline with lanes keeps its READY figure, as every lane owner of the
+  stage modes does. A Gemma pipeline that keeps the
+  one-chunk lookahead (the default) serves one request at a time: its
+  prompt capture is charged and capped, and its running check asks only for
+  what the request still needs (`requireContinuing`). One whose setup
+  prefills serially serves the width it saved (one lane without a width), and
+  a long lane needs more than its reservation asked. The lanes' running check
+  (`QwenResidentRuntime+Batch.swift`, `memoryRefused`) asks on every pass for
+  the first lane's whole charge, the others' state and the loading headroom,
+  with no credit for what the lanes already allocated (tensor parallel's
+  lanes give it). With the request prefix cache on, a lane's prompt capture
+  is outside its charge: at most the cache's 32 frontiers per prompt, as on
+  the one-request path, each with its own copy of every sliding-window
+  layer's window (about 0.1 GB a stage), and one copy of the full-attention
+  rows. Before that cap a lane kept every 512-token frontier: on the
+  M5 Ultras (2026-11-10, four lanes) a 73,128-token lane grew 17.5 GB and a
+  127,205-token lane 30.4 GB against charges of 4.6 and 7.6 GB. Capped, a
+  lane grows at most about its charge plus 3 to 4 GB. It runs to its end
+  with about twice its charge, plus the headroom, plus 4 GB admissible:
+  about 24 GB at 131,072 tokens and 38 GB at 262,144 on a Mac of 96 GiB or
+  more, where it is admitted with 12.1 and 19.3 GB (a stage's charge is
+  7.8 and 15.0 GB; the headroom 4.3 GB, 2.9 GB at 64 GiB, 2.2 GB at 48 GiB).
+  Those figures are the measured footprint less the frontiers the cap
+  drops, not yet measured with it. In between, the lane gets the memory 503
+  partway through its prompt, for that request alone and never a worker's
+  end: the check refuses while the lane's charge and the headroom are still
+  admissible. With about 20 GB of a Mac held by macOS, the provider and the
+  stage's weights, an idle Mac of 64 GB or more runs a 262,144-token lane to
+  its end. A 48 GB Mac refuses a lane past about 190,000 tokens and a 36 GB
+  Mac past about 85,000, as does any Mac whose other work holds the
+  difference: the serving context the pair advertises prices only the
+  reservation. The M5 Ultras (256 GB) don't meet it. A stage whose memory
+  refuses a request while it runs ends that request alone, on both ranks
+  ([a pipeline stage's memory refusal](#a-pipeline-stages-memory-refusal-ends-that-request-alone)),
+  as tensor parallel's ranks do.
 
 The provider holds a request to what its mode serves
-(`ClusterModelFeaturePolicy.servedProfile`: tensor parallel's whole profile, a
-pipeline's memory plan)
-as one Mac holds a request to its window. A `max_tokens` past the output limit,
-or past what the prompt leaves of the context, is cut to fit
+(`ClusterModelFeaturePolicy.servedProfile`: Gemma's whole profile in both
+modes) as one Mac holds a request to its window. A `max_tokens` past the
+output limit, or past what the prompt leaves of the context, is cut to fit
 (`EngineV2Bridge.pairServedLimits`, by the rule that cuts one Mac's to its
 window). A prompt that fills the context is refused with one Mac's 400,
 `context_length_exceeded`, in one Mac's words
@@ -5568,7 +6241,202 @@ Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Gemma4/R
 `libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapability.swift`
 (`pipelineServesWholeProfile`),
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Resident/QwenResidentRuntime+Load.swift`
+(`stageKVHostBound`, `stageRequestCapacity`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Gemma4/Resident/Gemma4ResidentFamily.swift`
+(`Gemma4ResidentLoadedStage.requestAllowance`)
 and `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`.
+
+## A pipeline stage's memory refusal ends that request alone
+
+A layer-stage pipeline (the Qwen and Gemma 4 stages, GLM's, MiMo V2.6's and
+GPT-OSS's) checks each running request against its rank's live memory gate, at
+most every 250 ms:
+kept prompt prefixes give way first, then the request's own prefix capture
+(`QwenResidentRequestExecution.checkRunning`; the gate is
+`QwenResidentRequestAllowance.requireContinuing`, GLM's `requireResources`,
+MiMo's and GPT-OSS's `requireLive`, which share one gate,
+`ClusterLiveMemory.requireStageRequest`).
+Every running gate, in every mode, asks power and thermal state first (a
+refusal there is untyped and fails the worker), then judges memory only inside
+its typed block, so every memory refusal is a `QwenResidentMemoryRefusal`.
+None asks the load's entry check (`QwenDenseStageLoadResources.requireInitial`)
+first: its floor is one the gate asks on its own sample anyway, and its refusal
+is untyped, so it would end the worker before the typed check ran.
+Before 0.10.12 a refusal that remained was thrown from the request's `check`,
+which also runs inside every transfer. The refusing rank left the data plane
+mid-exchange and its worker exited (the worker coordinator's failure path), the
+other rank lost its input, the client got an untyped 500 and the pair stopped
+serving for about a minute (journey 3, D6). Now the refusal ends that request
+on both ranks, and nothing else:
+
+- **The stop latch.** The memory check moves out of `check` into a
+  per-request latch (`QwenStageAbort`), polled where the rank owes its peer
+  its next message or is about to run a forward: in each send and each owed
+  acknowledgement of `QwenLayerStageGenerationTransport`, at rank 0's frame
+  start (before its forward), before rank 1 consumes a boundary (before its
+  forward), and in rank 0's one-chunk lookahead, which then prepares no next
+  chunk. Only a memory refusal latches (`QwenResidentMemoryRefusal`). Power,
+  thermal, native errors, the deadline and a cancel still throw. A recording
+  (benchmark) request keeps the memory check in `check`. The gate is now asked
+  at those points (still at most every 250 ms), about once per prompt chunk on
+  the rank prefilling, where `check` used to ask it every 250 ms from inside
+  the transfers: a refusal is acted on up to one chunk later.
+- **The marker.** The stages' messages strictly alternate, so a rank that must
+  stop owes exactly one next message, and its peer is already waiting for it.
+  The rank sends a marker in that message's own record (type, label and size,
+  so the keyed data plane counts and authenticates it as it would the
+  message): length word `0xFFFF_FFF1` in a length-prefixed slot (boundary
+  header, token, decision), an acknowledgement of phase `abortedMemory` in an
+  acknowledgement slot, and a `qwen_stage_generation_abort_v1` packet as the
+  body of a fixed frame (compact decode's frames, relays, the hand-off header,
+  MTP rounds). Each is a value the message it replaces never takes
+  (`QwenStageAbortWire`). A rank never stops in an array slot (a residual
+  payload, a hand-off segment, an MTP window): an array always follows its own
+  handshake, so the rank sends it and stops at its next control slot. Rank 0
+  replaces only a decision to go on; one that ends the request anyway (end of
+  sequence, length, the owner's stop) is sent as it is.
+- **The handshake.** The peer receives the marker in the receive it was
+  already in, answers with one confirmation (`abortConfirmed`, on a record of
+  its own) and stops too. Both cancel the request's session (its KV, capture,
+  MTP head history and any prepared lookahead boundary), return MLX's freed
+  buffers (`Memory.clearCache()`), confirm each other's retirement
+  (`exchangeAbortRetirement`: `requestRetired`, bound to the abort) and report
+  the abort with the refusing rank. Neither transport is failed and no record
+  is left in flight, so the next request runs on the same workers, data plane
+  and prefix caches. Nothing of the aborted request is stored; kept prefixes
+  stay on both ranks.
+
+| State | Where a stop goes |
+|---|---|
+| Prefill | Rank 0 at the next boundary header, before its forward; rank 1 in place of `boundaryReady`, or of `boundaryConsumed` with its forward skipped (D6 was rank 1 here) |
+| One-chunk lookahead | A latched rank 0 prepares no next chunk, reads `boundaryConsumed` (or rank 1's marker there), then stops at the next header |
+| Decode, plain or compact | The token frame's header, token, `tokenAccepted`, decision and `decisionAccepted` slots; compact decode's boundary, token and decision frames |
+| A published token | Rank 0 publishes a token and waits for the owner's answer before it decides, so a stop never crosses an answer; the client keeps the tokens it has |
+| Pipeline MTP | Rank 1 at its round (before it drafts) or its result (before it verifies); rank 0 at its round decision, after the window it was sent |
+| Phase split, alone route | Rank 0 at the hand-off header; rank 1 at `handoffReady` or `handoffAccepted`. After the hand-off, rank 1 at its next relay and rank 0 at a relay decision. On the alone route, rank 1 prefills the whole prompt by itself, so it takes a stop point before each of its frames, in the slot of the prompt digests it owes rank 0 next (`prefillAlone`, a prompt of more than one frame), and at those digests |
+| Before the first frame | No stop point: the reservation's own gate admitted the request just before, and a refusal is caught at the first frame |
+
+**Batch lanes** (`QwenResidentRuntime+Batch.swift`, wire v3; MiMo's and
+GPT-OSS's `IndependentHistoryBatchDriver` on the same wire). A refusal
+stops one lane, the newest still running (`QwenBatchMemoryStop`), never the
+batch. Rank 0 polls before it builds a step's header, and rank 1 before its
+reply, which names its lane in `memoryMask` (word 6). Rank 0 lets the lane
+leave once it owes the owner no answer, with disposition 5 and the refusing
+rank (slot word 27). Both ranks retire it as a cancelled lane is retired and
+publish its abort. Neither polls again until that lane has left; the other
+lanes run on.
+
+**The worker, the owner and the client.** The runtime's `start` throws
+`ClusterResidentRequestAbort` after its request scope ended cleanly. The worker
+publishes `aborted(memory, rank)` then `retired(aborted)` (a lane through its
+lane host), keeps its model and begins no forced exit (`WorkerCoordinator`).
+The worker sessions accept `aborted` only for a running request, and on rank 0
+only once the owner answered its last token. The owner
+(`ClusterWorkerRequest.run`) reads both ranks' aborts, which must agree. It
+cancels, fences and invalidates nothing, and counts the abort
+(`ClusterWorkerPair.requestsAborted`); a cancel that crosses it changes
+nothing. The owner's lease state retires it without quarantine
+(`ClusterOwnerLeaseState.observeRetired`). The provider's lease ends the
+request with the pair's capacity refusal (`DistributedMemoryAbort`:
+`token_budget_exhausted: request requires N context tokens but only M available
+on this cluster pair now (rank r's memory refused it while it ran)`). On the
+pair's local API a request that isn't streamed then gets one Mac's memory 503,
+and a streamed one its tokens, then an error chunk with `code`
+`request_exceeds_node_budget` and the 503's words
+(`DistributedHTTPEventStream.memoryFailureFrame`). Coordinator traffic gets
+`capacity` (503) with `request_exceeds_node_budget`, as for the pair's refusal
+at reservation.
+
+**Tensor parallel.** The ranks already stop a request after the same step
+when either rank's own check asks (the stop slot each step's agreement
+carries). Rank 0 then threw "The peer rank stopped …", and the Qwen and Gemma
+batches failed whole on a refusal, so the worker exited either way. Now:
+
+- **One request** (Gemma 4, GLM, MiMo): each rank records whether its stop was
+  its memory gate's (`QwenResidentMemoryRefusal`, from
+  `ClusterLiveMemory.requireTensorParallel`). The end-of-request agreement,
+  which both ranks always reach, carries rank 0's count, finish and owner stop,
+  and each rank's memory stop (`QwenTensorParallelStopRule.endWords`,
+  `readEnd`; MiMo's one extra exchange). A local stop with a memory stop is an
+  abort naming that rank on both ranks; a stop token, the length or the owner's
+  stop end the request as before. Gemma's and GLM's steps (and GLM's MTP
+  rounds) are built one ahead, so rank 1's flag rides the step after the one
+  already built. When rank 0 ends the request in that step, at its stop token
+  or its length, rank 1's stop came too late to change what the client gets:
+  rank 1 reports rank 0's finish with the tokens it committed
+  (`QwenTensorParallelStopRule.reconcile`), and both end cleanly. Two finishes
+  that differ would fail the request on the owner, and the pair with it.
+  Rank 1 likewise reports rank 0's client stop, with rank 0's tokens, when its
+  pages could not grow as the owner stopped the request (within a step or two,
+  so rank 0 heard the owner first). (MiMo reads a round's stops before it
+  commits, and its plain decode reads each step before it builds the next, so
+  its stop is never late.)
+  An aborted request's state retires normally and nothing of it goes to the
+  SSD tier. Gemma withdraws the prompt's capture. GLM stores a prompt's kept
+  boundary when the prefill frame that reaches it finishes, so the rank that
+  didn't refuse keeps that entry until it is evicted (the refusing rank's gate
+  dropped all of its own), and a restore needs both ranks. The check runs
+  after each committed token, as before.
+- **A prompt's prefill** (one request: Gemma 4 and MiMo by default, GLM with
+  one lane) runs its chunks without a check, as before, so a refusal is acted
+  on at the first committed token. Meanwhile nothing the request allocates
+  passes its reservation: the gate admitted its whole charge at its context
+  (its state there, the largest frame's transients and, on a paged rank, the
+  pages it grows chunk by chunk). What can change is the rest of the Mac, which
+  the first check sees. A check per chunk would need both ranks to agree per
+  chunk, an evaluated all-sum that ends the prefill's overlap of host and GPU
+  work. Lanes need none: every prompt frame or slice is a step, and the check
+  runs between steps.
+- **Batches** (Qwen 3.8 27B in every width, its one-request singleton and its
+  assistant lanes, and Gemma 4's lanes: `QwenTensorParallelBatchDriver`): the
+  memory check leaves `check` for `memoryRefused`, polled at a step boundary
+  (rank 0's plan, rank 1's report, and each build-ahead decision, which then
+  asks for a barrier). A refusal stops the newest running lane alone, as the
+  pipeline's batch does: rank 1 names it in its report's `memoryMask`, rank 0
+  plans it to leave with disposition 5 once it owes no answer, both retire it
+  as a cancelled lane, and it is published as aborted. The singleton host
+  returns the abort as its completion.
+- **GLM's lanes** (`GLM5NextTensorParallelLaneLoop.run(memoryRefused:check:)`):
+  the same at each step's start. Rank 1 names its lane with 2 in that slot's
+  leave word (`Report.memoryWanted`); rank 0 stops it running and publishing
+  and lets it leave, once it owes no answer, with `abortedRank0` or
+  `abortedRank1` (leave words 5 and 6).
+
+Every pair mode is covered: pipeline and tensor parallel, one request or
+lanes, MTP and assistant lanes, for every family that serves in it. Native
+errors, protocol violations, a peer that doesn't confirm within the progress
+limit, the deadline and power or thermal refusals fail the worker as before.
+
+**The dev memory fault.** A dev or DevNet install can make a rank's memory
+read as taken from the next request's Nth gate pass on (`ClusterMemoryFault`,
+the file `~/.darkbloom-dev/cluster-setup/memory-fault`, read and deleted when a
+request starts, never read in a production install). It changes only the
+sample the host memory gate judges (`QwenDenseStageLoadWatch.admits`): no free
+page and no file cache, as once another process has taken them. The policy
+refuses that sample with its own sentence, so the first check that judges it
+throws, as on a real Mac: a running gate's typed check, or a check outside it,
+which would end the worker on a real Mac too. See
+[the test guide](../developer/test.md#a-memory-refusal-on-a-real-pair-dev-memory-fault).
+
+**Builds.** A pair forms only between Macs on the same build
+(`ClusterConfiguration.peerBuildDiffers`), and each request's agreement binds
+both ranks' builds (`rankBuildSHA256`). An older rank would refuse a marker as
+a malformed message, and both workers would fail as they did before this
+change. The worker protocol version and the coordinator are unchanged.
+
+Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Generation/QwenStageAbort.swift`
+(`QwenStageAbort`, `QwenStageAbortWire`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Generation/QwenLayerStageGenerationTransport.swift`
+(`stopIfLatched`, `exchangeAbortRetirement`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Generation/QwenLayerStageGenerationDriver.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/MTP/QwenPipelineMTPGeneration.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Resident/QwenResidentRequestExecution.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Resident/QwenResidentRuntime+Batch.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Generation/GLM5NextPipelineGeneration.swift`,
+`libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/Execution/WorkerCoordinator.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerRequest.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedPipeExecutionOwner.swift`
+and `provider-swift/Sources/ProviderCore/Server/Distributed/DistributedHTTPEventStream.swift`.
 
 ## MiMo V2.6 tensor parallel
 
@@ -5893,7 +6761,7 @@ See [focused MiMo V2.6 tensor-parallel checks](../developer/test.md#focused-mimo
 
 `ClusterPlacementPlanner.rankQuoted` is the model-independent decision seam for adapters that provide exact simultaneous native/host peaks and current bounds. It filters infeasible shapes and unsupported modes, then uses the same hardware-only ordering as `plan`: candidates whose every range fits its Mac's hardware (`ClusterDeviceProfile.hardwareFits`: buffer and allocator limits, the GPU-resident part (`ClusterPlacementRank.gpuResidentBytes`, the `withinGPUWorkingSet` figure) within the GPU limit, and the whole need within the at-rest admissible memory `atRestAdmissibleBytes`, physical memory less what macOS wires, because the load gate counts every file-backed page), then predicted request time, ties and the tensor-parallel margin. Live free memory and file cache never order candidates; each rank's live fit is reported and the load gate still decides each load. A supported TP adapter must supply TP layout facts and keyed reduction measurements. Neither resource balance nor chip-name rules replace request-time scoring; balance only breaks ties. Candidates whose predicted times differ only by rounding (relative 1e-9, as every serial pipeline cut does on identical Macs) are ordered by `capacityBalance`, the smallest share of a rank's hardware capacity (`min(residentCapacityBytes, atRestAdmissibleBytes)`) left beyond its need, before the lower cut, so identical Macs split evenly and live free memory cannot pick the cut. Every structural boundary, including one layer on a slower member, remains available when its adapter quotes fit. A candidate is `possible` when every rank fits the hardware, or the live gate admits it now and its GPU part is within the limit: a split the GPU cannot keep resident is never offered because memory happens to be free. `ClusterPlacementMemoryVerdict.assess` runs the caller's planning step on the Macs as they are and, when nothing fits, with each GPU limit Darkbloom raises lifted to `ClusterGPUMemoryLimit.ceilingBytes` (physical memory less 16 GiB, or a sixteenth from 512 GB): `fits`, `needsGPULimitRaise` (each Mac's GPU need, limit now and ceiling, with `ClusterGPULimitRaise.question`) or `doesNotFit`. Only Macs `ClusterGPUMemoryLimit.raisedByDarkbloom` names (Apple silicon, any M generation, with 128 GB or more) are lifted (`ClusterDeviceProfile.withGPUMemoryLimitRaised` is nil elsewhere), so an Intel Mac or a Mac under 128 GB is held to the limit macOS keeps. `darkbloom cluster` never raises the limit itself. The one command that does is `darkbloom cluster gpu-limit`, which its owner runs on such a Mac, with consent and macOS's administrator prompt, to the same ceiling (`GLM5NextGPULimitEligibility` delegates to the same rule; see [GLM pair admission](#glm-pair-admission)). When no placement fits a pair as its Macs are, the setup's model row (`ClusterSetupPlanning.decide`) plans again with those Macs lifted: if a placement fits then, the row is blocked with that step (`ClusterSetupPlanning.gpuLimitSteps`: each Mac whose part needs more GPU memory than macOS allows, the need, the limit and the raised limit); otherwise it says "Needs more memory" with the reason (`refusalWords`: the GPU limits when every part fits its Mac's memory at rest, else the model's size). Nothing is offered that would load and then fail. `ClusterDeviceMemory.fit` reports `gateCountsLess` only on a sample whose gate counts file cache; above normal pressure, where the gate counts none, the answer is `afterApplicationsRelease`. A rank's live fit is the gate's decision on one sample, so it cannot foresee the gate withdrawing the file cache during the load once compression or swap-out since the load's first sample passes its limits (`QwenDenseStageLoadPolicy.maximumCompressedSinceFirstSampleBytes`, described above); the at-rest ceiling assumes the share loads into free pages, not into a file cache full of the model's own files.
 
-GLM's placement family (`GLM5NextPlacementFamily`, `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Metadata/GLM5NextServingMetadata.swift`) offers the two-rank plan `glm5_next_heads_and_expert_channels_v1` whenever the registered row lists `tensor_parallel_v1` and the geometry halves. Each text-layer tensor is divided or replicated exactly as the SDK's `GLM5NextTensorShard.splitAxis` loads it; the embedding, final norm and head are replicated, and the NextN layer and vision tower belong to no text range. Every rank decodes in speculative rounds with the NextN layer, which it holds whole beside its share, so the plan states it (`ClusterTensorParallelFamilyPlan.speculativeHead`, `GLM5NextPlacementFamily.tensorParallelSpeculativeHead`): the planner charges each tensor-parallel rank the layout's `speculativeHead` part (4,183,320,576 stored bytes, each tensor in whole pages, as `mtp_bytes` on the worker's load line) and the request memory the rounds add at the memory plan's context (the larger of the contiguous and the paged NextN charge of `GLM5NextTensorParallelRequestCharge`), and divides a token's predicted decode step by the speed-up the pair measured at the runtime's depth over one token per step (76.0 against 62.6 tok/s at depth 2, `GLM5NextPlacementFamily.measuredTensorParallelDecode`). Served tensor-parallel requests are taken back to one-token steps by the same speed-up before they correct the shares (`ClusterServedCalibration`), so the next plan predicts what was served. Without it the plan priced no NextN bytes and one token per step: it could admit a pair the load gate then refused, and it predicted decode too slow. Three terms of the load gate are not in the plan yet: the vision tower rank 0 holds for media (1.13 GB), the freed-buffer cache (`GLM5NextTensorParallelResidentRuntime.freedBufferCacheBytes`) and the bulk prefill's further workspaces and sealed sums' buffers (`bulkPrefillChunkTokens`). On two M5 Ultra 256 GB, adding them to the planner's estimate as it stands would put each rank's need above the at-rest ceiling (`ClusterDeviceProfile.atRestAdmissibleBytes`), so the pair would no longer plan tensor parallel; they wait for the gate's own charge to replace the estimate rather than be added to it. The plan sums two partials of the 4096-wide residual per layer and one per step (91 per decode step); the partials are the row-parallel projections' bfloat16 outputs, sent as they are and added in float32 with one rounding (`GLM5NextTensorParallelResidentRuntime.partialsTransport`, bound into the load agreement). That is bit-identical to widening them to float32 before the link, as `ClusterTensorParallelTerms.current` (`partialsDType` float32) describes, with half the bytes: GLM's projections never kept float32 partials (flagged for platform review) and holds request state whole on each rank, since the DSA latent cache is replicated. The pipeline's private image profile stays pipeline-only, in both the layout and the capability; tensor parallel serves media under the text profile (below). The hardware prior (`ClusterHardwarePrior.decodeBytesPerToken`) counts a mixture of experts' routed experts at the fraction a token is routed to (`ClusterRoutedExperts`; 8 of GLM's 288), not every expert byte. Of the bytes a step reads, a tensor-parallel share divides only the plan's divided bytes (`dividedDecodeFraction`), because every rank reads its replicated bytes whole. On two identical M5 Ultra 256 GB with GLM measured alone the product's rule (tensor parallel first wherever it fits) places tensor parallel on equal shares with the NextN layer priced, both on a new pair before any load measured the link and after the first load's keyed probe; the planner's own speed comparison (the plan tool without `--tensor-parallel-first`) chooses tensor parallel once the keyed link is measured and a pipeline before (`GLMTensorParallelChecks`; through `ClusterPlacementFlow.decide` in `PlacementSetupCheck.glmTensorParallelPair`). The pair serves it with eight lanes (`DistributedInstalledPlan.tensorParallelBatchLanes`).
+GLM's placement family (`GLM5NextPlacementFamily`, `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Metadata/GLM5NextServingMetadata.swift`) offers the two-rank plan `glm5_next_heads_and_expert_channels_v1` whenever the registered row lists `tensor_parallel_v1` and the geometry halves. Each text-layer tensor is divided or replicated exactly as the SDK's `GLM5NextTensorShard.splitAxis` loads it; the embedding, final norm and head are replicated, and the NextN layer and vision tower belong to no text range. Every rank decodes in speculative rounds with the NextN layer, which it holds whole beside its share, so the plan states it (`ClusterTensorParallelFamilyPlan.speculativeHead`, `GLM5NextPlacementFamily.tensorParallelSpeculativeHead`): the planner charges each tensor-parallel rank the layout's `speculativeHead` part (4,183,320,576 stored bytes, each tensor in whole pages, as `mtp_bytes` on the worker's load line) and the request memory the rounds add at the memory plan's context (the larger of the contiguous and the paged NextN charge of `GLM5NextTensorParallelRequestCharge`), and divides a token's predicted decode step by the speed-up the pair measured at the runtime's depth over one token per step (76.0 against 62.6 tok/s at depth 2, `GLM5NextPlacementFamily.measuredTensorParallelDecode`). Served tensor-parallel requests are taken back to one-token steps by the same speed-up before they correct the shares (`ClusterServedCalibration`), so the next plan predicts what was served. Without it the plan priced no NextN bytes and one token per step: it could admit a pair the load gate then refused, and it predicted decode too slow. Three terms of the load gate are not in the plan yet: the vision tower rank 0 holds for media (1.13 GB), the freed-buffer cache (`GLM5NextTensorParallelResidentRuntime.freedBufferCacheBytes`) and the bulk prefill's further workspaces and sealed sums' buffers (`bulkPrefillChunkTokens`). On two M5 Ultra 256 GB, adding them to the planner's estimate as it stands would put each rank's need above the at-rest ceiling (`ClusterDeviceProfile.atRestAdmissibleBytes`), so the pair would no longer plan tensor parallel; they wait for the gate's own charge to replace the estimate rather than be added to it. The plan sums two partials of the 4096-wide residual per layer and one per step (91 per decode step); the partials are the row-parallel projections' bfloat16 outputs, sent as they are and added in float32 with one rounding (`GLM5NextTensorParallelResidentRuntime.partialsTransport`, bound into the load agreement). That is bit-identical to widening them to float32 before the link, as `ClusterTensorParallelTerms.current` (`partialsDType` float32) describes, with half the bytes: GLM's projections never kept float32 partials (flagged for platform review) and holds request state whole on each rank, since the DSA latent cache is replicated. The pipeline's private image profile stays pipeline-only, in both the layout and the capability; tensor parallel serves media under the text profile (below). The hardware prior (`ClusterHardwarePrior.decodeBytesPerToken`) counts a mixture of experts' routed experts at the fraction a token is routed to (`ClusterRoutedExperts`; 8 of GLM's 288), not every expert byte. Of the bytes a step reads, a tensor-parallel share divides only the plan's divided bytes (`dividedDecodeFraction`), because every rank reads its replicated bytes whole. On two identical M5 Ultra 256 GB with GLM measured alone the product's rule (tensor parallel first wherever it fits) places tensor parallel on equal shares with the NextN layer priced, both on a new pair before any load measured the link and after the first load's keyed probe; the planner's own speed comparison (the plan tool without `--tensor-parallel-first`) chooses tensor parallel once the keyed link is measured and a pipeline before (`GLMTensorParallelChecks`; through `ClusterPlacementFlow.decide` in `PlacementSetupCheck.glmTensorParallelPair`). The pair serves as many requests at once as both Macs admit now under GLM's lane charge, up to eight, sized when it is set up and reserved when it loads, and one at a time where only one fits ([tensor-parallel lane widths](#tensor-parallel-lane-widths)).
 
 A chosen GLM tensor-parallel placement is served by `GLM5NextTensorParallelResidentRuntime` (`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/TensorParallel/`). Each rank verifies the whole artifact, loads every layer's share through `GLM5NextTensorShard`, and sums each layer's attention and feed-forward partials (bfloat16, added in float32) over the sealed all-sum (AES-256-GCM on the keyed JACCL data plane; a peer piece that does not open fails the request). On the JACCL mesh the sum is streamed in one CPU-stream task: each 256 KiB sealed piece carries its own tag, crosses as soon as it is sealed and is opened and added as soon as it lands, so only the first and last pieces wait for crypto (`SealedAllSum`, `sealed_stream.h`); other groups seal and gather the whole frame. Prefill runs 4,096-token chunks on both ranks (`prefillChunkTokens`: the M5 neural accelerators reach ~94 TFLOPS on 4,096-row NVFP4 matmuls against ~62 at 2,048; charged as a second request workspace), each chunk as two micro-batches whose sums are issued as soon as their partials exist, so one computes while the other's sum crosses the link (`GLM5NextTextStage.tensorParallelMicroBatches`; 2,532 against 1,767 tok/s whole); greedy and sampled requests then decode in MTP rounds (below). A tensor-parallel worker lifts MLX's per-command-buffer input-size bound before anything native starts (`WorkerCommandBufferBudget`, `MLX_MAX_MB_PER_BUFFER`; a launcher value is kept): every MoE launch takes a whole expert bank as input, so decode committed ~88 buffers a step instead of ~22 (measured 19.0 -> 16.8 ms a step; the 50-operation bound stays). Decode steps, MTP rounds and lane rounds encode with at most 100 operations a buffer on the thread that encodes them (`GLM5NextTensorParallelResidentRuntime.decodeCommandBuffers`), above the owner's 16-operation rank guard, which prefill keeps: each further buffer is a GPU gap of about 10 µs (13.24 -> 12.56 ms a step, tokens identical). An MTP round submits its NextN priming and proposals as soon as they are built, so the GPU runs them while the host builds the verification forward (`GLM5NextTensorParallelSpeculation.EarlySubmission.proposals`; before, the whole round's graph, about 1.8 ms of host work, was built with the GPU idle): a depth-2 round 23.06 -> 21.64 ms (95.9 -> 102.7 tok/s), two lanes 115.2 -> 121.6 tok/s, tokens and top logits identical. A greedy round reads out half the head's vocabulary rows on each rank and agrees on every window token through the round's existing agreement sum: each rank's slot carries its half's maximum and argmax, and the larger maximum wins, rank 0's lower index on a tie, which is the whole head's argmax (`GLM5NextTensorParallelSpeculation.splitsVocabulary`, `GLM5NextTextStageReadout.allTokensVocabularyPart`): 21.32 -> 21.05 ms a depth-2 round, tokens identical; sampled rounds keep the whole head. A GLM tensor-parallel worker lets the hyper-connection site that reads a sum wait for it itself (`WorkerFenceFusion`: `MLX_METAL_FENCED_INPUTS`; a launcher value is kept), one dependent dispatch fewer on each of a step's 90 sums. The core's fused fence update (`MLX_METAL_FUSED_FENCE_UPDATE`) stays a launcher's choice: above 32 KB a partial's update is split over several threadgroups and that path never signals the CPU, so two batched lanes (six verification rows) stalled every round about 0.7 s. The load gate charges the shard, the NextN layer, both pipeline ranks' request budgets plus speculative decode's request state, and a 4 GiB freed-buffer cache (the load runs with MLX's cache at zero; serving with it at zero halves prefill and decode). READY names the installed partition's plan hash, as a pipeline rank does. Prompt prefixes are reused as under Qwen tensor parallel: each rank keeps its own stage cache (its heads' KDA state and the replicated DSA latents) at a prompt's last whole chunk boundary in memory (`GLM5NextTensorParallelPrefixCache`, at most 8 GiB), and a request restores the longest boundary both ranks hold after one sealed vote, or neither does; entries give way first under memory pressure and every failure drops them. Each request's entries are its own partition's (`GLM5NextTensorParallelResidentRuntime.prefixScope`, see [tenant partitions](prefix-cache.md#cluster-prefix-tenant-partitions)): a tenant's boundaries are voted, restored and kept for that tenant alone, and a request whose cache is off votes and keeps none, on a cache-on request's frames. Each rank also keeps a cleanly retired request's boundary in the encrypted SSD tier, read from the memory entry's pages behind serving; the vote counts those records, and a boundary taken from one is restored into the request's own pages only after a second sealed exchange confirms both ranks have it, in the same partition (`prefixDiskScope`), so a restarted pair restores what the last one kept ([GLM TP prefix SSD tier](prefix-cache.md#glm-tp-prefix-ssd-tier)). The link probe that prices the reduction (`QwenTensorParallelLinkProbe`, recorded by both pipeline and tensor-parallel loads) times the sealed all-sum after one unmeasured pass with the same bounded cache, so the planner prices what a ready rank pays (a cold probe read 16.9 ms per 32 MiB against 5.8 ms ready).
 
@@ -5916,6 +6784,22 @@ A Qwen tensor-parallel rank waits for each all-sum the same way GLM's does: the 
 The GLM finite-calibration adapter samples each Mac locally and reuses `GLM5NextQualificationPlacement.evaluateLocal`. It supplies serial PP only; TP, lookahead and speculative execution are not part of that calibration seam. The cost layout leaves public admitted cuts empty. Existing keyed measurements feed `ClusterSpeedEstimator`; absent measurements remain priors, and the uniform layer-cost and unmeasured-link assumptions are reported. Predicted fastest is not measured-best pair throughput. Experimental workspace allowances never become measured or calibrated serving evidence.
 
 The installed run command recomputes the decision from both snapshots, binds it to the unchanged local template, and then invokes the existing signed quotation/owner path with the chosen cut. Local and peer quotes must still agree, and current-device/load/reserve/start checks retain authority. Public endpoint activation, automated calibration scheduling and a MiMo adapter for this exact-quote seam are separate integrations.
+
+### Planning stack
+
+Both planning entry points run on a thread of their own with a 16 MiB stack
+while their caller waits (`ClusterPlanningStack`): `ClusterPlacementFlow.decide`
+(the plan command, the automatic replacement's planner and every plan of the
+guided step) and the guided step itself (`ClusterSetupPlanning.decide`). Their
+callers run on 512 KiB stacks: the onboarding's and the cluster service's
+planning threads, the automatic replacement's task, `darkbloom cluster plan`'s
+task and every Swift Testing test. A debug build's planner frames are large. On
+2026-11-10 `decide` used 387 KiB of a test's stack planning a tensor-parallel
+width, of which its own frame was 99 KiB, and the guided step used 692 KiB. A
+test whose own frames left 20 KiB died of SIGBUS once a merge grew `decide`'s
+frame by 23 KiB. A release build used about 120 and 220 KiB. The planning thread
+inherits no task-local value, so it binds again the one planning reads
+(`ClusterPublicModels.declarationOverride`, which only tests set).
 
 ## Pipeline decode command buffers
 
@@ -6494,24 +7378,94 @@ qualification; those checks remain required.
 
 ### Gemma pipeline lanes
 
-A Gemma 4 pipeline whose saved setup prefills serially serves
-`DistributedInstalledPlan.gemma4PipelineBatchLanes` (4) requests at once,
-coordinator-registered pairs included. Every other pipeline lane adapter keeps
-the default of one (`DistributedInstalledPlan.defaultBatchLanes`). A saved
-width or the owner's `DARKBLOOM_CLUSTER_BATCH_LANES` still overrides the
-default.
+A Gemma 4 pipeline serves several requests at once (lanes) only with serial
+prefill, since lanes read prompts one frame at a time. Guided placement keeps
+the one-chunk lookahead and serves one request at a time (owner, 2026-11-10):
+`darkbloom cluster` and `darkbloom cluster plan` keep the placement chosen for
+one request (`ClusterPlacementFlow.decide`), which for a layer split takes the
+lookahead where the model has it (`ClusterPrefillSchedule.planned`), and save
+no width. On the M5 Ultra pair (2026-11-10), serial prefill gave every lane its
+request's solo tokens at 1, 2, 4 and 8 lanes, and 8 lanes served 182.3
+tokens/s in all against 48.2 at one. But a lone prompt's first token came 1.84
+to 1.94 times later at 8K to 64K tokens than with the lookahead.
+
+A Gemma pipeline serves a width (`batchLanes`) only where its setup chooses
+serial prefill and saves one:
+
+- both Macs' setups saved with `serial_v1` and a width of 2, 4 or 8
+  (`ClusterConfiguration.validate`), until the pair is planned again;
+- a local pair's [automatic replacement](#automatic-local-cluster-batching)
+  under queued requests, which plans its width with serial prefill
+  (`ClusterPlacementBatchScope`).
+
+LOAD admits a saved width whole (`QwenResidentRuntime`'s load). Every lane at
+the memory plan's request is charged as the lane book charges lanes held at
+once: the newest lane's whole allowance, and each other lane its state
+(`QwenBatchLaneBook.reservedBytes`).
+
+- A Mac that cannot hold that now refuses the load: "Resident load refused: N
+  requests at once, each of C context tokens, do not fit on rank R now".
+- Each lane is still admitted against live memory when it is reserved.
+- Each rank logs `darkbloom-resident-lanes-v1 rank=… lanes=… context=…
+  reserved=…`.
+- The check is the runtime's, not Gemma's alone: every pipeline stage the Qwen
+  resident runtime serves with lanes is admitted this way, a Qwen 3.5 row's
+  width saved by an automatic replacement included. That width was priced at
+  the same request (`ClusterPlacementBatchScope`).
+
+A Gemma setup saved without a width serves one request at a time under either
+schedule, as every pipeline lane adapter does
+(`DistributedInstalledPlan.defaultBatchLanes`): nothing priced a width for it.
+Until 0.10.12 a serial one defaulted to four lanes. A saved width or the
+owner's `DARKBLOOM_CLUSTER_BATCH_LANES` overrides the default.
+
+Guided placement sizes the plain pipeline only for a family listed in
+`ClusterPlacementPipelineWidth.qualifiedLanesByFamily`, up to its entry. No
+family is listed; listing Gemma 4 (`.gemma4LayerStage: 8`) sizes its guided
+setups again:
+
+1. The placement is chosen for one request: its mode, its leader and, for a
+   layer split, the one-chunk lookahead.
+2. When that is the plain pipeline, `ClusterPlacementPipelineWidth.size`
+   plans it again at 8, 4 and 2 lanes in turn, up to the family's entry. Each
+   plan keeps the same leader, uses serial prefill, and takes the cut that
+   serves fastest at that width.
+   - Each lane is priced at the standard request, whatever request the speed
+     is predicted for (`ClusterPlacementPolicy.pipelineLanes`).
+   - Every rank holds each lane's whole state: the layout's whole-model
+     request charge, or the rank's own state where that is larger. Beside it
+     sits one prompt frame's transient at that context, since lanes read
+     prompts one frame at a time.
+   - The first width both Macs admit now (`ClusterPlacementCandidate.admitted`)
+     is saved, with `serial_v1`. The plan keeps the reasons its mode was
+     chosen for one request, and predicts one request's speed with serial
+     prefill.
+3. When no wider width fits, the placement chosen for one request stands: no
+   width, the one-chunk lookahead, and one request at a time.
+
+Pipeline widths are 2, 4 and 8 (`ClusterPlacementBatchScope.pipelineWidths`),
+so a pair that fits six but not eight saves four.
 
 | Property | Basis |
 |---|---|
 | A lane costs no request its own tokens | Decode rows keep their one-request arithmetic ([batch decode](#gemma-ordinary-batch-decode-arithmetic)); each prompt frame runs alone on its request's own chunk grid (`QwenBatchSettings`) |
-| Memory | No load-time allocation; each lane is admitted against live memory and the activation floor is unchanged ([Gemma paged cluster lanes](hardware-support.md#gemma-paged-cluster-lanes)) |
+| Memory | LOAD admits the width whole at the memory plan's request, then each lane is admitted against live memory. Nothing is allocated at load for the width, and the activation floor is unchanged ([Gemma paged cluster lanes](hardware-support.md#gemma-paged-cluster-lanes)) |
 | Cancellation | A cancelled lane retires alone (`DistributedInstalledPlan.lanesRetireAlone`) |
-| One-chunk lookahead | Lanes prefill serially, so a setup that saved `one_chunk_lookahead_v1` keeps its schedule and one lane, as a planned batch width requires serial prefill (`ClusterConfiguration`) |
+| One-chunk lookahead | Lanes prefill serially: a width is saved only with `serial_v1`, and a setup saved with `one_chunk_lookahead_v1` keeps its schedule and one lane (`ClusterConfiguration`). With serial prefill, a long prompt alone starts its answer later than with the lookahead |
 
 Both owners derive the width from the same saved setup and bind it into the
-load agreement (`Gemma4BatchArithmeticAgreement`). The width is not qualified
-on hardware: multi-lane joining, cancellation and output agreement on the
-real pair remain separate checks, as for every pipeline lane adapter.
+load agreement (`Gemma4BatchArithmeticAgreement`).
+
+A pair saved for coordinator pairing keeps its width for the life of the setup,
+as a [Qwen TP width](#qwen-tensor-parallel-saved-width) does: no approval
+digest names a width. The approval does name the prefill schedule. The re-plan
+after an update plans the pair as guided placement does, so a pair approved
+with the one-chunk lookahead keeps the lookahead, one lane and its approval.
+
+Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementPipelineWidth.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementPlanner.swift` (`requirement`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Resident/QwenResidentRuntime+Load.swift`
+and `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Batch/QwenBatchLaneBook.swift`.
 
 ### Gemma routed-expert prior
 
@@ -6689,6 +7643,26 @@ saved-plan startup; reversing the ranks remains a distinct shape.
 no-cut tensor-parallel failures without indexing an absent layer cut. A passing
 run does not override a divergent record of the same shape. Comparator thresholds,
 artifact scoping and the grant rules are unchanged.
+
+### Tensor-parallel lane parity in pair qualification
+
+A tensor-parallel lane keeps its request's own arithmetic, so the pair
+qualification driver (`PairDriver`) holds every lane of a wave to the same
+request run alone in the loaded session. Its tokens must match, and with
+`--batch-logprobs K` its committed tokens' logprobs too. Every batch request
+then asks for each token's logprob and its K alternatives
+(`ClusterWorkerSampling.topLogprobs`; greedy requests ask with greedy sampling),
+which rank 0 sends on the committed-token channel. The driver records them as
+IEEE-754 bit patterns and compares them bit for bit (`compareLogprobs`); a
+cancelled or deadline-ended lane is compared as far as it got. A lane whose
+logprobs differ fails a tensor-parallel run even when every token matches.
+Pipeline workers send no logprobs and refuse such a request, so the option is
+tensor-parallel only. A request that captures logprobs may decode differently
+(`ClusterWorkerSampling.admitsSpeculativeVerification`: Qwen tensor parallel
+drops its assistant, as the product does; GLM replays its rounds' draws), so a
+qualification pairs a run without the option with one with it.
+Sources: `libs/darkbloom-cluster-worker/Sources/DarkbloomClusterQualification/PairDriver.swift`
+and `PairConfiguration.swift`; [lane parity](../provider/cli-reference.md#pair-batch-lane-parity).
 
 
 ### Pending requests during a batch mode replacement
@@ -6892,24 +7866,55 @@ change attention arithmetic or the cached frontier. See
 
 ## Bonsai 27B packed FP32 rows
 
-The registered Bonsai 27B signed-Hadamard pack preserves the singleton packed
-FP32 reduction for each input row. `HadamardQuantizedLinear.callAsFunction` in
-`libs/mlx-swift/Source/MLXNN/Hadamard.swift` selects this path only for FP32
-multi-row input, affine2/group128, block1024 and stored F16 scales. The signed
-transform and grouped gated-delta layout are unchanged. A leading weight
-dimension keeps the packed projection at M=1 per row, avoiding the
-architecture-dependent TF32 matrix projection without unpacking weights.
-Singleton calls, other packs, ordinary affine modules and global arithmetic
-switches retain their existing paths.
+The registered Bonsai 27B signed-Hadamard pack (FP32 multi-row input,
+affine2/group128, block1024 and stored F16 scales) computes multi-row calls one
+of two ways. `HadamardQuantizedLinear.callAsFunction` in
+`libs/mlx-swift/Source/MLXNN/Hadamard.swift` picks the way from the layer's
+`independentRows`, which the code that builds the layer sets, and from the
+call's row count. A call has more than one row for a prompt chunk, and for a
+decode step that carries several requests:
+
+| Where | Builder | `independentRows` | Calls of 2 rows | Calls of 3 or more rows |
+|---|---|---|---|---|
+| Single Mac | the SDK's `PrismHadamardCheckpoint.install` | false (default) | Per row: a decode step of two requests | One batched packed matmul: larger decode steps and every prompt chunk, as in provider 0.10.4 and earlier. MLX runs it with its vector kernels below its vector limit and with its matrix kernels from it (TF32 NAX on M5, FP32 steel on M1 to M4) |
+| Pair stages, the reference check | `QwenPrismHadamardSource.install` | true | Per row | Per row |
+
+Per row is the singleton packed FP32 reduction for each row: a leading weight
+dimension keeps each projection at M=1, so a pair's two machines compute the
+bytes of separate singleton calls on any chip. The single-Mac threshold is
+`HadamardQuantizedLinear.minimumBatchedRows` (3), chosen for speed from the
+provider's real decode step on an M5 Ultra. Per row was faster only at two
+requests (78.6 against 71.1 tokens per second), tied at three (95.9 against
+96.7) and was slower at four (107.3 against 116.0). Two requests decoding
+together therefore run per-row again, as every chip ran them through provider
+0.10.11, and three or more batch. Batched prefill is 6.4 to 7.0 times faster
+than per-row at 1K to 8K tokens.
+
+On a single Mac, prompt rows are therefore not bit-identical to the singleton
+decode arithmetic. A request's exact output can also still depend on the
+requests decoding beside it. The SDK's per-row decode seam
+(`Qwen35BatchDecodeProjection`) runs only where `Qwen35BatchDecodeScope` is
+enabled, and only cluster sessions enable it. So on a single Mac the 27B's two
+small plain FP32 gated-delta projections (`in_proj_a`, `in_proj_b`) take one
+matmul over a decode step's rows, as they did in provider 0.10.11, and a decode
+step of three or more requests batches its packed projections too.
+The signed transform and the grouped gated-delta layout are the same in both
+ways. So are singleton calls, other packs, ordinary affine modules and global
+arithmetic switches.
 
 `QuantizedLinear.constantCachedForward` in
-`libs/mlx-swift/Source/MLXNN/Quantized.swift` reuses the existing exact F16-to-F32
-constant caches; the row layout adds no persistent weight or constant copy.
-The registered block4096 Bonsai 9B pack retains its original arithmetic.
+`libs/mlx-swift/Source/MLXNN/Quantized.swift` reuses the existing exact
+F16-to-F32 constant caches in both ways. The row layout adds no persistent
+weight or constant copy. The registered block4096 Bonsai 9B pack keeps its
+original arithmetic.
+
 `QwenResidentArithmeticPolicy.prismHadamardRows` adds the
-`bonsai-fp32-row-arithmetic-v2` binding only to the 27B receipt. The family policy
-name remains stable while the exact arithmetic SHA changes, so mixed old/new
-ranks refuse the load agreement before reading stage weights.
+`bonsai-fp32-row-arithmetic-v2` binding only to the 27B receipt. The receipt
+describes pair stages, and their arithmetic did not change when single Macs
+went back to batching, so the receipt's bytes did not change either. The family
+policy name is stable while the exact arithmetic SHA differs from the 9B's.
+Ranks with different receipts refuse the load agreement before reading stage
+weights.
 
 Independent singleton comparisons and cross-chip projection diagnostics do not
 replace full-artifact qualification. Preserve earlier solo/pair reports and
@@ -7461,13 +8466,113 @@ and the shared 367,001,600-byte prompt wavefront term
 ([prompt wavefront](#qwen-tensor-parallel-prompt-wavefront)) included; with its
 weights and loading headroom it needs 54,441,306,624 and 77,998,565,888 bytes.
 Every
-registered Qwen TP row is sized the same way from its own quotes. GLM keeps its
-eight lanes and other families keep their defaults.
+registered Qwen TP row is sized the same way from its own quotes. Gemma 4 and
+GLM are sized by their lane charges ([tensor-parallel lane widths](#tensor-parallel-lane-widths)).
+Other families keep their defaults.
 
 Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementTensorWidth.swift`
 (`ClusterPlacementTensorWidth`),
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementFlow.swift` (`decide`) and
 `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementTensorBatchQuote.swift` (`applyWidth`).
+
+### Tensor-parallel lane widths
+
+A tensor-parallel owner that serves request-owned lanes saves a width at
+placement, the widest both Macs admit now, so the pair serves several requests
+at once from its first load
+(`ClusterRuntimeAdapter.savesTensorParallelWidth`: the Qwen TP rows, Gemma 4
+and GLM). Two pricing sources size it:
+
+| Family | How a width is priced | Source |
+|---|---|---|
+| Qwen TP rows | The owner's complete native quote at 2, 4, 6 and 8 lanes ([saved width](#qwen-tensor-parallel-saved-width)) | `tensor-batch-scope` |
+| Gemma 4 (QAT 4-bit) | The family's allowance (one request and the rank's reserve), plus its lane charge for every lane after the first | The layout's `ClusterTensorParallelFamilyPlan.laneBytes` |
+| GLM | One request as the plan prices it from the layout's state (the family states no allowance), plus its lane charge for every lane after the first | The layout's `ClusterTensorParallelFamilyPlan.laneBytes` |
+
+- **The lane charge.** For Gemma 4, a lane after the first costs one request's
+  whole charge at the memory plan's request
+  (`Gemma4TensorParallelRequestBudget.laneBytes`): its own KV heads, attention
+  transient, FP32 partials, vocabulary rows and prompt-prefix capture. That is
+  what `reserveLane` admits each lane with. For GLM
+  (`GLM5NextTensorParallelRequestCharge.laneBytes`), it is an upper bound on
+  what `reserveLane` asks for one more lane beside those held: the lane's
+  state, its DSA history pages three times (the page pool grows by copying its
+  slabs into larger ones, so old and new coexist while a lane's pages are
+  added) and a sliced prompt frame's held arrays. Pages are priced at FP32
+  rows, as LOAD prices them before the pool exists. The native plan tool writes
+  the charge into the layout (beside Gemma's allowance), so a metadata-only
+  layout carries none.
+- **The planner.** With `ClusterPlacementPolicy.tensorParallelLanes`, each
+  rank's request need grows by the lane charge for every lane after the first,
+  on top of what one request is priced at (the family's allowance, or the
+  layout's state where it states none). LOAD holds that whole reservation
+  while it reads the shard, so it is in the rank's load peak too, beside two
+  whole tensors and the read scratch, as a Qwen TP batch quote's is. One lane
+  keeps the load peak it had, so a one-request plan is unchanged; Gemma's
+  shard gate holds the allowance too, so it stays that 0.75 GB short, as
+  before widths. The placement is the one chosen for one request, its leader
+  and split unchanged. `ClusterPlacementTensorWidth` tries 8, 6, 4 and 2 and
+  saves the first that both Macs admit now
+  (`ClusterPlacementCandidate.admitted`). When none fits, the setup saves no
+  width and serves one request at a time.
+- **The cap.** A saved width is never wider than the family has qualified on
+  real Macs (`ClusterPlacementTensorWidth.qualifiedLanes`). The Qwen TP rows
+  keep the eight they saved before. GLM takes eight, which it served on every
+  pair before; the M5 Ultra pair gave each of its lanes its solo tokens at 2,
+  4, 6 and 8 (2026-11-10). Gemma 4 takes 2
+  (`ClusterPlacementTensorWidth.gemmaQualifiedLanes`), for the QAT 4-bit row
+  that pair qualified. There every lane gave its request's solo tokens and
+  logprobs at 2, 4 and 8, but a request was served fastest at 2: 95.5 tok/s in
+  all and 77 a request, against 96.2 and 48.5 at 4, and 60.8 and 14.5 at 8,
+  where the last of eight 8K-token prompts sent at once waited 63.7 s for its
+  first token (7.7 s alone). The 8-bit rows run the same lanes on 8-bit
+  kernels, which neither the pair nor the synthetic lane checks ran at these
+  widths, so they save no width.
+- **LOAD.** Both ranks reserve what the planner priced. Gemma 4:
+  `Gemma4TensorParallelRequestBudget.reservedBytes(lanes:)`, the allowance and
+  one more request's charge for each lane after the first. Its shard gate asks
+  for it before every tensor, beside the rest of the shard, two whole tensors,
+  the read scratch and the loading headroom; a load peak without it is about
+  0.75 GB a rank short, so on 24-48 GB Macs about one memory-bound pair in
+  seven would be planned at a width that LOAD then refuses. GLM:
+  `GLM5NextTensorParallelRequestCharge.reservedBytes(contextTokens:lanes:)`,
+  one request's charge at the memory plan's context and one lane charge for
+  each lane after the first; the load line reports it as `reserved=`. For GLM
+  the saved width is a ceiling: where the gate admits fewer lanes when the
+  rank loads, LOAD reserves the widest width it admits, never fewer than one
+  lane (`QwenDenseStageLoadPolicy.lanesAdmitted`; the load line's
+  `reserved_lanes=`), and each lane beyond it is admitted as it comes. The pair
+  still serves and reports the saved width, and both ranks bind that width
+  into their load agreement, so nothing else changes. On 2026-11-10 an 8-lane
+  GLM pair did not load on an M5 Ultra with 38.68 GiB of other programs'
+  memory in use (200.19 GiB admissible against 211.10 GiB), although one lane
+  needs 147.8 GiB; it now loads there at six. Making the width that loaded the
+  pair's advertised width needs the ranks to agree on it before the load
+  agreement and READY to carry it, so it is not done. Each lane is still
+  admitted against live memory, and a lane the host cannot hold is refused
+  alone.
+- **One number.** The setup screen (`ClusterSetupPlanning.loads`), both owners'
+  lanes, the slot's `max_concurrency` and the leader's local API all read
+  `DistributedInstalledPlan.batchLanes`, which returns the saved width.
+  `ClusterConfiguration.validate` accepts a Gemma or GLM tensor-parallel width
+  of 2, 4, 6 or 8 with serial prefill, as it does a Qwen TP row's.
+- **Existing pairs.** A GLM setup saved before this change has no width, so
+  it serves one request at a time until it is planned again. After a Darkbloom
+  update the control leader plans the pair again by itself
+  (`ClusterOnboardingUpdate`), which saves the width.
+
+Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementTensorWidth.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterTensorParallel.swift` (`laneBytes`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementPlanner.swift` (`tensorRequirement`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Gemma4/Resources/Gemma4TensorParallelRequestBudget.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Gemma4/TensorParallel/Gemma4TensorParallelResidentRuntime.swift`
+(`load`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/TensorParallel/GLM5NextTensorParallelRequestCharge.swift`
+(`laneBytes`, `reservedBytes`),
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/TensorParallel/GLM5NextTensorParallelResidentRuntime.swift`
+(`load`) and
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Metadata/GLM5NextServingMetadata.swift`
+(`GLM5NextPlacementFamily.tensorParallelLaneBytes`).
 
 ### Qwen tensor-parallel prompt wavefront
 
@@ -7836,8 +8941,10 @@ device lock is taken
 
 ```mermaid
 flowchart LR
-  L["Local request"] --> S{"Slot live?"}
-  S -- "no" --> N["503"]
+  L["Local request"] --> G{"The pair takes requests?<br/>(admission open, not draining)"}
+  G -- "no" --> N["503 pair_api_unavailable<br/>at once"]
+  G -- "yes" --> S{"Slot live?"}
+  S -- "no" --> N
   S -- "yes" --> F{"Admission open,<br/>a lane free,<br/>nobody waiting?"}
   F -- "yes" --> B["The slot's bridge"]
   F -- "no" --> Q["FIFO queue<br/>(parked)"]
@@ -7867,7 +8974,18 @@ flowchart LR
    `cluster local`.
 4. Local admission opens only once the warmup canary passed
    (`clusterPairAdmissionOpenSlotID`, set in `publishClusterPairSlot`) and
-   closes when retirement starts (`retireClusterPairSlot`).
+   closes when retirement starts (`retireClusterPairSlot`). The API's gate
+   follows it (`LocalResponseTracker.setPairServes`, read by
+   `LocalPairGateResponder` behind the key check and inside the router): while
+   it is closed (no slot yet, the canary, retiring), a POST gets the pair's
+   typed `503` at once (`ClusterPairAPIRefusal`: `pair_api_unavailable`,
+   `Retry-After: 10`, `ClusterLocalRelay.pairNotServing`'s words), from a flag
+   read without waiting for the loop actor, so nothing holds a request while the
+   part starts or the pair forms. A drain refuses at the door the same way
+   (`LocalDisconnectResponder.refusal`: the `503` with either key, the `401`
+   without), waiting requests too (`clusterPairNotServing`); a refusal raised
+   past the gate (`DistributedRequestQueue.unavailableMessage`, also
+   `cluster local`'s) is mapped to the same `503` (`CORSResponder`).
 5. A Darkbloom request never waits for this queue; its path through the pair
    is unchanged.
 6. The owner-pause hook `noteClusterPairLocalUse` brackets each local request
@@ -7884,7 +9002,7 @@ flowchart LR
    impostor still is too, because the engine serves only an owner whose
    readiness equals that identity, peer for peer (`DistributedCBv2Engine`).
    Every roster formed today is still two distinct peers.
-8. `darkbloom cluster` starts the API when the person chooses Both, me first
+8. `darkbloom cluster` starts the API when it serves the pair Both
    (`ClusterServingScope.publicServingWithLocalAPI`, kept in the setup record as
    `localAPI` with `localBind` and carried to the other Mac by the serve
    command). The cluster service gives `--local-endpoint --port --bind` to the
@@ -7941,16 +9059,26 @@ flowchart LR
    doesn't count, and before any answer in the cluster service's life
    `askFailuresWithoutLease`, two, failed in a row do) it answers each request
    at once with a 503 in the local API's error shape, `code`
-   `pair_mac_unreachable`, in words that name the other Mac
-   (`ClusterLocalRelay.Refusals`), which the member's `status` and
-   `darkbloom local` repeat (`ClusterServiceStatus.relayRankZeroAway`), to a
-   caller with this Mac's key or the pair's, as the local API checks them
-   (`ClusterLocalRelay.Caller`): any other gets the API's own 401, and a CORS
-   preflight or a liveness check the 503 without names; otherwise it waits at
-   most 3 s for rank 0 to take a connection
+   `pair_mac_unreachable`, in words that name the other Mac and say what to do
+   (`ClusterLocalRelay.Refusals`, `servingAlone`: `stop`, then `start --solo`,
+   which by itself is refused while this Mac's part holds its serving lock, up
+   to `ClusterPairWatch.giveUpSeconds` after the other Mac last answered), which
+   the member's `status` and `darkbloom local` repeat
+   (`ClusterServiceStatus.relayRankZeroAway`), to a caller with this Mac's key or
+   the pair's, as the local API checks them (`ClusterLocalRelay.Caller`): another
+   key in the local key format (`LocalEndpoint.isToken`, such as rank 0's own)
+   gets the same words without the name, any other the API's own 401, and a
+   CORS preflight or a liveness check the 503 without names or commands;
+   otherwise it waits at most 3 s for rank 0 to take a connection
    (`ClusterLocalRelay.connect(_:within:)`) and answers a failed one the same
-   way, `pair_api_unavailable` when rank 0's Mac refuses the port. The request
-   is read first, so the answer isn't lost to a reset. It clears once that Mac
+   way, `pair_api_unavailable` when rank 0's Mac refuses the port. While rank
+   0's status says its pair's API is down for now (its part starts again:
+   `ClusterLocalRelay.rankZeroAPIDown`), the relay keeps its port and its last
+   target instead of stopping (`ClusterService.recordRankZeroAsk`), and the
+   member's `status`, `darkbloom local` and `doctor` say it answers 503 for now
+   (`ClusterServiceStatus.relayRankZeroAPIDown`,
+   `ClusterPairSummary.memberAPIRestarting`). The request is read first, so the
+   answer isn't lost to a reset. It clears once that Mac
    answers over the cable again, and asks of it go back to every 10 s then
    (`ClusterService.updateRelayAway`). The solo server a pair falls back to
    takes this Mac's own port too (`thisMacPort`, else 8000), after the relay
@@ -7991,9 +9119,11 @@ configuration declares, and answers each request shape as one Mac does.
    withheld on the text and media paths (`GLM5NextPromptPolicy.withholdsReasoning`;
    the pair's media paths seed the native reasoning channel from the rendered
    prompt as the single-Mac media path does), a JSON answer or forced call is
-   withheld and validated on the text path, and with images or video either is
-   refused with 400 before any media decode, ahead of the pair's media routing
-   (`GLM5NextPromptPolicy.withholdsOutput` in `prepareCompletion`). A
+   withheld and validated on the text path, and a JSON answer also on the
+   single-Mac media path. With images or video, a forced call on any slot and a
+   JSON answer on a pair are refused with 400 before any media decode, ahead of
+   the pair's media routing (`GLM5NextPromptPolicy.withholdsOutput` in
+   `prepareCompletion`); the pair's media routes withhold neither. A
    `response_format` answer the service validates that stopped at
    `max_tokens` before it was complete is
    `MLXOpenAIServiceError.responseFormatCutOffByMaxTokens` (422), not an

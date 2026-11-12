@@ -13,10 +13,12 @@ extension Cluster {
                 macOS prompts on each Mac's own screen: its password for the cable port, Allow for Local Network, and \
                 Yes to the pairing code. For a Mac with no display, open Screen Sharing to it first; over SSH, macOS \
                 can't show its approval prompt. The first Mac checks its Thunderbolt cable, then says \
-                "Run `darkbloom cluster` on the other Mac." The other Mac finds it by itself; both show the same code; \
-                choose Yes on each. \
-                Then choose a model on the first Mac: Darkbloom works out how to split it across both Macs, copies \
-                it to a Mac that lacks it, starts both Macs and shows one line saying how the model is served. \
+                "→ Now run `darkbloom cluster` on the other Mac". The other Mac finds it by itself; both show the same \
+                code; choose Yes on each. \
+                Then choose a model on the first Mac: Darkbloom splits it across both Macs (tensor parallel unless it \
+                can't run there or was measured slower), copies it to a Mac that lacks it, starts both Macs serving \
+                through Darkbloom with the first Mac's local API beside it, and ends on one line, "✓ Serving <model> on \
+                both Macs" (`darkbloom status` has the details). `darkbloom cluster local` serves the pair for you alone. \
                 Nothing else is needed: no SSH, no address and no network setting is typed.
 
                 Run it again on any Mac to see the cluster, change the model or stop it.

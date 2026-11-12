@@ -20,6 +20,19 @@ struct ModelsCommandRunTests {
         ]}
         """
 
+    /// Alpha is downloaded by the test; Beta is not and fits any Mac with at
+    /// least 16 GB; Giant's memory tier is above any Mac.
+    static let noteCatalogJSON = """
+        {"models":[
+          {"id":"acme/Alpha-4bit","s3_name":"alpha","display_name":"Alpha","model_type":"text",
+           "size_gb":1.5,"min_ram_gb":8},
+          {"id":"acme/Beta-4bit","s3_name":"beta","display_name":"Beta","model_type":"text",
+           "size_gb":2.5,"min_ram_gb":8},
+          {"id":"acme/Giant-4bit","s3_name":"giant","display_name":"Giant","model_type":"text",
+           "size_gb":9000.0,"min_ram_gb":100000}
+        ]}
+        """
+
     @Test("list prints a table of local models, or the cache path when there are none")
     func listTable() async throws {
         let result = try await #require(
@@ -121,7 +134,7 @@ struct ModelsCommandRunTests {
             try await runMarked(
                 ["models", "catalog", "--config", sandbox.config.path, "--type", "text"], marker: "EMPTY")
             let query = CoordinatorStub.requests.first?.url?.query
-            #expect(query == "type=text")
+            #expect(query == "type=text&include_aliases=1")
         }
         let output = decodedText(result.standardOutputContent)
         let catalog = try #require(section(output, "CATALOG"))
@@ -153,6 +166,7 @@ struct ModelsCommandRunTests {
                  "--coordinator", "https://override.invalid"],
                 marker: "JSON")
             #expect(CoordinatorStub.requests.map { $0.url?.host } == ["override.invalid"])
+            #expect(CoordinatorStub.requests.first?.url?.query == nil)
 
             CoordinatorStub.install(["/v1/models/catalog": .json(500, "catalog offline")])
             let error = try await runFailingCLICommand(
@@ -166,6 +180,32 @@ struct ModelsCommandRunTests {
         #expect(entries.compactMap { $0["id"] as? String } == ["acme/Alpha-4bit", "acme/Remote-8bit"])
         #expect(entries.first?["min_ram_gb"] as? Int == 16)
         #expect(!output.contains("Supported models"))
+        #expect(!output.contains("Not downloaded"))
+    }
+
+    @Test("catalog ends with the not-downloaded models this Mac can select, from its one request")
+    func catalogNotDownloadedNote() async throws {
+        let result = try await #require(
+            processExitsWith: .success, observing: [\.standardOutputContent]
+        ) {
+            let sandbox = try CLICommandSandbox.enter()
+            defer { sandbox.remove() }
+            try sandbox.makeModel("acme/Alpha-4bit")
+            CoordinatorStub.install([
+                "/v1/models/catalog": .json(200, ModelsCommandRunTests.noteCatalogJSON),
+            ])
+            try await runMarked(["models", "catalog", "--config", sandbox.config.path], marker: "NOTE")
+            #expect(CoordinatorStub.requests.count == 1)
+        }
+        let note = try #require(section(decodedText(result.standardOutputContent), "NOTE"))
+        let cli = BuildEnvironment.current.cliName
+        // Beta fits the load budget of any Mac with 16 GB or more.
+        if ProcessInfo.processInfo.physicalMemory >= 16 << 30 {
+            #expect(note.contains("Not downloaded (this Mac meets their listed requirements)"))
+            #expect(note.contains("  Beta  [acme/Beta-4bit]  ~2.5 GB download"))
+            #expect(note.last == "  Then choose what to serve: \(cli) switch (\(cli) start when the provider is stopped)")
+        }
+        #expect(!note.contains { $0.hasSuffix("GB download") && !$0.contains("acme/Beta-4bit") })
     }
 
     @Test("remove deletes a model with --force or after 'yes', and keeps it otherwise")

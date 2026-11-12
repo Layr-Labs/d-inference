@@ -358,12 +358,19 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         dates = steps["Refuse back-deployed Date comparisons in provider source"]
         self.assertEqual(field(dates, "if"), "${{ !cancelled() }}")
         self.assertIn("python3 scripts/check-date-comparisons.py", run_command(dates).splitlines())
-        # The prompt fixture downloaders' self-tests need no Mac; dev runs them here.
+        # The prompt fixture downloaders' and the MiMo audio codec download's
+        # self-tests need no Mac; dev runs them here.
         fixtures = steps["Test the prompt fixture downloaders offline"]
         self.assertEqual(field(fixtures, "if"), "${{ !cancelled() }}")
         self.assertEqual(run_command(fixtures).splitlines(), ["python3 scripts/test-prepare-prompt-fixtures.py",
                                                               "python3 scripts/test-prepare-mimo-prompt-fixtures.py",
-                                                              "python3 scripts/test-prepare-mimo-image-http-fixtures.py"])
+                                                              "python3 scripts/test-prepare-mimo-image-http-fixtures.py",
+                                                              "python3 scripts/test-prepare-mimo-audio-fixtures.py"])
+        # So do the GPT-OSS tools' CPU tests (Python 3.11+); the log names the Python that ran them.
+        gptoss = steps["Test the GPT-OSS checkpoint and replay tools offline"]
+        self.assertEqual(field(gptoss, "if"), "${{ !cancelled() }}")
+        self.assertEqual(run_command(gptoss).splitlines(),
+                         ["python3 --version", "python3 -m unittest discover -s scripts -p 'test_gptoss_*.py' -v"])
         # The record names its change through the lookup's own code, and only
         # a run that tested something records.
         steps = {field(step, "name", indent=6): step for step in step_blocks(self.jobs["provider-test-gate"])}
@@ -777,6 +784,9 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         runners = {
             "Run worker capability checks": (release, None, "bash libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh"),
             "Run prefill schedule checks": (release, None, "bash libs/darkbloom-cluster/Tests/PrefillScheduleChecks/run.sh"),
+            # The worker package's own tests (D6's no-exit path among them): no other job runs them.
+            "Run the worker's request lifecycle tests":
+                (release, None, "bash libs/darkbloom-cluster-worker/Tests/LifecycleChecks/run.sh"),
             "Run stage metadata checks": (focused, 2, 'python3 libs/darkbloom-cluster/Tests/StageMetadataChecks/run.py '
                                                       '--output "$RUNNER_TEMP/stage-metadata-checks"'),
             "Run GPT-OSS stage checks": (focused, 2, "bash libs/darkbloom-cluster/Tests/GPTOSSStageChecks/run.sh"),
@@ -785,6 +795,8 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 (focused, 2, "bash provider-swift/Tests/ClusterModelProvisioningChecks/run.sh provisioning"),
             "Run cluster onboarding checks": (focused, 2, "bash provider-swift/Tests/ClusterOnboardingChecks/run.sh"),
             "Run cluster console checks": (focused, 2, "bash provider-swift/Tests/ClusterConsoleChecks/run.sh"),
+            "Run cluster qualification checks":
+                (focused, 2, "bash libs/darkbloom-cluster-worker/Tests/QualificationChecks/run.sh"),
             "Run cluster pairing checks": (focused, 1, "bash provider-swift/Tests/ClusterPairingChecks/run.sh"),
             "Run cluster diagnostics checks": (focused, 1, "bash provider-swift/Tests/ClusterDiagnosticsChecks/run.sh"),
             "Run cluster placement flow checks": (focused, 1, "bash provider-swift/Tests/ClusterPlacementChecks/run-flow.sh"),

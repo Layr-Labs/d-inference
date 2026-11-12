@@ -605,32 +605,37 @@ public final class MiMoResidentRuntime {
             prefillPolicy: QwenResidentPrefillSelection.policy(admission.configuration.prefillSchedule),
             phaseSplit: split, compactDecode: generationMode == .pipelineCompactDecode,
             speculativeRoundsFraming: speculative?.terms.decodeFraming)
-        var lastResourceCheck: UInt64 = 0, ordinal = 0
+        var ordinal = 0
         var captureCharge = reserved.prefixCaptureBytes
-        func check() throws {
-            try control.check(deadline: reserved.deadline)
-            let now = DispatchTime.now().uptimeNanoseconds
-            if lastResourceCheck == 0 || now - lastResourceCheck >= 250_000_000 {
-                // Kept prefixes give way first, then this request's own capture.
-                captureCharge = try QwenResidentRequestExecution.checkRunning(captureBytes: captureCharge,
-                    prefixCache: prefixCache, rank: collective.rank,
-                    live: { try reserved.allowance.requireLive(additionalNativeBytes: $0, additionalHostBytes: reserved.hostBytes) })
-                lastResourceCheck = DispatchTime.now().uptimeNanoseconds
-            }
-            try control.check(deadline: reserved.deadline)
+        // D6: the running memory check is this rank's stop latch, polled where
+        // it owes its peer the next message or is about to run a forward, never
+        // from inside a transfer; a refusal ends the request on both ranks alone.
+        let latch = QwenStageAbort(rank: collective.rank) {
+            // Kept prefixes give way first, then this request's own capture.
+            captureCharge = try QwenResidentRequestExecution.checkRunning(captureBytes: captureCharge,
+                prefixCache: self.prefixCache, rank: self.collective.rank,
+                live: { try reserved.allowance.requireLive(additionalNativeBytes: $0, additionalHostBytes: reserved.hostBytes) })
         }
+        func check() throws { try control.check(deadline: reserved.deadline) }
         try check()
         let started = DispatchTime.now().uptimeNanoseconds
         var firstToken: UInt64?
-        let (result, evidence) = try runMiMoLayerStageGenerationRequest(loaded: stage, plan: admission.plan,
-            agreement: agreement, collective: collective, recordsSteps: recordsSteps, prefixCache: prefixCache,
-            independentHistory: usesPagedHistory,
-            speculative: speculative, producerStage: producer,
-            handoffFault: agreement.phaseSplit == nil ? nil : handoffFault, onCommittedToken: { token in
-                let current = ordinal; ordinal += 1
-                if firstToken == nil { firstToken = DispatchTime.now().uptimeNanoseconds }
-                return try onCommittedToken(current, token, reserved.request.promptCount + current)
-            }, check: check)
+        let result: QwenLayerStageGenerationResult, evidence: MiMoRequestEvidence
+        do {
+            (result, evidence) = try runMiMoLayerStageGenerationRequest(loaded: stage, plan: admission.plan,
+                agreement: agreement, collective: collective, recordsSteps: recordsSteps, prefixCache: prefixCache,
+                independentHistory: usesPagedHistory,
+                speculative: speculative, producerStage: producer,
+                handoffFault: agreement.phaseSplit == nil ? nil : handoffFault, abort: latch, onCommittedToken: { token in
+                    let current = ordinal; ordinal += 1
+                    if firstToken == nil { firstToken = DispatchTime.now().uptimeNanoseconds }
+                    return try onCommittedToken(current, token, reserved.request.promptCount + current)
+                }, check: check)
+        } catch let stopped as QwenStageAborted {
+            // Both ranks retired it: this request alone ended.
+            return .aborted(requestID: reserved.request.requestID, abort: stopped.abort,
+                message: latch.reason ?? stopped.description, rank: collective.rank)
+        }
         let finished = DispatchTime.now().uptimeNanoseconds
         guard result.bothRequestStatesRetired,
               let reason = ClusterWorkerFinishReason(rawValue: result.finishReason.rawValue) else {

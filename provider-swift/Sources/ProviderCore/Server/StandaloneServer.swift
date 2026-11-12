@@ -296,6 +296,9 @@ public actor StandaloneServer {
     /// when constructing the Hummingbird application.
     let config: StandaloneServerConfig
     var slots: [String: CachedSlot] = [:]
+    /// `darkbloom status`'s answers in progress (`StandaloneServer+RunningRequests`).
+    var runningRequestTracker = RunningRequestProgressTracker()
+    var runningRequestsSample: (requests: [DaemonState.RunningRequest], at: TimeInterval)?
     let nativeMiMoRegistry: MiMoV26NativeLoadRegistry
     var nativeMiMoLifecycle: StandaloneNativeMiMoLifecycle = .unopened
     var nativeMiMoLoads: [String: StandaloneNativeMiMoLoad] = [:]

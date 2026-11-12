@@ -36,29 +36,31 @@ struct NemotronSuperVideoBindingTests {
         try #require(Data(base64Encoded: superImagePinnedTemplateBase64, options: .ignoreUnknownCharacters))
     }
 
+    private static func parse(_ messages: [[String: Any]]) throws -> Binding.EncodedBody {
+        try Binding.encodedBody(NemotronSuperRequestPlan(body: body(messages)))
+    }
+
     @Test func encodedBodyAdmitsOneVideoAsTheOnlyMedia() throws {
         for uri in [Self.mp4, "data:video/quicktime;base64,AAAA"] {
-            let parsed = try Binding.parseEncodedBody(Self.body([Self.user([Self.text("what happens?"), Self.video(uri)])]))
+            let parsed = try Self.parse([Self.user([Self.text("what happens?"), Self.video(uri)])])
             #expect(parsed.video == uri && parsed.images.isEmpty)
         }
-        let refused: [[[String: Any]]] = [
-            [Self.user([Self.video(), Self.video()])],
-            [Self.user([Self.video()]), Self.user([Self.video()])],
-            [Self.user([Self.video(), Self.image()])],
-            [Self.user([Self.image(), Self.video()])],
-            [Self.user([Self.video("data:video/webm;base64,AAAA")])],
-            [Self.user([Self.video("data:video/MP4;base64,AAAA")])],
-            [Self.user([Self.video("data:video/mp4,AAAA")])],
-            [Self.user([Self.video("https://example.invalid/clip.mp4")])],
-            [Self.user([Self.video("file:///tmp/clip.mp4")])],
+        let refused: [([[String: Any]], Binding.MediaRefusal)] = [
+            ([Self.user([Self.video(), Self.video()])], .secondVideo),
+            ([Self.user([Self.video()]), Self.user([Self.video()])], .secondVideo),
+            ([Self.user([Self.video(), Self.image()])], .imagesWithVideo),
+            ([Self.user([Self.image(), Self.video()])], .imagesWithVideo),
+            ([Self.user([Self.video("data:video/webm;base64,AAAA")])], .videoSource),
+            ([Self.user([Self.video("data:video/MP4;base64,AAAA")])], .videoSource),
+            ([Self.user([Self.video("data:video/mp4,AAAA")])], .videoSource),
+            ([Self.user([Self.video("https://example.invalid/clip.mp4")])], .videoSource),
+            ([Self.user([Self.video("file:///tmp/clip.mp4")])], .videoSource),
         ]
-        for messages in refused {
-            #expect(throws: Binding.Failure.unsupportedCapability) {
-                try Binding.parseEncodedBody(Self.body(messages))
-            }
+        for (messages, refusal) in refused {
+            #expect(throws: Binding.Failure.unsupportedMedia(refusal)) { try Self.parse(messages) }
         }
         #expect(throws: Binding.Failure.invalidInput) {
-            try Binding.parseEncodedBody(Self.body([Self.user([Self.text("no media")])]))
+            try Self.parse([Self.user([Self.text("no media")])])
         }
     }
 
@@ -90,7 +92,8 @@ struct NemotronSuperVideoBindingTests {
         func prompt(_ messages: [[String: Any]]) throws -> VideoPrompt {
             let body = try Self.body(messages)
             return try NemotronSuperPromptContract.videoPrompt(messages: ProviderLoop.decodeOpenAIRequest(body).messages,
-                body: body, templateBytes: Self.template(), tokenizer: SuperSyntheticVideoTokenizer(),
+                body: body, declared: nil, controls: NemotronSuperPromptContract.controls(body: body),
+                templateBytes: Self.template(), tokenizer: SuperSyntheticVideoTokenizer(),
                 labels: ["Frame 1 sampled at 0.00 seconds and frame 2 sampled at 0.50 seconds: ",
                          "Frame 3 sampled at 1.00 seconds: "])
         }
@@ -207,26 +210,33 @@ struct NemotronSuperVideoBindingTests {
                                                      templateBytes: Policy.pinnedTemplateBytes)
         #expect(ingress + plan.totalBytes <= (Policy.videoMediaChargeBytes ?? 0))
         // A prompt beyond the context is the request's own fault: 400, not a retryable 503.
-        #expect(throws: Binding.Failure.invalidInput) {
+        #expect(throws: Binding.Failure.contextExceeded) {
             try Binding.encodedVideoPlan(video, prompt: prompt, pruningRate: 0.5, contextLength: length - 1)
         }
         // Unpruned, every one of the 1,512 rows needs room.
-        #expect(throws: Binding.Failure.invalidInput) {
+        #expect(throws: Binding.Failure.contextExceeded) {
             try Binding.encodedVideoPlan(video, prompt: prompt, pruningRate: 0, contextLength: length)
         }
     }
 
-    @Test func invalidVideosTakeTheInvalidMediaPath() {
-        let errors: [any Error] = [NemotronSuperVideoDecode.Failure.limit, NemotronSuperVideoDecode.Failure.invalidVideo,
-            NemotronSuperVideoDecode.Failure.unsupportedRepresentation,
-            NemotronSuperVideoPreprocessing.Failure.emptyVideo, MediaIngest.MediaError.mediaTooLarge("video"),
-            Binding.Failure.unsupportedCapability, Binding.Failure.invalidInput]
-        for error in errors {
-            let mapped = SuperHTTPErrors.map(error, media: true)
-            guard case .multimodalRejected? = mapped as? MultiModelBatchSchedulerEngineError else {
-                Issue.record("\(error) mapped to \(mapped)")
-                continue
-            }
+    /// A video refusal names its cause by its failure code: a codec or
+    /// layout this route does not serve, a limit, or a movie that cannot be read.
+    @Test func videoRefusalsNameTheirCause() {
+        let cases: [(any Error, InferenceFailureCode)] = [
+            (NemotronSuperVideoDecode.Failure.unsupportedRepresentation, .unsupportedMedia),
+            (Binding.Failure.unsupportedMedia(.secondVideo), .unsupportedMedia),
+            (NemotronSuperVideoDecode.Failure.limit, .mediaTooLarge),
+            (MediaIngest.MediaError.mediaTooLarge("video"), .mediaTooLarge),
+            (NemotronSuperVideoDecode.Failure.invalidVideo, .invalidMedia),
+            (NemotronSuperVideoDecode.Failure.inconsistentFrames, .invalidMedia),
+            (NemotronSuperVideoPreprocessing.Failure.invalidGeometry, .unsupportedMedia),
+            (NemotronSuperVideoPreprocessing.Failure.emptyVideo, .invalidMedia),
+            (Binding.Failure.invalidInput, .invalidMedia),
+        ]
+        for (error, code) in cases {
+            let failure = ProviderLoop.sanitizedInferenceFailure(
+                from: SuperHTTPErrors.map(error, media: true), phase: .request)
+            #expect(failure.code == code && failure.statusCode == 400, "\(error): \(failure)")
         }
     }
 
@@ -242,8 +252,10 @@ struct NemotronSuperVideoBindingTests {
     }
 
     /// A spent decode allowance is this machine's wall time, not the movie's
-    /// fault: a retryable 503 (`capacity`) that a coordinator sends to another
-    /// provider. The movie's own limits stay `invalid_media` (400).
+    /// fault: a retryable 503 (`capacity`, error reason
+    /// `media_memory_unavailable`) that a coordinator sends to another provider
+    /// without a capacity strike. The movie's own limits are `media_too_large`
+    /// (400 here, 413 at the coordinator).
     @Test func spentDecodeAllowanceIsARetryableRefusal() {
         func wire(_ error: NemotronSuperVideoDecode.Failure) -> (InferenceFailureCode, UInt16) {
             let failure = ProviderLoop.sanitizedInferenceFailure(
@@ -251,10 +263,11 @@ struct NemotronSuperVideoBindingTests {
             return (failure.code, failure.statusCode)
         }
         let mapped = SuperHTTPErrors.map(NemotronSuperVideoDecode.Failure.decodeAllowanceSpent, media: true)
-        #expect(mapped as? MultiModelBatchSchedulerEngineError
-            == .requestRejected("inline video decoder outlasted its decode allowance; retry on another provider"))
+        #expect(mapped as? MultiModelBatchSchedulerEngineError == .mediaMemoryUnavailable)
         #expect(wire(.decodeAllowanceSpent) == (.capacity, 503))
-        #expect(wire(.limit) == (.invalidMedia, 400))
+        #expect(ProviderLoop.sanitizedInferenceFailure(from: mapped, phase: .request).errorReason
+            == .mediaMemoryUnavailable)
+        #expect(wire(.limit) == (.mediaTooLarge, 400))
     }
 
     /// Native feature failures name what went wrong, for video as for images.
@@ -341,10 +354,11 @@ struct NemotronSuperVideoBindingTests {
         let media = try fixture.owner.localImageBinding()
         let body = try await Self.longVideoBody()
         let template = try Self.template()
+        let plan = try NemotronSuperRequestPlan(body: body)
         let baseline = await fixture.budget.outstandingReservedBytes()
         let hold = SuperDecodeHold()
         let request = hold.decoding {
-            Task { try await media.runEncoded(body: body, templateBytes: template) { _ in } }
+            Task { try await media.runEncoded(body: body, plan: plan, templateBytes: template) { _ in } }
         }
         try await Self.decodeStarted(hold, fixture.budget)
         request.cancel()
@@ -361,9 +375,10 @@ struct NemotronSuperVideoBindingTests {
         let media = try fixture.owner.localImageBinding()
         let body = try await Self.longVideoBody()
         let template = try Self.template()
+        let plan = try NemotronSuperRequestPlan(body: body)
         let hold = SuperDecodeHold()
         let request = hold.decoding {
-            Task { try await media.runEncoded(body: body, templateBytes: template) { _ in } }
+            Task { try await media.runEncoded(body: body, plan: plan, templateBytes: template) { _ in } }
         }
         try await Self.decodeStarted(hold, fixture.budget)
         try await fixture.close()
@@ -442,7 +457,9 @@ struct NemotronSuperVideoBindingTests {
         // The layout's length: every tubelet's label and wrappers, and the
         // rows EVS keeps, however they split.
         let plan = try await NemotronSuperVideoDecode.inspect(uri)
-        let prompt = try owner.localVideoPrompt(body: body, templateBytes: template, labels: plan.labels)
+        let requestPlan = try NemotronSuperRequestPlan(body: body)
+        let prompt = try owner.localVideoPrompt(plan: requestPlan, body: body, templateBytes: template,
+                                                labels: plan.labels)
         let retained = NemotronSuperVideoFeatures.retainedRows(tubelets: plan.tubelets,
             rowsPerTubelet: plan.grid.tokens, pruningRate: owner.videoPruningRate)
         #expect(plan.tubelets > 1 && retained < plan.tubelets * plan.grid.tokens)
@@ -450,7 +467,9 @@ struct NemotronSuperVideoBindingTests {
                                        contextLength: 1024).count
         let baseline = await budget.outstandingReservedBytes()
         let events = SuperVideoEvents()
-        try await media.runEncoded(body: body, templateBytes: template) { event in await events.record(event) }
+        try await media.runEncoded(body: body, plan: requestPlan, templateBytes: template) { event in
+            await events.record(event)
+        }
         #expect(await events.errors.isEmpty)
         #expect(await events.completions == [2])
         #expect(await events.prompts == [length])
@@ -482,7 +501,8 @@ struct NemotronSuperVideoBindingTests {
         let broken = try Self.body([Self.user([Self.video(
             "data:video/mp4;base64," + Data("not a movie".utf8).base64EncodedString())])])
         await #expect(throws: MediaIngest.MediaError.self) {
-            try await media.runEncoded(body: broken, templateBytes: template) { _ in
+            try await media.runEncoded(body: broken, plan: NemotronSuperRequestPlan(body: broken),
+                                       templateBytes: template) { _ in
                 Issue.record("refused video emitted an event")
             }
         }

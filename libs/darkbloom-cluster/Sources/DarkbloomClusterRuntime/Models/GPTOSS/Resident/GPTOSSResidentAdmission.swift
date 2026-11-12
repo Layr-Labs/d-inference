@@ -143,21 +143,13 @@ struct GPTOSSResidentRequestAllowance {
             bound: QwenResidentResourceEnvironment.allocationBound))
     }
 
+    /// A memory refusal is typed, so a running request's stop ends that
+    /// request alone (D6; `ClusterLiveMemory.requireStageRequest`).
     func requireLive(additionalNativeBytes: Int = 0, additionalHostBytes: Int = 0) throws {
         guard additionalNativeBytes >= 0, additionalHostBytes >= 0 else {
             throw ProbeError("Invalid additional resident allowance")
         }
-        try QwenResidentResourceEnvironment.require()
-        let os = try QwenDenseStageLoadResources.observeOS()
-        let native = QwenDenseStageLoadResources.observeNative()
-        let free = max(QwenDenseStageLoadPolicy.minimumAdmissibleBytes,
-            try QwenLongPrefillCheckedBytes.sum([reservedBytes, additionalNativeBytes, additionalHostBytes,
-                QwenDenseStageLoadPolicy.loadingHeadroomBytes]))
-        let allocator = try QwenLongPrefillCheckedBytes.sum([native.activeBytes, native.cacheBytes,
-            reservedBytes, additionalNativeBytes, QwenDenseStageLoadPolicy.allocatorHeadroomBytes])
-        guard try watch.admits(os, bytes: free) else { throw ProbeError("Resident GPT-OSS request was refused") }
-        guard native.allocatorLimitBytes >= allocator else {
-            throw ProbeError("Resident GPT-OSS request exceeds the allocator limit")
-        }
+        try ClusterLiveMemory.requireStageRequest(watch, reservedBytes: reservedBytes,
+            additionalNativeBytes: additionalNativeBytes, additionalHostBytes: additionalHostBytes, family: "GPT-OSS")
     }
 }

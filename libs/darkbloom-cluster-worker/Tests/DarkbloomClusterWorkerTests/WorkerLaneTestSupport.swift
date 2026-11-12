@@ -17,6 +17,9 @@ final class LaneTestRuntime: WorkerRuntime, @unchecked Sendable {
     /// Lanes this rank leaves at once when they start, as rank 1 does when
     /// rank 0 drops a lane whose cancel has not reached this rank yet.
     var leaveOnStart = Set<UUID>()
+    /// Lanes both ranks end for rank 0's memory (D6): rank 0 after its first
+    /// answered token, rank 1 at once, as the Qwen loop reports them.
+    var abortsOnStart = Set<UUID>()
     /// Deterministic test barrier after the first fabricated polling token.
     var afterPollingToken: (() -> Void)?
     /// As a rank's live memory gate: a lane whose prompt plus output is
@@ -113,7 +116,11 @@ final class LaneTestRuntime: WorkerRuntime, @unchecked Sendable {
                 try host.publishToken(requestID: id, ordinal: 0, tokenID: 7, committedTokens: value.promptTokenIDs.count)
                 _ = try host.awaitDecisions([id])
             }
-            try host.publishFinished(requestID: id, reason: .length)
+            if lock.withLock({ abortsOnStart.contains(id) }) {
+                try host.publishAborted(requestID: id, abort: .init(reason: .memory, rank: 0))
+            } else {
+                try host.publishFinished(requestID: id, reason: .length)
+            }
             lock.withLock { reservations[id] = nil; started.remove(id) }
         }
     }

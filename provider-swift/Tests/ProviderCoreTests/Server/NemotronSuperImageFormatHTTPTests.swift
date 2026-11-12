@@ -35,10 +35,11 @@ struct NemotronSuperImageFormatHTTPTests {
         let hook = try NemotronSuperLocalImageHTTP(owner: owner, templateBytes: template)
         let model = NemotronSuperLocalBinding.modelID
         // The decoder sniffs content, so every accepted fixture is sent under
-        // both admitted labels: each format also arrives under the other's.
-        let admittedLabels = ["png", "jpeg"]
+        // several image labels: each format also arrives under another's, and
+        // under `image/jpg`, an alias clients send.
+        let admittedLabels = ["png", "jpeg", "jpg"]
         @Sendable func uri(_ data: Data, _ label: String) -> String {
-            "data:image/\(label);base64," + data.base64EncodedString()
+            "data:\(label.contains("/") ? label : "image/" + label);base64," + data.base64EncodedString()
         }
         @Sendable func body(_ images: [Data], label: String) throws -> ByteBuffer {
             let parts: [[String: Any]] = [["type": "text", "text": "fixture"]]
@@ -57,6 +58,14 @@ struct NemotronSuperImageFormatHTTPTests {
         var corrupt = accepted[0]
         corrupt[40] ^= 0x10
         let rejected = [oversize, twelveBit, corrupt, Data("GIF89a".utf8) + Data(count: 16)]
+        let rgb = try NemotronSuperImageIOFormatTests.raster("png-rgb8.png")
+        let imageIO: [(String, Data)] = [
+            ("webp", try NemotronSuperImageFixtures.data("webp-rgb8-lossless.webp")),
+            ("webp", try NemotronSuperImageFixtures.data("webp-exif6.webp")),
+            ("webp", try NemotronSuperImageFixtures.data("webp-rgba8-lossy.webp")),
+            ("gif", try NemotronSuperImageIOFormatTests.gif(NemotronSuperImageIOFormatTests.raster("png-palette8.png"))),
+            ("bmp", NemotronSuperImageIOFormatTests.bmp(rgb)),
+        ]
         let app = makeLocalInferenceApplication(
             config: .init(host: "127.0.0.1", port: 0, authToken: "synthetic-super-formats"),
             defaultMaxTokens: 2, acquire: { requested in
@@ -82,10 +91,23 @@ struct NemotronSuperImageFormatHTTPTests {
                     #expect(await budget.outstandingReservedBytes() == baseline)
                 }
             }
-            // Content decides the format; a label outside the decoder's formats
-            // is refused even when the content would decode.
+            // WebP, GIF and BMP under their own labels and under PNG's.
+            for (label, image) in imageIO {
+                for sent in [label, "png"] {
+                    try await client.execute(uri: "/v1/chat/completions", method: .post,
+                        headers: headers, body: try body([image], label: sent)) { response in
+                        let output = String(buffer: response.body)
+                        #expect(response.status == .ok, "\(label) as \(sent): \(output)")
+                        #expect(!output.contains("\"error\""), "\(label) as \(sent)")
+                    }
+                    #expect(await budget.outstandingReservedBytes() == baseline)
+                }
+            }
+            // Content decides the format: a TIFF is refused under any image
+            // label, and a PNG under a label that is not an image.
+            let tiff = Data([0x49, 0x49, 0x2a, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0])
             let refusals = rejected.flatMap { image in admittedLabels.map { (image, $0) } }
-                + [(accepted[0], "gif"), (accepted[0], "jpg")]
+                + [(tiff, "tiff"), (tiff, "png"), (accepted[0], "application/octet-stream")]
             for (image, label) in refusals {
                 try await client.execute(uri: "/v1/chat/completions", method: .post,
                     headers: headers, body: try body([image], label: label)) { response in

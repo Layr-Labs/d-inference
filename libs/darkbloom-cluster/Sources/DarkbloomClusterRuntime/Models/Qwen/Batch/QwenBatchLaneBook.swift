@@ -37,10 +37,18 @@ public protocol QwenBatchServingHost: AnyObject {
     /// worker answers the owner's cancel of it with `retired(cancelled)`,
     /// now or when that cancel arrives; the other lanes go on.
     func publishLeft(requestID: UUID) throws
+    /// Both ranks: both ended a started request alone because a rank's memory
+    /// refused it while it ran (D6), and its native state retired; on rank 0
+    /// only once the owner answered its last token. The worker publishes
+    /// `aborted` then `retired(aborted)`; the other lanes go on.
+    func publishAborted(requestID: UUID, abort: ClusterWorkerAbort) throws
 }
 
 extension QwenBatchServingHost {
     public func publishTelemetry(requestID: UUID, telemetry: ClusterWorkerRequestTelemetry) throws {}
+    public func publishAborted(requestID: UUID, abort: ClusterWorkerAbort) throws {
+        throw ProbeError("This batch host does not end a lane alone for memory")
+    }
     public func publishToken(requestID: UUID, ordinal: Int, tokenID: Int, committedTokens: Int,
                              logprobs: ClusterWorkerTokenLogprobs?) throws {
         guard logprobs == nil else { throw ProbeError("This batch host does not carry token logprobs") }
@@ -72,6 +80,16 @@ typealias QwenBatchLaneBook = ClusterBatchLaneBook<QwenResidentReservation>
 
 extension ClusterBatchLaneBook where Reservation == QwenResidentReservation {
     func allowances() -> [QwenResidentRequestAllowance] { reservations().map(\.allowance) }
+
+    /// What `lanes` lanes of `allowance`'s request charge here when all are held at once: the newest lane's whole
+    /// allowance and each other lane its state (`stateBytes`). A saved width is admitted at LOAD with it.
+    static func reservedBytes(lanes: Int, allowance: QwenResidentRequestAllowance) throws -> Int {
+        guard (1...QwenBatchWire.maximumLanes).contains(lanes) else {
+            throw ProbeError("Batch lanes are 1...\(QwenBatchWire.maximumLanes)")
+        }
+        return try QwenLongPrefillCheckedBytes.sum([allowance.reservedBytes,
+            QwenLongPrefillCheckedBytes.product([allowance.stateBytes, lanes - 1])])
+    }
 }
 
 /// The lanes one rank holds: reserved, started (waiting to join the loop),

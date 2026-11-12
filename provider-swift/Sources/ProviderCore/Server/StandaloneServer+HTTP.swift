@@ -188,6 +188,12 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
             // A cluster pair's refusal names its rule and the model's limits
             // (a closed template, never request content): the client sees why.
             return Self.openAIErrorResponse(status: .badRequest, message: message, code: refusal.rawValue)
+        } catch MultiModelBatchSchedulerEngineError.requestRejected(DistributedRequestQueue.unavailableMessage) {
+            // A pair's API whose pair stopped serving once the request was in
+            // (queued for a lane when a rank is lost or a stop begins, or
+            // `cluster local`'s session starting or stopping): its typed 503,
+            // as at its gate.
+            return ClusterPairAPIRefusal.response()
         } catch let error where error is MultiModelBatchSchedulerEngineError
             || error is MediaIngest.MediaError
         {
@@ -219,6 +225,12 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
                 // lease (not streamed: a streamed one is refused at its head,
                 // `EngineV2Bridge.holdHeadUntilAdmitted`).
                 return Self.openAIErrorResponse(status: status, message: Self.memoryRefusalMessage)
+            case .mediaUnsupportedByModel?:
+                // Media the model doesn't take as served here (a text-only
+                // model, or a pair that serves a model text only): the typed
+                // code this Mac gives the coordinator for it, on one Mac and
+                // on a pair alike.
+                return Self.openAIErrorResponse(status: status, message: failure.message, code: failure.code.rawValue)
             default:
                 return Self.openAIErrorResponse(status: status, message: failure.message)
             }
@@ -234,10 +246,7 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
 
     /// This Mac's answer to a request its memory can't hold now: each request
     /// reserves its prompt and its output when it starts.
-    static var memoryRefusalMessage: String {
-        "This Mac's memory can't hold this request right now. Lower max_tokens or shorten the prompt "
-            + "(or send less media), or retry when this Mac's other requests finish."
-    }
+    static var memoryRefusalMessage: String { LocalMemoryRefusal.message }
 
     /// Headers returned on a `OPTIONS` preflight. Matches the
     /// `defaultHeaders()` helper from the deleted
@@ -281,6 +290,14 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
             body: .init(byteBuffer: ByteBuffer(bytes: data))
         )
     }
+}
+
+/// The local API's words for a request this Mac's memory, or a pair's, can't
+/// hold now: the memory 503's message, and a pair's typed stream error's
+/// (`DistributedHTTPEventStream.memoryFailureFrame`).
+enum LocalMemoryRefusal {
+    static let message = "This Mac's memory can't hold this request right now. Lower max_tokens or shorten the prompt "
+        + "(or send less media), or retry when this Mac's other requests finish."
 }
 
 /// OpenAI-style `{"error": {...}}` envelope used by ``CORSResponder``

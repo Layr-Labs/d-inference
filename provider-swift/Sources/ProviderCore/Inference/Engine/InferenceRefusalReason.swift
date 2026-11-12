@@ -85,6 +85,7 @@ public enum InferenceRefusalReason: String, CaseIterable, Sendable, Equatable {
         case .conflictingReasoningEfforts: self = .contradictoryReasoningControls
         case .advertisedContextExceeded, .promptExceedsContext: self = .requestExceedsContext
         case .unsupportedOutputControl: self = .unsupportedOutputControl
+        case .missingUserQuery: self = .missingUserQuery
         default: return nil
         }
     }

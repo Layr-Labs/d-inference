@@ -528,7 +528,7 @@ public enum ProviderMessage: Sendable, Equatable {
             self.capacitySeq = failure.capacitySeq
             self.profile = profile
             self.toolCheck = failure.toolCheck
-            self.refusalReason = nil
+            self.refusalReason = failure.refusal
         }
 
         /// Decoder-only compatibility path. Discards the legacy free-form
@@ -1015,6 +1015,8 @@ extension ProviderMessage: Codable {
         case feasibleAfterMs = "feasible_after_ms"
         case capacitySeq = "capacity_seq"
         case toolCheck = "tool_check"
+        case refusalReason = "refusal_reason"
+        case refusalMessage = "refusal_message"
         // CapacityQuote
         case quoteId = "quote_id"
         case admissibleNow = "admissible_now"
@@ -1205,6 +1207,8 @@ extension ProviderMessage: Codable {
             }
             try container.encodeIfPresent(e.profile?.saturatedToWireRanges(), forKey: .profile)
             try container.encodeIfPresent(e.toolCheck?.rawValue, forKey: .toolCheck)
+            try container.encodeIfPresent(e.refusalReason?.rawValue, forKey: .refusalReason)
+            try container.encodeIfPresent(e.refusalReason?.clientMessage, forKey: .refusalMessage)
 
         case .attestationResponse(let a):
             try container.encode(TypeValue.attestationResponse, forKey: .type)
@@ -1488,7 +1492,10 @@ extension ProviderMessage: Codable {
                 // Unknown values decode to nil, like terminal_cause.
                 toolCheck: (try container.decodeIfPresent(String.self, forKey: .toolCheck))
                     .flatMap(ToolNoncomplianceCheck.init(rawValue:)),
-                refusalReason: nil
+                // Unknown values decode to nil; `refusal_message` is derived
+                // from the reason, never decoded.
+                refusalReason: (try container.decodeIfPresent(String.self, forKey: .refusalReason))
+                    .flatMap(InferenceRefusalReason.init(rawValue:))
             ))
 
         case .attestationResponse:

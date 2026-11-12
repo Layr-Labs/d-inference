@@ -156,6 +156,16 @@ public struct InferenceFailure: Sendable, Equatable {
     }
 
     public var message: String { code.message }
+
+    /// This failure naming `refusal` as the reason a client refusal refused
+    /// the request (nil keeps it unnamed).
+    func refusing(_ refusal: InferenceRefusalReason?) -> InferenceFailure {
+        InferenceFailure(
+            code: code, statusCode: statusCode, errorReason: errorReason, terminalCause: terminalCause,
+            attemptUsage: attemptUsage, rejectionReason: rejectionReason,
+            availableTokenBudget: availableTokenBudget, feasibleAfterMs: feasibleAfterMs,
+            capacitySeq: capacitySeq, toolCheck: toolCheck, refusal: refusal)
+    }
 }
 
 enum InferenceFailurePhase: Sendable, Equatable {
@@ -183,16 +193,15 @@ struct InferenceFailureLogger: Sendable {
         self.publicSink = { _ in }
     }
 
+    /// A client refusal (`failure.refusal`), before the request's inference
+    /// task or while its prompt was prepared, publishes its fixed reason in
+    /// place of the bare failure category.
     func record(requestId: String, failure: InferenceFailure) {
-        publicSink(ProviderOperationalMessage(failureCode: failure.code))
-        privateSink(Self.privateLine(requestId: requestId, failure: failure))
-    }
-
-    /// A client refusal, before the request's inference task or while its
-    /// prompt was prepared. Its public line names the fixed reason in place of
-    /// the bare failure category; without a reason it is `record(requestId:failure:)`.
-    func record(requestId: String, failure: InferenceFailure, refusal: InferenceRefusalReason?) {
-        guard let refusal else { return record(requestId: requestId, failure: failure) }
+        guard let refusal = failure.refusal else {
+            publicSink(ProviderOperationalMessage(failureCode: failure.code))
+            privateSink(Self.privateLine(requestId: requestId, failure: failure))
+            return
+        }
         publicSink(ProviderOperationalMessage(refusal: refusal))
         privateSink(Self.privateLine(requestId: requestId, failure: failure) + " refusal=\(refusal.rawValue)")
     }

@@ -643,7 +643,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             else {
                 await releaseBox.fire()
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                    "inference-enforced tool_choice is not supported for multimodal requests")
+                    "inference-enforced tool_choice is not supported for multimodal requests",
+                    refusal: .unsupportedForcedToolChoice)
             }
             // Media is decoded exactly once by EngineV2VisionPrefill.prepare
             // below, still synchronously inside this async-throws call before
@@ -1217,7 +1218,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             || ToolChoiceEnforcementPolicy.supportsForcedMedia(
                 context: .init(modelId: request.model, modelType: modelType), nativeWrapperLoaded: false) else {
             throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                "inference-enforced tool_choice is not supported for multimodal requests")
+                "inference-enforced tool_choice is not supported for multimodal requests",
+                refusal: .unsupportedForcedToolChoice)
         }
         let host: DistributedGLMMediaIngress.Prepared
         do {
@@ -1291,7 +1293,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // standalone serving. They do not require a native token constraint.
         guard prepared.mode == .auto || prepared.mode == .none else {
             throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                "inference-enforced tool_choice is not supported for multimodal requests")
+                "inference-enforced tool_choice is not supported for multimodal requests",
+                refusal: .unsupportedForcedToolChoice)
         }
         var visionRequest = request
         visionRequest.tools = prepared.tools

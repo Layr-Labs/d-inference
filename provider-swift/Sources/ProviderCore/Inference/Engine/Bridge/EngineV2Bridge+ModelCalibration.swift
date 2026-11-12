@@ -49,8 +49,11 @@ extension EngineV2Bridge {
         let age = performanceMeasurements.observationAge("isolated_prefill", now: now)
             .map { String(format: "%.0f", WedgeMonitor.seconds($0)) } ?? "?"
         let anchor = calibratedIsolatedPrefillTps.map { String(format: "%.0f tok/s", $0) } ?? "none"
-        Self.evidenceProbeLogger.info(
-            "Deadline refusals: \(modelId) re-measures stale prefill evidence with one idle probe after \(DeadlineRefusalStreak.threshold) refusals at \(rate) tok/s (evidence \(age) s old, anchor \(anchor), last prompt \(refusal?.promptTokens ?? 0) tokens)")
+        Self.evidenceProbeLogger.info("""
+            Deadline refusals: \(modelId) re-measures stale prefill evidence with one idle probe after \
+            \(DeadlineRefusalStreak.threshold) refusals at \(rate) tok/s (evidence \(age) s old, \
+            anchor \(anchor), last prompt \(refusal?.promptTokens ?? 0) tokens)
+            """)
         deadlineRefusalStreak.recordProbe(at: now)
     }
 

@@ -450,7 +450,19 @@ over the cable and ends with the same ✓/✗ block, bounded like the leader's s
   rows. Plain output prints each whole line.
 - **How the wait ends.** A refusal ends the wait at once with the leader's ✗ (`followRefused`; different builds:
   `differentBuildsLines`). Running out of time ends it with a ✗ and next steps (`notStartedReason`,
-  `notStartedLines`).
+  `notStartedLines`). A stop someone asked for (`darkbloom stop`, `cluster stop` or `restart` on either Mac, which the
+  leading Mac runs: `OnboardingLive.stop`) ends it at once with the leading Mac's line (`ClusterOnboardingStopped`).
+  The leading Mac counts each such stop in its setup record, in the same write as the stopped intent
+  (`ClusterSetupRecord.stopsAsked`, `OnboardingLive.stopping`); the start's own stops (a model change, the
+  registration's restart) and the cluster service's don't count. Its status reply carries the count
+  (`ClusterControlReply.stopsAsked`, 0 before the first; nil from an older build, which an older Mac ignores), and the
+  Mac that joins ends only once it grew since the start began (`ClusterOnboardingFollowedStop`); a look that read no
+  count tells nothing. The status' words never tell a stop: it reads "Stopped" until both parts start, so through a
+  whole download or copy of the model, and again while the registration restarts them (0.10.9 to 0.10.12 took
+  "Stopped" held 20 s for a stop; an external pair's joining Mac said it 20 s into a download, 2026-11-12). On the
+  leading Mac a stop ends the wait for the parts (`OnboardingLive.waitReady`) and the coordinator's wait
+  (`pairServing`) at once, and a stop asked while the model downloads or copies keeps the pair stopped: the start
+  compares the count before both Macs start (`ClusterOnboardingStopped.asked`).
 - **The leader's own Local Network wait** has a bound too (`ClusterOnboardingOperations.localNetworkWaitSeconds`,
   `localNetworkOffLines`).
 

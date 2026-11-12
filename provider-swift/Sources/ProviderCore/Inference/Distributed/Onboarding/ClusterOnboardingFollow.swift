@@ -51,10 +51,6 @@ extension ClusterOnboardingDriver {
                "If it still doesn't start, run `darkbloom --version` on both Macs; if they differ, run `darkbloom update` on the one that's behind."]
     }
 
-    /// How long the leading Mac's status must stay Stopped, once its start began, before the Mac that joined takes it
-    /// as a stop from anywhere.
-    static let stoppedHoldSeconds: Double = 20
-
     /// After the version split's ✗ on the Mac that joined.
     static func versionSplitAfterLine(_ leader: String?) -> String {
         ClusterOnboardingCommand.named("Once both Macs run the same version, run `darkbloom cluster` on \(ClusterOnboardingMacName.other(named: leader)) again; this Mac follows it by itself.")
@@ -202,7 +198,8 @@ extension ClusterOnboardingDriver {
         // The two Macs' versions, read on the looks' cadence: a split never clears by itself, so the wait ends at once.
         let splits = ClusterOnboardingMailbox<ClusterOnboardingVersionSplit?>()
         var splitAsking = false, splitAsked = Date.distantPast
-        var stoppedSince: Date?
+        // A stop a person asked for since the start began, by the leading Mac's record, never by its status' words.
+        var stops = ClusterOnboardingFollowedStop()
         while true {
             if !splitAsking, Date().timeIntervalSince(splitAsked) >= timing.pollSeconds {
                 (splitAsking, splitAsked) = (true, Date())
@@ -217,15 +214,6 @@ extension ClusterOnboardingDriver {
                     console.waitForExit()
                     return 1
                 }
-            }
-            // A stop from anywhere once the start began ends the wait: the leading Mac's status stays Stopped (a start
-            // reads Stopped for a moment while it stops the old setup or restarts the parts to register, never this long).
-            let stoppedNow = (started != nil || start != nil) && start?.phase != .stopping && lastStatus?.hasPrefix("Stopped") == true
-            stoppedSince = stoppedNow ? stoppedSince ?? Date() : nil
-            if let since = stoppedSince, Date().timeIntervalSince(since) >= Self.stoppedHoldSeconds {
-                console.settle()
-                console.say(ClusterOnboardingCommand.named(ClusterOnboardingStopped.line))
-                return 1
             }
             if !asking, Date().timeIntervalSince(asked) >= timing.pollSeconds {
                 asking = true
@@ -283,6 +271,14 @@ extension ClusterOnboardingDriver {
                 }
                 let seen = followed(status)
                 if started == nil, seen != .notStarted { started = Date() }
+                // A stop from anywhere once the start began ends the wait at once, as on the leading Mac. Its status
+                // reading "Stopped" is none: it reads so through a download or copy of the model, until both parts start,
+                // and while the start stops them to register.
+                if stops.look(look.stopsAsked, begun: started != nil || start != nil) {
+                    console.settle()
+                    console.say(ClusterOnboardingCommand.named(ClusterOnboardingStopped.line))
+                    return 1
+                }
                 // Each stage has the whole bound, as on the leading Mac (its load, its test and check, its restart).
                 let next = followStage(status, after: stage)
                 if started != nil, next > stage { stage = next; started = Date() }

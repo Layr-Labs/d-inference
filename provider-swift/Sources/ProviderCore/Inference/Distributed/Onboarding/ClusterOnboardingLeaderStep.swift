@@ -123,7 +123,10 @@ public struct ClusterOnboardingLeaderStatus: Sendable, Equatable {
     public var step: ClusterOnboardingLeaderStep?
     /// How far its start is (`ClusterOnboardingStartProgress`); nil before it starts, and from an older build.
     public var start: ClusterOnboardingStartProgress?
-    public init(lines: [String], step: ClusterOnboardingLeaderStep?, start: ClusterOnboardingStartProgress? = nil) {
-        self.lines = lines; self.step = step; self.start = start
+    /// How many stops a person asked for there (`ClusterSetupRecord.stopsAsked`, 0 before the first); nil when the status
+    /// couldn't be read, and from an older build.
+    public var stopsAsked: Int?
+    public init(lines: [String], step: ClusterOnboardingLeaderStep?, start: ClusterOnboardingStartProgress? = nil, stopsAsked: Int? = nil) {
+        self.lines = lines; self.step = step; self.start = start; self.stopsAsked = stopsAsked
     }
 }

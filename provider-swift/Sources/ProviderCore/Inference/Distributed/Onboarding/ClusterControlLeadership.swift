@@ -861,6 +861,9 @@ public struct ClusterControlReply: Codable, Sendable, Equatable {
     /// `status`: how far the leading Mac's start is (`ClusterOnboardingStartProgress`); nil when no start runs, and from
     /// an older build.
     public var start: ClusterOnboardingStartProgress? = nil
+    /// `status`: how many stops a person asked for on the leading Mac (`ClusterSetupRecord.stopsAsked`, 0 before the
+    /// first); nil from an older build. An older Mac ignores it.
+    public var stopsAsked: Int? = nil
 }
 
 public enum ClusterControlRouting {

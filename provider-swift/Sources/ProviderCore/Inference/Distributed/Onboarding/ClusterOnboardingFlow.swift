@@ -1515,6 +1515,10 @@ public struct ClusterOnboardingOperations: Sendable {
     /// Publishes how far the start is (`ClusterOnboardingStartProgress`) in the leading Mac's status, so the Mac that
     /// joined shows the same step; nil clears it. Not in `init`: only the live operations set it.
     public var publishStart: @Sendable (ClusterOnboardingStartProgress?) -> Void = { _ in }
+    /// How many stops a person asked for (`darkbloom stop`, `cluster stop` or `restart`, on either Mac), as the leading
+    /// Mac counts them (`ClusterSetupRecord.stopsAsked`); nil when that can't be read, and from an older build. Not in
+    /// `init`: only the live operations set it.
+    public var stopsAsked: @Sendable () -> Int? = { nil }
     /// The rank this Mac's part runs in the saved setup (each screen names its own part "This Mac"); nil when unknown.
     /// Not in `init`: only the live operations set it.
     public var thisRank: @Sendable () -> Int? = { nil }
@@ -2890,6 +2894,8 @@ public enum ClusterOnboardingDriver {
         if privateImage, let line = choice.publicTraffic {
             console.say("  " + ClusterOnboardingMacName.sentence(line) + (line.hasSuffix(".") ? "" : "."))
         }
+        // The start begins here: a stop a person asks for from now on ends it before both Macs start (below).
+        let stopsBefore = operations.stopsAsked()
         if let offer = choice.provision {
             operations.publishStep(.init(.copy))
             switch provision(offer, title: choice.title, index: chosen!, operations, console) {
@@ -2961,6 +2967,12 @@ public enum ClusterOnboardingDriver {
         guard clearVersionSplit(operations.versionSplit(), operations, console) else { return 1 }
         // Single-Mac serving on either Mac never ends by itself: said once, before anything starts, never waited for.
         guard clearSoloServing(operations.soloServing(), operations, console) else { return 1 }
+        // Stopped from anywhere since the start began (while the model downloaded or copied, say): the pair stays stopped
+        // and this screen ends as the Mac that joined does, which reads the same stop (`ClusterOnboardingFollowedStop`).
+        if ClusterOnboardingStopped.asked(since: stopsBefore, now: operations.stopsAsked()) {
+            console.say(ClusterOnboardingCommand.named(ClusterOnboardingStopped.line))
+            return 1
+        }
         switch busy(console, "Starting both Macs", operations.serve) {
         case .success: break
         case .failure(let failure):

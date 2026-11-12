@@ -313,6 +313,22 @@ struct QwenVLMTargetExtractionTests {
                 == EngineV2Factory.defaultSoloPrefillStripeTokens)
     }
 
+    @Test("Qwen interleaves decode steps between prefill chunks")
+    func qwenInterleavesDecodeBetweenPrefillChunks() throws {
+        let config = try EngineV2VLMTextExtraction.decodeQwenConfiguration(
+            configData: qwenTargetFixtureJSON(fullAttentionInterval: 2))
+        for model in [Qwen35Model(config), Qwen35MoEModel(config)] {
+            let scheduler = EngineV2Factory.productionSchedulerConfig(
+                maxConcurrentRequests: 2, model: model, environment: [:])
+            #expect(
+                scheduler.decodeStepsBetweenPrefillChunks
+                    == EngineV2Factory.qwenDecodeStepsBetweenPrefillChunks)
+        }
+        let other = EngineV2Factory.productionSchedulerConfig(
+            maxConcurrentRequests: 2, environment: [:])
+        #expect(other.decodeStepsBetweenPrefillChunks == 0)
+    }
+
     @Test("short demanded capture requires the actual dense paged SSD store and keeps its floor")
     func shortDemandedCaptureRequiresDensePagedSSD() async throws {
         let config = try EngineV2VLMTextExtraction.decodeQwenConfiguration(

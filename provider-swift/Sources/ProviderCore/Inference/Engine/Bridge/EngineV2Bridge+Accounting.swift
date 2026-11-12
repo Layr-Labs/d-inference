@@ -40,6 +40,13 @@ extension EngineV2Bridge {
     func runningRequestSamples(model: String, now: ContinuousClock.Instant = .now)
         -> [RunningRequestProgressTracker.Sample]
     {
+        Self.runningRequestSamples(active: active, probes: modelCalibration.requests.keys, model: model, now: now)
+    }
+
+    static func runningRequestSamples(
+        active: [String: ActiveRequestState], probes: Dictionary<String, ModelCalibrationPolicy.Cell>.Keys,
+        model: String, now: ContinuousClock.Instant
+    ) -> [RunningRequestProgressTracker.Sample] {
         active.map { id, state in
             RunningRequestProgressTracker.Sample(
                 id: id, model: model, sinceAdmission: now - state.submittedAt,

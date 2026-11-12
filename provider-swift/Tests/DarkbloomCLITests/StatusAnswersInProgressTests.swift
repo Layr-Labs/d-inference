@@ -29,7 +29,7 @@ struct StatusAnswersInProgressTests {
             "Answers in progress: 2",
             "  qwen3.6-35b-a3b-vl-mtp-mxfp8: 13m 17s, 30800 tokens so far, 38.7 tok/s (#aea3a020)",
             "  qwen3.6-35b-a3b-vl-mtp-mxfp8: 13m 16s, 30790 tokens so far, 39.3 tok/s (#07b64cf9)",
-            "  Credits post when an answer finishes.",
+            "  Credits post when a paid answer finishes; requests to your own machine are free.",
         ])
     }
 
@@ -40,7 +40,7 @@ struct StatusAnswersInProgressTests {
         #expect(Status.runningRequestLines(state: try state([reading], writtenAgo: 0, now: now), now: now) == [
             "Answers in progress: 1",
             "  gemma-4-26b: 4s, 0 tokens so far, reading the prompt (#0a1b2c3d)",
-            "  Credits post when an answer finishes.",
+            "  Credits post when a paid answer finishes; requests to your own machine are free.",
         ])
     }
 
@@ -58,7 +58,8 @@ struct StatusAnswersInProgressTests {
         #expect(json["schema"] as? Int == 1)
         #expect(json["daemon"] as? String == "running")
         #expect(json["cluster_part"] as? Bool == true)
-        #expect(json["note"] as? String == "Credits post when an answer finishes.")
+        #expect(json["note"] as? String
+            == "Credits post when a paid answer finishes; requests to your own machine are free.")
         let answers = try #require(json["answers_in_progress"] as? [[String: Any]])
         #expect(answers.count == 2)
         let first = try #require(answers.first)

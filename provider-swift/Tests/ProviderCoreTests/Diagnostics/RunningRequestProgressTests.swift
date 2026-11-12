@@ -90,6 +90,21 @@ struct RunningRequestProgressTests {
         #expect(DaemonStateFile.read(from: url).map { $0.runningRequests == nil } == true)
     }
 
+    /// The engine's own calibration, shape-warmup and shader-cache probes, and a
+    /// pair's warmup canary, run through the bridge like answers but are none:
+    /// an idle Mac right after a load lists nothing.
+    @Test func theEnginesOwnProbesAreNotListed() {
+        let now = ContinuousClock.now
+        let running = EngineV2Bridge.ActiveRequestState(promptTokens: 300, maxTokens: 32_768,
+                                                        submittedAt: now - .seconds(60))
+        let active = ["coord-7f3a": running, "calibration-0B1C2D3E": running,
+                      "cluster-warmup-0a1b2c3d4e5f": running]
+        let probes: [String: ModelCalibrationPolicy.Cell] = ["calibration-0B1C2D3E": ModelCalibrationPolicy.shaderCacheProbe]
+        let samples = EngineV2Bridge.runningRequestSamples(active: active, probes: probes.keys, model: Self.model, now: now)
+        #expect(samples.map(\.id) == ["coord-7f3a"])
+        #expect(samples.first?.sinceAdmission == .seconds(60))
+    }
+
     @Test func theLoopWritesTheListEvenWhenNothingRuns() async throws {
         let hardware = HardwareInfo(machineModel: "Mac17,6", chipName: "Apple M5 Max",
             chipFamily: .m5, chipTier: .max, memoryGb: 128, memoryAvailableGb: 128,

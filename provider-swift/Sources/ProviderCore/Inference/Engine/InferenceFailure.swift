@@ -127,7 +127,7 @@ public struct InferenceFailure: Sendable, Equatable {
     /// The check behind a `tool_noncompliance` reason; nil for every other one.
     public let toolCheck: ToolNoncomplianceCheck?
     /// Why a client refusal refused the request; nil for every other failure.
-    public let refusal: InferenceRefusalReason?
+    public internal(set) var refusal: InferenceRefusalReason?
 
     public init(
         code: InferenceFailureCode,
@@ -156,16 +156,6 @@ public struct InferenceFailure: Sendable, Equatable {
     }
 
     public var message: String { code.message }
-
-    /// This failure naming `refusal` as the reason a client refusal refused
-    /// the request (nil keeps it unnamed).
-    func refusing(_ refusal: InferenceRefusalReason?) -> InferenceFailure {
-        InferenceFailure(
-            code: code, statusCode: statusCode, errorReason: errorReason, terminalCause: terminalCause,
-            attemptUsage: attemptUsage, rejectionReason: rejectionReason,
-            availableTokenBudget: availableTokenBudget, feasibleAfterMs: feasibleAfterMs,
-            capacitySeq: capacitySeq, toolCheck: toolCheck, refusal: refusal)
-    }
 }
 
 enum InferenceFailurePhase: Sendable, Equatable {

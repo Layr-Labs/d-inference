@@ -245,7 +245,8 @@ extension ProviderLoop {
         // Each refusal before the inference task logs its fixed reason publicly,
         // so `darkbloom logs` accounts for it, and sends it on its frame.
         func reject(_ failure: InferenceFailure, refusal: InferenceRefusalReason) {
-            let failure = failure.refusing(refusal)
+            var failure = failure
+            failure.refusal = refusal
             InferenceFailureLogger(logger: logger).record(requestId: requestId, failure: failure)
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceError(requestId: requestId, failure: failure, profile: profile),

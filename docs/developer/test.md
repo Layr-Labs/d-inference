@@ -729,11 +729,15 @@ older cold sample, and the refusal streak: three idle refusals over stale
 evidence, long prompts included, ask for one probe and submit no request
 unprojected (a late retry included); refusals at a fresh rate or a fresh
 prompt-size bucket, at the anchor, with under 5 seconds left, beside other
-work or with the kill switch off do not count; a projected admission ends a
-partial streak; and a started probe holds the next to its interval.
+work or with either switch off do not count; a projected, an unprojected and
+an accepted-then-cancelled admission each end a partial streak; a started probe
+holds the next to its interval; and on battery a full streak waits for AC
+power.
 `ProductionModelCalibrationTests.staleRefusalStreakRerunsTheProbe` runs that
-probe on a toy Qwen `EngineV2`: three real refusals re-run one solo cell, and
-the next request is priced from it. In the SDK, the unit suite
+probe on a toy Qwen `EngineV2`: three real refusals re-run one solo cell whose
+rate becomes the anchor (at least twice the stale rate, not an absolute bar:
+CI VMs differ), starting it sets the interval, and the next request is priced
+from it. In the SDK, the unit suite
 `CBv2PerBatchDecodeChargeTests` pins per-step decode accounting, MTP-measured
 shape conversion, the mirrored MTP depth gates (batch gate and automatic
 envelope, with a driver check that the ceiling bounds every live plan depth)

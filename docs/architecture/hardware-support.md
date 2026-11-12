@@ -982,7 +982,8 @@ serving Mac, so the same request can project differently on other hardware:
   seconds explains on an idle Mac re-run the idle calibration probe once
   (`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`,
   `DeadlineRefusalStreak`): one solo 512-token cell remeasures the rate on that
-  Mac, at that power and thermal state, when it is idle at nominal posture. No
+  Mac, at that thermal state, when it is idle, at nominal posture and on AC
+  power (never on battery; `DARKBLOOM_TTFT_REFUSAL_PROBE=0` turns it off). No
   customer request is admitted without a projection for it. A refusal for
   physical capacity, at a fresh rate, at the anchor or with under 5 seconds
   left never counts.

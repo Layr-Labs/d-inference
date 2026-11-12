@@ -1,6 +1,6 @@
 # Build The Provider And Landing
 
-> Last updated: 2026-11-11
+> Last updated: 2026-11-12
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. Backend, sidecar, console and admin builds
@@ -332,7 +332,8 @@ the component classifier, the tested-change lookup, the route and the workflow
 pins. It also runs the offline self-tests of the prompt fixture downloaders
 (`scripts/test-prepare-prompt-fixtures.py`,
 `scripts/test-prepare-mimo-prompt-fixtures.py`,
-`scripts/test-prepare-mimo-image-http-fixtures.py`), the GPT-OSS checkpoint and
+`scripts/test-prepare-mimo-image-http-fixtures.py`) and of the MiMo audio codec
+download (`scripts/test-prepare-mimo-audio-fixtures.py`), the GPT-OSS checkpoint and
 replay tools' CPU tests (`scripts/test_gptoss_checkpoint.py`,
 `scripts/test_gptoss_replay.py`; Python 3.11+) and the Date comparison checks.
 It needs no Mac and no test result, so it runs from the start of the run, and

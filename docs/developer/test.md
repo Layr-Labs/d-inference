@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-11-10
+> Last updated: 2026-11-12
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -589,9 +589,11 @@ Ordinary fixtures use symmetric 128-context geometry; the separate complete-pref
 process uses `--asymmetric` for K64/V128 and 1,024-context geometry.
 `scripts/prepare-mimo-audio-fixtures.py` prepares hash-pinned public inputs
 including the genuine audio codec. The script downloads only the files that its
-cache directory lacks. It retries a failed download up to 5 times and ends an
-attempt that stays below 100 KB/s for 60 s. It keeps a file only when the size
-and SHA-256 match. Keep these output directories isolated from
+cache directory lacks. It makes up to 8 attempts per file, each resuming the
+partial download (`curl --continue-at -`) and ending when it stays below
+100 KB/s for 60 s, after 900 s, or when the 45-minute budget runs out; a server
+that ignores the range request makes the next attempt start over. It keeps a
+file only when the size and SHA-256 match, and deletes a mismatched one. Keep these output directories isolated from
 the ordinary regression inputs. Audio gates exercise PCM8 and AAC-video with a
 small target, not full-model quality or peak memory. Release-only builds do not
 provision test fixtures or opt into native qualification.

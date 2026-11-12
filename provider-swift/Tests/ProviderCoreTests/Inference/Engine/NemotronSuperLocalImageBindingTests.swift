@@ -436,6 +436,38 @@ extension NemotronSuperLocalImageBindingTests {
         #expect(await budget.outstandingReservedBytes() == 0)
     }
 
+    /// An image waits only behind an image already streaming: behind one still
+    /// before its first chunk (held here before its engine submission), a
+    /// bounded image is refused at once (S8, V4).
+    @Test(.timeLimit(.minutes(1))) func stackedImageDoesNotWaitBehindAnImageInPrefill() async throws {
+        let (owner, images, residency, budget, lease) = try await Self.stackedOwner(id: "super-image-stacked-prefill")
+        let input = Self.stackedInput, request = Self.stackedRequest
+        let gate = SuperHTTPTerminalGate()
+        await owner.bridge._testInstallPreSubmitGate { await gate.hold() }
+        let first = Task { try await images.run(request: request, input: input) { _ in } }
+        do {
+            try await superHTTPEventually("first image held before its submission") { await gate.entered }
+            let start = ContinuousClock.now
+            await #expect(throws: NemotronSuperLocalImageBinding.Failure.busy) {
+                try await images.run(request: request, input: input,
+                                     stackedUntil: ContinuousClock.now + .seconds(3)) { _ in }
+            }
+            #expect(ContinuousClock.now - start < .milliseconds(500))
+            await gate.release()
+            try await first.value
+        } catch {
+            await gate.release()
+            _ = await first.result
+            try await owner.closeAfterDrain()
+            _ = await budget.finishPendingLoad(lease)
+            throw error
+        }
+        try await owner.closeAfterDrain()
+        #expect(residency.snapshot.usedBytes == 0)
+        #expect(await budget.finishPendingLoad(lease))
+        #expect(await budget.outstandingReservedBytes() == 0)
+    }
+
     /// Draining the binding ends a stacked wait at once with `closed`.
     @Test(.timeLimit(.minutes(1))) func drainEndsAStackedImageWait() async throws {
         let (owner, images, residency, budget, lease) = try await Self.stackedOwner(id: "super-image-stacked-drain")

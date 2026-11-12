@@ -176,14 +176,68 @@ extension NemotronSuperLocalOwnerTests {
     /// and a conservative default before the first.
     @Test func expectedMediaFirstChunkIsTheLongestRecentOne() async throws {
         let (owner, _, residency, budget, lease) = try await Self.owner()
-        #expect(owner.expectedMediaFirstChunk == NemotronSuperServingPolicy.unmeasuredMediaFirstChunk)
+        // Never below 6 s, so fast recent first chunks (prefix-cache hits,
+        // small images) cannot shorten the wait a slow image needs (S7).
+        #expect(owner.expectedMediaFirstChunk == .seconds(6))
         owner.recordMediaFirstChunk(.seconds(2))
         owner.recordMediaFirstChunk(.seconds(1))
-        #expect(owner.expectedMediaFirstChunk == .seconds(2))
-        for _ in 0..<NemotronSuperServingPolicy.mediaFirstChunkSamples {
-            owner.recordMediaFirstChunk(.milliseconds(1500))
+        #expect(owner.expectedMediaFirstChunk == .seconds(6))
+        // A slow one counts for the last 64 media requests.
+        owner.recordMediaFirstChunk(.seconds(9))
+        for _ in 0..<63 { owner.recordMediaFirstChunk(.milliseconds(400)) }
+        #expect(owner.expectedMediaFirstChunk == .seconds(9))
+        owner.recordMediaFirstChunk(.milliseconds(400))
+        #expect(owner.expectedMediaFirstChunk == .seconds(6))
+        try await owner.closeAfterDrain()
+        #expect(residency.snapshot.usedBytes == 0)
+        #expect(await budget.finishPendingLoad(lease))
+    }
+
+    /// A media request finished mid-stream (cancelled) leaves no streaming
+    /// count: behind a text request that follows it, a stacked request is
+    /// refused at once (S8, V15).
+    @Test func cancelledStreamingImageLeavesNoStreamingCount() async throws {
+        let (owner, _, residency, budget, lease) = try await Self.owner()
+        #expect(owner.admitLocalRequest())
+        let image = OwnerProgress(isMedia: true)
+        owner.noteLocalFirstChunk(image)
+        owner.finishLocalRequest(image)
+        #expect(owner.admitLocalRequest())
+        let start = ContinuousClock.now
+        #expect(await owner.admitLocalRequest(waitingUpTo: .zero,
+                                              stackedUntil: ContinuousClock.now + .seconds(3)) == false)
+        #expect(ContinuousClock.now - start < .milliseconds(500))
+        owner.finishLocalRequest()
+        try await owner.closeAfterDrain()
+        #expect(residency.snapshot.usedBytes == 0)
+        #expect(await budget.finishPendingLoad(lease))
+    }
+
+    /// On an owner serving more than one request a stacked request does not wait
+    /// at the owner: the image binding serves one image at a time and keeps a
+    /// slot free for text, so the slot that frees first is rarely the image's
+    /// and the wait would end in a refusal there (S9). The binding waits instead.
+    @Test(.timeLimit(.minutes(2))) func widerOwnerLeavesTheStackedWaitToTheImageBinding() async throws {
+        let environment = [NemotronSuperLocalBridgeBuilder.maxConcurrentKey: "2"]
+        let grant = Int(UnifiedMemoryCap.minimumLoadKVBytes)
+        var refusal: NemotronSuperLocalBridgeBuilder.UnserviceableGrant?
+        do { _ = try await Self.owner(kvBytesCapacity: grant, environment: environment, latentMoE: true) }
+        catch let error as
+            NemotronSuperLocalBridgeBuilder.UnserviceableGrant { refusal = error }
+        let refused = try #require(refusal)
+        let (owner, _, residency, budget, lease) = try await Self.owner(
+            kvBytesCapacity: refused.minimumGrantBytes, environment: environment, latentMoE: true)
+        #expect(owner.maximumLocalRequests == 2)
+        let streaming = [OwnerProgress(isMedia: true), OwnerProgress(isMedia: true)]
+        for progress in streaming {
+            #expect(owner.admitLocalRequest())
+            owner.noteLocalFirstChunk(progress)
         }
-        #expect(owner.expectedMediaFirstChunk == .milliseconds(1500))
+        let start = ContinuousClock.now
+        #expect(await owner.admitLocalRequest(waitingUpTo: .zero,
+                                              stackedUntil: ContinuousClock.now + .seconds(3)) == false)
+        #expect(ContinuousClock.now - start < .milliseconds(500))
+        for progress in streaming { owner.finishLocalRequest(progress) }
         try await owner.closeAfterDrain()
         #expect(residency.snapshot.usedBytes == 0)
         #expect(await budget.finishPendingLoad(lease))

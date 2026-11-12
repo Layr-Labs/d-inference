@@ -1,4 +1,0 @@
-### `status`, `doctor` and `verify` keep an older denial visible
-
-- A provider's last coordinator authorization was shown only while it was at most 10 seconds old. An App Attest lease already stayed visible until it expires, but an older `none` (a denial) or `legacy` report vanished from `darkbloom status`, `doctor` and `verify`, so a Mac the coordinator had denied could look healthy. Such a report now stays visible as dated history: `Last reported authorization: received 10m ago; not a fresh dispatch grant. …` in `status`, and a `last reported authorization` line in `doctor` and `verify`, INFO for legacy and WARN for a denial.
-- History never stands in for a current grant or the public proofs: it offers no MDM removal or migration, and `doctor` and `verify` still run the trust and public attestation checks after it. `darkbloom verify` now fails on a WARN or FAIL line, not on an INFO line.

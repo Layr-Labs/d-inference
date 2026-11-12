@@ -1,5 +1,0 @@
-### Models catalog names the models this Mac could add
-
-- `darkbloom models catalog` now ends with the catalog models that are not downloaded and that this Mac could select: at most three rows with id and download size, larger first, then `darkbloom models download <id>` and `darkbloom switch`. The note is printed only when there is at least one such model.
-- A model is named when the `darkbloom start` picker would offer it to this Mac (required runtime capabilities present, not a hidden build or one replaced under a public alias), it is an active text model, its listed `min_ram_gb` is at most this Mac's memory, and it fits the provider's load budget alone. Free disk space, the memory reserve and memory in use at load time, the coordinator's minimum provider version and the provider's trust status are not checked, and the note says so.
-- The note only prints: nothing is downloaded, selected or saved, and no request is added. The table's catalog request now also asks for the public aliases (`include_aliases=1`); the `--json` request and output are unchanged.

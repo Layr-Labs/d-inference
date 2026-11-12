@@ -1,4 +1,0 @@
-### Nemotron 3.5 Super: a request that arrives as the previous one finishes waits instead of bouncing
-
-- A Super Mac serves up to 8 requests at once, but only one image or video at a time. It answered another image at once with 429 `queue_full`, which sends the image to another Mac. That included images arriving after the previous answer had ended but before its cleanup (native retirement, and the release of its image memory) had finished. The same held for any request when the Mac's Super owner was at its request limit.
-- Such a request now waits up to 1 s for that cleanup and is then served. The previous request's memory is released before the next one reserves its own, so memory use is unchanged. A request that arrives while the previous answer is still being generated is still refused at once.

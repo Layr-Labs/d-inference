@@ -1,4 +1,0 @@
-### The watchdog brings back a provider job launchd lost
-
-- When launchd dropped the provider's job while it was enabled (booted out, not stopped with `darkbloom stop`), the watchdog treated it as stopped and nothing restarted it until someone ran `darkbloom start` (#1104). It now restarts it after the usual grace, when `auto_restart` is on, the installed job is the provider's own and enabled, and no provider process is still alive, under the same lock as `stop` and updates. A job you stopped stays stopped, and nothing changes for a Mac whose pair runs here or for a pair member's job.
-- A pending update is handled as on a crash: a confirmed failed start counts once, the verified rollback and its retry backoff apply, and no update is downloaded on this path. An uncertain `launchctl` result keeps the crash-loop protection without counting a restart.

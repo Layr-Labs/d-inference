@@ -369,6 +369,8 @@ public enum LaunchAgent: Sendable {
     /// launchd restarts (including watchdog recovery) reuse this plist.
     /// `DARKBLOOM_TTFT_ADMISSION_FIXES`: the deadline-admission estimator
     /// corrections are on by default; their rollback must reach the job too.
+    /// `DARKBLOOM_TTFT_REFUSAL_PROBE`: the refusal streak's idle probe is on by
+    /// default; its own `0` rollback must reach the job too.
     /// `DARKBLOOM_TTFT_IDLE_CACHE_SWEEP`, `DARKBLOOM_TTFT_SEGMENT_RETENTION`
     /// and `DARKBLOOM_TTFT_SEGMENT_HOST_ZEROS`: the idle-gated cache sweep and
     /// retained, host-zeroed paged KV segments are on by default; each
@@ -384,6 +386,9 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_PREFIX_CACHE_SSD_INCREMENTAL_CHECKPOINTS`: eligible complete
     /// checkpoints are written as deltas by default; the rollback to complete
     /// files must reach the job.
+    /// `DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION`: a donor's
+    /// terminal follows its complete-checkpoint write by default; the opt-in
+    /// to answer first must reach the job to apply to an installed provider.
     /// `DARKBLOOM_TTFT_GDN_BLOCKED`: the SDK keeps a four-row Qwen GDN prompt
     /// kernel wherever its parity probe finds it bit-exact, which says nothing
     /// about speed; the stock-kernel rollback must reach the job. Spelled out
@@ -411,12 +416,15 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_TTFT_STREAM_TOOL_CALLS` / `DARKBLOOM_TTFT_THINK_CONTENT_SEED`:
     /// incremental `auto` tool calls and the plain-tail Qwen content seed are
     /// on by default; exact `0` is each rollback.
+    /// `DARKBLOOM_GEMMA4_NAX_ROW_MAP`: eligible Gemma expert prefill uses the
+    /// row-mapped NAX route by default; exact `0` restores its original graph.
     static let inferencePassthroughEnvKeys = [
         EngineV2Factory.maxPartialPrefillsKey,
         EngineV2Factory.prefillChunkKey,
         EngineV2Factory.stepTokenBudgetKey,
         PrefillDeadlineMode.environmentKey,
         DeadlineAdmissionFixes.environmentKey,
+        DeadlineRefusalProbe.environmentKey,
         GlobalKVCacheBudget.idleCacheSweepEnvironmentKey,
         EngineV2Factory.segmentRetentionEnvironmentKey,
         EngineV2Factory.segmentHostZerosEnvironmentKey,
@@ -425,6 +433,7 @@ public enum LaunchAgent: Sendable {
         GLM5NextWiredResidency.environmentFlag,
         PrefixCachePolicy.mimoCompletePrefixEnvironmentFlag,
         SSDPrefixCachePolicy.incrementalCheckpointsFlag,
+        SSDPrefixCachePolicy.terminalBeforePublicationFlag,
         "DARKBLOOM_TTFT_GDN_BLOCKED",
         EngineV2SlotFactory.mimoRectangularVerifyEnvironmentKey,
         PromptTokenCachePolicy.environmentKey,
@@ -438,6 +447,7 @@ public enum LaunchAgent: Sendable {
         NemotronSuperLocalPrefill.decodeStepsKey,
         ToolStreamPreparation.streamToolCallsEnvironmentKey,
         ReasoningPromptProbe.plainTailContentSeedEnvironmentKey,
+        "DARKBLOOM_GEMMA4_NAX_ROW_MAP",
     ] + MiMoV26DecodeDefaults.environmentKeys + MiMoV26DecodeDefaults.verifyEnvironmentKeys
 
     static let passthroughEnvKeys = [
@@ -456,7 +466,8 @@ public enum LaunchAgent: Sendable {
     ] + inferencePassthroughEnvKeys
 
     /// Build the daemon `EnvironmentVariables` map from a source environment,
-    /// keeping only the allowlisted, non-empty keys. Pure (environment injected)
+    /// keeping allowlisted, non-empty keys unless a rule below preserves an
+    /// explicit empty value. Pure (environment injected)
     /// so it is unit-testable without touching the real process environment.
     ///
     /// A value-conditional entry rides along: the operator drain
@@ -474,6 +485,12 @@ public enum LaunchAgent: Sendable {
             if let value = environment[key], !value.isEmpty {
                 out[key] = value
             }
+        }
+        // Explicit empty disables this SDK route; dropping it would restore
+        // the unset default. Preserve every supplied value without parsing it.
+        let rowMapKey = "DARKBLOOM_GEMMA4_NAX_ROW_MAP"
+        if let value = environment[rowMapKey] {
+            out[rowMapKey] = value
         }
         // Persist only the worker opt-in, never native diagnostic/fault flags.
         let workerKey = AppAttestWorkerSelection.qualificationEnvironment

@@ -76,11 +76,14 @@ enum ClusterPairCommands {
         terminalForTesting ?? (isatty(STDIN_FILENO) == 1 && isatty(STDOUT_FILENO) == 1)
     }
 
-    /// `darkbloom start` in a terminal: exactly what `darkbloom cluster` runs on this Mac (the setup command's run path).
+    /// `darkbloom start` in a terminal: what `darkbloom cluster` runs on this Mac (the setup command's run path), keeping
+    /// how the pair is saved to serve (`Cluster.Setup.keepsSavedServing`).
     static func openScreen(config: String?) async throws {
-        if let screen = screenForTesting { return try await screen(config) }
-        var setup = try Cluster.Setup.parse(config.map { ["--config", $0] } ?? [])
-        try await setup.run()
+        try await Cluster.Setup.$keepsSavedServing.withValue(true) {
+            if let screen = screenForTesting { return try await screen(config) }
+            var setup = try Cluster.Setup.parse(config.map { ["--config", $0] } ?? [])
+            try await setup.run()
+        }
     }
 
     /// `darkbloom stop` (and `darkbloom cluster stop`): the pair stops on both Macs and is saved as stopped, so neither
@@ -166,8 +169,9 @@ enum ClusterPairCommands {
             for line in serving.resultLines { say(line) }
             return serving.exitCode
         }
-        say(pair.actingLine("starting the pair"))
+        // Said only once the pair can start: a pair with no model yet gets its one line (#1908's review, nit 8).
         guard let actions = startable(pair, actions: actions, say: say) else { return 1 }
+        say(pair.actingLine("starting the pair"))
         return await serve(actions, config: config, say: say)
     }
 
@@ -176,8 +180,10 @@ enum ClusterPairCommands {
     /// the Mac that follows, the leading Mac's answer), says the pair serves; this Mac's own view decides only whether to
     /// ask: while the pair runs here and the other Mac answers, so a start whose other Mac is away goes on at once, as
     /// before. Like the wait's looks (`waitUntilServing`), it waits for the answer as long as it takes, never cut short.
+    /// Only while this Mac's cluster service starts at login: one that runs from a terminal session is moved to its login
+    /// agent by the start (`serve`), so the pair comes back after a restart (#1908's review, nit 3).
     private static func servingLook(_ pair: ClusterPairSummary, config: String?) async -> ClusterPairSummary? {
-        guard pair.started, pair.partServes, pair.otherMacReachable else { return nil }
+        guard pair.started, pair.partServes, pair.otherMacReachable, pair.startsAtLogin else { return nil }
         let look = await ClusterPairSummary.live(config: config)
         return look.state == .serving ? look : nil
     }

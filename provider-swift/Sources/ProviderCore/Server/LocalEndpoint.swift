@@ -51,7 +51,7 @@ public enum LocalEndpoint {
     /// it beside that Mac's own `local_token` (`LocalInferenceHTTPConfig.pairToken`), and every other Mac's relay passes
     /// requests on with it in place of its own Mac's key (`ClusterLocalRelay.Keys`), whichever Mac the plan made rank 0.
     /// The control leader sends it to the member with each start (inside the keyed link control session).
-    static func clusterTokenPath() -> URL { directory().appendingPathComponent("cluster_local_token") }
+    public static func clusterTokenPath() -> URL { directory().appendingPathComponent("cluster_local_token") }
 
     public static func loadOrCreateClusterToken() throws -> String {
         if let content = try? String(contentsOf: clusterTokenPath(), encoding: .utf8) {

@@ -454,6 +454,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// spawn, preparation start and end. No request content.
     static let promptPrepLogger = Logger(label: "darkbloom.request.prep")
 
+    /// The vision memory gate's refusals: the projected media decode and KV
+    /// tokens only. No request content.
+    static let mediaGateLogger = Logger(label: "darkbloom.media.gate")
+
     static func promptPrepMetadata(promptTokens: Int, timing: ProviderPromptContractPipeline.PrepTiming)
         -> Logger.Metadata
     {
@@ -512,11 +516,13 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     request: request, controls: templateControls)
             } else { nativeMiMoThinkingEnabled = true }
             try ReasoningEffortPolicy.validate(request, controls: templateControls, modelType: modelType)
-            prepared = try ToolChoicePromptPolicy.prepare(
+            var policy = try ToolChoicePromptPolicy.prepare(
                 request,
                 modelType: modelType,
                 allowInternalSchemaMetadata: allowInternalToolSchemaMetadata,
                 glm5PairPostValidation: glm5PairPostValidation)
+            policy.declaredTools = templateControls.declaredTools
+            prepared = policy
             try checkFirstContentDeadline()
         } catch {
             await releaseBox.fire()
@@ -567,9 +573,16 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             await releaseBox.fire()
             throw MultiModelBatchSchedulerEngineError.mediaUnsupportedByModel(modelId)
         }
-        // Only the GLM text path withholds and validates a JSON answer or a
-        // forced call, on one Mac and on a cluster pair alike.
-        if glmMedia, GLM5NextPromptPolicy.withholdsOutput(prepared, modelType: modelType) {
+        // GLM's JSON answer and forced calls are withheld until they validate,
+        // so its reasoning must already be a separate typed channel, as on the
+        // native families.
+        let withholdsGLMOutput = GLM5NextPromptPolicy.withholdsOutput(prepared, modelType: modelType)
+        // One Mac's media path withholds and validates a JSON answer as its
+        // text path does. A forced call is withheld and validated on the text
+        // path only, and the pair's media routes withhold neither, so media
+        // with either is refused before any media work.
+        if glmMedia, withholdsGLMOutput, prepared.requiresToolCall || glm5PairPostValidation
+            || engineV2Bridge?.clusterGLMMediaIngress != nil || engineV2Bridge?.clusterGLMImageConfiguration != nil {
             await releaseBox.fire()
             let (mode, refusal): (String, InferenceRefusalReason) = prepared.requiresToolCall
                 ? ("required/named tool_choice", .unsupportedForcedToolChoice)
@@ -634,7 +647,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             else {
                 await releaseBox.fire()
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                    "inference-enforced tool_choice is not supported for multimodal requests")
+                    "inference-enforced tool_choice is not supported for multimodal requests",
+                    refusal: .unsupportedForcedToolChoice)
             }
             // Media is decoded exactly once by EngineV2VisionPrefill.prepare
             // below, still synchronously inside this async-throws call before
@@ -696,10 +710,12 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             }
             if !mediaReserved {
                 await releaseBox.fire()
-                let mib = projectedBytes / (1024 * 1024)
-                throw MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(
-                    "insufficient global kv cache headroom for vision request "
-                    + "(media decode ~\(mib) MiB + generation KV) — retry after capacity frees")
+                // This request's media does not fit this Mac now. That does not
+                // disprove its text capacity, so the coordinator re-routes it
+                // without a capacity strike (`media_memory_unavailable`).
+                Self.mediaGateLogger.notice("vision request refused by the media memory gate", metadata: [
+                    "media_decode_mib": "\(projectedBytes / (1024 * 1024))", "kv_tokens": "\(kvTokens)"])
+                throw MultiModelBatchSchedulerEngineError.mediaMemoryUnavailable
             }
             // MEDIA → ENGINE V2: image, video, and mixed requests use the
             // wrapper's vision tower/projector, then prefill its same owned
@@ -709,8 +725,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             //
             // FAIL LOUD (v0.7.5): a construction failure is REFUSED — ERROR
             // `engine_v2_vision_refusal` telemetry (tagged with the media
-            // kind) + a retriable 503 (`.requestRejected`) so the
-            // coordinator's pre-content failover reroutes invisibly. The
+            // kind) + a retriable 503 (`EngineV2VisionPrefill.constructionRefusal`)
+            // so the coordinator's pre-content failover reroutes invisibly. The
             // legacy wrapper path below is NOT reachable for media on a
             // v2-bridged slot anymore (the pre-release silent fallback is gone).
             // These throws are NOT refusals: `CancellationError` (the
@@ -850,10 +866,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         releaseBox: releaseBox,
                         usageSignal: requestUsage,
                         reasoningPrefix: reasoningPrefix,
-                        nativeReasoningPrefix: nativeMediaTools || glmWithholdsReasoning
+                        nativeReasoningPrefix: nativeMediaTools || glmWithholdsReasoning || withholdsGLMOutput
                             ? (ReasoningPromptProbe.streamingPrefix(forPromptTail:
                                 tokenizer.inner.decode(tokenIds: Array(visionPrepared.promptTokens.suffix(ReasoningPromptProbe.tailTokenCount)),
                                                        skipSpecialTokens: false)) ?? "<think></think>") : nil,
+                        recordsWithheldOutput: withholdsGLMOutput,
                         preserveInnerReasoningSpans: ToolChoiceEnforcementPolicy.preservesInnerReasoningSpans(
                             .init(modelId: modelId, modelType: modelType)),
                         nativeGemmaChannels: diffusionContainer != nil && modelType == "diffusion_gemma",
@@ -877,11 +894,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     plumbing.emitTelemetry(
                         EngineV2VisionPrefill.refusalTelemetryEvent(
                             modelId: modelId, mediaKind: mediaKind, error: error))
-                    throw MultiModelBatchSchedulerEngineError.requestRejected(
-                        "engine_v2 media prefill construction failed "
-                            + "(media=\(mediaKind.rawValue)): "
-                            + EngineV2VisionPrefill.refusalDetail(for: error)
-                            + " — request not started; retry on another provider")
+                    throw EngineV2VisionPrefill.constructionRefusal(for: error, mediaKind: mediaKind)
                 }
             }
 
@@ -1008,6 +1021,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // reasoning must already be a separate channel: validation sees only
         // the answer.
         let jsonAnswer = tokenConstraint as? JSONAnswerConstraint
+        let loopGuard = GenerationLoopGuardPolicy.resolve(
+            modelType: modelType, request: request, prepared: prepared, tokenConstraint: tokenConstraint)
 
         let requestId = "req-\(UUID().uuidString.prefix(12))"
 
@@ -1060,7 +1075,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     serviceReservation: serviceReservation,
                     promptWork: promptWork,
                     distributedRequestOrigin: distributedRequestOrigin,
-                    measurementPurpose: measurementPurpose
+                    measurementPurpose: measurementPurpose,
+                    loopGuard: loopGuard
                 )
                 do {
                     try checkFirstContentDeadline()
@@ -1082,10 +1098,6 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 "internal error: model '\(modelId)' has no serving engine (no v2 bridge)")
         }
 
-        // GLM's JSON answer and forced calls are withheld until they validate,
-        // so its reasoning must already be a separate typed channel, as on the
-        // native families.
-        let withholdsGLMOutput = GLM5NextPromptPolicy.withholdsOutput(prepared, modelType: modelType)
         return try await makeDeadlineCheckedEventStream(
             upstream: upstream,
             cancelUpstream: cancelUpstream,
@@ -1212,7 +1224,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             || ToolChoiceEnforcementPolicy.supportsForcedMedia(
                 context: .init(modelId: request.model, modelType: modelType), nativeWrapperLoaded: false) else {
             throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                "inference-enforced tool_choice is not supported for multimodal requests")
+                "inference-enforced tool_choice is not supported for multimodal requests",
+                refusal: .unsupportedForcedToolChoice)
         }
         let host: DistributedGLMMediaIngress.Prepared
         do {
@@ -1237,9 +1250,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             let mediaKind = EngineV2VisionPrefill.mediaKind(of: request)
             (engineV2Vision ?? .production).emitTelemetry(EngineV2VisionPrefill.refusalTelemetryEvent(
                 modelId: request.model, mediaKind: mediaKind, error: error))
-            throw MultiModelBatchSchedulerEngineError.requestRejected(
-                "engine_v2 media prefill construction failed (media=\(mediaKind.rawValue)): "
-                    + EngineV2VisionPrefill.refusalDetail(for: error) + " — request not started; retry on another provider")
+            throw EngineV2VisionPrefill.constructionRefusal(for: error, mediaKind: mediaKind)
         }
         try checkFirstContentDeadline()
         let id = "req-" + UUID().uuidString
@@ -1288,7 +1299,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // standalone serving. They do not require a native token constraint.
         guard prepared.mode == .auto || prepared.mode == .none else {
             throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                "inference-enforced tool_choice is not supported for multimodal requests")
+                "inference-enforced tool_choice is not supported for multimodal requests",
+                refusal: .unsupportedForcedToolChoice)
         }
         var visionRequest = request
         visionRequest.tools = prepared.tools
@@ -1313,9 +1325,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             if let mediaError = error as? MediaIngest.MediaError { throw mediaError }
             if let engineError = error as? MultiModelBatchSchedulerEngineError { throw engineError }
             if let clientFault = EngineV2VisionPrefill.clientFault(for: error) { throw clientFault }
-            throw MultiModelBatchSchedulerEngineError.requestRejected(
-                "engine_v2 media prefill construction failed: "
-                    + EngineV2VisionPrefill.refusalDetail(for: error) + " — request not started")
+            throw EngineV2VisionPrefill.constructionRefusal(
+                for: error, mediaKind: EngineV2VisionPrefill.mediaKind(of: visionRequest))
         }
         defer { host.lifetime.releaseIfUnsubmitted() }
         try checkFirstContentDeadline()
@@ -1858,7 +1869,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 }
                 do {
                     try ToolConstraintValidation.validate(
-                        toolCalls, prepared: prepared)
+                        toolCalls, prepared: prepared, truncated: stopReason == "length")
                 } catch {
                     await releaseBox.fire()
                     continuation.finish(throwing: error)

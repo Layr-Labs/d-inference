@@ -22,7 +22,10 @@ struct NativeToolStreamRouter {
     private let streamedCallPolicy: ToolChoicePromptPolicy.Prepared?
     private var exposedCallCount = 0
     private var openCallIndex: Int?
-    /// Every call exposed so far, each already validated.
+    private var openCallName: String?
+    /// Every call exposed so far whose frame parsed, each already accepted by
+    /// `ToolConstraintValidation` (which returns `auto` calls as generated
+    /// unless the request is `strict`).
     private(set) var completedToolCalls: [ToolCall] = []
 
     // Pass the same prepared schemas used by the handler: Flint's raw-string
@@ -105,7 +108,7 @@ struct NativeToolStreamRouter {
                 openCallIndex = nil
                 continue
             }
-            events += try routeToolSegment(segment, prepared: prepared)
+            events += try routeToolSegment(segment, prepared: prepared, truncated: truncated)
         }
         return events
     }
@@ -196,9 +199,10 @@ struct NativeToolStreamRouter {
 
     /// Streamed calls are `auto` only. Each is validated (declared name,
     /// schema, cardinality) as soon as that is decidable: the cardinality at
-    /// its first fragment, the arguments when its frame closes.
+    /// its first fragment, the arguments when its frame closes. Without
+    /// `strict` only the cardinality is (`returnsAutoCallsAsGenerated`).
     private mutating func routeToolSegment(
-        _ segment: ToolCallStreamSegment, prepared: ToolChoicePromptPolicy.Prepared
+        _ segment: ToolCallStreamSegment, prepared: ToolChoicePromptPolicy.Prepared, truncated: Bool = false
     ) throws -> [MLXServerGenerationEvent] {
         switch segment {
         case .text(let text):
@@ -206,6 +210,7 @@ struct NativeToolStreamRouter {
         case .callStarted(let name):
             let index = try admitCall(prepared)
             openCallIndex = index
+            openCallName = name
             return [.toolCallDelta(.init(index: index, name: name))]
         case .callArguments(let fragment):
             guard let index = openCallIndex, !fragment.isEmpty else { return [] }
@@ -213,16 +218,26 @@ struct NativeToolStreamRouter {
         case .callCompleted(let call, let remainder):
             guard let index = openCallIndex else { return [] }
             openCallIndex = nil
-            try ToolConstraintValidation.validate([call], prepared: prepared)
+            try ToolConstraintValidation.validate([call], prepared: prepared, truncated: truncated)
             completedToolCalls.append(call)
             return [.toolCallDelta(.init(index: index, arguments: remainder, completed: call))]
         case .callFailed(let failure):
-            openCallIndex = nil
-            throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(
-                "streamed tool call output was \(failure.rawValue)")
+            defer { openCallIndex = nil }
+            guard prepared.returnsAutoCallsAsGenerated, let index = openCallIndex, let name = openCallName
+            else {
+                throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(
+                    ToolNoncomplianceCheck.streamedCallViolation(failure))
+            }
+            // Its arguments already left exactly as generated: OpenAI's raw
+            // `arguments` string for JSON that does not parse. Only close the
+            // call, so the response finishes with `tool_calls`; the closing
+            // call's empty arguments are never sent, and a call that did not
+            // parse is not one of `completedToolCalls`.
+            return [.toolCallDelta(.init(index: index,
+                completed: ToolCall(function: .init(name: name, arguments: [String: MLXLMCommon.JSONValue]()))))]
         case .call(let call):
             // Never exposed (e.g. an undeclared name): validate before showing.
-            try ToolConstraintValidation.validate([call], prepared: prepared)
+            try ToolConstraintValidation.validate([call], prepared: prepared, truncated: truncated)
             let index = try admitCall(prepared)
             completedToolCalls.append(call)
             let arguments = String(
@@ -235,7 +250,7 @@ struct NativeToolStreamRouter {
     private mutating func admitCall(_ prepared: ToolChoicePromptPolicy.Prepared) throws -> Int {
         if !prepared.allowsParallelCalls, exposedCallCount > 0 {
             throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(
-                "parallel tool calls are disabled for this request")
+                ToolNoncomplianceCheck.parallelViolation)
         }
         defer { exposedCallCount += 1 }
         return exposedCallCount

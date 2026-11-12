@@ -35,36 +35,91 @@ struct NemotronSuperLocalImageBindingTests {
                 == 16 * 1024 * 1024 + 3280)
     }
 
-    @Test func encodedBodyRejectsRemoteAndUnsupportedControls() throws {
-        for uri in ["https://example.invalid/image.png", "file:///tmp/image.png",
-                    "data:image/gif;base64,AA==", "data:image/jpg;base64,AA==", "data:image/png,abc",
+    private func parse(_ data: Data) throws -> NemotronSuperLocalImageBinding.EncodedBody {
+        try NemotronSuperLocalImageBinding.encodedBody(NemotronSuperRequestPlan(body: data))
+    }
+
+    @Test func encodedBodyRefusesRemoteMediaAndTakesTheTextRoutesControls() throws {
+        for uri in ["https://example.invalid/image.png", "file:///tmp/image.png", "data:image/png,abc",
                     "data:image/jpeg,abc"] {
             let data = try body(image: uri)
-            #expect(throws: NemotronSuperLocalImageBinding.Failure.unsupportedCapability) {
-                try NemotronSuperLocalImageBinding.parseEncodedBody(data)
+            #expect(throws: NemotronSuperLocalImageBinding.Failure.unsupportedMedia(.imageSource)) {
+                try parse(data)
             }
         }
+        // Controls are the request plan's, as on the text route.
         let unsupported = try body(image: "data:image/png;base64,AA==", extras: ["logprobs": true, "top_logprobs": 21])
-        #expect(throws: NemotronSuperLocalImageBinding.Failure.unsupportedCapability) {
-            try NemotronSuperLocalImageBinding.parseEncodedBody(unsupported)
-        }
-        let logprobs = try NemotronSuperLocalImageBinding.parseEncodedBody(
-            body(image: "data:image/png;base64,AQID", extras: ["logprobs": true, "top_logprobs": 3]))
+        #expect(throws: NemotronSuperRequestPlan.Failure.unsupportedControl) { try parse(unsupported) }
+        let logprobs = try parse(body(image: "data:image/png;base64,AQID",
+                                      extras: ["logprobs": true, "top_logprobs": 3]))
         #expect(logprobs.request.logprobs == true && logprobs.request.top_logprobs == 3)
-        let parsed = try NemotronSuperLocalImageBinding.parseEncodedBody(
-            body(image: "data:image/png;base64,AQID", extras: ["max_tokens": 7, "temperature": 0]))
+        // What the media route used to refuse and the text route serves.
+        let served = try parse(body(image: "data:image/png;base64,AQID", extras: [
+            "min_p": 0, "parallel_tool_calls": false, "response_format": ["type": "json_object"],
+            "tools": [["type": "function", "function": ["name": "lookup", "parameters": ["type": "object"]]]],
+            "tool_choice": "auto"]))
+        #expect(served.images == [Data([1, 2, 3])])
+        // Tools and the format are prompt instructions; the bridge gets neither.
+        #expect(served.request.tools == nil && served.request.response_format == nil && served.request.min_p == 0)
+        let parsed = try parse(body(image: "data:image/png;base64,AQID", extras: ["max_tokens": 7, "temperature": 0]))
         #expect(parsed.images == [Data([1, 2, 3])])
         #expect(parsed.request.max_tokens == 7 && parsed.request.temperature == 0)
         #expect(throws: NemotronSuperImageDecode.Failure.unsupportedEncoding) {
             try NemotronSuperLocalImageBinding.encodedPlan(parsed.images, contextLength: 64)
         }
         // The JPEG label is admitted too; content, not the label, then decides.
-        let jpegLabel = try NemotronSuperLocalImageBinding.parseEncodedBody(
-            body(image: "data:image/jpeg;base64,AQID"))
+        let jpegLabel = try parse(body(image: "data:image/jpeg;base64,AQID"))
         #expect(jpegLabel.images == [Data([1, 2, 3])])
         #expect(throws: NemotronSuperImageDecode.Failure.unsupportedEncoding) {
             try NemotronSuperLocalImageBinding.encodedPlan(jpegLabel.images, contextLength: 64)
         }
+    }
+
+    /// The decoder takes the format from the bytes, so an image part is
+    /// admitted under any `image/` media type, in any case (RFC 2045):
+    /// clients send `data:image/jpg`, which production refused as a 400. Only
+    /// the source is gated: an inline base64 `data:` URI whose media type is
+    /// an image.
+    @Test func encodedBodyTakesAnyImageLabelAndTheFormatFromTheBytes() throws {
+        let jpeg = try NemotronSuperImageFixtures.data("jpeg-420.jpeg")
+        for type in ["image/jpg", "image/JPEG", "Image/Jpg", "image/pjpeg", "image/x-png", "image/tiff",
+                     "image/jpeg;name=photo.jpg"] {
+            let parsed = try parse(body(image: "data:\(type);base64," + jpeg.base64EncodedString()))
+            #expect(parsed.images == [jpeg], "\(type)")
+            let plan = try NemotronSuperLocalImageBinding.encodedPlan(parsed.images, contextLength: 1024)
+            #expect(plan.images.map(\.quote.format) == [.jpeg], "\(type)")
+        }
+        for uri in ["data:image/;base64,AA==", "data:image;base64,AA==", "data:;base64,AA==",
+                    "data:application/octet-stream;base64,AA==", "data:video/mp4;base64,AA==",
+                    "data:text/plain;base64,AA==", "data:image/png;base64;x=y,AA==", "data:image/png;x;base64,AA==",
+                    "data:image/png ;base64,AA==", "data:image/p/ng;base64,AA==", " data:image/png;base64,AA==",
+                    "DATA:image/png;base64,AA==", "data:image/png;BASE64,AA==", "data:image/png;base64",
+                    "data:image/png;n=" + String(repeating: "x", count: 256) + ";base64,AA=="] {
+            #expect(throws: NemotronSuperLocalImageBinding.Failure.unsupportedMedia(.imageSource),
+                    "\(uri.prefix(48))") { try parse(body(image: uri)) }
+        }
+    }
+
+    /// Each media rule names its own refusal; none is a vague invalid input.
+    @Test func encodedBodyNamesEachMediaRule() throws {
+        let png: [String: Any] = ["type": "image_url", "image_url": ["url": "data:image/png;base64,AQID"]]
+        let mp4: [String: Any] = ["type": "video_url", "video_url": ["url": "data:video/mp4;base64,AAAA"]]
+        let audio: [String: Any] = ["type": "input_audio", "input_audio": ["data": "AAAA", "format": "wav"]]
+        let file: [String: Any] = ["type": "file", "file": ["file_id": "f"]]
+        let cases: [([[String: Any]], NemotronSuperLocalImageBinding.MediaRefusal)] = [
+            (Array(repeating: png, count: NemotronSuperServingPolicy.maximumImages + 1), .tooManyImages),
+            ([png, mp4], .imagesWithVideo), ([mp4, png], .imagesWithVideo), ([mp4, mp4], .secondVideo),
+            ([png, audio], .audio), ([png, file], .partType),
+        ]
+        for (parts, refusal) in cases {
+            let data = try JSONSerialization.data(withJSONObject: [
+                "model": NemotronSuperLocalBinding.modelID, "messages": [["role": "user", "content": parts]]])
+            #expect(throws: NemotronSuperLocalImageBinding.Failure.unsupportedMedia(refusal)) { try parse(data) }
+        }
+        let sixteen = try JSONSerialization.data(withJSONObject: [
+            "model": NemotronSuperLocalBinding.modelID, "messages": [["role": "user",
+                "content": Array(repeating: png, count: NemotronSuperServingPolicy.maximumImages)]]])
+        #expect(try parse(sixteen).images.count == NemotronSuperServingPolicy.maximumImages)
     }
 
     @Test func preparationQuoteChargesNormalizedInputsAndFeatures() throws {
@@ -116,9 +171,10 @@ struct NemotronSuperLocalImageBindingTests {
         let images = try owner.localImageBinding()
         let template = try #require(Data(base64Encoded: superImagePinnedTemplateBase64, options: .ignoreUnknownCharacters))
         let requestBody = try body(image: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAF0lEQVR4nGP4z8BAEiJN9aiGUQ1DSgMAkPn/Afnh+ngAAAAASUVORK5CYII=", extras: ["max_tokens": 2, "temperature": 0])
+        let plan = try NemotronSuperRequestPlan(body: requestBody)
         let baseline = await budget.outstandingReservedBytes()
         let completed = SuperOwnedImageEvents()
-        try await images.runEncoded(body: requestBody, templateBytes: template) { event in
+        try await images.runEncoded(body: requestBody, plan: plan, templateBytes: template) { event in
             _ = await completed.record(event)
         }
         #expect(await completed.errors.isEmpty)
@@ -126,12 +182,14 @@ struct NemotronSuperLocalImageBindingTests {
         #expect(await budget.outstandingReservedBytes() == baseline)
         let cancelled = SuperOwnedImageEvents()
         do {
-            try await images.runEncoded(body: requestBody, templateBytes: template) { event in
+            try await images.runEncoded(body: requestBody, plan: plan, templateBytes: template) { event in
                 if await cancelled.record(event) {
                     // This callback is an admitted-work latch: both entry points
-                    // must reject before admission while the same request is live.
+                    // must reject before admission while the same request is
+                    // live, at once (no bound, answer not ended).
+                    let start = ContinuousClock.now
                     await #expect(throws: NemotronSuperLocalImageBinding.Failure.busy) {
-                        try await images.runEncoded(body: requestBody, templateBytes: template) { _ in
+                        try await images.runEncoded(body: requestBody, plan: plan, templateBytes: template) { _ in
                             Issue.record("busy encoded request emitted an event")
                         }
                     }
@@ -141,6 +199,7 @@ struct NemotronSuperLocalImageBindingTests {
                             Issue.record("busy direct request emitted an event")
                         }
                     }
+                    #expect(ContinuousClock.now - start < .milliseconds(500))
                     withUnsafeCurrentTask { $0?.cancel() }
                 }
             }
@@ -173,8 +232,9 @@ struct NemotronSuperLocalImageBindingTests {
         // The real ingress reservation is acquired then refunded after the
         // owned task rejects a URL, without touching vision execution.
         let remote = try body(image: "https://example.invalid/image.png")
-        await #expect(throws: NemotronSuperLocalImageBinding.Failure.unsupportedCapability) {
-            try await images.runEncoded(body: remote, templateBytes: Data([1])) { _ in
+        let remotePlan = try NemotronSuperRequestPlan(body: remote)
+        await #expect(throws: NemotronSuperLocalImageBinding.Failure.unsupportedMedia(.imageSource)) {
+            try await images.runEncoded(body: remote, plan: remotePlan, templateBytes: Data([1])) { _ in
                 Issue.record("rejected encoded request emitted an event")
             }
         }
@@ -210,6 +270,303 @@ struct NemotronSuperLocalImageBindingTests {
         } catch NemotronSuperLocalImageBinding.Failure.closed { }
         #expect(await budget.finishPendingLoad(lease))
         #expect(await budget.outstandingReservedBytes() == 0)
+    }
+}
+
+extension NemotronSuperLocalImageBindingTests {
+    /// SUPER-IMAGE-504: an image that arrives while the active image's answer
+    /// has ended, but its settlement has not (held here by the test seam),
+    /// waits for that settlement and is served instead of a `busy` bounce. Its
+    /// media charge is reserved only after the first one's is released. A
+    /// settlement that outlasts `finishingWait` still refuses, after the wait.
+    @Test(.timeLimit(.minutes(1))) func imageArrivingDuringSettlementWaitsInsteadOfBouncing() async throws {
+        let (installed, construction, residency) = try SuperInstalledFixture().make()
+        let budget = GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0,
+            memorySnapshot: { .init(total: 8 << 30, active: 0, cache: 0, systemAvailable: .max) })
+        let lease = try #require(await budget.claimPendingLoad(requestID: "super-image-settlement",
+            weightBytes: UInt64(installed.receipt.payloadBytes), minimumKVBytes: 2 << 30))
+        let owner = try await NemotronSuperLocalBridgeBuilder.make(installed: installed,
+            tokenizer: TokenizerHandle(SuperSyntheticTokenizer()), eosTokenIDs: [31],
+            sizing: .init(weightsBytes: installed.receipt.payloadBytes, fp16KVBytesPerToken: 64,
+                maxContextLength: 64, defaultMaxTokens: 2), kvBytesCapacity: 2 << 30,
+            kvBudget: budget, loadLease: lease, construction: construction, environment: [:])
+        let images = try owner.localImageBinding()
+        let input = NemotronSuperLocalImageBinding.Input(promptTokens: [1, 18, 2],
+            normalizedImages: [MLXArray.zeros([1, 1, 4, 4])])
+        let request = ChatCompletionRequest(model: NemotronSuperLocalBinding.modelID,
+            messages: [], temperature: 0, max_tokens: 2)
+        let before = await budget.outstandingReservedBytes()
+
+        // Back to back: the second image arrives during the first's 300 ms settlement.
+        let settlement = SuperSettlementLatch(hold: .milliseconds(300))
+        await images.setTestSettlement { await settlement.hold() }
+        let first = Task {
+            let events = SuperOwnedImageEvents()
+            try await images.run(request: request, input: input) { _ = await events.record($0) }
+            return await events.completions
+        }
+        await settlement.waitUntilHeld()
+        await images.setTestSettlement(nil)
+        let second = SuperOwnedImageEvents()
+        do {
+            try await images.run(request: request, input: input) { _ = await second.record($0) }
+        } catch {
+            Issue.record("the image that arrived during the settlement was refused: \(error)")
+        }
+        #expect(await second.completions == [2])
+        #expect(try await first.value == [2])
+        #expect(await budget.outstandingReservedBytes() == before)
+
+        // Bounded: a settlement longer than the wait still answers `busy`, after it.
+        let long = SuperSettlementLatch(hold: .milliseconds(1_800))
+        await images.setTestSettlement { await long.hold() }
+        let third = Task {
+            try await images.run(request: request, input: input) { _ in }
+        }
+        await long.waitUntilHeld()
+        await images.setTestSettlement(nil)
+        let start = ContinuousClock.now
+        await #expect(throws: NemotronSuperLocalImageBinding.Failure.busy) {
+            try await images.run(request: request, input: input) { _ in
+                Issue.record("a request refused after the wait emitted an event")
+            }
+        }
+        let waited = ContinuousClock.now - start
+        #expect(waited >= .milliseconds(950))
+        #expect(waited < .milliseconds(1_700))
+        try await third.value
+        #expect(await budget.outstandingReservedBytes() == before)
+
+        try await owner.closeAfterDrain()
+        #expect(residency.snapshot.usedBytes == 0)
+        #expect(await budget.finishPendingLoad(lease))
+        #expect(await budget.outstandingReservedBytes() == 0)
+    }
+}
+
+extension NemotronSuperLocalImageBindingTests {
+    /// SUPER-SLOT: an image that arrives while the active image's answer is
+    /// streaming (held before its native terminal) waits until `stackedUntil`,
+    /// reserving nothing until the active image's charge is released, and is
+    /// served. Without a bound, or when the owner has no free request slot left
+    /// for text, it is refused at once; one request waits at a time; a
+    /// cancelled waiter returns at once and leaves no waiter behind.
+    @Test(.timeLimit(.minutes(1))) func stackedImageWaitsForAStreamingImage() async throws {
+        let (owner, images, residency, budget, lease) = try await Self.stackedOwner(id: "super-image-stacked")
+        let input = Self.stackedInput, request = Self.stackedRequest
+        let before = await budget.outstandingReservedBytes()
+        // Holds each image's real pump after its content, before its native terminal.
+        let gate = SuperHTTPTerminalGate()
+        await owner.bridge._testInstallCancelledSettlementHooks(
+            beforeNativeTerminal: { _ in await gate.hold() }, onSettlementWait: {})
+        let firstEvents = SuperOwnedImageEvents(), firstSample = ReservedBytesSample()
+        let first = Task {
+            try await images.run(request: request, input: input) { event in
+                if await firstEvents.record(event) { await firstSample.set(await budget.outstandingReservedBytes()) }
+            }
+            return await firstEvents.completions
+        }
+        do {
+            try await Self.waitUntilStreaming(gate: gate, events: firstEvents)
+            let held = await budget.outstandingReservedBytes()
+            // Refused at once: without a bound, and when the owner has no free
+            // request slot left (here filled by hand).
+            var start = ContinuousClock.now
+            await #expect(throws: NemotronSuperLocalImageBinding.Failure.busy) {
+                try await images.run(request: request, input: input) { _ in }
+            }
+            #expect(owner.admitLocalRequest())
+            await #expect(throws: NemotronSuperLocalImageBinding.Failure.busy) {
+                try await images.run(request: request, input: input,
+                                     stackedUntil: ContinuousClock.now + .seconds(3)) { _ in }
+            }
+            owner.finishLocalRequest()
+            #expect(ContinuousClock.now - start < .milliseconds(500))
+            // A cancelled waiter returns at once, reserving nothing.
+            let cancelled = Task {
+                try await images.run(request: request, input: input,
+                                     stackedUntil: ContinuousClock.now + .seconds(3)) { _ in }
+            }
+            try await Task.sleep(for: .milliseconds(150))
+            start = ContinuousClock.now
+            cancelled.cancel()
+            await #expect(throws: CancellationError.self) { try await cancelled.value }
+            #expect(ContinuousClock.now - start < .milliseconds(500))
+            // No waiter is left: the next one waits, and is served.
+            let sample = ReservedBytesSample()
+            let stackedEvents = SuperOwnedImageEvents()
+            let stacked = Task {
+                try await images.run(request: request, input: input,
+                                     stackedUntil: ContinuousClock.now + .seconds(3)) { event in
+                    if await stackedEvents.record(event) { await sample.set(await budget.outstandingReservedBytes()) }
+                }
+                return await stackedEvents.completions
+            }
+            try await Task.sleep(for: .milliseconds(150))
+            // One waits at a time: another bounded request is refused at once.
+            start = ContinuousClock.now
+            await #expect(throws: NemotronSuperLocalImageBinding.Failure.busy) {
+                try await images.run(request: request, input: input,
+                                     stackedUntil: ContinuousClock.now + .seconds(3)) { _ in }
+            }
+            #expect(ContinuousClock.now - start < .milliseconds(500))
+            // The waiting image has reserved nothing.
+            #expect(await budget.outstandingReservedBytes() == held)
+            await gate.release()
+            #expect(try await first.value == [2])
+            #expect(try await stacked.value == [2])
+            // It reserved only after the first image's charges were released: at
+            // its first chunk the budget held what the identical first image's
+            // did at its own, not both.
+            let alone = try #require(await firstSample.value)
+            let stackedAtFirstChunk = try #require(await sample.value)
+            #expect(stackedAtFirstChunk <= alone)
+        } catch {
+            await gate.release()
+            _ = await first.result
+            try await owner.closeAfterDrain()
+            _ = await budget.finishPendingLoad(lease)
+            throw error
+        }
+        #expect(await budget.outstandingReservedBytes() == before)
+        #expect(!(await gate.timedOut))
+        try await owner.closeAfterDrain()
+        #expect(residency.snapshot.usedBytes == 0)
+        #expect(await budget.finishPendingLoad(lease))
+        #expect(await budget.outstandingReservedBytes() == 0)
+    }
+
+    /// An image waits only behind an image already streaming: behind one still
+    /// before its first chunk (held here before its engine submission), a
+    /// bounded image is refused at once (S8, V4).
+    @Test(.timeLimit(.minutes(1))) func stackedImageDoesNotWaitBehindAnImageInPrefill() async throws {
+        let (owner, images, residency, budget, lease) = try await Self.stackedOwner(id: "super-image-stacked-prefill")
+        let input = Self.stackedInput, request = Self.stackedRequest
+        let gate = SuperHTTPTerminalGate()
+        await owner.bridge._testInstallPreSubmitGate { await gate.hold() }
+        let first = Task { try await images.run(request: request, input: input) { _ in } }
+        do {
+            try await superHTTPEventually("first image held before its submission") { await gate.entered }
+            let start = ContinuousClock.now
+            await #expect(throws: NemotronSuperLocalImageBinding.Failure.busy) {
+                try await images.run(request: request, input: input,
+                                     stackedUntil: ContinuousClock.now + .seconds(3)) { _ in }
+            }
+            #expect(ContinuousClock.now - start < .milliseconds(500))
+            await gate.release()
+            try await first.value
+        } catch {
+            await gate.release()
+            _ = await first.result
+            try await owner.closeAfterDrain()
+            _ = await budget.finishPendingLoad(lease)
+            throw error
+        }
+        try await owner.closeAfterDrain()
+        #expect(residency.snapshot.usedBytes == 0)
+        #expect(await budget.finishPendingLoad(lease))
+        #expect(await budget.outstandingReservedBytes() == 0)
+    }
+
+    /// Draining the binding ends a stacked wait at once with `closed`.
+    @Test(.timeLimit(.minutes(1))) func drainEndsAStackedImageWait() async throws {
+        let (owner, images, residency, budget, lease) = try await Self.stackedOwner(id: "super-image-stacked-drain")
+        let input = Self.stackedInput, request = Self.stackedRequest
+        let gate = SuperHTTPTerminalGate()
+        await owner.bridge._testInstallCancelledSettlementHooks(
+            beforeNativeTerminal: { _ in await gate.hold() }, onSettlementWait: {})
+        let firstEvents = SuperOwnedImageEvents()
+        let first = Task {
+            try await images.run(request: request, input: input) { _ = await firstEvents.record($0) }
+        }
+        do {
+            try await Self.waitUntilStreaming(gate: gate, events: firstEvents)
+            let stacked = Task {
+                try await images.run(request: request, input: input,
+                                     stackedUntil: ContinuousClock.now + .seconds(3)) { _ in }
+            }
+            try await Task.sleep(for: .milliseconds(150))
+            let start = ContinuousClock.now
+            let drain = Task { try await images.drain() }
+            await #expect(throws: NemotronSuperLocalImageBinding.Failure.closed) { try await stacked.value }
+            #expect(ContinuousClock.now - start < .milliseconds(500))
+            await gate.release()
+            _ = await first.result
+            try await drain.value
+        } catch {
+            await gate.release()
+            _ = await first.result
+            try await owner.closeAfterDrain()
+            _ = await budget.finishPendingLoad(lease)
+            throw error
+        }
+        try await owner.closeAfterDrain()
+        #expect(residency.snapshot.usedBytes == 0)
+        #expect(await budget.finishPendingLoad(lease))
+        #expect(await budget.outstandingReservedBytes() == 0)
+    }
+
+    private static var stackedInput: NemotronSuperLocalImageBinding.Input {
+        .init(promptTokens: [1, 18, 2], normalizedImages: [MLXArray.zeros([1, 1, 4, 4])])
+    }
+    private static var stackedRequest: ChatCompletionRequest {
+        ChatCompletionRequest(model: NemotronSuperLocalBinding.modelID, messages: [], temperature: 0, max_tokens: 2)
+    }
+
+    private static func stackedOwner(id: String) async throws
+        -> (NemotronSuperLocalBridgeBuilder.Owner, NemotronSuperLocalImageBinding, NemotronSuperResidency,
+            GlobalKVCacheBudget, PendingModelLoadLease) {
+        let (installed, construction, residency) = try SuperInstalledFixture().make()
+        let budget = GlobalKVCacheBudget(capFraction: 1, activationReserveBytes: 0,
+            memorySnapshot: { .init(total: 8 << 30, active: 0, cache: 0, systemAvailable: .max) })
+        let lease = try #require(await budget.claimPendingLoad(requestID: id,
+            weightBytes: UInt64(installed.receipt.payloadBytes), minimumKVBytes: 2 << 30))
+        let owner = try await NemotronSuperLocalBridgeBuilder.make(installed: installed,
+            tokenizer: TokenizerHandle(SuperSyntheticTokenizer()), eosTokenIDs: [31],
+            sizing: .init(weightsBytes: installed.receipt.payloadBytes, fp16KVBytesPerToken: 64,
+                maxContextLength: 64, defaultMaxTokens: 2), kvBytesCapacity: 2 << 30,
+            kvBudget: budget, loadLease: lease, construction: construction, environment: [:])
+        return (owner, try owner.localImageBinding(), residency, budget, lease)
+    }
+
+    /// The first image's pump is held before its terminal and its first chunk
+    /// has passed the binding.
+    private static func waitUntilStreaming(gate: SuperHTTPTerminalGate, events: SuperOwnedImageEvents) async throws {
+        try await superHTTPEventually("first image streaming, held before terminal") {
+            let entered = await gate.entered
+            let chunks = await events.chunks
+            return entered && chunks > 0
+        }
+        // The binding marks the first chunk right after delivering it.
+        try await Task.sleep(for: .milliseconds(50))
+    }
+}
+
+/// The reserved bytes a request saw at its first chunk.
+private actor ReservedBytesSample {
+    private(set) var value: UInt64?
+    func set(_ bytes: UInt64) { if value == nil { value = bytes } }
+}
+
+/// Holds a request's settlement for `hold` once its answer has ended, and
+/// tells the test when that has begun.
+private actor SuperSettlementLatch {
+    private let duration: Duration
+    private var held = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    init(hold: Duration) { duration = hold }
+
+    func hold() async {
+        held = true
+        for waiter in waiters { waiter.resume() }
+        waiters = []
+        try? await Task.sleep(for: duration)
+    }
+
+    func waitUntilHeld() async {
+        guard !held else { return }
+        await withCheckedContinuation { waiters.append($0) }
     }
 }
 

@@ -97,6 +97,10 @@ struct QwenPrismHadamardSource {
     /// behind its transform. `sourcePath` maps a module of this model to the
     /// artifact's module it is loaded from; the model's own parameters are
     /// lazy placeholders until the verified loader assigns the stored tensors.
+    /// Every projection keeps the singleton FP32 arithmetic for each prompt
+    /// row (`independentRows`), so two machines compute the same bytes; the
+    /// SDK's single-Mac loader batches the rows instead. Only the 27B's
+    /// block1024 profile differs between the two.
     func install(model: any LanguageModel, policies: [String: BaseConfiguration.Quantization],
                  sourcePath: (String) -> String?) throws {
         let leaves = Dictionary(uniqueKeysWithValues: model.leafModules().flattened())
@@ -125,7 +129,8 @@ struct QwenPrismHadamardSource {
                     throw ProbeError("Prism packed projection differs from the constructed model: \(path)")
                 }
                 replacements.append((path, try HadamardQuantizedLinear(weight: weight, scales: scales,
-                    biases: biases, groupSize: policy.groupSize, bits: policy.bits, transform: transform)))
+                    biases: biases, groupSize: policy.groupSize, bits: policy.bits, transform: transform,
+                    independentRows: true)))
             }
         }
         try model.update(modules: ModuleChildren.unflattened(replacements), verify: [.noUnusedKeys])

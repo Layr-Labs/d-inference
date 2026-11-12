@@ -214,6 +214,7 @@ extension ClusterOnboardingDriver {
                     console.settle()
                     console.result(false, split.title + ".", split.remedies)
                     console.say("  " + versionSplitAfterLine(leader))
+                    console.waitForExit()
                     return 1
                 }
             }
@@ -341,6 +342,7 @@ extension ClusterOnboardingDriver {
                 console.settle()
                 console.result(false, ClusterOnboardingNotServing.title(reason: noOutcomeReason(leader, seconds: timing.seconds)),
                                (latest.map { ["Last: " + $0 + "."] } ?? []) + [noOutcomeLine])
+                console.waitForExit()
                 return 1
             }
             if started == nil, Date().timeIntervalSince(begun) >= timing.seconds {
@@ -379,12 +381,14 @@ extension ClusterOnboardingDriver {
                               _ console: ClusterOnboardingConsole) -> Int32 {
         if step.differentBuilds {
             console.result(false, differentBuildsTitle, differentBuildsLines(leader, thisVersion: thisVersion, leaderVersion: step.version))
+            console.waitForExit()
             return 1
         }
         let other = ClusterOnboardingMacName.other(named: leader)
         let reason = (step.reason ?? "no approved model can run on these Macs now").trimmingCharacters(in: CharacterSet(charactersIn: ". "))
         console.result(false, ClusterOnboardingNotServing.title(reason: ClusterOnboardingMacName.sentence(other) + " can't start a model: " + reason),
                        ["Its screen says why. Once that is fixed, run `darkbloom cluster` on \(other) again; this Mac follows it by itself."])
+        console.waitForExit()
         return 1
     }
 
@@ -413,11 +417,16 @@ extension ClusterOnboardingDriver {
                 console.result(false, ClusterOnboardingNotServing.title(reason: first.hasSuffix(".") ? String(first.dropLast()) : first),
                                Array(failure.lines.dropFirst()))
                 console.say(testAgainOnLeaderLine(leader))
+                console.waitForExit()
                 return 1
             }
         }
-        _ = showOutcome(shown, console)
-        return followServedEnd(operations, console)
+        // The leading Mac's ending, as its status says it; a line from an older leader that it can't read, as before.
+        guard let title = shown.first.flatMap(ClusterOnboardingReady.endingTitle(inStatusLine:)) else {
+            _ = showOutcome(shown, console)
+            return followServedEnd(operations, console)
+        }
+        return servedEnding(title, operations, console)
     }
 
     /// The leading Mac's start ended with a failed test (`ClusterSetupRecord.startTestFailure`): the same ✗ and reason
@@ -427,6 +436,7 @@ extension ClusterOnboardingDriver {
         let note = status.dropFirst().first(where: ClusterOnboardingReady.isTestFailedNote) ?? ClusterOnboardingReady.testFailedNote
         console.result(false, ClusterOnboardingNotServing.title(reason: reason), [note])
         console.say(testAgainOnLeaderLine(leader))
+        console.waitForExit()
         return 1
     }
 
@@ -435,6 +445,7 @@ extension ClusterOnboardingDriver {
     static func followFailed(_ ended: ClusterOnboardingStartProgress, leader: String?, _ console: ClusterOnboardingConsole) -> Int32 {
         console.result(false, ended.title ?? ClusterOnboardingNotServing.title(reason: "the start ended"), ended.lines ?? [])
         if ended.retry == true { console.say(retryOnLeaderLine(leader)) }
+        console.waitForExit()
         return 1
     }
 
@@ -461,10 +472,11 @@ extension ClusterOnboardingDriver {
     /// Under that ✗: where the outcome is.
     public static let noOutcomeLine = "Its screen shows how the start ended and what to do next."
 
-    /// After ✓: what happens after a restart, and whether this window may close.
+    /// After a ✓ block from an older leader's status line: the hint, and Enter, as `servedEnding`.
     static func followServedEnd(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> Int32 {
-        if let restart = operations.afterRestart() { console.say(restart) }
-        console.say(operations.serviceOutlivesWindow() ? closeWindowLine : keepWindowLine)
+        console.say("  " + statusHint)
+        if !operations.serviceOutlivesWindow() { console.say("  " + keepWindowServiceLine) }
+        console.waitForExit()
         return 0
     }
 

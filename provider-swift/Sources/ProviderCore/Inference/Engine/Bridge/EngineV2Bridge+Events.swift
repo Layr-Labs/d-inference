@@ -18,8 +18,10 @@ extension EngineV2Bridge {
         readyReceiptRegistered: Bool = false,
         profile: RequestProfileBuilder? = nil,
         nativeRetirement: CBv2RequestRetirement? = nil,
+        terminalPrecedesPublication: Bool = false,
         httpResponse: DistributedHTTPResponse? = nil,
-        prefillProgress: LocalPrefillProgress? = nil
+        prefillProgress: LocalPrefillProgress? = nil,
+        loopGuard: GenerationLoopGuard? = nil
     ) {
         let bridge = self
         let retirementReceipt = nativeRetirement == nil ? nil : active[id]?.prefillReceipt
@@ -36,8 +38,10 @@ extension EngineV2Bridge {
                 readyReceiptRegistered: readyReceiptRegistered,
                 profile: profile,
                 nativeRetirement: nativeRetirement,
+                terminalPrecedesPublication: terminalPrecedesPublication,
                 httpResponse: httpResponse,
-                prefillProgress: prefillProgress
+                prefillProgress: prefillProgress,
+                loopGuard: loopGuard
             )
             retirementReceipt?.endAfterRetirement()
             await bridge.clearPumpTask(id: id, releaseNativeIdentity: nativeRetirement != nil)
@@ -69,8 +73,10 @@ extension EngineV2Bridge {
         readyReceiptRegistered: Bool = false,
         profile: RequestProfileBuilder? = nil,
         nativeRetirement: CBv2RequestRetirement? = nil,
+        terminalPrecedesPublication: Bool = false,
         httpResponse: DistributedHTTPResponse? = nil,
-        prefillProgress: LocalPrefillProgress? = nil
+        prefillProgress: LocalPrefillProgress? = nil,
+        loopGuard: GenerationLoopGuard? = nil
     ) async {
         // Resolve only after record(usage:) has delivered the lookup callback
         // or teardown has finalized its failure, and owned resources retire.
@@ -85,12 +91,18 @@ extension EngineV2Bridge {
         // the pathological duplicate-id corner.
         var sawFirstToken = false
         var sawTerminal = false
+        var loopGuard = loopGuard
+        // Set once the guard stopped this row: its cancel then ends as `length`.
+        var loopStop: GenerationLoopDetector.Detection?
         // Replay is only needed when a caller consumes matched-stop metadata.
         let trackStopTokens = usageSignal != nil && !stopSequences.isEmpty
         var generatedTokens: [Int] = []
         // Profiler: pump-LOCAL last-delta instant (one clock read per delta,
         // no lock), written to the profile exactly once at finish.
         var lastDeltaAt: SuspendingClock.Instant?
+        // When the client's terminal was yielded: an early terminal is
+        // measured against it once the request retires.
+        var terminalAt: ContinuousClock.Instant?
         eventLoop: for await event in events {
             switch event {
             case .delta(let text, let tokens, let logprobs):
@@ -139,7 +151,15 @@ extension EngineV2Bridge {
                 if !text.isEmpty {
                     continuation.yield(.chunk(text))
                 }
-            case .finished(let reason, let usage):
+                if loopStop == nil, let detection = loopGuard?.observe(text: text, tokens: tokens) {
+                    loopStop = detection
+                    stopRepeatingRow(id: id, modelType: loopGuard?.modelType, detection: detection)
+                }
+            case .finished(let engineReason, let usage):
+                // The guard's own stop is a complete answer cut at its length,
+                // paid as one; any other terminal keeps its reason.
+                let reason: CBv2FinishReason =
+                    loopStop != nil && engineReason == .cancelled ? .length : engineReason
                 // Only hold the pre-submit identity after active work ends:
                 // marking it pending during decode would divert ordinary cancel
                 // into the pre-admission cancellation path instead of the engine.
@@ -163,6 +183,7 @@ extension EngineV2Bridge {
                     cause: Self.httpTerminalCause(reason),
                     memoryRefused: Self.isPairMemoryAbort(reason)))
                 if reason == .stop || reason == .length {
+                    usageSignal?.recordAnswerFinished()
                     usageSignal?.record(matchedStopSequence: matchedStopSequence(
                         candidates: stopSequences,
                         generatedTokens: generatedTokens,
@@ -188,6 +209,7 @@ extension EngineV2Bridge {
                     sawFirstToken: sawFirstToken, continuation: continuation,
                     lastDeltaAt: lastDeltaAt
                 )
+                terminalAt = .now
                 break eventLoop
             }
         }
@@ -207,6 +229,9 @@ extension EngineV2Bridge {
             // receipt IDs until actual engine-queue release, even on a wedge.
             continuation.finish()
             await nativeRetirement.wait()
+            if terminalPrecedesPublication, let terminalAt {
+                noteRetirementAfterTerminal(requestId: id, held: terminalAt.duration(to: .now))
+            }
         }
         releaseServiceAllowance(requestID: id)
         // Every exit releases only the resources owned by this submission.

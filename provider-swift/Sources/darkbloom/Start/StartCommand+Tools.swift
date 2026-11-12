@@ -36,7 +36,7 @@ extension Start {
     /// Options that change what serves: with any of them, a running local API isn't enough, and the start runs.
     var changesWhatServes: Bool {
         !model.isEmpty || all || idleTimeout != nil || schedule || autopilot != nil || coordinatorURL != nil
-            || choose || meFirst == false || meFirstIdle != nil || route != nil
+            || meFirst == false || meFirstIdle != nil || route != nil
     }
 
     /// Whether a running local API serves as this start would: it answers on the `--port` and `--bind` given, if

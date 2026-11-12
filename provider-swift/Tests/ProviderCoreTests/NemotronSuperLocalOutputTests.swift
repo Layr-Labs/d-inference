@@ -220,12 +220,22 @@ final class NemotronSuperLocalOutputTests: XCTestCase {
 
     func testToolPolicyViolationsFailClosed() throws {
         let missing = "</think><tool_call>\n<function=get_weather>\n<parameter=days>\n2\n</parameter>\n</function>\n</tool_call>"
-        var schema = try output(Self.weather)
+        let time = "</think><tool_call>\n<function=get_time>\n</function>\n</tool_call>"
+        // `strict` holds automatic calls to the declarations.
+        let strict = Self.weather.replacingOccurrences(of: #""name":"get_weather","#,
+            with: #""name":"get_weather","strict":true,"#)
+        var schema = try output(strict)
         _ = try schema.append(missing)
         XCTAssertThrowsError(try schema.finish())
-        var undeclared = try output(Self.weather)
-        _ = try undeclared.append("</think><tool_call>\n<function=get_time>\n</function>\n</tool_call>")
+        var undeclared = try output(strict)
+        _ = try undeclared.append(time)
         XCTAssertThrowsError(try undeclared.finish())
+        // Without it, the calls are returned as generated (OpenAI semantics).
+        for text in [missing, time] {
+            var automatic = try output(Self.weather)
+            _ = try automatic.append(text)
+            XCTAssertEqual(try automatic.finish().result.calls.count, 1, text)
+        }
         let one = "<tool_call>\n<function=get_weather>\n<parameter=city>\nA\n</parameter>\n</function>\n</tool_call>"
         // `none` withholds the declarations, so any frame is undeclared, with
         // or without tools in the request.

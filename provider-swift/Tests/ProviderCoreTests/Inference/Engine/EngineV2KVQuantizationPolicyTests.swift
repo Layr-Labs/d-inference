@@ -28,6 +28,46 @@ struct EngineV2KVQuantizationPolicyTests {
         #expect(configuration.resolvedRotationBlockSize(headDim: 192) == 64)
     }
 
+    /// Served without its MTP head, Lightning keeps the exact checkpoint rows it
+    /// stored beside the head, so a cache hit's output does not move.
+    @Test func lightningCheckpointsDefaultToNative() throws {
+        func checkpoint(
+            global: String? = nil, byModel: [String: String] = [:], environment: [String: String] = [:]
+        ) throws -> EngineV2KVQuantizationSelection {
+            try EngineV2KVQuantizationPolicy.resolve(
+                modelType: "nemotron_h", global: global, byModel: byModel, modelID: "m",
+                environment: environment, purpose: .checkpoint)
+        }
+        let key = EngineV2KVQuantizationPolicy.checkpointEnvironmentKey
+        // A saved provider.toml spells out the previous default, which is not a choice.
+        for unset in [nil, "", " ", "balanced", " Balanced "] as [String?] {
+            #expect(try checkpoint(global: unset) == .native)
+        }
+        #expect(try checkpoint(environment: [key: " "]) == .native)
+        // Every explicit choice still wins, in the same order.
+        #expect(try checkpoint(global: "k4v4") == .balanced)
+        #expect(try checkpoint(global: "k8v4") == .k8v4)
+        #expect(try checkpoint(byModel: ["m": "balanced"]) == .balanced)
+        #expect(try checkpoint(environment: [key: "balanced"]) == .balanced)
+        #expect(try checkpoint(global: "balanced", byModel: ["m": "k8v8"]) == .k8v8)
+        #expect(try checkpoint(byModel: ["m": "balanced"], environment: [key: "native"]) == .native)
+        // Live execution keeps its own default.
+        #expect(try EngineV2KVQuantizationPolicy.resolve(
+            modelType: "nemotron_h", global: "balanced", modelID: "m", environment: [:]) == .balanced)
+        #expect(try EngineV2KVQuantizationPolicy.resolve(
+            modelType: "nemotron_h", modelID: "m", environment: [:]) == .native)
+    }
+
+    @Test(arguments: [
+        "qwen3_5", "gemma4", "gpt_oss", "glm5_next", "nemotron_h_omni", "prism_hadamard_qwen35", "supported",
+    ])
+    func otherFamiliesKeepTheirCheckpointDefault(modelType: String) throws {
+        #expect(try EngineV2KVQuantizationPolicy.resolve(
+            modelType: modelType, global: "balanced", modelID: "m", environment: [:], purpose: .checkpoint) == .balanced)
+        #expect(try EngineV2KVQuantizationPolicy.resolve(
+            modelType: modelType, modelID: "m", environment: [:], purpose: .checkpoint) == .balanced)
+    }
+
     @Test(arguments: EngineV2KVQuantizationSelection.allCases.map(\.rawValue) + ["invalid"])
     func exactMiMoTypeIgnoresEveryOverride(raw: String) throws {
         #expect(try EngineV2KVQuantizationPolicy.resolve(

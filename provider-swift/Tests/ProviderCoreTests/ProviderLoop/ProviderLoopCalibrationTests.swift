@@ -104,12 +104,12 @@ struct ProviderLoopCalibrationTests {
         let secondTask = await bridges[1].scheduledCalibrationTask()
         let running = try #require(firstTask ?? secondTask)
         let successor = firstTask == nil ? bridges[0] : bridges[1]
-        var foreground: Task<IdleCalibrationForegroundLease, Never>?
+        var foreground: Task<IdleCalibrationForegroundLease?, Never>?
         if draining {
             await fixture.loop.beginServingDrain(owner: .lifecycle)
         } else {
             let budget = await fixture.loop.kvBudget.serviceBudget
-            foreground = Task { await budget.idleCalibration.beginForeground() }
+            foreground = Task { await budget.idleCalibration.admittedLease() }
             let until = ContinuousClock.now + .seconds(5)
             while !running.isCancelled && ContinuousClock.now < until {
                 try await Task.sleep(for: .milliseconds(1))
@@ -117,7 +117,7 @@ struct ProviderLoopCalibrationTests {
             #expect(running.isCancelled)
         }
         for gate in gates { gate.release() }
-        let lease = await foreground?.value
+        let lease = await foreground?.value ?? nil
         await running.value
         #expect(!(await successor.hasScheduledCalibration()))
         lease?.finish()
@@ -183,6 +183,97 @@ struct ProviderLoopCalibrationTests {
         try? FileManager.default.removeItem(at: fixture.directory)
     }
 
+    @Test("a request behind a calibration probe whose engine stopped stepping ends when it is cancelled")
+    func cancelledRequestStopsWaitingForAStuckProbe() async throws {
+        let fixture = try await ServeLoopFixture.make(heartbeatIntervalSecs: 3_600)
+        let gate = RecoveryStepGate()
+        defer { gate.release() }
+        let bridge = try await installCalibrationSlot(fixture, gate: gate)
+        await fixture.loop.refreshModelCalibration()
+        let session = try #require(await bridge.scheduledCalibrationTask())
+        let until = ContinuousClock.now + .seconds(5)
+        while !gate.entered && ContinuousClock.now < until { try await Task.sleep(for: .milliseconds(1)) }
+        #expect(gate.entered, "the probe's engine step is held, as on a Mac whose engine stopped stepping")
+
+        let ended = CalibrationWaitFlag()
+        let request = Task {
+            defer { ended.set() }
+            let stream = await bridge.submitTokenized(promptTokens: [1, 2, 3],
+                request: ChatCompletionRequest(model: ServeLoopFixture.modelId, messages: [], max_tokens: 4),
+                requestId: "customer", cacheEnabled: false)
+            for await _ in stream {}
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        request.cancel()
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !ended.isSet && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        let endedOnCancel = ended.isSet
+        gate.release()
+        await request.value
+        await session.value
+        #expect(endedOnCancel, "a cancelled request must end without waiting for the probe to retire")
+        _ = await fixture.loop.drainAndShutdown(timeoutSeconds: 5)
+        await fixture.mock.shutdown()
+        await fixture.bridge.shutdown()
+        await bridge.shutdown()
+        try? FileManager.default.removeItem(at: fixture.directory)
+    }
+
+    @Test("a request behind a probe that outlives the bound is refused for capacity, and the slot reads crashed until the probe retires")
+    func requestIsRefusedWhenTheProbeOutlivesTheBound() async throws {
+        let fixture = try await ServeLoopFixture.make(heartbeatIntervalSecs: 3_600)
+        let gate = RecoveryStepGate()
+        defer { gate.release() }
+        let bridge = try await installCalibrationSlot(fixture, gate: gate)
+        let calibration = await fixture.loop.kvBudget.serviceBudget.idleCalibration
+        calibration.retirementBound = .milliseconds(200)
+        await fixture.loop.refreshModelCalibration()
+        let session = try #require(await bridge.scheduledCalibrationTask())
+        let until = ContinuousClock.now + .seconds(5)
+        while !gate.entered && ContinuousClock.now < until { try await Task.sleep(for: .milliseconds(1)) }
+        #expect(gate.entered)
+
+        let ended = CalibrationWaitFlag()
+        let refusal = CalibrationWaitMessage()
+        let request = Task {
+            defer { ended.set() }
+            let stream = await bridge.submitTokenized(promptTokens: [1, 2, 3],
+                request: ChatCompletionRequest(model: ServeLoopFixture.modelId, messages: [], max_tokens: 4),
+                requestId: "customer", cacheEnabled: false)
+            for await event in stream { if case .error(let message) = event { refusal.record(message) } }
+        }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !ended.isSet && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        let refusedInTime = ended.isSet
+        let stateWhileStuck = await bridge.backendSlotCapacity().state
+        gate.release()
+        await request.value
+        await session.value
+        let stateAfterRetirement = await bridge.backendSlotCapacity().state
+        #expect(refusedInTime, "a request must not wait past the bound for a probe that never retires")
+        #expect(refusal.message?.hasPrefix("token_budget_exhausted") == true,
+            "the refusal is retriable capacity, so the coordinator reroutes it")
+        #expect(stateWhileStuck == "crashed", "the coordinator must stop routing to a slot whose probe is stuck")
+        #expect(stateAfterRetirement != "crashed", "the slot serves again once the probe retires")
+        _ = await fixture.loop.drainAndShutdown(timeoutSeconds: 5)
+        await fixture.mock.shutdown()
+        await fixture.bridge.shutdown()
+        await bridge.shutdown()
+        try? FileManager.default.removeItem(at: fixture.directory)
+    }
+
+    @Test("the overdue refusal reaches the coordinator as retriable capacity: 503 token_budget_exhausted")
+    func overdueRefusalIsRetriableCapacity() {
+        let error = MultiModelBatchSchedulerEngineError.tokenBudgetExhausted(
+            EngineV2Bridge.idleCalibrationRetirementOverdue)
+        // As the inference handler maps a stream-start failure.
+        let failure = ProviderLoop.sanitizedInferenceFailure(
+            from: error, phase: .streamStart, errorReason: classifyInferenceErrorReason(error))
+        #expect(failure.code == .capacity, "the coordinator fails a capacity refusal over to another Mac")
+        #expect(failure.statusCode == 503)
+        #expect(failure.errorReason == .tokenBudgetExhausted)
+    }
+
     private func installCalibrationSlot(_ fixture: ServeLoopFixture, gate: RecoveryStepGate,
         afterSelfTest: Bool = false, postureAllows: Bool = true,
         modelID: String = ServeLoopFixture.modelId,
@@ -204,6 +295,20 @@ struct ProviderLoopCalibrationTests {
             tokenizer: TokenizerHandle(tokenizer), engineV2: bridge)
         return bridge
     }
+}
+
+private final class CalibrationWaitFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    var isSet: Bool { lock.withLock { value } }
+    func set() { lock.withLock { value = true } }
+}
+
+private final class CalibrationWaitMessage: @unchecked Sendable {
+    private let lock = NSLock()
+    private var first: String?
+    var message: String? { lock.withLock { first } }
+    func record(_ message: String) { lock.withLock { if first == nil { first = message } } }
 }
 
 private extension EngineV2Bridge {

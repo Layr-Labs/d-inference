@@ -3,6 +3,7 @@ import Foundation
 public final class InferenceCancellationToken: @unchecked Sendable {
     private let lock = NSLock()
     private var cancelled = false
+    private var cause: InferenceEarlyEndCause?
     private var output = OutputState.pending
 
     /// Me first: a Darkbloom request either sends output or gives way to the owner's request, never both, and the
@@ -19,10 +20,17 @@ public final class InferenceCancellationToken: @unchecked Sendable {
         return cancelled || Task.isCancelled
     }
 
-    public func cancel() {
-        lock.lock()
-        cancelled = true
-        lock.unlock()
+    /// The first cancel's cause is the one an early end is counted under.
+    public func cancel(cause: InferenceEarlyEndCause? = nil) {
+        lock.withLock {
+            if !cancelled { self.cause = cause }
+            cancelled = true
+        }
+    }
+
+    /// What cancelled the request; nil when it was not cancelled, or nothing said why.
+    public var endCause: InferenceEarlyEndCause? {
+        lock.withLock { cause }
     }
 
     public func checkCancellation() throws {
@@ -76,11 +84,11 @@ public actor InferenceCancellationRegistry {
     }
 
     @discardableResult
-    public func cancel(requestId: String) -> Bool {
+    public func cancel(requestId: String, cause: InferenceEarlyEndCause? = nil) -> Bool {
         guard let token = tokens.removeValue(forKey: requestId) else {
             return false
         }
-        token.cancel()
+        token.cancel(cause: cause)
         return true
     }
 

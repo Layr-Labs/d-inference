@@ -202,6 +202,9 @@ extension ModelScanner {
         if ToolChoiceEnforcementPolicy.advertisesNativeMediaTools(for: info) {
             info.nativeMediaTools = true
         }
+        if ToolChoiceEnforcementPolicy.advertisesNativeMediaControls(for: info) {
+            info.nativeMediaControls = true
+        }
         return info
     }
 

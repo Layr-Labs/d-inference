@@ -40,8 +40,21 @@ public final class DistributedPipeExecutionOwner: DistributedDeadlineExecutionOw
     public func setReadinessInvalidationHandler(_ handler: @escaping @Sendable () -> Void) {
         pair.setInvalidationHandler(handler)
     }
+    /// The request's own first token: its whole prompt at the caller's prefill rate. That rate is this pair's own,
+    /// measured end to end (from both ranks' reservation to the first committed token, `DistributedCBv2Engine.timing`),
+    /// so it carries the transfer and control costs a rank's own compute would leave out. A request with images or
+    /// video is priced the same way: its media tokens at that text rate, its vision tower's time not charged. Without
+    /// a usable rate nothing is projected. The engine adds the prompts already holding a lane
+    /// (`DistributedCBv2Engine.behindPendingPrefill`).
     public func projectFirstToken(_ request: CBv2Request, admission: CBv2FirstTokenDeadlineAdmission) -> CBv2FirstTokenProjectedWork {
-        .unbounded(reason: nil) // No measured peer transfer/control envelope is supplied by this adapter.
+        let tokens = request.promptTokens.count
+        guard tokens > 0, let rate = admission.conservativePrefillTokensPerSecond, rate.isFinite, rate > 0 else {
+            return .unbounded(reason: nil)
+        }
+        let seconds = Double(tokens) / rate
+        guard seconds.isFinite, seconds <= 3600 else { return .unbounded(reason: nil) }
+        return .bounded(work: .init(prefillTokens: tokens, decodeTokens: 0, scheduledSteps: (tokens + chunkSize - 1) / chunkSize,
+                                    mixedSteps: 0), serviceDuration: .seconds(seconds))
     }
     public func reserve(_ request: CBv2Request, identity expected: DistributedResidentIdentity,
                         profileID: String, capacityLimit: Int) throws -> any DistributedResidentRequestLease {

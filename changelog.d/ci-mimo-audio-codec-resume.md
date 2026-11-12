@@ -1,0 +1,4 @@
+### CI: the MiMo audio codec download resumes instead of starting over
+
+- The provider's last unit-test shard downloads the 1.87 GB pinned MiMo audio codec when the Darkbloom cache has no copy for the pull request's branch (a pull request into a branch other than `dev` or `master` cannot read `dev`'s copy). curl's own retries restarted every attempt from the first byte, so on a Darkbloom Sandbox link of about 2 MB/s no 900 s attempt finished: CI run 43132089921 got 1.60 and 1.79 GB and failed after 30 minutes.
+- `scripts/prepare-mimo-audio-fixtures.py` now runs up to eight 900 s attempts within 45 minutes, each resuming the partial file (`--continue-at -`), with a growing pause between them; a file whose digest is wrong is deleted, so the next run starts it over. `scripts/test-prepare-mimo-audio-fixtures.py` checks this offline.

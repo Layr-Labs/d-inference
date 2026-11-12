@@ -267,6 +267,14 @@ final class MiMoV26ManagedAudioProviderTests: XCTestCase {
         phase("owner joined")
         XCTAssertGreaterThan(actual.stepCount,before)
         XCTAssertEqual(lease.snapshot().phase,.completed)
+        // The bridge returns the terminal before the row's native retirement
+        // (`EngineV2Bridge+Events`), and the lease is host ownership only, so
+        // the media reservation settles on the engine queue just after. Wait
+        // for it; a leaked reservation still fails here.
+        let settled = ContinuousClock.now + .seconds(10)
+        while value.transaction.managedMediaReservationCountForTesting != 0, ContinuousClock.now < settled {
+            try await Task.sleep(for: .milliseconds(5))
+        }
         XCTAssertEqual(value.transaction.managedMediaReservationCountForTesting,0)
         XCTAssertNil(actual.nativeCompletionFault)
         let receipt = try await retire(value)

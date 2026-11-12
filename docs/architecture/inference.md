@@ -3573,8 +3573,16 @@ the owner's go.
 - **Media caps** (`provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift`):
   `maxImagePixels` 100 Mpx, `maxRequestImagePixels` 384 Mpx,
   `maxMediaDecodedBytes` 25 MiB, `maxVideoDurationSeconds` 600,
-  `maxImagesPerRequest` 16, `maxVideosPerRequest` 8,
-  `maxRequestVideoFramePixels` 384 Mpx; `decodeOverheadFactor = 4`.
+  `maxImagesPerRequest` 16 (64 for Qwen3.5-9B, `imageCap(forModel:)`;
+  `DARKBLOOM_MAX_IMAGES_PER_REQUEST` sets one cap for every model),
+  `maxVideosPerRequest` 8, `maxRequestVideoFramePixels` 384 Mpx;
+  `decodeOverheadFactor = 4`.
+- **Media memory gate.** The scheduler's `VisionMemoryGate` reserves a media
+  request's decode memory and its KV (1,024 tokens per image) before any
+  decode. A reservation that doesn't fit is refused as a retryable 503 with
+  the reason `media_memory_unavailable`, as MiMo's media reservation is, so
+  the coordinator sends the request elsewhere without a capacity strike or a
+  budget clamp.
 - **A failed video or audio reader decodes again once.** An `AVAssetReader` can
   fail on a valid clip. When a reader pass of the GLM 5.3, MiMo V2.6, Qwen4 or
   Nemotron Super video decoder, or of the MiMo V2.6 audiovisual decoder's audio

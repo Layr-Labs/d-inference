@@ -2096,9 +2096,15 @@ shader-cache probes and a pair's warmup canary are skipped), and
 (`provider-swift/Sources/ProviderCore/Service/DaemonRunningRequests.swift`)
 turns them into the daemon state's `running_requests`: model, elapsed, tokens
 so far, the rate since the previous sample, and a short hash of the request ID.
-A pair's leading Mac lists the pair's answers, since its part holds the pair's
-bridge. Nemotron Super's owner route bypasses the bridge, so its answers are not
-listed.
+A Mac that serves only you lists them as well: the standalone server samples
+its resident slots' bridges the same way, at most every 2 s, into the state it
+writes every 250 ms
+(`provider-swift/Sources/ProviderCore/Server/StandaloneServer+RunningRequests.swift`,
+`runningRequestsForState`). A pair's leading Mac lists the pair's answers when
+the pair serves through Darkbloom, since its part holds the pair's bridge; a
+pair that serves only on its local API (`DistributedLocalServer`) writes no
+state file, so it lists none. Nemotron Super's owner route bypasses the bridge,
+so its answers are not listed.
 
 Decoded text keeps a character the tokenizer writes as `<0xHH>` tokens wherever it
 falls. swift-transformers' `ByteFallbackDecoder` releases those tokens only when a

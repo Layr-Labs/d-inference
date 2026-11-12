@@ -601,7 +601,12 @@ curl -s "$BASE/models" -H "Authorization: Bearer $(darkbloom local --json | jq -
 `darkbloom status` says how this Mac serves, for both choices
 (`Serving: only you, on this Mac …` or `Serving: Darkbloom and you, me first …`),
 from the running provider's `~/.darkbloom/daemon-state.json`, which Only me
-writes too (`StandaloneServer.startLifecycleControl`).
+writes too (`StandaloneServer.startLifecycleControl`). Under it, `Answers in
+progress` lists each answer the models are writing, both ways: Only me's
+server samples its resident models every 2 s into that file
+(`StandaloneServer.runningRequestsForState`), and `darkbloom status --json`
+prints the same list. A pair that serves only on its local API (`darkbloom
+cluster local`) doesn't list them yet.
 
 ## Troubleshooting
 

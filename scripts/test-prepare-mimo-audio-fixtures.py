@@ -5,6 +5,7 @@ import importlib.util
 from pathlib import Path
 import subprocess
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -65,6 +66,44 @@ class DownloadTests(unittest.TestCase):
         with patch.object(SETUP.subprocess, "run", curl), self.assertRaises(subprocess.CalledProcessError):
             SETUP.download("https://example.invalid/codec", self.target, len(BODY))
         self.assertEqual(len(curl.calls), SETUP.DOWNLOAD_ATTEMPTS)
+
+    def test_the_attempts_fit_in_the_budget(self):
+        clock = [0.0]
+        SETUP.time.monotonic = lambda: clock[0]
+        self.sleep.side_effect = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+        self.addCleanup(setattr, SETUP.time, "monotonic", time.monotonic)
+        calls = []
+
+        def curl(args, **_):
+            calls.append(args)
+            # Each attempt runs to its --max-time and is cut (exit 28), as on a link too slow for the codec.
+            clock[0] += float(args[args.index("--max-time") + 1])
+            return subprocess.CompletedProcess(args, 28)
+
+        with patch.object(SETUP.subprocess, "run", curl), self.assertRaises(subprocess.CalledProcessError):
+            SETUP.download("https://example.invalid/codec", self.target, len(BODY))
+        self.assertLessEqual(clock[0], SETUP.DOWNLOAD_BUDGET_SECONDS + 1)
+        self.assertEqual(calls[0][calls[0].index("--max-time") + 1], "900")
+        self.assertIn("--fail", calls[0])
+        self.assertEqual(calls[0][calls[0].index("--speed-limit"):calls[0].index("--speed-limit") + 4],
+                         ["--speed-limit", "102400", "--speed-time", "60"])
+
+    def test_a_server_that_ignores_the_range_starts_the_file_over(self):
+        self.target.write_bytes(BODY[:100])
+        calls = []
+
+        def curl(args, **_):
+            calls.append(args)
+            output = Path(args[args.index("--output") + 1])
+            if output.exists():
+                return subprocess.CompletedProcess(args, 33)  # 200 to a range request: curl cannot resume
+            output.write_bytes(BODY)
+            return subprocess.CompletedProcess(args, 0)
+
+        with patch.object(SETUP.subprocess, "run", curl):
+            SETUP.download("https://example.invalid/codec", self.target, len(BODY))
+        self.assertEqual(self.target.read_bytes(), BODY)
+        self.assertEqual(len(calls), 2)
 
     def test_a_partial_longer_than_the_file_starts_over(self):
         self.target.write_bytes(b"x" * (len(BODY) + 1))

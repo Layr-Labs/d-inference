@@ -56,15 +56,21 @@ def download(url, temporary, size):
         temporary.unlink()
     deadline = time.monotonic() + DOWNLOAD_BUDGET_SECONDS
     for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
-        # End a stalled attempt so the next one resumes it.
+        # End a stalled attempt so the next one resumes it. No attempt runs
+        # past the budget (curl reads --max-time 0 as no limit).
+        seconds = max(1, min(900, int(deadline - time.monotonic())))
         result = subprocess.run(["curl", "--fail", "--silent", "--show-error", "--location",
                                  "--continue-at", "-", "--speed-limit", "102400", "--speed-time", "60",
-                                 "--max-time", "900", url, "--output", str(temporary)])
+                                 "--max-time", str(seconds), url, "--output", str(temporary)])
         if result.returncode == 0:
             return
-        if attempt == DOWNLOAD_ATTEMPTS or time.monotonic() >= deadline:
+        if result.returncode == 33:
+            # The server ignored the range request: the next attempt starts over.
+            temporary.unlink(missing_ok=True)
+        pause = min(60, 5 * 2 ** (attempt - 1))
+        if attempt == DOWNLOAD_ATTEMPTS or time.monotonic() + pause >= deadline:
             raise subprocess.CalledProcessError(result.returncode, result.args)
-        time.sleep(min(60, 5 * 2 ** (attempt - 1)))
+        time.sleep(pause)
 
 
 def verify(path, size, digest):
@@ -87,7 +93,7 @@ def prepare(cache, output):
         download(VIDEO_URL if relative == "openrouter-aac.mp4" else BASE_URL + "/" + relative, temporary, size)
         if not verify(temporary, size, digest):
             # A bad partial must not be resumed by the next run.
-            temporary.unlink()
+            temporary.unlink(missing_ok=True)
             raise ValueError("MiMo audio fixture digest mismatch: " + relative)
         os.replace(temporary, path)
     with ThreadPoolExecutor(max_workers=3) as pool:

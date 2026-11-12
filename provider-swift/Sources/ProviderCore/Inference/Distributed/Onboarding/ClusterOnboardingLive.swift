@@ -1457,6 +1457,9 @@ final class OnboardingLive: @unchecked Sendable {
     func localRegister() -> Result<[String], ClusterOnboardingFailure> {
         defer { clearRegistrationPending() }
         guard leadership?.scope.isLocalOnly != true else { return .success([]) }
+        // A pair stopped since it was started (a stop someone asked for during its test took the command lock first, or
+        // single-Mac serving took this Mac back) is neither registered nor started again: the stop stands.
+        guard leadership?.serving == true else { return .success([]) }
         let providerConfiguration = settings.service.wizard.providerConfiguration
         guard let saved = try? ClusterApprovalAttachment.savedSetup(paths: context.paths, providerConfiguration: providerConfiguration),
               let fetched = ClusterApprovalFetch.fetchBlocking(providerConfiguration: providerConfiguration),
@@ -1519,10 +1522,8 @@ final class OnboardingLive: @unchecked Sendable {
         markSoloBlocked(false)
         let served = routed(.init(op: .serve, stopsBefore: stopsBefore), acting: true,
                             local: { localServe(unlessStoppedSince: stopsBefore) }) { $0.lines }
-        // A forwarded start refused for that reason comes back as its lines only.
-        if case .failure = served, stopsBefore != nil, ClusterOnboardingStopped.asked(since: stopsBefore, now: stopsAsked()) {
-            return .failure(.stopped)
-        }
+        // A forwarded start refused for that reason comes back as its line only.
+        if case .failure(let failure) = served, failure.lines == ClusterOnboardingFailure.stopped.lines { return .failure(.stopped) }
         return served
     }
 

@@ -457,13 +457,16 @@ over the cable and ends with the same ✓/✗ block, bounded like the leader's s
   `OnboardingLive.recordStop`); the start's own stops (a model change, the registration's restart) and the cluster
   service's don't count. Its status reply carries the count (`ClusterControlReply.stopsAsked`, 0 before the first; nil
   from an older build, which an older Mac ignores). The start begins at its first step on the leading Mac, the model's
-  transfer or the start itself (`ClusterOnboardingLeaderStep.startBegun`), and both Macs compare the count with the one
-  they read then: the Mac that joins ends once it grew (`ClusterOnboardingFollowedStop`; a look that read no count
-  tells nothing), and the leading Mac ends its waits for the parts and for the coordinator at once too
-  (`ClusterOnboardingDriver.stopEnding`, asked about once a second off the console's thread). A stop asked while the
-  model downloads or copies keeps the pair stopped: the start compares the count before both Macs start, and the
-  leading Mac again under the command lock its start takes (`OnboardingLive.localServe(unlessStoppedSince:)`,
-  `ClusterControlRequest.stopsBefore`), so a stop that took the lock first is never undone. The status' words never tell
+  transfer or the start itself (`ClusterOnboardingLeaderStep.startBegun`); that step carries the count read then
+  (`ClusterOnboardingLeaderStep.stopsBefore`), so both Macs compare with the same number. The Mac that joins ends once
+  it grew (`ClusterOnboardingFollowedStop`; a look that read no count tells nothing), and so does the leading Mac: in
+  the model's download or copy (what arrived stays, and the next start goes on from there), in its waits for the
+  parts and for the coordinator (`ClusterOnboardingDriver.stopEnding`, asked about once a second off the console's
+  thread, `ClusterOnboardingLooker`), at its test, and before both Macs start (`startBothMacs`, also when the same start
+  goes on after the single-Mac or version question). The leading Mac compares the count again under the command lock
+  its start takes (`OnboardingLive.localServe(unlessStoppedSince:)`, `ClusterControlRequest.stopsBefore`), so a stop
+  that took the lock first is never undone, and its registration neither registers nor starts again a pair stopped
+  since its start (`OnboardingLive.localRegister`). Retry after a ✗ is a new start. The status' words never tell
   a stop: it reads "Stopped" until both parts start, so through a whole download or copy of the model, and again while
   the registration restarts them. 0.10.9 to 0.10.12 took "Stopped" held 20 s for a stop on the Mac that joins (an
   external pair's said it 20 s into a download, 2026-11-12), and the saved start turned off for one in the leading

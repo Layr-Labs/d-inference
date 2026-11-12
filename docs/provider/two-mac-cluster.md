@@ -673,10 +673,11 @@ many at once ([Gemma pipeline lanes](../architecture/inference.md#gemma-pipeline
    be paired by the coordinator by itself. Check with `darkbloom status`." A
    `darkbloom cluster stop` from any window or either Mac ends the wait at once
    with "Stopped (by `darkbloom cluster stop` on one of the Macs): the pair
-   isn't starting any more." So does one while both Macs load the model, and
-   one while the leading Mac downloads or copies it keeps the pair stopped once
-   that is done (`darkbloom stop` and `restart` count too once the pair runs;
-   before that, `darkbloom stop` stops only what runs on its own Mac). The Mac
+   isn't starting any more." So does one while the leading Mac downloads or
+   copies the model (what arrived stays, and the next start goes on from
+   there), while both Macs load it, and at the test (`darkbloom stop` and
+   `restart` count too once the pair runs; before that, `darkbloom stop` stops
+   only what runs on its own Mac). The Mac
    that joined says the same at once: the leading Mac counts each stop someone
    asks for, and its status carries the count. A status that reads "Stopped" is
    no stop on its own: it reads so through a whole download or copy, until both

@@ -277,7 +277,7 @@ extension ClusterOnboardingDriver {
                 // reading "Stopped" is none: it reads so through a download or copy of the model, until both parts start,
                 // and while the start stops them to register.
                 startBegan = startBegan || started != nil || start != nil || step?.startBegun == true
-                if stops.look(look.stopsAsked, begun: startBegan) {
+                if stops.look(look.stopsAsked, begun: startBegan, startStops: step?.startBegun == true ? step?.stopsBefore : nil) {
                     console.settle()
                     console.say(ClusterOnboardingCommand.named(ClusterOnboardingStopped.line))
                     return 1

@@ -402,6 +402,8 @@ public enum ClusterOnboardingStopped {
     /// What a screen that leaves the coordinator's wait says: what keeps going, and how to check.
     public static let leftPairWaitLine = "Left the wait: both Macs stay registered and the pair keeps trying to be paired by "
         + "the coordinator by itself. Check with `darkbloom status`."
+    /// Under `line` on the leading Mac when the stop ended its download or copy of the model.
+    public static let transferKeptLine = "What was downloaded or copied so far stays: the next start goes on from there."
 
     /// A stop a person asked for since the count was `before`. A count not known then or now (a status that couldn't be
     /// read, a leader on an older build, which counts none) never tells one.
@@ -419,14 +421,20 @@ public enum ClusterOnboardingStopped {
 /// Mac still at its model list, whose start goes on) is no stop of this start.
 public struct ClusterOnboardingFollowedStop: Sendable {
     private var before: Int?
+    /// The count the leading Mac read when its start began, as its step carries it (`ClusterOnboardingLeaderStep.stopsBefore`).
+    private var startStops: Int?
 
     public init() {}
 
-    /// One look at the leading Mac's status: the stops it counts (nil: not read, or a leader on an older build), and
-    /// whether the start had begun by then. True when a stop asked since the start began ends it. A count lower than
-    /// before (a record made again) is the one to compare with from then on.
-    public mutating func look(_ stopsAsked: Int?, begun: Bool) -> Bool {
+    /// One look at the leading Mac's status: the stops it counts (nil: not read, or a leader on an older build), whether
+    /// the start had begun by then, and the count its start began with when its step says it. True when a stop asked
+    /// since the start began ends it: compared with the leading Mac's own count where it says it, so both Macs count the
+    /// same stops, else with this Mac's last look before the start began. A count lower than before (a record made
+    /// again) is the one to compare with from then on.
+    public mutating func look(_ stopsAsked: Int?, begun: Bool, startStops: Int? = nil) -> Bool {
+        if let startStops { self.startStops = startStops }
         guard let stopsAsked else { return false }
+        if begun, let startStops = self.startStops { return ClusterOnboardingStopped.asked(since: startStops, now: stopsAsked) }
         guard begun, let before, stopsAsked >= before else {
             self.before = stopsAsked
             return false

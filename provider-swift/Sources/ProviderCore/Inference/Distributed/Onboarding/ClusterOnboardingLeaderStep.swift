@@ -36,9 +36,13 @@ public struct ClusterOnboardingLeaderStep: Codable, Sendable, Equatable {
     public var reason: String?
     /// The leading Mac's Darkbloom version, when it said it.
     public var version: String?
+    /// `copy`, `starting` (`startBegun`): the stops the leading Mac counted when its start began
+    /// (`ClusterSetupRecord.stopsAsked`), so the Mac that joined compares with the same count. Nil when it couldn't be
+    /// read, and from an older build.
+    public var stopsBefore: Int?
 
-    public init(_ kind: Kind, reason: String? = nil, version: String? = nil) {
-        self.kind = kind; self.reason = reason; self.version = version
+    public init(_ kind: Kind, reason: String? = nil, version: String? = nil, stopsBefore: Int? = nil) {
+        self.kind = kind; self.reason = reason; self.version = version; self.stopsBefore = stopsBefore
     }
 
     /// The planner's blocker when the two Macs' cluster workers differ (`ClusterSetupPlanning.differentBuilds`).

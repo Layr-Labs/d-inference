@@ -21,6 +21,10 @@ extension OnboardingChecks {
         aStopDuringTheDownloadKeepsThePairStopped()
         aStopFromAnywhereEndsTheLeadersLoadAtOnce()
         thePairsOwnStopsNeverEndTheLeadersWait()
+        aStopDuringTheTestEndsTheLeadersScreen()
+        aStartRefusedForAStopEndsTheScreen()
+        aStopDuringTheSoloQuestionKeepsThePairStopped()
+        retryIsANewStart()
     }
 
     static func theCoordinatorsWaitNamesOnlyWhatTheMacsReportNow() {
@@ -82,13 +86,18 @@ extension OnboardingChecks {
         expect(!run.text.contains(notServingChoices), "coordinator q: no ✗ or Retry")
     }
 
+    /// A `darkbloom cluster stop` while the leading Mac waits for the coordinator: the count grows (`stopsAsked`), and the
+    /// screen ends at once, while the wait itself would go on for minutes.
     static func aStopFromAnywhereEndsTheLeadersWaitAtOnce() {
-        let recorder = Recorder()
-        let run = TerminalRun(coordinatorWait(recorder) { progress in
+        let recorder = Recorder(), waiting = Recorder()
+        var made = coordinatorWait(recorder) { progress in
+            waiting.note("pairServing")
             progress("waiting for the coordinator to pair both Macs\nThis Mac: registered; waiting for the coordinator")
-            usleep(300_000)
-            return .failure(.stopped)
-        })
+            sleep(30)
+            return .failure(.init("not reached"))
+        }
+        made.stopsAsked = { waiting.all.isEmpty ? 4 : 5 }
+        let run = TerminalRun(made)
         expect(run.waitFor(prompt(2)), "leader stop: the list"); run.type("\r")
         expect(run.finish(seconds: 10) == 1, "leader stop: ended")
         expect(run.text.contains("Stopped (by `darkbloom cluster stop` on one of the Macs): the pair isn't starting any more."),
@@ -275,8 +284,8 @@ extension OnboardingChecks {
     }
 
     /// The leading Mac downloads a model no Mac has while someone runs `darkbloom cluster stop`, or asks how to get it
-    /// there when they do: once the download is done its screen ends with the stop line and starts nothing (before, it
-    /// started both Macs as if nobody had stopped them).
+    /// there when they do: its screen ends at once, as the joining Mac's does, and starts nothing (before, it started both
+    /// Macs once the download was done, as if nobody had stopped them). What arrived stays for the next start.
     static func aStopDuringTheDownloadKeepsThePairStopped() {
         let offer = ClusterOnboardingProvisionOffer(lines: ["This Mac: download from Darkbloom's catalog (16.3 GB)"],
                                                     downloadAlternative: false, leaderDownloads: true)
@@ -287,22 +296,102 @@ extension OnboardingChecks {
         for atTheQuestion in [false, true] {
             let label = atTheQuestion ? "leader stop at the copy question" : "leader stop in the download"
             let recorder = Recorder(), stopped = Recorder()
+            // A download of about 8 s.
             var made = operations(recorder, resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB"), pairEvents: [], pairResult: .failed([]),
-                                  choices: before, replanned: after)
+                                  choices: before, replanned: after, provisionReports: Array(repeating: copyReports[0], count: 80),
+                                  provisionReportPause: 100_000)
             // Two stops counted on earlier days; one more asked at the question or during the download.
             made.stopsAsked = { !stopped.all.isEmpty || (!atTheQuestion && recorder.all.contains("provision 0 copy")) ? 3 : 2 }
+            let steps = Recorder()
+            made.publishStep = { step in steps.note("\(step?.kind.rawValue ?? "none") \(step?.stopsBefore.map(String.init) ?? "-")") }
             let run = TerminalRun(made)
             defer { run.release() }
             expect(run.waitFor(prompt(1)), "\(label): the list"); run.type("\r")
             expect(run.waitFor("  1) Download\n  2) Cancel\n"), "\(label): get it")
             if atTheQuestion { stopped.note("stop") }
             run.type("\r")
+            let began = Date()
             expect(run.finish(seconds: 10) == 1, "\(label): ended, not served: \(run.text)")
+            expect(Date().timeIntervalSince(began) < 5, "\(label): at once, not after the download: \(Date().timeIntervalSince(began)) s")
             expect(run.text.hasSuffix("Stopped (by `darkbloom cluster stop` on one of the Macs): the pair isn't starting any more. "
-                                      + "Run `darkbloom cluster` on the leading Mac to start it again.\n"), "\(label): the line: \(run.text)")
-            expect(recorder.all.contains("provision 0 copy") && !recorder.all.contains("serve") && !recorder.all.contains("waitReady"),
-                   "\(label): downloaded, nothing started: \(recorder.all)")
+                                      + "Run `darkbloom cluster` on the leading Mac to start it again.\n  "
+                                      + ClusterOnboardingStopped.transferKeptLine + "\n"), "\(label): the line, and what stays: \(run.text)")
+            expect(recorder.all.contains("provision 0 copy") && recorder.all.filter({ $0 == "planModels" }).count == 1 && !recorder.all.contains("serve"),
+                   "\(label): nothing planned or started after it: \(recorder.all)")
+            expect(steps.all.contains("copy 2"), "\(label): the start's step carries the count it began with: \(steps.all)")
         }
+    }
+
+    /// A stop that lands while the leading Mac tests the started pair: the stop is the outcome, never ✓ or "test failed",
+    /// and nothing registers or starts again.
+    static func aStopDuringTheTestEndsTheLeadersScreen() {
+        for testPasses in [true, false] {
+            let recorder = Recorder(), tested = Recorder()
+            var made = operations(recorder, resume: .init(role: .leader, peerName: "Apple M5 Max, 128 GB"), pairEvents: [], pairResult: .failed([]))
+            made.testRequest = {
+                tested.note("test")
+                return testPasses ? .success(["in 0.61 s"]) : .failure(.init("The test request did not reach this Mac: closed"))
+            }
+            made.stopsAsked = { tested.all.isEmpty ? 0 : 1 }
+            let run = TerminalRun(made)
+            defer { run.release() }
+            expect(run.waitFor(prompt(2)), "stop in the test: the list"); run.type("\r")
+            expect(run.finish(seconds: 10) == 1, "stop in the test (\(testPasses ? "passed" : "failed")): ended: \(run.text)")
+            expect(run.text.hasSuffix(ClusterOnboardingStopped.line + "\n")
+                   && !run.text.contains("\u{2713} Serving") && !run.text.contains("the test failed") && !recorder.all.contains("register"),
+                   "stop in the test (\(testPasses ? "passed" : "failed")): the stop, nothing else: \(run.text) \(recorder.all)")
+        }
+    }
+
+    /// The leading Mac refuses its start under the lock (`serveUnlessStopped`): a stop took the lock first. The screen
+    /// ends with the stop line and waits for nothing.
+    static func aStartRefusedForAStopEndsTheScreen() {
+        let recorder = Recorder()
+        var made = operations(recorder, resume: .init(role: .leader, peerName: "Apple M5 Max, 128 GB"), pairEvents: [], pairResult: .failed([]))
+        made.serveUnlessStopped = { since in recorder.note("serveUnlessStopped \(since.map(String.init) ?? "-")"); return .failure(.stopped) }
+        made.stopsAsked = { 7 }
+        let run = TerminalRun(made)
+        defer { run.release() }
+        expect(run.waitFor(prompt(2)), "refused start: the list"); run.type("\r")
+        expect(run.finish(seconds: 10) == 1, "refused start: ended")
+        expect(run.text.hasSuffix(ClusterOnboardingStopped.line + "\n") && !recorder.all.contains("waitReady") && !recorder.all.contains("serve")
+               && recorder.all.contains("serveUnlessStopped 7"), "refused start: the stop line, nothing waited for: \(run.text) \(recorder.all)")
+    }
+
+    /// A stop asked while the leading Mac's screen asks to stop single-Mac serving (found while the parts loaded): the
+    /// same start goes on there, so the stop stands and nothing starts again (the joining Mac, which still follows, ends
+    /// on the same stop).
+    static func aStopDuringTheSoloQuestionKeepsThePairStopped() {
+        let recorder = Recorder(), stopped = Recorder()
+        let ready = ClusterOnboardingReady(servedBy: "this Mac", port: 8000, deployment: "Serving Gemma 4 26B across both Macs: tensor parallel",
+                                           split: "tensor parallel")
+        var made = soloOperations(recorder, serving: [], readyResults: [.failure(.soloServing([soloBoth[1]])), .success(ready)])
+        made.stopsAsked = { stopped.all.isEmpty ? 0 : 1 }
+        let run = TerminalRun(made)
+        defer { run.release() }
+        expect(run.waitFor(prompt(2)), "stop at the solo question: the list"); run.type("\r")
+        expect(run.waitFor("  2) Leave\n"), "stop at the solo question: the offer")
+        stopped.note("stop")
+        run.type("1")
+        expect(run.finish(seconds: 10) == 1, "stop at the solo question: ended: \(run.text)")
+        expect(run.text.hasSuffix(ClusterOnboardingStopped.line + "\n") && recorder.all.filter({ $0 == "serve" }).count == 1,
+               "stop at the solo question: the stop line, not started again: \(run.text) \(recorder.all)")
+    }
+
+    /// Retry after a ✗ is a new start (the joining Mac ended on that ✗): a stop asked before it is no stop of the new one.
+    static func retryIsANewStart() {
+        let recorder = Recorder(), stopped = Recorder()
+        var made = operations(recorder, resume: .init(role: .leader, peerName: "Apple M5 Max, 128 GB"), pairEvents: [], pairResult: .failed([]),
+                              readyResults: [.failure(.init("A part keeps ending the same way: boom")), .success(offeredReady)])
+        made.stopsAsked = { stopped.all.isEmpty ? 0 : 1 }
+        let run = TerminalRun(made)
+        defer { run.release() }
+        expect(run.waitFor(prompt(2)), "retry: the list"); run.type("\r")
+        expect(run.waitFor(notServingItemLines), "retry: the ✗ and its choices: \(run.text)")
+        stopped.note("stop")
+        run.type("1")
+        expect(run.finish(seconds: 15) == 0, "retry: served: \(run.text)")
+        expect(!run.text.contains("Stopped (by `darkbloom cluster stop`"), "retry: no stop line from before it: \(run.text)")
     }
 
     /// A real stop while the parts load: the leading Mac's screen ends at once with the stop line (its parts are stopped

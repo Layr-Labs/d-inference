@@ -1290,9 +1290,9 @@ run one per step and decode rows add only M=1 work.
 Bonsai 27B's eligible Hadamard projections take one of
 [two row paths](inference.md#bonsai-27b-packed-fp32-rows). Pair stages use the
 packed FP32 row path, one M=1 projection per row, so both machines agree byte
-for byte. A single Mac takes the same row path for calls of fewer than 12 rows
-(decode steps of up to 11 requests, tiny prompts) and batches larger calls
-(prompt chunks) in one packed matmul, as provider 0.10.4 did.
+for byte. A single Mac takes the same row path for a two-request decode step
+and batches calls of three or more rows (larger decode steps and prompt
+chunks) in one packed matmul, as provider 0.10.4 did.
 Existing LOAD allowances retain their constant-cache and activation charges;
 neither path introduces a persistent weight copy. The pair's arithmetic
 receipt changes independently of the Bonsai 9B row. This implementation establishes no new tensor-parallel

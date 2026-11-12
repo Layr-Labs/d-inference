@@ -8,7 +8,7 @@ import Testing
 struct BonsaiRowArithmeticTests {
     /// A single Mac's loader (the SDK's `PrismHadamardCheckpoint.install`)
     /// builds the 27B's packed projections with exactly this call, without
-    /// `independentRows`, so their calls of 12 or more rows batch. Only the pair's
+    /// `independentRows`, so their calls of three or more rows batch. Only the pair's
     /// stage builder asks for the per-row arithmetic the receipt below names
     /// (`BonsaiStagePreparationTests`). Fails if the default ever flips.
     @Test func aSingleMacLoaderBuildsBatchedProjections() throws {

@@ -17,7 +17,8 @@ extension EngineV2Bridge {
         let continuous = nativeTransactionID != nil
         // Early serving or partial samples must not suppress an unfinished bootstrap.
         let unfinishedBootstrap = !modelCalibration.bootstrapCompleted
-        let evidenceRefresh = !continuous && !unfinishedBootstrap && staleEvidenceProbeDue(at: now)
+        let evidenceRefresh = !continuous && !unfinishedBootstrap
+            && evidenceProbePermitted(requireNominalPosture: requireNominalPosture, at: now)
         // Bounded probes never qualify a reviewed deadline timing envelope.
         guard ownedEngine is EngineV2 || ownedEngine is CBv2NativeBlockEngine,
             deadlineProfile == nil, canSubmitWithNativeOwner(), !slotPostureClosed,

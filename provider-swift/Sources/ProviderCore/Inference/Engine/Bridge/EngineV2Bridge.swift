@@ -369,6 +369,11 @@ public actor EngineV2Bridge {
     var observedDecodeStep = MeasuredDecodeStep()
     /// `DeadlineAdmissionFixes`, resolved once per bridge.
     let admissionFixes: Bool
+    /// `DeadlineRefusalProbe`, resolved once per bridge.
+    let refusalProbe: Bool
+    /// Whether the Mac draws from AC power now. The refusal streak's probe is
+    /// optional work, so unlike the startup calibration it never runs on battery.
+    let evidenceProbeOnACPower: @Sendable () -> Bool
     /// `SSDPrefixCachePolicy.terminalBeforePublication`, resolved once per bridge.
     let terminalBeforeCheckpointPublication: Bool
     /// Cold-prefill throughput from completed prompt computation, independent
@@ -469,6 +474,8 @@ public actor EngineV2Bridge {
             !ProcessInfo.processInfo.isLowPowerModeEnabled && ProcessInfo.processInfo.thermalState == .nominal
         },
         admissionFixes: Bool? = nil,
+        refusalProbe: Bool? = nil,
+        evidenceProbeOnACPower: (@Sendable () -> Bool)? = nil,
         terminalBeforeCheckpointPublication: Bool? = nil,
         glm5NextNativeOwner: GLM5NextNativeOperationOwner? = nil,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil
@@ -483,6 +490,8 @@ public actor EngineV2Bridge {
         self.modelId = modelId
         self.calibrationPosturePermitsWork = calibrationPosturePermitsWork
         self.admissionFixes = admissionFixes ?? DeadlineAdmissionFixes.enabled
+        self.refusalProbe = refusalProbe ?? DeadlineRefusalProbe.enabled
+        self.evidenceProbeOnACPower = evidenceProbeOnACPower ?? { DeadlinePowerPolicyReader.activeSource() == "ac" }
         self.terminalBeforeCheckpointPublication =
             terminalBeforeCheckpointPublication ?? SSDPrefixCachePolicy.terminalBeforePublication()
         self.usesNativeBlockTiming = engine is CBv2NativeBlockEngine

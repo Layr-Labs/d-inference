@@ -57,6 +57,8 @@ final class PrefillScriptEngine: CBv2Engine, @unchecked Sendable {
         case reject
         case suspendThenAdmit
         case suspendThenReject
+        /// Accepted, then cancelled before the engine returns a verdict.
+        case cancelAfterAdmit
     }
 
     private let lock = NSLock()
@@ -185,6 +187,8 @@ final class PrefillScriptEngine: CBv2Engine, @unchecked Sendable {
                 retirement: retirement)
         case .reject, .suspendThenReject:
             return .deadlineUnreachable(projectedWork: projectedWork)
+        case .cancelAfterAdmit:
+            throw CBv2FirstTokenAdmissionCancellation(stream: makeStream(for: request.id), retirement: retirement)
         }
     }
 

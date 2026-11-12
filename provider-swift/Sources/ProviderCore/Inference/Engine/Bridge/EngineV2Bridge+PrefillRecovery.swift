@@ -19,6 +19,11 @@ extension EngineV2Bridge {
             && deadlineRefusalStreak.permitsEvidenceProbe(at: now) && isolatedPrefillEvidenceExpired(at: now)
     }
 
+    /// A due probe at nominal posture also needs AC power.
+    func evidenceProbePermitted(requireNominalPosture: Bool, at now: ContinuousClock.Instant = .now) -> Bool {
+        staleEvidenceProbeDue(at: now)
+    }
+
     /// Recovery is deliberately smaller than ordinary serving. A busy Mac,
     /// media request or large prompt still requires the normal projection.
     func canRecoverPrefillEvidence(promptTokens: Int, maxOutputTokens: Int, deadline: FirstContentDeadline?,

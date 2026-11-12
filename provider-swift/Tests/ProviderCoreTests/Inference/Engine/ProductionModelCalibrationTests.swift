@@ -324,13 +324,22 @@ struct ProductionModelCalibrationTests {
                     firstContentDeadline: .init(relativeBudgetMilliseconds: 12_000))
             }
         }
-        let started = await bridge.startModelCalibrationIfNeeded(requireNominalPosture: false)
+        let startedAt = ContinuousClock.now
+        let started = await bridge.startModelCalibrationIfNeeded(requireNominalPosture: false, now: startedAt)
         #expect(started)
+        // Starting the probe itself ends the streak and starts its interval.
+        #expect(await bridge.deadlineRefusalStreak.refusals == 0)
+        #expect(await bridge.deadlineRefusalStreak.probeAvailableAt == startedAt + DeadlineRefusalStreak.probeInterval)
         if started { await bridge.awaitProductionCalibration() }
         try await requireEngineIdle(engine, budget: budget)
         #expect(!(await bridge.isolatedPrefillEvidenceExpired()))
+        // The probe's cell replaced the stale sample and set the anchor. Its
+        // speed is the runner's (905 tok/s on a loaded CI VM), so the bar is
+        // relative to the stale 50 tok/s: at twice that, the 1,000-token prompt
+        // below fits its 12 s budget, which 50 tok/s refused.
         let measured = await bridge._testIsolatedPrefillTps()
-        #expect(measured > 1_000, "\(measured)")
+        #expect(await bridge.calibratedIsolatedPrefillTps == measured)
+        #expect(measured >= 2 * 50, "\(measured)")
         #expect(!(await bridge.startModelCalibrationIfNeeded(requireNominalPosture: false)))
 
         let profile = RequestProfileBuilder()

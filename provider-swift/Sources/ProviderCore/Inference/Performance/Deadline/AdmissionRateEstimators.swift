@@ -10,7 +10,13 @@ enum DeadlineAdmissionFixes {
     static let enabled = resolve()
 
     static func resolve(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
-        guard let raw = environment[environmentKey]?
+        isOn(environmentKey, environment: environment)
+    }
+
+    /// Unset, or any value but `0`, `false`, `no` or `off` (trimmed,
+    /// case-insensitive), is on.
+    static func isOn(_ key: String, environment: [String: String]) -> Bool {
+        guard let raw = environment[key]?
             .trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else { return true }
         return !["0", "false", "no", "off"].contains(raw)
     }
@@ -114,6 +120,18 @@ enum IsolatedPrefillAdmissionRate {
     }
 }
 
+/// The refusal streak's own off switch. On by default;
+/// `DARKBLOOM_TTFT_REFUSAL_PROBE=0` stops its counting and its probe and leaves
+/// the estimator corrections (`DeadlineAdmissionFixes`) on.
+enum DeadlineRefusalProbe {
+    static let environmentKey = "DARKBLOOM_TTFT_REFUSAL_PROBE"
+    static let enabled = resolve()
+
+    static func resolve(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        true
+    }
+}
+
 /// Consecutive `deadline_unreachable` refusals that stale isolated prefill
 /// evidence explains on an idle Mac, with nothing admitted in between. A
 /// refusal measures nothing, so expired evidence that refuses is never
@@ -138,7 +156,8 @@ struct DeadlineRefusalStreak {
     private(set) var refusals = 0
     /// The newest counted refusal's rate and prompt, for the log line.
     private(set) var lastRefusal: (tokensPerSecond: Double, promptTokens: Int)?
-    private var probeAfter: ContinuousClock.Instant?
+    /// When the next probe may start; nil before the first.
+    private(set) var probeAvailableAt: ContinuousClock.Instant?
 
     mutating func recordRefusal(tokensPerSecond: Double, promptTokens: Int) {
         refusals = min(refusals + 1, Self.threshold)
@@ -146,7 +165,7 @@ struct DeadlineRefusalStreak {
     }
 
     func permitsEvidenceProbe(at now: ContinuousClock.Instant = .now) -> Bool {
-        refusals >= Self.threshold && (probeAfter.map { now >= $0 } ?? true)
+        refusals >= Self.threshold && (probeAvailableAt.map { now >= $0 } ?? true)
     }
 
     /// Any engine admission ends the streak.
@@ -157,6 +176,6 @@ struct DeadlineRefusalStreak {
     /// A started probe ends the streak and starts the interval.
     mutating func recordProbe(at now: ContinuousClock.Instant = .now) {
         refusals = 0
-        probeAfter = now.advanced(by: Self.probeInterval)
+        probeAvailableAt = now.advanced(by: Self.probeInterval)
     }
 }

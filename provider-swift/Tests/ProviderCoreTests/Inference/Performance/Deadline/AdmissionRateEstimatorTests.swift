@@ -10,12 +10,14 @@ struct AdmissionRateEstimatorTests {
     private typealias Policy = IsolatedPrefillAdmissionRate
 
     private func bridge(fixes: Bool, nominalPosture: Bool = true,
-        kvBudget: GlobalKVCacheBudget? = nil) -> (EngineV2Bridge, PrefillScriptEngine) {
+        kvBudget: GlobalKVCacheBudget? = nil, refusalProbe: Bool = true,
+        onACPower: @escaping @Sendable () -> Bool = { true }) -> (EngineV2Bridge, PrefillScriptEngine) {
         let engine = PrefillScriptEngine()
         let bridge = EngineV2Bridge(engine: engine, modelId: "gemma-4-26b-qat-4bit",
             tokenizer: TokenizerHandle(PrefillStubTokenizer()), eosTokenIds: [],
             prefillDeadlineMode: .enforce, kvBudget: kvBudget,
-            calibrationPosturePermitsWork: { nominalPosture }, admissionFixes: fixes)
+            calibrationPosturePermitsWork: { nominalPosture }, admissionFixes: fixes,
+            refusalProbe: refusalProbe, evidenceProbeOnACPower: onACPower)
         return (bridge, engine)
     }
 
@@ -482,8 +484,10 @@ struct AdmissionRateEstimatorTests {
     /// slow sample `age` old, in the prompt-size bucket `submit` uses. With no
     /// calibration anchor, neither the idle anchor nor the short expiry applies.
     private func slowBridge(fixes: Bool = true, age: Duration = .seconds(300),
-        kvBudget: GlobalKVCacheBudget? = nil) async -> (EngineV2Bridge, PrefillScriptEngine) {
-        let (bridge, engine) = self.bridge(fixes: fixes, kvBudget: kvBudget)
+        kvBudget: GlobalKVCacheBudget? = nil, refusalProbe: Bool = true,
+        onACPower: @escaping @Sendable () -> Bool = { true }) async -> (EngineV2Bridge, PrefillScriptEngine) {
+        let (bridge, engine) = self.bridge(fixes: fixes, kvBudget: kvBudget, refusalProbe: refusalProbe,
+            onACPower: onACPower)
         engine.setDeadlineBehavior(.reject)
         await bridge.applyRateObservation(observation("isolated_prefill", tps: 50,
             at: ContinuousClock.now - age, prompt: Self.smallPrompt), requestID: "slow", calibration: false)
@@ -811,6 +815,96 @@ struct AdmissionRateEstimatorTests {
         await refuse(bridge, "refused-3")
         #expect(await bridge.deadlineRefusalStreak.refusals == 1)
         await bridge.shutdown()
+    }
+
+    @Test("an unprojected admission ends a partial streak")
+    func unprojectedAdmissionEndsPartialStreak() async throws {
+        let (bridge, engine) = await slowBridge()
+        await refuse(bridge, "refused-1", "refused-2")
+        #expect(await bridge.deadlineRefusalStreak.refusals == 2)
+        // No first-content deadline (a local request): submitted without a projection.
+        let stream = await bridge.submitTokenized(promptTokens: Array(repeating: 1, count: Self.smallPrompt),
+            request: ChatCompletionRequest(model: "gemma-4-26b-qat-4bit", messages: [], max_tokens: 8),
+            requestId: "unprojected")
+        #expect(engine.ordinarySubmissionCount == 1)
+        try await finish(stream, on: engine, prefillMilliseconds: nil)
+        try await waitForRetirement(bridge)
+        #expect(await bridge.isolatedPrefillEvidenceExpired())
+        await refuse(bridge, "refused-3")
+        #expect(await bridge.deadlineRefusalStreak.refusals == 1)
+        await bridge.shutdown()
+    }
+
+    @Test("an admission the engine cancels after accepting it ends a partial streak")
+    func cancelledAdmissionEndsPartialStreak() async throws {
+        let (bridge, engine) = await slowBridge()
+        await refuse(bridge, "refused-1", "refused-2")
+        #expect(await bridge.deadlineRefusalStreak.refusals == 2)
+        engine.setDeadlineBehavior(.cancelAfterAdmit)
+        await #expect(throws: CancellationError.self) { _ = try await submit(bridge, "accepted-then-cancelled") }
+        try await waitForRetirement(bridge)
+        #expect(engine.ordinarySubmissionCount == 0)
+        engine.setDeadlineBehavior(.reject)
+        await refuse(bridge, "refused-3")
+        #expect(await bridge.deadlineRefusalStreak.refusals == 1)
+        await bridge.shutdown()
+    }
+
+    // MARK: - The probe's own switch, and AC power
+
+    @Test("the refusal probe's switch is on by default, only an explicit off value disables it, and it reaches launchd")
+    func refusalProbeSwitchParsing() {
+        let key = DeadlineRefusalProbe.environmentKey
+        #expect(key == "DARKBLOOM_TTFT_REFUSAL_PROBE")
+        #expect(DeadlineRefusalProbe.resolve(environment: [:]))
+        for value in ["1", "true", "on", "", "\n"] {
+            #expect(DeadlineRefusalProbe.resolve(environment: [key: value]))
+        }
+        for value in ["0", "false", "OFF", " no ", "0\n"] {
+            #expect(!DeadlineRefusalProbe.resolve(environment: [key: value]))
+        }
+        // Its own switch: the estimator corrections' key does not turn it off.
+        #expect(DeadlineRefusalProbe.resolve(environment: [DeadlineAdmissionFixes.environmentKey: "0"]))
+        #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))
+    }
+
+    @Test("with the probe's switch off, refusals neither count nor ask for a probe; the estimator corrections stay on")
+    func refusalProbeSwitchOff() async throws {
+        let (bridge, engine) = await slowBridge(refusalProbe: false)
+        await refuse(bridge, "refused-1", "refused-2", "refused-3", "refused-4")
+        #expect(engine.deadlineAdmissions.allSatisfy { $0.conservativePrefillTokensPerSecond == 50 })
+        #expect(await bridge.deadlineRefusalStreak.refusals == 0)
+        #expect(!(await bridge.staleEvidenceProbeDue()))
+        #expect(!(await bridge.evidenceProbePermitted(requireNominalPosture: true)))
+        #expect(await bridge.admissionFixes)
+        await bridge.shutdown()
+    }
+
+    @Test("on battery a full streak waits for AC power before it probes")
+    func batteryDefersTheProbe() async throws {
+        let power = LockedPowerSource(ac: false)
+        let (bridge, _) = await slowBridge(onACPower: { power.ac })
+        await refuse(bridge, "refused-1", "refused-2", "refused-3")
+        #expect(await bridge.staleEvidenceProbeDue())
+        #expect(!(await bridge.evidenceProbePermitted(requireNominalPosture: true)))
+        // Plugged in: the same streak may probe now.
+        power.ac = true
+        #expect(await bridge.evidenceProbePermitted(requireNominalPosture: true))
+        // Callers that waive posture (tests, explicit runs) waive power too.
+        power.ac = false
+        #expect(await bridge.evidenceProbePermitted(requireNominalPosture: false))
+        await bridge.shutdown()
+    }
+}
+
+/// A power source a test can switch while a bridge reads it.
+private final class LockedPowerSource: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Bool
+    init(ac: Bool) { value = ac }
+    var ac: Bool {
+        get { lock.withLock { value } }
+        set { lock.withLock { value = newValue } }
     }
 }
 

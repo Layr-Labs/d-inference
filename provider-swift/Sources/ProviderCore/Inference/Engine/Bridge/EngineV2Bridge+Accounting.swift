@@ -35,6 +35,18 @@ extension EngineV2Bridge {
         active[id]?.completionTokens += newTokens
     }
 
+    /// The requests the engine is answering now, from the counters above:
+    /// what `darkbloom status` lists while an answer runs.
+    func runningRequestSamples(model: String, now: ContinuousClock.Instant = .now)
+        -> [RunningRequestProgressTracker.Sample]
+    {
+        active.map { id, state in
+            RunningRequestProgressTracker.Sample(
+                id: id, model: model, sinceAdmission: now - state.submittedAt,
+                sinceFirstToken: state.firstTokenAt.map { now - $0 }, outputTokens: state.completionTokens)
+        }
+    }
+
     /// Terminal usage can raise observed token counts, never erase them.
     /// Report decode rate over first-token→finish using completion - 1 tokens.
     func recordFinish(

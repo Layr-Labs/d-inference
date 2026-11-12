@@ -144,7 +144,6 @@ private struct SuperHTTPEngine: MLXServerEngine {
             if Task.isCancelled || waitCancellation.isCancelled { throw CancellationError() }
             throw MultiModelBatchSchedulerEngineError.queueFull("the Super owner is busy")
         }
-        let admittedAt = ContinuousClock.now
         let progress = NemotronSuperLocalBridgeBuilder.Owner.LocalRequestProgress(isMedia: media)
         var admissionTransferred = false
         defer { if !admissionTransferred { owner.finishLocalRequest(progress) } }
@@ -192,10 +191,7 @@ private struct SuperHTTPEngine: MLXServerEngine {
         let pair = AsyncThrowingStream<MLXServerGenerationEvent, Error>.makeStream(bufferingPolicy: .bufferingOldest(64))
         let relay = SuperImageHTTPRelay(continuation: pair.continuation, output: output, logprobs: completeLogprobs,
                                         usageSignal: textUsage,
-                                        onFirstChunk: {
-                                            owner.noteLocalFirstChunk(progress)
-                                            if media { owner.recordMediaFirstChunk(ContinuousClock.now - admittedAt) }
-                                        },
+                                        onFirstChunk: { owner.noteLocalFirstChunk(progress) },
                                         onAnswerEnded: { owner.noteLocalAnswerEnded(progress) })
         let scope = LocalRequestCancellation.current
         let task = Task {

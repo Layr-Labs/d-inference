@@ -77,6 +77,12 @@ actor NemotronSuperLocalImageBinding {
         private let lock = NSLock()
         private var streaming = false
         private var ended = false
+        /// When the binding admitted the request.
+        private let admittedAt = ContinuousClock.now
+        /// Told once, at the first chunk, the time since admission.
+        private let onFirstChunk: (@Sendable (Duration) -> Void)?
+
+        init(onFirstChunk: (@Sendable (Duration) -> Void)? = nil) { self.onFirstChunk = onFirstChunk }
         #if DEBUG
         /// TEST SEAM: runs after the answer has ended, before the request's
         /// native settlement, as a slow settlement would (`execute`).
@@ -87,7 +93,13 @@ actor NemotronSuperLocalImageBinding {
         /// The answer is streaming, or has ended.
         var hasStarted: Bool { lock.withLock { streaming || ended } }
 
-        func markFirstChunk() { lock.withLock { streaming = true } }
+        func markFirstChunk() {
+            let first = lock.withLock { () -> Bool in
+                defer { streaming = true }
+                return !streaming
+            }
+            if first { onFirstChunk?(ContinuousClock.now - admittedAt) }
+        }
 
         func markEnded() { lock.withLock { ended = true } }
 
@@ -294,8 +306,12 @@ actor NemotronSuperLocalImageBinding {
         }
     }
 
+    /// Each media request's admission-to-first-chunk time feeds the owner's
+    /// expectation (`Owner.expectedMediaFirstChunk`); a wait before the
+    /// admission is not part of it.
     private func makeProgress() -> MediaProgress {
-        let progress = MediaProgress()
+        let owner = self.owner
+        let progress = MediaProgress(onFirstChunk: { owner.recordMediaFirstChunk($0) })
         #if DEBUG
         progress.testSettlement = testSettlement
         #endif

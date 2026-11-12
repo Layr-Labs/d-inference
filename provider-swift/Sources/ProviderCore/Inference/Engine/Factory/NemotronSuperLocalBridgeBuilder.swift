@@ -246,7 +246,8 @@ enum NemotronSuperLocalBridgeBuilder {
             }
         }
 
-        /// Records one media request's time from its admission to its first chunk.
+        /// Records one media request's time from its image-binding admission
+        /// to its first chunk.
         func recordMediaFirstChunk(_ elapsed: Duration) {
             lock.withLock {
                 mediaFirstChunks.append(elapsed)

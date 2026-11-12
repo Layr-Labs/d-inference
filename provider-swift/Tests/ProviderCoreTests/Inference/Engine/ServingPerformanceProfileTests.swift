@@ -210,7 +210,9 @@ private func measuredProfileFixture() -> ServingPerformanceProfile {
 /// W14/W8d.6: right after a start on a warm Mac the automatic width falls back
 /// to 4, and a local stream holding its head sits in both the active map and
 /// the pending set until its submit returns. Each request counts once, so a
-/// burst of four small streams is admitted and only a fifth is refused.
+/// burst of four small streams is admitted and only a fifth is refused. An
+/// admitted request whose submit returned (a coordinator row) is only in the
+/// active map, and counts too.
 @Test func heldLocalHeadsCountOnceAtTheFallbackWidth() async {
     let budget = GlobalKVCacheBudget(memorySnapshot: {
         .init(total: 64 << 30, active: 0, cache: 0, systemAvailable: 64 << 30)
@@ -225,9 +227,15 @@ private func measuredProfileFixture() -> ServingPerformanceProfile {
     #expect(await bridge.acquireServiceAllowance(requestID: "fourth", allowExpansion: false))
     await bridge.profileTestHoldHeads(["fourth"])
     #expect(await bridge.acquireServiceAllowance(requestID: "fifth", allowExpansion: false) == false)
+    // Two held heads beside two admitted coordinator rows also fill the width.
+    await bridge.profileTestReleaseHeads(["third", "fourth"])
+    await bridge.profileTestAdmit(["coordinator-1", "coordinator-2"])
+    #expect(await bridge.acquireServiceAllowance(requestID: "fifth", allowExpansion: false) == false)
+    await bridge.profileTestReleaseHeads(["coordinator-2"])
+    #expect(await bridge.acquireServiceAllowance(requestID: "fifth", allowExpansion: false))
     // An expanded posture still admits up to its own width.
     #expect(await bridge.acquireServiceAllowance(requestID: "expanded", allowExpansion: true))
-    await bridge.profileTestReleaseHeads(["first", "second", "third", "fourth", "expanded"])
+    await bridge.profileTestReleaseHeads(["first", "second", "coordinator-1", "fifth", "expanded"])
     #expect(budget.serviceBudget.count == 0)
     await bridge.shutdown()
 }
@@ -246,6 +254,11 @@ private extension EngineV2Bridge {
             active[id] = ActiveRequestState(promptTokens: 1, maxTokens: 1, submittedAt: .now)
             pendingSubmissionIDs.insert(id)
         }
+    }
+
+    /// A request whose submit returned (every coordinator request): only in `active`.
+    func profileTestAdmit(_ ids: [String]) {
+        for id in ids { active[id] = ActiveRequestState(promptTokens: 1, maxTokens: 1, submittedAt: .now) }
     }
 
     func profileTestReleaseHeads(_ ids: [String]) {

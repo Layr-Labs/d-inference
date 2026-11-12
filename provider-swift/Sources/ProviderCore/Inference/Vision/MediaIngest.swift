@@ -269,6 +269,8 @@ public enum MediaIngest {
     /// Build a model-agnostic `UserInput` from the OpenAI request, decoding any
     /// inline image/video content parts. Inline MP4s are retained in memory by
     /// their `UserInput.Video` values for the lifetime of the returned input.
+    /// Without `maxImagesPerRequest`, the image cap is the request's model's
+    /// (`imageCap(forModel:)`).
     static func buildUserInput(
         from request: OpenAIChatCompletionRequest,
         templateControls: ChatTemplateControls = .init(),
@@ -277,10 +279,11 @@ public enum MediaIngest {
         modelType: String? = nil,
         maxImagePixels: Int = Self.maxImagePixels,
         maxRequestImagePixels: Int = Self.maxRequestImagePixels,
-        maxImagesPerRequest: Int = Self.maxImagesPerRequest,
+        maxImagesPerRequest: Int? = nil,
         maxVideosPerRequest: Int = Self.maxVideosPerRequest,
         maxRequestVideoFramePixels: Int = Self.maxRequestVideoFramePixels
     ) async throws -> UserInput {
+        let maxImagesPerRequest = maxImagesPerRequest ?? imageCap(forModel: request.model)
         try rejectUnsupportedAudio(request)
         let tools = ChatTemplateFixes.normalizeToolMetadata(
             tools, context: .init(modelId: request.model, modelType: modelType))
@@ -501,20 +504,31 @@ public enum MediaIngest {
     /// Max inline image parts per request — bounds the number of sequential
     /// vision-tower forward passes one request can drive (the tower runs once
     /// per image) independently of their pixel count, which the processor
-    /// resizes away. The image analog of `maxVideosPerRequest`.
+    /// resizes away. The image analog of `maxVideosPerRequest`. A model in
+    /// `modelMaxImagesPerRequest` has its own default (`imageCap(forModel:)`).
     public static let maxImagesPerRequest = resolveMaxCount(
         env: maxImagesEnvironmentKey, defaultCount: defaultMaxImagesPerRequest)
 
     static let maxImagesEnvironmentKey = "DARKBLOOM_MAX_IMAGES_PER_REQUEST"
     static let defaultMaxImagesPerRequest = 16
 
-    /// The image cap for one request to `model`.
+    /// Image-count defaults above 16, by served model id. Qwen3.5-9B: an
+    /// OpenRouter client sends 17–61 images (mostly 60, ~7.4 MB) a request.
+    /// Memory stays bounded: the aggregate-pixel and per-part caps bound
+    /// decode, the vision gate reserves 1,024 KV tokens per image before any
+    /// work, and the tower runs one image at a time.
+    static let modelMaxImagesPerRequest: [String: Int] = ["Qwen3.5-9B": 64]
+
+    /// The image cap for one request to `model`: the
+    /// `DARKBLOOM_MAX_IMAGES_PER_REQUEST` override when set (every model), else
+    /// the model's own default, else 16.
     static func imageCap(
         forModel model: String?,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Int {
         resolveMaxCount(
-            env: maxImagesEnvironmentKey, defaultCount: defaultMaxImagesPerRequest,
+            env: maxImagesEnvironmentKey,
+            defaultCount: model.flatMap { modelMaxImagesPerRequest[$0] } ?? defaultMaxImagesPerRequest,
             environment: environment)
     }
 

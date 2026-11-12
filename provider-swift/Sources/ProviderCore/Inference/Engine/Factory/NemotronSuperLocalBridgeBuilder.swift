@@ -204,6 +204,12 @@ enum NemotronSuperLocalBridgeBuilder {
             }
         }
 
+        /// Fewer than `maximumLocalRequests` are admitted: a request arriving
+        /// now, text included, would be admitted.
+        var hasFreeLocalAdmission: Bool {
+            lock.withLock { localRequestsAdmitted < maximumLocalRequests }
+        }
+
         /// An admitted request sent its first chunk: a media request's answer
         /// is streaming and ends soon.
         func noteLocalFirstChunk(_ progress: LocalRequestProgress) {

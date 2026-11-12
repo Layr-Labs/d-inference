@@ -78,7 +78,8 @@ actor NemotronSuperLocalImageBinding {
         private var streaming = false
         private var ended = false
         #if DEBUG
-        /// TEST SEAM: runs once the answer has ended, as a slow settlement would.
+        /// TEST SEAM: runs after the answer has ended, before the request's
+        /// native settlement, as a slow settlement would (`execute`).
         var testSettlement: (@Sendable () async -> Void)?
         #endif
 
@@ -88,12 +89,7 @@ actor NemotronSuperLocalImageBinding {
 
         func markFirstChunk() { lock.withLock { streaming = true } }
 
-        func markEnded() async {
-            lock.withLock { ended = true }
-            #if DEBUG
-            await testSettlement?()
-            #endif
-        }
+        func markEnded() { lock.withLock { ended = true } }
 
         func markCancelled() { lock.withLock { ended = true } }
     }
@@ -274,9 +270,10 @@ actor NemotronSuperLocalImageBinding {
     /// wait for it, one request at a time and reserving nothing until it is
     /// admitted: for up to `NemotronSuperServingPolicy.finishingWait` while
     /// the active answer has ended and only its settlement remains, and until
-    /// `stackedUntil` while the active answer streams. The active request's
-    /// charge is released before the waiting one reserves. Any other request
-    /// is refused at once, as before.
+    /// `stackedUntil` while the active answer streams and the owner still has
+    /// a free request slot besides this one's. The active request's charge is
+    /// released before the waiting one reserves. Any other request is refused
+    /// at once, as before.
     private func admit(stackedUntil: ContinuousClock.Instant?) async throws {
         let finishingEnd = ContinuousClock.now + NemotronSuperServingPolicy.finishingWait
         let id = UUID()
@@ -287,7 +284,10 @@ actor NemotronSuperLocalImageBinding {
             guard active != nil, let progress = activeProgress else { return }
             let now = ContinuousClock.now
             let settling = now < finishingEnd && progress.isEnded
+            // A stacked wait never holds the owner's last free request slot,
+            // which text would otherwise be refused for.
             let stacked = stackedUntil.map { now < $0 } == true && progress.hasStarted
+                && owner.hasFreeLocalAdmission
             guard settling || stacked else { throw Failure.busy }
             waiter = id
             try await Task.sleep(for: .milliseconds(5))
@@ -608,7 +608,10 @@ actor NemotronSuperLocalImageBinding {
             }
             // The stream closes before the row's native retirement
             // (`EngineV2Bridge` pump): only settlement remains.
-            await progress.markEnded()
+            progress.markEnded()
+            #if DEBUG
+            await progress.testSettlement?()
+            #endif
             if Task.isCancelled { await bridge.cancel(requestId: requestID) }
             await usage.waitForTerminalObservation()
         } onCancel: { Task { await bridge.cancel(requestId: requestID) } }

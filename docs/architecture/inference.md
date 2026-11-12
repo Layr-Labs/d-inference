@@ -740,17 +740,23 @@ the binding's media request, has finished its answer and only its settlement
 remains (native retirement, the media charge's release) waits up to
 `NemotronSuperServingPolicy.finishingWait` (1 s) for it instead of a 429
 `queue_full` (`NemotronSuperLocalBridgeBuilder.Owner.admitLocalRequest(waitingUpTo:stackedUntil:cancelled:)`,
-`NemotronSuperLocalImageBinding.admit(stackedUntil:)`). A media request that
-arrives while every request ahead of it is a media answer already streaming
-(its first chunk has passed; images end about 2 s later) also waits, until
+`NemotronSuperLocalImageBinding.admit(stackedUntil:)`). The managed slot's owner
+admits up to eight requests at once (`loadPlan`, halved by the load fit), so its
+media requests meet the binding's one-at-a-time limit long before the owner's
+request limit. A media request that
+arrives while the media request ahead of it is already streaming its answer
+(its first chunk has passed; images end about 2 s later), at the binding, or at
+a full owner whose admitted requests all are such answers, also waits, until
 `NemotronSuperServingPolicy.stackedMediaWaitEnd`: at most `stackedMediaWait`
 (3 s), and for a coordinator request only while its forwarded first-content
 deadline still covers the owner's expected media first-chunk time (the longest
 of its last `mediaFirstChunkSamples`, `Owner.expectedMediaFirstChunk`) and
 `stackedMediaWaitMargin`. A local request forwards no deadline and may wait the
-whole bound. One request waits at a time and takes the next admission before
-any newcomer; any other request, text mid-answer included, is still refused at
-once. A waiting request reserves nothing, so the previous request's media
+whole bound. At the binding it waits only while the owner keeps a request
+slot free besides its own (`Owner.hasFreeLocalAdmission`), so a waiting image
+never takes the slot a text request would get. One request waits at a time and
+takes the next admission before any newcomer; any other request, text
+mid-answer included, is still refused at once. A waiting request reserves nothing, so the previous request's media
 charge is released before it reserves; cancellation (a coordinator cancel or a
 local disconnect) ends the wait. Under the ingress reservation `NemotronSuperVideoDecode.inspect`
 runs the shared `MediaIngest.decodeVideo` checks (label, decoded bytes,

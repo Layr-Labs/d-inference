@@ -269,14 +269,21 @@ a terminal or not (`StartServingResolver`,
    background service, `restart` and `update` serve it from now on; `--local
    --here` (one terminal session) and the `--foreground` service save no mode. A
    plain `start --local` on one Mac saves it.
-   **Beside `--solo`, every flag is for that start only**
+   **Beside `--solo`, a start changes none of the pair's `[local]` settings**
    (`LocalFirstOptions.solo`): on a Mac in a pair `[local]` holds the pair's
    settings, so a solo start saves no mode (nor the default's), and refuses
    `--route`, `--me-first-idle`, `--no-me-first`, and `--me-first` over a saved
    `me_first = false`, when one would change the pair's value, before anything
    starts or is saved (exit 64, ``… would change [local] route, which your pair
    reads too. …``, `StartServingResolver.soloSettingsRefusal`). Only a new or
-   named port is saved: this Mac's one port, the pair's API's too.
+   named port is saved there: this Mac's one port, the pair's API's too. Like
+   every background start, a solo one still saves single-Mac serving's own
+   choices outside `[local]`, which the pair doesn't read: the models it serves
+   (`--model`, `--all` or the picker) in `[backend] enabled_models`
+   (`ProviderModelSelection.withReplacement`), so the background service,
+   `restart` and `update` serve the same models, and `--idle-timeout` in
+   `[backend] idle_timeout_mins`. `--local --here` and the `--foreground`
+   service save no model choice.
 2. The saved choice, `[local] mode`, Only me included: every choice serves in
    the background. A saved Both keeps its pause as saved (`me_first` absent is
    on, as before).

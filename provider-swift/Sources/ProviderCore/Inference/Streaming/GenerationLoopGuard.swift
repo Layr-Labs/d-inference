@@ -19,9 +19,15 @@ public struct GenerationLoopGuard: Sendable {
     private var carry = ""
     /// Set by a tool-call frame, or once the guard fired: it never fires again.
     private(set) var disarmed = false
+    /// The way out of a repeating thought, when this request may take it
+    /// (`GenerationLoopExitThinkingPolicy`); nil keeps every stop a `length`.
+    let exitThinking: GenerationLoopExitThinking?
+    /// Set when the guard's stop ended the thought rather than the answer.
+    private(set) var endsThought = false
 
     init(modelType: String, toolCallMarkers: [String],
-         thresholds: GenerationLoopDetector.Thresholds = .init()) {
+         thresholds: GenerationLoopDetector.Thresholds = .init(),
+         exitThinking: GenerationLoopExitThinking? = nil) {
         self.modelType = modelType
         self.detector = GenerationLoopDetector(thresholds: thresholds)
         self.toolCallMarkers = toolCallMarkers.filter { !$0.isEmpty }
@@ -30,6 +36,7 @@ public struct GenerationLoopGuard: Sendable {
             marker.utf8.contains { probe.contains($0) }
         } ? probe : []
         self.carryLength = max(0, (self.toolCallMarkers.map(\.count).max() ?? 1) - 1)
+        self.exitThinking = exitThinking
     }
 
     /// One delta of the row: its text and the tokens behind it. Returns the

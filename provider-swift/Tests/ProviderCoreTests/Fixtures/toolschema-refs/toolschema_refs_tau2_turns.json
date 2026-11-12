@@ -1,0 +1,2274 @@
+{
+ "about": "GEMMA-DIAG's 126 Tau2-Airline-shaped turns (make_tau2_set.py): every turn's tools hash (sha256 of the sorted-key compact JSON) equals toolschema_refs_tau2_airline.json's; gemma_prompt is the exact served-template prompt (gemma-4-26b-qat-4bit rev 34f030b1, template 94899c0f): token count and sha256 of the comma-joined token IDs, for the current declaration (the provider's own tokens at 0.10.12), the inline declaration and the typed declaration.",
+ "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22",
+ "turns": [
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "74ec710310cba97e640c584bcdd5073431427bf621b95255f5a7e1d88215b428",
+     "tokens": 4025
+    },
+    "inline": {
+     "sha256": "68d197ca263a96f7c440a7257dd62a949b09c58c89c5f1649a908066d99ca252",
+     "tokens": 4595
+    },
+    "typed": {
+     "sha256": "fa20ef6aaee506eed5c3d2450984569614da573409841d0c49784dca903c8459",
+     "tokens": 4065
+    }
+   },
+   "id": "t00-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "a76777b9f08109f444eaafcf8b5f316fafd5db5c4f26e1e8c4f137ed24efa092",
+     "tokens": 4017
+    },
+    "inline": {
+     "sha256": "a08d55b4982ed2fb5f2f40e48add1dbe70a7aa971a4faf786e14d1bceee8f091",
+     "tokens": 4587
+    },
+    "typed": {
+     "sha256": "ede8cc8390c7847fd52937ec34741804eacefe9fa5cfa2671673b549b31e350d",
+     "tokens": 4057
+    }
+   },
+   "id": "t01-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "dbf20228e77fe0b9cf1e7c818a8f3b83369ac2c1e4198f059fcf71056884ac26",
+     "tokens": 4500
+    },
+    "inline": {
+     "sha256": "9306f358460c0e36653dc71adeae7ea4e6dfb0ba68d98520d532bbe5d8ad1105",
+     "tokens": 5070
+    },
+    "typed": {
+     "sha256": "b25087e85e6f46fa51fcf6d9ea82db26030b81c7e16969dcb2d88cf064abf009",
+     "tokens": 4540
+    }
+   },
+   "id": "t01-s1",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "f4f38c97fae0dca17d49b9fec73732889448d1b8659eeb82af4aba7277efe37d",
+     "tokens": 4867
+    },
+    "inline": {
+     "sha256": "fbe6b32d34be4e02ac4aa34add24008bfd9490d64d6a2fd035faaa26ed7fd179",
+     "tokens": 5437
+    },
+    "typed": {
+     "sha256": "53049c20a75c428449d4a97c8bfa4265ea63a60d9a65b8e43174ada25f06094f",
+     "tokens": 4907
+    }
+   },
+   "id": "t01-s2",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "570033c6b22cebdc352eba75abe5f31537828ae61fae363c8563c68bef41baf9",
+     "tokens": 4044
+    },
+    "inline": {
+     "sha256": "5015843da21ce1ea07ed3bbeeca22f5f3ef3a5e71182db6f3e68a8c113d0c43b",
+     "tokens": 4614
+    },
+    "typed": {
+     "sha256": "9f75d1cc3d18a4ff465bd6fecdc5ab239494bb74056c2647ab34d53b4843b6f0",
+     "tokens": 4084
+    }
+   },
+   "id": "t02-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "9051dc50fbb45fdb36590195d39bdbdefc5e4dda89ae8267d705d9c8d408c275",
+     "tokens": 4643
+    },
+    "inline": {
+     "sha256": "c1d5bf2ce9ecb585b860da0fad013dbf06f8b5bcc9f390132dc33469da7dec12",
+     "tokens": 5213
+    },
+    "typed": {
+     "sha256": "e0c0e6beb083274576ddb88df1337127aab033aa3a31228653983657b1d06223",
+     "tokens": 4683
+    }
+   },
+   "id": "t02-s1",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "526049ced6a473354e374ee4a6641b692cebee1c5677bed3fb14775deea0888e",
+     "tokens": 5083
+    },
+    "inline": {
+     "sha256": "1f0443b83ef874527ac0cfaf1ae88c6c29ecf54eadd0abd5cc396b514207359e",
+     "tokens": 5653
+    },
+    "typed": {
+     "sha256": "3b25d3ab89c2db44ddee4ab089f25d65540ea377a61bbcd13916742a3e58e6e4",
+     "tokens": 5123
+    }
+   },
+   "id": "t02-s2",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "08d4f1dd7fbf118872a160cee7fbfa1204491b633ec144b1b0207d18958ba169",
+     "tokens": 5489
+    },
+    "inline": {
+     "sha256": "feed88707666326b8cc847d0c97b97c8944182f3d6701c4645de7dab0c5734e2",
+     "tokens": 6059
+    },
+    "typed": {
+     "sha256": "2aa29052ebf0e4e541a7749e0b5b7800787e0a65b602651374cee02920ad2301",
+     "tokens": 5529
+    }
+   },
+   "id": "t02-s3",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "8ae83fff08d703b083811b8d02b19c95c1a8e373928593970008c2bb67de82d5",
+     "tokens": 4066
+    },
+    "inline": {
+     "sha256": "a7594bda83bb10d70fecabeb12ebf3752b8baa3221856daf1760fa8d237e3a66",
+     "tokens": 4636
+    },
+    "typed": {
+     "sha256": "6bb5fb455b2ef8deb187da633a78b05b7469042c20ba9721628e4ea2e1413d80",
+     "tokens": 4106
+    }
+   },
+   "id": "t03-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "63bf911fad6656f3174936e29625fcbaf89dd8c34f41d0f1f6a1ac9ce462676c",
+     "tokens": 4363
+    },
+    "inline": {
+     "sha256": "5c3f426a90a20b424a1f64917aaaaeeef8b0102fcea4047ff797139896ed3b2e",
+     "tokens": 4933
+    },
+    "typed": {
+     "sha256": "961aaacc5a857ab6cfd9ebf1154bd9288a110fa2cf46d8363ceafc9d2d36f200",
+     "tokens": 4403
+    }
+   },
+   "id": "t03-s1",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "c2fcc962cd774026a92065ddb7d52595e0f4564e34869e47cad7b81a60b5c234",
+     "tokens": 4725
+    },
+    "inline": {
+     "sha256": "c011f7ea74cc683f330c4a25eba4396d8d10a506e056319a58aea38df213226a",
+     "tokens": 5295
+    },
+    "typed": {
+     "sha256": "b5f580a0504c578196de08f33b053bc7e322fb31977d9e8f7ffcf9caa041b05a",
+     "tokens": 4765
+    }
+   },
+   "id": "t03-s2",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "bd315d01f76ad7d08b14cc0df7e96e60e1d189be665356ed79e935d3ff182d2c",
+     "tokens": 4051
+    },
+    "inline": {
+     "sha256": "ab162f79e6fc0a93ee68625a37d8290d771b86237127e26532a118bc7ce5b1cd",
+     "tokens": 4621
+    },
+    "typed": {
+     "sha256": "64cd8beda7990f47d103166e98ad1c9642a063ba66af6e3287897cb87f1de6df",
+     "tokens": 4091
+    }
+   },
+   "id": "t04-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "09cc1abbe25e6fb267e4ea5186bb990db4032351ed5551bd107739e79a7844ea",
+     "tokens": 4518
+    },
+    "inline": {
+     "sha256": "fb579250b89d3d96f21fbac1f05c533d44d40c01aa089bc6a9cb537733ab6548",
+     "tokens": 5088
+    },
+    "typed": {
+     "sha256": "4362f79a714e2872ed312cdf58cd197f9289a30974962e86f0ac5e0d02433a89",
+     "tokens": 4558
+    }
+   },
+   "id": "t04-s1",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "2bcc7f7dac585fa5d7a2100f2e254ce1c1e481720323c50588cd79d65fd1dfa1",
+     "tokens": 4833
+    },
+    "inline": {
+     "sha256": "a1c08f009a38a78ee0b0485191ae68cb765ba4360c97e8ff3e758463a8171df4",
+     "tokens": 5403
+    },
+    "typed": {
+     "sha256": "d8b579f3b98652915fdc99ef1d852031d3265150c94bd0698ddfeb4576bf6499",
+     "tokens": 4873
+    }
+   },
+   "id": "t04-s2",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "a41f80b00b930b75c13d518381590ea03dcc9c3269c89eeb19f0386504a7af8c",
+     "tokens": 5149
+    },
+    "inline": {
+     "sha256": "c098539c83c3deaaa70e0cfa554ce536b7be74a509dff153e8fd915e52e3d344",
+     "tokens": 5719
+    },
+    "typed": {
+     "sha256": "4a82693257107ab456a7104e14ce08844eaa2eb3b96f696047c3367b99db5e46",
+     "tokens": 5189
+    }
+   },
+   "id": "t04-s3",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "ab17ed1dd03d49b59b1bd264741624b65463cc68f48b65cb6afdeb7d196285f5",
+     "tokens": 4007
+    },
+    "inline": {
+     "sha256": "fab95feea923127b2a47f61ddf1ebdc47a99bc6c05ca491a9eb81d2fc12ef9ad",
+     "tokens": 4577
+    },
+    "typed": {
+     "sha256": "a61ad2605b1798dfcde9f67376394e5d95426368479880bea4649a08c3ce843d",
+     "tokens": 4047
+    }
+   },
+   "id": "t05-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "4f583fffa7c96c893fd1ce5ecf7218be1dce9023adafe62347d66bf5d8b57eec",
+     "tokens": 4538
+    },
+    "inline": {
+     "sha256": "cb8cb0c362a476f1f386672db70caf405b1271ee8d33b569e1d5584da6426bf5",
+     "tokens": 5108
+    },
+    "typed": {
+     "sha256": "d051b19c3524e2c69dfbc9998f3ff17c827814a1cf8623337b073dceddef46e5",
+     "tokens": 4578
+    }
+   },
+   "id": "t05-s1",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "873d2bfcc9dbf4352fad7cc387ce6183d06555eecd37ce81fdd90b1bb1dc2935",
+     "tokens": 4042
+    },
+    "inline": {
+     "sha256": "97bc3e57147a66af87cac9d3d92920855e4bd4a9b6e0579e69f4816b585f3f56",
+     "tokens": 4612
+    },
+    "typed": {
+     "sha256": "379efbffde7b3d2866823a7da0eb1745241199096f2fcca2bc3a1fd83cc2bc57",
+     "tokens": 4082
+    }
+   },
+   "id": "t06-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "e877c000bf4104808c3bc89de5b0dfe5ac6631163b442be4d53a1d7d097828c7",
+     "tokens": 4358
+    },
+    "inline": {
+     "sha256": "a45df4a596258ced88e3c3204b44cfcfb9f29f62dce4f870e622f244fd0f235e",
+     "tokens": 4928
+    },
+    "typed": {
+     "sha256": "44b4a531f3b6c5d935982e9ca24c002c1cec02ffae7125126fa888a0da3bcbd4",
+     "tokens": 4398
+    }
+   },
+   "id": "t06-s1",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "7718c31d2802cc825604fb043d47412bb11c1526e68994ac2b5d07f159ae614a",
+     "tokens": 4008
+    },
+    "inline": {
+     "sha256": "5fd6caed323566c8b9a71fd360048a61baa0014fc2c777ace493ea65ba3c1489",
+     "tokens": 4578
+    },
+    "typed": {
+     "sha256": "b0058b160b601522ae902bf18675d538b14c8106fdedcfe14f87046f536becff",
+     "tokens": 4048
+    }
+   },
+   "id": "t07-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "cec10aedbae219b9a79f00d289f08217f37f23e3eecf61807dae391329d254f0",
+     "tokens": 4352
+    },
+    "inline": {
+     "sha256": "8edb8070ddb02846dc492a14fca6dd8a9b3179d0d4521e57d0370ad193b0cbb4",
+     "tokens": 4922
+    },
+    "typed": {
+     "sha256": "6f21ff5b42e33f080c1f7109c5f59bb4103e94784c3c841961a3120d42fddb59",
+     "tokens": 4392
+    }
+   },
+   "id": "t07-s1",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "cc8c27e39441437fc2b5686ec80c91aae06a22fa079407b184b189b35ef9c1a5",
+     "tokens": 4698
+    },
+    "inline": {
+     "sha256": "6c8aead32ad5892e9c751d7fffe1ae955384a95d19e341ea96e351cc1b936e75",
+     "tokens": 5268
+    },
+    "typed": {
+     "sha256": "9fa6b8cfcb430334198b64ef29e3f526c15ec734af0e5c06d105132363eea860",
+     "tokens": 4738
+    }
+   },
+   "id": "t07-s2",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "14edbd3afec906a8da7bd46907e3d2a2a8ca9fe9871dcc5f34e3ac9ad4b032fa",
+     "tokens": 4789
+    },
+    "inline": {
+     "sha256": "6152951e48c20ef4178631c6494a271df1fcb9e4505ba0d40d775e2faf0f130f",
+     "tokens": 5359
+    },
+    "typed": {
+     "sha256": "addb9c18e5b9c46d42ff83d224db37fe48d76d27d89abe08f0e311bc2b84f484",
+     "tokens": 4829
+    }
+   },
+   "id": "t07-w-update_reservation_flights",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "6cee1bc9281fb80dfa6eff1f8e777cd79888b29b5c65959060e0cdc6a199caae",
+     "tokens": 4011
+    },
+    "inline": {
+     "sha256": "855383b33985ec2656eda119d28d4f3771ca5b6c44ee615e12176583e4ff21cd",
+     "tokens": 4581
+    },
+    "typed": {
+     "sha256": "21ccb6216aa76e5b4b6463340e37390b4b2cbeca31c33ad42c2ae683e8c5f0df",
+     "tokens": 4051
+    }
+   },
+   "id": "t08-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "fceabe01a38ad42ea362a2641bc732dfac4c107f96e6b01ef7aac8e2f1b619e5",
+     "tokens": 4478
+    },
+    "inline": {
+     "sha256": "48e6116baae75de79c303d11c0ef46cd49d84d033dc37618b7cc79a4c8648e70",
+     "tokens": 5048
+    },
+    "typed": {
+     "sha256": "2dce11c8f70a7e1df45b70161779b3276f1616bac31a020e6c33b29ac124aac8",
+     "tokens": 4518
+    }
+   },
+   "id": "t08-s1",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "6bf459c89aaccec5dc1dd3b1dfc2d84942a0c7ad9f1a892fd13d4cfd7c810461",
+     "tokens": 4791
+    },
+    "inline": {
+     "sha256": "4d71e39fe5ddc60ccec3de6282c37459ac9ae65021ebefc9045f961ce797a1d6",
+     "tokens": 5361
+    },
+    "typed": {
+     "sha256": "c8d87f64080161c133b790e8f36e685114a95c7a93c21b72590f54cf03186707",
+     "tokens": 4831
+    }
+   },
+   "id": "t08-s2",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "0e39abd1fc839e9128b5a1a96f14d7587f803db26470198765ca004e91ebd006",
+     "tokens": 5228
+    },
+    "inline": {
+     "sha256": "2af44b9f4c4375bfe27ebd7d65adabf60d69116c202a0cf1dd5c919017f97bc3",
+     "tokens": 5798
+    },
+    "typed": {
+     "sha256": "7c444267d1f582bb47b027349d89c6cb9cadd55cc3c3af9198fec4a591f50ce6",
+     "tokens": 5268
+    }
+   },
+   "id": "t08-s3",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "e7a8eae2fba0abdf46457f10deec097979bb0e585fb9bfccd8bb0fb4a20fe0af",
+     "tokens": 5362
+    },
+    "inline": {
+     "sha256": "a83331d0b3e5ef669729366ee6b54867c5ef8d39c9d8c783f33b223084a073bd",
+     "tokens": 5932
+    },
+    "typed": {
+     "sha256": "7758438eb8fede392f38c4cf6b84e7a24ebb9048529cc0577496f8b70d49dbe9",
+     "tokens": 5402
+    }
+   },
+   "id": "t08-w-book_reservation",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "8b4173f513bb2303f3c45f00de42da7331c99ef51a8a09b7adf69d34a5b8bbc7",
+     "tokens": 4030
+    },
+    "inline": {
+     "sha256": "b3d4465a42aacead8737571739c50eb1208add66c511b012080d43a76694b921",
+     "tokens": 4600
+    },
+    "typed": {
+     "sha256": "308a8534efbf69122ba00746921bef7690fff7d2fec2820f9e403060929efdd1",
+     "tokens": 4070
+    }
+   },
+   "id": "t09-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "80e272f1533a74ce2c506c28cb5a5d92bc155f6cda11859d726ddb46eb73704d",
+     "tokens": 4085
+    },
+    "inline": {
+     "sha256": "60c2a4c86db5fe3a230c669df9996df9dc5e6ace3682c75b2bc258c038b84d12",
+     "tokens": 4655
+    },
+    "typed": {
+     "sha256": "9528e38c9da8bc7d20d1adc51a912e90e3079c90eae628ade660491d13abc51d",
+     "tokens": 4125
+    }
+   },
+   "id": "t09-s1",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "5b116a511e4d5cdc6d20f4cc02800a6b120064cbf34e1be149bf577d32f9441e",
+     "tokens": 4035
+    },
+    "inline": {
+     "sha256": "b93c90a2d2342b8946720caf0aa363b20a3a43a3b5e703ca20a9be2aff629a5f",
+     "tokens": 4605
+    },
+    "typed": {
+     "sha256": "237865d4e077a8ff3af335941d2662f47f47c9e553ae2d2dc295239eac3b3906",
+     "tokens": 4075
+    }
+   },
+   "id": "t10-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "296a2fed3bc1fd9657a08f05d4bba042e1eeabddab925af0811d47ab7a14992e",
+     "tokens": 4020
+    },
+    "inline": {
+     "sha256": "a5314affe964d8a8f1ef86370f4b4c6b726ea38366491574a452a1ff1b0bbc9c",
+     "tokens": 4590
+    },
+    "typed": {
+     "sha256": "b102b833cb6214fb9e782936b88d763e098168f1888b9b4f2a8959d045ea618f",
+     "tokens": 4060
+    }
+   },
+   "id": "t11-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "8ccd1b337c8e49db9c384abdf3439014977761d2134fe86d5d3b03e6d76cbb81",
+     "tokens": 4113
+    },
+    "inline": {
+     "sha256": "74804f4e5c8f4cc7fb5ee39563eedeb3908b58707c21ed4535c427c59bc7f262",
+     "tokens": 4683
+    },
+    "typed": {
+     "sha256": "6203f275a556f64714c1f1ff86c95f0de4bef80f4fb18af7d606bef157b210c7",
+     "tokens": 4153
+    }
+   },
+   "id": "t11-w-update_reservation_flights",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "65799cefd71f89e5d054cb8090063b229d6d9f3014b269a6773e54dcc99cba0d",
+     "tokens": 4042
+    },
+    "inline": {
+     "sha256": "51707c6369e60f130c071398c806253f73547324482ff9e1dfe1d169fbda9801",
+     "tokens": 4612
+    },
+    "typed": {
+     "sha256": "085f4f8ef4b56e625add220387cea1ee5d81f350ac2f0201ceec85625ecf2392",
+     "tokens": 4082
+    }
+   },
+   "id": "t12-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "9186e0848f03984564a4a7bc174659fa79e97f7fc020276059a6f825af5ff77b",
+     "tokens": 4386
+    },
+    "inline": {
+     "sha256": "adaa6dccabf4c3813af862ceb96e0f3d6ac09341eead54007d44d8304f58d44b",
+     "tokens": 4956
+    },
+    "typed": {
+     "sha256": "9aa349dd24aff15035e483228f7ad2af34fce3e5c9737f969d8476a2fe383e12",
+     "tokens": 4426
+    }
+   },
+   "id": "t12-s1",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "fbc498e3530f1430a56f5b2b02dfa56f5d66118b98810f527eb537ec14fc9bc1",
+     "tokens": 4954
+    },
+    "inline": {
+     "sha256": "343da6d3c99e596f7f2412f7cdddcaa7c9febf3d26097269419e1d75505fff2d",
+     "tokens": 5524
+    },
+    "typed": {
+     "sha256": "9358cd59cfc69d3a620569fa628821cfa2a389f5f4e8d97ce6ad2040975409fd",
+     "tokens": 4994
+    }
+   },
+   "id": "t12-s2",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "8db1ea910d50ac8f021c36ff092a5939a112ef134e55fd12e2a458c03ee5a795",
+     "tokens": 5136
+    },
+    "inline": {
+     "sha256": "b20887ed492c7a481f488c0be539deb506e5a1e5e9cd07d29ad5e829fd2f5d21",
+     "tokens": 5706
+    },
+    "typed": {
+     "sha256": "f170e857d7f3041a35cd5eedfec762dd6a9dcdad024d55f1a385d000b8ae0f5b",
+     "tokens": 5176
+    }
+   },
+   "id": "t12-s3",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "9fe85d1276a96db322fe2e03a709607c1ff8274818d5a066b7e9f04b1a9a1cf8",
+     "tokens": 4024
+    },
+    "inline": {
+     "sha256": "b1bd2f6aa039a53c8784d6be4004167c5871817c17cff298d66798cc324a147c",
+     "tokens": 4594
+    },
+    "typed": {
+     "sha256": "a6c965976fc0d7af32a33d308152a4ab3ca0f5726efed2a808c601cb06860e77",
+     "tokens": 4064
+    }
+   },
+   "id": "t13-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "85715cb7c1c8846b37224531b96d3438be70474a295d641905efc1c0ccc88941",
+     "tokens": 4015
+    },
+    "inline": {
+     "sha256": "078077f682225f81e3ce52e4f011a75467b7d5104324bf886e556f6aedd89394",
+     "tokens": 4585
+    },
+    "typed": {
+     "sha256": "79bf33d5393e3e6e28f3adbf41c37c2d915041a2af3b4cc02ca71891ddee2081",
+     "tokens": 4055
+    }
+   },
+   "id": "t14-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "3879aa7d52c49433e121ebc125df2a51b81d418f54d035db8e28c70c090351a5",
+     "tokens": 4028
+    },
+    "inline": {
+     "sha256": "bccab0d0cde99b848eb9d42c7c4f8d074dd72139c3f651482199bed5b9c69965",
+     "tokens": 4598
+    },
+    "typed": {
+     "sha256": "fad3f63f956730f82fab9fd463d5e55a00016babaac245211de10b862bd2c208",
+     "tokens": 4068
+    }
+   },
+   "id": "t15-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "45a5138f68592a96f9da6c7c3d8bc25093d2e78a09da48ac71dee1babb2e220b",
+     "tokens": 4120
+    },
+    "inline": {
+     "sha256": "b13a947ffa4ac256112d64bcf19398385ea39605f4ac1ecc9b3e6f936b9c33e7",
+     "tokens": 4690
+    },
+    "typed": {
+     "sha256": "6fb6e8ca906639ea57d234ebb4d62852a21420dd23b01f08536950acc4358371",
+     "tokens": 4160
+    }
+   },
+   "id": "t15-w-update_reservation_flights",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "3879aa7d52c49433e121ebc125df2a51b81d418f54d035db8e28c70c090351a5",
+     "tokens": 4028
+    },
+    "inline": {
+     "sha256": "bccab0d0cde99b848eb9d42c7c4f8d074dd72139c3f651482199bed5b9c69965",
+     "tokens": 4598
+    },
+    "typed": {
+     "sha256": "fad3f63f956730f82fab9fd463d5e55a00016babaac245211de10b862bd2c208",
+     "tokens": 4068
+    }
+   },
+   "id": "t16-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "45a5138f68592a96f9da6c7c3d8bc25093d2e78a09da48ac71dee1babb2e220b",
+     "tokens": 4120
+    },
+    "inline": {
+     "sha256": "b13a947ffa4ac256112d64bcf19398385ea39605f4ac1ecc9b3e6f936b9c33e7",
+     "tokens": 4690
+    },
+    "typed": {
+     "sha256": "6fb6e8ca906639ea57d234ebb4d62852a21420dd23b01f08536950acc4358371",
+     "tokens": 4160
+    }
+   },
+   "id": "t16-w-update_reservation_flights",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "434a22b864c267afe6b1235ca7c05ab970b41a59f6cb8be58bf1f4453c92ab7e",
+     "tokens": 4035
+    },
+    "inline": {
+     "sha256": "f54fed6fb42bbfbe984aaaec786d37b686522374a233c86319465f55876ec90a",
+     "tokens": 4605
+    },
+    "typed": {
+     "sha256": "c02612d71fad2969769bc3386bcfa2f9d676128c2139dcbac8df8af3c3b161ea",
+     "tokens": 4075
+    }
+   },
+   "id": "t17-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "48a1f6604bc74ad1c0c0399acee57f4a6f1a2261e088e6422822142f2c8b9eb1",
+     "tokens": 4126
+    },
+    "inline": {
+     "sha256": "35399877f7c5356327e55f6cf86e4a098728697aeb1b9f9e9359a7716e04159c",
+     "tokens": 4696
+    },
+    "typed": {
+     "sha256": "854d6468f2e366b37273068fd4f3d81f733bd82e67472907e6ec304792e3d43f",
+     "tokens": 4166
+    }
+   },
+   "id": "t17-w-update_reservation_flights",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "791bb756fd21a7f9045a99fa475138e857e5974b21d74d7aab1cc52d64ba4327",
+     "tokens": 4014
+    },
+    "inline": {
+     "sha256": "2da2b8a5f2e50e01cd654e6980a1123eb8eb82219a381681f9539f74e3d07f47",
+     "tokens": 4584
+    },
+    "typed": {
+     "sha256": "8c0b78ab4892e37c879f5e97997dfbc3b8ac8c1f00ca48e1c7593f6d0af47a1a",
+     "tokens": 4054
+    }
+   },
+   "id": "t18-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "e66b447ccc969dbb81e05e87aa521a79f9a80cb245fb5d75a98e570deb3ab7c9",
+     "tokens": 4105
+    },
+    "inline": {
+     "sha256": "c32a0d204d4d6e11a4d57fdaf44e558399e47ba9d2ab17f1b9d4cf3cd784336d",
+     "tokens": 4675
+    },
+    "typed": {
+     "sha256": "dce91818ec7af3713b0b6204f0c3cd7484bd49041942107b1c0d28cefbe92424",
+     "tokens": 4145
+    }
+   },
+   "id": "t18-w-update_reservation_flights",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "87ceec13707b43fe20e6fd9e91724c4bad112e3bfbe0a95d2fd5a48923a99606",
+     "tokens": 4069
+    },
+    "inline": {
+     "sha256": "1dcd67fc061e175e6ce780223f6a8f332124d677c51f337334b3324b03c78b80",
+     "tokens": 4639
+    },
+    "typed": {
+     "sha256": "12f861b48b2319099c6b8b5b9f0520b1a7106c94fc4e31d1afb0c061d5ea1cea",
+     "tokens": 4109
+    }
+   },
+   "id": "t19-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "9539760f52c64c791e8dcee783d0556972610cf35d18cc387e48a2b6d4c4380e",
+     "tokens": 4007
+    },
+    "inline": {
+     "sha256": "39a741ac7709bbe91e9a819c8b7161a8c960a3ecc78102d05ddd81e347f4dff2",
+     "tokens": 4577
+    },
+    "typed": {
+     "sha256": "1c3a480ce6e284572404fd43f487320646ccc6691fb1736a126b122c4dfafbeb",
+     "tokens": 4047
+    }
+   },
+   "id": "t20-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "7ad274731fd0863ddb3a33b6b191beb628a925f762ef4530c8b8e786892d55b9",
+     "tokens": 4155
+    },
+    "inline": {
+     "sha256": "d01aea17bebf81eff33b191bd2592e74f663e5fa6d3528838b803e0e4b55bc3f",
+     "tokens": 4725
+    },
+    "typed": {
+     "sha256": "e7bc89a0a4d57bf3974d25607b8372916c0c8cde819f998c0d404a3009025846",
+     "tokens": 4195
+    }
+   },
+   "id": "t20-w-book_reservation",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "8afe6ef03b6b02a52f102ae0e30da1ed53c91580fc2c69c20b4aa85e97555e03",
+     "tokens": 4066
+    },
+    "inline": {
+     "sha256": "ec4a962f0bb7e586abfa39006c4698b87536620459b148aec03d2779d6345bc0",
+     "tokens": 4636
+    },
+    "typed": {
+     "sha256": "66ef5f06aca2f845def396eced2530d490f79a4a4c41b67e2b7e25f5778f48e5",
+     "tokens": 4106
+    }
+   },
+   "id": "t21-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "4e6abfb4e3e8ec9aaacd4c3933f32d7fe1bedbbf4be1368857070b8c5e225de3",
+     "tokens": 4191
+    },
+    "inline": {
+     "sha256": "79bdca1aa2c246f60ab2a671a5cc1d5172a4b06db0241bddc549f90854f22836",
+     "tokens": 4761
+    },
+    "typed": {
+     "sha256": "893e7369d14c68b9c4b73c51ff9081446e5f1e1d933fafa7b13fbba88183cd89",
+     "tokens": 4231
+    }
+   },
+   "id": "t21-w-update_reservation_flights",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "13e175baeb869501bb34a8ff1822d795c357ccc01189ecf85f9ec132a7c1718f",
+     "tokens": 4022
+    },
+    "inline": {
+     "sha256": "5831cd9c6754a6c247a3a8ef4cbaaa6714e27196eeb766d2b5589aab13363d31",
+     "tokens": 4592
+    },
+    "typed": {
+     "sha256": "799111174411c2383120967e846df3b1b4c394a9a06194d783d71744092b1ff9",
+     "tokens": 4062
+    }
+   },
+   "id": "t22-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "7198cac81a4f5e3caa6616aefea65ff85565ddd3713a0aab1d8d7ce2310202f5",
+     "tokens": 4113
+    },
+    "inline": {
+     "sha256": "9f02472e483fe5958b3bc2aae830278303b58559148b764cffb80514da6f469e",
+     "tokens": 4683
+    },
+    "typed": {
+     "sha256": "d17284bdfced3763a1a3714db51ad75d19f12acd8416ccab21f24eb9a89546a4",
+     "tokens": 4153
+    }
+   },
+   "id": "t22-w-update_reservation_flights",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "3ce9e29b97e339a9332a88884f2d8d7a1c495e78f2277627a929c1b46e84c15a",
+     "tokens": 4027
+    },
+    "inline": {
+     "sha256": "1ecd7c0b90d777f5b1d8bf3cb177b352279384b41064c14c33cedcbf8dff1068",
+     "tokens": 4597
+    },
+    "typed": {
+     "sha256": "8883e39e647ff387fbd69570b807b1e19eeda6f4a66e34283534b2b0f9375156",
+     "tokens": 4067
+    }
+   },
+   "id": "t23-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "2d76662af56ce01a00a54d880729a59fad3d2a318250ef4900512d794cc3b621",
+     "tokens": 4018
+    },
+    "inline": {
+     "sha256": "8b739a81542149b679fdb534a2fc438445303be806a47434306e8cbc74333268",
+     "tokens": 4588
+    },
+    "typed": {
+     "sha256": "5738b859ba9fba1d1d07c44513f6f2d915cf2cdbfb6048077c7c6a580fa442cd",
+     "tokens": 4058
+    }
+   },
+   "id": "t24-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "44703b8481dff1d6aa2867b2355f2eca6a736398b987d2453dfb424bcff966a1",
+     "tokens": 4169
+    },
+    "inline": {
+     "sha256": "8a6dc669aa7d2c715f061e37ed0e42257ad22d5cf58a218b57f5727b105b07c1",
+     "tokens": 4739
+    },
+    "typed": {
+     "sha256": "d6eec400ddf50a8e2af47cbf792915d91220820c1c6f171b163c3e495f7af1e2",
+     "tokens": 4209
+    }
+   },
+   "id": "t24-w-book_reservation",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "5ea26d4ca65a7388383416bd9bc861e6066d0da0779adf6be6d5a659b6df0f73",
+     "tokens": 4026
+    },
+    "inline": {
+     "sha256": "b259ecba310b68e7224697c43390810273a3a7959786f74f6f44a28295ff2e80",
+     "tokens": 4596
+    },
+    "typed": {
+     "sha256": "4563e20415a4a46306e57b23a30f3df6faa41ebafa9b7d99a19063f597eb1764",
+     "tokens": 4066
+    }
+   },
+   "id": "t25-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "873c71f99cffabd728eee0ce25c8da7e548b82aee1a69824ee600108df1ff8bb",
+     "tokens": 4179
+    },
+    "inline": {
+     "sha256": "c5b46d5f8fec5d8c4b40bccbe79dccd78b333ab2d263e0d0f3ad1531b03bd717",
+     "tokens": 4749
+    },
+    "typed": {
+     "sha256": "1f9e7ba9c4ab539550dc35feab077cc264f31298b61139da4b012100fcfcbb7a",
+     "tokens": 4219
+    }
+   },
+   "id": "t25-w-book_reservation",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "aa8cb6c8a63c06507847a848f60623d6ecca76b161747580d545441ede13e0e8",
+     "tokens": 4002
+    },
+    "inline": {
+     "sha256": "07e23aa7062dbeba489cebab80d8a31a111ba249af13a57071b28e62fca565a9",
+     "tokens": 4572
+    },
+    "typed": {
+     "sha256": "3109271583cff0e44d6d3a499f6b3c1a829d3445a4fcf2b921a8f3a7a00bfb59",
+     "tokens": 4042
+    }
+   },
+   "id": "t26-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "d70ea32282a2a12138c472c49f84aebf64e6fad58cd39c779e7518d6a9aeb62a",
+     "tokens": 4008
+    },
+    "inline": {
+     "sha256": "7409d4283cd01cbbcc63f4277f1dfc2ab9f93d568a2df88007f729eff2421892",
+     "tokens": 4578
+    },
+    "typed": {
+     "sha256": "0c53f94b7114ae1e60b000cdf9dbfd744fe1be192b9070286382a2e1c2f65f59",
+     "tokens": 4048
+    }
+   },
+   "id": "t27-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "3e55ff84a9a3203c29868462f60438f8c9695ffcc3311504b655a70626df8435",
+     "tokens": 4505
+    },
+    "inline": {
+     "sha256": "01e1214ef18863e01b47cb4f3073dd09b36683f5adae7d31491d596ac4fbfa57",
+     "tokens": 5075
+    },
+    "typed": {
+     "sha256": "dff8dd3b722ffe41668ed8f6a0e9d494a6d908ae7a931004b1a35a17d795a557",
+     "tokens": 4545
+    }
+   },
+   "id": "t27-s1",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "f2f20d198a5ab50e3ab6f2186a5e4a4cc61b9d0c0d74a2b3351573e25af65a61",
+     "tokens": 4008
+    },
+    "inline": {
+     "sha256": "d380225f43bb9c2cfb673140773a1a7df4f6aa48ee0c63696ed533056d4f4018",
+     "tokens": 4578
+    },
+    "typed": {
+     "sha256": "944bed842b5e1f2caf86ac7204bbe082d086362b0b281822aa6de1103d895c65",
+     "tokens": 4048
+    }
+   },
+   "id": "t28-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "f9a5cb67ad4de39633fa0a1edd057c5662f6079848e36f43fbb06636ae084308",
+     "tokens": 4047
+    },
+    "inline": {
+     "sha256": "b44da1e48128d08024a3cbe38628a9c984c375e3b7ea8087377af3d3ea7deacd",
+     "tokens": 4617
+    },
+    "typed": {
+     "sha256": "a694753d629dc9032d4c22b5f42bd93749829592cc23919bd93058c0882dc50f",
+     "tokens": 4087
+    }
+   },
+   "id": "t29-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "1e96ac0df39f75e2a3e96aed27fdffbe8e477f07e0136ec3c94c7411721de0ea",
+     "tokens": 4457
+    },
+    "inline": {
+     "sha256": "7e6708b0c333cdfbe39a9b7098a622f4ed17b014a888450b1d109fbadb851c08",
+     "tokens": 5027
+    },
+    "typed": {
+     "sha256": "9caf301507b854b90b45fcd49bb847eff33f41b9ff537fc0e8addbfeb1a75ece",
+     "tokens": 4497
+    }
+   },
+   "id": "t29-s1",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "e379d56e8e777699c80cf6bc82da158a517d7fa831bf592081a3fd771f9c5197",
+     "tokens": 4038
+    },
+    "inline": {
+     "sha256": "872bf7b292e635ae36f953381dcc9bacbbfd3b039d9f17fa7a51d8a7657e60fe",
+     "tokens": 4608
+    },
+    "typed": {
+     "sha256": "620e9bd920f4a308d3c1478f90d983e0df9a4bbdeca8b83f5a3531f4ffb5f78b",
+     "tokens": 4078
+    }
+   },
+   "id": "t30-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "6bf1537df9c9083bbf785d4a11e618b5fef38773a3c0834cae6700c8180b897b",
+     "tokens": 4434
+    },
+    "inline": {
+     "sha256": "ce4970265927bd29e7c081bf94712a92beaf8abbd2a4947a494292348a1ce4b5",
+     "tokens": 5004
+    },
+    "typed": {
+     "sha256": "935406affae7df7dcf3da9d81790e7c2a378d778b424084f8e27bbf4f07230d9",
+     "tokens": 4474
+    }
+   },
+   "id": "t30-s1",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "b9fdd8ea0f11e102b848169a0af09d910e72d752cc614031da9984f763667b0e",
+     "tokens": 4743
+    },
+    "inline": {
+     "sha256": "15524df09f643d831a91e6ce7c160ce0c03cd89de85780cc661c2771414f633a",
+     "tokens": 5313
+    },
+    "typed": {
+     "sha256": "38d37f1e9ac8db018f8140dc46fa92545a0bbae2ebe025e19ac9f8809663b0bc",
+     "tokens": 4783
+    }
+   },
+   "id": "t30-s2",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "910749810afffb13e6229e05e93be0614e33fccbeb689dea6113e4ce00092a22",
+     "tokens": 4837
+    },
+    "inline": {
+     "sha256": "c6c6b8926962d7e1f717d2c31f820da4deb7c43330762a21ba5a49459320ef45",
+     "tokens": 5407
+    },
+    "typed": {
+     "sha256": "54b9f459bf56d3e7fedb578df60f2afb0fa60869013d0aff6fcebb5755971e00",
+     "tokens": 4877
+    }
+   },
+   "id": "t30-w-update_reservation_flights",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "39add67200c8d08f3e2b3867be385cf498a5748837630057b893d4007a57eb62",
+     "tokens": 4029
+    },
+    "inline": {
+     "sha256": "fb2a778ac3678f7027b9a0e3095e20e076204949777081444af1ece15d9fe381",
+     "tokens": 4599
+    },
+    "typed": {
+     "sha256": "45783f0b59681e272f9ddc5d20ba81620e4cd9700b97728bca71857a38a28f6b",
+     "tokens": 4069
+    }
+   },
+   "id": "t31-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "6a0d17cd4adcfed8bf96f88aa3e2a62c663ffa762556fea6dcb6f64d8e67f8a4",
+     "tokens": 4033
+    },
+    "inline": {
+     "sha256": "4b27cf4653d3d50b8e91a5ff780cf14c1769f7696413742765b21e6e56e49588",
+     "tokens": 4603
+    },
+    "typed": {
+     "sha256": "3447c687b1c4edd1662357c6d53b0c2d4532887fa623aced0dfa1f64690cce3e",
+     "tokens": 4073
+    }
+   },
+   "id": "t32-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "54f79056ec76782ed943c5908f15d7e12e0825c75c40216b299ed73395da6fc0",
+     "tokens": 4457
+    },
+    "inline": {
+     "sha256": "e2da9b11393d5e4af36fe181393127d8c24fe83c38ac3d772371cacd6705d2bc",
+     "tokens": 5027
+    },
+    "typed": {
+     "sha256": "c8350ca0351b68c38c42c507d61b489f5bb05cffcd21b57e790fded03dccac38",
+     "tokens": 4497
+    }
+   },
+   "id": "t32-s1",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "563e799348aeea142558e5cdd254443f19d6296e880e67cd6dd581a44854bc3a",
+     "tokens": 4836
+    },
+    "inline": {
+     "sha256": "67b0052493c16c4e3ef2b7c4dac210c627f1e94b888e60ec3dc19c96596c6959",
+     "tokens": 5406
+    },
+    "typed": {
+     "sha256": "ce9d31ff943cd5ca4a4146cd34c8a2fc8729b7c83fe1e395823ba6ff32867f24",
+     "tokens": 4876
+    }
+   },
+   "id": "t32-s2",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "20a375fa9edf7b141e21d044aba96d5b9a26aba5dfea2797715c834653dfe88f",
+     "tokens": 5020
+    },
+    "inline": {
+     "sha256": "049b1053784d77457cd71ec0bf8d2d0b1b7305ccab3136c08f1a5de538a582c0",
+     "tokens": 5590
+    },
+    "typed": {
+     "sha256": "d5240284a0a3f3b396b67fe7de658067b29c99bb7e8951c10e6831b67c552d9d",
+     "tokens": 5060
+    }
+   },
+   "id": "t32-s3",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "87597002cbf8ba56ed08fb8a7a73a73a8e5ecc1a1f5a7b3092dbdc09ff4abd28",
+     "tokens": 5111
+    },
+    "inline": {
+     "sha256": "1e0c1c951cffec2343f15529b819078b14e30aa64a8d50a29170f48d5d13889d",
+     "tokens": 5681
+    },
+    "typed": {
+     "sha256": "203edd8fbbeeb73ac5c502502186435175862642593e3ab0c2e0d0976c249b02",
+     "tokens": 5151
+    }
+   },
+   "id": "t32-w-update_reservation_flights",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "5e08fbd67ec1342995269aadbeadcafec28ee032097023bafebbdbf4c991b422",
+     "tokens": 4037
+    },
+    "inline": {
+     "sha256": "4d4b624642db4234883b0b8feddda70756946166974cd3c90cd7976709813d38",
+     "tokens": 4607
+    },
+    "typed": {
+     "sha256": "9cdb4f87187cb26c9d175a01d720baa674b3eee31a0f10ba7728cb1088ae0731",
+     "tokens": 4077
+    }
+   },
+   "id": "t33-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "583f0d1b9ad4072c7de51e09a74163bbc225fef7fca3b36e7d3962f275f94ca8",
+     "tokens": 4402
+    },
+    "inline": {
+     "sha256": "7f5f9ab782da84f5ba6e5c2d53b9ed219ab4b48499d66168276aa7e7c4f50eac",
+     "tokens": 4972
+    },
+    "typed": {
+     "sha256": "8aa1028d6b607ca66b548695a1cf807bae1824ec59ceef8c0ceed1108888f3ca",
+     "tokens": 4442
+    }
+   },
+   "id": "t33-s1",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "9de015fc8a8d22e7d2eaf42a6b082f899367d18980a028487577654f58c90e81",
+     "tokens": 4714
+    },
+    "inline": {
+     "sha256": "d0a5924c0bcbc377720bc0518ab0b624355f81d1f5d580f0423efa90846283ef",
+     "tokens": 5284
+    },
+    "typed": {
+     "sha256": "5fa05c223c465435541c0098bd4b96673e4d3f078ca0eb685e0dace53a88603a",
+     "tokens": 4754
+    }
+   },
+   "id": "t33-s2",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "3683782f596e038f354925898c6b12cf344b182ad98abdf5e1e2ceeed8f7abd0",
+     "tokens": 5029
+    },
+    "inline": {
+     "sha256": "96d82b907575243f7829750330cc841f7df12055b543189393582d843986e73b",
+     "tokens": 5599
+    },
+    "typed": {
+     "sha256": "3ac7b4dd69433c42dec6e90b5a0458fa3b3d65db5191342493179de667cd163c",
+     "tokens": 5069
+    }
+   },
+   "id": "t33-s3",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "b42eeddecce77601678f4bdb0a7b0bc6a8e4b755b3c81e03386ba45faeb37282",
+     "tokens": 5120
+    },
+    "inline": {
+     "sha256": "fdff945219fa952ad2c5d5bfc6df1cf31fd066d9506c37f48d922104539a4ca0",
+     "tokens": 5690
+    },
+    "typed": {
+     "sha256": "df17ca58c5e42f689f0a371d1407ea445eb4e7996ef50f5bbbe157199b6c3a87",
+     "tokens": 5160
+    }
+   },
+   "id": "t33-w-update_reservation_flights",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "0a1e16ed9e498e65f4f58865d5f91ea171549df65e724ee5a3307ed78872cf3d",
+     "tokens": 4051
+    },
+    "inline": {
+     "sha256": "4fe6894b7fd65ba11232f797a14ec93475f02a64a3a0f3ab8b27015e0719fcf9",
+     "tokens": 4621
+    },
+    "typed": {
+     "sha256": "58ec50d91e4d88d7733a1e3b09cfbab089f616fbf3b1865d075b2e1e9c5b68b2",
+     "tokens": 4091
+    }
+   },
+   "id": "t34-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "fef0fd52a9e248a338d10fb2d2ea9bf603da9767ef0ec1c2b318e1116bb392b2",
+     "tokens": 4029
+    },
+    "inline": {
+     "sha256": "b92549524a2daa0c607cf47205e7bc3c9d6dd4a4bb34e59929f44a0d22dfa2a6",
+     "tokens": 4599
+    },
+    "typed": {
+     "sha256": "dee76b82e50a8b30df816837651c94776160b616862196bdf3d223c3008514d4",
+     "tokens": 4069
+    }
+   },
+   "id": "t35-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "ef250dbd6f9816bbfc8c1659486e2fd176074bf517a92698a385f53e85dd721c",
+     "tokens": 4167
+    },
+    "inline": {
+     "sha256": "eeb4cb5ca008d7b5a536a9379d169db834285a06ff0c44cd94b8b156e4c1ed25",
+     "tokens": 4737
+    },
+    "typed": {
+     "sha256": "b90dd48188678e3fc386439a82fac68c698a3de477a4cc05e6b1e17d03919cc7",
+     "tokens": 4207
+    }
+   },
+   "id": "t35-w-book_reservation",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "5418694d964cb5153abd96f09dda967e6790af45ee05a9996c2b6c095b8de695",
+     "tokens": 4022
+    },
+    "inline": {
+     "sha256": "1809b37645e588eabdb6129aefff55b085a1f972df3491273c3f4673fc2e2cf2",
+     "tokens": 4592
+    },
+    "typed": {
+     "sha256": "9a96cae55da26e5957cfd7d89af147f898d96420f97be97dcb312813c8433ab3",
+     "tokens": 4062
+    }
+   },
+   "id": "t36-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "9d8b4488859098458a83b8d9a6341241f4f5c1f5da594d247ef9a55dbf78ee98",
+     "tokens": 4488
+    },
+    "inline": {
+     "sha256": "09699fa62f0034fd0546fcf611c953e4f3d9d7c3f9df4903775ec685f7e78ee3",
+     "tokens": 5058
+    },
+    "typed": {
+     "sha256": "1a8cc9e5ee922fdcb856ed49c8fe417a1729e698543c506d1da75c972d145224",
+     "tokens": 4528
+    }
+   },
+   "id": "t36-s1",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "4f072654369428097630b0f253ea71b023f050faf4d980c5981a9f5f0d2e8d8c",
+     "tokens": 4026
+    },
+    "inline": {
+     "sha256": "5b8cf45ca2a65b002254921e4f07ad8acea35574004134928a5f85da9cfadb3c",
+     "tokens": 4596
+    },
+    "typed": {
+     "sha256": "f8b01b91e14af8584bad78ce528dbb6590cb0beca58e3096fc7d49539d0f86ba",
+     "tokens": 4066
+    }
+   },
+   "id": "t37-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "e217f5d07fe7a3ac2dacc69b0025038a49a100688fd22d3e19e32f694d72f60e",
+     "tokens": 4376
+    },
+    "inline": {
+     "sha256": "fea1905ac31db132df79d9d5b81034955804cda7376164a5c33601ece8553b2b",
+     "tokens": 4946
+    },
+    "typed": {
+     "sha256": "ec0d5c2c023ec5a26d16e4e3afde37c2a0c1612d524d083fba3a74fb09de606d",
+     "tokens": 4416
+    }
+   },
+   "id": "t37-s1",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "12db6821d67a16c8ad2edcc014f0057cd8a5bf072159f62022833adc0ca369c5",
+     "tokens": 4941
+    },
+    "inline": {
+     "sha256": "37d70af0b4304d007ba0d227eaaee972424cb0574d3d831ec3b456bf85ec8564",
+     "tokens": 5511
+    },
+    "typed": {
+     "sha256": "303bd20788fa7c56d944dcaa2d9719ffba5ba459f902c50df3e7062c06e5586e",
+     "tokens": 4981
+    }
+   },
+   "id": "t37-s2",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "5567093d35d78a7e10097893971485055612b6cede6c1422f8e50ed567c24344",
+     "tokens": 5508
+    },
+    "inline": {
+     "sha256": "2a49395d19391fadafd63cbd24fc725a64547aee518a9de2c3194cd9c7efaf9b",
+     "tokens": 6078
+    },
+    "typed": {
+     "sha256": "241bc8b963020701b5826ea2ad5a64ad244f0675d5bef545c8840ad1ce4627c2",
+     "tokens": 5548
+    }
+   },
+   "id": "t37-s3",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "723cdaa136c98c77e56fc2a7030418861e67d2cca33378960673d32d9d6c11ba",
+     "tokens": 5600
+    },
+    "inline": {
+     "sha256": "eecb3683a280b2ea9c8a75e7d212e8cd33e112bc70a158e8ceb6e081e35e49ae",
+     "tokens": 6170
+    },
+    "typed": {
+     "sha256": "788aff0a9bf2e0bcd1a729021e81e8cfbd3d04dda97cac3bb96321d853264bda",
+     "tokens": 5640
+    }
+   },
+   "id": "t37-w-update_reservation_flights",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "be83e5741ccb7ab9d4cf6415c499b51d1ebc106001344389af8836004b57cba5",
+     "tokens": 4008
+    },
+    "inline": {
+     "sha256": "45948eabee1dbb335026b519115d49be811422b0d02f7cd5735ca63e94ad2650",
+     "tokens": 4578
+    },
+    "typed": {
+     "sha256": "73452e5e0f4122fc47349016e29f655d3b757df143df2397c3f51b77f04aad19",
+     "tokens": 4048
+    }
+   },
+   "id": "t38-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "70c375912907ebf4c4abdff1c466b195c7da96a78449e84535cd5837d0a6ca45",
+     "tokens": 4607
+    },
+    "inline": {
+     "sha256": "5090733fd3c6db343b3d34a41cce72916505e03405a5fae903765579a5abafb4",
+     "tokens": 5177
+    },
+    "typed": {
+     "sha256": "5a6310bb2e50f707e123be579f2799ac1b7b3a62b3bd6b2037b0e4bf8378b203",
+     "tokens": 4647
+    }
+   },
+   "id": "t38-s1",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "d8578c054f55553d88fc0c4cf1c967644f0ff350dade368efc9a13e215edddd8",
+     "tokens": 5013
+    },
+    "inline": {
+     "sha256": "3b07a89e4bb020f10d81616060774f902a92de503cbc3cf0829fd272bb25e857",
+     "tokens": 5583
+    },
+    "typed": {
+     "sha256": "adad434ab061dca2b28e2340e7c5901b5a526b0366b2e59db0a00d1ec40b9f6d",
+     "tokens": 5053
+    }
+   },
+   "id": "t38-s2",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "94ac8c595d01e77cfd93ee435b3d62cb276a191ce7ec0c1806f9606a24f782cc",
+     "tokens": 4021
+    },
+    "inline": {
+     "sha256": "ebdeebfab6b71d6dc85a07ad1ead545ae00bed3d979103d1d334306b106c3649",
+     "tokens": 4591
+    },
+    "typed": {
+     "sha256": "966c2d5d0e7736fb72fa5bac8bf2143846fec79c0969ca74c7f4e72f425db4e8",
+     "tokens": 4061
+    }
+   },
+   "id": "t39-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "7c4e4cfaecb4ca036eca538b9ae54909d239e2954f53cbbd47dc1ddc01aefd42",
+     "tokens": 4591
+    },
+    "inline": {
+     "sha256": "b79d71ad236e2af2fa19c758cec3d7c45b155a7a4fade5b41a9f45da25ace8a9",
+     "tokens": 5161
+    },
+    "typed": {
+     "sha256": "917b400e5d15ced3910972227f1ebd8ee747f6e7c73d8a46f982c28751712047",
+     "tokens": 4631
+    }
+   },
+   "id": "t39-s1",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "66fc36e902a1d6914f8d25a6f10077fbb0e950cdffb6defea083deb1c6f562f3",
+     "tokens": 4944
+    },
+    "inline": {
+     "sha256": "0cd075b24f5b1e24285ce8342b080801ee5488684505fee2c7605b225ba199aa",
+     "tokens": 5514
+    },
+    "typed": {
+     "sha256": "14afc68fb931e151b6cc14c88a154b765f5d1ded71e397640dcb0207c0acb03e",
+     "tokens": 4984
+    }
+   },
+   "id": "t39-s2",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "723da4b111d06288f0940c48ca74b485df5fa801108ec9ebdd40757f40124046",
+     "tokens": 5355
+    },
+    "inline": {
+     "sha256": "92f6654e7450744bb6d60ceb64728f0bfbca23a65ea3bf9af6aaf74056ca5cc9",
+     "tokens": 5925
+    },
+    "typed": {
+     "sha256": "dfdd43d089fbb98ada93cfd392fb4f884bd6b763de030d50d730a96650d3ccb9",
+     "tokens": 5395
+    }
+   },
+   "id": "t39-s3",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "0e2da3a8037c95ba58db9f58c947968c0212c4132a41c08b46b488a005c85849",
+     "tokens": 4017
+    },
+    "inline": {
+     "sha256": "7966d343a68168b6ec014ee3eed7c99b3fb382769c51bdf5397a1dd05b97f66a",
+     "tokens": 4587
+    },
+    "typed": {
+     "sha256": "f916e3007e426763610b9749113d370784c694155faaf0bf1ee3e4b274d47b0d",
+     "tokens": 4057
+    }
+   },
+   "id": "t40-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "6261cbadbafcbdc0ebc3bc1c85a71d7f189229811810c19b69d643ad5bd69bea",
+     "tokens": 4367
+    },
+    "inline": {
+     "sha256": "df74e0ec867f4a0109d2989b36435d38ed64c8190abd85c2c296148519a47e0e",
+     "tokens": 4937
+    },
+    "typed": {
+     "sha256": "3abbd5ee650783e397c94990476b4c6dfa96fb5155276f4a7d3ab3e2eea07a25",
+     "tokens": 4407
+    }
+   },
+   "id": "t40-s1",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "956e2c67ceb0a945e4802e48620205d95cd99dd4f71044abf2cbae9f50ca64c7",
+     "tokens": 4442
+    },
+    "inline": {
+     "sha256": "85f0d6de76b78da9a96b5cf7beb165fe026d563e3f554a3309ea6f56a3608e93",
+     "tokens": 5012
+    },
+    "typed": {
+     "sha256": "aaaa4f8570de492f15b487b160f2730193e7de4e1ad08559fcc17e5083e05284",
+     "tokens": 4482
+    }
+   },
+   "id": "t40-w-update_reservation_passengers",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "c892402c1e26459616933952e9025ac906060d87c4638defd081727df9ccbd83",
+     "tokens": 4008
+    },
+    "inline": {
+     "sha256": "ee924349b7abf1305b676867fed556bbf4fddfdf3e964aca1c4a4982df4aa78d",
+     "tokens": 4578
+    },
+    "typed": {
+     "sha256": "dfe83e9455554f362f4b9dfc84bcdd08e6d61a935132ac5f064009ea156ec30a",
+     "tokens": 4048
+    }
+   },
+   "id": "t41-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "25dec1efb7213fd86255d8b2b8a924da8e794a5dadfde6a33008ab8361b79e87",
+     "tokens": 4578
+    },
+    "inline": {
+     "sha256": "5d19ec44c53c29c53083a365b5ce3719a29607dae4fdfef54123f71097e53ad5",
+     "tokens": 5148
+    },
+    "typed": {
+     "sha256": "867cd302eb5b1ffda37e62961f0ee5e823ceebbc6677dc37a3d708f87a729f57",
+     "tokens": 4618
+    }
+   },
+   "id": "t41-s1",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "bd36603215a3e5580112114e74b68ad087193b8fcb90deb843e409379bfa8c1e",
+     "tokens": 4931
+    },
+    "inline": {
+     "sha256": "0d82c69489a1c93894b471dfa9afd0556759c905d2938ed335bd7cae35269793",
+     "tokens": 5501
+    },
+    "typed": {
+     "sha256": "cbc8667a606baebcc598c4467194ba240a9f061a92a62588ca8ce3a4cd161823",
+     "tokens": 4971
+    }
+   },
+   "id": "t41-s2",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "9dc3c072367c38cdec12a12079c61a5fc5c51f578647092cef653e5f3982f008",
+     "tokens": 5342
+    },
+    "inline": {
+     "sha256": "9d4fe42cfe6caae74883b6c908de8ccb2d2087df65de0c03ad868270e885299d",
+     "tokens": 5912
+    },
+    "typed": {
+     "sha256": "a81ca7cba5e5ac8cb3983ef4d697f83c010bc9c3f31c13ce3580ddbba899ce33",
+     "tokens": 5382
+    }
+   },
+   "id": "t41-s3",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "9387b8be024f33f4693af78f3aacdf3d8b6f9b999cdd00e2f0c98aa9fcddcd4b",
+     "tokens": 4006
+    },
+    "inline": {
+     "sha256": "6b6bf11f060087fcd3b5500028f6a7b6d9dcbc8581cc3daaf4ebc5f109ce3d2c",
+     "tokens": 4576
+    },
+    "typed": {
+     "sha256": "966576c6fc5181f460babb70922cfc39442231f4cfe0f63a703b44eac6e222cc",
+     "tokens": 4046
+    }
+   },
+   "id": "t42-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "5ff229d265ab537d4525fbeb10aae3e63d475a1fc2837efa18688dc35294de24",
+     "tokens": 4479
+    },
+    "inline": {
+     "sha256": "a29e1e6f4c34aa4061648d8ae8e1435f98cbe7aa40684851401fc9145b065e01",
+     "tokens": 5049
+    },
+    "typed": {
+     "sha256": "e81f6bc03e023ed7de3c7327f259b864ca3f235b0f80eace2b33d39fecd3af74",
+     "tokens": 4519
+    }
+   },
+   "id": "t42-s1",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "1d9e198f77baaf7d6439a1c4210fa14a05417e94622b09b62a84783d2ca8d8a8",
+     "tokens": 4895
+    },
+    "inline": {
+     "sha256": "42327eaee64a37192ef9612919a564230ac297b35bd93e41a274c5de8bc8fd5c",
+     "tokens": 5465
+    },
+    "typed": {
+     "sha256": "f3e358f092c25e89ab9d154808a5499aabfc91966c1a771031ad40078324d148",
+     "tokens": 4935
+    }
+   },
+   "id": "t42-s2",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "afc477df39b53e7ee7d0ce786f203838327cc10a778bc36df5a1327d2c24ff22",
+     "tokens": 5208
+    },
+    "inline": {
+     "sha256": "b60c50a0d0864782848d10e23971d5a93e62b5fa678b43e65f71a72186cd7113",
+     "tokens": 5778
+    },
+    "typed": {
+     "sha256": "0490389efe75667d8fe7511784be674552e0d5b90747411c74cf0e29a8bf2a50",
+     "tokens": 5248
+    }
+   },
+   "id": "t42-s3",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "d3c11f0294762b2d332b783881b809ab38388cc469e809d62d63d1d0fa840ec7",
+     "tokens": 4006
+    },
+    "inline": {
+     "sha256": "2914778a85de01dc68d4a28aacf3f7e43187622cd71fc07bf9596463ff2dd001",
+     "tokens": 4576
+    },
+    "typed": {
+     "sha256": "6950750f00fcd2f5dba4ebfdcacfe8710e40c15e0e2bd12675c3aab91c7ea2e8",
+     "tokens": 4046
+    }
+   },
+   "id": "t43-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "d5208fd51677f51af505ea29bc759d038bf63893036e9080a82383bf1c992c47",
+     "tokens": 4435
+    },
+    "inline": {
+     "sha256": "04a4a718206a9b214db970259193878178a30169509d851486d62df9979c09b6",
+     "tokens": 5005
+    },
+    "typed": {
+     "sha256": "bc57d23dc46cdc1415d017bd0e702a7253993935dff690084144888d89c6d95d",
+     "tokens": 4475
+    }
+   },
+   "id": "t43-s1",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "717afce0fce9f4b493dd25c6ab07cc1ce34fa7dd6bb227ace53d1cfffb305f9d",
+     "tokens": 4757
+    },
+    "inline": {
+     "sha256": "17463529fead1d7368bc6cbf3ef1a20dad89a46ba13e70970886f49a1c1f3550",
+     "tokens": 5327
+    },
+    "typed": {
+     "sha256": "e2c9ba6b13a3baba0b79ae43284b59bc83d3dcfb889771cd1a52e29006f5b4e3",
+     "tokens": 4797
+    }
+   },
+   "id": "t43-s2",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "5cddcadf3a4a22b2bde1776670edde8e215c80a59f65d931c8e7ca06b5ce4516",
+     "tokens": 5224
+    },
+    "inline": {
+     "sha256": "bd68176ff63192cd4586393941bbb900009c658b28ca7bf63a069a432c5420d1",
+     "tokens": 5794
+    },
+    "typed": {
+     "sha256": "e9211815b80e3c55ce1992695cda606317a2c976fdf0d44dc3dfbf207856c2aa",
+     "tokens": 5264
+    }
+   },
+   "id": "t43-s3",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "d1afbd39403ac894ef6416ed72044e4598a30e3cbf7c7460410998146ad6dfa6",
+     "tokens": 4054
+    },
+    "inline": {
+     "sha256": "6b000fde657db6c6d3d76708303afc1612cb65374ff6ab853c7e4c970ac5683e",
+     "tokens": 4624
+    },
+    "typed": {
+     "sha256": "3b00e5cbe63b1cb8c17f6a45f7480760c8041a744212dad3b901aa7c99a190aa",
+     "tokens": 4094
+    }
+   },
+   "id": "t44-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "57af7dbd2db491ea20e8e27cbaa126d1e2bbe1fc79297671ea475768e18b30c2",
+     "tokens": 4521
+    },
+    "inline": {
+     "sha256": "91b2c7bdf739d452a931a03c0f87edd5b4ad9d85e6192d2593a3b71ee6d8921d",
+     "tokens": 5091
+    },
+    "typed": {
+     "sha256": "f46a134462d888d9fa2c6a1bf99904b20479d97b46463378904b8d6eac1510bd",
+     "tokens": 4561
+    }
+   },
+   "id": "t44-s1",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "372cf50e2910bd16313fbc7d0936b9a3a2dbc456d3a65b9d1ccccc20d42aca03",
+     "tokens": 4836
+    },
+    "inline": {
+     "sha256": "e0b74ffd4e519c4d822c6532e1585542632973c26ab24cf0afdcd5065253cdd2",
+     "tokens": 5406
+    },
+    "typed": {
+     "sha256": "275099968ed75f726c5c5f57bb54bf26589a3705d694c2c85c09208424c0b14b",
+     "tokens": 4876
+    }
+   },
+   "id": "t44-s2",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "b398d7aedafa7679b20b3a703f87dab347be719b0d4d0c787a027e146d0b8c0d",
+     "tokens": 5152
+    },
+    "inline": {
+     "sha256": "96c6822b681661ecfc5ef00e5653f1baf6d61b5837e7c895ddad62071ec85bfe",
+     "tokens": 5722
+    },
+    "typed": {
+     "sha256": "cea96d61d898ce80b3effbe608294a2bd5138655bee28b9d7804ad0d5868f817",
+     "tokens": 5192
+    }
+   },
+   "id": "t44-s3",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "2540895230ab5c6a4703eed1b15a2b549d96937cd3b3170fbe1908d6054b8558",
+     "tokens": 9741
+    },
+    "inline": {
+     "sha256": "74bde5fa328aaa6e712279a751a5854227d1ddc09f35abd153cbf2ad50d19c8c",
+     "tokens": 10311
+    },
+    "typed": {
+     "sha256": "4c88d3325c0c465b3168038bc2176a626f8ae489f856c0645a3eb97a301d8940",
+     "tokens": 9781
+    }
+   },
+   "id": "t44-w-update_reservation_flights",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "4f40d10c10c673d53990d4d9e4c73f0e0052ae81d3a6c69b1420135c86427aa1",
+     "tokens": 4015
+    },
+    "inline": {
+     "sha256": "671b82c210cfa74a0324fbd80fd5ec0459508cb84a6213cde43b67e64bc244e6",
+     "tokens": 4585
+    },
+    "typed": {
+     "sha256": "4d605d3135ab3a1101d947c806bb46dddaa4727c6574135cb5c1d0c22ada192d",
+     "tokens": 4055
+    }
+   },
+   "id": "t45-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "a121ad46ecbd032defc8f5700605729878c6b3f440f7bb6a5854bdc78dcb599f",
+     "tokens": 4331
+    },
+    "inline": {
+     "sha256": "72feda347160493dffa0f1d900c84cff11da0ab1130372a875baef4fbb9bad49",
+     "tokens": 4901
+    },
+    "typed": {
+     "sha256": "65d50b2b674d6c2e4fa4b9ad18c8a1648ccd3c4df5cd81623992dca9d6d364b2",
+     "tokens": 4371
+    }
+   },
+   "id": "t45-s1",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "eaee90379b821db64123a6ea801716d5edcd0002cf8d783a4622443e24f3de30",
+     "tokens": 4027
+    },
+    "inline": {
+     "sha256": "5865fb47d3f00aefa041c4d585e4613cbddf6789846d4d9cab6172c29e20aa86",
+     "tokens": 4597
+    },
+    "typed": {
+     "sha256": "47fb5ad03d82fc0c90d028a8ece6daf35d31f1cfc653a3f59c6f16180f91d0a8",
+     "tokens": 4067
+    }
+   },
+   "id": "t46-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "454d1b932c5edfebc625895279a2d32ba55360fe9f43677ad2dfc73942ff3e2d",
+     "tokens": 4017
+    },
+    "inline": {
+     "sha256": "86f5280a5960d325877b2ed67a2eb1ab55d81be28717b5f2bd0ca95520cf28bc",
+     "tokens": 4587
+    },
+    "typed": {
+     "sha256": "d9a0094f72f6070a93c35b15580da83c923109d90c6316f236730654d1520597",
+     "tokens": 4057
+    }
+   },
+   "id": "t47-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "ece29fcbf444af359f6e147fd77f325fafc5762b352e73d2d53b9a901d3fab95",
+     "tokens": 4290
+    },
+    "inline": {
+     "sha256": "ad19c3e7baa6b8f1fe76e17f8ad96144222ae29e6e7137fe53d0947f8eeb1e34",
+     "tokens": 4860
+    },
+    "typed": {
+     "sha256": "c501f53b403fddf0fbb8ef30505d3b15e20750c94b218c299b47c9e1bf976457",
+     "tokens": 4330
+    }
+   },
+   "id": "t47-s1",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "b81d0b3d0cf354c09df5ead3203ecc4e90fa99f9645b60bacf0f4f895ee813d0",
+     "tokens": 4027
+    },
+    "inline": {
+     "sha256": "dfbd756f220ee97bff2abe9c477f8c6734809c1c69e64a93aee1aecd89674eca",
+     "tokens": 4597
+    },
+    "typed": {
+     "sha256": "47b65cd1893994d0e17cbabdc90650d95c1d67b6ab0b088e64a47c6511cf7a88",
+     "tokens": 4067
+    }
+   },
+   "id": "t48-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "2b537ec5e200c9fe632622408b16088bca3a74365de4741695c751ead0984613",
+     "tokens": 4377
+    },
+    "inline": {
+     "sha256": "b3db31672ce3393693a5f73da8b3ddb808192f8d286b308c041f1502e5a16232",
+     "tokens": 4947
+    },
+    "typed": {
+     "sha256": "cd7c4814a42758f283389d7b8c702f30da5bb525ef7bc5d908279c0211dc3118",
+     "tokens": 4417
+    }
+   },
+   "id": "t48-s1",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "c4a49b3bcf17791c7c028c1756cf3da1c9c39216d025ad3f507c36ea17549061",
+     "tokens": 4037
+    },
+    "inline": {
+     "sha256": "ec036fda64c9593ff968d820dc35229d12878bd471d75f5835b76dfd6ffb3af5",
+     "tokens": 4607
+    },
+    "typed": {
+     "sha256": "c6efd5c48a7c2d7737394c9730bc391ea568cf934e87067ec8e3eb92f30c906a",
+     "tokens": 4077
+    }
+   },
+   "id": "t49-s0",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  },
+  {
+   "gemma_prompt": {
+    "current": {
+     "sha256": "644feab2a4d6ed1b8f8dcbfb3e985d3ea153abbd18c02533f7f344a8d2d7606d",
+     "tokens": 4387
+    },
+    "inline": {
+     "sha256": "2aaccaa10c48b30dca9cb7d7d019142f7e1ca2f995c923588de5b1af1afa7baa",
+     "tokens": 4957
+    },
+    "typed": {
+     "sha256": "8fda7f74e7cafd5d015df828a9bdec27d343a1a7b456c5faeee8a7d2b1d04974",
+     "tokens": 4427
+    }
+   },
+   "id": "t49-s1",
+   "tools_sha256": "bdba5499d11340d02e92688d62f942f2f702667368d04e52772520aa8fa7ea22"
+  }
+ ]
+}

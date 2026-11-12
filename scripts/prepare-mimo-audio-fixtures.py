@@ -7,7 +7,6 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-import time
 
 VIDEO_URL = "https://model-assets.openrouter.ai/model-examples/bytedance/seedance-2.5-20260807/bd6114c8-ef63-47e2-9399-d89271243fe4/original-0.mp4"
 BASE_URL = "https://models.darkbloom.ai/v2/mimo-v2.6-flash-mopd--3012243b1fbc/2026-09-28-r1"
@@ -38,35 +37,6 @@ FILES = {
 }
 
 
-# A slow link moves the 1.87 GB codec in more than one attempt, so the budget
-# covers several resumed attempts.
-DOWNLOAD_ATTEMPTS = 8
-DOWNLOAD_BUDGET_SECONDS = 2700
-
-
-def download(url, temporary, size):
-    """Fetch `url` into `temporary`, each attempt resuming the partial file.
-
-    curl's own `--retry` starts every retry from the first byte, so on a link
-    that cannot move the codec within one 900 s attempt no retry ever
-    finished it. `--continue-at -` makes each attempt here continue where the
-    last one stopped. The caller's digest check still decides.
-    """
-    if temporary.is_file() and temporary.stat().st_size > size:
-        temporary.unlink()
-    deadline = time.monotonic() + DOWNLOAD_BUDGET_SECONDS
-    for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
-        # End a stalled attempt so the next one resumes it.
-        result = subprocess.run(["curl", "--fail", "--silent", "--show-error", "--location",
-                                 "--continue-at", "-", "--speed-limit", "102400", "--speed-time", "60",
-                                 "--max-time", "900", url, "--output", str(temporary)])
-        if result.returncode == 0:
-            return
-        if attempt == DOWNLOAD_ATTEMPTS or time.monotonic() >= deadline:
-            raise subprocess.CalledProcessError(result.returncode, result.args)
-        time.sleep(min(60, 5 * 2 ** (attempt - 1)))
-
-
 def verify(path, size, digest):
     if not path.is_file() or path.is_symlink() or path.stat().st_size != size:
         return False
@@ -84,10 +54,15 @@ def prepare(cache, output):
         temporary = path.with_name(path.name + ".download")
         if temporary.is_symlink():
             raise ValueError("unexpected download symlink")
-        download(VIDEO_URL if relative == "openrouter-aac.mp4" else BASE_URL + "/" + relative, temporary, size)
+        # Retry every transfer error too (a reset connection, error 56, or a
+        # cut transfer is not a transient error to plain `--retry`), end a
+        # stalled attempt so the next one starts, and start no retry after
+        # 30 min. The digest check below still decides.
+        subprocess.run(["curl", "--fail", "--silent", "--show-error", "--location",
+                        "--retry", "5", "--retry-all-errors", "--retry-delay", "5", "--retry-max-time", "1800",
+                        "--speed-limit", "102400", "--speed-time", "60", "--max-time", "900",
+                        (VIDEO_URL if relative == "openrouter-aac.mp4" else BASE_URL + "/" + relative), "--output", str(temporary)], check=True)
         if not verify(temporary, size, digest):
-            # A bad partial must not be resumed by the next run.
-            temporary.unlink()
             raise ValueError("MiMo audio fixture digest mismatch: " + relative)
         os.replace(temporary, path)
     with ThreadPoolExecutor(max_workers=3) as pool:

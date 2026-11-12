@@ -134,6 +134,30 @@ extension EngineV2Bridge {
         return serviceBudget?.isIdle(except: requestID.map { serviceOwnerPrefix + ":" + $0 }) ?? true
     }
 
+    /// Count a refusal toward `deadlineRefusalStreak` only when stale isolated
+    /// prefill evidence explains it: an ordinary engine on an idle Mac priced
+    /// nothing but this request's own prompt, from an aggregate older than
+    /// `EnginePerformanceMeasurements.freshness` that no fresh prompt-size
+    /// bucket tightened and, with a calibration anchor, below that anchor; and
+    /// the request still had `DeadlineRefusalStreak.minimumRemainingBudget`.
+    /// Queue or decode work, a reviewed calibration, native media, fail-closed
+    /// (unbounded) projections, a fresh rate and a late retry are refusals a
+    /// new prefill measurement would not change.
+    func recordDeadlineRefusal(requestID: String, promptTokens: Int, deadline: FirstContentDeadline?,
+        policy: CBv2FirstTokenDeadlineAdmission, work: CBv2FirstTokenProjectedWork) {
+        guard admissionFixes, refusalProbe, !supportsPrefillRecoveryRetirement,
+            policy.calibration == nil, policy.nativeTargetPrefill == nil,
+            case .bounded(let projected, _) = work, projected.decodeTokens == 0,
+            let rate = policy.conservativePrefillTokensPerSecond,
+            rate < (calibratedIsolatedPrefillTps ?? .infinity),
+            isolatedPrefillEvidenceExpired(),
+            performanceMeasurements.freshIsolatedPrefillRate(promptTokens: promptTokens) == nil,
+            let deadline, deadline.remainingDuration() >= DeadlineRefusalStreak.minimumRemainingBudget,
+            macIdle(except: requestID)
+        else { return }
+        deadlineRefusalStreak.recordRefusal(tokensPerSecond: rate, promptTokens: promptTokens)
+    }
+
     /// Move post-commit cancellation cleanup out of the cancelling task. The
     /// retained IDs block provider- and engine-ID reuse while the background
     /// owner holds every pre-submit reservation through actual engine

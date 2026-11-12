@@ -369,6 +369,8 @@ struct Start: AsyncParsableCommand {
         // Line-buffer stdout: in a log or a pipe (`start … > log`, nohup) it is block-buffered, and a start that serves
         // never exits, so its banner, "Listening on" and the tool lines would wait in the buffer.
         setvbuf(stdout, nil, _IOLBF, 0)
+        // A part of this Mac's cluster service whose update left the service on an earlier release restarts it once.
+        ClusterServiceStaleRestart.restartIfStale { print("\(ISO8601DateFormatter().string(from: Date())) cluster part: \($0)") }
         // From here on, a service's child is the --foreground service (`isServiceChild`).
         foreground = Self.isServiceChild(local: local, foreground: foreground, distributed: distributed,
                                          startedByAService: Self.startedByAService)

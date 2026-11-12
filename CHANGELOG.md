@@ -14,11 +14,59 @@ Prepared on 2026-11-12; tagging and publication are separate steps.
 
 ### Upgrade and rollout notes
 
+**Highlights**
+
+Plain-language summary of provider 0.10.12. The full technical changelog, the pull requests and the build's
+verification details are on this page too.
+
+**Two-Mac pairs**
+- Setting up a two-Mac pair is simpler, and a stopped pair starts again in its last mode.
+- A pair only takes requests whose first word it can deliver in time.
+- If one Mac of a pair drops out, the next request gets a clear error right away instead of hanging.
+- A pair Mac that runs short of memory ends only that request; the pair keeps serving.
+- A two-Mac pair that serves only you now restarts into the new version on its own after an update.
+- Gemma 4 pipeline pairs serve the model's full 262K context.
+- Gemma 4 tensor-parallel pairs serve 2 requests at once where memory allows; GLM-5.3 pairs serve as many as both Macs' memory holds.
+
+**Speed and stability**
+- Drafting models (Qwen 3.5 9B, Nemotron Lightning, Qwen 3.8) no longer run out of GPU resources under load.
+- Long busy stretches no longer slow a Mac down (the 9B keeps 65 tokens/s after 15 busy minutes, where 0.10.11 fell to 9).
+- Faster prompt reading and generation for Gemma 4; a faster first word for Qwen 3.5.
+- Saving a prompt's cache no longer holds up the answer.
+
+**Models**
+- **Bonsai 2 27B reads prompts about 6.5x faster on a single Mac** (back to its pre-0.10.5 speed).
+- Bonsai 2 27B generates at full speed again when two requests share a Mac.
+- Gemma 4 26B (QAT) drafts with exact acceptance, so it falls into fewer reasoning loops; Gemma 4 also reasons with `tool_choice: none` and accepts deadline text while reading images.
+- Qwen 3.8 drafts with exact acceptance on a single Mac; the Qwen 3.5 9B drafts and caches again; Qwen 3.5/3.6 cache hits are back.
+- Nemotron Lightning uses plain decoding.
+- Nemotron Super answers with JSON, tools and its settings alongside images and video, takes WebP, GIF and BMP images, and its prompt cache gives exactly the same answers.
+- Nemotron Super: an image that arrives while the Mac is still answering another image waits up to 3 seconds for it, when its deadline allows, instead of bouncing to another Mac.
+- GLM-5.3 answers in JSON with an image or video on one Mac, and an idle GLM Mac no longer looks full.
+- MiMo: a slow step no longer disables MiMo for good, and a stalled MiMo engine stops taking requests.
+- All models: answers that repeat themselves word for word stop early; `tool_choice: auto` returns tool calls as generated; nullable tool parameters accept `null`.
+
+**Requests and refusals**
+- A Mac tells the coordinator why it refused a request.
+- Requests sent together are no longer wrongly refused as "memory" on a warm Mac.
+- A Mac that can't hold an image or video right now says so clearly (`media_memory_unavailable`), and that refusal no longer makes the Mac look full.
+- A request no longer waits forever behind the Mac's idle speed test, and stopping no longer waits for requests the coordinator abandoned.
+- A Mac whose old, slow speed reading keeps making it refuse re-checks its speed with one short idle test (at most once per model every 2 minutes; never on battery; `DARKBLOOM_TTFT_REFUSAL_PROBE=off` turns it off).
+- Models you selected reload automatically.
+
+**The Darkbloom app and command line**
+- `darkbloom start` serves Darkbloom and your local API without asking; `darkbloom local` serves only you.
+- `darkbloom status` shows answers in progress, which early-ended requests are paid, and whether fan control is on; `status`, `doctor` and `verify` keep an older denial visible.
+- `darkbloom status` also lists answers in progress on a Mac that serves only you.
+- The models catalog and recommendations name the models this Mac could add, based on Macs with the same chip.
+- A restart after an update no longer rolls the update back, and the watchdog restarts a provider job that macOS lost.
+- Opt-in: answer before the cache save finishes.
+
 - 0.10.12 makes two-Mac pairs sturdier and wider: a pair keeps serving when one of its Macs runs short of memory, a Gemma 4 pair's pipeline serves the model's whole context, and Gemma 4 and GLM-5.3-Flash pairs in tensor parallel serve more than one request at once where both Macs' memory holds them. The toolchain (Xcode 27.2, macOS 27.2 SDK), `libs/mlx` and `libs/mlx-swift` are 0.10.11's, so the GPU kernels (`mlx.metallib`) are unchanged; `libs/mlx-swift-lm` (Swift model code) moves to `ad8a5860e5`.
 - **Behaviour changes to read first:**
   - **`darkbloom start` no longer asks how this Mac serves.** On a Mac with no saved choice it serves the Darkbloom network and this Mac's local API (Both), and Darkbloom keeps serving while you use the Mac; it saves that choice (`[local] mode = "both"`, `me_first = false`). Saved choices are never rewritten, so a Mac set to "Both, me first" keeps pausing. `darkbloom local` serves only you. Scripts and the desktop app's Start without its local API take the same default where nothing is saved (#2008).
   - **`darkbloom cluster` is simpler:** it no longer asks how the pair serves (always through Darkbloom, with the leading Mac's local API beside it, never pausing for new setups), picks tensor parallel or pipeline by itself for a new model (a pair's own model keeps its last mode, also when a stopped pair starts again; #2013), ends on one line ("✓ Serving <model> on both Macs", details in `darkbloom status`), and on a terminal waits for "Press Enter to exit." `darkbloom cluster local` still asks, for a pair only you use (#2007).
-  - **Bonsai 2 27B on a single Mac reads prompts batched again, fast** (about 620 tokens per second on an M5 Max instead of about 100; 0.10.5 to 0.10.11 ran every prompt row through the one-row kernel). Requests that decode together on a single Mac are batched too, so an answer can depend on the requests beside it, as in 0.10.4 (accepted for this release). Pairs keep the per-row exact arithmetic, so both Macs compute the same bytes (#2022).
+  - **Bonsai 2 27B on a single Mac reads prompts batched again, fast** (about 620 tokens per second on an M5 Max instead of about 100; 0.10.5 to 0.10.11 ran every prompt row through the one-row kernel). Two requests decoding together on a single Mac run per-row again, at full speed (#2028); prompts and three or more requests stay batched, and an answer can still depend on the requests beside it, as in 0.10.11. Pairs keep the per-row exact arithmetic, so both Macs compute the same bytes (#2022).
   - **Qwen3.5-9B has no default presence penalty and drafts with exact MTP acceptance:** its requests speculate and cache their prompts again; in the 0.10.12 gate it ran away on none of 31 draws under exact acceptance (13 of 31 under typical). The 35B Qwen builds keep the card's 1.5. A request's own `presence_penalty` still wins (#1961, back in with the SDK's shared-event fix, #2021).
   - **A pair keeps serving when one Mac runs short of memory partway through a request, in every pair mode** (tensor parallel and pipeline; Qwen 3.8 27B, Gemma 4, GLM-5.3-Flash, MiMo V2.6, GPT-OSS). That request alone ends, on both Macs, with one Mac's memory 503 (`request_exceeds_node_budget`); the next request is served. Before, the pair's worker exited and the pair was down for about a minute (0.10.11's known issue D6). Proven on the M5 Ultra pair with the real memory check.
   - **A Gemma 4 pair's pipeline serves the model's whole context** again: prompts up to 262,143 tokens and answers up to 32,768, as in tensor parallel and on one Mac (0.10.11 capped it at 65,536). Each Mac's memory check still decides, request by request, whether a long one fits now.
@@ -36,6 +84,11 @@ Prepared on 2026-11-12; tagging and publication are separate steps.
 - **GLM-5.3-Flash answers a JSON `response_format` with an image or video on one Mac**, as its text JSON mode does; before, every such request was a 400 (#2009). A pair still refuses it.
 - **Qwen 3.5/3.6 requests that can't speculate cache their prompts again** (a penalty, a `stop` string, logprobs, `logit_bias` or a token constraint): they record the MTP head's prompt history and save the same prefix checkpoints a speculating request saves, so the 35B builds, which keep the card's penalty, cache again (#1965 with mlx-swift-lm #398; window 8b: exact, memory accounted and capped).
 - **Nemotron 3.5 Lightning serves plain decode under `mtp_mode = "auto"`:** its MTP head sped up only a lone request and halved decode beside a second one; plain decode keeps production's throughput (#1969, window 7).
+- **A Mac whose old, slow speed reading keeps making it refuse re-checks its speed:** after three refusals in a row that only the stale reading explains, it runs one short idle test of its own (at most once per model every 2 minutes, never on battery) and prices the next request from the new reading, instead of refusing for up to 30 minutes. No customer request is risked: none is admitted without a time estimate. `DARKBLOOM_TTFT_REFUSAL_PROBE=0` turns it off (#2024, #1956 reworked).
+- **`darkbloom status` lists the answers in progress on a Mac that serves only you** (`darkbloom start --local`), as on a Mac that serves Darkbloom; a pair that serves only on its local API still lists none (#2030).
+- **A two-Mac pair that serves only you restarts into the new version on its own after an update:** the first part started from the newer release restarts the pair's cluster service once, before it takes a request (before, the service kept the earlier release until the next login) (#2033).
+- **Nemotron Super: an image that arrives as the previous image finishes waits for its cleanup** (up to 1 s) instead of being refused with 429 `queue_full` and sent to another Mac. Super's slot serves up to 8 requests at once; only images go one at a time. Memory use is unchanged (#2029).
+- **Nemotron Super: an image that arrives while another image's answer is streaming waits for the slot** (up to 3 s, and never past the time its first token needs), instead of being refused and sent to another Mac. Only one request waits at a time and it reserves no memory, so two images are never in memory at once; text never waits (#2035).
 - **Drafting models no longer use up Metal shared events while several requests decode:** each decode step of two or more requests together left one event alive, and after roughly 15–50 minutes of such a stretch the provider could abort (`Failed to create Metal shared event`). This hit Qwen 3.8 by default, the Qwen 3.5/3.6 builds with `presence_penalty: 0`, Lightning and Qwen4 Flash-Next. Tokens and drafts are unchanged (mlx-swift-lm #404, #2021).
 - **Paged decode stays fast on a busy Mac:** freed KV pages no longer scatter new requests' pages over many segments, so decode keeps one attention pass per layer instead of slowing to 0.30–0.40× its fresh speed a few minutes into a busy run (the 9B in production); outputs are unchanged (mlx-swift-lm #403, #2021).
 - **A Gemma 4 pipeline checks its whole number of requests at load:** a setup that saves several requests at once (2, 4 or 8) serves that many only if each Mac holds them all beside the model, and refuses the load otherwise; one without a saved number serves one at a time (it served four unchecked). Pipelines set up by `darkbloom cluster` keep one chunk of lookahead and one request at a time (#1937 via #2015).
@@ -60,7 +113,7 @@ Prepared on 2026-11-12; tagging and publication are separate steps.
 - Pair owners: both Macs of a pair must run the same version; a pair on 0.10.11 updates itself at its slot, or at once with `darkbloom update` on each Mac. `darkbloom update --rollback` puts back 0.10.11.
 - Pairs still on 0.10.10 stop serving through Darkbloom once 0.10.12 registers, until they update (0.10.12 and 0.10.11 hold 24 pair approvals each, the coordinator keeps 64).
 - The registration keeps 0.10.11's fields; its cluster runtime facts change where the modes do: Gemma 4's pipeline qualification serves the whole context again, and the tensor-parallel widths follow each Mac's memory. Deploy the coordinator that ships with 0.10.12 first.
-- The 61 entries below are the pending fragments rendered verbatim, except where the release notes reword one; CI-only entries change no provider behaviour.
+- The 68 entries below are the pending fragments rendered verbatim, except where the release notes reword one; CI-only entries change no provider behaviour.
 
 ### `status`, `doctor` and `verify` keep an older denial visible
 
@@ -70,9 +123,16 @@ Prepared on 2026-11-12; tagging and publication are separate steps.
 ### Bonsai 2 27B processes prompts at full speed again on a single Mac
 
 - Since provider 0.10.5, a single Mac ran every prompt row of Bonsai 2 27B through the one-row kernel. That kept each row's arithmetic identical to decode, but made prompt processing 2.3 to 6 times slower than in 0.10.4: about 100 tokens per second on an M5 Max instead of 620, and about 76 to 96 instead of 220 on M1 to M4 Macs. Image and tool prompts of 1,000 to 2,000 tokens or more then missed their first-token deadline, and OpenRouter saw 429s.
-- Now a single Mac processes a Bonsai 2 27B prompt with one batched matrix multiply per projection again, as in 0.10.4 (TF32 on M5, FP32 elsewhere). Prompt rows are no longer bit-identical to the decode arithmetic, as before 0.10.5. A request decoding alone is unchanged. When several Bonsai 2 27B requests decode at once on one Mac, their rows share the batched kernels again, as in 0.10.4, so a request's exact output can depend on the requests decoding beside it.
+- Now a single Mac processes a Bonsai 2 27B prompt with one batched matrix multiply per projection again, as in 0.10.4 (TF32 on M5, FP32 elsewhere). Prompt rows are no longer bit-identical to the decode arithmetic, as before 0.10.5. A request decoding alone is unchanged. When several Bonsai 2 27B requests decode at once on one Mac, a request's exact output can depend on the requests decoding beside it, as in 0.10.11; two requests decoding together run per-row at full speed (see the next entry).
 - Pairs keep the per-row arithmetic for prompt and decode rows, because both Macs must compute the same bytes. Their arithmetic receipt (`bonsai-fp32-row-arithmetic-v2`) is unchanged.
 - `libs/mlx-swift` moves to `1b3520fe94` (Layr-Labs/mlx-swift#70, on the fork's `release/provider-0.10.12` = the previous pin `c633d221d6`). Only Swift sources change there, so `mlx.metallib` is unchanged.
+
+### Two Bonsai 2 27B requests decoding together run at full speed again on a single Mac
+
+- With prompts batched again (#2022), a single Mac also ran each decode step of several Bonsai 2 27B requests as one batched matrix multiply. At two requests on an M5 Ultra that was 9.5 % slower than 0.10.11's one-row kernel (71.1 against 78.6 tokens per second, steady state).
+- Now two requests decoding together on a single Mac are computed row by row again, as 0.10.11 computed them on every Mac, and run at full speed again (78.6 tokens per second on the M5 Ultra). Prompts and decode steps of three or more requests stay batched: batched prompts are 6 to 7 times faster than 0.10.11 at 1K to 8K tokens, and from three requests batched decode is as fast or faster (116.0 against 107.3 tokens per second at four).
+- A request's exact output can still depend on the requests decoding beside it, as in 0.10.11. Pairs are unchanged.
+- `libs/mlx-swift` moves to `b1c94d29c5`, the merge of Layr-Labs/mlx-swift#71 into the fork's `release/provider-0.10.12`. Only Swift sources change there, so `mlx.metallib` is unchanged.
 
 ### A stream that stores its prompt's checkpoint no longer waits for row-by-row coding
 
@@ -90,6 +150,11 @@ Prepared on 2026-11-12; tagging and publication are separate steps.
 - Each of the 3 Cluster GPU Tests shards now asks the Darkbloom plane for a sandbox on a lane of its own (`test-cluster-gpu-1`, `test-cluster-gpu-2`, `test-cluster-gpu-3`; 4x24 while sizes are on). Each falls back alone to `blacksmith-12vcpu-macos-27` when the plane does not grant it. A lane routes only when the approval's `lanes` names it; on 2026-11-10 it named `test-cluster-gpu-1` and `test-cluster-gpu-2` but not `test-cluster-gpu-3`.
 - Shard 2 no longer needs 42 GiB. The paged verify/prefill attention bench (`paged-verify-bench`) bounds MLX's freed-buffer cache to 1 GiB, as a ready Qwen tensor-parallel rank does. Before, the cache kept every prompt chunk's attention temporaries, and the bench's process reached 34.26 GiB. The bench also prints its peak active memory and cache size for each run.
 - A full CI run now asks for 15 macOS jobs instead of 14. The GPU lanes come last in the lane table, so the `DARKBLOOM_MACOS_LANES` cap drops them first.
+
+### CI: the MiMo audio codec download resumes instead of starting over
+
+- The provider's last unit-test shard downloads the 1.87 GB pinned MiMo audio codec when the runner's Darkbloom cache has no copy, which happens on some runners and not others. curl's own retries restarted every attempt from the first byte, so on a link of about 2 MB/s no 900 s attempt finished: CI run 43132089921 got 1.60 and 1.79 GB and failed after 30 minutes, and other pull requests' runs hung in the same step until cancelled.
+- `scripts/prepare-mimo-audio-fixtures.py` now makes up to eight attempts per file, each resuming the partial file (`--continue-at -`), with a growing pause between them. Each attempt ends after at most 900 s and never past 45 minutes from the first, so the step gives up within 45 minutes. A server that ignores the range request makes the next attempt start over, and a file whose digest is wrong is deleted, so no later run resumes it. The same script prepares the codec in the release build's qualification lane. `scripts/test-prepare-mimo-audio-fixtures.py` checks this offline.
 
 ### CI: the cluster qualification checks build with the job's selected Xcode
 
@@ -149,9 +214,35 @@ Prepared on 2026-11-12; tagging and publication are separate steps.
 - While the other Mac of a pair doesn't answer (asleep, off, its cable out), the leading Mac keeps its part ready for 10 minutes so the pair re-forms when that Mac is back. Its part can't form the pair meanwhile, and each start reads its share of the model and registers with the coordinator again. A part that ended was started again every 30 seconds (every 48 seconds for a MiMo leader whose other Mac slept). It now waits twice as long as the last time, from 30 seconds up to 10 minutes (30 seconds, then 1, 2 and 4 minutes), and starts at once when the other Mac answers. While the other Mac answers, a part that keeps ending starts again as before (6, 12, 24, then every 30 seconds).
 - `darkbloom cluster status` on the leading Mac says when, under the line that it waits for the other Mac: ``This Mac's part starts again in 4 min, or as soon as the other Mac answers: while the other Mac is away, each start waits twice as long as the last, up to 10 min.``
 
+### A pair's cluster service runs the installed release after `darkbloom update`
+
+- A pair that serves only on its local API (or a Mac whose cluster service
+  serves alone) kept its cluster service on the earlier release after
+  `darkbloom update` on both Macs: the service's supervisor does not drain
+  such a pair for an update, so it never restarted into the installed
+  release, and `darkbloom restart` restarted only the pair's parts (0.10.12
+  W1). The parts ran the installed release; the service's own changes, and
+  the version it reports to the other Mac, waited for the next login.
+- Now the first part the service starts from a newer installed release
+  restarts the service's launchd job once, before it takes a request: the
+  pair stops on that Mac and starts again on the installed release, as after
+  a login. Only for the build's own job, only when its supervisor runs an
+  older release than the part, and once per release in 6 hours; the part's
+  log says so (`cluster part: this Mac's cluster service still runs …`). It
+  runs in the parts of this release, so it also covers the update to it.
+
 ### A stopped pair keeps its last mode on restart
 
 - `darkbloom cluster local`, and `darkbloom start` in a terminal on a pair that serves locally, preselect the mode the pair's own model last served in when its mode question comes up, so Enter starts a stopped pipeline pair as a pipeline again instead of switching it to tensor parallel. The **Recommended** tag stays on the automatic rule's pick; when the last mode is the recommended one, nothing changes. `darkbloom cluster local <its model>` starts the pair's own model in that mode too; a new model still gets the automatic rule.
+
+### Three deadline refusals on a stale prefill estimate re-measure the Mac
+
+- A `deadline_unreachable` refusal admits nothing, so it measures nothing. An idle Mac with no calibration anchor, whose prefill measurement was slow and is now older than 120 seconds, could go on refusing from it for up to 30 minutes.
+- After three refusals in a row that the stale estimate explains, the provider re-runs its idle calibration probe once: one uncached 512-token request of its own, alone, only while the Mac is idle, at nominal posture and on AC power. Any customer request preempts it. Its measurement replaces the estimate and the anchor, and the next request is priced from it. A loaded model probes at most once every 120 seconds.
+- It never runs on battery, with or without Low Power Mode; a full streak waits for AC power. The startup calibration is unchanged.
+- Only refusals the stale estimate explains count: the Mac was idle, the projection priced nothing but that request's prompt, the estimate was older than 120 seconds with no fresher measurement for that prompt size, it was below the calibration anchor if there is one, and the request still had at least 5 seconds left. Refusals at a fresh rate, late retries, refusals beside other work or for memory or capacity, reviewed calibrations, native-media requests and native block engines (which keep their own recovery probe) don't count.
+- A customer request is never admitted without a time projection because of these refusals, so none is admitted that is already out of time. The provider logs one line when the probe starts (`Deadline refusals: <model> re-measures stale prefill evidence with one idle probe …`).
+- No wire field changes. `DARKBLOOM_TTFT_REFUSAL_PROBE=0` turns the probe off on its own, and `DARKBLOOM_TTFT_ADMISSION_FIXES=0` turns it off with the other estimator corrections. Both reach the launchd provider job.
 
 ### Recommended models from Macs with the same chip
 
@@ -482,6 +573,16 @@ SSD-write policies are unchanged.
   state-file write (about every 2 s), into `running_requests` in its state
   file. Nemotron Super's answers are not listed yet.
 
+### `darkbloom status` lists the answers in progress on a Mac that serves only you
+
+- A Mac that serves only you (`darkbloom start --local`) now lists its answers
+  in progress under `darkbloom status` (and in `status --json`), as a Mac that
+  serves Darkbloom does: before, its state file never carried them, so a long
+  local answer looked like nothing was running (0.10.12 W1). Its standalone
+  server samples the counters its engines already keep, at most every 2 s.
+- A pair that serves only on its local API (`darkbloom cluster local`) still
+  lists none: its serving process writes no state file yet.
+
 ### `darkbloom status` says which requests that ended early are paid
 
 - The line under `Requests served` said that every request that ended early "may be unpaid". Many are paid: when the requester leaves mid-answer, the coordinator pays for the prompt and the output your Mac had already sent. `status` now lists those requests by what stopped them and whether they are paid, for example:
@@ -498,6 +599,17 @@ SSD-write policies are unchanged.
 ### `darkbloom status` says whether fan control is on
 
 - Fan control is opt-in (`sudo darkbloom fan enable`), and only `darkbloom fan status` said it was off, so a Mac with supported fans could serve hot under macOS automatic fan speed without anything in the normal flow saying so. `darkbloom status` now has a `Fan control (experimental)` line from the same report: the helper's mode when it runs; `off, macOS automatic` with the hottest GPU sensor and the enable command on supported hardware without the helper; and otherwise not answering, installed but not running (after `fan disable`, with no advice to enable), unsupported or unavailable. Fan control stays opt-in; nothing enables it.
+
+### Nemotron 3.5 Super: a request that arrives as the previous one finishes waits instead of bouncing
+
+- A Super Mac serves up to 8 requests at once, but only one image or video at a time. It answered another image at once with 429 `queue_full`, which sends the image to another Mac. That included images arriving after the previous answer had ended but before its cleanup (native retirement, and the release of its image memory) had finished. The same held for any request when the Mac's Super owner was at its request limit.
+- Such a request now waits up to 1 s for that cleanup and is then served. The previous request's memory is released before the next one reserves its own, so memory use is unchanged. A request that arrives while the previous answer is still being generated is still refused at once.
+
+### Nemotron 3.5 Super: an image that arrives while another image's answer is streaming waits for it instead of bouncing
+
+- A Super Mac serves up to 8 requests at once, but only one image or video at a time. An image that arrived while another image's answer was streaming was refused at once with 429 `queue_full`, so the coordinator sent it elsewhere or, after three refusals, gave up. Such an image now waits for the slot, up to 3 s, and is served when the image ahead of it finishes. An image's answer usually ends about 2 s after it starts streaming.
+- For Darkbloom requests the wait never spends the request's time limit for its first token. It stops early enough to leave room for this Mac's slowest recent time to first token on images (counted as at least 6 s), and is skipped when no room is left.
+- Only one request waits at a time, and a waiting request reserves no memory, so two images are never in memory at once. A waiting image never takes the last request slot a text request could use. Text requests never wait behind an answer still being generated, and an image never waits behind a text answer or behind an image whose prompt is still being processed.
 
 ### Nemotron 3.5 Super answers that repeat themselves verbatim stop early too
 

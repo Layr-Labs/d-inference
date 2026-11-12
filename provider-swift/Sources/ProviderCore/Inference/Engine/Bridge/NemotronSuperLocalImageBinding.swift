@@ -9,8 +9,10 @@ import MLXVLM
 /// manufactured; on a speculating owner the engine runs the request
 /// target-only. A prefix identity is derived only from the request's own
 /// evaluated features, and only with a cache scope. One media request runs
-/// at a time. The load owner retains this actor and drains it before
-/// retiring its bridge.
+/// at a time: a request that arrives while the active one's answer has
+/// already ended, or is streaming, may wait for it instead of being refused
+/// (`admit(stackedUntil:)`). The load owner retains this actor and drains it
+/// before retiring its bridge.
 actor NemotronSuperLocalImageBinding {
     enum Failure: Error, Equatable {
         case closed, busy, wrongModel, invalidInput, capacity, retainedFault
@@ -67,11 +69,57 @@ actor NemotronSuperLocalImageBinding {
         let normalizedImages: [MLXArray]
     }
 
+    /// One media request's progress, as `admit(stackedUntil:)` reads it: its
+    /// answer streams once its first chunk has passed, and has ended once its
+    /// engine stream closed or it was cancelled. Its native settlement and
+    /// charge release follow the end.
+    final class MediaProgress: @unchecked Sendable {
+        private let lock = NSLock()
+        private var streaming = false
+        private var ended = false
+        /// When the binding admitted the request.
+        private let admittedAt = ContinuousClock.now
+        /// Told once, at the first chunk, the time since admission.
+        private let onFirstChunk: (@Sendable (Duration) -> Void)?
+
+        init(onFirstChunk: (@Sendable (Duration) -> Void)? = nil) { self.onFirstChunk = onFirstChunk }
+        #if DEBUG
+        /// TEST SEAM: runs after the answer has ended, before the request's
+        /// native settlement, as a slow settlement would (`execute`).
+        var testSettlement: (@Sendable () async -> Void)?
+        #endif
+
+        var isEnded: Bool { lock.withLock { ended } }
+        /// The answer is streaming, or has ended.
+        var hasStarted: Bool { lock.withLock { streaming || ended } }
+
+        func markFirstChunk() {
+            let first = lock.withLock { () -> Bool in
+                defer { streaming = true }
+                return !streaming
+            }
+            if first { onFirstChunk?(ContinuousClock.now - admittedAt) }
+        }
+
+        func markEnded() { lock.withLock { ended = true } }
+
+        func markCancelled() { lock.withLock { ended = true } }
+    }
+
     private let owner: NemotronSuperLocalBridgeBuilder.Owner
     private let gate: VisionMemoryGate
     private var closing = false
     private var active: Task<Void, Error>?
+    private var activeProgress: MediaProgress?
+    /// The one request waiting for the active one, if any; it is admitted
+    /// before any newcomer.
+    private var waiter: UUID?
     private var cancelActive: (@Sendable () -> Void)?
+    #if DEBUG
+    private var testSettlement: (@Sendable () async -> Void)?
+    /// TEST SEAM: the next requests' answers run `hook` once they end.
+    func setTestSettlement(_ hook: (@Sendable () async -> Void)?) { testSettlement = hook }
+    #endif
 
     /// Only the exact installed Owner creates this binding. There is no API
     /// accepting independently supplied installed model and bridge handles.
@@ -87,9 +135,9 @@ actor NemotronSuperLocalImageBinding {
     /// production caller supplies. `cacheScope` partitions prefix reuse as
     /// for text (nil: none).
     func run(request: ChatCompletionRequest, input: Input, cacheScope: String? = nil,
+             stackedUntil: ContinuousClock.Instant? = nil,
              onEvent: @escaping @Sendable (GenerationEvent) async -> Void) async throws {
-        guard !closing else { throw Failure.closed }
-        guard active == nil else { throw Failure.busy }
+        try await admit(stackedUntil: stackedUntil)
         guard request.model == owner.modelID else { throw Failure.wrongModel }
         guard request.tools == nil, request.tool_choice == nil, request.response_format == nil,
             request.logprobs != true, request.top_logprobs == nil, request.prompt_cache_key == nil
@@ -99,7 +147,7 @@ actor NemotronSuperLocalImageBinding {
         // The bridge owns a second reservation under its request ID. Sharing
         // that key would make its KV admission look like a duplicate claim.
         let mediaReservationID = id + "-media"
-        let owner = self.owner, gate = self.gate
+        let owner = self.owner, gate = self.gate, progress = makeProgress()
         let task = Task<Void, Error> {
             try Task.checkCancellation()
             guard await gate.reserve(requestId: mediaReservationID, mediaDecodeBytes: quote.totalBytes, kvTokens: 0)
@@ -107,9 +155,10 @@ actor NemotronSuperLocalImageBinding {
             try await Self.prepareAndExecute(owner: owner, prepare: { construction in
                 try owner.prepareLocalImage(input, maximumFeatureBytes: quote.featureBytes,
                                             construction: construction)
-            }, request: request, requestID: id, cacheScope: cacheScope, logprobs: nil, onEvent: onEvent)
+            }, request: request, requestID: id, cacheScope: cacheScope, logprobs: nil, progress: progress,
+               onEvent: onEvent)
         }
-        try await settle(task, reservations: [mediaReservationID])
+        try await settle(task, reservations: [mediaReservationID], progress: progress)
     }
     #endif
 
@@ -126,13 +175,13 @@ actor NemotronSuperLocalImageBinding {
     /// entries leave on.
     func runEncoded(body: Data, plan: NemotronSuperRequestPlan, templateBytes: Data,
                     cacheScope: String? = nil, logprobs: EngineV2LogprobsChannel? = nil,
+                    stackedUntil: ContinuousClock.Instant? = nil,
                     onEvent: @escaping @Sendable (GenerationEvent) async -> Void) async throws {
-        guard !closing else { throw Failure.closed }
-        guard active == nil else { throw Failure.busy }
+        try await admit(stackedUntil: stackedUntil)
         let headerBytes = try Self.encodedHeaderQuote(bodyBytes: body.count, templateBytes: templateBytes.count)
         let id = "super-local-encoded-" + UUID().uuidString
         let ingressID = id + "-ingress", mediaID = id + "-media"
-        let owner = self.owner, gate = self.gate
+        let owner = self.owner, gate = self.gate, progress = makeProgress()
         let task = Task<Void, Error> {
             try Task.checkCancellation()
             // Before JSON/base64/header expansion, using the real shared ledger.
@@ -144,7 +193,7 @@ actor NemotronSuperLocalImageBinding {
                 try await VideoReaderFailureReport.reporting(to: { TelemetryClient.shared.emit($0) }) {
                     try await Self.executeEncodedVideo(video, plan: plan, body: body, templateBytes: templateBytes,
                         request: parsed.request, owner: owner, gate: gate, mediaID: mediaID, requestID: id,
-                        cacheScope: cacheScope, logprobs: logprobs, onEvent: onEvent)
+                        cacheScope: cacheScope, logprobs: logprobs, progress: progress, onEvent: onEvent)
                 }
                 return
             }
@@ -172,10 +221,10 @@ actor NemotronSuperLocalImageBinding {
                 return try owner.prepareLocalImage(input, maximumFeatureBytes: imagePlan.featureBytes,
                                                    construction: construction)
             }, request: parsed.request, requestID: id, cacheScope: cacheScope, logprobs: logprobs,
-               onEvent: onEvent)
+               progress: progress, onEvent: onEvent)
         }
         // No suspension precedes installing active: includes both admissions.
-        try await settle(task, reservations: [ingressID, mediaID])
+        try await settle(task, reservations: [ingressID, mediaID], progress: progress)
     }
 
     /// One inline video under the ingress reservation: its compressed samples
@@ -189,7 +238,7 @@ actor NemotronSuperLocalImageBinding {
         body: Data, templateBytes: Data,
         request: ChatCompletionRequest, owner: NemotronSuperLocalBridgeBuilder.Owner, gate: VisionMemoryGate,
         mediaID: String, requestID: String, cacheScope: String?, logprobs: EngineV2LogprobsChannel?,
-        onEvent: @escaping @Sendable (GenerationEvent) async -> Void) async throws {
+        progress: MediaProgress, onEvent: @escaping @Sendable (GenerationEvent) async -> Void) async throws {
         let video = try await NemotronSuperVideoDecode.inspect(uri)
         let prompt = try owner.localVideoPrompt(plan: requestPlan, body: body, templateBytes: templateBytes,
                                                 labels: video.labels)
@@ -204,12 +253,13 @@ actor NemotronSuperLocalImageBinding {
                 try owner.prepareLocalVideo(frames, prompt: prompt, maximumFeatureBytes: plan.featureBytes,
                                             construction: construction)
             }
-        }, request: request, requestID: requestID, cacheScope: cacheScope, logprobs: logprobs, onEvent: onEvent)
+        }, request: request, requestID: requestID, cacheScope: cacheScope, logprobs: logprobs, progress: progress,
+           onEvent: onEvent)
     }
 
     /// Cleanup coordinator holds no image arrays. Actual work task completion
     /// drops its captures before refund. drain awaits this same cleanup task.
-    private func settle(_ work: Task<Void, Error>, reservations: [String]) async throws {
+    private func settle(_ work: Task<Void, Error>, reservations: [String], progress: MediaProgress) async throws {
         let owner = self.owner, gate = self.gate
         let cleanup = Task<Void, Error> {
             let result = await work.result
@@ -219,11 +269,53 @@ actor NemotronSuperLocalImageBinding {
             try result.get()
         }
         active = cleanup
-        cancelActive = { work.cancel() }
-        defer { active = nil; cancelActive = nil }
+        activeProgress = progress
+        cancelActive = { progress.markCancelled(); work.cancel() }
+        defer { active = nil; activeProgress = nil; cancelActive = nil }
         try await withTaskCancellationHandler {
             try await cleanup.value
-        } onCancel: { work.cancel() }
+        } onCancel: { progress.markCancelled(); work.cancel() }
+    }
+
+    /// Admits one media request at a time (SUPER-IMAGE-504: an instant
+    /// `busy` is a coordinator bounce). A request that finds one active may
+    /// wait for it, one request at a time and reserving nothing until it is
+    /// admitted: for up to `NemotronSuperServingPolicy.finishingWait` while
+    /// the active answer has ended and only its settlement remains, and until
+    /// `stackedUntil` while the active answer streams and the owner still has
+    /// a free request slot besides this one's. The active request's charge is
+    /// released before the waiting one reserves. Any other request is refused
+    /// at once, as before.
+    private func admit(stackedUntil: ContinuousClock.Instant?) async throws {
+        let finishingEnd = ContinuousClock.now + NemotronSuperServingPolicy.finishingWait
+        let id = UUID()
+        defer { if waiter == id { waiter = nil } }
+        while true {
+            guard !closing else { throw Failure.closed }
+            guard waiter == nil || waiter == id else { throw Failure.busy }
+            guard active != nil, let progress = activeProgress else { return }
+            let now = ContinuousClock.now
+            let settling = now < finishingEnd && progress.isEnded
+            // A stacked wait never holds the owner's last free request slot,
+            // which text would otherwise be refused for.
+            let stacked = stackedUntil.map { now < $0 } == true && progress.hasStarted
+                && owner.hasFreeLocalAdmission
+            guard settling || stacked else { throw Failure.busy }
+            waiter = id
+            try await Task.sleep(for: .milliseconds(5))
+        }
+    }
+
+    /// Each media request's admission-to-first-chunk time feeds the owner's
+    /// expectation (`Owner.expectedMediaFirstChunk`); a wait before the
+    /// admission is not part of it.
+    private func makeProgress() -> MediaProgress {
+        let owner = self.owner
+        let progress = MediaProgress(onFirstChunk: { owner.recordMediaFirstChunk($0) })
+        #if DEBUG
+        progress.testSettlement = testSettlement
+        #endif
+        return progress
     }
 
     /// `prepare` builds the evaluated submission in `construction`; a
@@ -231,7 +323,7 @@ actor NemotronSuperLocalImageBinding {
     private static func prepareAndExecute(owner: NemotronSuperLocalBridgeBuilder.Owner,
         prepare: (NativeConstructionScope) async throws -> EngineV2VisionPrefill.PreparedSubmission,
         request: ChatCompletionRequest, requestID: String, cacheScope: String?,
-        logprobs: EngineV2LogprobsChannel?,
+        logprobs: EngineV2LogprobsChannel?, progress: MediaProgress,
         onEvent: @escaping @Sendable (GenerationEvent) async -> Void) async throws {
         let construction = NativeConstructionScope()
         let activity = owner.imageServiceBudget.beginUnboundedActivity()
@@ -242,7 +334,7 @@ actor NemotronSuperLocalImageBinding {
             try Task.checkCancellation()
             try await execute(bridge: owner.bridge, prepared: prepared,
                 cacheScope: owner.prefixBankBytes > 0 ? cacheScope : nil,
-                request: request, requestID: requestID, logprobs: logprobs, onEvent: onEvent)
+                request: request, requestID: requestID, logprobs: logprobs, progress: progress, onEvent: onEvent)
         } catch {
             if construction.snapshot.isRetainedFault {
                 owner.quarantineLocalImage(construction: construction, activity: activity)
@@ -512,7 +604,7 @@ actor NemotronSuperLocalImageBinding {
     private static func execute(bridge: EngineV2Bridge,
         prepared: EngineV2VisionPrefill.PreparedSubmission, cacheScope: String?,
         request: ChatCompletionRequest, requestID: String, logprobs: EngineV2LogprobsChannel?,
-        onEvent: @escaping @Sendable (GenerationEvent) async -> Void
+        progress: MediaProgress, onEvent: @escaping @Sendable (GenerationEvent) async -> Void
     ) async throws {
         let usage = EngineV2RequestUsageSignal()
         let identity = cacheScope == nil ? nil : try prepared.hybridPrefixIdentity()
@@ -528,7 +620,14 @@ actor NemotronSuperLocalImageBinding {
                 // they leave on the request's channel in that order.
                 if case .logprobs(let entries) = event { logprobs?.append(entries); continue }
                 await onEvent(event)
+                if case .chunk(let text) = event, !text.isEmpty { progress.markFirstChunk() }
             }
+            // The stream closes before the row's native retirement
+            // (`EngineV2Bridge` pump): only settlement remains.
+            progress.markEnded()
+            #if DEBUG
+            await progress.testSettlement?()
+            #endif
             if Task.isCancelled { await bridge.cancel(requestId: requestID) }
             await usage.waitForTerminalObservation()
         } onCancel: { Task { await bridge.cancel(requestId: requestID) } }

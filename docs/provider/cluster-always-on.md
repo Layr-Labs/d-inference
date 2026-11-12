@@ -165,6 +165,25 @@ The rules each Mac applies to the other's progress are in
    otherwise (the leader's local API server, a Mac serving alone) does not, so
    the update defers while it serves. A service whose status says so
    (`localOnly`, a solo part) gives the release up before downloading it.
+   `darkbloom update` installs before it asks, so after it ran on both Macs
+   such a pair sets itself up again on the installed release
+   (`ClusterOnboardingUpdate`) while the supervisor and the cluster service keep
+   the release they started with. The first part a service starts from a newer
+   installed release restarts the service's launchd job once, before it takes a
+   request (`launchctl kickstart -k`;
+   `provider-swift/Sources/ProviderCore/Service/ClusterSupervision/ClusterServiceStaleRestart.swift`):
+   only when its supervisor's state file names an earlier release (compared as
+   releases: 0.10.9 is older than 0.10.12, and a DevNet build by its number),
+   the part's parent is the service that supervisor runs, that supervisor is the
+   process launchd's job runs, and no part asked for this release in the last 6
+   hours. It asks only once that is recorded (`service-restart-asked.json`); a
+   record it can't write means no restart. The part's log says `cluster part:
+   this Mac's cluster service still runs v<earlier> while v<installed> is
+   installed …`. It then starts nothing for up to 20 s, with SIGTERM and SIGINT
+   at their default action, so the service's stop ends it at once (a `start`
+   part otherwise takes both for its own drain); a part that nothing stopped
+   gets its handlers back and starts as before. From 0.10.12, which also covers
+   the update to 0.10.12: its parts run 0.10.12.
 5. A Mac whose partner has automatic updates off gives the slot's release up
    before downloading it. A Mac with automatic updates off reports `disabled`
    whenever no cycle runs on it, except for the minute after a cycle that
@@ -434,7 +453,7 @@ system setting:
 | Follower never connects; log shows `Local network prohibited` | **Privacy & Security → Local Network** | Turn on Darkbloom; an ad-hoc build needs this per build |
 | A firewall alert after an update | `codesign -dv` on the listening binary | The binary is not Developer-ID signed; install the release build |
 | Install or provider log says `permissions: not asked once` | The listed reasons | Install the signed release (a locally built binary is ad-hoc signed and outside `Darkbloom.app`) |
-| The pair does not update | `cluster update:` lines in `~/.darkbloom/cluster-setup/service.log` on both Macs | `automatic updates are off`: run `darkbloom update` on both Macs, or set `auto_update` on both (`darkbloom autoupdate enable`), which takes effect when the cluster service next starts (at login, or after its next update). `deferred`: a request ran past 120 s, or one Mac could not take the release; the next slot tries again. `does not drain for an update`: the pair serves on the local API or a Mac serves alone. `failed its start check`: the release did not start on this Mac, which keeps its previous release and does not install that release again; the other Mac follows it back ([a rollback on one Mac](#a-rollback-on-one-mac)), and a newer release updates both. `not following the other Mac's rollback` or `the other Mac still runs`: see [a rollback on one Mac](#a-rollback-on-one-mac) |
+| The pair does not update | `cluster update:` lines in `~/.darkbloom/cluster-setup/service.log` on both Macs | `automatic updates are off`: run `darkbloom update` on both Macs, or set `auto_update` on both (`darkbloom autoupdate enable`), which takes effect when the cluster service next starts (at login, or after its next update). `deferred`: a request ran past 120 s, or one Mac could not take the release; the next slot tries again. `does not drain for an update`: the pair serves on the local API or a Mac serves alone; after `darkbloom update` on both Macs it serves the installed release once it set itself up again, and its first part restarts the cluster service into it (`cluster part:` in the part's log; [the coordinated update](#the-pairs-coordinated-update), step 4). `failed its start check`: the release did not start on this Mac, which keeps its previous release and does not install that release again; the other Mac follows it back ([a rollback on one Mac](#a-rollback-on-one-mac)), and a newer release updates both. `not following the other Mac's rollback` or `the other Mac still runs`: see [a rollback on one Mac](#a-rollback-on-one-mac) |
 
 ## Developer: a coordinator-paired member as a service
 

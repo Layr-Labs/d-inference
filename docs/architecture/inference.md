@@ -735,7 +735,34 @@ remain required.
 
 The same binding serves one inline video as the only media of a request
 (`data:video/mp4;base64,` or `data:video/quicktime;base64,`; one media request
-at a time, like images). Under the ingress reservation `NemotronSuperVideoDecode.inspect`
+at a time, like images). A request that arrives while the owner's request, or
+the binding's media request, has finished its answer and only its settlement
+remains (native retirement, the media charge's release) waits up to
+`NemotronSuperServingPolicy.finishingWait` (1 s) for it instead of a 429
+`queue_full` (`NemotronSuperLocalBridgeBuilder.Owner.admitLocalRequest(waitingUpTo:stackedUntil:cancelled:)`,
+`NemotronSuperLocalImageBinding.admit(stackedUntil:)`). The managed slot's owner
+admits up to eight requests at once (`loadPlan`, halved by the load fit), so its
+media requests meet the binding's one-at-a-time limit long before the owner's
+request limit. A media request that
+arrives while the media request ahead of it is already streaming its answer
+(its first chunk has passed; images end about 2 s later), at the binding, or at
+a full single-request owner whose request is such an answer (a wider owner
+leaves this wait to the binding), also waits, until
+`NemotronSuperServingPolicy.stackedMediaWaitEnd`: at most `stackedMediaWait`
+(3 s), and for a coordinator request only while its forwarded first-content
+deadline still covers the owner's expected media first-chunk time (the longest
+of its last `mediaFirstChunkSamples` (64), each measured from the image binding's
+admission, so earlier waits do not inflate it, and never below
+`minimumExpectedMediaFirstChunk` (6 s), so fast recent ones cannot shorten the
+wait a slow image needs; `Owner.expectedMediaFirstChunk`) and
+`stackedMediaWaitMargin`. A local request forwards no deadline and may wait the
+whole bound. At the binding it waits only while the owner keeps a request
+slot free besides its own (`Owner.hasFreeLocalAdmission`), so a waiting image
+never takes the slot a text request would get. One request waits at a time and
+takes the next admission before any newcomer; any other request, text
+mid-answer included, is still refused at once. A waiting request reserves nothing, so the previous request's media
+charge is released before it reserves; cancellation (a coordinator cancel or a
+local disconnect) ends the wait. Under the ingress reservation `NemotronSuperVideoDecode.inspect`
 runs the shared `MediaIngest.decodeVideo` checks (label, decoded bytes,
 container, duration, coded frame size up to
 `NemotronSuperServingPolicy.maximumVideoFramePixels` pixels in any shape),
@@ -1915,7 +1942,9 @@ MoE Qwens, and standalone `CBv2NativeBlockEngine` slots run an excluded
 128-token warmup followed by two uncached solo probes
 of at most 512 prompt tokens and 32 output tokens. Completed calibration seeds
 prefill/decode evidence without requiring a customer job and runs once per loaded
-engine. A probe's prompt sample must pass the same filters as a serving sample
+engine. After its bootstrap an ordinary engine re-runs one of those solo probes
+only when three deadline refusals that stale evidence explains ask for it
+([deadlines](#deadlines), `DeadlineRefusalStreak`). A probe's prompt sample must pass the same filters as a serving sample
 (`EngineV2Bridge.classifyPrefillSample`): a computation window of at least 1 ms
 and a rate of at most 20,000 tokens per second (`maxPlausiblePrefillTps`). This
 ceiling is equal to the coordinator's
@@ -2094,9 +2123,15 @@ shader-cache probes and a pair's warmup canary are skipped), and
 (`provider-swift/Sources/ProviderCore/Service/DaemonRunningRequests.swift`)
 turns them into the daemon state's `running_requests`: model, elapsed, tokens
 so far, the rate since the previous sample, and a short hash of the request ID.
-A pair's leading Mac lists the pair's answers, since its part holds the pair's
-bridge. Nemotron Super's owner route bypasses the bridge, so its answers are not
-listed.
+A Mac that serves only you lists them as well: the standalone server samples
+its resident slots' bridges the same way, at most every 2 s, into the state it
+writes every 250 ms
+(`provider-swift/Sources/ProviderCore/Server/StandaloneServer+RunningRequests.swift`,
+`runningRequestsForState`). A pair's leading Mac lists the pair's answers when
+the pair serves through Darkbloom, since its part holds the pair's bridge; a
+pair that serves only on its local API (`DistributedLocalServer`) writes no
+state file, so it lists none. Nemotron Super's owner route bypasses the bridge,
+so its answers are not listed.
 
 Decoded text keeps a character the tokenizer writes as `<0xHH>` tokens wherever it
 falls. swift-transformers' `ByteFallbackDecoder` releases those tokens only when a
@@ -2515,8 +2550,9 @@ This removes the previous doubling of projected processing time; an EWMA is a
 point estimate and does not guarantee the next request's speed. Actual elapsed
 deadline expiry, queue/cache projection and physical admission still apply.
 
-Three estimator corrections shape those inputs;
-`DARKBLOOM_TTFT_ADMISSION_FIXES=0` restores the previous estimators
+Three estimator corrections and a refusal probe shape those inputs;
+`DARKBLOOM_TTFT_ADMISSION_FIXES=0` restores the previous estimators and turns
+the probe off with them
 (`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`).
 
 Decode is charged per batch step. The decode EWMA is a per-request rate, so
@@ -2574,6 +2610,47 @@ that floor, because the anchor comes from a short calibration cell
 `ModelCalibrationPolicy.startup`) that never certifies longer work; bucket
 evidence expires after 120 seconds. The published isolated rate is unchanged.
 A late older cold sample no longer restarts the combined prefill EWMA.
+
+A refusal admits nothing, so it measures nothing: those idle rules are the
+only way expired evidence that refuses is replaced, and with no anchor or off
+nominal posture they keep it for 30 minutes. Ordinary engines therefore count
+consecutive `deadline_unreachable` refusals that stale evidence explains
+(`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`,
+`DeadlineRefusalStreak`;
+`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Admission.swift`,
+`EngineV2Bridge.recordDeadlineRefusal`): the Mac was idle, the engine's bounded
+projection priced only this request's own prompt, the policy carried no
+reviewed calibration and no native-media rate, the isolated aggregate was
+older than the 120-second freshness window, no fresh prompt-size bucket for
+this prompt priced it, with an anchor the rate was below the anchor, and the
+request still had at least 5 seconds of its first-content budget
+(`DeadlineRefusalStreak.minimumRemainingBudget`). A refusal beside other work,
+from a fail-closed (unbounded) projection, physical capacity included, at a
+fresh rate or as a late retry never counts, and any engine admission ends the
+streak. After three, the next capacity tick that finds the Mac idle at nominal
+posture and on AC power re-runs the
+[startup calibration](#model-startup-calibration)'s probe once
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+ModelCalibration.swift`,
+`startModelCalibrationIfNeeded`; `ModelCalibrationPolicy.evidenceRefresh`): one
+uncached solo cell of 512 prompt tokens and 32 output tokens, without the
+shape warmup, under the bootstrap's rules. Foreground work on any model
+preempts it and a posture change discards it. Its cell replaces the stale
+aggregate and the anchor, so the next request is priced from it. A streak never
+submits a customer request without a projection. Starting the probe ends the
+streak and starts a 120-second interval (`DeadlineRefusalStreak.probeInterval`),
+so a loaded model probes at most once per interval, preempted or not. The
+provider logs one `info` line when the probe starts (`darkbloom.DeadlineRefusals`:
+the model, the refused rate, the evidence's age, the anchor and the last refused
+prompt's tokens); no wire field changes. Unlike the startup calibration, the
+probe is optional work, so it never runs on battery, Low Power Mode or not
+(`EngineV2Bridge.evidenceProbePermitted`, which reads the providing power source
+through `DeadlinePowerPolicyReader.activeSource` only once a probe is due); a full
+streak waits for AC power. Neither calibration has a user-activity gate.
+`DARKBLOOM_TTFT_REFUSAL_PROBE=0` (`DeadlineRefusalProbe`) turns the counting and
+the probe off and leaves the estimator corrections on. An anchored engine at
+nominal posture prices expired evidence at no less than its anchor, so its
+refusals do not count: the probe is for engines with no anchor and for posture
+that returned to nominal.
 
 An independent reviewed deadline profile carries
 `deadline_calibration`: prompt/context bands, actual cold/reused prefix
@@ -7793,26 +7870,34 @@ The registered Bonsai 27B signed-Hadamard pack (FP32 multi-row input,
 affine2/group128, block1024 and stored F16 scales) computes multi-row calls one
 of two ways. `HadamardQuantizedLinear.callAsFunction` in
 `libs/mlx-swift/Source/MLXNN/Hadamard.swift` picks the way from the layer's
-`independentRows`, which the code that builds the layer sets. A call has more
-than one row for a prompt chunk, and for a decode step that carries several
-requests:
+`independentRows`, which the code that builds the layer sets, and from the
+call's row count. A call has more than one row for a prompt chunk, and for a
+decode step that carries several requests:
 
-| Where | Builder | `independentRows` | Multi-row calls |
-|---|---|---|---|
-| Single Mac | the SDK's `PrismHadamardCheckpoint.install` | false (default) | One batched packed matmul: TF32 (NAX) on M5, FP32 steel on M1 to M4, as in provider 0.10.4 and earlier. |
-| Pair stages, the reference check | `QwenPrismHadamardSource.install` | true | The singleton packed FP32 reduction per row. A leading weight dimension keeps each projection at M=1, so both machines compute the bytes of separate singleton calls on any chip. |
+| Where | Builder | `independentRows` | Calls of 2 rows | Calls of 3 or more rows |
+|---|---|---|---|---|
+| Single Mac | the SDK's `PrismHadamardCheckpoint.install` | false (default) | Per row: a decode step of two requests | One batched packed matmul: larger decode steps and every prompt chunk, as in provider 0.10.4 and earlier. MLX runs it with its vector kernels below its vector limit and with its matrix kernels from it (TF32 NAX on M5, FP32 steel on M1 to M4) |
+| Pair stages, the reference check | `QwenPrismHadamardSource.install` | true | Per row | Per row |
+
+Per row is the singleton packed FP32 reduction for each row: a leading weight
+dimension keeps each projection at M=1, so a pair's two machines compute the
+bytes of separate singleton calls on any chip. The single-Mac threshold is
+`HadamardQuantizedLinear.minimumBatchedRows` (3), chosen for speed from the
+provider's real decode step on an M5 Ultra. Per row was faster only at two
+requests (78.6 against 71.1 tokens per second), tied at three (95.9 against
+96.7) and was slower at four (107.3 against 116.0). Two requests decoding
+together therefore run per-row again, as every chip ran them through provider
+0.10.11, and three or more batch. Batched prefill is 6.4 to 7.0 times faster
+than per-row at 1K to 8K tokens.
 
 On a single Mac, prompt rows are therefore not bit-identical to the singleton
-decode arithmetic. In exchange, prefill is several times faster: provider
-0.10.4 measured 2.3 to 6 times the per-row path's rate. Concurrent decode is
-batched too. The SDK's per-row decode seam (`Qwen35BatchDecodeProjection`)
-runs only where `Qwen35BatchDecodeScope` is enabled, and only cluster sessions
-enable it. So a decode step with several requests takes one batched matmul,
-and which kernel runs (TF32 on M5 once the step is wide enough) depends on how
-many rows share the step. A request's exact output can therefore depend on the
-requests decoding beside it. Both were so in provider 0.10.4 and earlier, and
-are accepted for the prompt speed. A request decoding alone (one row) is
-unchanged.
+decode arithmetic. A request's exact output can also still depend on the
+requests decoding beside it. The SDK's per-row decode seam
+(`Qwen35BatchDecodeProjection`) runs only where `Qwen35BatchDecodeScope` is
+enabled, and only cluster sessions enable it. So on a single Mac the 27B's two
+small plain FP32 gated-delta projections (`in_proj_a`, `in_proj_b`) take one
+matmul over a decode step's rows, as they did in provider 0.10.11, and a decode
+step of three or more requests batches its packed projections too.
 The signed transform and the grouped gated-delta layout are the same in both
 ways. So are singleton calls, other packs, ordinary affine modules and global
 arithmetic switches.

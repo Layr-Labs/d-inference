@@ -60,7 +60,7 @@ prefix checkpoints, so its cached answers equal cold ones (#2002); tool calls un
 return as generated, while strict, required and named tools stay checked (#2003).
 `darkbloom start` serves Both without a question and `darkbloom local` serves only you
 (#2008); `darkbloom cluster` sets a pair up without the serving question and picks
-the mode itself (#2007). Also: a stopped pair keeps its last mode (#2013); a Gemma 4 pipeline checks its whole number of requests at load (#1937 via #2015); a refusal's error frame names its reason (#2016); `status` shows the answers in progress (#2017); a held local stream counts once at the fallback width (#2018); a media request a Mac can't hold is `media_memory_unavailable` (#2019); Super's text route gets the loop guard (#2020); the SDK fixes the drafting shared-event leak and keeps paged decode at one pass per layer (#2021: mlx-swift-lm #403, #404), and Qwen3.5-9B drops the default penalty with exact acceptance (#1961); a single Mac reads Bonsai 2 27B prompts batched again; pairs keep per-row arithmetic (#2022). The SDK pin
+the mode itself (#2007). Also: a stopped pair keeps its last mode (#2013); a Gemma 4 pipeline checks its whole number of requests at load (#1937 via #2015); a refusal's error frame names its reason (#2016); `status` shows the answers in progress (#2017); a held local stream counts once at the fallback width (#2018); a media request a Mac can't hold is `media_memory_unavailable` (#2019); Super's text route gets the loop guard (#2020); the SDK fixes the drafting shared-event leak and keeps paged decode at one pass per layer (#2021: mlx-swift-lm #403, #404), and Qwen3.5-9B drops the default penalty with exact acceptance (#1961); a single Mac reads Bonsai 2 27B prompts batched again; pairs keep per-row arithmetic (#2022); a stale prefill estimate that keeps refusing gets one idle probe, never an unprojected request (#2024); `status` lists answers in progress on a Mac that serves only you (#2030); CI resumes the MiMo audio codec download (#2023, CI only); two Bonsai 2 27B requests decoding together on a single Mac run per-row again at full speed, while prompts and larger batches stay batched (#2028); a pair's cluster service restarts into the installed release after an update (#2033); a Super image arriving as the previous image finishes waits for its cleanup (#2029); a Super image stacked behind a streaming image waits up to 3 s within its budget (#2035). The SDK pin
 moves once more, to `ad8a5860e5` (mlx-swift-lm #378, #398, #399, #402: Gemma 4 admits
 deadline text beside an image row once its prompt is read). The SDK pin moves once to
 `libs/mlx-swift-lm` `093563be11`: Gemma 4's row-mapped NAX prefill on by default
@@ -77,7 +77,7 @@ Before tagging `v0.10.12`:
   sets `DARKBLOOM_PROVIDER_TOOLCHAIN: release` and asserts
   `build_sdk_version == '27.2'`; `scripts/check-date-comparisons.py` passes; the
   release build runs `scripts/check-provider-weak-imports.py`.
-- Pins: `libs/mlx` `72dffa2d` as v0.10.11 and `libs/mlx-swift` moves to `1b3520fe94` (mlx-swift #70: Swift sources only), so the tag
+- Pins: `libs/mlx` `72dffa2d` as v0.10.11 and `libs/mlx-swift` moves to `b1c94d29c5` (mlx-swift #70, #71: Swift sources only), so the tag
   build's `metallib_hash` should equal v0.10.11's `5b97893c…70ac`;
   `libs/mlx-swift-lm` moves to fork `main` `44ab17555f` (#403, #404 on top of `ad8a5860e5`) (Swift model code, no Metal kernels). Confirm against the final DevNet build's row first.
 - Cluster runtime facts: run the release's facts step read-only on the exact tag

@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-11-10
+> Last updated: 2026-11-12
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -589,9 +589,11 @@ Ordinary fixtures use symmetric 128-context geometry; the separate complete-pref
 process uses `--asymmetric` for K64/V128 and 1,024-context geometry.
 `scripts/prepare-mimo-audio-fixtures.py` prepares hash-pinned public inputs
 including the genuine audio codec. The script downloads only the files that its
-cache directory lacks. It retries a failed download up to 5 times and ends an
-attempt that stays below 100 KB/s for 60 s. It keeps a file only when the size
-and SHA-256 match. Keep these output directories isolated from
+cache directory lacks. It makes up to 8 attempts per file, each resuming the
+partial download (`curl --continue-at -`) and ending when it stays below
+100 KB/s for 60 s, after 900 s, or when the 45-minute budget runs out; a server
+that ignores the range request makes the next attempt start over. It keeps a
+file only when the size and SHA-256 match, and deletes a mismatched one. Keep these output directories isolated from
 the ordinary regression inputs. Audio gates exercise PCM8 and AAC-video with a
 small target, not full-model quality or peak memory. Release-only builds do not
 provision test fixtures or opt into native qualification.
@@ -724,8 +726,20 @@ lockouts through the bridge and the real submission path, another model's
 lease or device activity on a shared whole-Mac service budget, a fresh
 long-prompt bucket below the floor, decode step-shape measurement and plumbing
 (including the first-token step's rows), rate and shape kept coupled across
-batch widths, the per-row charge kept for reviewed calibrations, and a late
-older cold sample. In the SDK, the unit suite
+batch widths, the per-row charge kept for reviewed calibrations, a late
+older cold sample, and the refusal streak: three idle refusals over stale
+evidence, long prompts included, ask for one probe and submit no request
+unprojected (a late retry included); refusals at a fresh rate or a fresh
+prompt-size bucket, at the anchor, with under 5 seconds left, beside other
+work or with either switch off do not count; a projected, an unprojected and
+an accepted-then-cancelled admission each end a partial streak; a started probe
+holds the next to its interval; and on battery a full streak waits for AC
+power.
+`ProductionModelCalibrationTests.staleRefusalStreakRerunsTheProbe` runs that
+probe on a toy Qwen `EngineV2`: three real refusals re-run one solo cell whose
+rate becomes the anchor (at least twice the stale rate, not an absolute bar:
+CI VMs differ), starting it sets the interval, and the next request is priced
+from it. In the SDK, the unit suite
 `CBv2PerBatchDecodeChargeTests` pins per-step decode accounting, MTP-measured
 shape conversion, the mirrored MTP depth gates (batch gate and automatic
 envelope, with a driver check that the ceiling bounds every live plan depth)
@@ -3026,11 +3040,15 @@ independently evaluated singleton calls, including grouped gated-delta
 layouts, optional bias, and prefill widths 511 and 512.
 `testBonsaiFloat32RowsDefaultToOneBatchedPackedMatmul` compares the default
 (single Mac) with one batched `quantizedMM` over all rows, and checks that the
-opt-in leaves other block sizes batched. `BonsaiStagePreparationTests` in
+opt-in leaves other block sizes batched. `testSingleMacRowsBatchFromTheThreshold`
+checks the single-Mac threshold for decode-shaped `[B, 1, H]` and prompt-shaped
+`[1, S, H]` calls: separate singleton calls below `minimumBatchedRows` (3),
+that is at two rows, and one batched `quantizedMM` from three rows on. `BonsaiStagePreparationTests` in
 `libs/darkbloom-cluster/Tests/DarkbloomClusterRuntimeTests/BonsaiStagePreparationTests.swift`
 requires every packed projection of both pair stages to ask for the per-row
 arithmetic, and `BonsaiRowArithmeticTests.aSingleMacLoaderBuildsBatchedProjections`
-requires the single-Mac loader's call (no `independentRows`) to stay batched.
+requires the single-Mac loader's call (no `independentRows`) to keep the
+default, which batches calls of three or more rows.
 `Float16ConstantCastTests` covers repeated calls, parameter and descriptor
 replacement, compiled state replacement and ineligible policies.
 `BonsaiRowArithmeticTests` in

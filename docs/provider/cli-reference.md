@@ -269,14 +269,21 @@ a terminal or not (`StartServingResolver`,
    background service, `restart` and `update` serve it from now on; `--local
    --here` (one terminal session) and the `--foreground` service save no mode. A
    plain `start --local` on one Mac saves it.
-   **Beside `--solo`, every flag is for that start only**
+   **Beside `--solo`, a start changes none of the pair's `[local]` settings**
    (`LocalFirstOptions.solo`): on a Mac in a pair `[local]` holds the pair's
    settings, so a solo start saves no mode (nor the default's), and refuses
    `--route`, `--me-first-idle`, `--no-me-first`, and `--me-first` over a saved
    `me_first = false`, when one would change the pair's value, before anything
    starts or is saved (exit 64, ``… would change [local] route, which your pair
    reads too. …``, `StartServingResolver.soloSettingsRefusal`). Only a new or
-   named port is saved: this Mac's one port, the pair's API's too.
+   named port is saved there: this Mac's one port, the pair's API's too. Like
+   every background start, a solo one still saves single-Mac serving's own
+   choices outside `[local]`, which the pair doesn't read: the models it serves
+   (`--model`, `--all` or the picker) in `[backend] enabled_models`
+   (`ProviderModelSelection.withReplacement`), so the background service,
+   `restart` and `update` serve the same models, and `--idle-timeout` in
+   `[backend] idle_timeout_mins`. `--local --here` and the `--foreground`
+   service save no model choice.
 2. The saved choice, `[local] mode`, Only me included: every choice serves in
    the background. A saved Both keeps its pause as saved (`me_first` absent is
    on, as before).
@@ -1753,6 +1760,17 @@ does: a check 5 minutes after it starts, then every 30 minutes; it downloads
 while serving, lets your requests finish, then restarts into the release
 (`StandaloneServer+AutoUpdate`).
 
+On a `darkbloom cluster` Mac it asks the cluster service to restart into the
+release together with the other Mac. A pair that serves only on its local API,
+or a Mac whose cluster service serves alone, doesn't drain for that, so its
+service keeps the earlier release while the pair sets itself up again on the
+installed one. The first part the service starts from the installed release
+(`darkbloom start` or `darkbloom cluster link-follower`, started by the
+service) then restarts the service's launchd job once, before it takes a
+request, and says so in the part's log: `cluster part: this Mac's cluster
+service still runs v<earlier> while v<installed> is installed …`
+([the coordinated update](./cluster-always-on.md#the-pairs-coordinated-update)).
+
 Until an installed release is promoted (600 s of fresh heartbeats of it from one
 provider process), the watchdog counts a failed start for a crash (the job
 loaded and the provider gone through the restart grace) and for a provider that
@@ -2895,9 +2913,15 @@ Output includes:
   below move only when an answer finishes, so a Mac writing a long answer
   otherwise looks hung. The daemon samples its bridges' own counters each capacity tick
   (`ProviderLoop.refreshRunningRequests`, `RunningRequestProgressTracker`) into
-  `running_requests` in the state file. On a two-Mac cluster the same lines sit
-  under the pair's block on the leading Mac, from the pair's part. Nemotron
-  Super's requests, which bypass the bridge, are not listed.
+  `running_requests` in the state file. A Mac that serves only you
+  (`darkbloom start --local`) lists its answers too: its standalone server
+  samples its resident models' bridges the same way, at most every 2 s, into
+  the state file it rewrites every 250 ms
+  (`StandaloneServer.runningRequestsForState`). On a two-Mac cluster that
+  serves through Darkbloom the same lines sit under the pair's block on the
+  leading Mac, from the pair's part. **Not listed:** a pair that serves only on
+  its local API (`darkbloom cluster local`), whose part writes no state file,
+  and Nemotron Super's requests, which bypass the bridge.
   `darkbloom status --json` prints only these, as JSON (`schema` 1; `daemon`
   `running`, `stale` or `not_running`; `pid`, `snapshot_age_seconds`,
   `cluster_part`; `answers_in_progress` with `model`, `ref`,
@@ -4193,6 +4217,7 @@ must support the checkpoint contract described in
 | `DARKBLOOM_CBV2_PREFILL_CHUNK`, `DARKBLOOM_CBV2_STEP_TOKENS` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` (`prefillChunkKey`, `stepTokenBudgetKey`) |
 | `DARKBLOOM_PREFILL_DEADLINE_MODE` | `provider-swift/Sources/ProviderCore/Inference/Engine/PrefillDeadlineMode.swift` (`environmentKey`) |
 | `DARKBLOOM_TTFT_ADMISSION_FIXES` | `provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift` (`DeadlineAdmissionFixes.environmentKey`) |
+| `DARKBLOOM_TTFT_REFUSAL_PROBE` | `provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift` (`DeadlineRefusalProbe.environmentKey`); `0` turns the refusal streak's idle probe off |
 | `DARKBLOOM_TTFT_IDLE_CACHE_SWEEP` | `provider-swift/Sources/ProviderCore/Inference/Memory/GlobalKVCacheBudget.swift` (`idleCacheSweepEnvironmentKey`) |
 | `DARKBLOOM_TTFT_SEGMENT_RETENTION` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+SegmentedBackend.swift` (`segmentRetentionEnvironmentKey`) |
 | `DARKBLOOM_TTFT_SEGMENT_HOST_ZEROS` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+SegmentedBackend.swift` (`segmentHostZerosEnvironmentKey`) |

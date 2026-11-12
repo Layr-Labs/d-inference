@@ -142,8 +142,8 @@ You can name the choice in the command, in a terminal or not:
 disagree are refused, for example `--local --me-first`. A plain `darkbloom start
 --local` on one Mac still saves Only me this way.
 
-**On a Mac in a pair, every flag beside `--solo` is for that start only.**
-`[local]` there holds the pair's settings: its answer (`mode`), its pause
+**On a Mac in a pair, a start beside `--solo` changes none of the pair's
+settings.** `[local]` there holds them: its answer (`mode`), its pause
 (`me_first`, `me_first_idle_minutes`) and its route. A solo start saves none of
 them:
 - a mode flag, or the default where the pair saved no mode, serves that start
@@ -156,7 +156,9 @@ them:
 
 Only this Mac's port is saved, as on every start: it is the one port this Mac's
 local API, the pair's included, listens on, so the address tools were given
-never moves.
+never moves. Like any background start, a solo start also saves the models it
+serves (`[backend] enabled_models`) and `--idle-timeout`, so a restart or an
+update serves this Mac alone the same way; the pair doesn't read either.
 
 **Only me in this Terminal window, for now:** `darkbloom start --local --here`
 serves **Only me** until you close the window or press Ctrl-C, and saves no

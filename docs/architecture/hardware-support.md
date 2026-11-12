@@ -978,9 +978,19 @@ serving Mac, so the same request can project differently on other hardware:
   (`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`,
   `IsolatedPrefillAdmissionRate.anchorFloorFraction`). Native engines keep
   their recovery probe instead.
+- Three consecutive refusals that isolated prefill evidence older than 120
+  seconds explains on an idle Mac re-run the idle calibration probe once
+  (`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`,
+  `DeadlineRefusalStreak`): one solo 512-token cell remeasures the rate on that
+  Mac, at that thermal state, when it is idle, at nominal posture and on AC
+  power (never on battery; `DARKBLOOM_TTFT_REFUSAL_PROBE=0` turns it off). No
+  customer request is admitted without a projection for it. A refusal for
+  physical capacity, at a fresh rate, at the anchor or with under 5 seconds
+  left never counts.
 
-The anchor and floor shape admission only. The published isolated rate,
-capacity wire fields and the external platform's memory contract are unchanged.
+The anchor, floor and refusal streak shape admission only. The published
+isolated rate, capacity wire fields and the external platform's memory
+contract are unchanged.
 
 ### Cross-repository agreement
 
@@ -1290,8 +1300,9 @@ run one per step and decode rows add only M=1 work.
 Bonsai 27B's eligible Hadamard projections take one of
 [two row paths](inference.md#bonsai-27b-packed-fp32-rows). Pair stages use the
 packed FP32 row path, one M=1 projection per row, so both machines agree byte
-for byte. A single Mac batches its multi-row calls (prompt chunks and decode
-steps with several requests) in one packed matmul, as provider 0.10.4 did.
+for byte. A single Mac takes the same row path for a two-request decode step
+and batches calls of three or more rows (larger decode steps and prompt
+chunks) in one packed matmul, as provider 0.10.4 did.
 Existing LOAD allowances retain their constant-cache and activation charges;
 neither path introduces a persistent weight copy. The pair's arithmetic
 receipt changes independently of the Bonsai 9B row. This implementation establishes no new tensor-parallel

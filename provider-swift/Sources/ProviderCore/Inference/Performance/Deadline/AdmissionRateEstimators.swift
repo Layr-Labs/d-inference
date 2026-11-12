@@ -10,7 +10,13 @@ enum DeadlineAdmissionFixes {
     static let enabled = resolve()
 
     static func resolve(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
-        guard let raw = environment[environmentKey]?
+        isOn(environmentKey, environment: environment)
+    }
+
+    /// Unset, or any value but `0`, `false`, `no` or `off` (trimmed,
+    /// case-insensitive), is on.
+    static func isOn(_ key: String, environment: [String: String]) -> Bool {
+        guard let raw = environment[key]?
             .trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else { return true }
         return !["0", "false", "no", "off"].contains(raw)
     }
@@ -111,5 +117,65 @@ enum IsolatedPrefillAdmissionRate {
         guard let observed else { return nil }
         guard let anchor else { return observed }
         return max(observed, anchor * anchorFloorFraction)
+    }
+}
+
+/// The refusal streak's own off switch. On by default;
+/// `DARKBLOOM_TTFT_REFUSAL_PROBE=0` stops its counting and its probe and leaves
+/// the estimator corrections (`DeadlineAdmissionFixes`) on.
+enum DeadlineRefusalProbe {
+    static let environmentKey = "DARKBLOOM_TTFT_REFUSAL_PROBE"
+    static let enabled = resolve()
+
+    static func resolve(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        DeadlineAdmissionFixes.isOn(environmentKey, environment: environment)
+    }
+}
+
+/// Consecutive `deadline_unreachable` refusals that stale isolated prefill
+/// evidence explains on an idle Mac, with nothing admitted in between. A
+/// refusal measures nothing, so expired evidence that refuses is never
+/// replaced: with no calibration anchor, or off nominal posture,
+/// `IsolatedPrefillAdmissionRate` keeps it for thirty minutes.
+///
+/// A full streak asks for one idle-calibration probe
+/// (`ModelCalibrationPolicy.evidenceRefresh`), never for a customer request
+/// submitted unprojected. The probe runs only on an idle Mac at nominal
+/// posture, any request preempts it, and its measurement replaces the stale
+/// estimate and the anchor. `probeInterval` holds a Mac and model to one
+/// probe per interval, whatever the probe goes on to measure.
+struct DeadlineRefusalStreak {
+    /// One refusal can be one long prompt and two a client's retry of it.
+    static let threshold = 3
+    static let probeInterval = EnginePerformanceMeasurements.freshness
+    /// A request refused with less first-content budget left is a late retry:
+    /// out of time on any Mac, so its refusal says nothing about the estimate.
+    /// A first attempt has at least 9 s.
+    static let minimumRemainingBudget: Duration = .seconds(5)
+
+    private(set) var refusals = 0
+    /// The newest counted refusal's rate and prompt, for the log line.
+    private(set) var lastRefusal: (tokensPerSecond: Double, promptTokens: Int)?
+    /// When the next probe may start; nil before the first.
+    private(set) var probeAvailableAt: ContinuousClock.Instant?
+
+    mutating func recordRefusal(tokensPerSecond: Double, promptTokens: Int) {
+        refusals = min(refusals + 1, Self.threshold)
+        lastRefusal = (tokensPerSecond, promptTokens)
+    }
+
+    func permitsEvidenceProbe(at now: ContinuousClock.Instant = .now) -> Bool {
+        refusals >= Self.threshold && (probeAvailableAt.map { now >= $0 } ?? true)
+    }
+
+    /// Any engine admission ends the streak.
+    mutating func recordAdmission() {
+        refusals = 0
+    }
+
+    /// A started probe ends the streak and starts the interval.
+    mutating func recordProbe(at now: ContinuousClock.Instant = .now) {
+        refusals = 0
+        probeAvailableAt = now.advanced(by: Self.probeInterval)
     }
 }

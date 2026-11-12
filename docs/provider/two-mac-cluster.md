@@ -1643,7 +1643,10 @@ runs a GPU benchmark beside the model
 ([device profile](../architecture/inference.md#automatic-local-cluster-batching)).
 A pair that serves on the leader's local API, or a Mac that serves alone, is not
 drained for an update yet: its update waits while it serves (the log says
-`this Mac's part does not drain for an update`).
+`this Mac's part does not drain for an update`). After `darkbloom update` on
+both Macs, such a pair sets itself up again on the installed release, and its
+first part restarts this Mac's cluster service once so the service runs that
+release too (from 0.10.12; [the coordinated update](cluster-always-on.md#the-pairs-coordinated-update)).
 
 ## When something is in the way
 

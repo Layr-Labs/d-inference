@@ -86,6 +86,11 @@ public struct DaemonState: Codable, Sendable, Equatable {
     public var configPath: String?
     public var runtimeCapabilities: [String]?
     public var inferenceActive: Bool
+    /// The answers the engines are writing now, longest first
+    /// (`RunningRequestProgressTracker`): `status` lists them, because the
+    /// served and token counters move only when an answer finishes. Empty
+    /// when none runs; nil for older daemons.
+    public var runningRequests: [RunningRequest]?
     /// Accepted or queued work, including local-endpoint requests that have
     /// not begun decoding. Nil for older daemon state files.
     public var requestWorkPending: Bool?
@@ -419,6 +424,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
         startupPreloadPendingModels: [String]? = nil,
         selectedModelRecovery: [SelectedModelRecoveryEntry]? = nil,
         inferenceActive: Bool = false,
+        runningRequests: [RunningRequest]? = nil,
         requestWorkPending: Bool? = nil,
         loadTransitionActive: Bool? = nil,
         lifecycle: ProviderDrainStatus? = nil,
@@ -467,6 +473,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
         self.configPath = configPath
         self.runtimeCapabilities = runtimeCapabilities
         self.inferenceActive = inferenceActive
+        self.runningRequests = runningRequests
         self.requestWorkPending = requestWorkPending
         self.loadTransitionActive = loadTransitionActive
         self.stats = stats

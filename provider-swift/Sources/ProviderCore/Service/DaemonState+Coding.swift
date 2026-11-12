@@ -13,7 +13,7 @@ extension DaemonState {
         case warmModels, advertisedModels, servingSelection, registeredModels
         case enabledModelsAtStart, enabledModelsAtLastSwitch, evictionExclusions
         case startupPreloadPendingModels, selectedModelRecovery, lifecycle, modelSwitch
-        case configPath, runtimeCapabilities, inferenceActive, requestWorkPending, loadTransitionActive
+        case configPath, runtimeCapabilities, inferenceActive, runningRequests, requestWorkPending, loadTransitionActive
         case stats, system, capacity, lastModelLoadError, slots
         case connectivity, autopilot, autopilotPhase, autopilotOperation, appAttest
         case autopilotState, coordinatorConnection, addonHold, meFirst
@@ -47,6 +47,7 @@ extension DaemonState {
         configPath = try c.decodeIfPresent(String.self, forKey: .configPath)
         runtimeCapabilities = try c.decodeIfPresent([String].self, forKey: .runtimeCapabilities)
         inferenceActive = try c.decode(Bool.self, forKey: .inferenceActive)
+        runningRequests = try c.decodeIfPresent([RunningRequest].self, forKey: .runningRequests)
         requestWorkPending = try c.decodeIfPresent(Bool.self, forKey: .requestWorkPending)
         loadTransitionActive = try c.decodeIfPresent(Bool.self, forKey: .loadTransitionActive)
         stats = try c.decode(Stats.self, forKey: .stats)
@@ -92,6 +93,7 @@ extension DaemonState {
         try c.encodeIfPresent(configPath, forKey: .configPath)
         try c.encodeIfPresent(runtimeCapabilities, forKey: .runtimeCapabilities)
         try c.encode(inferenceActive, forKey: .inferenceActive)
+        try c.encodeIfPresent(runningRequests, forKey: .runningRequests)
         try c.encodeIfPresent(requestWorkPending, forKey: .requestWorkPending)
         try c.encodeIfPresent(loadTransitionActive, forKey: .loadTransitionActive)
         try c.encode(stats, forKey: .stats)

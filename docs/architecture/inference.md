@@ -746,12 +746,15 @@ media requests meet the binding's one-at-a-time limit long before the owner's
 request limit. A media request that
 arrives while the media request ahead of it is already streaming its answer
 (its first chunk has passed; images end about 2 s later), at the binding, or at
-a full owner whose admitted requests all are such answers, also waits, until
+a full single-request owner whose request is such an answer (a wider owner
+leaves this wait to the binding), also waits, until
 `NemotronSuperServingPolicy.stackedMediaWaitEnd`: at most `stackedMediaWait`
 (3 s), and for a coordinator request only while its forwarded first-content
 deadline still covers the owner's expected media first-chunk time (the longest
-of its last `mediaFirstChunkSamples`, each measured from the image binding's
-admission, so earlier waits do not inflate it; `Owner.expectedMediaFirstChunk`) and
+of its last `mediaFirstChunkSamples` (64), each measured from the image binding's
+admission, so earlier waits do not inflate it, and never below
+`minimumExpectedMediaFirstChunk` (6 s), so fast recent ones cannot shorten the
+wait a slow image needs; `Owner.expectedMediaFirstChunk`) and
 `stackedMediaWaitMargin`. A local request forwards no deadline and may wait the
 whole bound. At the binding it waits only while the owner keeps a request
 slot free besides its own (`Owner.hasFreeLocalAdmission`), so a waiting image

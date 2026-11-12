@@ -167,7 +167,10 @@ enum NemotronSuperLocalBridgeBuilder {
         /// - for up to `finishing` while every admitted request's answer has
         ///   ended and only settlement is left;
         /// - until `stackedUntil` while every admitted request is a media
-        ///   request already streaming its answer, or has ended.
+        ///   request already streaming its answer, or has ended, on an owner
+        ///   serving one request at a time. A wider owner leaves stacked waits
+        ///   to the image binding, which keeps a slot free for text; at the
+        ///   owner they would end in a refusal there.
         /// A free admission goes to the waiting request before any newcomer;
         /// a request that finds another waiting is refused at once. `cancelled`
         /// (or task cancellation) ends the wait without an admission.
@@ -188,7 +191,7 @@ enum NemotronSuperLocalBridgeBuilder {
                     }
                     guard next else { return .refused }
                     let settling = now < finishingEnd && localAnswersEnded >= localRequestsAdmitted
-                    let stacked = stackedUntil.map { now < $0 } == true
+                    let stacked = maximumLocalRequests == 1 && stackedUntil.map { now < $0 } == true
                         && localAnswersEnded + localMediaStreaming >= localRequestsAdmitted
                     guard settling || stacked else { return .refused }
                     localWaiter = id
@@ -257,10 +260,11 @@ enum NemotronSuperLocalBridgeBuilder {
             }
         }
 
-        /// The longest of the owner's recent media first-chunk times; before
-        /// the first, `NemotronSuperServingPolicy.unmeasuredMediaFirstChunk`.
+        /// The longest of the owner's recent media first-chunk times, never
+        /// below `NemotronSuperServingPolicy.minimumExpectedMediaFirstChunk`.
         var expectedMediaFirstChunk: Duration {
-            lock.withLock { mediaFirstChunks.max() ?? NemotronSuperServingPolicy.unmeasuredMediaFirstChunk }
+            let floor = NemotronSuperServingPolicy.minimumExpectedMediaFirstChunk
+            return lock.withLock { max(mediaFirstChunks.max() ?? floor, floor) }
         }
 
         private var acceptsLocalWork: Bool {

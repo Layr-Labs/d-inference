@@ -394,11 +394,16 @@ enum NemotronSuperServingPolicy {
     /// Kept from a forwarded first-content budget after the wait and the
     /// expected first chunk: the chunk's way to the coordinator.
     static let stackedMediaWaitMargin: Duration = .milliseconds(500)
-    /// A media request's expected admission-to-first-chunk time before the
-    /// owner has measured one (`Owner.expectedMediaFirstChunk`).
-    static let unmeasuredMediaFirstChunk: Duration = .seconds(6)
-    /// Recent media first-chunk times an owner keeps.
-    static let mediaFirstChunkSamples = 8
+    /// The least an owner expects a media request's admission-to-first-chunk
+    /// time to be (`Owner.expectedMediaFirstChunk`), also before it has
+    /// measured one: fast recent first chunks (prefix-cache hits, small
+    /// images) must not shorten the wait budget a slow image needs, since an
+    /// image that waited and then misses its first-chunk timer fails, where an
+    /// immediate refusal would have been re-routed.
+    static let minimumExpectedMediaFirstChunk: Duration = .seconds(6)
+    /// Recent media first-chunk times an owner keeps: a slow one counts for
+    /// this many media requests.
+    static let mediaFirstChunkSamples = 64
 
     /// When a media request arriving at `now` stops waiting for a busy slot:
     /// `stackedMediaWait` later, or earlier so that `expectedFirstChunk` and

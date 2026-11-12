@@ -2895,9 +2895,15 @@ Output includes:
   below move only when an answer finishes, so a Mac writing a long answer
   otherwise looks hung. The daemon samples its bridges' own counters each capacity tick
   (`ProviderLoop.refreshRunningRequests`, `RunningRequestProgressTracker`) into
-  `running_requests` in the state file. On a two-Mac cluster the same lines sit
-  under the pair's block on the leading Mac, from the pair's part. Nemotron
-  Super's requests, which bypass the bridge, are not listed.
+  `running_requests` in the state file. A Mac that serves only you
+  (`darkbloom start --local`) lists its answers too: its standalone server
+  samples its resident models' bridges the same way, at most every 2 s, into
+  the state file it rewrites every 250 ms
+  (`StandaloneServer.runningRequestsForState`). On a two-Mac cluster that
+  serves through Darkbloom the same lines sit under the pair's block on the
+  leading Mac, from the pair's part. **Not listed:** a pair that serves only on
+  its local API (`darkbloom cluster local`), whose part writes no state file,
+  and Nemotron Super's requests, which bypass the bridge.
   `darkbloom status --json` prints only these, as JSON (`schema` 1; `daemon`
   `running`, `stale` or `not_running`; `pid`, `snapshot_age_seconds`,
   `cluster_part`; `answers_in_progress` with `model`, `ref`,

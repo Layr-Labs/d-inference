@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-11-11
+> Last updated: 2026-11-12
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -423,7 +423,10 @@ a model's mode.
 
 `darkbloom cluster local` keeps the question, simplified: both modes, the one
 the same rule picks tagged **Recommended** and preselected, so Enter takes it.
-No sentence explains it and no line quotes a speed:
+For the pair's own model (the one it serves or last served, also when
+`darkbloom start` in a terminal starts a stopped pair) the cursor is on the
+mode it last served in instead, the tag staying on the rule's pick, so Enter
+keeps that mode. No sentence explains it and no line quotes a speed:
 
 ```text
   How should both Macs split Gemma 4 26B?
@@ -434,8 +437,8 @@ No sentence explains it and no line quotes a speed:
 
 In a narrow window a line keeps the mode, the tag and the short words
 ("serves up to 8 at once · context 262,144"). A model named on the command line
-(`darkbloom cluster local <model>`) loads the recommended mode without the
-question. On a serving pair, choosing its model in another mode asks first
+(`darkbloom cluster local <model>`) loads without the question: the pair's own
+model in the mode it last served in, any other model in the recommended mode. On a serving pair, choosing its model in another mode asks first
 ("Switch Gemma 4 26B from tensor parallel to pipeline? …").
 
 The modes:

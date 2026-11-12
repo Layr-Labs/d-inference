@@ -3109,9 +3109,11 @@ stops such a row early.
   sees every generated token of every engine, for the requests that take the
   scheduler's text path (`MultiModelBatchSchedulerEngine.prepareCompletion`):
   single-Mac MLX slots, the native GLM-5.3 and MiMo engines, and the cluster
-  pairs. **Super is not guarded:** its coordinator and local requests take the
-  owner's own route (`ProviderLoop+InferenceHandler`, `superOwner.chatEngine` →
-  `NemotronSuperLocalBinding.executeBridge`), which submits without a guard.
+  pairs. Super's coordinator and local text requests take the owner's own
+  route (`ProviderLoop+InferenceHandler`, `superOwner.chatEngine` →
+  `NemotronSuperLocalImageHTTP` → `NemotronSuperLocalBinding.executeBridge`),
+  which resolves the same guard from its request plan
+  (`NemotronSuperRequestPlan.loopGuard()`) and passes it to the same pump.
 - **On fire:** the pump cancels the row in the engine without the caller's
   cancel bookkeeping (`EngineV2Bridge.stopRepeatingRow`), and turns the
   engine's cancelled terminal into a `length` finish with the engine's usage:
@@ -3128,11 +3130,10 @@ stops such a row early.
   media requests.
 - **Models** (`GenerationLoopGuardPolicy`, by `model_type`): on by default
   for `gemma4`, `gemma4_text`, `qwen3_5`, `qwen3_5_moe`, `qwen4_exp`,
-  `qwen4_exp_text`, `gpt_oss`, `nemotron_h` (Lightning), `glm5_next` and
-  `mimo_v2`. `nemotron_h_omni` (Super) is on the list but has no effect until
-  Super's route passes a guard. `DARKBLOOM_LOOP_GUARD=0` (or `off`)
-  turns it off; a comma-separated list of `model_type`s replaces the default
-  list.
+  `qwen4_exp_text`, `gpt_oss`, `nemotron_h` (Lightning), `nemotron_h_omni`
+  (Super, text only), `glm5_next` and `mimo_v2`. `DARKBLOOM_LOOP_GUARD=0`
+  (or `off`) turns it off; a comma-separated list of `model_type`s replaces
+  the default list.
 
 ### Collected and streaming reasoning state
 

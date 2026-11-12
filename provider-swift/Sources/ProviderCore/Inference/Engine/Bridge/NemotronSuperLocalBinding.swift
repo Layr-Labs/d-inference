@@ -15,10 +15,11 @@ actor NemotronSuperLocalBinding {
     typealias Acquire = @Sendable (String) async throws -> MultiModelBatchSchedulerEngine.AcquiredModel
     /// Internal fixture seam; production uses the bridge's real retirement barrier
     /// below. The `String?` is the request's prefix-cache scope (nil: no reuse);
-    /// the channel receives a logprobs request's entries.
+    /// the channel receives a logprobs request's entries; the guard is the
+    /// request's loop guard (nil: none).
     typealias Execute = @Sendable (EngineV2Bridge, [Int], ChatCompletionRequest, String, String?,
         EngineV2LogprobsChannel?, EngineV2RequestUsageSignal?, SSDCheckpointDonationDemand?,
-        @escaping @Sendable (GenerationEvent) async -> Void) async throws -> Void
+        GenerationLoopGuard?, @escaping @Sendable (GenerationEvent) async -> Void) async throws -> Void
 
     /// The id requests must name and the acquired bridge must serve.
     let modelID: String
@@ -34,11 +35,11 @@ actor NemotronSuperLocalBinding {
         self.modelID = modelID
         self.acquire = acquire
         self.execute = { bridge, tokens, request, requestID, cacheScope, logprobs, usageSignal,
-                         donationDemand, onEvent in
+                         donationDemand, loopGuard, onEvent in
             try await Self.executeBridge(bridge: bridge, tokens: tokens, request: request,
                 requestID: requestID, cacheScope: reusesTextPrefixes ? cacheScope : nil,
                 logprobs: logprobs, usageSignal: usageSignal, donationDemand: donationDemand,
-                onEvent: onEvent)
+                loopGuard: loopGuard, onEvent: onEvent)
         }
     }
 
@@ -60,11 +61,13 @@ actor NemotronSuperLocalBinding {
     /// `logprobs` channel its entries leave on. `usageSignal`, one per request,
     /// receives the engine's prefix-cache outcome and drives its receipts;
     /// `donationDemand` is the coordinator's fleet repeat hint for a durable
-    /// checkpoint write (nil: write).
+    /// checkpoint write (nil: write). `loopGuard` stops a row that repeats
+    /// verbatim (`NemotronSuperRequestPlan.loopGuard()`; nil: none).
     func run(request: ChatCompletionRequest, promptTokens: [Int],
              hasMedia: Bool = false, cacheScope: String? = "", logprobs: EngineV2LogprobsChannel? = nil,
              usageSignal: EngineV2RequestUsageSignal? = nil,
              donationDemand: SSDCheckpointDonationDemand? = nil,
+             loopGuard: GenerationLoopGuard? = nil,
              onEvent: @escaping @Sendable (GenerationEvent) async -> Void) async throws {
         guard !draining else { throw Failure.drained }
         guard request.model == modelID else { throw Failure.wrongModel }
@@ -83,7 +86,7 @@ actor NemotronSuperLocalBinding {
             let acquired = try await acquire(modelID)
             try await Self.runAcquired(acquired, modelID: modelID, execute: execute, tokens: promptTokens,
                 request: request, requestID: id.uuidString, cacheScope: cacheScope, logprobs: logprobs,
-                usageSignal: usageSignal, donationDemand: donationDemand, onEvent: onEvent)
+                usageSignal: usageSignal, donationDemand: donationDemand, loopGuard: loopGuard, onEvent: onEvent)
         }
         active[id] = task
         defer { active.removeValue(forKey: id) }
@@ -108,12 +111,12 @@ actor NemotronSuperLocalBinding {
         execute: @escaping Execute, tokens: [Int], request: ChatCompletionRequest,
         requestID: String, cacheScope: String?, logprobs: EngineV2LogprobsChannel?,
         usageSignal: EngineV2RequestUsageSignal?, donationDemand: SSDCheckpointDonationDemand?,
-        onEvent: @escaping @Sendable (GenerationEvent) async -> Void
+        loopGuard: GenerationLoopGuard?, onEvent: @escaping @Sendable (GenerationEvent) async -> Void
     ) async throws {
         guard let lease = acquired.nativeConsumerLease else {
             return try await executeAcquired(acquired, modelID: modelID, execute: execute, tokens: tokens,
                 request: request, requestID: requestID, cacheScope: cacheScope, logprobs: logprobs,
-                usageSignal: usageSignal, donationDemand: donationDemand, onEvent: onEvent)
+                usageSignal: usageSignal, donationDemand: donationDemand, loopGuard: loopGuard, onEvent: onEvent)
         }
         let release = acquired.releaseToken
         guard release.nativeBindingAccepted else { throw NativeLocalConsumerOwnershipError.invalidBinding }
@@ -130,7 +133,8 @@ actor NemotronSuperLocalBinding {
                         }
                         try await executeAcquired(acquired, modelID: modelID, execute: execute, tokens: tokens,
                             request: request, requestID: requestID, cacheScope: cacheScope, logprobs: logprobs,
-                            usageSignal: usageSignal, donationDemand: donationDemand, onEvent: onEvent)
+                            usageSignal: usageSignal, donationDemand: donationDemand, loopGuard: loopGuard,
+                            onEvent: onEvent)
                     }
                 } catch {
                     payload.discard()
@@ -157,14 +161,14 @@ actor NemotronSuperLocalBinding {
         execute: Execute, tokens: [Int], request: ChatCompletionRequest,
         requestID: String, cacheScope: String?, logprobs: EngineV2LogprobsChannel?,
         usageSignal: EngineV2RequestUsageSignal?, donationDemand: SSDCheckpointDonationDemand?,
-        onEvent: @escaping @Sendable (GenerationEvent) async -> Void
+        loopGuard: GenerationLoopGuard?, onEvent: @escaping @Sendable (GenerationEvent) async -> Void
     ) async throws {
         do {
             try Task.checkCancellation()
             guard let bridge = acquired.engineV2Bridge else { throw Failure.missingBridge }
             guard bridge.modelId == modelID else { throw Failure.wrongModel }
             try await execute(bridge, tokens, request, requestID, cacheScope, logprobs, usageSignal,
-                              donationDemand, onEvent)
+                              donationDemand, loopGuard, onEvent)
             await acquired.releaseToken.fire()
         } catch {
             await acquired.releaseToken.fire()
@@ -175,7 +179,7 @@ actor NemotronSuperLocalBinding {
     private static func executeBridge(
         bridge: EngineV2Bridge, tokens: [Int], request: ChatCompletionRequest, requestID: String,
         cacheScope: String?, logprobs: EngineV2LogprobsChannel?, usageSignal: EngineV2RequestUsageSignal?,
-        donationDemand: SSDCheckpointDonationDemand?,
+        donationDemand: SSDCheckpointDonationDemand?, loopGuard: GenerationLoopGuard?,
         onEvent: @escaping @Sendable (GenerationEvent) async -> Void
     ) async throws {
         let usage = usageSignal ?? EngineV2RequestUsageSignal()
@@ -183,7 +187,7 @@ actor NemotronSuperLocalBinding {
             let stream = await bridge.submitTokenized(
                 promptTokens: tokens, request: request, requestId: requestID,
                 cacheScope: cacheScope ?? "", cacheEnabled: cacheScope != nil,
-                usageSignal: usage, donationDemand: donationDemand)
+                usageSignal: usage, donationDemand: donationDemand, loopGuard: loopGuard)
             for await event in stream {
                 if Task.isCancelled { break }
                 // The bridge yields a delta's entries just before its text;

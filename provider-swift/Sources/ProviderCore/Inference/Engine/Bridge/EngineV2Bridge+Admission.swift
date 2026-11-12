@@ -145,7 +145,7 @@ extension EngineV2Bridge {
     /// new prefill measurement would not change.
     func recordDeadlineRefusal(requestID: String, promptTokens: Int, deadline: FirstContentDeadline?,
         policy: CBv2FirstTokenDeadlineAdmission, work: CBv2FirstTokenProjectedWork) {
-        guard admissionFixes, !supportsPrefillRecoveryRetirement,
+        guard admissionFixes, refusalProbe, !supportsPrefillRecoveryRetirement,
             policy.calibration == nil, policy.nativeTargetPrefill == nil,
             case .bounded(let projected, _) = work, projected.decodeTokens == 0,
             let rate = policy.conservativePrefillTokensPerSecond,

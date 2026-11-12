@@ -15,13 +15,15 @@ extension EngineV2Bridge {
     /// refusals that stale evidence explains asks for one idle-calibration
     /// probe while that evidence is still expired.
     func staleEvidenceProbeDue(at now: ContinuousClock.Instant = .now) -> Bool {
-        admissionFixes && !supportsPrefillRecoveryRetirement && deadlineProfile == nil
+        admissionFixes && refusalProbe && !supportsPrefillRecoveryRetirement && deadlineProfile == nil
             && deadlineRefusalStreak.permitsEvidenceProbe(at: now) && isolatedPrefillEvidenceExpired(at: now)
     }
 
-    /// A due probe at nominal posture also needs AC power.
+    /// A due probe at nominal posture also needs AC power: the probe is
+    /// optional, so unlike the startup calibration it never runs on battery,
+    /// Low Power Mode or not. The power source is read only once one is due.
     func evidenceProbePermitted(requireNominalPosture: Bool, at now: ContinuousClock.Instant = .now) -> Bool {
-        staleEvidenceProbeDue(at: now)
+        staleEvidenceProbeDue(at: now) && (!requireNominalPosture || evidenceProbeOnACPower())
     }
 
     /// Recovery is deliberately smaller than ordinary serving. A busy Mac,

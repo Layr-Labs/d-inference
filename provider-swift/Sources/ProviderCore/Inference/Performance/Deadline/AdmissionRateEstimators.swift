@@ -128,7 +128,7 @@ enum DeadlineRefusalProbe {
     static let enabled = resolve()
 
     static func resolve(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
-        true
+        DeadlineAdmissionFixes.isOn(environmentKey, environment: environment)
     }
 }
 

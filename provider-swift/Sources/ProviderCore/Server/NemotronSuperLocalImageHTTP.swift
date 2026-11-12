@@ -68,16 +68,20 @@ struct NemotronSuperLocalImageHTTP: Sendable {
     /// splices them into the response; without one it is refused. A text
     /// request reports its prefix-cache outcome to `usageSignal` (the
     /// coordinator request's, which also carries its cache receipts), else to
-    /// its own.
+    /// its own. A coordinator request's `firstContentDeadline` bounds how long
+    /// a media request that finds the owner busy may wait for it; a local
+    /// request has none.
     func engine(body: Data, hasMedia: Bool, cacheScope: String? = "",
                 trustsSchemaMetadata: Bool = false,
                 logprobs: EngineV2LogprobsChannel? = nil,
                 usageSignal: EngineV2RequestUsageSignal? = nil,
-                donationDemand: SSDCheckpointDonationDemand? = nil) -> any MLXServerEngine {
+                donationDemand: SSDCheckpointDonationDemand? = nil,
+                firstContentDeadline: FirstContentDeadline? = nil) -> any MLXServerEngine {
         let route: SuperHTTPEngine.Route = hasMedia ? .image(images) : .text(text, tokenizer)
         return SuperHTTPEngine(route: route, body: body, template: template, owner: owner,
                                cacheScope: cacheScope, trustsSchemaMetadata: trustsSchemaMetadata,
-                               logprobs: logprobs, usageSignal: usageSignal, donationDemand: donationDemand)
+                               logprobs: logprobs, usageSignal: usageSignal, donationDemand: donationDemand,
+                               firstContentDeadline: firstContentDeadline)
     }
 }
 
@@ -101,6 +105,8 @@ private struct SuperHTTPEngine: MLXServerEngine {
     let usageSignal: EngineV2RequestUsageSignal?
     /// The coordinator's repeat hint for a text request's durable checkpoint write.
     let donationDemand: SSDCheckpointDonationDemand?
+    /// The coordinator's first-content deadline; nil for a local request.
+    let firstContentDeadline: FirstContentDeadline?
 
     func availableModels() async throws -> [MLXServerModel] { [] }
     func tokenize(_ request: TokenizeRequest) async throws -> TokenizeResponse { throw unsupported() }
@@ -115,19 +121,32 @@ private struct SuperHTTPEngine: MLXServerEngine {
         -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         let owner = self.owner
         guard request.model == owner.modelID else { throw unsupported() }
+        let media = if case .text = route { false } else { true }
+        // A media request may wait for a busy slot while the media answers
+        // ahead of it stream, within its first-content budget less the owner's
+        // recent media first-chunk time; text never does.
+        let stackedUntil = media ? NemotronSuperServingPolicy.stackedMediaWaitEnd(
+            firstContentDeadline: firstContentDeadline?.instant,
+            expectedFirstChunk: owner.expectedMediaFirstChunk) : nil
         // The owner admits its configured concurrency before the request plan
         // decodes the body, the prompt is rendered or media is reserved, so a
         // busy owner refuses at once, unless every admitted request's answer
-        // has ended: then this one waits briefly for a settlement instead of
-        // bouncing (`NemotronSuperServingPolicy.finishingWait`). Every exit
-        // before the task takes it over returns it.
-        guard await owner.admitLocalRequest(waitingUpTo: NemotronSuperServingPolicy.finishingWait) else {
+        // has ended (`NemotronSuperServingPolicy.finishingWait`) or, for media,
+        // is a media answer already streaming (`stackedUntil`): then this one
+        // waits for the admission, reserving nothing, instead of bouncing.
+        // Every exit before the task takes it over returns it.
+        let waitCancellation = SuperWaitCancellation()
+        let waitRegistration = LocalRequestCancellation.current?.register { waitCancellation.cancel() }
+        let admitted = await owner.admitLocalRequest(waitingUpTo: NemotronSuperServingPolicy.finishingWait,
+            stackedUntil: stackedUntil, cancelled: { waitCancellation.isCancelled })
+        waitRegistration?.remove()
+        guard admitted else {
+            if Task.isCancelled || waitCancellation.isCancelled { throw CancellationError() }
             throw MultiModelBatchSchedulerEngineError.queueFull("the Super owner is busy")
         }
+        let progress = NemotronSuperLocalBridgeBuilder.Owner.LocalRequestProgress(isMedia: media)
         var admissionTransferred = false
-        defer { if !admissionTransferred { owner.finishLocalRequest() } }
-        let answered = SuperAnswerEnded()
-        let media = if case .text = route { false } else { true }
+        defer { if !admissionTransferred { owner.finishLocalRequest(progress) } }
         let output: NemotronSuperLocalOutput
         let completeLogprobs: NemotronSuperCompleteLogprobs?
         let execute: @Sendable (@escaping @Sendable (GenerationEvent) async -> Void) async throws -> Void
@@ -150,7 +169,8 @@ private struct SuperHTTPEngine: MLXServerEngine {
                 let body = self.body, template = self.template, cacheScope = self.cacheScope
                 execute = { onEvent in
                     try await images.runEncoded(body: body, plan: plan, templateBytes: template,
-                                                cacheScope: cacheScope, logprobs: logprobs, onEvent: onEvent)
+                                                cacheScope: cacheScope, logprobs: logprobs,
+                                                stackedUntil: stackedUntil, onEvent: onEvent)
                 }
             case .text(let binding, let tokenizer):
                 // Rendered before headers: template and tool errors keep their status.
@@ -171,11 +191,12 @@ private struct SuperHTTPEngine: MLXServerEngine {
         let pair = AsyncThrowingStream<MLXServerGenerationEvent, Error>.makeStream(bufferingPolicy: .bufferingOldest(64))
         let relay = SuperImageHTTPRelay(continuation: pair.continuation, output: output, logprobs: completeLogprobs,
                                         usageSignal: textUsage,
-                                        onAnswerEnded: { if answered.mark() { owner.noteLocalAnswerEnded() } })
+                                        onFirstChunk: { owner.noteLocalFirstChunk(progress) },
+                                        onAnswerEnded: { owner.noteLocalAnswerEnded(progress) })
         let scope = LocalRequestCancellation.current
         let task = Task {
             let registration = scope?.register { relay.cancel() }
-            defer { registration?.remove(); owner.finishLocalRequest(answerEnded: answered.isMarked) }
+            defer { registration?.remove(); owner.finishLocalRequest(progress) }
             do {
                 try Task.checkCancellation()
                 try await execute { event in await relay.accept(event) }
@@ -347,6 +368,8 @@ actor SuperImageHTTPRelay {
     /// Where the engine recorded the request's reused prompt tokens before
     /// its terminal usage; nil reports none.
     private let usageSignal: EngineV2RequestUsageSignal?
+    /// Told once, at the first native chunk: the answer is streaming.
+    private let onFirstChunk: (@Sendable () -> Void)?
     /// Told once, when the engine's terminal usage arrives: the answer has
     /// ended and only its settlement remains.
     private let onAnswerEnded: (@Sendable () -> Void)?
@@ -354,11 +377,13 @@ actor SuperImageHTTPRelay {
 
     init(continuation: AsyncThrowingStream<MLXServerGenerationEvent, Error>.Continuation,
          output: NemotronSuperLocalOutput, logprobs: NemotronSuperCompleteLogprobs? = nil,
-         usageSignal: EngineV2RequestUsageSignal? = nil, onAnswerEnded: (@Sendable () -> Void)? = nil) {
+         usageSignal: EngineV2RequestUsageSignal? = nil, onFirstChunk: (@Sendable () -> Void)? = nil,
+         onAnswerEnded: (@Sendable () -> Void)? = nil) {
         self.continuation = continuation
         self.output = output
         self.logprobs = logprobs
         self.usageSignal = usageSignal
+        self.onFirstChunk = onFirstChunk
         self.onAnswerEnded = onAnswerEnded
     }
     nonisolated func installCancellation(_ action: @escaping @Sendable () -> Void) { cancellation.install(action) }
@@ -382,7 +407,10 @@ actor SuperImageHTTPRelay {
                 return
             }
             guard !text.isEmpty else { return }
-            if firstChunkAt == nil { firstChunkAt = Date() }
+            if firstChunkAt == nil {
+                firstChunkAt = Date()
+                onFirstChunk?()
+            }
             do {
                 yield(try output.append(text))
                 logprobs?.accept(text)
@@ -445,13 +473,12 @@ actor SuperImageHTTPRelay {
     }
 }
 
-/// One request's answer has ended (`SuperImageHTTPRelay`'s terminal usage).
-private final class SuperAnswerEnded: @unchecked Sendable {
+/// Ends a request's admission wait when its local client disconnects.
+private final class SuperWaitCancellation: @unchecked Sendable {
     private let lock = NSLock()
-    private var ended = false
-    var isMarked: Bool { lock.withLock { ended } }
-    /// True the first time only.
-    func mark() -> Bool { lock.withLock { defer { ended = true }; return !ended } }
+    private var cancelled = false
+    var isCancelled: Bool { lock.withLock { cancelled } }
+    func cancel() { lock.withLock { cancelled = true } }
 }
 
 private final class SuperImageHTTPCancellation: @unchecked Sendable {

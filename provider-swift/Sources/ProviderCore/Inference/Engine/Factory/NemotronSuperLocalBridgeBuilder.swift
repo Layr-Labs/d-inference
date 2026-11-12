@@ -41,6 +41,14 @@ enum NemotronSuperLocalBridgeBuilder {
         private var localRequestsAdmitted = 0
         /// Admitted requests whose answer has ended (`noteLocalAnswerEnded`).
         private var localAnswersEnded = 0
+        /// Admitted media requests streaming their answer: first chunk sent,
+        /// answer not ended (`noteLocalFirstChunk`).
+        private var localMediaStreaming = 0
+        /// The one request waiting for an admission, if any; a free admission
+        /// goes to it first.
+        private var localWaiter: UUID?
+        /// Recent media admission-to-first-chunk times, newest last.
+        private var mediaFirstChunks: [Duration] = []
         let speculates: Bool
         /// Requests the bridge serves at once; one unless batched decode is on.
         let maximumLocalRequests: Int
@@ -129,47 +137,134 @@ enum NemotronSuperLocalBridgeBuilder {
             }
         }
 
+        /// One admitted local request's progress, as the owner's admission
+        /// waits read it. Its flags change only under the owner's lock.
+        final class LocalRequestProgress: @unchecked Sendable {
+            let isMedia: Bool
+            fileprivate var streaming = false
+            fileprivate var answerEnded = false
+            fileprivate var finished = false
+
+            init(isMedia: Bool) { self.isMedia = isMedia }
+        }
+
+        private enum LocalAdmission { case admitted, waiting, refused }
+
         /// Admits a local HTTP request, text or image, while fewer than
-        /// `maximumLocalRequests` are admitted. Each admission is returned
-        /// once by `finishLocalRequest()`, only after its work returned, which
-        /// follows native retirement.
+        /// `maximumLocalRequests` are admitted and no request waits for an
+        /// admission. Each admission is returned once by `finishLocalRequest`,
+        /// only after its work returned, which follows native retirement.
         func admitLocalRequest() -> Bool {
             lock.withLock {
-                guard localRequestsAdmitted < maximumLocalRequests else { return false }
+                guard localRequestsAdmitted < maximumLocalRequests, localWaiter == nil else { return false }
                 localRequestsAdmitted += 1
                 return true
             }
         }
 
-        /// As `admitLocalRequest()`, but while the owner is full and every
-        /// admitted request's answer has already ended (only settlement is
-        /// left), waits up to `limit` for one to finish instead of refusing.
-        func admitLocalRequest(waitingUpTo limit: Duration) async -> Bool {
-            let deadline = ContinuousClock.now + limit
+        /// As `admitLocalRequest()`, but a full owner may hold this request,
+        /// one at a time, instead of refusing it at once:
+        /// - for up to `finishing` while every admitted request's answer has
+        ///   ended and only settlement is left;
+        /// - until `stackedUntil` while every admitted request is a media
+        ///   request already streaming its answer, or has ended, on an owner
+        ///   serving one request at a time. A wider owner leaves stacked waits
+        ///   to the image binding, which keeps a slot free for text; at the
+        ///   owner they would end in a refusal there.
+        /// A free admission goes to the waiting request before any newcomer;
+        /// a request that finds another waiting is refused at once. `cancelled`
+        /// (or task cancellation) ends the wait without an admission.
+        func admitLocalRequest(waitingUpTo finishing: Duration,
+                               stackedUntil: ContinuousClock.Instant? = nil,
+                               cancelled: @escaping @Sendable () -> Bool = { false }) async -> Bool {
+            let finishingEnd = ContinuousClock.now + finishing
+            let id = UUID()
+            defer { lock.withLock { if localWaiter == id { localWaiter = nil } } }
             while true {
-                let (admitted, finishing): (Bool, Bool) = lock.withLock {
-                    guard localRequestsAdmitted < maximumLocalRequests else {
-                        return (false, localAnswersEnded >= localRequestsAdmitted)
+                let now = ContinuousClock.now
+                let verdict: LocalAdmission = lock.withLock {
+                    let next = localWaiter == nil || localWaiter == id
+                    if next, localRequestsAdmitted < maximumLocalRequests {
+                        localRequestsAdmitted += 1
+                        if localWaiter == id { localWaiter = nil }
+                        return .admitted
                     }
-                    localRequestsAdmitted += 1
-                    return (true, false)
+                    guard next else { return .refused }
+                    let settling = now < finishingEnd && localAnswersEnded >= localRequestsAdmitted
+                    let stacked = maximumLocalRequests == 1 && stackedUntil.map { now < $0 } == true
+                        && localAnswersEnded + localMediaStreaming >= localRequestsAdmitted
+                    guard settling || stacked else { return .refused }
+                    localWaiter = id
+                    return .waiting
                 }
-                if admitted { return true }
-                guard finishing, !Task.isCancelled, ContinuousClock.now < deadline else { return false }
-                try? await Task.sleep(for: .milliseconds(5))
+                switch verdict {
+                case .admitted: return true
+                case .refused: return false
+                case .waiting:
+                    try? await Task.sleep(for: .milliseconds(5))
+                    if Task.isCancelled || cancelled() { return false }
+                }
             }
         }
 
-        /// One admitted request's answer has ended (its terminal reached the
-        /// HTTP relay); its settlement and `finishLocalRequest` follow.
-        func noteLocalAnswerEnded() { lock.withLock { localAnswersEnded += 1 } }
+        /// Fewer than `maximumLocalRequests` are admitted: a request arriving
+        /// now, text included, would be admitted.
+        var hasFreeLocalAdmission: Bool {
+            lock.withLock { localRequestsAdmitted < maximumLocalRequests }
+        }
 
-        /// `answerEnded`: the request was counted by `noteLocalAnswerEnded()`.
-        func finishLocalRequest(answerEnded: Bool = false) {
+        /// An admitted request sent its first chunk: a media request's answer
+        /// is streaming and ends soon.
+        func noteLocalFirstChunk(_ progress: LocalRequestProgress) {
+            lock.withLock {
+                guard !progress.streaming, !progress.answerEnded, !progress.finished else { return }
+                progress.streaming = true
+                if progress.isMedia { localMediaStreaming += 1 }
+            }
+        }
+
+        /// An admitted request's answer has ended (its terminal reached the
+        /// HTTP relay); its settlement and `finishLocalRequest` follow.
+        func noteLocalAnswerEnded(_ progress: LocalRequestProgress) {
+            lock.withLock {
+                guard !progress.answerEnded, !progress.finished else { return }
+                if progress.isMedia, progress.streaming { localMediaStreaming -= 1 }
+                progress.answerEnded = true
+                localAnswersEnded += 1
+            }
+        }
+
+        /// Returns one admission. `progress` is the request's progress, if any
+        /// was noted for it.
+        func finishLocalRequest(_ progress: LocalRequestProgress? = nil) {
             lock.withLock {
                 localRequestsAdmitted -= 1
-                if answerEnded { localAnswersEnded -= 1 }
+                guard let progress, !progress.finished else { return }
+                progress.finished = true
+                if progress.answerEnded {
+                    localAnswersEnded -= 1
+                } else if progress.isMedia, progress.streaming {
+                    localMediaStreaming -= 1
+                }
             }
+        }
+
+        /// Records one media request's time from its image-binding admission
+        /// to its first chunk.
+        func recordMediaFirstChunk(_ elapsed: Duration) {
+            lock.withLock {
+                mediaFirstChunks.append(elapsed)
+                if mediaFirstChunks.count > NemotronSuperServingPolicy.mediaFirstChunkSamples {
+                    mediaFirstChunks.removeFirst()
+                }
+            }
+        }
+
+        /// The longest of the owner's recent media first-chunk times, never
+        /// below `NemotronSuperServingPolicy.minimumExpectedMediaFirstChunk`.
+        var expectedMediaFirstChunk: Duration {
+            let floor = NemotronSuperServingPolicy.minimumExpectedMediaFirstChunk
+            return lock.withLock { max(mediaFirstChunks.max() ?? floor, floor) }
         }
 
         private var acceptsLocalWork: Bool {

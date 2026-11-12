@@ -2215,6 +2215,22 @@ idleness and clears while request admission waits
 `DARKBLOOM_TTFT_SEGMENT_RETENTION=0` and `DARKBLOOM_TTFT_IDLE_CACHE_SWEEP=0`
 restore the previous behavior ([configuration](../reference/configuration.md)).
 
+Page placement keeps a busy pool's segmented decode at one pass per layer. The
+decode binds at most 17 segments per pass
+(`PagedSegmentDispatchPlan.maximumBindings`), so a layer whose partitions touch
+more segments needs more passes, issued one after another. A group's free pages
+form two tiers (`PagedKVFreePages`): pages that a prefix-cache alias still names
+wait in eviction order and are reused only when no other page is free; every
+other free page is placed by address. Each segment's usable pages split into
+runs of 16 pages, one 256-token partition. A request's layer continues in the
+run of its last page, then takes a free run in the same segment, then one in the
+segment with the most free runs, so requests that start together use different
+segments; only when no run is free does it take the lowest free page. Before, a
+retired request's pages went to the front of one shared free list and the next
+requests filled those holes across many segments, which took about one pass per
+partition once a busy engine had retired its first requests
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVFreePages.swift`).
+
 Resident publication uses a submission-unique `prefixCacheReceiptID`; the
 sampling engine ID can repeat after a seeded request completes. The bridge
 correlates checkpoint callbacks to that receipt so delayed donor callbacks
@@ -2844,7 +2860,9 @@ retain priority (`provider-swift/Sources/ProviderCore/Inference/MTP/EngineV2MTPA
 When neither a global nor a per-model acceptance value is configured, serving
 defaults to typical acceptance for eligible sampled target-prefix rows, except
 on the builds whose built-in rule is exact (`MTPAcceptancePolicy.builtInIsExact`):
-the owned Bonsai 9B candidate; the catalog `gemma-4-26b-qat-4bit`, which drafted every answer of OpenRouter's
+the owned Bonsai 9B candidate; the catalog `Qwen3.5-9B`, which looped under
+typical acceptance in the 0.10.12 gate (see the Qwen 3.5/3.6 defaults below);
+the catalog `gemma-4-26b-qat-4bit`, which drafted every answer of OpenRouter's
 10-31 GPQA run, 30 % of which ended at the 32,768-token cap; and every Qwen 3.8
 27B build (`EigenLabs/Qwen3.8-27B-4bit-mtp` and its head-less target,
 `ModelRuntimeRequirements.qwen38ConcreteModelIDs`), whose lone requests draft
@@ -2909,6 +2927,17 @@ fence and native completion tracking keep MTP steps
 `DARKBLOOM_TTFT_QWEN_MTP_CHAINED` and `DARKBLOOM_TTFT_QWEN_MTP_CARRY`
 (`CBv2MTPConfig.envOrdinaryDecodeHistory`, `envPrefillCarry`; see
 [`../reference/configuration.md`](../reference/configuration.md)).
+Assistant history keeps lazy views of each committed step's token and hidden
+arrays until a draft round reads them. This applies to the Qwen 3.5-family
+backlog, the Qwen4 Flash-Next backlog and Lightning's `pendingHidden`.
+`asyncEval` leaves its completion event (an `MTLSharedEvent`, from a finite
+system-wide pool) on every array it evaluated, until the array is waited on or
+read again. So while rows stayed batch-gated, each step kept one event alive.
+After a step's readback, the engine now drops the fired event from those arrays
+in both history paths (`finalizeMTPOrdinaryHistory` and `finalizeMTPRound`;
+`CBv2MTPHistoryEvents.release` in
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/CBv2MTPHistoryEvents.swift`).
+The call does not block and changes no value or evaluation.
 
 Complete SSD recurrent reuse with a persistent MTP assistant requires the
 serializable `CBv2MTPPrefixCheckpointCoding` contract. The Qwen implementation
@@ -2969,7 +2998,7 @@ production assembly and encrypted store.
 | `top_p` | `topP` | artifact default, else `1.0` |
 | `top_k` | `topK` | artifact default, else `0` |
 | `repetition_penalty` | `repetitionPenalty` | artifact default, else `1.0` |
-| `frequency_penalty` / `presence_penalty` | `frequencyPenalty` / `presencePenalty` | `0`; `presence_penalty` takes a model-card default (catalog Qwen 3.5/3.6) |
+| `frequency_penalty` / `presence_penalty` | `frequencyPenalty` / `presencePenalty` | `0`; `presence_penalty` takes a model-card default on the catalog 35B Qwen 3.5/3.6 builds (`Qwen3.5-9B` has none) |
 | `seed` | `seed`; also keys a stable engine request id | nil |
 | `logit_bias` | `logitBias` — string keys parsed to non-negative `Int`; invalid keys dropped and counted | `[:]` |
 | `logprobs` + `top_logprobs` | `topLogprobs = logprobs ? min(20, max(1, top_logprobs ?? 0)) : 0` | `0` |
@@ -2993,14 +3022,7 @@ recommends). The exact `prism-ml/Ternary-Bonsai-2-9B-mlx-2bit` and
 `EigenLabs/Ternary-Bonsai-2-9B-MLX-2bit` identities also require `model_type == prism_hadamard_qwen35` and honors its pinned artifact
 defaults (`temperature 1.0`, `top_p 0.95`, `top_k 20`, `do_sample true`). Its
 qualification requests explicitly supply `presence_penalty: 1.5`; that value
-is absent from the artifact and is not injected as a default. The catalog
-`Qwen3.5-9B`, `qwen3.5-35b-a3b` and `qwen3.6-35b-a3b-vl-mtp-mxfp8` builds
-(`EngineV2SamplingDefaults.qwen35CardModelTypes`, each bound to its `model_type`)
-ship no `generation_config.json`; omitted knobs take their model cards'
-thinking-mode values
-(`EngineV2SamplingDefaults.qwen35CardDefaults`: `temperature 1.0`, `top_p 0.95`,
-`top_k 20`, `presence_penalty 1.5`). Greedy decoding with no presence penalty
-made them repeat themselves until `max_tokens` (#1530). This request
+is absent from the artifact and is not injected as a default. This request
 policy enables native channels, nested reasoning and forced-media framing.
 These exact 9B identities separately default to paged attention and encrypted SSD
 prefix caching. Explicit operator selections, kill switches, native capability
@@ -3042,21 +3064,17 @@ the 9B, an M5 Ultra for the 35B):
 
 | Build | Omitted `presence_penalty` | Built-in MTP acceptance | The gate without the penalty |
 |---|---|---|---|
-| `Qwen3.5-9B`, `qwen3.5-35b-a3b`, `qwen3.6-35b-a3b-vl-mtp-mxfp8` (`qwen35CardDefaults`) | 1.5 | typical | `qwen3.5-35b-a3b` ran away under typical acceptance (5 of 19 everyday prompts, 8 of 12 loopers to 32,768, MTP running at concurrency 1) and under exact (2 of 12 loopers); the 3.6 build shares its architecture |
-
-The 9B ran away on 13 of 31 draws under typical acceptance and on 0 of 31
-under exact without the penalty, but it keeps the penalty and typical
-acceptance in 0.10.12: with two or more batched penalty-free 9B rows, live
-Metal shared events grew by about one per decode step until the provider
-crashed (10 to 60 minutes of sustained concurrency, 2026-11-11).
+| `qwen3.5-35b-a3b`, `qwen3.6-35b-a3b-vl-mtp-mxfp8` (`qwen35CardDefaults`) | 1.5 | typical | `qwen3.5-35b-a3b` ran away under typical acceptance (5 of 19 everyday prompts, 8 of 12 loopers to 32,768, MTP running at concurrency 1) and under exact (2 of 12 loopers); the 3.6 build shares its architecture |
+| `Qwen3.5-9B` (`qwen35NineBCardDefaults`) | none | **exact** (`MTPAcceptancePolicy.builtInIsExact`) | ran away on 13 of 31 draws under typical acceptance and on 0 of 31 under exact, MTP running; the penalty-free body cached 8,192 tokens on the second send, the penalty body none |
 
 A row with a penalty does not speculate (`EngineLoopV2.mtpBasicEligible`), so
-these builds' requests that omit the penalty stay without MTP, the cost the
+the 35B builds' requests that omit the penalty stay without MTP, the cost the
 gate accepted for loop safety; they still stage prefix checkpoints
 ([prefix caching](prefix-cache.md#invariants), invariant 9). A request's own
-`presence_penalty` always wins: `0` speculates under typical acceptance and
-donates checkpoints (the configuration that looped in the gate, now the
-caller's choice). The coordinator forwards a build's
+`presence_penalty` always wins: `0` on a 35B build speculates under typical
+acceptance and donates checkpoints (the configuration that looped in the gate,
+now the caller's choice); a nonzero value on the 9B turns its MTP off for that
+request (it still donates checkpoints). The coordinator forwards a build's
 registry runtime defaults for the fields a request omits
 ([`requestRuntimeDefaultKeys`](https://github.com/Layr-Labs/darkbloom-platform/blob/c69380d91fd3f9e4ef3ff1e3775690d80adbbe57/coordinator/api/inference/request/model_runtime_defaults.go));
 on 2026-11-10 the registry set `temperature`, `top_p` and `top_k` for these

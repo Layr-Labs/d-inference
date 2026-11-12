@@ -1,0 +1,71 @@
+{
+  "files": [
+    {
+      "source": "proposed/provider-swift/Sources/ProviderCore/Config/ClusterConfiguration.swift",
+      "target": "provider-swift/Sources/ProviderCore/Config/ClusterConfiguration.swift",
+      "sha256": "d5537d74b54ce12969387d6e039effb503fe32c4856f4d89fa1b831013de140a",
+      "baseSHA256": null
+    },
+    {
+      "source": "proposed/provider-swift/Sources/ProviderCore/Config/ClusterConfigurationCodec.swift",
+      "target": "provider-swift/Sources/ProviderCore/Config/ClusterConfigurationCodec.swift",
+      "sha256": "ec6d3c76a9cc8e61e54debad617d5e1d4b41f5ca74d993e8dbb047dd47e196cc",
+      "baseSHA256": null
+    },
+    {
+      "source": "proposed/provider-swift/Sources/ProviderCore/Config/ClusterConfigurationFiles.swift",
+      "target": "provider-swift/Sources/ProviderCore/Config/ClusterConfigurationFiles.swift",
+      "sha256": "a7b7d02ce4df05c8322463b15af92692158ff3bfdeb05473fa810f5d3adcd075",
+      "baseSHA256": null
+    },
+    {
+      "source": "proposed/provider-swift/Sources/ProviderCore/Config/ClusterConfigurationPaths.swift",
+      "target": "provider-swift/Sources/ProviderCore/Config/ClusterConfigurationPaths.swift",
+      "sha256": "e5f9865d9245451d172b3be8c5021670b5f3f7178d46dedebcfe009d02b3cb1c",
+      "baseSHA256": null
+    },
+    {
+      "source": "proposed/provider-swift/Sources/ProviderCore/Config/ClusterConfigurationProviderStore.swift",
+      "target": "provider-swift/Sources/ProviderCore/Config/ClusterConfigurationProviderStore.swift",
+      "sha256": "c5474733499ec221dec2f97ed0c3103a169bd5f07f122efc20e36b8560394642",
+      "baseSHA256": null
+    },
+    {
+      "source": "proposed/provider-swift/Sources/ProviderCore/Config/ClusterConfigurationStore.swift",
+      "target": "provider-swift/Sources/ProviderCore/Config/ClusterConfigurationStore.swift",
+      "sha256": "0944bf30562b12a64f012098e11973c350dc26bc7ec27469be471ab655e0031d",
+      "baseSHA256": null
+    },
+    {
+      "source": "proposed/provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift",
+      "target": "provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift",
+      "sha256": "0d39dc15b9f6ad3dd9a635284f3057d9753086b61c1ce785d8748a68444c1748",
+      "baseSHA256": "fbe7a39580dd5826a5dac499467644361b1cf0881392c8d91376f07ff38c03e8"
+    },
+    {
+      "source": "proposed/provider-swift/Sources/darkbloom/ClusterCommand.swift",
+      "target": "provider-swift/Sources/darkbloom/ClusterCommand.swift",
+      "sha256": "8b14e21aa9f81b4314316118c466a0a3f17bb57e0f899385836418606b104e64",
+      "baseSHA256": null
+    },
+    {
+      "source": "proposed/provider-swift/Sources/darkbloom/Darkbloom.swift",
+      "target": "provider-swift/Sources/darkbloom/Darkbloom.swift",
+      "sha256": "a0ac36897e9b68bd9575aa6a0e30f82c300fdfdd4aff1ceb07f0bb75117fe638",
+      "baseSHA256": "4daaff106d8f688302f89878f54f8ee266c838f5f62e8cbc3d5f08c3419024f8"
+    },
+    {
+      "source": "proposed/provider-swift/Tests/DarkbloomCLITests/ClusterCommandTests.swift",
+      "target": "provider-swift/Tests/DarkbloomCLITests/ClusterCommandTests.swift",
+      "sha256": "6d87f87194a061897b7d91d939ee9f669dbfc7296ff964565d48dd02d61aba5b",
+      "baseSHA256": null
+    },
+    {
+      "source": "proposed/provider-swift/Tests/ProviderCoreTests/Config/ClusterConfigurationTests.swift",
+      "target": "provider-swift/Tests/ProviderCoreTests/Config/ClusterConfigurationTests.swift",
+      "sha256": "e4e70e17632b4f2809e5f86bc8d0743cb317f1c333f0036e14cf8ca776cef381",
+      "baseSHA256": null
+    }
+  ],
+  "noMainEdits": true
+}

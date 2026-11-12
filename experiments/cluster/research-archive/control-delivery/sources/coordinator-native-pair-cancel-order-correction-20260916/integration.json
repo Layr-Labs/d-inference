@@ -1,0 +1,24 @@
+{
+  "schema": "native_pair_cancel_publication_correction_v1",
+  "priorManifestSHA256": "69189730ac9df0ced27006c2b00606583a20f905a7140cfc8fff5f24ff9dc500",
+  "files": [
+    {
+      "path": "coordinator/registry/native_pair_cancel_order_test.go",
+      "baseSHA256": null,
+      "proposedSHA256": "a1fb6e0b6c9bd81a3984f312947ffe5410e48561a6015ceb2305d6aa242af74b",
+      "sizeBytes": 2859
+    },
+    {
+      "path": "coordinator/registry/native_pair_relay.go",
+      "baseSHA256": "637c359146e791f7e0ae6592d61cea7fe21fac0f58820e464672c4989153a818",
+      "proposedSHA256": "c1cb47c29f8977a1f4ad64700a492699e6bfdb66f8d7dff54f20e31d8ea520a4",
+      "sizeBytes": 6309
+    },
+    {
+      "path": "coordinator/registry/native_pair_types.go",
+      "baseSHA256": "64b8265e862db4e0d5763c2d934dad487a265b568fe3ea9df993eec5e9410fcc",
+      "proposedSHA256": "b940010e07bae09875003647522cb3d8b52846f1283fc8682d1605b0f77f3cd6",
+      "sizeBytes": 3246
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "baseManifestSHA256": "1e8019ad6af9314979d5182bf61eb47671f9b22d5eb176b1cd97345c805e7c38",
+  "files": [
+    {
+      "afterSHA256": "53329e001eb240d8725609f9882f6b4548c3ec1a47a7322ec3fa52fc2cef86ed",
+      "beforeSHA256": "c8956960670986bc216af0c9b13040bd460e96450a937c05cef8d4f5b63d23d7",
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/NativePairRequestBridge.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-cancellation-correction-20260917/proposed/provider-swift/Sources/ProviderCore/Coordinator/NativePairRequestBridge.swift"
+    },
+    {
+      "afterSHA256": "e0a430dd838d7871d31d68a1795451b70dc9a2c694714f3a56ba174c721a383b",
+      "beforeSHA256": "8563ef58e4f51a60e17b0a261c58968c30526c0686982d256f907df611bd1702",
+      "path": "provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/NativePairSharedRequestTests.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-cancellation-correction-20260917/proposed/provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/NativePairSharedRequestTests.swift"
+    }
+  ],
+  "newRequiredMethod": "cancelBetweenDecodeAndFollowerDeliveryNeverEnqueuesCommand"
+}

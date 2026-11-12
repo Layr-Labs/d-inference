@@ -1,0 +1,22 @@
+{
+  "files": [
+    {
+      "baseSHA256": "a551f6e91a2c42590bc5c2da50df9eb8fea9cce298ee18304958c0aa4c1bff42",
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift",
+      "proposedSHA256": "99c1f0ed749c92a890be5890713702a84f341a3af7bf72a3c773c4be602d8927",
+      "sizeBytes": 23075,
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-member-actor-await-correction-20260916/proposed/provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift"
+    },
+    {
+      "baseSHA256": "2ddcb00c4e9a7155593192c52d25fb57a477a06e23b236dab1e580a0ac61387b",
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoop+ClusterMember.swift",
+      "proposedSHA256": "b82675f78b96323fbc1ff4d96aad5930c2f457cb8a6e6c6a3d0ebecc217e70bb",
+      "sizeBytes": 5337,
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-member-actor-await-correction-20260916/proposed/provider-swift/Sources/ProviderCore/ProviderLoop+ClusterMember.swift"
+    }
+  ],
+  "mainChanged": false,
+  "memberManifestSHA256": "4ae431c60990ff9e4dfe319b8b5387ac8fb6bffcd54eac0213d3f85ed60ef965",
+  "parentSwiftWrapperSHA256": "9a33d47e497064b6680ef513e09b5896d8f9d05462ce16e589f5548f0e01a8aa",
+  "schema": "member_actor_await_correction_v1"
+}

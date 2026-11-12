@@ -1,0 +1,74 @@
+--- rank-phase/rank_sidecar_admission.py
++++ rank-owner/rank_sidecar_admission.py
+@@ -28,13 +28,13 @@
+     raw = bounded_bytes(run / 'receipt.json', 4 * 1024 * 1024)
+     require(sha(raw) == pin(expected_sha256), 'Completed rank launcher receipt pin differs')
+     receipt = parse(raw)
+-    expected = dict(kind='remote_qwen_long_prefill_rank_phase_launcher', schema_version=1,
++    expected = dict(kind='remote_qwen_long_prefill_rank_owner_launcher', schema_version=1,
+                     native_rank_count=2, transport='loopback-test', backend='ring', flow=FLOW, envelope_version=4,
+                     stage_logits_dtype='bfloat16')
+     require(type(receipt) is dict and all(type(receipt.get(key)) is type(value) and receipt[key] == value
+-            for key, value in expected.items()), 'Wrong rank-phase launcher namespace/geometry')
++            for key, value in expected.items()), 'Wrong rank-owner launcher namespace/geometry')
+     require(receipt['stage_prefill_policy'] in ('serial_v1', 'prompt_lookahead_one_v1'), 'Unsupported recorded policy')
+-    for key in ('passed', 'phase_timing_requested', 'stage_model_forward_requested', 'timing_requested',
++    for key in ('passed', 'phase_timing_requested', 'owner_timing_requested', 'stage_model_forward_requested', 'timing_requested',
+                 'timing_diagnostic_only', 'native_execution_attempted',
+                 'source_bundle_raw_inputs_and_remote_model_unchanged_after_run'):
+         require(receipt.get(key) is True, 'Launcher did not pass required gate: ' + key)
+@@ -67,7 +67,14 @@
+     ranks = [dict(rank=rank, host=host, remote_path=remote_paths[rank],
+                   expected_identity=identities[rank]['expected_identity'], launcher_ssh_client_pid=pids[rank])
+              for rank in (0, 1)]
+-    return dict(run=str(run), launcher_receipt_sha256=sha(raw), host=host, epoch=receipt['epoch'],
++    sidecars = []
++    for rank in ranks:
++        sidecars.append(dict(rank, name='phase'))
++        sidecars.append(dict(rank, name='owner',
++            remote_path=rank['remote_path'].removesuffix('phase-trace.json') + 'owner-trace.json',
++            expected_identity=dict(rank['expected_identity'], frameSequence=7, tokenOffset=3584,
++                                   tokenCount=512, committedFrontier=4096)))
++    return dict(sidecars=sidecars, run=str(run), launcher_receipt_sha256=sha(raw), host=host, epoch=receipt['epoch'],
+         stage_prefill_policy=receipt['stage_prefill_policy'], ranks=ranks, rank_files=retained,
+         archive_manifests=manifests, launcher_files=receipt['launcher_files'],
+         agreement_fingerprint=identities[0]['agreement_fingerprint'],
+--- rank-phase/rank_sidecar_archives.py
++++ rank-owner/rank_sidecar_archives.py
+@@ -1,6 +1,12 @@
+ """Narrow archive pins and the exact stderr source; no model/full-source audit."""
+ import re
+ from sidecar_files import bounded_bytes, file_record, parse, pin, require, sha
++
++OWNER_RUNTIME = {
++    'launch_remote_long_ranks.py': 'f12eb7cc2034e11b9dc1e92c13205c9e041ec92dd2f6a389a2eb15af985f71bf',
++    'long_rank_configuration.py': 'b9d9cd763ca42875a134e41b1ad9ffebf0c92df553d6e3b467e317f78b93a03c',
++    'long_rank_paths.py': 'ca1b6cd8dc9ecd34c3ca41f5ee6f9aeb26b7efd38b2e6630a4da69d994cc36fe',
++}
+ 
+ WARNING = b'Using loopback-test transport for correctness only; timings are not cluster-performance evidence\n'
+ 
+@@ -24,8 +30,9 @@
+         total += len(raw)
+         require(total <= 8 * 1024 * 1024 and type(entry['size_bytes']) is int
+                 and len(raw) == entry['size_bytes'] and sha(raw) == pin(entry['sha256']), 'Launcher archive differs')
+-    require({'launch_remote_long_ranks.py', 'long_rank_configuration.py'} <= names,
+-            'Rank-phase launcher source missing')
++        if name in OWNER_RUNTIME:
++            require(sha(raw) == OWNER_RUNTIME[name], 'Frozen rank-owner runtime source differs')
++    require(set(OWNER_RUNTIME) <= names, 'Rank-owner launcher source missing')
+     warning = receipt['stderr_contract']
+     require(warning['expected_utf8'] == WARNING.decode() and warning['exact_one_line_required'] is True,
+             'Wrong stderr contract')
+--- rank-phase/rank_sidecar_evidence.py
++++ rank-owner/rank_sidecar_evidence.py
+@@ -27,7 +27,8 @@
+             '--stage-logits-dtype', 'bfloat16', '--tokens-file', '@rank/prompt.json',
+             '--long-prompt-sha256', prompt, '--prompt-tokens', '8192', '--chunk-size', '512',
+             '--decode-tokens', '1', '--repeats', '1', '--warmups', '0', '--seed', '7',
+-            '--timeout-seconds', '300', '--prefill-phase-trace-file', '@rank/phase-trace.json'])
++            '--timeout-seconds', '300', '--prefill-phase-trace-file', '@rank/phase-trace.json',
++            '--prefill-owner-trace-file', '@rank/owner-trace.json'])
+ 
+ 
+ def native_identity(raw_files, receipt, rank):

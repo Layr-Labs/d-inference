@@ -1,0 +1,304 @@
+--- a/provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedCBv2Engine+Events.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedCBv2Engine+Events.swift
+@@ -55,10 +55,10 @@
+         guard active === state else { return }
+         // A later peer loss must not preserve an earlier successful terminal.
+         // Otherwise retain the first failure/cancellation as the primary cause.
++        var changed = false
+         if state.terminal == nil || state.terminal == .stop || state.terminal == .length {
+-            let changed = state.terminal != reason
++            changed = state.terminal != reason
+             state.terminal = reason
+-            if changed { observe(state, phase: .terminal, reason: reason) }
+         }
+         state.deadlineTask?.cancel()
+         // Normal EOS/length/stop-string completion is conveyed by false from
+@@ -69,6 +69,8 @@
+             state.cancelSent = true
+             state.lease.cancel()
+         }
++        // Internal cancellation is armed before best-effort instrumentation.
++        if changed { observe(state, phase: .terminal, reason: state.terminal) }
+     }
+ 
+     func checkDeadline(_ state: DistributedRequestState) {
+@@ -119,7 +121,7 @@
+         state.continuation.onTermination = nil
+         state.continuation.yield(.finished(reason: reason, usage: usage))
+         state.continuation.finish()
++        state.retired.complete()
+         observe(state, phase: .retired, reason: reason)
+-        state.retired.complete()
+     }
+ }
+--- a/provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedCBv2Engine.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedCBv2Engine.swift
+@@ -12,7 +12,7 @@
+     let profile: DistributedResidentExecutionProfile
+     let detokenizers: any CBv2DetokenizerFactory
+     let clock: CBv2Clock
+-    let requestObserver: (@Sendable (DistributedRequestObservation) -> Void)?
++    let observationSink: DistributedRequestObservationSink?
+     var capacityLimit: Int
+     var active: DistributedRequestState?
+     var invalidated = false
+@@ -38,7 +38,7 @@
+         self.profile = profile
+         self.detokenizers = detokenizers
+         self.clock = clock
+-        self.requestObserver = requestObserver
++        self.observationSink = requestObserver.map(DistributedRequestObservationSink.init)
+         self.capacityLimit = ready.requestCapacityBytes
+         queue.setSpecific(key: queueKey, value: 1)
+         owner.setReadinessInvalidationHandler { [weak self] in
+--- a/provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedRequestLogging.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedRequestLogging.swift
+@@ -6,6 +6,7 @@
+     static func log(_ observation: Self) {
+         let logger = Logger(label: "darkbloom.distributed.request")
+         var fields: Logger.Metadata = [
++            "dropped_observations": .stringConvertible(observation.droppedObservations),
+             "generation": .string(observation.generation.uuidString),
+             "phase": .string(observation.phase.rawValue),
+             "prompt_tokens": .stringConvertible(observation.promptTokens),
+--- a/provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedRequestObservation.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedRequestObservation.swift
+@@ -2,7 +2,8 @@
+ import MLXLMCommon
+ 
+ /// Provider-local lifecycle timings, not external TTFT or native kernel timing.
+-/// The callback runs on the engine queue and must not block or reenter the engine.
++/// Value snapshots are made on the engine queue; callbacks run on a separate
++/// bounded serial sink and cannot hold up cancellation or retirement.
+ /// No prompt, output token, arbitrary error text, or remote clock is included.
+ public struct DistributedRequestObservation: Sendable {
+     public enum Phase: String, Sendable { case reserved, firstToken, terminal, retired }
+@@ -14,6 +15,13 @@
+     public let reservationMilliseconds: Double
+     public let remainingFirstTokenMilliseconds: Double?
+     public let outcome: String?
++    /// Cumulative observations discarded by this engine's bounded sink before
++    /// this delivery. Drop-newest overflow; saturates at UInt64.max.
++    public private(set) var droppedObservations: UInt64 = 0
++
++    func delivered(droppedObservations: UInt64) -> Self {
++        var result = self; result.droppedObservations = droppedObservations; return result
++    }
+ 
+     init(state: DistributedRequestState, phase: Phase, now: ContinuousClock.Instant,
+          reason: CBv2FinishReason? = nil) {
+@@ -56,7 +64,7 @@
+ extension DistributedCBv2Engine {
+     func observe(_ state: DistributedRequestState, phase: DistributedRequestObservation.Phase,
+                  reason: CBv2FinishReason? = nil) {
+-        guard let requestObserver else { return }
+-        requestObserver(.init(state: state, phase: phase, now: clock.now(), reason: reason))
++        guard let observationSink else { return }
++        observationSink.enqueue(.init(state: state, phase: phase, now: clock.now(), reason: reason))
+     }
+ }
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedRequestObservationSink.swift
+@@ -0,0 +1,50 @@
++import Foundation
++
++/// Best-effort value-only instrumentation. The queued work never captures a
++/// request state, lease or model. A blocked callback cannot block its producer.
++final class DistributedRequestObservationSink: @unchecked Sendable {
++    static let maximumPending = 64
++    private let lock = NSLock()
++    private let queue = DispatchQueue(label: "darkbloom.distributed.observations")
++    private let callback: @Sendable (DistributedRequestObservation) -> Void
++    private var pending: [DistributedRequestObservation] = []
++    private var draining = false
++    private var dropped: UInt64 = 0
++
++    init(_ callback: @escaping @Sendable (DistributedRequestObservation) -> Void) {
++        self.callback = callback
++        pending.reserveCapacity(Self.maximumPending)
++    }
++
++    func enqueue(_ observation: DistributedRequestObservation) {
++        let start = lock.withLock { () -> Bool in
++            guard pending.count < Self.maximumPending else {
++                if dropped != UInt64.max { dropped += 1 }
++                return false
++            }
++            pending.append(observation)
++            guard !draining else { return false }
++            draining = true
++            return true
++        }
++        if start { queue.async { self.drain() } }
++    }
++
++    private func drain() {
++        while true {
++            let next = lock.withLock { () -> DistributedRequestObservation? in
++                guard !pending.isEmpty else { draining = false; return nil }
++                return pending.removeFirst().delivered(droppedObservations: dropped)
++            }
++            guard let next else { return }
++            // Exactly one callback is in flight, outside the lock. Producer
++            // contention is bounded by one <=64-element value-array operation.
++            callback(next)
++        }
++    }
++
++    /// Internal fixture observation; no wait or callback is needed to inspect
++    /// a blocked sink's bounded backlog and cumulative loss.
++    var pendingCount: Int { lock.withLock { pending.count } }
++    var droppedCount: UInt64 { lock.withLock { dropped } }
++}
+--- /dev/null
++++ b/provider-swift/Tests/ProviderCoreTests/Inference/Distributed/DistributedRequestObservationSinkTests.swift
+@@ -0,0 +1,98 @@
++import Foundation
++import MLXLMCommon
++import Testing
++@testable import ProviderCore
++
++private final class BlockedObservation: @unchecked Sendable {
++    let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
++    private let lock = NSLock()
++    private var blocked = false
++    var isBlocked: Bool { lock.withLock { blocked } }
++    private var records: [DistributedRequestObservation] = []
++    var values: [DistributedRequestObservation] { lock.withLock { records } }
++
++    func receive(_ observation: DistributedRequestObservation) {
++        let first = lock.withLock { records.append(observation); return records.count == 1 }
++        if first {
++            lock.withLock { blocked = true }
++            entered.signal()
++            _ = release.wait(timeout: .now() + 10)
++            lock.withLock { blocked = false }
++        }
++    }
++
++    func waitForCount(_ count: Int) async -> Bool {
++        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
++        while values.count < count, ContinuousClock.now < deadline {
++            try? await Task.sleep(for: .milliseconds(1))
++        }
++        return values.count >= count
++    }
++}
++
++private func observationWait(_ signal: DispatchSemaphore) async -> Bool {
++    await withCheckedContinuation { continuation in
++        DispatchQueue.global().async {
++            continuation.resume(returning: signal.wait(timeout: .now() + 3) == .success)
++        }
++    }
++}
++
++@Suite(.timeLimit(.minutes(1)))
++struct DistributedRequestObservationSinkTests {
++    @Test func blockedCallbackCannotDelayDeadlineCancellationOrActualRetirement() async throws {
++        let owner = DistributedTestOwner(), clock = DistributedTestClock(), blocked = BlockedObservation()
++        defer { blocked.release.signal() }
++        let engine = try DistributedCBv2Engine(owner: owner, expectedIdentity: owner.identity,
++            profile: distributedTestProfile(), detokenizers: DistributedTestDetokenizers(), clock: clock.clock,
++            requestObserver: blocked.receive)
++        let stream = try engine.submit(distributedTestRequest(), deadlineContext: .init(
++            generationDeadline: clock.now.advanced(by: .seconds(30)),
++            firstTokenDeadline: clock.now.advanced(by: .seconds(3))))
++        #expect(await observationWait(blocked.entered))
++        #expect(blocked.isBlocked)
++        clock.advance(.seconds(4))
++        engine.onQueue { engine.checkDeadline(engine.active!) }
++        #expect(owner.last.cancelCount == 1 && owner.last.releaseCount == 0)
++        #expect(blocked.values.count == 1)
++        // No callback progress is permitted yet. Actual lease acknowledgement,
++        // resource release, stream completion and shutdown must still finish.
++        owner.last.acknowledge()
++        _ = await distributedCollect(stream)
++        await engine.shutdown()
++        #expect(owner.last.releaseCount == 1 && blocked.values.count == 1 && blocked.isBlocked)
++        #expect(engine.observationSink?.pendingCount == 2)
++        blocked.release.signal()
++        #expect(await blocked.waitForCount(3))
++        #expect(blocked.values.map(\.phase) == [.reserved, .terminal, .retired])
++        #expect(blocked.values.last?.outcome == "prefill_stall")
++        #expect(blocked.values.allSatisfy { $0.droppedObservations == 0 })
++    }
++
++    @Test func overflowIsBoundedAndCumulativeLossAppearsOnDeliveredValues() async throws {
++        let owner = DistributedTestOwner(), clock = DistributedTestClock(), blocked = BlockedObservation()
++        defer { blocked.release.signal() }
++        let engine = try DistributedCBv2Engine(owner: owner, expectedIdentity: owner.identity,
++            profile: distributedTestProfile(), detokenizers: DistributedTestDetokenizers(), clock: clock.clock,
++            requestObserver: blocked.receive)
++        let stream = try engine.submit(distributedTestRequest())
++        #expect(await observationWait(blocked.entered))
++        #expect(blocked.isBlocked)
++        let sink = try #require(engine.observationSink)
++        let value = try #require(blocked.values.first)
++        for _ in 0..<70 { sink.enqueue(value) }
++        #expect(sink.pendingCount == 64 && sink.droppedCount == 6)
++        engine.cancel(distributedTestRequest().id)
++        owner.last.acknowledge()
++        _ = await distributedCollect(stream)
++        await engine.shutdown()
++        // Terminal and retirement observations also obey the same bound.
++        #expect(sink.pendingCount == 64 && sink.droppedCount == 8)
++        #expect(blocked.values.count == 1 && owner.last.releaseCount == 1 && blocked.isBlocked)
++        blocked.release.signal()
++        #expect(await blocked.waitForCount(65))
++        #expect(blocked.values.count == 65 && sink.pendingCount == 0)
++        #expect(blocked.values.first?.droppedObservations == 0)
++        #expect(blocked.values.dropFirst().allSatisfy { $0.droppedObservations == 8 })
++    }
++}
+--- a/provider-swift/Tests/ProviderCoreTests/Inference/Distributed/DistributedRequestObservationTests.swift
++++ b/provider-swift/Tests/ProviderCoreTests/Inference/Distributed/DistributedRequestObservationTests.swift
+@@ -8,6 +8,13 @@
+     private var observations: [DistributedRequestObservation] = []
+     var values: [DistributedRequestObservation] { lock.withLock { observations } }
+     func record(_ value: DistributedRequestObservation) { lock.withLock { observations.append(value) } }
++    func waitForCount(_ count: Int) async -> Bool {
++        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
++        while values.count < count, ContinuousClock.now < deadline {
++            try? await Task.sleep(for: .milliseconds(1))
++        }
++        return values.count >= count
++    }
+ }
+ 
+ @Suite(.timeLimit(.minutes(1)))
+@@ -31,15 +38,17 @@
+         #expect(owner.last.send(.token(4)))
+         clock.advance(.milliseconds(50))
+         #expect(!owner.last.send(.token(5)))
++        #expect(await capture.waitForCount(3))
+         #expect(capture.values.map(\.phase) == [.reserved, .firstToken, .terminal])
+         #expect(owner.last.releaseCount == 0)
+         owner.last.acknowledge()
+         _ = await distributedCollect(stream)
+         await engine.shutdown()
++        #expect(await capture.waitForCount(4))
+         let values = capture.values
+         #expect(values.map(\.phase) == [.reserved, .firstToken, .terminal, .retired])
+         #expect(Set(values.map(\.generation)).count == 1)
+-        #expect(values.allSatisfy { $0.reservationMilliseconds == 250 && $0.promptTokens == 3 })
++        #expect(values.allSatisfy { $0.reservationMilliseconds == 250 && $0.promptTokens == 3 && $0.droppedObservations == 0 })
+         #expect(values[0].admissionElapsedMilliseconds == 250)
+         #expect(values[1].admissionElapsedMilliseconds == 2_250)
+         #expect(values[1].remainingFirstTokenMilliseconds == 7_750)
+@@ -57,6 +66,7 @@
+         clock.advance(.seconds(4))
+         engine.onQueue { engine.checkDeadline(engine.active!) }
+         owner.losePeer()
++        #expect(await capture.waitForCount(2))
+         #expect(capture.values.map(\.phase) == [.reserved, .terminal])
+         let terminal = try #require(capture.values.last)
+         #expect(terminal.outcome == "prefill_stall" && terminal.completionTokens == 0)
+@@ -65,6 +75,7 @@
+         owner.last.acknowledge()
+         _ = await distributedCollect(stream)
+         await engine.shutdown()
++        #expect(await capture.waitForCount(3))
+         #expect(capture.values.map(\.phase) == [.reserved, .terminal, .retired])
+         #expect(capture.values.last?.outcome == "prefill_stall")
+         #expect(owner.last.releaseCount == 1)

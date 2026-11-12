@@ -1,0 +1,295 @@
+--- /Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-swift-reuse-draft-20260917/HANDOFF.md
++++ /Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-swift-reuse-v2-20260917/HANDOFF.md
+@@ -1,6 +1,6 @@
+ # Incremental Swift qualification of retained protected requests
+ 
+-This source-only wrapper applies the exact frozen 56-file Swift composition from shared adapter manifest `1e8019ad6af9314979d5182bf61eb47671f9b22d5eb176b1cd97345c805e7c38` to the existing corrected invocation workspace. No preparation, compiler, helper, or test command has been executed by the author. MAIN and all previous freezes/evidence remain unchanged.
++This source-only wrapper applies the exact frozen 56-file Swift composition from shared adapter manifest `1e8019ad6af9314979d5182bf61eb47671f9b22d5eb176b1cd97345c805e7c38` plus cancellation correction `4662ba2a236c3bd8900b2bd607ebcd3249ced8b2a9631e0f7d8181827107fea3` to the existing corrected invocation workspace. No preparation, compiler, helper, or test command has been executed by the author. MAIN and all previous freezes/evidence remain unchanged.
+ 
+ The actual prior qualification is 88 tests in 14 suites (`bb4abe1a…08c1ad7c`) and CLI `64b76b88743b5c29b2c26e26953866822ab4fd44dfc447d4ac9b87477ad8fae4` (`cd6df58c…9dbe08955`). The complete candidate inventory is `c0042cf96bf736a47e7f7ba792376cb31336c6aef6b1343555e0e76306a78d84`. The original owned child receipts show natural exit0/reaped/groupAbsent. `qualified-inputs.json` pins those raw logs, receipts and source inventories. The original helper8003 evidence/artifacts remain untouched.
+ 
+@@ -8,13 +8,13 @@
+ 
+ The small five-module Foundation helper is rebuilt coherently in the new evidence directory because the Remote API/profile and mesh fixture differ. Its compile/legacy-test block is byte-exact to the frozen adapter runner apart from the absolute fixture source root. The old helper is neither overwritten nor mixed into the new module set. Provider tests and the actual matching darkbloom build then reuse the existing SwiftPM dependency/build cache and exact current source. This should limit rebuilding to the changed modules; it does not promise a duration or permit stale object substitution.
+ 
+-Coverage retains the exact existing filter and adds the frozen mesh/attachment/shared suites. `coverage.json` pins all 88 actually completed old test labels, including both parameterized aggregates, and explicit disjoint method groups: invocation10, mesh6, attachment6, shared6. The strict previous result parser still requires the two native protocol methods, member/CLI cases and exact false/true WebSocket acknowledgment completions. The new validator additionally requires every old label and every new group method exactly once, no failure records, and per-test completion count equal to the actual successful summary. The matching test receipt gates CLI build. Four small parser controls are staged, not executed; fabricated completion additions are explicitly parser fixtures, not product test evidence.
++Coverage retains the exact existing filter and adds the frozen mesh/attachment/shared suites. `coverage.json` pins all 88 actually completed old test labels, including both parameterized aggregates, and explicit disjoint method groups: invocation10, mesh6, attachment6, shared7. The strict previous result parser still requires the two native protocol methods, member/CLI cases and exact false/true WebSocket acknowledgment completions. The new validator additionally requires every old label and every new group method exactly once, no failure records, and per-test completion count equal to the actual successful summary. The matching test receipt gates CLI build. Four small parser controls are staged, not executed; fabricated completion additions are explicitly parser fixtures, not product test evidence.
+ 
+ After root review and grant, run these exact commands sequentially:
+ 
+ ```sh
+-wrapper=/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-swift-reuse-draft-20260917
+-checks=/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-swift-checks-1-20260917
++wrapper=/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-swift-reuse-v2-20260917
++checks=/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-swift-checks-2-20260917
+ python3 "$wrapper/test_coverage.py"
+ python3 "$wrapper/prepare.py" --apply
+ python3 "$wrapper/run.py" --prepared "$checks" --phase helper --attempt 1
+@@ -23,3 +23,5 @@
+ ```
+ 
+ All owned processes keep the existing maxjobs2, 60s helper compiler/30s legacy child/900s SwiftPM bounds and diagnostic/file ceilings. No model/GPU/RDMA/network run or production trust is established. The frozen shared adapter's separate Go14/1122-file commands remain unchanged. Native protected executable/description qualification and actual same-owner encrypted request execution remain later gates.
++
++This V2 preserves wrapper e7fea34e unchanged. It adds only the two-file cancellation correction to the already declared source composition and requires its seventh shared-method completion. The total workspace delta stays 37 paths and 13,853 final entries; no old output root is reused. `wrapper.patch` records the exact wrapper successor.
+--- /Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-swift-reuse-draft-20260917/context.py
++++ /Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-swift-reuse-v2-20260917/context.py
+@@ -5,16 +5,18 @@
+ BASE=Path(__file__).resolve().parent
+ ADAPTER=BASE.parent/'cluster-native-member-shared-requests-draft-20260917'
+ ADAPTER_SHA='1e8019ad6af9314979d5182bf61eb47671f9b22d5eb176b1cd97345c805e7c38'
++CORRECTION=BASE.parent/'cluster-native-member-shared-requests-cancellation-correction-20260917'
++CORRECTION_SHA='4662ba2a236c3bd8900b2bd607ebcd3249ced8b2a9631e0f7d8181827107fea3'
+ PRIOR=BASE.parent/'cluster-native-member-invocation-retry-1-20260917'
+ ORIGINAL=BASE.parent/'cluster-native-member-invocation-build-1-20260916'
+ WORKSPACE=ORIGINAL/'workspace'
+-OUTPUT=BASE.parent/'cluster-native-member-shared-requests-swift-checks-1-20260917'
++OUTPUT=BASE.parent/'cluster-native-member-shared-requests-swift-checks-2-20260917'
+ path=ADAPTER/'Tests/context.py'
+ if hashlib.sha256(path.read_bytes()).hexdigest()!='6dadabb14514ac98e8ff7020dcb40d892c4e3fdeba464ac3b6d4d7a8b3dae23f':raise ValueError('Frozen adapter context changed')
+ spec=importlib.util.spec_from_file_location('_shared_requests_context',path)
+ original=importlib.util.module_from_spec(spec);spec.loader.exec_module(original)
+ SOURCE=original.SOURCE
+ SWIFT_FILTER=original.SWIFT_FILTER
+-INVOCATION_METHODS=original.INVOCATION_METHODS
++INVOCATION_METHODS=original.INVOCATION_METHODS+('cancelBetweenDecodeAndFollowerDeliveryNeverEnqueuesCommand',)
+ NATIVE_PAIR_METHODS=original.NATIVE_PAIR_METHODS
+ isolated_environment=original.isolated_environment
+--- /Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-swift-reuse-draft-20260917/coverage.json
++++ /Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-swift-reuse-v2-20260917/coverage.json
+@@ -34,7 +34,8 @@
+       "requestDeadlinesUseOriginalLifetimeSlackWithoutTransitRestart",
+       "requestAdapterKeepsExactNativeWorkload",
+       "protectedReadyRequiresExactBindingAndActualChargedCapacity",
+-      "retainedViewPreservesSequenceAndNeverInfersCleanup"
++      "retainedViewPreservesSequenceAndNeverInfersCleanup",
++      "cancelBetweenDecodeAndFollowerDeliveryNeverEnqueuesCommand"
+     ]
+   },
+   "priorCompletionLabels": [
+--- /Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-swift-reuse-draft-20260917/guards.py
++++ /Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-swift-reuse-v2-20260917/guards.py
+@@ -3,7 +3,7 @@
+ import json
+ from pathlib import Path
+ import source_inventory as inventory
+-from context import BASE,ADAPTER,ADAPTER_SHA,PRIOR,ORIGINAL,WORKSPACE,OUTPUT,SOURCE,original
++from context import BASE,ADAPTER,ADAPTER_SHA,PRIOR,ORIGINAL,WORKSPACE,OUTPUT,SOURCE,original,CORRECTION,CORRECTION_SHA,INVOCATION_METHODS
+ 
+ def sha(path):return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+ def save(path,value):
+@@ -16,7 +16,16 @@
+         p=root/row['path'];require(p.is_file() and not p.is_symlink() and sha(p)==row['sha256'],'Frozen member changed: '+str(p))
+ def verify():
+     freeze(BASE);freeze(ADAPTER,ADAPTER_SHA)
+-    effective=original.verify()['files']
++    effective=[dict(row) for row in original.verify()['files']]
++    freeze(CORRECTION,CORRECTION_SHA)
++    correction=json.loads((CORRECTION/'integration.json').read_text())
++    require(correction['baseManifestSHA256']==ADAPTER_SHA and correction['newRequiredMethod']==INVOCATION_METHODS[-1],'Correction lineage differs')
++    by={row['path']:row for row in effective}
++    require(len(correction['files'])==2,'Exact two-file cancellation successor required')
++    for row in correction['files']:
++        target=by[row['path']]
++        require(target['proposedSHA256']==row['beforeSHA256'] and sha(row['sourcePath'])==row['afterSHA256'],'Correction preimage/source differs')
++        target.update(sourcePath=row['sourcePath'],proposedSHA256=row['afterSHA256'])
+     history=json.loads((BASE/'qualified-inputs.json').read_text())
+     for row in history['files']:
+         p=Path(row['path']);require(p.is_file() and not p.is_symlink() and p.stat().st_size==row['bytes'] and sha(p)==row['sha256'],'Qualified evidence changed')
+@@ -35,13 +44,13 @@
+     before=json.loads((ORIGINAL/'source-before.json').read_text());old=json.loads((PRIOR/'candidate-2-before.json').read_text());candidate=dict(before)
+     for row in effective:candidate[row['path']]={'sha256':row['proposedSHA256']}
+     plan=json.loads((BASE/'integration.json').read_text())
+-    require(plan['oldCandidateSHA256']==sha(PRIOR/'candidate-2-before.json') and plan['effectiveSourceSHA256']==sha(ADAPTER/'integration.json'),'Composition identity differs')
++    require(plan['oldCandidateSHA256']==sha(PRIOR/'candidate-2-before.json') and plan['effectiveSourceSHA256']==sha(ADAPTER/'integration.json') and plan['correctionManifestSHA256']==CORRECTION_SHA,'Composition identity differs')
+     rows=plan['files'];changed={p for p in set(old)|set(candidate) if old.get(p)!=candidate.get(p)}
+     require(changed=={x['path'] for x in rows} and len(rows)==37 and len(candidate)==13853 and len(old)==13839,'Exact incremental delta differs')
+     for row in rows:
+         require(old.get(row['path'],{}).get('sha256')==row['beforeSHA256'] and candidate[row['path']]=={'sha256':row['afterSHA256']} and sha(row['sourcePath'])==row['afterSHA256'],'Delta source/preimage differs')
+     coverage=json.loads((BASE/'coverage.json').read_text())
+-    require(set(sum(coverage['groups'].values(),[]))==set(original.INVOCATION_METHODS),'Required method membership differs')
++    require(set(sum(coverage['groups'].values(),[]))==set(INVOCATION_METHODS),'Required method membership differs')
+     return rows,before,old,candidate
+ 
+ def recheck_sources(candidate,before):
+--- /Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-swift-reuse-draft-20260917/integration.json
++++ /Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-swift-reuse-v2-20260917/integration.json
+@@ -1,4 +1,5 @@
+ {
++  "correctionManifestSHA256": "4662ba2a236c3bd8900b2bd607ebcd3249ced8b2a9631e0f7d8181827107fea3",
+   "effectiveSourceSHA256": "23f761a8ddf01e8b6ebd45dd040f5aa54c01c412af06457a1c86f768e76bf09f",
+   "files": [
+     {
+@@ -98,10 +99,10 @@
+       "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberSession.swift"
+     },
+     {
+-      "afterSHA256": "c8956960670986bc216af0c9b13040bd460e96450a937c05cef8d4f5b63d23d7",
++      "afterSHA256": "53329e001eb240d8725609f9882f6b4548c3ec1a47a7322ec3fa52fc2cef86ed",
+       "beforeSHA256": null,
+       "path": "provider-swift/Sources/ProviderCore/Coordinator/NativePairRequestBridge.swift",
+-      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Coordinator/NativePairRequestBridge.swift"
++      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-cancellation-correction-20260917/proposed/provider-swift/Sources/ProviderCore/Coordinator/NativePairRequestBridge.swift"
+     },
+     {
+       "afterSHA256": "02d0f6d163c4eea219ea0e0acceb5d4396123b767dad7e5ec42b12d969dcce82",
+@@ -218,10 +219,10 @@
+       "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-mesh-bridge-draft-20260917/proposed/provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/NativePairMemberMeshTests.swift"
+     },
+     {
+-      "afterSHA256": "8563ef58e4f51a60e17b0a261c58968c30526c0686982d256f907df611bd1702",
++      "afterSHA256": "e0a430dd838d7871d31d68a1795451b70dc9a2c694714f3a56ba174c721a383b",
+       "beforeSHA256": null,
+       "path": "provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/NativePairSharedRequestTests.swift",
+-      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-draft-20260917/proposed/provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/NativePairSharedRequestTests.swift"
++      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-cancellation-correction-20260917/proposed/provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/NativePairSharedRequestTests.swift"
+     }
+   ],
+   "finalFiles": 13853,
+--- /Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-swift-reuse-draft-20260917/prepare.py
++++ /Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-swift-reuse-v2-20260917/prepare.py
+@@ -5,7 +5,7 @@
+ from pathlib import Path
+ import sys
+ sys.dont_write_bytecode=True
+-from context import BASE,ADAPTER,ADAPTER_SHA,PRIOR,ORIGINAL,WORKSPACE,OUTPUT,SOURCE
++from context import BASE,ADAPTER,ADAPTER_SHA,PRIOR,ORIGINAL,WORKSPACE,OUTPUT,SOURCE,CORRECTION_SHA
+ from guards import verify,recheck_sources,require_preserved_cli,sha,save,require
+ from check_process import run_owned
+ 
+@@ -44,7 +44,7 @@
+     actual,main=recheck_sources(candidate,before);verify();require_preserved_cli()
+     save(OUTPUT/'candidate-before.json',actual);save(OUTPUT/'source-after-preparation.json',main)
+     save(OUTPUT/'preparation.json',dict(workspace=str(WORKSPACE),source=str(SOURCE),wrapperManifestSHA256=sha(BASE/'manifest.json'),
+-        adapterManifestSHA256=ADAPTER_SHA,integrationSHA256=sha(BASE/'integration.json'),effectiveSourceSHA256=sha(ADAPTER/'integration.json'),
++        adapterManifestSHA256=ADAPTER_SHA,correctionManifestSHA256=CORRECTION_SHA,integrationSHA256=sha(BASE/'integration.json'),effectiveSourceSHA256=sha(ADAPTER/'integration.json'),
+         oldCandidateSHA256=sha(PRIOR/'candidate-2-before.json'),candidateSHA256=sha(OUTPUT/'candidate-before.json'),
+         originalPreparationSHA256=sha(ORIGINAL/'preparation.json'),privateWorkspaceStateSHA256=sha(ORIGINAL/'workspace-state-relocated.json'),
+         changedFiles=[x['path'] for x in rows],retainedPreimages=23,sourceFiles=len(before),candidateFiles=len(candidate),
+--- /Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-swift-reuse-draft-20260917/run.py
++++ /Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-swift-reuse-v2-20260917/run.py
+@@ -9,7 +9,7 @@
+ sys.dont_write_bytecode = True
+ import source_inventory as inventory
+ from check_process import run_owned
+-from context import BASE, ADAPTER, ADAPTER_SHA, WORKSPACE, OUTPUT, SOURCE, SWIFT_FILTER, INVOCATION_METHODS, isolated_environment
++from context import BASE, ADAPTER, ADAPTER_SHA, WORKSPACE, OUTPUT, SOURCE, SWIFT_FILTER, INVOCATION_METHODS, isolated_environment, CORRECTION_SHA
+ from guards import sha, save, verify, recheck_sources, require_preserved_cli, require
+ from coverage import validate as validate_swift_results
+ 
+@@ -27,6 +27,7 @@
+     require(preparation['workspace'] == str(workspace) and preparation['source'] == str(SOURCE)
+         and preparation['wrapperManifestSHA256'] == sha(BASE / 'manifest.json')
+         and preparation['adapterManifestSHA256'] == ADAPTER_SHA
++        and preparation['correctionManifestSHA256'] == CORRECTION_SHA
+         and preparation['integrationSHA256'] == sha(BASE / 'integration.json')
+         and preparation['candidateSHA256'] == sha(prepared / 'candidate-before.json'), 'Preparation binding differs')
+     before = json.loads((prepared / 'source-before.json').read_text())
+@@ -113,7 +114,7 @@
+         if args.phase != 'helper': prior('helper')
+     save(output / 'checks.json', {'passed': True, 'phase': args.phase, 'details': details, 'artifacts': artifacts,
+         'steps': steps, 'manifestSHA256': sha(BASE / 'manifest.json'), 'candidateSHA256': sha(prepared / 'candidate-before.json'),
+-        'adapterManifestSHA256': ADAPTER_SHA, 'priorQualifiedCLI_SHA256': preparation['qualifiedCLI_SHA256'],
++        'adapterManifestSHA256': ADAPTER_SHA, 'correctionManifestSHA256': CORRECTION_SHA, 'priorQualifiedCLI_SHA256': preparation['qualifiedCLI_SHA256'],
+         'modelOrRDMAOrRemoteExecuted': False, 'productionMembershipQualified': False})
+ 
+ if __name__ == '__main__': main()
+--- /Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-swift-reuse-draft-20260917/runner.patch
++++ /Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-swift-reuse-v2-20260917/runner.patch
+@@ -1,18 +1,18 @@
+ --- /Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-draft-20260917/Tests/run.py
+-+++ /Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-swift-reuse-draft-20260917/run.py
+++++ /Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-swift-reuse-v2-20260917/run.py
+ @@ -9,8 +9,9 @@
+  sys.dont_write_bytecode = True
+  import source_inventory as inventory
+  from check_process import run_owned
+ -from context import BASE, SOURCE, SWIFT_FILTER, INVOCATION_METHODS, sha, save, verify, isolated_environment
+ -from corrected_results import validate_swift_results
+-+from context import BASE, ADAPTER, ADAPTER_SHA, WORKSPACE, OUTPUT, SOURCE, SWIFT_FILTER, INVOCATION_METHODS, isolated_environment
+++from context import BASE, ADAPTER, ADAPTER_SHA, WORKSPACE, OUTPUT, SOURCE, SWIFT_FILTER, INVOCATION_METHODS, isolated_environment, CORRECTION_SHA
+ +from guards import sha, save, verify, recheck_sources, require_preserved_cli, require
+ +from coverage import validate as validate_swift_results
+  
+  def main():
+      p = argparse.ArgumentParser(allow_abbrev=False)
+-@@ -19,22 +20,21 @@
++@@ -19,22 +20,22 @@
+      p.add_argument('--attempt', type=int, required=True)
+      args = p.parse_args()
+      if not 1 <= args.attempt <= 9: raise ValueError('Attempt bound')
+@@ -27,6 +27,7 @@
+ +    require(preparation['workspace'] == str(workspace) and preparation['source'] == str(SOURCE)
+ +        and preparation['wrapperManifestSHA256'] == sha(BASE / 'manifest.json')
+ +        and preparation['adapterManifestSHA256'] == ADAPTER_SHA
+++        and preparation['correctionManifestSHA256'] == CORRECTION_SHA
+ +        and preparation['integrationSHA256'] == sha(BASE / 'integration.json')
+ +        and preparation['candidateSHA256'] == sha(prepared / 'candidate-before.json'), 'Preparation binding differs')
+      before = json.loads((prepared / 'source-before.json').read_text())
+@@ -46,7 +47,7 @@
+      helper = prepared / ('helper-' + str(args.attempt))
+      def prior(name):
+          output = prepared / (name + '-' + str(args.attempt))
+-@@ -71,7 +71,7 @@
++@@ -71,7 +72,7 @@
+                      list(map(str, sorted((source / 'Sources' / name).glob('*.swift')))) + ['-o', str(library)], name, 60)
+              links = linkage + ['-l' + name for name, _ in modules]
+              executable = output / 'native-member-fixture'
+@@ -55,7 +56,7 @@
+              # Existing real owner/retirement/diagnostic regressions, same sources
+              # and arguments as MAIN SSHChecks. No temp-directory deletion.
+              for name in ['FakeClusterWorker', 'FakeOwner', 'RemoteOwnerTests', 'RetirementShutdownTests', 'DiagnosticFailureWorker', 'LateDiagnosticOwner', 'OwnerDiagnosticDrainTests']:
+-@@ -109,10 +109,11 @@
++@@ -109,10 +110,11 @@
+                  details = {'binarySHA256': sha(binary), 'binaryBytes': binary.stat().st_size, 'binaryExecuted': False}
+      finally:
+          resource.setrlimit(resource.RLIMIT_FSIZE, old_limit)
+@@ -64,7 +65,7 @@
+          if args.phase != 'helper': prior('helper')
+      save(output / 'checks.json', {'passed': True, 'phase': args.phase, 'details': details, 'artifacts': artifacts,
+          'steps': steps, 'manifestSHA256': sha(BASE / 'manifest.json'), 'candidateSHA256': sha(prepared / 'candidate-before.json'),
+-+        'adapterManifestSHA256': ADAPTER_SHA, 'priorQualifiedCLI_SHA256': preparation['qualifiedCLI_SHA256'],
+++        'adapterManifestSHA256': ADAPTER_SHA, 'correctionManifestSHA256': CORRECTION_SHA, 'priorQualifiedCLI_SHA256': preparation['qualifiedCLI_SHA256'],
+          'modelOrRDMAOrRemoteExecuted': False, 'productionMembershipQualified': False})
+  
+  if __name__ == '__main__': main()
+--- /Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-swift-reuse-draft-20260917/source-check.json
++++ /Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-swift-reuse-v2-20260917/source-check.json
+@@ -4,17 +4,16 @@
+   "current37PrivatePreimagesVerified": true,
+   "fullSourceInventoryDeferredToGrantedPreparation": true,
+   "materialized": false,
+-  "newCompletedLabelsRequired": 18,
++  "newCompletedLabelsRequired": 19,
+   "passed": true,
+   "priorCompletedLabels": 88,
+   "pythonAST": true,
+-  "qualifiedRawEvidencePinsVerified": true,
+   "replacements": 23,
+   "requiredGroups": {
+     "attachment": 6,
+     "invocation": 10,
+     "mesh": 6,
+-    "shared": 6
++    "shared": 7
+   },
+   "sameOwnedHelperAndParser": true,
+   "smallHelperBodyExactExceptFixtureRoot": true,
+--- /Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-swift-reuse-draft-20260917/test_coverage.py
++++ /Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-swift-reuse-v2-20260917/test_coverage.py
+@@ -15,7 +15,7 @@
+     def test_exact_prior_and_new_membership(self):
+         result=validate(self.complete)
+         self.assertEqual(result['priorCompletionLabelsPreserved'],88)
+-        self.assertEqual(result['requiredMethodGroups'],dict(invocation=10,mesh=6,attachment=6,shared=6))
++        self.assertEqual(result['requiredMethodGroups'],dict(invocation=10,mesh=6,attachment=6,shared=7))
+     def test_missing_or_duplicate_completion_refused(self):
+         line=self.extra.splitlines()[0]
+         for value in [self.complete.replace(line,'◇ Test discovery only.'),self.complete+'\n'+line]:
+@@ -26,6 +26,6 @@
+         with self.assertRaises(ValueError):validate(value)
+     def test_member_case_count_failure_and_summary_refused(self):
+         for value in [self.complete.replace('with 2 test cases passed','with 1 test cases passed'),
+-                      self.complete+'\n✘ Test fixture failed.\n',self.complete.replace('Test run with 106 tests','Test run with 107 tests')]:
++                      self.complete+'\n✘ Test fixture failed.\n',self.complete.replace('Test run with 107 tests','Test run with 108 tests')]:
+             with self.assertRaises(ValueError):validate(value)
+ if __name__=='__main__':unittest.main()

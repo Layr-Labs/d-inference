@@ -1,0 +1,27 @@
+--- run_tiny_stage_check_v2.py
++++ run_tiny_stage_check_v3.py
+@@ -119,6 +119,7 @@
+     parser.add_argument('--expected-native-sha256', required=True)
+     parser.add_argument('--workload', choices=['legacy', 'profiled'], required=True)
+     parser.add_argument('--reuse-bundle', type=Path)
++    parser.add_argument('--release', type=Path)
+     parser.add_argument('--expected-bundle-manifest-sha256')
+     args = parser.parse_args()
+     require((args.reuse_bundle is None) == (args.expected_bundle_manifest_sha256 is None),
+@@ -129,13 +130,15 @@
+     require(not out.exists() and out.parent.is_dir() and not out.is_relative_to(REPO), 'Output must be new and outside Git')
+     require(re.fullmatch('[0-9a-f]{64}', args.expected_native_sha256), 'Invalid native pin')
+     require(sha(HELPER) == HELPER_SHA, 'Frozen archive helper differs')
+-    release = REPO / 'experiments/cluster/inference/.build/release'
++    release = (args.release.expanduser().resolve(strict=True) if args.release is not None
++               else REPO / 'experiments/cluster/inference/.build/release')
+     require(sha(release / 'cluster-inference') == args.expected_native_sha256, 'Built native pin differs')
+     spec = importlib.util.spec_from_file_location('tiny_check_archive', HELPER)
+     archive = importlib.util.module_from_spec(spec); spec.loader.exec_module(archive)
+     out.mkdir(mode=0o700)
+     receipt = dict(kind='root_guarded_tiny_stage_check', schemaVersion=1, startedAtUTC=now(),
+         status='preparing', workload=args.workload, expectedNativeSHA256=args.expected_native_sha256,
++        releaseDirectory=str(release),
+         nativeExecutionAttempted=False, nativeExecutions=0, nativePID=None, nativeReaped=False,
+         nativeExitCode=None, primaryFailure=None, cleanupErrors=[], postRunErrors=[], memorySamples=[],
+         arithmeticEnvironment=ENVIRONMENT, initialActualFreeGateBytes=1024**3,

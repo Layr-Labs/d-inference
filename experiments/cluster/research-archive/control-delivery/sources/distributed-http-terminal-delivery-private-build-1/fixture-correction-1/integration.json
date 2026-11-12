@@ -1,0 +1,36 @@
+{
+  "sourceOnlyCorrection": true,
+  "runtimeChanges": false,
+  "assertionsUnchanged": true,
+  "newTestMethodsStill26": true,
+  "failedExecutionSHA256": "e29a4f9d3766ec7c8a1272f09f89c15013c6669116f773b00527b32b8d283b0c",
+  "files": [
+    {
+      "path": "provider-swift/Tests/ProviderCoreTests/Server/DistributedHTTPDeliveryLifecycleTests.swift",
+      "baseSHA256": "624db86e6f0c730870e5f5b15f75a7d0aad32ba3a24fe1ddf93531eaed82adac",
+      "sha256": "7e444cf0c3c7488c0561908dc576f25295117ee7dcb1a7411e4f508459471420"
+    },
+    {
+      "path": "provider-swift/Tests/ProviderCoreTests/Server/DistributedHTTPDisconnectTests.swift",
+      "baseSHA256": "a0ce9b956c82180e0e557f1ec2631ceb7619e39df58be8359c8efddfeb692630",
+      "sha256": "d05b557a3c0f9502f93f6785600cb1a9032e6ae38ce833ca609e3b7401eba3b9"
+    },
+    {
+      "path": "provider-swift/Tests/ProviderCoreTests/Server/DistributedHTTPTerminalIntegrationTests.swift",
+      "baseSHA256": "ebdaa9278b6c50cb591615da75b7fa2557881af91d3655ad9ef83781a44ae82b",
+      "sha256": "aa93cb69f527536d9cd54f1515df183e1cf2cb29962078945c9610ce5b468033"
+    },
+    {
+      "path": "provider-swift/Tests/ProviderCoreTests/Server/DistributedHTTPOriginTests.swift",
+      "baseSHA256": "4ff34b40321bc853c7d767a66b599f866525a40bba41ca59725d1d45d8834724",
+      "sha256": "af427abd1057325658bb1004f010096cdbb3e19a2278b35b4d4a3865d4d47952"
+    },
+    {
+      "path": "provider-swift/Tests/ProviderCoreTests/Server/DistributedHTTPVisibleContentTests.swift",
+      "baseSHA256": "0367df1364f6eb704c6298f228f5e85bbb10f8570cedab4c60c60bfd282c0e98",
+      "sha256": "371c1a3502c3647af6d1fda5475a012e0524d76c392e8ec707ad372928415ff4"
+    }
+  ],
+  "patchSHA256": "6ed1c517c7c194c5676ee5e71bc77705e2d5c8b9faeff0e608921c00d6c64aac",
+  "compilerRunWithCorrection": false
+}

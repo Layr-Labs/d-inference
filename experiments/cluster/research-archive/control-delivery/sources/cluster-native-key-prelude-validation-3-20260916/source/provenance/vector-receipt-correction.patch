@@ -1,0 +1,11 @@
+--- a/Tests/run.py
++++ b/Tests/run.py
+@@ -89,7 +89,7 @@
+         if verify() != before: raise ValueError('Frozen source changed during checks')
+     try:
+         vector = output / 'independent-vector.json'
+-        execute([sys.executable, '-B', str(HERE / 'make_vector.py'), '--libcrypto', str(LIBCRYPTO), '--output', str(vector)], 'independent-vector', 10)
++        execute([sys.executable, '-B', str(HERE / 'make_vector.py'), '--libcrypto', str(LIBCRYPTO), '--output', str(vector)], 'generate-vector', 10)
+         for module, sources, libraries in [('DarkbloomClusterBootstrap', bootstrap, []),
+                                            ('DarkbloomClusterSecurity', security, ['-lDarkbloomClusterBootstrap'])]:
+             library = output / ('lib' + module + '.dylib')

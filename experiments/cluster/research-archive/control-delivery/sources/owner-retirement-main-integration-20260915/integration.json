@@ -1,0 +1,45 @@
+{
+  "schema": "owner_retirement_main_integration_v1",
+  "sourceManifestSHA256": "072f18aad68445809a35896f1c8731febd1783f02f5b1261ddba946e1344febf",
+  "rootAuthorizedPromotion": true,
+  "runtimeFileCount": 1,
+  "changes": [
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterWorkerOwnerService.swift",
+      "baseSHA256": "67a597484dc15c1c9733e74efc8bc5ab449ff12730ce869058f907ef0150f7ae",
+      "bytes": 18101,
+      "sha256": "b23e811ae3c80de443c1e2c29c43c89c6283cefa74af68a431d1c5a9fc58120b"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Tests/ProcessChecks/FakeClusterWorker.swift",
+      "baseSHA256": "52d178b4b2234d1c2972cf34b9f25017c711ef0d7c0dc3c174741c95808f9b26",
+      "bytes": 6606,
+      "sha256": "1dcf619c726d1266b18c76fedb82935a611baebff13a02d47dd5742a4c2224f1"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Tests/SSHChecks/RetirementOwnerConnection.swift",
+      "baseSHA256": null,
+      "bytes": 7578,
+      "sha256": "dfc3d5f82712c07a8a89039674108e7155697fa7b8abd867399535bf364c7ed7"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Tests/SSHChecks/RetirementShutdownTests.swift",
+      "baseSHA256": null,
+      "bytes": 5029,
+      "sha256": "3e140b20f4b099d62a1a8298068d8081910090349f648fff3f50919782292600"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Tests/SSHChecks/run.sh",
+      "baseSHA256": "7905eb05ffd280ba935053c1175299fc3c243ab7c80a98d244c8c8cf01253fb7",
+      "bytes": 2477,
+      "sha256": "99e586162b9aa46b9401b57c9affe10dda13584657eeb73fd4fb7d0d8be9223f"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Tests/SSHChecks/README.md",
+      "baseSHA256": null,
+      "bytes": 1385,
+      "sha256": "c1c845352f3d6160ae4ef7d3c7b004976ffc4375134458eb3fadb7d446617551"
+    }
+  ],
+  "buildExecuted": false
+}

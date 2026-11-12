@@ -1,0 +1,23 @@
+{
+  "files": [
+    {
+      "baseSHA256": "0033ca14abd3564d7c5c374e1ddde05c1b223c1119fd74080f06d60c1efbb66c",
+      "destination": "libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerRequest.swift",
+      "sha256": "5157cdbf409c895f5cb4ca6292708cd5429d82c802786602d241861738de31ae",
+      "source": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerRequest.swift"
+    },
+    {
+      "baseSHA256": null,
+      "destination": "libs/darkbloom-cluster/Tests/ProcessChecks/PartialAdmissionTests.swift",
+      "sha256": "ec9b91da5187dfef826e3a9efa71b1829a6e5fcdf7f7877746ddbfa049cd7b01",
+      "source": "proposed/libs/darkbloom-cluster/Tests/ProcessChecks/PartialAdmissionTests.swift"
+    },
+    {
+      "baseSHA256": "34b1b8440b81b40ebcb27a123b8e0bc21940a8db243420eb4d15753c76a913a3",
+      "destination": "libs/darkbloom-cluster/Tests/ProcessChecks/run.sh",
+      "sha256": "673a470de1b8959b8298948a5f518a66087ee54fe087ceaf4d0f60bf5f051c3f",
+      "source": "proposed/libs/darkbloom-cluster/Tests/ProcessChecks/run.sh"
+    }
+  ],
+  "schema": "partial_admission_integration_v1"
+}

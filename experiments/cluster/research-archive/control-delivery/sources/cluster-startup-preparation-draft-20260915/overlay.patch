@@ -1,0 +1,583 @@
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerStartupPreparation.swift
+@@ -0,0 +1,79 @@
++import Foundation
++import DarkbloomClusterProtocol
++
++/// Startup work is not routed through an HTTP/coordinator/user usage stream.
++/// These are observed admission/retirement facts, not native peak-memory or
++/// latency claims. The unchanged total lifetime and request quota include it.
++public struct ClusterWorkerStartupPreparationResult: Sendable, Equatable {
++    public let requestID: UUID
++    public let promptTokens: Int
++    public let selectedTokens: Int
++    public let reservedBytes: Int
++    public let elapsedNanoseconds: UInt64
++    public let admissionsRemaining: Int
++}
++
++public enum ClusterWorkerStartupPreparation {
++    /// Synchronous startup-queue operation over the ordinary owned request path.
++    /// Cancellation is handled independently by Pair/request watchdogs; neither
++    /// this wait nor a deadline fabricates retirement or releases a live lease.
++    public static func run(pair: ClusterWorkerPair, recipe: ClusterRuntimeStartupPreparation,
++                           chunkSize: Int, deadlineUptimeNanoseconds: UInt64) throws -> ClusterWorkerStartupPreparationResult {
++        let started = DispatchTime.now().uptimeNanoseconds
++        let before = pair.admissionState
++        guard started < deadlineUptimeNanoseconds,
++              deadlineUptimeNanoseconds <= pair.localLifetimeDeadlineUptimeNanoseconds,
++              before.canAdmit(), before.admissionsRemaining == pair.maximumRequests,
++              before.admissionsRemaining > recipe.requestCount, let ready = pair.readiness else {
++            throw ClusterWorkerOwnerError.unavailable
++        }
++        let reservation = try recipe.reservation(profile: ready.profile, chunkSize: chunkSize,
++            deadlineUptimeNanoseconds: deadlineUptimeNanoseconds, capacityLimitBytes: ready.requestCapacityBytes)
++        let requestID = UUID()
++        let request = try pair.reserve(requestID: requestID, reservation: reservation,
++                                       admissionDeadline: deadlineUptimeNanoseconds)
++        let events = StartupPreparationEvents()
++        do {
++            let reservedBytes = request.reservedBytes
++            try request.start { events.accept($0) }
++            request.waitForRetirement()
++            guard events.clean(outputCount: recipe.outputCount), request.isRetired else {
++                throw ClusterWorkerOwnerError.unavailable
++            }
++            request.releaseResources()
++            let after = pair.admissionState
++            let completed = DispatchTime.now().uptimeNanoseconds
++            guard request.bytesInUse == 0, after.canAdmit(), pair.readiness != nil,
++                  after.admissionsRemaining == before.admissionsRemaining - recipe.requestCount,
++                  completed < deadlineUptimeNanoseconds else { throw ClusterWorkerOwnerError.unavailable }
++            return .init(requestID: requestID, promptTokens: reservation.promptTokenIDs.count,
++                selectedTokens: events.tokenCount, reservedBytes: reservedBytes,
++                elapsedNanoseconds: completed - started, admissionsRemaining: after.admissionsRemaining)
++        } catch {
++            pair.invalidate(); request.cancel(reason: .runtimeError)
++            request.waitForRetirement(); request.releaseResources()
++            throw error
++        }
++    }
++}
++
++private final class StartupPreparationEvents: @unchecked Sendable {
++    private let lock = NSLock()
++    private var count = 0
++    private var finished: ClusterWorkerFinishReason?
++    private var failed = false
++    var tokenCount: Int { lock.withLock { count } }
++    func accept(_ event: ClusterWorkerRequestEvent) -> Bool {
++        lock.withLock {
++            switch event {
++            case .token: count += 1
++            case .finished(let reason): finished = reason
++            case .failed: failed = true
++            }
++            return true
++        }
++    }
++    func clean(outputCount: Int) -> Bool {
++        lock.withLock { !failed && finished == .length && count == outputCount }
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapability.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapability.swift
+@@ -62,6 +62,7 @@
+     /// Requests remain serialized even when adjacent prefill stages overlap.
+     public let schedulingPolicy = "serial"
+     public let supportedPrefillSchedules: [ClusterPrefillSchedule]
++    public let startupPreparation: ClusterRuntimeStartupPreparation?
+     public let selectionPolicy = "greedy"
+     public let modality = "text"
+     public let stopPolicy = "selectedTokenIDs"
+@@ -73,7 +74,8 @@
+                 manifestSHA256: String, profile: ClusterWorkerProfile, profileFingerprint: String,
+                 partitions: [ClusterRuntimePartition], arithmeticPolicyID: String,
+                 arithmeticPolicySHA256: String, maxLifetimeSeconds: Int, maxRequests: Int,
+-                supportedPrefillSchedules: [ClusterPrefillSchedule] = [.serial]) throws {
++                supportedPrefillSchedules: [ClusterPrefillSchedule] = [.serial],
++                startupPreparation: ClusterRuntimeStartupPreparation? = nil) throws {
+         self.runtimeBinarySHA256 = runtimeBinarySHA256; self.adapterID = adapterID; self.adapterVersion = adapterVersion
+         self.runtimeModelID = runtimeModelID; self.artifactSHA256 = artifactSHA256
+         self.configurationSHA256 = configurationSHA256; self.manifestSHA256 = manifestSHA256
+@@ -81,6 +83,7 @@
+         self.arithmeticPolicyID = arithmeticPolicyID; self.arithmeticPolicySHA256 = arithmeticPolicySHA256
+         self.maxLifetimeSeconds = maxLifetimeSeconds; self.maxRequests = maxRequests
+         self.supportedPrefillSchedules = supportedPrefillSchedules
++        self.startupPreparation = startupPreparation
+         try ClusterRuntimeCapabilityValidation.check(self)
+     }
+ 
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapabilityCodec.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapabilityCodec.swift
+@@ -37,6 +37,10 @@
+         // adapters advertise the additional supported schedules explicitly.
+         if value.supportedPrefillSchedules != [.serial] {
+             object["supportedPrefillSchedules"] = value.supportedPrefillSchedules.map(\.rawValue)
++        }
++        if let preparation = value.startupPreparation {
++            object["startupPreparation"] = ["kind": preparation.kind, "requestCount": preparation.requestCount,
++                "tokenPattern": preparation.tokenPattern, "outputCount": preparation.outputCount]
+         }
+         var data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
+         try workerRequire(data.count < maximumBytes, "Runtime capability exceeds its byte bound")
+@@ -84,13 +88,22 @@
+                 return value
+             }
+         } else { schedules = [.serial] }
++        let preparation: ClusterRuntimeStartupPreparation?
++        if r.values["startupPreparation"] != nil {
++            var startup = WorkerObject(try r.object("startupPreparation"))
++            let parsed = try ClusterRuntimeStartupPreparation(tokenPattern: startup.ints("tokenPattern"),
++                                                               outputCount: startup.int("outputCount"))
++            try workerRequire(try startup.string("kind") == parsed.kind
++                && startup.int("requestCount") == parsed.requestCount, "Unknown startup preparation recipe")
++            try startup.finish(); preparation = parsed
++        } else { preparation = nil }
+         let value = try ClusterRuntimeCapability(runtimeBinarySHA256: r.string("runtimeBinarySHA256"),
+             adapterID: r.string("adapterID"), adapterVersion: r.int("adapterVersion"), runtimeModelID: r.string("runtimeModelID"),
+             artifactSHA256: r.string("artifactSHA256"), configurationSHA256: r.string("configurationSHA256"),
+             manifestSHA256: r.string("manifestSHA256"), profile: profile, profileFingerprint: r.string("profileFingerprint"),
+             partitions: partitions, arithmeticPolicyID: r.string("arithmeticPolicyID"),
+             arithmeticPolicySHA256: r.string("arithmeticPolicySHA256"), maxLifetimeSeconds: r.int("maxLifetimeSeconds"),
+-            maxRequests: r.int("maxRequests"), supportedPrefillSchedules: schedules)
++            maxRequests: r.int("maxRequests"), supportedPrefillSchedules: schedules, startupPreparation: preparation)
+         try workerRequire(try r.string("stateSemantics") == value.stateSemantics
+             && r.int("rankCount") == value.rankCount && r.int("batchSize") == value.batchSize
+             && r.int("maxActiveRequests") == value.maxActiveRequests
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapabilityValidation.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapabilityValidation.swift
+@@ -27,6 +27,11 @@
+         // promise. The producer obtains its exact values from the shared adapter.
+         try workerRequire((1...300).contains(value.maxLifetimeSeconds) && (1...16).contains(value.maxRequests),
+                           "Unsupported resident lifetime or request count")
++        if let preparation = value.startupPreparation {
++            try preparation.validate(profile: p)
++            try workerRequire(value.maxRequests > preparation.requestCount,
++                              "Startup preparation must leave an external admission")
++        }
+         try workerRequire(value.arithmeticPolicyID == "qwen_cbv2_query128_bf16_tf32_default_v1",
+                           "Unknown runtime arithmetic policy")
+         try workerRequire((1...16).contains(value.partitions.count)
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeStartupPreparation.swift
+@@ -0,0 +1,39 @@
++import Foundation
++
++/// Adapter-supplied synthetic input recipe, bound by canonical capability bytes.
++/// It consumes one ordinary admission and uses fresh request state. Completing
++/// these shapes does not predict user TTFT or warm every possible context shape.
++public struct ClusterRuntimeStartupPreparation: Equatable, Sendable {
++    public let kind = "configuredChunkAndDecode_v1"
++    public let requestCount = 1
++    public let tokenPattern: [Int]
++    public let outputCount: Int
++
++    public init(tokenPattern: [Int], outputCount: Int) {
++        self.tokenPattern = tokenPattern; self.outputCount = outputCount
++    }
++
++    func validate(profile: ClusterWorkerProfile) throws {
++        try workerRequire((1...16).contains(tokenPattern.count)
++            && tokenPattern.allSatisfy({ $0 >= 0 && $0 < profile.vocabularySize })
++            && (2...8).contains(outputCount) && outputCount <= profile.maximumOutputTokens
++            && (1...ClusterWorkerLimits.contextTokens).contains(profile.maximumContextTokens)
++            && (1...profile.maximumContextTokens).contains(profile.maximumChunkTokens)
++            && profile.maximumChunkTokens <= profile.maximumPromptTokens
++            && profile.maximumChunkTokens <= profile.maximumContextTokens - outputCount,
++            "Startup preparation exceeds its admitted profile")
++    }
++
++    public func reservation(profile: ClusterWorkerProfile, chunkSize: Int,
++                            deadlineUptimeNanoseconds: UInt64, capacityLimitBytes: Int) throws -> ClusterWorkerReservation {
++        try validate(profile: profile)
++        try workerRequire((1...profile.maximumChunkTokens).contains(chunkSize)
++            && deadlineUptimeNanoseconds > 0
++            && (1...ClusterWorkerLimits.capacityBytes).contains(capacityLimitBytes),
++            "Invalid startup preparation bounds")
++        return .init(profileID: profile.id,
++            promptTokenIDs: (0..<chunkSize).map { tokenPattern[$0 % tokenPattern.count] },
++            stopTokenIDs: [], outputCount: outputCount, chunkSize: chunkSize,
++            deadlineUptimeNanoseconds: deadlineUptimeNanoseconds, capacityLimitBytes: capacityLimitBytes)
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentCapabilityMetadata.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentCapabilityMetadata.swift
+@@ -41,6 +41,7 @@
+             arithmeticPolicySHA256: sha256(try canonicalJSONData(arithmetic)),
+             maxLifetimeSeconds: Int(QwenResidentAdapterDefinition.maximumLifetimeNanoseconds / 1_000_000_000),
+             maxRequests: QwenResidentAdapterDefinition.maximumRequests,
+-            supportedPrefillSchedules: QwenResidentAdapterDefinition.supportedPrefillSchedules)
++            supportedPrefillSchedules: QwenResidentAdapterDefinition.supportedPrefillSchedules,
++            startupPreparation: QwenResidentAdapterDefinition.startupPreparation)
+     }
+ }
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentStartupPreparation.swift
+@@ -0,0 +1,10 @@
++import DarkbloomClusterProtocol
++
++extension QwenResidentAdapterDefinition {
++    /// A synthetic valid vocabulary ID, not user text or a reusable prefix.
++    /// One configured full chunk plus two selections exercises initial prefill
++    /// and one decode input. It does not cover every long-context kernel shape.
++    static var startupPreparation: ClusterRuntimeStartupPreparation {
++        .init(tokenPattern: [1], outputCount: 2)
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Tests/CapabilityChecks/StartupPreparationCheck.swift
+@@ -0,0 +1,83 @@
++import Foundation
++import DarkbloomClusterProtocol
++
++private struct StartupCheckFailure: Error { let message: String }
++private func require(_ value: Bool, _ message: String) throws {
++    if !value { throw StartupCheckFailure(message: message) }
++}
++
++@main enum StartupPreparationCheck {
++    static func main() throws {
++        let legacy = try Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1]))
++        let old = try ClusterRuntimeCapabilityCodec.decode(legacy)
++        try require(old.startupPreparation == nil, "Legacy descriptor acquired startup work")
++        try require(try ClusterRuntimeCapabilityCodec.encode(old) == legacy, "Legacy canonical bytes changed")
++        let recipe: [String: Any] = ["kind": "configuredChunkAndDecode_v1", "requestCount": 1,
++                                    "tokenPattern": [1, 2], "outputCount": 2]
++        func encoded(_ modify: (inout [String: Any]) -> Void) throws -> Data {
++            var value = try JSONSerialization.jsonObject(with: legacy) as! [String: Any]
++            value["startupPreparation"] = recipe; modify(&value)
++            var result = try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .withoutEscapingSlashes])
++            result.append(10); return result
++        }
++        let bytes = try encoded { _ in }
++        let value = try ClusterRuntimeCapabilityCodec.decode(bytes)
++        guard let preparation = value.startupPreparation else { throw StartupCheckFailure(message: "Missing recipe") }
++        try require(try ClusterRuntimeCapabilityCodec.encode(value) == bytes, "Recipe is not canonical")
++        try require(value.profile == old.profile && value.partitions == old.partitions
++            && value.maxRequests == 16 && value.maxLifetimeSeconds == 300 && !value.prefixReuse,
++            "Startup metadata changed profile, quota, lifetime or state reuse")
++        let request = try preparation.reservation(profile: value.profile, chunkSize: 512,
++            deadlineUptimeNanoseconds: 99, capacityLimitBytes: 123)
++        try require(request.promptTokenIDs == (0..<512).map { $0 % 2 + 1 }
++            && request.outputCount == 2 && request.chunkSize == 512 && request.stopTokenIDs.isEmpty
++            && request.deadlineUptimeNanoseconds == 99 && request.capacityLimitBytes == 123,
++            "Recipe changed the caller deadline/capacity or selected geometry")
++        let small = try preparation.reservation(profile: value.profile, chunkSize: 1,
++            deadlineUptimeNanoseconds: 99, capacityLimitBytes: 123)
++        try require(small.promptTokenIDs == [1] && small.outputCount == 2, "Small selected chunk differs")
++        var rejected = 0
++        func no(_ operation: () throws -> Void) throws {
++            do { try operation() } catch { rejected += 1; return }
++            throw StartupCheckFailure(message: "Malformed recipe accepted")
++        }
++        let wrongTypes: [Any] = [NSNull(), false, "recipe"]
++        for replacement in wrongTypes {
++            try no { _ = try ClusterRuntimeCapabilityCodec.decode(encoded { $0["startupPreparation"] = replacement }) }
++        }
++        let invalid: [(String, Any)] = [("kind", "unknown"), ("requestCount", 0), ("requestCount", 2),
++            ("requestCount", true), ("tokenPattern", []), ("tokenPattern", Array(repeating: 1, count: 17)),
++            ("tokenPattern", [-1]), ("tokenPattern", [248320]), ("tokenPattern", [true]),
++            ("tokenPattern", [1.5]), ("outputCount", 1), ("outputCount", 9), ("outputCount", true), ("extra", 1)]
++        for (key, replacement) in invalid {
++            try no {
++                _ = try ClusterRuntimeCapabilityCodec.decode(encoded { object in
++                    var item = recipe; item[key] = replacement; object["startupPreparation"] = item
++                })
++            }
++        }
++        for key in recipe.keys.sorted() {
++            try no {
++                _ = try ClusterRuntimeCapabilityCodec.decode(encoded { object in
++                    var item = recipe; item.removeValue(forKey: key); object["startupPreparation"] = item
++                })
++            }
++        }
++        try no { _ = try ClusterRuntimeCapabilityCodec.decode(encoded { $0["maxRequests"] = 1 }) }
++        try no {
++            _ = try ClusterRuntimeCapabilityCodec.decode(encoded { object in
++                var profile = object["profile"] as! [String: Any]
++                profile["maximumOutputTokens"] = 1; object["profile"] = profile
++            })
++        }
++        for chunk in [0, 513, Int.max] {
++            try no { _ = try preparation.reservation(profile: value.profile, chunkSize: chunk,
++                deadlineUptimeNanoseconds: 99, capacityLimitBytes: 123) }
++        }
++        try no { _ = try preparation.reservation(profile: value.profile, chunkSize: 512,
++            deadlineUptimeNanoseconds: 0, capacityLimitBytes: 123) }
++        try no { _ = try preparation.reservation(profile: value.profile, chunkSize: 512,
++            deadlineUptimeNanoseconds: 99, capacityLimitBytes: 0) }
++        print("Startup recipe: legacy bytes, canonical recipe/profile binding, selected shapes and \(rejected) refusals checked; no native work")
++    }
++}
+--- a/libs/darkbloom-cluster/Tests/CapabilityChecks/run.sh
++++ b/libs/darkbloom-cluster/Tests/CapabilityChecks/run.sh
+@@ -8,12 +8,14 @@
+   -emit-library -emit-module -module-name DarkbloomClusterProtocol \
+   -emit-module-path "$task_build/DarkbloomClusterProtocol.swiftmodule" \
+   "$task_package"/Sources/DarkbloomClusterProtocol/*.swift -o "$task_build/libDarkbloomClusterProtocol.dylib"
+-for task_case in capability original; do
++for task_case in capability original startup; do
+   task_source="$task_fixtures/CapabilityProtocolCheck.swift"
+   if [[ "$task_case" == original ]]; then task_source="$task_package/Tests/ProtocolChecks/ClusterWorkerProtocolTests.swift"; fi
++  if [[ "$task_case" == startup ]]; then task_source="$task_fixtures/StartupPreparationCheck.swift"; fi
+   xcrun swiftc -swift-version 6 -warnings-as-errors -parse-as-library -target "$(uname -m)-apple-macos14.0" \
+     -I "$task_build" -L "$task_build" -lDarkbloomClusterProtocol -Xlinker -rpath -Xlinker "$task_build" \
+     "$task_source" -o "$task_build/$task_case"
+ done
+ "$task_build/capability" "$task_fixtures/Fixtures/registered-qwen35-9b.capability.json"
+ "$task_build/original"
++"$task_build/startup" "$task_fixtures/Fixtures/registered-qwen35-9b.capability.json"
+--- a/libs/darkbloom-cluster-worker/Tests/CapabilityChecks/CapabilityCommandCheck.swift
++++ b/libs/darkbloom-cluster-worker/Tests/CapabilityChecks/CapabilityCommandCheck.swift
+@@ -18,12 +18,15 @@
+             try checks.yes("actual-native-metadata-matches-golden-profile-and-four-plans") {
+                 let value = try QwenResidentCapabilityMetadata.describe(configuration: configuration, manifest: manifest, runtimeBinarySHA256: binary)
+                 try capabilityCheck(value.supportedPrefillSchedules == [.serial, .oneChunkLookahead], "Adapter schedules differ")
++                try capabilityCheck(value.startupPreparation == .init(tokenPattern: [1], outputCount: 2),
++                    "Adapter startup recipe differs")
+                 var current = try JSONSerialization.jsonObject(with: ClusterRuntimeCapabilityCodec.encode(value)) as! [String: Any]
+                 current.removeValue(forKey: "supportedPrefillSchedules")
++                current.removeValue(forKey: "startupPreparation")
+                 var legacy = try JSONSerialization.data(withJSONObject: current, options: [.sortedKeys, .withoutEscapingSlashes])
+                 legacy.append(10)
+                 try capabilityCheck(try ClusterRuntimeCapabilityCodec.decode(legacy) == golden,
+-                    "Native metadata changed beyond advertised prefill schedules")
++                    "Native metadata changed beyond advertised prefill schedules/startup recipe")
+             }
+             try checks.yes("binary-binding-remains-separate-from-model-identities") {
+                 let value = try QwenResidentCapabilityMetadata.describe(configuration: configuration, manifest: manifest, runtimeBinarySHA256: String(repeating: "2", count: 64))
+--- a/libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh
++++ b/libs/darkbloom-cluster-worker/Tests/CapabilityChecks/run.sh
+@@ -15,7 +15,7 @@
+   QwenLongPrefillTensorBudget QwenDenseProfileTypes QwenDenseRegisteredSpecification
+   QwenLayerStageGenerationRequest QwenLayerStageSchedule QwenLayerStageWireExpectation
+   ClusterRuntimeError CanonicalJSON ClusterMetadataHashing QwenLongPrefillArithmeticEnvironment
+-  QwenResidentAdapterDefinition QwenResidentCapabilityMetadata)
++  QwenResidentAdapterDefinition QwenResidentStartupPreparation QwenResidentCapabilityMetadata)
+ task_paths=()
+ for task_source in "${task_sources[@]}"; do task_paths+=("$task_runtime/$task_source.swift"); done
+ xcrun swiftc -swift-version 6 -warnings-as-errors -target "$(uname -m)-apple-macos14.0" \
+--- a/provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/ClusterStatusCodec.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/ClusterStatusCodec.swift
+@@ -32,7 +32,7 @@
+               value.session.binding == binding, value.boundPort == port,
+               value.authenticationConfigured == authenticationConfigured,
+               ["starting", "serving", "draining", "stopping", "quarantined", "stopped"].contains(value.hostPhase),
+-              ["prepared", "starting", "ready", "draining", "stopping", "quarantined", "released"].contains(value.session.phase),
++              ["prepared", "starting", "warming", "ready", "draining", "stopping", "quarantined", "released"].contains(value.session.phase),
+               (0...1).contains(value.acquisitions), value.session.members.count == 2,
+               !value.session.mtpEnabled, value.session.mtpOffReason == "runtimeCapabilityDisablesSpeculation" else {
+             throw ClusterConfigurationError.invalid("Status is stale, malformed or belongs to another saved setup")
+@@ -64,7 +64,8 @@
+         }
+         let admitted = value.session.admission
+         let sessionReady = value.session.ready
+-        guard !sessionReady || (value.session.observedMembershipEpoch != nil
++        guard value.session.phase != "warming" || !sessionReady,
++              !sessionReady || (value.session.observedMembershipEpoch != nil
+             && value.session.members.allSatisfy(\.nativeReady) && admitted?.valid == true
+             && (admitted?.remainingLifetimeNanoseconds ?? 0) > 0),
+               value.ready == (value.hostPhase == "serving" && !value.failed && sessionReady),
+--- a/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledSession.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledSession.swift
+@@ -4,7 +4,7 @@
+ import DarkbloomClusterRemote
+ 
+ public enum DistributedInstalledSessionStatus: String, Sendable {
+-    case prepared, starting, ready, draining, stopping, quarantined, released
++    case prepared, starting, warming, ready, draining, stopping, quarantined, released
+ }
+ 
+ /// One start attempt and its retained cleanup obligation. Missing peer proof is
+@@ -18,6 +18,7 @@
+     private let prepared: DistributedInstalledPreparation
+     private let diagnosticBinding: ClusterStatusBinding
+     private var observedMembershipEpoch: UUID?
++    private var preparationResult: ClusterWorkerStartupPreparationResult?
+     private let wireIdentity: ClusterWorkerIdentity
+     typealias EndpointFactory = @Sendable (DistributedInstalledPlan, ClusterWorkerIdentity, Int, UInt64, ClusterOwnerBootstrapRelay) throws -> ClusterRemoteWorkerEndpoint
+     private let endpointFactory: EndpointFactory
+@@ -35,6 +36,7 @@
+     private var notified = false
+     private var draining = false
+ 
++    public var startupPreparationResult: ClusterWorkerStartupPreparationResult? { lock.withLock { preparationResult } }
+     public var status: DistributedInstalledSessionStatus { lock.withLock { phase } }
+     public var admissionState: ClusterWorkerPairAdmissionState? { lock.withLock { pair }?.admissionState }
+     public var lifetimeDeadlineUptimeNanoseconds: UInt64? { lock.withLock { lifetime == 0 ? nil : lifetime } }
+@@ -149,8 +151,22 @@
+         lock.withLock { self.pair = pair }
+         let owner = try DistributedPipeExecutionOwner(pair: pair, profile: profile, chunkSize: configuration.chunkTokens)
+         owner.setReadinessInvalidationHandler { [weak self] in self?.beginStop(abnormal: true) }
++        if let recipe = capability.startupPreparation {
++            try lock.withLock {
++                guard phase == .starting, owner.readiness() != nil else { throw DistributedEngineError.unavailable }
++                observedMembershipEpoch = pair.readiness?.identity.membershipEpoch
++                phase = .warming
++            }
++            let result = try ClusterWorkerStartupPreparation.run(pair: pair, recipe: recipe,
++                chunkSize: configuration.chunkTokens,
++                deadlineUptimeNanoseconds: min(startupDeadline, pair.localLifetimeDeadlineUptimeNanoseconds))
++            try lock.withLock {
++                guard phase == .warming else { throw DistributedEngineError.shuttingDown }
++                preparationResult = result
++            }
++        }
+         try lock.withLock {
+-            guard phase == .starting, owner.readiness() != nil else { throw DistributedEngineError.unavailable }
++            guard (phase == .starting || phase == .warming), owner.readiness() != nil else { throw DistributedEngineError.unavailable }
+             self.observedMembershipEpoch = pair.readiness?.identity.membershipEpoch
+             self.owner = owner; phase = .ready
+         }
+--- a/provider-swift/Tests/ClusterInstalledSessionChecks/InstalledFixture.swift
++++ b/provider-swift/Tests/ClusterInstalledSessionChecks/InstalledFixture.swift
+@@ -13,7 +13,8 @@
+     func prepare() throws -> DistributedInstalledPreparation {
+         try .prepare(reference: reference, paths: paths, deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
+     }
+-    static func make(root: URL, probe: URL, owner: URL, worker: URL, lifetimeSeconds: Int = 10) throws -> Self {
++    static func make(root: URL, probe: URL, owner: URL, worker: URL, lifetimeSeconds: Int = 10,
++                     startupPreparation: ClusterRuntimeStartupPreparation? = nil) throws -> Self {
+         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+         let model = root.appendingPathComponent("model", isDirectory: true)
+         try FileManager.default.createDirectory(at: model, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+@@ -41,7 +42,8 @@
+             profile:profile,profileFingerprint:pin("e"),partitions:[.init(planSHA256:pin("f"),stages:[
+                 .init(rank:0,sourceLayerStart:0,sourceLayerEnd:4,stagePlanSHA256:pin("1"),constructionConfigurationSHA256:pin("2")),
+                 .init(rank:1,sourceLayerStart:4,sourceLayerEnd:32,stagePlanSHA256:pin("3"),constructionConfigurationSHA256:pin("4"))])],
+-            arithmeticPolicyID:"qwen_cbv2_query128_bf16_tf32_default_v1",arithmeticPolicySHA256:pin("5"),maxLifetimeSeconds:lifetimeSeconds,maxRequests:16)
++            arithmeticPolicyID:"qwen_cbv2_query128_bf16_tf32_default_v1",arithmeticPolicySHA256:pin("5"),maxLifetimeSeconds:lifetimeSeconds,maxRequests:16,
++            startupPreparation:startupPreparation)
+         let capBytes = try ClusterRuntimeCapabilityCodec.encode(cap), capHash = hash(capBytes)
+         try capBytes.write(to: model.appendingPathComponent("fixture-capability.json"))
+         let key=root.appendingPathComponent("key"),hosts=root.appendingPathComponent("known_hosts")
+--- a/provider-swift/Tests/ClusterInstalledSessionChecks/InstalledSessionCheck.swift
++++ b/provider-swift/Tests/ClusterInstalledSessionChecks/InstalledSessionCheck.swift
+@@ -39,7 +39,8 @@
+         try await failedStart(fixture,prepared)
+         try await missingRelease(fixture,prepared)
+         try await expired(fixture)
+-        print("Installed owner/session: metadata, bounded IO and 6 lifecycle scenarios passed; no native model, SSH or network")
++        try await startupPreparation(fixture)
++        print("Installed owner/session: metadata, bounded IO and 11 lifecycle scenarios passed; no native model, SSH or network")
+     }
+     static func changedConfiguration(_ f:InstalledFixture,edit:(inout [String:Any])->Void) throws->ClusterConfiguration {
+         var object=try JSONSerialization.jsonObject(with:JSONEncoder().encode(f.configuration)) as! [String:Any];edit(&object)
+--- /dev/null
++++ b/provider-swift/Tests/ClusterInstalledSessionChecks/InstalledStartupCheck.swift
+@@ -0,0 +1,102 @@
++import Foundation
++import DarkbloomClusterProtocol
++import DarkbloomClusterProcess
++@testable import InstalledContract
++
++extension InstalledSessionCheck {
++    static func startupPreparation(_ base: InstalledFixture) async throws {
++        let recipe = ClusterRuntimeStartupPreparation(tokenPattern: [1], outputCount: 2)
++        let f = try InstalledFixture.make(root: base.root.appendingPathComponent("with-startup"),
++            probe: base.probe, owner: base.owner, worker: base.worker, startupPreparation: recipe)
++        let prepared = try f.prepare()
++        let (s, _) = try session(f, prepared)
++        try require(s.readiness() == nil && s.startupPreparationResult == nil, "Preparation fabricated readiness")
++        try await s.start()
++        guard let result = s.startupPreparationResult else { throw CheckFailure(message: "Startup receipt missing") }
++        try require(s.status == .ready && s.readiness() != nil && s.admissionState?.admissionsRemaining == 15,
++                    "Warmup failed to consume one of the unchanged sixteen admissions")
++        try require(result.promptTokens == f.configuration.chunkTokens && result.selectedTokens == 2
++            && result.reservedBytes == 1600 && result.admissionsRemaining == 15
++            && result.elapsedNanoseconds > 0 && s.admissionState?.hasActiveRequest == false,
++            "Warmup geometry, actual reservation or explicit release differs")
++        try require(s.admissionState!.remainingLifetimeNanoseconds < 10_000_000_000,
++                    "Warmup refreshed the fixed lifetime")
++        for id in 1001...1015 {
++            let lease = try request(s, UInt64(id))
++            try lease.start { _ in true }; await lease.waitUntilRetired(); lease.releaseResources()
++        }
++        try require(s.admissionState?.admissionsRemaining == 0 && s.readiness() == nil,
++                    "Warmup silently became a seventeenth admission")
++        try rejected { _ = try request(s, 1016) }
++        try require(await s.stop(until: DispatchTime.now().uptimeNanoseconds + 5_000_000_000) == .released,
++                    "Warm session did not release its owners")
++
++        let (cancelled, cancelledEndpoints) = try session(f, prepared, behavior: "hang")
++        let startup = Task { try await cancelled.start() }
++        let until = ContinuousClock.now.advanced(by: .seconds(5))
++        while !(cancelled.status == .warming && cancelled.admissionState?.hasActiveRequest == true)
++                && ContinuousClock.now < until { try await Task.sleep(for: .milliseconds(10)) }
++        try require(cancelled.status == .warming && cancelled.readiness() == nil
++            && !cancelled.diagnosticObservation.ready && cancelled.startupPreparationResult == nil
++            && cancelled.admissionState?.admissionsRemaining == 15,
++            "Running startup was advertised as ready or omitted from quota")
++        let stopped = await cancelled.stop(until: DispatchTime.now().uptimeNanoseconds + 6_000_000_000)
++        do { try await startup.value; throw CheckFailure(message: "Cancelled startup succeeded") }
++        catch is CheckFailure { throw CheckFailure(message: "Cancelled startup succeeded") } catch {}
++        try require(cancelled.readiness() == nil && cancelled.startupPreparationResult == nil
++            && [.released, .quarantined].contains(stopped)
++            && cancelledEndpoints.snapshot.allSatisfy(\.nativeCleanupObserved),
++            "Cancelled warmup lost retained actual cleanup")
++        try require(!cancelled.canRotate || cancelledEndpoints.snapshot.allSatisfy(\.ownerDeviceLeaseReleasedObserved),
++                    "Warmup cancellation manufactured owner release")
++
++        let (taskCancelled, taskEndpoints) = try session(f, prepared, behavior: "hang")
++        let cancelledTask = Task { try await taskCancelled.start() }
++        let taskUntil = ContinuousClock.now.advanced(by: .seconds(5))
++        while !(taskCancelled.status == .warming && taskCancelled.admissionState?.hasActiveRequest == true)
++                && ContinuousClock.now < taskUntil { try await Task.sleep(for: .milliseconds(10)) }
++        try require(taskCancelled.status == .warming && taskCancelled.admissionState?.hasActiveRequest == true,
++                    "Task cancellation fixture did not enter admitted startup")
++        cancelledTask.cancel()
++        do { try await cancelledTask.value; throw CheckFailure(message: "Cancelled startup task succeeded") }
++        catch is CheckFailure { throw CheckFailure(message: "Cancelled startup task succeeded") } catch {}
++        _ = await taskCancelled.stop(until: DispatchTime.now().uptimeNanoseconds + 6_000_000_000)
++        try require(taskCancelled.readiness() == nil && taskCancelled.startupPreparationResult == nil
++            && taskEndpoints.snapshot.allSatisfy(\.nativeCleanupObserved),
++            "Task cancellation left warmup externally ready or without actual cleanup")
++        try require(!taskCancelled.canRotate || taskEndpoints.snapshot.allSatisfy(\.ownerDeviceLeaseReleasedObserved),
++                    "Task cancellation manufactured owner release")
++
++        let (failed, failedEndpoints) = try session(f, prepared, behavior: "exit")
++        do { try await failed.start(); throw CheckFailure(message: "Failed startup forward succeeded") }
++        catch is CheckFailure { throw CheckFailure(message: "Failed startup forward succeeded") } catch {}
++        _ = await failed.stop(until: DispatchTime.now().uptimeNanoseconds + 6_000_000_000)
++        try require(failed.readiness() == nil && failed.startupPreparationResult == nil
++            && failed.admissionState?.admissionsRemaining == 15
++            && failedEndpoints.snapshot.allSatisfy(\.nativeCleanupObserved),
++            "Failed recipe published readiness, restored quota or lost cleanup")
++        try require(!failed.canRotate || failedEndpoints.snapshot.allSatisfy(\.ownerDeviceLeaseReleasedObserved),
++                    "Failed recipe manufactured owner release")
++
++        let short = try InstalledFixture.make(root: base.root.appendingPathComponent("startup-short-life"),
++            probe: base.probe, owner: base.owner, worker: base.worker, lifetimeSeconds: 3, startupPreparation: recipe)
++        let (expired, endpoints) = try session(short, short.prepare(), behavior: "hang")
++        let expiringStartup = Task { try await expired.start() }
++        let warmingUntil = ContinuousClock.now.advanced(by: .seconds(2))
++        while !(expired.status == .warming && expired.admissionState?.hasActiveRequest == true)
++                && ContinuousClock.now < warmingUntil { try await Task.sleep(for: .milliseconds(10)) }
++        try require(expired.status == .warming && expired.admissionState?.hasActiveRequest == true,
++                    "Expiry fixture did not enter admitted startup")
++        let originalDeadline = expired.lifetimeDeadlineUptimeNanoseconds
++        do { try await expiringStartup.value; throw CheckFailure(message: "Expired warmup succeeded") }
++        catch is CheckFailure { throw CheckFailure(message: "Expired warmup succeeded") } catch {}
++        try require(expired.readiness() == nil && expired.startupPreparationResult == nil
++            && expired.admissionState?.remainingLifetimeNanoseconds == 0
++            && expired.lifetimeDeadlineUptimeNanoseconds == originalDeadline,
++            "Expired startup extended its lifetime or published readiness")
++        _ = await expired.stop(until: DispatchTime.now().uptimeNanoseconds + 6_000_000_000)
++        try require(endpoints.snapshot.allSatisfy(\.nativeCleanupObserved), "Expired warmup lacks actual cleanup")
++        try require(!expired.canRotate || endpoints.snapshot.allSatisfy(\.ownerDeviceLeaseReleasedObserved),
++                    "Expired recipe manufactured owner release")
++    }
++}
+--- a/provider-swift/Tests/ClusterInstalledSessionChecks/run.sh
++++ b/provider-swift/Tests/ClusterInstalledSessionChecks/run.sh
+@@ -55,7 +55,7 @@
+     InstalledProbeFixture) task_inputs=("$task_fixtures/InstalledProbeFixture.swift") ;;
+     InstalledFakeOwner) task_inputs=("$task_fixtures/InstalledFixtureIdentity.swift" "$task_fixtures/InstalledFakeOwner.swift") ;;
+     InstalledFakeWorker) task_inputs=("$task_fixtures/InstalledFixtureIdentity.swift" "$task_cluster/Tests/ProcessChecks/FakeClusterWorker.swift") ;;
+-    InstalledSessionCheck) task_inputs=("$task_fixtures/InstalledFixture.swift" "$task_fixtures/InstalledSessionCheck.swift") ;;
++    InstalledSessionCheck) task_inputs=("$task_fixtures/InstalledFixture.swift" "$task_fixtures/InstalledSessionCheck.swift" "$task_fixtures/InstalledStartupCheck.swift") ;;
+   esac
+   xcrun swiftc "${task_flags[@]}" -parse-as-library "${task_fixture_links[@]}" \
+     "${task_inputs[@]}" -o "$task_build/$task_name"

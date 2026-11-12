@@ -1,0 +1,158 @@
+{
+  "mainRoot": "/Users/developer/DarkbloomDev/d-inference",
+  "files": [
+    {
+      "path": "CHANGELOG.md",
+      "proposedSHA256": "e9c48060ba159f170fe537360d0159116698bf6d704be749a42ea5604d3fa64f",
+      "baseSHA256": "dea5d3dd4cccadb85b1ff9b4cbbf1ab30535580abfe3a738f51970a4aaacc850",
+      "mode": "0o644"
+    },
+    {
+      "path": "docs/provider/cli-reference.md",
+      "proposedSHA256": "555b18c826f9012495dccc9da61a35530c1a35359d39eae6b6f2e4b1bea5b4cf",
+      "baseSHA256": "f06b87ccc2549d32c17e83524cceb3098567e4ba68c5b61581a84ce66af63f50",
+      "mode": "0o644"
+    },
+    {
+      "path": "docs/reference/configuration.md",
+      "proposedSHA256": "a1f5257d76b9a9d1b5024fab0ac2b6ed55876e2ec28cc0b6a2f73f09c9046a31",
+      "baseSHA256": "c85d458fd8c4146c585509e2a4366698120f47c70be9954bb5d2e43ddbd7a03c",
+      "mode": "0o644"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Config/ClusterConfigurationInstalledReference.swift",
+      "proposedSHA256": "3ed7215e037afa76e159278b554abf52a84721d556ebf89a01a413d58639d13e",
+      "baseSHA256": "a1aec50903be426b53313d8e406144fc8b8ffb33a6ce4348771db45a37598243",
+      "mode": "0o644"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/ClusterDeviceJournalObservation.swift",
+      "proposedSHA256": "e18f0db68ea2d3a3895881ef377e09a48f62bbf77308c256de0f03f4d2c76649",
+      "baseSHA256": null,
+      "mode": "0o644"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/ClusterDiagnostics.swift",
+      "proposedSHA256": "19718036b51472df9ae759cc78ca87b8243d621f1470de84a0b143b34b947b94",
+      "baseSHA256": null,
+      "mode": "0o644"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/ClusterStatusClient.swift",
+      "proposedSHA256": "c1cc07e8eae085a81afd1deb5bae9e8ab1a80135a69e9d664fb2028e9d11f8de",
+      "baseSHA256": null,
+      "mode": "0o644"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/ClusterStatusCodec.swift",
+      "proposedSHA256": "19dfea8f0ada2d5746054f52519254e2ca19742ad9942139491523a959821afa",
+      "baseSHA256": null,
+      "mode": "0o644"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/ClusterStatusDiscovery.swift",
+      "proposedSHA256": "1ca0042954750ff57873dcb40ffb44d168f57bc39d18cb76b61920c1046956c2",
+      "baseSHA256": null,
+      "mode": "0o644"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/ClusterStatusValues.swift",
+      "proposedSHA256": "7da2e41d1e120f0347e87555d7d455858a90a8abf9605b3691e500949cde4742",
+      "baseSHA256": null,
+      "mode": "0o644"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPreparation.swift",
+      "proposedSHA256": "02cce955fa79ee75b428e4bd6171f33215f27c76a6fcd894f635c54890a8db4c",
+      "baseSHA256": "f886efca3edb3b8b713f78bc8d5e69f7beb5d5fb0d3b02099db371076a5be88b",
+      "mode": "0o644"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledSession.swift",
+      "proposedSHA256": "ee6b587c26b9ad38b0cd2920fc1d1d5db3ef18d0e97a36c4586218d2c8ffd38e",
+      "baseSHA256": "cbd4b0c1f8629582c1573959f2ed2766efc8e89df136b6e3afaf3f675305fe82",
+      "mode": "0o644"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledValidation.swift",
+      "proposedSHA256": "a15374ed24e26daefb0e1806c063713423eb0bd5a810230f7165fbfb671c4b03",
+      "baseSHA256": null,
+      "mode": "0o644"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServer+HTTP.swift",
+      "proposedSHA256": "5f95e03c5d6535d152fb9b2b44a3dbbbcf2be23f5e238c177f6a438746f1b95e",
+      "baseSHA256": "01d80e8bee15635a1b7c3ad7882fd6b26451d076124479c2a5c355bd74be84cb",
+      "mode": "0o644"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServerSession.swift",
+      "proposedSHA256": "8ab88ba87529b972470afa40a100490651e927861f72a530647d5bc3f6e5295e",
+      "baseSHA256": "804e7d63ec21d2b3085820e63071f707bc58f7aa5825fd3b3f8f71aa9be438a4",
+      "mode": "0o644"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift",
+      "proposedSHA256": "0065bad64f4cd9ec110926f95c6684f6091744b612f2908363786b195eed3858",
+      "baseSHA256": "62246571ad0f10cb3b87d776a8ae36badd255f7cc47b14f616deb9c99e956fb0",
+      "mode": "0o644"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/ClusterCommand.swift",
+      "proposedSHA256": "bb76a50a852638924642f32a13435ad84a2f846cc8ffd0d333dbdc64068c06eb",
+      "baseSHA256": "7cda994d02ae1618745857ac0f2c317dfa64c2f74129ad07f29dc76ba36ebd6e",
+      "mode": "0o644"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/ClusterDiagnosticsCommand.swift",
+      "proposedSHA256": "8e3ae3ceaa3af0790b089a92a270b64a17cb6448ce6f9d6352377292df66e2ce",
+      "baseSHA256": null,
+      "mode": "0o644"
+    },
+    {
+      "path": "provider-swift/Tests/ClusterDiagnosticsChecks/ClusterDiagnosticsCheck.swift",
+      "proposedSHA256": "42756f026e0dd5f2b2aab13a3eb92c2fff3a43b2d00284753ae219e860a4fc63",
+      "baseSHA256": null,
+      "mode": "0o644"
+    },
+    {
+      "path": "provider-swift/Tests/ClusterDiagnosticsChecks/README.md",
+      "proposedSHA256": "28ccf5194d971788619b3e7b6450b852ef791a4f174b358fa5f526823695d3dc",
+      "baseSHA256": null,
+      "mode": "0o644"
+    },
+    {
+      "path": "provider-swift/Tests/ClusterDiagnosticsChecks/run.sh",
+      "proposedSHA256": "f4cdefbd067a47ad12ecfa54f0a394c355cdc1eec35744e1a826df6a89005d8f",
+      "baseSHA256": null,
+      "mode": "0o755"
+    },
+    {
+      "path": "provider-swift/Tests/ClusterInstalledSessionChecks/run.sh",
+      "proposedSHA256": "6fbbf8cded1be347a2c6df07e9d3c36796e9356b801bd0f6e3ee368a8863a96a",
+      "baseSHA256": "e4eb283d1dfb3311c2cda17e7d6242a7251d53e049257b86679f51a92dd26fe9",
+      "mode": "0o644"
+    },
+    {
+      "path": "provider-swift/Tests/DarkbloomCLITests/ClusterDiagnosticsCommandTests.swift",
+      "proposedSHA256": "75f91c8a534c76923e3fbe42879ab5a9391a85c2049d48a0c93a09ca540e9c14",
+      "baseSHA256": null,
+      "mode": "0o644"
+    },
+    {
+      "path": "provider-swift/Tests/ProviderCoreTests/Server/ClusterStatusHTTPTests.swift",
+      "proposedSHA256": "cb40389e4af505983fd22ee45bfeb5a04af7d56b674ae3136052ddcbc88cc65a",
+      "baseSHA256": null,
+      "mode": "0o644"
+    },
+    {
+      "path": "provider-swift/Tests/ProviderCoreTests/Server/DistributedLocalServerTestSupport.swift",
+      "proposedSHA256": "f9fdb66e830d5fd3dd438a30d2982ef0f37d9d9d6dbe566415aec7bce6035523",
+      "baseSHA256": "5700c5e984c60da783ccc500b67d010731673af100c9c7cafc1537b59f479b8d",
+      "mode": "0o644"
+    }
+  ],
+  "packageManifestChanges": false,
+  "noMainWrites": true,
+  "fullProviderTestsPending": true
+}

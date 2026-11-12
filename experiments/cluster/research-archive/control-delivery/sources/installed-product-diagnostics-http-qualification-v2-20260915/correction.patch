@@ -1,0 +1,210 @@
+--- a/status_validation.py
++++ b/status_validation.py
+@@ -3,6 +3,8 @@
+ import uuid
+ 
+ EXPECTED_CLUSTER = 'darkbloom-product-qwen9b-diagnostics-20260915'
++EXPECTED_PREFILL_SCHEDULE = 'one_chunk_lookahead_v1'
++EXPECTED_PEERS = ('darkbloom-24', 'darkbloom-48')
+ MAXIMUM_STDOUT = 65536
+ 
+ 
+@@ -60,14 +62,15 @@
+                 'leader/session is not live ready')
+         epoch, nonce = session['observedMembershipEpoch'], live['nonce']
+         require(canonical_uuid(epoch) and canonical_uuid(nonce), 'actual epoch/nonce not observed')
+-        require(session['observedPrefillSchedule'] == saved['prefillSchedule']
+-                and saved['prefillSchedule'] in ('serial', 'oneChunkLookahead'), 'selected schedule differs')
++        require(session['observedPrefillSchedule'] == saved['prefillSchedule'] == EXPECTED_PREFILL_SCHEDULE,
++                'selected lookahead raw schedule differs')
+         require(session['mtpEnabled'] is False and session['mtpOffReason'] == 'runtimeCapabilityDisablesSpeculation',
+                 'unexpected speculation state')
+         peers, members = saved['peers'], session['members']
+         require(type(peers) is list and type(members) is list and len(peers) == len(members) == 2,
+                 'exactly two members required')
+-        require(peers[0]['id'] != peers[1]['id'] and saved['memberID'] == peers[0]['id'], 'leader/member identity differs')
++        require(tuple(peer['id'] for peer in peers) == EXPECTED_PEERS
++                and saved['memberID'] == EXPECTED_PEERS[0], 'leader/member identity differs')
+         for rank, member in enumerate(members):
+             require(type(member['rank']) is int and type(peers[rank]['rank']) is int
+                     and member['rank'] == rank == peers[rank]['rank']
+--- a/test_status.py
++++ b/test_status.py
+@@ -1,5 +1,6 @@
+ """Fabricated DTO and actual local Python-child checks; never SSH or native."""
+ import copy
++import hashlib
+ import json
+ import sys
+ import tempfile
+@@ -10,38 +11,42 @@
+ from status_validation import EXPECTED_CLUSTER, MAXIMUM_STDOUT, validate
+ 
+ 
++def stopped_report():
++    raw = (Path(__file__).parent / 'Fixtures/darkbloom-24.stopped-status.json').read_bytes()
++    assert hashlib.sha256(raw).hexdigest() == '7e8de892ea29e9ceec050badc2aa125c264b5644742944f6f35a0d3042be4fd2'
++    return json.loads(raw)
++
++
+ def report():
+-    binding = {'clusterID': EXPECTED_CLUSTER, 'memberID': 'leader', 'role': 'leader',
+-               'configurationSHA256': 'a' * 64, 'capabilitySHA256': 'b' * 64,
+-               'publicModelID': 'Qwen3.5-9B', 'runtimeModelID': 'registered_qwen35_9b',
+-               'artifactSHA256': 'c' * 64, 'configurationModelSHA256': 'd' * 64,
+-               'planSHA256': 'e' * 64, 'prefillSchedule': 'oneChunkLookahead',
+-               'maximumLifetimeSeconds': 300, 'maximumRequests': 16,
+-               'peers': [{'id': name, 'rank': rank, 'runtimeBinarySHA256': 'f' * 64}
+-                         for rank, name in enumerate(['leader', 'follower'])]}
+-    members = [{'peerID': name, 'rank': rank,
+-                'transport': 'localPipes' if rank == 0 else 'authenticatedSSH',
++    # Exact captured stopped saved binding; only live observations are fabricated.
++    value = stopped_report()
++    binding = copy.deepcopy(value['saved'])
++    assert binding['maximumRequests'] == 16 and binding['maximumLifetimeSeconds'] == 300
++    assert [(x['rank'], x['id']) for x in binding['peers']] == [(0, 'darkbloom-24'), (1, 'darkbloom-48')]
++    assert binding['prefillSchedule'] == 'one_chunk_lookahead_v1'
++    members = [{'peerID': peer['id'], 'rank': peer['rank'],
++                'transport': 'localPipes' if peer['rank'] == 0 else 'authenticatedSSH',
+                 'nativeReady': True, 'requestCapacityBytes': 1 << 30,
+                 'nativeCleanupObserved': False, 'ownerReleaseAcknowledged': False}
+-               for rank, name in enumerate(['leader', 'follower'])]
++               for peer in binding['peers']]
+     session = {'binding': copy.deepcopy(binding), 'phase': 'ready', 'ready': True,
+                'observedMembershipEpoch': '11111111-1111-4111-8111-111111111111',
+-               'observedPrefillSchedule': 'oneChunkLookahead', 'mtpEnabled': False,
++               'observedPrefillSchedule': binding['prefillSchedule'], 'mtpEnabled': False,
+                'mtpOffReason': 'runtimeCapabilityDisablesSpeculation', 'members': members,
+                'admission': {'remainingLifetimeNanoseconds': 250_000_000_000,
+                              'remainingRequests': 16, 'activeRequest': False,
+                              'draining': False, 'valid': True}}
+-    live = {'schema': 'darkbloom_cluster_status_v1', 'binding': copy.deepcopy(binding),
++    value['live'] = {'schema': 'darkbloom_cluster_status_v1', 'binding': copy.deepcopy(binding),
+             'nonce': '22222222-2222-4222-8222-222222222222', 'authenticationConfigured': True,
+             'hostPhase': 'serving', 'session': session, 'boundPort': 18081,
+             'acquisitions': 0, 'failed': False, 'ready': True,
+             'admissionAvailable': True, 'quarantined': False}
+-    return {'schema': 'darkbloom_cluster_diagnostics_v1', 'operation': 'status',
+-            'configurationState': 'verified', 'saved': binding, 'live': live,
+-            'deviceJournal': 'ownershipUnproven', 'physicalProbePerformed': False,
+-            'recoveryPerformed': False,
+-            'checks': [{'name': name, 'outcome': 'passed', 'detail': 'fabricated test only'}
+-                       for name in ['savedConfiguration', 'localServingObservation']]}
++    for check in value['checks']:
++        if check['name'] == 'localServingObservation':
++            check['outcome'] = 'passed'
++            check['detail'] = 'Fabricated live observation for source-derived DTO test only'
++    value['deviceJournal'] = 'ownershipUnproven'
++    return value
+ 
+ 
+ def encoded(value):
+@@ -49,6 +54,24 @@
+ 
+ 
+ class StatusTests(unittest.TestCase):
++    def test_actual_stopped_report_is_not_live_readiness(self):
++        value = stopped_report()
++        self.assertEqual(value['saved']['clusterID'], EXPECTED_CLUSTER)
++        self.assertEqual(value['saved']['maximumRequests'], 16)
++        self.assertEqual(value['saved']['maximumLifetimeSeconds'], 300)
++        self.assertEqual([x['id'] for x in value['saved']['peers']], ['darkbloom-24', 'darkbloom-48'])
++        self.assertNotIn('live', value)
++        with self.assertRaises(ValueError): validate(encoded(value))
++
++    def test_swift_case_names_and_serial_raw_value_refuse(self):
++        for name in ['oneChunkLookahead', 'serial', 'serial_v1']:
++            value = report()
++            value['saved']['prefillSchedule'] = name
++            value['live']['binding']['prefillSchedule'] = name
++            value['live']['session']['binding']['prefillSchedule'] = name
++            value['live']['session']['observedPrefillSchedule'] = name
++            with self.subTest(name=name), self.assertRaises(ValueError): validate(encoded(value))
++
+     def test_fresh_then_one_request_same_epoch(self):
+         value = report()
+         before = validate(encoded(value))
+@@ -74,7 +97,7 @@
+ 
+     def test_saved_success_without_observation_refuses(self):
+         value = report()
+-        value['checks'][1]['outcome'] = 'notObserved'
++        next(x for x in value['checks'] if x['name'] == 'localServingObservation')['outcome'] = 'notObserved'
+         with self.assertRaises(ValueError): validate(encoded(value))
+ 
+     def test_stale_epoch_nonce_or_counter_refuses(self):
+--- a/run.py
++++ b/run.py
+@@ -31,6 +31,7 @@
+     record['declaredPromptTokens']=args.declared_prompt_tokens
+     codefiles=sorted(BASE.glob('*.py'))+sorted(args.client.parent.glob('*.py'))+[args.prompt_file]
+     codefiles.extend([BASE/'stage_checks/__init__.py',BASE/'stage_checks/common.py'])
++    codefiles.append(BASE/'Fixtures/darkbloom-24.stopped-status.json')
+     if args.rendered_prompt is not None:
+         codefiles.extend([args.rendered_prompt,args.expected_token_ids])
+     pins={str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in codefiles}
+--- /dev/null
++++ b/Fixtures/darkbloom-24.stopped-status.json
+@@ -0,0 +1,62 @@
++{
++  "checks" : [
++    {
++      "detail" : "Canonical configuration\/capability pins and selected policy verified; this is not readiness.",
++      "name" : "savedConfiguration",
++      "outcome" : "passed"
++    },
++    {
++      "detail" : "Run cluster doctor for local installed metadata checks.",
++      "name" : "localInstalledMetadata",
++      "outcome" : "notRun"
++    },
++    {
++      "detail" : "Configuration input does not exist",
++      "name" : "localServingObservation",
++      "outcome" : "notObserved"
++    },
++    {
++      "detail" : "No live loaded cohort observed. Peer installation, authenticated connectivity and physical collectives remain untested.",
++      "name" : "peerAndCollectiveProbe",
++      "outcome" : "notRun"
++    },
++    {
++      "detail" : "Journal metadata only. Nonempty means ownership is unproven, not orphaned; empty\/absent is not a free-device proof. No lock or journal was changed.",
++      "name" : "deviceExclusion",
++      "outcome" : "notRun"
++    }
++  ],
++  "configurationState" : "verified",
++  "deviceJournal" : "emptyJournal",
++  "operation" : "status",
++  "physicalProbePerformed" : false,
++  "recoveryPerformed" : false,
++  "saved" : {
++    "artifactSHA256" : "127de76b4ef82b7aaa0acaac0ee31c784cff066eda64291f521f051469b7c24b",
++    "capabilitySHA256" : "7e8a1480f1c8831cf447fa2f51935bf5e3b79024b1b83c09aa2df0bb6df883e7",
++    "clusterID" : "darkbloom-product-qwen9b-diagnostics-20260915",
++    "configurationModelSHA256" : "c8e767de4953e58352fbc1acbf6615329075ed02fe16a36b8065714d85ee4423",
++    "configurationSHA256" : "31acc13339e8fde3308e3cb6488a5c53b0f61133c68f7716d5cd44199233b7ff",
++    "maximumLifetimeSeconds" : 300,
++    "maximumRequests" : 16,
++    "memberID" : "darkbloom-24",
++    "peers" : [
++      {
++        "id" : "darkbloom-24",
++        "rank" : 0,
++        "runtimeBinarySHA256" : "ffcbd7de0ccc5a8b35881f9dd5ed5b6fcb8a2f5bdc7e7b63fa1e46bd9c79bba5"
++      },
++      {
++        "id" : "darkbloom-48",
++        "rank" : 1,
++        "runtimeBinarySHA256" : "ffcbd7de0ccc5a8b35881f9dd5ed5b6fcb8a2f5bdc7e7b63fa1e46bd9c79bba5"
++      }
++    ],
++    "planSHA256" : "67bf0b1bf94f229682df58ae1ae10c758e2a386d66d3e1b68146f5c090f6309f",
++    "prefillSchedule" : "one_chunk_lookahead_v1",
++    "publicModelID" : "Qwen3.5-9B",
++    "role" : "leader",
++    "runtimeModelID" : "registered_qwen35_9b"
++  },
++  "schema" : "darkbloom_cluster_diagnostics_v1"
++}

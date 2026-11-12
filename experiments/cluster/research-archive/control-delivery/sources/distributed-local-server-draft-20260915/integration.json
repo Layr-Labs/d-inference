@@ -1,0 +1,37 @@
+{
+  "schema": "distributed_local_server_integration_v1",
+  "files": [
+    {
+      "source": "/Users/developer/DarkbloomDev/cluster-research/distributed-local-server-draft-20260915/proposed/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalDiscovery.swift",
+      "destination": "/Users/developer/DarkbloomDev/d-inference/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalDiscovery.swift",
+      "sha256": "f8e0bba4fac87e01f2d557626b10a363d86fc1da4a6844b6535fb191ecb62a9d"
+    },
+    {
+      "source": "/Users/developer/DarkbloomDev/cluster-research/distributed-local-server-draft-20260915/proposed/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServer+HTTP.swift",
+      "destination": "/Users/developer/DarkbloomDev/d-inference/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServer+HTTP.swift",
+      "sha256": "01d80e8bee15635a1b7c3ad7882fd6b26451d076124479c2a5c355bd74be84cb"
+    },
+    {
+      "source": "/Users/developer/DarkbloomDev/cluster-research/distributed-local-server-draft-20260915/proposed/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServer.swift",
+      "destination": "/Users/developer/DarkbloomDev/d-inference/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServer.swift",
+      "sha256": "68f07869b0e0e5c04e0ce584247781d4d36a0a47a253b5ede43e17f9e92e8916"
+    },
+    {
+      "source": "/Users/developer/DarkbloomDev/cluster-research/distributed-local-server-draft-20260915/proposed/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServerSession.swift",
+      "destination": "/Users/developer/DarkbloomDev/d-inference/provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServerSession.swift",
+      "sha256": "c8560206c9bb1fe364d41d32e76167b927b05787a8d107b9dfc8db5fefcfe853"
+    },
+    {
+      "source": "/Users/developer/DarkbloomDev/cluster-research/distributed-local-server-draft-20260915/proposed/provider-swift/Tests/ProviderCoreTests/Server/DistributedLocalServerTestSupport.swift",
+      "destination": "/Users/developer/DarkbloomDev/d-inference/provider-swift/Tests/ProviderCoreTests/Server/DistributedLocalServerTestSupport.swift",
+      "sha256": "a61cd362fa2c0ba48bfe1c8ffbbb283177fca4a37faa3a4174e2544d03d3112a"
+    },
+    {
+      "source": "/Users/developer/DarkbloomDev/cluster-research/distributed-local-server-draft-20260915/proposed/provider-swift/Tests/ProviderCoreTests/Server/DistributedLocalServerTests.swift",
+      "destination": "/Users/developer/DarkbloomDev/d-inference/provider-swift/Tests/ProviderCoreTests/Server/DistributedLocalServerTests.swift",
+      "sha256": "625356e9ae9d6a8507054046c5bc96e4ca4175388009535228b5b7ff01440597"
+    }
+  ],
+  "requires_installed_session_overlay": true,
+  "full_provider_checks_pending": true
+}

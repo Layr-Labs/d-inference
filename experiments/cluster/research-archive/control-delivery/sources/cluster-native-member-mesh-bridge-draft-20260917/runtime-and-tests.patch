@@ -1,0 +1,1231 @@
+--- a/Tests/OwnedChild/MemberFixtureConfiguration.swift
++++ b/Tests/OwnedChild/MemberFixtureConfiguration.swift
+@@ -10,6 +10,7 @@
+     let modelID: String
+     let leaseDirectory: String
+     let behavior: String
++    var combinedMesh: Bool { behavior == "mesh" || behavior == "mesh-forbidden-ready" }
+     var start: ClusterNativeAuthorizationStart {
+         get throws {
+             guard let data = Data(base64Encoded: startBase64) else { throw MemberFixtureError.invalid }
+--- a/Tests/OwnedChild/MemberFixtureNative.swift
++++ b/Tests/OwnedChild/MemberFixtureNative.swift
+@@ -26,14 +26,14 @@
+     // This marker records the actual native launch, not key or model readiness.
+     let directory = executable.deletingLastPathComponent()
+     try Data("\(getpid())\n".utf8).write(to: directory.appendingPathComponent("native-started"), options: .withoutOverwriting)
+-    if configuration.behavior == "forbidden-ready" {
++    if configuration.behavior == "forbidden-ready" || configuration.behavior == "mesh-forbidden-ready" {
+         let ready = ClusterWorkerReady(identity: try configuration.identity(epoch: start.common.epoch), rank: start.rank,
+             profile: MemberFixtureConfiguration.profile, executionPlanSHA256: start.common.planSHA256.hex, requestCapacityBytes: 4096)
+         try FileHandle.standardOutput.write(contentsOf: ClusterWorkerCodec.encode(ClusterWorkerEventFrame(
+             membershipEpoch: start.common.epoch, sequence: 0, requestID: nil, event: .ready(ready))))
+         return
+     }
+-    guard configuration.behavior == "key-only" else { throw MemberFixtureError.invalid }
++    guard configuration.behavior == "key-only" || configuration.behavior == "mesh" else { throw MemberFixtureError.invalid }
+     let connection = try ClusterBootstrapConnection.connect(path: path, ownerProcessID: owner,
+         identity: .init(membershipEpoch: start.common.epoch, rank: start.rank),
+         deadlineUptimeNanoseconds: deadline, mode: .nativeKeyPreludeV1)
+@@ -50,8 +50,27 @@
+         "recordTransportConstructed": true, "modelReadyPublished": false]
+     try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]).write(
+         to: directory.appendingPathComponent("native-public.json"), options: .withoutOverwriting)
+-    let marker = Data("native-key-prelude-complete-v1".utf8)
+-    guard try connection.exchange(sequence: 0, contribution: marker) == marker + marker else { throw MemberFixtureError.invalid }
++    if configuration.combinedMesh {
++        var observed: [Int] = []
++        for round in 0..<4 {
++            func value(_ rank: Int) -> Data {
++                switch round {
++                case 0: return Data([2, 0, 0, 0])
++                case 1: return Data(repeating: UInt8(rank + 20), count: 64)
++                default: return Data([0, 0, 0, 0])
++                }
++            }
++            let reply = try connection.exchange(sequence: UInt64(round), contribution: value(start.rank))
++            guard reply == value(0) + value(1) else { throw MemberFixtureError.invalid }
++            observed.append(reply.count)
++        }
++        try JSONSerialization.data(withJSONObject: ["replyBytes": observed, "rounds": 4,
++            "sameAuthenticatedSocket": true, "modelReadyPublished": false], options: [.sortedKeys]).write(
++                to: directory.appendingPathComponent("native-mesh.json"), options: .withoutOverwriting)
++    } else {
++        let marker = Data("native-key-prelude-complete-v1".utf8)
++        guard try connection.exchange(sequence: 0, contribution: marker) == marker + marker else { throw MemberFixtureError.invalid }
++    }
+     authority.invalidate()
+     guard !transport.status.active else { throw MemberFixtureError.invalid }
+ }
+--- a/Tests/OwnedChild/MemberFixtureOwner.swift
++++ b/Tests/OwnedChild/MemberFixtureOwner.swift
+@@ -9,9 +9,10 @@
+ func memberFixtureOwner(executable: URL) throws {
+     let configuration = try MemberFixtureConfiguration.read(beside: executable)
+     let expected = try configuration.start
++    let bootstrapProfile: ClusterOwnerBootstrapProfile = configuration.combinedMesh ? .nativeKeyPreludeMesh2 : .nativeKeyPrelude
+     try ClusterWorkerOwnerService.serveConfigured(input: STDIN_FILENO, output: STDOUT_FILENO,
+         clusterID: configuration.clusterID, leaseDirectory: URL(fileURLWithPath: configuration.leaseDirectory),
+-        maximumLifetimeNanoseconds: 20_000_000_000, bootstrapProfile: .nativeKeyPrelude,
++        maximumLifetimeNanoseconds: 20_000_000_000, bootstrapProfile: bootstrapProfile,
+         authorizeNativeStart: { observed in
+             guard observed.canonicalBytes == expected.canonicalBytes else { throw MemberFixtureError.invalid }
+         }, binding: { epoch, lease, incarnation in
+@@ -19,7 +20,7 @@
+                 identity: configuration.identity(epoch: epoch), profile: MemberFixtureConfiguration.profile,
+                 rank: expected.rank, executionPlanSHA256: expected.common.planSHA256.hex)
+         }, native: { binding, deadline, attachment in
+-            guard let attachment, attachment.profile == .nativeKeyPrelude,
++            guard let attachment, attachment.profile == bootstrapProfile,
+                   attachment.nativeStart?.canonicalBytes == expected.canonicalBytes else { throw MemberFixtureError.invalid }
+             return try ClusterWorkerProcess(launch: .init(executable: executable,
+                 arguments: ["--native-fixture"] + attachment.workerArguments,
+--- /dev/null
++++ b/coordinator/api/native_pair_mesh_test.go
+@@ -0,0 +1,45 @@
++package api
++
++import (
++	"context"
++	"github.com/eigeninference/d-inference/coordinator/protocol"
++	"net/http"
++	"net/http/httptest"
++	"nhooyr.io/websocket"
++	"strings"
++	"testing"
++	"time"
++)
++
++func TestNativePairMeshActualReadLoopRefusesWithoutGrant(t *testing.T) {
++	for _, kind := range []string{protocol.TypeNativePairKeyConfirmed, protocol.TypeNativePairMesh} {
++		t.Run(kind, func(t *testing.T) {
++			s, _ := testServer(t)
++			defer s.Close()
++			server := httptest.NewServer(http.HandlerFunc(s.handleProviderWS))
++			defer server.Close()
++			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
++			defer cancel()
++			conn, _, e := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http"), nil)
++			if e != nil {
++				t.Fatal(e)
++			}
++			defer conn.CloseNow()
++			b := []byte(`{"type":"` + kind + `","version":1,"member_nonce":"` + strings.Repeat("1", 64) + `","epoch":"` + strings.Repeat("2", 32) + `","generation":1,"sequence":1,"payload":"","signature":"MAYCAQECAQE="}`)
++			var decoded protocol.ProviderMessage
++			if e = protocol.DecodeProviderMessage(b, &decoded); e != nil {
++				t.Fatal(e)
++			}
++			if _, ok := decoded.Payload.(*protocol.NativePairMessage); !ok {
++				t.Fatal("real read-loop payload is not closed native control")
++			}
++			if e = conn.Write(ctx, websocket.MessageText, b); e != nil {
++				t.Fatal(e)
++			}
++			_, _, e = conn.Read(ctx)
++			if websocket.CloseStatus(e) != websocket.StatusPolicyViolation {
++				t.Fatalf("missing native grant was not refused: %v", e)
++			}
++		})
++	}
++}
+--- a/coordinator/api/provider.go
++++ b/coordinator/api/provider.go
+@@ -636,7 +636,7 @@
+ 
+ 			appAttestShadow = s.startAppAttestShadow(loopCtx, provider, regMsg, authenticatedAccountID)
+ 
+-		case protocol.TypeNativePairPrepared, protocol.TypeNativePairHello, protocol.TypeNativePairConfirmation, protocol.TypeNativePairOwnerReleased, protocol.TypeNativePairCancel:
++		case protocol.TypeNativePairKeyConfirmed, protocol.TypeNativePairMesh, protocol.TypeNativePairPrepared, protocol.TypeNativePairHello, protocol.TypeNativePairConfirmation, protocol.TypeNativePairOwnerReleased, protocol.TypeNativePairCancel:
+ 			if s.nativePairs == nil || nativeConnection == nil || s.nativePairs.Handle(nativeConnection, msg.Payload.(*protocol.NativePairMessage)) != nil {
+ 				_ = conn.Close(websocket.StatusPolicyViolation, "native pair control refused")
+ 				return
+--- a/coordinator/protocol/messages.go
++++ b/coordinator/protocol/messages.go
+@@ -1005,7 +1005,7 @@
+ 	pm.Type = msgType
+ 
+ 	switch msgType {
+-	case TypeNativePairPrepared, TypeNativePairHello, TypeNativePairConfirmation, TypeNativePairOwnerReleased, TypeNativePairCancel:
++	case TypeNativePairKeyConfirmed, TypeNativePairMesh, TypeNativePairPrepared, TypeNativePairHello, TypeNativePairConfirmation, TypeNativePairOwnerReleased, TypeNativePairCancel:
+ 		msg, err := DecodeNativePairMessage(data)
+ 		if err != nil {
+ 			return err
+--- a/coordinator/protocol/native_pair.go
++++ b/coordinator/protocol/native_pair.go
+@@ -11,6 +11,10 @@
+ )
+ 
+ const (
++	TypeNativePairKeyConfirmed     = "native_pair_key_confirmed"
++	TypeNativePairMesh             = "native_pair_mesh"
++	TypeNativePairMeshReady        = "native_pair_mesh_ready"
++	TypeNativePairMeshReply        = "native_pair_mesh_reply"
+ 	TypeNativePairPrepared         = "native_pair_prepared"
+ 	TypeNativePairHello            = "native_pair_hello"
+ 	TypeNativePairConfirmation     = "native_pair_confirmation"
+@@ -45,14 +49,14 @@
+ 
+ func IsNativePairInbound(t string) bool {
+ 	switch t {
+-	case TypeNativePairPrepared, TypeNativePairHello, TypeNativePairConfirmation, TypeNativePairOwnerReleased, TypeNativePairCancel:
++	case TypeNativePairKeyConfirmed, TypeNativePairMesh, TypeNativePairPrepared, TypeNativePairHello, TypeNativePairConfirmation, TypeNativePairOwnerReleased, TypeNativePairCancel:
+ 		return true
+ 	}
+ 	return false
+ }
+ func IsNativePairOutbound(t string) bool {
+ 	switch t {
+-	case TypeNativePairPrepare, TypeNativePairOwnerStart, TypeNativePairBinding, TypeNativePairPeerConfirmation, TypeNativePairCancel:
++	case TypeNativePairMeshReady, TypeNativePairMeshReply, TypeNativePairPrepare, TypeNativePairOwnerStart, TypeNativePairBinding, TypeNativePairPeerConfirmation, TypeNativePairCancel:
+ 		return true
+ 	}
+ 	return false
+--- /dev/null
++++ b/coordinator/protocol/native_pair_mesh.go
+@@ -0,0 +1,72 @@
++package protocol
++
++import "bytes"
++
++// Public bootstrap metadata only. Inference bytes and arbitrary collectives are
++// not legal here. The transcript is the SHA256 of A's exact canonical binding.
++// The signed outer frame independently binds rank's connection/epoch/generation.
++func NativePairKeyConfirmed(transcript [32]byte) []byte {
++	b := append([]byte("DBNK\x01"), transcript[:]...)
++	return b
++}
++
++func ValidateNativePairMeshContribution(round uint8, contribution []byte) error {
++	switch round {
++	case 0:
++		if bytes.Equal(contribution, []byte{2, 0, 0, 0}) {
++			return nil
++		}
++	case 1:
++		if len(contribution) == 64 {
++			return nil
++		}
++	case 2, 3:
++		if bytes.Equal(contribution, []byte{0, 0, 0, 0}) {
++			return nil
++		}
++	}
++	return ErrNativePairFrame
++}
++
++// Contribution/reply use distinct tags. The exact native ABI sizes remove a
++// caller-controlled allocation/length field. Round never wraps past three.
++func NativePairMeshPacket(transcript [32]byte, rank, round uint8, value []byte, reply bool) ([]byte, error) {
++	if rank > 1 || round > 3 {
++		return nil, ErrNativePairFrame
++	}
++	n := 4
++	if round == 1 {
++		n = 64
++	}
++	if reply {
++		if len(value) != n*2 {
++			return nil, ErrNativePairFrame
++		}
++		for r := 0; r < 2; r++ {
++			if ValidateNativePairMeshContribution(round, value[r*n:(r+1)*n]) != nil {
++				return nil, ErrNativePairFrame
++			}
++		}
++	} else if ValidateNativePairMeshContribution(round, value) != nil {
++		return nil, ErrNativePairFrame
++	}
++	tag := []byte("DBNM\x01")
++	if reply {
++		tag = []byte("DBNG\x01")
++	}
++	b := append(tag, transcript[:]...)
++	b = append(b, rank, round)
++	return append(b, value...), nil
++}
++
++func DecodeNativePairMeshPacket(packet []byte, transcript [32]byte, rank, round uint8, reply bool) ([]byte, error) {
++	if len(packet) < 39 {
++		return nil, ErrNativePairFrame
++	}
++	value := packet[39:]
++	expected, e := NativePairMeshPacket(transcript, rank, round, value, reply)
++	if e != nil || !bytes.Equal(expected, packet) {
++		return nil, ErrNativePairFrame
++	}
++	return append([]byte(nil), value...), nil
++}
+--- /dev/null
++++ b/coordinator/protocol/native_pair_mesh_test.go
+@@ -0,0 +1,71 @@
++package protocol
++
++import (
++	"bytes"
++	"encoding/hex"
++	"testing"
++)
++
++func TestNativePairMeshIndependentPublicVector(t *testing.T) {
++	var digest [32]byte
++	for i := range digest {
++		digest[i] = byte(i)
++	}
++	expected, _ := hex.DecodeString("44424e4d01000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f010002000000")
++	actual, e := NativePairMeshPacket(digest, 1, 0, []byte{2, 0, 0, 0}, false)
++	if e != nil || !bytes.Equal(actual, expected) {
++		t.Fatal("canonical public vector differs", e)
++	}
++	key, _ := hex.DecodeString("44424e4b01000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
++	if !bytes.Equal(NativePairKeyConfirmed(digest), key) {
++		t.Fatal("key-confirmed vector differs")
++	}
++	for i := range expected {
++		bad := append([]byte(nil), expected...)
++		bad[i] ^= 0x80
++		if _, e := DecodeNativePairMeshPacket(bad, digest, 1, 0, false); e == nil {
++			t.Fatal("changed vector admitted", i)
++		}
++	}
++}
++func TestNativePairMeshClosedSizesAndDirections(t *testing.T) {
++	var digest [32]byte
++	digest[0] = 1
++	for round := uint8(0); round < 4; round++ {
++		value := []byte{0, 0, 0, 0}
++		if round == 0 {
++			value[0] = 2
++		}
++		if round == 1 {
++			value = bytes.Repeat([]byte{7}, 64)
++		}
++		for rank := uint8(0); rank < 2; rank++ {
++			packet, e := NativePairMeshPacket(digest, rank, round, value, false)
++			if e != nil {
++				t.Fatal(e)
++			}
++			if _, e = DecodeNativePairMeshPacket(packet, digest, rank, round, true); e == nil {
++				t.Fatal("reflection")
++			}
++			for _, bad := range [][]byte{packet[:len(packet)-1], append(append([]byte(nil), packet...), 0)} {
++				if _, e = DecodeNativePairMeshPacket(bad, digest, rank, round, false); e == nil {
++					t.Fatal("length")
++				}
++			}
++			gathered := append(append([]byte(nil), value...), value...)
++			reply, e := NativePairMeshPacket(digest, rank, round, gathered, true)
++			if e != nil {
++				t.Fatal(e)
++			}
++			if b, e := DecodeNativePairMeshPacket(reply, digest, rank, round, true); e != nil || !bytes.Equal(b, gathered) {
++				t.Fatal("reply")
++			}
++		}
++	}
++	if _, e := NativePairMeshPacket(digest, 2, 0, []byte{2, 0, 0, 0}, false); e == nil {
++		t.Fatal("rank")
++	}
++	if _, e := NativePairMeshPacket(digest, 0, 4, []byte{0, 0, 0, 0}, false); e == nil {
++		t.Fatal("round")
++	}
++}
+--- a/coordinator/registry/native_pair_handlers.go
++++ b/coordinator/registry/native_pair_handlers.go
+@@ -79,6 +79,8 @@
+ 		return ErrNativePairApproval
+ 	}
+ 	switch m.Type {
++	case protocol.TypeNativePairKeyConfirmed, protocol.TypeNativePairMesh:
++		return c.handleMeshLocked(s, rank, m.Type, payload)
+ 	case protocol.TypeNativePairPrepared:
+ 		expected, _ := s.starts[rank].Canonical()
+ 		if s.committed || !bytes.Equal(payload, expected) {
+--- /dev/null
++++ b/coordinator/registry/native_pair_mesh.go
+@@ -0,0 +1,66 @@
++package registry
++
++import (
++	"bytes"
++	"crypto/sha256"
++	"github.com/eigeninference/d-inference/coordinator/protocol"
++)
++
++// Called only under c.mu, after Handle has authenticated the exact original
++// connection and consumed its signed sequence. Reuses the real active grant and
++// existing bounded writers; a failure takes Handle's ordinary cancellation path.
++func (c *NativePairCoordinator) handleMeshLocked(s *NativePairSession, rank int, kind string, payload []byte) error {
++	if !s.committed || !s.confirmations[0] || !s.confirmations[1] {
++		return ErrNativePairControl
++	}
++	if _, e := c.registry.ValidateVerifiedPair(s.handle); e != nil {
++		return e
++	}
++	binding, e := protocol.NativeAuthorizationBinding(s.hellos, s.starts)
++	if e != nil {
++		return e
++	}
++	digest := sha256.Sum256(binding)
++	if kind == protocol.TypeNativePairKeyConfirmed {
++		if s.keyConfirmed[rank] || !bytes.Equal(payload, protocol.NativePairKeyConfirmed(digest)) {
++			return ErrNativePairControl
++		}
++		s.keyConfirmed[rank] = true
++		if s.keyConfirmed[0] && s.keyConfirmed[1] {
++			// Reports mean both children authenticated their peer MAC. The
++			// coordinator only authenticates their providers and exact transcript.
++			for r := range s.connections {
++				if e := c.enqueueLocked(s, r, protocol.TypeNativePairMeshReady, payload); e != nil {
++					return e
++				}
++			}
++		}
++		return nil
++	}
++	if kind != protocol.TypeNativePairMesh || !s.keyConfirmed[0] || !s.keyConfirmed[1] || s.meshRound >= 4 || s.meshPending[rank] != nil {
++		return ErrNativePairControl
++	}
++	value, e := protocol.DecodeNativePairMeshPacket(payload, digest, uint8(rank), s.meshRound, false)
++	if e != nil {
++		return e
++	}
++	s.meshPending[rank] = value
++	if s.meshPending[0] == nil || s.meshPending[1] == nil {
++		return nil
++	}
++	gathered := append(append([]byte(nil), s.meshPending[0]...), s.meshPending[1]...)
++	for r := range s.connections {
++		packet, e := protocol.NativePairMeshPacket(digest, uint8(r), s.meshRound, gathered, true)
++		if e != nil {
++			return e
++		}
++		if e = c.enqueueLocked(s, r, protocol.TypeNativePairMeshReply, packet); e != nil {
++			return e
++		}
++	}
++	// FIFO writers preserve round order even if a faster peer advances while
++	// the other reply remains in flight. There is at most one contribution/rank.
++	s.meshPending = [2][]byte{}
++	s.meshRound++
++	return nil
++}
+--- /dev/null
++++ b/coordinator/registry/native_pair_mesh_test.go
+@@ -0,0 +1,157 @@
++package registry
++
++import (
++	"bytes"
++	"crypto/sha256"
++	"github.com/eigeninference/d-inference/coordinator/protocol"
++	"testing"
++	"time"
++)
++
++func meshFixture(t *testing.T, confirmed bool) (*nativePairFixture, *NativePairSession, [32]byte) {
++	t.Helper()
++	f := newNativePairFixture(t)
++	s := f.active(t)
++	for rank := range f.n {
++		start, _ := s.starts[rank].Canonical()
++		hello := append([]byte("DBNH\x01"), start...)
++		key := make([]byte, 32)
++		key[0] = byte(9 + rank)
++		if e := f.c.Handle(f.n[rank], f.signed(t, s, rank, protocol.TypeNativePairHello, append(hello, key...))); e != nil {
++			t.Fatal(e)
++		}
++	}
++	for rank := range f.n {
++		f.read(t, rank, protocol.TypeNativePairBinding)
++	}
++	for rank := range f.n {
++		if e := f.c.Handle(f.n[rank], f.signed(t, s, rank, protocol.TypeNativePairConfirmation, bytes.Repeat([]byte{byte(rank + 1)}, 32))); e != nil {
++			t.Fatal(e)
++		}
++	}
++	for rank := range f.n {
++		f.read(t, rank, protocol.TypeNativePairPeerConfirmation)
++	}
++	binding, e := protocol.NativeAuthorizationBinding(s.hellos, s.starts)
++	if e != nil {
++		t.Fatal(e)
++	}
++	digest := sha256.Sum256(binding)
++	if confirmed {
++		for rank := range f.n {
++			if e := f.c.Handle(f.n[rank], f.signed(t, s, rank, protocol.TypeNativePairKeyConfirmed, protocol.NativePairKeyConfirmed(digest))); e != nil {
++				t.Fatal(e)
++			}
++			if rank == 0 {
++				for _, ch := range f.frames {
++					select {
++					case <-ch:
++						t.Fatal("mesh before bilateral native confirmation")
++					default:
++					}
++				}
++			}
++		}
++		for rank := range f.n {
++			m := f.read(t, rank, protocol.TypeNativePairMeshReady)
++			b, _ := m.PayloadBytes()
++			if !bytes.Equal(b, protocol.NativePairKeyConfirmed(digest)) {
++				t.Fatal("changed transcript")
++			}
++		}
++	}
++	return f, s, digest
++}
++func meshValue(rank int, round uint8) []byte {
++	if round == 0 {
++		return []byte{2, 0, 0, 0}
++	}
++	if round == 1 {
++		return bytes.Repeat([]byte{byte(rank + 20)}, 64)
++	}
++	return []byte{0, 0, 0, 0}
++}
++func TestNativePairMeshFourRoundsPreserveOrderAndGrant(t *testing.T) {
++	f, s, digest := meshFixture(t, true)
++	for round := uint8(0); round < 4; round++ {
++		for _, rank := range []int{1, 0} {
++			b, e := protocol.NativePairMeshPacket(digest, uint8(rank), round, meshValue(rank, round), false)
++			if e != nil {
++				t.Fatal(e)
++			}
++			if e = f.c.Handle(f.n[rank], f.signed(t, s, rank, protocol.TypeNativePairMesh, b)); e != nil {
++				t.Fatal(e)
++			}
++		}
++		for rank := range f.n {
++			m := f.read(t, rank, protocol.TypeNativePairMeshReply)
++			b, _ := m.PayloadBytes()
++			value, e := protocol.DecodeNativePairMeshPacket(b, digest, uint8(rank), round, true)
++			if e != nil || !bytes.Equal(value, append(meshValue(0, round), meshValue(1, round)...)) {
++				t.Fatal("rank gather/order differs", e)
++			}
++			if m.PrepareBeforeUnixNano != s.membership.PrepareBefore.UnixNano() || m.ExpiresAtUnixNano != s.membership.ExpiresAt.UnixNano() {
++				t.Fatal("deadline restarted")
++			}
++		}
++	}
++	if f.phase(s) != VerifiedPairActive {
++		t.Fatal("mesh inferred native cleanup")
++	}
++	f.c.mu.Lock()
++	rounds := s.meshRound
++	f.c.mu.Unlock()
++	if rounds != 4 {
++		t.Fatal("not all rounds")
++	}
++	f.c.Cancel(s)
++	if f.phase(s) != VerifiedPairQuarantined {
++		t.Fatal("mesh cancel released native owners")
++	}
++}
++func TestNativePairMeshRefusesEarlyWrongContextAndSequence(t *testing.T) {
++	for _, mutation := range []string{"early", "digest", "rank", "skip", "size", "duplicate", "key-repeat", "expired"} {
++		t.Run(mutation, func(t *testing.T) {
++			f, s, digest := meshFixture(t, mutation != "early")
++			packet, _ := protocol.NativePairMeshPacket(digest, 0, 0, meshValue(0, 0), false)
++			kind := protocol.TypeNativePairMesh
++			switch mutation {
++			case "digest":
++				packet[5] ^= 1
++			case "rank":
++				packet[37] = 1
++			case "skip":
++				packet[38] = 2
++			case "size":
++				packet = packet[:len(packet)-1]
++			case "key-repeat":
++				kind = protocol.TypeNativePairKeyConfirmed
++				packet = protocol.NativePairKeyConfirmed(digest)
++			case "duplicate":
++				if e := f.c.Handle(f.n[0], f.signed(t, s, 0, kind, packet)); e != nil {
++					t.Fatal(e)
++				}
++			case "expired":
++				f.r.mu.Lock()
++				s.handle.state.membership.ExpiresAt = time.Now().Add(-time.Nanosecond)
++				f.r.mu.Unlock()
++			}
++			if e := f.c.Handle(f.n[0], f.signed(t, s, 0, kind, packet)); e == nil {
++				t.Fatal("bad mesh admitted")
++			}
++			if f.phase(s) != VerifiedPairQuarantined {
++				t.Fatal("failed mesh freed uncertain native ownership")
++			}
++		})
++	}
++}
++func TestNativePairMeshWrongKeyConfirmationNeverStartsMesh(t *testing.T) {
++	f, s, digest := meshFixture(t, false)
++	digest[0] ^= 1
++	if e := f.c.Handle(f.n[0], f.signed(t, s, 0, protocol.TypeNativePairKeyConfirmed, protocol.NativePairKeyConfirmed(digest))); e == nil {
++		t.Fatal("wrong native transcript accepted")
++	}
++	if f.phase(s) != VerifiedPairQuarantined {
++		t.Fatal("invalid confirmation released owners")
++	}
++}
+--- a/coordinator/registry/native_pair_types.go
++++ b/coordinator/registry/native_pair_types.go
+@@ -32,6 +32,9 @@
+ 	starts                [2]protocol.NativeAuthorizationStart
+ 	hellos                [2][]byte
+ 	confirmations         [2]bool
++	keyConfirmed          [2]bool
++	meshRound             uint8
++	meshPending           [2][]byte
+ 	committed             bool
+ 	stopped               bool
+ 	writersEnded          bool
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerBootstrapAttachment.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerBootstrapAttachment.swift
+@@ -13,13 +13,20 @@
+     private let listener: ClusterBootstrapListener
+     private let condition = NSCondition()
+     private var connection: ClusterBootstrapConnection?
+-    private var pending: ClusterBootstrapRound?
++    // Owner public sequences include the prelude. Native socket sequences stay
++    // unchanged at 0...3; do not broaden the shared socket frame ABI.
++    private struct PublicRound {
++        let identity: ClusterBootstrapIdentity
++        let sequence: UInt64
++        let contribution: Data
++    }
++    private var pending: PublicRound?
+     private var reply: Data?
+     private var failed = false
+     private var completed = false
+ 
+     init(profile: ClusterOwnerBootstrapProfile, deadline: UInt64, nativeStart: ClusterNativeAuthorizationStart? = nil) throws {
+-        guard (profile == .nativeKeyPrelude) == (nativeStart != nil) else { throw OwnerWire.invalid("Native prelude profile/start differs") }
++        guard profile.requiresNativeAuthorization == (nativeStart != nil) else { throw OwnerWire.invalid("Native prelude profile/start differs") }
+         self.nativeStart = nativeStart
+         self.profile = profile; deadlineUptimeNanoseconds = deadline
+         listener = try .init(deadlineUptimeNanoseconds: deadline)
+@@ -38,7 +45,7 @@
+         guard !failed, let pending, pending.sequence == sequence, reply == nil,
+               bytes.count <= 131_072 else { throw OwnerWire.invalid("Unexpected bootstrap reply") }
+         try profile.validateReply(sequence: sequence, contribution: pending.contribution, reply: bytes)
+-        if profile == .mesh2 {
++        if profile == .mesh2 || (profile == .nativeKeyPreludeMesh2 && sequence >= 3) {
+             let start = pending.identity.rank * pending.contribution.count
+             guard Data(bytes.dropFirst(start).prefix(pending.contribution.count)) == pending.contribution else { throw OwnerWire.invalid("Bootstrap reply changed local contribution") }
+         }
+@@ -54,7 +61,7 @@
+     private func exchangePublic(sequence: UInt64, bytes: Data, identity: ClusterBootstrapIdentity,
+                                 publish: @Sendable (UInt64, Data) throws -> Void) throws -> Data {
+         try profile.validate(sequence: sequence, contribution: bytes)
+-        let round = try ClusterBootstrapRound(identity: identity, sequence: sequence, contribution: bytes)
++        let round = PublicRound(identity: identity, sequence: sequence, contribution: bytes)
+         condition.lock(); pending = round; reply = nil; condition.unlock()
+         try publish(sequence, bytes)
+         condition.lock()
+@@ -89,19 +96,26 @@
+                 try context.sendPeerConfirmation(exchangePublic(sequence: 1, bytes: confirmation, identity: connection.identity, publish: publish))
+                 try context.requireComplete(transcriptSHA256: accepted.transcriptSHA256)
+                 _ = try exchangePublic(sequence: 2, bytes: accepted.transcriptSHA256, identity: connection.identity, publish: publish)
+-                // The key-only native fixture acknowledges that it retained the
+-                // confirmed authority before exiting. This is not an RDMA mesh
+-                // round or a model Ready receipt; it prevents EOF racing the
+-                // owner's final public publication.
+-                let receipt = try connection.receiveRound()
+-                let marker = Data("native-key-prelude-complete-v1".utf8)
+-                guard receipt.sequence == 0, receipt.contribution == marker else { throw OwnerWire.invalid("Native key-only completion marker differs") }
+-                try connection.reply(to: receipt, gathered: marker + marker)
++                if profile == .nativeKeyPreludeMesh2 {
++                    for expected in 0..<4 {
++                        let round = try connection.receiveRound()
++                        guard round.sequence == UInt64(expected) else { throw OwnerWire.invalid("Native mesh sequence differs") }
++                        let gathered = try exchangePublic(sequence: UInt64(expected + 3), bytes: round.contribution,
++                            identity: connection.identity, publish: publish)
++                        try connection.reply(to: round, gathered: gathered)
++                    }
++                } else {
++                    // Key-only completion is unchanged; it is not a mesh round.
++                    let receipt = try connection.receiveRound()
++                    let marker = Data("native-key-prelude-complete-v1".utf8)
++                    guard receipt.sequence == 0, receipt.contribution == marker else { throw OwnerWire.invalid("Native key-only completion marker differs") }
++                    try connection.reply(to: receipt, gathered: marker + marker)
++                }
+             } else { for expected in 0..<profile.rounds {
+                 let round = try connection.receiveRound()
+                 guard round.sequence == UInt64(expected) else { throw OwnerWire.invalid("Bootstrap local sequence differs") }
+                 try profile.validate(sequence: round.sequence, contribution: round.contribution)
+-                condition.lock(); pending = round; reply = nil; condition.unlock()
++                condition.lock(); pending = PublicRound(identity: round.identity, sequence: round.sequence, contribution: round.contribution); reply = nil; condition.unlock()
+                 try publish(round.sequence, round.contribution)
+                 condition.lock()
+                 while !failed && reply == nil && DispatchTime.now().uptimeNanoseconds < deadlineUptimeNanoseconds {
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerBootstrapProfile.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerBootstrapProfile.swift
+@@ -8,8 +8,18 @@
+     case mesh2 = "jaccl_mesh2_i32le_destination32_v1"
+     /// Development authorization only: no mesh, model or Ready publication.
+     case nativeKeyPrelude = "native_key_prelude_v1"
+-    public var rounds: Int { self == .mesh2 ? 4 : 3 }
++    /// Authenticated key prelude followed by the existing four mesh callbacks.
++    /// This bounded profile still cannot publish model Ready.
++    case nativeKeyPreludeMesh2 = "native_key_prelude_mesh2_v1"
++    public var rounds: Int { self == .mesh2 ? 4 : (self == .nativeKeyPrelude ? 3 : 7) }
++    public var requiresNativeAuthorization: Bool { self != .mesh2 }
++    var roundWireProfile: Self? { self == .nativeKeyPreludeMesh2 ? self : nil }
+     func validate(sequence: UInt64, contribution: Data) throws {
++        if self == .nativeKeyPreludeMesh2 {
++            if sequence < 3 { try Self.nativeKeyPrelude.validate(sequence: sequence, contribution: contribution) }
++            else { try Self.mesh2.validate(sequence: sequence - 3, contribution: contribution) }
++            return
++        }
+         if self == .nativeKeyPrelude {
+             switch sequence {
+             case 0: _ = try ClusterNativeKeyHello(encoded: contribution)
+@@ -26,6 +36,11 @@
+         }
+     }
+     func validateReply(sequence: UInt64, contribution: Data, reply: Data) throws {
++        if self == .nativeKeyPreludeMesh2 {
++            if sequence < 3 { try Self.nativeKeyPrelude.validateReply(sequence: sequence, contribution: contribution, reply: reply) }
++            else { try Self.mesh2.validateReply(sequence: sequence - 3, contribution: contribution, reply: reply) }
++            return
++        }
+         if self == .nativeKeyPrelude {
+             switch sequence {
+             case 0:
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerNativeKeyRelay.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerNativeKeyRelay.swift
+@@ -7,18 +7,20 @@
+ /// The configured owner independently validates the start before taking a lease.
+ public final class ClusterOwnerNativeKeyRelay: @unchecked Sendable {
+     public let start: ClusterNativeAuthorizationStart
++    public let profile: ClusterOwnerBootstrapProfile
+     public let deadlineUptimeNanoseconds: UInt64
+     private let exchangeBody: @Sendable (UInt64, Data) throws -> Data
+     private let cancellation: @Sendable () -> Void
+     private let lock = NSLock()
+     private var cancelled = false
+     public init(start: ClusterNativeAuthorizationStart, deadlineUptimeNanoseconds: UInt64,
++                profile: ClusterOwnerBootstrapProfile = .nativeKeyPrelude,
+                 exchange: @escaping @Sendable (UInt64, Data) throws -> Data,
+                 cancel: @escaping @Sendable () -> Void) throws {
+-        guard deadlineUptimeNanoseconds > DispatchTime.now().uptimeNanoseconds else {
++        guard profile.requiresNativeAuthorization, deadlineUptimeNanoseconds > DispatchTime.now().uptimeNanoseconds else {
+             throw ClusterOwnerStateError.invalid("Native key relay deadline expired")
+         }
+-        self.start = start; self.deadlineUptimeNanoseconds = deadlineUptimeNanoseconds
++        self.profile = profile; self.start = start; self.deadlineUptimeNanoseconds = deadlineUptimeNanoseconds
+         exchangeBody = exchange; cancellation = cancel
+     }
+     func requireBinding(identity: ClusterWorkerIdentity, rank: Int, plan: String) throws {
+@@ -30,9 +32,9 @@
+     }
+     func exchange(sequence: UInt64, bytes: Data) throws -> Data {
+         guard lock.withLock({ !cancelled }) else { throw ClusterWorkerOwnerErrorProxy.closed }
+-        try ClusterOwnerBootstrapProfile.nativeKeyPrelude.validate(sequence: sequence, contribution: bytes)
++        try profile.validate(sequence: sequence, contribution: bytes)
+         let reply = try exchangeBody(sequence, bytes)
+-        try ClusterOwnerBootstrapProfile.nativeKeyPrelude.validateReply(sequence: sequence, contribution: bytes, reply: reply)
++        try profile.validateReply(sequence: sequence, contribution: bytes, reply: reply)
+         guard lock.withLock({ !cancelled }) else { throw ClusterWorkerOwnerErrorProxy.closed }
+         return reply
+     }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerWire.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerWire.swift
+@@ -72,9 +72,12 @@
+         let inc: UUID?
+         if kind == "open" { inc = nil } else { inc = try uuid("incarnation"); keys.insert("incarnation") }
+         var value = Self(kind: kind, epoch: try uuid("epoch"), lease: try uuid("lease"), incarnation: inc, sequence: try uint("sequence"))
+-        if ["open", "hello"].contains(kind), object["bootstrapProfile"] != nil {
++        if ["open", "hello", "bootstrapRound", "bootstrapReply"].contains(kind), object["bootstrapProfile"] != nil {
+             keys.insert("bootstrapProfile")
+             guard let profile = ClusterOwnerBootstrapProfile(rawValue: try string("bootstrapProfile")) else { throw invalid("Unknown bootstrap profile") }
++            if ["bootstrapRound", "bootstrapReply"].contains(kind), profile != .nativeKeyPreludeMesh2 {
++                throw invalid("Only the combined profile tags extended public rounds")
++            }
+             value.bootstrapProfile = profile
+         }
+         switch kind {
+@@ -85,14 +88,14 @@
+             let cap = kind == "bootstrapRound" ? 65_536 : 131_072
+             guard encoded.utf8.count <= ((cap + 2) / 3) * 4, let bytes = Data(base64Encoded: encoded),
+                   bytes.count > 0, bytes.count <= cap, bytes.base64EncodedString() == encoded,
+-                  value.bootstrapSequence! < 4 else { throw invalid("Bootstrap payload exceeds closed bounds") }
++                  value.bootstrapSequence! < (value.bootstrapProfile == .nativeKeyPreludeMesh2 ? 7 : 4) else { throw invalid("Bootstrap payload exceeds closed bounds") }
+             value.bootstrapBytes = bytes
+         case "open":
+             keys.formUnion(["clusterID", "remainingNanoseconds"])
+             value.clusterID = try string("clusterID")
+             guard let label = value.clusterID, (1...128).contains(label.utf8.count), label.utf8.allSatisfy({ (33...126).contains($0) }) else { throw invalid("Cluster label differs") }
+             value.remaining = try uint("remainingNanoseconds")
+-            if value.bootstrapProfile == .nativeKeyPrelude {
++            if value.bootstrapProfile?.requiresNativeAuthorization == true {
+                 keys.formUnion(["nativeStart", "nativeLocalDeadline"])
+                 value.nativeLocalDeadline = try uint("nativeLocalDeadline")
+                 guard value.nativeLocalDeadline! > 0 else { throw invalid("Local native deadline is empty") }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterRemoteWorkerEndpoint.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterRemoteWorkerEndpoint.swift
+@@ -14,7 +14,7 @@
+     let clusterID: String
+     let leaseID: UUID
+     private let nativeKeyRelay: ClusterOwnerNativeKeyRelay?
+-    private var selectedBootstrapProfile: ClusterOwnerBootstrapProfile? { nativeKeyRelay == nil ? bootstrapRelay?.profile : .nativeKeyPrelude }
++    private var selectedBootstrapProfile: ClusterOwnerBootstrapProfile? { nativeKeyRelay?.profile ?? bootstrapRelay?.profile }
+     private var selectedBootstrapDeadline: UInt64? { nativeKeyRelay?.deadlineUptimeNanoseconds ?? bootstrapRelay?.deadlineUptimeNanoseconds }
+     private let bootstrapRelay: ClusterOwnerBootstrapRelay?
+     private var bootstrapReplies: [(UInt64, Data)] = []
+@@ -204,7 +204,7 @@
+                     } else if let (round, bytes) = work.4 {
+                         frame = OwnerWire(kind: "bootstrapReply", epoch: expectedIdentity.membershipEpoch,
+                             lease: leaseID, incarnation: incarnation, sequence: sequence,
+-                            bootstrapSequence: round, bootstrapBytes: bytes)
++                            bootstrapProfile: selectedBootstrapProfile?.roundWireProfile, bootstrapSequence: round, bootstrapBytes: bytes)
+                         writeDeadline = min(writeDeadline, selectedBootstrapDeadline!)
+                     } else if let (command, deadline) = work.3 {
+                         guard now < deadline else { throw ClusterWorkerOwnerError.deadline }
+@@ -276,7 +276,7 @@
+                 guard incarnation != nil, frame.incarnation == incarnation else { throw OwnerWire.invalid("Remote incarnation differs") }
+                 switch frame.kind {
+                 case "bootstrapRound":
+-                    guard let selectedBootstrapProfile, ready == nil, !cleanup,
++                    guard let selectedBootstrapProfile, frame.bootstrapProfile == selectedBootstrapProfile.roundWireProfile, ready == nil, !cleanup,
+                           frame.bootstrapSequence == nextBootstrapSequence, let bytes = frame.bootstrapBytes else {
+                         throw OwnerWire.invalid("Unexpected bootstrap round")
+                     }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterWorkerOwnerService.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterWorkerOwnerService.swift
+@@ -36,7 +36,7 @@
+         }
+         // Opt-in is configured locally. Wire start bytes alone never enable it.
+         let nativeStart: ClusterNativeAuthorizationStart?
+-        if bootstrapProfile == .nativeKeyPrelude {
++        if bootstrapProfile?.requiresNativeAuthorization == true {
+             guard let authorizeNativeStart, let bytes = open.nativeStart else { throw OwnerWire.invalid("Native authorization is not configured") }
+             let value = try ClusterNativeAuthorizationStart(encoded: bytes)
+             guard value.common.epoch == open.epoch, value.leaseID == open.lease,
+@@ -168,7 +168,7 @@
+             let route = binding.route
+             let frame = OwnerWire(kind: kind, epoch: route.membershipEpoch, lease: route.leaseID,
+                 incarnation: route.ownerIncarnation, sequence: nextOutgoing, launchID: launchID,
+-                payload: payload, termination: termination, bootstrapProfile: kind == "hello" ? attachment?.profile : nil,
++                payload: payload, termination: termination, bootstrapProfile: kind == "hello" ? attachment?.profile : (kind == "bootstrapRound" ? attachment?.profile.roundWireProfile : nil),
+                 bootstrapSequence: bootstrapSequence, bootstrapBytes: bootstrapBytes)
+             try pipe.write(frame.encoded(commandStream: false), until: min(deadline + 2_000_000_000, DispatchTime.now().uptimeNanoseconds + 500_000_000))
+             nextOutgoing += 1
+@@ -202,7 +202,7 @@
+             switch frame.kind {
+             case "fence": state.disconnect(); attachment?.cancel(); child?.requestNativeCleanup()
+             case "bootstrapReply":
+-                guard let attachment, let sequence = frame.bootstrapSequence, let bytes = frame.bootstrapBytes else { throw OwnerWire.invalid("Unexpected bootstrap reply") }
++                guard let attachment, frame.bootstrapProfile == attachment.profile.roundWireProfile, let sequence = frame.bootstrapSequence, let bytes = frame.bootstrapBytes else { throw OwnerWire.invalid("Unexpected bootstrap reply") }
+                 try attachment.acceptReply(sequence: sequence, bytes: bytes)
+             case "release": guard terminalPublished else { throw OwnerWire.invalid("Release before native terminal") }
+             case "command":
+@@ -256,7 +256,7 @@
+                 }
+                 catch ClusterWorkerOwnerError.closed { break }
+                 if case .ready = frame.event {
+-                    guard attachment?.profile != .nativeKeyPrelude else { throw OwnerWire.invalid("Key-only authorization cannot publish native model readiness") }
++                    guard attachment?.profile.requiresNativeAuthorization != true else { throw OwnerWire.invalid("Native authorization/mesh alone cannot publish model readiness") }
+                     try attachment?.requireCompleted()
+                 }
+                 try lock.withLock {
+--- a/provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberInstallation.swift
++++ b/provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberInstallation.swift
+@@ -18,30 +18,33 @@
+     let artifacts: [URL]
+     let chip: String
+     let leaseDirectory: URL
++    let bootstrapProfile: ClusterOwnerBootstrapProfile
+ 
+     public init(expectedCoordinatorPolicy: Data, rank: Int, clusterID: String,
+                 identity: ClusterWorkerIdentity, profile: ClusterWorkerProfile,
+                 installedOwner: URL, ownerSHA256: String, nativeExecutable: URL,
+-                metallib: URL, resourceLibrary: URL, chip: String) throws {
++                metallib: URL, resourceLibrary: URL, chip: String,
++                bootstrapProfile: ClusterOwnerBootstrapProfile = .nativeKeyPrelude) throws {
+         try self.init(expectedCoordinatorPolicy: expectedCoordinatorPolicy, rank: rank, clusterID: clusterID,
+             identity: identity, profile: profile, installedOwner: installedOwner, ownerSHA256: ownerSHA256,
+             nativeExecutable: nativeExecutable, metallib: metallib, resourceLibrary: resourceLibrary,
+-            chip: chip, leaseDirectory: ClusterUserPaths().deviceDirectory)
++            chip: chip, leaseDirectory: ClusterUserPaths().deviceDirectory, bootstrapProfile: bootstrapProfile)
+     }
+     // Same existing canonical-style private directory checks; only fixtures
+     // select a temporary scope. Production uses ClusterUserPaths above.
+     init(expectedCoordinatorPolicy: Data, rank: Int, clusterID: String,
+          identity: ClusterWorkerIdentity, profile: ClusterWorkerProfile,
+          installedOwner: URL, ownerSHA256: String, nativeExecutable: URL,
+-         metallib: URL, resourceLibrary: URL, chip: String, leaseDirectory: URL) throws {
++         metallib: URL, resourceLibrary: URL, chip: String, leaseDirectory: URL,
++         bootstrapProfile: ClusterOwnerBootstrapProfile = .nativeKeyPrelude) throws {
+         let policy = try NativePairMemberPolicy(expectedCoordinatorPolicy)
+-        guard (0...1).contains(rank), identity.peers.count == 2,
++        guard bootstrapProfile.requiresNativeAuthorization, (0...1).contains(rank), identity.peers.count == 2,
+               ClusterConfigurationSyntax.hash(ownerSHA256), policy.chips.contains(chip),
+               identity.artifactSHA256 == Self.hex(policy.hashes[1]),
+               identity.peers[rank].buildSHA256 == Self.hex(policy.hashes[2]) else { throw NativePairMemberError.binding }
+         _ = try ClusterOwnerBinding(clusterID: clusterID, ownerIncarnation: UUID(), leaseID: UUID(),
+             identity: identity, profile: profile, rank: rank, executionPlanSHA256: Self.hex(policy.hashes[0]))
+-        self.policy = policy; self.rank = rank; self.clusterID = clusterID
++        self.bootstrapProfile = bootstrapProfile; self.policy = policy; self.rank = rank; self.clusterID = clusterID
+         self.identity = identity; self.profile = profile
+         localOwner = try .init(installedDarkbloom: installedOwner); self.ownerSHA256 = ownerSHA256
+         artifacts = [nativeExecutable, metallib, resourceLibrary]; self.chip = chip; self.leaseDirectory = leaseDirectory
+--- a/provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberSession.swift
++++ b/provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberSession.swift
+@@ -17,6 +17,9 @@
+     private let condition = NSCondition()
+     private var stopped = false, committed = false, launched = false
+     private var peerBinding: Data?, peerConfirmation: Data?
++    private var keyConfirmationSent = false, meshReady = false
++    private var meshContribution: Data?, meshReply: Data?
++    private var combinedMesh: Bool { installation.bootstrapProfile == .nativeKeyPreludeMesh2 }
+     private var nextRound: UInt64 = 0
+     private var endpoint: ClusterRemoteWorkerEndpoint?
+     private var timer: DispatchSourceTimer?
+@@ -72,6 +75,18 @@
+         case "native_pair_peer_confirmation":
+             guard committed, peerBinding != nil, nextRound <= 1, peerConfirmation == nil, payload.count == 32 else { throw NativePairMemberError.binding }
+             peerConfirmation = payload
++        case "native_pair_mesh_ready":
++            guard combinedMesh, committed, nextRound == 2, keyConfirmationSent, !meshReady,
++                  let peerBinding, payload == (try NativePairMesh.keyConfirmed(ClusterNativeKeyBinding(encoded: peerBinding).transcriptSHA256)) else { throw NativePairMemberError.binding }
++            meshReady = true
++        case "native_pair_mesh_reply":
++            guard combinedMesh, committed, meshReady, (3...6).contains(nextRound),
++                  let meshContribution, meshReply == nil, let peerBinding else { throw NativePairMemberError.binding }
++            let digest = try ClusterNativeKeyBinding(encoded: peerBinding).transcriptSHA256
++            let gathered = try NativePairMesh.decode(payload, transcript: digest, rank: start.rank,
++                round: UInt8(nextRound - 3), reply: true)
++            guard Data(gathered.dropFirst(start.rank * meshContribution.count).prefix(meshContribution.count)) == meshContribution else { throw NativePairMemberError.binding }
++            meshReply = gathered
+         default: throw NativePairMemberError.binding
+         }
+         condition.broadcast()
+@@ -114,7 +129,7 @@
+             let mayLaunch = !stopped && committed && connection.isLive && DispatchTime.now().uptimeNanoseconds < prepareDeadline; condition.unlock()
+             guard mayLaunch else { throw NativePairMemberError.deadline }
+             for pin in pins { try pin.requireUnchanged() }
+-            let relay = try ClusterOwnerNativeKeyRelay(start: start, deadlineUptimeNanoseconds: lifetimeDeadline,
++            let relay = try ClusterOwnerNativeKeyRelay(start: start, deadlineUptimeNanoseconds: lifetimeDeadline, profile: installation.bootstrapProfile,
+                 exchange: { [weak self] round, bytes in
+                     guard let self else { throw NativePairMemberError.inactive }; return try self.exchange(round, bytes)
+                 }, cancel: { [weak self] in self?.ownerInvalidated() })
+@@ -145,21 +160,43 @@
+         onFinished(self, reusable)
+     }
+     private func ownerInvalidated() {
+-        condition.lock(); let completedPrelude = nextRound == 3; condition.unlock()
++        condition.lock(); let completedPrelude = nextRound == UInt64(installation.bootstrapProfile.rounds); condition.unlock()
+         if !completedPrelude { cancel(notify: true) }
+     }
+     private func exchange(_ round: UInt64, _ bytes: Data) throws -> Data {
+         condition.lock()
+-        do { try requireLive(); guard committed, round == nextRound else { throw NativePairMemberError.binding } }
+-        catch { condition.unlock(); throw error }
++        let publicPacket: (String, Data)?
++        do {
++            try requireLive()
++            guard committed, round == nextRound else { throw NativePairMemberError.binding }
++            switch round {
++            case 0:
++                let hello = try ClusterNativeKeyHello(encoded: bytes)
++                guard hello.start.canonicalBytes == start.canonicalBytes else { throw NativePairMemberError.binding }
++                publicPacket = ("native_pair_hello", bytes)
++            case 1: publicPacket = ("native_pair_confirmation", bytes)
++            case 2:
++                guard let peerBinding, try ClusterNativeKeyBinding(encoded: peerBinding).transcriptSHA256 == bytes else { throw NativePairMemberError.binding }
++                if combinedMesh {
++                    guard !keyConfirmationSent else { throw NativePairMemberError.binding }
++                    keyConfirmationSent = true
++                    publicPacket = ("native_pair_key_confirmed", try NativePairMesh.keyConfirmed(bytes))
++                } else { publicPacket = nil }
++            case 3...6:
++                guard combinedMesh, meshReady, let peerBinding, meshContribution == nil, meshReply == nil else { throw NativePairMemberError.binding }
++                let digest = try ClusterNativeKeyBinding(encoded: peerBinding).transcriptSHA256
++                let packet = try NativePairMesh.packet(transcript: digest, rank: start.rank, round: UInt8(round - 3), value: bytes)
++                meshContribution = bytes
++                publicPacket = ("native_pair_mesh", packet)
++            default: throw NativePairMemberError.binding
++            }
++        } catch { condition.unlock(); throw error }
+         condition.unlock()
+-        if round == 0 {
+-            let hello = try ClusterNativeKeyHello(encoded: bytes)
+-            guard hello.start.canonicalBytes == start.canonicalBytes else { throw NativePairMemberError.binding }
+-            try send("native_pair_hello", bytes)
+-        } else if round == 1 { try send("native_pair_confirmation", bytes) }
++        if let publicPacket { try send(publicPacket.0, publicPacket.1) }
+         condition.lock(); defer { condition.unlock() }
+-        while !stopped && ((round == 0 && peerBinding == nil) || (round == 1 && peerConfirmation == nil)) && DispatchTime.now().uptimeNanoseconds < lifetimeDeadline {
++        while !stopped && ((round == 0 && peerBinding == nil) || (round == 1 && peerConfirmation == nil)
++                || (round == 2 && combinedMesh && !meshReady) || (round >= 3 && meshReply == nil))
++                && DispatchTime.now().uptimeNanoseconds < lifetimeDeadline {
+             _ = condition.wait(until: Date(timeIntervalSinceNow: 0.02))
+         }
+         try requireLive()
+@@ -172,8 +209,12 @@
+             result = peerBinding
+         case 1: guard let peerConfirmation else { throw NativePairMemberError.deadline }; result = peerConfirmation
+         case 2:
+-            guard let peerBinding, try ClusterNativeKeyBinding(encoded: peerBinding).transcriptSHA256 == bytes else { throw NativePairMemberError.binding }
++            guard !combinedMesh || meshReady else { throw NativePairMemberError.deadline }
+             outcome = "native-confirmation-observed"; result = bytes
++        case 3...6:
++            guard let meshReply else { throw NativePairMemberError.deadline }
++            result = meshReply; self.meshReply = nil; meshContribution = nil
++            if round == 6 { outcome = "native-mesh-rounds-complete" }
+         default: throw NativePairMemberError.binding
+         }
+         nextRound += 1; return result
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Protocol/NativePairMesh.swift
+@@ -0,0 +1,34 @@
++import Foundation
++
++/// Closed public mirror of coordinator/protocol/native_pair_mesh.go. No caller
++/// supplied lengths, inference data, native pointers or arbitrary collectives.
++enum NativePairMesh {
++    static func keyConfirmed(_ transcript: Data) throws -> Data {
++        guard transcript.count == 32 else { throw NativePairMessage.Invalid.publicFrame }
++        var out = Data([68, 66, 78, 75, 1]); out.append(transcript); return out
++    }
++    static func validate(round: UInt8, contribution: Data) throws {
++        switch round {
++        case 0: guard contribution == Data([2, 0, 0, 0]) else { throw NativePairMessage.Invalid.publicFrame }
++        case 1: guard contribution.count == 64 else { throw NativePairMessage.Invalid.publicFrame }
++        case 2, 3: guard contribution == Data([0, 0, 0, 0]) else { throw NativePairMessage.Invalid.publicFrame }
++        default: throw NativePairMessage.Invalid.publicFrame
++        }
++    }
++    static func packet(transcript: Data, rank: Int, round: UInt8, value: Data, reply: Bool = false) throws -> Data {
++        guard transcript.count == 32, (0...1).contains(rank), round < 4 else { throw NativePairMessage.Invalid.publicFrame }
++        let count = round == 1 ? 64 : 4
++        if reply {
++            guard value.count == count * 2 else { throw NativePairMessage.Invalid.publicFrame }
++            for r in 0..<2 { try validate(round: round, contribution: Data(value.dropFirst(r * count).prefix(count))) }
++        } else { try validate(round: round, contribution: value) }
++        var out = Data([68, 66, 78, reply ? 71 : 77, 1]); out.append(transcript)
++        out.append(UInt8(rank)); out.append(round); out.append(value); return out
++    }
++    static func decode(_ bytes: Data, transcript: Data, rank: Int, round: UInt8, reply: Bool = false) throws -> Data {
++        guard bytes.count >= 39 else { throw NativePairMessage.Invalid.publicFrame }
++        let value = Data(bytes.dropFirst(39))
++        guard try packet(transcript: transcript, rank: rank, round: round, value: value, reply: reply) == bytes else { throw NativePairMessage.Invalid.publicFrame }
++        return value
++    }
++}
+--- a/provider-swift/Sources/ProviderCore/Protocol/NativePairMessages.swift
++++ b/provider-swift/Sources/ProviderCore/Protocol/NativePairMessages.swift
+@@ -18,8 +18,8 @@
+     public let expiresAtUnixNano: Int64?
+ 
+     public static let maximumFrameBytes = 64 * 1024
+-    public static let inboundTypes: Set<String> = ["native_pair_prepared", "native_pair_hello", "native_pair_confirmation", "native_pair_owner_released", "native_pair_cancel"]
+-    public static let outboundTypes: Set<String> = ["native_pair_prepare", "native_pair_owner_start", "native_pair_binding", "native_pair_peer_confirmation", "native_pair_cancel"]
++    public static let inboundTypes: Set<String> = ["native_pair_key_confirmed", "native_pair_mesh", "native_pair_prepared", "native_pair_hello", "native_pair_confirmation", "native_pair_owner_released", "native_pair_cancel"]
++    public static let outboundTypes: Set<String> = ["native_pair_mesh_ready", "native_pair_mesh_reply", "native_pair_prepare", "native_pair_owner_start", "native_pair_binding", "native_pair_peer_confirmation", "native_pair_cancel"]
+     public enum Invalid: Error { case publicFrame }
+     enum CodingKeys: String, CodingKey {
+         case type, version, epoch, generation, sequence, payload, signature
+--- a/provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/MemberFixtureConfiguration.swift
++++ b/provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/MemberFixtureConfiguration.swift
+@@ -10,6 +10,7 @@
+     let modelID: String
+     let leaseDirectory: String
+     let behavior: String
++    var combinedMesh: Bool { behavior == "mesh" || behavior == "mesh-forbidden-ready" }
+     var start: ClusterNativeAuthorizationStart {
+         get throws {
+             guard let data = Data(base64Encoded: startBase64) else { throw MemberFixtureError.invalid }
+--- a/provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/NativePairMemberFixture.swift
++++ b/provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/NativePairMemberFixture.swift
+@@ -90,7 +90,8 @@
+             installed.append(try NativePairMemberInstallation(expectedCoordinatorPolicy: p, rank: rank,
+                 clusterID: config.clusterID, identity: config.identity(epoch: common.epoch), profile: MemberFixtureConfiguration.profile,
+                 installedOwner: owner, ownerSHA256: native.hex, nativeExecutable: owner, metallib: metallib,
+-                resourceLibrary: resource, chip: "Apple M4", leaseDirectory: gate))
++                resourceLibrary: resource, chip: "Apple M4", leaseDirectory: gate,
++                bootstrapProfile: config.combinedMesh ? .nativeKeyPreludeMesh2 : .nativeKeyPrelude))
+         }
+         installations = installed
+     }
+--- /dev/null
++++ b/provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/NativePairMemberMeshTests.swift
+@@ -0,0 +1,175 @@
++import CryptoKit
++import Foundation
++import Testing
++import DarkbloomClusterSecurity
++@testable import DarkbloomClusterRemote
++@testable import ProviderCore
++
++@Suite("Owned native member mesh", .serialized)
++struct NativePairMemberMeshTests {
++    @Test func meshPublicVectorAndClosedBoundsMatchGo() throws {
++        let digest = Data((0..<32).map(UInt8.init))
++        let vector = try NativePairMesh.packet(transcript: digest, rank: 1, round: 0, value: Data([2,0,0,0]))
++        #expect(vector.hex == "44424e4d01000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f010002000000")
++        #expect(try NativePairMesh.keyConfirmed(digest).hex == "44424e4b01000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
++        for i in vector.indices {
++            var changed = vector; changed[i] ^= 0x80
++            #expect(throws: NativePairMessage.Invalid.self) { try NativePairMesh.decode(changed, transcript: digest, rank: 1, round: 0) }
++        }
++        for round in UInt8(0)..<4 {
++            let value = Self.value(rank: 0, round: round)
++            let reply = try NativePairMesh.packet(transcript: digest, rank: 0, round: round, value: value + value, reply: true)
++            #expect(try NativePairMesh.decode(reply, transcript: digest, rank: 0, round: round, reply: true) == value + value)
++            #expect(throws: NativePairMessage.Invalid.self) { try NativePairMesh.decode(reply, transcript: digest, rank: 0, round: round) }
++            #expect(throws: NativePairMessage.Invalid.self) { try NativePairMesh.decode(Data(reply.dropLast()), transcript: digest, rank: 0, round: round, reply: true) }
++        }
++        #expect(throws: NativePairMessage.Invalid.self) { try NativePairMesh.packet(transcript: digest, rank: 2, round: 0, value: Data([2,0,0,0])) }
++        #expect(throws: NativePairMessage.Invalid.self) { try NativePairMesh.packet(transcript: digest, rank: 0, round: 4, value: Data([0,0,0,0])) }
++    }
++
++    @Test func onlyCombinedOwnerProfileAdmitsExtendedPublicSequence() throws {
++        let epoch = UUID(), lease = UUID(), incarnation = UUID()
++        var frame = OwnerWire(kind: "bootstrapRound", epoch: epoch, lease: lease, incarnation: incarnation,
++            sequence: 1, bootstrapSequence: 6, bootstrapBytes: Data([0,0,0,0]))
++        #expect(throws: (any Error).self) { try frame.encoded(commandStream: false) }
++        frame.bootstrapProfile = .nativeKeyPreludeMesh2
++        #expect(try OwnerWire.decode(frame.encoded(commandStream: false), commandStream: false).bootstrapSequence == 6)
++        frame.bootstrapSequence = 7
++        #expect(throws: (any Error).self) { try frame.encoded(commandStream: false) }
++        frame.bootstrapSequence = 3; frame.bootstrapProfile = .mesh2
++        #expect(throws: (any Error).self) { try frame.encoded(commandStream: false) }
++        frame.bootstrapProfile = nil
++        let legacy = try frame.encoded(commandStream: false)
++        #expect(!String(decoding: legacy, as: UTF8.self).contains("bootstrapProfile"))
++        #expect(throws: (any Error).self) { try ClusterOwnerBootstrapProfile.nativeKeyPrelude.validate(sequence: 3, contribution: Data([0,0,0,0])) }
++        try ClusterOwnerBootstrapProfile.nativeKeyPreludeMesh2.validate(sequence: 6, contribution: Data([0,0,0,0]))
++    }
++
++    @Test func actualMeshFourRoundsUseAuthenticatedSocketAndRetireWithoutReady() async throws {
++        let fixture = try NativePairMemberFixture(behavior: "mesh")
++        let peers = fixture.installations.map(MemberFixturePeer.init)
++        do {
++            let binding = try await confirmed(fixture, peers)
++            for peer in peers { #expect(peer.mock.snapshot().nativePairs.allSatisfy { $0.type != "native_pair_mesh" }) }
++            try await ready(fixture, peers, binding)
++            for round in UInt8(0)..<4 {
++                var values: [Data] = []
++                for rank in 0..<2 { values.append(try await contribution(peers[rank], binding, rank: rank, round: round)) }
++                #expect(values == [Self.value(rank: 0, round: round), Self.value(rank: 1, round: round)])
++                for rank in 0..<2 {
++                    let payload = try NativePairMesh.packet(transcript: binding.transcriptSHA256, rank: rank, round: round, value: values[0] + values[1], reply: true)
++                    try await peers[rank].mock.pushNativePair(fixture.message("native_pair_mesh_reply", rank: rank, nonce: peers[rank].nonce, sequence: UInt64(round) + 6, payload: payload))
++                }
++            }
++            for rank in 0..<2 {
++                let release = try await peers[rank].wait("native_pair_owner_released")
++                var expected = Data([68,66,78,82,1]); expected.append(contentsOf: SHA256.hash(data: fixture.starts[rank].canonicalBytes)); expected.append(contentsOf: [1,1,1])
++                #expect(Data(base64Encoded: release.payload) == expected)
++                try fixture.requireRetired(rank, confirmed: true)
++                let object = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: fixture.directories[rank].appendingPathComponent("native-mesh.json"))) as? [String: Any])
++                #expect(object["rounds"] as? Int == 4 && object["replyBytes"] as? [Int] == [8,128,8,8])
++                #expect(object["sameAuthenticatedSocket"] as? Bool == true && object["modelReadyPublished"] as? Bool == false)
++                let frames = peers[rank].mock.snapshot().nativePairs
++                #expect(frames.map(\.type) == ["native_pair_prepared", "native_pair_hello", "native_pair_confirmation", "native_pair_key_confirmed"] + Array(repeating: "native_pair_mesh", count: 4) + ["native_pair_owner_released"])
++                #expect(frames.map(\.sequence) == Array(UInt64(1)...9))
++                for frame in frames { try peers[rank].signer.verify(frame) }
++                #expect(peers[rank].mock.snapshot().inferenceChunks.isEmpty)
++            }
++            for peer in peers { await peer.close() }
++        } catch { for peer in peers { await peer.close() }; throw error }
++    }
++
++    @Test func meshCancellationJoinsActualNativeOwnersAtPendingRound() async throws {
++        let fixture = try NativePairMemberFixture(behavior: "mesh"), peers = fixture.installations.map(MemberFixturePeer.init)
++        do {
++            let binding = try await confirmed(fixture, peers)
++            try await ready(fixture, peers, binding)
++            for rank in 0..<2 { _ = try await contribution(peers[rank], binding, rank: rank, round: 0) }
++            for rank in 0..<2 {
++                #expect(!FileManager.default.fileExists(atPath: fixture.directories[rank].appendingPathComponent("native-mesh.json").path))
++                try await peers[rank].mock.pushNativePair(fixture.message("native_pair_cancel", rank: rank, nonce: peers[rank].nonce, sequence: 6, payload: Data([68,66,78,67,1])))
++            }
++            for rank in 0..<2 { _ = try await peers[rank].wait("native_pair_owner_released"); try fixture.requireRetired(rank, confirmed: true) }
++            for peer in peers { await peer.close() }
++        } catch { for peer in peers { await peer.close() }; throw error }
++    }
++
++    @Test func meshWrongLocalEchoClosesControlAndNeverReturnsCapacity() async throws {
++        let fixture = try NativePairMemberFixture(behavior: "mesh"), peers = fixture.installations.map(MemberFixturePeer.init)
++        do {
++            let binding = try await confirmed(fixture, peers); try await ready(fixture, peers, binding)
++            for round in UInt8(0)..<2 {
++                for rank in 0..<2 { _ = try await contribution(peers[rank], binding, rank: rank, round: round) }
++                let value = round == 0 ? Self.value(rank: 0, round: 0) + Self.value(rank: 1, round: 0) : Data(repeating: 99, count: 128)
++                for rank in 0..<2 {
++                    let packet = try NativePairMesh.packet(transcript: binding.transcriptSHA256, rank: rank, round: round, value: value, reply: true)
++                    try await peers[rank].mock.pushNativePair(fixture.message("native_pair_mesh_reply", rank: rank, nonce: peers[rank].nonce, sequence: UInt64(round)+6, payload: packet))
++                }
++            }
++            let end = ContinuousClock.now.advanced(by: .seconds(5))
++            while ContinuousClock.now < end && peers.contains(where: { $0.context.isLive }) { try await Task.sleep(for: .milliseconds(5)) }
++            for peer in peers { #expect(!peer.context.isLive); await peer.close() }
++            // Disconnect cannot publish the signed old-connection release. The
++            // local obligation remains quarantined even after actual cleanup.
++            let cleanup = ContinuousClock.now.advanced(by: .seconds(5))
++            for rank in 0..<2 {
++                let journal = fixture.directories[rank].appendingPathComponent(".darkbloom/cluster-device/native-device.lease")
++                while ContinuousClock.now < cleanup {
++                    if try Data(contentsOf: journal).isEmpty { break }
++                    try await Task.sleep(for: .milliseconds(5))
++                }
++                try fixture.requireRetired(rank, confirmed: true)
++                #expect(peers[rank].control.status == "quarantined")
++                #expect(peers[rank].mock.snapshot().nativePairs.allSatisfy { $0.type != "native_pair_owner_released" })
++                #expect(!FileManager.default.fileExists(atPath: fixture.directories[rank].appendingPathComponent("native-mesh.json").path))
++            }
++        } catch { for peer in peers { await peer.close() }; throw error }
++    }
++
++    @Test func combinedMeshOwnerStillRefusesNativeReady() async throws {
++        let fixture = try NativePairMemberFixture(behavior: "mesh-forbidden-ready"), peer = MemberFixturePeer(installation: fixture.installations[0])
++        do {
++            try await peer.connect()
++            try await peer.mock.pushNativePair(fixture.message("native_pair_prepare", rank: 0, nonce: peer.nonce, sequence: 1))
++            _ = try await peer.wait("native_pair_prepared")
++            try await peer.mock.pushNativePair(fixture.message("native_pair_owner_start", rank: 0, nonce: peer.nonce, sequence: 2))
++            _ = try await peer.wait("native_pair_owner_released"); try fixture.requireRetired(0, confirmed: false)
++            #expect(peer.mock.snapshot().nativePairs.map(\.type) == ["native_pair_prepared", "native_pair_cancel", "native_pair_owner_released"])
++            #expect(peer.mock.snapshot().inferenceChunks.isEmpty)
++            await peer.close()
++        } catch { await peer.close(); throw error }
++    }
++
++    private static func value(rank: Int, round: UInt8) -> Data {
++        if round == 0 { return Data([2,0,0,0]) }
++        if round == 1 { return Data(repeating: UInt8(rank + 20), count: 64) }
++        return Data([0,0,0,0])
++    }
++    private func confirmed(_ fixture: NativePairMemberFixture, _ peers: [MemberFixturePeer]) async throws -> ClusterNativeKeyBinding {
++        for peer in peers { try await peer.connect() }
++        for rank in 0..<2 { try await peers[rank].mock.pushNativePair(fixture.message("native_pair_prepare", rank: rank, nonce: peers[rank].nonce, sequence: 1)) }
++        for rank in 0..<2 { _ = try await peers[rank].wait("native_pair_prepared") }
++        for rank in 0..<2 { try await peers[rank].mock.pushNativePair(fixture.message("native_pair_owner_start", rank: rank, nonce: peers[rank].nonce, sequence: 2)) }
++        var hellos: [ClusterNativeKeyHello] = []
++        for peer in peers { hellos.append(try ClusterNativeKeyHello(encoded: #require(Data(base64Encoded: try await peer.wait("native_pair_hello").payload)))) }
++        let binding = try ClusterNativeKeyBinding(hellos: hellos)
++        for rank in 0..<2 { try await peers[rank].mock.pushNativePair(fixture.message("native_pair_binding", rank: rank, nonce: peers[rank].nonce, sequence: 3, payload: binding.canonicalBytes)) }
++        var tags: [Data] = []
++        for peer in peers { tags.append(try #require(Data(base64Encoded: try await peer.wait("native_pair_confirmation").payload))) }
++        for rank in 0..<2 { try await peers[rank].mock.pushNativePair(fixture.message("native_pair_peer_confirmation", rank: rank, nonce: peers[rank].nonce, sequence: 4, payload: tags[1-rank])) }
++        for peer in peers {
++            let message = try await peer.wait("native_pair_key_confirmed")
++            #expect(try Data(base64Encoded: message.payload) == NativePairMesh.keyConfirmed(binding.transcriptSHA256))
++        }
++        return binding
++    }
++    private func ready(_ fixture: NativePairMemberFixture, _ peers: [MemberFixturePeer], _ binding: ClusterNativeKeyBinding) async throws {
++        for rank in 0..<2 { try await peers[rank].mock.pushNativePair(fixture.message("native_pair_mesh_ready", rank: rank, nonce: peers[rank].nonce, sequence: 5, payload: NativePairMesh.keyConfirmed(binding.transcriptSHA256))) }
++    }
++    private func contribution(_ peer: MemberFixturePeer, _ binding: ClusterNativeKeyBinding, rank: Int, round: UInt8) async throws -> Data {
++        let snapshot = try #require(try await peer.mock.waitForSnapshot(timeout: .seconds(5)) { $0.nativePairs.filter { $0.type == "native_pair_mesh" }.count > Int(round) })
++        let frame = snapshot.nativePairs.filter { $0.type == "native_pair_mesh" }[Int(round)]
++        try peer.signer.verify(frame)
++        return try NativePairMesh.decode(#require(Data(base64Encoded: frame.payload)), transcript: binding.transcriptSHA256, rank: rank, round: round)
++    }
++}

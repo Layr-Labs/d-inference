@@ -1,0 +1,103 @@
+# Latest checkpoint — 2026-09-15T23:32:00.497377+00:00
+
+Goal ACTIVE. Previous goal turn was PROGRESS (real installed HTTP short smoke). This continuation also PROGRESS:4KAPIpass,8Kserialmiss,31filepublicprefillselectionMAINintegration/native+Providerbuilds, installedcandidateboth. No productionrelease/push. Full scope intact.
+
+## LIVE HANDLE — inspect before other native/build jobs
+
+Root physical8Klookahead attempt RUNNING in exec session78020. Runner installed-product-lookahead-http-qualification-20260915/run.py --attempt1, frozen prompt8192/rendered/IDs from installed-http-long-prompts-20260915/fixtures, declared8192, existing frozenclient. Allagentcompilersheld. Poll SAMEhandle; do not restart because observationtimeout. It will own/restorebounded600s48alias and stopactualserver/owners. Newruntimepath below. No other rootliveexec handles: native test56937terminalPASS; Provider59242terminalPASS; deployment29417terminalPASS; docs61441terminalPASS.
+
+## MAIN changes this continuation
+
+Seven reviewed installed-session fixtures promoted from installed-session-checks-draft (manifest1890d22b597b35be4d8d9f5ed365bcff97bb22152f3f05242a9dcb8f87294ed2). ActualMAIN runnerPASS14.3535s, receipt installed-session-checks-main-integration-20260915/checks-1/execution.json. docs/developer/test.md/build.md updated toactualinstalledintegration+runner.
+
+31files explicit productprefillselection promoted from cluster-prefill-selection-draft. Manifest ecc0edc44dfc09254b2f421c28e663ca2dca99fc4aa006d34fb703c1258786ca, patch3254f65db2f252d59ed01e3bc3ed63482f3d78a68d00515d8ebd2ae7d8d437c4. Backup/promotion cluster-prefill-selection-main-integration-20260915. RootreviewProtocol/config/nativecoupling; independentnative review e37c7a0b6512f80a19a13056d95bd907406d5870b6f7452d54d0bdd1309b2124. Closedserial_v1/one_chunk_lookahead_v1 capabilityadvertisement, savedprefillSchedule(optionalomittedserialoldbytes; newconfiguresavesexplicit), nativeCLIflagonlyforlookahead preservesoldb833argv, bilateralpre-weightbinding, ordinaryservingreserve/Readyextraallowance immutablethroughrequest. No BenchmarkSPI/capture/envtoggleproductpath. Sixfunctionalnativefileschangedpluscomment.5featuredocsupdated.
+
+- Native release buildPASS34.178s; hash ffcbd7de0ccc5a8b35881f9dd5ed5b6fcb8a2f5bdc7e7b63fa1e46bd9c79bba5. Actual puremetadataPASS0.54s; cap7e8a1480f1c8831cf447fa2f51935bf5e3b79024b1b83c09aa2df0bb6df883e7 advertisesbothschedules. Same metalli b2129f6132794d84243c02631bc7478417dba0e0dbd10467beab56c11bf20bdd2 (actualhashstartswith2129, precedingb herejustwordboundary; useoldcheckpointcanonical).
+- Provider fullbuild+75selectedtests11suitesPASS97.7729s. NewProviderdebug76eda3a1a9670b8aaa06c92f3e41662f4b74e14de523e4b1cd0540b651081630. Package.resolved unchangedb2b12d24d48bbedc4583d8831e0b81fe68b96d641804e0ebc56715cd2d88a7ea.
+- ActualRuntime22XCTest(ResidentFacade/Recording)PASS100.1666s with163sourcepinsunchanged. Isolated clonedcachedworkspace in integration/native-test-workspace; MAINruntime/testsourcescopiedexact, MLXsiblingssymlinkMAIN. FirstattemptfailedcopiedModuleCacheabsolutePCMpath; retained/movedonlyownedclonedcachethenrebuildPASS. No productsourcefix needed. No payload/nativeGPUgenerationinthesetests.
+- docs300PASS/diffcheckPASS afterpromotion. Goal milestone1 remainsopenbroaderrecovery/matchedrepresentativeworkloads.
+
+## Candidate installed BOTH and selected lookahead
+
+Bundle installed-distributed-lookahead-product-bundle-20260915,10files369103502B; Provider76eda..., nativeffcbd...,cap7e8a...,samefixedmetallib/resources. Both actualfilehashes+ownerhelp+nativepuremetadataverified. Remote BOTH /Users/developer/DarkbloomDev/installed-distributed-lookahead-runtime-20260915. Receipts installed-distributed-lookahead-deployment-20260915.
+
+Root source scripts package_installed_distributed_lookahead_20260915.py, deploy_installed_distributed_lookahead_20260915.py, configure_installed_distributed_lookahead_20260915.py deriveearlierreviewedscriptswithnewpin/pathonly. Newconfiginputs installed-lookahead-product-configuration-20260915 manifest8e831a739e688384977c2b5b92ec08b260bb0c00a7fff30c299714b1b03ca922. ClusterIDdarkbloom-product-qwen9b-lookahead-20260915,cut4/28/chunk512/120s,explicitlookaheadboth. canonicalleader9a3e02ade8f3648011a19662f08cf493749b3b48f99ea92b2e5023c13f1c1427, followerf6c1c8d3b58b1eb2899dd063441aeabf1a60f0086623cb05d47255cf092d523f. DefaultproviderTOMLhashes24=6dfbfa2d53474b660a48e7966d7be064400628567bc641791c7f0ba51d935fc9,48=fa2bf685cad415222448e8ca16b10b8b2d2fe511ad557439ae2e7ec999e3e80a. Previousoldserialdefaultsbackedupinnewruntime/operator-state; oldb833runtime/receiptsremain. Actualconfigureexit0both; inertuntilstart.
+
+Newphysicalharness sameoldreviewedcodeexcept2installationrootchanges(guards/supervisor), lineage.jsonpins. Remotequalification-toolsreadyboth. Separatehelperoptional/tokenizepreflightusesfixedlocalleaderHTTPauth/no redirects/strictintegerIDs and15sabsolutealarmcopiedfromfrozenclient, closesresponse+connectionnestedfinally; pipeline reviewed. Prefix sourcepins includehelper,timer,rendered,expectedIDs. Rootphysicallookaheadpurgedcacheboth immediatelybeforeattempt1;guardsunchanged.
+
+## New HTTP evidence (oldb833 serial product)
+
+physical2short andphysical3medium independentraw replayPASS, audit installed-product-http-attempt2-audit-20260915 manifest9220b36875d75160bfc435dd6b5f62f256dced64873e5f4515e2022ef3d24d26; sourcereview69234e289bce86c6b80ba7cb2ffb045041cf204d354f1e4040b3f37c7211628b; replay8ef43de871e69ba8fc209b2fac48ca4264e76e106f558cfecb689769df4f05d8.218samplesalladmissible. No perrankACKtranscriptinHTTPfolder; naturalproviderexit0+sourcecleanupcontract+postflightproveenclosingobservation. Hummingbirdshutdown Alreadyclosed/CancellationError retained, notstderr-cleanclaim.
+
+- physical3PASS963serverprompt/128output, externalcontent2.461908417s vs10.963s, total6.341170583s.55? actualresources58/54 minima6.259475708/25.604507446GiB. exactsourcesnapshotretained.
+- physical4PASS4096serverprompt/128output, content9.755173625s vs14.096s, total13.707597459s. Run24.14545s;89/82resourcesmin6.677352905/26.011703491GiB. Both cleanup/naturalexit0/journals0/aliasrestore. Exactsource snapshotreconstructedfrompostdeltaandhashverifiedagainstinputpins beforestoring; everypinmatches.
+- physical5FAIL8192declared/frozenfullyrenderedinput,0content,clientelapsed18.321215541s,role-onlySSE(noDONE/no terminalusage). `/tokenize`actualSwiftall8192IDs matchpreparedRustIDs (responseSHAa38af1d287fc1f1184d0adb1b635f2cbcadd40f1acbed9fe5610779450360734), outsidegenerationtiming. Deadline18.192s missed; serverreportedruntimefailure atthatboundary (no perrankprecisecause transcript). Clientexit1/providerexit1,noForcedKill,allresourceguardsPASS105/97min6.544631958/25.884323120GiB, workersabsent/journals0/aliasrestored. Failure retained; notreplacedorcalledpassingHTTP. exactsourcesnapshotretained.
+
+All remain singledevelopmentprompts/freshinstalledsessions/MTPoff,Providerdebug/nativeRelease,directTailscaleclient, notrepresentativepercentiles/OpenRouter/upstreamqualification/numericalreferenceofnewprompts.4K/8Kpromptcounts sourcefixtures below. Newcandidatecannotclaimpairedbinaryidenticalspeedupvsoldb833serial; runnewcandidate serialcontrol ifneeded.
+
+## Frozen long prompts
+
+installed-http-long-prompts-20260915/fixture-manifest.json5d97049c6998aaab9f1e85c3a56ab079642227f3d724e0e56c283fe6f3a2a240(19members). ExactPythonfullJinja+tokenizer4096/8192, singleuserthinkingoff,nonrepeatedMLXsourceprefix,MITlicense. WholepinnedJinjabranchmatchesexplicitrender, addSpecialTokensfalse. ToolverifyrootalsoPASS.4KpromptSHAcd705525b8fee44acd155c7b7e558890932c4add723628da502b04b1d0f408bc;8KSHAa33c1d812f1561ae61fabb1dc15b07208af932ef2c6d73f983750219c7254d97.8KIDs6c00334453235f1045f47111cc45fb0e449c8d62191680ce4a6ae7991752f6f7. ActualCLIrequestsettingssamefrozenclient. Use uvtools/vllm-mlx/bin/python forverify.py; no extraPythoninstall.
+
+## Agents active
+
+transport_probe: private initialclusterstatus/doctor implementation. Reuseinstalledmetadata validator readonly(no matrixwrites), authenticated/no-store/nonceboundstatusroute<=16KiB underSAMEconfiguredHTTPauthpolicy. CLIvalidateslocaldiscoveryagainstlocal-interfaceaddresses(getifaddrs),supportsourTailscaleownbindnotonlyloopback; wildcard->loopback, arbitraryremotecredentialforwardingrefuses; labelsnoauthobservationshonestly. Actualreadiness/epoch/member/transport/schedule/MTPoff/lifetime/quarantine, config/PIDnotproof. Physicalcollectiveprobingnotyetdefault. Private/source-onlyduringrootphysical.
+
+arithmetic_audit: privateQwen9BMTPloaderextension. Separatefinalrankassistantwithownreplicatedinputembeddingandinlinehead; sharesalreadyloadedfinalnorm/lm_head,keepstageinertembeddingandMTPoffpath/receiptsexact. NarrowMLXLLMSPIpreparation/materialization avoidswhole-shardload. NewRuntimeMTPsource/placement/resources/materializer; existingQwenResidentLoading.swift extractiononly(nooverlapprefill6files).31headtensors136881152B+3embedding572129280B=709010432B rawbeforeallocator/cast/scratch/state. No MTPactiveadvertisement/generationflag untilactualverifier/historytransactions. Private/source-only.
+
+pipeline_stage_plan: privateHTTPcancellationclient+minimalharness derivative, beforefirstelapseddisconnect andaftertwo nonemptycontentevents. Retainsrawclocks/prefix/phase; observes30s self-retirementwindowbeforeseparateparentstopfallback. No EOF=retirementclaim. Freshstartupnormalrequest neededunderroot. FakeHTTPtestsheldduringphysical. AlsocompletedMTPsource map forarithmetic; committed final-rankpre-normhistorymissing, loaderaloneinsufficient.
+
+## Next work
+
+Poll78020 and verify outcome/cleanup, retainexactsource snapshot. Iflookaheadpasses8KSLA, stillneednewbinaryserialcontrol/representativebalancedrepeatworkloads, broaderHTTPcancel/peerfailure/recovery. PublishdatedHTTPreportandupdatestatuslineafterevidencereview. CheckMAINinstalledsession/newprefillconfigcontrolfixturesaftercombinedsourcechanges ifrelevant. Allowagentsfocusedtestswhenphysicaldone; rootcoordinatesheavybuilds. ContinueMTPactualgenerationtransaction,largermodeladapters, longrunningepoch/reconnect, coordinatoraccounting,releasepackaging/docs/M3projections. Do notmarkgoalcomplete.
+
+---
+Older checkpoint below is historical (superseded current-stage/install/agent statements).
+
+# Current distributed delivery checkpoint — 2026-09-15T23:17:23.169166+00:00
+
+Goal ACTIVE. User asked for progress, not a stop. Full authorization persists. No release/push/production deploy. Plan-first fulfilled. Latest branch HEAD605651bb9, master merged earlier; MAIN changes uncommitted. Preserve prior work and dirty MLX submodules.
+
+## Newest result: actual installed HTTP smoke PASS
+
+Both M4 Pro Macs reached by SSH at23:15 UTC, en1active. Both have installed development bundle at /Users/developer/DarkbloomDev/installed-distributed-runtime-20260915. Provider debug binary bf3f5f182083488c40fef46807adb07d78f9df6b8e14e5a78a21377c98b97001; native release b8335e55de6e681e9b1b7be6ae6a64e57380cc20b3d6e6c13587517afee0a1d1; actual capability26fa98e8d1c59f83318f806c30b81381b868818a2cb9274f49150e4b5644577e. Complete bundle installed/verified both, paired trust verified, actual cluster configure saved default provider references both. Private previous defaults/backups under remote runtime/operator-state; not restored because inert setup is the intended installed test state. 48previous watchdog was stopped using its normal darkbloom stop command before installation; auto-start disabled.
+
+Root actual command start --local --distributed --bind100.96.148.101 --port18081, fixed local owner and direct strictSSH follower owner. Defaults serial/MTPoff, cut4/28. Client from development Mac via Tailscale, actual OpenAI HTTP/auth/SSE, pinned thinkingoff settings.
+
+- physical-1 aborted before HTTPReady at24actualfree5.9114685GiB below6. No request, graceful cleanup/journals0/no native children/alias restored. Cache purged both afterward; no guard lowered.
+- physical-2 COMPLETED PASS in15.012690583s; ready8.921632042s from orchestration start. Actual external POST HTTP200, firstnonemptycontent1.339245042s, 128outputtokens,42 server-reported prompttokens,5.220690750s totalclientelapsed,finish:length,[DONE],bodyEOF. SLA10.042s on server-reported input, margin8.702754958s. One short smoke only, not representative/longprompt/OpenRouter/SLA qualification; no fresh numerical reference. Client itself does not claim native cleanup; enclosing supervisor/postflight proves both absent/journals0/naturalexit0/aliasrestored.
+- physical2 all samplesAC/zeroSwap/pressure1/actualfree>=6GiB, resource minima retained below. Exact root/client/prompt sources snapshot underphysical2/source-snapshot, matchinginputpins. No processes/alias left; root physical session75243 exited0.
+- Independent raw replay requested from arithmetic agent; pending as of checkpoint. Do not claim its review complete until result.
+
+Receipts installed-distributed-deployment-20260915 (24), installed-distributed-deployment-attempt2-20260915 (48); installed-distributed-configuration-20260915; installed-product-http-qualification-20260915/physical-{1,2}. Bundle installed-distributed-product-bundle-20260915. Configplan frozen installed-product-qualification-plan-20260915; actual canonicalconfigleader0f7a60ffddea51bd268eecc4866bc040a598ff9baaf5073fdcb15e5bc19523eb, followerdced67f01f0f64a879fe7cf4527cd3dc63a9570f0ec99c769e8ac208b1bcab35; both default~/.config/darkbloom/provider.toml.
+
+Physical2 resources: [{"file": "resources-0.jsonl", "samples": 55, "minimumActualFreeGiB": 6.679473876953125, "allAdmissible": true}, {"file": "resources-1.jsonl", "samples": 51, "minimumActualFreeGiB": 26.471908569335938, "allAdmissible": true}]
+
+## Harness and next local work
+
+Root scripts package_installed_distributed_20260915.py, deploy_installed_distributed_20260915.py, configure_installed_distributed_20260915.py. Physical runner installed-product-http-qualification-20260915/run.py --attemptN --prompt-filePATH --client installed-http-client-draft-20260915/client.py. Exactly one request128 each, sourcepin/snapshot everyattempt. Temporary bounded48IPv4alias169.254.70.47/32 for600s, same approved priorlease, no bridge resets/reboots. Preserve6GiBfree/zeroSwap/AC guards.
+
+Supervisor publication/finally and nonblocking bounded control fixes independently reviewed; three CPUfake child ownership cases PASS in installed-product-supervisor-checks2-20260915/checks.json. Fixed supervisorSHA958d13bb771c92350fb73c4302a0b7aaaf7f6a6554abd8af4d741b205d7cce14 copied both remote tools and cohort. First failed fixture was coldPython readiness race, preserved. run.py retains unknown postflight and interruptions until process absence or420s from productstart; monitors/errors retained, never clearjournal bytime. All fixes usedphysical2.
+
+Client frozen installed-http-client-draft-20260915 manifest809b6e9685d3bd3bf4e5c0e1f909f7b787a56c149a6e4792b8acb914ea0e6d0c;13CPU/fakechecksPASS, independentreviewnoblocker. Token private0600file fetched/deleted, neverargv. Captures requestsend-tofirstcontent withseparatereasoningclock. Shortprompt139B yielded42reportedtokens; medium4719B notyetrun. /apply-template additionalContext differs fromthinkingoffrequest, do notuseasexactcount withoutmatchingtranslation.
+
+## Agent state / still private
+
+transport_probe RUNNING source-only explicit product prefill scheduling overlay: reusable serial_v1/one_chunk_lookahead_v1, adapter-advertisedcapability, savedselection, strictworkerflag, preweightbilateralbinding, actualReadyextraallowance. Preserve oldcanonicalserialdescriptor/defaultserial, no BenchmarkSPI/capture inproduct. No compiler/native/network untilrootrelease. Existing benchmarklookaheadphysicallyvalidated; installedordinaryproductstillserial.
+
+pipeline_stage_plan idle afterindependentharnessreview; residualinterruptedgefixedafterreview. arithmetic_audit auditingphysical2raw. Both can handle source/CPU tasks.
+
+Installed-session repo-owned7filefixtures PRIVATE notpromoted: installed-session-checks-draft manifest1890d22b597b35be4d8d9f5ed365bcff97bb22152f3f05242a9dcb8f87294ed2; integration.patchfdaafc90b57b54e01ccfb2abb0915525bbaea608d88ecc4ccf5adb1465ce7a3e. Strongpartialstartup/missingACK/exit7assertions. qualification-3PASS14.657s55sourcepinsunchanged. PromoteafterreviewandMAINrun, docsdeveloper/testentry.
+
+## Immediate priorities
+
+1. Retain independentphysical2audit; communicate actual shortHTTPsuccess to user. Existinggoalfirst9Bmilestone stillopen forlongpromptTTFT/sustained/recovery.
+2. Additional actual medium/longpromptHTTP uncached tests, exacttemplatecount and clientmeasurement; controlledHTTPcancellation/freshrestart; widenpeer/linkfailure. Retainwarm/cold/outputconditions, failures,percentiles; no falseSLAclaims.
+3. Integrateandverifyexplicitlookaheadproductprofile. Releasecompilercoordinationtorootonlywhen no physicalrun.
+4. Longrunningrotation/reconnect/statusdoctor/generalProviderLoop/coordinatoraccounting; thenactiveMTPpairs/largermodeladapters andmodel-planningreuse, matchedsolo/distributed representativebenchmarks, M3Ultra projection(notmeasurement), releasereadiness.
+
+## Previously completed, still valid
+
+LatestMAIN Provider/CLI75selectedtests11suitesPASS24.7438s, Process/Remote/SSHchecksPASS, docs300PASS/diffcheckPASS. Core reusable typed adapter/planner/partition/native/transport/session/ownership/deadline/accounting modules implemented. Qwen9Bserial+lookahead128selectedtokens/finalBF16row/72statefingerprints matchsingleMacreference. Matchedinternal8192prompt/512chunk/128output/MTPoff/B1 threewarmmeasurements: serial425.968prefillTPS19.231474s,lookahead493.987TPS16.583442s; decode22.887vs22.903TPS. These are internalnotHTTP, repeateddiagnosticpromptnotrepresentative. Lookahead+15.968%effectivepromptthroughput vsserialdistributed, no matchedsolo128speedupclaim. Previouswakeuppump improveddecode~11to~23TPS. Actualbefore-first andafter2token cancels+freshrecoveryPASS, ownershipchargeduntilrealretirement. No27B/Gemma/MTP/M3qualification.
+
+Full previous baseline details/provenance retained in CLUSTER_DELIVERY_NEXT.pre-installed-http-20260915.md and CLUSTER_DELIVERY_NEXT.pre-start-integration-20260915.md. Those archives have stale current-stage/install/agent statements; this checkpoint supersedes them.

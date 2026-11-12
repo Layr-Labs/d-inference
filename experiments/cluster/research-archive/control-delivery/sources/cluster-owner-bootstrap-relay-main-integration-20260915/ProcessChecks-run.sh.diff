@@ -1,0 +1,20 @@
+--- before/libs/darkbloom-cluster/Tests/ProcessChecks/run.sh
++++ libs/darkbloom-cluster/Tests/ProcessChecks/run.sh
+@@ -7,6 +7,9 @@
+ trap 'rm -rf "$task_build"' EXIT
+ task_target="$(uname -m)-apple-macos14.0"
+ xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -emit-library -emit-module \
++  -module-name DarkbloomClusterBootstrap -emit-module-path "$task_build/DarkbloomClusterBootstrap.swiftmodule" \
++  "$task_root"/Sources/DarkbloomClusterBootstrap/*.swift -o "$task_build/libDarkbloomClusterBootstrap.dylib"
++xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -emit-library -emit-module \
+   -module-name DarkbloomClusterProtocol -emit-module-path "$task_build/DarkbloomClusterProtocol.swiftmodule" \
+   "$task_protocol"/*.swift -o "$task_build/libDarkbloomClusterProtocol.dylib"
+ xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -emit-library -emit-module \
+@@ -15,6 +18,7 @@
+   "$task_root"/Sources/DarkbloomClusterProcess/*.swift -o "$task_build/libDarkbloomClusterProcess.dylib"
+ xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -parse-as-library \
+   -I "$task_build" -L "$task_build" -lDarkbloomClusterProtocol -Xlinker -rpath -Xlinker "$task_build" \
++  -lDarkbloomClusterBootstrap \
+   "$task_root/Tests/ProcessChecks/FixtureIdentity.swift" "$task_root/Tests/ProcessChecks/FakeClusterWorker.swift" -o "$task_build/fake-worker"
+ if [[ "${1:-}" == "--compile-only" ]]; then exit 0; fi
+ xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -parse-as-library \

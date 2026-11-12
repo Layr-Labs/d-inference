@@ -1,0 +1,1152 @@
+--- /dev/null
++++ b/coordinator/api/native_pair_hardware.go
+@@ -0,0 +1,68 @@
++//go:build native_pair_hardware_experiment
++
++package api
++
++import (
++	"context"
++	"errors"
++	"time"
++
++	"github.com/eigeninference/d-inference/coordinator/registry"
++)
++
++// In-process private selector. It waits on read-only eligibility, then calls
++// the SAME BeginNativePair once. A refusal after that call is terminal; there
++// is no retry/replacement grant, test Provider, trust seed or public API route.
++func (s *Server) RunNativeHardwarePair(ctx context.Context, devices [2]registry.NativeHardwareDevice, approvalID string) (registry.NativeHardwareObservation, error) {
++	var empty registry.NativeHardwareObservation
++	if s.nativePairs == nil {
++		return empty, registry.ErrNativePairControl
++	}
++	selection, cancel := context.WithTimeout(ctx, 60*time.Second)
++	defer cancel()
++	ticker := time.NewTicker(50 * time.Millisecond)
++	defer ticker.Stop()
++	var pair *registry.NativePairSession
++	for pair == nil {
++		if err := selection.Err(); err != nil {
++			return empty, err
++		}
++		members, ready := s.nativePairs.HardwareSelectedMembers(devices, approvalID)
++		if ready {
++			if err := selection.Err(); err != nil {
++				return empty, err
++			}
++			var err error
++			pair, err = s.BeginNativePair(members, approvalID, 300*time.Second)
++			if err != nil {
++				return empty, err
++			}
++			break
++		}
++		select {
++		case <-selection.Done():
++			return empty, selection.Err()
++		case <-ticker.C:
++		}
++	}
++	// Never infer cleanup from Done, cancellation, expiry, or WS writer exit.
++	// The original expiry is fixed by Registry; this allowance only observes
++	// the existing member's three-second cleanup interval and does not renew it.
++	deadline := pair.HardwareObservation().ExpiresAt.Add(3 * time.Second)
++	for {
++		v := pair.HardwareObservation()
++		if v.ReleasedNormally() {
++			return v, nil
++		}
++		if !time.Now().Before(deadline) {
++			pair.Cancel()
++			return v, errors.New("native hardware pair lacks complete original release evidence")
++		}
++		select {
++		case <-ctx.Done():
++			pair.Cancel()
++			return pair.HardwareObservation(), ctx.Err()
++		case <-ticker.C:
++		}
++	}
++}
+--- a/coordinator/cmd/coordinator/main.go
++++ b/coordinator/cmd/coordinator/main.go
+@@ -269,6 +269,13 @@
+ 				"value", v, "min_ms", minTTFTDeadlineBaseMs, "max_ms", maxTTFTDeadlineBaseMs)
+ 		}
+ 	}
++	// PRIVATE_NATIVE_HARDWARE_BEGIN
++	hardwareExperiment, hardwareErr := configureNativeHardware(&serverCfg)
++	if hardwareErr != nil {
++		logger.Error("private native hardware configuration refused", "error", hardwareErr)
++		os.Exit(1)
++	}
++	// PRIVATE_NATIVE_HARDWARE_END
+ 	srv := api.NewServer(reg, st, serverCfg, logger)
+ 	var promptProvisioner *promptcontract.Provisioner
+ 	if cfg.PromptSidecar.Enabled {
+@@ -945,7 +952,7 @@
+ 	// Start listening.
+ 	go func() {
+ 		logger.Info("coordinator starting", "port", cfg.ServerConfig.Port, "admin_key_set", adminKey != "")
+-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
++		if err := serveNativeHardware(hardwareExperiment, httpServer, srv, ctx); err != nil && err != http.ErrServerClosed {
+ 			logger.Error("server failed", "error", err)
+ 			os.Exit(1)
+ 		}
+--- /dev/null
++++ b/coordinator/cmd/coordinator/native_hardware_disabled.go
+@@ -0,0 +1,16 @@
++//go:build !native_pair_hardware_experiment
++
++package main
++
++import (
++	"context"
++	"github.com/eigeninference/d-inference/coordinator/api"
++	"net/http"
++)
++
++type nativeHardwareExperiment struct{}
++
++func configureNativeHardware(*api.ServerConfig) (*nativeHardwareExperiment, error) { return nil, nil }
++func serveNativeHardware(_ *nativeHardwareExperiment, h *http.Server, _ *api.Server, _ context.Context) error {
++	return h.ListenAndServe()
++}
+--- /dev/null
++++ b/coordinator/cmd/coordinator/native_hardware_enabled.go
+@@ -0,0 +1,181 @@
++//go:build native_pair_hardware_experiment
++
++package main
++
++import (
++	"bytes"
++	"context"
++	"crypto/sha256"
++	"crypto/tls"
++	"encoding/hex"
++	"encoding/json"
++	"errors"
++	"io"
++	"net"
++	"net/http"
++	"os"
++	"path/filepath"
++	"time"
++
++	"github.com/eigeninference/d-inference/coordinator/api"
++	"github.com/eigeninference/d-inference/coordinator/registry"
++)
++
++type nativeHardwareExperiment struct {
++	Schema            string                           `json:"schema"`
++	Devices           [2]registry.NativeHardwareDevice `json:"devices"`
++	Approval          registry.NativeRuntimeApproval   `json:"approval"`
++	ListenAddress     string                           `json:"listenAddress"`
++	CertificateFile   string                           `json:"certificateFile"`
++	CertificateSHA256 string                           `json:"certificateSHA256"`
++	KeyFile           string                           `json:"keyFile"`
++	ReceiptFile       string                           `json:"receiptFile"`
++	configSHA         string
++	certificate       tls.Certificate
++}
++
++// Exact local startup bytes, never provider-supplied policy or a trust bypass.
++// Canonical regular files only. The key is read privately and never logged.
++func hardwareRead(path string, limit int64) ([]byte, error) {
++	if !filepath.IsAbs(path) {
++		return nil, errors.New("hardware path must be absolute")
++	}
++	resolved, e := filepath.EvalSymlinks(path)
++	if e != nil || resolved != path {
++		return nil, errors.New("hardware path is not canonical")
++	}
++	before, e := os.Lstat(path)
++	if e != nil || !before.Mode().IsRegular() || before.Size() > limit {
++		return nil, errors.New("hardware input bound")
++	}
++	f, e := os.Open(path)
++	if e != nil {
++		return nil, e
++	}
++	defer f.Close()
++	opened, e := f.Stat()
++	if e != nil || !os.SameFile(before, opened) {
++		return nil, errors.New("hardware input changed")
++	}
++	b, e := io.ReadAll(io.LimitReader(f, limit+1))
++	if e != nil || int64(len(b)) > limit {
++		return nil, errors.New("hardware input exceeds bound")
++	}
++	after, e := os.Lstat(path)
++	if e != nil || !os.SameFile(opened, after) || int64(len(b)) != after.Size() {
++		return nil, errors.New("hardware input changed")
++	}
++	return b, nil
++}
++func hardwareDigest(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
++func configureNativeHardware(cfg *api.ServerConfig) (*nativeHardwareExperiment, error) {
++	path := os.Getenv("DARKBLOOM_PRIVATE_NATIVE_HARDWARE_CONFIG")
++	if path == "" {
++		return nil, nil
++	}
++	b, e := hardwareRead(path, 64*1024)
++	if e != nil {
++		return nil, e
++	}
++	if hardwareDigest(b) != os.Getenv("DARKBLOOM_PRIVATE_NATIVE_HARDWARE_SHA256") {
++		return nil, errors.New("hardware config hash mismatch")
++	}
++	x := new(nativeHardwareExperiment)
++	dec := json.NewDecoder(bytes.NewReader(b))
++	dec.DisallowUnknownFields()
++	if e = dec.Decode(x); e != nil {
++		return nil, e
++	}
++	if dec.Decode(new(any)) != io.EOF {
++		return nil, errors.New("hardware config trailing data")
++	}
++	if x.Schema != "native_shared_hardware_coordinator_v1" || x.Devices[0].Serial == "" || x.Devices[1].Serial == "" || x.Devices[0].Serial == x.Devices[1].Serial ||
++		x.Approval.Model != "registered_qwen35_9b" || x.Approval.Schedule != 1 ||
++		x.Approval.MaximumPlaintext != 131072 || x.Approval.MaximumTransportFrame != 131112 ||
++		x.Approval.MaximumRecords != 1024 || x.Approval.MaximumCumulativePlaintext != 16777216 ||
++		!time.Now().Add(360*time.Second).Before(x.Approval.NotAfter) || x.Approval.NotAfter.After(time.Now().Add(15*time.Minute)) {
++		return nil, errors.New("hardware experiment scope mismatch")
++	}
++	// No wildcard binding, HTTP downgrade or forwarded-header override is added.
++	// Member clients use normal system anchors when their option is nil; an
++	// explicit application-scoped pinned CA is still evaluated by SecTrust with
++	// the original policies plus this same URL hostname, never accept-all.
++	host, port, e := net.SplitHostPort(x.ListenAddress)
++	if e != nil || net.ParseIP(host) == nil || net.ParseIP(host).IsUnspecified() || port == "0" {
++		return nil, errors.New("hardware TLS address must be explicit")
++	}
++	cert, e := hardwareRead(x.CertificateFile, 64*1024)
++	if e != nil {
++		return nil, e
++	}
++	if hardwareDigest(cert) != x.CertificateSHA256 {
++		return nil, errors.New("hardware certificate hash mismatch")
++	}
++	key, e := hardwareRead(x.KeyFile, 64*1024)
++	if e != nil {
++		return nil, e
++	}
++	x.certificate, e = tls.X509KeyPair(cert, key)
++	clear(key)
++	if e != nil {
++		return nil, e
++	}
++	parent, e := filepath.EvalSymlinks(filepath.Dir(x.ReceiptFile))
++	if e != nil || parent != filepath.Dir(x.ReceiptFile) || !filepath.IsAbs(x.ReceiptFile) {
++		return nil, errors.New("hardware receipt parent must be canonical")
++	}
++	if _, e = os.Lstat(x.ReceiptFile); !errors.Is(e, os.ErrNotExist) {
++		return nil, errors.New("hardware receipt already exists")
++	}
++	cfg.NativePairCatalog, e = registry.NewNativeRuntimeCatalog([]registry.NativeRuntimeApproval{x.Approval})
++	if e != nil {
++		return nil, e
++	}
++	x.configSHA = hardwareDigest(b)
++	return x, nil
++}
++
++func serveNativeHardware(x *nativeHardwareExperiment, h *http.Server, s *api.Server, ctx context.Context) error {
++	if x == nil {
++		return h.ListenAndServe()
++	}
++	l, e := net.Listen("tcp", x.ListenAddress)
++	if e != nil {
++		return e
++	}
++	defer l.Close()
++	tlsListener := tls.NewListener(l, &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{x.certificate}})
++	// This is the real Server handler on accepted TLS connections (r.TLS),
++	// with the ordinary attestation/release/catalog services configured above.
++	go func() {
++		v, err := s.RunNativeHardwarePair(ctx, x.Devices, x.Approval.ID)
++		message := ""
++		if err != nil {
++			message = err.Error()
++		}
++		receipt := struct {
++			Schema       string                             `json:"schema"`
++			ConfigSHA256 string                             `json:"configSHA256"`
++			Success      bool                               `json:"success"`
++			Error        string                             `json:"error"`
++			Observation  registry.NativeHardwareObservation `json:"observation"`
++		}{"native_shared_hardware_coordinator_result_v1", x.configSHA, err == nil, message, v}
++		b, encodeErr := json.Marshal(receipt)
++		if encodeErr != nil || len(b) > 16*1024 {
++			return
++		}
++		f, openErr := os.OpenFile(x.ReceiptFile, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
++		if openErr != nil {
++			return
++		}
++		defer f.Close()
++		b = append(b, '\n')
++		if n, writeErr := f.Write(b); writeErr != nil || n != len(b) {
++			return
++		}
++		_ = f.Sync()
++		// This goroutine never shuts down the server, clears holds or replaces
++		// providers. Root keeps it alive through peer receipt and postflight.
++	}()
++	return h.Serve(tlsListener)
++}
+--- /dev/null
++++ b/coordinator/registry/native_pair_hardware_observation.go
+@@ -0,0 +1,147 @@
++//go:build native_pair_hardware_experiment
++
++package registry
++
++import (
++	"crypto/sha256"
++	"encoding/hex"
++	"time"
++)
++
++// Diagnostic selection only. Reserve still performs the authoritative atomic
++// hold and repeats every trust/current-connection/admission check. No state is
++// prepared, granted, refreshed, or released by this observation.
++type NativeHardwareDevice struct {
++	Serial            string `json:"serial"`
++	SEPublicKeySHA256 string `json:"sePublicKeySHA256"`
++}
++
++func (c *NativePairCoordinator) HardwareSelectedMembers(devices [2]NativeHardwareDevice, approvalID string) ([2]*Provider, bool) {
++	var selected [2]*Provider
++	if c == nil || devices[0].Serial == "" || devices[1].Serial == "" || devices[0].Serial == devices[1].Serial ||
++		!verifiedPairSHA(devices[0].SEPublicKeySHA256) || !verifiedPairSHA(devices[1].SEPublicKeySHA256) || devices[0].SEPublicKeySHA256 == devices[1].SEPublicKeySHA256 {
++		return selected, false
++	}
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	a, ok := c.catalog.entries[approvalID]
++	if !ok || c.closed || c.revoked[approvalID] {
++		return selected, false
++	}
++	c.registry.mu.RLock()
++	defer c.registry.mu.RUnlock()
++	// Private isolated coordinator only. No scan/selection over a public fleet.
++	if len(c.registry.providers) > 16 {
++		return selected, false
++	}
++	for _, p := range c.registry.providers {
++		p.mu.Lock()
++		for rank, want := range devices {
++			att := p.AttestationResult
++			if att == nil || att.SerialNumber != want.Serial {
++				continue
++			}
++			h := sha256.Sum256([]byte(att.PublicKey))
++			if hex.EncodeToString(h[:]) != want.SEPublicKeySHA256 {
++				continue
++			}
++			// Refuse duplicate connections even when one is not yet attested.
++			if selected[rank] != nil {
++				p.mu.Unlock()
++				return [2]*Provider{}, false
++			}
++			selected[rank] = p
++		}
++		p.mu.Unlock()
++	}
++	if selected[0] == nil || selected[1] == nil || selected[0] == selected[1] {
++		return selected, false
++	}
++	unlock := lockVerifiedPairMembers(selected)
++	defer unlock()
++	now := time.Now()
++	for rank, p := range selected {
++		n := c.connections[p]
++		if !c.validConnectionLocked(n) || n.session != nil {
++			return selected, false
++		}
++		member, err := c.registry.verifiedPairMemberLocked(p, a.policy.Model, now, nil)
++		h := sha256.Sum256([]byte(member.SEPublicKey))
++		if err != nil || member.DeviceSerial != devices[rank].Serial || hex.EncodeToString(h[:]) != devices[rank].SEPublicKeySHA256 || !c.registry.verifiedPairIdleLocked(p, false) {
++			return selected, false
++		}
++	}
++	return selected, true
++}
++
++// Public scalars copied under the existing coordinator -> Registry lock order.
++// Published means actual enqueue/close attempts ended; it is NOT peer receipt.
++// The leader's actual owner.shutdown return supplies the separate remote-view
++// aggregate receipt join. No secrets or inference payloads are read here.
++type NativeHardwareObservation struct {
++	Epoch                      string                  `json:"epoch"`
++	Generation                 uint64                  `json:"generation"`
++	ApprovalID                 string                  `json:"approvalID"`
++	MembershipSHA256           string                  `json:"membershipSHA256"`
++	ApprovedBindingSHA256      string                  `json:"approvedBindingSHA256"`
++	PlanSHA256                 string                  `json:"planSHA256"`
++	NativeSHA256               string                  `json:"nativeSHA256"`
++	ProviderIDs                [2]string               `json:"providerIDs"`
++	Devices                    [2]NativeHardwareDevice `json:"devices"`
++	ProviderBinarySHA256       [2]string               `json:"providerBinarySHA256"`
++	StartSHA256                [2]string               `json:"startSHA256"`
++	ExpiresAt                  time.Time               `json:"expiresAt"`
++	Phase                      VerifiedPairPhase       `json:"phase"`
++	Released                   [2]bool                 `json:"released"`
++	Committed                  bool                    `json:"committed"`
++	KeyConfirmed               [2]bool                 `json:"keyConfirmed"`
++	MeshRound                  uint8                   `json:"meshRound"`
++	WorkerReady                [2]bool                 `json:"workerReady"`
++	WorkerRecords              [2]uint64               `json:"workerRecords"`
++	WorkerBytes                [2]uint64               `json:"workerBytes"`
++	RelayWritersEnded          bool                    `json:"relayWritersEnded"`
++	CancellationPublished      bool                    `json:"cancellationPublished"`
++	AggregatePublicationEnded  bool                    `json:"aggregatePublicationEnded"`
++	AggregatePublicationFailed [2]bool                 `json:"aggregatePublicationFailed"`
++	ConnectionClosed           [2]bool                 `json:"connectionClosed"`
++}
++
++func (s *NativePairSession) HardwareObservation() NativeHardwareObservation {
++	c := s.coordinator
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	c.registry.mu.RLock()
++	defer c.registry.mu.RUnlock()
++	m := s.membership
++	v := NativeHardwareObservation{Epoch: hex.EncodeToString(m.Epoch[:]), Generation: m.Generation,
++		ApprovalID: s.approval.policy.ID, MembershipSHA256: hex.EncodeToString(m.TranscriptSHA256[:]),
++		ApprovedBindingSHA256: hex.EncodeToString(m.ProposedRuntimeBindingSHA256[:]),
++		PlanSHA256:            hex.EncodeToString(m.PlanSHA256[:]), NativeSHA256: hex.EncodeToString(s.approval.policy.NativeRuntimeSHA256[:]),
++		ExpiresAt: m.ExpiresAt, Committed: s.committed, KeyConfirmed: s.keyConfirmed, MeshRound: s.meshRound,
++		WorkerReady: s.workerReady, WorkerRecords: s.workerRecords, WorkerBytes: s.workerBytes,
++		RelayWritersEnded: s.writersEnded, CancellationPublished: s.cancellationPublished,
++		AggregatePublicationEnded: s.workerReleasePublished, AggregatePublicationFailed: s.workerReleaseFailed}
++	// The retained actual handle remains inspectable after its indexes retire.
++	if s.handle != nil && s.handle.registry == c.registry && s.handle.state != nil {
++		v.Phase = s.handle.state.phase
++		v.Released = s.handle.state.released
++	}
++	for rank := range s.starts {
++		v.ProviderIDs[rank] = m.Members[rank].ProviderID
++		keyHash := sha256.Sum256([]byte(m.Members[rank].SEPublicKey))
++		v.Devices[rank] = NativeHardwareDevice{m.Members[rank].DeviceSerial, hex.EncodeToString(keyHash[:])}
++		v.ProviderBinarySHA256[rank] = m.Members[rank].ProviderBinaryHash
++		b, _ := s.starts[rank].Canonical()
++		h := sha256.Sum256(b)
++		v.StartSHA256[rank] = hex.EncodeToString(h[:])
++		v.ConnectionClosed[rank] = s.connections[rank].closed
++	}
++	return v
++}
++
++func (v NativeHardwareObservation) ReleasedNormally() bool {
++	return v.Committed && v.KeyConfirmed == [2]bool{true, true} && v.MeshRound == 4 &&
++		v.WorkerReady == [2]bool{true, true} && v.Phase == VerifiedPairReleased &&
++		v.Released == [2]bool{true, true} && v.RelayWritersEnded && v.CancellationPublished &&
++		v.AggregatePublicationEnded && v.AggregatePublicationFailed == [2]bool{false, false}
++}
+--- /dev/null
++++ b/coordinator/registry/native_pair_hardware_observation_test.go
+@@ -0,0 +1,145 @@
++//go:build native_pair_hardware_experiment
++
++package registry
++
++import (
++	"context"
++	"crypto/sha256"
++	"encoding/hex"
++	"github.com/eigeninference/d-inference/coordinator/protocol"
++	"testing"
++	"time"
++)
++
++func TestNativePairHardwareSelectionUsesActualCurrentTrust(t *testing.T) {
++	f := newNativePairFixture(t)
++	var devices [2]NativeHardwareDevice
++	for rank, p := range f.p {
++		p.mu.Lock()
++		a := p.AttestationResult
++		h := sha256.Sum256([]byte(a.PublicKey))
++		devices[rank] = NativeHardwareDevice{a.SerialNumber, hex.EncodeToString(h[:])}
++		p.mu.Unlock()
++	}
++	ready := func() bool {
++		members, ok := f.c.HardwareSelectedMembers(devices, f.policy.ID)
++		return ok && members == f.p
++	}
++	if !ready() {
++		t.Fatal("qualified fixture not observable")
++	}
++	f.p[0].mu.Lock()
++	f.p[0].FreshCodeAttested = false
++	f.p[0].mu.Unlock()
++	if ready() {
++		t.Fatal("observation bypassed code trust")
++	}
++	f.p[0].mu.Lock()
++	f.p[0].FreshCodeAttested = true
++	f.p[0].mu.Unlock()
++	if !ready() {
++		t.Fatal("read-only check changed pair")
++	}
++	f.c.Detach(f.n[0])
++	if ready() {
++		t.Fatal("detached Provider selected")
++	}
++}
++
++func TestNativePairHardwareObservationRequiresActualBilateralPublication(t *testing.T) {
++	f, s, d := protectedWorkerFixture(t, true)
++	for rank := range f.n {
++		p := workerFixturePacket(1, d, 0, []byte("fixture-ready"))
++		if e := f.c.Handle(f.n[rank], f.signed(t, s, rank, protocol.TypeNativePairWorkerReady, p)); e != nil {
++			t.Fatal(e)
++		}
++	}
++	f.read(t, 0, protocol.TypeNativePairWorkerReady)
++	v := s.HardwareObservation()
++	if v.ReleasedNormally() || v.ProviderIDs != [2]string{f.p[0].ID, f.p[1].ID} || v.StartSHA256[0] == v.StartSHA256[1] {
++		t.Fatal("incorrect active observation")
++	}
++	f.c.Cancel(s)
++	for rank := range f.n {
++		f.read(t, rank, protocol.TypeNativePairCancel)
++	}
++	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
++	defer cancel()
++	if e := s.WaitControlStopped(ctx); e != nil {
++		t.Fatal(e)
++	}
++	if s.HardwareObservation().ReleasedNormally() {
++		t.Fatal("Done or relay join became owner proof")
++	}
++	for rank := range f.n {
++		if e := f.c.Handle(f.n[rank], f.signed(t, s, rank, protocol.TypeNativePairOwnerReleased, nativePairReleaseReceipt(s.starts[rank]))); e != nil {
++			t.Fatal(e)
++		}
++		if rank == 0 && s.HardwareObservation().ReleasedNormally() {
++			t.Fatal("unilateral release became success")
++		}
++	}
++	for rank := range f.n {
++		f.read(t, rank, protocol.TypeNativePairWorkersReleased)
++	}
++	f.c.mu.Lock()
++	done := s.workerReleaseDone
++	f.c.mu.Unlock()
++	select {
++	case <-done:
++	case <-ctx.Done():
++		t.Fatal("publication incomplete")
++	}
++	v = s.HardwareObservation()
++	if !v.ReleasedNormally() {
++		t.Fatalf("actual release not observed: %+v", v)
++	}
++	// Copied scalar observation has no release authority and cannot alter the
++	// retained original handle. No synthetic flag is written into the runtime.
++	v.Released[0] = false
++	if v.ReleasedNormally() || !s.HardwareObservation().ReleasedNormally() {
++		t.Fatal("observation alias")
++	}
++	f.c.Detach(f.n[0])
++	if !s.HardwareObservation().ReleasedNormally() {
++		t.Fatal("later disconnect erased actual publication outcome")
++	}
++}
++
++func TestNativePairHardwarePublicationFailureIsRetained(t *testing.T) {
++	f, s, d := protectedWorkerFixture(t, true)
++	for rank := range f.n {
++		p := workerFixturePacket(1, d, 0, []byte("fixture-ready"))
++		if e := f.c.Handle(f.n[rank], f.signed(t, s, rank, protocol.TypeNativePairWorkerReady, p)); e != nil {
++			t.Fatal(e)
++		}
++	}
++	f.read(t, 0, protocol.TypeNativePairWorkerReady)
++	f.c.Cancel(s)
++	for rank := range f.n {
++		f.read(t, rank, protocol.TypeNativePairCancel)
++	}
++	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
++	defer cancel()
++	if e := s.WaitControlStopped(ctx); e != nil {
++		t.Fatal(e)
++	}
++	f.p[1].closeWriterNow() // actual existing priority writer refuses publication
++	for rank := range f.n {
++		if e := f.c.Handle(f.n[rank], f.signed(t, s, rank, protocol.TypeNativePairOwnerReleased, nativePairReleaseReceipt(s.starts[rank]))); e != nil {
++			t.Fatal(e)
++		}
++	}
++	f.c.mu.Lock()
++	done := s.workerReleaseDone
++	f.c.mu.Unlock()
++	select {
++	case <-done:
++	case <-ctx.Done():
++		t.Fatal("publication did not retire")
++	}
++	v := s.HardwareObservation()
++	if v.ReleasedNormally() || !v.AggregatePublicationFailed[1] || v.Released != [2]bool{true, true} {
++		t.Fatal("publication failure became success or erased owner proof")
++	}
++}
+--- a/coordinator/registry/native_pair_types.go
++++ b/coordinator/registry/native_pair_types.go
+@@ -40,6 +40,7 @@
+ 	workerAttached         [2]bool
+ 	workerReleaseStarted   bool
+ 	workerReleasePublished bool
++	workerReleaseFailed    [2]bool // private observation only, never a lifecycle gate
+ 	workerReleaseDone      chan struct{}
+ 	workerRecords          [2]uint64
+ 	workerBytes            [2]uint64
+--- a/coordinator/registry/native_pair_worker.go
++++ b/coordinator/registry/native_pair_worker.go
+@@ -38,6 +38,7 @@
+ 			s.connections[rank].closed = true
+ 		}
+ 	}
++	s.workerReleaseFailed = failed // retain the existing actual publication result
+ 	s.workerReleasePublished = true
+ 	c.removeReleasedLocked(s)
+ 	close(s.workerReleaseDone)
+--- a/provider-swift/Package.swift
++++ b/provider-swift/Package.swift
+@@ -142,7 +142,8 @@
+                 .product(name: "TOMLKit", package: "TOMLKit"),
+                 .product(name: "Hummingbird", package: "hummingbird"),
+             ],
+-            path: "Sources/ProviderCore"
++            path: "Sources/ProviderCore",
++            swiftSettings: [.define("NATIVE_PAIR_HARDWARE_EXPERIMENT")]
+         ),
+ 
+         // ----------------------------------------------------------------
+@@ -185,7 +186,8 @@
+                 "ProviderBenchmark",
+                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
+             ],
+-            path: "Sources/darkbloom"
++            path: "Sources/darkbloom",
++            swiftSettings: [.define("NATIVE_PAIR_HARDWARE_EXPERIMENT")]
+         ),
+ 
+         // ----------------------------------------------------------------
+@@ -304,7 +306,8 @@
+         .testTarget(
+             name: "DarkbloomCLITests",
+             dependencies: ["darkbloom"],
+-            path: "Tests/DarkbloomCLITests"
++            path: "Tests/DarkbloomCLITests",
++            swiftSettings: [.define("NATIVE_PAIR_HARDWARE_EXPERIMENT")]
+         ),
+ 
+         // ----------------------------------------------------------------
+--- a/provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift
++++ b/provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift
+@@ -60,7 +60,16 @@
+         // WebSocket server-response validation fail.
+         let scheme = url.scheme?.lowercased()
+         let useTLS = (scheme == "wss" || scheme == "https")
++        #if NATIVE_PAIR_HARDWARE_EXPERIMENT
++        let params: NWParameters
++        if let anchor = config.privateTLSAnchor {
++            params = try anchor.parameters(for: url)
++        } else {
++            params = useTLS ? NWParameters.tls : NWParameters.tcp
++        }
++        #else
+         let params = useTLS ? NWParameters.tls : NWParameters.tcp
++        #endif
+ 
+         // Disable Nagle's algorithm (TCP_NODELAY). Without this, the kernel
+         // batches small WebSocket frames (~200 bytes each) and delays sending
+--- a/provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientTypes.swift
++++ b/provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientTypes.swift
+@@ -139,6 +139,10 @@
+ // MARK: - Configuration
+ 
+ public struct CoordinatorClientConfig: Sendable {
++    #if NATIVE_PAIR_HARDWARE_EXPERIMENT
++    // Set once in the existing factory, then copied into the actor's let config.
++    internal var privateTLSAnchor: PrivateClusterTLSAnchor? = nil
++    #endif
+     public let executionRole: ProviderExecutionRole
+     public let url: String
+     public let hardware: HardwareInfo
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Coordinator/PrivateClusterTLSAnchor.swift
+@@ -0,0 +1,107 @@
++#if NATIVE_PAIR_HARDWARE_EXPERIMENT
++import Foundation
++import CryptoKit
++import Darwin
++import Network
++import Security
++
++enum PrivateClusterTLSError: Error { case configuration, input, endpoint }
++
++// Public certificate data only; copied once before the existing client starts.
++// There is no global trust mutation, fallback after an error, or reusable SecTrust
++// object shared between connections. The existing member/release gates remain.
++struct PrivateClusterTLSAnchor: Sendable {
++    private struct Input: Decodable {
++        let schema: String
++        let host: String
++        let port: Int
++        let caDERFile: String
++        let caDERSHA256: String
++    }
++    let host: String
++    let port: Int
++    let caDERSHA256: String
++    private let der: Data
++
++    private static func hash(_ bytes: Data) -> String {
++        SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
++    }
++    private static func read(_ path: String, maximum: Int) throws -> Data {
++        guard path.hasPrefix("/"), URL(fileURLWithPath: path).resolvingSymlinksInPath().path == path else {
++            throw PrivateClusterTLSError.input
++        }
++        let fd = Darwin.open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
++        guard fd >= 0 else { throw PrivateClusterTLSError.input }
++        defer { Darwin.close(fd) }
++        var before = stat(), after = stat()
++        guard fstat(fd, &before) == 0, (before.st_mode & S_IFMT) == S_IFREG,
++              before.st_size > 0, before.st_size <= maximum else { throw PrivateClusterTLSError.input }
++        var data = Data(count: Int(before.st_size) + 1), offset = 0
++        while offset < data.count {
++            let n = data.withUnsafeMutableBytes { p in Darwin.read(fd, p.baseAddress!.advanced(by: offset), p.count - offset) }
++            if n < 0 && errno == EINTR { continue }
++            guard n >= 0 else { throw PrivateClusterTLSError.input }
++            if n == 0 { break }
++            offset += n
++        }
++        guard offset == Int(before.st_size), fstat(fd, &after) == 0,
++              before.st_dev == after.st_dev, before.st_ino == after.st_ino,
++              before.st_size == after.st_size else { throw PrivateClusterTLSError.input }
++        data.removeLast()
++        return data
++    }
++
++    static func load(environment: [String: String], endpoint: String, member: Bool) throws -> Self? {
++        let path = environment["DARKBLOOM_PRIVATE_CLUSTER_TLS_CONFIG"]
++        let pin = environment["DARKBLOOM_PRIVATE_CLUSTER_TLS_SHA256"]
++        if path == nil && pin == nil { return nil }
++        guard member, let path, let pin, pin.count == 64 else { throw PrivateClusterTLSError.configuration }
++        let raw = try read(path, maximum: 8192)
++        guard hash(raw) == pin else { throw PrivateClusterTLSError.input }
++        let x = try JSONDecoder().decode(Input.self, from: raw)
++        guard let object = try JSONSerialization.jsonObject(with: raw) as? [String: Any],
++              Set(object.keys) == ["schema", "host", "port", "caDERFile", "caDERSHA256"],
++              x.schema == "private_cluster_tls_anchor_v1", !x.host.isEmpty, x.host.utf8.count <= 253,
++              x.host == x.host.lowercased(), (1...65535).contains(x.port), x.caDERSHA256.count == 64 else {
++            throw PrivateClusterTLSError.configuration
++        }
++        let der = try read(x.caDERFile, maximum: 16384)
++        guard hash(der) == x.caDERSHA256,
++              SecCertificateCreateWithData(nil, der as CFData) != nil else { throw PrivateClusterTLSError.input }
++        let result = Self(host: x.host, port: x.port, caDERSHA256: x.caDERSHA256, der: der)
++        guard let url = URL(string: endpoint) else { throw PrivateClusterTLSError.endpoint }
++        try result.check(url)
++        return result
++    }
++
++    private func check(_ url: URL) throws {
++        guard url.scheme == "wss", url.host == host, (url.port ?? 443) == port,
++              url.user == nil, url.password == nil, url.fragment == nil else { throw PrivateClusterTLSError.endpoint }
++    }
++
++    func parameters(for url: URL) throws -> NWParameters {
++        try check(url) // Every reconnect repeats the exact immutable URL check.
++        let options = NWProtocolTLS.Options()
++        let queue = DispatchQueue(label: "dev.darkbloom.private-cluster-tls.verify")
++        let capturedDER = der, capturedHost = host
++        sec_protocol_options_set_verify_block(options.securityProtocolOptions, { _, supplied, complete in
++            let trust = sec_trust_copy_ref(supplied).takeRetainedValue()
++            guard let certificate = SecCertificateCreateWithData(nil, capturedDER as CFData) else { complete(false); return }
++            var copied: CFArray?
++            guard SecTrustCopyPolicies(trust, &copied) == errSecSuccess,
++                  let original = copied as? [SecPolicy], !original.isEmpty else { complete(false); return }
++            // Keep every original Network.framework policy. Add the SAME URL
++            // hostname SSL policy rather than replacing it with BasicX509.
++            let policies = original + [SecPolicyCreateSSL(true, capturedHost as CFString)]
++            guard SecTrustSetPolicies(trust, policies as CFArray) == errSecSuccess,
++                  SecTrustSetAnchorCertificates(trust, [certificate] as CFArray) == errSecSuccess,
++                  SecTrustSetAnchorCertificatesOnly(trust, true) == errSecSuccess else { complete(false); return }
++            // Current date, validity, signature, constraints and SSL policies
++            // remain Security.framework's decision. No exceptions or fallback.
++            var error: CFError?
++            complete(SecTrustEvaluateWithError(trust, &error))
++        }, queue)
++        return NWParameters(tls: options, tcp: NWProtocolTCP.Options())
++    }
++}
++#endif
+--- a/provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedPipeExecutionOwner.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedPipeExecutionOwner.swift
+@@ -92,3 +92,9 @@
+     func waitUntilRetired() async { await native.waitUntilRetired() }
+     func releaseResources() { native.releaseResources() }
+ }
++
++#if NATIVE_PAIR_HARDWARE_EXPERIMENT
++extension DistributedPipeRequestLease: DistributedResidentRequestProvenance {
++    var nativeRequestID: UUID { native.requestID }
++}
++#endif
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedResidentRequestProvenance.swift
+@@ -0,0 +1,10 @@
++#if NATIVE_PAIR_HARDWARE_EXPERIMENT
++import Foundation
++
++/// Read-only identity of the actual existing native reservation. The public
++/// CBv2 ID remains unchanged and the Pipe owner still creates the native UUID.
++/// This exposes no new ownership, capacity, command or release authority.
++public protocol DistributedResidentRequestProvenance: DistributedResidentRequestLease {
++    var nativeRequestID: UUID { get }
++}
++#endif
+--- a/provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift
++++ b/provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift
+@@ -179,11 +179,24 @@
+         )
+ 
+         // 4. Create coordinator client and start connection
++        #if NATIVE_PAIR_HARDWARE_EXPERIMENT
++        var privateCoordinatorConfig = coordinatorConfig
++        privateCoordinatorConfig.privateTLSAnchor = try PrivateClusterTLSAnchor.load(
++            environment: ProcessInfo.processInfo.environment,
++            endpoint: loopConfig.coordinatorURL,
++            member: isClusterMember)
++        let coordinator = CoordinatorClient(
++            config: privateCoordinatorConfig,
++            stats: stats,
++            state: state
++        )
++        #else
+         let coordinator = CoordinatorClient(
+             config: coordinatorConfig,
+             stats: stats,
+             state: state
+         )
++        #endif
+         coordinatorClient = coordinator
+         // Seed the client with the current map: a model loaded before the
+         // client existed (e.g. a local-endpoint request during startup) may
+--- /dev/null
++++ b/provider-swift/Sources/darkbloom/NativeHardwareInput.swift
+@@ -0,0 +1,105 @@
++#if NATIVE_PAIR_HARDWARE_EXPERIMENT
++import Foundation
++import CryptoKit
++import Darwin
++
++enum NativeHardwareError: Error { case binding, io, deadline, incomplete }
++
++struct NativeHardwareInput: Codable, Sendable {
++    private struct RequestPacket: Decodable {
++        let schema: String, requestID: UUID, modelID: String, artifactSHA256: String
++        let profileID: String, promptFileSHA256: String, prefillSchedule: String
++        let promptTokenIDs: [Int], stopTokenIDs: [Int]
++        let chunkSize: Int, outputCount: Int, stageCut: Int
++        let mtpEnabled: Bool
++    }
++    let schema: String
++    let requestFile: String
++    let referenceFile: String
++    let inputBindingSHA256: String
++    let requestSHA256: String
++    let referenceSHA256: String
++    let tlsConfigurationSHA256: String
++    let nativeSHA256: String
++    let cliSHA256: String
++    let descriptorSHA256: String
++    let capabilitySHA256: String
++    let resourcePolicySHA256: String
++    let planSHA256: String
++    let configurationSHA256: String
++    let nativePeerIDs: [String]
++    let receiptDirectory: String
++
++    static let requestPin = "1645b9ddc580915dd8cbbafe245f82f773da1ceccc440766b4cebf247db19a12"
++    static let referencePin = "8a808a8c2a065719442b2eb1a951b5f09dc03cfdb3250403e2a79b0a51d4ae4b"
++    static let inputPin = "eeff23029fb833f9e6e7d466903038bb103ae3c4bb45981bc366987221324c07"
++    static let publicID = UUID(uuidString:"f6a06d14-9138-4a19-aece-39207e1c874e")!
++    static let tokens = [814,20139,1204,264,16097,21208,772,26731,948,310,2919,264,3777,4757,13,58737,279,22980,11,279,6463,1881,8785,7099,16665,321,8785,19101,11,321,799,4145]
++    static let expected = [1654,421]
++
++    static func digest(_ data: Data) -> String { SHA256.hash(data:data).map{String(format:"%02x",$0)}.joined() }
++    static func isHash(_ value:String)->Bool {value.utf8.count==64 && value.utf8.allSatisfy{(48...57).contains($0)||(97...102).contains($0)}}
++    static func canonical(_ path:String)->Bool {
++        path.hasPrefix("/") && URL(fileURLWithPath:path).resolvingSymlinksInPath().path==path
++    }
++    static func read(_ path:String, maximum:Int)->Data? {
++        guard canonical(path) else{return nil}
++        let fd=Darwin.open(path,O_RDONLY|O_NOFOLLOW|O_CLOEXEC)
++        guard fd>=0 else{return nil};defer{Darwin.close(fd)}
++        var before=stat(),after=stat()
++        guard fstat(fd,&before)==0,(before.st_mode & S_IFMT)==S_IFREG,before.st_size>=0,before.st_size<=maximum else{return nil}
++        var bytes=[UInt8](repeating:0,count:Int(before.st_size)+1),offset=0
++        while offset<bytes.count {
++            let n=bytes.withUnsafeMutableBytes { buffer in Darwin.read(fd,buffer.baseAddress!.advanced(by:offset),buffer.count-offset) }
++            if n<0 && errno==EINTR {continue};if n<0{return nil};if n==0{break};offset += n
++        }
++        guard offset==Int(before.st_size),fstat(fd,&after)==0,before.st_dev==after.st_dev,before.st_ino==after.st_ino,before.st_size==after.st_size else{return nil}
++        return Data(bytes.prefix(offset))
++    }
++    static func load(path:String,pin:String)throws->(NativeHardwareInput,String) {
++        guard let data=read(path,maximum:16*1024),isHash(pin),digest(data)==pin else{throw NativeHardwareError.binding}
++        let x=try JSONDecoder().decode(Self.self,from:data)
++        let expectedKeys:Set<String>=["schema","requestFile","referenceFile","inputBindingSHA256","requestSHA256","referenceSHA256","tlsConfigurationSHA256","nativeSHA256","cliSHA256","descriptorSHA256","capabilitySHA256","resourcePolicySHA256","planSHA256","configurationSHA256","nativePeerIDs","receiptDirectory"]
++        guard let object=try JSONSerialization.jsonObject(with:data) as? [String:Any],Set(object.keys)==expectedKeys,
++              x.schema=="native_shared_hardware_leader_v1",x.inputBindingSHA256==inputPin,x.requestSHA256==requestPin,x.referenceSHA256==referencePin,
++              [x.tlsConfigurationSHA256,x.nativeSHA256,x.cliSHA256,x.descriptorSHA256,x.capabilitySHA256,x.resourcePolicySHA256,x.planSHA256,x.configurationSHA256].allSatisfy(isHash),
++              ProcessInfo.processInfo.environment["DARKBLOOM_PRIVATE_CLUSTER_TLS_SHA256"]==x.tlsConfigurationSHA256,
++              x.nativePeerIDs.count==2,Set(x.nativePeerIDs).count==2,
++              x.nativePeerIDs.allSatisfy({!$0.isEmpty && $0.utf8.count<=128}),canonical(x.receiptDirectory),
++              let request=read(x.requestFile,maximum:16*1024),digest(request)==requestPin,
++              let reference=read(x.referenceFile,maximum:128*1024),digest(reference)==referencePin else{throw NativeHardwareError.binding}
++        // Bind the private direct injection to the actual original packet. This
++        // is not an HTTP ingress claim; the exact public UUID and prompt become
++        // the single CBv2 request whose real native UUID the lease exposes.
++        let packet=try JSONDecoder().decode(RequestPacket.self,from:request)
++        guard packet.schema=="qwen9b_protected_shared_input_v1",packet.requestID==publicID,
++              packet.modelID=="registered_qwen35_9b",packet.profileID=="registered_qwen35_9b_greedy_generation_v1",
++              packet.artifactSHA256=="127de76b4ef82b7aaa0acaac0ee31c784cff066eda64291f521f051469b7c24b",
++              packet.promptFileSHA256=="752bdb476caf6a98fe2a1a7a7e691a9b2522036a28c711b9c78cae98c32f7e9b",
++              packet.promptTokenIDs==tokens,packet.stopTokenIDs.isEmpty,
++              packet.chunkSize==16,packet.outputCount==2,packet.stageCut==16,
++              packet.prefillSchedule=="serial_v1",!packet.mtpEnabled else{throw NativeHardwareError.binding}
++        var directoryStat=stat()
++        guard lstat(x.receiptDirectory,&directoryStat)==0,(directoryStat.st_mode & S_IFMT)==S_IFDIR,
++              (directoryStat.st_mode & 0o777)==0o700 else{throw NativeHardwareError.binding}
++        var isDirectory:ObjCBool=false
++        guard FileManager.default.fileExists(atPath:x.receiptDirectory,isDirectory:&isDirectory),isDirectory.boolValue else{throw NativeHardwareError.binding}
++        return (x,pin)
++    }
++    func publish(_ name:String,_ value:[String:Any])throws {
++        guard ["reserved.json","leader-result.json"].contains(name) else{throw NativeHardwareError.binding}
++        var data=try JSONSerialization.data(withJSONObject:value,options:[.sortedKeys]);data.append(10)
++        guard data.count<=16*1024,Self.canonical(receiptDirectory) else{throw NativeHardwareError.binding}
++        let fd=Darwin.open(receiptDirectory+"/"+name,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0o600)
++        guard fd>=0 else{throw NativeHardwareError.io};defer{Darwin.close(fd)}
++        try data.withUnsafeBytes { b in
++            var offset=0
++            while offset<b.count {
++                let n=Darwin.write(fd,b.baseAddress!.advanced(by:offset),b.count-offset)
++                if n<0 && errno==EINTR{continue};guard n>0 else{throw NativeHardwareError.io};offset += n
++            }
++        }
++        guard fsync(fd)==0 else{throw NativeHardwareError.io}
++    }
++}
++#endif
+--- /dev/null
++++ b/provider-swift/Sources/darkbloom/NativeHardwareRequest.swift
+@@ -0,0 +1,101 @@
++#if NATIVE_PAIR_HARDWARE_EXPERIMENT
++import Foundation
++import ProviderCore
++import MLXLMCommon
++
++// Two token scalars and one terminal only. Callback performs no file IO,
++// detokenization, tensor operation, extra forward or asynchronous enqueue.
++final class NativeHardwareEvents: @unchecked Sendable {
++    private let lock=NSLock()
++    private var tokens:[Int]=[]
++    private var finished=false,invalid=false
++    func accept(_ event:DistributedResidentEvent)->Bool {
++        lock.lock();defer{lock.unlock()}
++        guard !finished,!invalid else{invalid=true;return false}
++        switch event {
++        case .token(let token):
++            guard tokens.count<2,(0..<248_320).contains(token) else{invalid=true;return false}
++            tokens.append(token);return true
++        case .finished(let reason):
++            finished=true
++            guard reason == .length else{invalid=true;return false}
++            return true
++        }
++    }
++    func result()throws->[Int] {
++        lock.lock();defer{lock.unlock()}
++        guard finished,!invalid,tokens==NativeHardwareInput.expected else{throw NativeHardwareError.incomplete}
++        return tokens
++    }
++}
++
++extension Start {
++    func executeNativeHardwareRequest(loop:ProviderLoop,input:NativeHardwareInput,pin:String) async throws {
++        // Wait for a real coordinator prepare; do not repeatedly claim an
++        // owner or turn a failed session into another attempt. The original
++        // member request/prepare/lifetime limits remain authoritative.
++        let ownerDeadline=DispatchTime.now().uptimeNanoseconds+120_000_000_000
++        while await loop.nativePairMemberStatus == "idle" {
++            try Task.checkCancellation()
++            guard DispatchTime.now().uptimeNanoseconds<ownerDeadline else{throw NativeHardwareError.deadline}
++            try await Task.sleep(for:.milliseconds(20))
++        }
++        let profile=try DistributedResidentExecutionProfile(id:"registered_qwen35_9b_greedy_generation_v1",
++            vocabularySize:248_320,maxPromptTokens:8192,maxOutputTokens:128,maxContextTokens:8320,requestTimeout:.seconds(120))
++        let owner=try await loop.nativePairRequestOwner(profile:profile,deadlineUptimeNanoseconds:ownerDeadline)
++        var lease:(any DistributedResidentRequestLease)?
++        var released=false
++        do {
++            guard let ready=owner.readiness(),ready.profileID==profile.id,ready.requestCapacityBytes>0,
++                  ready.identity.modelID=="registered_qwen35_9b",
++                  ready.identity.artifactSHA256=="127de76b4ef82b7aaa0acaac0ee31c784cff066eda64291f521f051469b7c24b",
++                  ready.identity.configurationSHA256==input.configurationSHA256,
++                  ready.identity.peers.map(\.id)==input.nativePeerIDs,
++                  ready.identity.peers.map(\.buildSHA256)==[input.nativeSHA256,input.nativeSHA256] else{throw NativeHardwareError.binding}
++            let request=CBv2Request(id:CBv2RequestID(1),promptTokens:NativeHardwareInput.tokens,
++                sampling:.init(temperature:0),maxTokens:2,prefixCacheEnabled:false)
++            let value=try owner.reserve(request,identity:ready.identity,profileID:profile.id,capacityLimit:ready.requestCapacityBytes,
++                deadlineContext:.init(generationDeadline:ContinuousClock.now.advanced(by:.seconds(120))))
++            lease=value
++            guard let provenance=value as? any DistributedResidentRequestProvenance,
++                  value.requestID==request.id,value.identity==ready.identity,value.reservedBytes>0,
++                  value.reservedBytes<=ready.requestCapacityBytes else{throw NativeHardwareError.binding}
++            let nativeID=provenance.nativeRequestID.uuidString.lowercased()
++            let common:[String:Any]=[
++                "schema":"native_shared_hardware_leader_result_v1","configurationFileSHA256":pin,
++                "publicRequestID":NativeHardwareInput.publicID.uuidString.lowercased(),"cbv2RequestID":request.id.raw,
++                "nativeRequestID":nativeID,"membershipEpoch":ready.identity.membershipEpoch.uuidString.lowercased(),
++                "tlsConfigurationSHA256":input.tlsConfigurationSHA256,
++                "nativeSHA256":input.nativeSHA256,"cliSHA256":input.cliSHA256,"descriptorSHA256":input.descriptorSHA256,
++                "capabilitySHA256":input.capabilitySHA256,"resourcePolicySHA256":input.resourcePolicySHA256,
++                "planSHA256":input.planSHA256,"configurationSHA256":ready.identity.configurationSHA256,
++                "nativePeerIDs":ready.identity.peers.map(\.id),
++                "inputBindingSHA256":input.inputBindingSHA256,"requestSHA256":input.requestSHA256,"referenceSHA256":input.referenceSHA256,
++                "reservedBytes":value.reservedBytes,"readyCapacityBytes":ready.requestCapacityBytes,
++                "numericallyQualified":false,"hardwareSmokeOnly":true]
++            try input.publish("reserved.json",common) // before request start, outside inference
++            let events=NativeHardwareEvents()
++            try await withTaskCancellationHandler {
++                try value.start {events.accept($0)}
++                await value.waitUntilRetired()
++            } onCancel: {value.cancel()}
++            value.releaseResources();released=true
++            let bytesAfter=value.bytesInUse
++            // Retained remote-view cleanup completes ONLY upon the original
++            // authenticated all-owner release. A timer/EOF cannot complete it.
++            await owner.shutdown()
++            let tokens=try events.result()
++            guard bytesAfter==0 else{throw NativeHardwareError.incomplete}
++            var result=common
++            result["tokenIDs"]=tokens;result["requestRetired"]=true;result["bytesInUseAfterRelease"]=bytesAfter
++            result["retainedOwnerShutdownReturned"]=true
++            result["success"]=true
++            try input.publish("leader-result.json",result)
++        } catch {
++            if let lease,!released {lease.cancel();await lease.waitUntilRetired();lease.releaseResources()}
++            await owner.shutdown()
++            throw error
++        }
++    }
++}
++#endif
+--- a/provider-swift/Sources/darkbloom/StartCommand+ClusterMember.swift
++++ b/provider-swift/Sources/darkbloom/StartCommand+ClusterMember.swift
+@@ -53,6 +53,12 @@
+     }
+ 
+     func runClusterMember() async throws {
++        #if NATIVE_PAIR_HARDWARE_EXPERIMENT
++        if let path=ProcessInfo.processInfo.environment["DARKBLOOM_PRIVATE_NATIVE_HARDWARE_CONFIG"] {
++            guard let pin=ProcessInfo.processInfo.environment["DARKBLOOM_PRIVATE_NATIVE_HARDWARE_SHA256"] else {throw NativeHardwareError.binding}
++            try await runNativeHardwareLeader(path:path,pin:pin);return
++        }
++        #endif
+         let path = try configOptions.config.map {
+             URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath)
+         } ?? ConfigManager.defaultConfigPath()
+--- /dev/null
++++ b/provider-swift/Sources/darkbloom/StartCommand+NativeHardware.swift
+@@ -0,0 +1,33 @@
++#if NATIVE_PAIR_HARDWARE_EXPERIMENT
++import Foundation
++import ProviderCore
++
++extension Start {
++    func runNativeHardwareLeader(path:String,pin:String) async throws {
++        let (input,exactPin)=try NativeHardwareInput.load(path:path,pin:pin)
++        let configPath=try configOptions.config.map { URL(fileURLWithPath:($0 as NSString).expandingTildeInPath) } ?? ConfigManager.defaultConfigPath()
++        let factory=try DistributedStartSessionFactory(providerConfiguration:configPath)
++        try ProcessLifecycle.acquireMediaServingLock()
++        ProcessLifecycle.preventSystemSleep()
++        defer{ProcessLifecycle.releaseSingleInstanceLock()}
++        // SAME real saved attachment, signer, installed owner and ProviderLoop.
++        let loop=try await makeClusterMemberLoop(reference:factory.reference,stopOnDisconnect:true)
++        let signals=try DistributedStartSignals();defer{signals.close()}
++        let serving=Task {try await loop.run()}
++        let request=Task {
++            try await loop.waitForClusterMemberRegistration(until:.now.advanced(by:.seconds(30)))
++            try await executeNativeHardwareRequest(loop:loop,input:input,pin:exactPin)
++        }
++        signals.attach{request.cancel()} // cancellation retains loop during actual cleanup
++        do {
++            try await withTaskCancellationHandler {try await request.value} onCancel:{request.cancel()}
++            serving.cancel();_ = try? await serving.value
++        } catch {
++            // request only returns after its owned cleanup; if that never
++            // completes the root's absolute process fence remains required.
++            serving.cancel();_ = try? await serving.value
++            throw error
++        }
++    }
++}
++#endif
+--- /dev/null
++++ b/provider-swift/Tests/DarkbloomCLITests/NativeHardwareDriverTests.swift
+@@ -0,0 +1,43 @@
++#if NATIVE_PAIR_HARDWARE_EXPERIMENT
++import Foundation
++import Testing
++import ProviderCore
++@testable import darkbloom
++
++struct NativeHardwareDriverTests {
++    @Test func acceptsOnlyTwoTokensAndLengthTerminal() throws {
++        let events=NativeHardwareEvents()
++        #expect(events.accept(.token(1654)));#expect(events.accept(.token(421)))
++        #expect(events.accept(.finished(.length)))
++        #expect(try events.result()==[1654,421])
++    }
++    @Test func failedOrMissingTerminalCannotQualify() {
++        for finish in [false,true] {
++            let events=NativeHardwareEvents()
++            _=events.accept(.token(1654));_=events.accept(.token(421))
++            if finish {_=events.accept(.finished(.cancelled))}
++            #expect(throws:(any Error).self){try events.result()}
++        }
++    }
++    @Test func extraOrLateTokensInvalidate() {
++        for late in [false,true] {
++            let events=NativeHardwareEvents()
++            _=events.accept(.token(1654));_=events.accept(.token(421))
++            if late {_=events.accept(.finished(.length))}
++            #expect(!events.accept(.token(99)))
++            #expect(throws:(any Error).self){try events.result()}
++        }
++    }
++    @Test func exactReadRefusesSymlinkAndOverBound() throws {
++        let root=FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
++        try FileManager.default.createDirectory(at:root,withIntermediateDirectories:false)
++        defer{try? FileManager.default.removeItem(at:root)}
++        let file=root.appendingPathComponent("input"),link=root.appendingPathComponent("link")
++        try Data([1,2,3]).write(to:file)
++        try FileManager.default.createSymbolicLink(atPath:link.path,withDestinationPath:file.path)
++        #expect(NativeHardwareInput.read(file.path,maximum:3)==Data([1,2,3]))
++        #expect(NativeHardwareInput.read(file.path,maximum:2)==nil)
++        #expect(NativeHardwareInput.read(link.path,maximum:3)==nil)
++    }
++}
++#endif

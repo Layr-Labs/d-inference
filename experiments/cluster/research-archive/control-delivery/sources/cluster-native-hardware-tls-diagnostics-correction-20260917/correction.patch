@@ -1,0 +1,124 @@
+--- e0/Tests/tls_server.go
++++ diagnostic/Tests/tls_server.go
+@@ -23,6 +23,19 @@
+ 	"sync/atomic"
+ 	"time"
+ )
++
++type observedListener struct {
++	net.Listener
++	accepted *atomic.Int64
++}
++
++func (l observedListener) Accept() (net.Conn, error) {
++	c, e := l.Listener.Accept()
++	if e == nil {
++		l.accepted.Add(1)
++	}
++	return c, e
++}
+ 
+ func must[T any](v T, e error) T {
+ 	if e != nil {
+@@ -63,6 +76,7 @@
+ 	write("wrong-ca.der", must(x509.CreateCertificate(rand.Reader, &other, &other, &otherKey.PublicKey, otherKey)))
+ 	ports := map[string]int{}
+ 	counts := map[string]*atomic.Int64{}
++	tcpCounts := map[string]*atomic.Int64{}
+ 	servers := []*http.Server{}
+ 	for i, mode := range []string{"valid", "wrong-host", "expired"} {
+ 		key := must(ecdsa.GenerateKey(elliptic.P256(), rand.Reader))
+@@ -112,7 +126,9 @@
+ 		})
+ 		server := &http.Server{Handler: handler, ReadHeaderTimeout: 3 * time.Second, WriteTimeout: 5 * time.Second, IdleTimeout: 5 * time.Second, ErrorLog: log.New(os.Stderr, "fixture TLS: ", 0)}
+ 		servers = append(servers, server)
+-		wrapped := tls.NewListener(listener, &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{{Certificate: [][]byte{der, caDER}, PrivateKey: key}}})
++		tcpCount := new(atomic.Int64)
++		tcpCounts[mode] = tcpCount
++		wrapped := tls.NewListener(observedListener{listener, tcpCount}, &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{{Certificate: [][]byte{der, caDER}, PrivateKey: key}}})
+ 		go func(s *http.Server, l net.Listener) {
+ 			if e := s.Serve(l); e != nil && !errors.Is(e, http.ErrServerClosed) {
+ 				panic(e)
+@@ -140,4 +156,9 @@
+ 		result[mode] = count.Load()
+ 	}
+ 	write("server-result.json", must(json.Marshal(result)))
++	tcpResult := map[string]int64{}
++	for mode, count := range tcpCounts {
++		tcpResult[mode] = count.Load()
++	}
++	write("server-tcp-observation.json", must(json.Marshal(tcpResult)))
+ }
+--- e0/Tests/PrivateClusterTLSCheck.swift
++++ diagnostic/Tests/PrivateClusterTLSCheck.swift
+@@ -10,11 +10,13 @@
+     let semaphore = DispatchSemaphore(value: 0)
+     private let lock = NSLock()
+     private var value: String?
+-    func finish(_ result: String) {
++    private var detail: String = ""
++    func finish(_ result: String, diagnostic: String = "") {
+         lock.lock(); defer { lock.unlock() }
+-        if value == nil { value = result; semaphore.signal() }
++        if value == nil { value = result; detail = String(diagnostic.prefix(2048)); semaphore.signal() }
+     }
+     func result() -> String? { lock.lock(); defer { lock.unlock() }; return value }
++    func diagnostic() -> String { lock.lock(); defer { lock.unlock() }; return detail }
+ }
+ 
+ @main struct PrivateClusterTLSCheck {
+@@ -34,7 +36,7 @@
+             try data.write(to:file,options:.withoutOverwriting)
+             return (url,["DARKBLOOM_PRIVATE_CLUSTER_TLS_CONFIG":file.path,"DARKBLOOM_PRIVATE_CLUSTER_TLS_SHA256":sha(data)])
+         }
+-        func handshake(_ url: URL, _ anchor: PrivateClusterTLSAnchor?) throws -> String {
++        func handshake(_ name: String, _ url: URL, _ anchor: PrivateClusterTLSAnchor?) throws -> String {
+             let parameters = try anchor?.parameters(for:url) ?? NWParameters.tls
+             let ws = NWProtocolWebSocket.Options(); ws.autoReplyPing=true
+             parameters.defaultProtocolStack.applicationProtocols.insert(ws,at:0)
+@@ -44,7 +46,14 @@
+                 switch state {
+                 case .ready:result.finish("ready")
+                 case .failed(let error),.waiting(let error):
+-                    if case .tls = error { result.finish("tls-refused") } else { result.finish("other-failure") }
++                    let diagnostic: String
++                    switch error {
++                    case .tls(let status): diagnostic = "tls OSStatus=\(status) " + String(reflecting:error)
++                    case .posix(let status): diagnostic = "posix errno=\(status.rawValue) " + String(reflecting:error)
++                    case .dns(let status): diagnostic = "dns code=\(status) " + String(reflecting:error)
++                    @unknown default: diagnostic = String(reflecting:error)
++                    }
++                    if case .tls = error { result.finish("tls-refused",diagnostic:diagnostic) } else { result.finish("other-failure",diagnostic:diagnostic) }
+                 default:break
+                 }
+             }
+@@ -53,6 +62,9 @@
+             connection.cancel()
+             // Fence this serial queue before releasing the actual connection.
+             queue.sync {}
++            let diagnostic = try JSONSerialization.data(withJSONObject:["case":name,"url":url.absoluteString,"outcome":result.result() ?? "missing","waitCompleted":waited == .success,"networkError":result.diagnostic()],options:[.sortedKeys])
++            try require(diagnostic.count <= 8192,"TLS diagnostic bound")
++            try diagnostic.write(to:root.appendingPathComponent(name+"-network.json"),options:.withoutOverwriting)
+             try require(waited == .success,"TLS fixture timed out")
+             return result.result() ?? "missing"
+         }
+@@ -60,7 +72,7 @@
+         for (name,mode,ca,expected) in [("valid","valid","ca.der","ready"),("untrusted","valid","ca.der","tls-refused"),("wrong-anchor","valid","wrong-ca.der","tls-refused"),("wrong-host","wrong-host","ca.der","tls-refused"),("expired","expired","ca.der","tls-refused")] {
+             let (url,env)=try config(name,mode,ca)
+             let anchor=try PrivateClusterTLSAnchor.load(environment:name == "untrusted" ? [:] : env,endpoint:url.absoluteString,member:true)
+-            let result=try handshake(url,anchor);observations[name]=result
++            let result=try handshake(name,url,anchor);observations[name]=result
+             try require(result == expected,"unexpected actual TLS outcome: "+name+":"+result)
+         }
+         let (good,env)=try config("wrong-url","valid")
+--- e0/Tests/run_tls.py
++++ diagnostic/Tests/run_tls.py
+@@ -21,7 +21,7 @@
+     check()
+     os.environ['GOMAXPROCS']='2'
+     os.environ['GO111MODULE']='off'
+-    source=ROOT/'proposed/provider-swift/Sources/ProviderCore/Coordinator/PrivateClusterTLSAnchor.swift'
++    source=Path('/Users/developer/DarkbloomDev/cluster-research/cluster-native-shared-hardware-driver-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Coordinator/PrivateClusterTLSAnchor.swift')
+     server=output/'tls-server';client=output/'tls-client'
+     steps=[('compile-server',['/Users/developer/.local/share/mise/installs/go/1.25.0/bin/go','build','-p','2','-o',str(server),str(ROOT/'Tests/tls_server.go')],90),
+            ('compile-client',['xcrun','swiftc','-j','2','-swift-version','6','-warnings-as-errors','-target','arm64-apple-macos14.0','-parse-as-library','-D','NATIVE_PAIR_HARDWARE_EXPERIMENT','-module-cache-path',str(output/'module-cache'),str(source),str(ROOT/'Tests/PrivateClusterTLSCheck.swift'),'-o',str(client)],90),

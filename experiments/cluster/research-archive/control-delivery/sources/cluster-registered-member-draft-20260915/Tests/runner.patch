@@ -1,0 +1,31 @@
+--- verified-pair-v2/Tests/run.py
++++ member/Tests/run.py
+@@ -61,8 +61,8 @@
+     os.chdir(workspace)
+     command = [str(GO), 'test', '-json', '-race', '-p', '2', '-count=1', '-timeout=120s']
+     if not args.all_registry:
+-        command += ['-run', '^TestVerifiedPair']
+-    command += ['./coordinator/registry']
++        command += ['-run', '^Test(VerifiedPair|ClusterMember|MemberRole)']
++    command += ['./coordinator/registry', './coordinator/protocol']
+     receipt = {'argv': command, 'sourceFiles': len(snapshot['files']), 'compilerParallelism': 2,
+                'goBinarySHA256': hashlib.sha256(GO.read_bytes()).hexdigest()}
+     began = time.monotonic()
+@@ -87,12 +87,13 @@
+     events = [json.loads(line) for line in (output / 'tests.stdout').read_text().splitlines() if line]
+     passed = {e['Test'] for e in events if e.get('Action') == 'pass' and 'Test' in e and '/' not in e['Test']}
+     new_tests = {name for name in passed if name.startswith('TestVerifiedPair')}
+-    complete = any(e.get('Action') == 'pass' and e.get('Package') == 'github.com/eigeninference/d-inference/coordinator/registry' and 'Test' not in e for e in events)
+-    if receipt.get('exitCode') != 0 or not receipt.get('reaped') or not receipt.get('groupAbsent') or not complete or len(new_tests) != 15:
++    complete = all(any(e.get('Action') == 'pass' and e.get('Package') == 'github.com/eigeninference/d-inference/coordinator/' + package and 'Test' not in e for e in events) for package in ['registry', 'protocol'])
++    member_tests = {name for name in passed if name.startswith(('TestClusterMember', 'TestMemberRole'))}
++    if receipt.get('exitCode') != 0 or not receipt.get('reaped') or not receipt.get('groupAbsent') or not complete or len(new_tests) != 15 or len(member_tests) != 4:
+         raise ValueError('Go checks failed or incomplete; source and raw receipts retained')
+-    result = {'passed': True, 'newTestMethods': len(new_tests), 'totalTestMethods': len(passed),
++    result = {'passed': True, 'verifiedPairTestMethods': len(new_tests), 'memberTestMethods': len(member_tests), 'totalTestMethods': len(passed),
+               'raceDetectorEnabled': True, 'sourcePinsUnchanged': True, 'mainEdited': False,
+-              'externalCoordinatorUsed': False, 'nativeOrKeyEstablishmentQualified': False}
++              'externalCoordinatorUsed': False, 'nativeOrKeyEstablishmentQualified': False, 'apiPackageCompiled': False, 'swiftCompiled': False}
+     (output / 'checks.json').write_text(json.dumps(result, indent=2, sort_keys=True) + '\n')
+     print(json.dumps(result, sort_keys=True))
+ 

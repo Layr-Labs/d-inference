@@ -1,0 +1,78 @@
+--- a/run-profiled-tiny-stage-check-20260914.py
++++ b/run_tiny_stage_check_v2.py
+@@ -22,6 +22,8 @@
+ RESEARCH = ROOT / 'cluster-research'
+ HELPER = RESEARCH / 'remote-solo-prefill-launcher-draft/prefill_compute_archive.py'
+ HELPER_SHA = 'dde031892fcec8c98b70f4b300e1ef1aaca309547c400b1a50d85e791e069930'
++REFERENCE_HELPER = Path(__file__).with_name('owned_bundle_reference.py')
++REFERENCE_HELPER_SHA = 'c4832e457307f683f5aff55cafefe6feeeaf6a69ad1be2dc220325f96f5da8a4'
+ ENVIRONMENT = {'DARKBLOOM_BF16_WEIGHTS': '1', 'DARKBLOOM_CBV2_ATTN_QUERY_BLOCK': '128', 'MLX_ENABLE_TF32': '1'}
+ 
+ 
+@@ -116,7 +118,13 @@
+     parser.add_argument('--output', type=Path, required=True)
+     parser.add_argument('--expected-native-sha256', required=True)
+     parser.add_argument('--workload', choices=['legacy', 'profiled'], required=True)
++    parser.add_argument('--reuse-bundle', type=Path)
++    parser.add_argument('--expected-bundle-manifest-sha256')
+     args = parser.parse_args()
++    require((args.reuse_bundle is None) == (args.expected_bundle_manifest_sha256 is None),
++            'Bundle reuse requires both path and expected manifest pin')
++    if args.reuse_bundle is not None:
++        require(re.fullmatch('[0-9a-f]{64}', args.expected_bundle_manifest_sha256), 'Invalid bundle manifest pin')
+     out = args.output.resolve()
+     require(not out.exists() and out.parent.is_dir() and not out.is_relative_to(REPO), 'Output must be new and outside Git')
+     require(re.fullmatch('[0-9a-f]{64}', args.expected_native_sha256), 'Invalid native pin')
+@@ -137,6 +145,7 @@
+     save()
+     process = None; modules = None; source_manifest = None; bundle_sha = None
+     driver_pin = sha(Path(__file__))
++    reference_helper = bundle_reference = None
+     try:
+         shutil.copyfile(Path(__file__), out / Path(__file__).name)
+         shutil.copyfile(HELPER, out / 'prefill_compute_archive.py')
+@@ -148,11 +157,27 @@
+                 'A native inference experiment is already active')
+         source_manifest = archive.archive_sources(REPO / 'experiments/cluster/runtime', out)
+         modules = archive.load_archived_runtime(out, uuid.uuid4().hex)
+-        bundle_sha = modules['bundle'].snapshot(release, out / 'bundle')
++        if args.reuse_bundle is not None:
++            require(sha(REFERENCE_HELPER) == REFERENCE_HELPER_SHA, 'Bundle reference helper changed')
++            reference_spec = importlib.util.spec_from_file_location('tiny_bundle_reference', REFERENCE_HELPER)
++            reference_helper = importlib.util.module_from_spec(reference_spec)
++            reference_spec.loader.exec_module(reference_helper)
++            shutil.copyfile(REFERENCE_HELPER, out / REFERENCE_HELPER.name)
++            bundle_reference = reference_helper.create_reference(args.reuse_bundle, out / 'bundle',
++                args.expected_bundle_manifest_sha256, args.expected_native_sha256,
++                out / 'source/experiments/cluster/runtime', modules['artifacts'])
++            bundle_sha = bundle_reference['manifestSHA256']
++            receipt.update(bundleAcquisition='reused_external_reference', bundleReference=bundle_reference,
++                           bundleCopiedForThisRun=False, bundleReferenceHelperSHA256=REFERENCE_HELPER_SHA)
++        else:
++            bundle_sha = modules['bundle'].snapshot(release, out / 'bundle')
+         require(sha(out / 'bundle/cluster-inference') == args.expected_native_sha256, 'Archived native differs')
+         receipt.update(sourceManifestSHA256=sha(out / 'source-manifest.json'), sourceFileCount=len(source_manifest['files']),
+                        bundleManifestSHA256=bundle_sha)
+         archive.verify_archive(modules, out, source_manifest, bundle_sha, [])
++        if bundle_reference is not None:
++            reference_helper.check_reference(out / 'bundle', bundle_reference,
++                out / 'source/experiments/cluster/runtime', modules['artifacts'])
+         before = sample(); receipt['memorySamples'].append(before); require_resources(before, initial)
+         require(before['actualFreeBytes'] >= 1024**3, 'Actual free memory fell below tiny gate before native launch')
+         mode, counts = ('qwen-layer-stage-profiled-check', ['8192', '512', '1']) if args.workload == 'profiled' else (
+@@ -208,6 +233,15 @@
+                         sizeBytes=size, hashOmittedBecauseOversized=size > limit)
+         except BaseException as error:
+             receipt['postRunErrors'].append(type(error).__name__ + ': ' + str(error))
++        if bundle_reference is not None:
++            try:
++                reference_helper.check_reference(out / 'bundle', bundle_reference,
++                    out / 'source/experiments/cluster/runtime', modules['artifacts'])
++                require(sha(REFERENCE_HELPER) == REFERENCE_HELPER_SHA and
++                        sha(out / REFERENCE_HELPER.name) == REFERENCE_HELPER_SHA, 'Bundle reference helper changed')
++                receipt['bundleReferenceUnchangedAfterRun'] = True
++            except BaseException as error:
++                receipt['postRunErrors'].append('bundle_reference_recheck: ' + type(error).__name__ + ': ' + str(error))
+         receipt.update(finishedAtUTC=now(), status='completed' if receipt['nativeReaped']
+             and receipt['nativeExitCode'] == 0 and not receipt['primaryFailure']
+             and not receipt['cleanupErrors'] and not receipt['postRunErrors'] else 'failed')

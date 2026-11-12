@@ -1,0 +1,24 @@
+--- a/provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/NativePairMemberControlTests.swift
++++ b/provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/NativePairMemberControlTests.swift
+@@ -62,8 +62,8 @@
+                 generation: 1, payload: Data([68, 66, 78, 67, 1]), until: began + 30_000_000)
+         }
+         #expect(DispatchTime.now().uptimeNanoseconds - began < 500_000_000)
+-        #expect(!connection.isLive && invalidated.wait(timeout: .now()) == .success)
+-        #expect(finished.wait(timeout: .now()) == .timedOut) // Signer has not returned.
++        #expect(!connection.isLive && isComplete(invalidated))
++        #expect(!isComplete(finished)) // Signer has not returned.
+         signer.resume()
+         try await waitUntil { finished.wait(timeout: .now()) == .success }
+     }
+@@ -95,6 +95,10 @@
+         } catch { peer.signer.resume(); await peer.close(); throw error }
+     }
+ 
++    private func isComplete(_ group: DispatchGroup) -> Bool {
++        group.wait(timeout: .now()) == .success
++    }
++
+     private func waitUntil(_ condition: () -> Bool) async throws {
+         let end = ContinuousClock.now.advanced(by: .seconds(5))
+         while !condition() && ContinuousClock.now < end { try await Task.sleep(for: .milliseconds(5)) }

@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-11
+> Last updated: 2026-11-12
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -2908,6 +2908,17 @@ fence and native completion tracking keep MTP steps
 `DARKBLOOM_TTFT_QWEN_MTP_CHAINED` and `DARKBLOOM_TTFT_QWEN_MTP_CARRY`
 (`CBv2MTPConfig.envOrdinaryDecodeHistory`, `envPrefillCarry`; see
 [`../reference/configuration.md`](../reference/configuration.md)).
+Assistant history keeps lazy views of each committed step's token and hidden
+arrays until a draft round reads them. This applies to the Qwen 3.5-family
+backlog, the Qwen4 Flash-Next backlog and Lightning's `pendingHidden`.
+`asyncEval` leaves its completion event (an `MTLSharedEvent`, from a finite
+system-wide pool) on every array it evaluated, until the array is waited on or
+read again. So while rows stayed batch-gated, each step kept one event alive.
+After a step's readback, the engine now drops the fired event from those arrays
+in both history paths (`finalizeMTPOrdinaryHistory` and `finalizeMTPRound`;
+`CBv2MTPHistoryEvents.release` in
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/CBv2MTPHistoryEvents.swift`).
+The call does not block and changes no value or evaluation.
 
 Complete SSD recurrent reuse with a persistent MTP assistant requires the
 serializable `CBv2MTPPrefixCheckpointCoding` contract. The Qwen implementation

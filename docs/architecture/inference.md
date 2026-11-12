@@ -750,7 +750,8 @@ a full owner whose admitted requests all are such answers, also waits, until
 `NemotronSuperServingPolicy.stackedMediaWaitEnd`: at most `stackedMediaWait`
 (3 s), and for a coordinator request only while its forwarded first-content
 deadline still covers the owner's expected media first-chunk time (the longest
-of its last `mediaFirstChunkSamples`, `Owner.expectedMediaFirstChunk`) and
+of its last `mediaFirstChunkSamples`, each measured from the image binding's
+admission, so earlier waits do not inflate it; `Owner.expectedMediaFirstChunk`) and
 `stackedMediaWaitMargin`. A local request forwards no deadline and may wait the
 whole bound. At the binding it waits only while the owner keeps a request
 slot free besides its own (`Owner.hasFreeLocalAdmission`), so a waiting image

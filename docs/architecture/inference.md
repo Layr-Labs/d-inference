@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-12
+> Last updated: 2026-11-13
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -3496,9 +3496,23 @@ as `"nullable": true` beside one type (`ToolSchemaNormalization`). The SDK adds
 null to that node's types, so a model's `null` (also `none` or `nil`) becomes
 JSON null, and its `ToolSchemaValidator` lets null through that node's type
 check while `enum`, `const` and combinators still apply; the provider's own
-validator already accepts null there (`ToolConstraintValidation`). Sources:
+validator already accepts null there (`ToolConstraintValidation`). A Gemma 4
+value written without its `<|"|>` marker (`zip:01000`) is also read by the
+schema, the other way round: where the schema admits a string but not the
+value's JSON type, the written text is kept (`"01000"`, `"1.10"`), as vLLM's
+`convert_value` does, at any depth; other parameters, and calls without a
+schema, keep the JSON reading (`GemmaArgumentValueParser`,
+`ToolArgumentNormalization.bareLiteral`). A marker-quoted value stays a string
+for any parameter. The schema read is the one Gemma is shown, after
+`ToolSchemaNormalization`: a property declared without a type (or `{}`) is
+shown as STRING and a union as its first member's type, so `any:5` there reads
+`"5"` where vLLM, reading the declared schema, returns 5 (both valid for the
+declared schema, except for an `enum` that mixes types, such as `["a", 1]`,
+on a property shown as STRING, untyped or a string-first union: its unquoted
+`1` reads `"1"`). Sources:
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/ToolArgumentNormalization.swift`
-(`declaredTypes`),
+(`declaredTypes`, `bareLiteral`),
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/Parsers/GemmaFunctionParser.swift`,
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/ToolSchemaValidator.swift`.
 
 Required/named `tool_choice` on a Qwen 3.5-family checkpoint accepts its

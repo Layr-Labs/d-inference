@@ -22,8 +22,9 @@ import Testing
 struct MuseGlimmerPromptGoldenTests {
     private static let modelType = MuseGlimmerModelPolicy.modelType
     /// The template the packaged artifact carries: the publisher's newer
-    /// template with only its date block replaced.
-    static let servedTemplateSHA256 = "6e0a14fabecc8c547bd3cbb3937128f1a97f1c95a0c645ea228b457898f926a9"
+    /// template with its date block replaced and one call argument
+    /// parenthesized (the fixture's README has both).
+    static let servedTemplateSHA256 = "0bb1b6209e797a62fdd81d445ddf36cbb1a2d71f84400c141c9ec11049d7ce3c"
     private static let referenceDirectoryKey = "MUSE_GLIMMER_NVFP4_DIR"
 
     private struct Case {

@@ -2,7 +2,7 @@
 
 | File | What it is | SHA-256 |
 |---|---|---|
-| `chat_template.jinja` | The chat template a served Muse Glimmer 30B artifact carries | `6e0a14fabecc8c547bd3cbb3937128f1a97f1c95a0c645ea228b457898f926a9` |
+| `chat_template.jinja` | The chat template a served Muse Glimmer 30B artifact carries | `0bb1b6209e797a62fdd81d445ddf36cbb1a2d71f84400c141c9ec11049d7ce3c` |
 | `prompt-golden.json` | Reference prompts and token IDs, written by `scripts/muse-glimmer-qualification/prompt_golden.py` | regenerated; check with `--check` |
 | `LICENSE` | Apache License 2.0, as the model repositories ship it | `cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30` |
 
@@ -11,8 +11,10 @@
 `chat_template.jinja` is Meta's template from
 [`meta-models/Muse-Glimmer-30B`](https://huggingface.co/meta-models/Muse-Glimmer-30B/blob/cec94fcfd6512f2cfe708138c32533b346ea4f69/chat_template.jinja)
 at revision `cec94fcfd6512f2cfe708138c32533b346ea4f69` (9,992 bytes, SHA-256
-`cfc67e5f349f37690dfd31ed1f18bc4442a9dd32fe39a648f993cb4eb3cae678`) with one
-change. Its default system block reads the date through
+`cfc67e5f349f37690dfd31ed1f18bc4442a9dd32fe39a648f993cb4eb3cae678`) with two
+changes, neither of which changes a rendered byte (9,819 bytes).
+
+First, its default system block reads the date through
 
 ```jinja
 {%- if current_date is defined and current_date -%}
@@ -29,9 +31,19 @@ and the served template replaces those five lines with the one direct call:
 ```
 
 `PromptRenderDate.supportsTemplate` accepts only direct literal date calls, so
-the published file yields no prompt contract and no prefix cache. With a date
-supplied, both files render every corpus case to the same text;
-`prompt_golden.py --published` checks the derivation and that equality.
+the published file yields no prompt contract and no prefix cache.
+
+Second, the tool-result branch passes a conditional as a call argument,
+`namespace(name=tcid if tcid else '')`. The coordinator's prompt renderer
+(minijinja) does not parse that spelling, and a template it cannot compile is
+never planned for cache routing. The served template writes
+`namespace(name=(tcid if tcid else ''))`, which Jinja2, Swift-Jinja and
+minijinja all read the same way.
+
+With a date supplied, both files render every corpus case to the same text;
+`prompt_golden.py --published` checks the derivation and that equality. Both
+sides hash these template bytes into the prompt contract id, so this file is
+the canonical one.
 
 The NVIDIA NVFP4 repository ships Meta's older template (7,167 bytes). The
 newer one differs in one error string and in the system message: it rewrites a

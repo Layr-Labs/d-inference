@@ -157,7 +157,7 @@
         {%- set tname = message.get('name') -%}
         {%- if not tname -%}
             {%- set tcid = message.get('tool_call_id') -%}
-            {%- set rns = namespace(name=tcid if tcid else '') -%}
+            {%- set rns = namespace(name=(tcid if tcid else '')) -%}
             {%- for m in messages -%}
                 {%- if m.get('tool_calls') -%}
                     {%- for tc in m['tool_calls'] -%}

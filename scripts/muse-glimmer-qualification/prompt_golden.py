@@ -6,11 +6,14 @@ blocks, ``loopcontrols`` and Transformers' ``tojson``), followed by the pinned
 ``tokenizer.json`` through the ``tokenizers`` library. Reference files are read
 as data and never imported or executed.
 
-The served template is the publisher's newer template with one change: its
-date block, which tests ``strftime_now is defined``, is replaced by the direct
-call ``strftime_now('%Y-%m-%d')`` that the provider's request-owned date binds.
-``--published`` names the publisher's file; the script then checks that the
-served file is exactly that derivation and that both render every case alike.
+The served template is the publisher's newer template with two changes, neither
+of which changes a rendered byte. Its date block, which tests
+``strftime_now is defined``, is replaced by the direct call
+``strftime_now('%Y-%m-%d')`` that the provider's request-owned date binds; and
+the one conditional it passes as a call argument is parenthesized, which the
+coordinator's prompt renderer needs to compile it. ``--published`` names the
+publisher's file; the script then checks that the served file is exactly that
+derivation and that both render every case alike.
 
 Each case is an OpenAI request body. The reference renders it after the
 request normalization the provider applies, restated here so that a change to
@@ -64,7 +67,7 @@ PINNED = {
     "tokenizer_config.json": "ee60d284ed7857ba89155f437cc915951e16056453ca7ae2491c5ae87a395c39",
 }
 PUBLISHED_TEMPLATE_SHA256 = "cfc67e5f349f37690dfd31ed1f18bc4442a9dd32fe39a648f993cb4eb3cae678"
-SERVED_TEMPLATE_SHA256 = "6e0a14fabecc8c547bd3cbb3937128f1a97f1c95a0c645ea228b457898f926a9"
+SERVED_TEMPLATE_SHA256 = "0bb1b6209e797a62fdd81d445ddf36cbb1a2d71f84400c141c9ec11049d7ce3c"
 REQUIREMENTS = {"jinja2": "3.1.6", "markupsafe": "3.0.3", "tokenizers": "0.22.2"}
 DATE = "2026-11-13"
 SPECIAL_TOKENS = {"bos_token": "<|begin_of_text|>", "eos_token": "<|end_of_text|>",
@@ -81,6 +84,9 @@ PUBLISHED_DATE_BLOCK = [
     "{%- endif -%}",
 ]
 SERVED_DATE_LINE = "{{- '\\nCurrent date: ' + strftime_now('%Y-%m-%d') + '.' -}}"
+# A conditional passed as a call argument, and the spelling every renderer parses.
+PUBLISHED_NAMESPACE_CALL = "namespace(name=tcid if tcid else '')"
+SERVED_NAMESPACE_CALL = "namespace(name=(tcid if tcid else ''))"
 
 WEATHER = {"type": "function", "function": {
     "name": "get_weather",
@@ -284,8 +290,10 @@ def load_tokenizer(directory):
 
 
 def served_from(published):
-    """The served template derived from the publisher's: only the date block."""
-    lines = published.split("\n")
+    """The served template derived from the publisher's: its two changes."""
+    if published.count(PUBLISHED_NAMESPACE_CALL) != 1:
+        raise ValueError("the publisher's namespace call is not the pinned one")
+    lines = published.replace(PUBLISHED_NAMESPACE_CALL, SERVED_NAMESPACE_CALL).split("\n")
     start = next(i for i, line in enumerate(lines) if line.strip() == PUBLISHED_DATE_BLOCK[0])
     block = [line.strip() for line in lines[start:start + len(PUBLISHED_DATE_BLOCK)]]
     if block != PUBLISHED_DATE_BLOCK:

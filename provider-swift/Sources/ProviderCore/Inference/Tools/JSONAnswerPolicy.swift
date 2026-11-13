@@ -70,7 +70,8 @@ enum JSONAnswerPolicy {
         stopTokenIDs: Set<Int>,
         promptTokens: [Int]?,
         servesDistributedPair: Bool,
-        families: Families = .current
+        families: Families = .current,
+        widensSchemas: Bool = QwenJSONSchemaRewrite.enabled
     ) -> JSONAnswerConstraint? {
         guard let profile = profile(modelID: modelID, modelType: modelType, families: families,
                                     servesDistributedPair: servesDistributedPair),
@@ -82,8 +83,8 @@ enum JSONAnswerPolicy {
                 tokenIds: Array(tokens.suffix(ReasoningPromptProbe.tailTokenCount)), skipSpecialTokens: false))
         }
         if phase == .reasoning, !profile.constrainsReasoning { return nil }
-        guard let answer = try? JSONAnswerFormat(format, forbidding: profile.contentMarkers,
-                                                 family: profile.family) else {
+        guard case let (answer, _)? = QwenJSONSchemaRewrite.answerFormat(format, profile: profile,
+                  widens: widensSchemas) else {
             return declined(profile, "schema outside the constrained subset")
         }
         guard let phase else {

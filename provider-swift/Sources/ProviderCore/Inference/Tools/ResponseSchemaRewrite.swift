@@ -41,7 +41,7 @@ enum ResponseSchemaRewrite {
         "json-schema.org/draft/2019-09/schema", "json-schema.org/draft/2020-12/schema",
     ]
 
-    static func subset(_ schema: MLXLMCommon.JSONValue) -> MLXLMCommon.JSONValue? {
+    static func subset(_ schema: MLXLMCommon.JSONValue, relaxingAssertions: Bool = false) -> MLXLMCommon.JSONValue? {
         guard case .object(var root) = schema else { return nil }
         if let metaSchema = root.removeValue(forKey: "$schema") {
             guard case .string(let uri) = metaSchema, readsAsTheSubset(uri) else { return nil }

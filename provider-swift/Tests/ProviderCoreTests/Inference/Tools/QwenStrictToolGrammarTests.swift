@@ -567,14 +567,16 @@ struct QwenStrictToolGrammarTests {
     @Test func theSwitchIsPerModelAndReachesTheProviderJob() {
         typealias G = QwenStrictToolGrammar
         #expect(G.environmentKey == "DARKBLOOM_STRICT_TOOL_GRAMMAR")
-        // By default only the MoE builds (Qwen 3.6, Qwen 3.5 35B), which do not draft by default: a constrained
-        // row stops drafting on its Mac, so Qwen 3.8 and the 9B take the grammar only when a Mac opts in.
+        // By default the MoE builds (Qwen 3.6, Qwen 3.5 35B), which do not draft by default, and Qwen 3.8 27B,
+        // whose strict calls are its main failure (a coordinator switch turns it off centrally); the 9B only when a
+        // Mac opts in.
         let byDefault = G.setting(environment: [:])
-        #expect(byDefault == .models(["qwen3_5_moe"]))
+        #expect(byDefault == .models(["qwen3_5_moe", "qwen3.8-27b"]))
         #expect(G.isEnabled(modelId: "qwen3.6-35b-a3b-vl-mtp-mxfp8", modelType: "qwen3_5_moe", setting: byDefault))
         #expect(G.isEnabled(modelId: "Qwen3.5-35B-A3B", modelType: "qwen3_5_moe", setting: byDefault))
-        #expect(!G.isEnabled(modelId: "EigenLabs/Qwen3.8-27B-4bit-mtp", modelType: "qwen3_5", setting: byDefault))
+        #expect(G.isEnabled(modelId: "EigenLabs/Qwen3.8-27B-4bit-mtp", modelType: "qwen3_5", setting: byDefault))
         #expect(!G.isEnabled(modelId: "Qwen3.5-9B", modelType: "qwen3_5", setting: byDefault))
+        #expect(!G.isEnabled(modelId: "EigenLabs/Qwen3.5-9B-MLX-4bit-mtp", modelType: "qwen3_5", setting: byDefault))
         #expect(G.setting(environment: [G.environmentKey: ""]) == byDefault)
         // An on word opts every Qwen 3.5-family build in.
         #expect(G.setting(environment: [G.environmentKey: " On "]) == .models(["qwen3_5", "qwen3_5_moe"]))
@@ -887,10 +889,12 @@ struct QwenStrictToolServingTests {
         + "<parameter=city>\nRome\n</parameter>\n<parameter=offset>\n\"5\"\n</parameter>\n"
         + "<parameter=zone>\n{\"dst\": yes true}\n</parameter>\n</function>\n</tool_call><|im_end|>"
 
-    /// A build the grammar is on for by default (Qwen 3.6), and one a Mac opts in (Qwen 3.8). The scheduler
-    /// reads the switch from the process environment, so these expect `DARKBLOOM_STRICT_TOOL_GRAMMAR` unset.
+    /// Builds the grammar is on for by default (Qwen 3.6, Qwen 3.8), and one a Mac opts in (the 9B). The
+    /// scheduler reads the switch from the process environment, so these expect `DARKBLOOM_STRICT_TOOL_GRAMMAR`
+    /// unset.
     private static let moe = (id: "qwen3.6-35b-a3b-vl-mtp-mxfp8", type: "qwen3_5_moe")
-    private static let dense = (id: StrictToolFixture.model, type: "qwen3_5")
+    private static let qwen38 = (id: StrictToolFixture.model, type: "qwen3_5")
+    private static let nineB = (id: "Qwen3.5-9B", type: "qwen3_5")
 
     private func serve(_ engine: MaskedScriptEngine, tools: String = tools, strict: Bool = true,
                        build: (id: String, type: String) = moe) async throws -> StrictToolOutcome {
@@ -939,13 +943,17 @@ struct QwenStrictToolServingTests {
         #expect(outcome.calls.first?.function.arguments["offset"] == .string("\"5\""))
     }
 
-    /// Qwen 3.8 and the 9B draft with MTP, which a constrained row stops, so
-    /// they are served as before unless the Mac opts them in.
-    @Test func denseBuildsAreServedAsBeforeByDefault() async throws {
+    /// Qwen 3.8 takes the grammar by default; the 9B, which drafts with MTP
+    /// that a constrained row stops, is served as before unless the Mac opts in.
+    @Test func qwen38TakesTheGrammarByDefaultAndThe9BDoesNot() async throws {
         let engine = MaskedScriptEngine(script: Self.script)
-        _ = try await serve(engine, build: Self.dense)
-        #expect(!engine.submitted.isEmpty)
-        #expect(engine.submitted.first?.tokenConstraint == nil)
+        let outcome = try await serve(engine, build: Self.qwen38)
+        #expect(engine.submitted.first?.tokenConstraint is QwenStrictToolConstraint)
+        #expect(outcome.error == nil && outcome.calls.first?.function.arguments["offset"] == .int(5))
+        let nineB = MaskedScriptEngine(script: Self.script)
+        _ = try await serve(nineB, build: Self.nineB)
+        #expect(!nineB.submitted.isEmpty)
+        #expect(nineB.submitted.first?.tokenConstraint == nil)
     }
 }
 

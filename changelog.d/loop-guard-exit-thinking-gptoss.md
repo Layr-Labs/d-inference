@@ -1,0 +1,5 @@
+### A GPT-OSS analysis that repeats itself verbatim now ends in an answer or a tool call
+
+- As for Gemma 4 and the Qwen 3.5/3.6 35B models: when the loop guard stops a verbatim loop inside GPT-OSS's Harmony analysis channel, the request no longer ends as `length` with no answer and no tool call. The provider ends the analysis message (`<|end|>`) and starts the next assistant message (`<|start|>assistant`), as the model does after its own analysis, and the model writes its `final` answer or its tool call in the same response. The usage counts every token produced, as one completion. A loop after that still ends as `length`.
+- In OpenRouter's Tau2-Bench airline run on 0.10.12 (`reasoning_effort: high`, temperature 0), 27 % of GPT-OSS's turns ended that way, at 4,097 tokens with nothing but reasoning.
+- On by default for `gpt_oss`. Never with logprobs or on a cluster pair. `DARKBLOOM_LOOP_EXIT_THINKING=gemma4,gemma4_text,qwen3_5_moe` (a list without `gpt_oss`) or `0` restores the `length` stop for GPT-OSS.

@@ -85,8 +85,10 @@ public final class GenerationLoopExitRecord: @unchecked Sendable {
 /// Which requests may end a repeating thought instead of the whole answer.
 ///
 /// On by default for Gemma 4, whose thought closes with one special token
-/// (`<channel|>`), and the Qwen 3.5/3.6 35B models (`qwen3_5_moe`), whose
-/// template closes it with `\n</think>\n\n` (`</think>` is one special token).
+/// (`<channel|>`), the Qwen 3.5/3.6 35B models (`qwen3_5_moe`), whose
+/// template closes it with `\n</think>\n\n` (`</think>` is one special token),
+/// and GPT-OSS (`gpt_oss`), whose Harmony analysis message ends with `<|end|>`
+/// and is followed by the next assistant message (`harmonyAnalysis`).
 /// `qwen3_5` has the marker but is off by default: it is Qwen 3.5 9B and also
 /// Qwen 3.8 27B, whose thought loops are rare. The guard keeps ending every
 /// other loop as `length`: a loop outside the thought, a family that is not
@@ -106,21 +108,33 @@ enum GenerationLoopExitThinkingPolicy {
         /// model ends its own thought (Qwen: `\n</think>\n\n`).
         var before = ""
         var after = ""
+        /// Control tokens spelled in `after` (Harmony's `<|start|>`): each must
+        /// be fed as its own token, never as ordinary pieces of its text.
+        var controls: [String] = []
     }
 
     /// The families whose thought this can end, by `model_type`.
     static let markersByModelType: [String: Markers] = [
+        "gpt_oss": harmonyAnalysis,
         "gemma4": .init(open: "<|channel>", close: "<channel|>"),
         "gemma4_text": .init(open: "<|channel>", close: "<channel|>"),
         "qwen3_5": qwenThink,
         "qwen3_5_moe": qwenThink,
     ]
 
+    /// GPT-OSS's Harmony analysis message (`<|channel|>analysis<|message|>` …
+    /// `<|end|>`). The exit ends that message and starts the next assistant
+    /// message, `<|end|><|start|>assistant`, as the model does after its own
+    /// analysis: the model then picks the channel itself, `final` for an
+    /// answer or `commentary to=functions.…` for a tool call.
+    static let harmonyAnalysis = Markers(
+        open: "<|channel|>analysis", close: "<|end|>", after: "<|start|>assistant", controls: ["<|start|>"])
+
     /// As the Qwen 3.5/3.6 template writes a closed thought:
     /// `<think>\n…\n</think>\n\n` before the answer.
     static let qwenThink = Markers(open: "<think>", close: "</think>", before: "\n", after: "\n\n")
 
-    static let defaultModelTypes: Set<String> = ["gemma4", "gemma4_text", "qwen3_5_moe"]
+    static let defaultModelTypes: Set<String> = ["gemma4", "gemma4_text", "qwen3_5_moe", "gpt_oss"]
 
     /// The answer's own cap. Gemma's GPQA answers after a thought are under
     /// 1,000 tokens; a Tau2 reply or call is shorter.
@@ -171,8 +185,15 @@ enum GenerationLoopExitThinkingPolicy {
         }
         let exitTokens = spell(markers.before) + [close] + spell(markers.after)
         let exitText = markers.before + markers.close + markers.after
-        // The model must be fed what the client is shown.
-        guard tokenizer.decode(tokenIds: exitTokens, skipSpecialTokens: false) == exitText else { return nil }
+        // The model must be fed what the client is shown, its control tokens
+        // as themselves.
+        guard tokenizer.decode(tokenIds: exitTokens, skipSpecialTokens: false) == exitText,
+              markers.controls.allSatisfy({ control in
+                  tokenizer.convertTokenToId(control).map {
+                      tokenizer.convertIdToToken($0) == control && exitTokens.contains($0)
+                  } ?? false
+              })
+        else { return nil }
         return GenerationLoopExitThinking(
             openMarker: markers.open, closeMarker: markers.close,
             exitTokens: exitTokens, exitText: exitText, closeToken: close,

@@ -3252,12 +3252,12 @@ stops such a row early.
   (Super, text only), `glm5_next` and `mimo_v2`. `DARKBLOOM_LOOP_GUARD=0`
   (or `off`) turns it off; a comma-separated list of `model_type`s replaces
   the default list.
-- **A loop inside a Gemma 4 or Qwen 3.5/3.6 35B thought ends the thought, not
-  the answer** (`GenerationLoopExitThinkingPolicy`, `LoopExitThinkingContinuation`).
-  For `gemma4`, `gemma4_text` and `qwen3_5_moe` (on by default) and `qwen3_5`
+- **A loop inside a Gemma 4, Qwen 3.5/3.6 35B or GPT-OSS thought ends the
+  thought, not the answer** (`GenerationLoopExitThinkingPolicy`, `LoopExitThinkingContinuation`).
+  For `gemma4`, `gemma4_text`, `qwen3_5_moe` and `gpt_oss` (on by default) and `qwen3_5`
   (Qwen 3.5 9B and Qwen 3.8 27B: listed, off by default), the guard also
   follows the thought channel (`<|channel>` … `<channel|>`, `<think>` …
-  `</think>`; the prompt's tail seeds the state: Qwen's served template opens
+  `</think>`, `<|channel|>analysis` … `<|end|>`; the prompt's tail seeds the state: Qwen's served template opens
   `<think>` in the prompt) and records
   every token the row produces, the in-flight ones after its stop included. A
   detection inside the thought stops the row as above; the scheduler
@@ -3269,7 +3269,12 @@ stops such a row early.
   continuation on the same bridge: the prompt, every generated
   token and the family's end of thinking (the exit tokens: Gemma's
   `<channel|>`; Qwen's `\n</think>\n\n`, as its template closes a thought, with
-  `</think>` as its own token and the newlines tokenized on each side), with
+  `</think>` as its own token and the newlines tokenized on each side;
+  GPT-OSS's `<|end|><|start|>assistant` (`harmonyAnalysis`): the analysis
+  message ends and the next assistant message starts, as after the model's own
+  analysis, so the model picks `final` for the answer or a
+  `commentary to=functions.…` call; `<|end|>` and `<|start|>` must resolve as
+  their own tokens), with
   `max_tokens` = the output the bridge resolved for the row minus the tokens
   produced minus the exit tokens, at most 8,192; the same sampling, stop strings
   and cache scope, the stop strings scoped as for output that starts outside the
@@ -3278,8 +3283,13 @@ stops such a row early.
   as `length`. The client's stream carries the thought, the exit text as one
   chunk and the answer, then one terminal: the original prompt, completion =
   the row's tokens + the exit tokens + the answer's, the continuation's finish
-  reason. The continuation is an ordinary row, so exact MTP drafting
-  stays on for it and its batch; a cancelled row donates no KV, so the
+  reason. (GPT-OSS: the Harmony reasoning parser, streaming and collected, reads
+  `<|end|>` as the analysis's end and `<|start|>assistant` as the next
+  message's role, so neither reaches `content` or `reasoning_content`, and the
+  Harmony tool-call parser holds `<|start|>assistant` until a call header
+  completes in the continuation; the prompt is reused as rendered, its
+  `Reasoning: low|medium|high` included.) The continuation is an ordinary row,
+  so exact MTP drafting stays on for it and its batch; a cancelled row donates no KV, so the
   continuation prefills the thought again (its prompt part can hit the prefix
   cache). When the continuation cannot start (under 256 tokens of budget left,
   the row closed its thought itself (its in-flight tokens after the stop hold

@@ -148,10 +148,27 @@ struct ProductionPromptParityTests {
             }
             let unplanned = try tokens(planned: false)
             let planned = try tokens(planned: true)
-            #expect(unplanned == fixture.vllmTokenIDs,
-                    "\(fixture.id): unplanned \(unplanned.count) tokens, vLLM \(fixture.vllmTokenIDs.count); first difference at \(firstDifference(unplanned, fixture.vllmTokenIDs) ?? -1)")
-            #expect(planned == fixture.stringTokenIDs,
-                    "\(fixture.id): planned \(planned.count) tokens, string render \(fixture.stringTokenIDs.count); first difference at \(firstDifference(planned, fixture.stringTokenIDs) ?? -1)")
+            if fixture.providerMatchesTransformers {
+                #expect(unplanned == fixture.vllmTokenIDs,
+                        "\(fixture.id): unplanned \(unplanned.count) tokens, vLLM \(fixture.vllmTokenIDs.count); first difference at \(firstDifference(unplanned, fixture.vllmTokenIDs) ?? -1)")
+                #expect(planned == fixture.stringTokenIDs,
+                        "\(fixture.id): planned \(planned.count) tokens, string render \(fixture.stringTokenIDs.count); first difference at \(firstDifference(planned, fixture.stringTokenIDs) ?? -1)")
+            }
+            // vLLM's change, on the provider's own render: nothing, or the one
+            // token its parts render adds where the two renders first differ.
+            switch firstDifference(fixture.stringTokenIDs, fixture.vllmTokenIDs) {
+            case nil:
+                #expect(unplanned == planned, "\(fixture.id): unplanned differs from planned")
+            case let index? where fixture.vllmTokenIDs.count == fixture.stringTokenIDs.count + 1:
+                var expected = planned
+                expected.insert(fixture.vllmTokenIDs[index], at: min(index, expected.count))
+                #expect(Array(planned.prefix(index)) == Array(fixture.stringTokenIDs.prefix(index)),
+                        "\(fixture.id): the planned render differs from Transformers' before the system turn ends")
+                #expect(unplanned == expected,
+                        "\(fixture.id): unplanned is not planned plus vLLM's token at \(index); first difference at \(firstDifference(unplanned, expected) ?? -1)")
+            default:
+                #expect(fixture.providerMatchesTransformers, "\(fixture.id): checked only against Transformers")
+            }
         }
     }
 }
@@ -166,12 +183,27 @@ private struct GemmaSystemPartsVectors: Decodable {
         let providerBody: JSONValue
         let stringTokenIDs: [Int]
         let vllmTokenIDs: [Int]
+        /// False where the provider's render of the body already differs
+        /// from Transformers' for another reason (the Tau2 body's `$ref`
+        /// tool declarations, which the coordinator inlines in production).
+        let providerMatchesTransformers: Bool
 
         enum CodingKeys: String, CodingKey {
             case id
             case providerBody = "provider_body"
             case stringTokenIDs = "string_token_ids"
             case vllmTokenIDs = "vllm_token_ids"
+            case providerMatchesTransformers = "provider_matches_transformers"
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(String.self, forKey: .id)
+            providerBody = try container.decode(JSONValue.self, forKey: .providerBody)
+            stringTokenIDs = try container.decode([Int].self, forKey: .stringTokenIDs)
+            vllmTokenIDs = try container.decode([Int].self, forKey: .vllmTokenIDs)
+            providerMatchesTransformers = try container.decodeIfPresent(
+                Bool.self, forKey: .providerMatchesTransformers) ?? true
         }
     }
 

@@ -23,6 +23,8 @@ struct NativeToolStreamRouter {
     private var exposedCallCount = 0
     private var openCallIndex: Int?
     private var openCallName: String?
+    /// `parallel_tool_calls: false`: the frames of calls after the first.
+    private var laterCalls = ParallelToolCallPolicy.LaterCallFilter()
     /// Every call exposed so far whose frame parsed, each already accepted by
     /// `ToolConstraintValidation` (which returns `auto` calls as generated
     /// unless the request is `strict`).
@@ -234,6 +236,7 @@ struct NativeToolStreamRouter {
     private mutating func routeToolSegment(
         _ segment: ToolCallStreamSegment, prepared: ToolChoicePromptPolicy.Prepared, truncated: Bool = false
     ) throws -> [MLXServerGenerationEvent] {
+        if laterCalls.drops(segment, exposedCalls: exposedCallCount, prepared: prepared) { return [] }
         switch segment {
         case .text(let text):
             return text.isEmpty ? [] : [visibleEvent(text)]

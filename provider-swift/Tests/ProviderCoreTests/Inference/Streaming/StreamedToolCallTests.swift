@@ -199,17 +199,67 @@ struct StreamedToolCallTests {
         #expect(call.completed?.function.name == "delete_everything")
     }
 
-    @Test func secondCallIsRefusedWhenParallelCallsAreDisabled() throws {
-        var router = try Self.router(Self.request(parallel: false))
-        let first = Self.gemmaCall(#"location:<|"|>Paris<|"|>"#)
-        var exposed: [ServerToolCallDelta] = []
-        for character in Self.characters(first) { exposed += Self.deltas(try router.process(character)) }
-        #expect(exposed.last?.completed != nil)
-        var thrown: Error?
-        for character in Self.characters(first) {
-            do { _ = try router.process(character) } catch { thrown = error; break }
+    /// `parallel_tool_calls: false` returns the first call, as OpenAI and vLLM
+    /// do. The calls the model makes after it, valid or not, are consumed and
+    /// dropped; none fails the stream after the first call already left.
+    @Test func laterCallsAreDroppedWhenParallelCallsAreDisabled() throws {
+        for strict in [false, true] {
+            let request = try Self.request(parallel: false, strict: strict)
+            var router = try Self.router(request)
+            let text = Self.gemmaCall(#"location:<|"|>Paris<|"|>"#)
+                + Self.gemmaCall(#"location:<|"|>Rome<|"|>,days:3"#)
+                + Self.gemmaCall(#"path:<|"|>a.py<|"|>,content:<|"|>x<|"|>"#, name: "write_file")
+                // Off the schema: `strict` would refuse it if it were returned.
+                + Self.gemmaCall(#"location:<|"|>Oslo<|"|>,unit:<|"|>kelvin<|"|>"#)
+            var events: [MLXServerGenerationEvent] = []
+            for character in Self.characters(text) { events += try router.process(character) }
+            events += try router.finishText()
+            events += try router.finishToolCalls(truncated: false)
+            let deltas = Self.deltas(events)
+            #expect(events.count == deltas.count, "strict \(strict): no visible text from a dropped frame")
+            #expect(deltas.allSatisfy { $0.index == 0 }, "strict \(strict)")
+            #expect(deltas.compactMap(\.name) == ["get_weather"], "strict \(strict)")
+            #expect(deltas.compactMap(\.completed).map(\.function.arguments) == [["location": .string("Paris")]],
+                "strict \(strict)")
+            #expect(router.completedToolCalls.map(\.function.arguments) == [["location": .string("Paris")]])
+            try ToolConstraintValidation.validate(router.completedToolCalls,
+                prepared: ToolChoicePromptPolicy.prepare(request, modelType: "gemma4"))
         }
-        #expect(thrown is MultiModelBatchSchedulerEngineError)
+    }
+
+    /// A later call that completes without being exposed (Harmony parses an
+    /// undeclared name, which `strict` refuses) is dropped too, before
+    /// validation could refuse it.
+    @Test func laterUnexposedCallIsDroppedUnvalidated() throws {
+        var router = try Self.router(Self.request(parallel: false, strict: true), modelType: "gpt_oss")
+        let text = "<|start|>assistant to=functions.get_weather<|channel|>commentary json"
+            + #"<|message|>{"location":"Paris"}<|call|>"#
+            + "<|start|>assistant to=functions.delete_everything<|channel|>commentary json"
+            + #"<|message|>{"path":"/"}<|call|>"#
+        var events: [MLXServerGenerationEvent] = []
+        for character in Self.characters(text) { events += try router.process(character) }
+        events += try router.finishText()
+        events += try router.finishToolCalls(truncated: false)
+        #expect(Self.deltas(events).compactMap(\.completed).map(\.function.name) == ["get_weather"])
+        #expect(router.completedToolCalls.map(\.function.name) == ["get_weather"])
+    }
+
+    /// The complete-call paths (native channel families, required/named,
+    /// surfaces that take calls in one piece, Nemotron Super's owner) keep
+    /// the first call the same way.
+    @Test func completeCallPathsKeepTheFirstCall() throws {
+        let first = ToolCall(function: .init(name: "get_weather", arguments: ["location": "Paris"]))
+        let second = ToolCall(function: .init(name: "get_weather", arguments: ["location": "Rome"]))
+        for choice in [nil, OpenAIToolChoice.mode(.required), .function(name: "get_weather")] {
+            let single = try ToolChoicePromptPolicy.prepare(Self.request(choice, parallel: false), modelType: "gemma4")
+            let admitted = ParallelToolCallPolicy.admitted([first, second], prepared: single)
+            #expect(admitted == [first])
+            try ToolConstraintValidation.validate(admitted, prepared: single)
+            let parallel = try ToolChoicePromptPolicy.prepare(Self.request(choice), modelType: "gemma4")
+            #expect(ParallelToolCallPolicy.admitted([first, second], prepared: parallel) == [first, second])
+        }
+        let none = try ToolChoicePromptPolicy.prepare(Self.request(parallel: false), modelType: "gemma4")
+        #expect(ParallelToolCallPolicy.admitted([], prepared: none).isEmpty)
     }
 
     /// The second partial holds a `}`, so Gemma's lenient EOS parse reads a

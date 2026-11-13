@@ -118,9 +118,10 @@ enum ToolConstraintValidation {
     /// Calls withheld until the end of generation. When the token limit cut
     /// the answer (`cutAtLimit`, `TokenLimitCutPolicy`), calls that fail their
     /// checks are the limit's (arguments it ended, a call it prevented): none
-    /// of them leaves, and the answer ends `length`. More calls than
-    /// `parallel_tool_calls: false` allows, or a call under `tool_choice: none`,
-    /// are the model's and still refused.
+    /// of them leaves, and the answer ends `length`. A call under
+    /// `tool_choice: none` is the model's and still refused, as would be more
+    /// calls than `parallel_tool_calls: false` allows (`ParallelToolCallPolicy`
+    /// already kept only the first).
     static func validateWithheld(
         _ calls: inout [ToolCall],
         prepared: ToolChoicePromptPolicy.Prepared,

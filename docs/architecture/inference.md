@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-12
+> Last updated: 2026-11-13
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -3547,8 +3547,12 @@ read bare scalars and composites as raw strings. When the frame closes, the
 complete parse must agree with everything already exposed
 (`libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/ToolCallStreaming.swift`).
 `NativeToolStreamRouter` admits `parallel_tool_calls` cardinality at the first
-fragment and, when the request is `strict` (below), validates name and schema
-at frame close; the service renders OpenAI fragments (`index`, `id`, `type`
+fragment: with `parallel_tool_calls: false` it exposes the first call only and
+consumes every later frame without exposing or validating it, as OpenAI
+returns one call and vLLM keeps the first; the complete-call paths, Nemotron
+Super's included, keep the first the same way (`ParallelToolCallPolicy`). When
+the request is `strict` (below), it validates name and schema at frame close;
+the service renders OpenAI fragments (`index`, `id`, `type`
 and `function.name` first, then `function.arguments` pieces). A response that
 begins with a call therefore reaches its first content frame at the function
 name instead of the engine terminal, which also ends the frame loop's
@@ -3612,8 +3616,9 @@ breaking a contract, and OpenRouter does not count a call cut by the caller's
 - Withheld calls (forced choices, native families, `DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0`)
   that fail their checks are dropped instead of refused, and a forced choice
   with no call ends `length` (`ToolConstraintValidation.validateWithheld`).
-  More calls than `parallel_tool_calls: false` allows, or a call under
-  `tool_choice: none`, are the model's and still refused. A native GLM, Flint
+  A call under `tool_choice: none` is the model's and still refused;
+  `parallel_tool_calls: false` keeps only the first call before any check
+  (`ParallelToolCallPolicy`). A native GLM, Flint
   or MiMo frame the limit left unparsed is dropped, never published as text.
   Calls that pass still leave, and the response then finishes `tool_calls`,
   as before.

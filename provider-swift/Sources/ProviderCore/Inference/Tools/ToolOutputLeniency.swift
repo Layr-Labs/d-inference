@@ -14,9 +14,10 @@ import Foundation
 /// flush would complete stays open with the rest of its arguments, so the
 /// stream finishes `length`; a withheld structured (`response_format`)
 /// answer leaves as generated; withheld calls that no longer pass their
-/// checks, and an unfinished frame, are dropped rather than refused. More
-/// calls than `parallel_tool_calls: false` allows, or a call under
-/// `tool_choice: none`, are the model's and still refused. A response with
+/// checks, and an unfinished frame, are dropped rather than refused. A call
+/// under `tool_choice: none` is the model's and still refused
+/// (`parallel_tool_calls: false` already keeps only the first call,
+/// `ParallelToolCallPolicy`). A response with
 /// calls that were complete before the cut still finishes `tool_calls`, as it
 /// does today.
 ///

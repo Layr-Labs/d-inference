@@ -1943,7 +1943,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     continuation.finish()
                     return
                 }
-                var toolCalls = toolHandler?.finish() ?? []
+                var toolCalls = ParallelToolCallPolicy.admitted(toolHandler?.finish() ?? [], prepared: prepared)
                 do {
                     if !cutAtLimit { try router.checkNativeToolFailure() }
                 } catch {

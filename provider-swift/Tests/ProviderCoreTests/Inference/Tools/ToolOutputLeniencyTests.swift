@@ -231,13 +231,19 @@ struct ToolOutputLeniencyTests {
         #expect(off.error.map { ProviderLoop.mapInferenceErrorToStatus($0) } == 422)
     }
 
-    /// More calls than `parallel_tool_calls: false` allows are the model's,
-    /// cut or not.
-    @Test func aSecondWithheldCallIsStillRefusedAtTheLimit() async throws {
-        let second = Self.pathOnlyCall + "\n" + Self.pathOnlyUnclosed
-        let served = try await Self.serveQwen(second, finish: "length", choice: .mode(.required), parallel: false,
-            reasoning: false)
-        #expect(classifyToolNoncomplianceCheck(try #require(served.error)) == .parallel)
+    /// `parallel_tool_calls: false` keeps the first call (`ParallelToolCallPolicy`):
+    /// a whole first call leaves, and a second the limit cut never does.
+    @Test func aSecondWithheldCallCutAtTheLimitLeavesTheFirst() async throws {
+        let first = "<tool_call>\n<function=write_file>\n<parameter=path>\nfib.py\n</parameter>\n"
+            + "<parameter=content>\nprint(1)\n</parameter>\n</function>\n</tool_call>"
+        let served = try await Self.serveQwen(first + "\n" + Self.pathOnlyUnclosed, finish: "length",
+            choice: .mode(.required), parallel: false, reasoning: false)
+        #expect(served.error == nil, "\(String(describing: served.error))")
+        let call = Self.streamedCall(served.chunks)
+        #expect(call.name == "write_file")
+        #expect(try JSONDecoder().decode([String: Value].self, from: Data(call.arguments.utf8))
+            == ["path": .string("fib.py"), "content": .string("print(1)")])
+        #expect(served.chunks.compactMap(\.finishReason) == ["tool_calls"])
     }
 
     // MARK: - Withheld answers at the forwarder

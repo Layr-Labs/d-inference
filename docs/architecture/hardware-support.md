@@ -977,7 +977,8 @@ serving Mac, so the same request can project differently on other hardware:
   floors the aggregate rate
   (`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`,
   `IsolatedPrefillAdmissionRate.anchorFloorFraction`). Native engines keep
-  their recovery probe instead.
+  their recovery probe instead (GLM and MiMo only until their first
+  calibration cell, below).
 - GLM-5.3-Flash and native MiMo V2.6 let a cold prompt of at most 4,096
   tokens raise their prefill estimate but never lower it: its rate is mostly the
   request's fixed cost. Idle at nominal posture, with no calibration cell or
@@ -986,10 +987,10 @@ serving Mac, so the same request can project differently on other hardware:
   (`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`,
   `NativePrefillEvidence`; `DARKBLOOM_TTFT_NATIVE_PREFILL_EVIDENCE=0` turns it off),
   so once calibrated they take no short-prompt recovery. A busy Mac or another
-  posture keeps one eighth of the cell as its floor. Their published
+  posture keeps one eighth of the cell as its floor. A slower isolated short
+  sample stays in its prompt-size bucket only, out of their published
   `isolated_prefill` measurement, `observed_prefill_tps` and slot telemetry's
-  `isolated_prefill_tps` follow that estimate; a slower short sample stays in
-  its prompt-size bucket only, and the smallest bucket no longer tightens their
+  `isolated_prefill_tps`, and the smallest bucket no longer tightens their
   prompts. Off nominal posture a short sample still cannot lower the estimate,
   so it keeps its nominal value until a longer prompt measures the new posture.
 - Three consecutive refusals that isolated prefill evidence older than 120

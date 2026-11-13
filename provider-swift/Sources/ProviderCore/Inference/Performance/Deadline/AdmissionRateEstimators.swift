@@ -123,8 +123,8 @@ enum IsolatedPrefillAdmissionRate {
 /// Admission's view of the isolated cold-prefill rate of a GLM-5.3-Flash or
 /// native MiMo V2.6 bridge (`EngineV2Bridge.nativePrefillEvidenceApplies`).
 /// Those engines have neither the anchor bound above nor the refusal streak:
-/// their own recovery admits only prompts of up to 1,024 tokens once their
-/// evidence expires.
+/// before their first calibration cell, their own recovery admits only
+/// prompts of up to 1,024 tokens once their evidence expires.
 ///
 /// A short cold prompt measures mostly the request's fixed cost: on idle GLM
 /// M5 Ultras a 13-20-token prompt measured 9-140 tok/s, against 1,378-2,031
@@ -133,10 +133,11 @@ enum IsolatedPrefillAdmissionRate {
 /// from a prompt of at most `sampleTokensAbove` tokens may raise the estimate
 /// (a short prompt's rate bounds a longer prompt's from below) but never lower
 /// it; calibration cells and longer prompts move it either way and alone date
-/// the evidence (`countsAsRateSample`). A slower short sample stays in its
-/// prompt-size bucket only: the published isolated and observed prefill rates,
-/// which routing reads, follow the estimate. The smallest bucket never
-/// tightens a prompt (`bucketTightens`); larger buckets still do.
+/// the evidence and restart the estimate after a gap (`countsAsRateSample`). A
+/// slower short sample stays in its prompt-size bucket only, out of the
+/// published isolated and observed prefill rates that routing reads. The
+/// smallest bucket never tightens a prompt (`bucketTightens`); larger buckets
+/// still do.
 ///
 /// On an idle Mac at nominal posture, counted evidence older than the
 /// 120-second freshness window is priced at no less than the calibration
@@ -144,7 +145,7 @@ enum IsolatedPrefillAdmissionRate {
 /// keeps the ordinary engines' floor of one eighth of the anchor, as does a
 /// busy Mac or another posture. Unlike `IsolatedPrefillAdmissionRate`, old
 /// evidence never skips the projection: a native step cannot be preempted, so
-/// a large prompt stays projected. With an anchor, the floor replaces the
+/// a large prompt stays projected. With an anchor, the projection replaces the
 /// short-prompt recovery. On by default;
 /// `DARKBLOOM_TTFT_NATIVE_PREFILL_EVIDENCE=0` restores the previous estimator,
 /// as does `DARKBLOOM_TTFT_ADMISSION_FIXES=0`.

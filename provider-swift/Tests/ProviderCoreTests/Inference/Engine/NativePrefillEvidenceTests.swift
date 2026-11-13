@@ -127,7 +127,7 @@ struct NativePrefillEvidenceTests {
         for minute in (0..<12).reversed() {
             await serve(bridge, 9, prompt: 10, at: now - .seconds(60 * minute + 5))
         }
-        // The slot's heartbeat telemetry follows the admission estimate.
+        // The estimate ignores them.
         #expect(await bridge._testIsolatedPrefillTps() == 2_000)
         #expect(try await prefillRate(bridge, prompt: 23_466) == 2_000)
         #expect(try await prefillRate(bridge, prompt: Self.tau2Prompt) == 2_000)
@@ -315,6 +315,45 @@ struct NativePrefillEvidenceTests {
         }
     }
 
+    @Test("a faster short prompt raises the estimate but does not date it: an idle Mac keeps its floor")
+    func raisingShortSampleDoesNotDateTheEvidence() async throws {
+        let (bridge, _) = try nativeBridge()
+        let now = ContinuousClock.now
+        await calibrate(bridge, at: now - .seconds(1_200))
+        await serve(bridge, 400, prompt: 6_000, at: now - .seconds(600))
+        await serve(bridge, 800, prompt: 3_000, at: now - .seconds(5))
+        #expect(await bridge._testIsolatedPrefillTps() == 0.3 * 800 + 0.7 * 400)
+        #expect(try await prefillRate(bridge, prompt: 23_466) == Self.calibrated)
+        await bridge.shutdown()
+    }
+
+    @Test("after an evidence gap faster short prompts blend into the estimate instead of replacing it")
+    func fasterShortSamplesBlendAfterAGap() async throws {
+        let (bridge, _) = try nativeBridge()
+        let now = ContinuousClock.now
+        await calibrate(bridge, at: now - .seconds(1_200))
+        await serve(bridge, 2_500, prompt: 3_000, at: now - .seconds(10))
+        await serve(bridge, 2_000, prompt: 3_000, at: now - .seconds(5))
+        #expect(await bridge._testIsolatedPrefillTps() == 0.3 * 2_000 + 0.7 * (0.3 * 2_500 + 0.7 * 1_420))
+        await bridge.shutdown()
+    }
+
+    @Test("before its first calibration cell a GLM Mac still recovers; a slower short sample backs the recovery off")
+    func uncalibratedNativeMacStillRecovers() async throws {
+        let (bridge, _) = try nativeBridge()
+        let now = ContinuousClock.now
+        // A long prompt ten minutes ago and no calibration cell yet.
+        await serve(bridge, 2_000, prompt: 6_000, at: now - .seconds(600))
+        let deadline = FirstContentDeadline(relativeBudgetMilliseconds: 9_326)
+        #expect(await bridge.canRecoverPrefillEvidence(promptTokens: 384, maxOutputTokens: 1,
+            deadline: deadline, isMultimodal: false))
+        // The recovery's own sample is slower than the estimate: it is not
+        // counted, so the recovery retires unmeasured and waits out its backoff.
+        #expect(await !bridge.recoverWithSampleForTest(cold(120, prompt: 384, at: .now)))
+        #expect(await bridge._testIsolatedPrefillTps() == 2_000)
+        await bridge.shutdown()
+    }
+
     @Test("the switch, or the estimator corrections' switch, restores today's estimator")
     func switchesRestoreTodaysEstimator() async throws {
         for (evidence, fixes) in [(false, true), (true, false)] {
@@ -385,10 +424,23 @@ struct NativePrefillEvidenceTests {
         // Samples above the 4,096-token bucket count either way.
         #expect(!NativePrefillEvidence.countsAsRateSample(promptTokens: 4_096))
         #expect(NativePrefillEvidence.countsAsRateSample(promptTokens: 4_097))
+        // Only the smallest prompt-size bucket is set aside.
+        #expect(!NativePrefillEvidence.bucketTightens(promptTokens: 1_024))
+        #expect(NativePrefillEvidence.bucketTightens(promptTokens: 1_025))
     }
 }
 
 private extension EngineV2Bridge {
     /// What `attachNativeTransaction` records for a native MiMo load.
     func markNativeMiMoForTest() { nativeTransactionID = UUID() }
+
+    /// One admitted recovery whose only sample is `observation`, booked as the
+    /// bridge books it; true when another recovery may start at once.
+    func recoverWithSampleForTest(_ observation: EngineRateObservation) -> Bool {
+        prefillEvidenceRecovery.acquire("recovery", evidenceGuard: nil)
+        prefillEvidenceRecovery.admit("recovery")
+        applyRateObservation(observation, requestID: "recovery", calibration: false)
+        prefillEvidenceRecovery.retire("recovery")
+        return prefillEvidenceRecovery.available()
+    }
 }

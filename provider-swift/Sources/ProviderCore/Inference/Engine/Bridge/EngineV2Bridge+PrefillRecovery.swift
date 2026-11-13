@@ -42,8 +42,9 @@ extension EngineV2Bridge {
 
     /// Recovery is deliberately smaller than ordinary serving. A busy Mac,
     /// media request or large prompt still requires the normal projection.
-    /// Under `NativePrefillEvidence` a calibrated Mac's idle floor already
-    /// admits such a prompt, so it takes the normal projection too.
+    /// Under `NativePrefillEvidence` a calibrated Mac takes the normal
+    /// projection too: idle at nominal posture its floor already admits such a
+    /// prompt, and a recovery sample could only raise its estimate.
     func canRecoverPrefillEvidence(promptTokens: Int, maxOutputTokens: Int, deadline: FirstContentDeadline?,
         isMultimodal: Bool, at now: ContinuousClock.Instant = .now) -> Bool {
         !(nativePrefillEvidenceApplies && calibratedIsolatedPrefillTps != nil) &&

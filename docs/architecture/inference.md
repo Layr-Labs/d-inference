@@ -9983,6 +9983,22 @@ Concurrent speculative requests verify their draft windows in one target forward
 Where it measured faster and byte-equal, a cohort's verify rows go through one kernel instead of MLX's own calls (`Qwen35WideQuantizedKernel`, a port of `qmv_wide_impl`): each vector keeps `qmv_wide`'s lanes, sub-chunk sums and shuffle ladder, but up to eight vectors (two four-column windows) share a weight read instead of five, and a thread may carry two output rows so each input value is converted once for both. The layout follows the GPU family (`Qwen35WideQuantizedKernel.layout`). On the M5 Max (family 17), one row a thread for bfloat16 and float32 inputs, up to 20% faster than MLX's calls. On the M3 Ultra (family 15), two rows a thread for the row-parallel float32 partials, 1.5-2.1x faster, while its bfloat16 projections keep MLX's calls, which measured as fast or faster; one row a thread was up to 1.6x slower there. Other families keep MLX's calls. The figures come from `QwenTensorParallelVerifyBenchTests` (opt-in) on each Mac with Qwen27's shard shapes, and `QwenTensorParallelBatchMTPWindowTests.wideKernelRowsEqualEachRowsOwnWindowCall` checks both layouts byte for byte against each row's own call on whichever GPU runs it.
 
 
+## Qwen forced-call thinking
+
+Forced required/named calls on qwen3_5 and qwen3_5_moe retain the resolved thinking setting. Nested reasoning.enabled takes precedence over enable_thinking and effort. The family tool parser and its accepted XML override classify reasoning before validating the call; a complete trailing call at a natural stop uses the existing promotion rule.
+
+The [rollout switch](../reference/configuration.md#qwen-forced-call-thinking) defaults off.
+CPU parser fixtures do not establish full-model output quality or GPU performance.
+
+
+## GPT-OSS commentary content
+
+GPT-OSS streams using the Harmony reasoning parser normalize recipientless assistant commentary to the answer channel before tool extraction and reasoning parsing. This keeps the preamble as content for both streamed and collected responses. Recipients before or after the channel marker remain tool calls; header context is bounded and message bodies are not promoted.
+
+The [rollout switch](../reference/configuration.md#gpt-oss-commentary-content) defaults off.
+CPU parser fixtures do not establish full-model output quality or GPU performance.
+
+
 ## Qwen stray thinking-close markers
 
 Qwen native channel splitting absorbs complete stray </think> markers outside thoughts. A known closed prompt also selects native splitting without tools. Legacy media installs the family tool handler with that route so literal argument markers stay protected. Partial markers at end of stream remain literal. Unknown/open prompt states retain the existing media route; existing native routes remain selected as before.

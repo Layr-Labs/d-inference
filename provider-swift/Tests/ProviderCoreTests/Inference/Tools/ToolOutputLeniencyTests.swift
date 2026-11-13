@@ -23,7 +23,7 @@ struct ToolOutputLeniencyTests {
                 : StrictToolCallPolicy.enabled(environment: environment)
         }
         #expect(enabled([:]) && enabled([key: "1"]) && enabled([key: "on"]))
-        for off in ["0", "off", "false", " OFF "] { #expect(!enabled([key: off]), "\(off)") }
+        for off in ["0", "off", "false", "no", " OFF "] { #expect(!enabled([key: off]), "\(off)") }
         #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))
         #expect(LaunchAgent.passthroughEnvironment(from: [key: "0", "UNRELATED": "x"]) == [key: "0"])
     }
@@ -202,8 +202,11 @@ struct ToolOutputLeniencyTests {
         #expect(served.error == nil, "\(String(describing: served.error))")
         let call = Self.streamedCall(served.chunks)
         #expect(call.name == "write_file")
-        #expect(try JSONDecoder().decode([String: Value].self, from: Data(call.arguments.utf8))
-            == ["path": .string("fib.py")], "the rest of its arguments as generated")
+        // Fragments stop where generation did: the provider closes nothing, so
+        // a client cannot parse (and run) a call the limit cut.
+        #expect((try? JSONDecoder().decode([String: Value].self, from: Data(call.arguments.utf8))) == nil)
+        #expect(try JSONDecoder().decode([String: Value].self, from: Data((call.arguments + "}").utf8))
+            == ["path": .string("fib.py")])
         #expect(served.chunks.compactMap(\.finishReason) == ["length"])
         #expect(served.chunks.contains { $0.usage?.completionTokens == 30 })
         // `DARKBLOOM_LENGTH_FINISH_AT_LIMIT=0`: the call is held to the
@@ -229,6 +232,30 @@ struct ToolOutputLeniencyTests {
             $0.cutAnswersEndAtLength = false
         }
         #expect(off.error.map { ProviderLoop.mapInferenceErrorToStatus($0) } == 422)
+    }
+
+    /// Withheld calls at a cut are checked one by one: the whole ones leave,
+    /// and only the one the limit cut is dropped.
+    @Test func wholeWithheldCallsLeaveBesideOneTheLimitCut() async throws {
+        let whole = "<tool_call>\n<function=write_file>\n<parameter=path>\na.py\n</parameter>\n"
+            + "<parameter=content>\nx\n</parameter>\n</function>\n</tool_call>\n"
+        let served = try await Self.serveQwen(whole + whole + Self.pathOnlyUnclosed, finish: "length",
+            choice: .mode(.required), reasoning: false)
+        #expect(served.error == nil, "\(String(describing: served.error))")
+        #expect(served.chunks.flatMap { $0.toolCallsDelta ?? [] }.compactMap { $0.function?.name }
+            == ["write_file", "write_file"])
+        #expect(served.chunks.compactMap(\.finishReason) == ["tool_calls"])
+    }
+
+    /// Nothing left during generation: a withheld strict call that fails its
+    /// check is refused before the text the end of generation flushes leaves,
+    /// so the router can still fail over.
+    @Test func aWithheldStrictCallIsRefusedBeforeTheFlushedTextLeaves() async throws {
+        let served = try await Self.serveQwen(Self.pathOnlyCall + "<to", finish: "stop", reasoning: false) {
+            $0.streamToolCalls = false
+        }
+        #expect(classifyToolNoncomplianceCheck(try #require(served.error)) == .schema)
+        #expect(served.chunks.allSatisfy { ($0.contentDelta ?? "").isEmpty && $0.toolCallsDelta == nil })
     }
 
     /// More calls than `parallel_tool_calls: false` allows are the model's,
@@ -298,6 +325,18 @@ struct ToolOutputLeniencyTests {
         #expect(try await Self.forward(prepared, ["not json"], finish: "stop").error is MLXOpenAIServiceError)
     }
 
+    /// A cut GLM answer that already holds a whole value leaves normalized, as
+    /// the candidate extraction always gave it; otherwise as generated.
+    @Test func aCutGLMAnswerWithAWholeValueLeavesNormalized() async throws {
+        let request = OpenAIChatCompletionRequest(model: "m", messages: [], responseFormat: .jsonObject())
+        var prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "glm5_next")
+        prepared.cutAnswersEndAtLength = true
+        let fenced = try await Self.forward(prepared, ["```json\n{\"city\": \"Paris\"}\n```\n", "This object lists"],
+            finish: "length")
+        #expect(fenced.error == nil && fenced.stopReason == "length", "\(String(describing: fenced.error))")
+        #expect(fenced.content == #"{"city": "Paris"}"#)
+    }
+
     /// A Flint call frame the budget cut is the limit's, not a native frame
     /// failure; its raw frame is never published as text.
     @Test func aNativeFlintFrameCutAtTheLimitEndsAsLength() async throws {
@@ -359,6 +398,22 @@ struct ToolOutputLeniencyTests {
         #expect(finish(Self.superWeather + noThinking, frame, cutAtLimit: false) == nil)
         #expect(finish(required, "<tool_call>\n<function=get_weather>", cutAtLimit: false) == nil)
         #expect(finish(json, #"{"a":"#, cutAtLimit: false) == nil)
+    }
+
+    /// `force_nonempty_content` makes an unterminated thought the answer at a
+    /// natural end; a thought the limit cut is not an answer, so nothing is
+    /// promoted (no copy of the streamed reasoning, no forced-text refusal).
+    @Test func aSuperThoughtCutAtTheLimitIsNotPromoted() throws {
+        let force = #""chat_template_kwargs":{"force_nonempty_content":true}"#
+        var json = try Self.superOutput(force + #","response_format":{"type":"json_object"}"#)
+        _ = try json.append("still thinking")
+        let cut = try json.finish(cutAtLimit: true)
+        #expect(cut.result.content.isEmpty && cut.result.reasoning == "still thinking")
+        var forced = try Self.superOutput(force + "," + Self.superWeather + #","tool_choice":"required""#)
+        _ = try forced.append("still thinking")
+        var failure: (any Error)?
+        do { #expect(try forced.finish(cutAtLimit: true).result.calls.isEmpty) } catch { failure = error }
+        #expect(failure == nil, "\(String(describing: failure))")
     }
 
     /// The relay's terminal decides: a cut answer ends `length` as generated;

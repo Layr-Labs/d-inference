@@ -107,20 +107,24 @@ struct EngineV2SamplingDefaultsTests {
     /// Every catalog Qwen 3.5/3.6 build keeps the cards' 1.5 for a request
     /// that omits the penalty. Without it qwen3.5-35b-a3b looped under both MTP
     /// acceptance rules in the 0.10.12 gate. Qwen3.5-9B passed that gate under
-    /// exact acceptance (0 of 31 draws), so 0.10.12 dropped its penalty; in
-    /// production its answers then ran to `max_tokens` about three times as
-    /// often, and its JSON `response_format` answers (rows that never
-    /// speculate) ran out about twice as often as on 0.10.11 in the same hour
-    /// (9B-MIDFAIL). The coordinator's body adds the registry's temperature,
-    /// top_p and top_k, and the penalty only where the registry sets one. A
-    /// request's own presence_penalty wins on every build.
-    @Test func qwen35OmittedPresencePenaltyFollowsEachBuildsGate() throws {
+    /// exact acceptance (0 of 31 draws), so 0.10.12 dropped its penalty. In
+    /// production, against 0.10.11 Macs over the same period, its answers with
+    /// `max_tokens` ≥ 8,192 then ran to the limit about three times as often
+    /// (5.5 % against 1.7 %), and its constrained JSON `response_format` rows,
+    /// which never speculate, ran out and failed about twice as often (51 %
+    /// against 23 % in the same 10-minute windows). The penalty is the
+    /// difference we can establish: with nothing else running those rows
+    /// failed 32.7 % against 13.6 % (9B-MIDFAIL). The coordinator's body adds
+    /// the registry's temperature, top_p and top_k, and the penalty only where
+    /// the registry sets one. A request's own presence_penalty wins on every
+    /// build.
+    @Test func qwen35OmittedPresencePenaltyIsTheCardsOnEveryBuild() throws {
         let coordinatorBody =
             #"{"model":"m","messages":[{"role":"user","content":"hi"}],"temperature":1,"top_p":0.95,"top_k":20}"#
-        let builds: [(id: String, type: String, penalty: Float)] = [
-            ("Qwen3.5-9B", "qwen3_5", 1.5),
-            ("qwen3.5-35b-a3b", "qwen3_5_moe", 1.5),
-            ("qwen3.6-35b-a3b-vl-mtp-mxfp8", "qwen3_5_moe", 1.5),
+        let builds: [(id: String, type: String)] = [
+            ("Qwen3.5-9B", "qwen3_5"),
+            ("qwen3.5-35b-a3b", "qwen3_5_moe"),
+            ("qwen3.6-35b-a3b-vl-mtp-mxfp8", "qwen3_5_moe"),
         ]
         for build in builds {
             let defaults = EngineV2SamplingDefaults.resolve(
@@ -128,7 +132,7 @@ struct EngineV2SamplingDefaultsTests {
             for body in [bareRequest, coordinatorBody] {
                 let sampling = EngineV2Translation.samplingParams(from: try request(body), defaults: defaults)
                 #expect(sampling.temperature == 1 && sampling.topP == 0.95 && sampling.topK == 20, "\(build.id)")
-                #expect(sampling.presencePenalty == build.penalty, "\(build.id): \(body)")
+                #expect(sampling.presencePenalty == 1.5, "\(build.id): \(body)")
                 #expect(sampling.frequencyPenalty == 0 && sampling.repetitionPenalty == 1, "\(build.id)")
             }
             for own in ["0", "1.5"] {
@@ -175,8 +179,8 @@ struct EngineV2SamplingDefaultsTests {
             environment: [key: "on"]) == .legacy)
     }
 
-    @Test("darkbloom start passes the 9B penalty rollback switch to the launchd daemon")
-    func qwen35NineBPenaltySwitchReachesTheDaemon() {
+    /// `darkbloom start` passes the 9B penalty rollback switch to the launchd daemon.
+    @Test func qwen35NineBPenaltySwitchReachesTheDaemon() {
         let key = EngineV2SamplingDefaults.qwen35NineBPenaltyEnvironmentKey
         #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))
         #expect(LaunchAgent.passthroughEnvironment(from: [key: "0"])[key] == "0")

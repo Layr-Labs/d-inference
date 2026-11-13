@@ -229,7 +229,7 @@ struct ToolOutputLeniencyTests {
         let call = Self.streamedCall(served.chunks)
         #expect(call.name == "write_file")
         #expect((try? JSONDecoder().decode([String: Value].self, from: Data(call.arguments.utf8))) == nil)
-        #expect(!call.arguments.contains("}"), "\(call.arguments)")
+        #expect(call.arguments.hasSuffix(#""content":"print(1"#), "\(call.arguments)")
         #expect(served.chunks.compactMap(\.finishReason) == ["length"])
     }
 

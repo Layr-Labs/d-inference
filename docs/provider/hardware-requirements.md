@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-13
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -20,6 +20,12 @@ loads a narrower owner, down to one request from 85.6 GiB available. Only
 is in
 [hardware support](../architecture/hardware-support.md#context); the slot is
 described in [the inference architecture](../architecture/inference.md#managed-nemotron-super-slot).
+
+The optional concurrent-image setting does not lower Super's RAM requirement or
+raise an owner's configured width. Each image must fit its full media quote
+through native cleanup. Full-checkpoint concurrent-image memory and throughput
+qualification remain pending; see the [configuration control](../reference/configuration.md#engine-and-scheduler)
+and [memory ownership](../architecture/hardware-support.md#context).
 
 For a paired cluster, the registered Qwen3.5 and Qwen3.6 35B A3B text targets
 support two equal tensor-parallel shares. Both Macs still need to pass their independent

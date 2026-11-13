@@ -21,7 +21,7 @@ import os
 /// `hardware/untrusted reason=timeout` on an otherwise-healthy connection
 /// (heartbeats and ping/pong run on separate tasks, so the socket stayed up).
 ///
-/// A lock (matching PongTracker/ManagedAtomic) is used instead of actor
+/// A lock (matching LinkActivityTracker/ManagedAtomic) is used instead of actor
 /// isolation so `send` can stay a synchronous, non-async closure.
 internal final class OutboundRouter: @unchecked Sendable {
     private let lock = OSAllocatedUnfairLock()

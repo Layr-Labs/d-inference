@@ -235,10 +235,11 @@ part of the WebSocket close frame, not of a JSON frame.
 | Close from the coordinator side | Wait before the next attempt |
 |---|---|
 | Code `1012` (service restart) | Drawn from `serviceRestartDelayRange`; the backoff does not grow |
-| Any other code, or no close frame | The next `ExponentialBackoff` range; the backoff grows |
+| Any other code, or no close frame, after a stable session | Drawn from `stableSessionRetryRange`; the backoff does not grow |
+| Any other code, or no close frame, after a shorter session | The next `ExponentialBackoff` range; the backoff grows |
 
-A session that stayed open for `stableSessionDuration` or more, counted from its
-`register` frame, resets the backoff before either wait. The values are in the
+A stable session stayed open for `stableSessionDuration` or more, counted from
+its `register` frame; it also resets the backoff. The values are in the
 [runtime constants](../provider/cli-reference.md#runtime-constants). Older
 providers handle `1012` like any other close, so the coordinator can send it to
 every provider version. Every reconnect sends a fresh `register`.

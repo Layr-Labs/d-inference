@@ -64,7 +64,8 @@ enum GenerationLoopGuardPolicy {
         prepared: ToolChoicePromptPolicy.Prepared,
         tokenConstraint: (any CBv2TokenConstraint)?,
         setting: Setting = current,
-        thresholds: GenerationLoopDetector.Thresholds = .init()
+        thresholds: GenerationLoopDetector.Thresholds = .init(),
+        exitThinking: GenerationLoopExitThinking? = nil
     ) -> GenerationLoopGuard? {
         guard case .modelTypes(let enabled) = setting,
               let modelType = modelType?.lowercased(), enabled.contains(modelType) else { return nil }
@@ -82,6 +83,7 @@ enum GenerationLoopGuardPolicy {
             guard !parser.supportsBareJSON, !parser.supportsMarkerlessNamedJSON else { return nil }
             markers += [parser.startTag].compactMap { $0 } + parser.alternateStartTags
         }
-        return GenerationLoopGuard(modelType: modelType, toolCallMarkers: markers, thresholds: thresholds)
+        return GenerationLoopGuard(
+            modelType: modelType, toolCallMarkers: markers, thresholds: thresholds, exitThinking: exitThinking)
     }
 }

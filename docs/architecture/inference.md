@@ -3216,9 +3216,10 @@ stops such a row early.
   engine's cancelled terminal into a `length` finish with the engine's usage:
   `finish_reason: "length"`, the tokens produced, no error frame, paid like
   any completion. It logs one line (category `engine_v2_loop_guard`: model,
-  `model_type`, period, span, tokens) and emits an `engine_v2_loop_guard`
-  engine-health event with the same fields. To the coordinator it is a
-  `length` finish below the request's bound.
+  `model_type`, period, span, tokens, and whether the stop ended a thought)
+  and emits an `engine_v2_loop_guard` engine-health event with the same fields
+  (`ends_thought`). To the coordinator it is a `length` finish below the
+  request's bound.
 - **Never on:** the first 4,096 tokens; a request with a token constraint, a
   forced tool call or a JSON `response_format`; the rest of a row once its text
   shows a tool-call frame (`<tool_call>`, `<|tool_call>`, `<function=`,
@@ -3231,6 +3232,38 @@ stops such a row early.
   (Super, text only), `glm5_next` and `mimo_v2`. `DARKBLOOM_LOOP_GUARD=0`
   (or `off`) turns it off; a comma-separated list of `model_type`s replaces
   the default list.
+- **A loop inside a Gemma 4 thought ends the thought, not the answer**
+  (`GenerationLoopExitThinkingPolicy`, `LoopExitThinkingContinuation`). For
+  `gemma4` and `gemma4_text`, the guard also follows the thought channel
+  (`<|channel>` … `<channel|>`; the prompt's tail seeds the state) and records
+  every token the row produces, the in-flight ones after its stop included. A
+  detection inside the thought stops the row as above; the scheduler
+  (`prepareCompletion`) then holds the row's `length` terminal, waits until the
+  row has released its serving slot (`EngineV2Bridge.waitForRowRelease`, as
+  model calibration waits: its pump's retirement cleanup and its whole-Mac
+  service charge; a row with a retirement handle, the coordinator's atomic
+  admission path, ends its stream before that; at most 5 s), and submits one
+  continuation on the same bridge: the prompt, every generated
+  token and `<channel|>`, with `max_tokens` = the output the bridge resolved
+  for the row minus the tokens produced minus 1, at most 8,192; the same
+  sampling, stop strings and cache scope; and a loop guard without the exit, so
+  a loop in the answer still ends as `length`. The client's stream carries the
+  thought, a `<channel|>` chunk and the answer, then one terminal: the original
+  prompt, completion = the row's tokens + 1 + the answer's, the continuation's
+  finish reason. The continuation is an ordinary row, so exact MTP drafting
+  stays on for it and its batch; a cancelled row donates no KV, so the
+  continuation prefills the thought again (its prompt part can hit the prefix
+  cache). When the continuation cannot start (under 256 tokens of budget left,
+  the row closed its thought itself, the row did not release its slot in time,
+  a refused submission, a failure before its first token, a cancel), the held
+  `length` terminal is
+  delivered as before; a failure after its first token ends the answer there,
+  as `length` (only the client's cancel keeps its error). Never with
+  logprobs or on a cluster pair. `DARKBLOOM_LOOP_EXIT_THINKING=0` (or `off`)
+  turns it off; a comma-separated list keeps it to the listed `model_type`s
+  that have a marker. `darkbloom start` passes it, and `DARKBLOOM_LOOP_GUARD`,
+  to the launchd daemon (`LaunchAgent.inferencePassthroughEnvKeys`). One `darkbloom.loop-guard.exit-thinking` line per ended
+  thought gives the outcome.
 
 ### Collected and streaming reasoning state
 

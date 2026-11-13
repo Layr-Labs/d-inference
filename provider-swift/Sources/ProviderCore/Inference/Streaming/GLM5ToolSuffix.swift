@@ -22,7 +22,7 @@ enum GLM5ToolSuffix {
 
     /// `<tool_call>` positions tried as the calls' first frame. Each attempt
     /// parses the rest of the suffix (at most `GLM5ToolCallParser`'s 1 MiB), so
-    /// this bounds the work; calls after more mentions than this stay text.
+    /// this bounds the work; calls after this many or more tags stay text.
     static let maximumStarts = 64
 
     private static let opening = "<tool_call>"

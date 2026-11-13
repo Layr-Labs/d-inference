@@ -15,14 +15,14 @@ struct GLM5ToolFailureTests {
     func malformedSuffixNeverCommitsEarlierCall(forced: Bool, width: Int) async throws {
         let output = valid + "PRIVATE_STRAY"
         let result = try await run(output, forced: forced, width: width)
-        try expectUnparsed(result, output: output, forced: forced)
+        expectUnparsed(result, output: output, forced: forced)
     }
 
     @Test(arguments: [false, true])
     func truncatedSecondCallNeverCommitsEarlierCall(forced: Bool) async throws {
         let output = valid + "<tool_call>echo<arg_key>text"
         let result = try await run(output, forced: forced, width: 1)
-        try expectUnparsed(result, output: output, forced: forced)
+        expectUnparsed(result, output: output, forced: forced)
     }
 
     @Test(arguments: [false, true])
@@ -37,7 +37,7 @@ struct GLM5ToolFailureTests {
     func oversizedFrameFailsBeforeFallback(forced: Bool) async throws {
         let output = "<tool_call>echo" + String(repeating: "x", count: (1 << 20) + 1)
         let result = try await run(output, forced: forced, width: 65536)
-        try expectUnparsed(result, output: output, forced: forced)
+        expectUnparsed(result, output: output, forced: forced)
     }
 
     /// The model's raw output after the prompt's open `<think>` (the legacy
@@ -184,7 +184,7 @@ struct GLM5ToolFailureTests {
         }
     }
 
-    private struct Result {
+    private struct Outcome {
         var calls: [ToolCall] = []
         var visible = ""
         var failure: MultiModelBatchSchedulerEngineError?
@@ -192,7 +192,7 @@ struct GLM5ToolFailureTests {
 
     /// A required call fails closed (422); an `auto` response returns the
     /// unparsed suffix as text, with no call and no failure.
-    private func expectUnparsed(_ result: Result, output: String, forced: Bool) throws {
+    private func expectUnparsed(_ result: Outcome, output: String, forced: Bool) {
         #expect(result.calls.isEmpty)
         if forced {
             #expect(result.visible.isEmpty)
@@ -207,11 +207,12 @@ struct GLM5ToolFailureTests {
     /// The production event stream on the legacy text path (no native
     /// channel), fed `width` characters at a time.
     private func run(_ output: String, forced: Bool, width: Int, finishReason: String? = nil,
-                     tool: String? = nil) async throws -> Result {
-        var request = try MiMoConsumerFixture.request(choice: forced ? #""required""# : #""auto""#)
+                     tool: String? = nil) async throws -> Outcome {
+        let choice = forced ? #""required""# : #""auto""#
+        var request = try MiMoConsumerFixture.request(choice: choice)
         if let tool {
             var body = try #require(JSONSerialization.jsonObject(with: MiMoConsumerFixture.body(
-                choice: #""auto""#)) as? [String: Any])
+                choice: choice)) as? [String: Any])
             body["tools"] = [try JSONSerialization.jsonObject(with: Data(tool.utf8))]
             request = try ProviderLoop.decodeOpenAIRequest(JSONSerialization.data(withJSONObject: body))
         }
@@ -233,7 +234,7 @@ struct GLM5ToolFailureTests {
         let stream = try scheduler._testMakeEventStream(upstream: upstream, cancelUpstream: {},
             prepared: prepared, releaseBox: OneShotRelease(release: { _ in }, modelId: "fixture"),
             toolHandler: handler)
-        var result = Result()
+        var result = Outcome()
         do {
             for try await event in stream {
                 switch event {

@@ -1791,7 +1791,7 @@ calls are the frames from the earliest `<tool_call>` whose rest parses as calls
 to the end of the response, and everything before them is text, which the
 service's reasoning parser then splits at `</think>`. A suffix with no such rest
 (a malformed or cut-off final frame, text after the calls), an output cut at the
-token limit, and calls after more than 64 tags are all text; no frame is
+token limit, and calls after 64 or more tags are all text; no frame is
 completed or salvaged. A required or named call still fails closed (422).
 `DARKBLOOM_GLM_TOOL_TEXT_FALLBACK=0` restores the whole-suffix failure (500).
 The request-local [GLM prompt contract](../reference/protocol-messages.md#glm-native-prompt-contract)

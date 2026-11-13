@@ -1917,8 +1917,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     continuation.finish()
                     return
                 }
-                let finished = router.finishCompleteCalls(truncated: stopReason == "length")
-                let toolCalls = finished.calls
+                let (toolCalls, residual) = router.finishCompleteCalls(truncated: stopReason == "length")
                 do {
                     try router.checkNativeToolFailure()
                 } catch {
@@ -1926,7 +1925,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     continuation.finish(throwing: error)
                     return
                 }
-                if prepared.mode == .auto, let residual = finished.residual, !residual.isEmpty {
+                if prepared.mode == .auto, let residual, !residual.isEmpty {
                     emit(router.visibleEvent(residual))
                 }
                 if prepared.mode == .auto, (toolHandler?.parseFailureCount ?? 0) > 0 {

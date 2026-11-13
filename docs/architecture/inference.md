@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-12
+> Last updated: 2026-11-13
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -1797,7 +1797,11 @@ streams on a separate typed channel, and the answer is withheld until
 generation ends, then decoded and checked (`json_schema` against the caller's
 schema, through the shared compiled subset when the schema fits it) before it
 is exposed; invalid output is a 422 with no
-content (`GLM5NextResponseFormat`, `GLM5NextResponseFormatOutput`). One Mac
+content (`GLM5NextResponseFormat`, `GLM5NextResponseFormatOutput`). With
+`DARKBLOOM_GLM_JSON_SCHEMA_MISS=release` (`GLM5NextSchemaMiss`), an answer that
+parses as JSON but misses its schema is exposed as the normalized JSON instead,
+for the caller's own validator to judge; output that is not a complete JSON
+value stays a 422. One Mac
 serves it with image or video input the same way: the instruction turn renders
 in the media prompt (`EngineV2VisionPrefill.glm5NextUserInput`), and the media
 path routes reasoning to the typed channel and records the withheld answer as

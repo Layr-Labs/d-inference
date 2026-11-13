@@ -199,6 +199,7 @@ enum ProviderOperationalMessage: String, CaseIterable, Sendable {
     case refusalUnsupportedForcedToolChoice = "Inference failure: invalid request (unsupported forced tool choice)"
     case refusalRequestExceedsContext = "Inference failure: invalid request (request exceeds context)"
     case refusalUnsupportedOutputControl = "Inference failure: invalid request (unsupported output control)"
+    case refusalMissingUserQuery = "Inference failure: invalid request (missing user query)"
 
     // Operator guidance.
     case glmWiredLimitNotice = "GLM-5.3-Flash hit the macOS GPU wired-memory limit. Run {cli} doctor for the fix."

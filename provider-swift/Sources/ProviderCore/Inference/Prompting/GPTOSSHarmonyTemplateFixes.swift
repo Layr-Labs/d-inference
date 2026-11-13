@@ -98,7 +98,7 @@ enum GPTOSSHarmonyTemplateFix {
                 }
                 guard seenToolCallIDs.insert(id).inserted else {
                     throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                        "duplicate assistant tool_call id \(id)")
+                        "duplicate assistant tool_call id \(id)", refusal: .invalidToolHistory)
                 }
             }
 
@@ -109,11 +109,12 @@ enum GPTOSSHarmonyTemplateFix {
             while j < messages.count, (messages[j]["role"] as? String) == "tool" {
                 guard let id = messages[j]["tool_call_id"] as? String, !id.isEmpty else {
                     throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                        "tool result following split tool_calls requires a non-empty tool_call_id")
+                        "tool result following split tool_calls requires a non-empty tool_call_id",
+                        refusal: .unmatchedToolResult)
                 }
                 guard results[id] == nil else {
                     throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                        "duplicate tool result for tool_call_id \(id)")
+                        "duplicate tool result for tool_call_id \(id)", refusal: .unmatchedToolResult)
                 }
                 results[id] = messages[j]
                 resultOrder.append(id)
@@ -145,7 +146,8 @@ enum GPTOSSHarmonyTemplateFix {
             // cannot be placed — reject cleanly rather than drop it.
             for id in resultOrder where !consumed.contains(id) {
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                    "tool result for tool_call_id \(id) has no matching assistant tool_call")
+                    "tool result for tool_call_id \(id) has no matching assistant tool_call",
+                    refusal: .unmatchedToolResult)
             }
             i = j
         }

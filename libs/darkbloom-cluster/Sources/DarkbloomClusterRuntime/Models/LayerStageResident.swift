@@ -44,7 +44,7 @@ extension LayerStageResidentAdmission {
     /// The layer-stage modes size LOAD for `memoryProfile`. They serve the
     /// whole profile when the adapter registering this row says its stages
     /// charge a longer request at its own context
-    /// (`ClusterRuntimeAdapter.pipelineServesWholeProfile`: none today), and no
+    /// (`ClusterRuntimeAdapter.pipelineServesWholeProfile`: Gemma 4), and no
     /// longer request than the memory plan's otherwise. The provider reads the
     /// same rule for what it advertises, so the two never differ.
     var servedProfile: QwenLayerStageGenerationProfile {

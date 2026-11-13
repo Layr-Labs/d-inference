@@ -64,6 +64,13 @@ struct Gemma4TensorParallelRequestCharge {
             promptTokens: min(profile.maximumPromptTokens, contextTokens - 1)).requestBytes
     }
 
+    /// The longest request this rank's paged KV host is bounded by, a ceiling
+    /// and not an allocation (each request's pages grow with it): the
+    /// profile's, which READY's capacity covers.
+    var hostBound: (maximumTokens: Int, chunkTokens: Int) {
+        (profile.maximumContextTokens, profile.maximumChunkTokens)
+    }
+
     /// READY's request capacity: LOAD's quote, or one request at the
     /// profile's longest context when that is more.
     var capacityBytes: Int {

@@ -8,7 +8,10 @@ import Foundation
 /// worker protocol through the library's own codec and session, so the driver
 /// is exercised through its real launch path. How it behaves is read from
 /// `behavior.json` beside the executable; nothing reaches it through the
-/// environment, because the driver launches a worker with a fixed one.
+/// environment, because the driver launches a worker with a fixed one. It
+/// serves one request at a time, or several with the batch lanes the driver
+/// names, in every mode it describes, and sends each committed token's
+/// logprobs when a request asks for them.
 @main enum PairCheckFakeWorker {
     struct Behavior: Decodable {
         var mode = "ok"
@@ -21,6 +24,10 @@ import Foundation
         var firstToken = 100
         /// Describe a runtime that runs the pipeline only, as an older worker would.
         var pipelineOnly = false
+        /// From this reservation of the run on (counting from 1), every logprob rank 0 sends is one ulp lower.
+        var logprobDriftFromReservation: Int?
+        /// From this reservation of the run on (counting from 1), every token rank 0 sends is one higher.
+        var tokenDriftFromReservation: Int?
 
         init() {}
         init(from decoder: Decoder) throws {
@@ -31,8 +38,13 @@ import Foundation
             evidenceDeltaRanks = try values.decodeIfPresent([Int].self, forKey: .evidenceDeltaRanks) ?? [1]
             firstToken = try values.decodeIfPresent(Int.self, forKey: .firstToken) ?? 100
             pipelineOnly = try values.decodeIfPresent(Bool.self, forKey: .pipelineOnly) ?? false
+            logprobDriftFromReservation = try values.decodeIfPresent(Int.self, forKey: .logprobDriftFromReservation)
+            tokenDriftFromReservation = try values.decodeIfPresent(Int.self, forKey: .tokenDriftFromReservation)
         }
-        enum CodingKeys: String, CodingKey { case mode, clockSkewNanoseconds, evidenceTokenDelta, evidenceDeltaRanks, firstToken, pipelineOnly }
+        enum CodingKeys: String, CodingKey {
+            case mode, clockSkewNanoseconds, evidenceTokenDelta, evidenceDeltaRanks, firstToken, pipelineOnly
+            case logprobDriftFromReservation, tokenDriftFromReservation
+        }
     }
 
     /// The name the guarded JACCL reads; the driver looks for it in a worker.
@@ -189,21 +201,43 @@ import Foundation
             artifactSHA256: artifact, configurationSHA256: configuration,
             peers: [.init(id: peer0, buildSHA256: build0), .init(id: peer1, buildSHA256: build1)])
         do {
-            var session = try ClusterWorkerSession(identity: identity, rank: rank, profile: profile, executionPlanSHA256: plan(cut: cut))
-            var sequence: UInt64 = 0, requestID: UUID?, reservation: ClusterWorkerReservation?, selected = 0
-            var reservations = 0, admittedNotStarted = false
-            func emit(_ event: ClusterWorkerEvent) throws {
-                let id: UUID?
-                switch event { case .ready, .unavailable, .shutdownComplete: id = nil; default: id = requestID }
+            // One request at a time, or several at once with batch lanes (`DARKBLOOM_CLUSTER_BATCH_LANES`, each
+            // request's events in the order `ClusterWorkerLaneSession` holds them to), as the real worker.
+            let lanes = environment["DARKBLOOM_CLUSTER_BATCH_LANES"].flatMap(Int.init) ?? 1
+            var single = lanes == 1
+                ? try ClusterWorkerSession(identity: identity, rank: rank, profile: profile, executionPlanSHA256: plan(cut: cut)) : nil
+            var laned = lanes > 1 ? try ClusterWorkerLaneSession(identity: identity, rank: rank, profile: profile,
+                executionPlanSHA256: plan(cut: cut), lanes: lanes) : nil
+            /// A reservation and how far it got; `number` counts every reservation of the run from 1.
+            struct Held { let reservation: ClusterWorkerReservation; let number: Int; var selected = 0; var admittedNotStarted = false }
+            var sequence: UInt64 = 0, held: [UUID: Held] = [:], reservations = 0
+            func emit(_ event: ClusterWorkerEvent, _ id: UUID? = nil) throws {
                 let frame = ClusterWorkerEventFrame(membershipEpoch: epoch, sequence: sequence, requestID: id, event: event)
-                try session.accept(frame, now: uptime())
+                if single != nil { try single!.accept(frame, now: uptime()) } else { try laned!.accept(frame, now: uptime()) }
                 try FileHandle.standardOutput.write(contentsOf: ClusterWorkerCodec.encode(frame)); sequence += 1
             }
             func tokens(_ request: ClusterWorkerReservation) -> [Int] {
                 (0..<request.outputCount).map { behavior.firstToken + $0 }
             }
-            func record(_ request: ClusterWorkerReservation) throws {
-                guard let directory = fields["--evidence-directory"], let requestID else { return }
+            // The token rank 0 sends at `ordinal`: from the `tokenDriftFromReservation`-th reservation on, one
+            // higher, as a lane whose arithmetic drifted from its request's alone.
+            func sentToken(_ request: Held, ordinal: Int) -> Int {
+                var token = tokens(request.reservation)[ordinal]
+                if let from = behavior.tokenDriftFromReservation, request.number >= from { token += 1 }
+                return token
+            }
+            // A token's logprob and its alternatives, when its request asks for them: the same at each ordinal for
+            // every request, so a request in a wave sends what it sends alone; from the
+            // `logprobDriftFromReservation`-th reservation on, one ulp lower, as a lane whose arithmetic drifted from
+            // its request's alone while its tokens stayed the same.
+            func logprobs(_ request: Held, ordinal: Int, token: Int) -> ClusterWorkerTokenLogprobs? {
+                guard let count = request.reservation.sampling?.capturedLogprobs else { return nil }
+                var value = -Float(ordinal + 1) / 16
+                if let from = behavior.logprobDriftFromReservation, request.number >= from { value = value.nextDown }
+                return .init(logprob: value, top: (0..<count).map { .init(tokenID: token + $0, logprob: value - Float($0)) })
+            }
+            func record(_ request: ClusterWorkerReservation, _ requestID: UUID) throws {
+                guard let directory = fields["--evidence-directory"] else { return }
                 var history = tokens(request)
                 if behavior.evidenceDeltaRanks.contains(rank) { history[history.count - 1] += behavior.evidenceTokenDelta }
                 let frames = (request.promptTokenIDs.count - 1) / request.chunkSize + request.outputCount
@@ -239,53 +273,64 @@ import Foundation
                 if count < 0 { if errno == EINTR { continue }; exit(74) }
                 for line in try decoder.append(Data(buffer.prefix(count))) {
                     guard case .command(let command) = try ClusterWorkerCodec.decodeControl(line) else { continue } // a rank-lease renewal
-                    try session.accept(command, now: uptime())
+                    if single != nil { try single!.accept(command, now: uptime()) } else { try laned!.accept(command, now: uptime()) }
+                    let id = command.requestID
                     switch command.command {
                     case .reserve(let value):
-                        requestID = command.requestID; reservation = value; selected = 0
                         let current = uptime()
                         reservations += 1
                         // "refuse": every reservation, as a rank whose gate refuses
                         // for memory; "refuse-once": the first only.
                         if behavior.mode == "refuse" || (behavior.mode == "refuse-once" && reservations == 1) {
-                            try emit(.refused(.capacity)); admittedNotStarted = false
+                            try emit(.refused(.capacity), id)
                         }
                         else if value.deadlineUptimeNanoseconds <= current || value.deadlineUptimeNanoseconds > deadline {
-                            try emit(.refused(.deadline))
-                        } else { try emit(.admitted(reservedBytes: 4096)); admittedNotStarted = true }
+                            try emit(.refused(.deadline), id)
+                        } else {
+                            held[id!] = .init(reservation: value, number: reservations, admittedNotStarted: true)
+                            try emit(.admitted(reservedBytes: 4096), id)
+                        }
                     case .start:
-                        admittedNotStarted = false
+                        held[id!]!.admittedNotStarted = false
                         if behavior.mode == "exit-on-start" { exit(9) }
                         if behavior.mode == "stall-on-start" { continue }
                         // The tampering rank waits on its peer, which refuses the
                         // record it cannot open: it fails the request and exits.
                         if tampers { continue }
-                        if peerTampers { try emit(.failed(.runtimeError)); exit(1) }
-                        let request = reservation!
+                        if peerTampers { try emit(.failed(.runtimeError), id); exit(1) }
+                        let request = held[id!]!
                         if rank == 1 {
-                            try record(request)
-                            try emit(.finished(.length)); try emit(.retired(.clean))
+                            try record(request.reservation, id!)
+                            try emit(.finished(.length), id); try emit(.retired(.clean), id); held[id!] = nil
                         } else {
-                            try emit(.committedToken(ordinal: 0, tokenID: tokens(request)[0],
-                                committedTokens: request.promptTokenIDs.count)); selected = 1
+                            let token = sentToken(request, ordinal: 0)
+                            try emit(.committedToken(ordinal: 0, tokenID: token, committedTokens: request.reservation.promptTokenIDs.count,
+                                logprobs: logprobs(request, ordinal: 0, token: token)), id)
+                            held[id!]!.selected = 1
                         }
                     case .tokenDecision(_, let decision):
-                        let request = reservation!
-                        if selected == request.outputCount || decision == .cleanStop {
-                            try record(request)
-                            try emit(.finished(selected == request.outputCount ? .length : .clientStop))
-                            try emit(.retired(.clean))
+                        let request = held[id!]!, selected = request.selected
+                        if selected == request.reservation.outputCount || decision == .cleanStop {
+                            try record(request.reservation, id!)
+                            try emit(.finished(selected == request.reservation.outputCount ? .length : .clientStop), id)
+                            try emit(.retired(.clean), id); held[id!] = nil
                         } else {
-                            try emit(.committedToken(ordinal: selected, tokenID: tokens(request)[selected],
-                                committedTokens: request.promptTokenIDs.count + selected)); selected += 1
+                            let token = sentToken(request, ordinal: selected)
+                            try emit(.committedToken(ordinal: selected, tokenID: token,
+                                committedTokens: request.reservation.promptTokenIDs.count + selected,
+                                logprobs: logprobs(request, ordinal: selected, token: token)), id)
+                            held[id!]!.selected += 1
                         }
                     case .cancel:
+                        // A cancel that crossed this request's own retirement changes nothing.
+                        guard let id, let request = held[id] else { continue }
                         // A reservation that never started is given back and the
                         // worker serves on (the pair's other rank refused the
-                        // request). Otherwise a real worker reports the failure,
-                        // releases and exits.
-                        if admittedNotStarted { admittedNotStarted = false; try emit(.retired(.cancelled)); continue }
-                        try emit(.failed(.runtimeError)); exit(1)
+                        // request); so is a started lane, which retires alone
+                        // while the others run on. Otherwise a real worker
+                        // reports the failure, releases and exits.
+                        if request.admittedNotStarted || laned != nil { held[id] = nil; try emit(.retired(.cancelled), id); continue }
+                        try emit(.failed(.runtimeError), id); exit(1)
                     case .keepWarm(let ordinal):
                         try emit(.keptWarm(ordinal: ordinal, microseconds: 1))
                     case .shutdown:
@@ -319,7 +364,8 @@ import Foundation
                 }, arithmeticPolicyID: "qwen_cbv2_query128_bf16_tf32_default_v1",
                 arithmeticPolicySHA256: hash("fake-arithmetic"),
                 supportedPrefillSchedules: [.serial, .oneChunkLookahead],
-                supportedGenerationModes: pipelineOnly ? [.pipeline] : ClusterGenerationMode.allCases.filter { !$0.usesTensorParallelDecode })
+                supportedGenerationModes: pipelineOnly ? [.pipeline]
+                    : ClusterGenerationMode.allCases.filter { !$0.usesTensorParallelDecode || $0.usesTensorParallelPrefill })
             try FileHandle.standardOutput.write(contentsOf: ClusterRuntimeCapabilityCodec.encode(capability))
             exit(0)
         } catch { exit(1) }

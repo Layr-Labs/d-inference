@@ -155,6 +155,11 @@ import DarkbloomClusterSecurity
                     if behavior == "abort-once", reservations == 1, rank == 1 {
                         try emit(.aborted(.init(reason: .memory, rank: 1))); try emit(.retired(.aborted)); continue
                     }
+                    // "abort-mismatch": rank 1 names another refusing rank than
+                    // rank 0's "abort-once" does; the owner must not take it.
+                    if behavior == "abort-mismatch", reservations == 1, rank == 1 {
+                        try emit(.aborted(.init(reason: .memory, rank: 0))); try emit(.retired(.aborted)); continue
+                    }
                     if rank == 1 {
                         if behavior == "telemetry" {
                             try emit(.requestTelemetry(.init(handoffNanoseconds: 81_000_000, handoffBytes: 1_000, mtpDrafted: 10, mtpAccepted: 8)))

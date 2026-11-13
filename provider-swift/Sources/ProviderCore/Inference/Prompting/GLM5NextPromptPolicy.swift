@@ -19,8 +19,9 @@ enum GLM5NextPromptPolicy {
     }
 
     /// A JSON answer (`GLM5NextResponseFormat`) or a required/named call is
-    /// withheld until it validates. Only the text path withholds, so media
-    /// refuses these requests and text splits reasoning on its typed channel.
+    /// withheld until it validates, with reasoning split on its typed channel.
+    /// One Mac's media path withholds a JSON answer too; a forced call with
+    /// media, and either with media on a pair, are refused (`prepareCompletion`).
     static func withholdsOutput(_ prepared: ToolChoicePromptPolicy.Prepared, modelType: String?) -> Bool {
         prepared.glmResponseFormat != nil || (applies(modelType: modelType) && prepared.requiresToolCall)
     }

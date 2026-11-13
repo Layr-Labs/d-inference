@@ -204,7 +204,7 @@ struct CoordinatorIntegrationTests {
                         ))
                     }
 
-                case .cancel(let rid):
+                case .cancel(let rid, _):
                     #expect(rid == requestId)
                     stateBox.markCanceled()
                     send.send(.inferenceError(
@@ -428,20 +428,20 @@ struct CoordinatorIntegrationTests {
         }
     }
 
-    // MARK: 3d. A stable session resets the reconnect backoff
+    // MARK: 3d. A stable session retries at once and resets the reconnect backoff
 
-    /// The policy here resets the backoff after a session of 1 s instead of
-    /// 60 s. After the backoff has grown to a 2-4 s wait, the next session
-    /// stays open for 1.5 s, so its ordinary close (code 1001) must reconnect
-    /// after the shortest wait, 0.5-1 s.
-    @Test("a session open past the stable duration reconnects after the shortest wait")
-    func stableSessionCloseReconnectsAfterShortestWait() async throws {
+    /// The policy here counts a session of 1 s as stable instead of 60 s.
+    /// After the backoff has grown to a 2-4 s wait, the next session stays open
+    /// for 1.5 s, so its ordinary close (code 1001) must reconnect after the
+    /// stable session's first retry, 0-0.25 s.
+    @Test("a session open past the stable duration reconnects within the first-retry range")
+    func stableSessionCloseReconnectsWithinFirstRetryRange() async throws {
         let policy = CoordinatorReconnectPolicy(stableSessionDuration: .seconds(1))
         try await withGrownReconnectBackoff(reconnectPolicy: policy) { mock in
             try await Task.sleep(for: .milliseconds(1500))
             let stable = try await reregistrationTime(after: mock)
             let elapsed = try #require(stable, "no registration after the stable session closed")
-            // The wait is 0.5-1 s, plus a loopback reconnect. Without the reset it is 2-4 s.
+            // The wait is 0-0.25 s, plus a loopback reconnect. Without the reset it is 2-4 s.
             #expect(elapsed < .milliseconds(1500), "registered again \(elapsed) after the close")
         }
     }

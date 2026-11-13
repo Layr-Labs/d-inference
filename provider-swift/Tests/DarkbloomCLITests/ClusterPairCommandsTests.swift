@@ -273,7 +273,7 @@ struct ClusterStatusPlainTests {
         typealias S = ClusterPairSummary
         #expect(S.state(ofStatus: ["Serving Qwen 3.8 27B through Darkbloom on both Macs (tensor parallel)."], started: true, leaderMode: "cluster") == (.serving, nil))
         let refused = "Qwen 3.8 27B is not serving yet: The other Mac (Apple M4 Max, 128 GB) isn't verified by Apple yet; Darkbloom retries by itself at about 00:34. Don't restart either Mac until then."
-        #expect(S.state(ofStatus: [refused, "Then choose Retry, or serve locally only now."], started: true, leaderMode: nil)
+        #expect(S.state(ofStatus: [refused, "Then choose Retry."], started: true, leaderMode: nil)
             == (.notServing, "The other Mac (Apple M4 Max, 128 GB) isn't verified by Apple yet; Darkbloom retries by itself at about 00:34. Don't restart either Mac until then"))
         #expect(S.state(ofStatus: ["Qwen 3.8 27B is not serving yet: the coordinator paired both Macs."], started: true, leaderMode: nil) == (.loading, "the coordinator paired both Macs"))
         #expect(S.state(ofStatus: ["Stopped; last model Qwen 3.8 27B."], started: false, leaderMode: nil) == (.stopped, nil))
@@ -367,7 +367,7 @@ struct ClusterStatusPlainTests {
         var refused = pair(role: .member)
         refused.state = .notServing
         refused.reason = "The other Mac (Apple M5 Max, 128 GB) isn't verified by Apple yet; Darkbloom retries by itself at about 00:34. Don't restart either Mac until then"
-        refused.lines = ["Qwen 3.8 27B is not serving yet: \(refused.reason!).", "Then choose Retry, or serve locally only now."]
+        refused.lines = ["Qwen 3.8 27B is not serving yet: \(refused.reason!).", "Then choose Retry."]
         #expect(refused.clusterStatusLines == [
             "Cluster: this Mac (Mac Studio) follows · \(otherMac) leads",
             "Model: Qwen 3.8 27B · tensor parallel · M3 Ultra 50% / M5 Max 50%",
@@ -960,6 +960,25 @@ struct ClusterPairControlTests {
         #expect(pairActionCalls(soloStderr).isEmpty, "--solo")
     }
 
+    /// #1931's review: beside --solo, a flag that would change a [local] key the pair reads is refused before the pair is
+    /// touched, as `--choose` without a terminal is: this Mac's leftover part keeps running, and nothing is saved.
+    @Test("`darkbloom start --solo --route …` is refused before this Mac's part of the pair is touched")
+    func startSoloWithAPairSettingIsRefusedBeforeThePairIsTouched() async {
+        let result = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent, \.standardErrorContent]) {
+            try await exitWithPair(stalePair(), actions: pairActions()) { sandbox in
+                try await Start.$releaseForTesting.withValue({ FileHandle.standardError.write(Data("released\n".utf8)); return true }) {
+                    try await runCLICommand(Start.self, ["start", "--solo", "--route", "this-mac", "--model", "acme/Alpha-4bit",
+                                                         "--config", sandbox.config.path])
+                }
+            }
+        }
+        let stderr = text(result?.standardErrorContent), stdout = text(result?.standardOutputContent)
+        #expect(stderr.contains("`--route` would change [local] route, which your pair reads too."), "\(stderr)")
+        #expect(!stderr.contains("released"), "this Mac's part keeps running")
+        #expect(pairActionCalls(stderr).isEmpty)
+        #expect(!stdout.contains("Terms of Service"), "nothing started")
+    }
+
     @Test("a leftover part that doesn't stop: nothing starts beside it, and the one step that always works is named")
     func startSoloWhenTheLeftoverWontStop() async {
         let result = await #expect(processExitsWith: .failure, observing: [\.standardOutputContent]) {
@@ -1056,12 +1075,15 @@ struct ClusterPairControlTests {
             try await exitWithPair(servingPair(), actions: pairActions()) { _ in
                 try await ClusterPairCommands.$terminalForTesting.withValue(true) {
                     try await ClusterPairCommands.$screenForTesting.withValue({ config in
-                        print("screen: darkbloom cluster (config \(config ?? "default"))")
+                        print("screen: darkbloom cluster (config \(config ?? "default"))"
+                            + (Cluster.Setup.keepsSavedServing ? ", keeping how the pair serves" : ""))
                     }) { try await runCLICommand(Start.self, ["start"]) }
                 }
             }
         }
-        #expect(lines(result?.standardOutputContent) == [openingScreen, "screen: darkbloom cluster (config default)", ""])
+        // Only an explicit `darkbloom cluster` switches a pair to Both (owner, 2026-11-11): `start` keeps the saved way.
+        #expect(lines(result?.standardOutputContent)
+            == [openingScreen, "screen: darkbloom cluster (config default), keeping how the pair serves", ""])
         let calls = pairActionCalls(text(result?.standardErrorContent))
         #expect(calls.isEmpty, "\(calls)")
     }
@@ -1132,7 +1154,8 @@ struct ClusterPairControlTests {
                 try await runCLICommand(Start.self, ["start"])
             }
         }
-        #expect(lines(result?.standardOutputContent) == [startingThePair, noModelHere, ""])
+        // #1908's review, nit 8: no "starting the pair" first, which nothing does.
+        #expect(lines(result?.standardOutputContent) == [noModelHere, ""])
         let calls = pairActionCalls(text(result?.standardErrorContent))
         #expect(calls.isEmpty, "\(calls)")
         // #1905's review: the Mac that follows has no model list (`darkbloom start` in a terminal there opens a screen that
@@ -1142,7 +1165,21 @@ struct ClusterPairControlTests {
                 try await runCLICommand(Start.self, ["start"])
             }
         }
-        #expect(lines(member?.standardOutputContent) == [startingThePair, noModelThere, ""])
+        #expect(lines(member?.standardOutputContent) == [noModelThere, ""])
+    }
+
+    /// #1908's review, nit 3: before J2-b's look, a script's start on a serving pair whose cluster service ran from a
+    /// terminal session moved it to its login agent, so the pair came back after a restart. The look keeps a pair as
+    /// it is only when its service starts at login; otherwise the start goes on, as before.
+    @Test("`darkbloom start` without a terminal on a serving pair whose cluster service doesn't start at login sets that up")
+    func startOnAServingPairWhoseServiceDoesNotStartAtLogin() async {
+        let result = await #expect(processExitsWith: .success, observing: [\.standardOutputContent, \.standardErrorContent]) {
+            var session = servingPair()
+            session.startsAtLogin = false
+            try await exitWithPair(session, actions: pairActions()) { _ in try await runCLICommand(Start.self, ["start"]) }
+        }
+        #expect(lines(result?.standardOutputContent).first == startingThePair)
+        #expect(pairActionCalls(text(result?.standardErrorContent)) == ["ensureService", "serve"])
     }
 
     @Test("`darkbloom start` without a terminal that doesn't serve says why and exits with cluster status's code")
@@ -1493,12 +1530,19 @@ struct ClusterPairControlTests {
             }
         }
         let stdout = text(result?.standardOutputContent)
+        // The card `darkbloom cluster` ends without: the log, login, restart and the commands (`statusCardLines`).
+        let pair = servingPair()
+        let card = pair.statusCardLines(afterRestart: pair.startsAtLogin ? ClusterOnboardingRestart.thisMacLine() : nil)
+        #expect(card.first == "Logs: " + ClusterUserPaths.serviceLogShown && card.last == "  darkbloom cluster  Change the model")
         #expect(stdout.hasPrefix("""
             Cluster: this Mac (Mac Studio) leads · \(otherMac) follows
             Model: Qwen 3.8 27B · tensor parallel · M3 Ultra 50% / M5 Max 50%
             Serves: through Darkbloom
             ✓ Serving Qwen 3.8 27B through Darkbloom on both Macs (tensor parallel).
             Next: To stop or change it: `darkbloom cluster` on this Mac.
+
+            """ + card.joined(separator: "\n") + """
+
 
             \(BuildEnvironment.current.cliName) \(ProviderCore.version)
 
@@ -1532,7 +1576,8 @@ struct ClusterPairControlTests {
             }
         }
         let out = lines(result?.standardOutputContent)
-        let block = stoppedPair().clusterStatusLines
+        let pair = stoppedPair()
+        let block = pair.clusterStatusLines + pair.statusCardLines(afterRestart: pair.startsAtLogin ? ClusterOnboardingRestart.thisMacLine() : nil)
         #expect(Array(out.prefix(block.count)) == block, "\(out)")
         let said = out.dropFirst(block.count).first ?? ""
         #expect(said.hasPrefix("This Mac serves alone (single-Mac serving, process ")

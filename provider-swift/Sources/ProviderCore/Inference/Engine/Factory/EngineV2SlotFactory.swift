@@ -328,7 +328,8 @@ enum EngineV2SlotFactory {
         let samplingDefaults = EngineV2SamplingDefaults.resolve(
             modelId: modelId,
             modelType: modelType,
-            modelDirectory: modelDirectory)
+            modelDirectory: modelDirectory,
+            environment: environment)
 
         // SSD offload never carves the live KV grant.
         let engineKVBytesCapacity = kvBytesCapacity

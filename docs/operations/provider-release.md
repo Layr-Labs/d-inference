@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-13
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -27,70 +27,35 @@ runs the resolve, build, qualification, signing, R2 staging and publication
 chain for one environment. To find the newest dev release, read
 `https://api.dev.darkbloom.dev/v1/releases/latest`.
 
-`ProviderCore.version` is prepared as `0.10.10`, a patch release over `v0.10.9`.
-It adds `darkbloom waitlist` and first-setup approval gates for Darkbloom
-Sandbox and `darkbloom cluster`, ported from #1742 onto `master` (the feature
-PR #1850). Nothing else changes from v0.10.9: the serving engine, the
-pair setup, the models, the toolchain (Xcode 27.2 / SDK 27.2 / Swift 6.4.2) and
-the MLX pins are v0.10.9's. Both Macs of a pair must run 0.10.10, and a pair on
-0.10.9 updates itself
-([updating Darkbloom on the pair](../provider/two-mac-cluster.md#updating-darkbloom-on-the-pair)).
-See the [`v0.10.10` changelog entry](../../CHANGELOG.md) for the full scope.
+`ProviderCore.version` is prepared as `0.10.13`, a patch release over `v0.10.12`
+with only the fixes listed in the [`v0.10.13` changelog entry](../../CHANGELOG.md): a Gemma 4 thought the loop guard stops ends in an answer (#2040); a pair being set up is no longer called stopped during the leader's download (#2042); a dead coordinator link is found in 6–8 s and the provider reconnects at once (#2047); Qwen 3.5 9B keeps its model card's presence penalty (#2051); Gemma 4 keeps a string parameter's unquoted `01000` as "01000" (#2050, SDK #405); a past turn's `reasoning`/`thinking` reaches the model (#2048); `parallel_tool_calls: false` returns the first call (#2049); a stray `<tool_call>` no longer fails a GLM response (#2052); an answer cut at `max_tokens` ends as `length`; strict calls after the start return as generated (#2053); the loop guard covers image and video requests (#2054); Qwen 3.5/3.6 exit-thinking, off by default (#2046); Qwen 3.5/3.6/3.8 parse tool calls after the thinking (#2057); tool JSON as Transformers renders it, on request (#2058); GPT-OSS answers under a `final` header with attributes reach the client (#2063); an optional release of GLM JSON schema misses, off by default (#2065); GPT-OSS serves forced tool choices (#2045); GLM and MiMo no longer refuse long prompts because of a short prompt's speed (#2072); GLM no longer refuses requests on idle Macs whose KV pool kept its free memory (#2060); Nemotron 3.5 Super exit-thinking, off by default (#2061); a looping GPT-OSS analysis on a tools request ends in an answer or call (#2070); strict Qwen tool calls are constrained to their schemas (#2069); Gemma 4 JSON answers follow the requested format (#2071); JSON answers on Bonsai 2 27B and Nemotron 3.5 Lightning follow their schemas (#2075); Qwen JSON answers follow Pydantic, OpenAI and zod schemas (#2084).
 
-Before tagging `v0.10.10`:
+Before tagging `v0.10.13`:
 
-- Confirm the tagged commit keeps the release toolchain: `mise.toml` has
-  `swift = "6.4.2"`, `release-provider.yml` sets
-  `DARKBLOOM_PROVIDER_TOOLCHAIN: release` and asserts
-  `build_sdk_version == '27.2'`, `scripts/check-date-comparisons.py` passes, and
-  the release build runs `scripts/check-provider-weak-imports.py`.
-- Confirm the pins `libs/mlx` and the nested `mlx` `72dffa2d`,
-  `libs/mlx-swift` `c633d221` and `libs/mlx-swift-lm` `32f5c744`, as v0.10.9.
-  The tag build's `metallib_hash` should equal v0.10.9's
-  `5b97893cc20e6e9651edf3284d970488af9a9bdd64820231e95fee760eec70ac`.
-- `PROD_CLUSTER_RUNTIME_ENABLED` is `true`, so this tag registers a cluster
-  runtime facts block. Run the release's facts step read-only on the exact tag
-  tree (`scripts/provider-cluster-runtime-facts.sh <app> darkbloom prod <new folder>`
-  on an unsigned app staged as the build job stages it). It must exit 0 and
-  match v0.10.9's block in models, grants and qualifications.
-- Catalog room: production holds 24 approvals from v0.10.8 and 24 from v0.10.9.
-  This release adds 2 per model of its block (24 for 12 models), so v0.10.8's
-  approvals are left out: pairs still on 0.10.8 stop serving through Darkbloom
-  until they update, and the coordinator logs `release cluster approvals
-  omitted` for v0.10.8.
+- Toolchain unchanged: `mise.toml` `swift = "6.4.2"`, `release-provider.yml`
+  sets `DARKBLOOM_PROVIDER_TOOLCHAIN: release` and asserts
+  `build_sdk_version == '27.2'`; the release build runs
+  `scripts/check-provider-weak-imports.py`.
+- Pins: `libs/mlx` `72dffa2d` and `libs/mlx-swift` `b1c94d29` as v0.10.12;
+  `libs/mlx-swift-lm` moves to fork `main` `859f641529` (SDK #405 and #406) (Swift only), so the tag build's
+  `metallib_hash` should equal v0.10.12's `5b97893c…70ac`.
+- Cluster runtime facts: run the release's facts step read-only on the exact tag
+  tree; expect the same models and grants as v0.10.12.
+- Catalog room: v0.10.12 and v0.10.13 hold 24 approvals each; v0.10.11's 24 are
+  left out (72 > 64). Pairs still on 0.10.11 stop serving through Darkbloom
+  until they update.
 - The tagged commit is on `master` and verified, holds `ProviderCore.version`
-  `0.10.10`, keeps the plain-build default `prod`, and its `changelog.d/` holds
+  `0.10.13`, keeps the plain-build default `prod`, and its `changelog.d/` holds
   only `README.md`.
 
-Roll out in this order; each step is a separate approval:
+After publish: the coordinator snapshot PR (pin + `LatestProviderVersion`
+0.10.13) rides the next coordinator update.
 
-1. Production platform: 0.10.10's registration needs nothing new. The waitlist
-   routes (darkbloom-platform #627) are independent: without them the first
-   setups go on as in 0.10.9. Confirm production's `/health` `build_commit`
-   and that no coordinator swap overlaps this release's publication.
-2. Merge into `master`, each squash-merged after its approval: the waitlist
-   feature PR, then this preparation. Let SDK 27 release preparation pass on
-   `master`.
-3. Re-run the facts dry run on the tag tree.
-4. Tag `v0.10.10` on this preparation's squash commit
-   ([step 4](#4-tag-and-push-production-source)). After registration, check
-   `GET /v1/cluster/approvals` for `release/0.10.10/<model>/s<1|2>` beside
-   v0.10.9's, and that `release cluster approvals omitted` names v0.10.8.
-5. Pairs on 0.10.9 update themselves at their update slot, or at once with
-   `darkbloom update` on each Mac. Single Macs update by themselves.
-6. The platform snapshots its provider contracts from the tagged commit and
-   sets `LatestProviderVersion` to `0.10.10`.
-
-Catalog changes, allowlist changes and model registration are separate
-approvals. This preparation tags, deploys and enables nothing.
-
-`v0.10.9` was [published on 2026-11-05](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.9)
-from `95cc1ca37533aa860f1948bde0d6ec9c36a6bd4a`, `v0.10.8` was
-[published on 2026-11-04](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.8)
-from `e8f3d53f6d49c66232ea4cd270b84c2aa4df01f0`, `v0.10.7` was
-[published on 2026-11-03](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.7)
-from `7512eeeae0682b120f3d86abbc712861bdbf2bda`. Publication does not establish
-that every optional feature or environment has been activated.
+`v0.10.12` was [published on 2026-11-12](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.12)
+from `dafd15c65850c0e4dfb7b7801d39b890bcc8f9cd`,
+`v0.10.11` was [published on 2026-11-09](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.11)
+from `34c4a10d86aa72e823787cb9cccb5d6c850d540a`. Publication does not
+establish that every optional feature or environment has been activated.
 
 ## Prerequisites
 
@@ -202,7 +167,11 @@ compilation and SDK qualification on separate `blacksmith-12vcpu-macos-27`
 runners with no signing/publication secrets. PR caches remain PR-scoped and do
 not seed `master`. Only pull-request runs can use Darkbloom Sandboxes, under
 [CI runner routing](../developer/build.md#ci-runner-routing); `master` and
-dispatched runs always use these Blacksmith runners.
+dispatched runs always use these Blacksmith runners. A pull-request run on a
+Darkbloom Sandbox that the plane gave no Darkbloom cache skips every cache step
+of `.github/actions/provider-release-build`, so it builds cold
+([CI caching](../developer/build.md#ci-caching)). The release workflows never
+skip them.
 
 The qualification lane prepares the bounded MiMo HTTP image fixtures before
 the full provider suite, including on cache hits. Keep that preparation as a
@@ -381,7 +350,10 @@ selects the same names from the version that `/v1/releases/latest` returns
 `curl | bash`, so it keeps its own copy of the names; the test compares that copy
 with the JSON. Every command it prints uses the selected `cliName`, through its
 last line, `Next: ~/.<cliName>/bin/<cliName> --opencode`
-(`scripts/test-install-identity.py` checks it for both identities); the platform
+(`scripts/test-install-identity.py` checks it for both identities). The lines
+before it say what that command does from 0.10.12 on (it serves Darkbloom and a
+local API, Darkbloom never paused, asking nothing about it) and that
+`<cliName> local` serves only you; the platform
 serves its own snapshot of the script, so a change to these lines reaches
 `curl | bash` only once that snapshot is updated.
 

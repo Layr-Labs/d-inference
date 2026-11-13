@@ -73,9 +73,11 @@ struct ClusterPairBothMeFirstCLITests {
         #expect(keyless == nil && said.count == 2)
     }
 
-    // MARK: - The answer, saved in [local]
+    // MARK: - How the pair serves, saved in [local]
 
-    @Test func theAnswerIsSavedAsLocalModeAndNothingElseChanges() throws {
+    /// `darkbloom cluster` serves Both: `[local] mode = "both"` and `me_first = false` (Darkbloom keeps serving while the
+    /// owner uses the pair's local API), said once when the pause was on by default; nothing else in the file changes.
+    @Test func bothIsSavedWithThePauseOffAndNothingElseChanges() throws {
         let url = try makeTempConfig("""
             [provider]
             name = "pair-test"
@@ -86,43 +88,75 @@ struct ClusterPairBothMeFirstCLITests {
             future_local_key = "kept"
             """)
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
-        #expect(Cluster.Setup.servingChoiceAsk(config: url.path) == ClusterServingChoiceAsk(saved: nil, idleMinutes: 5))
-
-        guard case .success = Cluster.Setup.saveServingChoice(.bothMeFirst, config: url.path) else {
-            Issue.record("the answer was not saved")
+        guard case .success(let said) = Cluster.Setup.saveServingChoice(.both, config: url.path) else {
+            Issue.record("how the pair serves was not saved")
             return
         }
+        #expect(said == [Cluster.Setup.keepsServingFromNextStartLine])
         let written = try String(contentsOf: url, encoding: .utf8)
-        #expect(try ConfigManager.load(from: url).local == LocalSettings(mode: .both, meFirstIdleMinutes: 5, port: 8009))
+        #expect(try ConfigManager.load(from: url).local == LocalSettings(mode: .both, meFirst: false, meFirstIdleMinutes: 5, port: 8009))
         #expect(try TOMLTable(string: written)["local"]?.table?["future_local_key"]?.string == "kept")
         #expect(try ConfigManager.load(from: url).provider.name == "pair-test")
-        #expect(Cluster.Setup.servingChoiceAsk(config: url.path) == ClusterServingChoiceAsk(saved: .bothMeFirst, idleMinutes: 5))
+        // Saved again: nothing more to say.
+        guard case .success(let again) = Cluster.Setup.saveServingChoice(.both, config: url.path) else {
+            Issue.record("saved again")
+            return
+        }
+        #expect(again.isEmpty)
 
         for choice in [ClusterServingChoice.onlyMe, .network] {
             _ = Cluster.Setup.saveServingChoice(choice, config: url.path)
             #expect(try ConfigManager.load(from: url).local?.mode?.rawValue == choice.rawValue)
+            #expect(try ConfigManager.load(from: url).local?.meFirst == false)
         }
     }
 
-    @Test func withNothingSavedTheQuestionPreselectsBothAndTwoMinutes() throws {
-        let url = try makeTempConfig("[provider]\nname = \"pair-test\"\n")
+    /// A pause asked for on purpose (`darkbloom start --me-first` saved `me_first = true`) stays.
+    @Test func aPauseSavedOnPurposeStays() throws {
+        let url = try makeTempConfig("[provider]\nname = \"pair-test\"\n\n[local]\nme_first = true\n")
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
-        #expect(Cluster.Setup.servingChoiceAsk(config: url.path) == ClusterServingChoiceAsk(saved: nil, idleMinutes: 2))
+        guard case .success(let said) = Cluster.Setup.saveServingChoice(.both, config: url.path) else {
+            Issue.record("not saved")
+            return
+        }
+        #expect(said.isEmpty)
+        #expect(try ConfigManager.load(from: url).local == LocalSettings(mode: .both, meFirst: true))
     }
 
-    /// Plain `darkbloom cluster` (and `darkbloom start` on a paired Mac) in a terminal asks; `cluster local` never does,
-    /// and keeps serving locally only on every interface, as before.
-    @Test func onlyPlainClusterAsksAndClusterLocalIsUnchanged() throws {
-        #expect(Cluster.Setup.asksServingChoice(request: .init()))
+    /// Plain `darkbloom cluster` (and `darkbloom start` on a paired Mac) in a terminal serves Both; `cluster local` never
+    /// does, and keeps serving locally only on every interface, as before.
+    @Test func onlyPlainClusterServesBothAndClusterLocalIsUnchanged() throws {
+        #expect(Cluster.Setup.servesBoth(request: .init()))
+        // `darkbloom start` in a terminal opens the same screen keeping how the pair is saved to serve (owner, 2026-11-11).
+        Cluster.Setup.$keepsSavedServing.withValue(true) {
+            #expect(!Cluster.Setup.servesBoth(request: .init()))
+        }
         let local = try Cluster.Local.parse([])
         #expect(local.onboardingRequest.scope == .localOnly(bind: "0.0.0.0"))
-        #expect(!Cluster.Setup.asksServingChoice(request: local.onboardingRequest))
+        #expect(!Cluster.Setup.servesBoth(request: local.onboardingRequest))
         let bound = try Cluster.Local.parse(["--bind", "127.0.0.1", "qwen"])
         #expect(bound.onboardingRequest.scope == .localOnly(bind: "127.0.0.1") && bound.onboardingRequest.model == "qwen")
-        #expect(!Cluster.Setup.asksServingChoice(request: bound.onboardingRequest))
+        #expect(!Cluster.Setup.servesBoth(request: bound.onboardingRequest))
     }
 
     // MARK: - Status
+
+    /// `darkbloom cluster` ends on its ✓ line; `darkbloom status` carries the rest of the card under the pair's lines.
+    @Test func statusCarriesTheCardTheSetupNoLongerEndsWith() {
+        var pair = leader()
+        pair.startsAtLogin = true
+        let cli = ClusterPairSummary.cli
+        let restart = "After a restart, this Mac serves again by itself."
+        #expect(pair.statusCardLines(afterRestart: restart) == ["Logs: " + ClusterUserPaths.serviceLogShown,
+                                                                "Starts by itself at login on this Mac.", restart, "",
+                                                                "  \(cli) stop     Stop both Macs", "  \(cli) restart  Restart with the current model",
+                                                                "  \(cli) cluster  Change the model"])
+        pair.startsAtLogin = false
+        let off = pair.statusCardLines(afterRestart: restart)
+        #expect(off[1].hasPrefix("Doesn't start by itself at login on this Mac") && !off.contains(restart))
+        #expect(ClusterPairSummary.notPaired.statusCardLines().isEmpty)
+        #expect(pair.clusterStatusLines.contains { $0.hasPrefix("Model: ") } && pair.clusterStatusLines.contains { $0.hasPrefix("Cluster: ") })
+    }
 
     /// This Mac's part runs rank 0, so the pair's API and its pause are here.
     private func leader(listening: ClusterPairLocalAPI.Address? = ClusterPairLocalAPI.Address(host: "0.0.0.0", port: 8001),

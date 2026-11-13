@@ -20,14 +20,47 @@ enum ToolChoicePromptPolicy {
         /// choice, JSON output and withheld reasoning are served alike on
         /// every GLM slot; a pair also asks for at most one call when
         /// automatic choice has `parallel_tool_calls: false`
-        /// (`singleCallInstruction`), which the validator holds it to.
+        /// (`singleCallInstruction`); a response keeps only its first call
+        /// (`ParallelToolCallPolicy.admitted`).
         var glm5PairPostValidation = false
+        /// The caller's declarations as sent, before ingress normalization
+        /// (`ToolSchemaNormalization`) filled in render types. Validation of
+        /// `auto` calls reads these; nil falls back to `tools`.
+        var declaredTools: [OpenAITool]? = nil
+        /// An answer the engine cut at the token limit ends as a normal
+        /// `length` finish, as generated (`TokenLimitCutPolicy`).
+        var cutAnswersEndAtLength = TokenLimitCutPolicy.endsAtLength
+        /// The client streams and the switch is on: a `strict` call that fails
+        /// its check once the response has started leaves as generated
+        /// (`StrictToolCallPolicy`). Set by the serving path, which knows the
+        /// client's own `stream`.
+        var strictCallsAsGenerated = false
+
+        /// The engine cut the answer at the token limit (`finishReason`
+        /// `length`) and it ends as a normal `length` finish.
+        func cutAtLimit(finishReason: String) -> Bool { cutAnswersEndAtLength && finishReason == "length" }
 
         var requiresToolCall: Bool {
             switch mode {
             case .required, .named: true
             case .none, .auto: false
             }
+        }
+
+        /// `auto` without `strict` returns the model's calls as generated,
+        /// as OpenAI and vLLM do: an undeclared name, arguments off the
+        /// schema and streamed argument text that does not parse reach the
+        /// client instead of failing a response that has already started.
+        /// A function declared `strict: true` keeps every call of the request
+        /// validated, and a request that declares no tools never receives a
+        /// call. `parallel_tool_calls: false` holds either way.
+        var returnsAutoCallsAsGenerated: Bool { returnsAutoCallsAsGenerated(afterResponseStarted: false) }
+
+        /// Once a streamed response has started, `strict` calls leave as
+        /// generated too when `strictCallsAsGenerated` (`StrictToolCallPolicy`).
+        func returnsAutoCallsAsGenerated(afterResponseStarted started: Bool) -> Bool {
+            guard mode == .auto, let tools, !tools.isEmpty else { return false }
+            return !tools.contains { $0.function.strict == true } || (started && strictCallsAsGenerated)
         }
     }
 
@@ -41,7 +74,7 @@ enum ToolChoicePromptPolicy {
         var choice = try prepareToolChoice(
             request, modelType: modelType, allowInternalSchemaMetadata: allowInternalSchemaMetadata)
         // GLM on a pair: `parallel_tool_calls: false` with automatic choice
-        // asks for at most one call, which the validator then holds it to.
+        // asks for at most one call; the response keeps only its first.
         if glm5PairPostValidation, choice.mode == .auto, !choice.allowsParallelCalls,
            choice.tools?.isEmpty == false {
             choice = Prepared(messages: appendingToLastUser(singleCallInstruction, in: choice.messages),

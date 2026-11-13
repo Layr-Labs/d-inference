@@ -51,10 +51,6 @@ extension ClusterOnboardingDriver {
                "If it still doesn't start, run `darkbloom --version` on both Macs; if they differ, run `darkbloom update` on the one that's behind."]
     }
 
-    /// How long the leading Mac's status must stay Stopped, once its start began, before the Mac that joined takes it
-    /// as a stop from anywhere.
-    static let stoppedHoldSeconds: Double = 20
-
     /// After the version split's ✗ on the Mac that joined.
     static func versionSplitAfterLine(_ leader: String?) -> String {
         ClusterOnboardingCommand.named("Once both Macs run the same version, run `darkbloom cluster` on \(ClusterOnboardingMacName.other(named: leader)) again; this Mac follows it by itself.")
@@ -202,7 +198,10 @@ extension ClusterOnboardingDriver {
         // The two Macs' versions, read on the looks' cadence: a split never clears by itself, so the wait ends at once.
         let splits = ClusterOnboardingMailbox<ClusterOnboardingVersionSplit?>()
         var splitAsking = false, splitAsked = Date.distantPast
-        var stoppedSince: Date?
+        // A stop a person asked for since the start began, by the leading Mac's count, never by its status' words. The start
+        // began at its first step on the leading Mac (`ClusterOnboardingLeaderStep.startBegun`), as that Mac counts from
+        // there too, or at its first progress or started status.
+        var stops = ClusterOnboardingFollowedStop(), startBegan = false
         while true {
             if !splitAsking, Date().timeIntervalSince(splitAsked) >= timing.pollSeconds {
                 (splitAsking, splitAsked) = (true, Date())
@@ -214,17 +213,9 @@ extension ClusterOnboardingDriver {
                     console.settle()
                     console.result(false, split.title + ".", split.remedies)
                     console.say("  " + versionSplitAfterLine(leader))
+                    console.waitForExit()
                     return 1
                 }
-            }
-            // A stop from anywhere once the start began ends the wait: the leading Mac's status stays Stopped (a start
-            // reads Stopped for a moment while it stops the old setup or restarts the parts to register, never this long).
-            let stoppedNow = (started != nil || start != nil) && start?.phase != .stopping && lastStatus?.hasPrefix("Stopped") == true
-            stoppedSince = stoppedNow ? stoppedSince ?? Date() : nil
-            if let since = stoppedSince, Date().timeIntervalSince(since) >= Self.stoppedHoldSeconds {
-                console.settle()
-                console.say(ClusterOnboardingCommand.named(ClusterOnboardingStopped.line))
-                return 1
             }
             if !asking, Date().timeIntervalSince(asked) >= timing.pollSeconds {
                 asking = true
@@ -282,6 +273,15 @@ extension ClusterOnboardingDriver {
                 }
                 let seen = followed(status)
                 if started == nil, seen != .notStarted { started = Date() }
+                // A stop from anywhere once the start began ends the wait at once, as on the leading Mac. Its status
+                // reading "Stopped" is none: it reads so through a download or copy of the model, until both parts start,
+                // and while the start stops them to register.
+                startBegan = startBegan || started != nil || start != nil || step?.startBegun == true
+                if stops.look(look.stopsAsked, begun: startBegan, startStops: step?.startBegun == true ? step?.stopsBefore : nil) {
+                    console.settle()
+                    console.say(ClusterOnboardingCommand.named(ClusterOnboardingStopped.line))
+                    return 1
+                }
                 // Each stage has the whole bound, as on the leading Mac (its load, its test and check, its restart).
                 let next = followStage(status, after: stage)
                 if started != nil, next > stage { stage = next; started = Date() }
@@ -341,6 +341,7 @@ extension ClusterOnboardingDriver {
                 console.settle()
                 console.result(false, ClusterOnboardingNotServing.title(reason: noOutcomeReason(leader, seconds: timing.seconds)),
                                (latest.map { ["Last: " + $0 + "."] } ?? []) + [noOutcomeLine])
+                console.waitForExit()
                 return 1
             }
             if started == nil, Date().timeIntervalSince(begun) >= timing.seconds {
@@ -379,12 +380,14 @@ extension ClusterOnboardingDriver {
                               _ console: ClusterOnboardingConsole) -> Int32 {
         if step.differentBuilds {
             console.result(false, differentBuildsTitle, differentBuildsLines(leader, thisVersion: thisVersion, leaderVersion: step.version))
+            console.waitForExit()
             return 1
         }
         let other = ClusterOnboardingMacName.other(named: leader)
         let reason = (step.reason ?? "no approved model can run on these Macs now").trimmingCharacters(in: CharacterSet(charactersIn: ". "))
         console.result(false, ClusterOnboardingNotServing.title(reason: ClusterOnboardingMacName.sentence(other) + " can't start a model: " + reason),
                        ["Its screen says why. Once that is fixed, run `darkbloom cluster` on \(other) again; this Mac follows it by itself."])
+        console.waitForExit()
         return 1
     }
 
@@ -413,11 +416,16 @@ extension ClusterOnboardingDriver {
                 console.result(false, ClusterOnboardingNotServing.title(reason: first.hasSuffix(".") ? String(first.dropLast()) : first),
                                Array(failure.lines.dropFirst()))
                 console.say(testAgainOnLeaderLine(leader))
+                console.waitForExit()
                 return 1
             }
         }
-        _ = showOutcome(shown, console)
-        return followServedEnd(operations, console)
+        // The leading Mac's ending, as its status says it; a line from an older leader that it can't read, as before.
+        guard let title = shown.first.flatMap(ClusterOnboardingReady.endingTitle(inStatusLine:)) else {
+            _ = showOutcome(shown, console)
+            return followServedEnd(operations, console)
+        }
+        return servedEnding(title, operations, console)
     }
 
     /// The leading Mac's start ended with a failed test (`ClusterSetupRecord.startTestFailure`): the same ✗ and reason
@@ -427,6 +435,7 @@ extension ClusterOnboardingDriver {
         let note = status.dropFirst().first(where: ClusterOnboardingReady.isTestFailedNote) ?? ClusterOnboardingReady.testFailedNote
         console.result(false, ClusterOnboardingNotServing.title(reason: reason), [note])
         console.say(testAgainOnLeaderLine(leader))
+        console.waitForExit()
         return 1
     }
 
@@ -435,6 +444,7 @@ extension ClusterOnboardingDriver {
     static func followFailed(_ ended: ClusterOnboardingStartProgress, leader: String?, _ console: ClusterOnboardingConsole) -> Int32 {
         console.result(false, ended.title ?? ClusterOnboardingNotServing.title(reason: "the start ended"), ended.lines ?? [])
         if ended.retry == true { console.say(retryOnLeaderLine(leader)) }
+        console.waitForExit()
         return 1
     }
 
@@ -461,10 +471,11 @@ extension ClusterOnboardingDriver {
     /// Under that ✗: where the outcome is.
     public static let noOutcomeLine = "Its screen shows how the start ended and what to do next."
 
-    /// After ✓: what happens after a restart, and whether this window may close.
+    /// After a ✓ block from an older leader's status line: the hint, and Enter, as `servedEnding`.
     static func followServedEnd(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> Int32 {
-        if let restart = operations.afterRestart() { console.say(restart) }
-        console.say(operations.serviceOutlivesWindow() ? closeWindowLine : keepWindowLine)
+        console.say("  " + statusHint)
+        if !operations.serviceOutlivesWindow() { console.say("  " + keepWindowServiceLine) }
+        console.waitForExit()
         return 0
     }
 

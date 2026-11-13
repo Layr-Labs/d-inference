@@ -116,6 +116,11 @@ enum ModelCalibrationPolicy {
         Cell(promptTokens: 512, outputTokens: 32, width: 1),
         Cell(promptTokens: 512, outputTokens: 32, width: 1)]
 
+    /// The startup's measured solo cell, alone: an ordinary engine re-runs it
+    /// after refusals that stale isolated prefill evidence explains
+    /// (`DeadlineRefusalStreak`), at most once per its interval.
+    static let evidenceRefresh = [Cell(promptTokens: 512, outputTokens: 32, width: 1)]
+
     static func bootstrap(maximumConcurrency: Int) -> [Cell] {
         var cells = [Cell(promptTokens: 128, outputTokens: 8, width: 1, warmup: true),
             Cell(promptTokens: 512, outputTokens: 32, width: 1),

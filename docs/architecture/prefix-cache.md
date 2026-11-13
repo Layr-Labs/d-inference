@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-12
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -968,6 +968,27 @@ rules applied to these signals.
    geometry; a matching longer token branch cannot supply an absent shorter
    checkpoint — `HybridPrefixCache.swift` (`lookup`),
    `HybridPrefixCacheContract.swift` (`CBv2RecurrentCheckpointGeometry`).
+9. On a slot with a prefix cache and a history-keeping MTP head that opted in
+   (the embedded Qwen 3.5/3.6 heads, Nemotron Super, native Qwen4), history
+   observation follows cache eligibility, not speculation eligibility. A cached
+   text request that cannot speculate (a token constraint, logprobs,
+   `logit_bias`, a repetition, frequency or presence penalty, a `stop` string:
+   `EngineLoopV2.mtpBasicEligible`), including a Qwen request with the card's
+   presence penalty (every catalog Qwen 3.5/3.6 build's default), records the head's history over
+   its prompt chunks. It therefore stages the same resident and SSD
+   checkpoints a speculating request stages, byte for byte. It never drafts,
+   verifies or seeds a carry, and its history is released once its prompt
+   completes. Media, explicit positions, `prefixCacheEnabled == false`,
+   preempted rows and a final prompt token scheduled alone record nothing. A
+   request that cannot speculate and restores such a checkpoint answers
+   exactly as its cold run; a speculating one restores the history its own
+   prompt would record, so with a fixed draft depth it also answers as its
+   cold run —
+   `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPPlanning.swift`
+   (`mtpRecordsPromptHistory`, `mtpRoundNeeded`),
+   `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPExecution.swift`
+   (`mtpTakeHistoryState`); opt-in per head
+   (`CBv2MTPPrefixCheckpointDrafter.checkpointsNonSpeculatingRows`).
 
 ## Failure modes
 
@@ -979,6 +1000,7 @@ rules applied to these signals.
 | `pending` / `scan_pending`, `error` / `scan_failed` | Startup disk scan not finished or failed | `SSDPrefixCache.swift` |
 | SSD repeat served cold | Prefix shorter than one block; staging reservation refused; donation below the effective-token floor; TTL expiry; box-wide LRU eviction | `SSDPrefixCache.swift` (`donate`), `SSDBlockIndex.swift` |
 | Recurrent repeat served cold | No actual checkpoint, incompatible geometry/identity, scope mismatch, SSD stage refusal/eviction, or opt-in memory bank eviction | `HybridPrefixCache.swift`, `EngineLoopV2+HybridPrefix.swift`, `PrefixCachePolicy+Hybrid.swift` |
+| A model with a history-keeping MTP head gets no coordinator holders although its slots are cache-ready | Its requests cannot speculate and its head does not record their prompt history: providers 0.10.5 through 0.10.11 on the Qwen 3.5/3.6 builds (whose default request there carried the card's presence penalty), or a head that has not opted in (NemotronH35, MiMo V2.6, GLM5-Next) ([invariant 9](#invariants)) | `EngineLoopV2+MTPPlanning.swift` (`mtpRecordsPromptHistory`), `MTPPrefixCheckpoint.swift` (`checkpointsNonSpeculatingRows`), `CompleteCheckpointCapture.swift` |
 | Local memory hit gives no coordinator routing preference | Paged resident publication is not implemented; recurrent slot missing verified identity; or holder evidence expired/invalidated | `ResidentPrefixCacheEvidence.swift`, [coordinator/registry/cache_routing_hints.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/cache_routing_hints.go) |
 | Load refused with `pagedUnavailable` | Explicit `paged` and preflight/capacity/pool construction failed | `EngineV2Factory+BackendPreparation.swift` |
 | Every slot contiguous despite `paged` config | `DARKBLOOM_CBV2_PAGED_KV` set to a negative value, or `supportsPagedKV == false` | `EngineV2KVBackendPolicy.swift`, `EngineV2Factory+BackendPreparation.swift` |

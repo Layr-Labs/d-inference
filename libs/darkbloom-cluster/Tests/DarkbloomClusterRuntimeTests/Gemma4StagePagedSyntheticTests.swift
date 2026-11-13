@@ -18,7 +18,7 @@ import Testing
 //
 // A contract test on a synthetic model, not a model or hardware result.
 
-@Suite("Paged stage KV on synthetic Gemma 4 stages (no artifact)", .serialized)
+@Suite("Paged stage KV on synthetic Gemma 4 stages (no artifact)", .serialized, .boundedBufferCache)
 struct Gemma4StagePagedSyntheticTests {
     static let vocabulary = Gemma4StageGeometry.vocabularySize, hidden = Gemma4StageGeometry.hiddenSize
     static let prompts: [[Int]] = [(0..<1100).map { ($0 * 7919 + 13) % 262_144 }, (0..<300).map { ($0 * 104_729 + 5) % 262_144 },

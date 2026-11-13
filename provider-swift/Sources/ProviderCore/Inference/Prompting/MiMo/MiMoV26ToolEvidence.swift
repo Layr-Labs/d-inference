@@ -56,6 +56,12 @@ struct MiMoV26ToolEvidence: Sendable, Equatable, Decodable {
         }
     }
 
+    /// The retained declarations for every model, nil when the body declared
+    /// none or they did not decode. Auto tool-call validation reads them
+    /// (`ToolChoicePromptPolicy.Prepared.declaredTools`), so a type the
+    /// ingress normalizer inferred is never enforced as the caller's.
+    var declaredTools: [OpenAITool]? { invalid ? nil : tools }
+
     func restoring(
         _ request: OpenAIChatCompletionRequest, modelType: String?
     ) throws -> OpenAIChatCompletionRequest {

@@ -87,12 +87,13 @@ extension JSONAnswerProfile {
         answerEOS: [.init(spelling: "<|im_end|>", id: 248046), .init(spelling: "<|endoftext|>", id: 248044)],
         vocabularySize: 248320)
 
-    /// PrismML Bonsai 2 (`prism_hadamard_qwen35`) ships Qwen 3.5's tokenizer
-    /// and chat template, so Qwen's ids under its own name. Its 27B artifact
-    /// declares `<|im_end|>` alone as EOS, so that is the one terminator; an
-    /// engine that also stops at `<|endoftext|>` never samples it here. Only
-    /// answer-first prompts are constrained (the JSON default renders thinking
-    /// off; the 9B drafts).
+    /// PrismML Bonsai 2 27B (`prism_hadamard_qwen35`) ships Qwen 3.5's
+    /// tokenizer and chat template, so Qwen's ids under its own name. Its
+    /// artifact declares `<|im_end|>` alone as EOS, so that is the one
+    /// terminator; an engine that also stops at `<|endoftext|>` never samples
+    /// it here. Only answer-first prompts are constrained, as on Lightning: the
+    /// JSON default renders thinking off, and its thinking answers met the
+    /// schema unconstrained.
     static let bonsai2 = JSONAnswerProfile(
         family: "Bonsai",
         thinkClose: "</think>",

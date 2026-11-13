@@ -91,7 +91,7 @@ struct QwenJSONAnswerPolicyTests {
 /// Client view of one stream. Raw `.content` text passes the service's qwen3
 /// think parser, as it does downstream of the scheduler; native `.parsed`
 /// channels arrive already split.
-private struct QwenAnswerOutcome {
+struct QwenAnswerOutcome {
     var content = ""
     var contentDeltas: [String] = []
     var reasoning = ""

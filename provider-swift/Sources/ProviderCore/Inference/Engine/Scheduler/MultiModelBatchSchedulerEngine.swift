@@ -1005,7 +1005,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 defaultMaxTokens: bridge.defaultMaxTokens,
                 stopTokenIDs: bridge.stopTokenIds,
                 nativePromptTokens: promptTokens,
-                servesDistributedPair: await bridge.servesDistributedPair)
+                servesDistributedPair: request.responseFormat?.requiresJSONOutput == true
+                    ? await bridge.servesDistributedPair : false)
             // Grammar compile (Gemma) can take the tool-constraint lock on the
             // first build per stop-set, and a JSON answer builds its vocabulary
             // on the first request per tokenizer; only those are worth a lock.
@@ -2055,6 +2056,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         nativeReasoningPrefix: String? = nil,
         recordsWithheldOutput: Bool = false,
         usageSignal: EngineV2RequestUsageSignal = EngineV2RequestUsageSignal(),
+        preserveInnerReasoningSpans: Bool = false,
+        absorbStrayThinkClose: Bool = false,
         answerStopFilter: FlintAnswerStopFilter? = nil,
         answerFormat: JSONAnswerFormat? = nil
     ) throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
@@ -2062,6 +2065,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             toolHandler: toolHandler, prepared: prepared, releaseBox: releaseBox,
             usageSignal: usageSignal, reasoningPrefix: reasoningPrefix,
             nativeReasoningPrefix: nativeReasoningPrefix, recordsWithheldOutput: recordsWithheldOutput,
+            preserveInnerReasoningSpans: preserveInnerReasoningSpans, absorbStrayThinkClose: absorbStrayThinkClose,
             answerStopFilter: answerStopFilter, answerFormat: answerFormat)
     }
     #endif

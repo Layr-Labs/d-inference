@@ -82,8 +82,7 @@ struct JSONAnswerFamilyTests {
         NemotronByteTestTokenizer.prompt(thinking: false))
 
     static let bonsaiIDs = ["ternary-bonsai-2-27b", "EigenLabs/Ternary-Bonsai-2-27B-MLX-2bit",
-                            EngineV2SupportedModels.bonsai2ModelID, Bonsai9BModelPolicy.modelID,
-                            Bonsai9BModelPolicy.eigenModelID]
+                            EngineV2SupportedModels.bonsai2ModelID]
     static let lightningIDs = ["nvidia-nemotron-3.5-lightning", EngineV2SupportedModels.nemotron35LightningModelID,
                                EngineV2SupportedModels.nemotron35LightningMTPModelID,
                                EngineV2SupportedModels.nemotron35LightningHybrid8BuildID,
@@ -103,8 +102,8 @@ struct JSONAnswerFamilyTests {
             servesDistributedPair: pair, families: families)
     }
 
-    /// Bonsai 27B's artifact stops at `<|im_end|>` alone, the 9B's at both
-    /// Qwen terminators: either way the answer ends with `<|im_end|>`.
+    /// Bonsai 27B's artifact stops at `<|im_end|>` alone; a slot that also
+    /// stops at `<|endoftext|>` still ends the answer with `<|im_end|>`.
     @Test func bonsaiBuildsAnswerUnderTheQwenIDs() throws {
         for model in Self.bonsaiIDs {
             for stops: Set<Int> in [[F.imEnd], F.stops] {
@@ -149,9 +148,32 @@ struct JSONAnswerFamilyTests {
             stops: F.stops, pair: true) != nil)
     }
 
-    /// A shared `model_type` admits only the listed builds.
+    /// The slot's pair flag reaches the policy through the factory the text
+    /// path calls (`MultiModelBatchSchedulerEngine.prepareCompletion`).
+    @Test func theFactoryPassesThePairFlagThrough() throws {
+        let cases: [(OpenAIChatCompletionRequest, String, TokenizerHandle, [Int], Set<Int>)] = [
+            (try request(F.jsonObject, model: "ternary-bonsai-2-27b"), "prism_hadamard_qwen35", Self.qwenHandle,
+             Self.qwenPrompt, F.stops),
+            (try request(F.jsonObject, model: "nvidia-nemotron-3.5-lightning"), "nemotron_h", Self.nemotronHandle,
+             Self.nemotronPrompt, Self.nemotronStops),
+        ]
+        for (request, modelType, handle, prompt, stops) in cases {
+            for pair in [false, true] {
+                let constraint = try ToolConstraintFactory.make(
+                    prepared: ToolChoicePromptPolicy.prepare(request, modelType: modelType), request: request,
+                    tokenizer: handle, modelContext: .init(modelId: request.model, modelType: modelType),
+                    defaultMaxTokens: 100, stopTokenIDs: stops, nativePromptTokens: prompt,
+                    servesDistributedPair: pair)
+                #expect((constraint is JSONAnswerConstraint) == !pair, "\(request.model) pair \(pair)")
+            }
+        }
+    }
+
+    /// A shared `model_type` admits only the listed builds: not the Bonsai 2
+    /// 9B, which drafts, nor Nano or Super.
     @Test func unlistedBuildsOfAnAdmittedTypeStayPromptOnly() throws {
-        for model in ["PrismML/Some-Other-Hadamard-Qwen", "EigenLabs/Qwen3.5-9B-MLX-4bit-mtp"] {
+        for model in [Bonsai9BModelPolicy.modelID, Bonsai9BModelPolicy.eigenModelID,
+                      "PrismML/Some-Other-Hadamard-Qwen", "EigenLabs/Qwen3.5-9B-MLX-4bit-mtp"] {
             #expect(make(try request(F.jsonObject, model: model), modelType: "prism_hadamard_qwen35",
                 handle: Self.qwenHandle, prompt: Self.qwenPrompt, stops: F.stops) == nil, "\(model)")
         }
@@ -200,6 +222,7 @@ struct JSONAnswerFamilyTests {
     /// Ids below 1,000 are special or added tokens: only the think markers are
     /// pieces, so `<|im_start|>`, `<tool_call>` and placeholders are never
     /// sampled, and the answer ends with `<|im_end|>` or `</s>` once complete.
+    /// Lightning is constrained from the answer phase only.
     @Test func theNemotronVocabularyAdmitsOnlyItsBytePiecesAndMarkers() throws {
         let profile = JSONAnswerProfile.nemotron35
         let vocabulary = try JSONAnswerVocabulary(tokenizer: NemotronByteTestTokenizer(), profile: profile,
@@ -210,53 +233,111 @@ struct JSONAnswerFamilyTests {
         #expect(vocabulary.pieces[1000 + 0x7B] == [0x7B])
         let format = try JSONAnswerFormat(.jsonObject(), forbidding: profile.contentMarkers, family: profile.family)
         let constraint = try JSONAnswerConstraint(format: format, profile: profile, vocabulary: vocabulary,
-            initialPhase: .reasoning, maxTokens: 256)
-        var state = constraint.initialState
-        for token in NemotronByteTestTokenizer.tokens("Short thought.</think>{\"a\": [1, \"x\"]}") {
-            #expect(!constraint.allowedTokenIDs(state: state, remainingTokens: 10).contains(where: {
-                [0, 1, 10, 14, 15].contains($0) }))
-            state = try #require(constraint.nextState(state: state, tokenID: token), "token \(token)")
+            initialPhase: .answer, maxTokens: 256)
+        func walk(_ text: String) throws -> Int {
+            var state = constraint.initialState
+            for token in Self.nemotronBytes(text) {
+                #expect(!constraint.allowedTokenIDs(state: state, remainingTokens: 10).contains(where: {
+                    [0, 1, 10, 12, 13, 14, 15].contains($0) }))
+                state = try #require(constraint.nextState(state: state, tokenID: token), "token \(token)")
+            }
+            return state
         }
-        #expect(constraint.nextState(state: state, tokenID: 11) == -1)
-        #expect(constraint.nextState(state: state, tokenID: 2) == -1)
-        // Reasoning may not spell a turn marker, and the answer may not hold one.
-        var thinking = constraint.initialState
-        for token in NemotronByteTestTokenizer.tokens("x<|im_end|") {
-            thinking = try #require(constraint.nextState(state: thinking, tokenID: token))
-        }
-        #expect(constraint.nextState(state: thinking, tokenID: 1000 + Int(UInt8(ascii: ">"))) == nil)
-        var answer = try #require(constraint.nextState(state: constraint.initialState, tokenID: 13))
-        for token in NemotronByteTestTokenizer.tokens("{\"a\": \"<tool_call") {
-            answer = try #require(constraint.nextState(state: answer, tokenID: token))
-        }
-        #expect(constraint.nextState(state: answer, tokenID: 1000 + Int(UInt8(ascii: ">"))) == nil)
-        // `</s>` has no piece, so its spelling (an HTML close tag) stays writable.
-        var html = try #require(constraint.nextState(state: constraint.initialState, tokenID: 13))
-        for token in NemotronByteTestTokenizer.tokens("{\"a\": \"<s>gone</s>\"}") {
-            html = try #require(constraint.nextState(state: html, tokenID: token), "token \(token)")
-        }
-        #expect(constraint.nextState(state: html, tokenID: 11) == -1)
+        let complete = try walk("{\"a\": [1, \"x\"]}")
+        #expect(constraint.nextState(state: complete, tokenID: 11) == -1)
+        #expect(constraint.nextState(state: complete, tokenID: 2) == -1)
+        // The answer may not spell a framing marker, even inside a string.
+        #expect(constraint.nextState(state: try walk("{\"a\": \"<tool_call"),
+            tokenID: 1000 + Int(UInt8(ascii: ">"))) == nil)
+        #expect(constraint.nextState(state: try walk("{\"a\": \"<|im_end|"),
+            tokenID: 1000 + Int(UInt8(ascii: ">"))) == nil)
+        // `</s>` (id 2) ends only a complete answer, but its spelling, an HTML
+        // close tag, has no marker and stays writable byte by byte.
+        let open = try walk("{\"a\": \"<s>gone")
+        #expect(constraint.nextState(state: open, tokenID: 2) == nil)
+        #expect(constraint.nextState(state: try walk("{\"a\": \"<s>gone</s>\"}"), tokenID: 11) == -1)
+    }
+
+    /// Single-byte ids of `text`, never a marker id: the spelling the answer
+    /// writes, not what the tokenizer would merge it into.
+    private static func nemotronBytes(_ text: String) -> [Int] {
+        text.utf8.map { NemotronByteTestTokenizer.firstByteID + Int($0) }
     }
 }
 
-/// Run against local snapshots (tokenizer, template and config files only; no
-/// weights are read): `DARKBLOOM_TEST_NEMOTRON_TOKENIZER_DIR=<Lightning snapshot>`,
-/// `DARKBLOOM_TEST_BONSAI_TOKENIZER_DIR=<Bonsai 2 snapshot>`. The stop set is the
-/// one the slot gets: the artifact's EOS (`ModelEOSPolicy`) plus the tokenizer's.
-@Suite("Bonsai and Nemotron JSON answer real tokenizers")
-struct JSONAnswerFamilyRealTokenizerTests {
-    private static let environment = ProcessInfo.processInfo.environment
+#if DEBUG
+/// The scheduler's forwarding body with the routing flags production passes
+/// for each family (`MultiModelBatchSchedulerEngine.prepareCompletion`): an
+/// answer-first constrained row streams its JSON as content, and an answer
+/// that misses is the typed 422 under the family's name.
+@Suite("JSON answer grammar: Bonsai and Lightning serving")
+struct JSONAnswerFamilyServingTests {
+    private typealias F = QwenAnswerFixture
 
-    private func load(_ key: String) async throws -> (any MLXLMCommon.Tokenizer, Set<Int>) {
-        let directory = URL(fileURLWithPath: try #require(Self.environment[key]))
+    private func run(model: String, modelType: String, profile: JSONAnswerProfile, output: [String],
+                     finish: String = "stop") async throws -> QwenAnswerOutcome {
+        var request = try F.request(format: F.schemaFormat(F.schema))
+        request.model = model
+        let context = ChatTemplateFixContext(modelId: model, modelType: modelType)
+        let answer = try JSONAnswerFormat(try #require(request.responseFormat), forbidding: profile.contentMarkers,
+                                          family: profile.family)
+        let upstream = AsyncStream<GenerationEvent> { continuation in
+            for chunk in output { continuation.yield(.chunk(chunk)) }
+            continuation.yield(.info(promptTokens: 1, completionTokens: output.count, tokensPerSecond: 0,
+                finishReason: finish))
+            continuation.finish()
+        }
+        let stream = try MultiModelBatchSchedulerEngine(registryProvider: { [:] })._testMakeEventStream(
+            upstream: upstream, cancelUpstream: {},
+            prepared: ToolChoicePromptPolicy.prepare(request, modelType: modelType),
+            releaseBox: OneShotRelease(release: { _ in }, modelId: "fixture"),
+            nativeReasoningPrefix: "<think></think>",
+            preserveInnerReasoningSpans: ToolChoiceEnforcementPolicy.preservesInnerReasoningSpans(context),
+            absorbStrayThinkClose: ToolChoiceEnforcementPolicy.absorbsStrayThinkClose(context),
+            answerFormat: answer)
+        var outcome = QwenAnswerOutcome()
+        do {
+            for try await event in stream { outcome.record(event) }
+        } catch { outcome.error = error }
+        outcome.finish()
+        return outcome
+    }
+
+    @Test(arguments: [("ternary-bonsai-2-27b", "prism_hadamard_qwen35", "Bonsai"),
+                      ("nvidia-nemotron-3.5-lightning", "nemotron_h", "Nemotron")])
+    func answersStreamAsContentAndMissesAreTyped422s(model: String, modelType: String, family: String) async throws {
+        let profile: JSONAnswerProfile = family == "Bonsai" ? .bonsai2 : .nemotron35
+        let valid = try await run(model: model, modelType: modelType, profile: profile,
+            output: [#"{"tables_used":["a"],"#, #""count":3}"#])
+        #expect(valid.error == nil && valid.reasoning.isEmpty)
+        #expect(valid.content == #"{"tables_used":["a"],"count":3}"#)
+        let miss = try await run(model: model, modelType: modelType, profile: profile,
+            output: [#"{"tables_used":["PRIVATE"]}"#])
+        guard case .invalidResponseFormatOutput(let message)? = miss.error as? MLXOpenAIServiceError else {
+            Issue.record("unexpected \(String(describing: miss.error))"); return
+        }
+        #expect(message.hasPrefix(family + " ") && !message.contains("PRIVATE"))
+        #expect(miss.error.map { ProviderLoop.mapInferenceErrorToStatus($0) } == 422)
+    }
+}
+#endif
+
+/// The opt-in real-tokenizer checks below read tokenizer, template and config
+/// files only (no weights). The stop set is the one the slot gets: the
+/// artifact's EOS (`ModelEOSPolicy`) plus the tokenizer's.
+enum JSONAnswerRealTokenizerCheck {
+    static func load(_ key: String) async throws -> (any MLXLMCommon.Tokenizer, Set<Int>) {
+        let directory = URL(fileURLWithPath: try #require(ProcessInfo.processInfo.environment[key]))
         let tokenizer = try await LocalTokenizerLoader(environment: [:]).load(from: directory)
         var stops = try #require(ModelEOSPolicy.artifactEOSTokenIds(modelDirectory: directory))
         if let eos = tokenizer.eosToken.flatMap(tokenizer.convertTokenToId) { stops.insert(eos) }
         return (tokenizer, stops)
     }
 
-    private func check(_ tokenizer: any MLXLMCommon.Tokenizer, stops: Set<Int>, profile: JSONAnswerProfile,
-                       pieceCount: Int, end: Int) throws {
+    /// The pinned contract, both rendered JSON prompt tails, and a real
+    /// tokenization of an answer that ends at `end`.
+    static func check(_ tokenizer: any MLXLMCommon.Tokenizer, stops: Set<Int>, profile: JSONAnswerProfile,
+                      pieceCount: Int, end: Int) throws {
         let vocabulary = try JSONAnswerVocabulary(tokenizer: tokenizer, profile: profile, stopTokenIDs: stops)
         #expect(vocabulary.pieceTokenIDs.count == pieceCount)
         for (thinking, phase) in [(false, JSONAnswerPhase.answer), (true, .reasoning)] {
@@ -276,18 +357,28 @@ struct JSONAnswerFamilyRealTokenizerTests {
         }
         #expect(constraint.nextState(state: state, tokenID: end) == -1)
     }
+}
 
-    @Test(.enabled(if: environment["DARKBLOOM_TEST_NEMOTRON_TOKENIZER_DIR"] != nil))
-    func lightningMatchesItsContract() async throws {
-        let (tokenizer, stops) = try await load("DARKBLOOM_TEST_NEMOTRON_TOKENIZER_DIR")
-        #expect(stops == [2, 11])
-        try check(tokenizer, stops: stops, profile: .nemotron35, pieceCount: 131_072 - 1_000 + 2, end: 11)
-    }
-
-    @Test(.enabled(if: environment["DARKBLOOM_TEST_BONSAI_TOKENIZER_DIR"] != nil))
-    func bonsaiMatchesItsContract() async throws {
-        let (tokenizer, stops) = try await load("DARKBLOOM_TEST_BONSAI_TOKENIZER_DIR")
+/// `DARKBLOOM_TEST_BONSAI_TOKENIZER_DIR=<Bonsai 2 27B snapshot>`.
+@Suite("Bonsai JSON answer real tokenizer",
+       .enabled(if: ProcessInfo.processInfo.environment["DARKBLOOM_TEST_BONSAI_TOKENIZER_DIR"] != nil))
+struct BonsaiJSONAnswerRealTokenizerTests {
+    @Test func theShippedTokenizerMatchesThePinnedContract() async throws {
+        let (tokenizer, stops) = try await JSONAnswerRealTokenizerCheck.load("DARKBLOOM_TEST_BONSAI_TOKENIZER_DIR")
         #expect(stops.contains(248_046))
-        try check(tokenizer, stops: stops, profile: .bonsai2, pieceCount: 248_044 + 2, end: 248_046)
+        try JSONAnswerRealTokenizerCheck.check(tokenizer, stops: stops, profile: .bonsai2, pieceCount: 248_044 + 2,
+                                               end: 248_046)
+    }
+}
+
+/// `DARKBLOOM_TEST_NEMOTRON_TOKENIZER_DIR=<Nemotron 3.5 Lightning snapshot>`.
+@Suite("Nemotron JSON answer real tokenizer",
+       .enabled(if: ProcessInfo.processInfo.environment["DARKBLOOM_TEST_NEMOTRON_TOKENIZER_DIR"] != nil))
+struct NemotronJSONAnswerRealTokenizerTests {
+    @Test func theShippedTokenizerMatchesThePinnedContract() async throws {
+        let (tokenizer, stops) = try await JSONAnswerRealTokenizerCheck.load("DARKBLOOM_TEST_NEMOTRON_TOKENIZER_DIR")
+        #expect(stops == [2, 11])
+        try JSONAnswerRealTokenizerCheck.check(tokenizer, stops: stops, profile: .nemotron35,
+                                               pieceCount: 131_072 - 1_000 + 2, end: 11)
     }
 }

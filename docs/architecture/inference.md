@@ -3392,7 +3392,7 @@ spliced across a boundary the reasoning parser later hides. Required and named
 
 ### Constrained Qwen JSON answers
 
-Qwen, the Bonsai 2 builds and Nemotron 3.5 Lightning share this machinery.
+Qwen, Bonsai 2 27B and Nemotron 3.5 Lightning share this machinery.
 The format instruction alone leaves some answers outside the requested schema:
 a near-miss key, a string for an integer, an invented key under
 `additionalProperties: false`, a raw newline inside a string, or prose. On the
@@ -3406,17 +3406,20 @@ when its model is admitted (`JSONAnswerPolicy.profile`):
 | Family | Admission | Contract (`JSONAnswerProfile`) |
 |---|---|---|
 | Qwen 3.5, 3.6, 3.8 | `model_type` `qwen3_5` or `qwen3_5_moe` | `qwen35` |
-| PrismML Bonsai 2 (27B, 9B) | `prism_hadamard_qwen35` and a listed Bonsai build (`EngineV2SupportedModels.isBonsai2ListingModelID`, `Bonsai9BModelPolicy`) | `bonsai2`: Qwen 3.5's tokenizer and ids, its own name in messages, `<|im_end|>` its one terminator |
+| PrismML Bonsai 2 27B | `prism_hadamard_qwen35` and a 27B listing id (`EngineV2SupportedModels.isBonsai2ListingModelID`; the 9B shares the type) | `bonsai2`: Qwen 3.5's tokenizer and ids, its own name in messages, `<|im_end|>` its one terminator |
 | Nemotron 3.5 Lightning | `nemotron_h` and a Lightning listing id (`EngineV2SupportedModels.isNemotron35ListingModelID`; Nano shares the type) | `nemotron35` |
 
 Bonsai and Lightning are admitted for their answers only
 (`JSONAnswerProfile.constrainsReasoning` false): a prompt that opens a thought
-keeps prompt-only steering, because a constrained row never drafts and, on
-their targets, no row in its decode step does (below), while their reasoning
-runs long and their thinking answers met the schema in the checks that
-motivated them. They are also not constrained on a cluster pair, which refuses
-any token constraint before reserving (`constrainedDecodingUnsupported`); their
-pairs keep prompt-only service. Qwen keeps both, as before.
+keeps prompt-only steering, silently and before the schema compiles, as it is
+Lightning's default. A constrained row never drafts and, on Lightning's target,
+no row in its decode step does (below); Lightning's reasoning runs long, and
+both families' thinking answers met the schema in the checks that motivated
+them. Neither is constrained on a cluster pair, which refuses any token
+constraint before reserving (`constrainedDecodingUnsupported`); their pairs
+keep prompt-only service. Qwen keeps both, as before. The Bonsai 2 9B is not
+admitted: it drafts, and its JSON prompts render thinking off by default, so
+each of its JSON rows would stop its whole decode cohort from speculating.
 
 `DARKBLOOM_JSON_ANSWER_GRAMMAR=qwen` (or `0`, `off`, `false`, `no`, `none`)
 keeps the grammar to the Qwen types, as before Bonsai and Lightning were
@@ -3473,7 +3476,8 @@ Qwen requests; a stop that cuts the value short fails the same check.
 Every other case keeps prompt-only steering and gains no refusal. A schema
 outside the subset (including an enum value containing a forbidden spelling), a
 tokenizer that fails the checks, a prompt tail without a think marker or a
-nonpositive budget logs one content-free private line (category `json-answer`).
+nonpositive budget logs one content-free private line (category `json-answer`);
+a Bonsai or Lightning prompt that opens a thought logs nothing.
 Tools or `tool_choice` beside the format keep today's behavior; Flint's
 format-over-tools precedence does not apply. Image and video requests take the
 media path, which installs no token constraint.
@@ -3486,8 +3490,9 @@ Qwen 3.5 targets nor Lightning's declare the row-exact recurrent fallback
 row is in a decode step, no row in that step speculates. A `stop`,
 `logit_bias`, penalty or logprob row has the same effect on these engines.
 Decoding such rows beside speculation needs that SDK capability and row-exactness
-evidence for each target. Bonsai 2 27B has no drafter; the 9B and Lightning
-do, which is why they constrain answer-first prompts only.
+evidence for each target. Bonsai 2 27B has no drafter. Lightning drafts, so only
+its answer-first prompts (thinking off) are constrained; its default thinking
+requests keep speculating.
 
 Sources: `provider-swift/Sources/ProviderCore/Inference/Tools/JSONAnswerPolicy.swift`,
 `provider-swift/Sources/ProviderCore/Inference/JSONAnswerProfile.swift`,

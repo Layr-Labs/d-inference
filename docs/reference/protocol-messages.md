@@ -1339,8 +1339,12 @@ the part type and the service-validated cut-off
 A decrypted Chat body's message with no `reasoning_content` (absent or null) but a `thinking` or `reasoning` string
 decodes with that string as its `reasoning_content`, the field the chat templates read. As transformers'
 `apply_chat_template` aliases them, the first non-null of `reasoning_content`, `thinking` and `reasoning` wins; an
-empty or non-string value aliases nothing and is otherwise ignored. `reasoning_details` is read only by the
-[GLM contract](#glm-native-prompt-contract). Every serving decode applies it, through `AliasedChatRequest`
+empty or non-string value aliases nothing and is otherwise ignored. Unlike transformers, which copies an empty
+string too, an empty alias leaves `reasoning_content` unset; the renders differ only when that turn's `content`
+holds `</think>`, which the Qwen 3.5-family and GLM templates then split off as the thought. `reasoning_details` is
+read only by the [GLM contract](#glm-native-prompt-contract), where an alias wins over GLM's own reading of
+`reasoning` and `reasoning_details` (so `thinking` beats `reasoning`), and a turn that aliases nothing keeps that
+reading. Every serving decode applies it, through `AliasedChatRequest`
 (`provider-swift/Sources/ProviderCore/HistoryReasoningAliases.swift`): admission and the prompt pipeline
 (`ProviderLoop.decodeInboundChatRequest`, `ProviderLoop.decodeOpenAIRequest`) and the local API (`LocalChatRequest`).
 

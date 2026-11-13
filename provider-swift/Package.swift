@@ -8,7 +8,7 @@ import Foundation
 // DARKBLOOM_RELEASE_ENVIRONMENT. On the dev branch every other build is dev:
 // it talks to the DevNet coordinator. On master it is prod.
 let releaseEnvironment = ProcessInfo.processInfo.environment["DARKBLOOM_RELEASE_ENVIRONMENT"]
-    .flatMap { $0.isEmpty ? nil : $0 } ?? "dev"
+    .flatMap { $0.isEmpty ? nil : $0 } ?? "prod"
 precondition(["prod", "dev", "staging"].contains(releaseEnvironment),
              "DARKBLOOM_RELEASE_ENVIRONMENT must be prod, dev or staging")
 let buildEnvironmentSwiftSettings: [SwiftSetting]

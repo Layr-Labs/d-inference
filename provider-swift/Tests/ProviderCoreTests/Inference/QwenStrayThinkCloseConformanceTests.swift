@@ -133,12 +133,29 @@ final class QwenStrayThinkCloseConformanceTests: XCTestCase {
     }
     #endif
 
-    func testSwitchOffPreservesLiteralClose() throws {
-        for value in ["0", "off", "false", "no"] {
+    /// The kill switch: an off word restores 0.10.12, where the close stays literal.
+    func testSwitchOffWordsPreserveLiteralClose() throws {
+        for value in ["0", "off", "false", "no", "none", "disabled", " OFF "] {
             setenv(flag, value, 1)
-            XCTAssertEqual(try content("before</think>after", width: 1, type: "qwen3_5"), "before</think>after")
+            XCTAssertEqual(try content("before</think>after", width: 1, type: "qwen3_5"), "before</think>after", value)
+            XCTAssertNil(QwenStrayThinkClose.nativePrefix("<think></think>",
+                context: .init(modelId: "Qwen3.5-9B", modelType: "qwen3_5")), value)
+        }
+    }
+
+    /// On by default for the Qwen types: unset, empty or any other value absorbs.
+    func testAbsorptionIsOnByDefault() throws {
+        unsetenv(flag)
+        let context = ChatTemplateFixContext(modelId: "Qwen3.5-9B", modelType: "qwen3_5")
+        XCTAssertEqual(try content("before</think>after", width: 1, type: "qwen3_5"), "beforeafter")
+        XCTAssertEqual(QwenStrayThinkClose.nativePrefix("<think></think>", context: context), "<think></think>")
+        for value in ["", "1", "on", "garbage"] {
+            setenv(flag, value, 1)
+            XCTAssertEqual(try content("before</think>after", width: 1, type: "qwen3_5_moe"), "beforeafter", value)
         }
         unsetenv(flag)
-        XCTAssertEqual(try content("before</think>after", width: 1, type: "qwen3_5"), "before</think>after")
+        for type in ["gpt_oss", "gemma4", "nemotron_h", "mimo_v2", "prism_hadamard_qwen35"] {
+            XCTAssertFalse(QwenStrayThinkClose.applies(.init(modelId: "Qwen3.5-9B", modelType: type)), type)
+        }
     }
 }

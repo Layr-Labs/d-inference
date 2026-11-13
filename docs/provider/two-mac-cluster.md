@@ -569,7 +569,9 @@ a Qwen pair before any output: a pair's ranks cannot apply the grammar
 request refused this way to a single Mac, which constrains it
 (darkbloom-platform `fix/coord-pair-refusal-failover`); a request to the owner's
 local cluster API gets the refusal. Other JSON requests are served with the
-format instruction only, as on one Mac
+format instruction only, as on one Mac, and so is every JSON request on a
+Bonsai 2 27B or Nemotron 3.5 Lightning pair, which a single Mac would constrain
+when the prompt starts in the answer
 ([constrained Qwen JSON answers](../architecture/inference.md#constrained-qwen-json-answers)).
 
 | # | Where | What you do | What it asks |

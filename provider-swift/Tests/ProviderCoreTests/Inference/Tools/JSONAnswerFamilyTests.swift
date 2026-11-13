@@ -237,8 +237,9 @@ struct JSONAnswerFamilyTests {
         func walk(_ text: String) throws -> Int {
             var state = constraint.initialState
             for token in Self.nemotronBytes(text) {
-                #expect(!constraint.allowedTokenIDs(state: state, remainingTokens: 10).contains(where: {
-                    [0, 1, 10, 12, 13, 14, 15].contains($0) }))
+                let allowed = constraint.allowedTokenIDs(state: state, remainingTokens: 10)
+                #expect(allowed.contains(token), "token \(token)")
+                #expect(!allowed.contains(where: { [0, 1, 10, 12, 13, 14, 15].contains($0) }))
                 state = try #require(constraint.nextState(state: state, tokenID: token), "token \(token)")
             }
             return state

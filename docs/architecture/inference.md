@@ -3473,6 +3473,12 @@ schema, or a budget that ends first, is a 422
 the content has streamed. Engine `stop` strings still apply as for the other
 Qwen requests; a stop that cuts the value short fails the same check.
 
+Constraining keeps an answer inside the schema, not on topic: a model that wants
+a key the schema forbids may keep writing the string it is in (one Lightning
+answer ran 1,955 tokens repeating its `reply` before closing it), and one asked
+for a `json_object` without a JSON-shaped prompt may put its prose in a key.
+These rows have no loop guard; a long one ends at `max_tokens` as a typed 422.
+
 Every other case keeps prompt-only steering and gains no refusal. A schema
 outside the subset (including an enum value containing a forbidden spelling), a
 tokenizer that fails the checks, a prompt tail without a think marker or a
@@ -3491,8 +3497,9 @@ row is in a decode step, no row in that step speculates. A `stop`,
 `logit_bias`, penalty or logprob row has the same effect on these engines.
 Decoding such rows beside speculation needs that SDK capability and row-exactness
 evidence for each target. Bonsai 2 27B has no drafter. Lightning drafts, so only
-its answer-first prompts (thinking off) are constrained; its default thinking
-requests keep speculating.
+its answer-first prompts (thinking off) are constrained: those trigger it, and
+every Lightning row sharing their decode step, thinking or not, stops
+speculating meanwhile.
 
 Sources: `provider-swift/Sources/ProviderCore/Inference/Tools/JSONAnswerPolicy.swift`,
 `provider-swift/Sources/ProviderCore/Inference/JSONAnswerProfile.swift`,

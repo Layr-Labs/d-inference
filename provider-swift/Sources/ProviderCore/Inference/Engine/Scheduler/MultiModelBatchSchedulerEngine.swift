@@ -890,6 +890,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         let promptTokens = visionPrepared.promptTokens
                         let multimodal = visionPrepared.multimodalInput()
                         let mediaKind = visionPrepared.mediaKind
+                        // The continuation's output starts after the end of
+                        // thinking, so stop strings apply from its first token.
+                        let continuationStopScope = ReasoningStopScope.scope(
+                            reasoningParser: visionRequest.reasoningParser, reasoningPrefix: nil,
+                            parsesToolCalls: toolHandler != nil)
                         let spliced = LoopExitThinkingContinuation.splice(
                             first: upstream,
                             cancelFirst: cancelEvents,
@@ -914,7 +919,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                                             cacheEnabled: cacheEnabled,
                                             multimodal: multimodal,
                                             mediaKind: mediaKind,
-                                            stopStringScope: stopStringScope,
+                                            stopStringScope: continuationStopScope,
                                             donationDemand: donationDemand,
                                             firstContentDeadline: nil,
                                             measurementPurpose: measurementPurpose,

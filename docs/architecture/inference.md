@@ -3252,8 +3252,8 @@ stops such a row early.
   (Super, text only), `glm5_next` and `mimo_v2`. `DARKBLOOM_LOOP_GUARD=0`
   (or `off`) turns it off; a comma-separated list of `model_type`s replaces
   the default list.
-- **A loop inside a Gemma 4 thought (or a listed Qwen 3.5/3.6 one) ends the
-  thought, not the answer** (`GenerationLoopExitThinkingPolicy`, `LoopExitThinkingContinuation`).
+- **A loop inside a Gemma 4 thought (or a listed Qwen 3.5/3.6 or Nemotron 3.5
+  Super one) ends the thought, not the answer** (`GenerationLoopExitThinkingPolicy`, `LoopExitThinkingContinuation`).
   For `gemma4` and `gemma4_text` (on by default) and `qwen3_5_moe` (Qwen 3.5/3.6
   35B) and `qwen3_5` (Qwen 3.5 9B, Qwen 3.8 27B), listed and off by default (their
   thought loops were too rare in the A/B to show rescues), the guard also
@@ -3302,8 +3302,9 @@ stops such a row early.
   (`NemotronSuperRequestPlan.exitThinking`; the exit is `</think>` alone, as its
   template writes a thought) and `NemotronSuperLocalBinding` continues the
   answer the same way, within the same admitted request. A cancel or drain
-  during the hand-off submits no second row; the request joins the splice and
-  then waits for both rows' terminal observations before the owner's admission
+  during the stopped row's release wait submits no second row (one that races
+  the submission cancels it at once); the request joins the splice and then
+  waits for both rows' terminal observations before the owner's admission
   returns. The guard follows the last thought marker, Super's reasoning channel
   the first `</think>`: a model that writes `<think>` in its answer and then
   loops is continued, and its `</think>` reaches the client as content. `darkbloom start` passes it, and `DARKBLOOM_LOOP_GUARD`,

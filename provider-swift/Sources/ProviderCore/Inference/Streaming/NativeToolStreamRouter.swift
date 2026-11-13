@@ -160,16 +160,18 @@ struct NativeToolStreamRouter {
     /// End of generation on the complete-call path: the handler's calls and
     /// its residual text. An `auto` GLM suffix that did not parse as one batch
     /// is split into text and its final calls (`GLM5ToolSuffix`), except in an
-    /// output the token limit cut off, where it stays text.
-    func finishCompleteCalls(truncated: Bool) -> (calls: [ToolCall], residual: String?) {
+    /// output the token limit cut off, where it stays text. A suffix whose
+    /// release would expose a think marker from inside a tool frame keeps
+    /// failing, as before.
+    func finishCompleteCalls(truncated: Bool) throws -> (calls: [ToolCall], residual: String?) {
         guard let handler else { return ([], nil) }
         let calls = handler.finish()
         let residual = handler.takeResidualText()
-        guard returnsUnparsedGLMOutputAsText, !truncated, calls.isEmpty, let residual else {
-            return (calls, residual)
+        guard returnsUnparsedGLMOutputAsText, calls.isEmpty, let residual else { return (calls, residual) }
+        switch GLM5ToolSuffix.split(residual, tools: tools) {
+        case .text(let text, calls: let found): return truncated ? ([], residual) : (found, text)
+        case .ambiguous: throw MultiModelBatchSchedulerEngineError.generationFailed("native GLM tool output is invalid")
         }
-        let split = GLM5ToolSuffix.split(residual, tools: tools)
-        return (split.calls, split.text)
     }
 
     private var returnsUnparsedGLMOutputAsText: Bool {

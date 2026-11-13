@@ -1784,17 +1784,24 @@ does not implement constrained decoding or advertise function calling.
 The suffix starts at the response's first `<tool_call>`, and GLM `auto` tool
 requests do not split reasoning off first, so it also holds a tag the model only
 mentioned or a call it drafted in its thought, or a tag its answer mentions.
-Such a suffix does not parse as one batch. On an `auto` request it is returned
-as reference GLM parsers (vLLM, SGLang) return unmatched markers: as text, never
-a failure (`NativeToolStreamRouter.finishCompleteCalls`, `GLM5ToolSuffix`). The
-calls are the frames from the earliest `<tool_call>` whose rest parses as calls
-to the end of the response, and everything before them is text, which the
-service's reasoning parser then splits at `</think>`. A suffix with no such rest
-(a malformed or cut-off final frame, text after the calls) is all text, and so is
-a suffix that did not parse in an output cut at the token limit, or whose calls
-follow 64 or more tags; no frame is completed or salvaged. A suffix that parses
-keeps its calls as before. A required or named call still fails closed (422).
-`DARKBLOOM_GLM_TOOL_TEXT_FALLBACK=0` restores the whole-suffix failure (500).
+Such a suffix does not parse as one batch. On an `auto` request it is no longer a
+failure: like the reference GLM parsers (vLLM, SGLang), which never fail a
+response on tool syntax, the provider returns it as text, under its own stricter
+rule for what still counts as a call (`NativeToolStreamRouter.finishCompleteCalls`,
+`GLM5ToolSuffix`). The calls are the trailing run of top-level frames, separated
+only by whitespace and ending the response, from just after the last frame of the
+run that does not parse; everything before them is text, which the service's
+reasoning parser then splits at `</think>`. A frame that has started its
+arguments owns everything up to its `</tool_call>`, so a frame inside or after an
+argument is data, never a call. A suffix with no such run (a malformed or cut-off
+final frame, text after the calls) is all text, and so is a suffix that did not
+parse in an output cut at the token limit; no frame is completed or salvaged. A
+suffix whose release would put a think marker from inside a frame before the
+reasoning parser keeps failing, as does a required or named call (422). Unlike
+vLLM and SGLang, a call followed by text or by a malformed frame commits nothing,
+and a call drafted inside a closed thought stays reasoning. A suffix that parses
+keeps its calls as before. `DARKBLOOM_GLM_TOOL_TEXT_FALLBACK=0` restores the
+whole-suffix failure (500).
 The request-local [GLM prompt contract](../reference/protocol-messages.md#glm-native-prompt-contract)
 also preserves original schema values only after a trusted loaded-model check.
 It renders reasoning that OpenRouter returns on earlier assistant turns

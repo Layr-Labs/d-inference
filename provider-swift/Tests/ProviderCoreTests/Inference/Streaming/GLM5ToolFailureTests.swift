@@ -98,10 +98,12 @@ struct GLM5ToolFailureTests {
         #expect(ProviderLoop.mapInferenceErrorToStatus(failure) == 422)
     }
 
+    static let storeTool = #"{"type":"function","function":{"name":"store","parameters":{"type":"object","properties":{"doc":{"type":"object"}},"required":["doc"]}}}"#
+
     /// The delimiters quoted inside a JSON argument are data: the calls start
     /// at the real frame, not at a quoted tag.
     @Test func quotedDelimitersStayArgumentData() async throws {
-        let tool = #"{"type":"function","function":{"name":"store","parameters":{"type":"object","properties":{"doc":{"type":"object"}},"required":["doc"]}}}"#
+        let tool = Self.storeTool
         let output = "See <tool_call> here.</think><tool_call>store<arg_key>doc</arg_key>"
             + #"<arg_value>{"x":"</tool_call><tool_call>store"}</arg_value></tool_call>"#
         let result = try await run(output, forced: false, width: 3, tool: tool)
@@ -134,14 +136,42 @@ struct GLM5ToolFailureTests {
         #expect(clean.failure == nil && clean.calls.count == 1 && clean.visible == "Need it.</think>")
     }
 
-    /// The search for the calls' first frame is bounded.
-    @Test func callsAfterTooManyTagsStayText() async throws {
-        let mentions = String(repeating: "<tool_call> ", count: GLM5ToolSuffix.maximumStarts)
-        let within = try await run(String(mentions.dropFirst(12)) + valid, forced: false, width: 4096)
-        #expect(within.calls.count == 1 && within.failure == nil)
-        let beyond = try await run(mentions + valid, forced: false, width: 4096)
-        #expect(beyond.calls.isEmpty && beyond.failure == nil)
-        #expect(beyond.visible == mentions + valid)
+    /// A frame that has started its arguments owns everything up to its own
+    /// `</tool_call>`: a frame inside an argument, or after one, is data and
+    /// never becomes a call, whether the outer frame is cut off or closed.
+    @Test(arguments: [nil, "length"], [1, 7, 4096])
+    func framesInsideAFrameAreNeverCalls(finishReason: String?, width: Int) async throws {
+        let nested = "<tool_call>store<arg_key>doc</arg_key><arg_value>{}</arg_value></tool_call>"
+        let cases: [(output: String, tool: String?)] = [
+            ("<tool_call>store<arg_key>doc</arg_key><arg_value>{\"x\":\"" + nested, Self.storeTool),
+            ("<tool_call>echo<arg_key>text</arg_key><arg_value>draft " + valid, nil),
+            ("Use <tool_call>.</think><tool_call>echo<arg_key>text</arg_key><arg_value>a</arg_value>junk" + valid, nil),
+        ]
+        for shape in cases {
+            let result = try await run(shape.output, forced: false, width: width, finishReason: finishReason,
+                tool: shape.tool)
+            #expect(result.failure == nil && result.calls.isEmpty, "\(shape.output)")
+            #expect(result.visible == shape.output, "\(shape.output)")
+        }
+    }
+
+    /// Released text would hand a think marker from inside a drafted call to
+    /// the service's reasoning parser as a channel boundary: that response keeps
+    /// failing, as before.
+    @Test func thinkMarkerInsideAReleasedFrameStillFails() async throws {
+        let draft = "Draft <tool_call>echo<arg_key>text</arg_key><arg_value></think></arg_value></tool_call>"
+        for output in [draft + "PRIVATE</think>Answer", draft + " more.</think>" + valid] {
+            let result = try await run(output, forced: false, width: 5)
+            #expect(result.calls.isEmpty && result.visible == "Draft ")
+            #expect(result.failure == .generationFailed("native GLM tool output is invalid"))
+        }
+    }
+
+    /// Finding the calls is linear in the suffix: many mentions before them.
+    @Test func manyMentionsBeforeTheCalls() async throws {
+        let mentions = String(repeating: "<tool_call> ", count: 20_000)
+        let result = try await run(mentions + valid, forced: false, width: 65536)
+        #expect(result.failure == nil && result.calls.count == 1 && result.visible == mentions)
     }
 
     /// `DARKBLOOM_GLM_TOOL_TEXT_FALLBACK=0` restores the whole-suffix failure.
@@ -155,7 +185,7 @@ struct GLM5ToolFailureTests {
                 tools: prepared.tools?.map { $0.toolSpec() }, glmUnparsedOutputIsText: textFallback)
             _ = try router.process("Wrap it in <tool_call> tags.</think>" + valid)
             _ = try router.finishText()
-            let finished = router.finishCompleteCalls(truncated: false)
+            let finished = try router.finishCompleteCalls(truncated: false)
             if textFallback {
                 try router.checkNativeToolFailure()
                 #expect(finished.calls.count == 1)

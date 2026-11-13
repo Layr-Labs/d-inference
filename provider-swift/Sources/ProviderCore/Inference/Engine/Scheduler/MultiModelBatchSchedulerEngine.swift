@@ -1917,15 +1917,17 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     continuation.finish()
                     return
                 }
-                let (toolCalls, residual) = router.finishCompleteCalls(truncated: stopReason == "length")
+                let finished: (calls: [ToolCall], residual: String?)
                 do {
+                    finished = try router.finishCompleteCalls(truncated: stopReason == "length")
                     try router.checkNativeToolFailure()
                 } catch {
                     await releaseBox.fire()
                     continuation.finish(throwing: error)
                     return
                 }
-                if prepared.mode == .auto, let residual, !residual.isEmpty {
+                let toolCalls = finished.calls
+                if prepared.mode == .auto, let residual = finished.residual, !residual.isEmpty {
                     emit(router.visibleEvent(residual))
                 }
                 if prepared.mode == .auto, (toolHandler?.parseFailureCount ?? 0) > 0 {

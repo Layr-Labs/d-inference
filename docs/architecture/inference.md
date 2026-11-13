@@ -3252,9 +3252,10 @@ stops such a row early.
   (Super, text only), `glm5_next` and `mimo_v2`. `DARKBLOOM_LOOP_GUARD=0`
   (or `off`) turns it off; a comma-separated list of `model_type`s replaces
   the default list.
-- **A loop inside a Gemma 4 or Qwen 3.5/3.6 thought ends the thought, not the
-  answer** (`GenerationLoopExitThinkingPolicy`, `LoopExitThinkingContinuation`).
-  For `gemma4`, `gemma4_text`, `qwen3_5` and `qwen3_5_moe`, the guard also
+- **A loop inside a Gemma 4 or Qwen 3.5/3.6 35B thought ends the thought, not
+  the answer** (`GenerationLoopExitThinkingPolicy`, `LoopExitThinkingContinuation`).
+  For `gemma4`, `gemma4_text` and `qwen3_5_moe` (on by default) and `qwen3_5`
+  (Qwen 3.5 9B and Qwen 3.8 27B: listed, off by default), the guard also
   follows the thought channel (`<|channel>` … `<channel|>`, `<think>` …
   `</think>`; the prompt's tail seeds the state: Qwen's served template opens
   `<think>` in the prompt) and records
@@ -3272,7 +3273,8 @@ stops such a row early.
   `max_tokens` = the output the bridge resolved for the row minus the tokens
   produced minus the exit tokens, at most 8,192; the same sampling, stop strings
   and cache scope, the stop strings scoped as for output that starts outside the
-  thought; and a loop guard without the exit, so a loop in the answer still ends
+  thought (a stop that ends the answer is the request's matched stop sequence);
+  and a loop guard without the exit, so a loop in the answer still ends
   as `length`. The client's stream carries the thought, the exit text as one
   chunk and the answer, then one terminal: the original prompt, completion =
   the row's tokens + the exit tokens + the answer's, the continuation's finish
@@ -3281,15 +3283,18 @@ stops such a row early.
   continuation prefills the thought again (its prompt part can hit the prefix
   cache). When the continuation cannot start (under 256 tokens of budget left,
   the row closed its thought itself (its in-flight tokens after the stop hold
-  the close marker's token), the row did not release its slot in time,
+  the close marker's token, or its in-flight text closes the thought; a close
+  token in the stopping delta whose text has not arrived keeps the stop a
+  `length`), the row did not release its slot in time,
   a refused submission, a failure before its first token, a cancel), the held
   `length` terminal is
   delivered as before; a failure after its first token ends the answer there,
   as `length` (only the client's cancel keeps its error). Never with
-  logprobs or on a cluster pair. Not for Qwen 3.8 (`qwen4_exp`), whose
-  thought loops are rare. `DARKBLOOM_LOOP_EXIT_THINKING=0` (or `off`)
+  logprobs or on a cluster pair. Never when the exit's tokens do not decode to
+  its text. `DARKBLOOM_LOOP_EXIT_THINKING=0` (or `off`)
   turns it off; a comma-separated list keeps it to the listed `model_type`s
-  that have a marker (`gemma4,gemma4_text` keeps Gemma's alone). `darkbloom start` passes it, and `DARKBLOOM_LOOP_GUARD`,
+  that have a marker (`gemma4,gemma4_text` keeps Gemma's alone;
+  `gemma4,gemma4_text,qwen3_5_moe,qwen3_5` adds the 9B and Qwen 3.8 27B). `darkbloom start` passes it, and `DARKBLOOM_LOOP_GUARD`,
   to the launchd daemon (`LaunchAgent.inferencePassthroughEnvKeys`). One `darkbloom.loop-guard.exit-thinking` line per ended
   thought gives the outcome.
 

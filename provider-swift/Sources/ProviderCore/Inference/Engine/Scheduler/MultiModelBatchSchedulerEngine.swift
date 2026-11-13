@@ -1122,6 +1122,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // stop strings apply from its first token, whatever the prompt opened.
             let continuationStopScope = ReasoningStopScope.scope(
                 reasoningParser: request.reasoningParser, reasoningPrefix: nil, parsesToolCalls: toolHandler != nil)
+            // A usage signal belongs to one engine request: the continuation
+            // has its own, and the stop that ended the answer is the request's.
+            let continuationUsage = EngineV2RequestUsageSignal()
             let spliced = LoopExitThinkingContinuation.splice(
                 first: upstream,
                 cancelFirst: cancelUpstream,
@@ -1152,6 +1155,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                                 requestId: continuationId,
                                 cacheScope: cacheScope,
                                 cacheEnabled: cacheEnabled,
+                                usageSignal: continuationUsage,
                                 stopStringScope: continuationStopScope,
                                 donationDemand: donationDemand,
                                 firstContentDeadline: nil,
@@ -1164,6 +1168,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 },
                 cancelContinuation: { await bridge.cancel(requestId: continuationId) },
                 onOutcome: { outcome in
+                    if case .continued = outcome {
+                        requestUsage.record(matchedStopSequence: continuationUsage.matchedStopSequence)
+                    }
                     LoopExitThinkingContinuation.logger.notice(
                         "loop guard ended a thought", metadata: [
                             "request_id": .string(requestId), "outcome": .string(outcome.description)])

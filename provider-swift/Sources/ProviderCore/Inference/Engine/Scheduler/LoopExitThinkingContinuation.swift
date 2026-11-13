@@ -126,11 +126,11 @@ enum LoopExitThinkingContinuation {
             onOutcome?(.endedAsLength(reason: reason))
         }
         let generated = exit.record.generatedTokens
-        // A row that closed its thought itself, in the tokens it produced
-        // after the stop, has no thought left to end. Only the marker's own
-        // token says so: the text around it (Qwen's newlines) is any text.
-        if let detection = exit.record.requested,
-           generated.dropFirst(detection.generatedTokens).contains(exit.closeToken) {
+        // A row that closed its thought itself after the stop has no thought
+        // left to end: the marker's own token says so (not the text around
+        // it: Qwen's newlines are any text), or the text the guard followed.
+        if let detection = exit.record.requested, exit.record.closedAfterStop
+            || generated.dropFirst(detection.generatedTokens).contains(exit.closeToken) {
             return endAsLength("the row closed its thought itself")
         }
         let budget = min(outputBudget - held.completion - exit.exitTokens.count, exit.answerTokenLimit)

@@ -77,18 +77,21 @@ public final class GenerationLoopExitRecord: @unchecked Sendable {
         lock.withLock { closedAfter = true }
     }
 
-    /// The row's text after the stop closed the thought.
+    /// The row's text after the stop closed the thought: a close whose token
+    /// came before its text, or one spelled as ordinary pieces.
     var closedAfterStop: Bool { lock.withLock { closedAfter } }
 }
 
 /// Which requests may end a repeating thought instead of the whole answer.
 ///
 /// On by default for Gemma 4, whose thought closes with one special token
-/// (`<channel|>`), and Qwen 3.5/3.6, whose template closes it with
-/// `\n</think>\n\n` (`</think>` is one special token). The guard keeps ending
-/// every other loop as `length`: a loop outside the thought, a family without a
-/// listed marker (Qwen 3.8's thought loops are rare), a request that asked for
-/// logprobs (the forced tokens have none), a pair's request.
+/// (`<channel|>`), and the Qwen 3.5/3.6 35B models (`qwen3_5_moe`), whose
+/// template closes it with `\n</think>\n\n` (`</think>` is one special token).
+/// `qwen3_5` has the marker but is off by default: it is Qwen 3.5 9B and also
+/// Qwen 3.8 27B, whose thought loops are rare. The guard keeps ending every
+/// other loop as `length`: a loop outside the thought, a family that is not
+/// on, a request that asked for logprobs (the forced tokens have none), a
+/// pair's request.
 ///
 /// `DARKBLOOM_LOOP_EXIT_THINKING`: unset, `1` or `on` keeps the default list;
 /// `0` or `off` turns it off; any other value is the comma-separated list of
@@ -117,7 +120,7 @@ enum GenerationLoopExitThinkingPolicy {
     /// `<think>\n…\n</think>\n\n` before the answer.
     static let qwenThink = Markers(open: "<think>", close: "</think>", before: "\n", after: "\n\n")
 
-    static let defaultModelTypes: Set<String> = ["gemma4", "gemma4_text", "qwen3_5", "qwen3_5_moe"]
+    static let defaultModelTypes: Set<String> = ["gemma4", "gemma4_text", "qwen3_5_moe"]
 
     /// The answer's own cap. Gemma's GPQA answers after a thought are under
     /// 1,000 tokens; a Tau2 reply or call is shorter.
@@ -166,10 +169,13 @@ enum GenerationLoopExitThinkingPolicy {
         func spell(_ text: String) -> [Int] {
             text.isEmpty ? [] : tokenizer.encode(text: text, addSpecialTokens: false)
         }
+        let exitTokens = spell(markers.before) + [close] + spell(markers.after)
+        let exitText = markers.before + markers.close + markers.after
+        // The model must be fed what the client is shown.
+        guard tokenizer.decode(tokenIds: exitTokens, skipSpecialTokens: false) == exitText else { return nil }
         return GenerationLoopExitThinking(
             openMarker: markers.open, closeMarker: markers.close,
-            exitTokens: spell(markers.before) + [close] + spell(markers.after),
-            exitText: markers.before + markers.close + markers.after, closeToken: close,
+            exitTokens: exitTokens, exitText: exitText, closeToken: close,
             startsInside: endsInside(tail, open: markers.open, close: markers.close),
             record: GenerationLoopExitRecord())
     }

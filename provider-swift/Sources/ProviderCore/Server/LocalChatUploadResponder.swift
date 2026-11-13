@@ -198,6 +198,7 @@ where Inner.Context == BasicRequestContext {
             else { return badRequest }
             item = decoded
         }
+        item.templateControls = item.templateControls.capturingTemplateJSON(from: Data(buffer: buffer))
         // Optional unpublished-owner hook is reached only after outer auth,
         // body-limit collection and ordinary request decoding. Exact raw bytes
         // retain controls that the upstream request type deliberately omits.

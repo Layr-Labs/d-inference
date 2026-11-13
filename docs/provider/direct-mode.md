@@ -1,6 +1,6 @@
 # The local API: an OpenAI-compatible server on your Mac
 
-> Last updated: 2026-11-12
+> Last updated: 2026-11-13
 
 Your Mac's models as an OpenAI-compatible HTTP server for your own tools,
 served two ways: **Both**, the default (`darkbloom start`: beside the Darkbloom
@@ -536,6 +536,19 @@ curl -s "$OPENAI_BASE_URL/chat/completions" \
   -H "Authorization: Bearer $OPENAI_API_KEY" -H "Content-Type: application/json" \
   -d '{"model":"EigenLabs/Qwen3.8-27B-4bit-mtp","reasoning_effort":"max","messages":[{"role":"user","content":"hi"}]}'
 ```
+
+### Tool JSON as the model was trained on
+
+Add `"_darkbloom_template_json": "transformers"` to a chat request, or start
+the provider with `DARKBLOOM_TEMPLATE_JSON=transformers`, and Qwen 3.5, 3.6 and
+3.8, Ternary Bonsai 2, MiMo v2.6, GLM-5.3 and GPT-OSS read your tool
+declarations and earlier tool calls as Hugging Face Transformers renders their
+templates: members in the order you sent them, `", "` and `": "` separators,
+non-ASCII text as written and `null` arguments kept. Without either, they read
+them as before: members sorted and compact. Nemotron 3.5 Lightning takes the
+order; Gemma 4 and Nemotron 3.5 Super already read them as Transformers does.
+`DARKBLOOM_TEMPLATE_JSON_LEGACY=1` turns this off
+([inference architecture](../architecture/inference.md#tool-json-as-transformers-renders-it)).
 
 ### Refused request shapes
 

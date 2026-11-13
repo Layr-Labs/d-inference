@@ -36,6 +36,9 @@ public struct ChatTemplateControls: Sendable, Equatable {
     var rawMiMoTools = MiMoV26ToolEvidence()
     var rawGLM5Controls = GLM5NextPromptPolicy.RawControls()
     var rawFlintControls = FlintRequestPolicy.RawControls()
+    /// Whether the body asked for Transformers' tool JSON, and its tool
+    /// declarations in their own order (`TemplateJSONOrder`).
+    var templateJSON = TemplateJSONOrder.Evidence()
 
     public init(
         reasoningEffort: String? = nil,
@@ -78,6 +81,14 @@ public struct ChatTemplateControls: Sendable, Equatable {
     func withRawFlintControls(_ evidence: FlintRequestPolicy.RawControls) -> Self {
         var copy = self
         copy.rawFlintControls = evidence
+        return copy
+    }
+
+    /// The controls with the ordered tool declarations of `body`, the bytes
+    /// they were decoded from, when it asked for Transformers' tool JSON.
+    func capturingTemplateJSON(from body: Data) -> Self {
+        var copy = self
+        copy.templateJSON = templateJSON.capturing(body: body)
         return copy
     }
 

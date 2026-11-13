@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-12
+> Last updated: 2026-11-13
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -3614,6 +3614,36 @@ and `xhigh` while thinking; they receive one of those for every effort a
 client sends ([reasoning effort](#reasoning-effort)), on text and media
 requests alike. Media preparation rethrows typed request errors instead of
 wrapping them as a retryable 503 construction refusal.
+
+### Tool JSON as Transformers renders it
+
+A request that carries `"_darkbloom_template_json": "transformers"` (the
+coordinator sets it for the builds it names) renders its tool declarations,
+earlier tool calls and tool results exactly as Hugging Face Transformers
+renders the model's template, for Qwen 3.5, 3.6 and 3.8, Ternary Bonsai 2,
+MiMo v2.6, GLM-5.3 and GPT-OSS:
+- `tojson` is Python `json.dumps(value, ensure_ascii=False, indent=None,
+  separators=None, sort_keys=False)` with any of those arguments a template
+  passes (`", "` and `": "`, non-ASCII and `/` as written), and `string` is
+  Python `str` (`True`, `None`); swift-jinja's sort keys, write compact JSON,
+  escape `/` and non-ASCII, and print `true`/`none`
+  (`provider-swift/Sources/ProviderCoreFoundation/HFTemplateFilters.swift`);
+- tools and each call's arguments reach the template as ordered values: the
+  normalized content (schema repairs, family rules) in the request's own member
+  order, with the `null` members and items the generic sanitizer drops, the
+  number types as written (`1.0` stays a float) and the declaration's own
+  members (`strict` included) restored. Tools come from the body's `tools`, read
+  with an order-preserving parser; arguments from each call's own string
+  (`provider-swift/Sources/ProviderCore/Inference/Prompting/TemplateJSONOrder.swift`).
+  Nemotron 3.5 Lightning takes only the order: its own filters already match.
+
+The `string` filter of those templates is renamed at load and bound to
+swift-jinja's, so every other request renders the same bytes as before.
+`DARKBLOOM_TEMPLATE_JSON=transformers` asks for every request of the process;
+`DARKBLOOM_TEMPLATE_JSON_LEGACY=1` turns the rendering off. Gemma 4 sorts in
+its template and Nemotron 3.5 Super's owner already renders the body as
+written, so neither changes. The coordinator's prompt sidecar renders
+swift-jinja's JSON, so it does not plan such a request's cache use.
 
 ### Reasoning effort
 

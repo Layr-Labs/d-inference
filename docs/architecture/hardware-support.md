@@ -1622,3 +1622,7 @@ memory is free. Admission limits and native memory guards are unchanged. See
 [planned cluster stop ordering](inference.md#planned-cluster-stop-ordering) and
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterService.swift`
 (`ClusterService.stopLocalPart`).
+
+### Gemma o4 parser qualification
+
+The [Gemma quoted numeric tool arguments change](inference.md#gemma-quoted-numeric-tool-arguments) operates on CPU text and schema values. Parser tests do not establish full-model numerical, memory, throughput or concurrency qualification. This opt-in does not change hardware admission or model memory allowances.

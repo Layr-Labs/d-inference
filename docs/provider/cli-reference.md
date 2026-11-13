@@ -4424,3 +4424,7 @@ Source: `provider-swift/Sources/darkbloom/ClusterServiceCommand.swift`
 for the bounds and process custody rules.
 
 Qwen3.8 27B automatic cluster capacity changes keep the current tensor split and native request execution path. Widening occurs only when the complete reservation fits that split; otherwise the current capacity remains available. No additional command or user setting is required. Implementation: `DistributedAutomaticBatchPlanner` and `ClusterPlacementFlow` in `provider-swift/Sources/ProviderCore/Inference/Distributed/`.
+
+### Gemma o4 parser switch
+
+For foreground qualification, set `DARKBLOOM_GEMMA_SCHEMA_COERCION` before starting the process. The [configuration reference](../reference/configuration.md#gemma-o4-conformance) defines activation and rollback; the daemon LaunchAgent does not inherit this switch.

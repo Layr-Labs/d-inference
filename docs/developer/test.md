@@ -3686,3 +3686,7 @@ one-line explanation and that request lengths still come from every build;
 read and the router's build-keyed setup. `swift test --filter
 DistributedAutomaticBatchPlannerTests` and `--filter ClusterObservabilityTests`
 from `provider-swift` cover replacement calibration and the recorded builds.
+
+### Gemma o4 conformance
+
+`GemmaQuotedArgumentConformanceTests` exercises the adopted SDK through provider-facing types without loading a model. CI reuses the compiled test products and runs this suite in separate processes with `DARKBLOOM_GEMMA_SCHEMA_COERCION=0` and `=1`; the ordinary suite retains the default-off check. In an authorized CPU test lane, from `provider-swift`, use `DARKBLOOM_GEMMA_SCHEMA_COERCION=1 ../scripts/run-nested-suite.sh GemmaQuotedArgumentConformanceTests --no-parallel` after building the exact pinned composition. GPU qualification remains separate.

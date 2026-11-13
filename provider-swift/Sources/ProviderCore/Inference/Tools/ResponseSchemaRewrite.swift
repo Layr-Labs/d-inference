@@ -48,8 +48,10 @@ enum ResponseSchemaRewrite {
             guard let value = root.removeValue(forKey: container) else { continue }
             guard case .object(let entries) = value else { return nil }
             // A name a pointer must escape or percent-encode is never
-            // resolved, so no reference can reach the wrong definition.
-            for (name, definition) in entries where !name.contains(where: { "~/%".contains($0) }) {
+            // resolved, so no reference can reach the wrong definition; nor is
+            // one over 256 bytes, so every lookup compares short keys.
+            for (name, definition) in entries
+            where name.utf8.count <= 256 && !name.contains(where: { "~/%".contains($0) }) {
                 walk.definitions["#/\(container)/\(name)"] = definition
             }
         }
@@ -75,8 +77,10 @@ enum ResponseSchemaRewrite {
         mutating func rewrite(_ schema: MLXLMCommon.JSONValue, depth: Int, unwraps: Int) -> MLXLMCommon.JSONValue? {
             guard depth <= ToolConstraintSchemaCompiler.maxDepth, unwraps <= maximumUnwraps, spend(1) else { return nil }
             guard case .object(var object) = schema else { return schema }
-            // Paid before any change below copies the node.
-            guard spend(object.count) else { return nil }
+            // Paid before any change below copies the node. The compiler
+            // refuses every key longer than `additionalProperties` (20 bytes):
+            // refused here first, every lookup below compares short keys.
+            guard spend(object.count), object.keys.allSatisfy({ $0.utf8.count <= 20 }) else { return nil }
             object.removeValue(forKey: "$comment")
             if let reference = object["$ref"] {
                 guard case .string(let path) = reference, spend(path.utf8.count / 64),
@@ -143,8 +147,10 @@ enum ResponseSchemaRewrite {
         object.keys.allSatisfy { $0.utf8.count <= 11 && ($0 == keyword || annotations.contains($0)) }
     }
 
+    /// Keys and the type's length are checked before any longer comparison.
     private static func isNull(_ schema: MLXLMCommon.JSONValue) -> Bool {
-        guard case .object(let object) = schema, object["type"] == .string("null") else { return false }
-        return onlyAnnotations(object, besides: "type")
+        guard case .object(let object) = schema, onlyAnnotations(object, besides: "type"),
+              case .string(let type)? = object["type"], type.utf8.count == 4 else { return false }
+        return type == "null"
     }
 }

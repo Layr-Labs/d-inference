@@ -1882,6 +1882,19 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 let answerTail = answerStops?.finish()
                 let cutAtLimit = prepared.cutAtLimit(finishReason: stopReason)
                     && answerStops?.matchedSequence == nil
+                /// The answer's own end checks, after the calls': constrained
+                /// response_format (exact Flint, Qwen) holds the completed
+                /// content, not a truncated or schema-invalid prefix, and GLM's
+                /// withheld JSON answer leaves only once it validates; a cut
+                /// answer leaves as generated.
+                func finishAnswer(hasToolCalls: Bool) throws {
+                    if !cutAtLimit { try formatOutput?.validate(finishReason: stopReason) }
+                    if let answer = try glmAnswer?.finalAnswer(finishReason: stopReason,
+                        hasToolCalls: hasToolCalls, cutAtLimit: cutAtLimit)
+                    {
+                        continuation.yield(answer)
+                    }
+                }
                 do {
                     var events: [MLXServerGenerationEvent] = []
                     if let answerTail, !answerTail.isEmpty {
@@ -1909,12 +1922,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         if !cutAtLimit { try router.checkNativeToolFailure() }
                         try ToolConstraintValidation.validate(router.completedToolCalls, prepared: prepared,
                             responseStarted: router.responseStarted)
-                        if !cutAtLimit { try formatOutput?.validate(finishReason: stopReason) }
-                        if let answer = try glmAnswer?.finalAnswer(finishReason: stopReason,
-                            hasToolCalls: !router.completedToolCalls.isEmpty, cutAtLimit: cutAtLimit)
-                        {
-                            continuation.yield(answer)
-                        }
+                        try finishAnswer(hasToolCalls: !router.completedToolCalls.isEmpty)
                     } catch {
                         await releaseBox.fire()
                         continuation.finish(throwing: error)
@@ -1966,16 +1974,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     return
                 }
                 do {
-                    // Constrained response_format (exact Flint, Qwen): the
-                    // completed content, not a truncated or schema-invalid
-                    // prefix, reaches success; a cut one ends `length`.
-                    if !cutAtLimit { try formatOutput?.validate(finishReason: stopReason) }
-                    // GLM's withheld JSON answer leaves only once it validates.
-                    if let answer = try glmAnswer?.finalAnswer(finishReason: stopReason,
-                        hasToolCalls: !toolCalls.isEmpty, cutAtLimit: cutAtLimit)
-                    {
-                        continuation.yield(answer)
-                    }
+                    try finishAnswer(hasToolCalls: !toolCalls.isEmpty)
                 } catch {
                     await releaseBox.fire()
                     continuation.finish(throwing: error)

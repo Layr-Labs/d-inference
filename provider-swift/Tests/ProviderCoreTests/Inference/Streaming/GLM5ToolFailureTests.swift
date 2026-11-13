@@ -397,14 +397,41 @@ struct GLM5ToolFailureTests {
 
     /// Outputs the token limit cut, and their visible text: the frames that
     /// end the output are dropped, from a frame that owns the rest or a header
-    /// the limit cut (in its name or a tag), back over the closed frames before
-    /// it, whole calls included; a `<tool_call>` the lexer reads as a mention
-    /// stays text with what follows.
+    /// the limit cut (in its name or a tag, after the start of a declared
+    /// name), back over the closed frames before it, whole calls included; a
+    /// `<tool_call>` the lexer reads as a mention stays text with what follows,
+    /// unless a frame's tag later in top-level text owns the rest from it.
     static let cutCases: [(output: String, visible: String, tool: String?)] = {
         let call = "<tool_call>echo<arg_key>text</arg_key><arg_value>SAFE</arg_value></tool_call>"
         let other = "<tool_call>echo<arg_key>text</arg_key><arg_value>MORE</arg_value></tool_call>"
         let nested = "<tool_call>store<arg_key>doc</arg_key><arg_value>{}</arg_value></tool_call>"
+        let headerTools = #"[{"type":"function","function":{"name":"echo","parameters":{"type":"object","properties":{"text":{"type":"string"}}}}},{"type":"function","function":{"name":"x"}}]"#
+        let orphan = "<tool_call>x</tool_call><arg_key>text</arg_key><arg_value>v</arg_value></tool_call>"
+        let refusedObject = #"{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"x":{"type":"object","anyOf":[{"type":"object"}]}}}}}"#
+        let arrayTools = #"[{"type":"function","function":{"name":"put","parameters":{"type":"object","properties":{"m":{"type":"array"}}}}},{"type":"function","function":{"name":"g","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"h","parameters":{"type":"object","properties":{"z":{"type":"string"}}}}}]"#
+        let storeHeaderTools = #"[{"type":"function","function":{"name":"store","parameters":{"type":"object","properties":{"doc":{"type":"object"}}}}},{"type":"function","function":{"name":"x"}},{"type":"function","function":{"name":"g","parameters":{"type":"object","properties":{}}}}]"#
         return [
+            // A frame's tag in top-level text owns the rest from the first
+            // frame or mention before it (none of these holds a think marker).
+            (orphan, "", headerTools),
+            ("Use <tool_call>. " + orphan, "Use ", headerTools),
+            ("Done.</think>Use <tool_call> here; e.g. <tool_call>f</tool_call> then </arg_key> closes a key. More.",
+             "Done.</think>Use ", nil),
+            // Frames the SDK refuses whose boundary another reading could move.
+            (#"<tool_call>f<arg_key>x</arg_key><arg_value>]{"y":"</arg_value></tool_call><tool_call>f</tool_call>"#,
+             "", refusedObject),
+            (#"<tool_call>g<arg_key>x</arg_key><arg_value>]{"y":"</arg_value></tool_call><tool_call>f</tool_call>"#,
+             "", refusedObject),
+            (#"<tool_call>put<arg_key>m</arg_key><arg_value>"x</arg_value></tool_call><tool_call>put<arg_key>m</arg_key><arg_value>["</arg_value></tool_call><tool_call>g</tool_call><tool_call>h<arg_key>z</arg_key><arg_value>"]</arg_value></tool_call>"#,
+             "", arrayTools),
+            (#"<tool_call>store<bad><tool_call>x</tool_call><arg_key>doc</arg_key><arg_value>{"x":"<tool_call>g</tool_call>"#,
+             "", storeHeaderTools),
+            // A think marker only in the frames the cut drops: the rest is released.
+            ("I'd wrap it in <tool_call> tags.</think>The answer is 42. "
+                + "<tool_call>echo<arg_key>text</arg_key><arg_value>strip </think> and",
+             "I'd wrap it in <tool_call> tags.</think>The answer is 42. ", nil),
+            // A header cut in its name whose name is not declared is a mention.
+            ("Calling.</think><tool_call>zz", "Calling.</think><tool_call>zz", nil),
             ("Wrap it in <tool_call> tags.</think>" + call, "Wrap it in <tool_call> tags.</think>", nil),
             ("Use <tool_call>.</think>" + call + " " + other + "\n", "Use <tool_call>.</think>", nil),
             (call + "<tool_call>echo<arg_key>text", "", nil),
@@ -432,6 +459,19 @@ struct GLM5ToolFailureTests {
         #expect(result.visible == shape.visible, "\(shape.output)")
     }
 
+    /// A header the end cut matches any declared name, even one whose
+    /// declaration the SDK refuses (here an indirect schema): the frame the
+    /// limit cut is dropped. An undeclared name is a mention.
+    @Test func aCutHeaderMatchesAnyDeclaredName() {
+        let required: [String: any Sendable] = ["required": ["q"]]
+        let parameters: [String: any Sendable] = ["type": "object", "anyOf": [required] as [any Sendable]]
+        let function: [String: any Sendable] = ["name": "lookup", "parameters": parameters]
+        let tools: [[String: any Sendable]] = [["type": "function", "function": function]]
+        #expect(GLM5ToolSuffix.textAtCut("<tool_call>look", tools: tools) == "")
+        #expect(GLM5ToolSuffix.textAtCut("<tool_call>lookup<arg_", tools: tools) == "")
+        #expect(GLM5ToolSuffix.textAtCut("<tool_call>zz", tools: tools) == "<tool_call>zz")
+    }
+
     /// A suffix that parses keeps its calls at a cut, as before; one that does
     /// not is not split, and the frames that end it are dropped.
     @Test func aCutSuffixIsNotSplitAndItsFramesAreDropped() async throws {
@@ -446,7 +486,9 @@ struct GLM5ToolFailureTests {
 
     /// #2052's shapes that own the rest, or whose release would expose a think
     /// marker from inside a frame, at a cut: dropped instead of failing, so
-    /// nothing after the kept text is released (`PRIVATE` and `HIDDEN` never).
+    /// nothing after the kept text is released (`PRIVATE` and `HIDDEN` never);
+    /// when a think marker is only in the frames the cut drops, the text before
+    /// them is released.
     static let ownedRestCases: [(output: String, visible: String, tool: String?)] = {
         let open = "<tool_call>store<arg_key>doc</arg_key><arg_value>"
         let inner = "<tool_call>store<arg_key>doc</arg_key><arg_value>{}</arg_value></tool_call>"
@@ -459,7 +501,7 @@ struct GLM5ToolFailureTests {
             ("Draft <tool_call>echo<arg_key>text</arg_key><arg_value></think></arg_value></tool_call>PRIVATE</think>Answer",
              "Draft ", nil),
             ("Draft <tool_call>. <tool_call>echo<arg_key>text</arg_key><arg_value></think>PRIVATE</arg_value></tool_call>",
-             "Draft ", nil),
+             "Draft <tool_call>. ", nil),
             ("Draft <tool_call>echo<bad><arg_key>text</arg_key><arg_value></think></arg_value></tool_call>PRIVATE</think>Answer",
              "Draft ", nil),
             ("<tool_call>echo<bad></think>PRIVATE" + orphan, "", headerTools),

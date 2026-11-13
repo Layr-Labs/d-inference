@@ -219,11 +219,12 @@ struct NativeToolStreamRouter {
     /// its residual text. An `auto` GLM suffix that did not parse as one batch
     /// is split into text and its final calls (`GLM5ToolSuffix`; such a suffix
     /// in an output the token limit cut off is all text, while one that parses
-    /// keeps its calls); when the cut ends the answer as `length` (`cutAtLimit`,
-    /// `TokenLimitCutPolicy`), without the frames that end it
-    /// (`GLM5ToolSuffix.droppingCutFrames`). A suffix whose release would
-    /// expose a think marker from inside a tool frame keeps failing, as before,
-    /// unless the cut ends the answer as `length`: it is then dropped.
+    /// keeps its calls). A suffix whose release would expose a think marker
+    /// from inside a tool frame keeps failing, as before. When the cut ends
+    /// the answer as `length` (`cutAtLimit`, `TokenLimitCutPolicy`), such a
+    /// suffix is not split, the frames that end it are dropped, and one whose
+    /// kept text would still expose a think marker is dropped whole
+    /// (`GLM5ToolSuffix.textAtCut`), never failing.
     mutating func finishCompleteCalls(truncated: Bool, cutAtLimit: Bool = false) throws
         -> (calls: [ToolCall], residual: String?)
     {
@@ -231,19 +232,19 @@ struct NativeToolStreamRouter {
         let calls = handler.finish()
         let residual = handler.takeResidualText()
         guard returnsUnparsedGLMOutputAsText, calls.isEmpty, let residual else { return (calls, residual) }
+        if cutAtLimit {
+            guard let kept = GLM5ToolSuffix.textAtCut(residual, tools: tools) else {
+                glmFramesDroppedAtCut = true
+                return ([], nil)
+            }
+            glmSuffixSplit = true
+            glmFramesDroppedAtCut = kept.utf8.count < residual.utf8.count
+            return ([], kept)
+        }
         switch GLM5ToolSuffix.split(residual, tools: tools, truncated: truncated) {
         case .text(let text, calls: let found):
             glmSuffixSplit = true
-            guard cutAtLimit else { return (found, text) }
-            // A cut that ends as `length` drops the frames that end the
-            // output, closed or not, never published as text; mentions and
-            // the text before them stay.
-            let kept = GLM5ToolSuffix.droppingCutFrames(residual, tools: tools)
-            glmFramesDroppedAtCut = kept.utf8.count < residual.utf8.count
-            return ([], kept)
-        case .ambiguous where cutAtLimit:
-            glmFramesDroppedAtCut = true
-            return ([], nil)
+            return (found, text)
         case .ambiguous:
             throw MultiModelBatchSchedulerEngineError.generationFailed("native GLM tool output is invalid")
         }

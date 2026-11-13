@@ -1812,11 +1812,12 @@ with no such run (a malformed or cut-off final frame, text after the calls) is
 all text, and so is a suffix that did not parse in an output cut at the token
 limit, except that a cut that ends the answer as `length` drops the frames that
 end it, closed or not, from a frame that owns the rest or a header the limit cut
-(`GLM5ToolSuffix.droppingCutFrames`, see
+(`GLM5ToolSuffix.textAtCut`, see
 [cut answers](#answers-cut-at-the-token-limit)); no frame is completed or salvaged. A suffix whose release would put a think marker from
 inside a frame (its name, a key or a value, or anything after a frame that owns
 the rest) before the reasoning parser keeps failing (500), at a stop or at the
-token limit (a cut that ends the answer as `length` drops it instead), as does a suffix the SDK refuses as oversized while it streams, and
+token limit (a cut that ends the answer as `length` drops it instead, when the
+text it would keep still holds such a marker), as does a suffix the SDK refuses as oversized while it streams, and
 a required or named call (422). Unlike vLLM and SGLang, a call followed by text
 or by a malformed frame, or next to one in the final run, commits nothing, and a
 call drafted inside a closed thought stays reasoning. A suffix that parses keeps its calls as before. The
@@ -3644,7 +3645,9 @@ complete call encodes exactly as before
 When the engine finishes `length`, the answer ends as a normal completion with
 `finish_reason: "length"` and its usage, never as a `tool_noncompliance` refusal
 or a native frame failure (`TokenLimitCutPolicy`,
-`provider-swift/Sources/ProviderCore/Inference/Tools/ToolOutputLeniency.swift`).
+`provider-swift/Sources/ProviderCore/Inference/Tools/ToolOutputLeniency.swift`);
+a GLM suffix the SDK refuses as oversized while it streams still fails before
+the end ([GLM5Next boundary](#glm5next-implementation-boundary)).
 The limit is the request's `max_tokens` or this Mac's clamp of it, not the model
 breaking a contract, and OpenRouter does not count a call cut by the caller's
 `max_tokens` against the provider. In the forwarder
@@ -3676,12 +3679,15 @@ breaking a contract, and OpenRouter does not count a call cut by the caller's
   `auto` GLM suffix that does not parse is not split into calls at a cut and
   stays text (`GLM5ToolSuffix`) without the frames that end the output: from a
   frame that owns the rest (open at the end, or broken, as the lexer reads it)
-  or a header the limit cut (in its name or a tag), or from the end, back over
-  the closed frames separated from it only by whitespace; they are dropped,
-  whether or not they parse (`GLM5ToolSuffix.droppingCutFrames`). A
-  `<tool_call>` the lexer reads as a mention, and frames followed by text, stay. A suffix
-  that cannot be released (a think marker inside a frame) is dropped. A
-  withheld `auto` frame of another family (Qwen without `stream`, or with
+  or a header the limit cut (in its name or a tag, after the start of a
+  declared name), or from the end, back over the closed frames separated from
+  it only by whitespace; they are dropped, whether or not they parse
+  (`GLM5ToolSuffix.textAtCut`). A `<tool_call>` the lexer reads as a mention,
+  and frames followed by text, stay, unless a frame's tag later in top-level
+  text makes the lexer own the rest from the first of them: everything from
+  there is dropped. If the text kept would still hold a think marker from
+  inside a frame, the whole suffix is dropped. A withheld `auto` frame of
+  another family (Qwen without `stream`, or with
   `DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0`) that the end-of-generation parse cannot
   read stays text, as before (the parser fallback); the coordinator path
   streams such calls and leaves a cut one open. Calls that pass still leave,

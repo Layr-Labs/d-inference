@@ -68,15 +68,18 @@ enum GLM5ToolSuffix {
             ? .text(suffix, calls: []) : .text(String(decoding: bytes[..<start], as: UTF8.self), calls: calls)
     }
 
-    /// `suffix` without the frames that end an output the token limit cut:
-    /// from the frame that owns the rest (`Lexer.unclosed`: open at the end,
-    /// or broken), or from a header the end cut (`Lexer.cutHeader`), or from
-    /// the end, back over the closed frames separated from it only by
-    /// whitespace. Such frames are never published as text
-    /// (`TokenLimitCutPolicy`), and a suffix is not split into calls at a cut
-    /// (`split(truncated:)`), so they are dropped. Mentions, frames followed
-    /// by text, and the text before them stay.
-    static func droppingCutFrames(_ suffix: String, tools: [[String: any Sendable]]?) -> String {
+    /// The text an output the token limit cut releases, when the cut ends it
+    /// as `length` (`TokenLimitCutPolicy`): it is not split into calls, as in
+    /// `split(truncated:)`, and the frames that end it are dropped, never
+    /// published as text: from the frame that owns the rest (`Lexer.unclosed`:
+    /// open at the end or broken, or from the first frame or mention before a
+    /// frame's tag in top-level text), or from a header the end cut
+    /// (`Lexer.cutHeader`), or from the end, back over the closed frames
+    /// separated from it only by whitespace. Mentions, frames followed by
+    /// text, and the text before them stay. Nil when that text would still
+    /// put a think marker from inside a frame before the reasoning parser:
+    /// the whole suffix is then dropped. Decided on exactly the text released.
+    static func textAtCut(_ suffix: String, tools: [[String: any Sendable]]?) -> String? {
         let bytes = Array(suffix.utf8)
         var lexer = Lexer(bytes: bytes, tools: tools)
         lexer.run()
@@ -88,6 +91,7 @@ enum GLM5ToolSuffix {
             head -= 1
             start = lexer.frames[head].lowerBound
         }
+        if lexer.holdsThinkMarker(before: start) { return nil }
         return String(decoding: bytes[..<start], as: UTF8.self)
     }
 
@@ -124,10 +128,14 @@ enum GLM5ToolSuffix {
         private(set) var cutHeader: Int?
         /// The first `<tool_call>` read as a mention.
         private var firstMention: Int?
+        /// Every function name the request declares, whether or not the SDK
+        /// accepts its declaration: what a header the end cut may be the start of.
+        private let declaredNames: [String]
         private var index = 0
 
         init(bytes: [UInt8], tools: [[String: any Sendable]]?) {
             self.bytes = bytes
+            declaredNames = (tools ?? []).compactMap { (($0["function"] as? [String: any Sendable]) ?? $0)["name"] as? String }
             // Only a declaration the SDK's parser accepts types arguments: one
             // per name, an object schema without indirect types. A `function`
             // that is not an object makes it refuse every name.
@@ -258,7 +266,7 @@ enum GLM5ToolSuffix {
         /// What follows a `<tool_call>` the response ends in: nothing yet, or
         /// the start of a declared function's name.
         private func beginsDeclaredName(_ name: String) -> Bool {
-            name.isEmpty || declarations.keys.contains { $0.hasPrefix(name) }
+            name.isEmpty || declaredNames.contains { $0.hasPrefix(name) }
         }
 
         /// The response ends inside the tag at `tag`, which would have opened

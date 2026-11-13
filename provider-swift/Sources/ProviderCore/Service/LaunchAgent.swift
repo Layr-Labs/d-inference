@@ -371,6 +371,8 @@ public enum LaunchAgent: Sendable {
     /// corrections are on by default; their rollback must reach the job too.
     /// `DARKBLOOM_TTFT_REFUSAL_PROBE`: the refusal streak's idle probe is on by
     /// default; its own `0` rollback must reach the job too.
+    /// `DARKBLOOM_TTFT_NATIVE_PREFILL_EVIDENCE`: GLM's and MiMo's long-prompt
+    /// prefill estimate is on by default; its `0` rollback must reach the job.
     /// `DARKBLOOM_TTFT_IDLE_CACHE_SWEEP`, `DARKBLOOM_TTFT_SEGMENT_RETENTION`
     /// and `DARKBLOOM_TTFT_SEGMENT_HOST_ZEROS`: the idle-gated cache sweep and
     /// retained, host-zeroed paged KV segments are on by default; each
@@ -441,6 +443,7 @@ public enum LaunchAgent: Sendable {
         PrefillDeadlineMode.environmentKey,
         DeadlineAdmissionFixes.environmentKey,
         DeadlineRefusalProbe.environmentKey,
+        NativePrefillEvidence.environmentKey,
         GlobalKVCacheBudget.idleCacheSweepEnvironmentKey,
         EngineV2Factory.segmentRetentionEnvironmentKey,
         EngineV2Factory.segmentHostZerosEnvironmentKey,

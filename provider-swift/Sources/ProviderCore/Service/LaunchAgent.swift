@@ -416,6 +416,8 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_TTFT_STREAM_TOOL_CALLS` / `DARKBLOOM_TTFT_THINK_CONTENT_SEED`:
     /// incremental `auto` tool calls and the plain-tail Qwen content seed are
     /// on by default; exact `0` is each rollback.
+    /// `DARKBLOOM_QWEN_FORCED_TOOL_FRAMING`: Qwen 3.5-family forced tool calls
+    /// are framed in the sampler by default; `off` restores prompt-only calls.
     /// `DARKBLOOM_GEMMA4_NAX_ROW_MAP`: eligible Gemma expert prefill uses the
     /// row-mapped NAX route by default; exact `0` restores its original graph.
     /// `DARKBLOOM_LOOP_GUARD` / `DARKBLOOM_LOOP_EXIT_THINKING`: the loop guard
@@ -449,6 +451,7 @@ public enum LaunchAgent: Sendable {
         EngineV2Factory.glm5NextDecodeStepsKey,
         NemotronSuperLocalPrefill.decodeStepsKey,
         ToolStreamPreparation.streamToolCallsEnvironmentKey,
+        QwenForcedToolFraming.environmentKey,
         ReasoningPromptProbe.plainTailContentSeedEnvironmentKey,
         "DARKBLOOM_GEMMA4_NAX_ROW_MAP",
         GenerationLoopGuardPolicy.environmentKey,

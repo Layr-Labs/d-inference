@@ -22,7 +22,8 @@ enum ToolConstraintFactory {
         modelContext: ChatTemplateFixContext,
         defaultMaxTokens: Int,
         stopTokenIDs: Set<Int>,
-        nativePromptTokens: [Int]? = nil
+        nativePromptTokens: [Int]? = nil,
+        framesQwenForcedCalls: Bool = false
     ) throws -> (any CBv2TokenConstraint)? {
         // Flint's automatic reasoning protocol needs framing even for no-tool
         // and auto requests. Do not broaden another family's admission policy.
@@ -82,6 +83,15 @@ enum ToolConstraintFactory {
                         vocabulary: tokenizer.qwen4FramingVocabulary(stopTokenIDs: stopTokenIDs),
                         nativePrefix: prefix, allowsParallel: prepared.allowsParallelCalls,
                         allowedToolNames: prepared.allowedToolNames)
+                }
+                // The Qwen 3.5-family text route, on an engine that runs token
+                // constraints: the call is framed in the sampler as well, with
+                // the Qwen4 framing vocabulary (built once per tokenizer).
+                if framesQwenForcedCalls, let framing = QwenForcedToolFraming.constraint(
+                    prepared: prepared, modelType: modelContext.modelType, tokenizer: tokenizer,
+                    maxTokens: request.maxTokens ?? defaultMaxTokens, stopTokenIDs: stopTokenIDs,
+                    promptTokens: nativePromptTokens) {
+                    return framing
                 }
                 // The structured parser withholds call bytes until finish; the
                 // shared validator below the stream rejects missing, wrong,

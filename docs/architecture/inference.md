@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-12
+> Last updated: 2026-11-13
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -3526,6 +3526,31 @@ between call frames on every path, including legacy Qwen text without native
 channels. Whitespace alone is still a missing call
 (`ToolConstraintValidation.validate`), and any other visible text, including
 other Unicode whitespace, is a `tool_choice` violation (422).
+
+On one Mac the Qwen 3.5-family text route (`qwen3_5`, `qwen3_5_moe`: Qwen 3.5
+9B and 35B, 3.6 and 3.8) also frames these calls in the sampler
+(`QwenForcedToolFraming`), so that text cannot be sampled. The scheduler's text
+path asks for it when the request is forced, its parser is `.qwen35` and the
+engine runs token constraints (`EngineV2Bridge.runsTokenConstraints`: not a
+cluster pair, not a native-tracked engine); `ToolConstraintFactory` then
+returns the native Qwen4 framing constraint (`Qwen4NativeToolConstraint`) with
+the prefix `<think></think>`, because this route renders forced calls with
+thinking off (`templateAdditionalContext`). Only a declared `<tool_call><function=NAME>`
+(the named function, or any declared one for `required`), or the dialect's
+framed JSON, can open the answer; framing whitespace may surround the frames,
+another frame may follow only when `parallel_tool_calls` allows it, and the
+answer may end only after a closed frame. The arguments stay model-selected and
+are validated as above. The Qwen 3.5 tokenizers carry the Qwen4 framing token
+ids (`<tool_call>` 248058, `</tool_call>` 248059, `<think>` 248068, `</think>`
+248069), which `Qwen4ToolFramingVocabulary` checks. A prompt that does not end
+in the closed think block, a tokenizer that fails the check or declarations the
+constraint cannot frame keep the prompt-only call, never a new refusal. The
+rendered prompt is unchanged. Like Qwen4's framed calls, a framed row is not
+MTP-eligible, pauses chained decode for its batch while it runs, and computes
+its mask every step, scanning the whole vocabulary at the frame boundaries
+(the first token, the function header, the step after a close).
+`DARKBLOOM_QWEN_FORCED_TOOL_FRAMING=off` (or `0`, `false`, `no`; passed to the
+launchd daemon) restores prompt-only calls.
 
 ### Streamed auto tool calls
 

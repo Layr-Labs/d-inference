@@ -995,6 +995,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // engine refuses a constraint whose budget differs
             // (tokenConstraintBudgetMismatch).
             request.maxTokens = bridge.outputTokens(requested: request.maxTokens, promptTokens: promptTokens.count)
+            var framesQwenForcedCalls = false
+            if QwenForcedToolFraming.isCandidate(prepared: prepared, parser: toolHandler?.format) {
+                framesQwenForcedCalls = await bridge.runsTokenConstraints
+            }
             let toolConstraintStart = SuspendingClock.now
             tokenConstraint = try ToolConstraintFactory.make(
                 prepared: prepared,
@@ -1004,10 +1008,12 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     modelId: request.model, modelType: modelType),
                 defaultMaxTokens: bridge.defaultMaxTokens,
                 stopTokenIDs: bridge.stopTokenIds,
-                nativePromptTokens: promptTokens)
+                nativePromptTokens: promptTokens,
+                framesQwenForcedCalls: framesQwenForcedCalls)
             // Grammar compile (Gemma) can take the tool-constraint lock on the
-            // first build per stop-set, and a JSON answer builds its vocabulary
-            // on the first request per tokenizer; only those are worth a lock.
+            // first build per stop-set, and a JSON answer or a framed Qwen call
+            // builds its vocabulary on the first request per tokenizer; only
+            // those are worth a lock.
             if prepared.tools?.isEmpty == false || tokenConstraint is JSONAnswerConstraint {
                 profile?.markDuration(.toolConstraint, start: toolConstraintStart)
             }

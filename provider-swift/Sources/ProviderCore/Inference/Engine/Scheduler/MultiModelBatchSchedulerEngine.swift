@@ -1118,6 +1118,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             let cacheScope = requestCacheScope
             let cacheEnabled = cacheEnabled
             let donationDemand = donationDemand
+            // The continuation's output starts after the end of thinking, so
+            // stop strings apply from its first token, whatever the prompt opened.
+            let continuationStopScope = ReasoningStopScope.scope(
+                reasoningParser: request.reasoningParser, reasoningPrefix: nil, parsesToolCalls: toolHandler != nil)
             let spliced = LoopExitThinkingContinuation.splice(
                 first: upstream,
                 cancelFirst: cancelUpstream,
@@ -1148,7 +1152,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                                 requestId: continuationId,
                                 cacheScope: cacheScope,
                                 cacheEnabled: cacheEnabled,
-                                stopStringScope: stopStringScope,
+                                stopStringScope: continuationStopScope,
                                 donationDemand: donationDemand,
                                 firstContentDeadline: nil,
                                 measurementPurpose: measurementPurpose,

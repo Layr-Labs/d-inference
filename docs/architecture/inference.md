@@ -3252,10 +3252,12 @@ stops such a row early.
   (Super, text only), `glm5_next` and `mimo_v2`. `DARKBLOOM_LOOP_GUARD=0`
   (or `off`) turns it off; a comma-separated list of `model_type`s replaces
   the default list.
-- **A loop inside a Gemma 4 thought ends the thought, not the answer**
-  (`GenerationLoopExitThinkingPolicy`, `LoopExitThinkingContinuation`). For
-  `gemma4` and `gemma4_text`, the guard also follows the thought channel
-  (`<|channel>` … `<channel|>`; the prompt's tail seeds the state) and records
+- **A loop inside a Gemma 4 or Qwen 3.5/3.6 thought ends the thought, not the
+  answer** (`GenerationLoopExitThinkingPolicy`, `LoopExitThinkingContinuation`).
+  For `gemma4`, `gemma4_text`, `qwen3_5` and `qwen3_5_moe`, the guard also
+  follows the thought channel (`<|channel>` … `<channel|>`, `<think>` …
+  `</think>`; the prompt's tail seeds the state: Qwen's served template opens
+  `<think>` in the prompt) and records
   every token the row produces, the in-flight ones after its stop included. A
   detection inside the thought stops the row as above; the scheduler
   (`prepareCompletion`) then holds the row's `length` terminal, waits until the
@@ -3264,24 +3266,30 @@ stops such a row early.
   service charge; a row with a retirement handle, the coordinator's atomic
   admission path, ends its stream before that; at most 5 s), and submits one
   continuation on the same bridge: the prompt, every generated
-  token and `<channel|>`, with `max_tokens` = the output the bridge resolved
-  for the row minus the tokens produced minus 1, at most 8,192; the same
-  sampling, stop strings and cache scope; and a loop guard without the exit, so
-  a loop in the answer still ends as `length`. The client's stream carries the
-  thought, a `<channel|>` chunk and the answer, then one terminal: the original
-  prompt, completion = the row's tokens + 1 + the answer's, the continuation's
-  finish reason. The continuation is an ordinary row, so exact MTP drafting
+  token and the family's end of thinking (the exit tokens: Gemma's
+  `<channel|>`; Qwen's `\n</think>\n\n`, as its template closes a thought, with
+  `</think>` as its own token and the newlines tokenized on each side), with
+  `max_tokens` = the output the bridge resolved for the row minus the tokens
+  produced minus the exit tokens, at most 8,192; the same sampling, stop strings
+  and cache scope, the stop strings scoped as for output that starts outside the
+  thought; and a loop guard without the exit, so a loop in the answer still ends
+  as `length`. The client's stream carries the thought, the exit text as one
+  chunk and the answer, then one terminal: the original prompt, completion =
+  the row's tokens + the exit tokens + the answer's, the continuation's finish
+  reason. The continuation is an ordinary row, so exact MTP drafting
   stays on for it and its batch; a cancelled row donates no KV, so the
   continuation prefills the thought again (its prompt part can hit the prefix
   cache). When the continuation cannot start (under 256 tokens of budget left,
-  the row closed its thought itself, the row did not release its slot in time,
+  the row closed its thought itself (its in-flight tokens after the stop hold
+  the close marker's token), the row did not release its slot in time,
   a refused submission, a failure before its first token, a cancel), the held
   `length` terminal is
   delivered as before; a failure after its first token ends the answer there,
   as `length` (only the client's cancel keeps its error). Never with
-  logprobs or on a cluster pair. `DARKBLOOM_LOOP_EXIT_THINKING=0` (or `off`)
+  logprobs or on a cluster pair. Not for Qwen 3.8 (`qwen4_exp`), whose
+  thought loops are rare. `DARKBLOOM_LOOP_EXIT_THINKING=0` (or `off`)
   turns it off; a comma-separated list keeps it to the listed `model_type`s
-  that have a marker. `darkbloom start` passes it, and `DARKBLOOM_LOOP_GUARD`,
+  that have a marker (`gemma4,gemma4_text` keeps Gemma's alone). `darkbloom start` passes it, and `DARKBLOOM_LOOP_GUARD`,
   to the launchd daemon (`LaunchAgent.inferencePassthroughEnvKeys`). One `darkbloom.loop-guard.exit-thinking` line per ended
   thought gives the outcome.
 

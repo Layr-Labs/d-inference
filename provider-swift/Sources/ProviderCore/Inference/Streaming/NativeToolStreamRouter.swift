@@ -49,7 +49,8 @@ struct NativeToolStreamRouter {
     // boundaries must agree before and after reasoning-channel separation.
     init(handler: BatchedToolStreamHandler?, requiresToolCall: Bool, nativePrefix: String?,
          tools: [[String: any Sendable]]? = nil,
-         preserveInnerReasoningSpans: Bool = false, nativeGemmaChannels: Bool = false,
+         preserveInnerReasoningSpans: Bool = false, promotesTrailingReasoningCalls: Bool = false,
+         nativeGemmaChannels: Bool = false,
          nativeGemmaReasoningEnabled: Bool = true, nativeMiMoChannels: Bool = false,
          nativeMiMoThinkingEnabled: Bool = true, nativeMiMoRequiresConstraint: Bool = false,
          absorbStrayThinkClose: Bool = false, withholdReasoning: Bool = false,
@@ -73,7 +74,8 @@ struct NativeToolStreamRouter {
                 flintFrames: handler?.format == .flint,
                 tools: tools,
                 preserveInnerReasoningSpans: preserveInnerReasoningSpans,
-                absorbStrayThinkClose: absorbStrayThinkClose)
+                absorbStrayThinkClose: absorbStrayThinkClose,
+                promotesTrailingCalls: promotesTrailingReasoningCalls)
         }
     }
 
@@ -81,6 +83,12 @@ struct NativeToolStreamRouter {
 
     /// True when calls leave as `.toolCallDelta` events while generated.
     var streamsToolCalls: Bool { streamedCallPolicy != nil }
+
+    /// The engine stopped at the token limit (`length`): a thought it cut off
+    /// promotes none of its frames.
+    mutating func outputReachedTokenLimit() {
+        parser?.outputReachedTokenLimit()
+    }
 
     /// Reasoning classified since the last call but withheld from the events
     /// at the caller's request. Its owner counts it as generated reasoning; it

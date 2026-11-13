@@ -130,14 +130,15 @@ struct NativeChannelSplitter {
     }
 
     /// Whether a `<tool_call>`'s payload starts a call as the Qwen parser
-    /// reads one: `<function=NAME>` (a name of at most 256 scalars) and then a
-    /// parameter or the function's close, or a JSON object with a key. A
+    /// reads one: `<function=NAME>` (a name shorter than 256 scalars) and then
+    /// a parameter or the function's close, or a JSON object (`{` and then a
+    /// key, `}`, or the redundant outer brace the JSON parser also accepts). A
     /// mention fails here at once, so it costs nothing of the budget.
     private static func opensCall(_ payload: Substring) -> Bool {
         var scalars = payload.unicodeScalars.drop { $0.properties.isWhitespace }
         if scalars.first == "{" {
             scalars = scalars.dropFirst().drop { $0.properties.isWhitespace }
-            return scalars.first == "\"" || scalars.first == "}"
+            return scalars.first == "\"" || scalars.first == "}" || scalars.first == "{"
         }
         guard scalars.starts(with: "<function=".unicodeScalars) else { return false }
         scalars = scalars.dropFirst("<function=".unicodeScalars.count)

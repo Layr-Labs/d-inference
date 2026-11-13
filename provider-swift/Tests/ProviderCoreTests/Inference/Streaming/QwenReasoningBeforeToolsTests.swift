@@ -393,6 +393,8 @@ struct QwenReasoningBeforeToolsTests {
         // A mention that reaches its first `<parameter=` cannot be told from a call whose argument spells the tags
         // (`nested`): the frame runs on to the real call's end and parses, as on the raw route.
         let opensAParameter = "<tool_call>\n<function=get_weather>\n<parameter=location> with the city.\n" + bern
+        // The JSON dialect with the redundant outer braces that `JSONToolCallParser` also accepts.
+        let braces = "<tool_call>\n{{\"name\": \"get_weather\", \"arguments\": {\"location\": \"Bern\"}}}}\n</tool_call>"
         for (thought, trailing) in [
             ("I need the weather.\n" + bern, bern),
             ("I need the weather.\n" + bern + "\n \n", bern + "\n \n"),
@@ -405,6 +407,7 @@ struct QwenReasoningBeforeToolsTests {
             ("Saving.\n" + nested, nested),
             ("Saving.\n" + Self.jsonCallInThought, Self.jsonCallInThought),
             ("I'll write " + opensAParameter, opensAParameter),
+            ("Calling.\n" + braces, braces),
             // Thousands of mentions that open like calls cost nothing: each is read as a mention at its prose.
             (String(repeating: "Emit <tool_call>\n<function=get_weather> for X. ", count: 3_000) + bern, bern),
         ] {

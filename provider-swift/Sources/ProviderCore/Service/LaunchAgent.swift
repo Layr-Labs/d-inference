@@ -404,6 +404,11 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_TTFT_PROMPT_CACHE` and its `_MB` / `_VERIFY` knobs: scoped
     /// prompt-token reuse is on by default; `0` / `false` / `off` / `no` is
     /// the rollback.
+    /// `DARKBLOOM_STRICT_TOOL_GRAMMAR` / `DARKBLOOM_STRICT_TOOL_GRAMMAR_ALL_TOOLS`:
+    /// `strict` Qwen 3.5-family calls follow their schemas in the sampler, by
+    /// default on the MoE builds and Qwen 3.8 (`on` adds the 9B, an off word
+    /// restores unconstrained calls, a list picks the builds); `on` for the
+    /// second extends it to calls of tools that are not `strict`.
     /// `DARKBLOOM_TTFT_TEMPLATE_LOOPS=0` renders cached prompts with the
     /// template as served. `DARKBLOOM_TTFT_COLD_LOAD_RELEASE=0` restores the
     /// fully serial FIFO.
@@ -458,6 +463,8 @@ public enum LaunchAgent: Sendable {
         PromptTokenCachePolicy.environmentKey,
         PromptTokenCachePolicy.capacityEnvironmentKey,
         PromptTokenCachePolicy.verifyEnvironmentKey,
+        QwenStrictToolGrammar.environmentKey,
+        QwenStrictToolGrammar.allToolsEnvironmentKey,
         ChatTemplateLoopRewrites.environmentKey,
         WorkFIFOPolicy.coldLoadReleaseEnvironmentKey,
         ModelCalibrationPolicy.shapeWarmupEnvironmentKey,

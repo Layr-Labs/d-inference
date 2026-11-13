@@ -4150,6 +4150,79 @@ provider release with them is tagged without being published to auto-update,
 snapshotted into #721, and published only once #721 is deployed, each step on
 the owner's go.
 
+### Strict tool-call grammar
+
+A `strict` `auto` call is checked against the caller's schema only when its
+frame closes ([streamed auto tool calls](#streamed-auto-tool-calls)), after the
+answer has started, so on the Qwen 3.5 template family (`qwen3_5`,
+`qwen3_5_moe`: Qwen 3.5 9B and 35B, 3.6 and 3.8) the provider can also
+constrain such calls in the sampler. By default it does so on the MoE builds
+(`qwen3_5_moe`: Qwen 3.6 and Qwen 3.5 35B), which do not draft with MTP by
+default (their cards' presence penalty), and on Qwen 3.8 27B (`qwen3.8-27b`),
+whose strict calls that missed their schemas were its main remaining failure,
+at the cost of its MTP on those answers (see below). The coordinator turns the grammar off for a build by
+forwarding its tools without `strict` (`EIGENINFERENCE_STRICT_TOOLS_UNMARK_MODELS`).
+The 9B drafts too, so a Mac opts it in (`DARKBLOOM_STRICT_TOOL_GRAMMAR=on` or a
+list, [configuration](../reference/configuration.md)). `QwenStrictToolGrammar` (in
+`provider-swift/Sources/ProviderCore/Inference/Tools/`) admits a request that
+is `auto`, declares a `strict` function (any tools with
+`DARKBLOOM_STRICT_TOOL_GRAMMAR_ALL_TOOLS`), parses with `.qwen35`, has no media,
+runs on an engine that samples under token constraints (not a cluster pair, not
+a native-tracked engine) and whose prompt ends in an open or closed think
+block; the scheduler's text path asks it after `ToolConstraintFactory`. Every
+declared tool must compile (`QwenStrictToolSchema`): local `$ref`s are inlined
+(cycles refused), `anyOf`/`oneOf` of one schema and `null`, a single `allOf`
+branch and objects beside an open object are folded (also with the render
+repair's `type` and empty `properties` beside the union, as the coordinator
+forwards Tau2's tools), annotations (`format` included) are dropped, and the
+rest must fit the shared fail-closed subset
+(`ToolConstraintSchemaCompiler.compileResponseSchema`). Anything else, an
+unrecognized prompt boundary or a vocabulary that does not verify leaves the
+request as before, with a content-free log line, never a refusal.
+
+`QwenStrictToolConstraint` is a byte-level automaton over the shared Qwen
+vocabulary contract (`JSONAnswerVocabulary` with the call markers as pieces).
+Reasoning and text are free and only watched for `</think>` and `<tool_call>`;
+they admit every byte-level piece, the think and call markers and the stop
+tokens, so an answer can end wherever it could before (the other added tokens,
+such as `<|im_start|>` or the media placeholders, are not sampled). After
+`<tool_call>`, whitespace may precede `<function=`, where the call commits; a
+first other byte is no call the parser can read, so the answer goes on as text,
+as without the grammar (`{`, the JSON dialect, and a non-ASCII byte, which could
+be whitespace the parser skips, are refused). Inside a call every byte follows
+the template's framing (`<function=NAME>\n`, `<parameter=KEY>\nVALUE\n</parameter>\n`,
+`</function>\n</tool_call>`): a declared function, declared parameters at most
+once, required ones before `</function>`; with `parallel_tool_calls: false` no
+second call opens. A value's grammar follows how `Qwen35ToolCallParser` reads it
+under the rendered schema (`QwenStrictToolSchema.parserConversion`, a mirror of
+the SDK's `ToolArgumentNormalization` that `QwenStrictToolGrammarTests` checks
+against the parser): text the parser keeps as a string is free (or one of an
+enum's values), and a value it converts is one JSON value of the declared
+schema (`FlintJSONGrammar`). The request stays unconstrained where the parser's
+reading and the declared type disagree (a top-level `$ref` the render repair
+typed as a string) or where the streamed call would expose a converted value as
+text (`QwenStrictToolSchema.streamsAsText`, the mirror of
+`Qwen35ArgumentStreamer`, for example a `{"type":"null"}` parameter). No value
+can spell `</parameter>` or a turn, reasoning or call marker, and a JSON value
+never writes a surrogate escape (`\uD800`…`\uDFFF`; the parser's
+JSONSerialization refuses a lone one and the value would stay a string; an
+escaped backslash followed by such text is refused too). The validator still
+checks every call.
+
+Calls drafted inside the thought are reasoning to the grammar. Where the Qwen
+route parses calls before it splits off the reasoning, such a call is parsed
+and checked like any other, unconstrained; where the reasoning is split first,
+only a call at the end of a thought that never closes is. The loop guard stays on
+(`GenerationLoopGuardPolicy`); the continuation after an exited thought runs
+without the grammar. As with constrained JSON answers (above), a constrained row
+never drafts MTP tokens and, on these engines, no row of a decode step it shares
+speculates (`ineligibleRowsDecodeBesideSpeculation` is false). Where a Mac would
+draft (at most `maxSpeculativeBatch` decode rows, 8 by default; the 3.6 and 35B
+cards' presence penalty keeps those builds from drafting unless a request sets
+`presence_penalty: 0`), the whole constrained answer, reasoning included, and
+every answer decoding beside it run target-only while it decodes. That is why
+the 9B takes the grammar only when a Mac opts in.
+
 ### Vision constraints
 
 - **One image per tower pass.** `EngineV2VisionTowerRun` drives the Qwen

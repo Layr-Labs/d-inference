@@ -66,15 +66,18 @@ struct GLM5NextResponseFormat: Sendable {
     /// The answer to expose: the JSON text the instruction asked for, without
     /// markdown fences or surrounding prose, or a typed 422 when no complete
     /// valid value exists. With `release`, a complete value that only misses
-    /// its `json_schema` is exposed too. Messages never quote generated content.
+    /// its `json_schema` is exposed too, when the model stopped by itself: an
+    /// output the token limit cut is judged as with `refuse`. Messages never
+    /// quote generated content.
     func validatedContent(_ content: String, finishReason: String) throws -> String {
         let mismatch = Self.failure(format.type == .jsonSchema
             ? "GLM content does not satisfy the json_schema" : "GLM content is not a JSON object")
+        let releases = schemaMiss == .release && finishReason != "length"
         // The service's candidate extraction (whole text, fenced block, first
         // balanced value) and its own checks; its messages can name generated
         // keys, so they are replaced by fixed ones.
         let checked = try? OpenAIResponseFormatSupport.normalizedContent(content, for: format)
-        guard let text = checked ?? releasableCandidate(content),
+        guard let text = checked ?? (releases ? releasableCandidate(content) : nil),
             let value = try? JSONDecoder().decode(MLXLMCommon.JSONValue.self, from: Data(text.utf8))
         else { throw mismatch }
         if finishReason == "length" {
@@ -87,7 +90,7 @@ struct GLM5NextResponseFormat: Sendable {
             }
         }
         if checked == nil || !satisfiesSchema(value) {
-            guard schemaMiss == .release else { throw mismatch }
+            guard releases else { throw mismatch }
             Self.logger.info("GLM JSON response_format answer released past a schema miss")
         }
         return text
@@ -99,10 +102,13 @@ struct GLM5NextResponseFormat: Sendable {
         return true
     }
 
-    /// With `release`, the `json_schema` candidate the service's own schema
-    /// check rejected: the same extraction, checked against no schema.
+    /// The `json_schema` candidate the service's own schema check rejected:
+    /// the same extraction, checked against no schema. This relies on the
+    /// service picking its candidate without the schema (the first that
+    /// decodes, never another after a schema failure) and on an empty schema
+    /// admitting any value.
     private func releasableCandidate(_ content: String) -> String? {
-        guard schemaMiss == .release, format.type == .jsonSchema else { return nil }
+        guard format.type == .jsonSchema else { return nil }
         return try? OpenAIResponseFormatSupport.normalizedContent(content, for: Self.anyJSONValue)
     }
 

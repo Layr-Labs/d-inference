@@ -111,6 +111,28 @@ struct GLM5NextSchemaMissTests {
         #expect(throws: MLXOpenAIServiceError.self) { try refused.validatedContent(#"{"tags":["a"]}"#, finishReason: "stop") }
     }
 
+    @Test("release judges an output the token limit cut as refuse does", arguments: [
+        #"{"city":"PRIVATE","temperature_f":75,"conditions":"hot"}"#,
+        "12",
+    ])
+    func releaseIsForNaturalStops(answer: String) throws {
+        let format = try Self.format(Self.schemaFormat(Self.weather), schemaMiss: .release)
+        let error = #expect(throws: MLXOpenAIServiceError.self) { try format.validatedContent(answer, finishReason: "length") }
+        #expect(!String(describing: error).contains("PRIVATE"))
+        var output = GLM5NextResponseFormatOutput(format)
+        _ = output.withholding(.content(answer))
+        let withheld = output
+        #expect(throws: MLXOpenAIServiceError.self) { try withheld.finalAnswer(finishReason: "length", hasToolCalls: false) }
+    }
+
+    @Test("release exposes the candidate the service checks: a root scalar, or the first balanced value")
+    func releasedCandidateIsTheServicesCandidate() throws {
+        let format = try Self.format(Self.schemaFormat(Self.weather), schemaMiss: .release)
+        #expect(try format.validatedContent("42", finishReason: "stop") == "42")
+        let prose = #"Example: {"city":"x"}. Answer: {"city":"Austin","temperature_f":75,"conditions":"sunny"}"#
+        #expect(try format.validatedContent(prose, finishReason: "stop") == #"{"city":"x"}"#)
+    }
+
     @Test("a truncated root number is refused in both modes")
     func truncatedNumberIsRefused() throws {
         let numberSchema = Self.schemaFormat(["type": "integer"])

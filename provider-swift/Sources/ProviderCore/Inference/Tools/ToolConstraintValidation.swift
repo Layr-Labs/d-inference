@@ -122,9 +122,10 @@ enum ToolConstraintValidation {
     /// choices hold every call to its schema, as always, and for `auto` only
     /// the last, which the limit may have cut, is held to the declarations
     /// without `strict` (`truncated`). A forced choice left with none ends
-    /// `length`. More calls than `parallel_tool_calls: false`
-    /// allows, or a call under `tool_choice: none`, are the model's and still
-    /// refused. Returns how many calls it dropped.
+    /// `length`. A call under `tool_choice: none` is the model's and still
+    /// refused, as would be more calls than `parallel_tool_calls: false`
+    /// allows (`ParallelToolCallPolicy` already kept only the first). Returns
+    /// how many calls it dropped.
     @discardableResult
     static func validateWithheld(
         _ calls: inout [ToolCall],

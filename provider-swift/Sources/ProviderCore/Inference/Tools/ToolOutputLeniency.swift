@@ -17,9 +17,10 @@ import Foundation
 /// leaves as generated (GLM's normalized when it already holds a whole
 /// value); withheld calls are checked one by one and those that fail are
 /// dropped rather than refused, as is an unfinished frame. A loop the guard
-/// stops, which also ends as `length`, counts as a cut. More
-/// calls than `parallel_tool_calls: false` allows, or a call under
-/// `tool_choice: none`, are the model's and still refused. A response with
+/// stops, which also ends as `length`, counts as a cut. A call under
+/// `tool_choice: none` is the model's and still refused
+/// (`parallel_tool_calls: false` already keeps only the first call,
+/// `ParallelToolCallPolicy`). A response with
 /// calls that were complete before the cut still finishes `tool_calls`, as it
 /// does today.
 ///

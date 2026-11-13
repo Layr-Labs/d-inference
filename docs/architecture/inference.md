@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-12
+> Last updated: 2026-11-13
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -3547,8 +3547,15 @@ read bare scalars and composites as raw strings. When the frame closes, the
 complete parse must agree with everything already exposed
 (`libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/ToolCallStreaming.swift`).
 `NativeToolStreamRouter` admits `parallel_tool_calls` cardinality at the first
-fragment and, when the request is `strict` (below), validates name and schema
-at frame close; the service renders OpenAI fragments (`index`, `id`, `type`
+fragment: with `parallel_tool_calls: false` it exposes the first call only and
+drops every later call frame, unexposed and unvalidated, as OpenAI returns one
+call and vLLM keeps the first; the complete-call paths, Nemotron Super's
+included, keep the first the same way (`ParallelToolCallPolicy`). A later
+frame keeps its family's malformed-output rule: one the parser returns as
+text (an undeclared name it cannot read) stays visible text, and one that does
+not parse still fails a GLM, MiMo, Flint or Nemotron Super response. When
+the request is `strict` (below), it validates name and schema at frame close;
+the service renders OpenAI fragments (`index`, `id`, `type`
 and `function.name` first, then `function.arguments` pieces). A response that
 begins with a call therefore reaches its first content frame at the function
 name instead of the engine terminal, which also ends the frame loop's
@@ -3619,9 +3626,10 @@ breaking a contract, and OpenRouter does not count a call cut by the caller's
   dropped instead of refused: forced choices hold every call to its schema, as
   always, and for `auto` only the last call, which the limit may have cut, is
   held to the declarations without `strict`. A forced choice left with no call
-  ends `length` (`ToolConstraintValidation.validateWithheld`). More calls than
-  `parallel_tool_calls: false` allows, or a call under `tool_choice: none`,
-  are the model's and still refused. A native GLM, Flint or MiMo frame the
+  ends `length` (`ToolConstraintValidation.validateWithheld`). A call under
+  `tool_choice: none` is the model's and still refused;
+  `parallel_tool_calls: false` keeps only the first call before any check
+  (`ParallelToolCallPolicy`). A native GLM, Flint or MiMo frame the
   limit left unparsed is dropped, never published as text. A withheld `auto`
   frame of another family (Qwen without `stream`, or with
   `DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0`) that the end-of-generation parse cannot

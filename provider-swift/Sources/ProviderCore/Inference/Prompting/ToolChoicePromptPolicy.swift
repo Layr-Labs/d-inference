@@ -20,7 +20,8 @@ enum ToolChoicePromptPolicy {
         /// choice, JSON output and withheld reasoning are served alike on
         /// every GLM slot; a pair also asks for at most one call when
         /// automatic choice has `parallel_tool_calls: false`
-        /// (`singleCallInstruction`), which the validator holds it to.
+        /// (`singleCallInstruction`); a response keeps only its first call
+        /// (`ParallelToolCallPolicy.admitted`).
         var glm5PairPostValidation = false
         /// The caller's declarations as sent, before ingress normalization
         /// (`ToolSchemaNormalization`) filled in render types. Validation of
@@ -73,7 +74,7 @@ enum ToolChoicePromptPolicy {
         var choice = try prepareToolChoice(
             request, modelType: modelType, allowInternalSchemaMetadata: allowInternalSchemaMetadata)
         // GLM on a pair: `parallel_tool_calls: false` with automatic choice
-        // asks for at most one call, which the validator then holds it to.
+        // asks for at most one call; the response keeps only its first.
         if glm5PairPostValidation, choice.mode == .auto, !choice.allowsParallelCalls,
            choice.tools?.isEmpty == false {
             choice = Prepared(messages: appendingToLastUser(singleCallInstruction, in: choice.messages),

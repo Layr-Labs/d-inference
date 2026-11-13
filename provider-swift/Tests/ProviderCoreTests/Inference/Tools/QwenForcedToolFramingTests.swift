@@ -176,13 +176,29 @@ struct QwenForcedToolFramingServingTests {
       "properties":{"city":{"type":"string"}},"required":["city"]}}},
      {"type":"function","function":{"name":"time","parameters":{"type":"object","properties":{}}}}]
     """#
+    /// About 75 tokens to the byte-level stand-in, so its requests ask for 256.
     private static let xmlCall = "<tool_call>\n<function=weather>\n<parameter=city>\nParis\n</parameter>\n"
         + "</function>\n</tool_call>"
 
+    /// Raw `.content` passes the service's qwen3 think parser, as it does
+    /// downstream of the scheduler (the closed block's seed is not an answer).
     private struct Outcome {
         var content = ""
         var calls: [ToolCall] = []
         var error: (any Error)?
+        private var parser = StreamingReasoningParser(format: .qwen3)
+
+        mutating func record(_ event: MLXServerGenerationEvent) {
+            switch event {
+            case .content(let text): parser.parse(text).forEach { content += $0.content }
+            case .parsed(let parsed): content += parsed.content
+            case .toolCall(let call): calls.append(call)
+            case .toolCallDelta(let delta): if let call = delta.completed { calls.append(call) }
+            case .info, .logprobs: break
+            }
+        }
+
+        mutating func finish() { parser.finish().forEach { content += $0.content } }
     }
 
     private func serve(_ engine: QwenScriptedEngine, modelType: String = "qwen3_5", fields: String) async throws
@@ -200,30 +216,24 @@ struct QwenForcedToolFramingServingTests {
         """.utf8))
         var outcome = Outcome()
         do {
-            for try await event in try await scheduler.streamChatCompletion(request: request) {
-                switch event {
-                case .content(let text): outcome.content += text
-                case .parsed(let parsed): outcome.content += parsed.content
-                case .toolCall(let call): outcome.calls.append(call)
-                case .toolCallDelta(let delta): if let call = delta.completed { outcome.calls.append(call) }
-                case .info, .logprobs: break
-                }
-            }
+            for try await event in try await scheduler.streamChatCompletion(request: request) { outcome.record(event) }
         } catch { outcome.error = error }
+        outcome.finish()
         await bridge.shutdown()
         return outcome
     }
 
     @Test func aRequiredCallIsFramedAndReachesTheClientAsACall() async throws {
         let engine = QwenScriptedEngine(script: Self.xmlCall)
-        let outcome = try await serve(engine, fields: #","tool_choice":"required","max_tokens":64"#)
+        let outcome = try await serve(engine, fields: #","tool_choice":"required","max_tokens":256"#)
         let request = try #require(engine.submitted.first)
         let constraint = try #require(request.tokenConstraint as? Qwen4NativeToolConstraint)
         #expect(constraint.maxTokens == request.maxTokens)
         #expect(outcome.error == nil)
         #expect(outcome.calls.map(\.function.name) == ["weather"])
         #expect(outcome.calls.first?.function.arguments["city"] == .string("Paris"))
-        #expect(outcome.content.allSatisfy(\.isWhitespace))
+        #expect(outcome.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            "\(outcome.content.debugDescription)")
     }
 
     @Test func aNamedCallInTheFramedJSONDialectUsesTheBridgeDefaultBudget() async throws {
@@ -247,19 +257,21 @@ struct QwenForcedToolFramingServingTests {
         let engine = QwenScriptedEngine(script: "  I will check the weather in Paris.")
         let outcome = try await serve(engine, fields: #","tool_choice":"required","max_tokens":64"#)
         #expect(engine.submitted.first?.tokenConstraint is Qwen4NativeToolConstraint)
-        #expect(outcome.calls.isEmpty && outcome.content.allSatisfy(\.isWhitespace))
+        #expect(outcome.calls.isEmpty)
+        #expect(outcome.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            "\(outcome.content.debugDescription)")
         #expect(outcome.error != nil)
     }
 
     @Test func autoCallsAndOtherFamiliesAreNotFramed() async throws {
         let auto = QwenScriptedEngine(script: Self.xmlCall)
-        let outcome = try await serve(auto, fields: #","tool_choice":"auto","max_tokens":64"#)
+        let outcome = try await serve(auto, fields: #","tool_choice":"auto","max_tokens":256"#)
         let request = try #require(auto.submitted.first)
         #expect(request.tokenConstraint == nil)
         #expect(outcome.error == nil && outcome.calls.map(\.function.name) == ["weather"])
         let bonsai = QwenScriptedEngine(script: Self.xmlCall)
         _ = try await serve(bonsai, modelType: "prism_hadamard_qwen35",
-            fields: #","tool_choice":"required","max_tokens":64"#)
+            fields: #","tool_choice":"required","max_tokens":256"#)
         #expect(bonsai.submitted.first?.tokenConstraint == nil)
     }
 }

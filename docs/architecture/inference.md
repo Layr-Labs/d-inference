@@ -3613,6 +3613,89 @@ spliced across a boundary the reasoning parser later hides. Required and named
 (`provider-swift/Sources/ProviderCore/Inference/Tools/GemmaNoToolTokenConstraint.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Tools/GemmaTokenVocabulary.swift`).
 
+### Constrained Gemma 4 JSON answers
+
+Gemma 4 answers to a JSON `response_format` are sampled under the same JSON
+grammar as constrained Qwen answers (below), with three differences: Gemma's
+vocabulary, its thought framing, and best-effort semantics.
+`ToolConstraintFactory.make` asks `GemmaJSONAnswerPolicy` first: a text request
+on `gemma4` or `gemma4_text` with a JSON `response_format`, no `tools`, no
+`tool_choice` (or a tool-free `auto`), no client `stop`, the `gemma4` reasoning
+parser and the pinned chat template (`TokenizerHandle.toolConstraintContractVerified`)
+gets a `GemmaJSONAnswerConstraint`. The prompt is unchanged.
+
+**Vocabulary.** Gemma's tokenizer is SentencePiece BPE with byte fallback, not
+byte-level BPE. `GemmaAnswerPieces` gives every id the bytes its decoder writes:
+U+2581 becomes a space, a `<0x80>`…`<0xFF>` token is that byte, other pieces are
+their UTF-8 (the provider's tokenizer runs no clean-up for Gemma). The 24 added
+tokens and the `<unusedN>` slots have no piece, and neither do the ASCII
+byte-fallback tokens: a byte-fallback run is decoded as a whole, so what one byte
+becomes depends on its neighbours (a run that is not UTF-8 reads as U+FFFD),
+while every ASCII character JSON needs has a piece of its own. Non-ASCII bytes
+occur only inside strings, where U+FFFD is still a character.
+Before constraining, `GemmaAnswerPieces.vocabulary` checks `<|channel>` 100,
+`<channel|>` 101, `<turn|>` 106 and `<eos>` 1 by id, spelling, encoding and
+decoding, that the tokenizer has exactly 262,144 ids, and that `<turn|>` and
+`<eos>` are engine stop tokens. The
+vocabulary is built on the first such request per loaded tokenizer and stop set
+and cached (two entries).
+
+**Phases.** The rendered prompt's tail selects the first phase
+(`GemmaJSONAnswerPolicy.initialPhase`). Thinking off renders an empty, closed
+thought (`<|turn>model\n<|channel>thought\n<channel|>`), so output starts in the
+answer. Thinking on ends at `<|turn>model\n`, so a thought may open with
+`<|channel>`, or the answer may start at once (whitespace before either stays
+content, so an answer can read `"\n{...}"`, still one JSON value). The thought
+is free text: no EOS or added token other than the two thought markers, and the
+first `<channel|>`, as its token or spelled from ordinary pieces (the stream's
+Gemma parser reads text), ends it. The answer is one JSON value of the request's
+grammar (`JSONAnswerFormat`, `FlintJSONGrammar`);
+no Gemma control spelling can complete in it, strings included. `<turn|>` or
+`<eos>` is allowed once the value is complete, and a value that delimits itself
+(an object, array, string or literal) is followed by the terminator only, never
+by text a client would have to strip. JSON whitespace outside strings runs at
+most 64 bytes (`GemmaJSONAnswerBoundary.maximumWhitespaceRun`), so a model that
+keeps reaching for a refused spelling (a code fence) cannot fill its budget with
+blank lines. States that differ only in a run
+no piece can push past that cap share one mask key (`maskEquivalent`), so
+indentation does not multiply mask builds; a request keeps at most two broad
+allowed sets (about 2 MB each) and the sampler its per-key device masks.
+
+**Best effort.** Unlike constrained Qwen answers, nothing is validated after
+generation (`MultiModelBatchSchedulerEngine` checks only `JSONAnswerConstraint`
+answers): a budget that ends first stays `length` with the partial value, as
+before. A request whose interned states reach the cap
+(`GemmaJSONAnswerConstraint.defaultMaximumStates`, 16,384) continues
+unconstrained instead of failing. A `json_schema` in the shapes common clients
+generate is first rewritten into the shared subset where the result admits
+exactly the same instances (`ResponseSchemaRewrite`: `$ref`s to plainly named
+entries of the root's `$defs`/`definitions` inlined, a one-branch `allOf`
+unwrapped, `anyOf` of one schema and `{"type": "null"}` made nullable, with only
+annotations beside them; `$comment` on every node it rewrites, the root's `$id`
+and a draft-06 to 2020-12 `$schema` dropped; at most 16 levels, 8 references or
+compositions in a row and a bounded amount of copying and hashing,
+`maximumWork`).
+One still outside it (`pattern`, `format`, a recursive `$ref`, a wider `anyOf`,
+an older `$schema`, a nullable enum of 128 values, …) whose root is
+`"type": "object"` is held to a JSON object; any other
+unsupported schema, an unpinned template or tokenizer, another
+prompt end or a nonpositive budget keeps prompt-only steering with one
+content-free line (category `json-answer`). An engine that runs no token
+constraint (a cluster pair or a native-tracked engine) would refuse one, so
+`EngineV2Bridge.admittedConstraint` submits the request there unconstrained.
+`DARKBLOOM_GEMMA_JSON_ANSWERS=off` restores prompt-only answers everywhere.
+
+**Speculative decoding.** A constrained row never drafts
+(`EngineLoopV2.mtpBasicEligible`), and Gemma's target is not recurrent, so a
+step that holds one runs target-only for every row in it, as for a `stop`,
+penalty or logprob row (see the Qwen notes below). Rows in steps without one
+are unchanged.
+
+Sources: `provider-swift/Sources/ProviderCore/Inference/Tools/GemmaJSONAnswerPolicy.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Tools/ResponseSchemaRewrite.swift`,
+`provider-swift/Sources/ProviderCore/Inference/GemmaJSONAnswerConstraint.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`.
+
 ### Constrained Qwen JSON answers
 
 The format instruction alone leaves some Qwen answers outside the requested

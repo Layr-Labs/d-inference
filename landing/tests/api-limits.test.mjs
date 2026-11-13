@@ -48,7 +48,7 @@ describe("request bodies are bounded while they are read", () => {
     assert.equal(await post(site.origin, "/api/chat", { body: streamed(body) }), 413);
   });
 
-  test("provider stories refuse an oversized body sent without Content-Length", async () => {
+  test("provider stories refuse an oversized body with or without Content-Length", async () => {
     const body = JSON.stringify({ ...story, padding: "x".repeat(64 * 1024) });
     assert.equal(await post(site.origin, "/api/provider-stories", { body }), 413);
     assert.equal(await post(site.origin, "/api/provider-stories", { body: streamed(body) }), 413);
@@ -83,7 +83,7 @@ describe("chat rate limiting without a trusted client address header", () => {
   });
 });
 
-describe("chat rate limiting behind a proxy that overwrites the client address", () => {
+describe("chat rate limiting behind a proxy that records the client address", () => {
   let site;
   before(async () => {
     site = await startSiteServer({

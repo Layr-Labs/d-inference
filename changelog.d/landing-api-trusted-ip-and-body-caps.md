@@ -8,7 +8,7 @@
 - The limiter's bucket map is capped at 10,000 entries and drops only expired
   buckets from its front, instead of scanning every bucket on each request once
   it held more than 10,000.
-- `/api/chat` reads at most 16 KiB of request body and `/api/provider-stories`
-  50,000 bytes, counted while the body is received, and answer HTTP 413 above
-  that. A body without `Content-Length` (chunked or HTTP/2) can no longer skip
-  the provider-story limit, and neither route parses an oversized body.
+- `/api/chat` accepts at most 16 KiB of request body and `/api/provider-stories`
+  50,000 bytes, counted on the bytes received, and answer HTTP 413 above that.
+  A body without `Content-Length` (chunked or HTTP/2) can no longer skip the
+  provider-story limit, and neither route parses an oversized body.

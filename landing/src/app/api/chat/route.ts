@@ -19,9 +19,9 @@ const MAX_RATE_BUCKETS = 10_000;
 // Forwarding headers carry whatever the client sent unless a proxy overwrites
 // them. Vercel replaces X-Forwarded-For with the connecting address and drops
 // client values (https://vercel.com/docs/headers/request-headers#x-forwarded-for).
-// Other hosts must name the header their own proxy overwrites; without one,
+// Other hosts must name the header their own proxy sets; without one,
 // every visitor shares a single bucket rather than choosing their own.
-const TRUSTED_CLIENT_IP_HEADER = process.env.DARKBLOOM_TRUSTED_CLIENT_IP_HEADER?.trim().toLowerCase()
+const TRUSTED_CLIENT_IP_HEADER = process.env.DARKBLOOM_TRUSTED_CLIENT_IP_HEADER?.trim()
   || (process.env.VERCEL === "1" ? "x-forwarded-for" : "");
 const SHARED_IDENTITY = "shared";
 const PROVIDER_EARNINGS_SHARE = 0.9;
@@ -51,14 +51,14 @@ function requestIdentity(request: NextRequest) {
   // A proxy that appends records the address it saw last; earlier entries
   // are client-supplied.
   const address = request.headers.get(TRUSTED_CLIENT_IP_HEADER)?.split(",").at(-1)?.trim();
-  return (address && rateLimitAddress(address)) || SHARED_IDENTITY;
+  return (address && addressIdentity(address)) || SHARED_IDENTITY;
 }
 
-function rateLimitAddress(address: string) {
+function addressIdentity(address: string) {
   const family = isIP(address);
   if (family === 4) return address;
   if (family !== 6) return null;
-  const groups = ipv6Groups(address.split("%")[0]);
+  const groups = ipv6Groups(address);
   // An IPv4-mapped address is that IPv4 visitor.
   if (groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff) {
     return [groups[6] >> 8, groups[6] & 0xff, groups[7] >> 8, groups[7] & 0xff].join(".");
@@ -68,14 +68,14 @@ function rateLimitAddress(address: string) {
   return `${groups.slice(0, 4).map((group) => group.toString(16)).join(":")}::/64`;
 }
 
-/** The eight 16-bit groups of an address `isIP` accepted as IPv6. */
+/** The eight 16-bit groups of an address `isIP` accepted as IPv6; a zone ID is ignored. */
 function ipv6Groups(address: string) {
-  const parse = (part: string | undefined) => (part ? part.split(":") : []).flatMap((group) => {
+  const parse = (part: string) => (part ? part.split(":") : []).flatMap((group) => {
     if (!group.includes(".")) return [Number.parseInt(group, 16)];
     const [a, b, c, d] = group.split(".").map(Number);
     return [(a << 8) | b, (c << 8) | d];
   });
-  const [head, tail] = address.split("::");
+  const [head, tail] = address.split("%")[0].split("::");
   const leading = parse(head);
   if (tail === undefined) return leading;
   const trailing = parse(tail);

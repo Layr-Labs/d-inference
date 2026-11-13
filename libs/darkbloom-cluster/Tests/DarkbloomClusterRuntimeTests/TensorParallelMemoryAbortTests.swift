@@ -53,60 +53,89 @@ struct TensorParallelMemoryAbortTests {
         return (production, dev)
     }
 
+    /// A Mac with room, as the gate samples it: a quarter of its memory free and a quarter file cache.
+    private static func roomy() -> QwenDenseStageLoadOSObservation {
+        let now = DispatchTime.now().uptimeNanoseconds
+        let page = 16_384, physical = QwenDenseStageLoadPolicy.localPhysicalMemoryBytes
+        let quarter = physical / page / 4
+        return .init(startedNanoseconds: now, completedNanoseconds: now, timestampUTC: ResourceObservationTimestamp.utc(),
+            physicalMemoryBytes: physical, pageSizeBytes: page, kernelFreePages: quarter, freePages: quarter,
+            inactivePages: quarter, speculativePages: 0, actualFreeBytes: quarter * page,
+            estimatedReclaimableBytes: 2 * quarter * page, pressureLevel: QwenDenseStageLoadPolicy.normalPressureLevel,
+            swapUsedBytes: 0, activePages: quarter, fileBackedPages: quarter, anonymousPages: quarter,
+            inactiveFileBackedPages: quarter, inactiveAnonymousPages: 0)
+    }
+
     /// The fault reads its switch only in a dev or DevNet install
     /// (`~/.darkbloom-dev`): a production install's file is never read nor
-    /// consumed, and the gate never refuses there. In a dev install it is
-    /// consumed when the next request starts (one-shot), and from that
-    /// request's third check on its gate refuses; the request's end disarms it.
+    /// consumed, and the gate's reading never changes there. In a dev install
+    /// it is consumed when the next request starts (one-shot); from that
+    /// request's third gate pass on, the pass reads this Mac's memory as
+    /// taken; the request's end disarms it.
     @Test func theMemoryFaultIsInertInAProductionInstallAndOneShotInADevOne() throws {
         let (production, dev) = try Self.installs()
         defer { try? FileManager.default.removeItem(at: production.deletingLastPathComponent()) }
         let fault = ClusterMemoryFault()
+        let room = Self.roomy()
+        func taken() -> Bool {
+            let read = fault.reading(room)
+            return read.actualFreeBytes == 0 && read.fileBackedPages == 0
+        }
         #expect(fault.arm(requestID: UUID(), installDirectory: production) == nil)
         #expect(FileManager.default.fileExists(atPath: production.appendingPathComponent(ClusterMemoryFault.switchPath).path))
-        for _ in 0..<5 { try fault.refuseIfDue() }
+        for _ in 0..<5 { #expect(!taken()) }
 
         let request = UUID()
         #expect(fault.arm(requestID: request, installDirectory: dev) == 3)
         #expect(!FileManager.default.fileExists(atPath: dev.appendingPathComponent(ClusterMemoryFault.switchPath).path))
-        try fault.refuseIfDue(); try fault.refuseIfDue()
-        #expect(throws: (any Error).self) { try fault.refuseIfDue() }
-        #expect(throws: (any Error).self) { try fault.refuseIfDue() }
+        #expect(!taken() && !taken())
+        #expect(taken() && taken())
         // Another request's end leaves it armed; its own end disarms it.
         fault.disarm(requestID: UUID())
-        #expect(throws: (any Error).self) { try fault.refuseIfDue() }
+        #expect(taken())
         fault.disarm(requestID: request)
-        try fault.refuseIfDue()
+        #expect(!taken())
         // One-shot: the next request finds no switch.
         #expect(fault.arm(requestID: UUID(), installDirectory: dev) == nil)
-        try fault.refuseIfDue()
+        #expect(!taken())
         // A malformed switch is consumed and arms nothing.
         try Data("soon".utf8).write(to: dev.appendingPathComponent(ClusterMemoryFault.switchPath))
         #expect(fault.arm(requestID: UUID(), installDirectory: dev) == nil)
         #expect(!FileManager.default.fileExists(atPath: dev.appendingPathComponent(ClusterMemoryFault.switchPath).path))
     }
 
-    /// The fault takes a real refusal's path: inside each live gate, where the
-    /// gate's own refusal is thrown, so the gate throws the typed memory
-    /// refusal that the stop latch, the stop slot and the batch read.
-    @Test func anArmedFaultRefusesThroughTheGatesOwnThrow() throws {
+    /// The fault is the reading, not a branch: once due, every check that
+    /// judges a sample refuses it as it would a real Mac whose memory was
+    /// taken. The policy judges the taken sample (it is consistent) and
+    /// refuses it; the load's entry check refuses it untyped, as it would a
+    /// real reading, which is why no running gate asks it; and each running
+    /// gate throws the typed refusal its stop latch, stop slot and lanes act
+    /// on. Disarmed, the same Mac is admitted again.
+    @Test func anArmedFaultIsTheReadingEveryCheckJudges() throws {
         let (production, dev) = try Self.installs()
         defer { try? FileManager.default.removeItem(at: production.deletingLastPathComponent()) }
+        let taken = try QwenDenseStageLoadPolicy.decide(Self.roomy().withMemoryTaken, requiredBytes: 0, purpose: "taken",
+            now: DispatchTime.now().uptimeNanoseconds)
+        #expect(!taken.admitted && taken.admissibleBytes == 0)
+        try Data("1\n".utf8).write(to: dev.appendingPathComponent(ClusterMemoryFault.switchPath))
         let fault = ClusterMemoryFault()
         let request = UUID()
-        #expect(fault.arm(requestID: request, installDirectory: dev) == 3)
-        let allowance = QwenResidentRequestAllowance(stateBytes: 1, fusionBytes: 0, reservedBytes: 1)
+        #expect(fault.arm(requestID: request, installDirectory: dev) == 1)
+        let gates: [() throws -> Void] = [
+            { try ClusterLiveMemory.requireTensorParallel(bytes: 0, family: "fixture") },
+            { try TakenMemory.mimo().requireLive() },
+            { try TakenMemory.gptOSS().requireLive() },
+            { try TakenMemory.qwen().requireContinuing(grownBytes: 0) },
+            { try TakenMemory.qwen().requireLive(onLoadedStage: true) },
+        ]
         try ClusterMemoryFault.$override.withValue(fault) {
-            var refusals: [Bool] = []
-            for _ in 0..<4 {
-                do { try ClusterLiveMemory.requireTensorParallel(bytes: 0, family: "fixture"); refusals.append(false) }
-                catch is QwenResidentMemoryRefusal { refusals.append(true) }
+            try QwenDenseStageLoadResources.$sampleOverride.withValue({ Self.roomy() }) {
+                #expect(throws: ProbeError.self) { _ = try QwenDenseStageLoadResources.requireInitial() }
+                for gate in gates { #expect(throws: QwenResidentMemoryRefusal.self) { try gate() } }
+                fault.disarm(requestID: request)
+                try ClusterLiveMemory.requireTensorParallel(bytes: 0, family: "fixture")
+                _ = try QwenDenseStageLoadResources.requireInitial()
             }
-            // Checks one and two pass (a real gate may refuse them too on a busy Mac: only the fault's are pinned).
-            #expect(refusals.suffix(2) == [true, true])
-            do { try allowance.requireContinuing(grownBytes: 0); Issue.record("the continuing gate admitted an armed fault") }
-            catch is QwenResidentMemoryRefusal {}
         }
-        fault.disarm(requestID: request)
     }
 }

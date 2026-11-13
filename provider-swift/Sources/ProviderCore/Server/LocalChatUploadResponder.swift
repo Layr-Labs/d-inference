@@ -198,6 +198,8 @@ where Inner.Context == BasicRequestContext {
             else { return badRequest }
             item = decoded
         }
+        let raw = Data(buffer: buffer), channel = EngineV2LogprobsChannel()
+        item.templateControls = item.templateControls.capturingLocalTemplateJSON(from: raw)
         // Optional unpublished-owner hook is reached only after outer auth,
         // body-limit collection and ordinary request decoding. Exact raw bytes
         // retain controls that the upstream request type deliberately omits.
@@ -210,7 +212,6 @@ where Inner.Context == BasicRequestContext {
         // in stream order. The generic service ignores them.
         let requestService: MLXOpenAIService
         let logprobs: EngineV2LogprobsChannel?
-        let raw = Data(buffer: buffer), channel = EngineV2LogprobsChannel()
         if let rawService = serviceForRawChat?(raw, item.request, channel) {
             requestService = rawService
             logprobs = ProviderLoop.extractLogprobsSpec(from: raw) != nil ? channel : nil

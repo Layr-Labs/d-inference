@@ -51,7 +51,8 @@ enum Gemma4TurnStructure {
         let indices = ordered.compactMap { $0[indexKey] as? Int }
         guard indices.count == messages.count, Set(indices).count == messages.count,
             indices.allSatisfy({ messages.indices.contains($0) }) else {
-            throw MultiModelBatchSchedulerEngineError.invalidToolPayload("native tool-result ownership is inconsistent")
+            throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
+                "native tool-result ownership is inconsistent", refusal: .invalidToolHistory)
         }
         return indices.map { messages[$0] }
     }
@@ -108,7 +109,8 @@ enum Gemma4TurnStructure {
                 if let id = message["tool_call_id"] as? String, !id.isEmpty {
                     guard let owner = ownerByCallID[id] else {
                         throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                            "tool result for tool_call_id \(id) has no matching assistant tool_call"
+                            "tool result for tool_call_id \(id) has no matching assistant tool_call",
+                            refusal: .unmatchedToolResult
                         )
                     }
                     pairedResults[owner, default: [:]][id, default: []].append(message)
@@ -118,7 +120,7 @@ enum Gemma4TurnStructure {
                         // validateGenericToolHistory already rejects this; keep
                         // the same clean 400 if reached through another path.
                         throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                            "tool message has no preceding assistant tool_calls")
+                            "tool message has no preceding assistant tool_calls", refusal: .unmatchedToolResult)
                     }
                     idlessResults[owner, default: []].append(message)
                     lastResultIndexByOwner[owner] = index
@@ -163,7 +165,8 @@ enum Gemma4TurnStructure {
                 if boundary < messages.count - 1 {
                     throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
                         "assistant tool_call ids [\(unanswered.joined(separator: ", "))] "
-                            + "have no tool results before the next message")
+                            + "have no tool results before the next message",
+                        refusal: .unansweredToolCall)
                 }
             }
 

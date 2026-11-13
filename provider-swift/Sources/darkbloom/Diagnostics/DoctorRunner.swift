@@ -274,6 +274,18 @@ enum DoctorRunner {
         }
 
         // ---- Coordinator trust (from the daemon's last trust_status) ----
+        // When no current decision is shown, an older none/legacy decision is
+        // history, not a grant: legacy is informational, a denial (none)
+        // warns, and the trust-level lines below still run unchanged.
+        // `appAttestAuthorized` stays with the current decision.
+        if authorization == nil, let state, let trust = state.trust,
+           let lastReported = state.lastReportedProviderAuthorization(coordinatorURL: coordinatorURL, now: now) {
+            out.append(Diagnostic(section: .trust, name: "last reported authorization",
+                                  level: lastReported.path == "legacy" ? .info : .warn,
+                                  message: ProviderAuthorizationReadiness.lastReportedSummary(
+                                      lastReported, receivedAt: trust.receivedAt, now: now),
+                                  fix: nil))
+        }
         if let authorization {
             out.append(Diagnostic(section: .trust, name: "serving authorization",
                                   level: appAttestAuthorized || authorization.path == "legacy" ? .pass : .warn,

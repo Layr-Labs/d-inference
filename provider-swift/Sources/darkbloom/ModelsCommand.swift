@@ -113,9 +113,13 @@ extension Models {
             let coordinatorURL = coordinator ?? snapshot.config.coordinator.url
             let client = ModelCatalogClient(coordinatorURL: coordinatorURL)
 
+            // The table's request also asks for the public aliases, which the
+            // note under the table needs; the `--json` request is as before.
             let entries: [CatalogModel]
+            let aliases: [CatalogAlias]
             do {
-                entries = try await client.fetchCatalog(typeFilter: type)
+                let catalog = try await client.fetchCatalogSnapshot(typeFilter: type, includeAliases: !json)
+                (entries, aliases) = (catalog.models, catalog.aliases)
             } catch let error as ModelCatalogError {
                 printError("\(error)")
                 throw ExitCode.failure
@@ -187,6 +191,20 @@ extension Models {
                 print()
                 print("  These models are no longer served by the network.")
                 print("  Remove with: \(BuildEnvironment.current.cliName) models remove <id>")
+            }
+
+            // -- Not downloaded, selectable on this Mac --
+            // Skipped when hardware detection failed, so nothing is guessed.
+            // `runtimeCapabilities` is nil only when no entry is gated.
+            if let hardware = snapshot.hardware {
+                let candidates = ModelsCatalogHint.candidates(
+                    entries: entries, aliases: aliases, downloadedIDs: downloadedIDs,
+                    memoryGb: Double(hardware.memoryGb), runtimeCapabilities: runtimeCapabilities ?? [])
+                for line in ModelsCatalogHint.lines(
+                    candidates: candidates, cliName: BuildEnvironment.current.cliName)
+                {
+                    print(line)
+                }
             }
         }
     }

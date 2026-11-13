@@ -26,10 +26,15 @@ struct NativeMediaToolsCapabilityTests {
         var model = ModelInfo(id: "native", sizeBytes: 1, estimatedMemoryGb: 1)
         let missing = try JSONEncoder().encode(model)
         #expect(!String(decoding: missing, as: UTF8.self).contains("native_media_tools"))
-        #expect(try JSONDecoder().decode(ModelInfo.self, from: missing).nativeMediaTools == nil)
+        #expect(!String(decoding: missing, as: UTF8.self).contains("native_media_controls"))
+        let decoded = try JSONDecoder().decode(ModelInfo.self, from: missing)
+        #expect(decoded.nativeMediaTools == nil && decoded.nativeMediaControls == nil)
         for value in [false, true] {
             model.nativeMediaTools = value
+            model.nativeMediaControls = value
             let encoded = try JSONEncoder().encode(model)
+            let object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+            #expect(object["native_media_controls"] as? Bool == value)
             #expect(try JSONDecoder().decode(ModelInfo.self, from: encoded) == model)
         }
     }

@@ -35,6 +35,33 @@ extension EngineV2Bridge {
         active[id]?.completionTokens += newTokens
     }
 
+    /// The requests the engine is answering now, from the counters above:
+    /// what `darkbloom status` lists while an answer runs.
+    func runningRequestSamples(model: String, now: ContinuousClock.Instant = .now)
+        -> [RunningRequestProgressTracker.Sample]
+    {
+        Self.runningRequestSamples(active: active, probes: modelCalibration.requests.keys, model: model, now: now)
+    }
+
+    /// Request IDs of a pair's warmup canary (`ProviderLoop.runClusterPairWarmup`).
+    static let pairWarmupRequestPrefix = "cluster-warmup-"
+
+    /// Only answers: never this engine's own calibration, shape-warmup and
+    /// shader-cache probes (`probes`, the IDs `runModelCalibrationCell`
+    /// registers) nor a pair's warmup canary, which run through the bridge
+    /// like requests while the Mac is otherwise idle.
+    static func runningRequestSamples(
+        active: [String: ActiveRequestState], probes: Dictionary<String, ModelCalibrationPolicy.Cell>.Keys,
+        model: String, now: ContinuousClock.Instant
+    ) -> [RunningRequestProgressTracker.Sample] {
+        active.compactMap { id, state in
+            guard !probes.contains(id), !id.hasPrefix(pairWarmupRequestPrefix) else { return nil }
+            return RunningRequestProgressTracker.Sample(
+                id: id, model: model, sinceAdmission: now - state.submittedAt,
+                sinceFirstToken: state.firstTokenAt.map { now - $0 }, outputTokens: state.completionTokens)
+        }
+    }
+
     /// Terminal usage can raise observed token counts, never erase them.
     /// Report decode rate over first-token→finish using completion - 1 tokens.
     func recordFinish(

@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-13
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -294,6 +294,66 @@ On M5 Ultra, Qwen3.5-9B peak MLX memory at 32,768 prompt tokens fell from
   advertised capacity do not change. A lower live transient shows up only
   through `liveKVHeadroomBytes`, which reads real MLX `active + cache`.
 
+### Gemma 4 dispatch qualification
+
+The [Gemma 4 native dispatch change](inference.md#gemma-4-native-dispatch)
+fuses the dense GeGLU product and sets no command-buffer limit of its own; the
+decode limits in force are the
+[operation-count policy](inference.md#gemma-decode-command-buffers). The
+provider's OS reserve, activation floor, LOAD quotation, KV grants, admission
+and memory-pressure safeguards remain unchanged.
+
+The linked endpoint screen, whose candidate also carried an earlier scoped
+command-buffer limit (`operations: 100`, `megabytes: 512`), measured repeat RSS of about 16.269 GiB for the
+candidate and 16.266 GiB for the baseline. The first candidate leg's lifetime
+physical-footprint peak included a cold prewarm and reached 20.06 GiB, versus
+17.54 GiB in the later warmed candidate leg. This is not a matched warm peak-memory
+comparison, and the endpoint did not expose MLX allocator peak. These results
+do not qualify lower reserves, higher admission limits, other chipsets or
+clustered execution.
+
+### Gemma 4 compiled feed-forward qualification
+
+The [compiled feed-forward path](inference.md#gemma-4-compiled-feed-forward-dispatch)
+retains live parameter arrays and child-module identities for eligible traces.
+Its weak owner reference avoids retaining the decoder; replaced or unsupported
+children retire an old trace, and trace destruction occurs outside the holder
+lock to preserve MLX evaluation-lock ordering. Source:
+`libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4CompiledFeedforward.swift`
+(`Gemma4CompiledFeedforwardCache`).
+
+The linked incremental endpoint comparison measured first-leg process lifetime
+physical-footprint maxima of about 20.05 GiB for the prior dispatch path and
+20.07 GiB with compiled feed-forward; later warmed legs measured 17.53 and
+17.56 GiB respectively. These include loading and prewarm, are not isolated
+feed-forward or MLX allocator peaks, and establish no memory reduction. Provider
+reserves, activation floors, LOAD quotations, KV grants and admission limits
+remain unchanged; the bounded decode result does not qualify increasing them.
+
+### Gemma 4 row-mapped NAX qualification
+
+The [row-mapped prefill route](inference.md#gemma-4-row-mapped-nax-prefill) keeps
+original activations, assignment maps and live expert arrays as graph inputs.
+It avoids the expanded sorted token tensor for the two gate/up products while
+retaining separate output arrays and the existing down/reduction graph. The
+helper adds no persistent parameter identity cache or copied expert bank.
+The guarded route is enabled by default; the
+[exact `0` rollback](../reference/configuration.md#gemma-4-row-mapped-nax)
+restores the original graph without changing hardware or admission eligibility.
+Sources: `libs/mlx-swift-lm/Libraries/MLXLMCommon/Gemma4RowMappedNAX.swift`
+(`tryPair`) and
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/Gemma4RowMappedNAXKernel.swift` (`pair`).
+
+Native checks cover live parameters, dropped wrappers, asynchronous evaluation,
+subset outputs and fixed full-model KV/frontier parity. They do not establish a
+lower peak allocation or a general workload memory bound. The endpoint reports
+process residency/footprint rather than MLX allocator peak, and lifetime peaks
+include loading and earlier requests. The bounded cold-TTFT result therefore
+does not qualify reducing reserves, activation floors or LOAD quotations, or
+increasing KV grants and admission limits. Those policies remain unchanged.
+Devices without NAX support retain the existing path; other devices and
+clustering require separate qualification.
+
 ### Load gate (`ModelLoadAdmission`)
 
 GLM sparse KV sizing uses the native asymmetric FP32 payload: each storage
@@ -499,6 +559,57 @@ found no candidate says `all loaded models are actively serving` only when each
 of them is serving work, and `no loaded model can be evicted` otherwise. The
 daemon state publishes the same exclusions (`eviction_exclusions`) and the
 ordinary serving selection (`serving_selection`) for `darkbloom status`.
+
+Selected-model recovery (`ProviderLoop+SelectedModelRecovery.swift`) retries
+the models the operator chose explicitly (`enabled_models`, `preload_models`,
+the pinned `model`, Autopilot's persisted selection) that memory, not the
+operator, kept out: the startup preload's candidates it skipped or that failed
+for memory, or that a slot cap left untried, and the selected models an
+Autopilot operation unloaded to load another model, queued as each leaves
+residency, whether the operation then succeeds or fails
+(`noteSelectedModelUnloaded`; an unload-only operation queues nothing). Before
+it, nothing retried them, and the coordinator cold-routes a model only to an
+idle machine. The capacity tick
+checks a waiting model when it is due: after 30 s, then 1, 2, 5 and every 10
+minutes, at once after any unload or a configuration change the running daemon
+reads (the saved `enabled_models` or Autopilot settings), and sooner when what
+blocked it ends first (a hold's expiry plus the idle threshold, an idle
+threshold, a minimum dwell or a per-model lease). A check plans on the same
+figures as the load gate (Super's LOAD-claim room against its narrowest
+configuration, otherwise usable load memory against weights plus headroom) and
+loads with `allowEviction: false`. Before the load it may unload only resident
+models whose weights make the room, least recently used first, that have no
+`evictionExclusions` entry and that `isProtectedFromRecoveryEviction` does not
+keep: never the ordinary selection, an Autopilot pin, or an advertised model a
+request could load straight back (`autopilotAllowsModel`), which would then
+evict the recovered model in turn. A candidate that still serves must also meet
+Autopilot's own victim rules (`selectedModelRecoveryVictimWait`): resident for
+`min_dwell_seconds`, no unexpired per-model lease, and idle, from its last
+request or its hold's expiry, for the longer of two minutes
+(`SelectedModelRecovery.victimMinimumIdle`) and `min_idle_seconds`. The attempt
+rechecks each victim against the plan's instant right before its unload. It
+never evicts a selected model, so it cannot churn against the operator's own
+models. It waits while a live Autopilot lease or a pause manages residency,
+while the owner uses the Mac under me first (`ownerPausesPublic`), and during
+any load, unload, operation, switch, startup preload or drain. The attempt
+rechecks these before each unload and again before the load, so one that
+begins while the last victim unloads stops the load. A
+refusal for memory, a slot or a transient state keeps the model waiting; any
+other load failure ends its recovery and leaves the model to the request path.
+A memory refusal that comes after the weights loaded (the post-load KV headroom
+guard, the re-slice checks, MiMo's grant) costs a whole load each time, so
+after three of them (`SelectedModelRecovery.postLoadRefusalLimit`, a policy
+value), counted since the model was queued or last made due by an unload or a
+configuration change, it is checked again only after one of those.
+Victims are evicted before the load's own checks run, so a load that then fails
+for another reason (missing files, an unpinned checkpoint) has still evicted
+them; that failure ends the model's recovery, so it costs at most one attempt's
+evictions. The daemon state reports each waiting model, its next check (none
+while it waits for an unload or a configuration change) and the last blocker
+(`selected_model_recovery`). The queue lives in memory: a restart rebuilds it
+from the startup preload only, so with `startup_preload = false`, or a
+nonempty `preload_models` that omits a model, a model that waited before the
+restart is not queued again and loads on request.
 
 The prompt token store (`PromptPieceTokenStore` in
 `provider-swift/Sources/ProviderCore/Inference/Prompting/PromptTokenCache.swift`)
@@ -781,7 +892,10 @@ alone does not release the probe's ownership: the bridge waits for the event
 pump and service reservation to retire. Shutdown follows the same ownership
 boundary. Retirement releases request ownership; it is not a claim that the
 allocator has returned every cached physical byte to the OS. Original request
-deadlines and memory admission remain authoritative during this wait.
+deadlines and memory admission remain authoritative during this wait. The wait
+ends early when the request is cancelled, and at `retirementBound` (30 s) with a
+retriable capacity refusal (`admitForeground`). Neither admits anything beside
+the unretired probe, and the slot reads `crashed` until that probe retires.
 
 The one-token startup health check is excluded from throughput learning, while
 its work accounting remains intact. Bounded calibration samples populate the
@@ -863,10 +977,36 @@ serving Mac, so the same request can project differently on other hardware:
   floors the aggregate rate
   (`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`,
   `IsolatedPrefillAdmissionRate.anchorFloorFraction`). Native engines keep
-  their recovery probe instead.
+  their recovery probe instead (GLM and MiMo only until their first
+  calibration cell, below).
+- GLM-5.3-Flash and native MiMo V2.6 let a cold prompt of at most 4,096
+  tokens raise their prefill estimate but never lower it: its rate is mostly the
+  request's fixed cost. Idle at nominal posture, with no calibration cell or
+  longer prompt in 120 seconds, they price prefill at no less than their
+  calibration cell
+  (`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`,
+  `NativePrefillEvidence`; `DARKBLOOM_TTFT_NATIVE_PREFILL_EVIDENCE=0` turns it off),
+  so once calibrated they take no short-prompt recovery. A busy Mac or another
+  posture keeps one eighth of the cell as its floor. A slower isolated short
+  sample stays in its prompt-size bucket only, out of their published
+  `isolated_prefill` measurement, `observed_prefill_tps` and slot telemetry's
+  `isolated_prefill_tps`, and the smallest bucket no longer tightens their
+  prompts. Off nominal posture a short sample still cannot lower the estimate,
+  so it keeps its nominal value until a longer prompt measures the new posture.
+- Three consecutive refusals that isolated prefill evidence older than 120
+  seconds explains on an idle Mac re-run the idle calibration probe once
+  (`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`,
+  `DeadlineRefusalStreak`): one solo 512-token cell remeasures the rate on that
+  Mac, at that thermal state, when it is idle, at nominal posture and on AC
+  power (never on battery; `DARKBLOOM_TTFT_REFUSAL_PROBE=0` turns it off). No
+  customer request is admitted without a projection for it. A refusal for
+  physical capacity, at a fresh rate, at the anchor or with under 5 seconds
+  left never counts.
 
-The anchor and floor shape admission only. The published isolated rate,
-capacity wire fields and the external platform's memory contract are unchanged.
+The anchor, floor and refusal streak shape admission only. The published
+prefill rates (apart from GLM's and MiMo's short-sample handling above),
+capacity wire fields and the external platform's memory contract are
+unchanged.
 
 ### Cross-repository agreement
 
@@ -952,7 +1092,7 @@ grant or reported capacity field changes, so
 | Post-load probe | `provider-swift/Sources/ProviderCore/Inference/Memory/KVHeadroomProbe.swift` |
 | Slot KV sizing and re-slice | `provider-swift/Sources/ProviderCore/Inference/Memory/EngineV2KVSizing.swift`, `provider-swift/Sources/ProviderCore/Inference/Memory/EngineV2Reslice.swift` |
 | Process-wide KV ledger | `provider-swift/Sources/ProviderCore/Inference/Memory/GlobalKVCacheBudget.swift` |
-| Calibration ownership and foreground lease | `provider-swift/Sources/ProviderCore/Inference/Performance/IdleCalibrationCoordinator.swift` (`startIfIdle`, `beginForeground`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+ModelCalibrationRequests.swift` (`runModelCalibrationRequest`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Events.swift` (`runPump`) |
+| Calibration ownership and foreground lease | `provider-swift/Sources/ProviderCore/Inference/Performance/IdleCalibrationCoordinator.swift` (`startIfIdle`, `admitForeground`, `isOverdue`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+ModelCalibrationRequests.swift` (`runModelCalibrationRequest`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Events.swift` (`runPump`) |
 | Deadline admission rate inputs | `provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift` (`DeadlineAdmissionFixes`, `IsolatedPrefillAdmissionRate`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Admission.swift` (`targetFirstTokenDeadlineAdmission`) |
 | MLX soft limits | `provider-swift/Sources/ProviderCore/Inference/Memory/MLXMemoryGuard.swift` |
 | Padded weight estimate, quantization | `provider-swift/Sources/ProviderCore/Models/ModelScanner+Discovery.swift` |
@@ -1158,23 +1298,30 @@ full-artifact memory fit, numerical parity or throughput; those require
 paired hardware qualification. The restore mechanism is described in
 [inference](inference.md#gemma-paged-prefix-restoration).
 
-A serial-prefill Gemma 4 pipeline's default width
-(`DistributedInstalledPlan.gemma4PipelineBatchLanes`,
+A Gemma 4 pipeline's width (the one its setup saved with serial prefill; one
+lane without one, as a guided setup saves it,
 [Gemma pipeline lanes](inference.md#gemma-pipeline-lanes)) adds no load-time
 allocation: the paged pool's capacity is a ceiling, and pages are reserved per
-request (`CBv2StageKVHost`). Each lane is charged its whole request state on
-every rank and admitted against live memory (`QwenResidentRuntime.reserveLane`);
-a lane the host cannot hold is refused alone, retryably. The measured
-activation floor still applies: prompt frames run one per step and decode rows
-add only M=1 work.
+request (`CBv2StageKVHost`). LOAD admits the width whole against live memory:
+every lane at the memory plan's request, as the lane book charges lanes held at
+once (`QwenBatchLaneBook.reservedBytes`). A Mac that cannot hold it now refuses
+the load. Each lane is then charged its whole request state on every rank and
+admitted against live memory again when it is reserved
+(`QwenResidentRuntime.reserveLane`); a lane the host cannot hold is refused
+alone, retryably. The measured activation floor still applies: prompt frames
+run one per step and decode rows add only M=1 work.
 
 ## Bonsai packed projection arithmetic
 
-Bonsai 27B uses the [packed FP32 row path](inference.md#bonsai-27b-packed-fp32-rows)
-for its eligible Hadamard projections. Existing LOAD allowances retain their
-constant-cache and activation charges; the layout change introduces no
-persistent weight copy. Its arithmetic receipt changes independently of the
-Bonsai 9B row. This implementation establishes no new tensor-parallel
+Bonsai 27B's eligible Hadamard projections take one of
+[two row paths](inference.md#bonsai-27b-packed-fp32-rows). Pair stages use the
+packed FP32 row path, one M=1 projection per row, so both machines agree byte
+for byte. A single Mac takes the same row path for a two-request decode step
+and batches calls of three or more rows (larger decode steps and prompt
+chunks) in one packed matmul, as provider 0.10.4 did.
+Existing LOAD allowances retain their constant-cache and activation charges;
+neither path introduces a persistent weight copy. The pair's arithmetic
+receipt changes independently of the Bonsai 9B row. This implementation establishes no new tensor-parallel
 capability, qualified hardware orientation, context ceiling or throughput claim;
 those remain properties of the recorded full-artifact runs.
 
@@ -1225,8 +1372,11 @@ A Gemma 4 tensor-parallel rank is charged its own share, not the whole model
 | Eight sealed frames of the packed collective (512 x 101,376 bytes and the seal) | per rank | about 415 MB |
 
 The layout's `requestAllowance` quotes one request at the memory plan's longest
-context (65,536 tokens) and prompt plus the per-rank charges, and the worker's
-LOAD gate reserves exactly that beside the shard. A reservation or lane asks
+context (65,536 tokens) and prompt plus the per-rank charges, and its
+`laneBytes` that request's per-request charges again for each further lane. The
+worker's LOAD gate reserves the allowance and the lane charge for every lane of
+its saved width after the first beside the shard, the width the planner priced
+([lane widths](inference.md#tensor-parallel-lane-widths)). A reservation or lane asks
 the live gate for every held request, the new one and the per-rank charges. A
 request past the memory plan, up to the profile's 262,144 tokens, is charged at
 its own context ([Gemma 4 native context](inference.md#gemma-4-native-context-on-a-pair)). The

@@ -1,6 +1,6 @@
 # Install, update, and uninstall the provider
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-11
 
 How to put the `darkbloom` CLI on an Apple Silicon Mac with `scripts/install.sh`,
 what the script verifies before it touches an existing install, how the binary
@@ -153,9 +153,10 @@ The `PATH` line the installer added is read only by a new shell. Until then,
 darkbloom --opencode            # or --hermes, or plain darkbloom start for neither
 ```
 
-It asks how this Mac serves (**Only me**, **Darkbloom network** or **Both, me
-first**); with **Both, me first** it then asks which models to serve and sets
-OpenCode up. The [quickstart](./quickstart.md) walks through each choice,
+It asks nothing about how this Mac serves: a first start serves **Both**
+(Darkbloom, and your local API beside it; Darkbloom keeps serving while you use
+the Mac) and saves it, asks which models to serve and sets OpenCode up.
+`darkbloom local` serves only you instead. The [quickstart](./quickstart.md) walks through each choice,
 including linking your account to earn on the Darkbloom network.
 
 ## Verify
@@ -290,6 +291,19 @@ identity becoming available without other evidence of a launch. This also covers
 a candidate that remains running without a heartbeat
 (`provider-swift/Sources/ProviderCore/Service/WatchdogRecoveryService.swift`,
 `observeHealthyProvider`).
+
+A restart you ask for before the release is promoted (`darkbloom restart`, or
+`stop` then `start`) is never a failed start: the stopped provider records in
+`provider-run.json` that it was asked to stop, and the startup timeout then runs
+from the start of the next process launchd runs (`startupWindowStart`). The
+provider's own restart into an update counts the same way. After a crash, a
+hang, a reboot, a `kill` or any other stop, the timeout still runs from the
+release's launch, whatever started the provider again, and so it does after a
+`--force` stop that had to kill the provider before it recorded its stop. A
+restarted process that sends no heartbeat within its own window still counts
+too. A release restarted more often than every 10 minutes is never promoted:
+the watchdog logs a warning in `~/.darkbloom/watchdog.log` at its 5th, 10th,
+20th, 40th… restart ([`darkbloom update`](./cli-reference.md#darkbloom-update)).
 
 The unprivileged updater never touches the root fan helper; after an update run
 `sudo darkbloom fan enable` again if you use [fan control](./fan-control.md).

@@ -296,6 +296,7 @@ final class MiMoV26NativeLoadTransaction: @unchecked Sendable {
     private var nativeConstruction: UUID?
     private var slotAssemblyClaimed = false
     private var usageReaderPreparationHookForTesting: (@Sendable () -> Void)?
+    private var mediaReservationRemovalHookForTesting: (@Sendable () -> Void)?
     private var cancelled = false
     private var published = false
     private var draining = false
@@ -1095,11 +1096,17 @@ final class MiMoV26NativeLoadTransaction: @unchecked Sendable {
     }
     private func removeSettledMediaReservation(_ reservation: MiMoV26ManagedMediaReservation) {
         guard reservation.isFullyRetired else { return }
-        lock.withLock {
-            if mediaReservations[reservation.id] === reservation {
-                mediaReservations.removeValue(forKey:reservation.id)
-            }
+        let removalHook = lock.withLock { () -> (@Sendable () -> Void)? in
+            guard mediaReservations[reservation.id] === reservation else { return nil }
+            mediaReservations.removeValue(forKey:reservation.id)
+            return mediaReservationRemovalHookForTesting
         }
+        removalHook?()
+    }
+    /// Observation only: runs outside the lock after each settled reservation
+    /// leaves the map. Test-only.
+    func setMediaReservationRemovalHookForTesting(_ hook: (@Sendable () -> Void)?) {
+        lock.withLock { mediaReservationRemovalHookForTesting = hook }
     }
 
     func registerDecodedMediaConsumer(_ lease: NativeLocalConsumerLease,

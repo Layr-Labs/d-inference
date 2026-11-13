@@ -294,10 +294,11 @@ extension QwenResidentRuntime {
                     // Each loaded stage's shared KV storage (Qwen 3.5 stages; other
                     // families keep their per-request contiguous storage), bounded by
                     // the longest request served (a ceiling, not an allocation).
+                    let hostBound = QwenResidentRuntime.stageKVHostBound(admission)
                     for value in [loaded.loaded] + (producerStage.map { [$0.loaded] } ?? []) {
                         try CBv2StageKVHost.install(on: value, kind: kvKind, lanes: batch.lanes,
-                            maximumTokensPerRequest: admission.servedProfile.maximumContextTokens,
-                            maximumChunkTokens: admission.servedProfile.maximumChunkTokens, quantization: kvQuantization)
+                            maximumTokensPerRequest: hostBound.maximumTokensPerRequest,
+                            maximumChunkTokens: hostBound.maximumChunkTokens, quantization: kvQuantization)
                     }
                     if batch.batching, loaded.loaded.kvHost.host == nil {
                         throw ProbeError("Batch lanes need a stage KV host; this model's stages keep per-request storage")
@@ -312,16 +313,9 @@ extension QwenResidentRuntime {
                             return .init(activeBytes: value.activeMemory, cachedBytes: value.cacheMemory,
                                 peakBytes: value.peakMemory)
                         }, clearCache: { Memory.clearCache() }, check: checked)
-                    // The schedule's named prefill storage for the longest prompt of `p`.
-                    func prefillAllowance(_ p: QwenLayerStageGenerationProfile) throws -> QwenGenerationPrefillAllowance? {
-                        try QwenResidentPrefillSelection.allowance(
-                            QwenResidentPrefillSelection.policy(configuration.prefillSchedule), rank: collective.rank,
-                            promptCount: p.maximumPromptTokens, chunkSize: p.maximumChunkTokens,
-                            hiddenSize: admission.profile.hiddenSize,
-                            elementBytes: qwenStageWireElementBytes(admission.profile.activationDType),
-                            bound: QwenResidentResourceEnvironment.allocationBound)
-                    }
-                    let prefill = try prefillAllowance(admission.memoryProfile)
+                    let prefill = try QwenResidentRuntime.stagePrefillAllowance(admission, rank: collective.rank,
+                        schedule: configuration.prefillSchedule, profile: admission.memoryProfile,
+                        bound: QwenResidentResourceEnvironment.allocationBound)
                     let split = try QwenResidentRuntime.phaseSplitAllowance(mode, admission: admission,
                         stage: loaded, rank: collective.rank, promptCount: admission.memoryProfile.maximumPromptTokens,
                         speculativeTerms: speculativeTerms)
@@ -332,6 +326,25 @@ extension QwenResidentRuntime {
                         rank: collective.rank, mode: mode, speculativeTerms: speculativeTerms)
                     try admitted.allowance.requireLive(additionalNativeBytes: admitted.extraNativeBytes,
                         additionalHostBytes: admitted.extraHostBytes)
+                    // A width of lanes (the setup's saved width) is admitted whole: every lane at the memory plan's
+                    // request, charged as the lane book charges them all held at once, beside the stage. That is the
+                    // figure its placement priced (`ClusterPlacementPolicy.pipelineLanes`). Each lane is still gated
+                    // live when it is reserved.
+                    if batch.batching {
+                        let reserved = try QwenBatchLaneBook.reservedBytes(lanes: batch.lanes, allowance: maximum)
+                        let context = admission.memoryProfile.maximumContextTokens
+                        do {
+                            try maximum.requireLive(additionalNativeBytes: QwenLongPrefillCheckedBytes.sum([
+                                reserved - maximum.reservedBytes, prefill?.extraNativeBytes ?? 0, split?.extraNativeBytes ?? 0]),
+                                additionalHostBytes: QwenLongPrefillCheckedBytes.sum([prefill?.extraHostBytes ?? 0,
+                                    split?.extraHostBytes ?? 0]))
+                        } catch {
+                            throw ProbeError("Resident load refused: \(batch.lanes) requests at once, each of \(context) context "
+                                + "tokens, do not fit on rank \(collective.rank) now (\(error))")
+                        }
+                        log("darkbloom-resident-lanes-v1 rank=\(collective.rank) lanes=\(batch.lanes) context=\(context)"
+                            + " reserved=\(reserved)")
+                    }
                     servingContext = admitted.contextTokens
                     prefixBudget = QwenStagePrefixCache.budget(roomBytes: admitted.roomBytes)
                     log("darkbloom-prefix-v1 rank=\(collective.rank) budget_bytes=\(prefixBudget ?? 0)"
@@ -358,18 +371,14 @@ extension QwenResidentRuntime {
                     activeLoaded = Memory.activeMemory
                     let planned = try QwenLongPrefillCheckedBytes.sum([maximum.reservedBytes, prefill?.reservedBytes ?? 0,
                         split?.reservedBytes ?? 0])
-                    // A family that serves longer requests than the memory plan
-                    // (`servedProfile`) charges each at its own context when it is
-                    // reserved: READY's capacity, a ceiling and never a grant, covers
-                    // its longest.
-                    let served = admission.servedProfile
-                    guard served.maximumContextTokens > admission.memoryProfile.maximumContextTokens else { return planned }
-                    let longest = try loaded.requestAllowance(plan: admission.plan, rank: collective.rank,
-                        maximumTokens: served.maximumContextTokens, chunkSize: served.maximumChunkTokens,
-                        decode: .init(mode: mode, rank: collective.rank, speculativeTerms: speculativeTerms),
-                        bound: QwenResidentResourceEnvironment.allocationBound)
-                    return max(planned, try QwenLongPrefillCheckedBytes.sum([longest.reservedBytes,
-                        prefillAllowance(served)?.reservedBytes ?? 0]))
+                    return try QwenResidentRuntime.stageRequestCapacity(admission, rank: collective.rank,
+                        schedule: configuration.prefillSchedule, plannedBytes: planned,
+                        bound: QwenResidentResourceEnvironment.allocationBound) { tokens, chunk in
+                        try loaded.requestAllowance(plan: admission.plan, rank: collective.rank,
+                            maximumTokens: tokens, chunkSize: chunk,
+                            decode: .init(mode: mode, rank: collective.rank, speculativeTerms: speculativeTerms),
+                            bound: QwenResidentResourceEnvironment.allocationBound)
+                    }
                 } catch {
                     // Prefer a recorded native fault over a secondary Swift
                     // validation/shape error before leaving this error scope.
@@ -422,5 +431,44 @@ extension QwenResidentRuntime {
             // when local model cleanup succeeded. The worker must terminate.
             throw primary
         }
+    }
+}
+
+extension QwenResidentRuntime {
+    /// The longest request each loaded stage's KV host is bounded by, a ceiling
+    /// and not an allocation: the served profile's (`servedProfile`), so a
+    /// stage that serves its whole profile holds its longest request.
+    static func stageKVHostBound(_ admission: any LayerStageResidentAdmission)
+        -> (maximumTokensPerRequest: Int, maximumChunkTokens: Int) {
+        let served = admission.servedProfile
+        return (served.maximumContextTokens, served.maximumChunkTokens)
+    }
+
+    /// The schedule's named prefill storage on `rank` for the longest prompt of `profile`.
+    static func stagePrefillAllowance(_ admission: any LayerStageResidentAdmission, rank: Int,
+                                      schedule: ClusterPrefillSchedule, profile: QwenLayerStageGenerationProfile,
+                                      bound: (Int) throws -> Int) throws -> QwenGenerationPrefillAllowance? {
+        try QwenResidentPrefillSelection.allowance(QwenResidentPrefillSelection.policy(schedule), rank: rank,
+            promptCount: profile.maximumPromptTokens, chunkSize: profile.maximumChunkTokens,
+            hiddenSize: admission.profile.hiddenSize,
+            elementBytes: qwenStageWireElementBytes(admission.profile.activationDType), bound: bound)
+    }
+
+    /// READY's request capacity on a stage, a ceiling and never a grant: the
+    /// memory plan's planned bytes. A family that serves longer requests than
+    /// the memory plan (`servedProfile`) charges each at its own context when
+    /// it is reserved, so READY's capacity covers its longest: one request at
+    /// the served context and chunk (`allowance`, the loaded stage's) with the
+    /// schedule's prefill for the served prompt, when that is more.
+    static func stageRequestCapacity(_ admission: any LayerStageResidentAdmission, rank: Int,
+                                     schedule: ClusterPrefillSchedule, plannedBytes: Int,
+                                     bound: (Int) throws -> Int,
+                                     allowance: (_ maximumTokens: Int, _ chunkSize: Int) throws
+                                         -> QwenResidentRequestAllowance) throws -> Int {
+        let served = admission.servedProfile
+        guard served.maximumContextTokens > admission.memoryProfile.maximumContextTokens else { return plannedBytes }
+        let longest = try allowance(served.maximumContextTokens, served.maximumChunkTokens)
+        let prefill = try stagePrefillAllowance(admission, rank: rank, schedule: schedule, profile: served, bound: bound)
+        return max(plannedBytes, try QwenLongPrefillCheckedBytes.sum([longest.reservedBytes, prefill?.reservedBytes ?? 0]))
     }
 }

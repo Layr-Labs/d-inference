@@ -326,6 +326,30 @@ struct PrefixCacheContractTests {
         #expect(cost.bytes(deepest: Int.max / 2, frontiers: 1) == Int.max)
     }
 
+    /// Every session that plans a prompt capture keeps at most the cache's
+    /// frontiers per prompt: the one-request path and the pipeline's lanes
+    /// (`QwenResidentRuntime+Batch.swift`, `laneSession`) alike. Uncapped, a
+    /// lane kept every 512-token frontier, each with its own copy of every
+    /// sliding-window layer (about 0.09 GB on a Gemma 4 stage): a 127K lane
+    /// grew 30 GB against its 7.6 GB charge (M5 Ultra, 2026-11-10). A lane's
+    /// session needs a loaded stage, so this reads the sources.
+    @Test func everySessionThatCapturesAPromptKeepsAtMostTheCachesFrontiersPerPrompt() throws {
+        let sources = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("Sources/DarkbloomClusterRuntime")
+        let files = try #require(FileManager.default.enumerator(at: sources, includingPropertiesForKeys: nil))
+            .compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" }
+        var planning: Set<String> = []
+        for file in files {
+            let text = try String(contentsOf: file, encoding: .utf8)
+            guard text.contains(".prefixCaptureFrontiers = ") else { continue }
+            planning.insert(file.lastPathComponent)
+            #expect(text.contains(".prefixCaptureMaximumFrontiers = prefixCache.frontiersPerPrompt"),
+                    "\(file.lastPathComponent) plans a prompt capture without the cache's frontier cap")
+        }
+        #expect(planning.isSuperset(of: ["QwenLayerStageGenerationDriver.swift", "QwenResidentRuntime+Batch.swift"]),
+                "the capture sites moved: \(planning.sorted())")
+    }
+
     /// The session captures only the frontiers after the prefix it reuses,
     /// and nothing on a repeat of the whole prompt; the reservation charges
     /// that, not the whole prompt as if cold. Otherwise a phantom capture

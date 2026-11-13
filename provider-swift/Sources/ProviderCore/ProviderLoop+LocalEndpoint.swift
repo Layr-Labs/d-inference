@@ -32,6 +32,8 @@ extension ProviderLoop {
     func startLocalEndpoint(_ cfg: LocalInferenceHTTPConfig) {
         guard localServerTask == nil else { return }
         enableMeFirstIfConfigured()
+        // A pair's API takes requests only while its pair does: none before its slot's admission opens.
+        syncClusterPairGate()
         // Fires only once OUR server has actually bound the socket — the
         // authoritative bind signal. We publish discovery here (never from a
         // best-effort HTTP probe that a foreign process on the same port

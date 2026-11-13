@@ -24,7 +24,7 @@ import Testing
 /// page size, with prompt and boundary of hundreds of tokens; and there,
 /// through a balanced record, whose latents the codec encodes
 /// (`checkBalanced`).
-@Suite("GLM tensor-parallel prefix SSD restore", .serialized)
+@Suite("GLM tensor-parallel prefix SSD restore", .serialized, .boundedBufferCache)
 struct GLM5NextTensorParallelPrefixRestoreTests {
     typealias Record = GLM5NextTensorParallelPrefixRecord
     typealias Plan = GLM5NextTensorParallelPrefillPlan

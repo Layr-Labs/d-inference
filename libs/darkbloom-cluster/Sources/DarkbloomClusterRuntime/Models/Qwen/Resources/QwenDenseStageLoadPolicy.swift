@@ -412,3 +412,25 @@ enum QwenDenseStageLoadPolicy {
         }
     }
 }
+
+extension QwenDenseStageLoadPolicy {
+    /// The lanes a tensor-parallel rank's LOAD reserves on this sample (`GLM5NextTensorParallelResidentRuntime`): the
+    /// widest of its saved width (`lanes`) down to one whose requirement (`bytes(width)`, beside the loading headroom)
+    /// the gate admits, or nil when not even one lane fits. The saved width is a ceiling, not a condition: a load one
+    /// lane fits is never refused for the rest, which are admitted one by one as they come (each lane's live gate).
+    static func lanesAdmitted(saved lanes: Int, on os: QwenDenseStageLoadOSObservation, purpose: String, now: UInt64,
+                              bytes: (_ lanes: Int) throws -> Int) throws -> Int? {
+        for width in stride(from: lanes, through: 1, by: -1) {
+            let required = try tensorParallelRequiredBytes(bytes(width), physicalMemoryBytes: os.physicalMemoryBytes)
+            if try decide(os, requiredBytes: required, purpose: purpose, now: now).admitted { return width }
+        }
+        return nil
+    }
+
+    /// What a tensor-parallel rank's gate asks the host for `bytes` (`ClusterLiveMemory.requireTensorParallel`):
+    /// those bytes and the loading headroom, never less than the floor.
+    static func tensorParallelRequiredBytes(_ bytes: Int, physicalMemoryBytes: Int) throws -> Int {
+        max(minimumAdmissibleBytes(physicalMemoryBytes: physicalMemoryBytes),
+            try QwenLongPrefillCheckedBytes.sum([bytes, loadingHeadroomBytes(physicalMemoryBytes: physicalMemoryBytes)]))
+    }
+}

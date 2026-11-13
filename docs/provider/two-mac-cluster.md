@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-12
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -96,7 +96,7 @@ onto the Macs and, later, what to do with a running cluster. Where the screen
 has no color (`NO_COLOR`, `TERM=dumb`, a pipe), the same list is numbered and
 one key answers it: a number, enter for the first line, or a letter only one
 line starts with (`y` for "Yes"). q or Esc cancels any list, so q never
-picks a line such as "Qwen3.8-27B-4bit-mtp · 16.3 GB · pipeline". While the setup waits (for the other Mac,
+picks a line such as "Qwen3.8-27B-4bit-mtp · 16.3 GB". While the setup waits (for the other Mac,
 for Allow), q or Esc stops it and an arrow key does nothing; no prompt asks for
 a key to do something. The model list shows only models
 approved for clusters (`ClusterPublicModels.declared`: GLM-5.3-Flash,
@@ -199,8 +199,8 @@ follows the start from the cluster's status the two Macs exchange over the cable
    by itself keeps it waiting, with a live row and the time of the bound, e.g.
    "Waiting for Apple to verify this Mac (Darkbloom retries by itself) · 2 of
    15 min" or "Waiting for Darkbloom to pair both Macs".
-4. It ends with the leading Mac's outcome. After ✓, the same ✓ block, then "You
-   can close this window." After the leading Mac's ✗ (`ClusterControlReply.start`
+4. It ends with the leading Mac's outcome. After ✓, the same one-line ✓ block
+   and hint as the leading Mac ([the ending](#the-ending)). After the leading Mac's ✗ (`ClusterControlReply.start`
    with phase `failed`, named from this Mac's side), the same ✗ and next step,
    then "Choose Retry on the other Mac (…): its screen shows the choices." That
    line appears only in that ✗, since the leading Mac's screen shows Retry then.
@@ -249,35 +249,57 @@ time, a bar of the real bytes during a copy or download, the same per-Mac rows
 it finishes is said once ("✓ Files (9 min 12 s)"). Each new step gets the
 follow's whole bound again, and a copy whose bytes still move never counts as
 silence. A leading Mac with an older Darkbloom publishes none, and the Mac
-that joined keeps its general words. The leader ends with the outcome as its own block, between
-two rules, then the pair's card, as `darkbloom start` ends, and the shell:
+that joined keeps its general words.
+
+<a id="the-ending"></a>
+
+Both Macs end the same way: one line in its own block, between two rules,
+bold green on a color terminal, then one hint
+(`ClusterOnboardingDriver.servedEnding`):
 
 ```
 ────────────────────────────────────────────────
-✓ Serving Qwen3.8-27B-4bit-mtp through Darkbloom on both Macs (pipeline)
-  API at http://localhost:8001 on this Mac
-  Test response in 0.61 s
+✓ Serving Qwen3.8-27B-4bit-mtp on both Macs
 ────────────────────────────────────────────────
-  Model:   Qwen3.8-27B-4bit-mtp · pipeline (Apple M3 Ultra 32 layers / Apple M5 Max 32 layers)
-  Macs:    This Mac leads · the other Mac (Apple M5 Max, 128 GB) follows
-  Serves:  through Darkbloom
-  Logs:    ~/.darkbloom/cluster-setup/service.log
-  Starts by itself at login on both Macs.
+  `darkbloom status` for details
+```
+
+Through Darkbloom is implied. Served locally (`darkbloom cluster local`), the
+line says where: `✓ Serving <model> on both Macs, on your local API at
+http://localhost:8001` (with `on the other Mac` when that Mac's part serves
+the API). The Mac that joined reads the line from the leading Mac's status
+(`ClusterOnboardingReady.endingTitle(inStatusLine:)`). The pair's card (its
+split, the Macs, the local API, the log, whether it starts at login and the
+commands that control it) is in `darkbloom status` on either Mac
+([below](#darkbloom-status-on-a-paired-mac)). A build whose cluster service
+lives only as long as its window adds "Keep this window open: this Mac's
+cluster service stops with it."
+
+On an interactive terminal both Macs then say "Press Enter to exit." and wait
+for Enter, q or Esc (`ClusterOnboardingConsole.waitForExit`); the pair keeps
+serving. A plain transcript (`NO_COLOR`, `TERM=dumb`, a pipe), an agent's run
+and anything without a terminal never wait. A ✗ that ends a run (a failed
+test, a different build, the leading Mac's ✗ on the Mac that joined) ends the
+same way.
+
+<a id="darkbloom-status-on-a-paired-mac"></a>
+
+`darkbloom status` on a paired Mac starts with `darkbloom cluster status`'s
+lines (who leads, the model with its mode and split, how it serves, the
+outcome with the test's time, the local API), then the rest of the card
+(`ClusterPairSummary.statusCardLines`; the restart line from this Mac's
+auto-login and FileVault settings, `ClusterOnboardingRestart.thisMacLine`):
+
+```
+Logs: ~/.darkbloom/cluster-setup/service.log
+Starts by itself at login on this Mac.
+After a restart, this Mac serves again by itself.
 
   darkbloom stop     Stop both Macs
   darkbloom restart  Restart with the current model
-  darkbloom status   Check status
+  darkbloom cluster  Change the model
 ```
 
-A pair served only on its local API (**Only me**, or a pair Darkbloom doesn't
-take) says `Local:   http://localhost:8001` instead of `Serves:`, on the leading Mac's own saved port. The login line says `on both Macs` only when the cluster
-service starts by itself at login on both Macs. Otherwise it names the Mac where
-it doesn't (`Starts by itself at login on this Mac, not on the other Mac.`). A
-Mac with an older Darkbloom doesn't report it, so the card says the other Mac
-doesn't say. On a Mac named there, `darkbloom cluster` turns its service on
-again. With a build whose cluster service lives only as long as its window, the
-card says to keep that window open instead, or both windows when neither Mac's
-starts at login.
 Darkbloom Dev, the DevNet app, keeps its own pair: its own pairing, cluster
 setup, cluster service and ports on the cable, so its pair and the production
 app's never answer each other. Only one app's pair runs on a Mac at a time: both
@@ -294,28 +316,26 @@ there. Its
 pair's API takes 8000 too, or the lowest free port up to 8020 when the
 production app's pair holds it; its card and hints name `darkbloom-dev`.
 
-Served on the leader's local API only (you chose **Only me**, or the
-coordinator has no cluster support), the block says
-`✓ Serving <model> on this Mac's local API only`. It
-says Serving only once both Macs loaded the model and a request answered.
+It says Serving only once both Macs loaded the model and a request answered.
 `darkbloom cluster` on the Mac that joined shows the same outcome block once the
 cluster has one.
 
 Serving through Darkbloom needs both Macs logged in (`darkbloom login`): the
 coordinator pairs only logged-in Macs. Before the Start step starts anything,
 the leader names each Mac without a login ("This Mac and the other Mac (…)
-aren't logged in to Darkbloom, so the coordinator won't pair them.") and offers
-**Log in on this Mac** (or **Check again** after `darkbloom login` on the other
-Mac), **Serve locally only** or **Cancel**.
+aren't logged in to Darkbloom, so the coordinator won't pair them."), says
+"To use the pair just for yourself, run `darkbloom cluster local`."
+(`ClusterOnboardingDriver.localPairHint`) and offers **Log in on this Mac** (or
+**Check again** after `darkbloom login` on the other Mac) or **Cancel**.
 
 A start that does not come to serve shows `✗ Not serving: <reason>.` as the
 block, with the next step under it ("The other Mac (…) isn't verified by Apple
 yet; Darkbloom retries by itself at about 00:34. Don't restart either Mac until
 then.", "… lacks free memory for its share", "A part keeps ending the same way:
 …"; the time is that Mac's local App Attest key-generation safeguard,
-"within minutes" when it is unknown), and stays open with **Retry**, **Change
-model**, **Serve locally only** and **Diagnostics** (a redacted file in the home
-folder). q leaves with "Not serving yet. Both Macs keep trying by themselves;
+"within minutes" when it is unknown), the same `darkbloom cluster local` hint
+when the pair is set to serve through Darkbloom, and stays open with **Retry**,
+**Change model** and **Diagnostics** (a redacted file in the home folder). q leaves with "Not serving yet. Both Macs keep trying by themselves;
 run `darkbloom cluster` to check." and exit status 1, never Done.
 
 Apple's check is part of every start: each Mac's new part needs a current App
@@ -348,88 +368,78 @@ and shows the result.
 After setup, `darkbloom cluster` works like `darkbloom start`; on a paired Mac,
 `darkbloom start` opens the same screen, and `darkbloom stop`, `restart` and
 `status` act on both Macs. In a terminal, `darkbloom start`'s first line says
-what that screen does: on the leader of a stopped pair, ``This Mac is in a two-Mac cluster with the other Mac
-(…), which is stopped. Press Enter to start it with Qwen 3.8 27B (last used), or
-choose another model.``; otherwise ``…: opening the pair's screen.`` The screen
+what that screen does: on the leader of a stopped pair whose other Mac answers,
+``This Mac is in a two-Mac cluster with the other Mac (…), which is stopped.
+Press Enter to start it with Qwen 3.8 27B (last used), or choose another
+model.``; otherwise ``…: opening the pair's screen.`` (with the other Mac
+silent the screen first offers Try again, Start over or Quit). The screen
 opens with both Macs and the cable ("This Mac
 (Studio A) leads · the other Mac (Apple M3 Ultra, 256 GB) follows · cable
 ready"; the other Mac by its hardware name, since no computer name crosses the
-cable), then the pair's status: the outcome block (`✓ Serving …` or `✗ Not
-serving: <reason>`), or "Stopped; last model …".
+cable; "This Mac (Studio A) · the other Mac (…) isn't answering" when it
+doesn't answer), then the pair's status: the outcome block (`✓ Serving …` or
+`✗ Not serving: <reason>`), or "Stopped; last model …".
 
 On the leader, the pair's model list follows, like `darkbloom start`'s picker:
 
-- The model serving now is marked "serving now" (with the mode it serves in when
-  the list shows another), or "last used" when the status above says the pair
-  isn't serving, and is preselected. Enter on the model the pair serves sends one
-  test request; in another mode it asks first ("Switch Gemma 4 26B from tensor
-  parallel to pipeline? It stops serving on both Macs while it loads again …").
-  A stopped pair's last model starts again in the mode it served in.
-- Each model shows its size, where it is (copied or downloaded first), and the
-  modes it runs here ("tensor parallel or pipeline"): the one the mode question
-  recommends first, else the fastest measured on this pair with this build,
-  else the planner's choice. A model named on the command line
-  (`darkbloom cluster local <model>`) starts in that same mode. The list shows
-  no speed: neither the model list nor the mode question quotes tokens per
-  second. Models these Macs cannot serve are not listed.
-- Under the models, **Change how the pair serves (now: …)** asks the three
-  choices again, the way it serves now preselected
-  ([Both, me first](#both-me-first-the-pairs-own-api-beside-darkbloom)); the
-  current model then serves the chosen way. Serving through Darkbloom checks
-  both Macs' logins first, before the local API stops. (`darkbloom cluster local`
-  shows **Switch to serving through Darkbloom** there instead.) **Start over
-  (unpair and set up again)** asks once ([pairing again](#pairing-again)).
+- The model serving now is marked "serving now", or "last used" when the status
+  above says the pair isn't serving, and is preselected. Enter on the model the
+  pair serves sends one test request and keeps the mode it serves in.
+- Each model shows its size and where it is (copied or downloaded first). The
+  list shows no mode and no speed: `darkbloom cluster` chooses the mode itself
+  (below). Models these Macs cannot serve are not listed.
+- Under the models, **Start over (unpair and set up again)** asks once
+  ([pairing again](#pairing-again)). `darkbloom cluster` has no line that
+  changes how the pair serves: it always serves Both
+  ([below](#both-me-first-the-pairs-own-api-beside-darkbloom)).
+  `darkbloom cluster local` shows **Switch to serving through Darkbloom** there.
 - q or Esc changes nothing; the screen shows the status again and the commands.
 
-A model that runs more than one way here asks how both Macs split it. The
-question's first line names the model and recommends a mode for these two Macs,
-with why: "Recommended for Gemma 4 26B on these two Macs: Tensor parallel,
-faster here and serves up to 8 requests at once." The speeds rank the modes but
-the question never quotes them: neither the recommendation nor a mode's line
-shows tokens per second. In a colour terminal the mode is in bold. In a narrow
-window the reason is shortened ("faster, up to 8 at once"), then left out; the
-model's and the mode's names never are. That mode's line ends "· recommended
-for these Macs", and Enter takes it (`ClusterOnboardingModeAdvice.advise`). The
-leading Mac makes the recommendation from its plans, so both Macs' screens show
-the same words:
+<a id="tensor-parallel-or-pipeline"></a>
 
-- Only modes whose own plan fits both Macs' free memory now count (while a
-  model serves, its memory is freed first, so fitting now doesn't decide). One
-  that fits alone is "the only one that fits these Macs now". Serving through
-  Darkbloom, a mode Darkbloom serves publicly comes before one it doesn't.
-- Among the rest, through Darkbloom, the mode that serves more requests at once
-  wins, because Darkbloom turns away what a busy pair can't take; serving
-  **Only me**, the mode clearly faster on this pair wins (measured, else the
-  planner's prediction; within 5 % counts as the same speed).
-- A measurement outranks a prediction: while some modes have served on this
-  pair and others haven't, the fastest measured one is recommended ("the only
-  one measured on these Macs so far"), because the planner's figure for a mode
-  that hasn't served can be far off (two M5 Ultras, Gemma: a pipeline predicted
-  at 152 tokens/s served 64, beside tensor parallel measured at 111).
-- "Measured" means served at least 3 times with this Darkbloom build
-  (`ClusterServedModes`). Right after an update nothing has, so until one of
-  the modes serves with the new build, the question ranks them by what these
-  Macs served with an earlier build, the same way (through Darkbloom or
-  locally, with or without Qwen's tensor assistant). It counts only records
-  that say how they were served, which builds write from 0.10.11 on. So the
-  update from 0.10.10 to 0.10.11 still recommends from the planner's
-  prediction, until a mode has served with 0.10.11; the earlier-build ranking
-  first applies at the update after it. There is no safe way to read 0.10.10's
-  records: they name neither the way they were served nor Qwen's assistant,
-  and equal tensor-parallel shares are used through Darkbloom and locally
-  alike, so nothing in a record tells the two apart. The prediction decides
-  only when no such record exists (pair-2, DevNet .118: right after the update
-  the question recommended Gemma's pipeline from predictions; replayed with its
-  records, the tensor-parallel records from .110, which say how they were
-  served, recommend tensor parallel, "the only one measured on these Macs so
-  far", and .92's records, written before builds said how they served, are
-  skipped).
-- Nothing fits, or there is no measured or predicted speed and no difference
-  in requests at once: "No recommendation for <model> on these two Macs:
-  <why>.", nothing is
-  marked, and the cursor starts as before: the model serving now keeps its
-  mode, any other starts on the fastest measured mode with this build (else the
-  planner's).
+**Tensor parallel or pipeline is chosen for you**
+(`ClusterOnboardingMode.automaticIndex`): tensor parallel, unless it can't run
+on these Macs or this pair measured it slower; then the fastest of the modes
+measured faster than it. With no tensor parallel that can run, the planner's
+first mode that can. `darkbloom cluster` asks nothing and never asks to switch
+a model's mode.
+
+- **Can't run:** the model has no tensor-parallel plan here (Qwen 3.8 27B's
+  pipeline would drop its media and logprobs, so it has only tensor parallel;
+  a mode is offered only if it keeps every feature), or tensor parallel's own
+  plan doesn't fit both Macs' free memory now while another mode's does (while
+  a model serves, its memory is freed first, so fitting now doesn't decide).
+  Through Darkbloom, a mode Darkbloom doesn't serve publicly doesn't count
+  while another one is served.
+- **Measured slower:** this pair served another mode more than 5 % faster with
+  this Darkbloom build (`ClusterServedModes`: at least 3 requests of 64 tokens or
+  more). Not measured yet, or a link not measured yet (right after an update,
+  or a new pair), is no reason: tensor parallel.
+- The pair's own model keeps the mode it last served in: chosen again while it
+  serves (a test, not a reload), started again on a stopped pair, or planned
+  again for a switch to Darkbloom. So a pair serving a pipeline never flips to
+  tensor parallel on a restart. The rule picks the mode for a new model (one
+  the pair hasn't served, or no mode recorded).
+
+`darkbloom cluster local` keeps the question, simplified: both modes, the one
+the same rule picks tagged **Recommended** and preselected, so Enter takes it.
+For the pair's own model (the one it serves or last served, also when
+`darkbloom start` in a terminal starts a stopped pair) the cursor is on the
+mode it last served in instead, the tag staying on the rule's pick, so Enter
+keeps that mode. No sentence explains it and no line quotes a speed:
+
+```text
+  How should both Macs split Gemma 4 26B?
+  1) Pipeline · serves one request at a time · context 65,536 tokens, prompts up to 32,768
+  2) Tensor parallel · Recommended · serves up to 2 requests at once · context 262,144 tokens
+  Choose 1-2 (enter = 2):
+```
+
+In a narrow window a line keeps the mode, the tag and the short words
+("serves up to 2 at once · context 262,144"). A model named on the command line
+(`darkbloom cluster local <model>`) loads without the question: the pair's own
+model in the mode it last served in, any other model in the recommended mode. On a serving pair, choosing its model in another mode asks first
+("Switch Gemma 4 26B from tensor parallel to pipeline? …").
 
 The modes:
 
@@ -440,43 +450,46 @@ The modes:
 - **Speculative pipeline** (MiMo): a pipeline that drafts several tokens and
   checks them together.
 
-Each mode also says how many requests it serves at once: "serves one request
-at a time" or "serves up to 8 requests at once"
-(`DistributedInstalledPlan.defaultBatchLanes`). **On a GLM-5.3-Flash pair,
-choose Tensor parallel.** Its pipeline serves one request at a time: through
-Darkbloom, every other request waits about 6 s and is then refused as "at
-capacity". On two M5 Ultras (2026-11-04, DevNet), its tensor parallel served 8
-requests at once with none refused, and each answered about 2.6 times faster
-(105.6 against 40.8 tokens/s alone).
+Each mode in `darkbloom cluster local`'s question also says how many requests
+it serves at once: "serves one request at a time" or "serves up to 8 requests
+at once" (`DistributedInstalledPlan.batchLanes`: the width the setup saved for
+both Macs' memory, or the family's default). It is the same number the pair
+reports to Darkbloom. On a GLM-5.3-Flash pair tensor parallel is the one to
+use: its pipeline serves one request at a time, and through Darkbloom every
+other request waits about 6 s and is then refused as "at capacity". On two M5
+Ultras (2026-11-04, DevNet), its tensor parallel served 8 requests at once with
+none refused, and each answered about 2.6 times faster (105.6 against 40.8
+tokens/s alone).
 
-The split each mode shows is the one that loads when you choose it: the list
-plans every mode it offers, and the start loads the plan it showed. While a
-model serves, each mode's split reads "decided when it loads": the list plans
-with that model's memory still taken, and the start stops it and plans again
-with its memory free. The card after the start shows the split that loaded.
+A Gemma 4 pipeline serves one request at a time. It reads each prompt with one
+chunk of lookahead, which starts a long prompt's answer sooner. To serve
+several requests at once it would read each prompt one chunk at a time: on two
+M5 Ultras (2026-11-10), a long prompt alone then started its answer about 1.9
+times later. So the setup keeps the lookahead.
+
+While a model serves, a mode's split reads "decided when it loads": the list
+plans with that model's memory still taken, and the start stops it and plans
+again with its memory free. `darkbloom status` shows the split that loaded.
 
 A mode is offered only if it keeps every feature of the model: Qwen 3.8 27B
 offers tensor parallel only, because pipeline would drop its image, video and
 logprob support. A mode chosen on the following Mac goes to the leading Mac
 with the model, so the pair loads it the same way.
 
-Choosing the model that serves, in its mode, sends one test request, the same as
-a start's, and changes nothing else: "Already serving Qwen 3.8 27B; test response
-in 0.61 s" in the ✓ block, then the card; a failed test shows the ✗ block with
-**Retry**, **Change model**, **Serve locally only** and **Diagnostics**. A pair
-served only through Darkbloom has no local API on this Mac to send a test from;
-the screen says so ("Already serving Qwen 3.8 27B through Darkbloom; this Mac has
-no local API to send a test from.") and shows the pair's status as both Macs
-report it. Choosing another while one serves asks once ("Switch to
+Choosing the model that serves sends one test request, the same as a start's,
+and changes nothing else; it passes with [the ending](#the-ending)'s ✓ line,
+and a failed test shows the ✗ block with **Retry**, **Change model** and
+**Diagnostics**. A pair Darkbloom has (the status above says it serves) answers
+no test from this Mac's local API; it ends on the same ✓ line, hint and Enter
+(`testServing`). Choosing another while one serves asks once ("Switch to
 Gemma 4 26B? Qwen 3.8 27B stops serving on both Macs while Gemma 4 26B loads …",
 **No** by default), then says "✓ Stopped Qwen 3.8 27B on both Macs" and shows
 each Mac's load. The steps are headed **Model** and **Start**; the numbered "1/4
-… 4/4" steps are the first setup's only. Every start ends with the outcome block
-and the pair's card ([above](#the-steps-once)), then returns to the shell; a pair
-that does not serve ends with the ✗ block and **Retry**, **Change model**,
-**Serve locally only** and **Diagnostics** instead. To stop, run `darkbloom
-stop`: both Macs stop and free their memory. The start's own test request is
-the test.
+… 4/4" steps are the first setup's only. Every start ends as
+[the ending](#the-ending) says; a pair that does not serve ends with the ✗
+block and **Retry**, **Change model** and **Diagnostics** instead. To stop, run
+`darkbloom stop`: both Macs stop and free their memory. The start's own test
+request is the test.
 
 **Set up the cable port** comes first when the cable moved to a port not set
 up yet ([below](#when-something-is-in-the-way)).
@@ -556,22 +569,18 @@ a Qwen pair before any output: a pair's ranks cannot apply the grammar
 request refused this way to a single Mac, which constrains it
 (darkbloom-platform `fix/coord-pair-refusal-failover`); a request to the owner's
 local cluster API gets the refusal. Other JSON requests are served with the
-format instruction only, as on one Mac
+format instruction only, as on one Mac, and so is every JSON request on a
+Bonsai 2 27B or Nemotron 3.5 Lightning pair, which a single Mac would constrain
+when the prompt starts in the answer
 ([constrained Qwen JSON answers](../architecture/inference.md#constrained-qwen-json-answers)).
 
 | # | Where | What you do | What it asks |
 |---|---|---|---|
-| 1 | the first Mac | Run `darkbloom cluster`. Its first line is "Allow macOS permissions." It checks the Thunderbolt cable ("✓ Cable ready") and Local Network access. Nobody waits on the cable yet, so this Mac leads; its last line is **"Run `darkbloom cluster` on the other Mac."**, and it waits (q cancels). With two cables it asks "Which cable goes to the other Mac?" | the cable's port, once (your password; sudo in this terminal where macOS shows no window); Local Network access for the terminal app only where macOS blocks it |
+| 1 | the first Mac | Run `darkbloom cluster`. Its first line is "Allow macOS permissions." It checks the Thunderbolt cable ("✓ Cable ready") and Local Network access. Nobody waits on the cable yet, so this Mac leads; its last line, set apart by blank lines and in bold with the command in color, is **"→ Now run `darkbloom cluster` on the other Mac"** (`ClusterOnboardingPairing.otherMacCallout`; `darkbloom cluster local` names `darkbloom cluster local`), and it waits (q cancels). With two cables it asks "Which cable goes to the other Mac?" | the cable's port, once (your password; sudo in this terminal where macOS shows no window); Local Network access for the terminal app only where macOS blocks it |
 | 2 | the other Mac | Run `darkbloom cluster`. The same checks; then it finds the waiting Mac on the cable by itself (no address, no host name). Both screens show the same six-digit code ("Code 123 456. Same on the other Mac?"); a Mac that answered first says "Now confirm on the other Mac." | the same as the first Mac; **Yes** on each Mac when the codes match |
 | 3 | both Macs | Each says it is paired ("✓ Paired. This Mac leads." on the leader, "✓ Paired. The other Mac leads." on the other Mac). Both cluster services now run, and macOS asks on both Macs at the same moment to let Darkbloom find devices on your local network: click Allow on each; each screen waits for its own ("✓ Allowed"), up to 10 minutes with a timer, then ends with a ✗ that says where to turn Darkbloom on and what to do if it isn't listed. Nothing else is ever asked on the other Mac; it says "Waiting for the other Mac (…) to choose the model and start…", says what the leader's screen waits on, and follows the start to the same ✓/✗ block. | Local Network access for Darkbloom, once on each Mac |
-| 4 | the leader | It asks how the pair serves: Only me (this pair, local), Darkbloom network, or Both, me first, preselected ([Both, me first](#both-me-first-the-pairs-own-api-beside-darkbloom)). Then it lists every model approved for clusters that the pair can serve (held by both Macs, by one of them, or in Darkbloom's catalog), one line each with its size and how the planner splits it, "tensor parallel" or "pipeline" ("Qwen3.8-27B-4bit-mtp · 16.3 GB · pipeline"), ending "copy" or "download" when the model must reach a Mac first (a model no Mac holds yet is split once it arrives, so its line has no split). A model a Mac holds twice (a catalog download beside the cluster's own copy) is listed once. The planner records why a model that has tensor parallel is split otherwise (for example "tensor parallel: slower here", "tensor parallel: not measured yet" or "tensor parallel: link unmeasured"); `darkbloom cluster plan` gives the full reason under "Tensor parallel or pipeline". Models that fit in the Macs' free memory now come first; one that does not ends with "does not fit now". A model a Mac has no room for on disk now comes last, ending "not enough free disk" ([Free disk](#free-disk)). Choose the model with ↑↓ and enter (enter takes the first). If the other Mac does not answer over the cable (its Darkbloom prompt may still wait for Allow), it offers **Try again** or **Cancel**. | how the pair serves, once; the copy first in a list; a short one says its time ("Copy to the other Mac (about 7 s)") |
-| 5 | — | Choosing is starting: the leader saves the setup, sends it to the other Mac over the cable and starts both Macs; once both are loaded it answers one test request, and through Darkbloom the coordinator is asked for the pair ([below](#registered-with-the-coordinator-as-a-cluster-member)). It says where and how the pair serves: "✓ Serving Qwen3.8-27B-4bit-mtp through Darkbloom on both Macs (pipeline)" once the coordinator has the pair, or "✓ Serving Qwen3.8-27B-4bit-mtp on this Mac's local API only (pipeline)" when it serves only there (**Only me**, or a pair Darkbloom doesn't take), with the test response ("Test response in 0.61 s"). | nothing |
-
-When it serves through Darkbloom, the screen says so in one line, for example:
-
-```
-✓ Serving Qwen3.8-27B-4bit-mtp through Darkbloom on both Macs (pipeline)
-```
+| 4 | the leader | It lists every model approved for clusters that the pair can serve (held by both Macs, by one of them, or in Darkbloom's catalog), one line each with its size, ending "copy" or "download" when the model must reach a Mac first ("Qwen3.8-27B-4bit-mtp · 16.3 GB"). It asks nothing about how the pair serves (it serves through Darkbloom with this Mac's local API beside it, [Both](#both-me-first-the-pairs-own-api-beside-darkbloom)) or how both Macs split the model ([chosen for you](#tensor-parallel-or-pipeline)). A model a Mac holds twice (a catalog download beside the cluster's own copy) is listed once. Models that fit in the Macs' free memory now come first; one that does not ends with "does not fit now". A model a Mac has no room for on disk now comes last, ending "not enough free disk" ([Free disk](#free-disk)). Choose the model with ↑↓ and enter (enter takes the first). If the other Mac does not answer over the cable (its Darkbloom prompt may still wait for Allow), it offers **Try again** or **Cancel**. | the copy first in a list; a short one says its time ("Copy to the other Mac (about 7 s)") |
+| 5 | — | Choosing is starting: the leader saves the setup, sends it to the other Mac over the cable and starts both Macs in the chosen mode; once both are loaded it answers one test request, and the coordinator is asked for the pair ([below](#registered-with-the-coordinator-as-a-cluster-member)). Both Macs end on one line, "✓ Serving Qwen3.8-27B-4bit-mtp on both Macs", and "`darkbloom status` for details" ([the ending](#the-ending)); on an interactive terminal, "Press Enter to exit." | Enter (an interactive terminal only) |
 
 No screen and no status says it serves or earns through Darkbloom unless the
 pair is offered (both Macs carry a cluster approval) and the coordinator has
@@ -621,9 +630,9 @@ pair's model and split; a release's cluster runtime facts carry them for
 GLM-5.3-Flash and Qwen3.8-27B
 ([serving a pair](../reference/cluster-control-protocol.md#serving-a-pair)).
 A tensor-parallel pair registers like a pipeline one; its plan names no cut.
-A Gemma 4 pipeline pair whose plan prefills serially takes several requests at
-once; one planned with the one-chunk lookahead takes one at a time
-([Gemma pipeline lanes](../architecture/inference.md#gemma-pipeline-lanes)).
+A Gemma 4 pipeline pair is planned with the one-chunk lookahead and takes one
+request at a time; a setup saved with serial prefill and a width takes that
+many at once ([Gemma pipeline lanes](../architecture/inference.md#gemma-pipeline-lanes)).
 
 1. Run `darkbloom cluster` and choose a model, as in [the steps](#the-steps-once).
    After the Test stage passes, the leader reads the approvals the coordinator
@@ -650,8 +659,9 @@ once; one planned with the one-chunk lookahead takes one at a time
    loaded the model and the pair answered its first request (the warm-up). A
    reason the Macs know ends the wait sooner (a missing login at once, others
    once the wait has run 90 s), with the choices [above](#the-steps-once). There
-   is no local API in this mode, unless you chose
-   [Both, me first](#both-me-first-the-pairs-own-api-beside-darkbloom).
+   is no local API in a pair saved as the Darkbloom network alone (an earlier
+   build or an agent's run); `darkbloom cluster` serves
+   [Both](#both-me-first-the-pairs-own-api-beside-darkbloom).
 
    The wait says only what the Macs report at that moment. "isn't verified by
    Apple yet" appears only while a Mac reports its App Attest authorization
@@ -665,8 +675,15 @@ once; one planned with the one-chunk lookahead takes one at a time
    be paired by the coordinator by itself. Check with `darkbloom status`." A
    `darkbloom cluster stop` from any window or either Mac ends the wait at once
    with "Stopped (by `darkbloom cluster stop` on one of the Macs): the pair
-   isn't starting any more." The Mac that joined says the same once the leading
-   Mac's status has stayed stopped for 20 seconds.
+   isn't starting any more." So does one while the leading Mac downloads or
+   copies the model (what arrived stays, and the next start goes on from
+   there), while both Macs load it, and at the test (`darkbloom stop` and
+   `restart` count too once the pair runs; before that, `darkbloom stop` stops
+   only what runs on its own Mac). The Mac
+   that joined says the same at once: the leading Mac counts each stop someone
+   asks for, and its status carries the count. A status that reads "Stopped" is
+   no stop on its own: it reads so through a whole download or copy, until both
+   parts start (0.10.9 to 0.10.12 took it for one after 20 seconds).
 
 An approval ends at its `not_after`, which the operator sets; one derived from
 a release ends 90 days after that release registered
@@ -750,45 +767,48 @@ If both Macs start waiting at the same moment, the pairing's own rule picks one
 to keep waiting (it leads) and the other joins it ("✓ Paired. The other Mac
 leads.").
 
-## Both, me first: the pair's own API beside Darkbloom
+<a id="both-me-first-the-pairs-own-api-beside-darkbloom"></a>
 
-`darkbloom cluster` asks how the pair serves, with the three choices
-`darkbloom start` gives one Mac ([Use your Mac yourself, first](./local-first.md)):
+## Both: the pair's own API beside Darkbloom
 
-```text
-  How should this pair serve?
-  The pair's pause, route and account key are the leading Mac's: its [local] and `darkbloom route key`.
-  1) Only me (this pair, local) · Darkbloom never contacts these Macs. Your tools use the leading Mac's API.
-  2) Darkbloom network · The pair serves Darkbloom and earns while it runs.
-  3) Both, me first · The pair serves Darkbloom while you aren't using it. When you use its API, Darkbloom pauses until you've been idle for 2 minutes.
-  Choose 1-3 (enter = 3):
-```
+`darkbloom cluster` serves every pair one way, with no question (owner,
+2026-11-11): through Darkbloom, with the pair's own local API on the leading
+Mac beside it, and Darkbloom keeps serving while you use that API
+(`ClusterOnboardingOperations.servesBoth`, `ClusterServingChoice.both`).
 
-- **When it asks:** in the first setup, on the leader, once both Macs answer and
-  before the model list, which is planned for the answer. On a set-up pair, the
-  list's **Change how the pair serves (now: …)** asks again, the way it serves
-  now preselected. The first time, Enter takes **Both, me first**, or the answer
-  saved before.
-- **Only in a terminal, and only `darkbloom cluster`** (and `darkbloom start` on
-  a paired Mac, which opens the same screen). `darkbloom cluster local` names its
-  way of serving and asks nothing. Without a terminal nothing is asked: the pair
-  serves as its setup says, and a pair set up before this build serves through
-  Darkbloom with no local API, as before.
-- **Saved:** the answer goes into `[local] mode` of this Mac's `provider.toml`
-  (`local`, `network` or `both`) with the pair's way of serving, once the start
-  goes ahead; q at the question or at the list saves nothing. `darkbloom start
-  --solo` on this Mac then serves the same way
-  ([no terminal, no question](./local-first.md#no-terminal-no-question)). A
-  saved **Only me** is for this Mac alone: while the pair doesn't run here,
-  `darkbloom start --solo`, with or without a terminal (a script), serves this
-  Mac alone, Only me in the background, after this Mac's part is stopped, as a
-  network `--solo` start does. Without `--solo`, `darkbloom start` starts the
-  pair, the app's Start included.
-- **Only me** is `darkbloom cluster local`'s way of serving
-  ([below](#serving-locally-only)). **Darkbloom network** is the pair as
-  before, with no local API.
+- **Saved:** on the leading Mac, `[local] mode = "both"` and, where no
+  `me_first` is saved, `[local] me_first = false` in its `provider.toml`
+  (`Cluster.Setup.saveServingChoice`), once the pair switches, starts or is
+  shown serving that way: before the parts start (they read it then). A run
+  that changes nothing (Cancel at the login check, q at the list, the other Mac
+  silent) saves nothing. A saved `me_first` stays as it is: `true` keeps the
+  pause on (below). A pair that already serves Both with the pause on keeps it
+  until its next start, and the screen says so ("Darkbloom keeps serving while
+  you use the pair's local API from the pair's next start (`darkbloom restart`
+  starts it again now).").
+- **The pause back on:** there is no flag for a pair (`darkbloom start
+  --me-first` serves this Mac alone and writes `me_first = true` only over a
+  saved `false`); set `me_first = true` under `[local]` in the leading Mac's `provider.toml`, then run `darkbloom restart`. `darkbloom cluster` keeps it.
+- **A pair saved another way** (Only me, or the Darkbloom network alone from an
+  earlier build or an agent's run) switches when you run `darkbloom cluster` on
+  the leading Mac, and the screen says so in one line ("This pair served only
+  on your local API; `darkbloom cluster` serves it through Darkbloom, with your
+  local API beside it."): a serving pair switches at once
+  ([switching](#switching-how-a-pair-serves)), a stopped one starts that way from
+  the list. An update, a restart or the cluster service never change how a
+  pair serves.
+- **Only in a terminal, and only `darkbloom cluster`.** `darkbloom start` on a
+  paired Mac opens the same screen but keeps how the pair is saved to serve
+  (`Cluster.Setup.keepsSavedServing`), with the list's switch between Darkbloom
+  and local only. `darkbloom cluster local` serves **Only me**
+  ([below](#serving-locally-only)). Without a terminal (an agent's run, the
+  cluster service) the pair serves as its setup says.
+- **Where the pair can't serve through Darkbloom** (no login, an account the
+  waitlist hasn't approved, no approval for the model, a coordinator without
+  cluster support), the screen says "To use the pair just for yourself, run
+  `darkbloom cluster local`." instead of offering to serve locally.
 
-With **Both, me first**:
+With **Both**:
 
 - **The API:** the part that runs rank 0, which hosts the pair's slot, serves
   the pair's local OpenAI-compatible API beside Darkbloom, on the same engine
@@ -836,21 +856,21 @@ With **Both, me first**:
   for the pair's API too: its requests reach the leading Mac from another
   machine, so with `my-macs-first` tools there use the pair and your other
   Macs, never the paid network.
-- **Me first:** while one of your requests runs on it, or waits for a lane, the
-  pair takes no new Darkbloom request, and Darkbloom's running requests finish.
-  A request on another Mac's port is yours too.
-  It takes Darkbloom requests again 2 minutes after your last request ends
-  (`[local] me_first_idle_minutes` on that Mac, 1 to 120); `[local] me_first =
-  false` there keeps Darkbloom serving while you use it
-  ([owner pause](../architecture/owner-pause.md#pairs)). While it is paused,
-  the pair keeps its base reward on the coordinator that ships with 0.10.11
+- **Darkbloom keeps serving** while you use the pair's API: your requests and
+  Darkbloom's share the pair's lanes. Only where the leading Mac's `[local]
+  me_first = true` (set on purpose) does the pair pause: while one of your
+  requests runs on it, or waits for a lane, it takes no new Darkbloom request,
+  Darkbloom's running requests finish, and it takes Darkbloom requests again 2
+  minutes after your last request ends (`[local] me_first_idle_minutes`, 1 to
+  120; [owner pause](../architecture/owner-pause.md#pairs)). A request on
+  another Mac's port is yours too. While it is paused, the pair keeps its base
+  reward on the coordinator that ships with 0.10.11
   ([darkbloom-platform#709](https://github.com/Layr-Labs/darkbloom-platform/pull/709)
-  onwards), as a single Mac does. On coordinators before #709, its reward
-  uptime stops, as for any pair drain.
-- **Switching:** between **Darkbloom network** and **Both, me first** the plan
-  stays: only the leading part starts again, and the screen waits until the pair
-  serves again. From **Only me**, the model is planned again for Darkbloom
-  first, as for **Darkbloom network**. Both need both Macs logged in.
+  onwards), as a single Mac does.
+- <a id="switching-how-a-pair-serves"></a>**Switching:** from the Darkbloom
+  network alone the plan stays: only the leading part starts again, and the
+  screen waits until the pair serves again. From **Only me**, the model is
+  planned again for Darkbloom first. Both need both Macs logged in.
 - **Not offered:** while Darkbloom doesn't have the pair (no approval, the
   coordinator away), it serves on the leader's local API as before
   ([above](#registered-with-the-coordinator-as-a-cluster-member)): on that Mac
@@ -861,8 +881,9 @@ With **Both, me first**:
   other machines, the other Macs' ports, and tools set up with the pair's key
   reach the pair again once Darkbloom has it.
 
-`darkbloom status` and `darkbloom cluster status` say it. On the Mac that runs
-the pair's API:
+`darkbloom status` and `darkbloom cluster status` say it: `Serves: through
+Darkbloom, and on its local API`, the pair's line and its `Local API:` line.
+With `me_first = true` (set by hand, above), on the Mac that runs the pair's API:
 
 ```text
 Serves: through Darkbloom, and on its local API with you first
@@ -888,9 +909,6 @@ Local API: http://127.0.0.1:8001/v1 on this Mac, and port 8001 of its LAN or tai
 Members: the other Mac (Apple M5 Ultra, 256 GB) runs the pair's API; this Mac passes your requests to it, and Darkbloom pauses for them too
 ```
 
-`darkbloom cluster` on either Mac shows the line under its `✓ Serving` block
-too.
-
 Each Mac's own port can differ: here both Macs saved 8001. Until its port is
 passed on (the pair's API still starting), the other Mac says `Local API: not
 listening on this Mac yet; it starts once the pair's API on the other Mac (…)
@@ -904,9 +922,8 @@ where the API is instead (`Local API: on the other Mac (…), which runs the
 pair's API; …`). The leading Mac's `Members:` line says the other Mac runs no
 local API whenever its own API listens on this Mac only.
 
-The setup's ✓ card on each Mac prints that Mac's own address once its port is
-up (`Local API: http://127.0.0.1:8001/v1 on this Mac, you first (…)`), else
-says `darkbloom local` shows it once this Mac's port is up.
+`darkbloom local` on each Mac prints that Mac's own address once its port is
+up.
 
 No screen or status line quotes a speed, and none prints the key.
 
@@ -914,8 +931,8 @@ No screen or status line quotes a speed, and none prints the key.
 
 ## Only me: the pair for you alone
 
-**Only me** serves the pair for you alone, whether you choose it in
-`darkbloom cluster` or run `darkbloom cluster local`: the same steps, model
+**Only me** serves the pair for you alone, with `darkbloom cluster local`: the
+same steps, model
 choice, planner, copies, speculative decoding, caches, failover and stop as
 `darkbloom cluster`, but no Mac of the cluster contacts a coordinator. Nothing
 registers, sends heartbeats, takes public traffic or bills, and serving needs
@@ -935,12 +952,12 @@ decodes with its speculative assistant under the default `mtp_mode`
    cluster to **Only me** and waits until it serves again. On the Mac that joins
    a waiting leader, it pairs like `darkbloom cluster`, says to continue on the
    leader with `darkbloom cluster local`, and then follows the start there.
-2. Read the API's place from the ready screen. The port is the leading Mac's
-   own saved `[local] port`, as for **Both, me first** (8001 on a Mac that had
+2. Read the API's place from the ending's line. The port is the leading Mac's
+   own saved `[local] port`, as for **Both** (8001 on a Mac that had
    none, 8000 kept on a Mac updated from 0.10.10):
 
    ```
-   ✓ Serving Qwen3.8-27B-4bit-mtp (pipeline) at http://localhost:8001 and on the network (local only)
+   ✓ Serving Qwen3.8-27B-4bit-mtp on both Macs, on your local API at http://localhost:8001
    ```
 
 3. Get the key: `darkbloom local` on either Mac prints that Mac's base URL,
@@ -960,8 +977,8 @@ Mac or reach it over a tailnet (encrypted). With the macOS firewall on, macOS
 may ask once to let Darkbloom accept incoming connections.
 
 The choice is kept: after a restart or reboot both Macs serve **Only me**
-again, until you switch back. In `darkbloom cluster` on the leader, the list's
-**Change how the pair serves** switches it ([Both, me first](#both-me-first-the-pairs-own-api-beside-darkbloom));
+again, until you switch back. `darkbloom cluster` on the leader switches it to
+[Both](#both-me-first-the-pairs-own-api-beside-darkbloom), saying so in one line;
 in `darkbloom cluster local`, the list's **Switch to serving through Darkbloom**
 serves through Darkbloom again. On a serving cluster, **Switch to
 serving through Darkbloom** plans the model again for Darkbloom (a local plan
@@ -1052,8 +1069,8 @@ Macs have stopped their parts and given back their memory, so the memory the
 running model held does not turn tensor parallel into a pipeline. Every load records the
 encrypted link's cost for later predictions; plans use the median of the
 pair's last eight measurements from the last 30 days. GLM-5.3-Flash on two M5
-Ultra 256 GB runs tensor parallel on equal shares with eight concurrent
-requests; the plan counts its NextN (MTP) layer on both Macs and its
+Ultra 256 GB runs tensor parallel on equal shares with up to eight concurrent
+requests, as many as both Macs' memory holds; the plan counts its NextN (MTP) layer on both Macs and its
 speculative decoding ([GLM tensor parallel](../architecture/inference.md#exact-quote-placement)).
 GLM-5.3-Flash has both a pipeline and a tensor-parallel adapter; its private
 image candidate is pipeline-only.
@@ -1063,8 +1080,8 @@ Models that run tensor parallel, and when:
 | Model | Tensor parallel chosen | Notes |
 |---|---|---|
 | Qwen3.5 9B, Qwen3.8 27B, Qwen3.5/3.6 35B A3B | wherever it fits | Qwen3.8 27B keeps images, video and logprobs only in tensor parallel |
-| GLM-5.3-Flash | wherever it fits | Eight concurrent requests by default |
-| Gemma 4 26B (QAT 4-bit, 8-bit) | only where the plan predicts it faster from its own measured speed on both Macs (it keeps every feature of the pipeline, prompt-prefix and SSD reuse included) | Text only; logprobs in tensor parallel only; one request at a time unless you set `DARKBLOOM_CLUSTER_BATCH_LANES` (its tensor-parallel batch width is not priced yet); a request cancelled during its prompt keeps the pair's one lane until that prompt is read (about a minute for a 16K-token prompt) |
+| GLM-5.3-Flash | wherever it fits | As many requests at once as both Macs' memory holds beside the model, up to 8 (sized when the pair is set up and reserved when it loads, as far as each Mac's memory then allows; requests beyond that are taken as memory allows); where only one fits, one at a time. A pair set up before Darkbloom 0.10.12 is sized when it is planned again, which the update does by itself |
+| Gemma 4 26B (QAT 4-bit, 8-bit) | only where the plan predicts it faster from its own measured speed on both Macs (it keeps every feature of the pipeline, prompt-prefix and SSD reuse included) | Text only; logprobs in tensor parallel only; QAT 4-bit serves 2 requests at once where both Macs' memory holds them beside the model (sized when the pair is set up and reserved when it loads), the 8-bit model one at a time; where only one fits, one at a time, and a request cancelled during its prompt keeps that one lane until the prompt is read (about a minute for a 16K-token prompt) |
 | MiMo V2.6 Flash | only where it keeps every feature of the mode it would replace (it keeps the speculative pipeline's rounds, not the plain pipeline's batch lanes) and the plan predicts it faster from its own measured speed on both Macs | Text only; speculative decoding; logprobs in tensor parallel only; one request at a time; see [MiMo V2.6 Flash on the pair](#mimo-v26-flash-on-the-pair) |
 
 For Gemma 4 and MiMo V2.6 Flash, tensor parallel must first keep every feature
@@ -1161,7 +1178,7 @@ installed artifact, not from a per-model table:
 
 Cluster workers accept up to 32,768 output tokens and 32,768 prompt tokens,
 within a 65,536-token combined ceiling, except for a model served at its native
-context (Qwen3.8 27B and Gemma 4 26B in tensor parallel, below).
+context (Qwen3.8 27B in tensor parallel, and Gemma 4 26B in both modes, below).
 Each model's declared context and both ranks' live memory admission may reduce
 that budget. Omitting `max_tokens` on the local API uses the full allowance,
 clamped to the model and remaining context; an explicit `max_tokens: 32768`
@@ -1174,20 +1191,32 @@ Either arrives before any streamed byte.
 Qwen3.8 27B on a tensor-parallel pair accepts its native context, as a single
 Mac serving it does: prompts up to 262,143 tokens and up to 65,536 output tokens
 (the catalog's output limit, which the coordinator also gives a request that
-omits `max_tokens`), within 262,144 combined. Gemma 4 26B on a tensor-parallel
-pair accepts its native context too: prompts up to 262,143 tokens and up to
-32,768 output tokens (its catalog's output limit), within 262,144 combined.
-Each pair is still loaded and planned for the 32,768 +
+omits `max_tokens`), within 262,144 combined. Gemma 4 26B accepts its native
+context on a pair in tensor parallel and in the pipeline: prompts up to 262,143
+tokens and up to 32,768 output tokens (its catalog's output limit), within
+262,144 combined. Each pair is still loaded and planned for the 32,768 +
 32,768-token request, at any number of lanes. A longer request is admitted on
 its own when both Macs' memory holds it at that moment. If it does not fit, it
 alone receives HTTP 503 before any streamed byte (on the local API, in one
 Mac's words: "This Mac's memory can't hold this request right now ..."), and
-other requests keep running. The pipeline modes of every model with a native
-context (GLM-5.3-Flash, Gemma 4 26B, and the 27B where its policy allows them)
-keep the 32,768 + 32,768-token request. Their leader refuses a longer request
-itself, before either rank is asked: a pipeline stage whose memory check refuses
-a running request ends its worker, and the pair stops serving for about a
-minute, where tensor parallel ends that one request. See
+other requests keep running. In every mode, a request one Mac's memory refuses
+while it runs ends alone: the client gets the same 503 (or, once a stream has
+started, an error chunk with `code` `request_exceeds_node_budget` and the same
+words), and the pair keeps serving. Gemma 4's pipeline serves one request at a
+time with the one-chunk lookahead, its default. With lanes (a setup that
+prefills serially), a very long request needs about twice its memory on each
+Mac, plus about 8 GB, to run to its end: each check while it runs asks for its
+whole share again, and the prompt prefix cache's copies of its prompt come on
+top. That is about 24 GB a Mac at 131,072 tokens and 38 GB at 262,144, where it
+is admitted with about 12 GB and 19 GB. On a Mac with less free memory, it is
+admitted and then refused that way partway through its prompt, a 503 for that
+request alone; one request at a time and tensor parallel serve it without that.
+The pipeline modes of every other model
+with a native context (GLM-5.3-Flash, and the 27B where its policy allows
+them) keep the 32,768 + 32,768-token request. Their leader refuses a longer
+request itself, before either rank is asked: a pipeline is planned and proven
+at that request, and serving the whole context there waits for its own proof
+on real pairs. See
 [the 27B's native context](../architecture/inference.md#qwen27-tensor-parallel-native-context)
 and [Gemma 4's](../architecture/inference.md#gemma-4-native-context-on-a-pair).
 
@@ -1262,29 +1291,57 @@ plan: normally the re-plan after its update, which restarts both parts anyway.
 Manage the cluster on the Mac that leads; on the other
 Mac, `darkbloom cluster` shows the status and names the Mac to use.
 
+While the leading Mac waits for the other Mac, its part can't form the pair, and
+each start reads its share of the model and registers it again. A part that
+ends then waits twice as long as the last time before it starts again, from 30
+seconds up to 10 minutes (30 seconds, then 1, 2 and 4 minutes), instead of every
+30 seconds; it starts at once when the other Mac answers. `darkbloom cluster status` on the leading Mac says when,
+under the line that it waits for the other Mac: ``This Mac's part starts again in
+4 min, or as soon as the other Mac answers: …``.
+
 While the Mac that runs the pair's API is away, the other Mac's own port for it
-(with **Only me**, and with **Both, me first** on every address) is never a
+(with **Only me**, and with **Both** on every address) is never a
 connection that just closes: it answers every request at once with a `503`
-(`code` `pair_mac_unreachable`), ``Your pair's other Mac (…) isn't reachable;
-this Mac relays to it. Requests resume when it's back, or run `darkbloom stop`,
-then `darkbloom start --solo`, to serve this Mac alone.`` Those words name the
-other Mac only to a request with this Mac's key or the pair's: any other gets
-the local API's own `401`, as that API would answer it, and a liveness check or
-a browser's preflight, which need no key, the `503` without names. That Mac is
-away once it hasn't answered over the cable for 12 s; a status request to it
-that fails while it answers there doesn't count (only before it has answered at
-all since this Mac's cluster service started do two failed in a row).
-`darkbloom status` and `darkbloom local` there say the same, after
+(`code` `pair_mac_unreachable`, `Retry-After: 10`), ``Your pair's other Mac (…)
+isn't reachable; this Mac relays to it. Requests resume when it's back, or run
+`darkbloom stop`, then `darkbloom start --solo`, to serve this Mac alone
+(`darkbloom start --solo` by itself is refused while this Mac's part of the
+pair holds its serving lock: up to 15 minutes after the other Mac last answered
+over the cable).`` `darkbloom start --solo` by itself is refused that long
+because the pair still runs here ([going back to serving on one
+Mac](#going-back-to-serving-on-one-mac)); `darkbloom stop` ends it at once.
+Those words name the other Mac only to a request with this Mac's key or the
+pair's. A request with another key in the local key format (`dk-local-` and 43
+characters), such as the other Mac's own, which works through this Mac while
+that Mac is there but which this Mac can't judge, gets the same `503` without
+the name; any other gets the local API's own `401`, as that API would answer
+it, and a liveness check or a browser's preflight, which need no key, the `503`
+without names or commands. That Mac is away once it hasn't answered over the
+cable for 12 s; a status request to it that fails while it answers there
+doesn't count (only before it has answered at all since this Mac's cluster
+service started do two failed in a row). In those first 12 s a request gets
+the same `503` within 3 s, the longest this Mac waits for that Mac to take the
+connection. `darkbloom status` and `darkbloom local` there say the same, after
 `Local API: http://127.0.0.1:<port>/v1 on this Mac answers 503 for now.`, and
 `darkbloom start --opencode` there says it at once. Relaying resumes by itself
 within seconds of that Mac answering over the cable again.
-`darkbloom start --solo` alone is refused while this Mac's part holds its
-serving lock (up to the 15 minutes in [going back to serving on one
-Mac](#going-back-to-serving-on-one-mac)), hence `darkbloom stop` first. A
-request on that port while the API on the other Mac doesn't listen (its part
-starting again) gets a `503` with `code` `pair_api_unavailable` the same way. A
-Mac that serves the model alone after the 10 minutes does so on its own saved
-port (`[local] port`), so its tools keep their address.
+
+When only that Mac's part stops or starts again (a stop, a restart, an update,
+a crash) while that Mac stays on the cable, that Mac is never away: every
+request gets a `503` with `code` `pair_api_unavailable` and `Retry-After: 10`
+at once, from the first one on, to the same callers the same way. The pair's API
+there answers it while its pair doesn't serve (stopping, starting, its warm-up
+request), ``The pair's API takes no requests right now: the pair is starting
+or stopping. Requests resume when it serves, or run …`` with the same commands,
+and never holds a request until the pair serves; once nothing listens there,
+this Mac's port answers ``The pair's API on your pair's other Mac (…) isn't
+answering yet; this Mac relays to it. Requests resume when it answers, or run
+…``. This Mac's port stays up meanwhile, and `darkbloom status`, `darkbloom
+local` and `darkbloom doctor` there say `Local API: http://127.0.0.1:<port>/v1
+on this Mac answers 503 for now.` with those words. Requests pass again as soon
+as that API listens. A Mac that serves the model alone after the 10 minutes
+does so on its own saved port (`[local] port`), so its tools keep their
+address.
 
 ## How the split is chosen
 
@@ -1516,8 +1573,9 @@ fails too do both Macs wait for the next slot. So a new release reaches the pair
 at its next slot, up to 30 minutes after it is published, and each failed try
 waits 30 minutes more; `darkbloom update` on both Macs updates at once. Until a new
 release's cluster service has stayed healthy for 10 minutes, three of its starts
-that end by themselves bring back the previous release and quarantine the new
-one, as the watchdog does for a single Mac. A Mac never restarts into a new
+that end by themselves (a crash, an error, or a service that stops beating) bring
+back the previous release and quarantine the new one, as the watchdog does for a
+single Mac. A clean stop someone asks for is not one of them. A Mac never restarts into a new
 release that does not start at all (it checks before the restart): it brings
 back the previous release at once and quarantines the new one. When one Mac
 brings back the previous release this way, or with `darkbloom update
@@ -1594,21 +1652,23 @@ runs a GPU benchmark beside the model
 ([device profile](../architecture/inference.md#automatic-local-cluster-batching)).
 A pair that serves on the leader's local API, or a Mac that serves alone, is not
 drained for an update yet: its update waits while it serves (the log says
-`this Mac's part does not drain for an update`).
+`this Mac's part does not drain for an update`). After `darkbloom update` on
+both Macs, such a pair sets itself up again on the installed release, and its
+first part restarts this Mac's cluster service once so the service runs that
+release too (from 0.10.12; [the coordinated update](cluster-always-on.md#the-pairs-coordinated-update)).
 
 ## When something is in the way
 
-At the first setup's login check, **Serve locally only** plans the model again
-for **Only me** before anything starts, so Qwen 3.8 27B keeps its
-speculative assistant there, as any local start does. When a start's part keeps ending
+When a start's part keeps ending
 because the link to the other Mac keeps closing, the ✗ says so and names the
 other Mac's side ("the other Mac's worker ended or the cable dropped"): that
 Mac's service restarts its worker without reporting it, so its line says what
 can't be read from here instead of "running, no error". In the DevNet app, the
 screens and `status` name its own command (`darkbloom-dev …`).
 
-The mode chosen at "How should both Macs split <model>?" is the one that loads,
-for every model that runs both ways (GLM-5.3-Flash included). Which Mac's
+The mode chosen for the start ([tensor parallel or pipeline](#tensor-parallel-or-pipeline))
+is the one that loads, for every model that runs both ways (GLM-5.3-Flash
+included). Which Mac's
 worker keeps ending is read from the leading Mac's incident log: a
 `worker_crashed` carrying this Mac's own worker-exit record
 (`worker-exit-v1 rank=<this Mac's rank>`) names this Mac, and one carrying what
@@ -1732,7 +1792,7 @@ they control single-Mac serving on one Mac
 | Command | On a Mac in the pair |
 |---|---|
 | `darkbloom stop` (or `darkbloom cluster stop`) | Stops serving on both Macs. They stay stopped after a restart, and both cluster services stay up, idle, so the next start needs no visit to the other Mac. It waits until both Macs' parts have ended and says so (`Memory freed on both Macs ✓`) |
-| `darkbloom start` | Starts the pair, whatever its state, also after `darkbloom stop`: in a terminal, the same screen as `darkbloom cluster`; in a script, starts the saved model on both Macs and waits until it serves. A script's start on a pair that already serves keeps it (`…: the pair already serves.`, exit 0). `darkbloom start --solo` serves this Mac alone instead: see [going back to serving on one Mac](#going-back-to-serving-on-one-mac) |
+| `darkbloom start` | Starts the pair, whatever its state, also after `darkbloom stop`: in a terminal, the same screen as `darkbloom cluster`; in a script, starts the saved model on both Macs and waits until it serves. A script's start on a pair that already serves keeps it (`…: the pair already serves.`, exit 0), while this Mac's cluster service starts at login; one that runs from a terminal session is moved to its login agent first. `darkbloom start --solo` serves this Mac alone instead: see [going back to serving on one Mac](#going-back-to-serving-on-one-mac) |
 | `darkbloom restart` | Stops and starts the pair with its current model. While the pair doesn't run here, restarts single-Mac serving that runs here instead, and never starts the pair or single-Mac serving that was stopped |
 | `darkbloom status` | The pair first (who leads, the model, whether it serves now and what to do), then this Mac's fields. When this Mac serves alone instead (`start --solo`), a line under the pair says so, and single-Mac serving's own lines follow. `darkbloom cluster status` gives the pair alone, with `--json` and exit codes |
 
@@ -1821,7 +1881,8 @@ on its own), `darkbloom start --solo` serves this Mac alone:
   on a paired Mac before it downloads anything. It says the pair as this Mac's
   own files tell it ("This Mac serves in a pair with …" only when it serves;
   "… which is stopped", "… that isn't running here", or, on the Mac that
-  follows, "started with …"). A pair with no model yet gets no **Start
+  follows, "started with …", where the summary says Start serving "Makes sure
+  the pair serves …" rather than that it starts it). A pair with no model yet gets no **Start
   serving**: the page says to choose its model with `darkbloom cluster` in
   Terminal on the leading Mac first, and so does the CLI (``No model was chosen for the pair yet: choose one with `darkbloom cluster` in a terminal on <the leading Mac>.``).
 - A pair that is merely stopped gives one line: ``This Mac is in a two-Mac
@@ -1922,11 +1983,16 @@ Until it leaves too, the other Mac still holds its pairing, and it can't tell
 this Mac having left from this Mac being off:
 - its `status`, `cluster status` and a `start`'s result say ``If the other Mac
   left the pair, `darkbloom cluster leave` here unpairs this Mac too.``, and no
-  longer that `start` on either Mac starts the pair;
+  longer that `start` on either Mac starts the pair. They name no roles while
+  this Mac doesn't answer: ``Cluster: this Mac (…) is paired with the other Mac
+  (…), which isn't answering``, then ``■ Stopped; last model …`` with ``The
+  other Mac (…) isn't answering over the cable.``;
 - its `darkbloom cluster`, which a `start` in a terminal opens, no longer
-  reaches this Mac. It says ``If it left the pair, choose Start over to pair
-  again, or Quit and run `darkbloom cluster leave` here.`` and offers
-  **Start over**.
+  reaches this Mac. Its opening line names no roles either (``This Mac (…) ·
+  the other Mac (…) isn't answering``), its status says the pair is stopped,
+  as `cluster status` does, never that it serves alone, and it says ``If it
+  left the pair, choose Start over to pair again, or Quit and run `darkbloom
+  cluster leave` here.`` and offers **Start over**.
 
 The models, single-Mac serving and the cable port setup stay on both Macs
 (`darkbloom cluster link --remove` undoes the cable setup). Every line:

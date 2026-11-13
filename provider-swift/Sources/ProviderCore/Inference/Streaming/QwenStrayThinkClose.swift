@@ -1,7 +1,10 @@
 import Foundation
 import MLXLMServer
 
-/// Qwen-only opt-in to the native splitter's existing close-marker handling.
+/// The Qwen types take the native splitter's existing close-marker handling,
+/// on by default. An off word in `DARKBLOOM_QWEN_ABSORB_STRAY_THINK_CLOSE`
+/// (`off`, `false`, `0`, `none`, `no` or `disabled`, in any case, surrounding
+/// space ignored) is the kill switch: the close stays literal, as in 0.10.12.
 enum QwenStrayThinkClose {
     static let environmentKey = "DARKBLOOM_QWEN_ABSORB_STRAY_THINK_CLOSE"
     static let modelTypes: Set<String> = [
@@ -13,8 +16,13 @@ enum QwenStrayThinkClose {
         environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
         guard let type = context.modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
             modelTypes.contains(type) else { return false }
-        return ["1", "on", "true", "yes"].contains(
-            environment[environmentKey]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "")
+        return enabled(environment[environmentKey])
+    }
+
+    static func enabled(_ value: String?) -> Bool {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !value.isEmpty else { return true }
+        return !["off", "false", "0", "none", "no", "disabled"].contains(value)
     }
 
     /// A missing/disabled reasoning parser stays untouched. Only a prompt

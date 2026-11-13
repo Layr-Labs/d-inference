@@ -828,6 +828,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     )
                     let reasoningPrefix = promptReasoningPrefix
                         ?? contentSeed(parser: visionRequest.reasoningParser, stream: visionRequest.stream)
+                    // Before submission, so a parser that fails to resolve
+                    // leaves no engine row behind (`QwenStrayThinkClose`).
+                    let mediaToolHandler = try QwenStrayThinkClose.mediaToolHandler(
+                        existing: toolHandler, prefix: promptReasoningPrefix, request: visionRequest,
+                        prepared: prepared, context: qwenOutputContext)
                     // The text path's loop guard, and Gemma's exit from a
                     // repeating thought (`GenerationLoopGuardPolicy`,
                     // `GenerationLoopExitThinkingPolicy`). The answer after the
@@ -951,9 +956,6 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         events = spliced.events
                         cancelEvents = spliced.cancel
                     }
-                    let mediaToolHandler = try QwenStrayThinkClose.mediaToolHandler(
-                        existing: toolHandler, prefix: promptReasoningPrefix, request: visionRequest,
-                        prepared: prepared, context: qwenOutputContext)
                     return try await makeDeadlineCheckedEventStream(
                         upstream: events,
                         cancelUpstream: cancelEvents,
@@ -1781,8 +1783,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// `MLXServerGenerationEvent` shape, with tool-call parsing, usage/info
     /// framing, structured-error promotion, and release-on-every-exit.
     /// Shared by the batched/v2 TEXT path and the v0.7.5 media-through-v2
-    /// path (which passes `toolHandler: nil` — see the routing comment) so
-    /// the downstream SSE/billing contract is identical for both.
+    /// path (which passes `toolHandler: nil` — see the routing comment —
+    /// except a closed-thought Qwen prompt, `QwenStrayThinkClose.mediaToolHandler`)
+    /// so the downstream SSE/billing contract is identical for both.
     private func makeEventStream(
         upstream: AsyncStream<GenerationEvent>,
         cancelUpstream: @escaping @Sendable () async -> Void,

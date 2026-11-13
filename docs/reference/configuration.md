@@ -1853,4 +1853,4 @@ Every write of the wizard's record (`~/.darkbloom/cluster-setup/wizard.json`) ta
 
 | Variable | Values | Default | Reader | Scope |
 |---|---|---|---|---|
-| `DARKBLOOM_QWEN_ABSORB_STRAY_THINK_CLOSE` | `1`, `on`, `true`, `yes` enable, ignoring case and surrounding whitespace; other values disable | off (existing behavior) | `QwenStrayThinkClose` | [Qwen stray thinking-close markers](../architecture/inference.md#qwen-stray-thinking-close-markers); forwarded by `LaunchAgent` |
+| `DARKBLOOM_QWEN_ABSORB_STRAY_THINK_CLOSE` | an off word (`off`, `false`, `0`, `none`, `no`, `disabled`; any case, surrounding whitespace ignored) turns it off; unset or any other value leaves it on | on (an off word restores 0.10.12: the close stays literal) | `QwenStrayThinkClose.enabled` | [Qwen stray thinking-close markers](../architecture/inference.md#qwen-stray-thinking-close-markers); forwarded by `LaunchAgent` |

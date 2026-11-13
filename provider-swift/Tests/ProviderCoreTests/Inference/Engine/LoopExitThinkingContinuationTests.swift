@@ -119,7 +119,7 @@ struct LoopExitThinkingContinuationTests {
         LoopExitThinkingContinuation.splice(
             first: first, cancelFirst: { calls.cancelFirst() }, exit: exit, promptTokens: Self.prompt,
             outputBudget: outputBudget,
-            submit: { prompt, maxTokens in
+            submit: { prompt, maxTokens, _ in
                 calls.submit(prompt, maxTokens)
                 return try continuation()
             },
@@ -359,7 +359,7 @@ struct LoopExitThinkingContinuationTests {
         let spliced = LoopExitThinkingContinuation.splice(
             first: first, cancelFirst: { calls.cancelFirst() }, exit: exit(requested: true, tokens: thought),
             promptTokens: Self.prompt, outputBudget: 8_192,
-            submit: { prompt, maxTokens in
+            submit: { prompt, maxTokens, _ in
                 // The owner's hand-off (the row's release, the submission) is still running.
                 await gate.enterAndWait()
                 calls.submit(prompt, maxTokens)
@@ -374,6 +374,44 @@ struct LoopExitThinkingContinuationTests {
         #expect(calls.submits.count == 1)
         #expect(calls.cancels.continuation == 1)
         #expect(await drain(spliced.events) == ["info:5/4200/length"])
+    }
+
+    @Test("an owner that checks the splice's cancel after its release wait submits nothing")
+    func ownerChecksTheSplicesCancel() async throws {
+        let calls = Calls()
+        let gate = HandOffGate()
+        let outcomes = Outcomes()
+        let first = stream([.info(promptTokens: 5, completionTokens: 4_200, tokensPerSecond: 10, finishReason: "length")])
+        let spliced = LoopExitThinkingContinuation.splice(
+            first: first, cancelFirst: { calls.cancelFirst() }, exit: exit(requested: true, tokens: thought),
+            promptTokens: Self.prompt, outputBudget: 8_192,
+            submit: { prompt, maxTokens, cancelled in
+                // The owner's release wait, then its check, as both owners do.
+                await gate.enterAndWait()
+                guard !cancelled() else { throw CancellationError() }
+                calls.submit(prompt, maxTokens)
+                return self.stream([.chunk("never")], finish: false)
+            },
+            cancelContinuation: { calls.cancelContinuation() },
+            onOutcome: { outcomes.add($0) })
+        await gate.waitUntilEntered()
+        // A cancel that reaches the splice but not its task, as the local API's disconnect hook's.
+        await spliced.cancel()
+        gate.release()
+        await spliced.finished()
+        #expect(calls.submits.isEmpty)
+        #expect(calls.cancels.continuation == 0)
+        #expect(await drain(spliced.events) == ["info:5/4200/length"])
+        // The owner's refusal is the cancel's, and is logged as one.
+        #expect(outcomes.all == [.endedAsLength(reason: "cancelled")])
+    }
+
+    /// The splice's outcomes, in order.
+    private final class Outcomes: @unchecked Sendable {
+        private let lock = NSLock()
+        private var items: [LoopExitThinkingContinuation.Outcome] = []
+        func add(_ outcome: LoopExitThinkingContinuation.Outcome) { lock.withLock { items.append(outcome) } }
+        var all: [LoopExitThinkingContinuation.Outcome] { lock.withLock { items } }
     }
 
     @Test("a cancel before the continuation starts keeps it from starting")

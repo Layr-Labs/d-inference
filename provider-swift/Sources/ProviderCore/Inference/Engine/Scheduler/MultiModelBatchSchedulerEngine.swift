@@ -1242,7 +1242,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 // The output the bridge resolved for the row, as it sized the
                 // row's service allowance.
                 outputBudget: bridge.outputTokens(requested: base.maxTokens, promptTokens: promptTokens.count),
-                submit: { continuationPrompt, budget in
+                submit: { continuationPrompt, budget, cancelled in
                     // The stopped row's stream can end before it releases its
                     // serving slot (a row with a retirement handle): until then
                     // it still counts against the Mac's width.
@@ -1251,11 +1251,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     }
                     // A consumer that stopped reading the spliced stream (its
                     // `onTermination(.cancelled)` cancels this task) gets no
-                    // continuation row. A cancel that reaches only the splice's
-                    // `Control` (the local API's disconnect hook) is seen once the
-                    // row is submitted, and cancels it at once (closing that
-                    // window is a follow-up).
+                    // continuation row, nor does a cancel that reached only the
+                    // splice's control (the local API's disconnect hook).
                     try Task.checkCancellation()
+                    guard !cancelled() else { throw CancellationError() }
                     var next = base
                     next.maxTokens = budget
                     // As model calibration submits: the request's prompt progress

@@ -164,9 +164,10 @@ struct NativeToolStreamRouter {
 
     /// End of generation on the complete-call path: the handler's calls and
     /// its residual text. An `auto` GLM suffix that did not parse as one batch
-    /// is split into text and its final calls (`GLM5ToolSuffix`; an output the
-    /// token limit cut off is all text). A suffix whose release would expose a
-    /// think marker from inside a tool frame keeps failing, as before.
+    /// is split into text and its final calls (`GLM5ToolSuffix`; such a suffix
+    /// in an output the token limit cut off is all text, while one that parses
+    /// keeps its calls). A suffix whose release would expose a think marker
+    /// from inside a tool frame keeps failing, as before.
     mutating func finishCompleteCalls(truncated: Bool) throws -> (calls: [ToolCall], residual: String?) {
         guard let handler else { return ([], nil) }
         let calls = handler.finish()

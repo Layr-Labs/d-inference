@@ -1,5 +1,6 @@
 // Copyright © 2026 Eigen Labs.
 
+import Foundation
 import MLXLMServer
 
 /// Rewrites a GPT-OSS answer header that carries attributes, such as
@@ -11,6 +12,7 @@ import MLXLMServer
 struct HarmonyFinalHeaderFilter: Sendable {
     private static let channelMarker = "<|channel|>"
     private static let messageMarker = "<|message|>"
+    private static let constrainMarker = "<|constrain|>"
     /// A header is a few tokens; longer text after `<|channel|>` passes unchanged.
     private static let maximumHeaderBytes = 256
 
@@ -62,18 +64,21 @@ struct HarmonyFinalHeaderFilter: Sendable {
         return pending
     }
 
-    /// `final` for an answer header with attributes; any other header as given.
-    /// A header with a recipient (`to=`) is a call, not an answer. Surrounding
-    /// whitespace alone is left as is: the parser trims it.
+    /// `final` for an answer header: its first word is `final`, it names no
+    /// recipient (`to=` is a call) and it holds no control marker but
+    /// `<|constrain|>` (another one means the header was cut short and a new
+    /// message began). Any other header as given.
     private static func answerHeader(_ header: String) -> String {
         let name = header.drop { $0.isWhitespace }.prefix { !$0.isWhitespace && $0 != "<" }
         guard name == "final", !header.contains("to="),
-              header.trimmingCharacters(in: .whitespaces) != "final" else { return header }
+              !header.replacingOccurrences(of: constrainMarker, with: "").contains("<|") else { return header }
         return "final"
     }
 
     /// Length of the longest suffix of `text` that is a proper prefix of
-    /// `<|channel|>`. The marker is ASCII, so its bytes and characters count alike.
+    /// `<|channel|>`, in bytes. The caller holds that many Characters: the
+    /// suffix is ASCII, so this is the same text, or one cluster more when a
+    /// prepended mark joins its first byte. Text is held, never split.
     private static func markerPrefixLength(_ text: String) -> Int {
         let marker = Array(channelMarker.utf8)
         let bytes = Array(text.utf8.suffix(marker.count - 1))

@@ -57,7 +57,7 @@ struct HarmonyFinalHeaderFilterTests {
             "<|channel|>commentary<|message|>Checking the weather.<|end|>",
             "<|channel|>final to=functions.x<|message|>{}",
             "<|channel|>finalize<|message|>x",
-            "<|channel|> final <|message|>Plain answer.",
+            "<|channel|>final<|end|><|start|>assistant<|channel|>analysis<|message|>Reasoning.<|end|>",
             "No markers <|chan at all, a < and |>.",
             "Unicode é 🙂 <|channel|>analysis<|message|>Ünïcode<|end|>",
         ]
@@ -66,12 +66,25 @@ struct HarmonyFinalHeaderFilterTests {
         }
     }
 
+    @Test("a padded plain final header becomes the exact one, for the non-stream parser too", arguments: widths)
+    func paddedFinalHeaderIsExact(width: Int) {
+        #expect(Self.filtered("<|channel|> final <|message|>Plain answer.", width: width)
+            == "<|channel|>final<|message|>Plain answer.")
+    }
+
     @Test("an unterminated or oversized header is passed on unchanged")
     func unfinishedHeadersPassThrough() {
         let unterminated = Self.analysis + "<|channel|>final <|constrain|>js"
         #expect(Self.filtered(unterminated, width: 3) == unterminated)
         let oversized = "<|channel|>final " + String(repeating: "a", count: 300) + "<|message|>{}"
         for width in Self.widths { #expect(Self.filtered(oversized, width: width) == oversized, "width \(width)") }
+        // The limit is 256 header bytes at every chunking.
+        let atLimit = "<|channel|>final " + String(repeating: "a", count: 250) + "<|message|>{}"
+        let overLimit = "<|channel|>final " + String(repeating: "a", count: 251) + "<|message|>{}"
+        for width in Self.widths {
+            #expect(Self.filtered(atLimit, width: width) == "<|channel|>final<|message|>{}", "width \(width)")
+            #expect(Self.filtered(overLimit, width: width) == overLimit, "width \(width)")
+        }
         var partial = HarmonyFinalHeaderFilter()
         #expect(partial.ingest("text <|chan") == "text ")
         #expect(partial.finish() == "<|chan")

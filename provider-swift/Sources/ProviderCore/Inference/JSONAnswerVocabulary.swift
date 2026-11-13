@@ -3,10 +3,10 @@
 import Foundation
 import MLXLMCommon
 
-/// Byte-level vocabulary of one JSON-answer profile. Base BPE ids and the
-/// profile's `pieceTokens` carry pieces; every other id (special and added
-/// tokens, padding up to the model's vocabulary) has none and is never
-/// allowed. Built only when the tokenizer matches the pinned contract.
+/// Byte-level vocabulary of one JSON-answer profile. The profile's BPE ids and
+/// its `pieceTokens` carry pieces; every other id (special and added tokens,
+/// padding up to the model's vocabulary) has none and is never allowed. Built
+/// only when the tokenizer matches the pinned contract.
 final class JSONAnswerVocabulary: ByteOrderedPieceVocabulary, Sendable {
     /// Indexed by token id; empty for ids that are never allowed.
     let pieces: [[UInt8]]
@@ -39,7 +39,8 @@ final class JSONAnswerVocabulary: ByteOrderedPieceVocabulary, Sendable {
     }
 
     /// Verifies every pinned marker and terminator by id, spelling, encoding
-    /// and decoding, and that every base id is a byte-level piece.
+    /// and decoding, and that every id in the profile's BPE range is a
+    /// byte-level piece.
     convenience init(tokenizer: any MLXLMCommon.Tokenizer, profile: JSONAnswerProfile,
                      stopTokenIDs: Set<Int>) throws {
         for token in profile.pieceTokens + profile.answerEOS {
@@ -52,7 +53,7 @@ final class JSONAnswerVocabulary: ByteOrderedPieceVocabulary, Sendable {
             }
         }
         var pieces = [[UInt8]](repeating: [], count: profile.vocabularySize)
-        for id in 0..<profile.firstAddedTokenID {
+        for id in profile.pieceIDs {
             guard let raw = tokenizer.convertIdToToken(id), let bytes = ByteLevelBPE.bytes(raw), !bytes.isEmpty else {
                 throw ToolConstraintSchemaError.invalid("Incomplete \(profile.family) byte-level vocabulary")
             }

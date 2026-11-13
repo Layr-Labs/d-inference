@@ -4,7 +4,8 @@
 // constraints. Vocabulary decoding is cached per loaded tokenizer; schemas
 // and grammar state remain per request. Qwen4 uses its rendered native channel
 // boundary and opaque framed arguments; Gemma keeps its own schema automaton;
-// tool-free Qwen 3.5 JSON answers use JSONAnswerConstraint.
+// tool-free JSON answers of the families `JSONAnswerPolicy` admits use
+// JSONAnswerConstraint.
 
 import Foundation
 import ProviderCoreFoundation
@@ -50,10 +51,10 @@ enum ToolConstraintFactory {
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(error.localizedDescription)
             }
         }
-        // A tool-free Qwen JSON answer is constrained when everything it needs
+        // A tool-free JSON answer is constrained when everything it needs
         // verifies; otherwise it keeps prompt-only steering, never a refusal.
-        if let answer = QwenJSONAnswerPolicy.constraint(request: request, tokenizer: tokenizer,
-            modelType: modelContext.modelType, defaultMaxTokens: defaultMaxTokens,
+        if let answer = JSONAnswerPolicy.constraint(request: request, tokenizer: tokenizer,
+            modelID: modelContext.modelId, modelType: modelContext.modelType, defaultMaxTokens: defaultMaxTokens,
             stopTokenIDs: stopTokenIDs, promptTokens: nativePromptTokens) {
             return answer
         }

@@ -1926,7 +1926,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     continuation.finish(throwing: error)
                     return
                 }
-                let toolCalls = finished.calls
+                let toolCalls = ParallelToolCallPolicy.admitted(finished.calls, prepared: prepared)
                 if prepared.mode == .auto, let residual = finished.residual, !residual.isEmpty {
                     emit(router.visibleEvent(residual))
                 }

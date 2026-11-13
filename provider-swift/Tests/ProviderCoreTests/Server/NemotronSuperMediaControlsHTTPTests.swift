@@ -162,9 +162,10 @@ struct NemotronSuperMediaControlsHTTPTests {
                 #expect(none.content == "Sunny." && none.toolCalls.isEmpty, "\(name)")
                 #expect(!script.prompt.contains("<name>get_weather</name>")
                     && script.prompt.contains("Do not call any tool."), "\(name)")
-                // `parallel_tool_calls: false` with two calls: the model broke the contract (422).
-                _ = try await send(body(media, Self.twoCalls, stream: false,
-                    ["tools": [Self.weather], "parallel_tool_calls": false]), status: .unprocessableContent)
+                // `parallel_tool_calls: false` with two calls: the first is returned, as OpenAI and vLLM do.
+                let single = try SuperJSON(try await send(body(media, Self.twoCalls, stream: false,
+                    ["tools": [Self.weather], "parallel_tool_calls": false])))
+                #expect(single.toolCalls.map(\.arguments) == [#"{"city":"Paris"}"#], "\(name)")
                 // Media in a tool result, which `native_media_tools` advertises.
                 let result = try SuperJSON(try await send(toolResultBody(media, ["</think>", "Sunny."])))
                 #expect(result.content == "Sunny.", "\(name)")

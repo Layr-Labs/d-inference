@@ -7,8 +7,6 @@ import MLXLMCommon
 /// `<tool_call>\n<function=NAME>\n<parameter=KEY>\nVALUE\n</parameter>\n…`
 /// `</function>\n</tool_call>`.
 enum QwenStrictToolFraming: Int8, Hashable, Sendable {
-    /// After `<tool_call>`.
-    case callOpen
     /// After the function name's `>`, and after a text value's `</parameter>`.
     case lineBreak
     /// `<parameter=`, entered after its first two bytes.
@@ -22,7 +20,6 @@ enum QwenStrictToolFraming: Int8, Hashable, Sendable {
 
     var bytes: [UInt8] {
         switch self {
-        case .callOpen: Self.callOpenBytes
         case .lineBreak, .valueOpen: Self.lineBreakBytes
         case .parameterOpen: Self.parameterOpenBytes
         case .valueClose: QwenStrictToolSchema.valueClose
@@ -30,22 +27,25 @@ enum QwenStrictToolFraming: Int8, Hashable, Sendable {
         }
     }
 
-    private static let callOpenBytes = Array("\n<function=".utf8)
     private static let lineBreakBytes: [UInt8] = [10]
     private static let parameterOpenBytes = Array("<parameter=".utf8)
     private static let callCloseBytes = Array("</function>\n</tool_call>".utf8)
 }
 
-/// The spellings each span of a call watches, built once per constraint.
+/// The spellings each span of a call watches, built once per constraint,
+/// and whether a second call may follow the first.
 struct QwenStrictToolMarkers: Sendable {
     /// A text value: its closing tag ends it; any other is refused.
     let text: [[UInt8]]
     /// A JSON value: every one is refused.
     let value: [[UInt8]]
+    /// `parallel_tool_calls: false`: no call opens after one closed.
+    let singleCall: Bool
 
-    init(forbidding markers: [[UInt8]]) {
+    init(forbidding markers: [[UInt8]], singleCall: Bool = false) {
         text = markers + [QwenStrictToolBoundary.parameterClose]
-        value = markers + [QwenStrictToolBoundary.parameterClose] + QwenStrictToolBoundary.surrogateEscapes
+        value = text + QwenStrictToolBoundary.surrogateEscapes
+        self.singleCall = singleCall
     }
 }
 
@@ -60,6 +60,12 @@ struct QwenStrictToolBoundary: Hashable {
         case reasoning
         /// Free text, until `<tool_call>` opens a call.
         case content
+        /// After `<tool_call>`: whitespace, then the bytes of `<function=`
+        /// matched so far. Another byte is not a call the parser can read, so
+        /// the answer goes on as text, as without a grammar; `{` (the JSON
+        /// dialect) and a non-ASCII byte (Unicode whitespace the parser would
+        /// skip) are refused.
+        case opening(Int8)
         case fixed(QwenStrictToolFraming, Int16)
         /// The function name typed so far.
         case name([UInt8])
@@ -77,6 +83,7 @@ struct QwenStrictToolBoundary: Hashable {
     static let thinkClose = Array("</think>".utf8)
     static let callOpen = Array("<tool_call>".utf8)
     static let parameterClose = Array("</parameter>".utf8)
+    static let functionOpen = Array("<function=".utf8)
     private static let reasoningMarkers = [thinkClose]
     private static let contentMarkers = [callOpen]
     /// `\uD800`…`\uDFFF`: the parser's JSONSerialization refuses a lone
@@ -91,18 +98,18 @@ struct QwenStrictToolBoundary: Hashable {
     private(set) var tool: Int16 = -1
     private(set) var parameter: Int16 = -1
     private(set) var seen = FlintJSONPropertySet()
+    /// A call closed earlier in this answer.
+    private(set) var closedCall = false
 
     init(reasoning: Bool) { step = reasoning ? .reasoning : .content }
 
     /// Outside calls: an end of the answer may be sampled here.
     var isFree: Bool {
         switch step {
-        case .reasoning, .content: true
+        case .reasoning, .content, .opening: true
         default: false
         }
     }
-
-    var isInsideCall: Bool { !isFree }
 
     /// Free spans whose bytes can only be refused by completing a marker:
     /// reasoning, text, text values (every marker ends in `>`).
@@ -128,10 +135,24 @@ struct QwenStrictToolBoundary: Hashable {
             return true
         case .content:
             if Self.advance(&window, with: byte, markers: Self.contentMarkers) != nil {
+                guard !(markers.singleCall && closedCall) else { return false }
                 window = []
-                step = .fixed(.callOpen, 0)
+                step = .opening(0)
             }
             return true
+        case .opening(let matched):
+            if matched == 0, (9...13).contains(byte) || byte == 32 { return true }
+            if byte == Self.functionOpen[Int(matched)] {
+                step = Int(matched) + 1 == Self.functionOpen.count ? .name([]) : .opening(matched + 1)
+                return true
+            }
+            if matched == 0, byte == 123 || byte >= 0x80 { return false }
+            // Text again, watched from the bytes after `<tool_call>` on.
+            step = .content
+            for previous in Self.functionOpen.prefix(Int(matched)) {
+                _ = Self.advance(&window, with: previous, markers: Self.contentMarkers)
+            }
+            return consume(byte, schema: schema, markers: markers)
         case .fixed(let framing, let offset):
             let bytes = framing.bytes
             guard bytes[Int(offset)] == byte else { return false }
@@ -226,8 +247,6 @@ struct QwenStrictToolBoundary: Hashable {
 
     private mutating func complete(_ framing: QwenStrictToolFraming, schema: QwenStrictToolSchema) {
         switch framing {
-        case .callOpen:
-            step = .name([])
         case .lineBreak:
             step = .between(false)
         case .parameterOpen:
@@ -244,6 +263,7 @@ struct QwenStrictToolBoundary: Hashable {
         case .callClose:
             tool = -1
             seen = FlintJSONPropertySet()
+            closedCall = true
             step = .content
         }
     }
@@ -286,20 +306,24 @@ final class QwenStrictToolConstraint: CBv2TokenConstraint, @unchecked Sendable {
     private var states: [QwenStrictToolBoundary]
     private var stateIndex: [QwenStrictToolBoundary: Int]
     private var allowedCache: [(state: Int, tokens: [Int])] = []
-    private var broadMasks: [(rejected: Set<Int>, tokens: [Int])] = []
+    /// Opaque-span masks by refused pieces and whether stops are allowed.
+    private var broadMasks: [(rejected: Set<Int>, free: Bool, tokens: [Int])] = []
+    /// A call's opening masks by bytes of `<function=` matched: nothing else
+    /// of an opening state changes what it admits.
+    private var openingMasks: [Int: [Int]] = [:]
     static let maximumStates = 32_768
     private static let maximumMaskEntries = 8
     /// After resource exhaustion every later token is free (`releasedState`).
     static let releasedState = Int.max
 
     init(schema: QwenStrictToolSchema, vocabulary: JSONAnswerVocabulary, forbidding markers: [[UInt8]],
-         startsInReasoning: Bool, maxTokens: Int) throws {
+         startsInReasoning: Bool, allowsParallelCalls: Bool = true, maxTokens: Int) throws {
         guard maxTokens > 0 else {
             throw ToolConstraintSchemaError.invalid("strict tool grammars require a positive output budget")
         }
         self.schema = schema
         self.vocabulary = vocabulary
-        self.markers = QwenStrictToolMarkers(forbidding: markers)
+        self.markers = QwenStrictToolMarkers(forbidding: markers, singleCall: !allowsParallelCalls)
         self.startsInReasoning = startsInReasoning
         self.maxTokens = maxTokens
         fallbackTokenID = vocabulary.fallbackTokenID
@@ -312,7 +336,7 @@ final class QwenStrictToolConstraint: CBv2TokenConstraint, @unchecked Sendable {
     func allowedTokenIDs(state: Int, remainingTokens: Int) -> [Int] {
         lock.lock(); defer { lock.unlock() }
         guard remainingTokens > 0 else { return [] }
-        if state == Self.releasedState { return (vocabulary.pieceTokenIDs + freeStops).sorted() }
+        if state == Self.releasedState { return Self.merged(vocabulary.pieceTokenIDs, freeStops) }
         guard states.indices.contains(state) else { return [] }
         if let index = allowedCache.firstIndex(where: { $0.state == state }) {
             let entry = allowedCache.remove(at: index)
@@ -321,26 +345,36 @@ final class QwenStrictToolConstraint: CBv2TokenConstraint, @unchecked Sendable {
         }
         let boundary = states[state]
         var allowed: [Int]
-        if let sensitive = broadCandidates(boundary) {
+        if case .opening(let matched) = boundary.step {
+            if let mask = openingMasks[Int(matched)] {
+                allowed = mask
+            } else {
+                allowed = openingMask(boundary, matched: Int(matched))
+                openingMasks[Int(matched)] = allowed
+            }
+        } else if let sensitive = broadCandidates(boundary) {
             // Opaque spans: only sensitive pieces can be refused, so the rest
-            // of the vocabulary is admitted without simulation.
+            // of the vocabulary is admitted without simulation. Outside calls
+            // an answer may also end.
             let rejected = Set(sensitive.filter { transition(boundary, token: $0) == nil })
-            if let index = broadMasks.firstIndex(where: { $0.rejected == rejected }) {
+            let free = boundary.isFree
+            if let index = broadMasks.firstIndex(where: { $0.rejected == rejected && $0.free == free }) {
                 let mask = broadMasks.remove(at: index)
                 broadMasks.append(mask)
                 allowed = mask.tokens
             } else {
                 allowed = rejected.isEmpty ? vocabulary.pieceTokenIDs
                     : vocabulary.pieceTokenIDs.filter { !rejected.contains($0) }
+                if free { allowed = Self.merged(allowed, freeStops) }
                 if broadMasks.count == Self.maximumMaskEntries { broadMasks.removeFirst() }
-                broadMasks.append((rejected, allowed))
+                broadMasks.append((rejected, free, allowed))
             }
         } else {
+            // Structural positions are inside calls, where no answer ends.
             allowed = vocabulary.acceptedTokens(from: boundary) {
                 $0.consume($1, schema: schema, markers: markers)
             }
         }
-        if boundary.isFree { allowed = (allowed + freeStops).sorted() }
         if allowedCache.count == Self.maximumMaskEntries { allowedCache.removeFirst() }
         allowedCache.append((state, allowed))
         return allowed
@@ -377,6 +411,52 @@ final class QwenStrictToolConstraint: CBv2TokenConstraint, @unchecked Sendable {
     }
 
     var cachedStateCount: Int { lock.lock(); defer { lock.unlock() }; return states.count }
+
+    /// After `<tool_call>` most pieces leave the opening at their first byte
+    /// that is not whitespace (the answer goes on as free text), so only pieces
+    /// that keep matching `<function=`, or that could complete a marker later,
+    /// are simulated; the rest are decided by that byte.
+    private func openingMask(_ boundary: QwenStrictToolBoundary, matched: Int) -> [Int] {
+        let open = QwenStrictToolBoundary.functionOpen
+        var allowed: [Int] = []
+        allowed.reserveCapacity(vocabulary.pieceTokenIDs.count + freeStops.count)
+        for id in vocabulary.pieceTokenIDs {
+            let piece = vocabulary.pieces[id]
+            var index = 0
+            if matched == 0 {
+                while index < piece.count, (9...13).contains(piece[index]) || piece[index] == 32 { index += 1 }
+                if index == piece.count {
+                    allowed.append(id)
+                    continue
+                }
+            }
+            let byte = piece[index]
+            let keepsOpening = byte == open[matched]
+            if !keepsOpening, matched == 0, byte == 123 || byte >= 0x80 { continue }
+            if keepsOpening || piece[index...].contains(62) {
+                if transition(boundary, token: id) != nil { allowed.append(id) }
+            } else {
+                allowed.append(id)
+            }
+        }
+        // Ascending already: pieces are listed in id order.
+        return Self.merged(allowed, freeStops)
+    }
+
+    /// Two ascending lists of distinct ids as one.
+    private static func merged(_ lhs: [Int], _ rhs: [Int]) -> [Int] {
+        var result: [Int] = []
+        result.reserveCapacity(lhs.count + rhs.count)
+        var i = 0, j = 0
+        while i < lhs.count || j < rhs.count {
+            if j == rhs.count || (i < lhs.count && lhs[i] < rhs[j]) {
+                result.append(lhs[i]); i += 1
+            } else {
+                result.append(rhs[j]); j += 1
+            }
+        }
+        return result
+    }
 
     /// Reasoning, text and text values are opaque until a marker; JSON string
     /// bodies are opaque until a quote, escape, control byte or marker.

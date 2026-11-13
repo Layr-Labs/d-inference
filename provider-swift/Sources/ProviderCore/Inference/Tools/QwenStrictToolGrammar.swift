@@ -28,13 +28,13 @@ import MLXLMServer
 /// and, on these engines, on every row of a decode step it shares
 /// (`EngineLoopV2.mtpDraftBatchRows`), as for constrained JSON answers.
 enum QwenStrictToolGrammar {
-    /// Unset, `on`, `1` or `true`: the Qwen 3.5-family builds (`qwen3_5`,
+    /// Unset, `on`, `1`, `true` or `yes`: the Qwen 3.5-family builds (`qwen3_5`,
     /// `qwen3_5_moe`). An off word (`off`, `0`, `false`, `no`, `none`,
     /// `disabled`, any case) restores unconstrained calls. Any other value is a
     /// comma-separated list: a `model_type`, or a case-insensitive part of a
     /// model id (`qwen3.8-27b`); only Qwen 3.5-family builds qualify.
     static let environmentKey = "DARKBLOOM_STRICT_TOOL_GRAMMAR"
-    /// `on`, `1` or `true`: also requests whose tools are not `strict`.
+    /// `on`, `1`, `true` or `yes` (any case): also requests whose tools are not `strict`.
     static let allToolsEnvironmentKey = "DARKBLOOM_STRICT_TOOL_GRAMMAR_ALL_TOOLS"
 
     static let modelTypes: Set<String> = ["qwen3_5", "qwen3_5_moe"]
@@ -124,7 +124,7 @@ enum QwenStrictToolGrammar {
         }
         guard let constraint = try? QwenStrictToolConstraint(schema: schema, vocabulary: vocabulary,
             forbidding: forbiddenMarkers, startsInReasoning: prefix == ReasoningPromptProbe.thinkOpen,
-            maxTokens: request.maxTokens ?? defaultMaxTokens) else {
+            allowsParallelCalls: prepared.allowsParallelCalls, maxTokens: request.maxTokens ?? defaultMaxTokens) else {
             return declined("no positive output budget")
         }
         return constraint
@@ -132,9 +132,10 @@ enum QwenStrictToolGrammar {
 
     /// Spellings no argument value may contain: the turn, reasoning and call
     /// markers (each also an added token of these tokenizers).
-    static let forbiddenMarkers: [[UInt8]] = [
+    static let forbiddenMarkers: [[UInt8]] = forbiddenSpellings.map { Array($0.utf8) }
+    private static let forbiddenSpellings = [
         "<tool_call>", "</tool_call>", "<think>", "</think>", "<|im_start|>", "<|im_end|>", "<|endoftext|>",
-    ].map { Array($0.utf8) }
+    ]
 
     /// The Qwen 3.5 vocabulary contract (`JSONAnswerProfile.qwen35`) with the
     /// call markers as ordinary pieces. Every watched marker ends in `>`, so
@@ -142,8 +143,8 @@ enum QwenStrictToolGrammar {
     static let profile = JSONAnswerProfile(
         family: "Qwen tools",
         thinkClose: "</think>",
-        reasoningStops: ["<tool_call>", "</parameter>"] + forbiddenMarkers.map { String(decoding: $0, as: UTF8.self) },
-        contentMarkers: forbiddenMarkers.map { String(decoding: $0, as: UTF8.self) } + ["</parameter>"],
+        reasoningStops: ["<tool_call>", "</parameter>"] + forbiddenSpellings,
+        contentMarkers: forbiddenSpellings + ["</parameter>"],
         firstAddedTokenID: 248044,
         pieceTokens: [.init(spelling: "<think>", id: 248068), .init(spelling: "</think>", id: 248069),
                       .init(spelling: "<tool_call>", id: 248058), .init(spelling: "</tool_call>", id: 248059)],

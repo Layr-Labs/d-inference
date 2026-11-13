@@ -20,9 +20,10 @@ import MLXLMCommon
 /// and `items` whatever the node's type, so a reference the compiler would
 /// ignore there must resolve too.
 enum ResponseSchemaRewrite {
-    /// Bounds the walk's copying: a node it visits costs one plus its keys,
-    /// and an enum made nullable its values. A definition used from many
-    /// places is copied, and paid for, each time.
+    /// Bounds the walk's work: a node it visits costs one plus its keys, a
+    /// reference or a property name one per 64 bytes it hashes, and an enum
+    /// made nullable its values. A definition used from many places is
+    /// copied, and paid for, each time.
     static let maximumWork = 16_384
     /// Bounds the references and compositions one position unwraps in a row.
     static let maximumUnwraps = 8
@@ -78,8 +79,9 @@ enum ResponseSchemaRewrite {
             guard spend(object.count) else { return nil }
             object.removeValue(forKey: "$comment")
             if let reference = object["$ref"] {
-                guard case .string(let path) = reference, onlyAnnotations(object, besides: "$ref"),
-                      let target = definitions[path], expanding.insert(path).inserted else { return nil }
+                guard case .string(let path) = reference, spend(path.utf8.count / 64),
+                      onlyAnnotations(object, besides: "$ref"), let target = definitions[path],
+                      expanding.insert(path).inserted else { return nil }
                 defer { expanding.remove(path) }
                 return rewrite(target, depth: depth, unwraps: unwraps + 1)
             }
@@ -99,7 +101,8 @@ enum ResponseSchemaRewrite {
             if case .object(let properties)? = object["properties"] {
                 var rewritten: [String: MLXLMCommon.JSONValue] = [:]
                 for (name, property) in properties {
-                    guard let value = rewrite(property, depth: depth + 1, unwraps: 0) else { return nil }
+                    guard spend(name.utf8.count / 64), let value = rewrite(property, depth: depth + 1, unwraps: 0)
+                    else { return nil }
                     rewritten[name] = value
                 }
                 object["properties"] = .object(rewritten)
@@ -134,8 +137,10 @@ enum ResponseSchemaRewrite {
         }
     }
 
+    /// No keyword or annotation is longer than 11 bytes, so a longer key is
+    /// refused before it is hashed.
     private static func onlyAnnotations(_ object: [String: MLXLMCommon.JSONValue], besides keyword: String) -> Bool {
-        object.keys.allSatisfy { $0 == keyword || annotations.contains($0) }
+        object.keys.allSatisfy { $0.utf8.count <= 11 && ($0 == keyword || annotations.contains($0)) }
     }
 
     private static func isNull(_ schema: MLXLMCommon.JSONValue) -> Bool {

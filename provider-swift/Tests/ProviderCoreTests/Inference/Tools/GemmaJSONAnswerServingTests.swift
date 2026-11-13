@@ -157,7 +157,7 @@ struct GemmaJSONAnswerPolicyTests {
         let refused = [
             // Draft-04 has no const, and draft-03 spells required as a boolean.
             ##"{"$schema":"http://json-schema.org/draft-04/schema#","type":"string","const":"a"}"##,
-            #"{"$schema":4,"type":"string"}"#,
+            #"{"$schema":4,"type":"string"}"#, #"{"$schema":"json-schema.org/draft-07/schema","type":"string"}"#,
             #"{"allOf":[{"type":"string"},{"type":"string"}]}"#,
             #"{"anyOf":[{"type":"string"},{"type":"null"}],"minLength":1}"#,
             #"{"anyOf":[{"type":"string"},{"type":["null"]}]}"#,
@@ -184,10 +184,19 @@ struct GemmaJSONAnswerPolicyTests {
         }
         #expect(try Self.rewrite(chain(4, reference)) == Self.json(#"{"type":"string"}"#))
         #expect(try Self.rewrite(chain(4_000, reference)) == nil, "at most \(ResponseSchemaRewrite.maximumUnwraps) in a row")
-        #expect(try Self.rewrite(chain(ToolConstraintSchemaCompiler.maxDepth, property)) != nil)
-        #expect(try Self.rewrite(chain(100, property)) == nil, "at most \(ToolConstraintSchemaCompiler.maxDepth) levels")
+        // The deepest output the rewrite writes is one the compiler takes.
+        let deepest = try #require(try Self.rewrite(chain(ToolConstraintSchemaCompiler.maxDepth, property)))
+        #expect((try? ToolConstraintSchemaCompiler.compileResponseSchema(deepest)) != nil)
+        #expect(try Self.rewrite(chain(ToolConstraintSchemaCompiler.maxDepth + 1, property)) == nil,
+                "at most \(ToolConstraintSchemaCompiler.maxDepth) levels")
         #expect(try Self.rewrite(chain(4, twice)) != nil)
-        #expect(try Self.rewrite(chain(12, twice)) == nil, "at most \(ResponseSchemaRewrite.maximumNodes) nodes")
+        #expect(try Self.rewrite(chain(12, twice)) == nil, "at most \(ResponseSchemaRewrite.maximumWork)")
+        // Copying is paid for too: a definition of 5,000 keys reached from 64 properties.
+        let wide = "{" + (0..<5_000).map { #""k\#($0)":0"# }.joined(separator: ",") + #","properties":{}}"#
+        let fanOut = #"{"type":"object","properties":{"#
+            + (0..<64).map { ##""p\##($0)":{"$ref":"#/$defs/B"}"## }.joined(separator: ",")
+            + ##"},"$defs":{"B":"## + wide + "}}"
+        #expect(try Self.rewrite(fanOut) == nil, "at most \(ResponseSchemaRewrite.maximumWork)")
     }
 
     @Test func aPydanticSchemaKeepsItsKeysAndRequirements() throws {

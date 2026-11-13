@@ -84,11 +84,16 @@ struct GLM5ToolFailureTests {
         #expect(result.visible == shape.visible, "\(shape.name)")
     }
 
-    /// A required call keeps failing closed when its suffix does not parse.
+    /// A required call keeps failing closed when its suffix does not parse: the
+    /// parser's own refusal, or the visible-text check when text precedes it.
     @Test func forcedChoiceStillRefusesAStraySuffix() async throws {
-        let result = try await run("Wrap it in <tool_call> tags.</think>" + valid, forced: true, width: 1)
-        #expect(result.calls.isEmpty && result.visible.isEmpty)
-        #expect(result.failure == .toolChoiceViolation("native GLM tool output is invalid"))
+        let stray = try await run("<tool_call>.</tool_call>" + valid, forced: true, width: 1)
+        #expect(stray.calls.isEmpty && stray.visible.isEmpty)
+        #expect(stray.failure == .toolChoiceViolation("native GLM tool output is invalid"))
+        let mentioned = try await run("Wrap it in <tool_call> tags.</think>" + valid, forced: true, width: 1)
+        #expect(mentioned.calls.isEmpty && mentioned.visible.isEmpty)
+        let failure = try #require(mentioned.failure)
+        #expect(ProviderLoop.mapInferenceErrorToStatus(failure) == 422)
     }
 
     /// The delimiters quoted inside a JSON argument are data: the calls start
@@ -122,6 +127,42 @@ struct GLM5ToolFailureTests {
         #expect(result.failure == nil)
         #expect(result.calls.isEmpty)
         #expect(result.visible == output)
+    }
+
+    /// The search for the calls' first frame is bounded.
+    @Test func callsAfterTooManyTagsStayText() async throws {
+        let mentions = String(repeating: "<tool_call> ", count: GLM5ToolSuffix.maximumStarts)
+        let within = try await run(String(mentions.dropFirst(12)) + valid, forced: false, width: 4096)
+        #expect(within.calls.count == 1 && within.failure == nil)
+        let beyond = try await run(mentions + valid, forced: false, width: 4096)
+        #expect(beyond.calls.isEmpty && beyond.failure == nil)
+        #expect(beyond.visible == mentions + valid)
+    }
+
+    /// `DARKBLOOM_GLM_TOOL_TEXT_FALLBACK=0` restores the whole-suffix failure.
+    @Test func rollbackRestoresTheSuffixFailure() throws {
+        let request = try MiMoConsumerFixture.request(choice: #""auto""#)
+        let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "glm5_next")
+        for textFallback in [true, false] {
+            let handler = try #require(try ToolStreamPreparation.makeHandler(
+                request: request, prepared: prepared, modelType: "glm5_next"))
+            var router = NativeToolStreamRouter(handler: handler, requiresToolCall: false, nativePrefix: nil,
+                tools: prepared.tools?.map { $0.toolSpec() }, glmUnparsedOutputIsText: textFallback)
+            _ = try router.process("Wrap it in <tool_call> tags.</think>" + valid)
+            _ = try router.finishText()
+            let finished = router.finishCompleteCalls(truncated: false)
+            if textFallback {
+                try router.checkNativeToolFailure()
+                #expect(finished.calls.count == 1)
+                #expect(finished.residual == "<tool_call> tags.</think>")
+            } else {
+                #expect(finished.calls.isEmpty)
+                #expect(throws: MultiModelBatchSchedulerEngineError.generationFailed(
+                    "native GLM tool output is invalid")) { try router.checkNativeToolFailure() }
+            }
+        }
+        #expect(GLM5ToolSuffix.environmentKey == "DARKBLOOM_GLM_TOOL_TEXT_FALLBACK")
+        #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(GLM5ToolSuffix.environmentKey))
     }
 
     /// Forced choice is served by structured post-validation: the production

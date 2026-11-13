@@ -43,6 +43,10 @@ public struct ChatTemplateControls: Sendable, Equatable {
     /// body. The coordinator path serves every request as a stream and the
     /// coordinator reassembles a complete one (`StrictToolCallPolicy`).
     var clientStreams: Bool?
+    /// The coordinator planned this request for its prompt cache or counted
+    /// its prompt exactly, so it renders the prompt the coordinator's prompt
+    /// sidecar rendered (`servingCoordinatorRequest`).
+    var rendersCoordinatorPrompt = false
 
     public init(
         reasoningEffort: String? = nil,
@@ -112,11 +116,16 @@ public struct ChatTemplateControls: Sendable, Equatable {
     /// receipt nonce) renders the prompt the plan was made for, without
     /// Transformers' tool JSON: a prompt the plan does not expect contradicts
     /// its cache receipts, and a caller could set the field through a
-    /// coordinator that forwards it.
-    func servingCoordinatorRequest(planned: Bool) -> Self {
-        guard planned, templateJSON != .init() else { return self }
+    /// coordinator that forwards it. A planned request, or one whose prompt
+    /// the coordinator counted exactly (`counted`), renders without Gemma 4's
+    /// system parts (`Gemma4SystemPartsRender`): the prompt sidecar renders
+    /// the string form, and an exact count the prompt misses withdraws the
+    /// request's calibrated deadline admission (`PromptWork.reconciled`).
+    func servingCoordinatorRequest(planned: Bool, counted: Bool = false) -> Self {
+        guard planned || counted else { return self }
         var copy = self
-        copy.templateJSON = .init()
+        if planned { copy.templateJSON = .init() }
+        copy.rendersCoordinatorPrompt = true
         return copy
     }
 

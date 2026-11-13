@@ -427,9 +427,11 @@ extension ProviderLoop {
         // Recover the one out-of-band template-control value once from the
         // authenticated plaintext body. The same value is used by text,
         // vision, and both prompt-token recount paths. A request planned for
-        // the coordinator's prompt cache renders the prompt of its plan.
+        // the coordinator's prompt cache renders the prompt of its plan, and
+        // one it counted exactly renders the prompt it counted.
         let templateControls = inbound.extensions.templateControls
-            .servingCoordinatorRequest(planned: remoteCache.scope != nil || remoteCache.receiptNonce != nil)
+            .servingCoordinatorRequest(planned: remoteCache.scope != nil || remoteCache.receiptNonce != nil,
+                counted: promptWork?.source == "exact_contract")
             .resolvingPromptDate()
         // Cache identity is coordinator-authored and authenticated outside the
         // sealed OpenAI body. Never trust caller-controlled prompt_cache_key/user

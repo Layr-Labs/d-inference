@@ -1396,6 +1396,19 @@ SHA-256 in the commit. A provider change to the rendered prompt, such as the
 Qwen JSON `response_format` thinking default, lands with the regenerated
 vectors and must pass `scripts/verify-prompt-parity.sh` before review.
 
+`fixtures/prompt-contract/v1/gemma4_system_parts_vectors.json` (10 cases) is
+this repository's: Transformers' chat-template render (jinja2 with Transformers'
+environment and `tojson`) of the served `gemma-4-26b-qat-4bit` template and
+tokenizer, whose SHA-256s it records. Each case has two token arrays:
+`vllm_token_ids` (string content as one text part, as vLLM hands it) and
+`string_token_ids` (list content joined, the sidecar's render).
+`ProductionPromptParityTests.gemmaSystemPartsVectors` runs in the same parity
+step and holds an unplanned Gemma 4 request to the first and a planned one to
+the second ([Gemma 4 system message parts](../architecture/inference.md#gemma-4-system-message-parts)).
+A case marked `provider_matches_transformers: false` (the Tau2 body, whose
+`$ref` tools already render differently) is checked only as the parts render's
+one-token change to the provider's own render.
+
 `fixtures/prompt-contract/v1/native_reasoning_vectors.json` (28 cases) is this
 repository's: the template context the provider gives each reasoning control,
 or its refusal. `CachePromptParityTests` checks the provider against it, and

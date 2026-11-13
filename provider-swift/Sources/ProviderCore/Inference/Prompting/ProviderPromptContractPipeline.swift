@@ -166,8 +166,13 @@ enum ProviderPromptContractPipeline {
         guard !preserveMiMoMediaParts || isMiMo else {
             throw MultiModelBatchSchedulerEngineError.multimodalRejected("native media owner required")
         }
+        let systemParts = !preserveMiMoMediaParts && Gemma4SystemPartsRender.applies(
+            to: request, modelType: modelType, controls: templateControls)
         let messages = prepared.messages.map { message in
             var value = message.templateMessageDict()
+            if systemParts, let parts = Gemma4SystemPartsRender.textParts(of: message) {
+                value["content"] = parts
+            }
             if preserveMiMoMediaParts, case .parts(let parts) = message.content {
                 value["content"] = parts.map { part -> [String: any Sendable] in
                     switch part {

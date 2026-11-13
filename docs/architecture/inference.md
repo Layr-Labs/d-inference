@@ -3613,6 +3613,44 @@ spliced across a boundary the reasoning parser later hides. Required and named
 (`provider-swift/Sources/ProviderCore/Inference/Tools/GemmaNoToolTokenConstraint.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Tools/GemmaTokenVocabulary.swift`).
 
+### Gemma 4 system message parts
+
+Gemma 4's template renders a string system message as is and a list of text
+parts with a space after each part (`item['text'] | trim + ' '`); it trims each
+part of a list-shaped user message on its own. vLLM hands this template every
+string as one text part, so vLLM-served endpoints feed, and count, one more
+token before the system turn's `<turn|>` than the string render: OpenRouter's
+GPQA prompt (system "You are a helpful assistant.") is 88 tokens there.
+`Gemma4SystemPartsRender` renders a Gemma 4 (`gemma4`, `gemma4_text`) text
+request's system message, and a user message's list content, as those parts
+(`ProviderPromptContractPipeline.normalizedInput`), so serving, the usage
+floor and `usage.prompt_tokens` use vLLM's prompt; list content renders as
+Transformers renders it instead of joined first.
+
+A request whose prompt the coordinator's sidecar rendered keeps the string
+form the sidecar renders (`ChatTemplateControls.servingCoordinatorRequest`,
+`rendersCoordinatorPrompt`). A planned request (a cache scope or receipt nonce)
+would otherwise fail its lookup receipt (`prompt_anchor_mismatch`,
+`provider_longer`) and fence the provider's cache routing for the model. A
+request carrying an exact prompt-work count (`exact_contract`) would otherwise
+lose its calibrated deadline admission (`PromptWork.reconciled`). Other
+coordinator requests carry no cache scope and reuse no prefix cache. On the
+network nearly every Gemma request is planned or counted (count-only accounting
+counts it even with cache routing off), so it counts as before until the
+sidecar renders the parts too. A network request the sidecar did not count
+(sampled out, throttled, a sidecar error) renders the parts, so the same body
+can count one token more under coordinator load. Media requests, other models
+and `DARKBLOOM_GEMMA_SYSTEM_PARTS_RENDER=off` keep the string render. The parts
+of a user list are trimmed one by one and join without a separator, as in
+Transformers and vLLM. vLLM hands the parts to templates it reads as OpenAI
+content format, which both Gemma 4 templates we serve are. A Gemma
+`calibrated_template` count, if one is ever reviewed, must be fitted on the
+render the provider serves.
+`ProductionPromptParityTests` checks both renders against Transformers' on the
+served artifacts (`fixtures/prompt-contract/v1/gemma4_system_parts_vectors.json`);
+for the Tau2 body, whose `$ref` tools already render differently, it checks the
+parts render relative to the provider's own render.
+
 ### Constrained Gemma 4 JSON answers
 
 Gemma 4 answers to a JSON `response_format` are sampled under the same JSON

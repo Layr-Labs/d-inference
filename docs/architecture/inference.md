@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-12
+> Last updated: 2026-11-13
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -3707,6 +3707,46 @@ render `high`, which #703 capped at `medium` to avoid upstream timeouts. So a
 provider release with them is tagged without being published to auto-update,
 snapshotted into #721, and published only once #721 is deployed, each step on
 the owner's go.
+
+### Strict tool-call grammar
+
+A `strict` `auto` call is checked against the caller's schema only when its
+frame closes ([streamed auto tool calls](#streamed-auto-tool-calls)), after the
+answer has started, so on the Qwen 3.5 template family (`qwen3_5`,
+`qwen3_5_moe`: Qwen 3.5 9B and 35B, 3.6 and 3.8) the provider also constrains
+such calls in the sampler. `QwenStrictToolGrammar` (in
+`provider-swift/Sources/ProviderCore/Inference/Tools/`) admits a request that
+is `auto`, declares a `strict` function (any tools with
+`DARKBLOOM_STRICT_TOOL_GRAMMAR_ALL_TOOLS`), parses with `.qwen35`, has no media,
+runs on an engine that samples under token constraints (not a cluster pair, not
+a native-tracked engine) and whose prompt ends in an open or closed think
+block; the scheduler's text path asks it after `ToolConstraintFactory`. Every
+declared tool must compile (`QwenStrictToolSchema`): local `$ref`s are inlined
+(cycles refused), `anyOf`/`oneOf` of one schema and `null`, a single `allOf`
+branch and objects beside an open object are folded, annotations (`format`
+included) are dropped, and the rest must fit the shared fail-closed subset
+(`ToolConstraintSchemaCompiler.compileResponseSchema`). Anything else, an
+unrecognized prompt boundary or a vocabulary that does not verify leaves the
+request as before, with a content-free log line, never a refusal.
+
+`QwenStrictToolConstraint` is a byte-level automaton over the shared Qwen
+vocabulary contract (`JSONAnswerVocabulary` with the call markers as pieces).
+Reasoning and text are free and only watched for `</think>` and `<tool_call>`;
+an answer can end wherever it could before. Inside a call every byte follows
+the template's framing (`<tool_call>\n<function=NAME>\n`,
+`<parameter=KEY>\nVALUE\n</parameter>\n`, `</function>\n</tool_call>`):
+a declared function, declared parameters at most once, required ones before
+`</function>`. A value's grammar follows how `Qwen35ToolCallParser` reads it
+under the rendered schema (`QwenStrictToolSchema.parserConversion`, a mirror of
+the SDK's `ToolArgumentNormalization` that `QwenStrictToolGrammarTests` checks
+against the parser): text the parser keeps as a string is free (or one of an
+enum's values), and a value it converts is one JSON value of the declared
+schema (`FlintJSONGrammar`); where the two disagree (a top-level `$ref` the
+render repair typed as a string), the request stays unconstrained. No value can
+spell `</parameter>` or a turn, reasoning or call marker. The validator still
+checks every call. The engine drafts no MTP tokens for a row with a token
+constraint, so a constrained answer that runs alone on its Mac decodes without
+MTP; the loop guard stays on (`GenerationLoopGuardPolicy`).
 
 ### Vision constraints
 

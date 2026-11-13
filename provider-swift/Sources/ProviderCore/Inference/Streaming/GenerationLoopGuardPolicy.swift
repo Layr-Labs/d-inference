@@ -69,7 +69,9 @@ enum GenerationLoopGuardPolicy {
     ) -> GenerationLoopGuard? {
         guard case .modelTypes(let enabled) = setting,
               let modelType = modelType?.lowercased(), enabled.contains(modelType) else { return nil }
-        guard tokenConstraint == nil, !prepared.requiresToolCall,
+        // The strict-tool grammar leaves reasoning and text free: a loop there
+        // is still stopped, and one inside a call ends it as at `max_tokens`.
+        guard tokenConstraint == nil || tokenConstraint is QwenStrictToolConstraint, !prepared.requiresToolCall,
               prepared.responseFormat == nil, prepared.glmResponseFormat == nil,
               request.responseFormat?.requiresJSONOutput != true else { return nil }
         var markers = genericToolCallMarkers

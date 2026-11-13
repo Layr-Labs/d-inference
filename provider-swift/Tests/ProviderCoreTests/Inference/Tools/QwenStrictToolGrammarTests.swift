@@ -273,12 +273,12 @@ struct QwenStrictToolGrammarTests {
         // the parser (the repair types it), so it stays unconstrained.
         let bare = #"[{"type":"function","function":{"name":"f","strict":true,"parameters":{"type":"object","#
             + #""$defs":{"P":{"type":"object","properties":{"a":{"type":"integer"}}}},"#
-            + #""properties":{"p":{"$ref":"#/$defs/P"}},"required":["p"]}}}]"#
+            + ##""properties":{"p":{"$ref":"#/$defs/P"}},"required":["p"]}}}]"##
         #expect(try F.constraint(F.body(tools: bare)) == nil)
         // Recursive references are not expanded.
         let recursive = #"[{"type":"function","function":{"name":"f","strict":true,"parameters":{"type":"object","#
-            + #""$defs":{"N":{"type":"object","properties":{"next":{"$ref":"#/$defs/N"}}}},"#
-            + #""properties":{"n":{"type":"object","properties":{"next":{"$ref":"#/$defs/N"}}}}}}}]"#
+            + ##""$defs":{"N":{"type":"object","properties":{"next":{"$ref":"#/$defs/N"}}}},"##
+            + ##""properties":{"n":{"type":"object","properties":{"next":{"$ref":"#/$defs/N"}}}}}}}]"##
         #expect(try F.constraint(F.body(tools: recursive)) == nil)
     }
 
@@ -339,7 +339,7 @@ struct QwenStrictToolGrammarTests {
             #"{"type":"object"}"#, #"{"type":"array"}"#, #"{"type":"integer","nullable":true}"#,
             #"{"type":["integer","null"]}"#, #"{"type":["string","integer"]}"#, #"{"type":"null"}"#,
             #"{"anyOf":[{"type":"integer"},{"type":"null"}]}"#, #"{"anyOf":[{"type":"string"},{"type":"integer"}]}"#,
-            #"{"allOf":[{"type":"number"},{"type":"integer"}]}"#, #"{"$ref":"#/x","type":"string"}"#,
+            #"{"allOf":[{"type":"number"},{"type":"integer"}]}"#, ##"{"$ref":"#/x","type":"string"}"##,
             #"{"type":"int"}"#, #"{"type":"dict"}"#, #"{"type":"weird"}"#, #"{"enum":["a"]}"#, "{}",
             #"{"type":"Integer"}"#, #"{"type":"object","nullable":1}"#,
         ]

@@ -140,7 +140,7 @@ struct EngineV2SamplingDefaultsTests {
         }
     }
 
-    /// `DARKBLOOM_QWEN35_9B_PRESENCE_PENALTY=0` (or `off`, `false`) restores
+    /// `DARKBLOOM_QWEN35_9B_PRESENCE_PENALTY=0` (or `off`, `false`, `no`) restores
     /// 0.10.12's no-penalty default on Qwen3.5-9B alone; anything else keeps
     /// the card's 1.5, and the 35B builds ignore it. A request's own value
     /// still wins under the rollback.
@@ -153,10 +153,10 @@ struct EngineV2SamplingDefaultsTests {
         }
         let card = EngineV2SamplingDefaults(temperature: 1.0, topP: 0.95, topK: 20, presencePenalty: 1.5)
         let noPenalty = EngineV2SamplingDefaults(temperature: 1.0, topP: 0.95, topK: 20)
-        for value in ["0", "off", "false", " OFF\n", "False"] {
+        for value in ["0", "off", "false", "no", " OFF\n", "False"] {
             #expect(nineB([key: value]) == noPenalty, "\(value)")
         }
-        for value in ["", "1", "on", "true", "1.5", "card", "no"] {
+        for value in ["", "1", "on", "true", "1.5", "card", "yes"] {
             #expect(nineB([key: value]) == card, "\(value)")
         }
         #expect(nineB([:]) == card)

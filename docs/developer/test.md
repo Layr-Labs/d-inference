@@ -2268,7 +2268,7 @@ CPU-only JSON-answer suites from `provider-swift/` together with the Flint suite
 whose automaton they share:
 
 ```bash
-../scripts/run-nested-suite.sh 'QwenJSONAnswer(Constraint|Policy|Output|Serving)Tests|FlintResponseFormat|FlintNativeProtocol|FlintAnswerStop' --no-parallel
+../scripts/run-nested-suite.sh 'QwenJSONAnswer(Constraint|Policy|Output|Serving)Tests|JSONAnswerFamilyTests|FlintResponseFormat|FlintNativeProtocol|FlintAnswerStop' --no-parallel
 ```
 
 `QwenJSONAnswerConstraintTests` drives the production constraint over a
@@ -2282,17 +2282,25 @@ every prompt-only fallback through `ToolConstraintFactory.make`, and
 `QwenJSONAnswerServingTests` samples a scripted engine through the real bridge
 and scheduler: streamed content, a typed 422 on truncation, requested reasoning
 split before validation, and unchanged tool and other-family paths.
+`JSONAnswerFamilyTests` covers the other admitted families through
+`JSONAnswerPolicy`: the Bonsai 2 builds on the Qwen contract under their own
+name, Lightning on its Nemotron contract (a synthetic tokenizer with the special
+and added tokens at ids below 1,000 and byte pieces from 1000), unlisted builds
+of a shared `model_type`, `DARKBLOOM_JSON_ANSWER_GRAMMAR=qwen`, a mismatched
+contract, and the Nemotron vocabulary's admitted ids and terminators.
 
-`QwenJSONAnswerRealTokenizerTests` is opt-in. Set
-`DARKBLOOM_TEST_QWEN_TOKENIZER_DIR` to a local Qwen 3.5, 3.6 or 3.8 snapshot
-directory and select that suite alone; it reads only tokenizer and template
-files, checks the pinned contract and both rendered JSON prompt tails, and walks
-a real tokenization of an answer. Without the variable the suite is skipped,
+`QwenJSONAnswerRealTokenizerTests` and `NemotronJSONAnswerRealTokenizerTests`
+are opt-in. Set `DARKBLOOM_TEST_QWEN_TOKENIZER_DIR` to a local Qwen 3.5, 3.6 or
+3.8 (or Bonsai 2) snapshot directory, or `DARKBLOOM_TEST_NEMOTRON_TOKENIZER_DIR`
+to a Nemotron 3.5 Lightning one, and select that suite alone; it reads only
+tokenizer and template files, checks the pinned contract and both rendered JSON
+prompt tails, and walks a real tokenization of an answer. Without the variable the suite is skipped,
 which the nested runner reports as an error. None of these suites loads weights
 or establishes answer quality or throughput. Sources:
 `provider-swift/Tests/ProviderCoreTests/Inference/Tools/QwenJSONAnswerConstraintTests.swift`,
 `provider-swift/Tests/ProviderCoreTests/Inference/Tools/QwenJSONAnswerServingTests.swift`,
-`provider-swift/Tests/ProviderCoreTests/Inference/Tools/QwenJSONAnswerRealTokenizerTests.swift`.
+`provider-swift/Tests/ProviderCoreTests/Inference/Tools/QwenJSONAnswerRealTokenizerTests.swift`,
+`provider-swift/Tests/ProviderCoreTests/Inference/Tools/JSONAnswerFamilyTests.swift`.
 
 ## Flint native validation
 

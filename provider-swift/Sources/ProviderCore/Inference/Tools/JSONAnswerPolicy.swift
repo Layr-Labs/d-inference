@@ -38,6 +38,12 @@ enum JSONAnswerPolicy {
         switch modelType {
         case "qwen3_5", "qwen3_5_moe":
             return .qwen35
+        case "prism_hadamard_qwen35" where families == .all:
+            let listed = EngineV2SupportedModels.isBonsai2ListingModelID(modelID)
+                || Bonsai9BModelPolicy.matches(modelId: modelID, modelType: modelType)
+            return listed ? .bonsai2 : nil
+        case "nemotron_h" where families == .all:
+            return EngineV2SupportedModels.isNemotron35ListingModelID(modelID) ? .nemotron35 : nil
         default:
             return nil
         }

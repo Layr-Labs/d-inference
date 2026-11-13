@@ -3392,15 +3392,27 @@ spliced across a boundary the reasoning parser later hides. Required and named
 
 ### Constrained Qwen JSON answers
 
-The format instruction alone leaves some Qwen answers outside the requested
-schema: a near-miss key, a string for an integer, or prose. On the Qwen text
-path the answer is therefore sampled under a grammar, as on
-[exact Flint](#native-flint). `ToolConstraintFactory.make` asks
-`QwenJSONAnswerPolicy` before any tool-choice constraint: a text request on
-`qwen3_5` or `qwen3_5_moe` with a JSON `response_format`, no `tools`, no
-`tool_choice` and the `qwen3` reasoning parser gets a `JSONAnswerConstraint`.
-The prompt is unchanged (the service's format instruction and the no-thinking
-default above), so the coordinator prompt sidecar needs no rule.
+The same machinery serves the Bonsai 2 builds and Nemotron 3.5 Lightning.
+The format instruction alone leaves some answers outside the requested schema:
+a near-miss key, a string for an integer, an invented key under
+`additionalProperties: false`, a raw newline inside a string, or prose. On the
+text path of the families with a pinned answer contract the answer is therefore
+sampled under a grammar, as on [exact Flint](#native-flint).
+`ToolConstraintFactory.make` asks `JSONAnswerPolicy` before any tool-choice
+constraint: a text request with a JSON `response_format`, no `tools`, no
+`tool_choice` and the `qwen3` reasoning parser gets a `JSONAnswerConstraint`
+when its model is admitted (`JSONAnswerPolicy.profile`):
+
+| Family | Admission | Contract (`JSONAnswerProfile`) |
+|---|---|---|
+| Qwen 3.5, 3.6, 3.8 | `model_type` `qwen3_5` or `qwen3_5_moe` | `qwen35` |
+| PrismML Bonsai 2 (27B, 9B) | `prism_hadamard_qwen35` and a listed Bonsai build (`EngineV2SupportedModels.isBonsai2ListingModelID`, `Bonsai9BModelPolicy`) | `bonsai2`: Qwen 3.5's tokenizer, the same ids, its own name in messages |
+| Nemotron 3.5 Lightning | `nemotron_h` and a Lightning listing id (`EngineV2SupportedModels.isNemotron35ListingModelID`; Nano shares the type) | `nemotron35` |
+
+`DARKBLOOM_JSON_ANSWER_GRAMMAR=qwen` keeps the grammar to the Qwen types, as
+before Bonsai and Lightning were admitted (read at launch; forwarded to the
+LaunchAgent). The prompt is unchanged (the service's format instruction and the
+Qwen no-thinking default above), so the coordinator prompt sidecar needs no rule.
 
 The rendered prompt's tail selects the first phase
 (`JSONAnswerProfile.initialPhase`, through `ReasoningPromptProbe.streamingPrefix`).
@@ -3412,17 +3424,23 @@ one JSON value of the grammar compiled from the schema (`JSONAnswerFormat`: the
 shared fail-closed subset and the byte-level `FlintJSONGrammar` automaton), so
 declared properties are the only keys generated. `<think>`, `</think>`,
 `<tool_call>`, `</tool_call>`, `<function=`, `<|im_start|>`, `<|im_end|>` and
-`<|endoftext|>` cannot complete anywhere in it, strings included, and
-`<|im_end|>` or `<|endoftext|>` is allowed only once the value is complete.
+the family's other terminator (`<|endoftext|>`, Lightning's `</s>`) cannot
+complete anywhere in it, strings included, and an answer terminator is allowed
+only once the value is complete.
 
-`JSONAnswerVocabulary` admits the byte-level BPE ids below `<|endoftext|>`
-(248044) and the `<think>`/`</think>` tokens only. Other added and special tokens
-and the model's padding up to 248,320 ids are never allowed. Before constraining,
-it checks `<think>` 248068, `</think>` 248069, `<|im_end|>` 248046 and
-`<|endoftext|>` 248044 by id, spelling, encoding and decoding, that every base
-id decodes as a byte-level piece, and that both terminators are engine stop
-tokens. It is built on the first such request per loaded tokenizer and stop set
-and cached like Flint's (`TokenizerVocabularyCache`, four entries).
+`JSONAnswerVocabulary` admits the profile's byte-level BPE ids and its
+`<think>`/`</think>` tokens only; other added and special tokens and the model's
+padding are never allowed. Qwen and Bonsai: BPE ids below `<|endoftext|>`
+(248044), padding up to 248,320, the markers `<think>` 248068, `</think>` 248069,
+terminators `<|im_end|>` 248046 and `<|endoftext|>` 248044. Lightning: its
+1,000 special and added tokens come first, BPE ids 1000–131071, the markers
+`<think>` 12 and `</think>` 13 (ordinary output pieces), terminators `<|im_end|>`
+11 and `</s>` 2 (the checkpoint's two EOS ids). Before constraining, it checks
+each marker and terminator by id, spelling, encoding and decoding, that every
+id in the BPE range decodes as a byte-level piece, and that both terminators
+are engine stop tokens. It is built on the first such request per loaded
+tokenizer and stop set and cached like Flint's (`TokenizerVocabularyCache`,
+four entries).
 
 A constraint's budget must equal the engine request's `maxTokens`, or the engine
 refuses it (`CBv2SchedulerError.tokenConstraintBudgetMismatch`). The bridge
@@ -3447,17 +3465,17 @@ Tools or `tool_choice` beside the format keep today's behavior; Flint's
 format-over-tools precedence does not apply. Image and video requests take the
 media path, which installs no token constraint.
 
-A constrained row never drafts (`EngineLoopV2.mtpBasicEligible`). Qwen 3.5
-targets do not declare the row-exact recurrent fallback
+A constrained row never drafts (`EngineLoopV2.mtpBasicEligible`). Neither the
+Qwen 3.5 targets nor Lightning's declare the row-exact recurrent fallback
 (`CBv2RecurrentMTPRequestScopedMediaFallback`), so
 `ineligibleRowsDecodeBesideSpeculation` is false for their MTP driver and
 `EngineLoopV2.mtpDraftBatchRows` keeps the whole cohort: while a constrained
 row is in a decode step, no row in that step speculates. A `stop`,
 `logit_bias`, penalty or logprob row has the same effect on these engines.
 Decoding such rows beside speculation needs that SDK capability and row-exactness
-evidence for the Qwen target.
+evidence for each target. Bonsai 2 has no drafter.
 
-Sources: `provider-swift/Sources/ProviderCore/Inference/Tools/QwenJSONAnswerPolicy.swift`,
+Sources: `provider-swift/Sources/ProviderCore/Inference/Tools/JSONAnswerPolicy.swift`,
 `provider-swift/Sources/ProviderCore/Inference/JSONAnswerProfile.swift`,
 `provider-swift/Sources/ProviderCore/Inference/JSONAnswerVocabulary.swift`,
 `provider-swift/Sources/ProviderCore/Inference/JSONAnswerConstraint.swift`,
@@ -4616,7 +4634,7 @@ these sources recursively (`provider-swift/Package.swift`, `package`).
 | MTP | `provider-swift/Sources/ProviderCore/Inference/MTP/MTPAutomaticVerificationPolicy.swift`, `provider-swift/Sources/ProviderCore/Inference/MTP/EngineV2MTPAssistant.swift`, `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/MTPContractsV2.swift` |
 | Vision | `provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift`, `provider-swift/Sources/ProviderCore/Inference/Vision/VisionTowerBudget.swift`, `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionTowerRun.swift`, `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionPrefill.swift` |
 | Tool constraints, reasoning probe | `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintFactory.swift`, `provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningPromptProbe.swift` |
-| Constrained JSON answers | `provider-swift/Sources/ProviderCore/Inference/Tools/QwenJSONAnswerPolicy.swift` (`QwenJSONAnswerPolicy`), `provider-swift/Sources/ProviderCore/Inference/Prompting/JSONAnswerFormat.swift` (`JSONAnswerFormat`, `JSONAnswerOutput`), `provider-swift/Sources/ProviderCore/Inference/JSONAnswerConstraint.swift`, `provider-swift/Sources/ProviderCore/Inference/ByteLevelVocabulary.swift` |
+| Constrained JSON answers | `provider-swift/Sources/ProviderCore/Inference/Tools/JSONAnswerPolicy.swift` (`JSONAnswerPolicy`), `provider-swift/Sources/ProviderCore/Inference/JSONAnswerProfile.swift` (`JSONAnswerProfile`), `provider-swift/Sources/ProviderCore/Inference/Prompting/JSONAnswerFormat.swift` (`JSONAnswerFormat`, `JSONAnswerOutput`), `provider-swift/Sources/ProviderCore/Inference/JSONAnswerConstraint.swift`, `provider-swift/Sources/ProviderCore/Inference/ByteLevelVocabulary.swift` |
 | Engine contracts, timing, scheduler, loop | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2Contracts.swift`, `SchedulerV2.swift`, `EngineLoopV2.swift`, `CBv2RequestTiming+Stamps.swift` |
 
 ### Native Flint

@@ -147,15 +147,7 @@ struct QwenConstraintSpanServingTests {
             + Array(SpanStreamTokenizer.firstPiece ..< SpanStreamTokenizer.firstPiece + pieces.count)
             + [StrictToolFixture.imEnd]
         let width = 64
-        var embedding = [Float](repeating: 0, count: 248320 * width)
-        var head = embedding
-        for (index, token) in path.enumerated() {
-            for column in 0..<width {
-                let value: Float = index & (1 << (column % 6)) == 0 ? -0.25 : 0.25
-                embedding[token * width + column] = value
-                if index + 1 < path.count { head[path[index + 1] * width + column] = value }
-            }
-        }
+        let (embedding, head) = providerSpanSuccessorWeights(path: path)
         var replacements: [String: MLXArray] = [
             "model.embed_tokens.weight": MLXArray(embedding, [248320, width]),
             "lm_head.weight": MLXArray(head, [248320, width]),
@@ -195,40 +187,28 @@ struct QwenConstraintSpanServingTests {
         let target = try target()
         // Prove this fixture actually supports MTP before the constrained red.
         let (unconstrained, _, _) = engine(target, enabled: true)
-        var raw = ""
-        for await event in try unconstrained.submit(.init(id: .init(1),
-            promptTokens: [SpanStreamTokenizer.promptID], sampling: .init(temperature: 0),
-            maxTokens: Self.pieces.count + 2, stopTokens: StrictToolFixture.stops)) {
-            if case .delta(let text, _, _) = event { raw += text }
+        do {
+            var raw = ""
+            for await event in try unconstrained.submit(.init(id: .init(1),
+                promptTokens: [SpanStreamTokenizer.promptID], sampling: .init(temperature: 0),
+                maxTokens: Self.pieces.count + 2, stopTokens: StrictToolFixture.stops)) {
+                if case .delta(let text, _, _) = event { raw += text }
+            }
+            let control = try #require(unconstrained.mtpMetricsSnapshot())
+            #expect(raw == Self.pieces.joined())
+            #expect(control.acceptedTokens > 0)
+            await unconstrained.shutdown()
+        } catch {
+            await unconstrained.shutdown()
+            throw error
         }
-        let control = try #require(unconstrained.mtpMetricsSnapshot())
-        await unconstrained.shutdown()
-        #expect(raw == Self.pieces.joined())
-        #expect(control.acceptedTokens > 0)
 
         var baseline: SpanStreamOutcome?
         for enabled in [false, true] {
             let (native, drafter, tokenizer) = engine(target, enabled: enabled)
-            let handle = TokenizerHandle(tokenizer)
-            let id = StrictToolFixture.model
-            let bridge = EngineV2Bridge(engine: native, modelId: id, tokenizer: handle,
-                eosTokenIds: StrictToolFixture.stops, defaultMaxTokens: 64, maxConcurrentRequests: 1)
-            let scheduler = MultiModelBatchSchedulerEngine(registryProvider: {
-                [id: .init(tokenizer: handle, modelType: "qwen3_5", engineV2Bridge: bridge)]
-            })
-            let body = #"{"model":"\#(id)","messages":[{"role":"user","content":"time"}],"#
-                + #""temperature":0,"reasoning":{"enabled":true},"reasoning_parser":"qwen3","#
-                + #""max_tokens":64,"tools":\#(Self.tools)}"#
-            var request = try JSONDecoder().decode(OpenAIChatCompletionRequest.self, from: Data(body.utf8))
-            request.stream = true
-            request.streamToolCallDeltas = true
-            var outcome = SpanStreamOutcome()
-            for try await event in try await scheduler.streamChatCompletion(request: request) {
-                outcome.record(event)
-            }
-            outcome.finish()
+            let outcome = try await stream(native, tokenizer: tokenizer, thinking: true,
+                extra: #""tools":\#(Self.tools)"#, prompt: "time")
             let metrics = try #require(native.mtpMetricsSnapshot())
-            await bridge.shutdown()
             #expect(outcome.reasoning == "Let me check the time.")
             #expect(outcome.content == "One moment, please. All done, thank you.")
             let calls = outcome.deltas.compactMap(\.completed)
@@ -520,58 +500,65 @@ struct QwenConstraintSpanServingTests {
             let bridge = EngineV2Bridge(engine: native, modelId: StrictToolFixture.model,
                 tokenizer: TokenizerHandle(tokenizer), eosTokenIds: StrictToolFixture.stops,
                 defaultMaxTokens: 64, maxConcurrentRequests: 1)
-            let constraint = try strictConstraint(tokenizer: tokenizer, maxTokens: 4)
-            var errors: [String] = [], text = ""
-            var terminals = 0
-            for await event in await bridge.submitTokenized(promptTokens: [SpanStreamTokenizer.promptID],
-                request: ChatCompletionRequest(model: StrictToolFixture.model, messages: [], temperature: 0, max_tokens: 3),
-                requestId: "reused-after-refusal", cacheEnabled: false, tokenConstraint: constraint) {
-                switch event {
-                case .error(let message): errors.append(message)
-                case .info: terminals += 1
-                case .chunk(let value): text += value
-                case .terminal, .logprobs: Issue.record("unexpected error-path event")
+            do {
+                let constraint = try strictConstraint(tokenizer: tokenizer, maxTokens: 4)
+                var errors: [String] = [], text = ""
+                var terminals = 0
+                for await event in await bridge.submitTokenized(promptTokens: [SpanStreamTokenizer.promptID],
+                    request: ChatCompletionRequest(model: StrictToolFixture.model, messages: [], temperature: 0, max_tokens: 3),
+                    requestId: "reused-after-refusal", cacheEnabled: false, tokenConstraint: constraint) {
+                    switch event {
+                    case .error(let message): errors.append(message)
+                    case .info: terminals += 1
+                    case .chunk(let value): text += value
+                    case .terminal, .logprobs: Issue.record("unexpected error-path event")
+                    }
                 }
-            }
-            #expect(errors.count == 1 && terminals == 0 && text.isEmpty)
-            if let baselineError { #expect(errors == baselineError) } else { baselineError = errors }
-            errors = []
-            let nextConstraint = try strictConstraint(tokenizer: tokenizer, maxTokens: 4)
-            for await event in await bridge.submitTokenized(promptTokens: [SpanStreamTokenizer.promptID],
-                request: ChatCompletionRequest(model: StrictToolFixture.model, messages: [], temperature: 0, max_tokens: 4),
-                requestId: "reused-after-refusal", cacheEnabled: false,
-                tokenConstraint: nextConstraint) {
-                switch event {
-                case .chunk(let value): text += value
-                case .info(_, let count, _, let reason):
-                    terminals += 1
-                    #expect(count == 4 && reason == "length")
-                case .error(let message): errors.append(message)
-                case .terminal, .logprobs: Issue.record("unexpected success-path event")
+                #expect(errors.count == 1 && terminals == 0 && text.isEmpty)
+                if let baselineError { #expect(errors == baselineError) } else { baselineError = errors }
+                errors = []
+                let nextConstraint = try strictConstraint(tokenizer: tokenizer, maxTokens: 4)
+                for await event in await bridge.submitTokenized(promptTokens: [SpanStreamTokenizer.promptID],
+                    request: ChatCompletionRequest(model: StrictToolFixture.model, messages: [], temperature: 0, max_tokens: 4),
+                    requestId: "reused-after-refusal", cacheEnabled: false,
+                    tokenConstraint: nextConstraint) {
+                    switch event {
+                    case .chunk(let value): text += value
+                    case .info(_, let count, _, let reason):
+                        terminals += 1
+                        #expect(count == 4 && reason == "length")
+                    case .error(let message): errors.append(message)
+                    case .terminal, .logprobs: Issue.record("unexpected success-path event")
+                    }
                 }
+                #expect(errors.isEmpty && terminals == 1 && text == "Let me check the")
+                await bridge.shutdown()
+            } catch {
+                await bridge.shutdown()
+                throw error
             }
-            #expect(errors.isEmpty && terminals == 1 && text == "Let me check the")
-            await bridge.shutdown()
         }
     }
 
+    /// Owns the engine until the bridge drains, including request opening failures.
     private func stream(_ native: EngineV2, tokenizer: SpanStreamTokenizer,
-                        thinking: Bool, extra: String, maxTokens: Int = 64) async throws -> SpanStreamOutcome {
+                        thinking: Bool, extra: String, maxTokens: Int = 64,
+                        prompt: String = "check") async throws -> SpanStreamOutcome {
         let handle = TokenizerHandle(tokenizer)
         let id = StrictToolFixture.model
         let bridge = EngineV2Bridge(engine: native, modelId: id, tokenizer: handle,
             eosTokenIds: StrictToolFixture.stops, defaultMaxTokens: 64, maxConcurrentRequests: 1)
-        let scheduler = MultiModelBatchSchedulerEngine(registryProvider: {
-            [id: .init(tokenizer: handle, modelType: "qwen3_5", engineV2Bridge: bridge)]
-        })
-        let body = #"{"model":"\#(id)","messages":[{"role":"user","content":"check"}],"#
-            + #""temperature":0,"reasoning":{"enabled":\#(thinking)},"reasoning_parser":"qwen3","#
-            + #""max_tokens":\#(maxTokens),\#(extra)}"#
-        var request = try JSONDecoder().decode(OpenAIChatCompletionRequest.self, from: Data(body.utf8))
-        request.stream = true
-        request.streamToolCallDeltas = true
-        var outcome = SpanStreamOutcome()
         do {
+            let scheduler = MultiModelBatchSchedulerEngine(registryProvider: {
+                [id: .init(tokenizer: handle, modelType: "qwen3_5", engineV2Bridge: bridge)]
+            })
+            let body = #"{"model":"\#(id)","messages":[{"role":"user","content":"\#(prompt)"}],"#
+                + #""temperature":0,"reasoning":{"enabled":\#(thinking)},"reasoning_parser":"qwen3","#
+                + #""max_tokens":\#(maxTokens),\#(extra)}"#
+            var request = try JSONDecoder().decode(OpenAIChatCompletionRequest.self, from: Data(body.utf8))
+            request.stream = true
+            request.streamToolCallDeltas = true
+            var outcome = SpanStreamOutcome()
             for try await event in try await scheduler.streamChatCompletion(request: request) { outcome.record(event) }
             outcome.finish()
             await bridge.shutdown()

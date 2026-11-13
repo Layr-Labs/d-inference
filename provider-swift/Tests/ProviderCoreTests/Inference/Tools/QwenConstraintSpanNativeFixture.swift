@@ -99,6 +99,29 @@ final class ProviderObservedQwenAssistant: CBv2MTPRequestStatefulDrafter {
     }
 }
 
+// Shared deterministic input for the two native model fixtures, not an output
+// oracle. Stream expectations remain independent literal strings and token IDs.
+func providerSpanSuccessorWeights(path: [Int], repeating tokenToRepeat: Int? = nil)
+    -> (embedding: [Float], head: [Float]) {
+    let width = 64, vocabularySize = 248320
+    precondition(path.count < 64 && path.allSatisfy { (0..<vocabularySize).contains($0) })
+    if let tokenToRepeat { precondition(path.contains(tokenToRepeat)) }
+    var embedding = [Float](repeating: 0, count: vocabularySize * width)
+    var head = embedding
+    for (index, token) in path.enumerated() {
+        for column in 0..<width {
+            let value: Float = (tokenToRepeat == nil ? index : 0) & (1 << (column % 6)) == 0 ? -0.25 : 0.25
+            embedding[token * width + column] = value
+            if let tokenToRepeat {
+                head[tokenToRepeat * width + column] = value
+            } else if index + 1 < path.count {
+                head[path[index + 1] * width + column] = value
+            }
+        }
+    }
+    return (embedding, head)
+}
+
 // A tiny real hybrid target and inline head loaded through public weights.
 // The final projections are zero, leaving a wide-margin successor code.
 func makeProviderQwenSpanFixture(outputTokens: [Int], promptToken: Int, stopToken: Int,
@@ -123,21 +146,9 @@ func makeProviderQwenSpanFixture(outputTokens: [Int], promptToken: Int, stopToke
         from: JSONSerialization.data(withJSONObject: object["text_config"]!))
     let target = Qwen35TextModel(configuration)
     let path = [promptToken] + outputTokens + [stopToken]
-    precondition(path.count < 64)
     precondition(!repeatsSingleToken || outputTokens.count == 1)
-    var code = [Float](repeating: 0, count: 248320 * 64)
-    var head = code
-    for (index, token) in path.enumerated() {
-        for column in 0..<64 {
-            let value: Float = (repeatsSingleToken ? 0 : index) & (1 << (column % 6)) == 0 ? -0.25 : 0.25
-            code[token * 64 + column] = value
-            if repeatsSingleToken {
-                head[outputTokens[0] * 64 + column] = value
-            } else if index + 1 < path.count {
-                head[path[index + 1] * 64 + column] = value
-            }
-        }
-    }
+    let (code, head) = providerSpanSuccessorWeights(path: path,
+        repeating: repeatsSingleToken ? outputTokens[0] : nil)
     var parameters = Dictionary(uniqueKeysWithValues: target.parameters().flattened())
     for (key, value) in parameters {
         parameters[key] = value.asType(.bfloat16)

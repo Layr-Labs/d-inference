@@ -4314,8 +4314,9 @@ the owner's go.
 
 ### Strict tool-call grammar
 
-With `DARKBLOOM_CONSTRAINT_SPANS=1`, `QwenStrictToolConstraint` exposes
-ordinary reasoning and content as free spans through
+When the [constraint-span setting](../reference/configuration.md#engine-and-scheduler)
+(`DARKBLOOM_CONSTRAINT_SPANS`) enables speculation, `QwenStrictToolConstraint`
+exposes ordinary reasoning and content as free spans through
 `CBv2FreeSpanTokenConstraint`. Its pure preview accepts only tokens that stay
 in the same state without touching a marker prefix. Call openings, framing,
 arguments and partial markers remain protected; text after a closed call can
@@ -4324,7 +4325,7 @@ the answer: the JSON value, string bodies and trailing whitespace stay protected
 Other JSON families retain target-only decoding. Neither constraint mutates
 its interned states while previewing a speculative token.
 
-The switch defaults off, retaining request-wide target-only constrained decoding.
+Disabling the setting retains request-wide target-only constrained decoding.
 Existing grammar admission, masks and sampler/model/lifecycle eligibility remain
 authoritative. Required/named calls acquire no new strict-auto grammar. An
 eligible native Qwen assistant retains committed history through protected

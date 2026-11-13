@@ -28,13 +28,25 @@ struct GemmaByteNFABuilder {
         let end: Int
     }
 
+    /// The most states a tool grammar may have. Construction stops as soon as
+    /// it passes this, so an oversized grammar costs at most one value past
+    /// the limit rather than its whole size.
+    static let maxStates = 100_000
+    static let stateLimitError = ToolConstraintSchemaError.unsupported(
+        "compiled tool grammar exceeds the \(maxStates)-state safety limit")
+
     var nodes: [GemmaByteNFA.Node] = []
     private struct MemberKey: Hashable {
         let scope: Int
         let index: Int
         let emitted: Bool
     }
+    private struct PropertyKey: Hashable {
+        let scope: Int
+        let index: Int
+    }
     private var memberMemo: [MemberKey: Fragment] = [:]
+    private var propertyMemo: [PropertyKey: Fragment] = [:]
     private var nextMemberScope = 0
 
     mutating func node() -> Int {
@@ -131,6 +143,7 @@ struct GemmaByteNFABuilder {
     }
 
     mutating func value(_ schema: ToolValueSchema) throws -> Fragment {
+        try requireStateBudget()
         let core: Fragment
         switch schema {
         case .object(let properties, _, _):
@@ -201,25 +214,18 @@ struct GemmaByteNFABuilder {
     ) throws -> Fragment {
         let key = MemberKey(scope: scope, index: index, emitted: emitted)
         if let cached = memberMemo[key] { return cached }
+        try requireStateBudget()
         let result = Fragment(start: node(), end: node())
         memberMemo[key] = result
         guard index < properties.count else {
             epsilon(result.start, result.end)
             return result
         }
-        let property = properties[index]
-        var emittedParts: [Fragment] = []
-        if emitted { emittedParts.append(literal(",")) }
-        emittedParts.append(literal(property.name))
-        emittedParts.append(literal(":"))
-        emittedParts.append(try value(property.schema))
-        emittedParts.append(
-            try members(
-                properties, scope: scope, index: index + 1, emitted: true))
-        let include = sequence(emittedParts)
+        let member = try emittedMember(properties, scope: scope, index: index)
+        let include = emitted ? sequence([literal(","), member]) : member
         epsilon(result.start, include.start)
         epsilon(include.end, result.end)
-        if property.required {
+        if properties[index].required {
             return result
         }
         let skip = try members(
@@ -227,6 +233,34 @@ struct GemmaByteNFABuilder {
         epsilon(result.start, skip.start)
         epsilon(skip.end, result.end)
         return result
+    }
+
+    /// `name:value` and the members after it, built once per property and
+    /// entered from both emitted states (after a comma or not). Building it
+    /// per state copied a nested optional object once per path to it, which
+    /// doubles at every level and is invisible to the schema's grammar cost.
+    /// Every member list in a scope ends where the object closes, so sharing
+    /// the tail leaves the language unchanged.
+    private mutating func emittedMember(
+        _ properties: [ToolValueSchema.Property],
+        scope: Int,
+        index: Int
+    ) throws -> Fragment {
+        let key = PropertyKey(scope: scope, index: index)
+        if let cached = propertyMemo[key] { return cached }
+        let property = properties[index]
+        let member = sequence([
+            literal(property.name),
+            literal(":"),
+            try value(property.schema),
+            try members(properties, scope: scope, index: index + 1, emitted: true),
+        ])
+        propertyMemo[key] = member
+        return member
+    }
+
+    private func requireStateBudget() throws {
+        guard nodes.count <= Self.maxStates else { throw Self.stateLimitError }
     }
 
     private mutating func gemmaString(_ value: String) throws -> Fragment {

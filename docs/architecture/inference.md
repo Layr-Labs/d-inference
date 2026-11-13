@@ -3613,6 +3613,24 @@ spliced across a boundary the reasoning parser later hides. Required and named
 (`provider-swift/Sources/ProviderCore/Inference/Tools/GemmaNoToolTokenConstraint.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Tools/GemmaTokenVocabulary.swift`).
 
+### Gemma required and named tool-call grammar
+
+Required and named `tool_choice` on the pinned Gemma 4 contract sample under
+`GemmaToolCallTokenConstraint`, a byte-level automaton of the exact call the
+template renders, built from the compiled tool schemas
+(`ToolConstraintSchemaCompiler`: at most 64 tools, 16 levels, 128 properties
+per object, 16 array items and 50,000 grammar-cost units). The builder makes
+each property's `name:value` and the members after it once per object and
+enters it both after a comma and without one, so an optional nested object
+costs its own size once however many optional siblings precede it; a
+grammar's state count grows with the schema, as its cost does. The
+100,000-state limit is checked while the automaton is built
+(`GemmaByteNFABuilder.maxStates`), so a schema past it is refused one value
+past the limit, before the minimum-distance pass, instead of after building
+the whole grammar
+(`provider-swift/Sources/ProviderCore/Inference/Tools/GemmaToolConstraintGrammar.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Tools/GemmaToolCallTokenConstraint.swift`).
+
 ### Constrained Gemma 4 JSON answers
 
 Gemma 4 answers to a JSON `response_format` are sampled under the same JSON

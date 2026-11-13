@@ -3252,8 +3252,8 @@ stops such a row early.
   (Super, text only), `glm5_next` and `mimo_v2`. `DARKBLOOM_LOOP_GUARD=0`
   (or `off`) turns it off; a comma-separated list of `model_type`s replaces
   the default list.
-- **A loop inside a Gemma 4 or Qwen 3.5/3.6 35B thought ends the thought, not
-  the answer** (`GenerationLoopExitThinkingPolicy`, `LoopExitThinkingContinuation`).
+- **A loop inside a Gemma 4 thought (or a listed Qwen 3.5/3.6 one) ends the
+  thought, not the answer** (`GenerationLoopExitThinkingPolicy`, `LoopExitThinkingContinuation`).
   For `gemma4` and `gemma4_text` (on by default) and `qwen3_5_moe` (Qwen 3.5/3.6
   35B) and `qwen3_5` (Qwen 3.5 9B, Qwen 3.8 27B), listed and off by default (their
   thought loops were too rare in the A/B to show rescues), the guard also
@@ -3294,8 +3294,8 @@ stops such a row early.
   logprobs or on a cluster pair. Never when the exit's tokens do not decode to
   its text. `DARKBLOOM_LOOP_EXIT_THINKING=0` (or `off`)
   turns it off; a comma-separated list keeps it to the listed `model_type`s
-  that have a marker (`gemma4,gemma4_text` keeps Gemma's alone;
-  `gemma4,gemma4_text,qwen3_5_moe,qwen3_5` adds the 9B and Qwen 3.8 27B). `darkbloom start` passes it, and `DARKBLOOM_LOOP_GUARD`,
+  that have a marker (`gemma4,gemma4_text` is the default; `…,qwen3_5_moe`
+  adds the Qwen 3.5/3.6 35B models, and `…,qwen3_5` the 9B and Qwen 3.8 27B). `darkbloom start` passes it, and `DARKBLOOM_LOOP_GUARD`,
   to the launchd daemon (`LaunchAgent.inferencePassthroughEnvKeys`). One `darkbloom.loop-guard.exit-thinking` line per ended
   thought gives the outcome.
 

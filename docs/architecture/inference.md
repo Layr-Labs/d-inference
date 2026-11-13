@@ -3397,7 +3397,7 @@ stops such a row early.
   tokens too): left to pick its channel, the model reopened its analysis and
   looped again in 10 of 10 GPQA loopers on the GPU A/B, and without tools there
   is no call to pick. `DARKBLOOM_GPTOSS_FINAL_EXIT=0` (or `off`) keeps those
-  requests' `length` stop, as 0.10.13), with
+  requests' `length` stop, as with the tools-only exit), with
   `max_tokens` = the output the bridge resolved for the row minus the tokens
   produced minus the exit tokens, at most 8,192; the same sampling, stop strings
   and cache scope, the stop strings scoped as for output that starts outside the

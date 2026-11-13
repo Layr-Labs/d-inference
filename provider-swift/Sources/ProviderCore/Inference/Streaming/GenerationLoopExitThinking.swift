@@ -107,7 +107,7 @@ public final class GenerationLoopExitRecord: @unchecked Sendable {
 /// `0` or `off` turns it off; any other value is the comma-separated list of
 /// `model_type`s to allow, among those with a listed marker.
 /// `DARKBLOOM_GPTOSS_FINAL_EXIT`: `0`, `off` or `false` keeps GPT-OSS's exit to
-/// requests that declare tools (0.10.13); anything else leaves it on.
+/// requests that declare tools (#2070's exit alone); anything else leaves it on.
 enum GenerationLoopExitThinkingPolicy {
     static let environmentKey = "DARKBLOOM_LOOP_EXIT_THINKING"
 
@@ -176,7 +176,7 @@ enum GenerationLoopExitThinkingPolicy {
     static let current = setting(environment: ProcessInfo.processInfo.environment)
 
     /// Whether a GPT-OSS request without tools gets its exit
-    /// (`harmonyAnalysisToFinal`); off keeps 0.10.13's tools-only exit.
+    /// (`harmonyAnalysisToFinal`); off keeps the exit to requests with tools.
     static let finalExitEnvironmentKey = "DARKBLOOM_GPTOSS_FINAL_EXIT"
 
     static let finalExitCurrent = finalExit(environment: ProcessInfo.processInfo.environment)

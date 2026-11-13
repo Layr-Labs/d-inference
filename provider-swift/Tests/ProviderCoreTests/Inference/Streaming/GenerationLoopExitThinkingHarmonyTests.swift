@@ -283,7 +283,7 @@ struct GenerationLoopExitThinkingHarmonyTests {
         #expect(gemma.answerStopScope == nil)
     }
 
-    @Test("`DARKBLOOM_GPTOSS_FINAL_EXIT` off keeps 0.10.13's exit for tool requests only; it reaches the launchd daemon")
+    @Test("`DARKBLOOM_GPTOSS_FINAL_EXIT` off keeps the exit for tool requests only; it reaches the launchd daemon")
     func finalExitSwitch() throws {
         let key = GenerationLoopExitThinkingPolicy.finalExitEnvironmentKey
         #expect(key == "DARKBLOOM_GPTOSS_FINAL_EXIT")
@@ -866,7 +866,7 @@ struct GenerationLoopExitThinkingHarmonyTests {
         #expect(outcome.loopGuardStops == [true, false])
     }
 
-    @Test("`DARKBLOOM_GPTOSS_FINAL_EXIT` off: without tools an analysis loop ends as length, as 0.10.13")
+    @Test("`DARKBLOOM_GPTOSS_FINAL_EXIT` off: without tools an analysis loop ends as length, as with the tools-only exit")
     func finalExitOffKeepsLength() async throws {
         let engine = HarmonyLoopTestEngine(.analysisLoop, then: .answer)
         let outcome = try await serve(engine, extra: "", finalExit: false)

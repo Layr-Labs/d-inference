@@ -3759,7 +3759,8 @@ Constraining keeps an answer inside the schema, not on topic: a model that wants
 a key the schema forbids may keep writing the string it is in (one Lightning
 answer ran 1,955 tokens repeating its `reply` before closing it), and one asked
 for a `json_object` without a JSON-shaped prompt may put its prose in a key.
-These rows have no loop guard; a long one ends at `max_tokens` as a typed 422.
+These rows have no loop guard; a long one ends at `max_tokens` as a `length`
+finish with its answer as generated (unchecked).
 
 Every other case keeps prompt-only steering and gains no refusal. A schema
 outside the subset (including an enum value containing a forbidden spelling), a
@@ -3991,10 +3992,11 @@ breaking a contract, and OpenRouter does not count a call cut by the caller's
   end unparseable, as in an OpenAI stream the limit cut, and no client can run
   the call; the stream finishes `length`. A call not yet exposed is not
   exposed.
-- A constrained JSON answer (exact Flint, constrained Qwen) skips its final
-  check. GLM's withheld JSON answer leaves normalized when it already holds a
-  whole valid value (the candidate extraction, as before), and otherwise as
-  generated (`GLM5NextResponseFormatOutput.finalAnswer`).
+- A constrained JSON answer (exact Flint; Qwen, Bonsai 2 27B and Lightning
+  under the JSON-answer grammar) skips its final check. GLM's withheld JSON
+  answer leaves normalized when it already holds a whole valid value (the
+  candidate extraction, as before), and otherwise as generated
+  (`GLM5NextResponseFormatOutput.finalAnswer`).
 - Withheld calls (forced choices, native families, `DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0`)
   whose set fails its checks are checked one by one, and a call that fails is
   dropped instead of refused: forced choices hold every call to its schema, as

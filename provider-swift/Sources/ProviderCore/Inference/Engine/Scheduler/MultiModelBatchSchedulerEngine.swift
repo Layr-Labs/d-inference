@@ -2031,10 +2031,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 let cutAtLimit = prepared.cutAtLimit(finishReason: stopReason)
                     && answerStops?.matchedSequence == nil
                 /// The answer's own end checks, after the calls': constrained
-                /// response_format (exact Flint, Qwen) holds the completed
-                /// content, not a truncated or schema-invalid prefix, and GLM's
-                /// withheld JSON answer leaves only once it validates; a cut
-                /// answer leaves as generated.
+                /// response_format (exact Flint, the JSON-answer families) holds
+                /// the completed content, not a truncated or schema-invalid
+                /// prefix, and GLM's withheld JSON answer leaves only once it
+                /// validates; a cut answer leaves as generated.
                 /// At a cut: a structured answer whose check, which the cut
                 /// skips, would have refused it.
                 var answerLeftUnchecked = false

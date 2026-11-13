@@ -8,8 +8,9 @@
 - Requests whose prompt opens a thought (Lightning's default), requests served by a cluster pair, and the Bonsai 2 9B
   keep today's prompt-only steering.
 - Like Qwen's, these answers decode without MTP (a Lightning row sharing their decode step stops speculating
-  meanwhile), and the provider checks them when generation ends: an answer cut at `max_tokens` is the typed `422`
-  (`tool_noncompliance`), which a coordinator chat stream ends as `finish_reason: "length"` (darkbloom-platform #897).
+  meanwhile), and the provider checks them when generation ends: an answer that misses the schema at a natural stop
+  is the typed `422` (`tool_noncompliance`); one cut at `max_tokens` ends as a normal `length` finish with its
+  content as generated.
 - The grammar keeps an answer inside the schema, not on topic: a model that wants a forbidden key may keep writing the
   string it is in until `max_tokens`.
 - `DARKBLOOM_JSON_ANSWER_GRAMMAR=qwen` (or `0`/`off`) keeps the grammar to the Qwen types.

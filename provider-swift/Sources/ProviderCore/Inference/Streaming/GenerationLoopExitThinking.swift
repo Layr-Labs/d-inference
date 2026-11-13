@@ -89,9 +89,10 @@ public final class GenerationLoopExitRecord: @unchecked Sendable {
 /// Which requests may end a repeating thought instead of the whole answer.
 ///
 /// On by default for Gemma 4, whose thought closes with one special token
-/// (`<channel|>`), and GPT-OSS (`gpt_oss`, for a request that declares
-/// tools), whose Harmony analysis message ends with `<|end|>` and is followed
-/// by the next assistant message (`harmonyAnalysis`). Qwen 3.5/3.6
+/// (`<channel|>`), and GPT-OSS (`gpt_oss`), whose Harmony analysis message
+/// ends with `<|end|>` and is followed by the next assistant message
+/// (`harmonyAnalysis`) or, for a request without tools, by the final
+/// channel's header (`harmonyAnalysisToFinal`). Qwen 3.5/3.6
 /// (`qwen3_5_moe`, `qwen3_5`), whose template closes a thought with
 /// `\n</think>\n\n` (`</think>` is one special token), are listed but off by
 /// default: their thought loops were too rare in the A/B to show rescues, and
@@ -105,6 +106,8 @@ public final class GenerationLoopExitRecord: @unchecked Sendable {
 /// `DARKBLOOM_LOOP_EXIT_THINKING`: unset, `1` or `on` keeps the default list;
 /// `0` or `off` turns it off; any other value is the comma-separated list of
 /// `model_type`s to allow, among those with a listed marker.
+/// `DARKBLOOM_GPTOSS_FINAL_EXIT`: `0`, `off` or `false` keeps GPT-OSS's exit to
+/// requests that declare tools (0.10.13); anything else leaves it on.
 enum GenerationLoopExitThinkingPolicy {
     static let environmentKey = "DARKBLOOM_LOOP_EXIT_THINKING"
 
@@ -118,6 +121,8 @@ enum GenerationLoopExitThinkingPolicy {
         /// Control tokens spelled in `after` (Harmony's `<|start|>`): each must
         /// be fed as its own token, never as ordinary pieces of its text.
         var controls: [String] = []
+        /// The continuation's stop scope when `after` opens the answer itself.
+        var answerStopScope: CBv2StopStringScope?
     }
 
     /// The families whose thought this can end, by `model_type`.
@@ -139,18 +144,25 @@ enum GenerationLoopExitThinkingPolicy {
     static let harmonyAnalysis = Markers(
         open: "<|channel|>analysis", close: "<|end|>", after: "<|start|>assistant", controls: ["<|start|>"])
 
+    /// GPT-OSS without tools: the same end of the analysis, then the final
+    /// channel's header, so the model writes its answer. Left to pick its
+    /// channel, the model reopened its analysis and looped again in 10 of 10
+    /// GPQA loopers without tools (GPU A/B, effort high, T 0); without tools
+    /// there is no call to pick. Its output starts inside the final channel,
+    /// so the request's stops apply from its first token.
+    static let harmonyAnalysisToFinal = Markers(
+        open: "<|channel|>analysis", close: "<|end|>", after: "<|start|>assistant<|channel|>final<|message|>",
+        controls: ["<|start|>", "<|channel|>", "<|message|>"],
+        answerStopScope: GPTOSSHarmonyTemplateFix.insideFinalChannelStopScope)
+
+    /// A family's exit for a request without tools, where it differs.
+    static let markersWithoutToolsByModelType: [String: Markers] = ["gpt_oss": harmonyAnalysisToFinal]
+
     /// As the Qwen 3.5/3.6 template writes a closed thought:
     /// `<think>\n…\n</think>\n\n` before the answer.
     static let qwenThink = Markers(open: "<think>", close: "</think>", before: "\n", after: "\n\n")
 
     static let defaultModelTypes: Set<String> = ["gemma4", "gemma4_text", "gpt_oss"]
-
-    /// Families whose exit applies only to a request that declares tools.
-    /// GPT-OSS without tools reopened its analysis after the exit and looped
-    /// again in 10 of 10 GPQA loopers on the GPU A/B (effort high, T 0), so
-    /// those requests keep today's `length` (and are not billed the extra
-    /// tokens); with tools it wrote the call or the reply in 40 of 66 Tau2 loopers.
-    static let toolRequestsOnly: Set<String> = ["gpt_oss"]
 
     /// The answer's own cap. Gemma's GPQA answers after a thought are under
     /// 1,000 tokens; a Tau2 reply or call is shorter.
@@ -163,12 +175,15 @@ enum GenerationLoopExitThinkingPolicy {
 
     static let current = setting(environment: ProcessInfo.processInfo.environment)
 
+    /// Whether a GPT-OSS request without tools gets its exit
+    /// (`harmonyAnalysisToFinal`); off keeps 0.10.13's tools-only exit.
     static let finalExitEnvironmentKey = "DARKBLOOM_GPTOSS_FINAL_EXIT"
 
     static let finalExitCurrent = finalExit(environment: ProcessInfo.processInfo.environment)
 
     static func finalExit(environment: [String: String]) -> Bool {
-        true
+        let raw = environment[finalExitEnvironmentKey]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return !["0", "off", "false"].contains(raw ?? "")
     }
 
     static func setting(environment: [String: String]) -> Setting {
@@ -197,8 +212,8 @@ enum GenerationLoopExitThinkingPolicy {
     ) -> GenerationLoopExitThinking? {
         guard case .modelTypes(let enabled) = setting,
               let modelType = modelType?.lowercased(), enabled.contains(modelType),
-              let markers = markersByModelType[modelType], !logprobs,
-              declaresTools || !toolRequestsOnly.contains(modelType),
+              let markers = exitMarkers(modelType: modelType, declaresTools: declaresTools, finalExit: finalExit),
+              !logprobs,
               let close = tokenizer.convertTokenToId(markers.close),
               tokenizer.convertIdToToken(close) == markers.close
         else { return nil }
@@ -225,7 +240,16 @@ enum GenerationLoopExitThinkingPolicy {
             openMarker: markers.open, closeMarker: markers.close,
             exitTokens: exitTokens, exitText: exitText, closeToken: close,
             startsInside: endsInside(tail, open: markers.open, close: markers.close),
-            record: GenerationLoopExitRecord())
+            record: GenerationLoopExitRecord(), answerStopScope: markers.answerStopScope)
+    }
+
+    /// The family's markers for this request: without tools, its own exit for
+    /// that case when it has one, and none when that exit is switched off.
+    static func exitMarkers(modelType: String, declaresTools: Bool, finalExit: Bool) -> Markers? {
+        guard !declaresTools, let withoutTools = markersWithoutToolsByModelType[modelType] else {
+            return markersByModelType[modelType]
+        }
+        return finalExit ? withoutTools : nil
     }
 
     /// Whether `text` leaves the channel open: its last marker opens it.

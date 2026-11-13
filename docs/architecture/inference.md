@@ -3369,8 +3369,7 @@ stops such a row early.
   the default list.
 - **A loop inside a Gemma 4 or GPT-OSS thought (or a listed Qwen 3.5/3.6 or
   Nemotron 3.5 Super one) ends the thought, not the answer** (`GenerationLoopExitThinkingPolicy`, `LoopExitThinkingContinuation`).
-  For `gemma4`, `gemma4_text` and `gpt_oss` (on by default; `gpt_oss` only for a
-  request that declares tools, `toolRequestsOnly`) and `qwen3_5_moe` (Qwen 3.5/3.6
+  For `gemma4`, `gemma4_text` and `gpt_oss` (on by default) and `qwen3_5_moe` (Qwen 3.5/3.6
   35B) and `qwen3_5` (Qwen 3.5 9B, Qwen 3.8 27B), listed and off by default (their
   thought loops were too rare in the A/B to show rescues), the guard also
   follows the thought channel (`<|channel>` … `<channel|>`, `<think>` …
@@ -3391,20 +3390,29 @@ stops such a row early.
   message ends and the next assistant message starts, as after the model's own
   analysis, so the model picks `final` for the answer or a
   `commentary to=functions.…` call; `<|end|>` and `<|start|>` must resolve as
-  their own tokens. Without tools the model reopened its analysis after the exit
-  and looped again in 10 of 10 GPQA loopers on the GPU A/B, so a GPT-OSS request
-  without tools keeps its `length` stop), with
+  their own tokens. For a GPT-OSS request without tools (or with
+  `tool_choice: "none"`, which renders none) the exit also opens the final
+  channel, `<|end|><|start|>assistant<|channel|>final<|message|>`
+  (`harmonyAnalysisToFinal`; `<|channel|>` and `<|message|>` as their own
+  tokens too): left to pick its channel, the model reopened its analysis and
+  looped again in 10 of 10 GPQA loopers on the GPU A/B, and without tools there
+  is no call to pick. `DARKBLOOM_GPTOSS_FINAL_EXIT=0` (or `off`) keeps those
+  requests' `length` stop, as 0.10.13), with
   `max_tokens` = the output the bridge resolved for the row minus the tokens
   produced minus the exit tokens, at most 8,192; the same sampling, stop strings
   and cache scope, the stop strings scoped as for output that starts outside the
-  thought (a stop that ends the answer is the request's matched stop sequence);
+  thought (GPT-OSS's final exit: as for output that starts inside the final
+  channel, `GPTOSSHarmonyTemplateFix.insideFinalChannelStopScope`, since the
+  model's own scope would wait for a header the exit already fed; a stop that
+  ends the answer is the request's matched stop sequence);
   and a loop guard without the exit, so a loop in the answer still ends
   as `length`. The client's stream carries the thought, the exit text as one
   chunk and the answer, then one terminal: the original prompt, completion =
   the row's tokens + the exit tokens + the answer's, the continuation's finish
   reason. (GPT-OSS: the Harmony reasoning parser, streaming and collected, reads
   `<|end|>` as the analysis's end and `<|start|>assistant` as the next
-  message's role, so neither reaches `content` or `reasoning_content`, and the
+  message's role (and the final exit's `<|channel|>final<|message|>` as the
+  answer's header), so none of them reaches `content` or `reasoning_content`, and the
   Harmony tool-call parser holds `<|start|>assistant` until a call header
   completes in the continuation; the prompt is reused as rendered, its
   `Reasoning: low|medium|high` included.) The continuation is an ordinary row,

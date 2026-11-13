@@ -38,7 +38,14 @@ enum GPTOSSHarmonyTemplateFix {
         opener: "<|channel|>final", openerEnd: "<|message|>",
         closers: ["<|end|>", "<|return|>", "<|call|>", "<|start|>"])
 
-    static let insideFinalChannelStopScope = finalChannelStopScope
+    /// The same, for output that starts inside the final channel: a loop
+    /// guard's continuation whose prompt ends with the final header
+    /// (`GenerationLoopExitThinkingPolicy.harmonyAnalysisToFinal`). Stops match
+    /// from its first token until the message ends. As in other scopes that
+    /// start in the answer, a stop that matches only leading whitespace waits
+    /// for the answer's first text.
+    static let insideFinalChannelStopScope = CBv2StopStringScope(
+        excluding: ["<|end|>", "<|return|>", "<|call|>", "<|start|>"].map { .init(opener: $0, closers: []) })
 
     private static func isHarmonyModelHint(_ value: String?) -> Bool {
         guard let value else { return false }

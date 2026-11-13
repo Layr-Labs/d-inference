@@ -119,9 +119,13 @@ final class WholeMacServiceBudget: @unchecked Sendable {
                 && now >= idleSince.advanced(by: .milliseconds(requirement.minimumWholeMacQuiescenceMs))
     }
 
+    /// `overcommit`: charged even when the Mac is full (a loop exit's continuation, which takes its stopped row's
+    /// place; `EngineV2Bridge.acquireServiceAllowance`). Its charge counts like any other until it is released, so
+    /// other work waits for the sum to drop below the width again.
     func acquire(ownerID: String, concurrency: Int, serviceReservationID: String? = nil,
         serviceReservation: ServiceReservationLifetime? = nil, work: Work? = nil,
-        deadlineApplicability: DeadlineApplicability? = nil, requiresIdle: Bool = false) -> Bool {
+        deadlineApplicability: DeadlineApplicability? = nil, requiresIdle: Bool = false,
+        overcommit: Bool = false) -> Bool {
         // Correlation is optional. Malformed input gets no overlap credit; it
         // never bypasses the actual provider-side service allowance.
         let reservationID = serviceReservation?.id
@@ -133,7 +137,9 @@ final class WholeMacServiceBudget: @unchecked Sendable {
                 return (false, nil)
             }
             let charge = 1 / Double(concurrency)
-            guard charges.values.reduce(0, { $0 + $1.fraction }) + charge <= 1 + 1e-12 else { return (false, nil) }
+            guard overcommit || charges.values.reduce(0, { $0 + $1.fraction }) + charge <= 1 + 1e-12 else {
+                return (false, nil)
+            }
             guard serviceReservation?.acquireLease() ?? true else { return (false, nil) }
             let now = clockNow()
             let captured = deadlineApplicability.flatMap { requirement in

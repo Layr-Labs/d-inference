@@ -3417,7 +3417,13 @@ stops such a row early.
   `length` (21 of 29 exits on 0.10.13 `.181` at 12-on-8 concurrency); ahead of
   them it starts at the next free slot (the slot its own row freed has gone to
   the queue's head by then, so on a Mac whose every slot holds a generation
-  longer than the lease past the exit it can still time out). The engine's KV
+  longer than the lease past the exit it can still time out). The same holds
+  for the whole-Mac service allowance: the row's share was released before the
+  continuation asks, and on a full Mac work waiting for a slot takes it first,
+  so the continuation is never refused for width
+  (`acquireServiceAllowance(takesStoppedRowPlace:)`,
+  `WholeMacServiceBudget.acquire(overcommit:)`): it may exceed the width by
+  itself until it ends, while other work waits. The engine's KV
   preemption reads the same priority: the continuation is evicted after
   ordinary rows, and when its own chunk doesn't fit, the youngest ordinary
   running row is evicted instead (it re-prefills); at the queue's head, a

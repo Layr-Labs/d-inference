@@ -104,7 +104,7 @@ enum GenerationLoopExitThinkingPolicy {
         }
     }
 
-    /// The exit for one guarded text request, or nil when its loops must
+    /// The exit for one guarded request, or nil when its loops must
     /// keep ending as `length`.
     static func resolve(
         modelType: String?,

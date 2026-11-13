@@ -822,6 +822,24 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         modelType: modelType,
                         decodeTail: { tokenizer.inner.decode(tokenIds: $0, skipSpecialTokens: false) }
                     ) ?? contentSeed(parser: visionRequest.reasoningParser, stream: visionRequest.stream)
+                    // The text path's loop guard, and Gemma's exit from a
+                    // repeating thought (`GenerationLoopGuardPolicy`,
+                    // `GenerationLoopExitThinkingPolicy`). The answer after the
+                    // thought is one more row over the same media input, so the
+                    // exit needs a prompt with plain positions (Gemma's).
+                    var exitThinking = visionPrepared.positionState == nil
+                        ? GenerationLoopExitThinkingPolicy.resolve(
+                            modelType: modelType, tokenizer: tokenizer.inner,
+                            promptTokens: visionPrepared.promptTokens, logprobs: engineV2Logprobs != nil)
+                        : nil
+                    if exitThinking != nil, await bridge.servesDistributedPair { exitThinking = nil }
+                    let loopGuard = GenerationLoopGuardPolicy.resolve(
+                        modelType: modelType, request: visionRequest, prepared: prepared, tokenConstraint: nil,
+                        exitThinking: exitThinking)
+                    let stopStringScope = ReasoningStopScope.scope(
+                        reasoningParser: visionRequest.reasoningParser,
+                        reasoningPrefix: reasoningPrefix,
+                        parsesToolCalls: toolHandler != nil)
                     // Qualified native media shares text's request-owned
                     // parser. Other VLMs retain their legacy media behavior.
                     let upstream = try await bridge.submitTokenized(
@@ -843,10 +861,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         multimodal: visionPrepared.multimodalInput(),
                         hybridPrefixIdentity: mediaPrefixIdentity,
                         mediaKind: visionPrepared.mediaKind,
-                        stopStringScope: ReasoningStopScope.scope(
-                            reasoningParser: visionRequest.reasoningParser,
-                            reasoningPrefix: reasoningPrefix,
-                            parsesToolCalls: toolHandler != nil),
+                        stopStringScope: stopStringScope,
                         donationDemand: donationDemand,
                         firstContentDeadline: firstContentDeadline,
                         profile: profile,
@@ -854,7 +869,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         serviceReservation: serviceReservation,
                         promptWork: promptWork,
                         distributedRequestOrigin: distributedRequestOrigin,
-                        measurementPurpose: measurementPurpose
+                        measurementPurpose: measurementPurpose,
+                        loopGuard: loopGuard
                     )
                     do {
                         try checkFirstContentDeadline()
@@ -862,9 +878,76 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         await bridge.cancel(requestId: visionRequestId)
                         throw error
                     }
+                    var events = upstream
+                    var cancelEvents: @Sendable () async -> Void = { await bridge.cancel(requestId: visionRequestId) }
+                    if let exitThinking, loopGuard != nil {
+                        // The answer after a thought the guard ended, as on the
+                        // text path, over the same evaluated media input.
+                        let base = visionRequest
+                        let continuationId = visionRequestId + "-exit"
+                        let defaultMaxTokens = defaultMaxTokens
+                        let sampling = engineV2Sampling
+                        let measurementPurpose = measurementPurpose
+                        let cacheScope = requestCacheScope
+                        let cacheEnabled = cacheEnabled
+                        let donationDemand = donationDemand
+                        let promptTokens = visionPrepared.promptTokens
+                        let multimodal = visionPrepared.multimodalInput()
+                        let mediaKind = visionPrepared.mediaKind
+                        // The continuation's output starts after the end of
+                        // thinking, so stop strings apply from its first token.
+                        let continuationStopScope = ReasoningStopScope.scope(
+                            reasoningParser: visionRequest.reasoningParser, reasoningPrefix: nil,
+                            parsesToolCalls: toolHandler != nil)
+                        let spliced = LoopExitThinkingContinuation.splice(
+                            first: upstream,
+                            cancelFirst: cancelEvents,
+                            exit: exitThinking,
+                            promptTokens: promptTokens,
+                            outputBudget: bridge.outputTokens(requested: base.maxTokens, promptTokens: promptTokens.count),
+                            submit: { continuationPrompt, budget in
+                                guard await bridge.waitForRowRelease(requestId: visionRequestId, within: .seconds(5)) else {
+                                    throw LoopExitThinkingContinuation.RowNotReleased()
+                                }
+                                var next = base
+                                next.maxTokens = budget
+                                return try await LocalPrefillProgress.$current.withValue(nil) {
+                                    try await MeFirstOwnerRequest.$makeRoom.withValue(nil) {
+                                        try await bridge.submitTokenized(
+                                            promptTokens: continuationPrompt,
+                                            request: Self.translate(
+                                                openAIRequest: next, defaultMaxTokens: defaultMaxTokens,
+                                                logitBias: sampling?.logitBias, seed: sampling?.seed),
+                                            requestId: continuationId,
+                                            cacheScope: cacheScope,
+                                            cacheEnabled: cacheEnabled,
+                                            multimodal: multimodal,
+                                            mediaKind: mediaKind,
+                                            stopStringScope: continuationStopScope,
+                                            donationDemand: donationDemand,
+                                            firstContentDeadline: nil,
+                                            measurementPurpose: measurementPurpose,
+                                            // A loop in the answer still ends it as `length`.
+                                            loopGuard: GenerationLoopGuardPolicy.resolve(
+                                                modelType: modelType, request: next, prepared: prepared,
+                                                tokenConstraint: nil))
+                                    }
+                                }
+                            },
+                            cancelContinuation: { await bridge.cancel(requestId: continuationId) },
+                            onOutcome: { outcome in
+                                LoopExitThinkingContinuation.logger.notice(
+                                    "loop guard ended a thought", metadata: [
+                                        "request_id": .string(visionRequestId),
+                                        "outcome": .string(outcome.description),
+                                        "media_kind": .string(mediaKind.rawValue)])
+                            })
+                        events = spliced.events
+                        cancelEvents = spliced.cancel
+                    }
                     return try await makeDeadlineCheckedEventStream(
-                        upstream: upstream,
-                        cancelUpstream: { await bridge.cancel(requestId: visionRequestId) },
+                        upstream: events,
+                        cancelUpstream: cancelEvents,
                         toolHandler: toolHandler,
                         prepared: prepared,
                         releaseBox: releaseBox,

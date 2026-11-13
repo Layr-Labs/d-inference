@@ -3271,7 +3271,10 @@ stops such a row early.
   sees every generated token of every engine, for the requests that take the
   scheduler's text path (`MultiModelBatchSchedulerEngine.prepareCompletion`):
   single-Mac MLX slots, the native GLM-5.3 and MiMo engines, and the cluster
-  pairs. Super's coordinator and local text requests take the owner's own
+  pairs; and for one Mac's image and video requests
+  (`EngineV2VisionPrefill`, the same function's media path), with the same
+  rule. The pairs' media routes, MiMo's native media and Super's media pass no
+  guard. Super's coordinator and local text requests take the owner's own
   route (`ProviderLoop+InferenceHandler`, `superOwner.chatEngine` →
   `NemotronSuperLocalImageHTTP` → `NemotronSuperLocalBinding.executeBridge`),
   which resolves the same guard from its request plan
@@ -3289,8 +3292,7 @@ stops such a row early.
   forced tool call or a JSON `response_format`; the rest of a row once its text
   shows a tool-call frame (`<tool_call>`, `<|tool_call>`, `<function=`,
   `to=functions.`, `<start_function_call>` and the request parser's own tags);
-  a request with tools whose parser also reads untagged calls (bare JSON);
-  media requests.
+  a request with tools whose parser also reads untagged calls (bare JSON).
 - **Models** (`GenerationLoopGuardPolicy`, by `model_type`): on by default
   for `gemma4`, `gemma4_text`, `qwen3_5`, `qwen3_5_moe`, `qwen4_exp`,
   `qwen4_exp_text`, `gpt_oss`, `nemotron_h` (Lightning), `nemotron_h_omni`
@@ -3329,6 +3331,19 @@ stops such a row early.
   that have a marker. `darkbloom start` passes it, and `DARKBLOOM_LOOP_GUARD`,
   to the launchd daemon (`LaunchAgent.inferencePassthroughEnvKeys`). One `darkbloom.loop-guard.exit-thinking` line per ended
   thought gives the outcome.
+- **Image and video requests on one Mac** (`prepareCompletion`'s media path,
+  `EngineV2VisionPrefill`) take the same guard and, for a family with an exit,
+  the same exit. The continuation re-submits the same evaluated media input
+  (`PreparedSubmission.multimodalInput()`: the same spans and embeddings; the
+  vision tower does not run again) with the longer prompt, so it runs only for
+  a media prompt with plain positions (Gemma's): a prompt with model positions
+  (`CBv2PositionState`, Qwen's M-RoPE) covers only its own length, which the
+  engine checks at submit, and its loops keep ending as `length`. Unlike the
+  text continuation, it prefills the whole prompt again (media rows take no
+  prefix cache) and runs as a media row (target-only where the model's MTP
+  has a media fallback). It emits its own `engine_v2_vision` engagement event
+  (request id `…-exit`), and its outcome line carries `media_kind`. The pairs'
+  media routes, MiMo's native media and Super's media take neither.
 
 ### Collected and streaming reasoning state
 

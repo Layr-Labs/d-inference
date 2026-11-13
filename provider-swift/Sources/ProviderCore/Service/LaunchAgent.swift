@@ -414,6 +414,9 @@ public enum LaunchAgent: Sendable {
     /// fully serial FIFO.
     /// `DARKBLOOM_GEMMA_JSON_ANSWERS`: Gemma 4 JSON `response_format` answers
     /// are grammar-constrained by default; `off` restores prompt-only answers.
+    /// `DARKBLOOM_GEMMA_SYSTEM_PARTS_RENDER`: a Gemma 4 request the coordinator
+    /// did not plan renders its system message as text parts, as vLLM does, by
+    /// default; `off` restores the string render.
     /// `DARKBLOOM_QWEN_JSON_SCHEMA_REWRITE`: Qwen JSON answers constrain client
     /// schemas outside the subset by default; `off` restores their decline.
     /// `DARKBLOOM_TTFT_SHAPE_WARMUP`: the load-time shape warmup is on by
@@ -465,6 +468,7 @@ public enum LaunchAgent: Sendable {
         "DARKBLOOM_TTFT_GDN_BLOCKED",
         EngineV2SlotFactory.mimoRectangularVerifyEnvironmentKey,
         GemmaJSONAnswerPolicy.environmentKey,
+        Gemma4SystemPartsRender.environmentKey,
         PromptTokenCachePolicy.environmentKey,
         PromptTokenCachePolicy.capacityEnvironmentKey,
         PromptTokenCachePolicy.verifyEnvironmentKey,

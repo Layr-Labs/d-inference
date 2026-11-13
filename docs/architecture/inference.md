@@ -3613,6 +3613,30 @@ spliced across a boundary the reasoning parser later hides. Required and named
 (`provider-swift/Sources/ProviderCore/Inference/Tools/GemmaNoToolTokenConstraint.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Tools/GemmaTokenVocabulary.swift`).
 
+### Gemma 4 system message parts
+
+Gemma 4's template renders a string system message as is and a list of text
+parts with a space after each part (`item['text'] | trim + ' '`); it trims each
+part of a list-shaped user message on its own. vLLM hands this template every
+string as one text part, so vLLM-served endpoints feed, and count, one more
+token before the system turn's `<turn|>` than the string render: OpenRouter's
+GPQA prompt (system "You are a helpful assistant.") is 88 tokens there.
+`Gemma4SystemPartsRender` renders a Gemma 4 (`gemma4`, `gemma4_text`) text
+request's system message, and a user message's list content, as those parts
+(`ProviderPromptContractPipeline.normalizedInput`), so serving, the usage
+floor and `usage.prompt_tokens` use vLLM's prompt; list content renders as
+Transformers renders it instead of joined first.
+
+A request the coordinator planned for its prompt cache (it carries a cache
+scope or receipt nonce, `ChatTemplateControls.servingCoordinatorRequest`)
+renders the string form, the prompt the sidecar planned: a longer prompt would
+fail its lookup receipt (`prompt_anchor_mismatch`, `provider_longer`) and fence
+the provider's cache routing for the model. Unplanned coordinator requests
+carry no cache scope and reuse no prefix cache. Media requests, other models
+and `DARKBLOOM_GEMMA_SYSTEM_PARTS_RENDER=off` keep the string render.
+`ProductionPromptParityTests` checks both renders against Transformers' on the
+served artifacts (`fixtures/prompt-contract/v1/gemma4_system_parts_vectors.json`).
+
 ### Constrained Gemma 4 JSON answers
 
 Gemma 4 answers to a JSON `response_format` are sampled under the same JSON

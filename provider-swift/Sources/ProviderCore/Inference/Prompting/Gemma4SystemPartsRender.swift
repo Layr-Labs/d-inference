@@ -45,13 +45,26 @@ enum Gemma4SystemPartsRender {
         controls: ChatTemplateControls,
         enabled: Bool = enabled
     ) -> Bool {
-        false
+        guard enabled, !controls.rendersCachePlan, let modelType,
+              modelTypes.contains(modelType.lowercased()) else { return false }
+        return !MediaIngest.hasMedia(request)
     }
 
     /// The template content of `message` as text parts: a system message's
     /// string or list, a user message's list. Nil keeps its string content.
     static func textParts(of message: OpenAIChatMessage) -> [any Sendable]? {
-        nil
+        switch (message.role, message.content) {
+        case (.system, .text(let text)):
+            return [part(text)]
+        case (.system, .parts(let parts)), (.user, .parts(let parts)):
+            let texts = parts.compactMap { item -> (any Sendable)? in
+                if case .text(let text) = item { return part(text) }
+                return nil
+            }
+            return texts.isEmpty ? nil : texts
+        default:
+            return nil
+        }
     }
 
     private static func part(_ text: String) -> [String: any Sendable] {

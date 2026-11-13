@@ -60,6 +60,8 @@ struct GemmaQuotedArgumentConformanceTests {
             #"{"anyOf":[{"type":"string"},{"type":"integer"}]}"#,
             #"{"type":["integer","string"]}"#,
             #"{"type":["string","integer"]}"#,
+            #"{"anyOf":[{"type":["integer","string"]},{"type":"null"}]}"#,
+            #"{"allOf":[{"anyOf":[{"type":"integer"},{"type":"string"}]}]}"#,
         ] {
             let (prepared, handler) = try setup(schema: schema, stream: stream)
             let frame = #"<|tool_call>call:count_items{count:<|"|>003<|"|>}<tool_call|>"#

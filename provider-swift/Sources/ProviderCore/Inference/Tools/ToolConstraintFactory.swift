@@ -84,6 +84,14 @@ enum ToolConstraintFactory {
                         nativePrefix: prefix, allowsParallel: prepared.allowsParallelCalls,
                         allowedToolNames: prepared.allowedToolNames)
                 }
+                // The Qwen 3.5-family text route, on an engine that runs token
+                // constraints: the call is framed in the sampler as well.
+                if framesQwenForcedCalls, let framing = QwenForcedToolFraming.constraint(
+                    prepared: prepared, modelType: modelContext.modelType, tokenizer: tokenizer,
+                    maxTokens: request.maxTokens ?? defaultMaxTokens, stopTokenIDs: stopTokenIDs,
+                    promptTokens: nativePromptTokens) {
+                    return framing
+                }
                 // The structured parser withholds call bytes until finish; the
                 // shared validator below the stream rejects missing, wrong,
                 // undeclared, or schema-invalid calls before exposing them.

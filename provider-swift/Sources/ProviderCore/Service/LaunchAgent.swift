@@ -489,6 +489,7 @@ public enum LaunchAgent: Sendable {
         // SDK-read (`EngineLoopV2.nativeSegmentReleaseEnvironmentKey`): idle seconds
         // before an issued GLM pool returns its free segments; `0` is the rollback.
         "DARKBLOOM_NATIVE_SEGMENT_RELEASE",
+        NativeReasoningBudget.environmentKey,
         GenerationLoopGuardPolicy.environmentKey,
         GenerationLoopExitThinkingPolicy.environmentKey,
         EngineV2SamplingDefaults.qwen35NineBPenaltyEnvironmentKey,

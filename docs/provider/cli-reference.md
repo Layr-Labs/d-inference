@@ -4101,6 +4101,10 @@ see the [scheduler environment reference](../reference/configuration.md#engine-a
 
 ## LaunchAgent environment passthrough
 
+`DARKBLOOM_NATIVE_REASONING_BUDGET` is forwarded to the service. Set it before
+engine construction; see [native reasoning budgets](../reference/configuration.md#native-reasoning-budgets)
+for its values and supported request behavior.
+
 The SDK's [Gemma row-mapped NAX route](../reference/configuration.md#gemma-4-row-mapped-nax)
 is enabled by default within its hardware and model guards. The provider forwards
 `DARKBLOOM_GEMMA4_NAX_ROW_MAP` verbatim, including an explicit empty value, when

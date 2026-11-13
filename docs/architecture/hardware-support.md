@@ -17,6 +17,11 @@ The native [cross-stream fence ordering](inference.md#cross-stream-fence-orderin
 uses the same memory reservations and command-buffer limits. Its component
 tests do not change a model's hardware qualification or usable-memory grant.
 
+[Native reasoning token budgets](inference.md#native-reasoning-token-budgets)
+use the existing model admission and native retirement owners. They add no
+hardware eligibility or memory grant; target-only budget rows can reduce mixed
+batch chaining, so the feature carries no throughput qualification.
+
 ## Context
 
 Automatic local cluster batching prices each lane's full registered request

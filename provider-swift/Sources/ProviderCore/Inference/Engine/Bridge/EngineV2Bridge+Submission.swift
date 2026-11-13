@@ -168,6 +168,18 @@ extension EngineV2Bridge {
         /// (`GenerationLoopGuardPolicy`); nil leaves it unguarded.
         loopGuard: GenerationLoopGuard? = nil
     ) async throws -> AsyncStream<GenerationEvent> {
+        let reasoningBudget: CBv2ReasoningBudget?
+        do {
+            if let budget = request.nativeReasoningBudget {
+                guard supportsNativeReasoningBudgets, tokenConstraint == nil, loopGuard?.exitThinking == nil else {
+                    throw NativeReasoningBudget.refusal("this engine route cannot preserve a reasoning budget")
+                }
+                reasoningBudget = try budget.resolved(tokenizer: tokenizer.inner)
+            } else { reasoningBudget = nil }
+        } catch {
+            usageSignal?.finalizeLookup(failure: .policy, fallbackTier: prefixCacheFallbackTier)
+            throw error
+        }
         let tokenConstraint = Self.admittedConstraint(tokenConstraint, servesDistributedPair: servesDistributedPair,
             tracksNativeShutdown: tracksNativeShutdown)
         if let clusterStillImages {
@@ -377,6 +389,7 @@ extension EngineV2Bridge {
         // The engine is asked for the output resolved above, which the service
         // allowance was sized for, not the translation's `max_tokens ?? default`.
         cbv2Request.maxTokens = maxOutputTokens
+        cbv2Request.reasoningBudget = reasoningBudget
         cbv2Request.mimoClusterImages = mimoClusterImages
         cbv2Request.clusterStillImages = clusterStillImages
         cbv2Request.clusterGLMMedia = clusterGLMMedia

@@ -27,8 +27,13 @@ import Logging
 /// after its first token ends the answer there, as `length`; only the client's
 /// cancel keeps its error.
 enum LoopExitThinkingContinuation {
-    typealias Submit = @Sendable (_ promptTokens: [Int], _ maxTokens: Int) async throws
-        -> AsyncStream<GenerationEvent>
+    /// `cancelled` is the splice's own cancel (its `cancel`, which an owner's
+    /// disconnect hook can call while the splice's task keeps running): an
+    /// owner checks it after its release wait and submits nothing once it is
+    /// set, as it does for the task's cancellation.
+    typealias Submit = @Sendable (
+        _ promptTokens: [Int], _ maxTokens: Int, _ cancelled: @Sendable () -> Bool
+    ) async throws -> AsyncStream<GenerationEvent>
 
     /// What happened to one request whose loop guard ended its thought.
     enum Outcome: Sendable, Equatable, CustomStringConvertible {
@@ -142,9 +147,9 @@ enum LoopExitThinkingContinuation {
         guard !control.isCancelled, !Task.isCancelled else { return endAsLength("cancelled") }
         let continuation: AsyncStream<GenerationEvent>
         do {
-            continuation = try await submit(promptTokens + generated + exit.exitTokens, budget)
+            continuation = try await submit(promptTokens + generated + exit.exitTokens, budget, { control.isCancelled })
         } catch {
-            return endAsLength("continuation refused: \(error)")
+            return endAsLength(control.isCancelled ? "cancelled" : "continuation refused: \(error)")
         }
         guard control.markStarted() else {
             await cancelContinuation()

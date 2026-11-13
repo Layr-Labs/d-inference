@@ -202,12 +202,12 @@ actor NemotronSuperLocalBinding {
                     exit: exit,
                     promptTokens: tokens,
                     outputBudget: bridge.outputTokens(requested: request.max_tokens, promptTokens: tokens.count),
-                    submit: { continuationPrompt, budget in
+                    submit: { continuationPrompt, budget, cancelled in
                         guard await bridge.waitForRowRelease(requestId: requestID, within: .seconds(5)) else {
                             throw LoopExitThinkingContinuation.RowNotReleased()
                         }
                         // A request cancelled or drained during the wait gets no second row.
-                        guard !cancel.cancelled else { throw CancellationError() }
+                        guard !cancel.cancelled, !cancelled() else { throw CancellationError() }
                         // As `run` checks the first prompt.
                         guard !continuationPrompt.contains(18),
                               continuationPrompt.allSatisfy({ (0..<131072).contains($0) })

@@ -87,8 +87,9 @@ public final class GenerationLoopExitRecord: @unchecked Sendable {
 /// On by default for Gemma 4, whose thought closes with one special token
 /// (`<channel|>`), the Qwen 3.5/3.6 35B models (`qwen3_5_moe`), whose
 /// template closes it with `\n</think>\n\n` (`</think>` is one special token),
-/// and GPT-OSS (`gpt_oss`), whose Harmony analysis message ends with `<|end|>`
-/// and is followed by the next assistant message (`harmonyAnalysis`).
+/// and GPT-OSS (`gpt_oss`, for a request that declares tools), whose Harmony
+/// analysis message ends with `<|end|>` and is followed by the next assistant
+/// message (`harmonyAnalysis`).
 /// `qwen3_5` has the marker but is off by default: it is Qwen 3.5 9B and also
 /// Qwen 3.8 27B, whose thought loops are rare. The guard keeps ending every
 /// other loop as `length`: a loop outside the thought, a family that is not
@@ -180,6 +181,7 @@ enum GenerationLoopExitThinkingPolicy {
         guard case .modelTypes(let enabled) = setting,
               let modelType = modelType?.lowercased(), enabled.contains(modelType),
               let markers = markersByModelType[modelType], !logprobs,
+              declaresTools || !toolRequestsOnly.contains(modelType),
               let close = tokenizer.convertTokenToId(markers.close),
               tokenizer.convertIdToToken(close) == markers.close
         else { return nil }

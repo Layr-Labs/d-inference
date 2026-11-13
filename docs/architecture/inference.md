@@ -3254,7 +3254,8 @@ stops such a row early.
   the default list.
 - **A loop inside a Gemma 4, Qwen 3.5/3.6 35B or GPT-OSS thought ends the
   thought, not the answer** (`GenerationLoopExitThinkingPolicy`, `LoopExitThinkingContinuation`).
-  For `gemma4`, `gemma4_text`, `qwen3_5_moe` and `gpt_oss` (on by default) and `qwen3_5`
+  For `gemma4`, `gemma4_text`, `qwen3_5_moe` and `gpt_oss` (on by default; `gpt_oss`
+  only for a request that declares tools, `toolRequestsOnly`) and `qwen3_5`
   (Qwen 3.5 9B and Qwen 3.8 27B: listed, off by default), the guard also
   follows the thought channel (`<|channel>` … `<channel|>`, `<think>` …
   `</think>`, `<|channel|>analysis` … `<|end|>`; the prompt's tail seeds the state: Qwen's served template opens
@@ -3274,7 +3275,9 @@ stops such a row early.
   message ends and the next assistant message starts, as after the model's own
   analysis, so the model picks `final` for the answer or a
   `commentary to=functions.…` call; `<|end|>` and `<|start|>` must resolve as
-  their own tokens), with
+  their own tokens. Without tools the model reopened its analysis after the exit
+  and looped again in 10 of 10 GPQA loopers on the GPU A/B, so a GPT-OSS request
+  without tools keeps its `length` stop), with
   `max_tokens` = the output the bridge resolved for the row minus the tokens
   produced minus the exit tokens, at most 8,192; the same sampling, stop strings
   and cache scope, the stop strings scoped as for output that starts outside the

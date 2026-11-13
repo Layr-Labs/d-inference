@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-12
+> Last updated: 2026-11-13
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -3464,6 +3464,40 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Tools/QwenJSONAnswerPoli
 `provider-swift/Sources/ProviderCore/Inference/Prompting/JSONAnswerFormat.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift` (`makeEventStream`),
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPPlanning.swift`.
+
+### Constrained GPT-OSS JSON answers
+
+GPT-OSS answers under the same format instruction, and without a grammar it
+could wrap the JSON in fences or prose, miss a schema key, or open the answer
+with header attributes (`<|channel|>final <|constrain|>json<|message|>`) that the
+SDK's Harmony parser drops. `ToolConstraintFactory.make` asks
+`GPTOSSJSONAnswerPolicy` right after the Qwen policy: a `gpt_oss` text request
+with a JSON `response_format`, no `tools`, no `tool_choice`, no client `stop`
+sequences and no media, whose rendered prompt ends at `<|start|>assistant`, gets
+a `GPTOSSJSONAnswerConstraint`. The prompt is unchanged.
+
+The constraint forces `<|channel|>analysis<|message|>`, leaves the analysis free
+except that no Harmony control spelling can complete as text (a marker window,
+as in `GPTOSSForcedToolConstraint`), and ends it with `<|end|>`. Within
+`analysisReserve` (the header, 256 answer tokens, `<|end|>` and `<|return|>`) only
+`<|end|>` is allowed, so a tight `max_tokens` still yields an answer. Then only
+`<|start|>assistant<|channel|>final<|message|>` can follow, then one JSON value
+of the format (`JSONAnswerConstraint` in its answer phase on the
+`gptOSSAnswer` profile: byte-level BPE below `<|startoftext|>` 199998, Harmony
+controls never pieces), and `<|return|>` once the value is complete.
+`GPTOSSAnswerFraming` resolves the control ids and both headers from the loaded
+tokenizer and checks them by round trip before anything is constrained.
+
+The stream gains no check: a natural stop is complete by construction, and a cut
+at `max_tokens` ends with `finish_reason: "length"` as before. Every declined
+request (a schema outside the subset, another prompt tail, an unverified
+tokenizer, a nonpositive budget) keeps prompt-only steering with one
+content-free `json-answer` log line. `DARKBLOOM_GPTOSS_JSON_ANSWERS=off`
+(`0`, `false`, `no`) restores prompt-only answers; `darkbloom start` passes it to
+the launchd job.
+
+Sources: `provider-swift/Sources/ProviderCore/Inference/Tools/GPTOSSJSONAnswerPolicy.swift`,
+`provider-swift/Sources/ProviderCore/Inference/GPTOSSJSONAnswerConstraint.swift`.
 
 ### Tool-call parsers
 

@@ -409,6 +409,8 @@ public enum LaunchAgent: Sendable {
     /// default; its `0` rollback must reach the job too.
     /// `DARKBLOOM_GLM_RECTANGULAR_VERIFY`: rectangular adaptive MTP verification
     /// is the GLM default; its serial-target rollback must reach the job.
+    /// `DARKBLOOM_GLM_JSON_SCHEMA_MISS=release`: a GLM JSON answer that parses
+    /// but misses its schema is exposed instead of refused.
     /// `DARKBLOOM_GLM_DECODE_STEPS_BETWEEN_CHUNKS` and
     /// `DARKBLOOM_NEMOTRON_SUPER_DECODE_STEPS_BETWEEN_CHUNKS`: GLM and the
     /// Super owner run decode-only steps between prompt chunks by default; `0`
@@ -446,6 +448,7 @@ public enum LaunchAgent: Sendable {
         WorkFIFOPolicy.coldLoadReleaseEnvironmentKey,
         ModelCalibrationPolicy.shapeWarmupEnvironmentKey,
         GLM5NextProtectedModel.rectangularVerifyEnvironmentKey,
+        GLM5NextSchemaMiss.environmentKey,
         EngineV2Factory.glm5NextDecodeStepsKey,
         NemotronSuperLocalPrefill.decodeStepsKey,
         ToolStreamPreparation.streamToolCallsEnvironmentKey,

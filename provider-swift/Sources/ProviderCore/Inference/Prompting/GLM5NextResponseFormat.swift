@@ -84,10 +84,18 @@ struct GLM5NextResponseFormat: Sendable {
                 break
             }
         }
-        if let schema, !ToolConstraintValidation.satisfies(value, schema: schema) { throw mismatch }
-        if let rawSchema, !ToolConstraintValidation.satisfies(value, jsonSchema: rawSchema) { throw mismatch }
+        let satisfied = schema.map { ToolConstraintValidation.satisfies(value, schema: $0) }
+            ?? rawSchema.map { ToolConstraintValidation.satisfies(value, jsonSchema: $0) } ?? true
+        guard satisfied else {
+            guard schemaMiss == .release else { throw mismatch }
+            Self.logger.info("GLM JSON response_format answer released past a schema miss")
+            return text
+        }
         return text
     }
+
+    private static let logger = ProviderLogger(
+        subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "json-answer")
 
     private static func invalid(_ detail: String) -> MultiModelBatchSchedulerEngineError {
         .invalidToolPayload("GLM5: " + detail, refusal: .unsupportedResponseFormat)

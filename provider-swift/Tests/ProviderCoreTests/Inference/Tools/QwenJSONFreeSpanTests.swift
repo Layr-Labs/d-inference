@@ -1,5 +1,6 @@
 // Copyright © 2026 Eigen Labs.
 
+import MLXLMCommon
 import Testing
 @testable import ProviderCore
 
@@ -64,5 +65,23 @@ struct QwenJSONFreeSpanTests {
             initialPhase: .reasoning, maxTokens: 64)
         #expect(!constraint.isFreeSpan(state: 0))
         #expect(!constraint.isFreeSpanContinuation(state: 0, tokenID: 65))
+    }
+
+    /// review prov-2101 SF1: the SDK makes a row MTP history-eligible by the
+    /// constraint's free-span conformance alone (`mtpSpanConstraint`), so a
+    /// non-Qwen JSON answer (Nemotron Lightning, Bonsai, GPT-OSS arguments)
+    /// that conformed would seed MTP history every step with the switch on.
+    /// Only the Qwen answers that can hold a free span may conform.
+    @Test func onlyQwenJSONAnswersOfferFreeSpansToTheEngine() throws {
+        typealias F = QwenAnswerFixture
+        for profile in [JSONAnswerProfile.bonsai2] {
+            let format = try JSONAnswerFormat(try #require(try F.request(format: F.jsonObject).responseFormat),
+                forbidding: profile.contentMarkers, family: profile.family)
+            let vocabulary = try JSONAnswerVocabulary(pieces: F.vocabulary().pieces,
+                profile: profile, stopTokenIDs: F.stops)
+            let constraint: any CBv2TokenConstraint = try JSONAnswerConstraint(format: format, profile: profile,
+                vocabulary: vocabulary, initialPhase: .reasoning, maxTokens: 64)
+            #expect(!(constraint is any CBv2FreeSpanTokenConstraint), "\(profile.family)")
+        }
     }
 }

@@ -80,16 +80,17 @@ struct GLMJSONAnswerTests {
     private static let thinkingPrompt = T.tokens(T.prompt(thinking: true))
     private static let answerPrompt = T.tokens(T.prompt(thinking: false))
 
-    private func request(_ format: String?) throws -> OpenAIChatCompletionRequest {
-        var request = try F.request(format: format)
+    private func request(_ format: String?, tools: String? = nil,
+                         image: Bool = false) throws -> OpenAIChatCompletionRequest {
+        var request = try F.request(format: format, tools: tools, image: image)
         request.model = "glm-5.3-flash"
         return request
     }
 
-    private func make(_ request: OpenAIChatCompletionRequest, prompt: [Int] = thinkingPrompt,
-                      stops: Set<Int> = T.stops, accepts: Bool = true, pair: Bool = false,
-                      glm: Bool = true) -> JSONAnswerConstraint? {
-        JSONAnswerPolicy.constraint(request: request, tokenizer: Self.handle, modelID: request.model,
+    private func make(_ request: OpenAIChatCompletionRequest, tokenizer: TokenizerHandle = handle,
+                      prompt: [Int] = thinkingPrompt, stops: Set<Int> = T.stops, accepts: Bool = true,
+                      pair: Bool = false, glm: Bool = true) -> JSONAnswerConstraint? {
+        JSONAnswerPolicy.constraint(request: request, tokenizer: tokenizer, modelID: request.model,
             modelType: "glm5_next", defaultMaxTokens: 100, stopTokenIDs: stops, promptTokens: prompt,
             servesDistributedPair: pair, acceptsTokenConstraints: accepts, glm: glm)
     }
@@ -118,20 +119,13 @@ struct GLMJSONAnswerTests {
         #expect(make(json, accepts: false, pair: true) == nil)
         #expect(make(try request(nil)) == nil)
         #expect(make(try request(#"{"type":"text"}"#)) == nil)
-        var tools = try F.request(format: F.jsonObject, tools: F.tools)
-        tools.model = "glm-5.3-flash"
-        #expect(make(tools) == nil)
-        var image = try F.request(format: F.jsonObject, image: true)
-        image.model = "glm-5.3-flash"
-        #expect(make(image) == nil)
+        #expect(make(try request(F.jsonObject, tools: F.tools)) == nil)
+        #expect(make(try request(F.jsonObject, image: true)) == nil)
         // A slot whose stop set lacks an answer terminator, or a tokenizer that
         // moves a pinned marker, is not constrained.
         #expect(make(json, stops: [T.endOfText]) == nil)
         let moved = T.pinned.map { $0.0 == "</think>" ? ($0.0, 154_851) : $0 }
-        #expect(JSONAnswerPolicy.constraint(request: json,
-            tokenizer: TokenizerHandle(GLMByteTestTokenizer(markers: moved)), modelID: json.model,
-            modelType: "glm5_next", defaultMaxTokens: 100, stopTokenIDs: T.stops, promptTokens: Self.thinkingPrompt,
-            servesDistributedPair: false, acceptsTokenConstraints: true, glm: true) == nil)
+        #expect(make(json, tokenizer: TokenizerHandle(GLMByteTestTokenizer(markers: moved))) == nil)
     }
 
     /// The slot's flag reaches the policy through the factory the text path
@@ -209,14 +203,31 @@ extension QwenAnswerFixture {
     }
 }
 
-/// `DARKBLOOM_TEST_GLM_TOKENIZER_DIR=<GLM-5.3-Flash snapshot>`.
+/// `DARKBLOOM_TEST_GLM_TOKENIZER_DIR=<GLM-5.3-Flash snapshot>`. GLM's template
+/// ends every generation prompt with an open thought, so a JSON prompt starts
+/// in reasoning (the shared check also expects a thinking-off answer phase).
 @Suite("GLM JSON answer real tokenizer",
        .enabled(if: ProcessInfo.processInfo.environment["DARKBLOOM_TEST_GLM_TOKENIZER_DIR"] != nil))
 struct GLMJSONAnswerRealTokenizerTests {
     @Test func theShippedTokenizerMatchesThePinnedContract() async throws {
         let (tokenizer, stops) = try await JSONAnswerRealTokenizerCheck.load("DARKBLOOM_TEST_GLM_TOKENIZER_DIR")
         #expect(stops.isSuperset(of: [154_820, 154_827]))
-        try JSONAnswerRealTokenizerCheck.check(tokenizer, stops: stops, profile: .glm5Next,
-                                               pieceCount: 154_820 + 2, end: 154_827)
+        let profile = JSONAnswerProfile.glm5Next
+        let vocabulary = try JSONAnswerVocabulary(tokenizer: tokenizer, profile: profile, stopTokenIDs: stops)
+        #expect(vocabulary.pieceTokenIDs.count == 154_820 + 2)
+        let prompt = try tokenizer.applyChatTemplate(messages: [["role": "user", "content": "Extract the name."]],
+            tools: nil, additionalContext: nil)
+        let tail = tokenizer.decode(tokenIds: Array(prompt.suffix(ReasoningPromptProbe.tailTokenCount)),
+            skipSpecialTokens: false)
+        #expect(profile.initialPhase(promptTail: tail) == .reasoning)
+        let answer = try JSONAnswerFormat(.jsonObject(), forbidding: profile.contentMarkers, family: profile.family)
+        let constraint = try JSONAnswerConstraint(format: answer, profile: profile, vocabulary: vocabulary,
+            initialPhase: .reasoning, maxTokens: 256)
+        var state = constraint.initialState
+        for token in tokenizer.encode(text: "Find the name.</think>{\"name\": \"Ada Lovelace\", \"born\": 1815, "
+                                      + "\"tags\": [\"é\", null]}", addSpecialTokens: false) {
+            state = try #require(constraint.nextState(state: state, tokenID: token), "token \(token)")
+        }
+        #expect(constraint.nextState(state: state, tokenID: 154_827) == -1)
     }
 }

@@ -6,7 +6,7 @@ extension EngineV2Bridge {
     /// pair-only request behavior keys on this, never on the request.
     var servesDistributedPair: Bool { ownedEngine is DistributedCBv2Engine }
     /// The slot's engine runs token constraints (`EngineV2.acceptsTokenConstraints`):
-    /// any untracked engine, and the native engines whose contract qualifies
-    /// them. A cluster pair does not.
+    /// an untracked `EngineV2`, or a native-tracked one whose contract
+    /// qualifies them. False for every other engine, a cluster pair included.
     var acceptsTokenConstraints: Bool { (ownedEngine as? EngineV2)?.acceptsTokenConstraints == true }
 }

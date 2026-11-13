@@ -3773,7 +3773,8 @@ EOS ids). GLM-5.3-Flash: BPE ids below `<|endoftext|>` (154820), padding up to
 154,880, the markers `<think>` 154841 and `</think>` 154842, terminators
 `<|user|>` 154827 and `<|endoftext|>` 154820; neither its reasoning nor its
 answer can spell `<|user|>`, `<|assistant|>`, `<|system|>`, `<|observation|>` or
-`<|endoftext|>`, and the answer none of its tool-call markers. Before constraining, it checks that every terminator is an engine
+`<|endoftext|>`, and the answer none of its tool-call markers. Before
+constraining, it checks that every terminator is an engine
 stop token (first, so a mismatched slot never decodes the vocabulary), each
 marker and terminator by id, spelling, encoding and decoding, and that every id
 in the BPE range decodes as a byte-level piece. It is built on the first such

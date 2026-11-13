@@ -1171,6 +1171,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // The native channel's initial state; nil keeps the raw-text route
         // (the tool handler first, then the downstream think parser).
         let nativeReasoningPrefix: String?
+        var promotesTrailingReasoningCalls = false
         if modelType == "mimo_v2" {
             // MiMo ON/unset emits only the assistant header, not an open think
             // span. Empty initial content state keeps native splitting active
@@ -1184,11 +1185,15 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             nativeReasoningPrefix = ReasoningPromptProbe.streamingPrefix(forPromptTail:
                 tokenizer.inner.decode(tokenIds: Array(promptTokens.suffix(ReasoningPromptProbe.tailTokenCount)),
                                        skipSpecialTokens: false)) ?? "<think></think>"
-        } else if toolHandler != nil, ToolChoiceEnforcementPolicy.splitsQwenReasoningBeforeTools(modelContext) {
+        } else if toolHandler?.format == .qwen35,
+            ToolChoiceEnforcementPolicy.splitsQwenReasoningBeforeTools(modelContext) {
             // The think parser's own seed, the prompt's think state, starts the
-            // split: reasoning is classified before tool parsing. Without a
-            // seed the output keeps the raw-text route.
+            // split: reasoning is classified before tool parsing, with call
+            // frames found by the Qwen parser's own scanner. Without a seed, or
+            // with another requested tool parser, the output keeps the raw-text
+            // route.
             nativeReasoningPrefix = reasoningPrefix
+            promotesTrailingReasoningCalls = true
         } else {
             nativeReasoningPrefix = nil
         }
@@ -1204,6 +1209,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             nativeReasoningPrefix: nativeReasoningPrefix,
             recordsWithheldOutput: withholdsGLMOutput,
             preserveInnerReasoningSpans: ToolChoiceEnforcementPolicy.preservesInnerReasoningSpans(modelContext),
+            promotesTrailingReasoningCalls: promotesTrailingReasoningCalls,
             nativeGemmaChannels: modelType == "diffusion_gemma",
             nativeGemmaReasoningEnabled: modelType != "diffusion_gemma"
                 || DiffusionGemmaReasoningControl.enabled(for: request, controls: templateControls),
@@ -1574,6 +1580,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         nativeReasoningPrefix: String? = nil,
         recordsWithheldOutput: Bool = false,
         preserveInnerReasoningSpans: Bool = false,
+        promotesTrailingReasoningCalls: Bool = false,
         nativeGemmaChannels: Bool = false,
         nativeGemmaReasoningEnabled: Bool = true,
         nativeMiMoChannels: Bool = false,
@@ -1602,6 +1609,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 nativeReasoningPrefix: nativeReasoningPrefix,
                 recordsWithheldOutput: recordsWithheldOutput,
                 preserveInnerReasoningSpans: preserveInnerReasoningSpans,
+                promotesTrailingReasoningCalls: promotesTrailingReasoningCalls,
                 nativeGemmaChannels: nativeGemmaChannels,
                 nativeGemmaReasoningEnabled: nativeGemmaReasoningEnabled,
                 nativeMiMoChannels: nativeMiMoChannels,
@@ -1637,6 +1645,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         nativeReasoningPrefix: String? = nil,
         recordsWithheldOutput: Bool = false,
         preserveInnerReasoningSpans: Bool = false,
+        promotesTrailingReasoningCalls: Bool = false,
         nativeGemmaChannels: Bool = false,
         nativeGemmaReasoningEnabled: Bool = true,
         nativeMiMoChannels: Bool = false,
@@ -1669,6 +1678,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     requiresToolCall: prepared.requiresToolCall, nativePrefix: nativeReasoningPrefix,
                     tools: prepared.tools?.map { $0.toolSpec() },
                     preserveInnerReasoningSpans: preserveInnerReasoningSpans,
+                    promotesTrailingReasoningCalls: promotesTrailingReasoningCalls,
                     nativeGemmaChannels: nativeGemmaChannels,
                     nativeGemmaReasoningEnabled: nativeGemmaReasoningEnabled,
                     nativeMiMoChannels: nativeMiMoChannels,

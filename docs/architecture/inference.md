@@ -3309,7 +3309,8 @@ families retain their previous literal-close behavior
 (`provider-swift/Sources/ProviderCore/Inference/Tools/ToolChoiceEnforcementPolicy.swift`).
 
 Qwen 3.5, 3.6 and 3.8 (`qwen3_5`, `qwen3_5_moe`) keep their legacy tool
-framing, but a text request with tools takes the same reasoning-first split
+framing, but a text request with tools and their own tool parser (`.qwen35`,
+the default) takes the same reasoning-first split
 (`ToolChoiceEnforcementPolicy.splitsQwenReasoningBeforeTools`):
 `MultiModelBatchSchedulerEngine.prepareCompletion` seeds `NativeChannelSplitter`
 with the prompt's own think state, the `ReasoningPromptProbe` prefix that would
@@ -3321,12 +3322,20 @@ came back as text, and a drafted call was executed. Their `auto` calls still
 stream while generated (`ToolStreamPreparation` keys on `usesNativeTextChannels`,
 which these families are not). Forced calls keep their prompt policy (thinking
 stays off); a stray thought before one is now reasoning instead of a 422. A
-call written in a thought that never closes stays reasoning, as on the native
-families. A request without tools and an explicit non-think parser keep the
-raw-text route; so does a prompt whose think state the probe cannot read,
-unless the request has the local server's streamed content seed. A collected
-local response carries content and reasoning untrimmed, as on the native
-families.
+thought that never closes and ends in complete `<tool_call>` frames (whitespace
+aside) is the model calling from inside it, a known Qwen 3.5 failure mode
+(vLLM #35687): at the end of the output the splitter (`promotesTrailingCalls`)
+also returns those frames as content, so they parse as calls, as on the raw
+route; they stay in the streamed reasoning too. A frame followed by more
+thought, or by `</think>`, stays reasoning. Inside a thought a literal
+`</think>`, even in a call's arguments, ends it, as on every native family. A
+request without tools, another requested `tool_call_parser` and an explicit
+non-think reasoning parser keep the raw-text route; so does a prompt whose
+think state the probe cannot read, unless the request has the local server's
+streamed content seed. A collected local response carries content and
+reasoning untrimmed, as on the native families: a call's message keeps the
+`\n\n` after `</think>` as its content, and a collected Responses `output` has
+it as a message item before the calls.
 
 `ReasoningPromptProbe.streamingPrefix` in
 `provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningPromptProbe.swift`

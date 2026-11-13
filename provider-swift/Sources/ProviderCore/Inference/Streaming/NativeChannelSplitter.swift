@@ -22,6 +22,9 @@ struct NativeChannelSplitter {
     private var flintScanner: FlintToolFrameScanner?
     private let preserveInnerReasoningSpans: Bool
     private let absorbStrayThinkClose: Bool
+    private let promotesTrailingCalls: Bool
+    /// The open thought's text (kept only with `promotesTrailingCalls`).
+    private var openThought = ""
     private var innerReasoningDepth = 0
     private(set) var reasoningNestingLimitExceeded = false
     static let maximumInnerReasoningDepth = 32
@@ -30,9 +33,16 @@ struct NativeChannelSplitter {
             + (flintScanner?.bufferedCharacterCount ?? 0)
     }
 
+    /// `promotesTrailingCalls`: a thought that never closes and ends in
+    /// complete `<tool_call>` frames (whitespace only between and after them)
+    /// was the model calling from inside it, a known Qwen 3.5 failure mode;
+    /// at the end of the output those frames are also returned as content,
+    /// so they parse as calls. A frame followed by more thought, or by
+    /// `</think>`, stays reasoning.
     init(prefix: String, protectToolFrames: Bool, qwenStructuredFrames: Bool = false, flintFrames: Bool = false,
          tools: [[String: any Sendable]]? = nil,
-         preserveInnerReasoningSpans: Bool = false, absorbStrayThinkClose: Bool = false) {
+         preserveInnerReasoningSpans: Bool = false, absorbStrayThinkClose: Bool = false,
+         promotesTrailingCalls: Bool = false) {
         state = prefix == "<think>" ? .reasoning : .content
         self.protectToolFrames = protectToolFrames
         self.qwenStructuredFrames = qwenStructuredFrames
@@ -40,6 +50,7 @@ struct NativeChannelSplitter {
         self.tools = tools
         self.preserveInnerReasoningSpans = preserveInnerReasoningSpans
         self.absorbStrayThinkClose = absorbStrayThinkClose
+        self.promotesTrailingCalls = promotesTrailingCalls
     }
 
     mutating func parse(_ text: String) -> [ParsedReasoning] {
@@ -50,10 +61,58 @@ struct NativeChannelSplitter {
 
     mutating func finish() -> [ParsedReasoning] {
         guard !reasoningNestingLimitExceeded else { return [] }
-        let pieces = drain(final: true)
+        var pieces = drain(final: true)
         toolScanner = nil
         flintScanner = nil
+        if promotesTrailingCalls, case .reasoning = state, let calls = Self.trailingCalls(in: openThought) {
+            pieces.append(.init(content: calls, reasoningContent: nil))
+        }
+        openThought = ""
         return pieces
+    }
+
+    /// The complete `<tool_call>` frames that end `thought`, with the
+    /// whitespace between them, or nil. A frame opens on `<function=` or `{`
+    /// (a mentioned tag does not), and its end follows the Qwen tool parser's
+    /// own scanner (JSON strings and XML parameter values are opaque, so a tag
+    /// inside an argument is not a frame).
+    static func trailingCalls(in thought: String) -> String? {
+        var start: String.Index?
+        var end = thought.endIndex
+        while true {
+            var last = end
+            while last > thought.startIndex, thought[thought.index(before: last)].isWhitespace {
+                last = thought.index(before: last)
+            }
+            guard thought[..<last].hasSuffix("</tool_call>"),
+                let frame = outermostFrame(in: thought, closingAt: last) else { break }
+            start = frame
+            end = frame
+        }
+        return start.map { String(thought[$0...]) }
+    }
+
+    /// The first `<tool_call>` before `end` whose frame opens a call and
+    /// closes exactly at `end`.
+    private static func outermostFrame(in thought: String, closingAt end: String.Index) -> String.Index? {
+        let scalars = thought.unicodeScalars
+        var from = thought.startIndex
+        while let open = thought.range(of: "<tool_call>", range: from..<end) {
+            from = open.upperBound
+            let payload = thought[open.upperBound..<end].drop { $0.isWhitespace }
+            guard payload.hasPrefix("<function=") || payload.hasPrefix("{") else { continue }
+            var scanner = Qwen35ToolFrameScanner(endTag: "</tool_call>")
+            var index = open.upperBound
+            while index < end {
+                let next = scalars.index(after: index)
+                if scanner.consume(scalars[index]) {
+                    if next == end { return open.lowerBound }
+                    break
+                }
+                index = next
+            }
+        }
+        return nil
     }
 
     private mutating func drain(final: Bool) -> [ParsedReasoning] {
@@ -122,7 +181,7 @@ struct NativeChannelSplitter {
                 switch state {
                 case .content:
                     append(String(buffer[..<range.lowerBound]), reasoning: false, to: &result)
-                    if marker == "<think>" { state = .reasoning }
+                    if marker == "<think>" { state = .reasoning; openThought = "" }
                     else if marker == "</think>" {
                         // Stray close after a prompt-side `<think></think>` (or a
                         // duplicate close): drop the marker, stay in content.
@@ -152,6 +211,7 @@ struct NativeChannelSplitter {
                     } else {
                         append(String(buffer[..<range.lowerBound]), reasoning: true, to: &result)
                         state = .content
+                        openThought = ""
                     }
                 case .tool:
                     append(String(buffer[..<range.upperBound]), reasoning: false, to: &result)
@@ -178,8 +238,9 @@ struct NativeChannelSplitter {
         return result
     }
 
-    private func append(_ text: String, reasoning: Bool, to result: inout [ParsedReasoning]) {
+    private mutating func append(_ text: String, reasoning: Bool, to result: inout [ParsedReasoning]) {
         guard !text.isEmpty else { return }
+        if reasoning && promotesTrailingCalls { openThought += text }
         result.append(.init(content: reasoning ? "" : text, reasoningContent: reasoning ? text : nil))
     }
 }

@@ -41,6 +41,13 @@ private struct BudgetBridgeTokenizer: MLXLMCommon.Tokenizer {
 /// XCTest runs separately from Swift Testing. The raw-ingress flag is restored
 /// after each case; the native engine's capability is explicit and immutable.
 final class NativeReasoningBudgetIngressTests: XCTestCase {
+    private final class LookupReceipts: @unchecked Sendable {
+        private let lock = NSLock()
+        private var values: [PrefixCacheLookupResult] = []
+        func append(_ value: PrefixCacheLookupResult) { lock.withLock { values.append(value) } }
+        var snapshot: [PrefixCacheLookupResult] { lock.withLock { values } }
+    }
+
     private let flag = "DARKBLOOM_NATIVE_REASONING_BUDGET"
     private var previous: String?
 
@@ -181,6 +188,39 @@ final class NativeReasoningBudgetIngressTests: XCTestCase {
         XCTAssertEqual(roundTrip.seed, 23)
         XCTAssertEqual(roundTrip.min_p, 0.2)
         XCTAssertNil(roundTrip.nativeReasoningBudget)
+    }
+
+    func testBudgetRefusalFinalizesPolicyLookupExactlyOnceForBothSubmissionAPIs() async throws {
+        for throwsOnRefusal in [false, true] {
+            for (enabled, tokenizer) in [(false, BudgetBridgeTokenizer()),
+                                          (true, BudgetBridgeTokenizer(splitsClose: true))] {
+                let bridge = bridge(model: "budget-receipt", tokenizer: tokenizer, enabled: enabled)
+                var request = ChatCompletionRequest(model: "budget-receipt", messages: [], temperature: 0, max_tokens: 6)
+                request.nativeReasoningBudget = .init(maximumTokens: 2, family: .nemotronSuper)
+                let receipts = LookupReceipts()
+                let signal = EngineV2RequestUsageSignal(onLookupResolved: receipts.append)
+                if throwsOnRefusal {
+                    do {
+                        _ = try await bridge.submitTokenized(promptTokens: [0], request: request,
+                            usageSignal: signal, firstContentDeadline: nil)
+                        XCTFail("Unsupported budget must throw before generation")
+                    } catch let error as MultiModelBatchSchedulerEngineError {
+                        guard case .unsupportedOutputControl = error else { throw error }
+                    }
+                } else {
+                    let result = await collect(await bridge.submitTokenized(promptTokens: [0],
+                        request: request, usageSignal: signal))
+                    XCTAssertEqual(result.text, "")
+                    XCTAssertFalse(result.errors.isEmpty)
+                    XCTAssertNil(result.completion)
+                }
+                XCTAssertEqual(signal.lookupResult?.outcome, .skippedPolicy)
+                XCTAssertEqual(receipts.snapshot.count, 1)
+                XCTAssertEqual(receipts.snapshot.first?.outcome, .skippedPolicy)
+                await bridge.shutdown()
+                XCTAssertEqual(receipts.snapshot.count, 1)
+            }
+        }
     }
 }
 

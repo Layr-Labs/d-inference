@@ -9,7 +9,7 @@ import MLXLMServer
 /// exact header `final` to content and drop every other message, so without
 /// this filter such an answer reaches the client as empty content. Other
 /// headers and message bodies pass byte for byte. The commentary mode (on by
-/// default, `DARKBLOOM_GPTOSS_COMMENTARY_CONTENT` an off word turns it off)
+/// default; an off word in `DARKBLOOM_GPTOSS_COMMENTARY_CONTENT` turns it off)
 /// also maps recipientless assistant commentary to content, retaining bounded
 /// header context so a recipient before the channel remains a tool call.
 struct HarmonyFinalHeaderFilter: Sendable {
@@ -105,11 +105,11 @@ struct HarmonyFinalHeaderFilter: Sendable {
         return pending
     }
 
-    /// Normalize `final` or (commentary mode) recipientless assistant `commentary`.
-    /// An answer names no
-    /// recipient (`to=` is a call) and it holds no control marker other than
-    /// `<|constrain|>` (another one means the header was cut short and a new
-    /// message began). Any other header as given.
+    /// `final` for an answer header: `final`, or (commentary mode) a
+    /// recipientless assistant `commentary`. An answer names no recipient
+    /// (`to=` is a call) and holds no control marker other than `<|constrain|>`
+    /// (another one means the header was cut short and a new message began).
+    /// Any other header as given.
     private func answerHeader(_ header: String) -> String {
         let name = header.drop { $0.isWhitespace }.prefix { !$0.isWhitespace && $0 != "<" }
         let role = leadingHeader.trimmingCharacters(in: .whitespacesAndNewlines)

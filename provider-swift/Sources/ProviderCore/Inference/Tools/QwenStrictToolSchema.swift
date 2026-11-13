@@ -364,7 +364,8 @@ struct QwenStrictToolSchema: Sendable {
     /// `{"type":"null"}`, Pydantic's `Optional`), a single `allOf` branch,
     /// and objects beside an open object (any object). The validator ignores
     /// the render type the normalizer writes beside a union, so it is dropped,
-    /// as is the empty `properties` the coordinator's repair writes there.
+    /// as is the empty `properties` the render repair (the provider's and the
+    /// coordinator's) writes there.
     static func clean(_ node: MLXLMCommon.JSONValue, depth: Int) throws -> MLXLMCommon.JSONValue {
         guard depth <= ToolConstraintSchemaCompiler.maxDepth * 2 else {
             throw ToolConstraintSchemaError.unsupported("schema nesting exceeds its bounds")

@@ -379,7 +379,8 @@ struct QwenStrictToolGrammarTests {
         #expect(F.allows("null\n</parameter>\n", constraint, after: call))
         #expect(!F.allows("\"5\"", constraint, after: call))
         let text = call + "null\n</parameter>\n<parameter=label>\nx\n</parameter>\n<parameter=flight>\n"
-            + "{\"leg\": {\"anything\": [1, 2]}}\n</parameter>\n</function>\n</tool_call>"
+            + "{\"leg\": {\"anything\": [1, 2]}}\n</parameter>\n<parameter=legs>\n"
+            + "[{\"number\": \"HAT1\", \"seats\": 2}, {\"x\": true}]\n</parameter>\n</function>\n</tool_call>"
         // The forwarded form's empty `properties` beside the union asserts nothing: any object.
         let legs = call + "null\n</parameter>\n<parameter=label>\nx\n</parameter>\n<parameter=legs>\n"
         #expect(F.allows("[{\"number\": \"HAT1\", \"seats\": 2}, {\"x\": true}]\n</parameter>\n", constraint, after: legs))
@@ -388,6 +389,8 @@ struct QwenStrictToolGrammarTests {
         let (request, prepared) = try F.prepared(body)
         let arguments = try #require(try F.calls(text, request, prepared).first.map(F.arguments))
         #expect(arguments["limit"] == .null && arguments["label"] == .string("x"))
+        #expect(arguments["legs"] == .array([.object(["number": .string("HAT1"), "seats": .int(2)]),
+                                             .object(["x": .bool(true)])]))
         // A union of several types has no exact grammar here: unconstrained.
         let several = #"[{"type":"function","function":{"name":"f","strict":true,"parameters":{"type":"object","#
             + #""properties":{"v":{"anyOf":[{"type":"string"},{"type":"integer"}]}}}}}]"#
@@ -401,6 +404,7 @@ struct QwenStrictToolGrammarTests {
         #"{"type":"object","patternProperties":{"^x":{"type":"string"}}}"#, #"{"not":{"type":"string"}}"#,
         #"{"type":"array","items":{"type":"string"},"uniqueItems":true}"#, #"{"description":"anything"}"#,
         #"{"$ref":"https://example.com/schema.json"}"#, #"{"type":"null"}"#,
+        #"{"anyOf":[{"type":"object"},{"type":"null"}],"properties":{"a":{}},"type":"object"}"#,
     ])
     func unsupportedSchemasStayUnconstrainedWithoutAnError(_ property: String) throws {
         let tools = #"[{"type":"function","function":{"name":"f","strict":true,"parameters":{"type":"object","#

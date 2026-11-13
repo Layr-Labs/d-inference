@@ -3730,7 +3730,8 @@ declared tool must compile (`QwenStrictToolSchema`): local `$ref`s are inlined
 (cycles refused), `anyOf`/`oneOf` of one schema and `null`, a single `allOf`
 branch and objects beside an open object are folded (also with the render
 repair's `type` and empty `properties` beside the union, as the coordinator
-forwards Tau2's tools), annotations (`format` included) are dropped, and the rest must fit the shared fail-closed subset
+forwards Tau2's tools), annotations (`format` included) are dropped, and the
+rest must fit the shared fail-closed subset
 (`ToolConstraintSchemaCompiler.compileResponseSchema`). Anything else, an
 unrecognized prompt boundary or a vocabulary that does not verify leaves the
 request as before, with a content-free log line, never a refusal.

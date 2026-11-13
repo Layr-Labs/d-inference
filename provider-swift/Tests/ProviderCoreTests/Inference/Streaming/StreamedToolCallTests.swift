@@ -227,18 +227,39 @@ struct StreamedToolCallTests {
         }
     }
 
-    /// A later call that completes without being exposed (a name the request
-    /// did not declare) is dropped too, before validation could refuse it.
+    /// A later call that completes without being exposed (Harmony parses an
+    /// undeclared name, which `strict` refuses) is dropped too, before
+    /// validation could refuse it.
     @Test func laterUnexposedCallIsDroppedUnvalidated() throws {
-        var router = try Self.router(Self.request(parallel: false, strict: true), modelType: "qwen3_5")
-        let text = "<tool_call>\n<function=get_weather>\n<parameter=location>\nParis\n</parameter>\n</function>\n</tool_call>\n"
-            + "<tool_call>\n<function=delete_everything>\n<parameter=path>\n/\n</parameter>\n</function>\n</tool_call>"
+        var router = try Self.router(Self.request(parallel: false, strict: true), modelType: "gpt_oss")
+        let text = "<|start|>assistant to=functions.get_weather<|channel|>commentary json"
+            + #"<|message|>{"location":"Paris"}<|call|>"#
+            + "<|start|>assistant to=functions.delete_everything<|channel|>commentary json"
+            + #"<|message|>{"path":"/"}<|call|>"#
         var events: [MLXServerGenerationEvent] = []
         for character in Self.characters(text) { events += try router.process(character) }
         events += try router.finishText()
         events += try router.finishToolCalls(truncated: false)
         #expect(Self.deltas(events).compactMap(\.completed).map(\.function.name) == ["get_weather"])
         #expect(router.completedToolCalls.map(\.function.name) == ["get_weather"])
+    }
+
+    /// The complete-call paths (native channel families, required/named,
+    /// surfaces that take calls in one piece, Nemotron Super's owner) keep
+    /// the first call the same way.
+    @Test func completeCallPathsKeepTheFirstCall() throws {
+        let first = ToolCall(function: .init(name: "get_weather", arguments: ["location": "Paris"]))
+        let second = ToolCall(function: .init(name: "get_weather", arguments: ["location": "Rome"]))
+        for choice in [nil, OpenAIToolChoice.mode(.required), .function(name: "get_weather")] {
+            let single = try ToolChoicePromptPolicy.prepare(Self.request(choice, parallel: false), modelType: "gemma4")
+            let admitted = ToolConstraintValidation.admitted([first, second], prepared: single)
+            #expect(admitted == [first])
+            try ToolConstraintValidation.validate(admitted, prepared: single)
+            let parallel = try ToolChoicePromptPolicy.prepare(Self.request(choice), modelType: "gemma4")
+            #expect(ToolConstraintValidation.admitted([first, second], prepared: parallel) == [first, second])
+        }
+        let none = try ToolChoicePromptPolicy.prepare(Self.request(parallel: false), modelType: "gemma4")
+        #expect(ToolConstraintValidation.admitted([], prepared: none).isEmpty)
     }
 
     /// The second partial holds a `}`, so Gemma's lenient EOS parse reads a

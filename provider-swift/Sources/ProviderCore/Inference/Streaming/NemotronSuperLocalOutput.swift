@@ -79,7 +79,7 @@ struct NemotronSuperLocalOutput {
             reasoning = split.reasoning ?? ""
             _ = try route([.init(content: split.content ?? "", reasoningContent: nil)])
         }
-        let calls = handler?.finish() ?? []
+        let calls = ToolConstraintValidation.admitted(handler?.finish() ?? [], prepared: plan.toolPolicy)
         let residual = handler?.takeResidualText() ?? ""
         let forced = plan.toolPolicy.requiresToolCall
         // route refuses mid-stream parse failures, so any failure here is the

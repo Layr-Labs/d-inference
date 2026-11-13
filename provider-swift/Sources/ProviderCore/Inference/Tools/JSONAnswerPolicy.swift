@@ -58,9 +58,10 @@ enum JSONAnswerPolicy {
     /// The constraint for an eligible request, or nil. Requests with media,
     /// tools or a `tool_choice` are out of scope, and so is a prompt that
     /// opens a thought on a family admitted for its answers alone (Lightning's
-    /// default). An unsupported schema, an unrecognized prompt boundary, an
-    /// unverified tokenizer or a nonpositive budget falls back with a
-    /// content-free log line.
+    /// default). On Qwen a schema outside the subset is widened first
+    /// (`QwenJSONSchemaRewrite`). An unsupported schema, an unrecognized prompt
+    /// boundary, an unverified tokenizer or a nonpositive budget falls back
+    /// with a content-free log line.
     static func constraint(
         request: OpenAIChatCompletionRequest,
         tokenizer: TokenizerHandle,
@@ -83,7 +84,7 @@ enum JSONAnswerPolicy {
                 tokenIds: Array(tokens.suffix(ReasoningPromptProbe.tailTokenCount)), skipSpecialTokens: false))
         }
         if phase == .reasoning, !profile.constrainsReasoning { return nil }
-        guard case let (answer, _)? = QwenJSONSchemaRewrite.answerFormat(format, profile: profile,
+        guard case let (answer, widening)? = QwenJSONSchemaRewrite.answerFormat(format, profile: profile,
                   widens: widensSchemas) else {
             return declined(profile, "schema outside the constrained subset")
         }
@@ -99,6 +100,7 @@ enum JSONAnswerPolicy {
                                                          maxTokens: request.maxTokens ?? defaultMaxTokens) else {
             return declined(profile, "no positive output budget")
         }
+        if let widening { logger.info("\(profile.family) json_schema outside the constrained subset: \(widening.note)") }
         return constraint
     }
 

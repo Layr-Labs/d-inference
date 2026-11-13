@@ -71,8 +71,13 @@ struct QwenJSONSchemaRewriteTests {
         #expect(ends(answer, constraint))
         #expect(F.walk(#"{"age":"x"#, constraint) == nil, "types stay")
         #expect(F.walk(#"{"age":1,"email":"e","extra""#, constraint) == nil, "additionalProperties false stays")
-        // Never a refusal for a value the grammar left free.
-        #expect(throws: Never.self) { try constraint.format.validate(content: answer, finishReason: "stop") }
+        // Best effort, never a refusal: a widened answer is not checked after generation.
+        for (content, finish) in [(answer, "stop"), ("not json", "stop"), (#"{"age":1"#, "length")] {
+            #expect(throws: Never.self) { try constraint.format.validate(content: content, finishReason: finish) }
+        }
+        // A schema inside the subset keeps its check.
+        let exact = try #require(try make(F.schemaFormat(F.schema)))
+        #expect(throws: MLXOpenAIServiceError.self) { try exact.format.validate(content: "not json", finishReason: "stop") }
         for schema in [#"{"type":"string","pattern":"^a"}"#, #"{"type":"array","items":{"type":"string"},"maxItems":64}"#] {
             let relaxed = try #require(try make(F.schemaFormat(schema)), "\(schema)")
             #expect(relaxed.format.schema != nil)

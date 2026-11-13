@@ -228,13 +228,14 @@ extension MultiModelBatchSchedulerEngine {
         topLogprobs: Int? = nil,
         logitBias: [String: Float]? = nil,
         seed: UInt64? = nil,
-        engineStopStrings: Bool = true
+        engineStopStrings: Bool = true,
+        nativeReasoningBudget: NativeReasoningBudget? = nil
     ) -> ChatCompletionRequest {
         let stop: StopSequences? = {
             guard engineStopStrings, let stops = request.stop, !stops.isEmpty else { return nil }
             return .multiple(stops)
         }()
-        return ChatCompletionRequest(
+        var translated = ChatCompletionRequest(
             model: request.model,
             messages: request.messages.map { msg in
                 ChatMessage(role: msg.role.rawValue, content: msg.content.text)
@@ -258,6 +259,8 @@ extension MultiModelBatchSchedulerEngine {
             top_logprobs: topLogprobs,
             min_p: request.minP
         )
+        translated.nativeReasoningBudget = nativeReasoningBudget
+        return translated
     }
 }
 

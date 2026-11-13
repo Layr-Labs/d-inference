@@ -4219,6 +4219,42 @@ Which requests render this way:
   re-encodes the bodies it forwards sorted; darkbloom-platform#919 keeps the
   caller's order for the builds it names).
 
+### Native reasoning token budgets
+
+Supported local Super and MiMo requests can opt into a thought-token ceiling
+through [the default-off switch](../reference/configuration.md#native-reasoning-budgets).
+`NemotronSuperPromptContract` and `MiMoV26RawControlEvidence` retain validated
+`reasoning.max_tokens`; explicit thinking-off conflicts with the budget. MiMo
+retains the value across both Chat and Responses decoding. Super uses its bound
+Chat owner; this change does not register a Super Responses route.
+
+`NativeReasoningBudget` is an internal sidecar excluded from
+`ChatCompletionRequest` wire coding. Family owners set the initial thought
+state: Super's rendered prompt opens the thought, while MiMo waits for an open
+marker. `EngineV2Bridge.submitTokenized` checks its actual engine capability and
+validates atomic marker encode/decode round trips with the loaded tokenizer
+before admission. Distributed or unsupported engines refuse the control.
+
+The SDK default sampler counts confirmed thought payload tokens, permits an
+early natural close and forces the close at N before continuing the same
+request's answer. Markers do not spend N, later opens cannot reset it, and the
+original total output ceiling and stops still win. The close counts toward
+completion usage; logprobs remain the raw model probabilities. Budget rows use
+ordinary target decoding for their full lifetime; they do not chain or draft.
+Other rows keep their sampling semantics, but a mixed batch may lose chaining.
+A generic token constraint or cancel/resubmit thought-exit continuation cannot
+be combined with this first budget contract.
+
+Text and supported native image paths carry the same sidecar. Native media
+seals, admission, cancellation and retirement remain owned by the existing
+engine lifecycle. This capability changes no model memory limit or hardware
+qualification and makes no throughput or full-model quality claim.
+
+Sources: `provider-swift/Sources/ProviderCore/Inference/Prompting/NativeReasoningBudget.swift`
+(`resolved`), `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`
+(`submitTokenized`), and `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/ReasoningBudgetV2.swift`
+(`CBv2ReasoningBudget`).
+
 ### Reasoning effort
 
 Every model that reasons takes each effort a client names (`none`,

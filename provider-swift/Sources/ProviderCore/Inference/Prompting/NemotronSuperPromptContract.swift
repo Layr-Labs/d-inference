@@ -32,6 +32,7 @@ enum NemotronSuperPromptContract {
         var mediumEffort = false
         var truncateHistoryThinking = true
         var forceNonemptyContent = false
+        var reasoningBudgetTokens: Int? = nil
     }
 
     /// Verified pinned template, prepared for swift-jinja: comment whitespace
@@ -52,13 +53,14 @@ enum NemotronSuperPromptContract {
         let effort: String?
         let nestedEnabled: Bool?
         let nestedEffort: String?
+        let budget: Int?
         enum Keys: String, CodingKey {
             case enabled = "enable_thinking", medium = "medium_effort"
             case truncate = "truncate_history_thinking", effort = "reasoning_effort"
             case forceContent = "force_nonempty_content", thinking
             case kwargs = "chat_template_kwargs", reasoning, preserve = "preserve_thinking"
         }
-        enum ReasoningKeys: String, CodingKey { case enabled, effort }
+        enum ReasoningKeys: String, CodingKey { case enabled, effort; case maxTokens = "max_tokens" }
         /// The kwargs this contract reads: the template's switches, OpenRouter's
         /// `thinking` spelling of `enable_thinking`, and the parser's
         /// `force_nonempty_content`. Any other kwarg would be dropped by the template.
@@ -88,6 +90,11 @@ enum NemotronSuperPromptContract {
             let reasoning = try values.nestedOptionalContainer(keyedBy: ReasoningKeys.self, forKey: .reasoning)
             nestedEnabled = try reasoning?.decodeIfPresent(Bool.self, forKey: .enabled)
             nestedEffort = try reasoning?.decodeIfPresent(String.self, forKey: .effort)
+            budget = try reasoning?.decodeIfPresent(Int.self, forKey: .maxTokens)
+            if let budget {
+                guard NativeReasoningBudget.isEnabled, NativeReasoningBudget.acceptsMaximumTokens(budget)
+                else { throw Failure.unsupportedControl }
+            }
         }
 
         /// Fields the pinned template cannot honor are refused, never dropped:
@@ -153,10 +160,10 @@ enum NemotronSuperPromptContract {
         let effortMedium = effort?.nemotronSuperMediumEffort
         if let medium = raw.medium, let effortMedium, medium != effortMedium { throw Failure.conflictingControls }
         let medium = raw.medium ?? effortMedium ?? false
-        guard !(medium && !enabled) else { throw Failure.conflictingControls }
+        guard !(medium && !enabled), raw.budget == nil || enabled else { throw Failure.conflictingControls }
         return Controls(enableThinking: enabled, mediumEffort: medium,
             truncateHistoryThinking: raw.truncate ?? true,
-            forceNonemptyContent: raw.forceContent ?? false)
+            forceNonemptyContent: raw.forceContent ?? false, reasoningBudgetTokens: raw.budget)
     }
 
     static func additionalContext(body: Data) throws -> [String: any Sendable] {

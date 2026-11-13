@@ -578,6 +578,17 @@ and rollback are defined in the [provider configuration reference](../provider/c
 | `DARKBLOOM_JSON_ANSWER_GRAMMAR` | `qwen`, `0`, `off`, `false`, `no`, `none` (trimmed, case-insensitive) narrow; any other value or unset admits every family | every admitted family | `provider-swift/Sources/ProviderCore/Inference/Tools/JSONAnswerPolicy.swift` (`JSONAnswerPolicy.Families`) | Which families sample a tool-free JSON `response_format` answer under the grammar ([constrained Qwen JSON answers](../architecture/inference.md#constrained-qwen-json-answers)): Qwen 3.5/3.6/3.8, and for answer-first prompts on a single Mac Bonsai 2 27B and Nemotron 3.5 Lightning. The narrowing values keep it to the Qwen types, as before Bonsai and Lightning were admitted; the others then keep prompt-only steering. Read once per process. Forwarded to the LaunchAgent. |
 | `DARKBLOOM_QWEN_JSON_SCHEMA_REWRITE` | `off`, `0`, `false`, `no` (trimmed, case-insensitive) disable; unset or any other value enables | on | `provider-swift/Sources/ProviderCore/Inference/Tools/QwenJSONSchemaRewrite.swift` (`QwenJSONSchemaRewrite.enabled`) | Qwen JSON answers constrain a `json_schema` outside the subset: rewritten exactly (Pydantic, OpenAI strict, zod), else without its value assertions (`minimum`, `pattern`, `format`, …; never refused for those values), else, for an object root, as a JSON object ([constrained Qwen JSON answers](../architecture/inference.md#constrained-qwen-json-answers)). The off words restore today's prompt-only decline for them. Read once per process. Forwarded to the LaunchAgent. |
 
+### Native reasoning budgets
+
+| Variable | Values | Default | Source | Effect |
+|---|---|---|---|---|
+| `DARKBLOOM_NATIVE_REASONING_BUDGET` | `1`, `true`, `yes`, `on` (case-insensitive) enable; every other value disables | off | `provider-swift/Sources/ProviderCore/Inference/Prompting/NativeReasoningBudget.swift` (`isEnabled`); SDK `CBv2ReasoningBudget.enabled` | Enables validated `reasoning.max_tokens` on supported local Super/MiMo routes. Set before engine construction; forwarded to the daemon. |
+
+The request budget is a positive JSON integer no greater than 2,147,483,647;
+an explicit thinking-off setting conflicts with it. The total output ceiling
+remains separate. See [native reasoning token budgets](../architecture/inference.md#native-reasoning-token-budgets)
+for supported routes, exact token accounting and refusal behavior.
+
 ### Managed Nemotron Super slot
 
 The managed `nvidia-nemotron-3.5-super` slot reads provider configuration, not

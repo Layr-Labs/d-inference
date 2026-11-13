@@ -96,13 +96,15 @@ struct GemmaJSONAnswerPolicyTests {
 
     @Test func clientSchemaShapesAreRewrittenIntoTheSubsetExactly() throws {
         // Pydantic / OpenAI strict conversion, zod-to-json-schema (named: a root $ref) and one-branch allOf shapes.
+        let nullableEnum =
+            ##"{"type":"object","properties":{"e":{"anyOf":[{"$ref":"#/$defs/E"},{"type":"null"}]}},"$defs":{"E":{"type":"string","enum":["x","y"]}}}"##
         let rewritten = [
             ##"{"type":"object","properties":{"a":{"$ref":"#/$defs/A"}},"$defs":{"A":{"type":"string"}},"required":["a"]}"##,
             #"{"type":"object","properties":{"a":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null}}}"#,
             ##"{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","properties":{}}"##,
             ##"{"$schema":"http://json-schema.org/draft-07/schema#","definitions":{"B":{"type":"integer"}},"type":"object","properties":{"b":{"$ref":"#/definitions/B","description":"n"}}}"##,
             ##"{"type":"object","properties":{"c":{"allOf":[{"$ref":"#/$defs/C"}],"title":"C"}},"$defs":{"C":{"type":"boolean"}}}"##,
-            ##"{"type":"object","properties":{"e":{"anyOf":[{"$ref":"#/$defs/E"},{"type":"null"}]}},"$defs":{"E":{"type":"string","enum":["x","y"]}}}"##,
+            nullableEnum,
             ##"{"$ref":"#/definitions/P","definitions":{"P":{"type":"object","properties":{"p":{"type":"string"}},"required":["p"]}},"$schema":"http://json-schema.org/draft-07/schema#"}"##,
         ]
         for schema in rewritten {
@@ -111,7 +113,7 @@ struct GemmaJSONAnswerPolicyTests {
             #expect(constraint.format.schema != nil, "enforced as written: \(schema)")
         }
         // The nullable enum admits its values and null, nothing else.
-        let e = try F.constraint(F.schemaFormat(rewritten[5]))
+        let e = try F.constraint(F.schemaFormat(nullableEnum))
         for value in [#""x""#, #""y""#, "null"] {
             #expect(F.walk(F.ids(#"{"e": "# + value + "}"), e) != nil, "\(value)")
         }
@@ -155,7 +157,7 @@ struct GemmaJSONAnswerPolicyTests {
         let refused = [
             // Draft-04 has no const, and draft-03 spells required as a boolean.
             ##"{"$schema":"http://json-schema.org/draft-04/schema#","type":"string","const":"a"}"##,
-            #"{"$schema":4,"type":"string"}"#,
+            #"{"$schema":4,"type":"string"}"#, #"{"$schema":"json-schema.org/draft-07/schema","type":"string"}"#,
             #"{"allOf":[{"type":"string"},{"type":"string"}]}"#,
             #"{"anyOf":[{"type":"string"},{"type":"null"}],"minLength":1}"#,
             #"{"anyOf":[{"type":"string"},{"type":["null"]}]}"#,
@@ -182,10 +184,19 @@ struct GemmaJSONAnswerPolicyTests {
         }
         #expect(try Self.rewrite(chain(4, reference)) == Self.json(#"{"type":"string"}"#))
         #expect(try Self.rewrite(chain(4_000, reference)) == nil, "at most \(ResponseSchemaRewrite.maximumUnwraps) in a row")
-        #expect(try Self.rewrite(chain(ToolConstraintSchemaCompiler.maxDepth, property)) != nil)
-        #expect(try Self.rewrite(chain(100, property)) == nil, "at most \(ToolConstraintSchemaCompiler.maxDepth) levels")
+        // The deepest output the rewrite writes is one the compiler takes.
+        let deepest = try #require(try Self.rewrite(chain(ToolConstraintSchemaCompiler.maxDepth, property)))
+        #expect((try? ToolConstraintSchemaCompiler.compileResponseSchema(deepest)) != nil)
+        #expect(try Self.rewrite(chain(ToolConstraintSchemaCompiler.maxDepth + 1, property)) == nil,
+                "at most \(ToolConstraintSchemaCompiler.maxDepth) levels")
         #expect(try Self.rewrite(chain(4, twice)) != nil)
-        #expect(try Self.rewrite(chain(12, twice)) == nil, "at most \(ResponseSchemaRewrite.maximumNodes) nodes")
+        #expect(try Self.rewrite(chain(12, twice)) == nil, "at most \(ResponseSchemaRewrite.maximumWork)")
+        // Copying is paid for too: a definition of 5,000 keys reached from 64 properties.
+        let wide = "{" + (0..<5_000).map { #""k\#($0)":0"# }.joined(separator: ",") + #","properties":{}}"#
+        let fanOut = #"{"type":"object","properties":{"#
+            + (0..<64).map { ##""p\##($0)":{"$ref":"#/$defs/B"}"## }.joined(separator: ",")
+            + ##"},"$defs":{"B":"## + wide + "}}"
+        #expect(try Self.rewrite(fanOut) == nil, "at most \(ResponseSchemaRewrite.maximumWork)")
     }
 
     @Test func aPydanticSchemaKeepsItsKeysAndRequirements() throws {

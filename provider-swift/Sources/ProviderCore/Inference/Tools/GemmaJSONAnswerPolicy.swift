@@ -30,11 +30,11 @@ enum GemmaJSONAnswerPolicy {
     }
 
     /// The constraint for an eligible request, or nil. Requests with media,
-    /// tools, a `tool_choice` or client stop sequences are out of scope. A
-    /// schema outside the constrained subset is held to a JSON object when its
-    /// root is one, else prompt-only; an unpinned template or tokenizer, an
-    /// unrecognized prompt end or a nonpositive budget falls back with a
-    /// content-free log line.
+    /// tools, a `tool_choice` other than a tool-free `auto`, or client stop
+    /// sequences are out of scope. A schema outside the constrained subset is
+    /// held to a JSON object when its root is one, else prompt-only; an
+    /// unpinned template or tokenizer, an unrecognized prompt end or a
+    /// nonpositive budget falls back with a content-free log line.
     static func constraint(
         request: OpenAIChatCompletionRequest,
         tokenizer: TokenizerHandle,
@@ -46,13 +46,13 @@ enum GemmaJSONAnswerPolicy {
     ) -> GemmaJSONAnswerConstraint? {
         guard enabled, let modelType, modelTypes.contains(modelType),
               let format = request.responseFormat, format.requiresJSONOutput,
-              request.tools?.isEmpty ?? true, request.toolChoice == nil,
+              request.tools?.isEmpty ?? true, request.toolChoice == nil || request.toolChoice == .mode(.auto),
               request.stop?.isEmpty ?? true, request.reasoningParser == .gemma4,
               !MediaIngest.hasMedia(request) else { return nil }
         guard tokenizer.toolConstraintContractVerified else {
             return declined("unpinned Gemma 4 chat template")
         }
-        guard let answer = answerFormat(format) else {
+        guard case let (answer, heldToObject)? = answerFormat(format) else {
             return declined("schema outside the constrained subset and not an object")
         }
         guard let promptTokens, !promptTokens.isEmpty,
@@ -69,6 +69,7 @@ enum GemmaJSONAnswerPolicy {
             initialPhase: phase, maxTokens: request.maxTokens ?? defaultMaxTokens) else {
             return declined("no positive output budget")
         }
+        if heldToObject { logger.info("Gemma json_schema outside the constrained subset: held to a JSON object") }
         return constraint
     }
 
@@ -80,18 +81,17 @@ enum GemmaJSONAnswerPolicy {
         return nil
     }
 
-    /// The request's format, or a JSON-object answer for a `json_schema`
-    /// outside the shared subset whose root is an object.
-    static func answerFormat(_ format: OpenAIResponseFormat) -> JSONAnswerFormat? {
+    /// The request's format, or a JSON-object answer (`heldToObject`) for a
+    /// `json_schema` outside the shared subset whose root is an object.
+    static func answerFormat(_ format: OpenAIResponseFormat) -> (format: JSONAnswerFormat, heldToObject: Bool)? {
         let profile = JSONAnswerProfile.gemma4
         if let exact = try? JSONAnswerFormat(format, forbidding: profile.contentMarkers, family: profile.family) {
-            return exact
+            return (exact, false)
         }
-        guard format.type == .jsonSchema, let schema = format.jsonSchema?.schema, rootIsObject(schema) else {
-            return nil
-        }
-        logger.info("Gemma json_schema outside the constrained subset: held to a JSON object")
-        return try? JSONAnswerFormat(.jsonObject(), forbidding: profile.contentMarkers, family: profile.family)
+        guard format.type == .jsonSchema, let schema = format.jsonSchema?.schema, rootIsObject(schema),
+              let object = try? JSONAnswerFormat(.jsonObject(), forbidding: profile.contentMarkers,
+                                                 family: profile.family) else { return nil }
+        return (object, true)
     }
 
     /// A schema whose every instance is an object: `type` is exactly

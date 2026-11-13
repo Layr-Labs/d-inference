@@ -111,7 +111,8 @@ enum GemmaAnswerFixture {
     static let stops: Set<Int> = [1, 50, 106]
     static let eos = 1, turnEnd = 106, toolResponse = 50, thoughtOpen = 100, thoughtClose = 101
     static let tokenizer = GemmaPieceTestTokenizer()
-    private static let shared = Result { try GemmaAnswerPieces.vocabulary(tokenizer: tokenizer, stopTokenIDs: stops) }
+    private static let shared = try? GemmaAnswerVocabulary(
+        GemmaAnswerPieces.vocabulary(tokenizer: tokenizer, stopTokenIDs: stops))
 
     static let schema = #"""
     {"type":"object","properties":{
@@ -129,19 +130,29 @@ enum GemmaAnswerFixture {
         #"{"type":"json_schema","json_schema":{"name":"out","schema":"# + schema + "}}"
     }
 
-    static func vocabulary() throws -> JSONAnswerVocabulary { try shared.get() }
+    static func vocabulary() throws -> JSONAnswerVocabulary {
+        try GemmaAnswerPieces.vocabulary(tokenizer: tokenizer, stopTokenIDs: stops)
+    }
+
+    /// Built once; the suites that only walk the machine share it.
+    static func sharedVocabulary() throws -> GemmaAnswerVocabulary {
+        guard let shared else { return GemmaAnswerVocabulary(try vocabulary()) }
+        return shared
+    }
 
     static func answerFormat(_ format: String) throws -> JSONAnswerFormat {
         let body = #"{"model":"gemma","messages":[{"role":"user","content":"hi"}],"response_format":"# + format + "}"
         let request = try JSONDecoder().decode(OpenAIChatCompletionRequest.self, from: Data(body.utf8))
-        return try #require(GemmaJSONAnswerPolicy.answerFormat(try #require(request.responseFormat)))
+        let format = try #require(request.responseFormat)
+        return try #require(GemmaJSONAnswerPolicy.answerFormat(format)).format
     }
 
-    static func constraint(_ format: String = jsonObject, phase: GemmaJSONAnswerBoundary.Phase = .answer,
+    static func constraint(_ format: String = GemmaAnswerFixture.jsonObject,
+                           phase: GemmaJSONAnswerBoundary.Phase = .answer,
                            maxTokens: Int = 100_000,
                            maximumStates: Int = GemmaJSONAnswerConstraint.defaultMaximumStates) throws
         -> GemmaJSONAnswerConstraint {
-        try GemmaJSONAnswerConstraint(format: answerFormat(format), vocabulary: vocabulary(), initialPhase: phase,
+        try GemmaJSONAnswerConstraint(format: answerFormat(format), vocabulary: sharedVocabulary(), initialPhase: phase,
             maxTokens: maxTokens, maximumStates: maximumStates)
     }
 
@@ -186,7 +197,9 @@ struct GemmaAnswerPiecesTests {
     }
 
     @Test func theVocabularyHoldsTheAnswerPiecesOnly() throws {
-        let vocabulary = try F.vocabulary()
+        let shared = try F.sharedVocabulary()
+        let vocabulary = shared.json
+        #expect(shared.leadingWhitespace == 4, "the fixture's longest leading run is ▁▁▁▁")
         #expect(vocabulary.pieces.count == 262_144)
         #expect(vocabulary.pieces[100] == Array("<|channel>".utf8) && vocabulary.pieces[101] == Array("<channel|>".utf8))
         let usable = Set(vocabulary.pieceTokenIDs)
@@ -364,6 +377,38 @@ struct GemmaJSONAnswerConstraintTests {
         #expect(constraint.cachedStateCount == count && constraint.allowsChainedDecode)
         #expect(constraint.allowedTokenIDs(state: 99_999, remainingTokens: 5).isEmpty)
         #expect(constraint.nextState(state: 0, tokenID: 262_144) == nil)
+    }
+
+    @Test func aLongPrettyAnswerStaysFarBelowTheStateCapAndSharesMasks() throws {
+        let constraint = try F.constraint()
+        var text = "{\n  \"users\": ["
+        for index in 0..<120 {
+            text += (index == 0 ? "" : ",") + "\n    {\n      \"name\": \"user \(index)\",\n      \"age\": \(20 + index % 50),"
+                + "\n      \"tags\": [\"a\", \"b\"],\n      \"ok\": \(index % 2 == 0)\n    }"
+        }
+        text += "\n  ]\n}"
+        let end = try #require(F.walk(F.ids(text), constraint))
+        #expect(constraint.nextState(state: end, tokenID: F.turnEnd) == -1)
+        let states = constraint.cachedStateCount
+        #expect(states < 400, "\(states) states for \(text.utf8.count) bytes")
+        // Indentation runs no piece can push past the cap share one mask.
+        let keys = Set((0..<states).compactMap { constraint.maskCacheKey(state: $0, remainingTokens: 1) })
+        #expect(keys.count < states)
+    }
+
+    @Test func whitespaceRunsShareAMaskUntilTheCapIsInReach() throws {
+        let constraint = try F.constraint()
+        let open = try #require(F.walk(F.ids("{"), constraint))
+        let one = try #require(F.walk([107], constraint, from: open))
+        let two = try #require(F.walk([107], constraint, from: one))
+        #expect(constraint.maskCacheKey(state: one, remainingTokens: 1) == constraint.maskCacheKey(state: two, remainingTokens: 1))
+        #expect(constraint.maskCacheKey(state: open, remainingTokens: 1) == constraint.maskCacheKey(state: one, remainingTokens: 1))
+        #expect(constraint.allowedTokenIDs(state: one, remainingTokens: 1) == constraint.allowedTokenIDs(state: two, remainingTokens: 1))
+        // 62 bytes in, a 4-space piece no longer fits: that state has its own mask.
+        var state = open
+        for _ in 0..<31 { state = try #require(constraint.nextState(state: state, tokenID: 108)) }
+        #expect(constraint.maskCacheKey(state: state, remainingTokens: 1) != constraint.maskCacheKey(state: open, remainingTokens: 1))
+        #expect(!F.allows(constraint, state, GemmaPieceTestTokenizer.id("▁▁▁▁")) && F.allows(constraint, state, 1032))
     }
 
     @Test func pastTheStateCapTheAnswerContinuesUnconstrained() throws {

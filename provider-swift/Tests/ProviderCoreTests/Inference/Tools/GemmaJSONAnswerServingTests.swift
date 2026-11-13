@@ -47,6 +47,8 @@ struct GemmaJSONAnswerPolicyTests {
                 }
             }
         }
+        // A tool-free `auto` is the same request.
+        #expect(try make(Self.request(format: F.jsonObject, choice: #""auto""#)) is GemmaJSONAnswerConstraint)
         var unbounded = try Self.request(format: F.jsonObject)
         unbounded.maxTokens = nil
         #expect((try make(unbounded) as? GemmaJSONAnswerConstraint)?.maxTokens == 100)
@@ -94,10 +96,11 @@ struct GemmaJSONAnswerPolicyTests {
 
     @Test func schemasOutsideTheSubsetFallBackToAnObjectOrToPromptOnly() throws {
         let objectRoots = [
-            #"{"type":"object","properties":{"a":{"$ref":"#/$defs/A"}},"$defs":{"A":{"type":"string"}}}"#,
+            ##"{"type":"object","properties":{"a":{"$ref":"#/$defs/A"}},"$defs":{"A":{"type":"string"}}}"##,
             #"{"type":"object","properties":{"a":{"type":"string","pattern":"^x"}}}"#,
-            #"{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","properties":{}}"#,
+            ##"{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","properties":{}}"##,
             #"{"type":"object","properties":{"a":{"anyOf":[{"type":"string"},{"type":"null"}]}}}"#,
+            #"{"type":"object","properties":{"a":{"type":"string","enum":["ok","<eos>"]}}}"#,
         ]
         for schema in objectRoots {
             let constraint = try #require(try make(Self.request(format: F.schemaFormat(schema)))
@@ -107,9 +110,9 @@ struct GemmaJSONAnswerPolicyTests {
             #expect(!F.allows(constraint, 0, GemmaPieceTestTokenizer.id("[")))
         }
         let otherRoots = [
-            #"{"$ref":"#/$defs/A","type":"object","$defs":{"A":{"type":"string"}}}"#,
+            ##"{"$ref":"#/$defs/A","type":"object","$defs":{"A":{"type":"string"}}}"##,
             #"{"anyOf":[{"type":"string"},{"type":"integer"}]}"#, #"{"type":"string","pattern":"^a"}"#,
-            #"{"type":["object","array"],"items":{"type":"string"}}"#, "{}",
+            #"{"type":["object","array"],"items":{"type":"string"}}"#, "{}", #"{"type":"string","enum":["<eos>"]}"#,
         ]
         for schema in otherRoots { #expect(try make(Self.request(format: F.schemaFormat(schema))) == nil, "\(schema)") }
         #expect(try make(Self.request(format: #"{"type":"json_schema"}"#)) == nil)

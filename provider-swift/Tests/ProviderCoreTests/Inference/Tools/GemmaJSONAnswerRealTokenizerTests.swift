@@ -20,12 +20,20 @@ struct GemmaJSONAnswerRealTokenizerTests {
         let elapsed = clock.now - started
 
         // Every piece is exactly what the decoder writes for that id alone
-        // (byte-fallback ids decode as a run, so they are checked below).
+        // (byte-fallback ids decode as a run, so they are checked below), up
+        // to the tokenizer's clean-up, which only drops a space before
+        // punctuation and so never touches a byte the JSON automaton needs.
+        func cleanedUp(_ text: String) -> String {
+            [(" .", "."), (" ?", "?"), (" !", "!"), (" ,", ","), (" ' ", "'"), (" n't", "n't"), (" 'm", "'m"),
+             (" 's", "'s"), (" 've", "'ve"), (" 're", "'re")].reduce(text) {
+                $0.replacingOccurrences(of: $1.0, with: $1.1)
+            }
+        }
         var mismatches: [Int] = []
         for id in vocabulary.pieceTokenIDs where vocabulary.pieces[id].count > 1 || vocabulary.pieces[id][0] < 0x80 {
-            if Array(tokenizer.decode(tokenIds: [id], skipSpecialTokens: false).utf8) != vocabulary.pieces[id] {
-                mismatches.append(id)
-            }
+            let piece = String(decoding: vocabulary.pieces[id], as: UTF8.self)
+            let decoded = tokenizer.decode(tokenIds: [id], skipSpecialTokens: false)
+            if decoded != piece && decoded != cleanedUp(piece) { mismatches.append(id) }
         }
         #expect(mismatches.isEmpty, "first mismatches: \(mismatches.prefix(8))")
         // JSON's ASCII has a piece of its own, so ASCII byte fallback is never needed.
@@ -46,14 +54,16 @@ struct GemmaJSONAnswerRealTokenizerTests {
         }
 
         // Real tokenizations of answers walk through, decode to themselves, and may end.
-        let format = try #require(GemmaJSONAnswerPolicy.answerFormat(.jsonObject()))
+        let format = try #require(GemmaJSONAnswerPolicy.answerFormat(.jsonObject())).format
+        let answerVocabulary = GemmaAnswerVocabulary(vocabulary)
+        #expect(answerVocabulary.leadingWhitespace < GemmaJSONAnswerBoundary.maximumWhitespaceRun)
         let answers = [
             (GemmaJSONAnswerBoundary.Phase.answer,
              "{\"name\": \"Ada Lovelace\", \"born\": 1815, \"tags\": [\"é\", \"数学\", null],\n  \"ok\": true}"),
             (.opening, "<|channel>thought\nThe user wants {json}.<channel|>{\"a\": {\"b\": [1.5e-3, \"x y\"]}}"),
         ]
         for (phase, text) in answers {
-            let constraint = try GemmaJSONAnswerConstraint(format: format, vocabulary: vocabulary,
+            let constraint = try GemmaJSONAnswerConstraint(format: format, vocabulary: answerVocabulary,
                 initialPhase: phase, maxTokens: 512)
             let tokens = tokenizer.encode(text: text, addSpecialTokens: false)
             #expect(tokenizer.decode(tokenIds: tokens, skipSpecialTokens: false) == text)
@@ -64,6 +74,7 @@ struct GemmaJSONAnswerRealTokenizerTests {
             }
             #expect(constraint.nextState(state: state, tokenID: 106) == -1)
         }
-        print("gemma-json-answer-vocabulary-build: \(elapsed)")
+        print("gemma-json-answer-vocabulary-build: \(elapsed); longest leading whitespace "
+            + "\(answerVocabulary.leadingWhitespace) bytes")
     }
 }

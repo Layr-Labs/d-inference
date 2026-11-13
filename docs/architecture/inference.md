@@ -3397,18 +3397,19 @@ grammar as constrained Qwen answers (below), with three differences: Gemma's
 vocabulary, its thought framing, and best-effort semantics.
 `ToolConstraintFactory.make` asks `GemmaJSONAnswerPolicy` first: a text request
 on `gemma4` or `gemma4_text` with a JSON `response_format`, no `tools`, no
-`tool_choice`, no client `stop`, the `gemma4` reasoning parser and the pinned
-chat template (`TokenizerHandle.toolConstraintContractVerified`) gets a
-`GemmaJSONAnswerConstraint`. The prompt is unchanged.
+`tool_choice` (or a tool-free `auto`), no client `stop`, the `gemma4` reasoning
+parser and the pinned chat template (`TokenizerHandle.toolConstraintContractVerified`)
+gets a `GemmaJSONAnswerConstraint`. The prompt is unchanged.
 
 **Vocabulary.** Gemma's tokenizer is SentencePiece BPE with byte fallback, not
 byte-level BPE. `GemmaAnswerPieces` gives every id the bytes its decoder writes:
 U+2581 becomes a space, a `<0x80>`…`<0xFF>` token is that byte, other pieces are
-their UTF-8. The 24 added tokens and the `<unusedN>` slots have no piece, and
-neither do the ASCII byte-fallback tokens: the decoder turns a byte-fallback run
-that is not UTF-8 into one U+FFFD per token, so an ASCII byte spelled that way
-could vanish, while every ASCII character JSON needs has a piece of its own.
-Non-ASCII bytes occur only inside strings, where U+FFFD is still a character.
+their UTF-8 (the provider's tokenizer runs no clean-up for Gemma). The 24 added
+tokens and the `<unusedN>` slots have no piece, and neither do the ASCII
+byte-fallback tokens: a byte-fallback run is decoded as a whole, so what one byte
+becomes depends on its neighbours (a run that is not UTF-8 reads as U+FFFD),
+while every ASCII character JSON needs has a piece of its own. Non-ASCII bytes
+occur only inside strings, where U+FFFD is still a character.
 Before constraining, it checks `<|channel>` 100, `<channel|>` 101, `<turn|>` 106
 and `<eos>` 1 by id, spelling, encoding and decoding, that the tokenizer has
 exactly 262,144 ids, and that `<turn|>` and `<eos>` are engine stop tokens. The
@@ -3419,7 +3420,8 @@ and cached (two entries).
 (`GemmaJSONAnswerPolicy.initialPhase`). Thinking off renders an empty, closed
 thought (`<|turn>model\n<|channel>thought\n<channel|>`), so output starts in the
 answer. Thinking on ends at `<|turn>model\n`, so a thought may open with
-`<|channel>`, or the answer may start at once. The thought is free text: no EOS
+`<|channel>`, or the answer may start at once (whitespace before either stays
+content, so an answer can read `"\n{...}"`, still one JSON value). The thought is free text: no EOS
 or other added token, and the first `<channel|>`, as its token or spelled from
 ordinary pieces (the stream's Gemma parser reads text), ends it. The answer is
 one JSON value of the request's grammar (`JSONAnswerFormat`, `FlintJSONGrammar`);
@@ -3428,7 +3430,10 @@ no Gemma control spelling can complete in it, strings included. `<turn|>` or
 (an object, array, string or literal) is followed by the terminator only, never
 by text a client would have to strip. JSON whitespace outside strings runs at
 most 64 bytes, so a model that keeps reaching for a refused spelling (a code
-fence) cannot fill its budget with blank lines.
+fence) cannot fill its budget with blank lines. States that differ only in a run
+no piece can push past that cap share one mask key (`maskEquivalent`), so
+indentation does not multiply mask builds; a request keeps at most two broad
+allowed sets (about 2 MB each) and the sampler its per-key device masks.
 
 **Best effort.** Unlike constrained Qwen answers, nothing is validated after
 generation (`MultiModelBatchSchedulerEngine` checks only `JSONAnswerConstraint`

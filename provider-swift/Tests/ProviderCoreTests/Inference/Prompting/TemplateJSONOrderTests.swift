@@ -56,9 +56,9 @@ struct TemplateJSONOrderTests {
         let prepared = try ToolChoicePromptPolicy.prepare(inbound.request, modelType: modelType)
         let normalized = try ProviderPromptContractPipeline.normalizedInput(
             prepared: prepared, request: inbound.request, modelType: modelType, templateControls: controls)
-        // The process captured the evidence with its own environment.
+        // The local API's capture, under `environment`.
         let evidence = TemplateJSONOrder.Evidence(requested: controls.templateJSON.requested)
-            .capturing(body: body, environment: environment)
+            .askingLocally(environment: environment).capturing(body: body, environment: environment)
         let input = TemplateJSONOrder.apply(
             messages: normalized.messages, tools: normalized.tools,
             additionalContext: normalized.additionalContext, request: inbound.request,
@@ -112,12 +112,61 @@ struct TemplateJSONOrderTests {
 
     @Test func evidenceIsCapturedOnlyForAnAskingRequest() throws {
         let asked = try ProviderLoop.decodeInboundChatRequest(Self.body(asking: true)).extensions.templateControls
-        #expect(asked.templateJSON.requested)
+        #expect(asked.templateJSON.requested && asked.templateJSON.captured)
         #expect(asked.templateJSON.tools?.count == 1)
         #expect(asked == ProviderLoop.extractChatTemplateControls(from: Self.body(asking: true)))
         let plain = try ProviderLoop.decodeInboundChatRequest(Self.body(asking: false)).extensions.templateControls
-        #expect(!plain.templateJSON.requested)
+        #expect(!plain.templateJSON.requested && !plain.templateJSON.captured)
         #expect(plain.templateJSON.tools == nil)
+    }
+
+    /// The coordinator's prompt sidecar plans a request's cache use for the
+    /// prompt as rendered before, and a coordinator that forwards unknown
+    /// fields would carry a caller's own. A planned request renders the
+    /// prompt of its plan; the environment asks only on the local API.
+    @Test func onlyAnUnplannedCoordinatorRequestAsks() throws {
+        let asked = try ProviderLoop.decodeInboundChatRequest(Self.body(asking: true)).extensions.templateControls
+        #expect(TemplateJSONOrder.asks(asked.templateJSON, environment: [:]))
+        #expect(asked.servingCoordinatorRequest(planned: false) == asked)
+        let planned = asked.servingCoordinatorRequest(planned: true)
+        #expect(planned.templateJSON == TemplateJSONOrder.Evidence())
+        #expect(!TemplateJSONOrder.asks(planned.templateJSON, environment: [:]))
+
+        let environment = [TemplateJSONOrder.environmentKey: "transformers"]
+        let plain = try ProviderLoop.decodeInboundChatRequest(Self.body(asking: false)).extensions.templateControls
+        #expect(!TemplateJSONOrder.asks(plain.templateJSON, environment: environment))
+        let local = plain.capturingLocalTemplateJSON(from: Self.body(asking: false), environment: environment)
+        #expect(TemplateJSONOrder.asks(local.templateJSON, environment: environment))
+        #expect(local.templateJSON.tools?.count == 1)
+        let off = plain.capturingLocalTemplateJSON(from: Self.body(asking: false), environment: [:])
+        #expect(off == plain)
+    }
+
+    /// Only a path that read the body renders Transformers' JSON: the local
+    /// batch route decodes the field without its bytes, and `tools` beyond
+    /// the ordered parser's bounds are not read. Either renders as before,
+    /// never Transformers' filters over sorted members.
+    @Test func aRequestWhoseBodyWasNotReadRendersAsBefore() throws {
+        let unread = try JSONDecoder().decode(ChatTemplateControls.self, from: Self.body(asking: true))
+        #expect(unread.templateJSON.requested && !unread.templateJSON.captured)
+        #expect(!TemplateJSONOrder.asks(unread.templateJSON, environment: [:]))
+
+        let deep = String(repeating: "[", count: 80) + String(repeating: "]", count: 80)
+        let beyond = Data(
+            #"{"model":"m","messages":[],"_darkbloom_template_json":"transformers","tools":\#(deep)}"#.utf8)
+        let refused = TemplateJSONOrder.Evidence(requested: true).capturing(body: beyond, environment: [:])
+        #expect(refused.requested && !refused.captured)
+        #expect(!TemplateJSONOrder.asks(refused, environment: [:]))
+
+        // Without tools the body is still read: earlier calls keep their order.
+        let none = TemplateJSONOrder.Evidence(requested: true)
+            .capturing(body: Data(#"{"model":"m","messages":[],"tools":null}"#.utf8), environment: [:])
+        #expect(none.captured && none.tools == nil)
+        #expect(TemplateJSONOrder.asks(none, environment: [:]))
+        // The kill switch reads nothing.
+        let legacy = TemplateJSONOrder.Evidence(requested: true)
+            .capturing(body: Self.body(asking: true), environment: [HFTemplateFilters.legacyEnvironmentKey: "1"])
+        #expect(!legacy.captured)
     }
 
     @Test func overlayKeepsContentAndTakesOrderNullsAndNumberTypes() throws {

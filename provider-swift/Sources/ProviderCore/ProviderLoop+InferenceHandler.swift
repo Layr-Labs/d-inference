@@ -426,8 +426,11 @@ extension ProviderLoop {
 
         // Recover the one out-of-band template-control value once from the
         // authenticated plaintext body. The same value is used by text,
-        // vision, and both prompt-token recount paths.
-        let templateControls = inbound.extensions.templateControls.resolvingPromptDate()
+        // vision, and both prompt-token recount paths. A request planned for
+        // the coordinator's prompt cache renders the prompt of its plan.
+        let templateControls = inbound.extensions.templateControls
+            .servingCoordinatorRequest(planned: remoteCache.scope != nil || remoteCache.receiptNonce != nil)
+            .resolvingPromptDate()
         // Cache identity is coordinator-authored and authenticated outside the
         // sealed OpenAI body. Never trust caller-controlled prompt_cache_key/user
         // for remote cache partitioning. Legacy coordinators omit the outer

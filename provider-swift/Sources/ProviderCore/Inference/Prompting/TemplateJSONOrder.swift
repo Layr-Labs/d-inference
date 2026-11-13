@@ -23,38 +23,57 @@ import ProviderCoreFoundation
 /// Tools come from the body's `tools` member (`Evidence`); arguments from
 /// each call's own `function.arguments` string.
 ///
-/// A request asks with `"_darkbloom_template_json": "transformers"` (the
-/// coordinator sets it per build, together with its prompt sidecar's
-/// matching render); `DARKBLOOM_TEMPLATE_JSON=transformers` asks for every
-/// request of the process. Any other request renders as before.
+/// A request asks with `"_darkbloom_template_json": "transformers"`; on the
+/// local API `DARKBLOOM_TEMPLATE_JSON=transformers` asks for every request.
+/// A coordinator request asks only when the coordinator did not plan it for
+/// its prompt cache (`ChatTemplateControls.servingCoordinatorRequest`). It
+/// renders this way only on a path that read its body (`Evidence.capturing`);
+/// any other request renders as before.
 enum TemplateJSONOrder {
     static let environmentKey = "DARKBLOOM_TEMPLATE_JSON"
     static let transformers = "transformers"
 
-    /// Whether the request asked, and its `tools` member in its own order.
-    /// `tools` is nil when the request did not ask, has none, or they do not
-    /// parse within `NemotronSuperOrderedJSON`'s bounds (tools then keep the
-    /// sorted order).
+    /// Whether the request asked, whether its body was read, and its `tools`
+    /// member in its own order.
     struct Evidence: Sendable, Equatable {
         var requested = false
+        /// The body was read (`capturing`). A request whose path does not
+        /// read it (the local batch route, `/v1/responses`), or whose `tools`
+        /// do not parse within `NemotronSuperOrderedJSON`'s bounds, renders
+        /// as before.
+        var captured = false
+        /// The body's `tools`; nil when it has none.
         var tools: [Value]?
+
+        /// On the local API the process environment can ask for every request.
+        func askingLocally(environment: [String: String] = ProcessInfo.processInfo.environment) -> Evidence {
+            guard !requested,
+                environment[TemplateJSONOrder.environmentKey]?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased() == TemplateJSONOrder.transformers
+            else { return self }
+            var copy = self
+            copy.requested = true
+            return copy
+        }
 
         func capturing(
             body: Data, environment: [String: String] = ProcessInfo.processInfo.environment
         ) -> Evidence {
-            guard TemplateJSONOrder.asks(self, environment: environment),
-                case .array(let tools)? = try? NemotronSuperOrderedJSON.member("tools", of: body)
-            else { return self }
-            return Evidence(requested: requested, tools: tools)
+            guard requested, !HFTemplateFilters.legacyRequested(environment: environment) else { return self }
+            let member: Value?
+            do { member = try NemotronSuperOrderedJSON.member("tools", of: body) } catch { return self }
+            switch member {
+            case .some(.array(let tools)): return Evidence(requested: true, captured: true, tools: tools)
+            case .none, .some(.null): return Evidence(requested: true, captured: true)
+            default: return self
+            }
         }
     }
 
     static func asks(
         _ evidence: Evidence, environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Bool {
-        guard !HFTemplateFilters.legacyRequested(environment: environment) else { return false }
-        return evidence.requested
-            || environment[environmentKey]?.trimmingCharacters(in: .whitespaces).lowercased() == transformers
+        evidence.requested && evidence.captured && !HFTemplateFilters.legacyRequested(environment: environment)
     }
 
     /// The template input with Transformers' filters, ordered tools (passed

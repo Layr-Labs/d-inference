@@ -3639,11 +3639,29 @@ MiMo v2.6, GLM-5.3 and GPT-OSS:
 
 The `string` filter of those templates is renamed at load and bound to
 swift-jinja's, so every other request renders the same bytes as before.
-`DARKBLOOM_TEMPLATE_JSON=transformers` asks for every request of the process;
 `DARKBLOOM_TEMPLATE_JSON_LEGACY=1` turns the rendering off. Gemma 4 sorts in
 its template and Nemotron 3.5 Super's owner already renders the body as
-written, so neither changes. The coordinator's prompt sidecar renders
-swift-jinja's JSON, so it does not plan such a request's cache use.
+written, so neither changes.
+
+Which requests render this way:
+- **Coordinator requests:** only one the coordinator did not plan for its
+  prompt cache, so it carries no cache scope or receipt nonce
+  (`ChatTemplateControls.servingCoordinatorRequest`). The prompt sidecar plans
+  a request for the prompt as rendered before; a planned request that rendered
+  another prompt would contradict its cache receipts, and the coordinator
+  would quarantine this Mac's cache affinity for the model. A coordinator that
+  forwards unknown body fields would also carry a caller's own field to a
+  planned request, which therefore renders as before. A coordinator that sets
+  the field for a build (darkbloom-platform#919) does not plan such tool
+  requests, so they are served without a cache scope.
+- **Local API:** a single chat request that carries the field, or every one
+  while the provider runs with `DARKBLOOM_TEMPLATE_JSON=transformers` (the
+  variable does not apply to coordinator requests).
+- **Rendered as before:** media requests, which render outside the text path;
+  the local batch route, `/v1/responses` and `/apply-template`, which do not
+  read the request's bytes; and a body whose `tools` the order-preserving
+  parser refuses (more than 64 levels, an integer outside 64 bits, a lone
+  surrogate). None renders Transformers' filters over sorted members.
 
 ### Reasoning effort
 

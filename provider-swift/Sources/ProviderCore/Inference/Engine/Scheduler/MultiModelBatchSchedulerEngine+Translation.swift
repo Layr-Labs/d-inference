@@ -92,6 +92,30 @@ public struct ChatTemplateControls: Sendable, Equatable {
         return copy
     }
 
+    /// `capturingTemplateJSON` for a local API request, which
+    /// `DARKBLOOM_TEMPLATE_JSON=transformers` also asks for.
+    func capturingLocalTemplateJSON(
+        from body: Data, environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Self {
+        var copy = self
+        copy.templateJSON = templateJSON.askingLocally(environment: environment)
+            .capturing(body: body, environment: environment)
+        return copy
+    }
+
+    /// The controls a coordinator request renders with. A request the
+    /// coordinator planned for its prompt cache (it carries a cache scope or
+    /// receipt nonce) renders the prompt the plan was made for, without
+    /// Transformers' tool JSON: a prompt the plan does not expect contradicts
+    /// its cache receipts, and a caller could set the field through a
+    /// coordinator that forwards it.
+    func servingCoordinatorRequest(planned: Bool) -> Self {
+        guard planned, templateJSON != .init() else { return self }
+        var copy = self
+        copy.templateJSON = .init()
+        return copy
+    }
+
     func resolvingPromptDate(at now: Date = Date()) -> Self {
         promptDate == nil ? withPromptDate(.capture(at: now)) : self
     }

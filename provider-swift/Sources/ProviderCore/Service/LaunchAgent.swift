@@ -421,6 +421,8 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_LOOP_GUARD` / `DARKBLOOM_LOOP_EXIT_THINKING`: the loop guard
     /// and its exit from a repeating Gemma 4 thought are on by default; `0`
     /// turns each off, a list of `model_type`s replaces its default list.
+    /// `DARKBLOOM_QWEN35_9B_PRESENCE_PENALTY`: Qwen3.5-9B keeps the card's
+    /// presence penalty by default; its `0` rollback must reach the job.
     /// `DARKBLOOM_GLM_TOOL_TEXT_FALLBACK`: unparsed `auto` GLM tool output is
     /// text by default; exact `0` restores the 500.
     static let inferencePassthroughEnvKeys = [
@@ -455,6 +457,7 @@ public enum LaunchAgent: Sendable {
         "DARKBLOOM_GEMMA4_NAX_ROW_MAP",
         GenerationLoopGuardPolicy.environmentKey,
         GenerationLoopExitThinkingPolicy.environmentKey,
+        EngineV2SamplingDefaults.qwen35NineBPenaltyEnvironmentKey,
         GLM5ToolSuffix.environmentKey,
     ] + MiMoV26DecodeDefaults.environmentKeys + MiMoV26DecodeDefaults.verifyEnvironmentKeys
 

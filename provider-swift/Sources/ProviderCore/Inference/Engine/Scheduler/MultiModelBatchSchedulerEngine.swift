@@ -1887,8 +1887,18 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 /// content, not a truncated or schema-invalid prefix, and GLM's
                 /// withheld JSON answer leaves only once it validates; a cut
                 /// answer leaves as generated.
+                /// At a cut: a structured answer whose check, which the cut
+                /// skips, would have refused it.
+                var answerLeftUnchecked = false
                 func finishAnswer(hasToolCalls: Bool) throws {
-                    if !cutAtLimit { try formatOutput?.validate(finishReason: stopReason) }
+                    if cutAtLimit {
+                        answerLeftUnchecked =
+                            (formatOutput.map { (try? $0.validate(finishReason: stopReason)) == nil } ?? false)
+                            || (!hasToolCalls && (glmAnswer.map { !$0.answerValidates(finishReason: stopReason) }
+                                ?? false))
+                    } else {
+                        try formatOutput?.validate(finishReason: stopReason)
+                    }
                     if let answer = try glmAnswer?.finalAnswer(finishReason: stopReason,
                         hasToolCalls: hasToolCalls, cutAtLimit: cutAtLimit)
                     {
@@ -1897,16 +1907,17 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 }
                 /// What the cut and the strict leniency changed, so the
                 /// refusals they replace stay measurable.
-                func emitLeniencyTelemetry(droppedCalls: Int, strictAsGenerated: Bool) {
+                func emitLeniencyTelemetry(hasToolCalls: Bool, droppedCalls: Int, strictAsGenerated: Bool) {
                     if cutAtLimit {
-                        if router.callsLeftOpenAtCut > 0 {
-                            emitToolConstraintTelemetry(operation: "tool_constraint_cut", reason: "open_call")
-                        }
-                        if droppedCalls > 0 {
-                            emitToolConstraintTelemetry(operation: "tool_constraint_cut", reason: "dropped_calls")
-                        }
-                        if formatOutput != nil || glmAnswer != nil {
-                            emitToolConstraintTelemetry(operation: "tool_constraint_cut", reason: "unchecked_answer")
+                        let outcomes = [
+                            ("open_call", router.callsLeftOpenAtCut > 0),
+                            ("dropped_calls", droppedCalls + router.callsDroppedAtCut > 0),
+                            ("dropped_frame", router.hasNativeToolFailure || router.glmFramesDroppedAtCut),
+                            ("forced_no_call", prepared.requiresToolCall && !hasToolCalls),
+                            ("unchecked_answer", answerLeftUnchecked),
+                        ]
+                        for (reason, happened) in outcomes where happened {
+                            emitToolConstraintTelemetry(operation: "tool_constraint_cut", reason: reason)
                         }
                     }
                     if strictAsGenerated || router.strictCallsReturnedAsGenerated > 0 {
@@ -1953,7 +1964,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                             reason: "parser",
                             severity: .warn)
                     }
-                    emitLeniencyTelemetry(droppedCalls: 0, strictAsGenerated: false)
+                    emitLeniencyTelemetry(hasToolCalls: !router.completedToolCalls.isEmpty, droppedCalls: 0,
+                        strictAsGenerated: false)
                     Self.yieldTerminalInfo(continuation, promptTokenCount: promptTokenCount,
                         completionTokens: completionTokens, startedAt: startedAt,
                         firstTokenAt: firstTokenAt, lastTokenAt: lastTokenAt,
@@ -2013,7 +2025,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         operation: "tool_constraint_valid",
                         reason: prepared.mode.telemetryValue)
                 }
-                emitLeniencyTelemetry(droppedCalls: droppedCalls, strictAsGenerated: strictAsGenerated)
+                emitLeniencyTelemetry(hasToolCalls: !toolCalls.isEmpty, droppedCalls: droppedCalls,
+                    strictAsGenerated: strictAsGenerated)
                 for toolCall in toolCalls {
                     continuation.yield(.toolCall(toolCall))
                 }

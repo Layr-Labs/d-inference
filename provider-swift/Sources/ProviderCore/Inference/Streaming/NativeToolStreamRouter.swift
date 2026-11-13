@@ -36,9 +36,13 @@ struct NativeToolStreamRouter {
     /// call that fails its check may then leave as generated
     /// (`StrictToolCallPolicy`).
     var responseStarted = false
-    /// Telemetry: streamed calls left open at a cut, and `strict` calls that
+    /// Telemetry: at a cut, streamed calls left open and calls never exposed
+    /// that were dropped, and whether an `auto` GLM suffix lost frames the
+    /// limit left unfinished (`finishCompleteCalls`); `strict` calls that
     /// failed their check and left as generated because the response started.
     private(set) var callsLeftOpenAtCut = 0
+    private(set) var callsDroppedAtCut = 0
+    private(set) var glmFramesDroppedAtCut = false
     private(set) var strictCallsReturnedAsGenerated = 0
 
     // Pass the same prepared schemas used by the handler: Flint's raw-string
@@ -132,19 +136,25 @@ struct NativeToolStreamRouter {
         for segment in handler.finishSegments() {
             switch segment {
             case .callFailed where truncated:
-                if cutAtLimit, openCallIndex != nil { callsLeftOpenAtCut += 1 }
+                if cutAtLimit { recordCut(leftOpen: openCallIndex != nil) }
                 openCallIndex = nil
             case .callCompleted where cutAtLimit:
                 // Its remainder is the parse's closure, not generated text.
-                if openCallIndex != nil { callsLeftOpenAtCut += 1 }
+                recordCut(leftOpen: openCallIndex != nil)
                 openCallIndex = nil
-            case .callStarted where cutAtLimit, .call where cutAtLimit:
+            case .callStarted where cutAtLimit:
                 continue
+            case .call where cutAtLimit:
+                recordCut(leftOpen: false)
             default:
                 events += try routeToolSegment(segment, prepared: prepared, truncated: truncated)
             }
         }
         return events
+    }
+
+    private mutating func recordCut(leftOpen: Bool) {
+        if leftOpen { callsLeftOpenAtCut += 1 } else { callsDroppedAtCut += 1 }
     }
 
     private func checkReasoningState() throws {
@@ -200,7 +210,7 @@ struct NativeToolStreamRouter {
     /// A suffix whose release would expose a think marker from inside a tool
     /// frame keeps failing, as before, unless the cut ends the answer as
     /// `length`: it is then dropped.
-    func finishCompleteCalls(truncated: Bool, cutAtLimit: Bool = false) throws
+    mutating func finishCompleteCalls(truncated: Bool, cutAtLimit: Bool = false) throws
         -> (calls: [ToolCall], residual: String?)
     {
         guard let handler else { return ([], nil) }
@@ -210,11 +220,16 @@ struct NativeToolStreamRouter {
         switch GLM5ToolSuffix.split(residual, tools: tools) {
         case .text(let text, calls: let found):
             guard truncated else { return (found, text) }
+            guard cutAtLimit else { return ([], residual) }
             // A cut that ends as `length` drops the frames the limit left
             // unfinished, never published as text; mentions and the text
             // before them stay.
-            return ([], cutAtLimit ? GLM5ToolSuffix.droppingCutFrames(residual, tools: tools) : residual)
-        case .ambiguous where cutAtLimit: return ([], nil)
+            let kept = GLM5ToolSuffix.droppingCutFrames(residual, tools: tools)
+            glmFramesDroppedAtCut = kept.utf8.count < residual.utf8.count
+            return ([], kept)
+        case .ambiguous where cutAtLimit:
+            glmFramesDroppedAtCut = true
+            return ([], nil)
         case .ambiguous: throw MultiModelBatchSchedulerEngineError.generationFailed("native GLM tool output is invalid")
         }
     }

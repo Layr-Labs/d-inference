@@ -220,6 +220,19 @@ struct ToolOutputLeniencyTests {
         #expect(unterminated.error == nil && unterminated.chunks.compactMap(\.finishReason) == ["length"])
     }
 
+    /// The limit cut inside a string value: the fragments stop with what was
+    /// generated, the value and the object left unclosed, and the call open.
+    @Test func aCallCutInsideAStringValueStaysOpenAndUnclosed() async throws {
+        let served = try await Self.serveQwen(Self.thought + Self.pathOnly + "<parameter=content>\nprint(1",
+            finish: "length")
+        #expect(served.error == nil, "\(String(describing: served.error))")
+        let call = Self.streamedCall(served.chunks)
+        #expect(call.name == "write_file")
+        #expect((try? JSONDecoder().decode([String: Value].self, from: Data(call.arguments.utf8))) == nil)
+        #expect(!call.arguments.contains("}"), "\(call.arguments)")
+        #expect(served.chunks.compactMap(\.finishReason) == ["length"])
+    }
+
     /// A withheld forced call the budget cut: none parsed (the required call
     /// it prevented), or one the parse completed without `content`.
     @Test(arguments: [pathOnly, pathOnlyUnclosed])

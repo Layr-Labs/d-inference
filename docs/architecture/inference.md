@@ -3643,11 +3643,12 @@ breaking a contract, and OpenRouter does not count a call cut by the caller's
   whole valid value (the candidate extraction, as before), and otherwise as
   generated (`GLM5NextResponseFormatOutput.finalAnswer`).
 - Withheld calls (forced choices, native families, `DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0`)
-  whose set fails its checks are checked one by one: whole calls leave, only
-  the last, which the limit may have cut, is held to the declarations, and a
-  call that fails is dropped instead of refused; a forced choice left with no
-  call ends `length` (`ToolConstraintValidation.validateWithheld`). A call
-  under `tool_choice: none` is the model's and still refused;
+  whose set fails its checks are checked one by one, and a call that fails is
+  dropped instead of refused: forced choices hold every call to its schema, as
+  always, and for `auto` only the last call, which the limit may have cut, is
+  held to the declarations without `strict`. A forced choice left with no call
+  ends `length` (`ToolConstraintValidation.validateWithheld`). A call under
+  `tool_choice: none` is the model's and still refused;
   `parallel_tool_calls: false` keeps only the first call before any check
   (`ParallelToolCallPolicy`). A native Flint or MiMo frame, or a forced GLM
   frame, the limit left unparsed is dropped, never published as text. An
@@ -3659,7 +3660,9 @@ breaking a contract, and OpenRouter does not count a call cut by the caller's
   frame) is dropped. Calls that pass still leave, and the response then
   finishes `tool_calls`, as before.
 - The text the end of generation flushes leaves after the calls' checks, so a
-  refusal with nothing else sent stays one the router can fail over on.
+  refusal with nothing else sent stays one the router can fail over on. This
+  order does not depend on the switch: with it off, such a refusal also comes
+  before that text instead of after it.
 - Super's output (`NemotronSuperLocalOutput.finish(cutAtLimit:)`) does the same
   for its unterminated frame, its calls and its withheld JSON answer, and a
   thought the limit cut is not promoted to the answer by
@@ -3673,8 +3676,11 @@ bills its usage. Its own length finish for a refusal after commit (platform
 providers. A local request without `stream` still gets the service's 422
 `responseFormatCutOffByMaxTokens` when its cut content is not one JSON value:
 the service checks complete responses itself. Telemetry
-`tool_constraint_cut` records each outcome (`open_call`, `dropped_calls`,
-`unchecked_answer`) in place of the refusals it replaces.
+`tool_constraint_cut` records each outcome by reason: `open_call` (a streamed
+call left open), `dropped_calls` (calls dropped, withheld or never exposed),
+`dropped_frame` (a native frame the cut left unparsed), `forced_no_call` (a
+forced choice that ends with no call) and `unchecked_answer` (a structured
+answer whose skipped check would have refused it). Super's output records none.
 `DARKBLOOM_LENGTH_FINISH_AT_LIMIT=0` (or `off`, `false`, `no`) restores the
 refusal; it is read once per process and reaches the launchd job.
 

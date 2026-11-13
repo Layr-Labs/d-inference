@@ -76,9 +76,10 @@ struct NemotronSuperReasoningChannel {
     var promotesUnterminatedReasoning: Bool { forceNonemptyContent && inReasoning }
 
     /// `UltraV3ReasoningParser.extract_reasoning` for a complete output.
-    /// `promotingUnterminated: false` keeps an unterminated thought reasoning
-    /// even with `force_nonempty_content` (an output the token limit cut).
-    func complete(_ output: String, promotingUnterminated: Bool = true) -> Split {
+    /// `promoting: false` (an output the token limit cut) keeps the thought
+    /// reasoning even with `force_nonempty_content`, closed or not: the empty
+    /// answer is the limit's.
+    func complete(_ output: String, promoting: Bool = true) -> Split {
         guard thinking else { return Split(reasoning: nil, content: output.isEmpty ? nil : output) }
         var body = Substring(output)
         let opened = output.range(of: Self.open, options: .literal)
@@ -94,7 +95,7 @@ struct NemotronSuperReasoningChannel {
         if opened != nil, let reasoning = split.reasoning, reasoning.hasPrefix("\n") {
             split.reasoning = String(reasoning.dropFirst())
         }
-        if split.content == nil, forceNonemptyContent, promotingUnterminated {
+        if split.content == nil, forceNonemptyContent, promoting {
             split = Split(reasoning: nil, content: split.reasoning)
         }
         return split

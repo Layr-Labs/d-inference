@@ -1,6 +1,6 @@
 # Build The Provider And Landing
 
-> Last updated: 2026-11-12
+> Last updated: 2026-11-13
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. Backend, sidecar, console and admin builds
@@ -489,6 +489,16 @@ checkout. Each routed job runs on `fromJSON(needs.route.outputs.routes)['<lane>'
 where the lane is the job's name; each provider shard reads its own lane,
 `format('test-provider-{0}', matrix.shard)`, and each Cluster Runtime Tests
 shard the lane its matrix entry names, `matrix.lane`.
+
+The route client requests run-scoped labels with
+`X-Darkbloom-Run-Scoped-Labels: 1`. It accepts a Darkbloom decision only when
+its profile label ends in `-run-<github.run_id>`, after any size suffix.
+For example, one sized Mac lane uses
+`darkbloom-macos-arm64-4x24-run-40408691758`. The scoped label replaces the
+shared profile label, so a runner from an older workflow run cannot take the
+job. Individual-job retries keep the run ID and their original route output.
+A missing, generic or different-run label keeps the lane's Blacksmith fallback;
+it does not broaden the accepted runner labels.
 
 | Workflow | Routed jobs | Fallback |
 |---|---|---|

@@ -61,7 +61,8 @@ enum LoopExitThinkingContinuation {
     /// worth it: the request ends as `length`, as before.
     static let minimumAnswerBudget = 256
 
-    /// The spliced stream and its cancel, which stops whichever row is running.
+    /// The spliced stream; its cancel, which stops whichever row is running;
+    /// and `finished`, which returns once the splice is over.
     static func splice(
         first: AsyncStream<GenerationEvent>,
         cancelFirst: @escaping @Sendable () async -> Void,
@@ -71,7 +72,8 @@ enum LoopExitThinkingContinuation {
         submit: @escaping Submit,
         cancelContinuation: @escaping @Sendable () async -> Void,
         onOutcome: (@Sendable (Outcome) -> Void)? = nil
-    ) -> (events: AsyncStream<GenerationEvent>, cancel: @Sendable () async -> Void) {
+    ) -> (events: AsyncStream<GenerationEvent>, cancel: @Sendable () async -> Void,
+          finished: @Sendable () async -> Void) {
         let (events, out) = AsyncStream<GenerationEvent>.makeStream()
         let control = Control()
         let task = Task {
@@ -90,7 +92,7 @@ enum LoopExitThinkingContinuation {
             task.cancel()
             Task { await cancel() }
         }
-        return (events, cancel)
+        return (events, cancel, {})
     }
 
     private static func run(

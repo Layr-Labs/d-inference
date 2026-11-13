@@ -186,8 +186,9 @@ public final class ClusterLinkControlListener: @unchecked Sendable {
             let challenge = LinkHandshake.challenge(nonce: LinkHandshake.randomNonce(),
                 ephemeralPublicKey: ephemeral.publicKey.rawRepresentation)
             try connection.writeAll(challenge, deadline: deadline)
-            // Exact-size reads: nothing beyond the hello is consumed here (the
-            // connector sends nothing more before the accept).
+            // Fixed-size reads. The reader may buffer ahead up to its capacity,
+            // which is below the hello's size, and the connector sends nothing
+            // more before the accept: nothing past the hello is consumed here.
             let reader = LinkReader(socket: connection, capacity: 128)
             var helloBytes = try reader.readExact(LinkHandshake.headerBytes, deadline: deadline)
             try LinkHandshake.requireVersion(helloBytes, hello: true)

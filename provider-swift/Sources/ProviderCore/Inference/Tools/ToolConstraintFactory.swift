@@ -68,6 +68,11 @@ enum ToolConstraintFactory {
         } else {
             let strategy = try ToolChoiceEnforcementPolicy.forcedStrategy(
                 mode: prepared.mode, modelContext: modelContext)
+            if strategy == .harmonyFraming {
+                return try GPTOSSForcedToolConstraint.make(prepared: prepared, tokenizer: tokenizer,
+                    maxTokens: request.maxTokens ?? defaultMaxTokens, stopTokenIDs: stopTokenIDs,
+                    promptTokens: nativePromptTokens)
+            }
             if strategy == .structuredPostValidation {
                 if Qwen4ModelIdentity.isQualified(modelContext.modelId),
                    modelContext.modelType == "qwen4_exp" {

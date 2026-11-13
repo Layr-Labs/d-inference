@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-12
+> Last updated: 2026-11-13
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -3519,8 +3519,38 @@ its own `model_type`:
 
 These calls are prompt-forced, withheld and schema-validated
 (`ToolChoiceEnforcementPolicy.forcedStrategy` `.structuredPostValidation`).
-GPT-OSS (`gpt_oss`, `.harmony`) has no forced strategy and is not listed. In
-forced mode `NativeToolStreamRouter` drops framing whitespace (ASCII space,
+
+GPT-OSS (`gpt_oss`, `.harmony`) frames forced calls in the sampler
+(`.harmonyFraming`, `GPTOSSForcedToolConstraint`): the catalog build
+`gpt-oss-20b` is listed. The prompt is prepared as for the other families (the
+forcing instruction in the system and last user turns; a named function renders
+only its own declaration), so the coordinator sidecar's prompt-contract vectors
+hold. After the prompt's `<|start|>assistant` the sampler forces
+`<|channel|>analysis<|message|>`: the model reasons as unforced, at the
+request's `reasoning_effort`, in free text that can never spell a Harmony
+control token. `<|end|>` ends the analysis; then only
+`<|start|>assistant<|channel|>commentary to=functions.NAME <|constrain|>json<|message|>`
+of a declared function (the named one, or any declared one for `required`), one
+JSON object of that function's compiled schema (a `JSONAnswerConstraint` on the
+`JSONAnswerProfile.gptOSS` byte vocabulary) and `<|call|>`. A final answer, a
+commentary preamble, an undeclared function and off-schema arguments cannot be
+sampled. Within the output kept back for the call (`<|end|>`, the longest call
+header, 128 argument tokens and `<|call|>`) the analysis must end. The headers'
+token sequences are the tokenizer's own encodings, checked by round trip; a
+tokenizer that fails the check, or a prompt that does not end at the assistant
+boundary, refuses the request (400 `unsupported_forced_tool_choice`). One call
+per response, as Harmony's `<|call|>` stops generation: `parallel_tool_calls`
+changes nothing. The call is withheld, parsed by `HarmonyToolCallParser` and
+validated like every forced call; the only text the router lets through first is
+the analysis message (`HarmonyForcedCallText`), which the Harmony reasoning
+parser turns into reasoning. `DARKBLOOM_GPTOSS_FORCED_TOOLS=off` (or `0`,
+`false`, `no`; read at launch, passed to the launchd daemon) restores 0.10.12:
+the model is not listed and forced choice is refused. The coordinator also
+routes these requests only to providers at or above its GPT-OSS floor
+(darkbloom-platform `modelarch.ForcedToolsMinimumProviderVersion`, 0.10.13), and
+never to a cluster pair, whose engine runs no constrained decoding.
+
+In forced mode `NativeToolStreamRouter` drops framing whitespace (ASCII space,
 tab, CR and LF; `ToolChoiceEnforcementPolicy.isFramingWhitespace`) around and
 between call frames on every path, including legacy Qwen text without native
 channels. Whitespace alone is still a missing call

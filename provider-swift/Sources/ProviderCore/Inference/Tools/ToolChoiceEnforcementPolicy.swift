@@ -83,6 +83,7 @@ enum ToolChoiceEnforcementPolicy {
             || GLM5NextPromptPolicy.applies(modelType: modelContext.modelType) {
             return .structuredPostValidation
         }
+        if GPTOSSForcedToolCalls.applies(to: modelContext) { return .harmonyFraming }
         throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
             "inference-enforced tool_choice is unsupported for this model family")
     }
@@ -116,6 +117,7 @@ enum ToolChoiceEnforcementPolicy {
         if let admittedType = structuredForcedToolModelTypes[model.id] {
             return model.modelType == admittedType
         }
+        if GPTOSSForcedToolCalls.advertises(model) { return true }
         return ModelRuntimeRequirements.qwen38ConcreteModelIDs.contains(model.id)
             && Qwen35TemplateFix.applies(to: context)
     }

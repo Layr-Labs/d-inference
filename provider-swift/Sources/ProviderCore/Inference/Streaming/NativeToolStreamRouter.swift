@@ -17,6 +17,8 @@ struct NativeToolStreamRouter {
     private var rejectedNativeGemmaReasoning = false
     private let withholdReasoning: Bool
     private var withheldReasoning = ""
+    /// Forced GPT-OSS calls: the analysis text before the call.
+    private var harmonyAnalysis: HarmonyForcedCallText?
     /// Validation contract for calls exposed while generated; nil keeps the
     /// complete-call path (calls flushed at the engine terminal).
     private let streamedCallPolicy: ToolChoicePromptPolicy.Prepared?
@@ -45,6 +47,7 @@ struct NativeToolStreamRouter {
         self.nativeMiMoRequiresConstraint = nativeMiMoRequiresConstraint
         self.rejectMiMoThought = nativeMiMoChannels && !nativeMiMoThinkingEnabled
         self.streamedCallPolicy = handler?.streamsCalls == true ? streamedCalls : nil
+        if requiresToolCall, handler?.format == .harmony { harmonyAnalysis = HarmonyForcedCallText() }
         if nativeGemmaChannels {
             gemmaParser = DiffusionGemmaChannelSplitter()
         } else if let nativePrefix {
@@ -184,6 +187,15 @@ struct NativeToolStreamRouter {
             // their existing fallback contract.
             try checkNativeToolFailure()
             guard let visible, !visible.isEmpty else { continue }
+            if harmonyAnalysis != nil {
+                // Harmony analysis is reasoning to the stream's Harmony parser.
+                guard let shown = harmonyAnalysis!.filter(visible) else {
+                    throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(
+                        "forced tool_choice produced visible text before a validated call")
+                }
+                if !shown.isEmpty { events.append(visibleEvent(shown)) }
+                continue
+            }
             if requiresToolCall {
                 // Framing whitespace around and between call frames is not an
                 // answer on any path, including legacy Qwen text without

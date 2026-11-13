@@ -443,6 +443,7 @@ public enum LaunchAgent: Sendable {
         PromptTokenCachePolicy.capacityEnvironmentKey,
         PromptTokenCachePolicy.verifyEnvironmentKey,
         ChatTemplateLoopRewrites.environmentKey,
+        GPTOSSJSONAnswerPolicy.environmentKey,
         WorkFIFOPolicy.coldLoadReleaseEnvironmentKey,
         ModelCalibrationPolicy.shapeWarmupEnvironmentKey,
         GLM5NextProtectedModel.rectangularVerifyEnvironmentKey,

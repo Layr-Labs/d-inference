@@ -1008,7 +1008,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // Grammar compile (Gemma) can take the tool-constraint lock on the
             // first build per stop-set, and a JSON answer builds its vocabulary
             // on the first request per tokenizer; only those are worth a lock.
-            if prepared.tools?.isEmpty == false || tokenConstraint is JSONAnswerConstraint {
+            if prepared.tools?.isEmpty == false || tokenConstraint is JSONAnswerConstraint
+                || tokenConstraint is GPTOSSJSONAnswerConstraint {
                 profile?.markDuration(.toolConstraint, start: toolConstraintStart)
             }
             try checkFirstContentDeadline()

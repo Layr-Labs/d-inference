@@ -57,6 +57,12 @@ enum ToolConstraintFactory {
             stopTokenIDs: stopTokenIDs, promptTokens: nativePromptTokens) {
             return answer
         }
+        // A tool-free GPT-OSS JSON answer: free analysis, then the answer under the plain final header.
+        if let answer = GPTOSSJSONAnswerPolicy.constraint(request: request, tokenizer: tokenizer,
+            modelType: modelContext.modelType, defaultMaxTokens: defaultMaxTokens,
+            stopTokenIDs: stopTokenIDs, promptTokens: nativePromptTokens) {
+            return answer
+        }
         guard prepared.mode.requiresInferenceConstraint else { return nil }
         // `.none` keeps Gemma's sampler guard when its prompt contract is
         // pinned, while every other family retains the existing prompt-only

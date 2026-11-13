@@ -274,7 +274,7 @@ struct GenerationLoopExitThinkingTests {
         let closed = QwenByteTestTokenizer.tokens(QwenByteTestTokenizer.prompt(thinking: false))
         #expect(GenerationLoopExitThinkingPolicy.resolve(
             modelType: "qwen3_5_moe", tokenizer: Self.qwen, promptTokens: closed, logprobs: false,
-            setting: .modelTypes(GenerationLoopExitThinkingPolicy.defaultModelTypes))?.startsInside == false)
+            setting: Self.qwenOn)?.startsInside == false)
         // Qwen 3.8 (`qwen4_exp`) is not listed: its thought loops are rare in production.
         #expect(qwenExit("qwen4_exp") == nil)
         // The env list still turns Qwen's off and keeps Gemma's.

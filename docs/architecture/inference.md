@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-12
+> Last updated: 2026-11-13
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -2630,6 +2630,41 @@ that floor, because the anchor comes from a short calibration cell
 `ModelCalibrationPolicy.startup`) that never certifies longer work; bucket
 evidence expires after 120 seconds. The published isolated rate is unchanged.
 A late older cold sample no longer restarts the combined prefill EWMA.
+
+GLM-5.3-Flash and native MiMo V2.6 bridges keep the bounded recovery probe
+below instead of that bound, and price prefill from evidence that can speak
+for a long prompt
+(`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`,
+`NativePrefillEvidence`; `EngineV2Bridge.nativePrefillEvidenceApplies`). A
+short cold prompt measures mostly the request's fixed cost: on idle GLM M5
+Ultras a 13-20-token prompt measured 9-140 tok/s against 1,378-2,031 tok/s for
+prompts above 4K tokens. Before this, one such sample set the estimate, the
+Macs refused every long prompt, and a refusal measures nothing. A cold
+isolated sample from a prompt of at most 4,096 tokens now raises the estimate
+when it is faster and is otherwise left out of it, since a short prompt's rate
+bounds a longer one's from below. Calibration cells and longer prompts move
+the estimate either way, and only they date the evidence: 120 seconds after the
+newest of them, the next sample restarts the estimate. On an idle Mac at
+nominal posture, evidence older than 120 seconds, or none, is priced at no
+less than the calibration cell's rate; fresh evidence, a busy Mac or another
+posture keep the floor of one eighth of it. Old evidence never skips the
+projection: a native step cannot be preempted. The smallest prompt-size bucket
+(up to 1,024 tokens) no longer tightens a prompt, because it mixes a few-token
+prompt's fixed cost with real prefill; larger buckets still do. A slower short
+sample stays in its prompt-size bucket only: the published `isolated_prefill`
+measurement and `observed_prefill_tps`, and the slot telemetry's
+`isolated_prefill_tps`, follow the estimate. With a calibration cell, the Mac no
+longer takes the bounded recovery below, since the floor already admits such a
+prompt; before its first cell it still does. Because slower short samples no
+longer refresh the published measurement, it expires 120 seconds after the
+last sample that entered the estimate, even while short prompts arrive, so
+MiMo's maintenance calibration, which waits for an idle Mac and evidence older
+than 90 seconds, runs on such a Mac as on one without traffic. Off nominal posture a short
+sample still cannot lower the estimate, so the first long prompt after a
+posture change is priced from the nominal estimate until it is measured.
+`DARKBLOOM_TTFT_NATIVE_PREFILL_EVIDENCE=0` restores the previous estimator, as
+does `DARKBLOOM_TTFT_ADMISSION_FIXES=0`. Other models, Diffusion Gemma's native
+block engine included, are unchanged.
 
 A refusal admits nothing, so it measures nothing: those idle rules are the
 only way expired evidence that refuses is replaced, and with no anchor or off

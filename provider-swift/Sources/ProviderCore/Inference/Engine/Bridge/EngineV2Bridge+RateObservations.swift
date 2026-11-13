@@ -28,8 +28,14 @@ extension EngineV2Bridge {
 
     func applyRateObservation(_ value: EngineRateObservation, requestID: String, calibration: Bool) {
         let isDecode = value.phase == "decode"
-        let resetIsolated = !isDecode && value.phase == "isolated_prefill"
-            && isolatedPrefillEvidenceExpired(at: value.at)
+        let native = nativePrefillEvidenceApplies
+        // A short prompt's rate bounds a longer prompt's from below: it may
+        // raise a native engine's estimate, never lower it.
+        let shortNativeSample = native && !calibration && value.phase == "isolated_prefill"
+            && !NativePrefillEvidence.countsAsRateSample(promptTokens: value.prompt)
+            && isolatedPrefillEwmaInitialized && value.tps <= isolatedPrefillTpsEwma
+        let resetIsolated = !isDecode && value.phase == "isolated_prefill" && !shortNativeSample
+            && (native ? nativeRateEvidenceExpired(at: value.at) : isolatedPrefillEvidenceExpired(at: value.at))
         // A late completed sample older than the newest evidence is not an
         // evidence gap and must not restart the combined estimate.
         let resetPrefill = !isDecode && value.cache == "cold"
@@ -44,14 +50,20 @@ extension EngineV2Bridge {
             }
             updateDecodeTpsEwma(value.tps, shape: value.decodeShape)
         }
+        // The prompt-size bucket keeps a slower short sample; the published
+        // prefill rates, which routing prices this Mac from, follow the estimate.
         performanceMeasurements.observe(value.phase, tps: value.tps, prompt: value.prompt,
             context: value.context, cache: value.cache, overlap: value.overlap, at: value.at,
-            deadlinePostureEpoch: value.postureEpoch, recordAggregate: value.aggregate,
+            deadlinePostureEpoch: value.postureEpoch, recordAggregate: value.aggregate && !shortNativeSample,
             restartEstimate: calibration && value.aggregate)
-        guard !isDecode, value.aggregate, value.cache == "cold" else { return }
+        guard !isDecode, value.aggregate, value.cache == "cold", !shortNativeSample else { return }
         if resetIsolated || calibration { isolatedPrefillEwmaInitialized = false }
         if resetPrefill || calibration { prefillEwmaInitialized = false }
         updatePrefillTpsEwma(value.tps, isolated: !value.overlap.contended)
+        if native, !value.overlap.contended,
+            calibration || NativePrefillEvidence.countsAsRateSample(promptTokens: value.prompt) {
+            nativeRateEvidenceAt = max(nativeRateEvidenceAt ?? value.at, value.at)
+        }
         if calibration, value.phase == "isolated_prefill" { calibratedIsolatedPrefillTps = value.tps }
         if value.phase == "isolated_prefill" { prefillEvidenceRecovery.observe(requestID) }
     }

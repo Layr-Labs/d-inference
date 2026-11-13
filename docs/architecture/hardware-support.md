@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-11-10
+> Last updated: 2026-11-13
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -978,6 +978,20 @@ serving Mac, so the same request can project differently on other hardware:
   (`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`,
   `IsolatedPrefillAdmissionRate.anchorFloorFraction`). Native engines keep
   their recovery probe instead.
+- GLM-5.3-Flash and native MiMo V2.6 let a cold prompt of at most 4,096
+  tokens raise their prefill estimate but never lower it: its rate is mostly the
+  request's fixed cost. Idle at nominal posture, with no calibration cell or
+  longer prompt in 120 seconds, they price prefill at no less than their
+  calibration cell
+  (`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`,
+  `NativePrefillEvidence`; `DARKBLOOM_TTFT_NATIVE_PREFILL_EVIDENCE=0` turns it off),
+  so once calibrated they take no short-prompt recovery. A busy Mac or another
+  posture keeps one eighth of the cell as its floor. Their published
+  `isolated_prefill` measurement, `observed_prefill_tps` and slot telemetry's
+  `isolated_prefill_tps` follow that estimate; a slower short sample stays in
+  its prompt-size bucket only, and the smallest bucket no longer tightens their
+  prompts. Off nominal posture a short sample still cannot lower the estimate,
+  so it keeps its nominal value until a longer prompt measures the new posture.
 - Three consecutive refusals that isolated prefill evidence older than 120
   seconds explains on an idle Mac re-run the idle calibration probe once
   (`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`,
@@ -989,8 +1003,9 @@ serving Mac, so the same request can project differently on other hardware:
   left never counts.
 
 The anchor, floor and refusal streak shape admission only. The published
-isolated rate, capacity wire fields and the external platform's memory
-contract are unchanged.
+prefill rates (apart from GLM's and MiMo's slower short samples above),
+capacity wire fields and the external platform's memory contract are
+unchanged.
 
 ### Cross-repository agreement
 

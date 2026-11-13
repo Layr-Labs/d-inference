@@ -17,7 +17,8 @@ struct NativePrefillEvidenceTests {
     /// Milliseconds the Macs had left for the Tau2 first turns (TAU2-AUDIT t13, p50).
     private static let tau2RemainingMs: Int64 = 12_619
 
-    private func nativeBridge(nominalPosture: Bool = true) throws -> (EngineV2Bridge, GlobalKVCacheBudget) {
+    private func nativeBridge(model: String = "glm-5.3-flash", nominalPosture: Bool = true) throws
+        -> (EngineV2Bridge, GlobalKVCacheBudget) {
         let engine = try CBv2NativeBlockEngine(tokenizer: PrefillStubTokenizer(), kvBytesCapacity: 1 << 20,
             shutdownGraceSeconds: 0, loopConfig: .init(stepTimeout: 60, watchdogInterval: 0.01),
             reservationForRequest: { _ in 1_024 }, makeSession: { request, cancellation in
@@ -27,11 +28,18 @@ struct NativePrefillEvidenceTests {
         let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
             .init(total: 8 << 30, active: 0, cache: 0, systemAvailable: 8 << 30)
         }
-        let bridge = EngineV2Bridge(engine: engine, modelId: "glm-5.3-flash",
+        let bridge = EngineV2Bridge(engine: engine, modelId: model,
             tokenizer: TokenizerHandle(PrefillStubTokenizer()), eosTokenIds: [],
             prefillDeadlineMode: .enforce, kvBytesPerToken: 1, kvBudget: budget,
             calibrationPosturePermitsWork: { nominalPosture })
         return (bridge, budget)
+    }
+
+    /// A native MiMo bridge: the scripted engine, owned by a load transaction.
+    private func mimoBridge() async throws -> EngineV2Bridge {
+        let (bridge, _) = try nativeBridge(model: "mimo-v2.6-flash-mopd")
+        await bridge.markNativeMiMoForTest()
+        return bridge
     }
 
     /// An ordinary (non-native) engine, as the other models run.
@@ -140,7 +148,7 @@ struct NativePrefillEvidenceTests {
         await bridge.shutdown()
     }
 
-    @Test("below 4K tokens the prompt-size bucket cannot undercut a native prompt with a short sample")
+    @Test("the smallest prompt-size bucket cannot undercut a native prompt with a short sample")
     func shortBucketDoesNotTightenNativePrompts() async throws {
         let (bridge, _) = try nativeBridge()
         let now = ContinuousClock.now
@@ -154,7 +162,8 @@ struct NativePrefillEvidenceTests {
 
     @Test("MiMo: a tiny prompt between maintenance cells does not drag the 512-token rate down")
     func mimoMaintenanceRateHolds() async throws {
-        let (bridge, _) = try nativeBridge()
+        let bridge = try await mimoBridge()
+        #expect(await bridge.nativePrefillEvidenceApplies)
         let now = ContinuousClock.now
         // MiMo's maintenance plan: 512, 4,096 and 512 prompt tokens.
         await calibrate(bridge, 450, at: now - .seconds(100))
@@ -192,4 +201,194 @@ struct NativePrefillEvidenceTests {
         #expect(try await prefillRate(bridge, prompt: Self.tau2Prompt) == Self.calibrated / 8)
         await bridge.shutdown()
     }
+
+    @Test("a short prompt faster than the estimate raises it; a slower one is ignored")
+    func shortPromptRaisesButNeverLowers() async throws {
+        let (bridge, _) = try nativeBridge()
+        let now = ContinuousClock.now
+        await calibrate(bridge, 450, at: now - .seconds(60))
+        await serve(bridge, 600, prompt: 3_000, at: now - .seconds(30))
+        let raised = 0.3 * 600 + 0.7 * 450
+        #expect(await bridge._testIsolatedPrefillTps() == raised)
+        await serve(bridge, 100, prompt: 3_000, at: now - .seconds(20))
+        #expect(await bridge._testIsolatedPrefillTps() == raised)
+        // The published rates, which routing reads, follow the estimate; the
+        // slower sample stays in its prompt-size bucket.
+        let capacity = await bridge.backendSlotCapacity()
+        #expect(capacity.observedPrefillTps == raised)
+        let measurements = try #require(capacity.performanceMeasurements)
+        let aggregate = try #require(measurements.isolatedPrefill)
+        #expect(aggregate.sampleCount == 2)
+        #expect(aggregate.tokensPerSecond == raised)
+        let shortCold = measurements.workloadBuckets.filter { (bucket: PerformanceWorkloadBucket) -> Bool in
+            bucket.phase == "prefill" && bucket.promptTokenBucket == 4_096 && bucket.cacheState == "cold"
+        }
+        #expect(shortCold.map(\.observation.sampleCount) == [2])
+        await bridge.shutdown()
+    }
+
+    @Test("off nominal posture, a native Mac gets no calibrated floor")
+    func noFloorOffNominalPosture() async throws {
+        let (bridge, _) = try nativeBridge(nominalPosture: false)
+        let now = ContinuousClock.now
+        await calibrate(bridge, at: now - .seconds(1_200))
+        await serve(bridge, 700, prompt: 8_000, at: now - .seconds(600))
+        #expect(try await prefillRate(bridge, prompt: Self.tau2Prompt) == 700)
+        await bridge.shutdown()
+    }
+
+    @Test("another native block engine (Diffusion Gemma) keeps today's estimator")
+    func otherNativeBlockEnginesUnchanged() async throws {
+        let (bridge, _) = try nativeBridge(model: "diffusion-gemma-fixture")
+        let now = ContinuousClock.now
+        await calibrate(bridge, at: now - .seconds(600))
+        await serve(bridge, 13, prompt: 13, at: now - .seconds(5))
+        #expect(await !bridge.nativePrefillEvidenceApplies)
+        #expect(await bridge._testIsolatedPrefillTps() == 13)
+        #expect(try await prefillRate(bridge, prompt: Self.tau2Prompt) == 13)
+        await bridge.shutdown()
+    }
+
+    @Test("a slow long prompt ten minutes ago does not keep an idle Mac refusing")
+    func oldSlowLongPromptGivesWayToTheFloor() async throws {
+        let (bridge, _) = try nativeBridge()
+        let now = ContinuousClock.now
+        await calibrate(bridge, at: now - .seconds(1_200))
+        await serve(bridge, 400, prompt: 6_000, at: now - .seconds(600))
+        #expect(await bridge._testIsolatedPrefillTps() == 400)
+        #expect(try await prefillRate(bridge, prompt: Self.tau2Prompt) == Self.calibrated)
+        await bridge.shutdown()
+    }
+
+    @Test("a late long-prompt sample does not age the evidence")
+    func lateSampleKeepsTheNewestDate() async throws {
+        let (bridge, _) = try nativeBridge()
+        let now = ContinuousClock.now
+        await calibrate(bridge, at: now - .seconds(1_200))
+        await serve(bridge, 800, prompt: 6_000, at: now - .seconds(10))
+        // Completed out of order: measured before the newest sample.
+        await serve(bridge, 700, prompt: 8_000, at: now - .seconds(200))
+        let blended = 0.3 * 700 + 0.7 * 800
+        #expect(await bridge._testIsolatedPrefillTps() == blended)
+        // The evidence is still 10 s old, so the calibration floor does not apply.
+        #expect(try await prefillRate(bridge, prompt: Self.tau2Prompt) == blended)
+        await bridge.shutdown()
+    }
+
+    @Test("a fresh 1-4K prompt still tightens a prompt of its size; the smallest bucket never does")
+    func comparableBucketStillTightens() async throws {
+        let (bridge, _) = try nativeBridge()
+        let now = ContinuousClock.now
+        await calibrate(bridge, at: now - .seconds(1_200))
+        // Slower than the estimate, so it stays out of it, but it is real
+        // evidence for prompts of 1,025-4,096 tokens.
+        await serve(bridge, 300, prompt: 3_000, at: now - .seconds(5))
+        #expect(await bridge._testIsolatedPrefillTps() == Self.calibrated)
+        #expect(try await prefillRate(bridge, prompt: Self.tau2Prompt) == 300)
+        await serve(bridge, 120, prompt: 540, at: now - .seconds(4))
+        #expect(try await prefillRate(bridge, prompt: 1_000) == Self.calibrated)
+        await bridge.shutdown()
+    }
+
+    @Test("a calibrated GLM Mac prices a short prompt by projection, not the exclusive recovery")
+    func calibratedNativeMacSkipsRecovery() async throws {
+        let deadline = FirstContentDeadline(relativeBudgetMilliseconds: 9_326)
+        for evidence in [true, false] {
+            let engine = try CBv2NativeBlockEngine(tokenizer: PrefillStubTokenizer(), kvBytesCapacity: 1 << 20,
+                shutdownGraceSeconds: 0, loopConfig: .init(stepTimeout: 60, watchdogInterval: 0.01),
+                reservationForRequest: { _ in 1_024 }, makeSession: { request, cancellation in
+                    RecoverySession(tokens: request.promptTokens.count, cancellation: cancellation,
+                        gate: nil, decodeGate: nil)
+                })
+            let bridge = EngineV2Bridge(engine: engine, modelId: "glm-5.3-flash",
+                tokenizer: TokenizerHandle(PrefillStubTokenizer()), eosTokenIds: [],
+                prefillDeadlineMode: .enforce, calibrationPosturePermitsWork: { true },
+                nativePrefillEvidence: evidence)
+            await calibrate(bridge, at: .now - .seconds(600))
+            // Expired evidence: today the 384-token prompt would take the recovery.
+            #expect(await bridge.canRecoverPrefillEvidence(promptTokens: 384, maxOutputTokens: 1,
+                deadline: deadline, isMultimodal: false) == !evidence)
+            if evidence {
+                #expect(try await prefillRate(bridge, prompt: 384) == Self.calibrated)
+            }
+            await bridge.shutdown()
+        }
+    }
+
+    @Test("the switch, or the estimator corrections' switch, restores today's estimator")
+    func switchesRestoreTodaysEstimator() async throws {
+        for (evidence, fixes) in [(false, true), (true, false)] {
+            let engine = try CBv2NativeBlockEngine(tokenizer: PrefillStubTokenizer(), kvBytesCapacity: 1 << 20,
+                shutdownGraceSeconds: 0, loopConfig: .init(stepTimeout: 60, watchdogInterval: 0.01),
+                reservationForRequest: { _ in 1_024 }, makeSession: { request, cancellation in
+                    RecoverySession(tokens: request.promptTokens.count, cancellation: cancellation,
+                        gate: nil, decodeGate: nil)
+                })
+            let bridge = EngineV2Bridge(engine: engine, modelId: "glm-5.3-flash",
+                tokenizer: TokenizerHandle(PrefillStubTokenizer()), eosTokenIds: [],
+                prefillDeadlineMode: .enforce, calibrationPosturePermitsWork: { true },
+                admissionFixes: fixes, nativePrefillEvidence: evidence)
+            let now = ContinuousClock.now
+            await calibrate(bridge, at: now - .seconds(600))
+            await serve(bridge, 13, prompt: 13, at: now - .seconds(5))
+            #expect(await !bridge.nativePrefillEvidenceApplies)
+            #expect(await bridge._testIsolatedPrefillTps() == 13)
+            #expect(try await prefillRate(bridge, prompt: Self.tau2Prompt) == 13)
+            await bridge.shutdown()
+        }
+    }
+
+    @Test("the switch is on by default, only an explicit off value disables it, and it reaches launchd")
+    func switchParsingAndPassthrough() {
+        let key = NativePrefillEvidence.environmentKey
+        #expect(key == "DARKBLOOM_TTFT_NATIVE_PREFILL_EVIDENCE")
+        #expect(NativePrefillEvidence.resolve(environment: [:]))
+        for value in ["1", "true", "on", "", "\n"] {
+            #expect(NativePrefillEvidence.resolve(environment: [key: value]))
+        }
+        for value in ["0", "false", "OFF", " no ", "0\n"] {
+            #expect(!NativePrefillEvidence.resolve(environment: [key: value]))
+        }
+        #expect(NativePrefillEvidence.resolve(environment: [DeadlineRefusalProbe.environmentKey: "0"]))
+        #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))
+        #expect(LaunchAgent.passthroughEnvironment(from: [key: "0"])[key] == "0")
+        #expect(LaunchAgent.passthroughEnvironment(from: [:])[key] == nil)
+    }
+
+    @Test("the native rate policy")
+    func nativeRatePolicy() {
+        let fresh = Duration.seconds(30), expired = Duration.seconds(300), ancient = Duration.seconds(36_000)
+        func rate(_ observed: Double?, _ anchor: Double?, _ age: Duration?, idle: Bool = true,
+            nominal: Bool = true) -> Double? {
+            NativePrefillEvidence.resolve(observed: observed, anchor: anchor, evidenceAge: age,
+                macIdle: idle, nominalPosture: nominal)
+        }
+        // Idle at nominal posture with old or no counted evidence: never below the
+        // anchor, and never skipped, however old.
+        #expect(rate(13, 1_420, expired) == 1_420)
+        #expect(rate(13, 1_420, ancient) == 1_420)
+        #expect(rate(2_000, 1_420, ancient) == 2_000)
+        #expect(rate(nil, 1_420, nil) == 1_420)
+        #expect(rate(13, 1_420, nil) == 1_420)
+        // Fresh counted evidence, a busy Mac or off-nominal posture: one eighth of the anchor at most.
+        #expect(rate(400, 1_420, fresh) == 400)
+        #expect(rate(13, 1_420, fresh) == 177.5)
+        #expect(rate(13, 1_420, expired, idle: false) == 177.5)
+        #expect(rate(13, 1_420, ancient, nominal: false) == 177.5)
+        // No anchor: the measured rate, or no rate.
+        #expect(rate(13, nil, ancient) == 13)
+        #expect(rate(nil, nil, nil) == nil)
+        #expect(rate(nil, 1_420, fresh, idle: false) == nil)
+        // Invalid inputs.
+        #expect(rate(.nan, nil, fresh) == nil)
+        #expect(rate(400, .infinity, expired) == 400)
+        // Samples above the 4,096-token bucket count either way.
+        #expect(!NativePrefillEvidence.countsAsRateSample(promptTokens: 4_096))
+        #expect(NativePrefillEvidence.countsAsRateSample(promptTokens: 4_097))
+    }
+}
+
+private extension EngineV2Bridge {
+    /// What `attachNativeTransaction` records for a native MiMo load.
+    func markNativeMiMoForTest() { nativeTransactionID = UUID() }
 }

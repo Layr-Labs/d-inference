@@ -120,6 +120,72 @@ enum IsolatedPrefillAdmissionRate {
     }
 }
 
+/// Admission's view of the isolated cold-prefill rate of a GLM-5.3-Flash or
+/// native MiMo V2.6 bridge (`EngineV2Bridge.nativePrefillEvidenceApplies`).
+/// Those engines have neither the anchor bound above nor the refusal streak:
+/// their own recovery admits only prompts of up to 1,024 tokens once their
+/// evidence expires.
+///
+/// A short cold prompt measures mostly the request's fixed cost: on idle GLM
+/// M5 Ultras a 13-20-token prompt measured 9-140 tok/s, against 1,378-2,031
+/// tok/s for prompts above 4K tokens. One such sample set the estimate, every
+/// longer prompt was refused, and a refusal measures nothing. So a cold sample
+/// from a prompt of at most `sampleTokensAbove` tokens may raise the estimate
+/// (a short prompt's rate bounds a longer prompt's from below) but never lower
+/// it; calibration cells and longer prompts move it either way and alone date
+/// the evidence (`countsAsRateSample`). A slower short sample stays in its
+/// prompt-size bucket only: the published isolated and observed prefill rates,
+/// which routing reads, follow the estimate. The smallest bucket never
+/// tightens a prompt (`bucketTightens`); larger buckets still do.
+///
+/// On an idle Mac at nominal posture, counted evidence older than the
+/// 120-second freshness window is priced at no less than the calibration
+/// anchor, which was measured under those conditions; fresh counted evidence
+/// keeps the ordinary engines' floor of one eighth of the anchor, as does a
+/// busy Mac or another posture. Unlike `IsolatedPrefillAdmissionRate`, old
+/// evidence never skips the projection: a native step cannot be preempted, so
+/// a large prompt stays projected. With an anchor, the floor replaces the
+/// short-prompt recovery. On by default;
+/// `DARKBLOOM_TTFT_NATIVE_PREFILL_EVIDENCE=0` restores the previous estimator,
+/// as does `DARKBLOOM_TTFT_ADMISSION_FIXES=0`.
+enum NativePrefillEvidence {
+    static let environmentKey = "DARKBLOOM_TTFT_NATIVE_PREFILL_EVIDENCE"
+    static let enabled = resolve()
+    /// The 4,096-token prompt-size bucket's ceiling
+    /// (`EnginePerformanceMeasurements.bucket`).
+    static let sampleTokensAbove = 4_096
+
+    static func resolve(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        DeadlineAdmissionFixes.isOn(environmentKey, environment: environment)
+    }
+
+    static func countsAsRateSample(promptTokens: Int) -> Bool {
+        promptTokens > sampleTokensAbove
+    }
+
+    /// The smallest prompt-size bucket (up to 1,024 tokens) mixes a few-token
+    /// prompt's fixed cost with real prefill, so it never tightens a native
+    /// prompt; larger buckets hold prompts of comparable size and still do.
+    static func bucketTightens(promptTokens: Int) -> Bool {
+        EnginePerformanceMeasurements.bucket(promptTokens) > 1_024
+    }
+
+    static func resolve(
+        observed: Double?, anchor: Double?, evidenceAge: Duration?,
+        macIdle: Bool, nominalPosture: Bool
+    ) -> Double? {
+        let observed = observed.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+        let anchor = anchor.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+        if let anchor, macIdle, nominalPosture,
+            evidenceAge.map({ $0 > EnginePerformanceMeasurements.freshness }) ?? true {
+            return max(observed ?? anchor, anchor)
+        }
+        guard let observed else { return nil }
+        guard let anchor else { return observed }
+        return max(observed, anchor * IsolatedPrefillAdmissionRate.anchorFloorFraction)
+    }
+}
+
 /// The refusal streak's own off switch. On by default;
 /// `DARKBLOOM_TTFT_REFUSAL_PROBE=0` stops its counting and its probe and leaves
 /// the estimator corrections (`DeadlineAdmissionFixes`) on.

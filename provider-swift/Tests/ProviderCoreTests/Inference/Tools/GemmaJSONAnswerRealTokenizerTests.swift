@@ -20,22 +20,18 @@ struct GemmaJSONAnswerRealTokenizerTests {
         let elapsed = clock.now - started
 
         // Every piece is exactly what the decoder writes for that id alone
-        // (byte-fallback ids decode as a run, so they are checked below), up
-        // to the tokenizer's clean-up, which only drops a space before
-        // punctuation and so never touches a byte the JSON automaton needs.
-        func cleanedUp(_ text: String) -> String {
-            [(" .", "."), (" ?", "?"), (" !", "!"), (" ,", ","), (" ' ", "'"), (" n't", "n't"), (" 'm", "'m"),
-             (" 's", "'s"), (" 've", "'ve"), (" 're", "'re")].reduce(text) {
-                $0.replacingOccurrences(of: $1.0, with: $1.1)
-            }
-        }
+        // (byte-fallback ids decode as a run, so they are checked below). The
+        // provider's loader turns swift-transformers' clean-up off for Gemma,
+        // so a space before punctuation survives.
         var mismatches: [Int] = []
         for id in vocabulary.pieceTokenIDs where vocabulary.pieces[id].count > 1 || vocabulary.pieces[id][0] < 0x80 {
-            let piece = String(decoding: vocabulary.pieces[id], as: UTF8.self)
-            let decoded = tokenizer.decode(tokenIds: [id], skipSpecialTokens: false)
-            if decoded != piece && decoded != cleanedUp(piece) { mismatches.append(id) }
+            if Array(tokenizer.decode(tokenIds: [id], skipSpecialTokens: false).utf8) != vocabulary.pieces[id] {
+                mismatches.append(id)
+            }
         }
         #expect(mismatches.isEmpty, "first mismatches: \(mismatches.prefix(8))")
+        #expect(tokenizer.decode(tokenIds: tokenizer.encode(text: "a , b .", addSpecialTokens: false),
+                                 skipSpecialTokens: false) == "a , b .")
         // JSON's ASCII has a piece of its own, so ASCII byte fallback is never needed.
         let singles = Set(vocabulary.pieceTokenIDs.filter { vocabulary.pieces[$0].count == 1 }
             .map { vocabulary.pieces[$0][0] })

@@ -119,6 +119,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// `prompt_tokens_details.cached_tokens` into the trailing SSE usage
     /// chunk. Same out-of-band pattern as `engineV2Logprobs`.
     private let engineV2Usage: EngineV2RequestUsageSignal?
+    /// Which families may end a repeating thought (`GenerationLoopExitThinkingPolicy`):
+    /// the process's `DARKBLOOM_LOOP_EXIT_THINKING` unless a test sets it.
+    var exitThinkingSetting = GenerationLoopExitThinkingPolicy.current
     /// Per-request logprobs plumbing. Non-nil means the sealed request asked for
     /// logprobs: the v2 translation flips `logprobs`/`top_logprobs` on so
     /// the engine captures them, and the bridge yields OpenAI-shaped entries
@@ -1025,7 +1028,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // single Mac's text row without logprobs (`GenerationLoopExitThinkingPolicy`).
         var exitThinking = GenerationLoopExitThinkingPolicy.resolve(
             modelType: modelType, tokenizer: tokenizer.inner, promptTokens: promptTokens,
-            logprobs: engineV2Logprobs != nil)
+            logprobs: engineV2Logprobs != nil, setting: exitThinkingSetting)
         if exitThinking != nil, await engineV2Bridge?.servesDistributedPair != false { exitThinking = nil }
         let loopGuard = GenerationLoopGuardPolicy.resolve(
             modelType: modelType, request: request, prepared: prepared, tokenConstraint: tokenConstraint,

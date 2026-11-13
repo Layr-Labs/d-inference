@@ -252,14 +252,14 @@ struct StreamedToolCallTests {
         let second = ToolCall(function: .init(name: "get_weather", arguments: ["location": "Rome"]))
         for choice in [nil, OpenAIToolChoice.mode(.required), .function(name: "get_weather")] {
             let single = try ToolChoicePromptPolicy.prepare(Self.request(choice, parallel: false), modelType: "gemma4")
-            let admitted = ToolConstraintValidation.admitted([first, second], prepared: single)
+            let admitted = ParallelToolCallPolicy.admitted([first, second], prepared: single)
             #expect(admitted == [first])
             try ToolConstraintValidation.validate(admitted, prepared: single)
             let parallel = try ToolChoicePromptPolicy.prepare(Self.request(choice), modelType: "gemma4")
-            #expect(ToolConstraintValidation.admitted([first, second], prepared: parallel) == [first, second])
+            #expect(ParallelToolCallPolicy.admitted([first, second], prepared: parallel) == [first, second])
         }
         let none = try ToolChoicePromptPolicy.prepare(Self.request(parallel: false), modelType: "gemma4")
-        #expect(ToolConstraintValidation.admitted([], prepared: none).isEmpty)
+        #expect(ParallelToolCallPolicy.admitted([], prepared: none).isEmpty)
     }
 
     /// The second partial holds a `}`, so Gemma's lenient EOS parse reads a

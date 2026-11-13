@@ -1917,7 +1917,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     continuation.finish()
                     return
                 }
-                let toolCalls = ToolConstraintValidation.admitted(toolHandler?.finish() ?? [], prepared: prepared)
+                let toolCalls = ParallelToolCallPolicy.admitted(toolHandler?.finish() ?? [], prepared: prepared)
                 do {
                     try router.checkNativeToolFailure()
                 } catch {

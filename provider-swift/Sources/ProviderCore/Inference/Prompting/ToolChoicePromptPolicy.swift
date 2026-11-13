@@ -21,7 +21,7 @@ enum ToolChoicePromptPolicy {
         /// every GLM slot; a pair also asks for at most one call when
         /// automatic choice has `parallel_tool_calls: false`
         /// (`singleCallInstruction`); a response keeps only its first call
-        /// (`ToolConstraintValidation.admitted`).
+        /// (`ParallelToolCallPolicy.admitted`).
         var glm5PairPostValidation = false
         /// The caller's declarations as sent, before ingress normalization
         /// (`ToolSchemaNormalization`) filled in render types. Validation of

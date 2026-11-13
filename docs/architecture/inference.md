@@ -3545,10 +3545,10 @@ complete parse must agree with everything already exposed
 `NativeToolStreamRouter` admits `parallel_tool_calls` cardinality at the first
 fragment: with `parallel_tool_calls: false` it exposes the first call only and
 consumes every later frame without exposing or validating it, as OpenAI
-returns one call and vLLM keeps the first (the complete-call paths, Nemotron
-Super's included, keep the first through `ToolConstraintValidation.admitted`).
-When the request is `strict` (below), it validates name and schema at frame
-close; the service renders OpenAI fragments (`index`, `id`, `type`
+returns one call and vLLM keeps the first; the complete-call paths, Nemotron
+Super's included, keep the first the same way (`ParallelToolCallPolicy`). When
+the request is `strict` (below), it validates name and schema at frame close;
+the service renders OpenAI fragments (`index`, `id`, `type`
 and `function.name` first, then `function.arguments` pieces). A response that
 begins with a call therefore reaches its first content frame at the function
 name instead of the engine terminal, which also ends the frame loop's
@@ -3561,7 +3561,7 @@ function and arguments off the declared schema are returned instead of
 failing a response whose reasoning has already streamed. The request stays
 validated when any declared function sets `strict: true`, when it declares no
 tools (a call is then never returned), and for `required`, named and `none`
-choices; `parallel_tool_calls: false` returns the first call either way, and a call parsed from
+choices; `parallel_tool_calls: false` holds either way, and a call parsed from
 a frame that `max_tokens` cut off is still validated (it may be missing
 arguments). Strict `auto` checks
 each call against the caller's schema as sent

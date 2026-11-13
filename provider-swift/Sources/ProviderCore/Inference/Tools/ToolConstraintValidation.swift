@@ -111,15 +111,6 @@ enum ToolConstraintValidation {
         }
     }
 
-    /// The calls a response returns. With `parallel_tool_calls: false` that is
-    /// the first call only, as OpenAI and vLLM return it: calls the model makes
-    /// after it are dropped instead of failing the response. Callers pass
-    /// their calls through here before `validate`, whose cardinality check
-    /// stays as defense in depth.
-    static func admitted(_ calls: [ToolCall], prepared: ToolChoicePromptPolicy.Prepared) -> [ToolCall] {
-        prepared.allowsParallelCalls ? calls : Array(calls.prefix(1))
-    }
-
     /// Reserved-metadata forgery guard for untrusted payloads. The
     /// `originalBooleanSchemaKey` marker is injected by our own normalizer, so
     /// a client that sends it is forging internal state.

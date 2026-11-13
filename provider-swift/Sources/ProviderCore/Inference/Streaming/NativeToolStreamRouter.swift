@@ -23,9 +23,8 @@ struct NativeToolStreamRouter {
     private var exposedCallCount = 0
     private var openCallIndex: Int?
     private var openCallName: String?
-    /// The open frame is a call made after the one `parallel_tool_calls:
-    /// false` allows: it is consumed and nothing of it is exposed.
-    private var droppingCall = false
+    /// `parallel_tool_calls: false`: the frames of calls after the first.
+    private var laterCalls = ParallelToolCallPolicy.LaterCallFilter()
     /// Every call exposed so far whose frame parsed, each already accepted by
     /// `ToolConstraintValidation` (which returns `auto` calls as generated
     /// unless the request is `strict`).
@@ -207,15 +206,12 @@ struct NativeToolStreamRouter {
     private mutating func routeToolSegment(
         _ segment: ToolCallStreamSegment, prepared: ToolChoicePromptPolicy.Prepared, truncated: Bool = false
     ) throws -> [MLXServerGenerationEvent] {
+        if laterCalls.drops(segment, exposedCalls: exposedCallCount, prepared: prepared) { return [] }
         switch segment {
         case .text(let text):
             return text.isEmpty ? [] : [visibleEvent(text)]
         case .callStarted(let name):
-            guard admitsCall(prepared) else {
-                droppingCall = true
-                return []
-            }
-            let index = admitCall()
+            let index = try admitCall(prepared)
             openCallIndex = index
             openCallName = name
             return [.toolCallDelta(.init(index: index, name: name))]
@@ -223,7 +219,6 @@ struct NativeToolStreamRouter {
             guard let index = openCallIndex, !fragment.isEmpty else { return [] }
             return [.toolCallDelta(.init(index: index, arguments: fragment))]
         case .callCompleted(let call, let remainder):
-            droppingCall = false
             guard let index = openCallIndex else { return [] }
             openCallIndex = nil
             try ToolConstraintValidation.validate([call], prepared: prepared, truncated: truncated)
@@ -231,10 +226,6 @@ struct NativeToolStreamRouter {
             return [.toolCallDelta(.init(index: index, arguments: remainder, completed: call))]
         case .callFailed(let failure):
             defer { openCallIndex = nil }
-            if droppingCall {
-                droppingCall = false
-                return []
-            }
             guard prepared.returnsAutoCallsAsGenerated, let index = openCallIndex, let name = openCallName
             else {
                 throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(
@@ -249,9 +240,8 @@ struct NativeToolStreamRouter {
                 completed: ToolCall(function: .init(name: name, arguments: [String: MLXLMCommon.JSONValue]()))))]
         case .call(let call):
             // Never exposed (e.g. an undeclared name): validate before showing.
-            guard admitsCall(prepared) else { return [] }
             try ToolConstraintValidation.validate([call], prepared: prepared, truncated: truncated)
-            let index = admitCall()
+            let index = try admitCall(prepared)
             completedToolCalls.append(call)
             let arguments = String(
                 decoding: try JSONEncoder.openAIServer.encode(call.function.arguments), as: UTF8.self)
@@ -260,14 +250,11 @@ struct NativeToolStreamRouter {
         }
     }
 
-    /// With `parallel_tool_calls: false` only the first call is exposed, as
-    /// OpenAI and vLLM return it (`ToolConstraintValidation.admitted`); later
-    /// calls are dropped, never a failure after the first already streamed.
-    private func admitsCall(_ prepared: ToolChoicePromptPolicy.Prepared) -> Bool {
-        prepared.allowsParallelCalls || exposedCallCount == 0
-    }
-
-    private mutating func admitCall() -> Int {
+    private mutating func admitCall(_ prepared: ToolChoicePromptPolicy.Prepared) throws -> Int {
+        if !prepared.allowsParallelCalls, exposedCallCount > 0 {
+            throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(
+                ToolNoncomplianceCheck.parallelViolation)
+        }
         defer { exposedCallCount += 1 }
         return exposedCallCount
     }

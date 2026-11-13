@@ -736,6 +736,43 @@ struct GenerationLoopExitThinkingServingTests {
         await bridge.shutdown()
     }
 
+    @Test("on a full Mac a continuation takes its stopped row's place in the whole-Mac allowance; other work is refused",
+          .timeLimit(.minutes(1)))
+    func continuationTakesItsRowsAllowance() async throws {
+        // Every whole-Mac slot is held: the stopped row's slot went to work
+        // that was waiting for it before the continuation could ask.
+        let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
+            .init(total: 8 << 30, active: 0, cache: 0, systemAvailable: 8 << 30)
+        }
+        let width = ServingPerformanceProfiles.legacyWholeMacConcurrency
+        for slot in 0..<width {
+            #expect(budget.serviceBudget.acquire(ownerID: "busy-\(slot)", concurrency: width))
+        }
+        let engine = HeldQueueEngine()
+        let bridge = EngineV2Bridge(engine: engine, modelId: modelID, tokenizer: Self.tokenizer,
+            eosTokenIds: [GemmaThoughtTestTokenizer.turnClose, GemmaThoughtTestTokenizer.eos], defaultMaxTokens: 64,
+            maxConcurrentRequests: 8, kvBytesPerToken: 4_000, kvBudget: budget)
+        let request = MultiModelBatchSchedulerEngine.translate(
+            openAIRequest: try JSONDecoder().decode(OpenAIChatCompletionRequest.self, from: Data("""
+            {"model":"\(modelID)","messages":[{"role":"user","content":"hi"}],"max_tokens":256}
+            """.utf8)), defaultMaxTokens: 64)
+        let prompt = GemmaThoughtTestTokenizer.tokens("<|turn>user\nhi<turn|>\n<|turn>model\n")
+        // Ordinary work is refused as capacity (503 locally; the coordinator re-routes it).
+        var refused: [String] = []
+        for await event in await bridge.submitTokenized(promptTokens: prompt, request: request, requestId: "ordinary") {
+            if case .error(let message) = event { refused.append(message) }
+        }
+        #expect(refused == [EngineV2Bridge.serviceAllowanceExhausted])
+        // The continuation is not: it reaches the engine.
+        let continuation = await EngineAdmissionPriority.$current.withValue(LoopExitThinkingContinuation.admissionPriority) {
+            await bridge.submitTokenized(promptTokens: prompt, request: request, requestId: "continuation")
+        }
+        #expect(engine.submittedPriorities == [1])
+        await bridge.cancel(requestId: "continuation")
+        for await _ in continuation {}
+        await bridge.shutdown()
+    }
+
     @Test("Qwen 3.6: a loop inside the thought ends it with `\\n</think>\\n\\n`, and stops apply to the answer")
     func qwenThoughtLoopEndsInAnAnswer() async throws {
         let engine = ThoughtLoopCBv2Engine(loopInsideThought: true, family: .qwen)

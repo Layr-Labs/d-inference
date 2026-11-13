@@ -110,6 +110,8 @@ final class HarmonyLoopTestEngine: CBv2Engine, @unchecked Sendable {
         case answer
         /// The answer's text alone, repeating itself.
         case answerLoop
+        /// `<|return|>` at once: the model ends the answer without text.
+        case noAnswer
     }
 
     static let clause = Array("We need to check the reservation first. ")
@@ -203,6 +205,8 @@ final class HarmonyLoopTestEngine: CBv2Engine, @unchecked Sendable {
                 stop(200_002)
             case .answerLoop:
                 loop()
+            case .noAnswer:
+                stop(200_002)
             }
         }
         return stream
@@ -313,6 +317,10 @@ struct GenerationLoopExitThinkingHarmonyTests {
         // The model's own scope waits for a header that the exit already fed: it would never match.
         let model = StopHoldback(stopStrings: ["B"], scope: GPTOSSHarmonyTemplateFix.finalChannelStopScope)
         #expect(!model.ingest("Answer: B").stopped)
+        // As in other scopes that start in the answer, a stop that matches only leading whitespace waits for text.
+        let leading = StopHoldback(stopStrings: ["\n"], scope: scope).ingest("\nAnswer: B\nmore")
+        #expect(leading.stopped)
+        #expect(leading.text == "\nAnswer: B")
     }
 
     // MARK: Policy
@@ -538,7 +546,8 @@ struct GenerationLoopExitThinkingHarmonyTests {
     private func serve(
         _ engine: HarmonyLoopTestEngine, tokenizer: HarmonyTestTokenizer = Self.tokenizer, effort: String? = nil,
         maxTokens: Int = 8_192, extra: String = Self.tools, streamCalls: Bool = false,
-        exitSetting: GenerationLoopExitThinkingPolicy.Setting = Self.defaults, finalExit: Bool = true
+        exitSetting: GenerationLoopExitThinkingPolicy.Setting = Self.defaults, finalExit: Bool = true,
+        usage: EngineV2RequestUsageSignal? = nil
     ) async throws -> Outcome {
         let telemetry = TelemetrySink()
         let handle = TokenizerHandle(tokenizer)
@@ -549,7 +558,7 @@ struct GenerationLoopExitThinkingHarmonyTests {
             maxConcurrentRequests: 1, emitTelemetry: { telemetry.add($0) })
         var scheduler = MultiModelBatchSchedulerEngine(registryProvider: {
             ["gpt-oss-20b": .init(tokenizer: handle, modelType: "gpt_oss", engineV2Bridge: bridge)]
-        }, templateControls: ChatTemplateControls(reasoningEffort: effort))
+        }, templateControls: ChatTemplateControls(reasoningEffort: effort), engineV2Usage: usage)
         // The switches as a clean process reads them, whatever this process's environment says.
         scheduler.exitThinkingSetting = exitSetting
         scheduler.gptossFinalExit = finalExit
@@ -816,6 +825,32 @@ struct GenerationLoopExitThinkingHarmonyTests {
         #expect(outcome.info?.promptTokens == first.promptTokens.count)
         #expect(outcome.info?.completionTokens == rowOutput.count + Self.finalExitTokens.count + answerOutput.count)
         #expect(outcome.loopGuardStops == [true])
+    }
+
+    @Test("without tools, a stop string that ends the answer is the request's matched stop sequence")
+    func noToolsStopInTheAnswer() async throws {
+        let engine = HarmonyLoopTestEngine(.analysisLoop, then: .answer)
+        let usage = EngineV2RequestUsageSignal()
+        // "need" is only in the row's analysis (the loop's clause), where stops do not apply.
+        let outcome = try await serve(engine, extra: #","stop":["need","B"]"#, usage: usage)
+        #expect(outcome.error == nil)
+        #expect(engine.requests.count == 2)
+        #expect(engine.requests.last?.stopStrings == ["need", "B"])
+        #expect(outcome.info?.stopReason == "stop")
+        // Matched from the continuation's first token: its output starts inside the final channel.
+        #expect(usage.matchedStopSequence == "B")
+    }
+
+    @Test("without tools, an answer the model ends at once is an empty stop: the model's own end, counted")
+    func noToolsEmptyAnswer() async throws {
+        let engine = HarmonyLoopTestEngine(.analysisLoop, then: .noAnswer)
+        let outcome = try await serve(engine, extra: "")
+        #expect(outcome.error == nil)
+        #expect(engine.requests.count == 2)
+        let rowOutput = try #require(engine.outputs.first)
+        #expect(outcome.content.isEmpty)
+        #expect(outcome.info?.stopReason == "stop")
+        #expect(outcome.info?.completionTokens == rowOutput.count + Self.finalExitTokens.count + 1)
     }
 
     @Test("without tools, an answer that repeats itself after the exit ends as length, with the answer so far")

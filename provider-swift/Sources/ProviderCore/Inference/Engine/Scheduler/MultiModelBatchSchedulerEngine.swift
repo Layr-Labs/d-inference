@@ -836,7 +836,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     var exitThinking = visionPrepared.positionState == nil
                         ? GenerationLoopExitThinkingPolicy.resolve(
                             modelType: modelType, tokenizer: tokenizer.inner,
-                            promptTokens: visionPrepared.promptTokens, logprobs: engineV2Logprobs != nil)
+                            promptTokens: visionPrepared.promptTokens, logprobs: engineV2Logprobs != nil,
+                            declaresTools: prepared.tools?.isEmpty == false, setting: exitThinkingSetting,
+                            finalExit: gptossFinalExit)
                         : nil
                     if exitThinking != nil, await bridge.servesDistributedPair { exitThinking = nil }
                     let loopGuard = GenerationLoopGuardPolicy.resolve(

@@ -40,9 +40,23 @@ final class BudgetOnlyReasoningConformanceTests: XCTestCase {
     }
 
     func testInvalidBudgetsAreStillRefused() {
-        for value in ["0", "-1", "2.5", #""512""#, "true", "{}", "[]"] {
+        for value in ["0", "-1", "2147483648", "9223372036854775807", "2.5", #""512""#, "true", "{}", "[]"] {
             XCTAssertThrowsError(try NemotronSuperPromptContract.controls(body: body(value)))
             XCTAssertThrowsError(try MiMoV26TemplateFix.validateRawControls(body(value)))
+        }
+    }
+
+    func testPositiveBudgetConflictsWithExplicitThinkingOff() throws {
+        for controls in [#""reasoning":{"enabled":false,"max_tokens":2}"#,
+                         #""reasoning":{"effort":"none","max_tokens":2}"#,
+                         #""enable_thinking":false,"reasoning":{"max_tokens":2}"#] {
+            let data = Data("""
+            {"model":"mimo-v2.6-flash-mopd","messages":[{"role":"user","content":"Hello"}],\(controls)}
+            """.utf8)
+            XCTAssertThrowsError(try NemotronSuperPromptContract.controls(body: data))
+            let request = try JSONDecoder().decode(OpenAIChatCompletionRequest.self, from: data)
+            let template = try JSONDecoder().decode(ChatTemplateControls.self, from: data)
+            XCTAssertThrowsError(try MiMoV26TemplateFix.effectiveThinkingEnabled(request: request, controls: template))
         }
     }
 

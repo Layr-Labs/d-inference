@@ -287,6 +287,11 @@ def plan_lanes_text(outcome="1"):
     return evaluate_counts("\n".join(lane_lines(route)[1:]) + "\n", outcome)
 
 
+def run_labels(labels, run_id="40408691758"):
+    """The profile label is replaced, so an older run cannot match these labels."""
+    return [*labels[:-1], f"{labels[-1]}-run-{run_id}"]
+
+
 def sized(size):
     """The Darkbloom macOS labels of a lane sent with this size."""
     return [*MACOS[:-1], f"{MACOS[-1]}-{size}"]
@@ -411,6 +416,57 @@ class RouteStepTests(unittest.TestCase):
                     self.assertRoutes(result, routes)
                     self.assertIn("Routing is off", summary)
         self.assertEqual(plane.requests, [])
+
+    def test_requests_run_scoped_labels_without_changing_route_body(self):
+        with self.plane() as plane:
+            result, _, _ = self.route(plane.url)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        request, = plane.requests
+        self.assertEqual(request["headers"].get("X-Darkbloom-Run-Scoped-Labels"), "1")
+        body = json.loads(request["body"])
+        self.assertEqual(body["run_id"], 40408691758)
+        self.assertEqual(set(body), {"repository", "run_id", "run_attempt", "lanes"})
+
+    def test_accepts_only_current_run_labels_for_both_profiles_and_sizes(self):
+        cases = (("linux_arm64", LINUX, LINUX_FALLBACK, ""),
+                 ("macos_arm64", MACOS, MACOS_FALLBACK, ""),
+                 ("macos_arm64", [*MACOS[:-1], f"{MACOS[-1]}-4x24"], MACOS_FALLBACK, "4x24"))
+        for run_id in ("40408691758", "40408691759"):
+            for profile, plain, fallback, shape in cases:
+                with self.subTest(run_id=run_id, shape=shape, profile=profile):
+                    labels = run_labels(plain, run_id)
+                    offer = reply(probe={"target": "darkbloom", "runs_on": labels})
+                    with self.plane((200, offer, 0)) as plane:
+                        result, routes, _ = self.route(plane.url, RUN_ID=run_id, RUN_ATTEMPT="3",
+                                                      JOB_SHAPES="on",
+                                                      lanes=f"probe {profile} {fallback} 1 {shape}\n")
+                    self.assertRoutes(result, routes, {"probe": labels})
+
+    def test_legacy_or_other_run_grants_keep_the_blacksmith_fallback(self):
+        for labels in (MACOS, run_labels(MACOS, "40408691757"),
+                       [*MACOS, f"{MACOS[-1]}-run-40408691758"]):
+            with self.subTest(labels=labels):
+                offer = reply(probe={"target": "darkbloom", "runs_on": labels})
+                with self.plane((200, offer, 0)) as plane:
+                    result, routes, _ = self.route(plane.url,
+                                                  lanes=f"probe macos_arm64 {MACOS_FALLBACK}\n")
+                self.assertRoutes(result, routes, {"probe": MACOS_FALLBACK})
+
+    def test_two_runs_do_not_select_each_others_registered_runner(self):
+        old, new = "40408691758", "40408691759"
+        responses = [(200, reply(probe={"target": "darkbloom", "runs_on": run_labels(MACOS, run)}), 0)
+                     for run in (old, new)]
+        with self.plane(*responses) as plane:
+            actual = []
+            for run in (old, new):
+                result, routes, _ = self.route(plane.url, RUN_ID=run,
+                                              lanes=f"probe macos_arm64 {MACOS_FALLBACK}\n")
+                self.assertRoutes(result, routes, {"probe": run_labels(MACOS, run)})
+                actual.append(routes["probe"])
+        # GitHub requires every requested label. The old runner retains only
+        # its own run-qualified profile label, never the generic one.
+        self.assertFalse(set(actual[1]).issubset(set(actual[0])))
+        self.assertNotIn(MACOS[-1], actual[0])
 
     def test_request_contract_and_exact_label_grants(self):
         for suffix in ("", "/"):

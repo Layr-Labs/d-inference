@@ -160,7 +160,7 @@ final class GPTOSSForcedToolConstraint: CBv2TokenConstraint, @unchecked Sendable
         }
         let profile = JSONAnswerProfile.gptOSS
         framing = try GPTOSSHarmonyFraming(tokenizer: tokenizer, names: selected.map(\.name),
-            firstAddedTokenID: profile.firstAddedTokenID)
+            firstAddedTokenID: profile.bpeIDs.upperBound)
         guard !vocabulary.stopTokenIDs.contains(framing.end) else {
             throw ToolConstraintSchemaError.invalid("GPT-OSS analysis must not end the request")
         }

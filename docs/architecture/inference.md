@@ -3367,13 +3367,14 @@ stops such a row early.
   (Super, text only), `glm5_next` and `mimo_v2`. `DARKBLOOM_LOOP_GUARD=0`
   (or `off`) turns it off; a comma-separated list of `model_type`s replaces
   the default list.
-- **A loop inside a Gemma 4 thought (or a listed Qwen 3.5/3.6 one) ends the
-  thought, not the answer** (`GenerationLoopExitThinkingPolicy`, `LoopExitThinkingContinuation`).
-  For `gemma4` and `gemma4_text` (on by default) and `qwen3_5_moe` (Qwen 3.5/3.6
+- **A loop inside a Gemma 4 or GPT-OSS thought (or a listed Qwen 3.5/3.6 or
+  Nemotron 3.5 Super one) ends the thought, not the answer** (`GenerationLoopExitThinkingPolicy`, `LoopExitThinkingContinuation`).
+  For `gemma4`, `gemma4_text` and `gpt_oss` (on by default; `gpt_oss` only for a
+  request that declares tools, `toolRequestsOnly`) and `qwen3_5_moe` (Qwen 3.5/3.6
   35B) and `qwen3_5` (Qwen 3.5 9B, Qwen 3.8 27B), listed and off by default (their
   thought loops were too rare in the A/B to show rescues), the guard also
   follows the thought channel (`<|channel>` … `<channel|>`, `<think>` …
-  `</think>`; the prompt's tail seeds the state: Qwen's served template opens
+  `</think>`, `<|channel|>analysis` … `<|end|>`; the prompt's tail seeds the state: Qwen's served template opens
   `<think>` in the prompt) and records
   every token the row produces, the in-flight ones after its stop included. A
   detection inside the thought stops the row as above; the scheduler
@@ -3385,7 +3386,14 @@ stops such a row early.
   continuation on the same bridge: the prompt, every generated
   token and the family's end of thinking (the exit tokens: Gemma's
   `<channel|>`; Qwen's `\n</think>\n\n`, as its template closes a thought, with
-  `</think>` as its own token and the newlines tokenized on each side), with
+  `</think>` as its own token and the newlines tokenized on each side;
+  GPT-OSS's `<|end|><|start|>assistant` (`harmonyAnalysis`): the analysis
+  message ends and the next assistant message starts, as after the model's own
+  analysis, so the model picks `final` for the answer or a
+  `commentary to=functions.…` call; `<|end|>` and `<|start|>` must resolve as
+  their own tokens. Without tools the model reopened its analysis after the exit
+  and looped again in 10 of 10 GPQA loopers on the GPU A/B, so a GPT-OSS request
+  without tools keeps its `length` stop), with
   `max_tokens` = the output the bridge resolved for the row minus the tokens
   produced minus the exit tokens, at most 8,192; the same sampling, stop strings
   and cache scope, the stop strings scoped as for output that starts outside the
@@ -3394,8 +3402,13 @@ stops such a row early.
   as `length`. The client's stream carries the thought, the exit text as one
   chunk and the answer, then one terminal: the original prompt, completion =
   the row's tokens + the exit tokens + the answer's, the continuation's finish
-  reason. The continuation is an ordinary row, so exact MTP drafting
-  stays on for it and its batch; a cancelled row donates no KV, so the
+  reason. (GPT-OSS: the Harmony reasoning parser, streaming and collected, reads
+  `<|end|>` as the analysis's end and `<|start|>assistant` as the next
+  message's role, so neither reaches `content` or `reasoning_content`, and the
+  Harmony tool-call parser holds `<|start|>assistant` until a call header
+  completes in the continuation; the prompt is reused as rendered, its
+  `Reasoning: low|medium|high` included.) The continuation is an ordinary row,
+  so exact MTP drafting stays on for it and its batch; a cancelled row donates no KV, so the
   continuation prefills the thought again (its prompt part can hit the prefix
   cache). When the continuation cannot start (under 256 tokens of budget left,
   the row closed its thought itself (its in-flight tokens after the stop hold
@@ -3409,8 +3422,21 @@ stops such a row early.
   logprobs or on a cluster pair. Never when the exit's tokens do not decode to
   its text. `DARKBLOOM_LOOP_EXIT_THINKING=0` (or `off`)
   turns it off; a comma-separated list keeps it to the listed `model_type`s
-  that have a marker (`gemma4,gemma4_text` is the default; `…,qwen3_5_moe`
-  adds the Qwen 3.5/3.6 35B models, and `…,qwen3_5` the 9B and Qwen 3.8 27B). `darkbloom start` passes it, and `DARKBLOOM_LOOP_GUARD`,
+  that have a marker (`gemma4,gemma4_text,gpt_oss` is the default;
+  `gemma4,gemma4_text` turns GPT-OSS's off; `…,qwen3_5_moe`
+  adds the Qwen 3.5/3.6 35B models, and `…,qwen3_5` the 9B and Qwen 3.8 27B).
+  Nemotron 3.5 Super (`nemotron_h_omni`: listed, off by default until its A/B;
+  `…,nemotron_h_omni` turns it on) takes its owner's own route: its request
+  plan resolves the exit from the rendered prompt
+  (`NemotronSuperRequestPlan.exitThinking`; the exit is `</think>` alone, as its
+  template writes a thought) and `NemotronSuperLocalBinding` continues the
+  answer the same way, within the same admitted request. A cancel or drain
+  during the stopped row's release wait submits no second row (one that races
+  the submission cancels it at once); the request joins the splice and then
+  waits for both rows' terminal observations before the owner's admission
+  returns. The guard follows the last thought marker, Super's reasoning channel
+  the first `</think>`: a model that writes `<think>` in its answer and then
+  loops is continued, and its `</think>` reaches the client as content. `darkbloom start` passes it, and `DARKBLOOM_LOOP_GUARD`,
   to the launchd daemon (`LaunchAgent.inferencePassthroughEnvKeys`). One `darkbloom.loop-guard.exit-thinking` line per ended
   thought gives the outcome.
 - **Image and video requests on one Mac** (`prepareCompletion`'s media path,
@@ -3587,17 +3613,125 @@ spliced across a boundary the reasoning parser later hides. Required and named
 (`provider-swift/Sources/ProviderCore/Inference/Tools/GemmaNoToolTokenConstraint.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Tools/GemmaTokenVocabulary.swift`).
 
+### Constrained Gemma 4 JSON answers
+
+Gemma 4 answers to a JSON `response_format` are sampled under the same JSON
+grammar as constrained Qwen answers (below), with three differences: Gemma's
+vocabulary, its thought framing, and best-effort semantics.
+`ToolConstraintFactory.make` asks `GemmaJSONAnswerPolicy` first: a text request
+on `gemma4` or `gemma4_text` with a JSON `response_format`, no `tools`, no
+`tool_choice` (or a tool-free `auto`), no client `stop`, the `gemma4` reasoning
+parser and the pinned chat template (`TokenizerHandle.toolConstraintContractVerified`)
+gets a `GemmaJSONAnswerConstraint`. The prompt is unchanged.
+
+**Vocabulary.** Gemma's tokenizer is SentencePiece BPE with byte fallback, not
+byte-level BPE. `GemmaAnswerPieces` gives every id the bytes its decoder writes:
+U+2581 becomes a space, a `<0x80>`…`<0xFF>` token is that byte, other pieces are
+their UTF-8 (the provider's tokenizer runs no clean-up for Gemma). The 24 added
+tokens and the `<unusedN>` slots have no piece, and neither do the ASCII
+byte-fallback tokens: a byte-fallback run is decoded as a whole, so what one byte
+becomes depends on its neighbours (a run that is not UTF-8 reads as U+FFFD),
+while every ASCII character JSON needs has a piece of its own. Non-ASCII bytes
+occur only inside strings, where U+FFFD is still a character.
+Before constraining, `GemmaAnswerPieces.vocabulary` checks `<|channel>` 100,
+`<channel|>` 101, `<turn|>` 106 and `<eos>` 1 by id, spelling, encoding and
+decoding, that the tokenizer has exactly 262,144 ids, and that `<turn|>` and
+`<eos>` are engine stop tokens. The
+vocabulary is built on the first such request per loaded tokenizer and stop set
+and cached (two entries).
+
+**Phases.** The rendered prompt's tail selects the first phase
+(`GemmaJSONAnswerPolicy.initialPhase`). Thinking off renders an empty, closed
+thought (`<|turn>model\n<|channel>thought\n<channel|>`), so output starts in the
+answer. Thinking on ends at `<|turn>model\n`, so a thought may open with
+`<|channel>`, or the answer may start at once (whitespace before either stays
+content, so an answer can read `"\n{...}"`, still one JSON value). The thought
+is free text: no EOS or added token other than the two thought markers, and the
+first `<channel|>`, as its token or spelled from ordinary pieces (the stream's
+Gemma parser reads text), ends it. The answer is one JSON value of the request's
+grammar (`JSONAnswerFormat`, `FlintJSONGrammar`);
+no Gemma control spelling can complete in it, strings included. `<turn|>` or
+`<eos>` is allowed once the value is complete, and a value that delimits itself
+(an object, array, string or literal) is followed by the terminator only, never
+by text a client would have to strip. JSON whitespace outside strings runs at
+most 64 bytes (`GemmaJSONAnswerBoundary.maximumWhitespaceRun`), so a model that
+keeps reaching for a refused spelling (a code fence) cannot fill its budget with
+blank lines. States that differ only in a run
+no piece can push past that cap share one mask key (`maskEquivalent`), so
+indentation does not multiply mask builds; a request keeps at most two broad
+allowed sets (about 2 MB each) and the sampler its per-key device masks.
+
+**Best effort.** Unlike constrained Qwen answers, nothing is validated after
+generation (`MultiModelBatchSchedulerEngine` checks only `JSONAnswerConstraint`
+answers): a budget that ends first stays `length` with the partial value, as
+before. A request whose interned states reach the cap
+(`GemmaJSONAnswerConstraint.defaultMaximumStates`, 16,384) continues
+unconstrained instead of failing. A `json_schema` in the shapes common clients
+generate is first rewritten into the shared subset where the result admits
+exactly the same instances (`ResponseSchemaRewrite`: `$ref`s to plainly named
+entries of the root's `$defs`/`definitions` inlined, a one-branch `allOf`
+unwrapped, `anyOf` of one schema and `{"type": "null"}` made nullable, with only
+annotations beside them; `$comment` on every node it rewrites, the root's `$id`
+and a draft-06 to 2020-12 `$schema` dropped; at most 16 levels, 8 references or
+compositions in a row and a bounded amount of copying and hashing,
+`maximumWork`).
+One still outside it (`pattern`, `format`, a recursive `$ref`, a wider `anyOf`,
+an older `$schema`, a nullable enum of 128 values, …) whose root is
+`"type": "object"` is held to a JSON object; any other
+unsupported schema, an unpinned template or tokenizer, another
+prompt end or a nonpositive budget keeps prompt-only steering with one
+content-free line (category `json-answer`). An engine that runs no token
+constraint (a cluster pair or a native-tracked engine) would refuse one, so
+`EngineV2Bridge.admittedConstraint` submits the request there unconstrained.
+`DARKBLOOM_GEMMA_JSON_ANSWERS=off` restores prompt-only answers everywhere.
+
+**Speculative decoding.** A constrained row never drafts
+(`EngineLoopV2.mtpBasicEligible`), and Gemma's target is not recurrent, so a
+step that holds one runs target-only for every row in it, as for a `stop`,
+penalty or logprob row (see the Qwen notes below). Rows in steps without one
+are unchanged.
+
+Sources: `provider-swift/Sources/ProviderCore/Inference/Tools/GemmaJSONAnswerPolicy.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Tools/ResponseSchemaRewrite.swift`,
+`provider-swift/Sources/ProviderCore/Inference/GemmaJSONAnswerConstraint.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`.
+
 ### Constrained Qwen JSON answers
 
-The format instruction alone leaves some Qwen answers outside the requested
-schema: a near-miss key, a string for an integer, or prose. On the Qwen text
-path the answer is therefore sampled under a grammar, as on
-[exact Flint](#native-flint). `ToolConstraintFactory.make` asks
-`QwenJSONAnswerPolicy` before any tool-choice constraint: a text request on
-`qwen3_5` or `qwen3_5_moe` with a JSON `response_format`, no `tools`, no
-`tool_choice` and the `qwen3` reasoning parser gets a `JSONAnswerConstraint`.
-The prompt is unchanged (the service's format instruction and the no-thinking
-default above), so the coordinator prompt sidecar needs no rule.
+Qwen, Bonsai 2 27B and Nemotron 3.5 Lightning share this machinery.
+The format instruction alone leaves some answers outside the requested schema:
+a near-miss key, a string for an integer, an invented key under
+`additionalProperties: false`, a raw newline inside a string, or prose. On the
+text path of the families with a pinned answer contract the answer is therefore
+sampled under a grammar, as on [exact Flint](#native-flint).
+`ToolConstraintFactory.make` asks `JSONAnswerPolicy` before any tool-choice
+constraint: a text request with a JSON `response_format`, no `tools`, no
+`tool_choice` and the `qwen3` reasoning parser gets a `JSONAnswerConstraint`
+when its model is admitted (`JSONAnswerPolicy.profile`):
+
+| Family | Admission | Contract (`JSONAnswerProfile`) |
+|---|---|---|
+| Qwen 3.5, 3.6, 3.8 | `model_type` `qwen3_5` or `qwen3_5_moe` | `qwen35` |
+| PrismML Bonsai 2 27B | `prism_hadamard_qwen35` and a 27B listing id (`EngineV2SupportedModels.isBonsai2ListingModelID`; the 9B shares the type) | `bonsai2`: Qwen 3.5's tokenizer and ids, its own name in messages, `<|im_end|>` its one terminator |
+| Nemotron 3.5 Lightning | `nemotron_h` and a Lightning listing id (`EngineV2SupportedModels.isNemotron35ListingModelID`; Nano shares the type) | `nemotron35` |
+
+Bonsai and Lightning are admitted for their answers only
+(`JSONAnswerProfile.constrainsReasoning` false): a prompt that opens a thought
+keeps prompt-only steering, silently and before the schema compiles, as it is
+Lightning's default. A constrained row never drafts and, on Lightning's target,
+no row in its decode step does (below); Lightning's reasoning runs long, and
+both families' thinking answers met the schema in the checks that motivated
+them. Neither is constrained on a cluster pair, which refuses any token
+constraint before reserving (`constrainedDecodingUnsupported`); their pairs
+keep prompt-only service. Qwen keeps both, as before. The Bonsai 2 9B is not
+admitted: it drafts, and its JSON prompts render thinking off by default, so
+each of its JSON rows would stop its whole decode cohort from speculating.
+
+`DARKBLOOM_JSON_ANSWER_GRAMMAR=qwen` (or `0`, `off`, `false`, `no`, `none`)
+keeps the grammar to the Qwen types, as before Bonsai and Lightning were
+admitted (read once per process; forwarded to the LaunchAgent). The prompt is
+unchanged (the service's format instruction and the Qwen no-thinking default
+above), so the coordinator prompt sidecar needs no rule.
 
 The rendered prompt's tail selects the first phase
 (`JSONAnswerProfile.initialPhase`, through `ReasoningPromptProbe.streamingPrefix`).
@@ -3608,18 +3742,27 @@ reasoning, which stays free except that every EOS is masked, the spellings
 one JSON value of the grammar compiled from the schema (`JSONAnswerFormat`: the
 shared fail-closed subset and the byte-level `FlintJSONGrammar` automaton), so
 declared properties are the only keys generated. `<think>`, `</think>`,
-`<tool_call>`, `</tool_call>`, `<function=`, `<|im_start|>`, `<|im_end|>` and
-`<|endoftext|>` cannot complete anywhere in it, strings included, and
-`<|im_end|>` or `<|endoftext|>` is allowed only once the value is complete.
+`<tool_call>`, `</tool_call>`, `<function=`, `<|im_start|>`, `<|im_end|>` and,
+for Qwen and Bonsai, `<|endoftext|>` cannot complete anywhere in it, strings
+included, and an answer terminator is allowed only once the value is complete.
+Lightning's `</s>` has no piece, so its spelling (an HTML close tag) stays
+writable.
 
-`JSONAnswerVocabulary` admits the byte-level BPE ids below `<|endoftext|>`
-(248044) and the `<think>`/`</think>` tokens only. Other added and special tokens
-and the model's padding up to 248,320 ids are never allowed. Before constraining,
-it checks `<think>` 248068, `</think>` 248069, `<|im_end|>` 248046 and
-`<|endoftext|>` 248044 by id, spelling, encoding and decoding, that every base
-id decodes as a byte-level piece, and that both terminators are engine stop
-tokens. It is built on the first such request per loaded tokenizer and stop set
-and cached like Flint's (`TokenizerVocabularyCache`, four entries).
+`JSONAnswerVocabulary` admits the profile's byte-level BPE ids and its
+`<think>`/`</think>` tokens only; other added and special tokens and the model's
+padding are never allowed. Qwen and Bonsai: BPE ids below `<|endoftext|>`
+(248044), padding up to 248,320, the markers `<think>` 248068, `</think>` 248069;
+Qwen's terminators are `<|im_end|>` 248046 and `<|endoftext|>` 248044, Bonsai's
+`<|im_end|>` alone (its 27B artifact names no other EOS; a slot that also stops
+at 248044 never samples it). Lightning: its 1,000 special and added tokens come
+first, BPE ids 1000–131071, the markers `<think>` 12 and `</think>` 13 (ordinary
+output pieces), terminators `<|im_end|>` 11 and `</s>` 2 (the checkpoint's two
+EOS ids). Before constraining, it checks that every terminator is an engine
+stop token (first, so a mismatched slot never decodes the vocabulary), each
+marker and terminator by id, spelling, encoding and decoding, and that every id
+in the BPE range decodes as a byte-level piece. It is built on the first such
+request per loaded tokenizer and stop set and cached like Flint's
+(`TokenizerVocabularyCache`, four entries).
 
 A constraint's budget must equal the engine request's `maxTokens`, or the engine
 refuses it (`CBv2SchedulerError.tokenConstraintBudgetMismatch`). The bridge
@@ -3638,25 +3781,69 @@ ends the answer as a normal `length` finish with its content as generated
 apply as for the other Qwen requests; a stop that cuts the value short fails the
 same check.
 
+Constraining keeps an answer inside the schema, not on topic: a model that wants
+a key the schema forbids may keep writing the string it is in (one Lightning
+answer ran 1,955 tokens repeating its `reply` before closing it), and one asked
+for a `json_object` without a JSON-shaped prompt may put its prose in a key.
+These rows have no loop guard; a long one ends at `max_tokens` as a `length`
+finish with its answer as generated (unchecked).
+
+**Client schemas outside the subset (Qwen).** On the Qwen profile a
+`json_schema` the subset refuses is widened before it is declined
+(`QwenJSONSchemaRewrite`; `DARKBLOOM_QWEN_JSON_SCHEMA_REWRITE`, on by default,
+an off word restores the decline; read once per process; forwarded to the
+LaunchAgent). It is rewritten exactly when it can be, as Pydantic, OpenAI's
+strict mode and zod write it (`ResponseSchemaRewrite`, as for
+[Gemma](#constrained-gemma-4-json-answers): `$defs`/`definitions` references
+inlined, a one-branch `allOf`, `anyOf` with null made nullable, a draft-06 to
+2020-12 `$schema` dropped). Otherwise its value assertions are dropped
+(`ResponseSchemaRewrite.valueAssertions`: `minimum`, `maximum`, `pattern`,
+`format`, `minLength`, `maxLength`, `multipleOf`, `uniqueItems`, …; item bounds
+beyond 16; on an open node, one that declares no properties and wraps no
+reference or composition, also `keyAssertions` such as `minProperties` or
+`not`, and an `additionalProperties` schema becomes `true`): the grammar keeps the structure, types, enums and required keys, and
+the values are the model's. This is a superset of the schema under the subset's
+closed objects (an object that declares properties generates only those keys,
+as for every constrained schema), so a catch-all or a key count beside declared
+properties, or beside a reference or composition, stays and the schema falls
+back. An object root the subset still
+cannot shape (a union, `patternProperties`, …) is held to a JSON object. A
+widened answer is best effort, as these requests were unconstrained before: the
+provider's check when generation ends passes it (`JSONAnswerFormat.unchecked`;
+Gemma's exact rewrite keeps its check), so that check never refuses it,
+whatever its values or finish. Two refusals remain as on any path: the local
+non-streaming API checks the request's own schema in the SDK
+(`OpenAIResponseFormatSupport`), as it does for prompt-only answers, and an
+answer that exhausts the grammar's interned states fails like any constrained
+answer (`tool_constraint_impossible_state`). The grammar's integers have at
+most 15 digits. Each widened answer logs one content-free line. Bonsai and
+Lightning keep declining these schemas.
+
 Every other case keeps prompt-only steering and gains no refusal. A schema
-outside the subset (including an enum value containing a forbidden spelling), a
-tokenizer that fails the checks, a prompt tail without a think marker or a
-nonpositive budget logs one content-free private line (category `json-answer`).
+outside the subset that is not widened (including an enum value containing a
+forbidden spelling), a tokenizer that fails the checks, a prompt tail without a think marker or a
+nonpositive budget logs one content-free private line (category `json-answer`);
+a Bonsai or Lightning prompt that opens a thought logs nothing.
 Tools or `tool_choice` beside the format keep today's behavior; Flint's
 format-over-tools precedence does not apply. Image and video requests take the
 media path, which installs no token constraint.
 
-A constrained row never drafts (`EngineLoopV2.mtpBasicEligible`). Qwen 3.5
-targets do not declare the row-exact recurrent fallback
+A constrained row never drafts (`EngineLoopV2.mtpBasicEligible`). Neither the
+Qwen 3.5 targets nor Lightning's declare the row-exact recurrent fallback
 (`CBv2RecurrentMTPRequestScopedMediaFallback`), so
 `ineligibleRowsDecodeBesideSpeculation` is false for their MTP driver and
 `EngineLoopV2.mtpDraftBatchRows` keeps the whole cohort: while a constrained
 row is in a decode step, no row in that step speculates. A `stop`,
 `logit_bias`, penalty or logprob row has the same effect on these engines.
 Decoding such rows beside speculation needs that SDK capability and row-exactness
-evidence for the Qwen target.
+evidence for each target. Bonsai 2 27B has no drafter. Lightning drafts, so only
+its answer-first prompts (thinking off) are constrained: those trigger it, and
+every Lightning row sharing their decode step, thinking or not, stops
+speculating meanwhile.
 
-Sources: `provider-swift/Sources/ProviderCore/Inference/Tools/QwenJSONAnswerPolicy.swift`,
+Sources: `provider-swift/Sources/ProviderCore/Inference/Tools/JSONAnswerPolicy.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Tools/QwenJSONSchemaRewrite.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Tools/ResponseSchemaRewrite.swift`,
 `provider-swift/Sources/ProviderCore/Inference/JSONAnswerProfile.swift`,
 `provider-swift/Sources/ProviderCore/Inference/JSONAnswerVocabulary.swift`,
 `provider-swift/Sources/ProviderCore/Inference/JSONAnswerConstraint.swift`,
@@ -3864,10 +4051,11 @@ breaking a contract, and OpenRouter does not count a call cut by the caller's
   end unparseable, as in an OpenAI stream the limit cut, and no client can run
   the call; the stream finishes `length`. A call not yet exposed is not
   exposed.
-- A constrained JSON answer (exact Flint, constrained Qwen) skips its final
-  check. GLM's withheld JSON answer leaves normalized when it already holds a
-  whole valid value (the candidate extraction, as before), and otherwise as
-  generated (`GLM5NextResponseFormatOutput.finalAnswer`).
+- A constrained JSON answer (exact Flint; Qwen, Bonsai 2 27B and Lightning
+  under the JSON-answer grammar) skips its final check. GLM's withheld JSON
+  answer leaves normalized when it already holds a whole valid value (the
+  candidate extraction, as before), and otherwise as generated
+  (`GLM5NextResponseFormatOutput.finalAnswer`).
 - Withheld calls (forced choices, native families, `DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0`)
   whose set fails its checks are checked one by one, and a call that fails is
   dropped instead of refused: forced choices hold every call to its schema, as
@@ -4123,6 +4311,79 @@ render `high`, which #703 capped at `medium` to avoid upstream timeouts. So a
 provider release with them is tagged without being published to auto-update,
 snapshotted into #721, and published only once #721 is deployed, each step on
 the owner's go.
+
+### Strict tool-call grammar
+
+A `strict` `auto` call is checked against the caller's schema only when its
+frame closes ([streamed auto tool calls](#streamed-auto-tool-calls)), after the
+answer has started, so on the Qwen 3.5 template family (`qwen3_5`,
+`qwen3_5_moe`: Qwen 3.5 9B and 35B, 3.6 and 3.8) the provider can also
+constrain such calls in the sampler. By default it does so on the MoE builds
+(`qwen3_5_moe`: Qwen 3.6 and Qwen 3.5 35B), which do not draft with MTP by
+default (their cards' presence penalty), and on Qwen 3.8 27B (`qwen3.8-27b`),
+whose strict calls that missed their schemas were its main remaining failure,
+at the cost of its MTP on those answers (see below). The coordinator turns the grammar off for a build by
+forwarding its tools without `strict` (`EIGENINFERENCE_STRICT_TOOLS_UNMARK_MODELS`).
+The 9B drafts too, so a Mac opts it in (`DARKBLOOM_STRICT_TOOL_GRAMMAR=on` or a
+list, [configuration](../reference/configuration.md)). `QwenStrictToolGrammar` (in
+`provider-swift/Sources/ProviderCore/Inference/Tools/`) admits a request that
+is `auto`, declares a `strict` function (any tools with
+`DARKBLOOM_STRICT_TOOL_GRAMMAR_ALL_TOOLS`), parses with `.qwen35`, has no media,
+runs on an engine that samples under token constraints (not a cluster pair, not
+a native-tracked engine) and whose prompt ends in an open or closed think
+block; the scheduler's text path asks it after `ToolConstraintFactory`. Every
+declared tool must compile (`QwenStrictToolSchema`): local `$ref`s are inlined
+(cycles refused), `anyOf`/`oneOf` of one schema and `null`, a single `allOf`
+branch and objects beside an open object are folded (also with the render
+repair's `type` and empty `properties` beside the union, as the coordinator
+forwards Tau2's tools), annotations (`format` included) are dropped, and the
+rest must fit the shared fail-closed subset
+(`ToolConstraintSchemaCompiler.compileResponseSchema`). Anything else, an
+unrecognized prompt boundary or a vocabulary that does not verify leaves the
+request as before, with a content-free log line, never a refusal.
+
+`QwenStrictToolConstraint` is a byte-level automaton over the shared Qwen
+vocabulary contract (`JSONAnswerVocabulary` with the call markers as pieces).
+Reasoning and text are free and only watched for `</think>` and `<tool_call>`;
+they admit every byte-level piece, the think and call markers and the stop
+tokens, so an answer can end wherever it could before (the other added tokens,
+such as `<|im_start|>` or the media placeholders, are not sampled). After
+`<tool_call>`, whitespace may precede `<function=`, where the call commits; a
+first other byte is no call the parser can read, so the answer goes on as text,
+as without the grammar (`{`, the JSON dialect, and a non-ASCII byte, which could
+be whitespace the parser skips, are refused). Inside a call every byte follows
+the template's framing (`<function=NAME>\n`, `<parameter=KEY>\nVALUE\n</parameter>\n`,
+`</function>\n</tool_call>`): a declared function, declared parameters at most
+once, required ones before `</function>`; with `parallel_tool_calls: false` no
+second call opens. A value's grammar follows how `Qwen35ToolCallParser` reads it
+under the rendered schema (`QwenStrictToolSchema.parserConversion`, a mirror of
+the SDK's `ToolArgumentNormalization` that `QwenStrictToolGrammarTests` checks
+against the parser): text the parser keeps as a string is free (or one of an
+enum's values), and a value it converts is one JSON value of the declared
+schema (`FlintJSONGrammar`). The request stays unconstrained where the parser's
+reading and the declared type disagree (a top-level `$ref` the render repair
+typed as a string) or where the streamed call would expose a converted value as
+text (`QwenStrictToolSchema.streamsAsText`, the mirror of
+`Qwen35ArgumentStreamer`, for example a `{"type":"null"}` parameter). No value
+can spell `</parameter>` or a turn, reasoning or call marker, and a JSON value
+never writes a surrogate escape (`\uD800`…`\uDFFF`; the parser's
+JSONSerialization refuses a lone one and the value would stay a string; an
+escaped backslash followed by such text is refused too). The validator still
+checks every call.
+
+Calls drafted inside the thought are reasoning to the grammar. Where the Qwen
+route parses calls before it splits off the reasoning, such a call is parsed
+and checked like any other, unconstrained; where the reasoning is split first,
+only a call at the end of a thought that never closes is. The loop guard stays on
+(`GenerationLoopGuardPolicy`); the continuation after an exited thought runs
+without the grammar. As with constrained JSON answers (above), a constrained row
+never drafts MTP tokens and, on these engines, no row of a decode step it shares
+speculates (`ineligibleRowsDecodeBesideSpeculation` is false). Where a Mac would
+draft (at most `maxSpeculativeBatch` decode rows, 8 by default; the 3.6 and 35B
+cards' presence penalty keeps those builds from drafting unless a request sets
+`presence_penalty: 0`), the whole constrained answer, reasoning included, and
+every answer decoding beside it run target-only while it decodes. That is why
+the 9B takes the grammar only when a Mac opts in.
 
 ### Vision constraints
 
@@ -5032,7 +5293,7 @@ these sources recursively (`provider-swift/Package.swift`, `package`).
 | MTP | `provider-swift/Sources/ProviderCore/Inference/MTP/MTPAutomaticVerificationPolicy.swift`, `provider-swift/Sources/ProviderCore/Inference/MTP/EngineV2MTPAssistant.swift`, `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/MTPContractsV2.swift` |
 | Vision | `provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift`, `provider-swift/Sources/ProviderCore/Inference/Vision/VisionTowerBudget.swift`, `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionTowerRun.swift`, `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionPrefill.swift` |
 | Tool constraints, reasoning probe | `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintFactory.swift`, `provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningPromptProbe.swift` |
-| Constrained JSON answers | `provider-swift/Sources/ProviderCore/Inference/Tools/QwenJSONAnswerPolicy.swift` (`QwenJSONAnswerPolicy`), `provider-swift/Sources/ProviderCore/Inference/Prompting/JSONAnswerFormat.swift` (`JSONAnswerFormat`, `JSONAnswerOutput`), `provider-swift/Sources/ProviderCore/Inference/JSONAnswerConstraint.swift`, `provider-swift/Sources/ProviderCore/Inference/ByteLevelVocabulary.swift` |
+| Constrained JSON answers | `provider-swift/Sources/ProviderCore/Inference/Tools/JSONAnswerPolicy.swift` (`JSONAnswerPolicy`), `provider-swift/Sources/ProviderCore/Inference/JSONAnswerProfile.swift` (`JSONAnswerProfile`), `provider-swift/Sources/ProviderCore/Inference/Prompting/JSONAnswerFormat.swift` (`JSONAnswerFormat`, `JSONAnswerOutput`), `provider-swift/Sources/ProviderCore/Inference/JSONAnswerConstraint.swift`, `provider-swift/Sources/ProviderCore/Inference/ByteLevelVocabulary.swift` |
 | Engine contracts, timing, scheduler, loop | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2Contracts.swift`, `SchedulerV2.swift`, `EngineLoopV2.swift`, `CBv2RequestTiming+Stamps.swift` |
 
 ### Native Flint

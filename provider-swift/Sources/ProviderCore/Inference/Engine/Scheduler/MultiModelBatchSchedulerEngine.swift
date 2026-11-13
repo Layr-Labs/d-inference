@@ -1071,7 +1071,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         }
 
         // Parser resolution precedes both text and qualified native media.
-        let tokenConstraint: (any CBv2TokenConstraint)?
+        var tokenConstraint: (any CBv2TokenConstraint)?
         do {
             try checkFirstContentDeadline()
             guard let bridge = engineV2Bridge else {
@@ -1094,7 +1094,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     modelId: request.model, modelType: modelType),
                 defaultMaxTokens: bridge.defaultMaxTokens,
                 stopTokenIDs: bridge.stopTokenIds,
-                nativePromptTokens: promptTokens)
+                nativePromptTokens: promptTokens,
+                servesDistributedPair: request.responseFormat?.requiresJSONOutput == true
+                    ? await bridge.servesDistributedPair : false)
             // Grammar compile (Gemma) can take the tool-constraint lock on the
             // first build per stop-set, and a JSON answer builds its vocabulary
             // on the first request per tokenizer; only those are worth a lock.
@@ -1106,6 +1108,22 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             await releaseBox.fire()
             throw error
         }
+        // `strict` calls on the Qwen 3.5 text route: their arguments follow the
+        // declared schemas in the sampler. A request the grammar declines, or
+        // a slot that cannot run it, is served as before.
+        if tokenConstraint == nil, let bridge = engineV2Bridge,
+           QwenStrictToolGrammar.isEnabled(modelId: request.model, modelType: modelType),
+           QwenStrictToolGrammar.isCandidate(prepared: prepared, parser: toolHandler?.format) {
+            let start = SuspendingClock.now
+            let pair = await bridge.servesDistributedPair
+            let native = await bridge.tracksNativeShutdown
+            tokenConstraint = QwenStrictToolGrammar.constraint(
+                prepared: prepared, request: request, parser: toolHandler?.format, tokenizer: tokenizer,
+                modelType: modelType, defaultMaxTokens: bridge.defaultMaxTokens, stopTokenIDs: bridge.stopTokenIds,
+                promptTokens: promptTokens, runsTokenConstraints: !pair && !native)
+            // The first such request per tokenizer builds its vocabulary.
+            profile?.markDuration(.toolConstraint, start: start)
+        }
         let answerStopFilter = (tokenConstraint as? FlintAnswerStopConstraint)?.makeStreamFilter()
         // A constrained JSON answer is validated when generation ends, so its
         // reasoning must already be a separate channel: validation sees only
@@ -1115,7 +1133,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // single Mac's text row without logprobs (`GenerationLoopExitThinkingPolicy`).
         var exitThinking = GenerationLoopExitThinkingPolicy.resolve(
             modelType: modelType, tokenizer: tokenizer.inner, promptTokens: promptTokens,
-            logprobs: engineV2Logprobs != nil, setting: exitThinkingSetting)
+            logprobs: engineV2Logprobs != nil, declaresTools: prepared.tools?.isEmpty == false,
+            setting: exitThinkingSetting)
         if exitThinking != nil, await engineV2Bridge?.servesDistributedPair != false { exitThinking = nil }
         let loopGuard = GenerationLoopGuardPolicy.resolve(
             modelType: modelType, request: request, prepared: prepared, tokenConstraint: tokenConstraint,
@@ -1230,6 +1249,13 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     guard await bridge.waitForRowRelease(requestId: requestId, within: .seconds(5)) else {
                         throw LoopExitThinkingContinuation.RowNotReleased()
                     }
+                    // A consumer that stopped reading the spliced stream (its
+                    // `onTermination(.cancelled)` cancels this task) gets no
+                    // continuation row. A cancel that reaches only the splice's
+                    // `Control` (the local API's disconnect hook) is seen once the
+                    // row is submitted, and cancels it at once (closing that
+                    // window is a follow-up).
+                    try Task.checkCancellation()
                     var next = base
                     next.maxTokens = budget
                     // As model calibration submits: the request's prompt progress
@@ -2013,10 +2039,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 let cutAtLimit = prepared.cutAtLimit(finishReason: stopReason)
                     && answerStops?.matchedSequence == nil
                 /// The answer's own end checks, after the calls': constrained
-                /// response_format (exact Flint, Qwen) holds the completed
-                /// content, not a truncated or schema-invalid prefix, and GLM's
-                /// withheld JSON answer leaves only once it validates; a cut
-                /// answer leaves as generated.
+                /// response_format (exact Flint, the JSON-answer families) holds
+                /// the completed content, not a truncated or schema-invalid
+                /// prefix, and GLM's withheld JSON answer leaves only once it
+                /// validates; a cut answer leaves as generated.
                 /// At a cut: a structured answer whose check, which the cut
                 /// skips, would have refused it.
                 var answerLeftUnchecked = false
@@ -2246,6 +2272,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         promotesTrailingReasoningCalls: Bool = false,
         recordsWithheldOutput: Bool = false,
         usageSignal: EngineV2RequestUsageSignal = EngineV2RequestUsageSignal(),
+        preserveInnerReasoningSpans: Bool = false,
+        absorbStrayThinkClose: Bool = false,
         answerStopFilter: FlintAnswerStopFilter? = nil,
         answerFormat: JSONAnswerFormat? = nil,
         rewriteHarmonyFinalHeaders: Bool = false
@@ -2254,7 +2282,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             toolHandler: toolHandler, prepared: prepared, releaseBox: releaseBox,
             usageSignal: usageSignal, reasoningPrefix: reasoningPrefix,
             nativeReasoningPrefix: nativeReasoningPrefix, recordsWithheldOutput: recordsWithheldOutput,
-            promotesTrailingReasoningCalls: promotesTrailingReasoningCalls,
+            preserveInnerReasoningSpans: preserveInnerReasoningSpans,
+            promotesTrailingReasoningCalls: promotesTrailingReasoningCalls, absorbStrayThinkClose: absorbStrayThinkClose,
             answerStopFilter: answerStopFilter, answerFormat: answerFormat,
             rewriteHarmonyFinalHeaders: rewriteHarmonyFinalHeaders)
     }

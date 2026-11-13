@@ -21,6 +21,7 @@ verification details are on this page too.
 
 - Gemma 4 no longer gets stuck repeating a thought: when its reasoning starts to loop, it stops thinking and answers.
 - Qwen 3.5 and 3.6 can do the same when their operator turns it on; it is off by default for now.
+- Nemotron 3.5 Super can do the same when its operator turns it on; it is off by default until it has been measured.
 - When you set up a two-Mac pair, the second Mac no longer says "Stopped" while the first Mac downloads the model.
 - GLM-5.3-Flash no longer turns requests away on an idle Mac after a run of long prompts: memory kept from finished requests is given back when a new one needs it.
 - GLM-5.3-Flash and MiMo no longer turn long requests away on an idle Mac because a short one ran just before: the time a long prompt needs is no longer guessed from a few-token prompt.
@@ -37,6 +38,11 @@ verification details are on this page too.
 - A GLM-5.3 answer that mentions a tool tag in passing no longer fails.
 - Answers about images and videos that repeat themselves word for word stop early too.
 - Optional: GLM-5.3 can return a JSON answer that misses the requested schema instead of an error, for the caller to judge.
+- Gemma 4 answers in exactly the JSON format you ask for.
+- Qwen tool calls marked strict always match their schemas.
+- Bonsai 2 27B and Nemotron 3.5 Lightning answer in exactly the JSON format you ask for.
+- Qwen JSON answers follow schemas written with Pydantic, OpenAI or zod.
+- GPT-OSS no longer runs out of tokens repeating its reasoning on tool requests: it stops and answers or calls a tool.
 
 - **A Gemma 4 thought that repeats itself verbatim now ends in an answer:** the loop guard closes the thought and the model answers in the same response (at most 8,192 tokens, within the request's budget), instead of ending as `length` with no answer. A loop in the answer still ends as `length`. Gemma 4 only; never with logprobs or on a pair; `DARKBLOOM_LOOP_EXIT_THINKING=0` turns it off (#2040).
 - **Setting up a pair no longer says "Stopped" while the leading Mac downloads:** the joining Mac ends its screen only on a stop someone asked for, and such a stop now ends the leading Mac's start at once, also during the download or the load (#2042).
@@ -56,9 +62,15 @@ verification details are on this page too.
 - **GPT-OSS honours `tool_choice` `required` and a named function:** the model reasons first, at the request's `reasoning_effort`, then writes only a call to a declared function with arguments that match its schema, arriving as `tool_calls` (before, these requests were refused with 400 `tool_choice_unsupported`). The coordinator sends them only to Macs on this release, never to a pair. `DARKBLOOM_GPTOSS_FORCED_TOOLS=off` turns it off (#2045).
 - **GLM-5.3-Flash and MiMo no longer refuse long prompts because of a short prompt's speed:** an idle Mac priced every prompt's prefill from the last cold prompt it ran, whatever its size. A few-token prompt reads as 9-140 tokens per second (its fixed setup) on GLM Macs that read long prompts at 1,400-2,000, so they refused nearly every longer request as `deadline_unreachable` (1,300 of the 1,452 requests of OpenRouter's Tau2 run on GLM) and never measured one. A prompt of up to 4,096 tokens may now raise that estimate but never lower it, and an idle Mac with no recent calibration or longer-prompt reading prices prefill at no less than its own calibration. GLM and MiMo only. `DARKBLOOM_TTFT_NATIVE_PREFILL_EVIDENCE=0` restores 0.10.12's behaviour (#2072).
 - **GLM-5.3-Flash no longer refuses requests on an idle Mac whose KV pool kept its free memory:** the pool now returns its free segments before retrying a refused lone request (waiting up to 10 s while the previous request's prefix checkpoint is published) and after 30 s idle. On 0.10.12 the pool kept every segment and each prefix-cache restore added more, until a request arriving at an idle 256 GB Mac failed as `capacity_busy` right after admission (about 3,960 a day), which also put the Mac into the coordinator's capacity cooldown. GLM only. `DARKBLOOM_NATIVE_SEGMENT_RELEASE=0` restores 0.10.12's behaviour (#2060).
+- **Nemotron 3.5 Super can end a repeating thought in an answer (off by default):** `DARKBLOOM_LOOP_EXIT_THINKING=gemma4,gemma4_text,nemotron_h_omni` turns it on. When the loop guard stops a verbatim loop inside Super's thought, the provider ends the thought (`</think>`, as Super's template does) and the model answers within the same request, instead of ending as `length` with no answer. Off by default until its A/B. Never with logprobs, media or on a pair (#2061).
+- **A GPT-OSS analysis that repeats itself now ends in an answer or a tool call** on requests that declare tools: the provider closes the analysis and the model writes its final answer or call in the same response (on 126 Tau2 airline turns, turns with nothing fell from 74 to 38). Requests without tools keep the `length` stop. `DARKBLOOM_LOOP_EXIT_THINKING=gemma4,gemma4_text` turns it off for GPT-OSS (#2070).
+- **Strict Qwen tool calls always match their schemas:** on one Mac, a call to a function declared `strict: true` is constrained while it is sampled, so it can no longer miss its schema and fail the response partway. On by default for Qwen 3.8 27B, Qwen 3.6 35B and Qwen 3.5 35B (Qwen 3.5 9B when a Mac opts in). While such an answer decodes, drafting pauses on that Mac, so a lone strict answer on Qwen 3.8 decodes at about 50 instead of 120 tokens per second. Schemas the grammar can't hold exactly are served as before. `DARKBLOOM_STRICT_TOOL_GRAMMAR=off` turns it off on a Mac (#2069).
+- **Gemma 4 JSON answers follow the requested format:** with a JSON `response_format` the answer after the thought is exactly one JSON value of that format, with no code fences or extra text, including schemas written with `$defs`/`$ref` or optional fields (100 of 100 valid in our test, up from 87). Requests the grammar doesn't cover and pairs are answered as before. `DARKBLOOM_GEMMA_JSON_ANSWERS=off` turns it off (#2071).
+- **Valid JSON answers on Bonsai 2 27B and Nemotron 3.5 Lightning:** a JSON `response_format` request whose answer starts without a thought is sampled under the same grammar the Qwen 3.5 family uses, so the answer is one JSON value of the requested schema. `DARKBLOOM_JSON_ANSWER_GRAMMAR=qwen` keeps the grammar to Qwen (#2075).
+- **Qwen JSON answers follow Pydantic, OpenAI and zod schemas:** schemas with nested models (`$defs`/`$ref`), optional fields or value limits are now constrained too: the structure, types, enums and required keys are enforced, and a value limit the grammar can't hold is left to the caller; never a refusal. A long JSON answer decodes without drafting, so alone it is slower (about 52 instead of 123 tokens per second on Qwen 3.8). `DARKBLOOM_QWEN_JSON_SCHEMA_REWRITE=off` restores today's behaviour (#2084).
 - **Rollout:** a patch release over 0.10.12 with only the fixes below; nothing else from `dev` rides. Pairs: both Macs must run the same version, and a pair on 0.10.12 updates itself. `darkbloom update --rollback` puts back 0.10.12.
 - The registration keeps 0.10.12's fields and cluster runtime facts; `libs/mlx` (72dffa2d), `libs/mlx-swift` (b1c94d29) and the Xcode 27.2 toolchain are unchanged, so `mlx.metallib` is unchanged.
-- The 18 entries below are the pending fragments rendered verbatim, except where the release notes reword one; CI-only entries change no provider behaviour.
+- The 24 entries below are the pending fragments rendered verbatim, except where the release notes reword one; CI-only entries change no provider behaviour.
 
 ### A pair being set up is no longer called stopped while the leading Mac downloads
 
@@ -75,6 +87,11 @@ verification details are on this page too.
 
 - Gemma 4 sometimes writes a string argument without its quote marker. Every such value was read as JSON, so a string parameter's `01000` reached the client as the number 1000, `1.10` as 1.1, `007` as 7 and a 20-digit id as an inexact number, and a `strict` tool failed the call partway through the stream.
 - Such a value is now read by its parameter's type, at any depth, as vLLM does: a parameter that takes a string keeps the text the model wrote, and number, integer and boolean parameters read it as before. The type is the one Gemma is shown: a parameter declared without a type (or as `{}`) is shown as a string and a union as its first member's type, so an unquoted `5` there now stays "5" where vLLM, reading the declared schema, returns 5; both are valid for the declared schema, except for an `enum` that mixes types on a parameter shown as a string (untyped, or a union that lists the string first, as `Literal["a", 1]` declares it), where an unquoted `1` now reads "1". A value in quote markers stays a string even for an integer parameter, as before. The SDK pin moves to mlx-swift-lm main with this change.
+
+### Gemma 4 JSON answers follow the requested format
+
+- A Gemma 4 26B request with a JSON `response_format` (`json_object`, or `json_schema` within the provider's supported subset) is now sampled under a grammar: after the model's thought, if any, the answer is exactly one JSON value of the requested format, with no code fences, surrounding prose or trailing text. Schemas as Pydantic, OpenAI's strict mode or zod write them (`$defs`/`$ref`, optional fields as `anyOf` with null, `$schema`) are enforced as written; a `json_schema` the grammar still does not cover is held to a JSON object when its root is an object. The thought is unchanged.
+- Requests the grammar does not cover (tools, a `tool_choice` other than `auto` without tools, `stop` sequences, images, other schemas) and cluster pairs are answered as before; an answer cut at `max_tokens` still ends as `length`, never as an error. `DARKBLOOM_GEMMA_JSON_ANSWERS=off` turns the grammar off on a Mac.
 
 ### GLM JSON answers: an optional release of schema misses
 
@@ -121,6 +138,23 @@ verification details are on this page too.
 - A client that sends an earlier assistant turn back as OpenRouter returned it carries that turn's thought in `reasoning`; some clients use `thinking`. The provider read only `reasoning_content`, so the thought was dropped: Qwen 3.8, Bonsai 2 27B and MiMo, whose templates replay every earlier thought, saw an empty thought on each of those turns, and Qwen 3.5/3.6 and Gemma 4 lost the thoughts of the tool calls since the last user message.
 - Darkbloom requests and the local API now read such a turn's `thinking` or `reasoning` as its `reasoning_content`, as Hugging Face's chat template rendering does: the first non-null of `reasoning_content`, `thinking` and `reasoning` wins. An empty or non-string value changes nothing.
 
+### Valid JSON answers on Bonsai 2 27B and Nemotron 3.5 Lightning
+
+- A tool-free JSON `response_format` request on Bonsai 2 27B or on Nemotron 3.5 Lightning, on one Mac, whose prompt
+  starts in the answer (thinking off, the JSON default on Bonsai), is now sampled under the JSON-answer grammar the
+  Qwen 3.5 family already uses: for schemas inside the constrained subset the answer is one JSON value of the
+  requested schema (no extra or missing keys, no raw newline inside a string). On our checks, Lightning answers with
+  thinking off missed the schema 8 times in 72 before and 0 times after.
+- Requests whose prompt opens a thought (Lightning's default), requests served by a cluster pair, and the Bonsai 2 9B
+  keep today's prompt-only steering.
+- Like Qwen's, these answers decode without MTP (a Lightning row sharing their decode step stops speculating
+  meanwhile), and the provider checks them when generation ends: an answer that misses the schema at a natural stop
+  is the typed `422` (`tool_noncompliance`); one cut at `max_tokens` ends as a normal `length` finish with its
+  content as generated.
+- The grammar keeps an answer inside the schema, not on topic: a model that wants a forbidden key may keep writing the
+  string it is in until `max_tokens`.
+- `DARKBLOOM_JSON_ANSWER_GRAMMAR=qwen` (or `0`/`off`) keeps the grammar to the Qwen types.
+
 ### An answer cut at max_tokens ends as length, not as an error
 
 - When generation stops at the request's `max_tokens` (or this Mac's limit) during a `response_format` answer or a tool call, the response now ends normally with `finish_reason: "length"` and its usage, instead of a `tool_noncompliance` error. Before, a streaming client got an error frame partway through the answer, which OpenRouter counts as a failed response, and a coordinator request without `stream` got a 422.
@@ -129,12 +163,24 @@ verification details are on this page too.
 - `DARKBLOOM_LENGTH_FINISH_AT_LIMIT=0` and `DARKBLOOM_STRICT_CALLS_AS_GENERATED=0` (or `off`, `false`, `no`) restore each refusal; both reach a provider started by `darkbloom start` (launchd). Telemetry `tool_constraint_cut` (by outcome) and `tool_constraint_strict_as_generated` count what replaced the refusals.
 - With or without the switches, a tool-call refusal at the end of an answer now comes before the last text the model produced instead of after it, so a refusal with nothing else sent stays one the request can be retried on another Mac.
 
+### A GPT-OSS analysis that repeats itself verbatim now ends in an answer or a tool call
+
+- As for Gemma 4: when the loop guard stops a verbatim loop inside GPT-OSS's Harmony analysis channel, the request no longer ends as `length` with no answer and no tool call. The provider ends the analysis message (`<|end|>`) and starts the next assistant message (`<|start|>assistant`), as the model does after its own analysis, and the model writes its `final` answer or its tool call in the same response. The usage counts every token produced, as one completion. A loop after that still ends as `length`.
+- In OpenRouter's Tau2-Bench airline run on 0.10.12 (`reasoning_effort: high`, temperature 0), 27 % of GPT-OSS's turns ended that way, at 4,097 tokens with nothing but reasoning.
+- On by default for `gpt_oss` requests that declare tools, the shape of Tau2's turns: on a GPU A/B of 126 Tau2-Bench airline turns at `reasoning_effort: high`, temperature 0, the turns that ended with nothing fell from 74 to 38 (calls 31 → 46, replies 21 → 35), and 7 more got a retryable memory-admission 503 after their retries (the same build needed such retries with the exit off too). Without tools the model mostly opened a new analysis after the exit and looped again, so those requests keep the `length` stop. Never with logprobs or on a cluster pair. `DARKBLOOM_LOOP_EXIT_THINKING=gemma4,gemma4_text` (a list without `gpt_oss`) or `0` restores the `length` stop for GPT-OSS.
+
 ### A Qwen 3.5 or 3.6 thought that repeats itself verbatim can end in an answer (off by default)
 
 - Once turned on, as for Gemma 4 in 0.10.13: when the loop guard stops a verbatim loop inside a Qwen 3.5 or 3.6 35B thought, the request no longer ends as `length` with no answer. The provider ends the thought as Qwen's template does (`\n</think>\n\n`), and the model writes its answer in the same response. The usage counts every token produced, as one completion. A loop in the answer still ends as `length`.
 - Since 0.10.12, 0.16 % (Qwen 3.6 35B) and 0.83 % (Qwen 3.5 35B) of GPQA-shaped requests ended that way with no answer.
 - Off by default: the A/B on Qwen 3.5/3.6 35B found too few thought loops to show rescues (Qwen 3.6 never looped in 198 greedy GPQA draws; Qwen 3.5 35B looped 3 times, once on the candidate, whose answer looped again). `DARKBLOOM_LOOP_EXIT_THINKING=gemma4,gemma4_text,qwen3_5_moe` turns it on for the 35B models; `…,qwen3_5` adds the 9B and Qwen 3.8 27B; `0` turns all of it off. Never with logprobs or on a cluster pair.
 - Client stop strings apply to the answer from its first token, and a stop string that ends the answer is reported as the matched stop sequence (Gemma 4's too).
+
+### A Nemotron 3.5 Super thought that repeats itself verbatim can end in an answer (off by default)
+
+- Once turned on, as for Gemma 4 in 0.10.13 (and the Qwen 3.5/3.6 35B models, when listed): when the loop guard stops a verbatim loop inside Super's thought, the request no longer ends as `length` with no answer. The provider ends the thought (`</think>`, as Super's template does), and the model writes its answer in the same response. The usage counts every token produced, as one completion. A loop in the answer still ends as `length`.
+- Since 0.10.12, 3.0 % of GPQA-shaped Super requests ended that way with no answer.
+- Off by default until its A/B: `DARKBLOOM_LOOP_EXIT_THINKING=gemma4,gemma4_text,nemotron_h_omni` turns it on beside Gemma 4's (the default); adding `qwen3_5_moe` turns on the Qwen 3.5/3.6 35B models' too; `0` turns all of them off. Never with logprobs, media or on a cluster pair.
 
 ### A Gemma 4 thought that repeats itself verbatim now ends in an answer
 
@@ -168,6 +214,11 @@ verification details are on this page too.
 - With `parallel_tool_calls: false`, a model that made a second call failed the whole response: a streamed answer ended in an error after its first call had already been sent, and a complete answer was a 422. Under automatic tool choice the prompt does not ask for a single call (only a GLM pair's prompt does), so these were requests the provider should have served.
 - The response now carries the first call, as OpenAI and vLLM return it, and the calls the model makes after it are dropped, streamed or not, on every model, Nemotron Super's path included. A later frame that does not parse keeps the existing rule for malformed output: GLM, MiMo, Flint and Nemotron Super fail the response, as for any malformed frame, and a frame that never reads as a call (an undeclared name on Qwen or Gemma) stays text.
 
+### Qwen JSON answers follow Pydantic, OpenAI and zod schemas
+
+- A Qwen 3.5, 3.6 or 3.8 request whose `json_schema` the JSON-answer grammar used to decline is now constrained: Pydantic's nested models (`$defs`/`$ref`), `Optional` fields (`anyOf` with null), `$schema`, and value limits such as `minimum`, `maximum`, `pattern`, `format`, length or item bounds and map-typed `additionalProperties`. A schema that can be rewritten into the grammar exactly is enforced as written; otherwise the structure, types, enums and required keys are enforced and the value limits are left to the model (the provider never refuses a streamed answer for them); an object schema the grammar still cannot shape is held to a JSON object. These answers used to be unconstrained and sometimes came back fenced.
+- `DARKBLOOM_QWEN_JSON_SCHEMA_REWRITE=off` restores declining these schemas to prompt-only steering.
+
 ### Qwen 3.5, 3.6 and 3.8 parse tool calls after the thinking
 
 - On Qwen 3.8, Qwen 3.6, Qwen 3.5 35B and Qwen 3.5 9B, tool calls were parsed before the thinking was split off. A
@@ -184,6 +235,13 @@ verification details are on this page too.
   returned as `reasoning_content` instead of failing the request.
 - A local `stream: false` response for these requests keeps the whitespace around its content and reasoning, as the
   streamed response does.
+
+### Strict Qwen tool calls always match their schemas
+
+- On Qwen 3.8 27B, Qwen 3.6 35B and Qwen 3.5 9B and 35B, a tool call to a function declared `strict: true` could miss the caller's schema (a quoted number, a wrong enum value, a missing required argument, a value inside a `$ref` definition of the wrong JSON type); the provider checks such a call when it closes, after the answer started streaming, and the response then failed partway. On one Mac the provider now constrains these calls while they are sampled, by default on Qwen 3.8 27B, Qwen 3.6 35B and Qwen 3.5 35B, and on Qwen 3.5 9B when the Mac opts in (`DARKBLOOM_STRICT_TOOL_GRAMMAR=on`): only a declared function, its declared parameters (each at most once, every required one), and values of the declared types and enums can be written, in the template's call format. Reasoning and text around the calls stay free (ordinary text, the reasoning and call markers and the end of the answer; other special tokens such as `<|im_start|>` are not sampled), text that only mentions `<tool_call>` stays text, and the choice whether to call, the prompt and the streamed call deltas are unchanged. With `parallel_tool_calls: false` an answer opens at most one call.
+- It applies to `tool_choice` `auto` (or absent) requests that declare at least one `strict` function; every call of such a request is held to its schema, as the check already holds it. Local `$ref`/`$defs` are inlined, `anyOf` of a type and `null` is supported, and a request whose schemas use a keyword the grammar cannot hold exactly (`pattern`, `minimum`, `minLength`, unions of several types, recursive references, ...) is served unconstrained, as before, never refused. Cluster pairs keep the previous behavior.
+- As with constrained JSON answers, MTP drafting stops while a constrained answer is decoding: it drafts nothing itself, and on these models no other answer decoding beside it on the same Mac drafts either. Qwen 3.8 and Qwen 3.5 9B draft while up to 8 answers decode at once, so their decode slows while a strict-tool answer is running (on Qwen 3.8 a lone strict answer decodes at about 50 instead of 120 tokens per second; with two or more answers decoding the Mac barely drafts anyway, and at four the answers beside a constrained one decode about 13 % slower): Qwen 3.8 takes the grammar by default because strict calls that missed their schemas were its main remaining failure on OpenRouter, the 9B only when a Mac opts in. Qwen 3.6 and 3.5 35B, whose cards set a presence penalty, do not draft anyway unless a request sets `presence_penalty: 0`.
+- The coordinator can turn it off for a model on every Mac at once by forwarding the model's tools without `strict` (`EIGENINFERENCE_STRICT_TOOLS_UNMARK_MODELS`); those calls are then also not checked against their schemas, and it does not reach a request body above 4 MiB or a Mac with `DARKBLOOM_STRICT_TOOL_GRAMMAR_ALL_TOOLS=on`. `DARKBLOOM_STRICT_TOOL_GRAMMAR=off` turns it off on a Mac, `on` turns it on for every one of the four builds, and a list of model types or model-id parts (`qwen3.8-27b,qwen3_5_moe`) picks the builds. `DARKBLOOM_STRICT_TOOL_GRAMMAR_ALL_TOOLS=on` also constrains the calls of requests without `strict` functions. Both reach a provider started by `darkbloom start`.
 
 ### Qwen 3.5 9B keeps its model card's presence penalty
 

@@ -185,7 +185,8 @@ struct GenerationLoopExitThinkingTests {
             #expect(exit.exitText == "<channel|>")
             #expect(!exit.startsInside)
         }
-        for modelType in ["qwen4_exp", "gpt_oss", "nemotron_h", "glm5_next", "mimo_v2", "diffusion_gemma", "llama"] {
+        // (`gpt_oss` has a marker since its Harmony exit: `GenerationLoopExitThinkingHarmonyTests`.)
+        for modelType in ["qwen4_exp", "nemotron_h", "glm5_next", "mimo_v2", "diffusion_gemma", "llama"] {
             #expect(resolve(modelType) == nil, "\(modelType)")
         }
         #expect(resolve(nil) == nil)

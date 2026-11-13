@@ -26,6 +26,52 @@ struct LoopExitThinkingContinuationTests {
 
     private struct Refused: Error {}
 
+    /// Holds a submission until released.
+    private final class HandOffGate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var entered = false
+        private var released = false
+        private var enteredWaiters: [CheckedContinuation<Void, Never>] = []
+        private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+        func enterAndWait() async {
+            let waiters = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+                entered = true
+                defer { enteredWaiters.removeAll() }
+                return enteredWaiters
+            }
+            waiters.forEach { $0.resume() }
+            await withCheckedContinuation { continuation in
+                let now = lock.withLock { () -> Bool in
+                    if released { return true }
+                    releaseWaiters.append(continuation)
+                    return false
+                }
+                if now { continuation.resume() }
+            }
+        }
+
+        func waitUntilEntered() async {
+            await withCheckedContinuation { continuation in
+                let now = lock.withLock { () -> Bool in
+                    if entered { return true }
+                    enteredWaiters.append(continuation)
+                    return false
+                }
+                if now { continuation.resume() }
+            }
+        }
+
+        func release() {
+            let waiters = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+                released = true
+                defer { releaseWaiters.removeAll() }
+                return releaseWaiters
+            }
+            waiters.forEach { $0.resume() }
+        }
+    }
+
     private final class Seen: @unchecked Sendable {
         private let lock = NSLock()
         private var events = 0
@@ -68,7 +114,8 @@ struct LoopExitThinkingContinuationTests {
     private func splice(
         first: AsyncStream<GenerationEvent>, exit: GenerationLoopExitThinking, outputBudget: Int = 8_192,
         calls: Calls, continuation: @escaping @Sendable () throws -> AsyncStream<GenerationEvent>
-    ) -> (events: AsyncStream<GenerationEvent>, cancel: @Sendable () async -> Void) {
+    ) -> (events: AsyncStream<GenerationEvent>, cancel: @Sendable () async -> Void,
+          finished: @Sendable () async -> Void) {
         LoopExitThinkingContinuation.splice(
             first: first, cancelFirst: { calls.cancelFirst() }, exit: exit, promptTokens: Self.prompt,
             outputBudget: outputBudget,
@@ -302,6 +349,31 @@ struct LoopExitThinkingContinuationTests {
                                                 completionTokens: 2)])
         }.events)
         #expect(terminal == ["chunk:<channel|>", "chunk:A", "info:5/4203/length"])
+    }
+
+    @Test("a cancel during the hand-off starts no continuation, and the splice's end waits for the submission")
+    func cancelDuringHandOff() async throws {
+        let calls = Calls()
+        let gate = HandOffGate()
+        let first = stream([.info(promptTokens: 5, completionTokens: 4_200, tokensPerSecond: 10, finishReason: "length")])
+        let spliced = LoopExitThinkingContinuation.splice(
+            first: first, cancelFirst: { calls.cancelFirst() }, exit: exit(requested: true, tokens: thought),
+            promptTokens: Self.prompt, outputBudget: 8_192,
+            submit: { prompt, maxTokens in
+                // The owner's hand-off (the row's release, the submission) is still running.
+                await gate.enterAndWait()
+                calls.submit(prompt, maxTokens)
+                return self.stream([.chunk("never")], finish: false)
+            },
+            cancelContinuation: { calls.cancelContinuation() })
+        await gate.waitUntilEntered()
+        await spliced.cancel()
+        gate.release()
+        await spliced.finished()
+        // The submission returned after the cancel: it was cancelled before the splice ended.
+        #expect(calls.submits.count == 1)
+        #expect(calls.cancels.continuation == 1)
+        #expect(await drain(spliced.events) == ["info:5/4200/length"])
     }
 
     @Test("a cancel before the continuation starts keeps it from starting")

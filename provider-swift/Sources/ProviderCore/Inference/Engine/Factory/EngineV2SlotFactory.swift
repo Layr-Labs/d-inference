@@ -594,6 +594,8 @@ enum EngineV2SlotFactory {
                 nativeContextTokens: sizing.maxContextLength, environment: environment)
                 ?? Bonsai9BModelPolicy.contextLimit(modelId: modelId, modelType: modelType,
                     nativeContextTokens: sizing.maxContextLength)
+                ?? MuseGlimmerModelPolicy.contextLimit(modelId: modelId, modelType: modelType,
+                    nativeContextTokens: sizing.maxContextLength)
                 ?? (preparedBackend?.performanceProfile == nil && deadlineProfile == nil ? nil : sizing.maxContextLength),
             pagedPageSize: preparedBackend?.pagedPoolConfig?.pageSize,
             runtimePolicyEnvironment: environment,

@@ -27,6 +27,7 @@
 //   35B builds keep the cards' presence penalty (`qwen35CardDefaults`);
 //   Qwen3.5-9B has none (`qwen35NineBCardDefaults`), as the 0.10.12 gate
 //   decided per build.
+//   Muse Glimmer 30B takes its model card's values (`museGlimmerCardDefaults`).
 //   Every other model keeps the legacy defaults byte-for-byte.
 // * `do_sample: false` in the file means greedy (legacy), matching HF
 //   semantics; an absent or unreadable file is legacy.
@@ -88,6 +89,14 @@ public struct EngineV2SamplingDefaults: Sendable, Equatable {
         "qwen3.6-35b-a3b-vl-mtp-mxfp8": "qwen3_5_moe",
     ]
 
+    /// Muse Glimmer 30B's model-card values. The NVIDIA NVFP4 repository's
+    /// `generation_config.json` declares `do_sample: false`; the card, and the
+    /// base repository's own file, give these. A reasoning model decoded
+    /// greedily is outside what the card evaluates, so the exact identity
+    /// takes them whatever that file says.
+    static let museGlimmerCardDefaults = EngineV2SamplingDefaults(
+        temperature: 1.0, topP: 0.95, topK: 64)
+
     public var isLegacy: Bool { self == .legacy }
 
     #if canImport(os)
@@ -116,6 +125,9 @@ public struct EngineV2SamplingDefaults: Sendable, Equatable {
     ) -> EngineV2SamplingDefaults {
         if let type = qwen35CardModelTypes[modelId], type == modelType {
             return modelId == qwen35NineBModelID ? qwen35NineBCardDefaults : qwen35CardDefaults
+        }
+        if MuseGlimmerModelPolicy.matches(modelId: modelId, modelType: modelType) {
+            return museGlimmerCardDefaults
         }
         guard honorsArtifactDefaults(modelId: modelId, modelType: modelType),
             let modelDirectory

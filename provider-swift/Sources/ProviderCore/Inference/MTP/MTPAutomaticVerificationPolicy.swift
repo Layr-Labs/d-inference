@@ -5,6 +5,7 @@ public enum MTPAutomaticVerificationPolicy {
     public static let initialDraftTokens = 1
 
     /// Qwen retains its request-stateful controller and drafter-owned cap.
+    /// Exact Muse Glimmer drafts adaptively up to its own cap.
     /// Exact Gemma QAT can alternate ordinary decode with one draft token;
     /// all other stateless assistants retain fixed depth one. Explicit offline
     /// verification controls retain fixed depth one for comparable measurements.
@@ -13,6 +14,11 @@ public enum MTPAutomaticVerificationPolicy {
         modelID: String? = nil,
         hasBenchmarkVerificationOverride: Bool = false
     ) -> (maximum: Int, fixed: Int?) {
+        if MuseGlimmerModelPolicy.matchesModelID(modelID) {
+            // Its block drafter proposes several tokens a round. Depth adapts
+            // up to the model's cap, which never exceeds the engine's tested window.
+            return (min(MuseGlimmerModelPolicy.maximumDraftTokens, CBv2MTPConfig.testedMaxDraftTokens), nil)
+        }
         if usesRequestStatefulDrafter {
             if Bonsai9BModelPolicy.matchesModelID(modelID) {
                 // Publisher's private 9B reference depth; retain a bounded

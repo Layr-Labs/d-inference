@@ -1,0 +1,4 @@
+### `parallel_tool_calls: false` returns the first tool call instead of failing the response
+
+- With `parallel_tool_calls: false`, a model that made a second call failed the whole response: a streamed answer ended in an error after its first call had already been sent, and a complete answer was a 422. Under automatic tool choice the prompt does not ask for a single call (only a GLM pair's prompt does), so these were requests the provider should have served.
+- The response now carries the first call, as OpenAI and vLLM return it, and the calls the model makes after it are dropped, streamed or not, on every model, Nemotron Super's path included. A later frame that does not parse keeps the existing rule for malformed output: GLM, MiMo, Flint and Nemotron Super fail the response, as for any malformed frame, and a frame that never reads as a call (an undeclared name on Qwen or Gemma) stays text.

@@ -162,6 +162,13 @@ struct StructuredForcedToolAdmissionTests {
                 let parallel = try serve(build, request, prepared, output: parallelOutput, width: width)
                 #expect(parallel.map(\.function.name) == ["get_weather", "get_time"], "\(build.id) width \(width)")
             }
+            // parallel_tool_calls=false returns the first call, as OpenAI and vLLM do.
+            let single = try self.request(build, choice: Self.required, parallel: false)
+            let singlePrepared = try ToolChoicePromptPolicy.prepare(single, modelType: build.modelType)
+            for width in [1, 5, Int.max] {
+                let first = try serve(build, single, singlePrepared, output: parallelOutput, width: width)
+                #expect(first.map(\.function.name) == ["get_weather"], "\(build.id) width \(width)")
+            }
         }
     }
 
@@ -224,15 +231,6 @@ struct StructuredForcedToolAdmissionTests {
             try expectViolation(build) {
                 _ = try serve(build, request, prepared,
                     output: answer(build, frame(build, "delete_files", ["path": "/"])))
-            }
-
-            // parallel_tool_calls=false admits exactly one call.
-            let single = try self.request(build, choice: Self.required, parallel: false)
-            let singlePrepared = try ToolChoicePromptPolicy.prepare(single, modelType: build.modelType)
-            try expectViolation(build) {
-                _ = try serve(build, single, singlePrepared, output: answer(build,
-                    frame(build, "get_weather", ["city": "Paris"]) + "\n"
-                        + frame(build, "get_weather", ["city": "Rome"])))
             }
 
             // Malformed policies are client errors before any generation.
@@ -322,7 +320,7 @@ struct StructuredForcedToolAdmissionTests {
                 continue
             }
         }
-        let calls = handler.finish()
+        let calls = ParallelToolCallPolicy.admitted(handler.finish(), prepared: prepared)
         try router.checkNativeToolFailure()
         try ToolConstraintValidation.validate(calls, prepared: prepared)
         return calls

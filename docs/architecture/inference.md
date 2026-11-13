@@ -1781,6 +1781,27 @@ commit a partial call batch. Its retained suffix is capped at 1 MiB; rejection
 returns the original text through the existing parser-failure path. Ambiguous
 string unions and unsupported indirect schemas are not inferred. This parser
 does not implement constrained decoding or advertise function calling.
+The suffix starts at the response's first `<tool_call>`, and GLM `auto` tool
+requests do not split reasoning off first, so it also holds a tag the model only
+mentioned or a call it drafted in its thought, or a tag its answer mentions.
+Such a suffix does not parse as one batch. On an `auto` request it is no longer a
+failure: like the reference GLM parsers (vLLM, SGLang), which never fail a
+response on tool syntax, the provider returns it as text, under its own stricter
+rule for what still counts as a call (`NativeToolStreamRouter.finishCompleteCalls`,
+`GLM5ToolSuffix`). The calls are the trailing run of top-level frames, separated
+only by whitespace and ending the response, from just after the last frame of the
+run that does not parse; everything before them is text, which the service's
+reasoning parser then splits at `</think>`. A frame that has started its
+arguments owns everything up to its `</tool_call>`, so a frame inside or after an
+argument is data, never a call. A suffix with no such run (a malformed or cut-off
+final frame, text after the calls) is all text, and so is a suffix that did not
+parse in an output cut at the token limit; no frame is completed or salvaged. A
+suffix whose release would put a think marker from inside a frame before the
+reasoning parser keeps failing, as does a required or named call (422). Unlike
+vLLM and SGLang, a call followed by text or by a malformed frame commits nothing,
+and a call drafted inside a closed thought stays reasoning. A suffix that parses
+keeps its calls as before. `DARKBLOOM_GLM_TOOL_TEXT_FALLBACK=0` restores the
+whole-suffix failure (500).
 The request-local [GLM prompt contract](../reference/protocol-messages.md#glm-native-prompt-contract)
 also preserves original schema values only after a trusted loaded-model check.
 It renders reasoning that OpenRouter returns on earlier assistant turns
@@ -2958,7 +2979,9 @@ When neither a global nor a per-model acceptance value is configured, serving
 defaults to typical acceptance for eligible sampled target-prefix rows, except
 on the builds whose built-in rule is exact (`MTPAcceptancePolicy.builtInIsExact`):
 the owned Bonsai 9B candidate; the catalog `Qwen3.5-9B`, which looped under
-typical acceptance in the 0.10.12 gate (see the Qwen 3.5/3.6 defaults below);
+typical acceptance in the 0.10.12 gate (its default carries the card's presence
+penalty again, so only its rows with `presence_penalty` 0 draft; see the Qwen
+3.5/3.6 defaults below);
 the catalog `gemma-4-26b-qat-4bit`, which drafted every answer of OpenRouter's
 10-31 GPQA run, 30 % of which ended at the 32,768-token cap; and every Qwen 3.8
 27B build (`EigenLabs/Qwen3.8-27B-4bit-mtp` and its head-less target,
@@ -3095,7 +3118,7 @@ production assembly and encrypted store.
 | `top_p` | `topP` | artifact default, else `1.0` |
 | `top_k` | `topK` | artifact default, else `0` |
 | `repetition_penalty` | `repetitionPenalty` | artifact default, else `1.0` |
-| `frequency_penalty` / `presence_penalty` | `frequencyPenalty` / `presencePenalty` | `0`; `presence_penalty` takes a model-card default on the catalog 35B Qwen 3.5/3.6 builds (`Qwen3.5-9B` has none) |
+| `frequency_penalty` / `presence_penalty` | `frequencyPenalty` / `presencePenalty` | `0`; `presence_penalty` takes the model card's 1.5 on the catalog Qwen 3.5/3.6 builds (`DARKBLOOM_QWEN35_9B_PRESENCE_PENALTY=0` drops it on `Qwen3.5-9B`) |
 | `seed` | `seed`; also keys a stable engine request id | nil |
 | `logit_bias` | `logitBias` — string keys parsed to non-negative `Int`; invalid keys dropped and counted | `[:]` |
 | `logprobs` + `top_logprobs` | `topLogprobs = logprobs ? min(20, max(1, top_logprobs ?? 0)) : 0` | `0` |
@@ -3153,29 +3176,27 @@ The catalog `Qwen3.5-9B`, `qwen3.5-35b-a3b` and `qwen3.6-35b-a3b-vl-mtp-mxfp8`
 builds (`EngineV2SamplingDefaults.qwen35CardModelTypes`, each bound to its
 `model_type`) take their model cards' thinking-mode values for omitted knobs:
 `temperature 1.0`, `top_p 0.95`, `top_k 20`. Greedy decoding made them repeat
-themselves until `max_tokens` (#1530). The cards' `presence_penalty 1.5` is a
-per-build default, set by the 0.10.12 gate on the signed 0.10.11 (temperature 1
-/ 0.95 / 20; #1652's four loopers and five tool transcripts at 32,768 tokens and
-nineteen everyday prompts at 8,192, three seeds each; the Studio M3 Ultra for
-the 9B, an M5 Ultra for the 35B):
+themselves until `max_tokens` (#1530). Every build also takes the cards'
+`presence_penalty 1.5` for a request that omits one (`qwen35CardDefaults`):
 
-| Build | Omitted `presence_penalty` | Built-in MTP acceptance | The gate without the penalty |
+| Build | Omitted `presence_penalty` | Built-in MTP acceptance | Without the penalty |
 |---|---|---|---|
-| `qwen3.5-35b-a3b`, `qwen3.6-35b-a3b-vl-mtp-mxfp8` (`qwen35CardDefaults`) | 1.5 | typical | `qwen3.5-35b-a3b` ran away under typical acceptance (5 of 19 everyday prompts, 8 of 12 loopers to 32,768, MTP running at concurrency 1) and under exact (2 of 12 loopers); the 3.6 build shares its architecture |
-| `Qwen3.5-9B` (`qwen35NineBCardDefaults`) | none | **exact** (`MTPAcceptancePolicy.builtInIsExact`) | ran away on 13 of 31 draws under typical acceptance and on 0 of 31 under exact, MTP running; the penalty-free body cached 8,192 tokens on the second send, the penalty body none |
+| `qwen3.5-35b-a3b`, `qwen3.6-35b-a3b-vl-mtp-mxfp8` | 1.5 | typical | The 0.10.12 gate on the signed 0.10.11 (temperature 1 / 0.95 / 20; #1652's four loopers and five tool transcripts at 32,768 tokens, nineteen everyday prompts at 8,192, three seeds each; an M5 Ultra): `qwen3.5-35b-a3b` ran away under typical acceptance (5 of 19 everyday prompts, 8 of 12 loopers to 32,768, MTP running at concurrency 1) and under exact (2 of 12 loopers); the 3.6 build shares its architecture |
+| `Qwen3.5-9B` | 1.5; none under `DARKBLOOM_QWEN35_9B_PRESENCE_PENALTY=0` (`qwen35NineBNoPenaltyDefaults`, 0.10.12's default) | **exact** (`MTPAcceptancePolicy.builtInIsExact`) | The same gate (the Studio M3 Ultra) saw it run away on 13 of 31 draws under typical acceptance and on 0 of 31 under exact, so 0.10.12 shipped it without the penalty. In production that was a regression. On 2026-11-12, on 0.10.12 Macs against 0.10.11 Macs (the penalty, MTP off) in the same 10-minute windows, answers with `max_tokens` ≥ 8,192 hit the cap on 6.1 % against 1.5 %. On the 4,096-token JSON `response_format` workload, answers ran out and failed in 51 % of requests against 23 %. Those rows never speculate (a token constraint) and their template is unchanged since 0.10.4, so the penalty alone made the difference. A registry `presence_penalty` 1.5 brought both back within the hour |
 
 A row with a penalty does not speculate (`EngineLoopV2.mtpBasicEligible`), so
-the 35B builds' requests that omit the penalty stay without MTP, the cost the
-gate accepted for loop safety; they still stage prefix checkpoints
+these builds' requests that omit the penalty stay without MTP, the cost taken
+for loop safety. They still stage prefix checkpoints
 ([prefix caching](prefix-cache.md#invariants), invariant 9). A request's own
-`presence_penalty` always wins: `0` on a 35B build speculates under typical
-acceptance and donates checkpoints (the configuration that looped in the gate,
-now the caller's choice); a nonzero value on the 9B turns its MTP off for that
-request (it still donates checkpoints). The coordinator forwards a build's
-registry runtime defaults for the fields a request omits
-([`requestRuntimeDefaultKeys`](https://github.com/Layr-Labs/darkbloom-platform/blob/c69380d91fd3f9e4ef3ff1e3775690d80adbbe57/coordinator/api/inference/request/model_runtime_defaults.go));
-on 2026-11-10 the registry set `temperature`, `top_p` and `top_k` for these
-builds and no `presence_penalty`, so the provider default above decides it.
+`presence_penalty` always wins: `0` speculates (typical acceptance on the 35B
+builds, the configuration that looped in the gate; exact on the 9B) and donates
+checkpoints. The coordinator forwards a build's registry runtime defaults for
+the fields a request omits
+([`requestRuntimeDefaultKeys`](https://github.com/Layr-Labs/darkbloom-platform/blob/a9c111db3e235fa979a914d6a46bf93cba8e4268/coordinator/api/inference/request/model_runtime_defaults.go),
+`presence_penalty` included). Since 2026-11-12 19:17Z the registry sets
+`presence_penalty` 1.5 on `Qwen3.5-9B`, which reaches 0.10.12 Macs too; to
+the provider it is the request's own value, so `DARKBLOOM_QWEN35_9B_PRESENCE_PENALTY=0`
+changes nothing while the registry sets it.
 
 Other model identities keep the legacy defaults in the table byte-for-byte. `do_sample: false` or an absent/unreadable file is legacy. The
 sampler is not part of prompt or cache identity, so prefix-cache and SSD
@@ -3579,8 +3600,15 @@ read bare scalars and composites as raw strings. When the frame closes, the
 complete parse must agree with everything already exposed
 (`libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/ToolCallStreaming.swift`).
 `NativeToolStreamRouter` admits `parallel_tool_calls` cardinality at the first
-fragment and, when the request is `strict` (below), validates name and schema
-at frame close; the service renders OpenAI fragments (`index`, `id`, `type`
+fragment: with `parallel_tool_calls: false` it exposes the first call only and
+drops every later call frame, unexposed and unvalidated, as OpenAI returns one
+call and vLLM keeps the first; the complete-call paths, Nemotron Super's
+included, keep the first the same way (`ParallelToolCallPolicy`). A later
+frame keeps its family's malformed-output rule: one the parser returns as
+text (an undeclared name it cannot read) stays visible text, and one that does
+not parse still fails a GLM, MiMo, Flint or Nemotron Super response. When
+the request is `strict` (below), it validates name and schema at frame close;
+the service renders OpenAI fragments (`index`, `id`, `type`
 and `function.name` first, then `function.arguments` pieces). A response that
 begins with a call therefore reaches its first content frame at the function
 name instead of the engine terminal, which also ends the frame loop's

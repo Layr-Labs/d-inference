@@ -1799,19 +1799,26 @@ value holding frame tags, which the SDK refuses, its own tags after a malformed
 header, a key that only canonically equals a declared one, a value whose declared
 type is a union of `string` with `object` or `array`, which the template could
 have written either way) or that is still open at the end owns the rest of the
-response: no frame inside or after its arguments is ever a call. A `<tool_call>`
+response: no frame inside or after its arguments is ever a call. Where the SDK
+accepts a frame on its own, the lexer reads it as the SDK does; a frame the SDK
+refuses keeps its end only without a `"` (one may open a JSON string that a raw
+reading ends inside, or end a raw string that a JSON reading runs past), else it
+owns the rest too, as does a frame's tag in top-level text. A `<tool_call>`
 followed by anything else, with no frame tags before the next `<tool_call>`, is a
-mention. A suffix with no such run (a
-malformed or cut-off final frame, text after the calls) is all text, and so is a
-suffix that did not parse in an output cut at the token limit; no frame is
-completed or salvaged. A suffix whose release would put a think marker from
+mention; a thought that spells out the tags in order (`<arg_key>` … `</arg_value>`)
+therefore owns the rest, and fails as before when its `</think>` follows. A suffix
+with no such run (a malformed or cut-off final frame, text after the calls) is
+all text, and so is a suffix that did not parse in an output cut at the token
+limit; no frame is completed or salvaged. A suffix whose release would put a think marker from
 inside a frame (its name, a key or a value, or anything after a frame that owns
 the rest) before the reasoning parser keeps failing (500), at a stop or at the
 token limit, as does a suffix the SDK refuses as oversized while it streams, and
 a required or named call (422). Unlike vLLM and SGLang, a call followed by text
 or by a malformed frame commits nothing, and a call drafted inside a closed
-thought stays reasoning. A suffix that parses keeps its calls as before.
-`DARKBLOOM_GLM_TOOL_TEXT_FALLBACK=0` restores the whole-suffix failure (500).
+thought stays reasoning. A suffix that parses keeps its calls as before. The
+rule follows the handler's `glm5` parser format, so a request that selects that
+parser for another family gets it too. `DARKBLOOM_GLM_TOOL_TEXT_FALLBACK=0`
+restores the whole-suffix failure (500).
 The request-local [GLM prompt contract](../reference/protocol-messages.md#glm-native-prompt-contract)
 also preserves original schema values only after a trusted loaded-model check.
 It renders reasoning that OpenRouter returns on earlier assistant turns

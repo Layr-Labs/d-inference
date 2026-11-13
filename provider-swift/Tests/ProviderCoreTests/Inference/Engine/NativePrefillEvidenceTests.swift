@@ -15,7 +15,7 @@ struct NativePrefillEvidenceTests {
     private static let calibrated = 1_420.0
     private static let tau2Prompt = 3_772
     /// Milliseconds the Macs had left for the Tau2 first turns (TAU2-AUDIT t13, p50).
-    private static let tau2RemainingMs = 12_619
+    private static let tau2RemainingMs: Int64 = 12_619
 
     private func nativeBridge(nominalPosture: Bool = true) throws -> (EngineV2Bridge, GlobalKVCacheBudget) {
         let engine = try CBv2NativeBlockEngine(tokenizer: PrefillStubTokenizer(), kvBytesCapacity: 1 << 20,
@@ -59,7 +59,7 @@ struct NativePrefillEvidenceTests {
     }
 
     private func policy(_ bridge: EngineV2Bridge, prompt: Int,
-        remainingMs: Int = tau2RemainingMs) async throws -> CBv2FirstTokenDeadlineAdmission {
+        remainingMs: Int64 = tau2RemainingMs) async throws -> CBv2FirstTokenDeadlineAdmission {
         try #require(await bridge.firstTokenDeadlineAdmission(
             deadline: .init(relativeBudgetMilliseconds: remainingMs), isMultimodal: false,
             requestID: "priced", promptTokens: prompt))

@@ -329,6 +329,22 @@ struct GLM5ToolFailureTests {
         }
     }
 
+    /// A trailing run with a member the SDK refuses is not a batch to take
+    /// part of: no member of it runs, as the SDK's own batch rule says (an
+    /// undeclared name, a missing required argument).
+    @Test(arguments: [1, 7, 4096])
+    func aRefusedMemberCancelsTheWholeRun(width: Int) async throws {
+        let london = "<tool_call>echo<arg_key>text</arg_key><arg_value>London</arg_value></tool_call>"
+        for output in [
+            "Checking.</think><tool_call>ech<arg_key>text</arg_key><arg_value>Paris</arg_value></tool_call>\n" + london,
+            "Checking.</think><tool_call>echo</tool_call>\n" + london,
+        ] {
+            let result = try await run(output, forced: false, width: width, finishReason: "stop")
+            #expect(result.failure == nil && result.calls.isEmpty, "\(output)")
+            #expect(result.visible == output, "\(output)")
+        }
+    }
+
     /// Declared keys (byte for byte) and additional properties keep their
     /// types after a mention: the final call parses.
     @Test func declaredAndAdditionalKeysStillParse() async throws {
@@ -438,6 +454,35 @@ struct GLM5ToolFailureTests {
         }
         #expect(GLM5ToolSuffix.environmentKey == "DARKBLOOM_GLM_TOOL_TEXT_FALLBACK")
         #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(GLM5ToolSuffix.environmentKey))
+    }
+
+    /// Only an `auto` request returns an unparsed GLM suffix as text. With any
+    /// other prepared choice (here `none`, which the Flint response format
+    /// forces while a client-selected parser keeps its handler) no residual
+    /// is published, so the suffix still fails.
+    @Test func onlyAutoChoiceReturnsTheSuffixAsText() throws {
+        let auto = try MiMoConsumerFixture.request(choice: #""auto""#)
+        let autoPrepared = try ToolChoicePromptPolicy.prepare(auto, modelType: "glm5_next")
+        let nonePrepared = try ToolChoicePromptPolicy.prepare(
+            try MiMoConsumerFixture.request(choice: #""none""#), modelType: "glm5_next")
+        #expect(nonePrepared.mode == .none)
+        for (prepared, fallsBack) in [(autoPrepared, true), (nonePrepared, false)] {
+            let handler = try #require(try ToolStreamPreparation.makeHandler(
+                request: auto, prepared: autoPrepared, modelType: "glm5_next"))
+            var router = NativeToolStreamRouter(handler: handler, requiresToolCall: false, nativePrefix: nil,
+                tools: autoPrepared.tools?.map { $0.toolSpec() }, streamedCalls: prepared)
+            _ = try router.process("Wrap it in <tool_call> tags.</think>" + valid)
+            _ = try router.finishText()
+            let finished = try router.finishCompleteCalls(truncated: false)
+            if fallsBack {
+                try router.checkNativeToolFailure()
+                #expect(finished.calls.count == 1)
+            } else {
+                #expect(finished.calls.isEmpty)
+                #expect(throws: MultiModelBatchSchedulerEngineError.generationFailed(
+                    "native GLM tool output is invalid")) { try router.checkNativeToolFailure() }
+            }
+        }
     }
 
     /// Forced choice is served by structured post-validation: the production

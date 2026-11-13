@@ -65,8 +65,8 @@ struct GLM5NextResponseFormat: Sendable {
 
     /// The answer to expose: the JSON text the instruction asked for, without
     /// markdown fences or surrounding prose, or a typed 422 when no complete
-    /// valid value exists (with `release`, when no complete value exists).
-    /// Messages never quote generated content.
+    /// valid value exists. With `release`, a complete value that only misses
+    /// its `json_schema` is exposed too. Messages never quote generated content.
     func validatedContent(_ content: String, finishReason: String) throws -> String {
         let mismatch = Self.failure(format.type == .jsonSchema
             ? "GLM content does not satisfy the json_schema" : "GLM content is not a JSON object")
@@ -86,10 +86,9 @@ struct GLM5NextResponseFormat: Sendable {
                 break
             }
         }
-        guard checked != nil, satisfiesSchema(value) else {
+        if checked == nil || !satisfiesSchema(value) {
             guard schemaMiss == .release else { throw mismatch }
             Self.logger.info("GLM JSON response_format answer released past a schema miss")
-            return text
         }
         return text
     }

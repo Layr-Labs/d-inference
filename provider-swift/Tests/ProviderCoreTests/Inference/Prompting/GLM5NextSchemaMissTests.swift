@@ -16,8 +16,8 @@ struct GLM5NextSchemaMissTests {
         "required": ["city", "temperature_f", "conditions"],
         "additionalProperties": false,
     ] }
-    /// `minimum` alone keeps the schema inside the compiled subset; `not` takes it outside, so the
-    /// raw-schema validator judges it.
+    /// `not` is outside the compiled subset and unknown to the service's own check, so only the
+    /// provider's raw-schema validator rejects `{"n":3}`.
     static var outsideSubset: [String: Any] { [
         "type": "object", "properties": ["n": ["type": "integer", "not": ["const": 3]]] as [String: Any],
         "required": ["n"],

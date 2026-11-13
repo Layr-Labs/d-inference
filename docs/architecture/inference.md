@@ -3627,13 +3627,20 @@ request's system message, and a user message's list content, as those parts
 floor and `usage.prompt_tokens` use vLLM's prompt; list content renders as
 Transformers renders it instead of joined first.
 
-A request the coordinator planned for its prompt cache (it carries a cache
-scope or receipt nonce, `ChatTemplateControls.servingCoordinatorRequest`)
-renders the string form, the prompt the sidecar planned: a longer prompt would
-fail its lookup receipt (`prompt_anchor_mismatch`, `provider_longer`) and fence
-the provider's cache routing for the model. Unplanned coordinator requests
-carry no cache scope and reuse no prefix cache. Media requests, other models
-and `DARKBLOOM_GEMMA_SYSTEM_PARTS_RENDER=off` keep the string render.
+A request whose prompt the coordinator's sidecar rendered keeps the string
+form the sidecar renders (`ChatTemplateControls.servingCoordinatorRequest`,
+`rendersCoordinatorPrompt`). A planned request (a cache scope or receipt nonce)
+would otherwise fail its lookup receipt (`prompt_anchor_mismatch`,
+`provider_longer`) and fence the provider's cache routing for the model. A
+request carrying an exact prompt-work count (`exact_contract`) would otherwise
+lose its calibrated deadline admission (`PromptWork.reconciled`). Other
+coordinator requests carry no cache scope and reuse no prefix cache. On the
+network most Gemma requests are planned or counted, so they count as before
+until the sidecar renders the parts too. Media requests, other models and
+`DARKBLOOM_GEMMA_SYSTEM_PARTS_RENDER=off` keep the string render. The parts of
+a user list are trimmed one by one and join without a separator, as in
+Transformers and vLLM. Because vLLM hands any template the same one-part lists,
+the parts are vLLM's prompt on every Gemma 4 template.
 `ProductionPromptParityTests` checks both renders against Transformers' on the
 served artifacts (`fixtures/prompt-contract/v1/gemma4_system_parts_vectors.json`).
 

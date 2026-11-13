@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import MLXLMServer
 import MLXLMCommon
@@ -117,6 +118,9 @@ struct ProductionPromptParityTests {
         let modelDirectory = URL(fileURLWithPath: artifactRootPath, isDirectory: true)
             .appendingPathComponent(model.promptContractID, isDirectory: true)
         #expect(Gemma4ToolConstraintContract.templateSHA256(at: modelDirectory) == vectors.templateSHA256)
+        let tokenizerFile = try Data(contentsOf: modelDirectory.appendingPathComponent("tokenizer.json"))
+        #expect(SHA256.hash(data: tokenizerFile).map { String(format: "%02x", $0) }.joined()
+                == vectors.tokenizerSHA256)
         let tokenizer = try await LocalTokenizerLoader().load(from: modelDirectory)
         let modelType = ModelScanner.parseConfigJSON(
             at: modelDirectory.appendingPathComponent("config.json")).modelType
@@ -176,6 +180,7 @@ struct ProductionPromptParityTests {
 private struct GemmaSystemPartsVectors: Decodable {
     let modelID: String
     let templateSHA256: String
+    let tokenizerSHA256: String
     let cases: [Case]
 
     struct Case: Decodable {
@@ -210,6 +215,7 @@ private struct GemmaSystemPartsVectors: Decodable {
     enum CodingKeys: String, CodingKey {
         case modelID = "model_id"
         case templateSHA256 = "template_sha256"
+        case tokenizerSHA256 = "tokenizer_sha256"
         case cases
     }
 }

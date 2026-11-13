@@ -15,10 +15,13 @@
 // of a list-shaped user message, as the template's text parts: vLLM's prompt
 // for string content, and Transformers' and vLLM's for list content.
 //
-// A request the coordinator planned for its prompt cache keeps the prompt of
-// its plan (`ChatTemplateControls.rendersCachePlan`): the prompt sidecar plans
-// the string render, and a prompt longer than the plan fails the lookup receipt
-// (`prompt_anchor_mismatch`) and fences the Mac's cache routing for the model.
+// A request whose prompt the coordinator's prompt sidecar rendered keeps it
+// (`ChatTemplateControls.rendersCoordinatorPrompt`): the sidecar renders the
+// string form. A planned prompt longer than its plan fails the lookup receipt
+// (`prompt_anchor_mismatch`) and fences the Mac's cache routing for the model;
+// a prompt that misses an exact prompt-work count loses its calibrated
+// deadline admission. Every string is still a one-part list to vLLM, whatever
+// the template, so the parts are vLLM's prompt on any Gemma 4 template.
 // A media request renders as before. `DARKBLOOM_GEMMA_SYSTEM_PARTS_RENDER=off`
 // restores 0.10.12's render everywhere.
 
@@ -45,7 +48,7 @@ enum Gemma4SystemPartsRender {
         controls: ChatTemplateControls,
         enabled: Bool = enabled
     ) -> Bool {
-        guard enabled, !controls.rendersCachePlan, let modelType,
+        guard enabled, !controls.rendersCoordinatorPrompt, let modelType,
               modelTypes.contains(modelType.lowercased()) else { return false }
         return !MediaIngest.hasMedia(request)
     }

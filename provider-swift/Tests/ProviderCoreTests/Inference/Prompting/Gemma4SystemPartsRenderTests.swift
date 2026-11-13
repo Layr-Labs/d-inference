@@ -1,5 +1,6 @@
 import Foundation
 import Jinja
+import MLXLMCommon
 import MLXLMServer
 import Testing
 
@@ -112,12 +113,50 @@ struct Gemma4SystemPartsRenderTests {
         #expect(!Gemma4SystemPartsRender.applies(to: media, modelType: "gemma4", controls: controls, enabled: true))
     }
 
-    @Test func plannedControlsDropTheirAskOnlyWhenPlanned() {
+    @Test func plannedOrCountedRequestsRenderTheCoordinatorsPrompt() throws {
         let controls = ChatTemplateControls(enableThinking: true)
         #expect(controls.servingCoordinatorRequest(planned: false) == controls)
-        #expect(!controls.rendersCachePlan)
-        #expect(controls.servingCoordinatorRequest(planned: true).rendersCachePlan)
+        #expect(controls.servingCoordinatorRequest(planned: false, counted: false) == controls)
+        #expect(!controls.rendersCoordinatorPrompt)
+        #expect(controls.servingCoordinatorRequest(planned: true).rendersCoordinatorPrompt)
+        #expect(controls.servingCoordinatorRequest(planned: false, counted: true).rendersCoordinatorPrompt)
         #expect(controls.servingCoordinatorRequest(planned: true).enableThinking == true)
+        let body = try Self.body([["role": "system", "content": Self.system],
+                                  ["role": "user", "content": Self.question]])
+        let request = try ProviderLoop.decodeOpenAIRequest(body)
+        #expect(!Gemma4SystemPartsRender.applies(to: request, modelType: "gemma4",
+            controls: controls.servingCoordinatorRequest(planned: false, counted: true), enabled: true))
+    }
+
+    @Test func emptyMissingAndOtherRolesFollowVLLM() throws {
+        let empty = try #require(Gemma4SystemPartsRender.textParts(of: OpenAIChatMessage(role: .system, content: .text(""))))
+        #expect(Self.texts(empty) == [""])
+        #expect(Gemma4SystemPartsRender.textParts(of: OpenAIChatMessage(role: .system, content: .null)) == nil)
+        #expect(Gemma4SystemPartsRender.textParts(of: OpenAIChatMessage(role: .system, content: .parts([]))) == nil)
+        #expect(Gemma4SystemPartsRender.textParts(of: OpenAIChatMessage(role: .user, content: .text("hi"))) == nil)
+        #expect(Gemma4SystemPartsRender.textParts(of: OpenAIChatMessage(role: .assistant, content: .parts([.text("a")]))) == nil)
+        #expect(Gemma4SystemPartsRender.textParts(of: OpenAIChatMessage(role: .tool, content: .parts([.text("a")]))) == nil)
+    }
+
+    @Test func theUsageFloorCountsThePromptTheEngineServes() throws {
+        let body = try Self.body([["role": "system", "content": Self.system],
+                                  ["role": "user", "content": Self.question]])
+        let request = try ProviderLoop.decodeOpenAIRequest(body)
+        let unplanned = ProviderLoop.extractChatTemplateControls(from: body)
+        let planned = unplanned.servingCoordinatorRequest(planned: true)
+        func floor(_ controls: ChatTemplateControls) -> Int {
+            ProviderLoop.promptTokenFloor(request: request, tokenizer: TokenizerHandle(PartsCountingTokenizer()),
+                modelType: "gemma4", templateControls: controls)
+        }
+        func served(_ controls: ChatTemplateControls) throws -> Int {
+            try ProviderPromptContractPipeline.tokenize(
+                prepared: ToolChoicePromptPolicy.prepare(request, modelType: "gemma4"), request: request,
+                tokenizer: PartsCountingTokenizer(), modelType: "gemma4", templateControls: controls).count
+        }
+        #expect(floor(unplanned) == 3)
+        #expect(try served(unplanned) == 3)
+        #expect(floor(planned) == 2)
+        #expect(try served(planned) == 2)
     }
 
     @Test func theSwitchIsOnUnlessTurnedOff() {
@@ -176,4 +215,20 @@ struct Gemma4SystemPartsRenderTests {
     {{- '<turn|>\n' -}}
 {%- endif %}
 """#
+}
+
+/// One token per message, plus one per text part of list content.
+private struct PartsCountingTokenizer: MLXLMCommon.Tokenizer {
+    func encode(text: String, addSpecialTokens: Bool) -> [Int] { [] }
+    func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String { "" }
+    func convertTokenToId(_ token: String) -> Int? { nil }
+    func convertIdToToken(_ id: Int) -> String? { nil }
+    var bosToken: String? { nil }
+    var eosToken: String? { nil }
+    var unknownToken: String? { nil }
+    func applyChatTemplate(messages: [[String: any Sendable]], tools: [[String: any Sendable]]?,
+        additionalContext: [String: any Sendable]?) throws -> [Int] {
+        let count = messages.reduce(0) { $0 + 1 + (($1["content"] as? [any Sendable])?.count ?? 0) }
+        return Array(repeating: 7, count: count)
+    }
 }

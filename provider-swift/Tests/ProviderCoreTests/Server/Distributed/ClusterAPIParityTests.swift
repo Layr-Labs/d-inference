@@ -24,12 +24,14 @@ struct ClusterAPIParityTests {
     /// still finishing the cancelled request: here the pair acknowledges
     /// retirement only once the client has the whole answer, as a pair still
     /// finishing a step does. The run above acknowledges at once, so it met
-    /// this order only intermittently (`tool-choice-named-stream`).
+    /// this order only intermittently (`tool-choice-named-stream`). The answer
+    /// is the plain script's text: Qwen's thought before a call is reasoning,
+    /// not a violation.
     @Test(arguments: ["qwen3.8-27b", "qwen3.5-9b", "qwen3.5-35b-a3b", "bonsai-27b", "nemotron-3.5"])
     func streamRejectedMidGenerationEndsWithTheSingleMacFailureFrameBeforeRetirement(_ name: String) async throws {
         let family = try #require(ParityFamily.all.first { $0.name == name })
         let testCase = try #require(ParityCase.all(family).first { $0.name == "tool-choice-named-stream" })
-        let tokens = testCase.script.tokens(family)
+        let tokens = ParityScriptKind.plain.tokens(family)
         let directory = try family.makeDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let script = ParityScript()

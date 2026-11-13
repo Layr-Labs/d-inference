@@ -3334,6 +3334,45 @@ passes it through `NativeToolStreamRouter` to the splitter. Other native-channel
 families retain their previous literal-close behavior
 (`provider-swift/Sources/ProviderCore/Inference/Tools/ToolChoiceEnforcementPolicy.swift`).
 
+Qwen 3.5, 3.6 and 3.8 (`qwen3_5`, `qwen3_5_moe`) keep their legacy tool
+framing, but a text request with tools and their own tool parser (`.qwen35`,
+the default) takes the same reasoning-first split
+(`ToolChoiceEnforcementPolicy.splitsQwenReasoningBeforeTools`):
+`MultiModelBatchSchedulerEngine.prepareCompletion` seeds `NativeChannelSplitter`
+with the prompt's own think state, the `ReasoningPromptProbe` prefix that would
+otherwise seed the downstream think parser. A `<tool_call>` that a thought
+mentions, or a call that it drafts, stays reasoning, and the calls after
+`</think>` parse. Before, the tool handler scanned the raw text, thinking
+included: one mentioned tag opened a frame that swallowed the real call and
+came back as text, and a drafted call was executed. Their `auto` calls still
+stream while generated (`ToolStreamPreparation` keys on `usesNativeTextChannels`,
+which these families are not). Forced calls keep their prompt policy (thinking
+stays off); a stray thought before one is now reasoning instead of a 422. A
+thought that never closes and ends in complete `<tool_call>` frames (whitespace
+aside) is the model calling from inside it, a known Qwen 3.5 failure mode
+(vLLM #35687): when the output ends there, the splitter
+(`promotesTrailingCalls`) also returns those frames as content, so they parse
+as calls, as on the raw route. Such a call leaves when the output ends, not
+while generated, and its text stays in the streamed reasoning too. Frames are
+read as the Qwen parser frames content, and only frames that parse with a
+declared name count: a mention never starts one, unless it reaches its first
+`<parameter=` (then it cannot be told from a call whose argument spells the
+tags, as on the raw route), and a frame that never closes holds the rest of the
+thought. Only the frames at the very end count: a frame followed by more
+thought, or by `</think>`, stays reasoning, and so does an earlier call that
+text separates from them (a drafted call and a second real call cannot be told
+apart; the raw route ran both). A thought the token limit cut off (`length`)
+promotes nothing (`NativeToolStreamRouter.outputReachedTokenLimit`). The search
+is bounded by a fixed multiple of the thought's length; past that bound nothing
+is promoted. Inside a thought a literal `</think>`, even in a call's arguments,
+ends it, as on every native family. A request without tools, another requested
+`tool_call_parser` and an explicit non-think reasoning parser keep the raw-text
+route; so does a prompt whose think state the probe cannot read, unless the
+request has the local server's streamed content seed. A collected local
+response carries content and reasoning untrimmed, as on the native families: a
+call's message keeps the `\n\n` after `</think>` as its content, and a
+collected Responses `output` has it as a message item before the calls.
+
 `ReasoningPromptProbe.streamingPrefix` in
 `provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningPromptProbe.swift`
 decodes only the final eight prompt tokens to initialize Qwen/DeepSeek

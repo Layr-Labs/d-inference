@@ -160,6 +160,43 @@ struct LoopExitThinkingContinuationTests {
         #expect(calls.submits.isEmpty)
     }
 
+    @Test("a multi-token exit (Qwen's `\\n</think>\\n\\n`): only the close marker in flight means the row closed its thought")
+    func multiTokenExit() async throws {
+        let exitTokens = [10, 248_069, 10, 10]
+        func qwenExit(_ tokens: [Int]) -> GenerationLoopExitThinking {
+            let record = GenerationLoopExitRecord()
+            record.append(tokens)
+            record.requestExit(.init(period: 19, span: 2_048, generatedTokens: 4_096))
+            return GenerationLoopExitThinking(
+                openMarker: "<think>", closeMarker: "</think>", exitTokens: exitTokens, exitText: "\n</think>\n\n",
+                closeToken: 248_069, startsInside: true, record: record)
+        }
+        // Newlines in flight after the stop are still the thought.
+        let calls = Calls()
+        let tokens = Array(repeating: 900, count: 4_096) + [10, 10, 900]
+        let out = await drain(splice(
+            first: stream([.info(promptTokens: 5, completionTokens: 4_099, tokensPerSecond: 10, finishReason: "length")]),
+            exit: qwenExit(tokens), calls: calls
+        ) {
+            self.stream([.chunk("B"), .info(promptTokens: 4_108, completionTokens: 1, tokensPerSecond: 20,
+                                            finishReason: "stop")])
+        }.events)
+        #expect(out == ["chunk:\n</think>\n\n", "chunk:B", "info:5/4104/stop"])
+        let submit = try #require(calls.submits.first)
+        #expect(submit.prompt == Self.prompt + tokens + exitTokens)
+        #expect(submit.maxTokens == 8_192 - 4_099 - 4)
+
+        // `</think>` in flight: the row closed its thought itself.
+        let closed = Calls()
+        let closing = Array(repeating: 900, count: 4_096) + [10, 248_069, 10, 10, 65]
+        let kept = await drain(splice(
+            first: stream([.info(promptTokens: 5, completionTokens: 4_101, tokensPerSecond: 10, finishReason: "length")]),
+            exit: qwenExit(closing), calls: closed
+        ) { self.stream([.chunk("never")]) }.events)
+        #expect(kept == ["info:5/4101/length"])
+        #expect(closed.submits.isEmpty)
+    }
+
     @Test("no output budget left: nothing is submitted")
     func noBudget() async {
         let calls = Calls()

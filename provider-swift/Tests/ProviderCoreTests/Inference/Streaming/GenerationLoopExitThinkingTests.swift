@@ -177,7 +177,7 @@ struct GenerationLoopExitThinkingTests {
             modelType: modelType, tokenizer: tokenizer, promptTokens: prompt, logprobs: logprobs, setting: setting)
     }
 
-    @Test("on by default for Gemma 4 only, with its close marker as the exit")
+    @Test("on by default for Gemma 4, with its close marker as the exit; not for families without a listed marker")
     func defaultModelTypes() throws {
         for modelType in ["gemma4", "gemma4_text", "GEMMA4"] {
             let exit = try #require(resolve(modelType), "\(modelType)")
@@ -185,8 +185,7 @@ struct GenerationLoopExitThinkingTests {
             #expect(exit.exitText == "<channel|>")
             #expect(!exit.startsInside)
         }
-        for modelType in ["qwen3_5", "qwen3_5_moe", "qwen4_exp", "gpt_oss", "nemotron_h", "glm5_next", "mimo_v2",
-                          "diffusion_gemma", "llama"] {
+        for modelType in ["qwen4_exp", "gpt_oss", "nemotron_h", "glm5_next", "mimo_v2", "diffusion_gemma", "llama"] {
             #expect(resolve(modelType) == nil, "\(modelType)")
         }
         #expect(resolve(nil) == nil)
@@ -207,7 +206,7 @@ struct GenerationLoopExitThinkingTests {
         #expect(resolve("gemma4", setting: listed) == nil)
         #expect(resolve("gemma4_text", setting: listed) != nil)
         // A listed family without a known marker stays off.
-        #expect(resolve("qwen3_5", setting: listed) == nil)
+        #expect(resolve("llama", setting: .modelTypes(["llama"])) == nil)
     }
 
     @Test("never with logprobs, and never without the marker token")
@@ -226,6 +225,60 @@ struct GenerationLoopExitThinkingTests {
         #expect(resolve("gemma4", prompt: primed)?.startsInside == true)
         #expect(resolve("gemma4", prompt: closed)?.startsInside == false)
         #expect(resolve("gemma4", prompt: Self.prompt)?.startsInside == false)
+    }
+
+    // MARK: The `</think>` families
+
+    private static let qwen = QwenByteTestTokenizer()
+    private static let qwenThinking = QwenByteTestTokenizer.tokens(QwenByteTestTokenizer.prompt(thinking: true))
+
+    private func qwenExit(_ modelType: String = "qwen3_5_moe") -> GenerationLoopExitThinking? {
+        GenerationLoopExitThinkingPolicy.resolve(
+            modelType: modelType, tokenizer: Self.qwen, promptTokens: Self.qwenThinking, logprobs: false,
+            setting: .modelTypes(GenerationLoopExitThinkingPolicy.defaultModelTypes))
+    }
+
+    @Test("Qwen 3.5/3.6 end the thought as their template does: `\\n</think>\\n\\n`, the marker as its own token")
+    func qwenFamilies() throws {
+        for modelType in ["qwen3_5", "qwen3_5_moe"] {
+            let exit = try #require(qwenExit(modelType), "\(modelType)")
+            #expect(exit.exitText == "\n</think>\n\n")
+            #expect(exit.exitTokens == [10, 248069, 10, 10])
+            #expect(exit.closeToken == 248069)
+            // The served template opens the thought in the prompt.
+            #expect(exit.startsInside)
+        }
+        let closed = QwenByteTestTokenizer.tokens(QwenByteTestTokenizer.prompt(thinking: false))
+        #expect(GenerationLoopExitThinkingPolicy.resolve(
+            modelType: "qwen3_5_moe", tokenizer: Self.qwen, promptTokens: closed, logprobs: false,
+            setting: .modelTypes(GenerationLoopExitThinkingPolicy.defaultModelTypes))?.startsInside == false)
+        // Qwen 3.8 (`qwen4_exp`) is not listed: its thought loops are rare in production.
+        #expect(qwenExit("qwen4_exp") == nil)
+        // The env list still turns Qwen's off and keeps Gemma's.
+        let gemmaOnly = GenerationLoopExitThinkingPolicy.setting(
+            environment: [GenerationLoopExitThinkingPolicy.environmentKey: "gemma4,gemma4_text"])
+        #expect(GenerationLoopExitThinkingPolicy.resolve(
+            modelType: "qwen3_5_moe", tokenizer: Self.qwen, promptTokens: Self.qwenThinking, logprobs: false,
+            setting: gemmaOnly) == nil)
+        #expect(resolve("gemma4", setting: gemmaOnly) != nil)
+    }
+
+    @Test("a Qwen thought that loops asks to end the thought; a loop after `</think>` does not")
+    func qwenGuard() throws {
+        var inThought = GenerationLoopGuard(
+            modelType: "qwen3_5_moe", toolCallMarkers: GenerationLoopGuardPolicy.genericToolCallMarkers,
+            exitThinking: try #require(qwenExit()))
+        let (thoughtStop, _) = run(clause(8_000), into: &inThought)
+        #expect(thoughtStop != nil)
+        #expect(inThought.endsThought)
+
+        var inAnswer = GenerationLoopGuard(
+            modelType: "qwen3_5_moe", toolCallMarkers: GenerationLoopGuardPolicy.genericToolCallMarkers,
+            exitThinking: try #require(qwenExit()))
+        let closing: [(String, [Int])] = [("ok\n", [111, 107, 10]), ("</think>", [248069]), ("\n\n", [10, 10])]
+        let (answerStop, _) = run(closing + clause(8_000), into: &inAnswer)
+        #expect(answerStop != nil)
+        #expect(!inAnswer.endsThought)
     }
 
     @Test("darkbloom start passes the loop guard's and the exit's switches to the launchd daemon")

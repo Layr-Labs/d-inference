@@ -16,10 +16,14 @@ public struct GenerationLoopExitThinking: Sendable {
     let openMarker: String
     /// Text that closes it.
     let closeMarker: String
-    /// The tokens appended to end the thought: the close marker's token.
+    /// The tokens appended to end the thought: the family's closing text, with
+    /// the close marker as its own special token.
     let exitTokens: [Int]
     /// Their text, as the client's stream shows them.
     let exitText: String
+    /// The close marker's own token. A row that produced it after the stop
+    /// closed its thought itself.
+    let closeToken: Int
     /// The prompt itself left the reasoning channel open.
     let startsInside: Bool
     /// Shared with the continuation: the row's tokens and the guard's request.
@@ -28,6 +32,21 @@ public struct GenerationLoopExitThinking: Sendable {
     /// budget: a model that wrote a loop may write a near-verbatim one next,
     /// which the guard does not see.
     var answerTokenLimit = GenerationLoopExitThinkingPolicy.answerTokenLimit
+
+    init(
+        openMarker: String, closeMarker: String, exitTokens: [Int], exitText: String, closeToken: Int? = nil,
+        startsInside: Bool, record: GenerationLoopExitRecord,
+        answerTokenLimit: Int = GenerationLoopExitThinkingPolicy.answerTokenLimit
+    ) {
+        self.openMarker = openMarker
+        self.closeMarker = closeMarker
+        self.exitTokens = exitTokens
+        self.exitText = exitText
+        self.closeToken = closeToken ?? exitTokens.first ?? -1
+        self.startsInside = startsInside
+        self.record = record
+        self.answerTokenLimit = answerTokenLimit
+    }
 }
 
 /// One request's generated tokens and whether its loop guard asked to end
@@ -70,6 +89,10 @@ enum GenerationLoopExitThinkingPolicy {
     struct Markers: Sendable, Equatable {
         let open: String
         let close: String
+        /// What the family's template writes around the close marker when the
+        /// model ends its own thought (Qwen: `\n</think>\n\n`).
+        var before = ""
+        var after = ""
     }
 
     /// The families whose thought this can end, by `model_type`.

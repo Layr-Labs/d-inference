@@ -9,25 +9,243 @@ import Testing
 struct GLM5ToolFailureTests {
     private let valid = "<tool_call>echo<arg_key>text</arg_key><arg_value>SAFE</arg_value></tool_call>"
 
+    /// A malformed suffix commits no call. A required call fails (422); an
+    /// `auto` response returns the suffix as text instead of failing.
     @Test(arguments: [false, true], [1, 7, 4096])
     func malformedSuffixNeverCommitsEarlierCall(forced: Bool, width: Int) async throws {
-        try await check(output: valid + "PRIVATE_STRAY", forced: forced, width: width, invalid: true)
+        let output = valid + "PRIVATE_STRAY"
+        let result = try await run(output, forced: forced, width: width)
+        expectUnparsed(result, output: output, forced: forced)
     }
 
     @Test(arguments: [false, true])
     func truncatedSecondCallNeverCommitsEarlierCall(forced: Bool) async throws {
-        try await check(output: valid + "<tool_call>echo<arg_key>text", forced: forced, width: 1, invalid: true)
+        let output = valid + "<tool_call>echo<arg_key>text"
+        let result = try await run(output, forced: forced, width: 1)
+        expectUnparsed(result, output: output, forced: forced)
     }
 
     @Test(arguments: [false, true])
     func validCallSurvives(forced: Bool) async throws {
-        try await check(output: valid, forced: forced, width: 1, invalid: false)
+        let result = try await run(valid, forced: forced, width: 1)
+        #expect(result.failure == nil)
+        #expect(result.calls.map(\.function.name) == ["echo"])
+        #expect(result.visible.isEmpty)
     }
 
     @Test(arguments: [false, true])
     func oversizedFrameFailsBeforeFallback(forced: Bool) async throws {
-        try await check(output: "<tool_call>echo" + String(repeating: "x", count: (1 << 20) + 1),
-            forced: forced, width: 65536, invalid: true)
+        let output = "<tool_call>echo" + String(repeating: "x", count: (1 << 20) + 1)
+        let result = try await run(output, forced: forced, width: 65536)
+        expectUnparsed(result, output: output, forced: forced)
+    }
+
+    /// The model's raw output after the prompt's open `<think>` (the legacy
+    /// text path: the tool parser also reads the reasoning), the calls an
+    /// `auto` response returns, and its visible text, which the service's
+    /// reasoning parser then splits at `</think>`. Shapes from the
+    /// conformance replay: a tag mentioned or a call drafted in the thought, a
+    /// text answer that mentions the tag, clean calls.
+    static let strayCases: [(name: String, output: String, calls: [String], visible: String)] = {
+        let call = "<tool_call>echo<arg_key>text</arg_key><arg_value>SAFE</arg_value></tool_call>"
+        let other = "<tool_call>echo<arg_key>text</arg_key><arg_value>MORE</arg_value></tool_call>"
+        let draft = "<tool_call>echo<arg_key>text</arg_key><arg_value>DRAFT</arg_value></tool_call>"
+        return [
+            ("call", "Need it.</think>" + call, ["SAFE"], "Need it.</think>"),
+            ("call drafted in the thought", "I'll do " + draft + " maybe.</think>" + call, ["SAFE"],
+             "I'll do " + draft + " maybe.</think>"),
+            ("tag mentioned in the thought", "Wrap it in <tool_call> tags.</think>" + call, ["SAFE"],
+             "Wrap it in <tool_call> tags.</think>"),
+            ("tag mentioned in the thought, text answer",
+             "The tool would need <tool_call> syntax, but I can answer.</think>Zürich is cool.", [],
+             "The tool would need <tool_call> syntax, but I can answer.</think>Zürich is cool."),
+            ("text answer mentions the tag", "Simple.</think>To call a tool, GLM writes <tool_call> first.", [],
+             "Simple.</think>To call a tool, GLM writes <tool_call> first."),
+            ("answer quotes a frame, then calls",
+             "Simple.</think>The format is <tool_call> … </tool_call>. Calling: " + call, ["SAFE"],
+             "Simple.</think>The format is <tool_call> … </tool_call>. Calling: "),
+            ("two calls", "Two.</think>" + call + "\n" + other, ["SAFE", "MORE"], "Two.</think>"),
+            ("call from an unclosed thought", "Need it." + call, ["SAFE"], "Need it."),
+            ("call drafted in the thought, no call", "I'd do " + draft + "</think>", [],
+             "I'd do " + draft + "</think>"),
+            ("tag mentioned before two calls", "Use <tool_call>.</think>" + call + " " + other + "\n",
+             ["SAFE", "MORE"], "Use <tool_call>.</think>"),
+        ]
+    }()
+
+    @Test(arguments: GLM5ToolFailureTests.strayCases.indices, [1, 4096])
+    func strayToolTagsAreTextAndTheFinalCallsParse(index: Int, width: Int) async throws {
+        let shape = Self.strayCases[index]
+        let result = try await run(shape.output, forced: false, width: width)
+        #expect(result.failure == nil, "\(shape.name)")
+        #expect(result.calls.count == shape.calls.count, "\(shape.name)")
+        #expect(result.calls.compactMap { $0.function.arguments["text"]?.anyValue as? String } == shape.calls,
+            "\(shape.name)")
+        #expect(result.visible == shape.visible, "\(shape.name)")
+    }
+
+    /// A required call keeps failing closed when its suffix does not parse: the
+    /// parser's own refusal, or the visible-text check when text precedes it.
+    @Test(arguments: [#""required""#, #"{"type":"function","function":{"name":"echo"}}"#])
+    func forcedChoiceStillRefusesAStraySuffix(choice: String) async throws {
+        let stray = try await run("<tool_call>.</tool_call>" + valid, forced: true, width: 1, choice: choice)
+        #expect(stray.calls.isEmpty && stray.visible.isEmpty)
+        #expect(stray.failure == .toolChoiceViolation("native GLM tool output is invalid"))
+        let mentioned = try await run("Wrap it in <tool_call> tags.</think>" + valid, forced: true, width: 1,
+            choice: choice)
+        #expect(mentioned.calls.isEmpty && mentioned.visible.isEmpty)
+        let failure = try #require(mentioned.failure)
+        #expect(ProviderLoop.mapInferenceErrorToStatus(failure) == 422)
+    }
+
+    static let storeTool = #"{"type":"function","function":{"name":"store","parameters":{"type":"object","properties":{"doc":{"type":"object"}},"required":["doc"]}}}"#
+
+    /// The delimiters quoted inside a JSON argument are data: the calls start
+    /// at the real frame, not at a quoted tag.
+    @Test func quotedDelimitersStayArgumentData() async throws {
+        let tool = Self.storeTool
+        let output = "See <tool_call> here.</think><tool_call>store<arg_key>doc</arg_key>"
+            + #"<arg_value>{"x":"</tool_call><tool_call>store"}</arg_value></tool_call>"#
+        let result = try await run(output, forced: false, width: 3, tool: tool)
+        #expect(result.failure == nil)
+        #expect(result.calls.count == 1)
+        #expect(result.calls.first?.function.arguments["doc"] == .object(["x": .string("</tool_call><tool_call>store")]))
+        #expect(result.visible == "See <tool_call> here.</think>")
+    }
+
+    /// An undeclared or malformed final call is not salvaged: the response is
+    /// text, as are its earlier calls.
+    @Test func malformedFinalCallIsText() async throws {
+        let output = "Use <tool_call>.</think>" + valid
+            + "<tool_call>nope<arg_key>text</arg_key><arg_value>a</arg_value></tool_call>"
+        let result = try await run(output, forced: false, width: 5)
+        #expect(result.failure == nil)
+        #expect(result.calls.isEmpty)
+        #expect(result.visible == output)
+    }
+
+    /// Calls are never split out of a suffix that did not parse in an output
+    /// the token limit cut off; a suffix that parses keeps its calls, as before.
+    /// The frames that end it are dropped when the cut ends as `length`
+    /// (`TokenLimitCutPolicy`) and stay text with it off.
+    @Test func truncatedOutputIsNotSplit() async throws {
+        let output = "Wrap it in <tool_call> tags.</think>" + valid
+        let result = try await run(output, forced: false, width: 4, finishReason: "length")
+        #expect(result.failure == nil)
+        #expect(result.calls.isEmpty)
+        #expect(result.visible == "Wrap it in <tool_call> tags.</think>")
+        let off = try await run(output, forced: false, width: 4, finishReason: "length", cutAnswersEndAtLength: false)
+        #expect(off.failure == nil && off.calls.isEmpty && off.visible == output)
+        let clean = try await run("Need it.</think>" + valid, forced: false, width: 4, finishReason: "length")
+        #expect(clean.failure == nil && clean.calls.count == 1 && clean.visible == "Need it.</think>")
+    }
+
+    /// A frame that has started its arguments owns everything up to its own
+    /// `</tool_call>`: a frame inside an argument, or after one, is data and
+    /// never becomes a call, whether the outer frame is cut off or closed.
+    @Test(arguments: [nil, "length"], [1, 7, 4096])
+    func framesInsideAFrameAreNeverCalls(finishReason: String?, width: Int) async throws {
+        let nested = "<tool_call>store<arg_key>doc</arg_key><arg_value>{}</arg_value></tool_call>"
+        // `atCut`: what a cut that ends as `length` leaves visible
+        // (`TokenLimitCutPolicy`): the outer frame, open or closed, ends the
+        // output, so it is dropped instead of published as text.
+        let cases: [(output: String, tool: String?, atCut: String)] = [
+            ("<tool_call>store<arg_key>doc</arg_key><arg_value>{\"x\":\"" + nested, Self.storeTool, ""),
+            ("<tool_call>echo<arg_key>text</arg_key><arg_value>draft " + valid, nil, ""),
+            ("Use <tool_call>.</think><tool_call>echo<arg_key>text</arg_key><arg_value>a</arg_value>junk" + valid, nil,
+             "Use <tool_call>.</think>"),
+        ]
+        for shape in cases {
+            let result = try await run(shape.output, forced: false, width: width, finishReason: finishReason,
+                tool: shape.tool)
+            #expect(result.failure == nil && result.calls.isEmpty, "\(shape.output)")
+            #expect(result.visible == (finishReason == "length" ? shape.atCut : shape.output), "\(shape.output)")
+        }
+    }
+
+    /// Released text would hand a think marker from inside a drafted call to
+    /// the service's reasoning parser as a channel boundary: that response keeps
+    /// failing, as before.
+    @Test func thinkMarkerInsideAReleasedFrameStillFails() async throws {
+        let draft = "Draft <tool_call>echo<arg_key>text</arg_key><arg_value></think></arg_value></tool_call>"
+        for output in [draft + "PRIVATE</think>Answer", draft + " more.</think>" + valid] {
+            let result = try await run(output, forced: false, width: 5)
+            #expect(result.calls.isEmpty && result.visible == "Draft ")
+            #expect(result.failure == .generationFailed("native GLM tool output is invalid"))
+        }
+    }
+
+    /// Outputs the token limit cut, and their visible text when the cut ends
+    /// as `length`: the run of frames that ends the output, up to a frame the
+    /// limit left unfinished (in its name, a tag, a key or a value), is
+    /// dropped, whole calls included, and never published as text; a
+    /// `<tool_call>` the lexer reads as a mention stays text with what follows.
+    static let cutCases: [(output: String, visible: String)] = {
+        let call = "<tool_call>echo<arg_key>text</arg_key><arg_value>SAFE</arg_value></tool_call>"
+        let other = "<tool_call>echo<arg_key>text</arg_key><arg_value>MORE</arg_value></tool_call>"
+        return [
+            ("Wrap it in <tool_call> tags.</think>" + call, "Wrap it in <tool_call> tags.</think>"),
+            ("Use <tool_call>.</think>" + call + " " + other + "\n", "Use <tool_call>.</think>"),
+            (call + "<tool_call>echo<arg_key>text", ""),
+            ("Calling.</think>" + call + "\n<tool_call>echo<arg_key>text</arg_key><arg_value>MO", "Calling.</think>"),
+            ("Calling.</think>" + call + "\n<tool_call>ec", "Calling.</think>"),
+            ("Calling.</think><tool_call>", "Calling.</think>"),
+            ("Calling.</think>" + call + "<tool_call>echo<arg_", "Calling.</think>"),
+            ("The tool would need <tool_call> syntax, but I can answer.</think>Zürich is cool.",
+             "The tool would need <tool_call> syntax, but I can answer.</think>Zürich is cool."),
+            ("Simple.</think>To call a tool, GLM writes <tool_call> first.",
+             "Simple.</think>To call a tool, GLM writes <tool_call> first."),
+        ]
+    }()
+
+    @Test(arguments: GLM5ToolFailureTests.cutCases.indices, [1, 7, 4096])
+    func framesTheLimitCutAreDroppedAndMentionsStay(index: Int, width: Int) async throws {
+        let shape = Self.cutCases[index]
+        let result = try await run(shape.output, forced: false, width: width, finishReason: "length")
+        #expect(result.failure == nil && result.calls.isEmpty, "\(shape.output)")
+        #expect(result.visible == shape.visible, "\(shape.output)")
+    }
+
+    /// The same suffix in an answer the token limit cut: the cut ends it as
+    /// `length` (`TokenLimitCutPolicy`), so the suffix is dropped, never
+    /// released, and nothing fails.
+    @Test func thinkMarkerInsideAFrameCutAtTheLimitIsDropped() async throws {
+        let draft = "Draft <tool_call>echo<arg_key>text</arg_key><arg_value></think></arg_value></tool_call>"
+        let result = try await run(draft + "PRIVATE</think>Answer", forced: false, width: 5, finishReason: "length")
+        #expect(result.failure == nil && result.calls.isEmpty && result.visible == "Draft ")
+    }
+
+    /// Finding the calls is linear in the suffix: many mentions before them.
+    @Test func manyMentionsBeforeTheCalls() async throws {
+        let mentions = String(repeating: "<tool_call> ", count: 20_000)
+        let result = try await run(mentions + valid, forced: false, width: 65536)
+        #expect(result.failure == nil && result.calls.count == 1 && result.visible == mentions)
+    }
+
+    /// `DARKBLOOM_GLM_TOOL_TEXT_FALLBACK=0` restores the whole-suffix failure.
+    @Test func rollbackRestoresTheSuffixFailure() throws {
+        let request = try MiMoConsumerFixture.request(choice: #""auto""#)
+        let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "glm5_next")
+        for textFallback in [true, false] {
+            let handler = try #require(try ToolStreamPreparation.makeHandler(
+                request: request, prepared: prepared, modelType: "glm5_next"))
+            var router = NativeToolStreamRouter(handler: handler, requiresToolCall: false, nativePrefix: nil,
+                tools: prepared.tools?.map { $0.toolSpec() }, glmUnparsedOutputIsText: textFallback)
+            _ = try router.process("Wrap it in <tool_call> tags.</think>" + valid)
+            _ = try router.finishText()
+            let finished = try router.finishCompleteCalls(truncated: false)
+            if textFallback {
+                try router.checkNativeToolFailure()
+                #expect(finished.calls.count == 1)
+                #expect(finished.residual == "<tool_call> tags.</think>")
+            } else {
+                #expect(finished.calls.isEmpty)
+                #expect(throws: MultiModelBatchSchedulerEngineError.generationFailed(
+                    "native GLM tool output is invalid")) { try router.checkNativeToolFailure() }
+            }
+        }
+        #expect(GLM5ToolSuffix.environmentKey == "DARKBLOOM_GLM_TOOL_TEXT_FALLBACK")
+        #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(GLM5ToolSuffix.environmentKey))
     }
 
     /// Forced choice is served by structured post-validation: the production
@@ -49,9 +267,41 @@ struct GLM5ToolFailureTests {
         }
     }
 
-    private func check(output: String, forced: Bool, width: Int, invalid: Bool) async throws {
-        let request = try MiMoConsumerFixture.request(choice: forced ? #""required""# : #""auto""#)
-        let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "glm5_next")
+    private struct Outcome {
+        var calls: [ToolCall] = []
+        var visible = ""
+        var failure: MultiModelBatchSchedulerEngineError?
+    }
+
+    /// A required call fails closed (422); an `auto` response returns the
+    /// unparsed suffix as text, with no call and no failure.
+    private func expectUnparsed(_ result: Outcome, output: String, forced: Bool) {
+        #expect(result.calls.isEmpty)
+        if forced {
+            #expect(result.visible.isEmpty)
+            #expect(result.failure == .toolChoiceViolation("native GLM tool output is invalid"))
+            if let failure = result.failure { #expect(ProviderLoop.mapInferenceErrorToStatus(failure) == 422) }
+        } else {
+            #expect(result.failure == nil)
+            #expect(result.visible == output)
+        }
+    }
+
+    /// The production event stream on the legacy text path (no native
+    /// channel), fed `width` characters at a time.
+    private func run(_ output: String, forced: Bool, width: Int, finishReason: String? = nil,
+                     tool: String? = nil, choice forcedChoice: String = #""required""#,
+                     cutAnswersEndAtLength: Bool? = nil) async throws -> Outcome {
+        let choice = forced ? forcedChoice : #""auto""#
+        var request = try MiMoConsumerFixture.request(choice: choice)
+        if let tool {
+            var body = try #require(JSONSerialization.jsonObject(with: MiMoConsumerFixture.body(
+                choice: choice)) as? [String: Any])
+            body["tools"] = [try JSONSerialization.jsonObject(with: Data(tool.utf8))]
+            request = try ProviderLoop.decodeOpenAIRequest(JSONSerialization.data(withJSONObject: body))
+        }
+        var prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "glm5_next")
+        if let cutAnswersEndAtLength { prepared.cutAnswersEndAtLength = cutAnswersEndAtLength }
         let handler = try #require(try ToolStreamPreparation.makeHandler(
             request: request, prepared: prepared, modelType: "glm5_next"))
         let scheduler = MultiModelBatchSchedulerEngine(registryProvider: { [:] })
@@ -60,36 +310,27 @@ struct GLM5ToolFailureTests {
             for start in stride(from: 0, to: chars.count, by: width) {
                 continuation.yield(.chunk(String(chars[start..<min(start + width, chars.count)])))
             }
+            if let finishReason {
+                continuation.yield(.info(promptTokens: 1, completionTokens: 1, tokensPerSecond: 1,
+                    finishReason: finishReason))
+            }
             continuation.finish()
         }
         let stream = try scheduler._testMakeEventStream(upstream: upstream, cancelUpstream: {},
             prepared: prepared, releaseBox: OneShotRelease(release: { _ in }, modelId: "fixture"),
             toolHandler: handler)
-        var calls = 0, visible = ""
-        var failure: MultiModelBatchSchedulerEngineError?
+        var result = Outcome()
         do {
             for try await event in stream {
                 switch event {
-                case .toolCall(let call):
-                    calls += 1
-                    #expect(call.function.name == "echo")
-                case .content(let text): visible += text
-                case .parsed(let value): visible += value.content
+                case .toolCall(let call): result.calls.append(call)
+                case .content(let text): result.visible += text
+                case .parsed(let value): result.visible += value.content
                 default: break
                 }
             }
-        } catch { failure = try #require(error as? MultiModelBatchSchedulerEngineError) }
-        if invalid {
-            #expect(calls == 0)
-            #expect(visible.isEmpty)
-            #expect(failure == (forced ? .toolChoiceViolation("native GLM tool output is invalid")
-                : .generationFailed("native GLM tool output is invalid")))
-            if let failure { #expect(ProviderLoop.mapInferenceErrorToStatus(failure) == (forced ? 422 : 500)) }
-        } else {
-            #expect(failure == nil)
-            #expect(calls == 1)
-            #expect(visible.isEmpty)
-        }
+        } catch { result.failure = try #require(error as? MultiModelBatchSchedulerEngineError) }
+        return result
     }
 }
 #endif

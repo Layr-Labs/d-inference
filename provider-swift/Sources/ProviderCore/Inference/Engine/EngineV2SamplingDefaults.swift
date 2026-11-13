@@ -23,10 +23,11 @@
 //   identities (catalog `glm-5.3-flash` and the local qualification download)
 //   honor their artifact defaults.
 //   The catalog Qwen 3.5/3.6 builds take their model cards' thinking-mode
-//   values instead of the greedy decoding that looped to `max_tokens`. The
-//   35B builds keep the cards' presence penalty (`qwen35CardDefaults`);
-//   Qwen3.5-9B has none (`qwen35NineBCardDefaults`), as the 0.10.12 gate
-//   decided per build.
+//   values instead of the greedy decoding that looped to `max_tokens`,
+//   including the cards' presence penalty 1.5 (`qwen35CardDefaults`).
+//   0.10.12 dropped it on Qwen3.5-9B, whose answers then ran to
+//   `max_tokens` about three times as often in production; 0.10.13 gives it
+//   back (`DARKBLOOM_QWEN35_9B_PRESENCE_PENALTY=0` is the rollback).
 //   Every other model keeps the legacy defaults byte-for-byte.
 // * `do_sample: false` in the file means greedy (legacy), matching HF
 //   semantics; an absent or unreadable file is legacy.
@@ -70,18 +71,41 @@ public struct EngineV2SamplingDefaults: Sendable, Equatable {
     public static let legacy = EngineV2SamplingDefaults()
 
     /// The model cards' thinking-mode values (the template default), shared by
-    /// these exact catalog builds and their `model_type`. The 35B builds keep
-    /// the cards' presence penalty: without it qwen3.5-35b-a3b looped under
-    /// typical and exact MTP acceptance alike.
+    /// these exact catalog builds and their `model_type`, with the cards'
+    /// presence penalty. Without it qwen3.5-35b-a3b looped under typical and
+    /// exact MTP acceptance alike, and Qwen3.5-9B's answers ran on to
+    /// `max_tokens` (`qwen35NineBNoPenaltyDefaults`). A penalty row does not
+    /// speculate; it still stages the prefix checkpoints a speculating row
+    /// stages.
     static let qwen35CardDefaults = EngineV2SamplingDefaults(
         temperature: 1.0, topP: 0.95, topK: 20, presencePenalty: 1.5)
-    /// Qwen3.5-9B's: the same values without the penalty. Without it the 9B
-    /// looped only under typical MTP acceptance, and its built-in rule is exact
-    /// (`MTPAcceptancePolicy`); a penalty would keep its rows from speculating
-    /// (they would still stage prefix checkpoints).
-    static let qwen35NineBCardDefaults = EngineV2SamplingDefaults(
+    /// Qwen3.5-9B under `DARKBLOOM_QWEN35_9B_PRESENCE_PENALTY=0`: the card's
+    /// values without the penalty, 0.10.12's default. Its 31-draw gate saw no
+    /// loop under exact acceptance. In production (0.10.12 against 0.10.11 in
+    /// the same hour) its answers ran to `max_tokens` about three times as
+    /// often, and its JSON `response_format` answers, rows that never
+    /// speculate (a token constraint), ran out about twice as often: the
+    /// penalty alone made that difference. The registry's `presence_penalty`
+    /// 1.5 restored it on 2026-11-12.
+    static let qwen35NineBNoPenaltyDefaults = EngineV2SamplingDefaults(
         temperature: 1.0, topP: 0.95, topK: 20)
     static let qwen35NineBModelID = "Qwen3.5-9B"
+
+    /// `DARKBLOOM_QWEN35_9B_PRESENCE_PENALTY`: unset (or `1`, `on`, `true`)
+    /// keeps the card's 1.5 for Qwen3.5-9B requests that omit a presence
+    /// penalty; `0`, `off`, `false` or `no` restores 0.10.12's no-penalty
+    /// default.
+    /// Any other value keeps the card's. Only the 9B reads it. A request's own
+    /// `presence_penalty`, the coordinator's registry default included, always
+    /// wins.
+    static let qwen35NineBPenaltyEnvironmentKey = "DARKBLOOM_QWEN35_9B_PRESENCE_PENALTY"
+
+    static func qwen35NineBKeepsCardPenalty(environment: [String: String]) -> Bool {
+        guard let raw = environment[qwen35NineBPenaltyEnvironmentKey]?
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !raw.isEmpty
+        else { return true }
+        return !["0", "off", "false", "no"].contains(raw)
+    }
     static let qwen35CardModelTypes = [
         "Qwen3.5-9B": "qwen3_5",
         "qwen3.5-35b-a3b": "qwen3_5_moe",
@@ -110,12 +134,17 @@ public struct EngineV2SamplingDefaults: Sendable, Equatable {
 
     /// Resolve once at slot construction. `.legacy` when the gate is off,
     /// the checkpoint directory is unknown, the file is absent or
-    /// unreadable, or the artifact declares `do_sample: false`.
+    /// unreadable, or the artifact declares `do_sample: false`. `environment`
+    /// is read for `DARKBLOOM_QWEN35_9B_PRESENCE_PENALTY` alone.
     static func resolve(
-        modelId: String, modelType: String?, modelDirectory: URL?
+        modelId: String, modelType: String?, modelDirectory: URL?,
+        environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> EngineV2SamplingDefaults {
         if let type = qwen35CardModelTypes[modelId], type == modelType {
-            return modelId == qwen35NineBModelID ? qwen35NineBCardDefaults : qwen35CardDefaults
+            if modelId == qwen35NineBModelID, !qwen35NineBKeepsCardPenalty(environment: environment) {
+                return qwen35NineBNoPenaltyDefaults
+            }
+            return qwen35CardDefaults
         }
         guard honorsArtifactDefaults(modelId: modelId, modelType: modelType),
             let modelDirectory

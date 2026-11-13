@@ -11,6 +11,7 @@ extension ChatTemplateControls: Decodable {
         case promptDate = "_darkbloom_prompt_date"
         case templateJSON = "_darkbloom_template_json"
         case reasoning
+        case stream
     }
 
     private enum ReasoningKeys: String, CodingKey {
@@ -47,5 +48,6 @@ extension ChatTemplateControls: Decodable {
         rawFlintControls = FlintRequestPolicy.RawControls.capture(from: decoder)
         templateJSON.requested =
             (try? values.decode(String.self, forKey: .templateJSON)) == TemplateJSONOrder.transformers
+        clientStreams = (try? values.decode(Bool.self, forKey: .stream)) == true
     }
 }

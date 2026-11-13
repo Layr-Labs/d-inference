@@ -39,6 +39,10 @@ public struct ChatTemplateControls: Sendable, Equatable {
     /// Whether the body asked for Transformers' tool JSON, and its tool
     /// declarations in their own order (`TemplateJSONOrder`).
     var templateJSON = TemplateJSONOrder.Evidence()
+    /// The body's own `stream`; nil when the controls were not read from a
+    /// body. The coordinator path serves every request as a stream and the
+    /// coordinator reassembles a complete one (`StrictToolCallPolicy`).
+    var clientStreams: Bool?
 
     public init(
         reasoningEffort: String? = nil,

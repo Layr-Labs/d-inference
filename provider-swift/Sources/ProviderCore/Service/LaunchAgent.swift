@@ -404,7 +404,7 @@ public enum LaunchAgent: Sendable {
     /// the rollback.
     /// `DARKBLOOM_STRICT_TOOL_GRAMMAR` / `DARKBLOOM_STRICT_TOOL_GRAMMAR_ALL_TOOLS`:
     /// `strict` Qwen 3.5-family calls follow their schemas in the sampler, by
-    /// default on the MoE builds (`on` adds the dense ones, an off word
+    /// default on the MoE builds and Qwen 3.8 (`on` adds the 9B, an off word
     /// restores unconstrained calls, a list picks the builds); `on` for the
     /// second extends it to calls of tools that are not `strict`.
     /// `DARKBLOOM_TTFT_TEMPLATE_LOOPS=0` renders cached prompts with the

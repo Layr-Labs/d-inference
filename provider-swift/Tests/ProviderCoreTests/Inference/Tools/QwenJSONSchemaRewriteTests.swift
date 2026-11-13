@@ -70,7 +70,7 @@ struct QwenJSONSchemaRewriteTests {
         let answer = #"{"age":-5,"email":"not an email","scores":{"a":-1.5},"tags":["","",""]}"#
         #expect(ends(answer, constraint))
         #expect(F.walk(#"{"age":"x"#, constraint) == nil, "types stay")
-        #expect(F.walk(#"{"age":1,"email":"e","extra""#, constraint) == nil, "additionalProperties false stays")
+        #expect(F.walk(#"{"age":1,"email":"e","scores":{"a":"x"}"#, constraint) != nil, "a map's values are free")
         // Best effort, never a refusal: a widened answer is not checked after generation.
         for (content, finish) in [(answer, "stop"), ("not json", "stop"), (#"{"age":1"#, "length")] {
             #expect(throws: Never.self) { try constraint.format.validate(content: content, finishReason: finish) }
@@ -90,6 +90,13 @@ struct QwenJSONSchemaRewriteTests {
         let union = #"{"type":"object","properties":{"id":{"anyOf":[{"type":"string"},{"type":"integer"}]}}}"#
         let constraint = try #require(try make(F.schemaFormat(union)))
         #expect(constraint.format.schema == nil, "a JSON object")
+        // A catch-all beside declared properties (zod's `.catchall()`) or a key count beyond them would narrow
+        // under the closed object, so these are held to a JSON object too.
+        for schema in [#"{"type":"object","properties":{"id":{"type":"string"}},"additionalProperties":{"type":"integer"}}"#,
+                       #"{"type":"object","properties":{"a":{"type":"string"}},"minProperties":2}"#] {
+            let held = try #require(try make(F.schemaFormat(schema)), "\(schema)")
+            #expect(held.format.schema == nil && ends(#"{"id":"a","n":3}"#, held), "\(schema)")
+        }
         #expect(ends(#"{"id":1}"#, constraint) && ends(#"{"anything":["x"]}"#, constraint))
         #expect(F.walk("[", constraint) == nil && F.walk("```", constraint) == nil)
         #expect(try make(F.schemaFormat(union), widens: false) == nil)
@@ -124,9 +131,14 @@ struct QwenJSONSchemaRewriteTests {
              #"{"type":"object","additionalProperties":true}"#),
             (##"{"$ref":"#/$defs/A","minimum":1,"$defs":{"A":{"type":"integer","maximum":3}}}"##, #"{"type":"integer"}"#),
             (#"{"anyOf":[{"type":"string","maxLength":3},{"type":"null"}]}"#, #"{"type":"string","nullable":true}"#),
+            (#"{"type":"object","minProperties":1,"not":{"required":["x"]},"if":{"required":["a"]},"then":{"required":["b"]}}"#,
+             #"{"type":"object"}"#),
             // Structure is never dropped: the compiler still refuses these.
             (#"{"type":"object","patternProperties":{"^a":{"type":"string"}}}"#,
              #"{"type":"object","patternProperties":{"^a":{"type":"string"}}}"#),
+            // Beside declared properties (a closed object) key and count assertions stay too.
+            (#"{"type":"object","properties":{"a":{"type":"string","pattern":"^a"}},"additionalProperties":{"type":"integer"},"minProperties":2,"not":{"required":["b"]}}"#,
+             #"{"type":"object","properties":{"a":{"type":"string"}},"additionalProperties":{"type":"integer"},"minProperties":2,"not":{"required":["b"]}}"#),
         ]
         for (input, expected) in cases {
             #expect(ResponseSchemaRewrite.subset(try Self.json(input), relaxingAssertions: true) == (try Self.json(expected)),

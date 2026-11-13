@@ -23,10 +23,15 @@ import MLXLMCommon
 /// rewrites `properties` and `items` whatever the node's type, so those
 /// checks and references hold there too.
 ///
-/// With `relaxingAssertions` the result may admit more instances, never fewer:
-/// each rewritten node also loses its `valueAssertions`, an item bound beyond
+/// With `relaxingAssertions` the result may admit more instances, never fewer,
+/// under the subset's closed objects (an object that declares properties
+/// generates only those keys): each rewritten node also loses its
+/// `valueAssertions` and an item bound beyond
 /// `ToolConstraintSchemaCompiler.maxArrayItems` (an array without one is
-/// unbounded), and an `additionalProperties` schema becomes `true`.
+/// unbounded). A node that declares no properties also loses its
+/// `keyAssertions`, and an `additionalProperties` schema there becomes `true`;
+/// beside declared properties those could demand keys the closed object never
+/// generates, so they stay for the compiler to refuse.
 enum ResponseSchemaRewrite {
     /// Bounds the walk's work: a node it visits costs one plus its keys and
     /// the members of its `type` and `required` arrays, a reference or a
@@ -42,8 +47,12 @@ enum ResponseSchemaRewrite {
     static let valueAssertions: Set<String> = [
         "pattern", "format", "minLength", "maxLength", "contentEncoding", "contentMediaType",
         "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
-        "uniqueItems", "minProperties", "maxProperties", "propertyNames",
-        "dependentRequired", "dependentSchemas", "dependencies", "not", "if", "then", "else",
+        "uniqueItems", "maxProperties", "propertyNames",
+    ]
+    /// Assertions that can demand keys or a key count, dropped only where the
+    /// object is open.
+    static let keyAssertions: Set<String> = [
+        "minProperties", "dependentRequired", "dependentSchemas", "dependencies", "not", "if", "then", "else",
     ]
     private static let annotations: Set<String> = [
         "title", "description", "default", "examples", "deprecated", "readOnly", "writeOnly", "$comment",
@@ -192,6 +201,8 @@ enum ResponseSchemaRewrite {
         for bound in ["minItems", "maxItems"] where exceedsArrayBounds(object[bound]) {
             object.removeValue(forKey: bound)
         }
+        if case .object(let properties)? = object["properties"], !properties.isEmpty { return }
+        for keyword in keyAssertions { object.removeValue(forKey: keyword) }
         if case .object? = object["additionalProperties"] { object["additionalProperties"] = .bool(true) }
     }
 

@@ -4,9 +4,10 @@ import MLXLMServer
 import Testing
 @testable import ProviderCore
 
-/// `DARKBLOOM_GLM_JSON_SCHEMA_MISS`: a GLM JSON answer that parses but misses
-/// its schema is the typed 422 by default, or with `release` the normalized
-/// answer, for the caller's own validator to judge. Non-JSON stays a 422.
+/// `DARKBLOOM_GLM_JSON_SCHEMA_MISS`: a GLM JSON answer whose value misses its
+/// schema is the typed 422 by default, or with `release` at a natural stop that
+/// value, for the caller's own validator to judge. A cut output is judged as
+/// with `refuse`; no complete JSON value stays a 422.
 @Suite("GLM JSON schema-miss switch")
 struct GLM5NextSchemaMissTests {
     static var weather: [String: Any] { [

@@ -4,10 +4,11 @@ import Foundation
 import MLXLMCommon
 import MLXLMServer
 
-/// What a GLM JSON answer that parses but misses its schema becomes.
+/// What a GLM JSON answer whose value misses its schema becomes.
 /// `refuse` (the default) is the typed 422 of the strict contract. `release`
-/// exposes the normalized answer, so the caller's own validator judges it.
-/// An answer that is not JSON stays a 422 either way.
+/// exposes that value at a natural stop, so the caller's own validator judges
+/// it; an output the token limit cut is judged as with `refuse`, and an answer
+/// with no complete JSON value stays a 422 either way.
 /// `DARKBLOOM_GLM_JSON_SCHEMA_MISS=release` selects it; read once at launch.
 enum GLM5NextSchemaMiss: String, Sendable {
     case refuse, release

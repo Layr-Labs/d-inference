@@ -421,6 +421,26 @@ struct GemmaJSONAnswerConstraintTests {
         #expect(!F.allows(constraint, state, F.id("▁▁▁▁")) && F.allows(constraint, state, F.space))
     }
 
+    /// The mask equals the transitions: exactly the tokens a state accepts,
+    /// plus the terminators once the value is complete. Each run is checked
+    /// on a fresh constraint, so the probes' interning never nears the cap.
+    @Test func everyMaskIsExactlyTheAcceptedTokensAcrossWhitespaceRuns() throws {
+        let vocabulary = try F.sharedVocabulary()
+        let leading = vocabulary.leadingWhitespace
+        // An id without a piece is never a transition, so the pieces and the stops cover every candidate.
+        let candidates = Set(vocabulary.json.pieceTokenIDs).union(F.stops).sorted()
+        for (phase, prefix) in [(GemmaJSONAnswerBoundary.Phase.opening, ""), (.answer, "{"), (.answer, "[1,"),
+                                (.answer, #"{"a": 1"#)] {
+            for run in Set([0, 1, 2, 63 - leading, 64 - leading, 65 - leading, 63, 64]) {
+                let constraint = try F.constraint(phase: phase)
+                let start = try #require(F.walk(F.ids(prefix) + Array(repeating: F.space, count: run), constraint))
+                let allowed = constraint.allowedTokenIDs(state: start, remainingTokens: 10)
+                let accepted = candidates.filter { constraint.nextState(state: start, tokenID: $0) != nil }
+                #expect(allowed == accepted, "\(phase) \(prefix) + \(run) spaces")
+            }
+        }
+    }
+
     @Test func pastTheStateCapTheAnswerContinuesUnconstrained() throws {
         // A string body is one state, so the fourth state is the colon's.
         let constraint = try F.constraint(maximumStates: 4)

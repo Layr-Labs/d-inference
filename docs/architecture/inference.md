@@ -4314,6 +4314,18 @@ the owner's go.
 
 ### Strict tool-call grammar
 
+**Free-span qualification in progress.** The SDK exposes
+`CBv2FreeSpanTokenConstraint` for constraints that can prove a token stays in
+the same free state without previewing a mutating transition. Its
+`DARKBLOOM_CONSTRAINT_SPANS` switch defaults off. This provider test candidate
+has not yet adopted that capability: its existing strict-tool and JSON
+constraints retain request-wide target-only behavior. The native scheduler and
+bridge regression in
+`provider-swift/Tests/ProviderCoreTests/Inference/Tools/QwenConstraintSpanServingTests.swift`
+requires drafting around a protected call while preserving streamed output.
+It is a qualification requirement, not evidence of a completed optimization or
+full-model speedup.
+
 A `strict` `auto` call is checked against the caller's schema only when its
 frame closes ([streamed auto tool calls](#streamed-auto-tool-calls)), after the
 answer has started, so on the Qwen 3.5 template family (`qwen3_5`,

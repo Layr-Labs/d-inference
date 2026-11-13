@@ -123,6 +123,15 @@ No model weights or live provider state are needed.
 
 ## Provider And SDK
 
+`QwenConstraintSpanServingTests` sends a strict-auto request through the public
+scheduler, bridge and real `EngineV2`. A tiny native target with deterministic
+weights supplies literal reasoning, content and call arguments; an unconstrained
+control proves that it can draft. The constrained test requires drafting before
+and after the protected call, none inside, and unchanged output and accounting
+with the span switch off. Run it with the normal source-matched provider test
+products and isolated runner below. It does not qualify the production Qwen
+assistant's persistent history, full model throughput or native-tracked engines.
+
 From the repository root, use the [MiMo regression fixture recipe](#mimo-regression-fixtures)
 to prepare the inputs and run `make provider-test`.
 

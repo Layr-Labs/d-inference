@@ -1799,9 +1799,12 @@ schema, through the shared compiled subset when the schema fits it) before it
 is exposed; invalid output is a 422 with no
 content (`GLM5NextResponseFormat`, `GLM5NextResponseFormatOutput`). With
 `DARKBLOOM_GLM_JSON_SCHEMA_MISS=release` (`GLM5NextSchemaMiss`), an answer that
-parses as JSON but misses its schema is exposed as the normalized JSON instead,
-for the caller's own validator to judge; output that is not a complete JSON
-value stays a 422. One Mac
+holds a JSON value (the whole text, a fenced block, or the first balanced object
+or array) that misses its schema is exposed as that value instead, for the
+caller's own validator to judge, when the model stopped by itself; output with
+no complete JSON value, and any output the token limit cut, is judged as without
+the switch. It applies to streamed responses (every coordinator request): a
+non-streamed local API request still gets the service's own schema check. One Mac
 serves it with image or video input the same way: the instruction turn renders
 in the media prompt (`EngineV2VisionPrefill.glm5NextUserInput`), and the media
 path routes reasoning to the typed channel and records the withheld answer as

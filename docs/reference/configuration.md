@@ -583,7 +583,7 @@ and rollback are defined in the [provider configuration reference](../provider/c
 
 ### SDK feature defaults
 
-Some switches are read by the SDK itself (`libs/mlx-swift-lm`), which keeps each of them off unless set. `darkbloom start` and `darkbloom benchmark` turn on the ones listed in `SDKFeatureDefaults.onByDefault` before any engine or parser reads them, but only where the environment (the shell, or the LaunchAgent plist, which forwards each key) sets nothing: an operator value always wins, and `<KEY>=0` restores the 0.10.12 behaviour. The start log names the switches it turned on. Source: `provider-swift/Sources/ProviderCore/Config/SDKFeatureDefaults.swift` (`SDKFeatureDefaults`).
+Some switches are read by the SDK itself (`libs/mlx-swift-lm`), which keeps each of them off unless set. Every `darkbloom` process (single-Mac serving, pair members, workers, benchmarks) turns on the ones listed in `SDKFeatureDefaults.onByDefault` when it starts, before any command runs, wherever the environment (the shell, or the LaunchAgent plist, which forwards each key) leaves them unset or empty. A non-empty operator value always wins; `<KEY>=0` restores the 0.10.12 behaviour. Defaults the process injected itself are never written into a service plist, so an installed service follows the running release's defaults. `darkbloom start` names the switches it turned on; `darkbloom benchmark` prints them on stderr. Source: `provider-swift/Sources/ProviderCore/Config/SDKFeatureDefaults.swift` (`SDKFeatureDefaults`).
 
 ### Native reasoning budgets
 

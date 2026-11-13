@@ -530,10 +530,8 @@ struct Start: AsyncParsableCommand {
             }
         }
 
-        // SDK-read feature switches this release turns on by default; an
-        // operator value (shell or LaunchAgent) wins, `0` = 0.10.12. Before any
-        // engine or parser reads them (several are read once per process).
-        let sdkDefaults = SDKFeatureDefaults.apply()
+        // Applied in main.swift before any command; name what it turned on.
+        let sdkDefaults = SDKFeatureDefaults.injectedKeys.sorted()
         if !sdkDefaults.isEmpty { print("SDK feature defaults on: \(sdkDefaults.joined(separator: ", "))") }
 
         // These controls are process-start latches in MLX/MLXLM. Project the

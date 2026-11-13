@@ -531,10 +531,16 @@ public enum LaunchAgent: Sendable {
     /// would collapse a drain export back to `trust`. Config-backed `0` /
     /// `trust` remain excluded — `provider.toml` stays authoritative for
     /// whether the route runs, and `trust` is the default whenever it does.
-    static func passthroughEnvironment(from environment: [String: String]) -> [String: String] {
+    /// Keys `SDKFeatureDefaults` injected into this process are not the
+    /// operator's: they are left out, so the installed service applies the
+    /// running release's own defaults (`injected`).
+    static func passthroughEnvironment(
+        from environment: [String: String],
+        injected: Set<String> = SDKFeatureDefaults.injectedKeys
+    ) -> [String: String] {
         var out = GemmaOptimizationEnvironment.daemonDrainPassthrough(
             from: environment)
-        for key in passthroughEnvKeys {
+        for key in passthroughEnvKeys where !injected.contains(key) {
             if let value = environment[key], !value.isEmpty {
                 out[key] = value
             }

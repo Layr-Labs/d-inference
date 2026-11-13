@@ -56,7 +56,7 @@ struct JSONAnswerBoundary: Hashable {
 /// once the value is complete. Per-request and host-only: as in
 /// `FlintNativeProtocolConstraint`, interning collapses free text to bounded
 /// framing states, and it never forces a value or repairs a truncated one.
-final class JSONAnswerConstraint: CBv2FreeSpanTokenConstraint, @unchecked Sendable {
+class JSONAnswerConstraint: CBv2TokenConstraint, @unchecked Sendable {
     let mode = CBv2TokenConstraintMode.auto
     let maxTokens: Int
     let initialState = 0
@@ -213,3 +213,9 @@ final class JSONAnswerConstraint: CBv2FreeSpanTokenConstraint, @unchecked Sendab
         return next
     }
 }
+
+/// The Qwen answers whose reasoning can hold a free span. The SDK makes a row
+/// MTP history-eligible by `CBv2FreeSpanTokenConstraint` conformance alone, so
+/// only this subclass conforms (`JSONAnswerPolicy` builds it for the Qwen
+/// family); other families' JSON answers keep ordinary chained decode.
+final class QwenJSONAnswerConstraint: JSONAnswerConstraint, CBv2FreeSpanTokenConstraint, @unchecked Sendable {}

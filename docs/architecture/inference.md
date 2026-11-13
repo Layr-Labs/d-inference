@@ -4356,10 +4356,14 @@ exposes ordinary reasoning and content as free spans through
 `CBv2FreeSpanTokenConstraint`. Its pure preview accepts only tokens that stay
 in the same state without touching a marker prefix. Call openings, framing,
 arguments and partial markers remain protected; text after a closed call can
-become free again. `JSONAnswerConstraint` exposes only Qwen reasoning before
-the answer: the JSON value, string bodies and trailing whitespace stay protected.
-Other JSON families retain target-only decoding. Neither constraint mutates
-its interned states while previewing a speculative token.
+become free again. `QwenJSONAnswerConstraint` (the Qwen-family
+`JSONAnswerConstraint` that `JSONAnswerPolicy` builds) exposes only Qwen
+reasoning before the answer: the JSON value, string bodies and trailing
+whitespace stay protected. Other JSON families build the plain
+`JSONAnswerConstraint`, which does not conform to `CBv2FreeSpanTokenConstraint`,
+so they neither draft nor keep MTP history and retain target-only decoding.
+Neither constraint mutates its interned states while previewing a speculative
+token.
 
 Disabling the setting retains request-wide target-only constrained decoding.
 Existing grammar admission, masks and sampler/model/lifecycle eligibility remain

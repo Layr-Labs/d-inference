@@ -4420,3 +4420,11 @@ Source: `provider-swift/Sources/darkbloom/ClusterServiceCommand.swift`
 for the bounds and process custody rules.
 
 Qwen3.8 27B automatic cluster capacity changes keep the current tensor split and native request execution path. Widening occurs only when the complete reservation fits that split; otherwise the current capacity remains available. No additional command or user setting is required. Implementation: `DistributedAutomaticBatchPlanner` and `ClusterPlacementFlow` in `provider-swift/Sources/ProviderCore/Inference/Distributed/`.
+
+
+## Qwen stray thinking-close markers
+
+The daemon allow-list forwards `DARKBLOOM_QWEN_ABSORB_STRAY_THINK_CLOSE`; see its
+[values, default and behavior](../reference/configuration.md#qwen-stray-thinking-close-markers).
+Set it before starting or restarting the daemon. An environment change does
+not alter an already-running daemon.

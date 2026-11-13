@@ -1617,3 +1617,10 @@ memory is free. Admission limits and native memory guards are unchanged. See
 [planned cluster stop ordering](inference.md#planned-cluster-stop-ordering) and
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterService.swift`
 (`ClusterService.stopLocalPart`).
+
+
+## Qwen stray thinking-close markers
+
+The [qwen stray thinking-close markers](inference.md#qwen-stray-thinking-close-markers) switch changes prompt/output
+processing only. It adds no hardware capability or memory grant; parser
+fixtures do not qualify model residency, throughput or concurrent GPU loads.

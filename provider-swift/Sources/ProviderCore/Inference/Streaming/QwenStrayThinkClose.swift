@@ -7,10 +7,10 @@ import MLXLMServer
 /// space ignored) is the kill switch: the close stays literal, as in 0.10.12.
 enum QwenStrayThinkClose {
     static let environmentKey = "DARKBLOOM_QWEN_ABSORB_STRAY_THINK_CLOSE"
-    /// Qwen3-VL keeps its existing route: its Instruct build never reasons,
-    /// and its bare prompt tail gets a synthetic content seed
-    /// (`ReasoningPromptProbe.plainTailContentModelTypes`), not a thought the
-    /// template closed, so there is no stray close to absorb.
+    /// Qwen3-VL (`qwen3_vl`, `qwen3_vl_moe`) keeps its existing route: its
+    /// Instruct builds never reason, and `qwen3_vl_moe`'s bare prompt tail gets
+    /// a synthetic content seed (`ReasoningPromptProbe.plainTailContentModelTypes`),
+    /// not a thought the template closed, so there is no stray close to absorb.
     static let modelTypes: Set<String> = [
         "qwen3", "qwen3_moe", "qwen3_next",
         "qwen3_5", "qwen3_5_moe", "qwen4_exp", "qwen4_exp_text",

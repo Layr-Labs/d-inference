@@ -9985,7 +9985,7 @@ Where it measured faster and byte-equal, a cohort's verify rows go through one k
 
 ## Qwen stray thinking-close markers
 
-Qwen native channel splitting absorbs complete stray </think> markers outside thoughts. A known closed prompt also selects native splitting without tools. Legacy media installs the family tool handler with that route so literal argument markers stay protected. Partial markers at end of stream remain literal. Unknown/open prompt states retain the existing media route; existing native routes remain selected as before.
+Qwen native channel splitting absorbs complete stray </think> markers outside thoughts. A closed-thought prompt also selects native splitting for Qwen streams that had none (no tools, or a Qwen type outside the reasoning-before-tools split); Qwen3-VL keeps its route, since its bare Instruct tail is a synthetic content seed rather than a closed thought. Legacy media installs the family tool handler with that route so literal argument markers stay protected. Partial markers at end of stream remain literal. Unknown/open prompt states retain the existing media route; existing native routes remain selected as before.
 
 It is on by default for the Qwen types; its [kill switch](../reference/configuration.md#qwen-stray-thinking-close-markers), `DARKBLOOM_QWEN_ABSORB_STRAY_THINK_CLOSE=0`, restores 0.10.12, where the close stays literal.
 CPU parser fixtures do not establish full-model output quality or GPU performance.

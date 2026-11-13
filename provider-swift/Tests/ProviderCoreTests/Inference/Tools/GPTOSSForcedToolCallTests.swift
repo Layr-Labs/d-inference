@@ -253,6 +253,21 @@ struct GPTOSSForcedToolCallTests {
         #expect(tight.allowsChainedDecode)
     }
 
+    @Test("an analysis that reaches 16,384 output tokens ends there and the call starts")
+    func analysisCapEndsReasoning() throws {
+        let budget = 100_000, cap = 16_384
+        let constraint = try F.constraint(F.namedWeather, maxTokens: budget)
+        let open = try #require(F.walk("<|channel|>analysis<|message|>", constraint))
+        #expect(constraint.allowedTokenIDs(state: open, remainingTokens: budget - cap + 1).count > 1)
+        #expect(constraint.maskCacheKey(state: open, remainingTokens: budget - cap + 1) == open)
+        #expect(constraint.allowedTokenIDs(state: open, remainingTokens: budget - cap) == [T.end])
+        #expect(constraint.maskCacheKey(state: open, remainingTokens: budget - cap) == -1)
+        let ended = try #require(constraint.nextState(state: open, tokenID: T.end))
+        let called = try #require(F.walk(F.call("get_weather", #"{"city":"Paris"}"#), constraint, from: ended,
+            consumed: cap + 1))
+        #expect(constraint.nextState(state: called, tokenID: T.call) == -1)
+    }
+
     @Test("the constraint refuses tokenizers and choices it cannot frame")
     func refusesWhatItCannotFrame() throws {
         let prepared = try ToolChoicePromptPolicy.prepare(F.request(choice: F.namedWeather), modelType: "gpt_oss")
@@ -285,7 +300,9 @@ struct GPTOSSForcedToolCallTests {
     func switchStrategyAndAdvertisement() throws {
         let context = ChatTemplateFixContext(modelId: "gpt-oss-20b", modelType: "gpt_oss")
         for value in [nil, "", "on", "1", "true"] { #expect(GPTOSSForcedToolCalls.isEnabled(value), "\(value ?? "nil")") }
-        for value in ["off", "OFF", "0", "false", "no", " off "] { #expect(!GPTOSSForcedToolCalls.isEnabled(value), "\(value)") }
+        for value in ["off", "OFF", "0", "false", "no", " off ", "none", "NONE", "disabled", " Disabled "] {
+            #expect(!GPTOSSForcedToolCalls.isEnabled(value), "\(value)")
+        }
         #expect(GPTOSSForcedToolCalls.applies(to: context, enabled: true))
         #expect(!GPTOSSForcedToolCalls.applies(to: context, enabled: false))
         #expect(!GPTOSSForcedToolCalls.applies(to: .init(modelId: "gpt-oss-20b", modelType: "gemma4"), enabled: true))

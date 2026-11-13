@@ -3713,8 +3713,12 @@ the owner's go.
 A `strict` `auto` call is checked against the caller's schema only when its
 frame closes ([streamed auto tool calls](#streamed-auto-tool-calls)), after the
 answer has started, so on the Qwen 3.5 template family (`qwen3_5`,
-`qwen3_5_moe`: Qwen 3.5 9B and 35B, 3.6 and 3.8) the provider also constrains
-such calls in the sampler. `QwenStrictToolGrammar` (in
+`qwen3_5_moe`: Qwen 3.5 9B and 35B, 3.6 and 3.8) the provider can also
+constrain such calls in the sampler. By default it does so on the MoE builds
+(`qwen3_5_moe`: Qwen 3.6 and Qwen 3.5 35B), which do not draft with MTP; the
+dense builds (Qwen 3.8, Qwen 3.5 9B) draft, which a constrained row stops (see
+below), so a Mac opts them in (`DARKBLOOM_STRICT_TOOL_GRAMMAR=on` or a list,
+[configuration](../reference/configuration.md)). `QwenStrictToolGrammar` (in
 `provider-swift/Sources/ProviderCore/Inference/Tools/`) admits a request that
 is `auto`, declares a `strict` function (any tools with
 `DARKBLOOM_STRICT_TOOL_GRAMMAR_ALL_TOOLS`), parses with `.qwen35`, has no media,
@@ -3768,9 +3772,9 @@ never drafts MTP tokens and, on these engines, no row of a decode step it shares
 speculates (`ineligibleRowsDecodeBesideSpeculation` is false). Where a Mac would
 draft (at most `maxSpeculativeBatch` decode rows, 8 by default; the 3.6 and 35B
 cards' presence penalty keeps those builds from drafting unless a request sets
-`presence_penalty: 0`), the whole
-constrained answer, reasoning included, and every answer decoding beside it run
-target-only while it decodes.
+`presence_penalty: 0`), the whole constrained answer, reasoning included, and
+every answer decoding beside it run target-only while it decodes. That is why
+the dense builds take the grammar only when a Mac opts in.
 
 ### Vision constraints
 

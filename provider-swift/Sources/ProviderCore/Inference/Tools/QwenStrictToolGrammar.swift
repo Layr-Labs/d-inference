@@ -26,18 +26,25 @@ import MLXLMServer
 ///
 /// A token constraint keeps the engine from drafting with MTP on that row
 /// and, on these engines, on every row of a decode step it shares
-/// (`EngineLoopV2.mtpDraftBatchRows`), as for constrained JSON answers.
+/// (`EngineLoopV2.mtpDraftBatchRows`), as for constrained JSON answers. So by
+/// default only the MoE builds (Qwen 3.6, Qwen 3.5 35B), whose cards' presence
+/// penalty keeps them from drafting, take the grammar; the dense builds (Qwen
+/// 3.8, Qwen 3.5 9B) draft, and a Mac opts them in.
 enum QwenStrictToolGrammar {
-    /// Unset, `on`, `1`, `true` or `yes`: the Qwen 3.5-family builds (`qwen3_5`,
-    /// `qwen3_5_moe`). An off word (`off`, `0`, `false`, `no`, `none`,
-    /// `disabled`, any case) restores unconstrained calls. Any other value is a
-    /// comma-separated list: a `model_type`, or a case-insensitive part of a
-    /// model id (`qwen3.8-27b`); only Qwen 3.5-family builds qualify.
+    /// Unset: the default builds (`qwen3_5_moe`). `on`, `1`, `true` or `yes`:
+    /// every Qwen 3.5-family build (`qwen3_5`, `qwen3_5_moe`). An off word
+    /// (`off`, `0`, `false`, `no`, `none`, `disabled`, any case) restores
+    /// unconstrained calls. Any other value is a comma-separated list: a
+    /// `model_type`, or a case-insensitive part of a model id (`qwen3.8-27b`);
+    /// only Qwen 3.5-family builds qualify.
     static let environmentKey = "DARKBLOOM_STRICT_TOOL_GRAMMAR"
     /// `on`, `1`, `true` or `yes` (any case): also requests whose tools are not `strict`.
     static let allToolsEnvironmentKey = "DARKBLOOM_STRICT_TOOL_GRAMMAR_ALL_TOOLS"
 
+    /// The Qwen 3.5 template family: the builds that can take the grammar.
     static let modelTypes: Set<String> = ["qwen3_5", "qwen3_5_moe"]
+    /// The builds that take it unless the switch says otherwise.
+    static let defaultModelTypes: Set<String> = ["qwen3_5_moe"]
 
     enum Setting: Sendable, Equatable {
         case off
@@ -55,7 +62,8 @@ enum QwenStrictToolGrammar {
 
     static func setting(environment: [String: String]) -> Setting {
         guard let raw = environment[environmentKey]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
-              !raw.isEmpty, !onWords.contains(raw) else { return .models(modelTypes) }
+              !raw.isEmpty else { return .models(defaultModelTypes) }
+        if onWords.contains(raw) { return .models(modelTypes) }
         if offWords.contains(raw) { return .off }
         let entries = Set(raw.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty && !offWords.contains($0) && !onWords.contains($0) })

@@ -3289,10 +3289,16 @@ stops such a row early.
 - **Image and video requests on one Mac** (`prepareCompletion`'s media path,
   `EngineV2VisionPrefill`) take the same guard and, for a family with an exit,
   the same exit. The continuation re-submits the same evaluated media input
-  (`PreparedSubmission.multimodalInput()`: the same spans and embeddings) with
-  the longer prompt, so it runs only for a media prompt with plain positions
-  (Gemma's): a prompt with model positions (`CBv2PositionState`, Qwen's
-  M-RoPE) covers only its own length, and its loops keep ending as `length`.
+  (`PreparedSubmission.multimodalInput()`: the same spans and embeddings; the
+  vision tower does not run again) with the longer prompt, so it runs only for
+  a media prompt with plain positions (Gemma's): a prompt with model positions
+  (`CBv2PositionState`, Qwen's M-RoPE) covers only its own length, which the
+  engine checks at submit, and its loops keep ending as `length`. Unlike the
+  text continuation, it prefills the whole prompt again (media rows take no
+  prefix cache) and runs as a media row (target-only where the model's MTP
+  has a media fallback). It emits its own `engine_v2_vision` engagement event
+  (request id `…-exit`), and its outcome line carries `media_kind`. The pairs'
+  media routes, MiMo's native media and Super's media take neither.
 
 ### Collected and streaming reasoning state
 

@@ -933,9 +933,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                             cancelContinuation: { await bridge.cancel(requestId: continuationId) },
                             onOutcome: { outcome in
                                 LoopExitThinkingContinuation.logger.notice(
-                                    "loop guard ended a media thought", metadata: [
+                                    "loop guard ended a thought", metadata: [
                                         "request_id": .string(visionRequestId),
-                                        "outcome": .string(outcome.description)])
+                                        "outcome": .string(outcome.description),
+                                        "media_kind": .string(mediaKind.rawValue)])
                             })
                         events = spliced.events
                         cancelEvents = spliced.cancel

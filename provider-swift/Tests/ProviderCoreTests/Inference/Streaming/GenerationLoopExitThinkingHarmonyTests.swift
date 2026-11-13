@@ -287,6 +287,8 @@ struct GenerationLoopExitThinkingHarmonyTests {
 
     @Test("the control tokens must be fed as themselves: a tokenizer that spells them as text gets no exit")
     func controlTokensResolve() {
+        // The served spelling resolves; each case below differs from it in one respect.
+        #expect(resolve(tokenizer: Self.tokenizer) != nil)
         // Encodes `<|start|>assistant` as bytes, which decode to the same text.
         var spelled = Self.tokenizer
         spelled.spellsControlsAsBytes = true
@@ -359,6 +361,24 @@ struct GenerationLoopExitThinkingHarmonyTests {
         let opening = pieces(Self.analysis + ["ok"] + Self.next + Self.analysis)
         #expect(run(opening + clause(8_000), into: &loopGuard) != nil)
         #expect(loopGuard.endsThought)
+    }
+
+    @Test("`<|start|>assistant` without `<|end|>` keeps the analysis open, as both Harmony parsers read it")
+    func roleMarkerInsideAnalysis() throws {
+        let exit = try #require(resolve())
+        var loopGuard = loopGuard(exit)
+        let skipped = Self.analysis + ["ok"] + ["<|start|>", "assistant", "<|channel|>", "final", "<|message|>"]
+        #expect(run(pieces(skipped) + clause(8_000), into: &loopGuard) != nil)
+        #expect(loopGuard.endsThought)
+        // The client is shown the same: without `<|end|>` the text after the
+        // role marker is still the analysis, streamed and collected, so the
+        // exit's `<|end|>` is what lets an answer through.
+        var streaming = StreamingReasoningParser(format: .harmony)
+        let streamed = (skipped + ["Answer"]).flatMap { streaming.parse($0) } + streaming.finish()
+        #expect(streamed.allSatisfy(\.content.isEmpty))
+        let collected = ReasoningParser(format: .harmony).parse(skipped.joined() + "Answer")
+        #expect(collected.content.isEmpty)
+        #expect(collected.reasoningContent?.hasSuffix("Answer") == true)
     }
 
     @Test("a call header turns the guard off: no stop, no exit")

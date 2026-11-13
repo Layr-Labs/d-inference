@@ -65,15 +65,17 @@ enum GLM5ToolSuffix {
         return lexer.releasesThinkMarker(before: bytes.count) ? .ambiguous : .text(suffix, calls: [])
     }
 
-    /// `suffix` without the run of whitespace-separated frames that ends in the
-    /// frame the end of the response left unfinished (`Lexer.cutFrameStart`):
-    /// what a cut at the token limit left, never published as text
-    /// (`TokenLimitCutPolicy`). Mentions, and the text before the run, stay.
+    /// `suffix` without the run of whitespace-separated frames that ends an
+    /// output the token limit cut, whose last frame closed or was left
+    /// unfinished by the end (`Lexer.cutFrameStart`). Such frames are never
+    /// published as text (`TokenLimitCutPolicy`), and a suffix that did not
+    /// parse is not split into calls at a cut, so they are dropped. Mentions,
+    /// frames followed by text, and the text before the run stay.
     static func droppingCutFrames(_ suffix: String, tools: [[String: any Sendable]]?) -> String {
         let bytes = Array(suffix.utf8)
         var lexer = Lexer(bytes: bytes, tools: tools)
         lexer.run()
-        guard var start = lexer.cutFrameStart else { return suffix }
+        var start = lexer.cutFrameStart ?? bytes.count
         for frame in lexer.frames.reversed() where frame.range.upperBound <= start {
             guard Lexer.isWhitespace(bytes[frame.range.upperBound ..< start]) else { break }
             start = frame.range.lowerBound

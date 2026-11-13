@@ -126,12 +126,16 @@ struct GLM5ToolFailureTests {
 
     /// Calls are never split out of a suffix that did not parse in an output
     /// the token limit cut off; a suffix that parses keeps its calls, as before.
+    /// The frames that end it are dropped when the cut ends as `length`
+    /// (`TokenLimitCutPolicy`) and stay text with it off.
     @Test func truncatedOutputIsNotSplit() async throws {
         let output = "Wrap it in <tool_call> tags.</think>" + valid
         let result = try await run(output, forced: false, width: 4, finishReason: "length")
         #expect(result.failure == nil)
         #expect(result.calls.isEmpty)
-        #expect(result.visible == output)
+        #expect(result.visible == "Wrap it in <tool_call> tags.</think>")
+        let off = try await run(output, forced: false, width: 4, finishReason: "length", cutAnswersEndAtLength: false)
+        #expect(off.failure == nil && off.calls.isEmpty && off.visible == output)
         let clean = try await run("Need it.</think>" + valid, forced: false, width: 4, finishReason: "length")
         #expect(clean.failure == nil && clean.calls.count == 1 && clean.visible == "Need it.</think>")
     }
@@ -142,21 +146,20 @@ struct GLM5ToolFailureTests {
     @Test(arguments: [nil, "length"], [1, 7, 4096])
     func framesInsideAFrameAreNeverCalls(finishReason: String?, width: Int) async throws {
         let nested = "<tool_call>store<arg_key>doc</arg_key><arg_value>{}</arg_value></tool_call>"
-        // `openAtCut`: the outer frame is still open at the end, so a cut that
-        // ends as `length` drops it (`TokenLimitCutPolicy`) instead of
-        // publishing it as text.
-        let cases: [(output: String, tool: String?, openAtCut: Bool)] = [
-            ("<tool_call>store<arg_key>doc</arg_key><arg_value>{\"x\":\"" + nested, Self.storeTool, true),
-            ("<tool_call>echo<arg_key>text</arg_key><arg_value>draft " + valid, nil, false),
+        // `atCut`: what a cut that ends as `length` leaves visible
+        // (`TokenLimitCutPolicy`): the outer frame, open or closed, ends the
+        // output, so it is dropped instead of published as text.
+        let cases: [(output: String, tool: String?, atCut: String)] = [
+            ("<tool_call>store<arg_key>doc</arg_key><arg_value>{\"x\":\"" + nested, Self.storeTool, ""),
+            ("<tool_call>echo<arg_key>text</arg_key><arg_value>draft " + valid, nil, ""),
             ("Use <tool_call>.</think><tool_call>echo<arg_key>text</arg_key><arg_value>a</arg_value>junk" + valid, nil,
-             false),
+             "Use <tool_call>.</think>"),
         ]
         for shape in cases {
             let result = try await run(shape.output, forced: false, width: width, finishReason: finishReason,
                 tool: shape.tool)
             #expect(result.failure == nil && result.calls.isEmpty, "\(shape.output)")
-            #expect(result.visible == (finishReason == "length" && shape.openAtCut ? "" : shape.output),
-                "\(shape.output)")
+            #expect(result.visible == (finishReason == "length" ? shape.atCut : shape.output), "\(shape.output)")
         }
     }
 
@@ -173,13 +176,16 @@ struct GLM5ToolFailureTests {
     }
 
     /// Outputs the token limit cut, and their visible text when the cut ends
-    /// as `length`: the frame the limit left unfinished (in its name, a tag, a
-    /// key or a value) is dropped with the run of frames before it, a whole
-    /// call included, and never published as text; a `<tool_call>` the lexer
-    /// reads as a mention stays text with what follows it.
+    /// as `length`: the run of frames that ends the output, up to a frame the
+    /// limit left unfinished (in its name, a tag, a key or a value), is
+    /// dropped, whole calls included, and never published as text; a
+    /// `<tool_call>` the lexer reads as a mention stays text with what follows.
     static let cutCases: [(output: String, visible: String)] = {
         let call = "<tool_call>echo<arg_key>text</arg_key><arg_value>SAFE</arg_value></tool_call>"
+        let other = "<tool_call>echo<arg_key>text</arg_key><arg_value>MORE</arg_value></tool_call>"
         return [
+            ("Wrap it in <tool_call> tags.</think>" + call, "Wrap it in <tool_call> tags.</think>"),
+            ("Use <tool_call>.</think>" + call + " " + other + "\n", "Use <tool_call>.</think>"),
             (call + "<tool_call>echo<arg_key>text", ""),
             ("Calling.</think>" + call + "\n<tool_call>echo<arg_key>text</arg_key><arg_value>MO", "Calling.</think>"),
             ("Calling.</think>" + call + "\n<tool_call>ec", "Calling.</think>"),
@@ -284,7 +290,8 @@ struct GLM5ToolFailureTests {
     /// The production event stream on the legacy text path (no native
     /// channel), fed `width` characters at a time.
     private func run(_ output: String, forced: Bool, width: Int, finishReason: String? = nil,
-                     tool: String? = nil, choice forcedChoice: String = #""required""#) async throws -> Outcome {
+                     tool: String? = nil, choice forcedChoice: String = #""required""#,
+                     cutAnswersEndAtLength: Bool? = nil) async throws -> Outcome {
         let choice = forced ? forcedChoice : #""auto""#
         var request = try MiMoConsumerFixture.request(choice: choice)
         if let tool {
@@ -293,7 +300,8 @@ struct GLM5ToolFailureTests {
             body["tools"] = [try JSONSerialization.jsonObject(with: Data(tool.utf8))]
             request = try ProviderLoop.decodeOpenAIRequest(JSONSerialization.data(withJSONObject: body))
         }
-        let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "glm5_next")
+        var prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "glm5_next")
+        if let cutAnswersEndAtLength { prepared.cutAnswersEndAtLength = cutAnswersEndAtLength }
         let handler = try #require(try ToolStreamPreparation.makeHandler(
             request: request, prepared: prepared, modelType: "glm5_next"))
         let scheduler = MultiModelBatchSchedulerEngine(registryProvider: { [:] })

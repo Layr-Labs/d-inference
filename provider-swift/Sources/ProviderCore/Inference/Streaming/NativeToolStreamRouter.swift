@@ -134,6 +134,9 @@ struct NativeToolStreamRouter {
         guard let handler, let prepared = streamedCallPolicy else { return [] }
         var events: [MLXServerGenerationEvent] = []
         for segment in handler.finishSegments() {
+            // `parallel_tool_calls: false` drops a later call at a cut as
+            // anywhere (`ParallelToolCallPolicy`): not the cut's to count.
+            if cutAtLimit, laterCalls.drops(segment, exposedCalls: exposedCallCount, prepared: prepared) { continue }
             switch segment {
             case .callFailed where truncated:
                 if cutAtLimit { recordCut(leftOpen: openCallIndex != nil) }
@@ -206,7 +209,7 @@ struct NativeToolStreamRouter {
     /// is split into text and its final calls (`GLM5ToolSuffix`), except in an
     /// output the token limit cut off, where it stays text; when the cut ends
     /// the answer as `length` (`cutAtLimit`, `TokenLimitCutPolicy`), without
-    /// the frames the limit left unfinished (`GLM5ToolSuffix.droppingCutFrames`).
+    /// the frames that end it (`GLM5ToolSuffix.droppingCutFrames`).
     /// A suffix whose release would expose a think marker from inside a tool
     /// frame keeps failing, as before, unless the cut ends the answer as
     /// `length`: it is then dropped.
@@ -221,9 +224,9 @@ struct NativeToolStreamRouter {
         case .text(let text, calls: let found):
             guard truncated else { return (found, text) }
             guard cutAtLimit else { return ([], residual) }
-            // A cut that ends as `length` drops the frames the limit left
-            // unfinished, never published as text; mentions and the text
-            // before them stay.
+            // A cut that ends as `length` drops the frames that end the
+            // output, unfinished or not, never published as text; mentions
+            // and the text before them stay.
             let kept = GLM5ToolSuffix.droppingCutFrames(residual, tools: tools)
             glmFramesDroppedAtCut = kept.utf8.count < residual.utf8.count
             return ([], kept)

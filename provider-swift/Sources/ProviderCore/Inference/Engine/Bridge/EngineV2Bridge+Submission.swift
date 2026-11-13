@@ -169,12 +169,17 @@ extension EngineV2Bridge {
         loopGuard: GenerationLoopGuard? = nil
     ) async throws -> AsyncStream<GenerationEvent> {
         let reasoningBudget: CBv2ReasoningBudget?
-        if let budget = request.nativeReasoningBudget {
-            guard supportsNativeReasoningBudgets, tokenConstraint == nil, loopGuard?.exitThinking == nil else {
-                throw NativeReasoningBudget.refusal("this engine route cannot preserve a reasoning budget")
-            }
-            reasoningBudget = try budget.resolved(tokenizer: tokenizer.inner)
-        } else { reasoningBudget = nil }
+        do {
+            if let budget = request.nativeReasoningBudget {
+                guard supportsNativeReasoningBudgets, tokenConstraint == nil, loopGuard?.exitThinking == nil else {
+                    throw NativeReasoningBudget.refusal("this engine route cannot preserve a reasoning budget")
+                }
+                reasoningBudget = try budget.resolved(tokenizer: tokenizer.inner)
+            } else { reasoningBudget = nil }
+        } catch {
+            usageSignal?.finalizeLookup(failure: .policy, fallbackTier: prefixCacheFallbackTier)
+            throw error
+        }
         let tokenConstraint = Self.admittedConstraint(tokenConstraint, servesDistributedPair: servesDistributedPair,
             tracksNativeShutdown: tracksNativeShutdown)
         if let clusterStillImages {

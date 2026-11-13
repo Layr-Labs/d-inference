@@ -315,6 +315,7 @@ struct QwenStrictToolGrammarTests {
                 state = try #require(constraint.nextState(state: state, tokenID: Int(byte)))
             }
             #expect(try F.calls(mention, request, prepared).isEmpty)
+            #expect(try F.streamedCalls(mention, body).isEmpty)
         }
         #expect(!F.allows("{\"name\"", constraint, after: "<tool_call>\n"))
         #expect(!F.allows("\u{00A0}", constraint, after: "<tool_call>"))
@@ -606,6 +607,132 @@ struct QwenStrictToolGrammarTests {
                 == completed.function.arguments, "chunks of \(chunking)")
             #expect(router.completedToolCalls == [completed])
         }
+    }
+}
+
+/// Whole answers drawn from the masks from the first token on, over a
+/// vocabulary with multi-byte pieces (split and spelled markers, mentions,
+/// Unicode whitespace, the JSON dialect, escapes): every mask is exactly the
+/// set `nextState` accepts, and every call either reader returns is one the
+/// grammar opened and closed.
+@Suite("Strict tool grammar: whole answers over multi-byte pieces")
+struct QwenStrictToolWholeAnswerTests {
+    private typealias F = StrictToolFixture
+    static let multiBytePieces: [String] = [
+        "<tool", "_call", ">", " tags", "\n<", "<function=", "<function=get_time>", "\n<function=get_time>\n",
+        " {", "{\"", "\u{00A0}", " \u{00A0}", "\u{2028}", "\u{0085}", "\n\n", "  ", "x>", "<b>", "<func", "tion=",
+        "get_time", "place_order", ">\n", "\n<parameter=city>\n", "<parameter=", "city", ">\nRome",
+        "Rome\n</parameter>\n", "\n</parameter>\n", "</parameter>", "</function>\n</tool_call>", "</function>",
+        "\n</tool_call>", "</tool_call>", "\t<", "\n<function=place_order>\n", "<tool_call>\n<function=get_time>\n",
+        "é", "\\u", "ud83d", "\r\n", " \n", "<|im_end|>", "<think>", "</think>", "<tool_call> ",
+        " {\"name\": \"get_time\", \"arguments\": {\"city\": \"x\"}}", "<tool_call>{", "\n<function=zzz>",
+        "\u{00A0}<function=get_time>", " \u{0085}\n", "<tool_call>\n<b>", "s>",
+        "\n<function=get_time>\n<parameter=city>\nRome\n</parameter>\n</function>\n</tool_call>",
+    ]
+    static let firstMultiBytePiece = 300
+
+    static func vocabulary() throws -> JSONAnswerVocabulary {
+        let profile = QwenStrictToolGrammar.profile
+        var pieces = [[UInt8]](repeating: [], count: profile.vocabularySize)
+        for byte in 0..<256 { pieces[byte] = [UInt8(byte)] }
+        for (offset, text) in multiBytePieces.enumerated() { pieces[firstMultiBytePiece + offset] = Array(text.utf8) }
+        for token in profile.pieceTokens + profile.answerEOS { pieces[token.id] = Array(token.spelling.utf8) }
+        return try JSONAnswerVocabulary(pieces: pieces, profile: profile, stopTokenIDs: F.stops)
+    }
+
+    static func constraint(parallel: Bool, vocabulary: JSONAnswerVocabulary) throws -> QwenStrictToolConstraint {
+        let (_, prepared) = try F.prepared(F.body(tools: F.order, parallel: parallel))
+        let schema = try QwenStrictToolSchema(declared: try #require(prepared.declaredTools),
+            rendered: try #require(prepared.tools), forbidding: QwenStrictToolGrammar.forbiddenMarkers,
+            family: QwenStrictToolGrammar.profile.family)
+        return try QwenStrictToolConstraint(schema: schema, vocabulary: vocabulary,
+            forbidding: QwenStrictToolGrammar.forbiddenMarkers, startsInReasoning: false,
+            allowsParallelCalls: parallel, maxTokens: 4096)
+    }
+
+    /// The mask is the sorted set of pieces and stops `nextState` accepts, the same on every call.
+    static func maskMatchesSimulation(_ constraint: QwenStrictToolConstraint, _ vocabulary: JSONAnswerVocabulary,
+                                      state: Int) -> Bool {
+        let mask = constraint.allowedTokenIDs(state: state, remainingTokens: 100)
+        let expected = (vocabulary.pieceTokenIDs + F.stops).sorted()
+            .filter { constraint.nextState(state: state, tokenID: $0) != nil }
+        return mask == expected && constraint.allowedTokenIDs(state: state, remainingTokens: 100) == mask
+    }
+
+    @Test(arguments: [true, false])
+    func openingMasksMatchSimulation(_ parallel: Bool) throws {
+        let vocabulary = try Self.vocabulary()
+        let constraint = try Self.constraint(parallel: parallel, vocabulary: vocabulary)
+        let call = "<tool_call>\n<function=get_time>\n<parameter=city>\nRome\n</parameter>\n</function>\n</tool_call>"
+        for prefix in ["", "<tool_call>", "<tool_call>\n", "<tool_call> \t\n", "<tool_call>\n<", "<tool_call>\n<func",
+                       "<tool_call>\n<function", "x <tool_call>", "<tool_call>\n<b", call, call + "\n",
+                       "<tool_call> tags <tool_call>\n"] {
+            var state = constraint.initialState
+            for byte in prefix.utf8 {
+                state = try #require(constraint.nextState(state: state, tokenID: Int(byte)), "\(prefix.debugDescription)")
+            }
+            #expect(Self.maskMatchesSimulation(constraint, vocabulary, state: state), "\(prefix.debugDescription)")
+        }
+    }
+
+    @Test(arguments: [(UInt64(1), true), (UInt64(2), false)])
+    func answersDrawnFromTheMasksOnlyCallWhatTheGrammarHeld(_ seed: UInt64, _ parallel: Bool) throws {
+        let vocabulary = try Self.vocabulary()
+        let constraint = try Self.constraint(parallel: parallel, vocabulary: vocabulary)
+        let body = F.body(tools: F.order, parallel: parallel)
+        let (request, prepared) = try F.prepared(body)
+        let parser = Qwen35ToolCallParser(startTag: "<tool_call>", endTag: "</tool_call>")
+        let specs = try #require(prepared.tools).map { $0.toolSpec() }
+        let markers = QwenStrictToolMarkers(forbidding: QwenStrictToolGrammar.forbiddenMarkers, singleCall: !parallel)
+        let ascii = Set(Array(32...126) + [10])
+        let multiBytePieces = Set(Self.firstMultiBytePiece..<(Self.firstMultiBytePiece + Self.multiBytePieces.count))
+        var random = StrictGrammarRandom(seed: seed)
+        var finished = 0
+        for _ in 0..<100 {
+            var state = constraint.initialState
+            var bytes: [UInt8] = []
+            var ended = false
+            for step in 0..<500 {
+                let allowed = constraint.allowedTokenIDs(state: state, remainingTokens: 100)
+                if step % 25 == 0 { #expect(Self.maskMatchesSimulation(constraint, vocabulary, state: state)) }
+                if allowed.contains(F.imEnd), step > 30, Int.random(in: 0..<40, using: &random) == 0 {
+                    ended = true
+                    break
+                }
+                let multi = allowed.filter(multiBytePieces.contains)
+                let pool = !multi.isEmpty && Bool.random(using: &random) ? multi : allowed.filter(ascii.contains)
+                let token = try #require(pool.randomElement(using: &random))
+                state = try #require(constraint.nextState(state: state, tokenID: token))
+                bytes += vocabulary.pieces[token]
+            }
+            guard ended else { continue }
+            finished += 1
+            // Replay the bytes: the calls the grammar opened at `<function=` and closed.
+            var boundary = QwenStrictToolBoundary(reasoning: false)
+            var held: [[String: MLXLMCommon.JSONValue]] = []
+            var frame: [UInt8] = []
+            for byte in bytes {
+                let inside = !boundary.isFree
+                let consumed = boundary.consume(byte, schema: constraint.schema, markers: markers)
+                #expect(consumed)
+                if inside { frame.append(byte) }
+                if inside, boundary.isFree {
+                    let call = parser.parse(content: "<tool_call>\n<function=" + String(decoding: frame, as: UTF8.self),
+                                            tools: specs)
+                    #expect(call != nil, "\(frame)")
+                    if let call { held.append(call.function.arguments) }
+                    frame = []
+                }
+            }
+            let text = String(decoding: bytes, as: UTF8.self)
+            let calls = try F.calls(text, request, prepared)
+            let streamed = try F.streamedCalls(text, body)
+            #expect(parallel || calls.count <= 1)
+            for call in calls + streamed {
+                #expect(held.contains(call.function.arguments), "\(text.debugDescription)")
+            }
+        }
+        #expect(finished > 80)
     }
 }
 

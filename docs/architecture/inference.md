@@ -3767,7 +3767,8 @@ without the grammar. As with constrained JSON answers (above), a constrained row
 never drafts MTP tokens and, on these engines, no row of a decode step it shares
 speculates (`ineligibleRowsDecodeBesideSpeculation` is false). Where a Mac would
 draft (at most `maxSpeculativeBatch` decode rows, 8 by default; the 3.6 and 35B
-cards' presence penalty already keeps those builds from drafting), the whole
+cards' presence penalty keeps those builds from drafting unless a request sets
+`presence_penalty: 0`), the whole
 constrained answer, reasoning included, and every answer decoding beside it run
 target-only while it decodes.
 

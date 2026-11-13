@@ -84,6 +84,11 @@ struct QwenStrictToolBoundary: Hashable {
     static let callOpen = Array("<tool_call>".utf8)
     static let parameterClose = Array("</parameter>".utf8)
     static let functionOpen = Array("<function=".utf8)
+    /// Whitespace the parser skips between `<tool_call>` and `<function=`.
+    static func isOpeningWhitespace(_ byte: UInt8) -> Bool { (9...13).contains(byte) || byte == 32 }
+    /// Refused right after `<tool_call>`: the JSON dialect, and a non-ASCII
+    /// byte, which could be whitespace the parser would skip.
+    static func isRefusedAfterCallMarker(_ byte: UInt8) -> Bool { byte == 123 || byte >= 0x80 }
     private static let reasoningMarkers = [thinkClose]
     private static let contentMarkers = [callOpen]
     /// `\uD800`…`\uDFFF`: the parser's JSONSerialization refuses a lone
@@ -141,12 +146,12 @@ struct QwenStrictToolBoundary: Hashable {
             }
             return true
         case .opening(let matched):
-            if matched == 0, (9...13).contains(byte) || byte == 32 { return true }
+            if matched == 0, Self.isOpeningWhitespace(byte) { return true }
             if byte == Self.functionOpen[Int(matched)] {
                 step = Int(matched) + 1 == Self.functionOpen.count ? .name([]) : .opening(matched + 1)
                 return true
             }
-            if matched == 0, byte == 123 || byte >= 0x80 { return false }
+            if matched == 0, Self.isRefusedAfterCallMarker(byte) { return false }
             // Text again, watched from the bytes after `<tool_call>` on.
             step = .content
             for previous in Self.functionOpen.prefix(Int(matched)) {
@@ -309,8 +314,9 @@ final class QwenStrictToolConstraint: CBv2TokenConstraint, @unchecked Sendable {
     /// Opaque-span masks by refused pieces and whether stops are allowed.
     private var broadMasks: [(rejected: Set<Int>, free: Bool, tokens: [Int])] = []
     /// A call's opening masks by bytes of `<function=` matched: nothing else
-    /// of an opening state changes what it admits.
+    /// of an opening state changes what it admits. At most ten entries.
     private var openingMasks: [Int: [Int]] = [:]
+    private var releasedMask: [Int]?
     static let maximumStates = 32_768
     private static let maximumMaskEntries = 8
     /// After resource exhaustion every later token is free (`releasedState`).
@@ -336,7 +342,12 @@ final class QwenStrictToolConstraint: CBv2TokenConstraint, @unchecked Sendable {
     func allowedTokenIDs(state: Int, remainingTokens: Int) -> [Int] {
         lock.lock(); defer { lock.unlock() }
         guard remainingTokens > 0 else { return [] }
-        if state == Self.releasedState { return Self.merged(vocabulary.pieceTokenIDs, freeStops) }
+        if state == Self.releasedState {
+            if let releasedMask { return releasedMask }
+            let mask = Self.merged(vocabulary.pieceTokenIDs, freeStops)
+            releasedMask = mask
+            return mask
+        }
         guard states.indices.contains(state) else { return [] }
         if let index = allowedCache.firstIndex(where: { $0.state == state }) {
             let entry = allowedCache.remove(at: index)
@@ -424,7 +435,7 @@ final class QwenStrictToolConstraint: CBv2TokenConstraint, @unchecked Sendable {
             let piece = vocabulary.pieces[id]
             var index = 0
             if matched == 0 {
-                while index < piece.count, (9...13).contains(piece[index]) || piece[index] == 32 { index += 1 }
+                while index < piece.count, QwenStrictToolBoundary.isOpeningWhitespace(piece[index]) { index += 1 }
                 if index == piece.count {
                     allowed.append(id)
                     continue
@@ -432,7 +443,7 @@ final class QwenStrictToolConstraint: CBv2TokenConstraint, @unchecked Sendable {
             }
             let byte = piece[index]
             let keepsOpening = byte == open[matched]
-            if !keepsOpening, matched == 0, byte == 123 || byte >= 0x80 { continue }
+            if !keepsOpening, matched == 0, QwenStrictToolBoundary.isRefusedAfterCallMarker(byte) { continue }
             if keepsOpening || piece[index...].contains(62) {
                 if transition(boundary, token: id) != nil { allowed.append(id) }
             } else {

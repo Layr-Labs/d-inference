@@ -133,7 +133,8 @@ private final class RetirementGate: @unchecked Sendable {
 
 /// The coordinator's path: the row is admitted atomically against its
 /// first-content deadline, so its stream ends before its retirement, which this
-/// engine holds 50 ms past the stop. The continuation (no deadline) is an
+/// engine holds 50 ms past the stop (or, with `holdFirstRetirement`, until the
+/// test releases the first row's). The continuation (no deadline) is an
 /// ordinary submission: it answers "Answer: B" and stops.
 private final class AdmittedThoughtLoopEngine: CBv2Engine, @unchecked Sendable {
     private let lock = NSLock()
@@ -141,8 +142,30 @@ private final class AdmittedThoughtLoopEngine: CBv2Engine, @unchecked Sendable {
     private var continuations: [CBv2RequestID: AsyncStream<CBv2Event>.Continuation] = [:]
     private var produced: [CBv2RequestID: Int] = [:]
     private var gates: [CBv2RequestID: RetirementGate] = [:]
+    private var firstFinished = false
+    private var firstFinishedWaiters: [CheckedContinuation<Void, Never>] = []
+    /// The first row keeps its slot after its terminal until `releaseFirstRetirement()`.
+    let holdFirstRetirement: Bool
+
+    init(holdFirstRetirement: Bool = false) { self.holdFirstRetirement = holdFirstRetirement }
 
     var requests: [CBv2Request] { lock.withLock { submitted } }
+
+    /// Returns once the first row's terminal has gone out.
+    func waitUntilFirstFinished() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let now = lock.withLock { () -> Bool in
+                if firstFinished { return true }
+                firstFinishedWaiters.append(continuation)
+                return false
+            }
+            if now { continuation.resume() }
+        }
+    }
+
+    func releaseFirstRetirement() {
+        lock.withLock { submitted.first.flatMap { gates[$0.id] } }?.release()
+    }
 
     func submit(
         _ request: CBv2Request, firstTokenDeadline: CBv2FirstTokenDeadlineAdmission
@@ -184,14 +207,23 @@ private final class AdmittedThoughtLoopEngine: CBv2Engine, @unchecked Sendable {
     }
 
     private func finish(_ id: CBv2RequestID, _ reason: CBv2FinishReason) {
-        let (continuation, prompt, completion, gate) = lock.withLock {
+        let (continuation, prompt, completion, gate, isFirst) = lock.withLock {
             defer { continuations[id] = nil }
             return (continuations[id], submitted.first { $0.id == id }?.promptTokens.count ?? 0, produced[id] ?? 0,
-                    gates[id])
+                    gates[id], submitted.first?.id == id)
         }
         continuation?.yield(.finished(
             reason: reason, usage: CBv2Usage(promptTokens: prompt, completionTokens: completion)))
         continuation?.finish()
+        if isFirst, holdFirstRetirement {
+            let waiters = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+                firstFinished = true
+                defer { firstFinishedWaiters.removeAll() }
+                return firstFinishedWaiters
+            }
+            waiters.forEach { $0.resume() }
+            return
+        }
         // The row's engine resources retire a little after its terminal.
         Task {
             try? await Task.sleep(for: .milliseconds(50))
@@ -403,6 +435,43 @@ struct GenerationLoopExitThinkingServingTests {
         #expect(engine.requests.count == 2)
         #expect(outcome.info?.stopReason == "stop")
         #expect(outcome.content == "Answer: B")
+    }
+
+    @Test("a local client that leaves while the stopped row releases its slot gets no continuation row")
+    func localDisconnectDuringTheReleaseWait() async throws {
+        let engine = AdmittedThoughtLoopEngine(holdFirstRetirement: true)
+        let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
+            .init(total: 8 << 30, active: 0, cache: 0, systemAvailable: 8 << 30)
+        }
+        let bridge = EngineV2Bridge(engine: engine, modelId: modelID, tokenizer: Self.tokenizer,
+            eosTokenIds: [GemmaThoughtTestTokenizer.turnClose, GemmaThoughtTestTokenizer.eos], defaultMaxTokens: 64,
+            maxConcurrentRequests: 1, prefillDeadlineMode: .enforce, kvBytesPerToken: 4_000, kvBudget: budget)
+        await bridge.setMeasurementActivity(EngineMeasurementActivity())
+        await bridge.updatePrefillTpsEwma(2_000, isolated: true)
+        let id = modelID
+        let tokenizer = Self.tokenizer
+        var scheduler = MultiModelBatchSchedulerEngine(
+            registryProvider: { [id: .init(tokenizer: tokenizer, modelType: "gemma4", engineV2Bridge: bridge)] },
+            firstContentDeadline: FirstContentDeadline(relativeBudgetMilliseconds: 60_000))
+        scheduler.exitThinkingSetting = Self.cleanProcess
+        let served = scheduler
+        let scope = LocalRequestCancellationScope()
+        let request = Task {
+            await LocalRequestCancellation.$current.withValue(scope) {
+                _ = try? await self.consume(served, maxTokens: 8_192)
+            }
+        }
+        // The guard stopped the row and its `length` went out, but the row
+        // still holds its slot: the splice waits in `waitForRowRelease`. The
+        // local API's disconnect hook then reaches only the splice's control.
+        await engine.waitUntilFirstFinished()
+        try await Task.sleep(for: .milliseconds(200))
+        scope.cancel()
+        try await Task.sleep(for: .milliseconds(100))
+        engine.releaseFirstRetirement()
+        await request.value
+        await bridge.shutdown()
+        #expect(engine.requests.count == 1)
     }
 
     @Test("Qwen 3.6: a loop inside the thought ends it with `\\n</think>\\n\\n`, and stops apply to the answer")

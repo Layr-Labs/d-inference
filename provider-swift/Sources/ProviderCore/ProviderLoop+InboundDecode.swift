@@ -54,6 +54,9 @@ extension ProviderLoop {
     }
 
     private static func repairedRequestBody(_ data: Data, modelType: String? = nil) throws -> Data {
+        // Every parse below recurses per JSON level; refuse a body that could
+        // exhaust the caller's task stack before one runs.
+        guard !JSONNestingLimit.exceeds(data) else { throw JSONNestingLimit.tooDeep }
         // Inject default `type`s into tool parameter schemas so a Gemma-style
         // chat template's `{{ value['type'] | upper }}` can't crash on a typeless
         // property (DAR-130). No-op for requests without tools.

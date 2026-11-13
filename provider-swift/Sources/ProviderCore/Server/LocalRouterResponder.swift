@@ -95,6 +95,13 @@ public final class LocalRouter: Sendable {
             response.headers[LocalRouterPolicy.servedByHeader] = LocalRouterPolicy.thisMac
             return response
         }
+        // A pass-on parses the body, recursing per JSON level on this task's stack.
+        guard !JSONNestingLimit.exceeds(body) else {
+            var response = Self.errorResponse(.badRequest,
+                message: "request JSON nests deeper than \(JSONNestingLimit.maximumDepth) levels")
+            response.headers[LocalRouterPolicy.servedByHeader] = LocalRouterPolicy.thisMac
+            return response
+        }
         var local = try await inner.respond(to: request, context: context)
         local.headers[LocalRouterPolicy.servedByHeader] = LocalRouterPolicy.thisMac
         guard LocalRouterPolicy.passesOn(localStatus: local.status) else { return local }

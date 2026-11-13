@@ -50,7 +50,17 @@ struct InferenceRefusalLoggingTests {
         ([user, #""reasoning":{"enabled":"zq-private-7f3a"}"#], .unsupportedReasoningControl),
         ([user, #""temperature":"zq-private-7f3a""#], .invalidRequestField),
         ([user, #""stop":"#], .malformedBody),
+        ([user, deeplyNestedTools], .malformedBody),
     ]
+
+    /// A tool parameter nested 200 arrays deep: past `JSONNestingLimit`, and
+    /// deep enough to exhaust a task's stack in the parsers it guards.
+    static let deeplyNestedTools: String = {
+        var schema = #"{"type":"string"}"#
+        for _ in 0 ..< 200 { schema = #"{"type":"array","items":"# + schema + "}" }
+        return #""tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"x":"#
+            + schema + "}}}}]"
+    }()
 
     @Test func everyRefusalLogsItsFixedReasonAndSendsIt() async throws {
         for (fields, reason) in Self.refusals {

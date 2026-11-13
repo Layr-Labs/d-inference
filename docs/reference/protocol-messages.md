@@ -1292,6 +1292,14 @@ Go `InferenceRequestMessage` · Swift `CoordinatorMessage.InferenceRequest`.
 | `cache_repeated_prefix_tokens` | `*int` | `Int?` | ptr | Coordinator-observed fleet-wide repeat demand: the deepest boundary another plan shared within the routing TTL among those a plan observes (multiples of 1,024 tokens, the final boundary, and a power-of-two ladder for very long prompts), 0 when none. Sent only with a granted scope; absent from older coordinators (providers then write every checkpoint) and cleared on retry/fallback (`CacheAttemptSnapshot.ApplyTo`, [coordinator/registry/cache_attempt_ownership.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/cache_attempt_ownership.go)). Integer count only, never a key, hash or boundary. Providers gate complete-checkpoint donations on it (`skipped_novel`; `SSDCheckpointDemand.admitsWrite`, `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDCheckpointDemand.swift`). Swift clamps a negative value to 0. The e2e wire relay projects it for `inference_request` (`copyFields`, [e2e/testbed/provider_wire_relay.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/e2e/testbed/provider_wire_relay.go)) |
 | `tool_schema_metadata_protocol` | `int` | `Int?` | opt | `1` = the coordinator rejected client-forged reserved keys before normalisation |
 
+A decrypted body that nests objects and arrays more than 64 deep
+(`JSONNestingLimit.maximumDepth`,
+`provider-swift/Sources/ProviderCore/Protocol/JSONNestingLimit.swift`) is
+refused before it is parsed, with `failure_code` `invalid_request` (400) and
+`refusal_reason` `malformed_body`. The coordinator's own tool-schema
+normalisation stops at depth 64 and forwards deeper nodes unchanged; see
+[request JSON limits](../architecture/inference.md#request-json-limits-before-decoding).
+
 `prompt_work` is defined in [coordinator/protocol/prompt_work.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/prompt_work.go) and
 `provider-swift/Sources/ProviderCore/Protocol/PromptWork.swift`:
 

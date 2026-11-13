@@ -44,6 +44,14 @@ enum ToolSchemaNormalization {
     /// traversal. Above this we skip normalization, bounding the cost on the
     /// (already size-capped) inference path.
     static let maxNormalizationBytes = 4 * 1024 * 1024
+    /// Upper bound on schema nodes normalized per request. Each positional
+    /// `{}` or boolean becomes a two-key map, so a few MiB of them rewrite to
+    /// tens of MiB and hundreds of MiB of objects; past this many nodes the
+    /// body is left unchanged, as an oversized one is. Real tool sets are a
+    /// small fraction of it.
+    static let maxNormalizedNodes = 100_000
+
+    private struct NodeBudgetExceeded: Error {}
 
     static func ensureParameterTypes(in data: Data) -> Data {
         // Bound the work: skip the round-trip for oversized bodies (see the constant).
@@ -55,14 +63,20 @@ enum ToolSchemaNormalization {
         else {
             return data
         }
-        let normalizedTools: [Any] = tools.map { tool in
-            guard var toolDict = tool as? [String: Any],
-                  var function = toolDict["function"] as? [String: Any],
-                  let parameters = function["parameters"]
-            else { return tool }
-            function["parameters"] = injectDefaultTypes(parameters)
-            toolDict["function"] = function
-            return toolDict
+        var budget = maxNormalizedNodes
+        let normalizedTools: [Any]
+        do {
+            normalizedTools = try tools.map { tool in
+                guard var toolDict = tool as? [String: Any],
+                      var function = toolDict["function"] as? [String: Any],
+                      let parameters = function["parameters"]
+                else { return tool }
+                function["parameters"] = try injectTypes(parameters, positional: false, budget: &budget)
+                toolDict["function"] = function
+                return toolDict
+            }
+        } catch {
+            return data
         }
         root["tools"] = normalizedTools
         guard let out = try? JSONSerialization.data(withJSONObject: root) else { return data }
@@ -85,14 +99,17 @@ enum ToolSchemaNormalization {
     /// become render-safe string schemas carrying their original semantic
     /// value, and maps are guaranteed a string `type`.
     static func injectDefaultTypes(_ node: Any) -> Any {
-        injectTypes(node, positional: false)
+        var unbounded = Int.max
+        return (try? injectTypes(node, positional: false, budget: &unbounded)) ?? node
     }
 
     /// Traversal core behind ``injectDefaultTypes(_:)``; `positional` reports
     /// whether `node` sits in a schema-positional slot (see the mirror note
     /// above). Arrays keep positionality for their members (tuple-form
     /// `items`, `prefixItems`, union member lists).
-    private static func injectTypes(_ node: Any, positional: Bool) -> Any {
+    private static func injectTypes(_ node: Any, positional: Bool, budget: inout Int) throws -> Any {
+        budget -= 1
+        guard budget >= 0 else { throw NodeBudgetExceeded() }
         if positional, isJSONBoolean(node) {
             return [
                 "type": "string",
@@ -100,7 +117,7 @@ enum ToolSchemaNormalization {
             ] as [String: Any]
         }
         if let arr = node as? [Any] {
-            return arr.map { injectTypes($0, positional: positional) }
+            return try arr.map { try injectTypes($0, positional: positional, budget: &budget) }
         }
         guard var dict = node as? [String: Any] else { return node }
         // An EMPTY positional map is the `{}` "anything" schema — semantically
@@ -117,14 +134,14 @@ enum ToolSchemaNormalization {
 
         for key in ["properties", "patternProperties"] {
             if let props = dict[key] as? [String: Any] {
-                dict[key] = props.mapValues { injectTypes($0, positional: true) }
+                dict[key] = try props.mapValues { try injectTypes($0, positional: true, budget: &budget) }
             }
         }
         if let items = dict["items"] {
-            dict["items"] = injectTypes(items, positional: true)
+            dict["items"] = try injectTypes(items, positional: true, budget: &budget)
         }
         if let prefix = dict["prefixItems"] as? [Any] {
-            dict["prefixItems"] = prefix.map { injectTypes($0, positional: true) }
+            dict["prefixItems"] = try prefix.map { try injectTypes($0, positional: true, budget: &budget) }
         }
         // additionalProperties may itself be a schema (map-shaped params, e.g.
         // {"additionalProperties":{"type":"string"}}) — recurse so its inner schema
@@ -132,11 +149,11 @@ enum ToolSchemaNormalization {
         // standard allow/deny-all switch; templates never subscript it) — only
         // the MAP-valued form is schema-positional.
         if let addl = dict["additionalProperties"], addl is [String: Any] {
-            dict["additionalProperties"] = injectTypes(addl, positional: true)
+            dict["additionalProperties"] = try injectTypes(addl, positional: true, budget: &budget)
         }
         for key in ["anyOf", "oneOf", "allOf"] {
             if let variants = dict[key] as? [Any] {
-                dict[key] = variants.map { injectTypes($0, positional: true) }
+                dict[key] = try variants.map { try injectTypes($0, positional: true, budget: &budget) }
             }
         }
         if positional,

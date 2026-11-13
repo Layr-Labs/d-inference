@@ -118,6 +118,12 @@ where Inner.Context == BasicRequestContext {
                 message: "request body exceeds the \(bodyLimit / (1024 * 1024)) MiB local endpoint limit"
             )
         }
+        // Every parse below recurses per JSON level on this task's stack.
+        guard !JSONNestingLimit.exceeds(buffer) else {
+            return CORSResponder<Inner>.openAIErrorResponse(
+                status: .badRequest,
+                message: "request JSON nests deeper than \(JSONNestingLimit.maximumDepth) levels")
+        }
 
         if isResponses {
             var body = buffer

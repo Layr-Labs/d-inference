@@ -341,6 +341,12 @@ extension ProviderLoop {
             return
         }
 
+        // Every parse below recurses per JSON level on this task's stack.
+        if JSONNestingLimit.exceeds(decryptedData) {
+            rejectInvalidRequest(.malformedBody)
+            return
+        }
+
         if toolSchemaMetadataProtocol != ToolSchemaNormalization.metadataProtocolVersion,
             ToolSchemaNormalization.containsReservedMetadata(in: decryptedData)
         {

@@ -48,8 +48,10 @@ public enum MTPAcceptancePolicy {
 
     /// The built-in rule is exact for:
     /// - the owned Bonsai 9B candidate;
-    /// - the catalog Qwen3.5-9B: with no default presence penalty its rows
-    ///   speculate, and at temperature 1 typical acceptance made them loop to
+    /// - the catalog Qwen3.5-9B: its default carries the card's presence
+    ///   penalty again (a penalty row does not speculate), but a request with
+    ///   `presence_penalty` 0, or a Mac on the no-penalty rollback, drafts, and
+    ///   at temperature 1 typical acceptance made such rows loop to
     ///   `max_tokens` where exact acceptance did not;
     /// - the catalog Gemma 4 26B QAT, whose assistant drafts most of its rows:
     ///   on OpenRouter's GPQA run of 10-31 every answer drafted under typical

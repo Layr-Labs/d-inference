@@ -136,6 +136,13 @@ enum GenerationLoopExitThinkingPolicy {
 
     static let defaultModelTypes: Set<String> = ["gemma4", "gemma4_text", "qwen3_5_moe", "gpt_oss"]
 
+    /// Families whose exit applies only to a request that declares tools.
+    /// GPT-OSS without tools reopened its analysis after the exit and looped
+    /// again in 10 of 10 GPQA loopers on the GPU A/B (effort high, T 0), so
+    /// those requests keep today's `length` (and are not billed the extra
+    /// tokens); with tools it wrote the call or the reply in 40 of 66 Tau2 loopers.
+    static let toolRequestsOnly: Set<String> = ["gpt_oss"]
+
     /// The answer's own cap. Gemma's GPQA answers after a thought are under
     /// 1,000 tokens; a Tau2 reply or call is shorter.
     static let answerTokenLimit = 8_192
@@ -167,6 +174,7 @@ enum GenerationLoopExitThinkingPolicy {
         tokenizer: any MLXLMCommon.Tokenizer,
         promptTokens: [Int],
         logprobs: Bool,
+        declaresTools: Bool = false,
         setting: Setting = current
     ) -> GenerationLoopExitThinking? {
         guard case .modelTypes(let enabled) = setting,

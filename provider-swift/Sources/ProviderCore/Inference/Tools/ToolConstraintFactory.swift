@@ -22,7 +22,8 @@ enum ToolConstraintFactory {
         modelContext: ChatTemplateFixContext,
         defaultMaxTokens: Int,
         stopTokenIDs: Set<Int>,
-        nativePromptTokens: [Int]? = nil
+        nativePromptTokens: [Int]? = nil,
+        framesQwenForcedCalls: Bool = false
     ) throws -> (any CBv2TokenConstraint)? {
         // Flint's automatic reasoning protocol needs framing even for no-tool
         // and auto requests. Do not broaden another family's admission policy.

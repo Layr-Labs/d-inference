@@ -3450,7 +3450,8 @@ entries of the root's `$defs`/`definitions` inlined, a one-branch `allOf`
 unwrapped, `anyOf` of one schema and `{"type": "null"}` made nullable, with only
 annotations beside them; `$comment` on every node it rewrites, the root's `$id`
 and a draft-06 to 2020-12 `$schema` dropped; at most 16 levels, 8 references or
-compositions in a row and a bounded amount of copying, `maximumWork`).
+compositions in a row and a bounded amount of copying and hashing,
+`maximumWork`).
 One still outside it (`pattern`, `format`, a recursive `$ref`, a wider `anyOf`,
 an older `$schema`, a nullable enum of 128 values, …) whose root is
 `"type": "object"` is held to a JSON object; any other

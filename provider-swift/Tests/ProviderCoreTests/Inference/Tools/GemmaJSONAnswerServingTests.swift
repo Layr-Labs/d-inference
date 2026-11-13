@@ -197,6 +197,15 @@ struct GemmaJSONAnswerPolicyTests {
             + (0..<64).map { ##""p\##($0)":{"$ref":"#/$defs/B"}"## }.joined(separator: ",")
             + ##"},"$defs":{"B":"## + wide + "}}"
         #expect(try Self.rewrite(fanOut) == nil, "at most \(ResponseSchemaRewrite.maximumWork)")
+        // So are the bytes it hashes: a 100,000-byte reference from 64 properties, 64 names of 32,768 bytes.
+        let long = String(repeating: "x", count: 100_000)
+        let longReference = #"{"type":"object","properties":{"#
+            + (0..<64).map { ##""p\##($0)":{"$ref":"#/$defs/\##(long)"}"## }.joined(separator: ",")
+            + ##"},"$defs":{""## + long + #"":{"type":"string"}}}"#
+        let longNames = #"{"type":"object","properties":{"#
+            + (0..<64).map { #""\#(long.prefix(32_768))\#($0)":{"type":"string"}"# }.joined(separator: ",") + "}}"
+        #expect(try Self.rewrite(longReference) == nil)
+        #expect(try Self.rewrite(longNames) == nil)
     }
 
     @Test func aPydanticSchemaKeepsItsKeysAndRequirements() throws {

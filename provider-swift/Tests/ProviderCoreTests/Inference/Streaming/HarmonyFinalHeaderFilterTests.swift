@@ -49,6 +49,15 @@ struct HarmonyFinalHeaderFilterTests {
         }
     }
 
+    @Test("the non-stream Harmony parser gets the answer too")
+    func nonStreamParserGetsTheAnswer() {
+        let parser = ReasoningParser(format: .harmony)
+        for header in ["final <|constrain|>json", "final json", " final "] {
+            let output = Self.analysis + "<|channel|>\(header)<|message|>" + Self.answer
+            #expect(parser.parse(Self.filtered(output, width: 4096)).content == Self.answer, "\(header)")
+        }
+    }
+
     @Test("every other header and all other text pass through byte for byte", arguments: widths)
     func otherOutputIsUnchanged(width: Int) {
         let outputs = [
@@ -88,6 +97,11 @@ struct HarmonyFinalHeaderFilterTests {
         var partial = HarmonyFinalHeaderFilter()
         #expect(partial.ingest("text <|chan") == "text ")
         #expect(partial.finish() == "<|chan")
+        // At most 256 header bytes and a partial `<|message|>` (266 bytes) are held.
+        var held = HarmonyFinalHeaderFilter()
+        let longHeader = String(repeating: "a", count: 266)
+        #expect(held.ingest("<|channel|>" + longHeader) == "<|channel|>")
+        #expect(held.ingest("a") == longHeader + "a")
     }
 
     @Test("only a Harmony-parsed GPT-OSS stream is filtered")

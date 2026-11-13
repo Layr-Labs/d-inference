@@ -468,16 +468,19 @@ struct GenerationLoopExitThinkingHarmonyTests {
 
     private func serve(
         _ engine: HarmonyLoopTestEngine, tokenizer: HarmonyTestTokenizer = Self.tokenizer, effort: String? = nil,
-        maxTokens: Int = 8_192, extra: String = Self.tools, streamCalls: Bool = false
+        maxTokens: Int = 8_192, extra: String = Self.tools, streamCalls: Bool = false,
+        exitSetting: GenerationLoopExitThinkingPolicy.Setting = Self.defaults
     ) async throws -> Outcome {
         let telemetry = TelemetrySink()
         let handle = TokenizerHandle(tokenizer)
         let bridge = EngineV2Bridge(engine: engine, modelId: "gpt-oss-20b", tokenizer: handle,
             eosTokenIds: HarmonyTestTokenizer.stops, defaultMaxTokens: 64,
             maxConcurrentRequests: 1, emitTelemetry: { telemetry.add($0) })
-        let scheduler = MultiModelBatchSchedulerEngine(registryProvider: {
+        var scheduler = MultiModelBatchSchedulerEngine(registryProvider: {
             ["gpt-oss-20b": .init(tokenizer: handle, modelType: "gpt_oss", engineV2Bridge: bridge)]
         }, templateControls: ChatTemplateControls(reasoningEffort: effort))
+        // The switch as a clean process reads it, whatever this process's environment says.
+        scheduler.exitThinkingSetting = exitSetting
         var request = try JSONDecoder().decode(OpenAIChatCompletionRequest.self, from: Data("""
         {"model":"gpt-oss-20b","messages":[{"role":"user","content":"hi"}],\
         "reasoning_parser":"harmony","temperature":0,"max_tokens":\(maxTokens)\(extra)}
@@ -559,10 +562,10 @@ struct GenerationLoopExitThinkingHarmonyTests {
     func streamingDeltas() async throws {
         let engine = HarmonyLoopTestEngine(.analysisLoop)
         let outcome = try await serve(engine)
-        // The row's text, the exit once, then the continuation's text, in order and whole (the tool handler may
-        // hold `<|start|>assistant`, a call header's prefix, until the next chunk shows it is not a call).
+        // The row's text, the exit once, then the continuation's text, in order and whole. Chunk boundaries are
+        // the stream's own: the tool handler may hold `<|start|>assistant` (a call header's prefix) and the
+        // Harmony header filter a header in progress, until the next chunk shows what they are.
         let joined = outcome.chunks.joined()
-        #expect(Array(outcome.chunks.prefix(3)) == Self.analysis)
         let exitRange = try #require(joined.range(of: "<|end|><|start|>assistant"))
         #expect(joined.components(separatedBy: "<|end|>").count == 2)
         #expect(String(joined[..<exitRange.lowerBound]).hasPrefix("<|channel|>analysis<|message|>" + Self.loopText))
@@ -714,14 +717,22 @@ struct GenerationLoopExitThinkingHarmonyTests {
         #expect(outcome.loopGuardStops == [false])
     }
 
-    @Test("off: an analysis loop ends as length with nothing more submitted, as 0.10.12")
-    func offKeepsLength() async throws {
+    @Test("off: an analysis loop ends as length with nothing more submitted, as 0.10.12",
+          arguments: ["0", "gemma4,gemma4_text"])
+    func offKeepsLength(switchValue: String) async throws {
+        let setting = GenerationLoopExitThinkingPolicy.setting(
+            environment: [GenerationLoopExitThinkingPolicy.environmentKey: switchValue])
         let engine = HarmonyLoopTestEngine(.analysisLoop)
-        let outcome = try await serve(engine, tokenizer: Self.withoutExit)
+        let outcome = try await serve(engine, exitSetting: setting)
         #expect(engine.requests.count == 1)
         #expect(outcome.info?.stopReason == "length")
         #expect(outcome.content.isEmpty)
         #expect(outcome.loopGuardStops == [false])
+        // The exit that cannot resolve (a tokenizer without `<|end|>`) is the same path.
+        let unresolved = HarmonyLoopTestEngine(.analysisLoop)
+        let same = try await serve(unresolved, tokenizer: Self.withoutExit)
+        #expect(same.chunks == outcome.chunks)
+        #expect(same.info?.completionTokens == outcome.info?.completionTokens)
     }
 }
 

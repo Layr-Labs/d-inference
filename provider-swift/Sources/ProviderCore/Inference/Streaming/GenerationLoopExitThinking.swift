@@ -85,15 +85,15 @@ public final class GenerationLoopExitRecord: @unchecked Sendable {
 /// Which requests may end a repeating thought instead of the whole answer.
 ///
 /// On by default for Gemma 4, whose thought closes with one special token
-/// (`<channel|>`), the Qwen 3.5/3.6 35B models (`qwen3_5_moe`), whose
-/// template closes it with `\n</think>\n\n` (`</think>` is one special token),
-/// and GPT-OSS (`gpt_oss`, for a request that declares tools), whose Harmony
-/// analysis message ends with `<|end|>` and is followed by the next assistant
-/// message (`harmonyAnalysis`).
-/// `qwen3_5` has the marker but is off by default: it is Qwen 3.5 9B and also
-/// Qwen 3.8 27B, whose thought loops are rare. The guard keeps ending every
-/// other loop as `length`: a loop outside the thought, a family that is not
-/// on, a request that asked for logprobs (the forced tokens have none), a
+/// (`<channel|>`), and GPT-OSS (`gpt_oss`, for a request that declares
+/// tools), whose Harmony analysis message ends with `<|end|>` and is followed
+/// by the next assistant message (`harmonyAnalysis`). Qwen 3.5/3.6
+/// (`qwen3_5_moe`, `qwen3_5`), whose template closes a thought with
+/// `\n</think>\n\n` (`</think>` is one special token), are listed but off by
+/// default: their thought loops were too rare in the A/B to show rescues, and
+/// `qwen3_5` is also Qwen 3.8 27B. The guard keeps ending every other loop as
+/// `length`: a loop outside the thought, a family that is not on, a request
+/// that asked for logprobs (the forced tokens have none), a
 /// pair's request.
 ///
 /// `DARKBLOOM_LOOP_EXIT_THINKING`: unset, `1` or `on` keeps the default list;
@@ -135,7 +135,7 @@ enum GenerationLoopExitThinkingPolicy {
     /// `<think>\n…\n</think>\n\n` before the answer.
     static let qwenThink = Markers(open: "<think>", close: "</think>", before: "\n", after: "\n\n")
 
-    static let defaultModelTypes: Set<String> = ["gemma4", "gemma4_text", "qwen3_5_moe", "gpt_oss"]
+    static let defaultModelTypes: Set<String> = ["gemma4", "gemma4_text", "gpt_oss"]
 
     /// Families whose exit applies only to a request that declares tools.
     /// GPT-OSS without tools reopened its analysis after the exit and looped
@@ -168,7 +168,7 @@ enum GenerationLoopExitThinkingPolicy {
         }
     }
 
-    /// The exit for one guarded text request, or nil when its loops must
+    /// The exit for one guarded request, or nil when its loops must
     /// keep ending as `length`.
     static func resolve(
         modelType: String?,

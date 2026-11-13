@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-12
+> Last updated: 2026-11-13
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -4201,6 +4201,7 @@ must support the checkpoint contract described in
 | `DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` (`terminalBeforePublication`); an affirmative value answers an unseeded donor before its complete-checkpoint write settles (default off) |
 | `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26WiredResidency.swift` (`isEnabled`) |
 | `DARKBLOOM_GLM_PERSISTENT_WIRED_RESIDENCY` | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextWiredResidency.swift` (`isEnabled`); on by default, `0`/`false`/`no`/`off` rolls back to per-command-buffer residency |
+| `DARKBLOOM_GLM_JSON_SCHEMA_MISS` | `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextResponseFormat.swift` (`GLM5NextSchemaMiss`); `release` exposes a GLM JSON answer that misses its schema at a natural stop |
 | `DARKBLOOM_MLX_RESOURCE_DEBUG` | forwarded to `mlx-swift-lm` |
 | `DARKBLOOM_TTFT_GDN_BLOCKED` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/GatedDelta.swift` (`GatedDeltaPrefill.mode`); `0` keeps the stock Qwen GDN prompt kernel |
 | `DARKBLOOM_GEMMA4_NAX_ROW_MAP` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/Gemma4RowMappedNAX.swift` (`requested`, `tryPair`); exact `0` restores the original Gemma expert-prefill graph |
@@ -4218,9 +4219,11 @@ must support the checkpoint contract described in
 | `DARKBLOOM_PREFILL_DEADLINE_MODE` | `provider-swift/Sources/ProviderCore/Inference/Engine/PrefillDeadlineMode.swift` (`environmentKey`) |
 | `DARKBLOOM_TTFT_ADMISSION_FIXES` | `provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift` (`DeadlineAdmissionFixes.environmentKey`) |
 | `DARKBLOOM_TTFT_REFUSAL_PROBE` | `provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift` (`DeadlineRefusalProbe.environmentKey`); `0` turns the refusal streak's idle probe off |
+| `DARKBLOOM_TTFT_NATIVE_PREFILL_EVIDENCE` | `provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift` (`NativePrefillEvidence.environmentKey`); `0` restores GLM's and MiMo's previous prefill estimate |
 | `DARKBLOOM_TTFT_IDLE_CACHE_SWEEP` | `provider-swift/Sources/ProviderCore/Inference/Memory/GlobalKVCacheBudget.swift` (`idleCacheSweepEnvironmentKey`) |
 | `DARKBLOOM_TTFT_SEGMENT_RETENTION` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+SegmentedBackend.swift` (`segmentRetentionEnvironmentKey`) |
 | `DARKBLOOM_TTFT_SEGMENT_HOST_ZEROS` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+SegmentedBackend.swift` (`segmentHostZerosEnvironmentKey`) |
+| `DARKBLOOM_NATIVE_SEGMENT_RELEASE` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift` (`nativeSegmentReleaseIdleNanosDefault`); idle seconds (default 30), and any value that is not a positive number below a day (`0`, `off`) keeps an issued GLM pool's free segments until the pool retires |
 | `MLX_GATHER_QMM_EXPERT_SLICES` | only when the shell value is exactly `1` (`GemmaOptimizationEnvironment.daemonDrainPassthrough`, `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationEnvironment.swift`) |
 | `DARKBLOOM_APP_ATTEST_WORKER_QUALIFICATION` | only when the shell value is exactly `1`; selects the [opt-in worker candidate](../reference/configuration.md#app-attest-worker-qualification) (`AppAttestWorkerSelection`, `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`) |
 
@@ -4242,7 +4245,9 @@ automatic updates with `darkbloom autoupdate disable`.
 | Coordinator reconnect backoff | `ExponentialBackoff(base: 1.0, max: 30.0)` s | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorReconnectPolicy.swift` (`CoordinatorReconnectPolicy`) |
 | Backoff reset after a stable session | `stableSessionDuration = .seconds(60)`, counted from the `register` frame | same |
 | Reconnect wait after close code `1012` (service restart) | `serviceRestartDelayRange = 0...1` s, drawn at random; the backoff does not grow | same |
-| WebSocket ping interval / pong timeout | `pingInterval = 10.0` s / `pongTimeout = 30.0` s | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift` |
+| First reconnect wait after a stable session (any other end) | `stableSessionRetryRange = 0...0.25` s, drawn at random; the backoff does not grow | same |
+| WebSocket ping interval / dead-link bound | `pingInterval = .seconds(2)` / `deadAfter = .seconds(6)`: no inbound frame (pong, ping or message) for more than 6 s declares the link dead, checked at each ping | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorLinkLiveness.swift` (`CoordinatorLinkLiveness`) |
+| Suspension gap | `suspensionGap = .seconds(30)`: a ping tick this late (sleep) reconnects once; a shorter late tick restarts the silence window | same |
 | Coordinator handshake deadline (TCP, TLS and WebSocket upgrade to `.ready`) | `defaultTimeout = 30` s; a stalled handshake is cancelled and retried with the reconnect backoff | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorConnectionHandshake.swift` (`CoordinatorConnectionHandshake`) |
 | State-file and capacity refresh | every `max(1, heartbeat_interval_secs / 2)` s; the heartbeat default is in the [`provider.toml` table](#providertoml-keys-read-by-the-cli) | `provider-swift/Sources/ProviderCore/ProviderLoop+Capacity.swift` |
 | State-file stale threshold | `isStale(maxAge: 90)` s; `doctor` calls the daemon wedged after `max(8 × refresh period, 90)` s | `provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift`; `provider-swift/Sources/darkbloom/Diagnostics/KVBackendPosture.swift` (`wedgedAfterSeconds`) |

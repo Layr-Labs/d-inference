@@ -60,12 +60,27 @@ struct NemotronSuperRequestPlan: Sendable {
     /// The text request's loop guard: the scheduler's text path policy
     /// (`GenerationLoopGuardPolicy`), so the same model list, exclusions and
     /// `DARKBLOOM_LOOP_GUARD` switch. Media requests get none, as there.
+    /// `exitThinking`: this request's way out of a repeating thought
+    /// (`exitThinking(promptTokens:tokenizer:)`).
     func loopGuard(
-        setting: GenerationLoopGuardPolicy.Setting = GenerationLoopGuardPolicy.current
+        setting: GenerationLoopGuardPolicy.Setting = GenerationLoopGuardPolicy.current,
+        exitThinking: GenerationLoopExitThinking? = nil
     ) -> GenerationLoopGuard? {
         guard !hasMedia else { return nil }
         return GenerationLoopGuardPolicy.resolve(modelType: Self.modelType, request: request,
-            prepared: toolPolicy, tokenConstraint: nil, setting: setting)
+            prepared: toolPolicy, tokenConstraint: nil, setting: setting, exitThinking: exitThinking)
+    }
+
+    /// The exit for a text request's rendered prompt, as the scheduler's text
+    /// path resolves it (`GenerationLoopExitThinkingPolicy`): never with
+    /// logprobs, or with media.
+    func exitThinking(
+        promptTokens: [Int], tokenizer: any MLXLMCommon.Tokenizer,
+        setting: GenerationLoopExitThinkingPolicy.Setting = GenerationLoopExitThinkingPolicy.current
+    ) -> GenerationLoopExitThinking? {
+        guard !hasMedia else { return nil }
+        return GenerationLoopExitThinkingPolicy.resolve(modelType: Self.modelType, tokenizer: tokenizer,
+            promptTokens: promptTokens, logprobs: topLogprobs > 0, setting: setting)
     }
 
     /// The request the bridge executes, for text and media alike. `translate`

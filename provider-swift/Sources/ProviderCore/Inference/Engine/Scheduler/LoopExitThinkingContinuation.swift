@@ -12,11 +12,12 @@ import Logging
 /// for the row's stream to finish, and submits one continuation (its `submit`
 /// first waits for the row to release its serving slot:
 /// `EngineV2Bridge.waitForRowRelease`): the same prompt, every token the row
-/// produced, then the family's end-of-thinking marker, with the output budget
-/// the row left (at most `GenerationLoopExitThinking.answerTokenLimit`). The
-/// client sees one answer: the thought, the marker, then the continuation's
-/// text, and one terminal whose usage is the original prompt and every token
-/// produced (the row's, the marker, the continuation's).
+/// produced, then the family's end of thinking (`GenerationLoopExitThinking.exitTokens`),
+/// with the output budget the row left (at most
+/// `GenerationLoopExitThinking.answerTokenLimit`). The client sees one answer:
+/// the thought, the exit text, then the continuation's text, and one terminal
+/// whose usage is the original prompt and every token produced (the row's, the
+/// exit's, the continuation's).
 ///
 /// Anything that keeps the continuation from starting (under
 /// `minimumAnswerBudget` tokens of budget left, a row that closed its thought
@@ -60,7 +61,10 @@ enum LoopExitThinkingContinuation {
     /// worth it: the request ends as `length`, as before.
     static let minimumAnswerBudget = 256
 
-    /// The spliced stream and its cancel, which stops whichever row is running.
+    /// The spliced stream; its cancel, which stops whichever row is running;
+    /// and `finished`, which returns once the splice is over: a continuation
+    /// that a cancel overtook during the hand-off has been cancelled by then.
+    /// An owner that returns its admission when the request ends joins it.
     static func splice(
         first: AsyncStream<GenerationEvent>,
         cancelFirst: @escaping @Sendable () async -> Void,
@@ -70,7 +74,8 @@ enum LoopExitThinkingContinuation {
         submit: @escaping Submit,
         cancelContinuation: @escaping @Sendable () async -> Void,
         onOutcome: (@Sendable (Outcome) -> Void)? = nil
-    ) -> (events: AsyncStream<GenerationEvent>, cancel: @Sendable () async -> Void) {
+    ) -> (events: AsyncStream<GenerationEvent>, cancel: @Sendable () async -> Void,
+          finished: @Sendable () async -> Void) {
         let (events, out) = AsyncStream<GenerationEvent>.makeStream()
         let control = Control()
         let task = Task {
@@ -89,7 +94,7 @@ enum LoopExitThinkingContinuation {
             task.cancel()
             Task { await cancel() }
         }
-        return (events, cancel)
+        return (events, cancel, { await task.value })
     }
 
     private static func run(
@@ -125,10 +130,11 @@ enum LoopExitThinkingContinuation {
             onOutcome?(.endedAsLength(reason: reason))
         }
         let generated = exit.record.generatedTokens
-        // A row that closed its thought itself, in the tokens it produced
-        // after the stop, has no thought left to end.
-        if let detection = exit.record.requested,
-           generated.dropFirst(detection.generatedTokens).contains(where: exit.exitTokens.contains) {
+        // A row that closed its thought itself after the stop has no thought
+        // left to end: the marker's own token says so (not the text around
+        // it: Qwen's newlines are any text), or the text the guard followed.
+        if let detection = exit.record.requested, exit.record.closedAfterStop
+            || generated.dropFirst(detection.generatedTokens).contains(exit.closeToken) {
             return endAsLength("the row closed its thought itself")
         }
         let budget = min(outputBudget - held.completion - exit.exitTokens.count, exit.answerTokenLimit)

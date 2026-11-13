@@ -4,17 +4,18 @@ import Foundation
 import MLXLMCommon
 import MLXLMServer
 
-/// Which text chat requests get a loop guard (`GenerationLoopGuard`).
+/// Which chat requests get a loop guard (`GenerationLoopGuard`).
 ///
 /// On by default for the families whose answers were seen repeating verbatim
 /// to their cap: Gemma 4, Qwen 3.5/3.6/3.8 (and Flash-Next), GPT-OSS,
 /// Nemotron 3.5 Lightning and Super, GLM-5.3 and MiMo. Super's text requests
 /// take the owner's own route, which resolves the same guard from its request
-/// plan (`NemotronSuperRequestPlan.loopGuard()`).
+/// plan (`NemotronSuperRequestPlan.loopGuard()`). One Mac's image and video
+/// requests (`EngineV2VisionPrefill`) take the same rule as text; the pairs'
+/// media routes, MiMo's native media and Super's media pass none.
 /// Off for every other family (diffusion Gemma, exact Flint, Bonsai,
-/// Qwen3-VL), for media requests (only the text paths pass a guard), and for
-/// any request whose output is a constrained or JSON value: a token
-/// constraint, a forced tool call, or a JSON `response_format`.
+/// Qwen3-VL), and for any request whose output is a constrained or JSON value:
+/// a token constraint, a forced tool call, or a JSON `response_format`.
 ///
 /// `DARKBLOOM_LOOP_GUARD`: unset, `1` or `on` keeps the default list; `0` or
 /// `off` turns the guard off; any other value is the comma-separated list of
@@ -57,7 +58,7 @@ enum GenerationLoopGuardPolicy {
         }
     }
 
-    /// The guard for one text request, or nil when it must not have one.
+    /// The guard for one text, image or video request, or nil when it must not have one.
     static func resolve(
         modelType: String?,
         request: OpenAIChatCompletionRequest,
@@ -69,7 +70,9 @@ enum GenerationLoopGuardPolicy {
     ) -> GenerationLoopGuard? {
         guard case .modelTypes(let enabled) = setting,
               let modelType = modelType?.lowercased(), enabled.contains(modelType) else { return nil }
-        guard tokenConstraint == nil, !prepared.requiresToolCall,
+        // The strict-tool grammar leaves reasoning and text free: a loop there
+        // is still stopped, and one inside a call ends it as at `max_tokens`.
+        guard tokenConstraint == nil || tokenConstraint is QwenStrictToolConstraint, !prepared.requiresToolCall,
               prepared.responseFormat == nil, prepared.glmResponseFormat == nil,
               request.responseFormat?.requiresJSONOutput != true else { return nil }
         var markers = genericToolCallMarkers

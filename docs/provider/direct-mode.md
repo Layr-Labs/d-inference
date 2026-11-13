@@ -1,6 +1,6 @@
 # The local API: an OpenAI-compatible server on your Mac
 
-> Last updated: 2026-11-12
+> Last updated: 2026-11-13
 
 Your Mac's models as an OpenAI-compatible HTTP server for your own tools,
 served two ways: **Both**, the default (`darkbloom start`: beside the Darkbloom
@@ -359,6 +359,9 @@ next request reads it again, with no restart.
   that value as `max_tokens`; with both, `max_tokens` wins
   (`LocalChatRequest`, `provider-swift/Sources/ProviderCore/Server/LocalChatRequest.swift`).
   Passed on, the body goes unchanged, as the coordinator reads all three names.
+- **A past turn's `reasoning` or `thinking`:** every local API reads it as that
+  turn's `reasoning_content`, as Darkbloom requests do
+  ([History reasoning under another name](../reference/protocol-messages.md#history-reasoning-under-another-name)).
 - **Cost on this Mac's path:** none of the above runs for a request this Mac
   serves. It stays in the process, its body is collected once (the engine
   collects it anyway) and not parsed by the router, no Keychain read happens,
@@ -537,6 +540,22 @@ curl -s "$OPENAI_BASE_URL/chat/completions" \
   -d '{"model":"EigenLabs/Qwen3.8-27B-4bit-mtp","reasoning_effort":"max","messages":[{"role":"user","content":"hi"}]}'
 ```
 
+### Tool JSON as the model was trained on
+
+Add `"_darkbloom_template_json": "transformers"` to a request on
+`/v1/chat/completions`, or start the provider with
+`DARKBLOOM_TEMPLATE_JSON=transformers` for every such request on this API, and
+Qwen 3.5, 3.6 and 3.8, Ternary Bonsai 2, MiMo v2.6, GLM-5.3 and GPT-OSS read
+your tool declarations and earlier tool calls as Hugging Face Transformers
+renders their templates: members in the order you sent them, `", "` and `": "`
+separators, non-ASCII text as written and `null` arguments kept. Without
+either, they read them as before: members sorted and compact. Nemotron 3.5
+Lightning takes the order; Gemma 4 and Nemotron 3.5 Super already read them as
+Transformers does. Requests with images, audio or video, batch requests and
+`/v1/responses` render as before, and the variable does not change requests
+the network sends your Mac. `DARKBLOOM_TEMPLATE_JSON_LEGACY=1` turns this off
+([inference architecture](../architecture/inference.md#tool-json-as-transformers-renders-it)).
+
 ### Refused request shapes
 
 The chat routes and Responses input answer these shapes with an OpenAI error
@@ -550,7 +569,7 @@ envelope, the same on one Mac and on a [two-Mac cluster](./two-mac-cluster.md):
 | A content part whose `type` is none of `text`, `input_text`, `output_text`, `image_url`, `input_image`, `video_url`, `input_audio` (for example `input_file`, `input_video`, `refusal`) | HTTP `400` before model acquisition or SSE headers: `Content part type "<type>" is not supported. Send text, image_url, video_url or input_audio parts.` The type is shown with at most 64 of its letters, digits and `_.-:/`. Models without native audio still refuse `input_audio` | `libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/OpenAIRequestValidation.swift` (`OpenAIRequestValidationError.unsupportedContentPart`) |
 | A reasoning effort that is none of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` (for example `turbo`), on a model that reasons | HTTP `400` before the prompt renders or any KV is reserved, code `invalid_reasoning_effort`, `param` the field it came in (`reasoning_effort`, `reasoning.effort`, or GLM-5.3-Flash's `chat_template_kwargs.reasoning_effort`): `reasoning_effort must be one of: none, minimal, low, medium, high, xhigh, max.` The request may hold its model first: a cold model loads, and with Both, me first it counts as your use of the Mac. Through the coordinator the same request gets HTTP `400` `invalid inference request` | `provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningEffort.swift` (`ReasoningEffortPolicy.validate`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`) |
 | On Nemotron 3.5 Super, `reasoning_effort` and `reasoning.effort` that differ, even two names (`high` and `max`). The same effort in both, in any spelling, is served | HTTP `400` at the same point, code `invalid_reasoning_effort`, `param` `reasoning_effort, reasoning.effort`: `reasoning_effort and reasoning.effort must be the same when both are sent, one of: none, minimal, low, medium, high, xhigh, max.` Through the coordinator, HTTP `400` `invalid inference request` | `provider-swift/Sources/ProviderCore/Inference/Prompting/NemotronSuperPromptContract.swift` (`controls(body:)`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`) |
-| `response_format` `json_object`/`json_schema` whose answer stopped at `max_tokens` before it was complete (a reasoning model can spend the whole budget thinking) | HTTP `422`: `The output was cut off by max_tokens before the structured (response_format) answer was complete. Raise max_tokens or lower the reasoning effort, and retry.` Invalid JSON at a natural stop keeps its `422` with the closed internal-failure message. GLM-5.3-Flash validates its withheld JSON answer itself (`GLM5NextResponseFormat`) and answers a truncated one with that closed `422` | `libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/MLXOpenAIService.swift` (`MLXOpenAIServiceError.responseFormatCutOffByMaxTokens`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`); `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextResponseFormat.swift` (`validatedContent`) |
+| `response_format` `json_object`/`json_schema` whose answer stopped at `max_tokens` before it was complete (a reasoning model can spend the whole budget thinking) | HTTP `422`: `The output was cut off by max_tokens before the structured (response_format) answer was complete. Raise max_tokens or lower the reasoning effort, and retry.` Invalid JSON at a natural stop keeps its `422` with the closed internal-failure message. A grammar-constrained answer (Qwen 3.5, 3.6 and 3.8; Bonsai 2 27B and Nemotron 3.5 Lightning on one Mac when the prompt starts in the answer) is checked by the provider instead: one cut at `max_tokens` ends `finish_reason: length` with its content as generated; one that misses at a natural stop is HTTP `422` with the family's closed message, `<family> content does not satisfy the json_schema` (or `is not a single JSON value`, `json_object content must be a JSON object`), after the content already streamed. GLM-5.3-Flash validates its withheld JSON answer itself (`GLM5NextResponseFormat`) and answers a truncated one with that closed `422` | `libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/MLXOpenAIService.swift` (`MLXOpenAIServiceError.responseFormatCutOffByMaxTokens`); `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift` (`CORSResponder`); `provider-swift/Sources/ProviderCore/Inference/Prompting/JSONAnswerFormat.swift` (`JSONAnswerOutput`); `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextResponseFormat.swift` (`validatedContent`) |
 | GLM-5.3-Flash with images or video and a required or named `tool_choice` on any Mac, or `response_format` `json_object`/`json_schema` on a cluster pair | HTTP `400` `Invalid inference request.` (failure code `invalid_request`) before any media decode: only the text path withholds and validates a forced call, and a pair's media routes withhold neither. One Mac serves `json_object`/`json_schema` with images or video as on text: reasoning on its own channel, the answer withheld and validated (`422` when it isn't the JSON asked for). Hidden reasoning (`reasoning.exclude: true`, `include_reasoning: false`, `thinking.display: "omitted"`) is served with media too, its reasoning withheld | `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift` (`prepareCompletion`); `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextPromptPolicy.swift` (`withholdsOutput`, `withholdsReasoning`) |
 | An image or video the model's processor refuses: for Qwen 3.5 and 3.8 a side below `patch_size × merge_size` (32 pixels) or an aspect ratio above 200:1, which it does not upscale; a video without a decodable track; more images or videos than the processor takes | HTTP `400` `Invalid media input.` (failure code `invalid_media`), before the vision tower or any native reservation, never the retryable `503` | `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionPrefill.swift` (`clientFault(for:)`) |
 | A video whose reader fails on GLM 5.3, MiMo V2.6, Qwen4 or Nemotron Super after its metadata checks passed, or whose audio track's reader fails on MiMo V2.6 | The provider decodes the track once more with a new reader. If that succeeds, the request is served. If it fails again with a decoder, hardware or interruption code, HTTP `503` (failure code `capacity`, error reason `media_memory_unavailable`), which a coordinator retries on another provider; any other second failure is HTTP `400` `Invalid media input.` (failure code `invalid_media`). Each failed pass logs a WARN `engine_health` event, `video_reader_failed` or `audio_reader_failed`, with the reader status and error codes only | `libs/mlx-swift-lm/Libraries/MLXLMCommon/VideoReaderFailure.swift` (`VideoReaderRetry`); `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionPrefill.swift` (`clientFault(for:)`); `provider-swift/Sources/ProviderCore/Inference/Vision/MiMo/MiMoV26EncodedMediaIngress.swift` (`outwardFailure`); `provider-swift/Sources/ProviderCore/Server/NemotronSuperLocalImageHTTP.swift` (`SuperHTTPErrors.map`) |
@@ -660,7 +679,7 @@ frame-timestamp label.
 | `enable_thinking` absent or `true` | Template default; `reasoning_content` streams until `</think>` |
 | `enable_thinking: false` | All output is `content`, including literal markers |
 | `chat_template_kwargs.force_nonempty_content` | Unterminated reasoning becomes `content`: moved in a complete response; a stream sends it as reasoning, then repeats it as `content` at the end |
-| `tools`, `tool_choice`, `parallel_tool_calls` (text, image or video) | `<tool_call>` frames become validated `tool_calls`; violations return 422, or end a stream with an error event |
+| `tools`, `tool_choice`, `parallel_tool_calls` (text, image or video) | `<tool_call>` frames become validated `tool_calls` (with `parallel_tool_calls: false`, the first one only); violations return 422, or end a stream with an error event |
 | `response_format` `json_object`/`json_schema` (text, image or video) | Content is withheld and validated; invalid JSON returns 422, or ends a stream with an error event. With `tools`, calls return as `tool_calls` and only an answer without calls must be JSON |
 | `logprobs: true`, `top_logprobs` 0 to 20 (text, image or video) | `choices[0].logprobs.content`, streamed and complete: one entry per generated token in generation order, covering reasoning, answer and tool-call tokens (as vLLM and SGLang return them), each with at least one alternative. Joined, the entry tokens spell the reasoning, the `</think>` marker and then the answer, not the answer alone. Reasoning chunks carry their tokens' entries, and a response that ends while reasoning still carries them. A complete response carries the stream's entries. Tool-call tokens lack entries only in the rare case that nothing follows the call. The request does not speculate; others keep speculating ([logprob rows](../architecture/inference.md#nemotron-super-logprobs)) |
 | Contradictory controls, `top_logprobs` outside 0 to 20, `logit_bias`, `min_p` other than 0, `n > 1`, `prompt_cache_key` (text, image or video) | 400 `Invalid inference request.` before generation |

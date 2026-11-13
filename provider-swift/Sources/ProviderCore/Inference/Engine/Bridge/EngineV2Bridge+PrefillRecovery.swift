@@ -11,6 +11,20 @@ extension EngineV2Bridge {
         return now > expiration
     }
 
+    /// GLM-5.3-Flash and native MiMo bridges: a short prompt never lowers the
+    /// prefill estimate (`NativePrefillEvidence`). Other native block engines
+    /// keep the previous estimator; a reviewed deadline profile keeps its own envelope.
+    var nativePrefillEvidenceApplies: Bool {
+        admissionFixes && nativePrefillEvidence && supportsPrefillRecoveryRetirement && deadlineProfile == nil
+            && (isGLM5NextManaged || nativeTransactionID != nil)
+    }
+
+    /// No counted sample yet reads as expired: the first one starts the estimate.
+    func nativeRateEvidenceExpired(at now: ContinuousClock.Instant = .now) -> Bool {
+        guard let nativeRateEvidenceAt else { return true }
+        return now - nativeRateEvidenceAt > EnginePerformanceMeasurements.freshness
+    }
+
     /// An ordinary engine has no recovery probe of its own: a full streak of
     /// refusals that stale evidence explains asks for one idle-calibration
     /// probe while that evidence is still expired.
@@ -28,9 +42,13 @@ extension EngineV2Bridge {
 
     /// Recovery is deliberately smaller than ordinary serving. A busy Mac,
     /// media request or large prompt still requires the normal projection.
+    /// Under `NativePrefillEvidence` a calibrated Mac takes the normal
+    /// projection too: idle at nominal posture its floor already admits such a
+    /// prompt, and a recovery sample could only raise its estimate.
     func canRecoverPrefillEvidence(promptTokens: Int, maxOutputTokens: Int, deadline: FirstContentDeadline?,
         isMultimodal: Bool, at now: ContinuousClock.Instant = .now) -> Bool {
-        supportsPrefillRecoveryRetirement && prefillDeadlineMode == .enforce && prefillDeadlineProjectionEnabled &&
+        !(nativePrefillEvidenceApplies && calibratedIsolatedPrefillTps != nil) &&
+            supportsPrefillRecoveryRetirement && prefillDeadlineMode == .enforce && prefillDeadlineProjectionEnabled &&
             (deadline?.remainingDuration(now: now) ?? .zero) > .zero &&
             deadlineProfile == nil && !isMultimodal && promptTokens > 0 && maxOutputTokens > 0 &&
             promptTokens <= PrefillEvidenceRecovery.maximumPromptTokens &&

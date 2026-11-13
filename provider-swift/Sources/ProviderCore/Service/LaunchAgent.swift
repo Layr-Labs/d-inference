@@ -371,6 +371,8 @@ public enum LaunchAgent: Sendable {
     /// corrections are on by default; their rollback must reach the job too.
     /// `DARKBLOOM_TTFT_REFUSAL_PROBE`: the refusal streak's idle probe is on by
     /// default; its own `0` rollback must reach the job too.
+    /// `DARKBLOOM_TTFT_NATIVE_PREFILL_EVIDENCE`: GLM's and MiMo's long-prompt
+    /// prefill estimate is on by default; its `0` rollback must reach the job.
     /// `DARKBLOOM_TTFT_IDLE_CACHE_SWEEP`, `DARKBLOOM_TTFT_SEGMENT_RETENTION`
     /// and `DARKBLOOM_TTFT_SEGMENT_HOST_ZEROS`: the idle-gated cache sweep and
     /// retained, host-zeroed paged KV segments are on by default; each
@@ -402,13 +404,28 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_TTFT_PROMPT_CACHE` and its `_MB` / `_VERIFY` knobs: scoped
     /// prompt-token reuse is on by default; `0` / `false` / `off` / `no` is
     /// the rollback.
+    /// `DARKBLOOM_STRICT_TOOL_GRAMMAR` / `DARKBLOOM_STRICT_TOOL_GRAMMAR_ALL_TOOLS`:
+    /// `strict` Qwen 3.5-family calls follow their schemas in the sampler, by
+    /// default on the MoE builds and Qwen 3.8 (`on` adds the 9B, an off word
+    /// restores unconstrained calls, a list picks the builds); `on` for the
+    /// second extends it to calls of tools that are not `strict`.
     /// `DARKBLOOM_TTFT_TEMPLATE_LOOPS=0` renders cached prompts with the
     /// template as served. `DARKBLOOM_TTFT_COLD_LOAD_RELEASE=0` restores the
     /// fully serial FIFO.
+    /// `DARKBLOOM_GEMMA_JSON_ANSWERS`: Gemma 4 JSON `response_format` answers
+    /// are grammar-constrained by default; `off` restores prompt-only answers.
+    /// `DARKBLOOM_QWEN_JSON_SCHEMA_REWRITE`: Qwen JSON answers constrain client
+    /// schemas outside the subset by default; `off` restores their decline.
     /// `DARKBLOOM_TTFT_SHAPE_WARMUP`: the load-time shape warmup is on by
     /// default; its `0` rollback must reach the job too.
     /// `DARKBLOOM_GLM_RECTANGULAR_VERIFY`: rectangular adaptive MTP verification
     /// is the GLM default; its serial-target rollback must reach the job.
+    /// `DARKBLOOM_GLM_JSON_SCHEMA_MISS=release`: a GLM JSON answer whose value
+    /// misses its schema at a natural stop is exposed instead of refused.
+    /// `DARKBLOOM_LENGTH_FINISH_AT_LIMIT` / `DARKBLOOM_STRICT_CALLS_AS_GENERATED`:
+    /// an answer cut at the token limit ends as `length`, and a streamed
+    /// `strict` call that fails its check after the start leaves as generated,
+    /// by default; `0`, `off` or `false` restores each refusal.
     /// `DARKBLOOM_GLM_DECODE_STEPS_BETWEEN_CHUNKS` and
     /// `DARKBLOOM_NEMOTRON_SUPER_DECODE_STEPS_BETWEEN_CHUNKS`: GLM and the
     /// Super owner run decode-only steps between prompt chunks by default; `0`
@@ -421,6 +438,13 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_LOOP_GUARD` / `DARKBLOOM_LOOP_EXIT_THINKING`: the loop guard
     /// and its exit from a repeating Gemma 4 thought are on by default; `0`
     /// turns each off, a list of `model_type`s replaces its default list.
+    /// `DARKBLOOM_QWEN35_9B_PRESENCE_PENALTY`: Qwen3.5-9B keeps the card's
+    /// presence penalty by default; its `0` rollback must reach the job.
+    /// `DARKBLOOM_GLM_TOOL_TEXT_FALLBACK`: unparsed `auto` GLM tool output is
+    /// text by default; exact `0` restores the 500.
+    /// `DARKBLOOM_GPTOSS_FORCED_TOOLS`: GPT-OSS forced tool calls are on by
+    /// default; an off word (`off`, `false`, `0`, `none`, `no`, `disabled`)
+    /// refuses them and stops advertising them.
     static let inferencePassthroughEnvKeys = [
         EngineV2Factory.maxPartialPrefillsKey,
         EngineV2Factory.prefillChunkKey,
@@ -428,6 +452,7 @@ public enum LaunchAgent: Sendable {
         PrefillDeadlineMode.environmentKey,
         DeadlineAdmissionFixes.environmentKey,
         DeadlineRefusalProbe.environmentKey,
+        NativePrefillEvidence.environmentKey,
         GlobalKVCacheBudget.idleCacheSweepEnvironmentKey,
         EngineV2Factory.segmentRetentionEnvironmentKey,
         EngineV2Factory.segmentHostZerosEnvironmentKey,
@@ -439,20 +464,34 @@ public enum LaunchAgent: Sendable {
         SSDPrefixCachePolicy.terminalBeforePublicationFlag,
         "DARKBLOOM_TTFT_GDN_BLOCKED",
         EngineV2SlotFactory.mimoRectangularVerifyEnvironmentKey,
+        GemmaJSONAnswerPolicy.environmentKey,
         PromptTokenCachePolicy.environmentKey,
         PromptTokenCachePolicy.capacityEnvironmentKey,
         PromptTokenCachePolicy.verifyEnvironmentKey,
+        QwenStrictToolGrammar.environmentKey,
+        QwenStrictToolGrammar.allToolsEnvironmentKey,
         ChatTemplateLoopRewrites.environmentKey,
         WorkFIFOPolicy.coldLoadReleaseEnvironmentKey,
         ModelCalibrationPolicy.shapeWarmupEnvironmentKey,
+        TokenLimitCutPolicy.environmentKey,
+        StrictToolCallPolicy.environmentKey,
         GLM5NextProtectedModel.rectangularVerifyEnvironmentKey,
+        GLM5NextSchemaMiss.environmentKey,
         EngineV2Factory.glm5NextDecodeStepsKey,
         NemotronSuperLocalPrefill.decodeStepsKey,
         ToolStreamPreparation.streamToolCallsEnvironmentKey,
+        JSONAnswerPolicy.familiesEnvironmentKey,
+        QwenJSONSchemaRewrite.environmentKey,
         ReasoningPromptProbe.plainTailContentSeedEnvironmentKey,
         "DARKBLOOM_GEMMA4_NAX_ROW_MAP",
+        // SDK-read (`EngineLoopV2.nativeSegmentReleaseEnvironmentKey`): idle seconds
+        // before an issued GLM pool returns its free segments; `0` is the rollback.
+        "DARKBLOOM_NATIVE_SEGMENT_RELEASE",
         GenerationLoopGuardPolicy.environmentKey,
         GenerationLoopExitThinkingPolicy.environmentKey,
+        EngineV2SamplingDefaults.qwen35NineBPenaltyEnvironmentKey,
+        GLM5ToolSuffix.environmentKey,
+        GPTOSSForcedToolCalls.environmentKey,
     ] + MiMoV26DecodeDefaults.environmentKeys + MiMoV26DecodeDefaults.verifyEnvironmentKeys
 
     static let passthroughEnvKeys = [

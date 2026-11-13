@@ -36,6 +36,13 @@ public struct ChatTemplateControls: Sendable, Equatable {
     var rawMiMoTools = MiMoV26ToolEvidence()
     var rawGLM5Controls = GLM5NextPromptPolicy.RawControls()
     var rawFlintControls = FlintRequestPolicy.RawControls()
+    /// Whether the body asked for Transformers' tool JSON, and its tool
+    /// declarations in their own order (`TemplateJSONOrder`).
+    var templateJSON = TemplateJSONOrder.Evidence()
+    /// The body's own `stream`; nil when the controls were not read from a
+    /// body. The coordinator path serves every request as a stream and the
+    /// coordinator reassembles a complete one (`StrictToolCallPolicy`).
+    var clientStreams: Bool?
 
     public init(
         reasoningEffort: String? = nil,
@@ -78,6 +85,38 @@ public struct ChatTemplateControls: Sendable, Equatable {
     func withRawFlintControls(_ evidence: FlintRequestPolicy.RawControls) -> Self {
         var copy = self
         copy.rawFlintControls = evidence
+        return copy
+    }
+
+    /// The controls with the ordered tool declarations of `body`, the bytes
+    /// they were decoded from, when it asked for Transformers' tool JSON.
+    func capturingTemplateJSON(from body: Data) -> Self {
+        var copy = self
+        copy.templateJSON = templateJSON.capturing(body: body)
+        return copy
+    }
+
+    /// `capturingTemplateJSON` for a local API request, which
+    /// `DARKBLOOM_TEMPLATE_JSON=transformers` also asks for.
+    func capturingLocalTemplateJSON(
+        from body: Data, environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Self {
+        var copy = self
+        copy.templateJSON = templateJSON.askingLocally(environment: environment)
+            .capturing(body: body, environment: environment)
+        return copy
+    }
+
+    /// The controls a coordinator request renders with. A request the
+    /// coordinator planned for its prompt cache (it carries a cache scope or
+    /// receipt nonce) renders the prompt the plan was made for, without
+    /// Transformers' tool JSON: a prompt the plan does not expect contradicts
+    /// its cache receipts, and a caller could set the field through a
+    /// coordinator that forwards it.
+    func servingCoordinatorRequest(planned: Bool) -> Self {
+        guard planned, templateJSON != .init() else { return self }
+        var copy = self
+        copy.templateJSON = .init()
         return copy
     }
 

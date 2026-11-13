@@ -248,14 +248,11 @@ extension CoordinatorClient {
         failureStream: AsyncStream<Error>,
         session: CoordinatorSessionRecorder
     ) async throws {
-        let pingInterval: TimeInterval = 10.0
-        let pongTimeout: TimeInterval = 30.0
-
-        // Thread-safe pong timestamp: updated from the pong handler (runs on
-        // connectionQueue), read from the ping task. Using an actor would force
-        // structured concurrency overhead on every ping; an unfair lock is cheaper
-        // for a single Instant.
-        let pongTracker = PongTracker()
+        let liveness = self.linkLiveness
+        // Time of the last inbound frame: updated on connectionQueue by the pong
+        // handler and the receive callback, read by the ping task. An unfair
+        // lock is cheaper than an actor hop for a single Instant.
+        let activity = LinkActivityTracker()
         let pongQueue = self.connectionQueue
 
         try await withThrowingTaskGroup(of: Void.self) { group in
@@ -273,7 +270,7 @@ extension CoordinatorClient {
             // Task 1: Receive messages from coordinator
             group.addTask { [weak self] in
                 guard let self else { return }
-                try await self.receiveLoop(connection: connection, session: session)
+                try await self.receiveLoop(connection: connection, session: session, activity: activity)
             }
 
             // Task 2: Forward outbound messages to coordinator
@@ -310,27 +307,24 @@ extension CoordinatorClient {
                 }
             }
 
-            // Task 4: Ping timer with pong timeout + suspension detection
+            // Task 4: Ping timer with the dead-link bound and suspension
+            // detection (CoordinatorLinkLiveness). A silent link, such as one
+            // whose node was hard-reset, ends with no close frame and no TCP
+            // reset; this task is what notices it.
             group.addTask {
-                var lastTick = CFAbsoluteTimeGetCurrent()
+                var watch = CoordinatorLinkWatch(liveness: liveness, start: .now)
                 while true {
-                    try await taskSleep( .seconds(pingInterval))
+                    try await taskSleep(liveness.pingInterval)
 
-                    // If far more wall-clock elapsed than we slept for, the
-                    // process was suspended/throttled (App Nap or sleep). The
-                    // socket is almost certainly dead and the coordinator has
-                    // likely already evicted us, so reconnect NOW instead of
-                    // waiting out the (also-throttled) pong timeout — this is
-                    // what removes the multi-minute post-wake detection lag.
-                    let now = CFAbsoluteTimeGetCurrent()
-                    let gap = now - lastTick
-                    lastTick = now
-                    if gap > pingInterval * 3 {
+                    switch watch.check(now: .now, lastInbound: activity.lastInbound) {
+                    case .alive:
+                        break
+                    case .dead:
+                        throw CoordinatorError.pongTimeout(after: liveness.deadAfter)
+                    case .suspended:
+                        // Sleep or a long suspension: the coordinator has
+                        // probably dropped the session, so reconnect once now.
                         throw CoordinatorError.suspensionDetected
-                    }
-
-                    if pongTracker.elapsed() > pongTimeout {
-                        throw CoordinatorError.pongTimeout
                     }
 
                     // Send a WebSocket ping; the matching pong refreshes the
@@ -338,7 +332,7 @@ extension CoordinatorClient {
                     let pingMetadata = NWProtocolWebSocket.Metadata(opcode: .ping)
                     pingMetadata.setPongHandler(pongQueue) { error in
                         if error == nil {
-                            pongTracker.recordPong()
+                            activity.recordInbound()
                         }
                     }
                     let pingContext = NWConnection.ContentContext(
@@ -406,7 +400,7 @@ extension CoordinatorClient {
     // MARK: - Receive Loop
 
     private func receiveLoop(
-        connection: NWConnection, session: CoordinatorSessionRecorder
+        connection: NWConnection, session: CoordinatorSessionRecorder, activity: LinkActivityTracker
     ) async throws {
         while !shutdownRequested {
             guard !Task.isCancelled, nwConnection === connection else { throw CancellationError() }
@@ -450,6 +444,9 @@ extension CoordinatorClient {
                                 cont.resume(throwing: CoordinatorError.connectionClosed(error))
                                 return
                             }
+                            // Any frame proves the link is alive, so a busy
+                            // stream never waits on a pong.
+                            activity.recordInbound()
                             cont.resume(returning: (data, wsMeta, receivedAt, profileAnchor))
                         }
                     }

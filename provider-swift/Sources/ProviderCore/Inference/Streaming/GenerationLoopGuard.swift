@@ -51,6 +51,13 @@ public struct GenerationLoopGuard: Sendable {
         self.insideThinking = exitThinking?.startsInside ?? false
     }
 
+    /// A fresh guard for the same request without the exit: the continuation's,
+    /// so a loop in the answer still ends as `length`.
+    func withoutExit() -> GenerationLoopGuard {
+        GenerationLoopGuard(modelType: modelType, toolCallMarkers: toolCallMarkers,
+                            thresholds: detector.thresholds)
+    }
+
     /// One delta of the row: its text and the tokens behind it. Returns the
     /// detection that should stop the row, at most once.
     mutating func observe(text: String, tokens: [Int]) -> GenerationLoopDetector.Detection? {
@@ -59,7 +66,15 @@ public struct GenerationLoopGuard: Sendable {
         if let exitThinking, !sawToolCall {
             exitThinking.record.append(tokens)
         }
-        guard !disarmed else { return nil }
+        guard !disarmed else {
+            // After a stop that ended the thought, the in-flight text still
+            // says whether the row closed it itself.
+            if endsThought, let exitThinking, !text.isEmpty {
+                followChannel(text, markers: exitThinking)
+                if !insideThinking { exitThinking.record.noteClosedAfterStop() }
+            }
+            return nil
+        }
         if !toolCallMarkers.isEmpty, !text.isEmpty {
             let scanned = carry + text
             let bytes = markerBytes
@@ -76,7 +91,9 @@ public struct GenerationLoopGuard: Sendable {
         }
         guard let detection = detector.append(tokens) else { return nil }
         disarmed = true
-        if let exitThinking, insideThinking {
+        // A close token in this delta whose text the detokenizer still holds
+        // back: the thought has ended, so the stop stays a `length`.
+        if let exitThinking, insideThinking, !tokens.contains(exitThinking.closeToken) {
             endsThought = true
             exitThinking.record.requestExit(detection)
         }
@@ -85,8 +102,9 @@ public struct GenerationLoopGuard: Sendable {
 
     /// The last channel marker seen decides whether the row is inside its
     /// thought. A marker split across deltas is seen through `channelCarry`,
-    /// which is one character shorter than the longest marker, so a marker
-    /// is never counted from the carry alone.
+    /// one character shorter than the longest marker. A shorter marker (Qwen's
+    /// `<think>`) can be seen again from the carry alone; it was already the
+    /// last marker then, so the state does not change.
     private mutating func followChannel(_ text: String, markers: GenerationLoopExitThinking) {
         let scanned = channelCarry + text
         if scanned.utf8.contains(UInt8(ascii: "<")) {

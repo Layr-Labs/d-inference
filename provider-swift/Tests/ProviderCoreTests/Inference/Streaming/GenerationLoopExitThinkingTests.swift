@@ -177,7 +177,7 @@ struct GenerationLoopExitThinkingTests {
             modelType: modelType, tokenizer: tokenizer, promptTokens: prompt, logprobs: logprobs, setting: setting)
     }
 
-    @Test("on by default for Gemma 4 only, with its close marker as the exit")
+    @Test("on by default for Gemma 4, with its close marker as the exit; not for families without a listed marker")
     func defaultModelTypes() throws {
         for modelType in ["gemma4", "gemma4_text", "GEMMA4"] {
             let exit = try #require(resolve(modelType), "\(modelType)")
@@ -185,8 +185,8 @@ struct GenerationLoopExitThinkingTests {
             #expect(exit.exitText == "<channel|>")
             #expect(!exit.startsInside)
         }
-        for modelType in ["qwen3_5", "qwen3_5_moe", "qwen4_exp", "gpt_oss", "nemotron_h", "glm5_next", "mimo_v2",
-                          "diffusion_gemma", "llama"] {
+        // (`gpt_oss` has a marker since its Harmony exit: `GenerationLoopExitThinkingHarmonyTests`.)
+        for modelType in ["qwen4_exp", "nemotron_h", "glm5_next", "mimo_v2", "diffusion_gemma", "llama"] {
             #expect(resolve(modelType) == nil, "\(modelType)")
         }
         #expect(resolve(nil) == nil)
@@ -207,7 +207,7 @@ struct GenerationLoopExitThinkingTests {
         #expect(resolve("gemma4", setting: listed) == nil)
         #expect(resolve("gemma4_text", setting: listed) != nil)
         // A listed family without a known marker stays off.
-        #expect(resolve("qwen3_5", setting: listed) == nil)
+        #expect(resolve("llama", setting: .modelTypes(["llama"])) == nil)
     }
 
     @Test("never with logprobs, and never without the marker token")
@@ -226,6 +226,161 @@ struct GenerationLoopExitThinkingTests {
         #expect(resolve("gemma4", prompt: primed)?.startsInside == true)
         #expect(resolve("gemma4", prompt: closed)?.startsInside == false)
         #expect(resolve("gemma4", prompt: Self.prompt)?.startsInside == false)
+    }
+
+    // MARK: The `</think>` families
+
+    private static let qwen = QwenByteTestTokenizer()
+    private static let qwenThinking = QwenByteTestTokenizer.tokens(QwenByteTestTokenizer.prompt(thinking: true))
+
+    /// Qwen's exit is listed but off by default: these tests turn it on.
+    private static let qwenOn = GenerationLoopExitThinkingPolicy.Setting.modelTypes(
+        GenerationLoopExitThinkingPolicy.defaultModelTypes.union(["qwen3_5_moe"]))
+
+    private func qwenExit(_ modelType: String = "qwen3_5_moe",
+                          setting: GenerationLoopExitThinkingPolicy.Setting = Self.qwenOn) -> GenerationLoopExitThinking? {
+        GenerationLoopExitThinkingPolicy.resolve(
+            modelType: modelType, tokenizer: Self.qwen, promptTokens: Self.qwenThinking, logprobs: false,
+            setting: setting)
+    }
+
+    @Test("Qwen 3.5/3.6 end the thought as their template does: `\\n</think>\\n\\n`, the marker as its own token")
+    func qwenFamilies() throws {
+        for modelType in ["qwen3_5", "qwen3_5_moe"] {
+            let exit = try #require(GenerationLoopExitThinkingPolicy.resolve(
+                modelType: modelType, tokenizer: Self.qwen, promptTokens: Self.qwenThinking, logprobs: false,
+                setting: .modelTypes([modelType])), "\(modelType)")
+            #expect(exit.exitText == "\n</think>\n\n")
+            #expect(exit.exitTokens == [10, 248069, 10, 10])
+            #expect(exit.closeToken == 248069)
+            // The served template opens the thought in the prompt.
+            #expect(exit.startsInside)
+        }
+        // Off by default (the A/B found too few Qwen loops to show rescues):
+        // the env list turns the 35B models (`qwen3_5_moe`) on. `qwen3_5` also
+        // covers Qwen 3.8 27B.
+        let defaults = GenerationLoopExitThinkingPolicy.Setting.modelTypes(
+            GenerationLoopExitThinkingPolicy.defaultModelTypes)
+        #expect(qwenExit("qwen3_5_moe", setting: defaults) == nil)
+        #expect(qwenExit("qwen3_5", setting: defaults) == nil)
+        #expect(qwenExit("qwen3_5_moe") != nil)
+        #expect(qwenExit("qwen3_5") == nil)
+        // A prompt whose earlier turns closed their thoughts still opens this one.
+        let history = QwenByteTestTokenizer.tokens("<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n"
+            + "<think>\nok\n</think>\n\nhello<|im_end|>\n<|im_start|>user\nmore<|im_end|>\n"
+            + "<|im_start|>assistant\n<think>\n")
+        #expect(GenerationLoopExitThinkingPolicy.resolve(
+            modelType: "qwen3_5_moe", tokenizer: Self.qwen, promptTokens: history, logprobs: false,
+            setting: Self.qwenOn)?.startsInside == true)
+        let closed = QwenByteTestTokenizer.tokens(QwenByteTestTokenizer.prompt(thinking: false))
+        #expect(GenerationLoopExitThinkingPolicy.resolve(
+            modelType: "qwen3_5_moe", tokenizer: Self.qwen, promptTokens: closed, logprobs: false,
+            setting: Self.qwenOn)?.startsInside == false)
+        // Qwen 3.8 (`qwen4_exp`) is not listed: its thought loops are rare in production.
+        #expect(qwenExit("qwen4_exp") == nil)
+        // The env list still turns Qwen's off and keeps Gemma's.
+        let gemmaOnly = GenerationLoopExitThinkingPolicy.setting(
+            environment: [GenerationLoopExitThinkingPolicy.environmentKey: "gemma4,gemma4_text"])
+        #expect(GenerationLoopExitThinkingPolicy.resolve(
+            modelType: "qwen3_5_moe", tokenizer: Self.qwen, promptTokens: Self.qwenThinking, logprobs: false,
+            setting: gemmaOnly) == nil)
+        #expect(resolve("gemma4", setting: gemmaOnly) != nil)
+    }
+
+    @Test("a Qwen thought that loops asks to end the thought; a loop after `</think>` does not")
+    func qwenGuard() throws {
+        var inThought = GenerationLoopGuard(
+            modelType: "qwen3_5_moe", toolCallMarkers: GenerationLoopGuardPolicy.genericToolCallMarkers,
+            exitThinking: try #require(qwenExit()))
+        let (thoughtStop, _) = run(clause(8_000), into: &inThought)
+        #expect(thoughtStop != nil)
+        #expect(inThought.endsThought)
+
+        var inAnswer = GenerationLoopGuard(
+            modelType: "qwen3_5_moe", toolCallMarkers: GenerationLoopGuardPolicy.genericToolCallMarkers,
+            exitThinking: try #require(qwenExit()))
+        let closing: [(String, [Int])] = [("ok\n", [111, 107, 10]), ("</think>", [248069]), ("\n\n", [10, 10])]
+        let (answerStop, _) = run(closing + clause(8_000), into: &inAnswer)
+        #expect(answerStop != nil)
+        #expect(!inAnswer.endsThought)
+    }
+
+    @Test("a Qwen thought the model opens itself, after a thinking-off prompt, can be ended; a split `</think>` closes it")
+    func qwenChannelEdges() throws {
+        let closedPrompt = QwenByteTestTokenizer.tokens(QwenByteTestTokenizer.prompt(thinking: false))
+        let exit = try #require(GenerationLoopExitThinkingPolicy.resolve(
+            modelType: "qwen3_5_moe", tokenizer: Self.qwen, promptTokens: closedPrompt, logprobs: false,
+            setting: Self.qwenOn))
+        #expect(!exit.startsInside)
+        var reopened = GenerationLoopGuard(
+            modelType: "qwen3_5_moe", toolCallMarkers: GenerationLoopGuardPolicy.genericToolCallMarkers, exitThinking: exit)
+        let (inside, _) = run([("<think>", [248068]), ("\n", [10])] + clause(8_000), into: &reopened)
+        #expect(inside != nil)
+        #expect(reopened.endsThought)
+
+        var split = GenerationLoopGuard(
+            modelType: "qwen3_5_moe", toolCallMarkers: GenerationLoopGuardPolicy.genericToolCallMarkers,
+            exitThinking: try #require(qwenExit()))
+        let pieces: [(String, [Int])] = [("ok\n</thi", [111, 107, 10, 60, 47, 116, 104, 105]), ("nk>\n\n", [110, 107, 62, 10, 10])]
+        let (outside, _) = run(pieces + clause(8_000), into: &split)
+        #expect(outside != nil)
+        #expect(!split.endsThought)
+    }
+
+    @Test("a `</think>` whose text has not arrived yet keeps the stop a length: in the stopping delta or after it")
+    func qwenCloseTheTextHasNotShown() throws {
+        // The stopping delta carries the close token, but the detokenizer has
+        // not released its text yet: the row is not stopped inside its thought.
+        let held = try #require(qwenExit())
+        var stopping = GenerationLoopGuard(
+            modelType: "qwen3_5_moe", toolCallMarkers: GenerationLoopGuardPolicy.genericToolCallMarkers, exitThinking: held)
+        var fired: GenerationLoopDetector.Detection?
+        for (index, (text, tokens)) in clause(8_000).enumerated() {
+            // Every delta from the 4,096th on could be the one that fires.
+            let closing = index >= 4_095 ? tokens + [248069] : tokens
+            if let detection = stopping.observe(text: text, tokens: closing) { fired = detection; break }
+        }
+        #expect(fired != nil)
+        #expect(!stopping.endsThought)
+        #expect(held.record.requested == nil)
+
+        // After the stop: `</think>` spelled as ordinary pieces (no close
+        // token) still closes the thought, in the text the guard follows.
+        let after = try #require(qwenExit())
+        var spelled = GenerationLoopGuard(
+            modelType: "qwen3_5_moe", toolCallMarkers: GenerationLoopGuardPolicy.genericToolCallMarkers, exitThinking: after)
+        let (stop, _) = run(clause(8_000), into: &spelled)
+        #expect(stop != nil)
+        #expect(spelled.endsThought)
+        #expect(!after.record.closedAfterStop)
+        #expect(spelled.observe(text: "\n</", tokens: [10, 1_000]) == nil)
+        #expect(spelled.observe(text: "think>\n\nB", tokens: [1_001, 1_002, 66]) == nil)
+        #expect(after.record.closedAfterStop)
+    }
+
+    @Test("the exit's tokens must spell its text: a tokenizer that adds a prefix gets no exit")
+    func exitTokensSpellTheText() {
+        struct Prefixing: MLXLMCommon.Tokenizer {
+            let inner = QwenByteTestTokenizer()
+            func encode(text: String, addSpecialTokens: Bool) -> [Int] {
+                [248044] + inner.encode(text: text, addSpecialTokens: addSpecialTokens)
+            }
+            func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String {
+                inner.decode(tokenIds: tokenIds, skipSpecialTokens: skipSpecialTokens)
+            }
+            func convertTokenToId(_ token: String) -> Int? { inner.convertTokenToId(token) }
+            func convertIdToToken(_ id: Int) -> String? { inner.convertIdToToken(id) }
+            var bosToken: String? { nil }
+            var eosToken: String? { inner.eosToken }
+            var unknownToken: String? { nil }
+            func applyChatTemplate(messages: [[String: any Sendable]], tools: [[String: any Sendable]]?,
+                additionalContext: [String: any Sendable]?) throws -> [Int] {
+                try inner.applyChatTemplate(messages: messages, tools: tools, additionalContext: additionalContext)
+            }
+        }
+        #expect(GenerationLoopExitThinkingPolicy.resolve(
+            modelType: "qwen3_5_moe", tokenizer: Prefixing(), promptTokens: Self.qwenThinking, logprobs: false,
+            setting: Self.qwenOn) == nil)
     }
 
     @Test("darkbloom start passes the loop guard's and the exit's switches to the launchd daemon")

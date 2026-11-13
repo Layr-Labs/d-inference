@@ -395,7 +395,7 @@ enum CoordinatorInboundFrame: Equatable {
 public enum CoordinatorError: Error, CustomStringConvertible {
     case invalidURL(String)
     case encodingFailed
-    case pongTimeout
+    case pongTimeout(after: Duration)
     case connectionClosed(Error)
     case suspensionDetected
     case handshakeTimeout(seconds: TimeInterval)
@@ -404,7 +404,7 @@ public enum CoordinatorError: Error, CustomStringConvertible {
         switch self {
         case .invalidURL(let url): return "Invalid coordinator URL: \(url)"
         case .encodingFailed: return "Failed to encode message"
-        case .pongTimeout: return "WebSocket pong timeout (no response in 30s)"
+        case .pongTimeout(let bound): return "WebSocket pong timeout (no frame from the coordinator in \(bound.components.seconds)s)"
         case .connectionClosed(let err): return "WebSocket connection closed: \(err.localizedDescription)"
         case .suspensionDetected: return "Process suspension detected (timer gap); forcing reconnect"
         case .handshakeTimeout(let seconds): return "WebSocket handshake did not complete in \(Int(seconds))s"

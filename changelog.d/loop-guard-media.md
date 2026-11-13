@@ -8,5 +8,6 @@
 - For Gemma 4, a repeating thought on an image or video request ends the
   thought and the model answers, over the same media input (exit-thinking).
 - On OpenRouter's VGI-Bench rerun of 11-13, 117 of 257 served Gemma video
-  answers ran to the 117,8xx-token cap and 116 of those returned no content;
-  the median served answer was 110K tokens long (27 minutes).
+  answers ran to the 117,8xx-token cap, 116 of them with at most 71 tokens
+  outside the thought; the median served answer was 110K tokens long (27
+  minutes).

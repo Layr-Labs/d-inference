@@ -345,6 +345,8 @@ public enum LaunchAgent: Sendable {
     /// install/restart like the kill switches.
     /// `DARKBLOOM_CONSTRAINT_SPANS`: opt-in drafting through free Qwen
     /// reasoning/text spans; the SDK snapshots it when constructing an engine.
+    /// `DARKBLOOM_CBV2_MTP_GRAMMAR`: grammar-aware MTP verification of
+    /// constrained rows (SDK-read, per engine); `0` keeps them target-only.
     /// `DARKBLOOM_KV_BACKEND_GUARD`: the crash-loop guard's record-path
     /// override (`KVBackendGuardStore.pathEnvKey`). The guard has one writer
     /// (the launchd watchdog — same key in `WatchdogAgent.passthroughEnvKeys`)
@@ -467,6 +469,9 @@ public enum LaunchAgent: Sendable {
         "DARKBLOOM_TTFT_GDN_BLOCKED",
         EngineV2SlotFactory.mimoRectangularVerifyEnvironmentKey,
         GemmaJSONAnswerPolicy.environmentKey,
+        // SDK-read (`GemmaFunctionParser.schemaCoercionEnabled`): quoted Gemma
+        // numbers typed by the tool's schema at frame close; `0` keeps strings.
+        "DARKBLOOM_GEMMA_SCHEMA_COERCION",
         PromptTokenCachePolicy.environmentKey,
         PromptTokenCachePolicy.capacityEnvironmentKey,
         PromptTokenCachePolicy.verifyEnvironmentKey,
@@ -507,7 +512,7 @@ public enum LaunchAgent: Sendable {
         "DARKBLOOM_CBV2_KV_QUANTIZATION",
         "DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION",
         "DARKBLOOM_CBV2_MTP", "DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS",
-        "DARKBLOOM_CONSTRAINT_SPANS",
+        "DARKBLOOM_CONSTRAINT_SPANS", "DARKBLOOM_CBV2_MTP_GRAMMAR",
         "DARKBLOOM_KV_BACKEND_GUARD",
         "DARKBLOOM_MLX_CACHE_LIMIT_GB", "DARKBLOOM_MLX_MEMORY_RESERVE_GB",
         "DARKBLOOM_R2_CDN_URL",

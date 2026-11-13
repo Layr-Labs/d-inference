@@ -4427,4 +4427,4 @@ Qwen3.8 27B automatic cluster capacity changes keep the current tensor split and
 
 ### Gemma o4 parser switch
 
-For foreground qualification, set `DARKBLOOM_GEMMA_SCHEMA_COERCION` before starting the process. The [configuration reference](../reference/configuration.md#gemma-o4-conformance) defines activation and rollback; the daemon LaunchAgent does not inherit this switch.
+Set `DARKBLOOM_GEMMA_SCHEMA_COERCION` before starting the process; the LaunchAgent forwards it to the installed service. The [configuration reference](../reference/configuration.md#gemma-o4-conformance) defines activation and rollback.

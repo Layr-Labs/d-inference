@@ -210,8 +210,9 @@ private final class AdmittedThoughtLoopEngine: CBv2Engine, @unchecked Sendable {
 
 /// A busy Mac: `slots` engine slots and a queue, admitted as `SchedulerV2`
 /// admits (the waiting requests by priority, higher first, then in arrival
-/// order). A request still waiting after `lease` ends `admission_timeout`, as
-/// `EngineLoopV2`'s admission lease ends it (120 s in production). The first
+/// order). The continuation, if still waiting after `lease`, ends
+/// `admission_timeout`, as `EngineLoopV2`'s admission lease ends it (120 s in
+/// production); the other requests have no lease here. The first
 /// request is a Gemma row whose thought repeats verbatim once the test opens
 /// its gate (the guard's stop cancels it); a request whose prompt ends with
 /// Gemma's exit (`<channel|>`) is the continuation: it answers "Answer: B".
@@ -287,7 +288,7 @@ private final class QueueingThoughtLoopEngine: CBv2Engine, @unchecked Sendable {
         }
         if admitNow {
             start(row)
-        } else {
+        } else if request.promptTokens.last == GemmaThoughtTestTokenizer.channelClose {
             Task { [weak self, lease] in
                 try? await Task.sleep(for: lease)
                 self?.expire(row.request.id)
@@ -700,18 +701,33 @@ struct GenerationLoopExitThinkingServingTests {
         let prompt = GemmaThoughtTestTokenizer.tokens("<|turn>user\nhi<turn|>\n<|turn>model\n")
         var streams: [AsyncStream<GenerationEvent>] = []
         for id in ["older", "newer"] {
-            streams.append(await bridge.submitTokenized(promptTokens: prompt, request: request, requestId: id))
+            streams.append(await MeFirstDarkbloomRequest.$id.withValue("req-\(id)") {
+                await bridge.submitTokenized(promptTokens: prompt, request: request, requestId: id)
+            })
         }
-        streams.append(await EngineAdmissionPriority.$current.withValue(LoopExitThinkingContinuation.admissionPriority) {
-            await bridge.submitTokenized(promptTokens: prompt, request: request, requestId: "continuation")
+        streams.append(await MeFirstDarkbloomRequest.$id.withValue("req-continuation") {
+            await EngineAdmissionPriority.$current.withValue(LoopExitThinkingContinuation.admissionPriority) {
+                await bridge.submitTokenized(promptTokens: prompt, request: request, requestId: "continuation")
+            }
         })
         #expect(engine.submittedPriorities == [0, 0, 1])
         // One request waits. The engine admits the continuation first, then
-        // the older request, so the newer one is the one that waits.
+        // the older request, so the newer one is the one that waits. The
+        // bridge counts only the requests a request can't overtake, so it
+        // reads the newer one as waiting and the older one as admitted; the
+        // continuation could be either and reads as waiting (errors lean that
+        // way), but me first treats it as admitted: it never gives way.
         engine.setWaiting(1)
         #expect(await bridge.queueState(of: "newer")?.waiting == true)
         #expect(await bridge.queueState(of: "older")?.waiting == false)
+        #expect(await bridge.queueState(of: "continuation")?.waiting == true)
+        #expect(await bridge.hasAdmitted(darkbloomRequest: "req-newer") == false)
+        #expect(await bridge.hasAdmitted(darkbloomRequest: "req-older"))
+        #expect(await bridge.hasAdmitted(darkbloomRequest: "req-continuation"))
+        // Nothing waits: all read as admitted.
+        engine.setWaiting(0)
         #expect(await bridge.queueState(of: "continuation")?.waiting == false)
+        #expect(await bridge.hasAdmitted(darkbloomRequest: "req-newer"))
         for id in ["older", "newer", "continuation"] { await bridge.cancel(requestId: id) }
         for stream in streams { for await _ in stream {} }
         await bridge.shutdown()

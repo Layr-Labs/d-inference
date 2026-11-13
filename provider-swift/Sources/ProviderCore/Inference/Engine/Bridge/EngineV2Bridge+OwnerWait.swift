@@ -48,9 +48,11 @@ extension EngineV2Bridge {
     /// doesn't wait in its queue (`queueState(of:)`), so it is in its prompt or past it. Such a request keeps its work
     /// when the owner's request waits (`ProviderLoop.giveWayToOwner`). False before it reaches the engine and while it
     /// waits in the queue, including after the engine has put it back there (preempted for memory, its prompt's work
-    /// gone).
+    /// gone). A loop exit's continuation (priority above 0, `EngineAdmissionPriority`) counts as admitted: its
+    /// request's thought has already streamed, so it never gives way.
     func hasAdmitted(darkbloomRequest requestId: String) -> Bool {
-        guard let id = active.first(where: { $0.value.darkbloomRequestId == requestId })?.key else { return false }
-        return queueState(of: id)?.waiting != true
+        guard let entry = active.first(where: { $0.value.darkbloomRequestId == requestId }) else { return false }
+        if entry.value.priority > 0 { return true }
+        return queueState(of: entry.key)?.waiting != true
     }
 }

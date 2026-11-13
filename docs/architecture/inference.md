@@ -3415,9 +3415,17 @@ stops such a row early.
   frees, and a continuation queued behind them in arrival order waited past the
   engine's 120 s admission lease and ended `admission_timeout`, the held
   `length` (21 of 29 exits on 0.10.13 `.181` at 12-on-8 concurrency); ahead of
-  them it starts at the next free slot. The bridge's queue reading
-  (`queueState(of:)`, me first's and the held local head's) follows the same
-  order. Exact MTP drafting stays on for it and its batch; a cancelled row donates no KV, so the
+  them it starts at the next free slot (the slot its own row freed has gone to
+  the queue's head by then, so on a Mac whose every slot holds a generation
+  longer than the lease past the exit it can still time out). The engine's KV
+  preemption reads the same priority: the continuation is evicted after
+  ordinary rows, and when its own chunk doesn't fit, the youngest ordinary
+  running row is evicted instead (it re-prefills); at the queue's head, a
+  continuation whose reservation fails holds back the requests behind it, as
+  any head does. The bridge's queue reading (`queueState(of:)`, me first's and
+  the held local head's) counts only requests it can't overtake, so it still
+  errs toward "waiting"; me first treats a continuation as admitted (it never
+  gives way). Exact MTP drafting stays on for it and its batch; a cancelled row donates no KV, so the
   continuation prefills the thought again (its prompt part can hit the prefix
   cache). When the continuation cannot start (under 256 tokens of budget left,
   the row closed its thought itself (its in-flight tokens after the stop hold

@@ -59,7 +59,7 @@ jobs:
           # The only labels a lane can receive besides its fallback. A plane
           # decision is used only when it repeats its profile's array exactly.
           # For a lane sent with a size, the size qualifies the last label
-          # (darkbloom-macos-arm64-4x24).
+          # (darkbloom-macos-arm64-4x24), followed by -run-<run ID>.
           profiles='{"linux_arm64":["self-hosted","linux","ARM64","darkbloom-linux-arm64"],"macos_arm64":["self-hosted","macOS","ARM64","darkbloom-macos-arm64"]}'
           # Plane text is untrusted: keep it short, on one line, and free of
           # Markdown, HTML and workflow-command syntax before printing it.
@@ -166,6 +166,7 @@ jobs:
               status=$(curl --disable --silent --show-error --proto '=https' --max-time 5 \
                 --max-filesize 65536 --user-agent darkbloom-route/1 --request POST \
                 --header 'Content-Type: application/json' --header 'Accept: application/json' \
+                --header 'X-Darkbloom-Run-Scoped-Labels: 1' \
                 --data-binary @- --output "$body" --write-out '%{http_code}' \
                 "${plane_url%/}/v1/ci/routes" <<<"$request") || status=000
               case $status in
@@ -192,12 +193,13 @@ jobs:
           fi
 
           decisions=$(jq -n -c --argjson configured "$configured" --argjson profiles "$profiles" \
-            --arg fallback_reason "$fallback_reason" --slurpfile reply "$reply" "$clean"'
+            --arg fallback_reason "$fallback_reason" --arg run_id "$RUN_ID" --slurpfile reply "$reply" "$clean"'
             ($reply[0].lanes // {}) as $plane_decisions
             | [ $configured[]
                 | ($plane_decisions[.lane] | if type == "object" then . else {} end) as $decision
                 | (.shape as $shape | $profiles[.profile]
-                    | if $shape == null then . else .[:-1] + [.[-1] + "-" + $shape] end) as $labels
+                    | if $shape == null then . else .[:-1] + [.[-1] + "-" + $shape] end
+                    | .[:-1] + [.[-1] + "-run-" + $run_id]) as $labels
                 | if .count == 0 then .target = "fallback" | .reason = "not requested"
                   elif $fallback_reason != "" then .target = "fallback" | .reason = $fallback_reason
                   elif .held then .target = "fallback" | .reason = "needs its size, and job sizes are off (DARKBLOOM_JOB_SHAPES)"

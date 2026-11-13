@@ -107,10 +107,12 @@ struct GLM5NextResponseFormatOutput {
     /// governs an answer, not calls: beside tool calls the retained text
     /// leaves as generated, as the service exposes the other families'
     /// content beside calls; otherwise the validated answer, or a typed 422.
+    /// An answer the token limit cut (`cutAtLimit`) also leaves as generated:
+    /// the response ends `length` (`TokenLimitCutPolicy`).
     func finalAnswer(finishReason: String, hasToolCalls: Bool, cutAtLimit: Bool = false) throws
         -> MLXServerGenerationEvent?
     {
-        guard !hasToolCalls else {
+        guard !hasToolCalls, !cutAtLimit else {
             return content.isEmpty ? nil : .parsed(.init(content: content, reasoningContent: nil))
         }
         return .parsed(.init(content: try format.validatedContent(content, finishReason: finishReason),

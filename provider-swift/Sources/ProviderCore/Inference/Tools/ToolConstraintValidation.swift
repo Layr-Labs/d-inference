@@ -30,7 +30,10 @@ enum ToolConstraintValidation {
 
     /// `truncated`: generation stopped at `max_tokens`. A call parsed from a
     /// cut-off frame may be missing arguments, so it is held to the
-    /// declarations even without `strict`, as before.
+    /// declarations even without `strict`, as before; the serving path ends
+    /// such an answer as `length` instead of refusing it (`TokenLimitCutPolicy`).
+    /// `responseStarted`: an event of this response already left, so a
+    /// `strict` call may leave as generated (`StrictToolCallPolicy`).
     static func validate(
         _ calls: [ToolCall],
         prepared: ToolChoicePromptPolicy.Prepared,
@@ -56,7 +59,7 @@ enum ToolConstraintValidation {
                 throw violation("model did not emit the named tool call")
             }
         case .auto:
-            if prepared.returnsAutoCallsAsGenerated, !truncated { return }
+            if prepared.returnsAutoCallsAsGenerated(afterResponseStarted: responseStarted), !truncated { return }
         }
 
         let allowed = prepared.allowedToolNames
@@ -109,6 +112,29 @@ enum ToolConstraintValidation {
                     throw violation(ToolNoncomplianceCheck.schemaViolation)
                 }
             }
+        }
+    }
+
+    /// Calls withheld until the end of generation. When the token limit cut
+    /// the answer (`cutAtLimit`, `TokenLimitCutPolicy`), calls that fail their
+    /// checks are the limit's (arguments it ended, a call it prevented): none
+    /// of them leaves, and the answer ends `length`. More calls than
+    /// `parallel_tool_calls: false` allows, or a call under `tool_choice: none`,
+    /// are the model's and still refused.
+    static func validateWithheld(
+        _ calls: inout [ToolCall],
+        prepared: ToolChoicePromptPolicy.Prepared,
+        truncated: Bool = false,
+        cutAtLimit: Bool,
+        responseStarted: Bool = false
+    ) throws {
+        do {
+            try validate(calls, prepared: prepared, truncated: truncated, responseStarted: responseStarted)
+        } catch {
+            guard cutAtLimit, prepared.allowsParallelCalls || calls.count <= 1,
+                prepared.mode != .none || calls.isEmpty
+            else { throw error }
+            calls = []
         }
     }
 

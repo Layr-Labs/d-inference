@@ -522,6 +522,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 allowInternalSchemaMetadata: allowInternalToolSchemaMetadata,
                 glm5PairPostValidation: glm5PairPostValidation)
             policy.declaredTools = templateControls.declaredTools
+            // The coordinator path serves every request as a stream; the body
+            // says whether the client streams (`StrictToolCallPolicy`).
+            policy.strictCallsAsGenerated = StrictToolCallPolicy.returnsAsGenerated
+                && (templateControls.clientStreams ?? (request.stream == true))
             prepared = policy
             try checkFirstContentDeadline()
         } catch {
@@ -1685,7 +1689,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         continuation.yield(routed)
                     } else if let visible = glmAnswer?.withholding(routed) {
                         continuation.yield(visible)
+                    } else {
+                        return
                     }
+                    router.responseStarted = true
                 }
                 startedAt = Date()
 
@@ -1866,13 +1873,21 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 // Flush and validate parsed calls. Gemma required/named are
                 // sampler-constrained; Qwen required/named are prompt-forced
                 // and fail closed here before a call is exposed. This remains
-                // defense in depth for every mode.
+                // defense in depth for every mode. An answer the engine cut
+                // at the token limit ends as a normal `length` finish instead
+                // (`TokenLimitCutPolicy`): what left stays as generated, a
+                // withheld answer leaves as generated, and checks the cut
+                // broke drop what they would refuse. A stop sequence matched
+                // on the last budgeted token ended the answer, not the limit.
+                let answerTail = answerStops?.finish()
+                let cutAtLimit = prepared.cutAtLimit(finishReason: stopReason)
+                    && answerStops?.matchedSequence == nil
                 do {
                     var events: [MLXServerGenerationEvent] = []
-                    if let tail = answerStops?.finish(), !tail.isEmpty {
-                        events += try router.process(tail)
+                    if let answerTail, !answerTail.isEmpty {
+                        events += try router.process(answerTail)
                     }
-                    events += try router.finishText()
+                    events += try router.finishText(cutAtLimit: cutAtLimit)
                     usageSignal.recordWithheldReasoning(router.takeWithheldReasoning())
                     for routed in events { emit(routed) }
                 } catch {
@@ -1886,14 +1901,17 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     // and re-check the whole set. The other terminal checks
                     // match the complete-call path below.
                     do {
-                        for routed in try router.finishToolCalls(truncated: stopReason == "length") {
+                        for routed in try router.finishToolCalls(truncated: stopReason == "length",
+                            cutAtLimit: cutAtLimit)
+                        {
                             emit(routed)
                         }
-                        try router.checkNativeToolFailure()
-                        try ToolConstraintValidation.validate(router.completedToolCalls, prepared: prepared)
-                        try formatOutput?.validate(finishReason: stopReason)
-                        if let answer = try glmAnswer?.finalAnswer(
-                            finishReason: stopReason, hasToolCalls: !router.completedToolCalls.isEmpty)
+                        if !cutAtLimit { try router.checkNativeToolFailure() }
+                        try ToolConstraintValidation.validate(router.completedToolCalls, prepared: prepared,
+                            responseStarted: router.responseStarted)
+                        if !cutAtLimit { try formatOutput?.validate(finishReason: stopReason) }
+                        if let answer = try glmAnswer?.finalAnswer(finishReason: stopReason,
+                            hasToolCalls: !router.completedToolCalls.isEmpty, cutAtLimit: cutAtLimit)
                         {
                             continuation.yield(answer)
                         }
@@ -1917,17 +1935,18 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     continuation.finish()
                     return
                 }
-                let toolCalls = toolHandler?.finish() ?? []
+                var toolCalls = toolHandler?.finish() ?? []
                 do {
-                    try router.checkNativeToolFailure()
+                    if !cutAtLimit { try router.checkNativeToolFailure() }
                 } catch {
                     await releaseBox.fire()
                     continuation.finish(throwing: error)
                     return
                 }
+                // A native frame the cut left unparsed is never published as text.
                 if prepared.mode == .auto,
                     let residual = toolHandler?.takeResidualText(),
-                    !residual.isEmpty
+                    !residual.isEmpty, !router.hasNativeToolFailure
                 {
                     emit(router.visibleEvent(residual))
                 }
@@ -1938,8 +1957,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         severity: .warn)
                 }
                 do {
-                    try ToolConstraintValidation.validate(
-                        toolCalls, prepared: prepared, truncated: stopReason == "length")
+                    try ToolConstraintValidation.validateWithheld(&toolCalls, prepared: prepared,
+                        truncated: stopReason == "length", cutAtLimit: cutAtLimit,
+                        responseStarted: router.responseStarted)
                 } catch {
                     await releaseBox.fire()
                     continuation.finish(throwing: error)
@@ -1948,11 +1968,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 do {
                     // Constrained response_format (exact Flint, Qwen): the
                     // completed content, not a truncated or schema-invalid
-                    // prefix, reaches success.
-                    try formatOutput?.validate(finishReason: stopReason)
+                    // prefix, reaches success; a cut one ends `length`.
+                    if !cutAtLimit { try formatOutput?.validate(finishReason: stopReason) }
                     // GLM's withheld JSON answer leaves only once it validates.
-                    if let answer = try glmAnswer?.finalAnswer(
-                        finishReason: stopReason, hasToolCalls: !toolCalls.isEmpty)
+                    if let answer = try glmAnswer?.finalAnswer(finishReason: stopReason,
+                        hasToolCalls: !toolCalls.isEmpty, cutAtLimit: cutAtLimit)
                     {
                         continuation.yield(answer)
                     }
@@ -1961,7 +1981,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     continuation.finish(throwing: error)
                     return
                 }
-                if prepared.mode.requiresInferenceConstraint {
+                if prepared.mode.requiresInferenceConstraint, !cutAtLimit || !toolCalls.isEmpty {
                     emitToolConstraintTelemetry(
                         operation: "tool_constraint_valid",
                         reason: prepared.mode.telemetryValue)

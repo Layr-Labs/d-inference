@@ -416,6 +416,10 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_TTFT_STREAM_TOOL_CALLS` / `DARKBLOOM_TTFT_THINK_CONTENT_SEED`:
     /// incremental `auto` tool calls and the plain-tail Qwen content seed are
     /// on by default; exact `0` is each rollback.
+    /// `DARKBLOOM_LENGTH_FINISH_AT_LIMIT` / `DARKBLOOM_STRICT_CALLS_AS_GENERATED`:
+    /// an answer cut at the token limit ends as `length`, and a streamed
+    /// `strict` call that fails its check after the start leaves as generated,
+    /// by default; `0`, `off` or `false` restores each refusal.
     /// `DARKBLOOM_GEMMA4_NAX_ROW_MAP`: eligible Gemma expert prefill uses the
     /// row-mapped NAX route by default; exact `0` restores its original graph.
     /// `DARKBLOOM_LOOP_GUARD` / `DARKBLOOM_LOOP_EXIT_THINKING`: the loop guard
@@ -450,6 +454,8 @@ public enum LaunchAgent: Sendable {
         NemotronSuperLocalPrefill.decodeStepsKey,
         ToolStreamPreparation.streamToolCallsEnvironmentKey,
         ReasoningPromptProbe.plainTailContentSeedEnvironmentKey,
+        TokenLimitCutPolicy.environmentKey,
+        StrictToolCallPolicy.environmentKey,
         "DARKBLOOM_GEMMA4_NAX_ROW_MAP",
         GenerationLoopGuardPolicy.environmentKey,
         GenerationLoopExitThinkingPolicy.environmentKey,

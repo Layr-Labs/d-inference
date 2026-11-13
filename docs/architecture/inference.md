@@ -1797,7 +1797,9 @@ streams on a separate typed channel, and the answer is withheld until
 generation ends, then decoded and checked (`json_schema` against the caller's
 schema, through the shared compiled subset when the schema fits it) before it
 is exposed; invalid output is a 422 with no
-content (`GLM5NextResponseFormat`, `GLM5NextResponseFormatOutput`). One Mac
+content (`GLM5NextResponseFormat`, `GLM5NextResponseFormatOutput`), and an
+answer the token limit cut leaves as generated with `finish_reason: "length"`.
+One Mac
 serves it with image or video input the same way: the instruction turn renders
 in the media prompt (`EngineV2VisionPrefill.glm5NextUserInput`), and the media
 path routes reasoning to the typed channel and records the withheld answer as
@@ -3434,10 +3436,12 @@ request before it builds any token constraint, Qwen's and Flint's.
 The request streams through the native reasoning split (`NativeToolStreamRouter`
 seeded from `JSONAnswerConstraint.channelPrefix`), so `JSONAnswerOutput` checks
 only the answer when generation ends: content that is not one JSON value of the
-schema, or a budget that ends first, is a 422
-`MLXOpenAIServiceError.invalidResponseFormatOutput` (`tool_noncompliance`) after
-the content has streamed. Engine `stop` strings still apply as for the other
-Qwen requests; a stop that cuts the value short fails the same check.
+schema is a 422 `MLXOpenAIServiceError.invalidResponseFormatOutput`
+(`tool_noncompliance`) after the content has streamed. A budget that ends first
+ends the answer as a normal `length` finish with its content as generated
+([cut answers](#answers-cut-at-the-token-limit)). Engine `stop` strings still
+apply as for the other Qwen requests; a stop that cuts the value short fails the
+same check.
 
 Every other case keeps prompt-only steering and gains no refusal. A schema
 outside the subset (including an enum value containing a forbidden spelling), a
@@ -3557,9 +3561,12 @@ function and arguments off the declared schema are returned instead of
 failing a response whose reasoning has already streamed. The request stays
 validated when any declared function sets `strict: true`, when it declares no
 tools (a call is then never returned), and for `required`, named and `none`
-choices; `parallel_tool_calls: false` holds either way, and a call parsed from
-a frame that `max_tokens` cut off is still validated (it may be missing
-arguments). Strict `auto` checks
+choices; `parallel_tool_calls: false` holds either way, and a call that
+`max_tokens` cut off is never completed by the end-of-generation parse
+([cut answers](#answers-cut-at-the-token-limit)). A `strict` call that fails
+its check once an event of a streaming client's response has left returns as
+generated too ([strict calls after the start](#strict-calls-after-the-response-started)).
+Strict `auto` checks
 each call against the caller's schema as sent
 (`Prepared.declaredTools`, from the body before ingress normalization
 (`ToolSchemaNormalization`) filled `type: "string"` into typeless properties
@@ -3573,15 +3580,75 @@ there. Every refusal that remains names its check on the error frame
 | Case | Behavior |
 |---|---|
 | Undeclared or unresolvable name | Never exposed early: completes in one piece, returned as generated (refused under `strict`), or the existing text fallback when it does not parse |
-| Parse failure or divergence after exposure | The arguments already sent stay as generated (OpenAI's raw `arguments` string) and the call closes; `finish_reason` is `tool_calls`. Under `strict`: typed `tool_choice` violation on the stream |
-| Schema violation after exposure | Returned as generated; under `strict`, typed `tool_choice` violation on the stream |
-| Call cut off by `max_tokens`, even when the end-of-generation parse of its partial frame fails or diverges | Fragments stop; `finish_reason` is `length` |
+| Parse failure or divergence after exposure | The arguments already sent stay as generated (OpenAI's raw `arguments` string) and the call closes; `finish_reason` is `tool_calls`. Under `strict`, the same once the response started; before it, a typed `tool_choice` violation |
+| Schema violation after exposure | Returned as generated; under `strict`, the same once the response started; before it, a typed `tool_choice` violation |
+| Call cut off by `max_tokens`, whether the end-of-generation parse of its partial frame fails, diverges or completes it | Fragments stop and the call stays open; `finish_reason` is `length` |
 | Required or named `tool_choice`, native-channel families, other formats, non-chat surfaces, `DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0` | Complete calls released at the engine terminal after validation (for `auto`, as above) |
 
 The response hash adds one `tool_call` marker per fragment in wire order; a
 complete call encodes exactly as before
 (`provider-swift/Sources/ProviderCore/ProviderLoop+SSEParser.swift`,
 `encodeToolCallsForHash`).
+
+### Answers cut at the token limit
+
+When the engine finishes `length`, the answer ends as a normal completion with
+`finish_reason: "length"` and its usage, never as a `tool_noncompliance` refusal
+or a native frame failure (`TokenLimitCutPolicy`,
+`provider-swift/Sources/ProviderCore/Inference/Tools/ToolOutputLeniency.swift`).
+The limit is the request's `max_tokens` or this Mac's clamp of it, not the model
+breaking a contract, and OpenRouter does not count a call cut by the caller's
+`max_tokens` against the provider. In the forwarder
+(`MultiModelBatchSchedulerEngine.makeEventStream`, `Prepared.cutAtLimit`):
+
+- What already left stays as generated, including reasoning that spent the
+  whole budget.
+- A streamed `auto` call stays open with its fragments, and the end-of-generation
+  parse completes no call (`NativeToolStreamRouter.finishToolCalls`), so the
+  stream finishes `length`; a call not yet exposed is not exposed.
+- A constrained JSON answer (exact Flint, constrained Qwen) skips its final
+  check; GLM's withheld JSON answer leaves as generated
+  (`GLM5NextResponseFormatOutput.finalAnswer`).
+- Withheld calls (forced choices, native families, `DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0`)
+  that fail their checks are dropped instead of refused, and a forced choice
+  with no call ends `length` (`ToolConstraintValidation.validateWithheld`).
+  More calls than `parallel_tool_calls: false` allows, or a call under
+  `tool_choice: none`, are the model's and still refused. A native GLM, Flint
+  or MiMo frame the limit left unparsed is dropped, never published as text.
+  Calls that pass still leave, and the response then finishes `tool_calls`,
+  as before.
+- Super's output (`NemotronSuperLocalOutput.finish(cutAtLimit:)`) does the same
+  for its unterminated frame, its calls and its withheld JSON answer. Its
+  internal qualification route stays strict.
+
+The coordinator relays such a response as any `length` finish: it settles and
+bills its usage. Its own length finish for a refusal after commit (platform
+#897, `EIGENINFERENCE_LENGTH_FINISH_AFTER_TOOL_CHECK`) then only covers older
+providers. A local request without `stream` still gets the service's 422
+`responseFormatCutOffByMaxTokens` when its cut content is not one JSON value:
+the service checks complete responses itself. `DARKBLOOM_LENGTH_FINISH_AT_LIMIT=0`
+(or `off`, `false`) restores the refusal; it reaches the launchd job.
+
+### Strict calls after the response started
+
+A call to a `strict` function of an `auto` request that fails this provider's
+check (schema, declared name, arguments that parse) returns as generated, as a
+non-strict call does, once an event of the response has left and the client
+streams (`StrictToolCallPolicy`, `Prepared.strictCallsAsGenerated`,
+`returnsAutoCallsAsGenerated(afterResponseStarted:)`). By then the client
+holds part of the answer, so a refusal could only break the stream partway,
+which OpenRouter counts as a failed response; a returned call is the client's
+to check, as with any unconstrained server. Before anything left the refusal
+stays, a status the coordinator can fail over on; so does every refusal for a
+client that does not stream, which OpenRouter does not count. The coordinator
+path serves every request as a stream, so the client's own `stream` is read
+from the body (`ChatTemplateControls.clientStreams`). The forwarder marks the
+response started at the first event it yields
+(`NativeToolStreamRouter.responseStarted`); a call validated in the same chunk
+as its first fragment is refused before it leaves. Forced choices, `none` and
+`parallel_tool_calls: false` keep their checks; Super's output keeps refusing.
+`DARKBLOOM_STRICT_CALLS_AS_GENERATED=0` (or `off`, `false`) restores the
+refusal; it reaches the launchd job.
 
 ### Chat-template render check
 
@@ -4705,8 +4772,9 @@ value of the compiled grammar; declared object properties are the only keys
 generated. A schema outside the subset is a 400 before generation.
 `JSONAnswerFormat.validate`, shared with
 [constrained Qwen answers](#constrained-qwen-json-answers), decodes and checks
-the completed content again; a failure, including an output budget that ends
-before the value completes, is a typed 422 rather than a successful completion.
+the completed content again; a failure is a typed 422 rather than a successful
+completion, and an output budget that ends before the value completes ends the
+answer as `length` ([cut answers](#answers-cut-at-the-token-limit)).
 Tools plus a response format
 get only the response format, whatever `tool_choice` asked: the prompt renders
 as it would without the format, so the coordinator prompt sidecar needs no
@@ -9180,8 +9248,8 @@ configuration declares, and answers each request shape as one Mac does.
    `response_format` answer the service validates that stopped at
    `max_tokens` before it was complete is
    `MLXOpenAIServiceError.responseFormatCutOffByMaxTokens` (422), not an
-   internal failure; GLM's withheld JSON keeps its own typed 422
-   (`GLM5NextResponseFormat.validatedContent`). `GLMSlotParityTests` serves
+   internal failure; GLM's withheld JSON keeps its own typed 422 at any other
+   finish (`GLM5NextResponseFormat.validatedContent`). `GLMSlotParityTests` serves
    each of these GLM requests on a single-Mac slot and on a pair slot and
    compares what the local API returns. Media the model's processor refuses is
    the request's own fault on every provider:

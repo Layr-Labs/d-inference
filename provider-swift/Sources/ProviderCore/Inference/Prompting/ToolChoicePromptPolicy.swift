@@ -59,7 +59,7 @@ enum ToolChoicePromptPolicy {
         /// generated too when `strictCallsAsGenerated` (`StrictToolCallPolicy`).
         func returnsAutoCallsAsGenerated(afterResponseStarted started: Bool) -> Bool {
             guard mode == .auto, let tools, !tools.isEmpty else { return false }
-            return !tools.contains { $0.function.strict == true }
+            return !tools.contains { $0.function.strict == true } || (started && strictCallsAsGenerated)
         }
     }
 

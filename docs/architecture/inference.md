@@ -3308,6 +3308,22 @@ passes it through `NativeToolStreamRouter` to the splitter. Other native-channel
 families retain their previous literal-close behavior
 (`provider-swift/Sources/ProviderCore/Inference/Tools/ToolChoiceEnforcementPolicy.swift`).
 
+Qwen 3.5, 3.6 and 3.8 (`qwen3_5`, `qwen3_5_moe`) keep their legacy tool
+framing, but a text request with tools takes the same reasoning-first split
+(`ToolChoiceEnforcementPolicy.splitsQwenReasoningBeforeTools`):
+`MultiModelBatchSchedulerEngine.prepareCompletion` seeds `NativeChannelSplitter`
+with the prompt's own think state, the `ReasoningPromptProbe` prefix that would
+otherwise seed the downstream think parser. A `<tool_call>` that a thought
+mentions, or a call that it drafts, stays reasoning, and the calls after
+`</think>` parse. Before, the tool handler scanned the raw text, thinking
+included: one mentioned tag opened a frame that swallowed the real call and
+came back as text, and a drafted call was executed. Their `auto` calls still
+stream while generated (`ToolStreamPreparation` keys on `usesNativeTextChannels`,
+which these families are not), and forced calls keep their prompt policy. A
+request without tools, an explicit non-think parser and a prompt whose think
+state the probe cannot read keep the raw-text route. A collected local
+response carries content and reasoning untrimmed, as on the native families.
+
 `ReasoningPromptProbe.streamingPrefix` in
 `provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningPromptProbe.swift`
 decodes only the final eight prompt tokens to initialize Qwen/DeepSeek

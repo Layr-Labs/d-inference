@@ -1167,6 +1167,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             events = spliced.events
             cancelEvents = spliced.cancel
         }
+        // Qwen 3.5-family tool output takes the native split from the prompt's
+        // own think state (the parser seed above): reasoning is classified
+        // before tool parsing. Without a seed it keeps the raw-text route.
+        let qwenReasoningFirst = toolHandler != nil && ToolChoiceEnforcementPolicy.splitsQwenReasoningBeforeTools(
+            .init(modelId: modelId, modelType: modelType)) ? reasoningPrefix : nil
 
         return try await makeDeadlineCheckedEventStream(
             upstream: events,
@@ -1186,7 +1191,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 || glmWithholdsReasoning
                 ? (ReasoningPromptProbe.streamingPrefix(forPromptTail:
                     tokenizer.inner.decode(tokenIds: Array(promptTokens.suffix(ReasoningPromptProbe.tailTokenCount)),
-                                           skipSpecialTokens: false)) ?? "<think></think>") : nil)),
+                                           skipSpecialTokens: false)) ?? "<think></think>") : qwenReasoningFirst)),
             recordsWithheldOutput: withholdsGLMOutput,
             preserveInnerReasoningSpans: ToolChoiceEnforcementPolicy.preservesInnerReasoningSpans(
                 .init(modelId: modelId, modelType: modelType)),

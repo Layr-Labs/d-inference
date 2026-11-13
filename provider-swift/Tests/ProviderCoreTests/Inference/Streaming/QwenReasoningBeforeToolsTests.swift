@@ -231,6 +231,21 @@ struct QwenReasoningBeforeToolsTests {
               calls: [weather("Bern")], reasoning: "Wrap it in <tool_call> tags."),
     ]
 
+    /// The route is the Qwen 3.5 types' alone: native families keep their own, other Qwen types the raw one,
+    /// and `auto` calls keep streaming (their deltas key on the native-channel predicate, which stays false).
+    @Test func routingIsScopedToTheQwen35Types() {
+        for build in Self.builds {
+            let context = ChatTemplateFixContext(modelId: build.id, modelType: build.modelType)
+            #expect(ToolChoiceEnforcementPolicy.splitsQwenReasoningBeforeTools(context))
+            #expect(!ToolChoiceEnforcementPolicy.usesNativeTextChannels(context))
+        }
+        for modelType in ["qwen3_next", "qwen3_vl_moe", "qwen3", "prism_hadamard_qwen35", "qwen4_exp", "gemma4",
+                          "glm5_next", "gpt_oss", "mimo_v2", "nemotron_h", "llama", "Qwen3_5", " qwen3_5"] {
+            #expect(!ToolChoiceEnforcementPolicy.splitsQwenReasoningBeforeTools(
+                .init(modelId: "EigenLabs/Qwen3.8-27B-4bit-mtp", modelType: modelType)), "\(modelType)")
+        }
+    }
+
     @Test(arguments: Self.builds, Self.cases)
     func clientReceivesTheRealCallsOnly(build: QwenToolBuild, expected: QwenToolOutputCase) async throws {
         for stream in [true, false] {

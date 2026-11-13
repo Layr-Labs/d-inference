@@ -150,6 +150,15 @@ enum ToolChoiceEnforcementPolicy {
         context.modelType == "mimo_v2" || nativeStructuredTarget(context)
     }
 
+    /// Qwen 3.5, 3.6 and 3.8 text with tools keeps its legacy tool framing
+    /// (`auto` calls stream while generated; forced calls keep the family's
+    /// prompt policy), but its reasoning is classified before tool parsing,
+    /// as on the native families: tool syntax that a thought mentions or
+    /// drafts stays reasoning, never a call, and cannot swallow the real call.
+    static func splitsQwenReasoningBeforeTools(_ context: ChatTemplateFixContext) -> Bool {
+        context.modelType == "qwen3_5" || context.modelType == "qwen3_5_moe"
+    }
+
     /// Only the qualified Nemotron parser absorbs a close already in content.
     /// Other native-channel families retain their existing literal handling.
     static func absorbsStrayThinkClose(_ context: ChatTemplateFixContext) -> Bool {

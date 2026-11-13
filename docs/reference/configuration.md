@@ -1847,3 +1847,11 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/C
 The wizard’s optional local stopDrain token is saved with stopped intent and retained after a local timeout. Leases preserve the peer’s prior intent until the local supervisor retires its owned part and outstanding lease. The token is not a wire or user-facing configuration field; older records decode without it. A new serve is refused while it remains, and a model change retries the shared stop first.
 
 Every write of the wizard's record (`~/.darkbloom/cluster-setup/wizard.json`) takes the `wizard.json.lock` flock. When another writer holds that lock, the write waits up to 2 seconds for it (`ClusterSetupStore.recordLockWaitSeconds`). After 2 seconds the write fails with "Configuration or native device lease is currently held". The cluster service writes the record while it holds its own service lock, so it tries once and writes again on its next supervision cycle. Source: `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterSetupWizardStore.swift` (`ClusterSetupStore.updateRecord`).
+
+### Gemma o4 conformance
+
+| Variable | Values / type | Default | Read in | Effect |
+|---|---|---|---|---|
+| `DARKBLOOM_GEMMA_SCHEMA_COERCION` | exact `1` enables | unset (off); `0` keeps legacy behavior | `libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/Parsers/GemmaFunctionParser.swift` (`GemmaFunctionParser`) | Opts in to Gemma quoted numeric tool arguments. Read once per process. |
+
+Set this variable before starting an isolated foreground provider. It is not forwarded by the LaunchAgent allow-list. Unset it or use `0` and restart the process to roll back. See the [parser behavior](../architecture/inference.md#gemma-quoted-numeric-tool-arguments).

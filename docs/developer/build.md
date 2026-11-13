@@ -1,6 +1,6 @@
 # Build The Provider And Landing
 
-> Last updated: 2026-11-12
+> Last updated: 2026-11-13
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. Backend, sidecar, console and admin builds
@@ -1134,3 +1134,7 @@ Qwen27 TP batch prefix capture/restore changes the Runtime target only; it
 reuses the pinned SDK owned-state APIs. Rebuild the worker and planner together
 because the same complete LOAD budget prices the additional snapshot banks.
 See [warm-prefix validation](test.md#qwen27-tp-warm-prefix-checks).
+
+### Gemma o4 dependency adoption
+
+The Gemma quoted numeric tool arguments conformance suite consumes the exact `libs/mlx-swift-lm` gitlink, including its parser tests. Use the normal recursive dependency checkout and test-product build; the [isolated conformance runs](test.md#gemma-o4-conformance) reuse those products without a second build. Native MLX and nested core pins are unchanged.

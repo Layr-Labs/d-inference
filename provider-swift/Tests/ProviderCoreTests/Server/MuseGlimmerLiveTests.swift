@@ -7,13 +7,18 @@ import Testing
 @testable import ProviderCore
 
 /// Opt-in real weights, production slot and loopback HTTP. The token is
-/// ephemeral, the model and cache roots are explicit, and no coordinator is
-/// contacted. Nothing here starts a service or takes this Mac's serving lock.
+/// ephemeral, the model root is explicit, and no coordinator is contacted.
+/// Nothing here starts a service or takes this Mac's serving lock.
 ///
 ///   DARKBLOOM_MUSE_GLIMMER_LIVE=1
 ///   DARKBLOOM_MUSE_GLIMMER_HUB=<Hugging Face hub root holding the pinned snapshot>
-///   DARKBLOOM_MUSE_GLIMMER_CACHE=<directory for the encrypted prefix cache>
+///   DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL=1
+///   DARKBLOOM_PREFIX_CACHE_TEST_ROOT=<empty directory for this run's prefix cache>
 ///   DARKBLOOM_MUSE_GLIMMER_RECEIPTS=<file>   (optional: one JSON line per request)
+///
+/// The prefix cache must be the isolated test root, which the store encrypts
+/// under a key held in memory: the run never opens the operator's cache
+/// directory or its persistent key.
 ///
 /// It proves that the provider loads the pinned checkpoint into a paged slot
 /// and that a client receives reasoning, answer and tool calls in their own
@@ -27,13 +32,10 @@ struct MuseGlimmerLiveTests {
         let previous = ModelScanner.configuredCacheDirectory
         ModelScanner.configureCacheDirectory(root)
         defer { ModelScanner.configureCacheDirectory(previous) }
-        let priorCacheSettings = CacheStorage.settings
-        let cacheRoot = URL(fileURLWithPath: try #require(env["DARKBLOOM_MUSE_GLIMMER_CACHE"]))
-        try FileManager.default.createDirectory(at: cacheRoot, withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700])
-        let volume = try CacheVolume.inspect(directory: cacheRoot.path)
-        try CacheStorage.configure(.init(directory: volume.directory, volumeUUID: volume.uuid))
-        defer { try? CacheStorage.configure(priorCacheSettings) }
+        try #require(SSDPrefixCacheFactory.isolatedTestRoot(environment: env) != nil,
+            "set DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL=1 and DARKBLOOM_PREFIX_CACHE_TEST_ROOT")
+        try #require(SSDPrefixCacheFactory.forceEphemeralKey(environment: env),
+            "this run must not load a persistent cache key")
 
         let id = MuseGlimmerModelPolicy.localModelID
         let directory = try #require(ModelScanner.resolveLocalPath(modelID: id))

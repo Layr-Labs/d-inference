@@ -65,7 +65,8 @@ struct NativeChannelSplitter {
         var pieces = drain(final: true)
         toolScanner = nil
         flintScanner = nil
-        if promotesTrailingCalls, case .reasoning = state, let calls = Self.trailingCalls(in: openThought) {
+        if promotesTrailingCalls, case .reasoning = state,
+            let calls = Self.trailingCalls(in: openThought, tools: tools) {
             pieces.append(.init(content: calls, reasoningContent: nil))
         }
         openThought = ""
@@ -81,22 +82,22 @@ struct NativeChannelSplitter {
     /// The complete `<tool_call>` frames that end `thought`, with the
     /// whitespace between them, or nil. Frames are read left to right as the
     /// Qwen tool parser frames content: one opens at a `<tool_call>` whose
-    /// payload starts a call (`<function=` or `{`; a mentioned tag does not),
-    /// ends where the parser's own scanner ends it (JSON strings and XML
-    /// parameter values are opaque, so a tag inside an argument is not a
-    /// frame), and counts only if it parses; one that does not is read as a
-    /// mention. The work is bounded by a few passes over the thought; past
-    /// that bound nothing is promoted.
-    static func trailingCalls(in thought: String) -> String? {
+    /// payload starts a call (`opensCall`), ends where the parser's own
+    /// scanner ends it (JSON strings and XML parameter values are opaque, so a
+    /// tag inside an argument is not a frame), and counts only if it parses
+    /// with a declared name (any name without `tools`); any other
+    /// `<tool_call>` is read as a mention. A frame that never closes holds the
+    /// rest of the thought. The work is bounded by a fixed multiple of the
+    /// thought's length; past that bound nothing is promoted.
+    static func trailingCalls(in thought: String, tools: [[String: any Sendable]]? = nil) -> String? {
         let scalars = thought.unicodeScalars
         let parser = Qwen35ToolCallParser(startTag: "<tool_call>", endTag: "</tool_call>")
-        var budget = 8 * scalars.count + 4_096
+        var budget = 16 * scalars.count + 4_096
         var frames: [Range<String.Index>] = []
         var from = thought.startIndex
         while let open = thought.range(of: "<tool_call>", range: from..<thought.endIndex) {
             from = open.upperBound
-            let payload = thought[open.upperBound...].drop { $0.isWhitespace }
-            guard payload.hasPrefix("<function=") || payload.hasPrefix("{") else { continue }
+            guard opensCall(thought[open.upperBound...]) else { continue }
             var scanner = Qwen35ToolFrameScanner(endTag: "</tool_call>")
             var index = open.upperBound
             var frameEnd: String.Index?
@@ -106,11 +107,10 @@ struct NativeChannelSplitter {
                 if scanner.consume(scalars[index]) { frameEnd = next; break }
                 index = next
             }
-            // A frame that never closes holds the rest of the thought.
-            guard let close = frameEnd, budget > 0 else { break }
+            guard budget > 0, let close = frameEnd else { break }
             let frame = String(thought[open.lowerBound..<close])
             budget -= 2 * frame.unicodeScalars.count
-            if parser.parse(content: frame, tools: nil) != nil {
+            if parser.parse(content: frame, tools: tools) != nil {
                 frames.append(open.lowerBound..<close)
                 from = close
             }
@@ -127,6 +127,25 @@ struct NativeChannelSplitter {
             end = frame.lowerBound
         }
         return start.map { String(thought[$0...]) }
+    }
+
+    /// Whether a `<tool_call>`'s payload starts a call as the Qwen parser
+    /// reads one: `<function=NAME>` (a name of at most 256 scalars) and then a
+    /// parameter or the function's close, or a JSON object with a key. A
+    /// mention fails here at once, so it costs nothing of the budget.
+    private static func opensCall(_ payload: Substring) -> Bool {
+        var scalars = payload.unicodeScalars.drop { $0.properties.isWhitespace }
+        if scalars.first == "{" {
+            scalars = scalars.dropFirst().drop { $0.properties.isWhitespace }
+            return scalars.first == "\"" || scalars.first == "}"
+        }
+        guard scalars.starts(with: "<function=".unicodeScalars) else { return false }
+        scalars = scalars.dropFirst("<function=".unicodeScalars.count)
+        guard let angle = scalars.prefix(256).firstIndex(of: ">") else { return false }
+        let name = scalars[..<angle]
+        guard !name.isEmpty, !name.contains(where: { $0.properties.isWhitespace }) else { return false }
+        let body = scalars[scalars.index(after: angle)...].drop { $0.properties.isWhitespace }
+        return body.starts(with: "<parameter=".unicodeScalars) || body.starts(with: "</function>".unicodeScalars)
     }
 
     private mutating func drain(final: Bool) -> [ParsedReasoning] {

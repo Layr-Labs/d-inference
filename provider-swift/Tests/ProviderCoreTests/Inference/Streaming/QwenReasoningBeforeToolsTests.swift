@@ -277,8 +277,8 @@ struct QwenReasoningBeforeToolsTests {
         .init(name: "a call written in a thought that never closes, then the end of the turn",
               output: "I need the weather.\n" + call("Bern"), calls: [weather("Bern")],
               streamsWhileGenerated: false),
-        .init(name: "two calls written in a thought that never closes, then the end of the turn",
-              output: "Two cities.\n" + call("Zürich") + "\n" + call("Paris") + "\n",
+        .init(name: "two calls written back to back in a thought that never closes, then the end of the turn",
+              output: "Two cities.\n" + call("Zürich") + call("Paris"),
               calls: [weather("Zürich"), weather("Paris")], streamsWhileGenerated: false),
         .init(name: "a JSON-dialect call written in a thought that never closes, then the end of the turn",
               output: "Saving it.\n" + jsonCallInThought,
@@ -335,6 +335,9 @@ struct QwenReasoningBeforeToolsTests {
         .init(name: "a call at the end of a thought cut off by the token limit",
               output: "I need the weather.\n" + call("Bern"), lengthStop: true,
               calls: [], reasoning: "I need the weather.\n" + call("Bern")),
+        .init(name: "thinking off: a call at the end of a stray thought cut off by the token limit",
+              output: "<think>\nI need the weather.\n" + call("Bern"), choice: .thinkingOff, lengthStop: true,
+              calls: [], reasoning: "I need the weather.\n" + call("Bern")),
         .init(name: "a mention that opens like a call, then a call, in a thought that never closes",
               output: "I'll emit <tool_call>\n<function=get_weather> for Bern.\n" + call("Bern"),
               calls: [weather("Bern")], streamsWhileGenerated: false),
@@ -347,6 +350,10 @@ struct QwenReasoningBeforeToolsTests {
         .init(name: "required: a stray thought that never closes and ends in the call",
               output: "<think>\nI need the weather.\n" + call("Bern"), choice: .required,
               calls: [weather("Bern")], streamsWhileGenerated: false),
+        // The raw route ran both calls too, but sent the newline between them as reasoning after the first call.
+        .init(name: "two calls on their own lines at the end of a thought that never closes: no reasoning between them",
+              output: "Two cities.\n" + call("Zürich") + "\n" + call("Paris") + "\n",
+              calls: [weather("Zürich"), weather("Paris")], streamsWhileGenerated: false),
         // The trade-off: only the frames at the very end of the thought are calls. A draft and a second real call
         // cannot be told apart, so a call separated from them by text stays reasoning (the raw route ran both).
         .init(name: "two calls with text between them in a thought that never closes: the last one",
@@ -383,6 +390,9 @@ struct QwenReasoningBeforeToolsTests {
         let paris = Self.call("Paris"), bern = Self.call("Bern")
         let nested = "<tool_call>\n<function=save_note>\n<parameter=body>\nsee <tool_call>\n<function=x>\n</parameter>\n"
             + "</function>\n</tool_call>"
+        // A mention that reaches its first `<parameter=` cannot be told from a call whose argument spells the tags
+        // (`nested`): the frame runs on to the real call's end and parses, as on the raw route.
+        let opensAParameter = "<tool_call>\n<function=get_weather>\n<parameter=location> with the city.\n" + bern
         for (thought, trailing) in [
             ("I need the weather.\n" + bern, bern),
             ("I need the weather.\n" + bern + "\n \n", bern + "\n \n"),
@@ -394,17 +404,29 @@ struct QwenReasoningBeforeToolsTests {
             ("Emit <tool_call>{name, arguments}.\n" + bern, bern),
             ("Saving.\n" + nested, nested),
             ("Saving.\n" + Self.jsonCallInThought, Self.jsonCallInThought),
+            ("I'll write " + opensAParameter, opensAParameter),
+            // Thousands of mentions that open like calls cost nothing: each is read as a mention at its prose.
+            (String(repeating: "Emit <tool_call>\n<function=get_weather> for X. ", count: 3_000) + bern, bern),
         ] {
-            #expect(NativeChannelSplitter.trailingCalls(in: thought) == trailing, "\(thought)")
+            #expect(NativeChannelSplitter.trailingCalls(in: thought) == trailing, "\(thought.prefix(200))")
         }
         for thought in ["Maybe " + paris + " no.", "Use <tool_call> tags", "Use <tool_call> tags </tool_call>",
                         "Broken <tool_call>\n<function=get_weather>\nnot a parameter\n</tool_call>",
                         "Half " + String(bern.dropLast(3)), "", "No calls at all."] {
             #expect(NativeChannelSplitter.trailingCalls(in: thought) == nil, "\(thought)")
         }
-        // Thousands of mentions that open like calls, each running on to the last frame's end: the work stays
-        // bounded, and past the bound nothing is promoted.
-        let degenerate = String(repeating: "<tool_call>\n<function=get_weather> again ", count: 3_000) + bern
+        // With the request's tools, a frame with an undeclared name (an echoed template example) is a mention.
+        let example = "<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n"
+            + "</parameter>\n</function>\n</tool_call>"
+        let declared: [[String: any Sendable]] = [
+            ["type": "function", "function": ["name": "get_weather"] as [String: any Sendable]],
+        ]
+        #expect(NativeChannelSplitter.trailingCalls(in: "Like this:\n" + example + "\n" + bern, tools: declared) == bern)
+        #expect(NativeChannelSplitter.trailingCalls(in: "Like this:\n" + example + "\n" + bern) == example + "\n" + bern)
+        // Thousands of frames that read as calls up to their first parameter and then fail to parse, each running
+        // on to the last frame's end: the work stays bounded, and past the bound nothing is promoted.
+        let degenerate = String(repeating: "<tool_call>\n<function=get_weather>\n<parameter=location>\nX\n</parameter>\n"
+            + "again ", count: 2_000) + bern
         #expect(NativeChannelSplitter.trailingCalls(in: degenerate) == nil)
         // At any chunking, the frames that end an open thought also leave as content at the end of the output, and
         // only then; a closed thought, a cut at the token limit or the option off leaves them reasoning.

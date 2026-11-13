@@ -3328,22 +3328,24 @@ aside) is the model calling from inside it, a known Qwen 3.5 failure mode
 (`promotesTrailingCalls`) also returns those frames as content, so they parse
 as calls, as on the raw route. Such a call leaves when the output ends, not
 while generated, and its text stays in the streamed reasoning too. Frames are
-read as the Qwen parser frames content, and only frames that parse count, so a
-mentioned tag never starts one. Only the frames at the very end count: a frame
-followed by more thought, or by `</think>`, stays reasoning, and so does an
-earlier call that text separates from them (a drafted call and a second real
-call cannot be told apart; the raw route ran both). A thought the token limit
-cut off (`length`) promotes nothing
-(`NativeToolStreamRouter.outputReachedTokenLimit`). The search is bounded at a
-few passes over the thought; past that bound nothing is promoted. Inside a
-thought a literal `</think>`, even in a call's arguments, ends it, as on every
-native family. A request without tools, another requested `tool_call_parser`
-and an explicit non-think reasoning parser keep the raw-text route; so does a
-prompt whose think state the probe cannot read, unless the request has the
-local server's streamed content seed. A collected local response carries
-content and reasoning untrimmed, as on the native families: a call's message
-keeps the `\n\n` after `</think>` as its content, and a collected Responses
-`output` has it as a message item before the calls.
+read as the Qwen parser frames content, and only frames that parse with a
+declared name count: a mention never starts one, unless it reaches its first
+`<parameter=` (then it cannot be told from a call whose argument spells the
+tags, as on the raw route), and a frame that never closes holds the rest of the
+thought. Only the frames at the very end count: a frame followed by more
+thought, or by `</think>`, stays reasoning, and so does an earlier call that
+text separates from them (a drafted call and a second real call cannot be told
+apart; the raw route ran both). A thought the token limit cut off (`length`)
+promotes nothing (`NativeToolStreamRouter.outputReachedTokenLimit`). The search
+is bounded by a fixed multiple of the thought's length; past that bound nothing
+is promoted. Inside a thought a literal `</think>`, even in a call's arguments,
+ends it, as on every native family. A request without tools, another requested
+`tool_call_parser` and an explicit non-think reasoning parser keep the raw-text
+route; so does a prompt whose think state the probe cannot read, unless the
+request has the local server's streamed content seed. A collected local
+response carries content and reasoning untrimmed, as on the native families: a
+call's message keeps the `\n\n` after `</think>` as its content, and a
+collected Responses `output` has it as a message item before the calls.
 
 `ReasoningPromptProbe.streamingPrefix` in
 `provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningPromptProbe.swift`

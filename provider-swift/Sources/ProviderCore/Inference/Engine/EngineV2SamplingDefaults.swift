@@ -82,6 +82,7 @@ public struct EngineV2SamplingDefaults: Sendable, Equatable {
     static let qwen35NineBCardDefaults = EngineV2SamplingDefaults(
         temperature: 1.0, topP: 0.95, topK: 20)
     static let qwen35NineBModelID = "Qwen3.5-9B"
+    static let qwen35NineBPenaltyEnvironmentKey = "DARKBLOOM_QWEN35_9B_PRESENCE_PENALTY"
     static let qwen35CardModelTypes = [
         "Qwen3.5-9B": "qwen3_5",
         "qwen3.5-35b-a3b": "qwen3_5_moe",
@@ -112,7 +113,8 @@ public struct EngineV2SamplingDefaults: Sendable, Equatable {
     /// the checkpoint directory is unknown, the file is absent or
     /// unreadable, or the artifact declares `do_sample: false`.
     static func resolve(
-        modelId: String, modelType: String?, modelDirectory: URL?
+        modelId: String, modelType: String?, modelDirectory: URL?,
+        environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> EngineV2SamplingDefaults {
         if let type = qwen35CardModelTypes[modelId], type == modelType {
             return modelId == qwen35NineBModelID ? qwen35NineBCardDefaults : qwen35CardDefaults

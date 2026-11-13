@@ -244,9 +244,6 @@ final class NemotronSuperLocalOutputTests: XCTestCase {
             _ = try none.append("</think>" + one)
             XCTAssertThrowsError(try none.finish(), tools)
         }
-        var parallel = try output(Self.weather + #","parallel_tool_calls":false"#)
-        _ = try parallel.append("</think>" + one + one)
-        XCTAssertThrowsError(try parallel.finish())
         var required = try output(Self.weather + #","tool_choice":"required""#)
         XCTAssertThrowsError(try required.append("</think>Sure, here it is."))
         var requiredMissing = try output(Self.weather + #","tool_choice":"required""#)
@@ -255,6 +252,23 @@ final class NemotronSuperLocalOutputTests: XCTestCase {
         var requiredValid = try output(Self.weather + #","tool_choice":"required""#)
         XCTAssertEqual(try stream(&requiredValid, ["plan</think>\n", one]),
                        ["R:plan", #"F:get_weather{"city":"A"}"#])
+    }
+
+    /// `parallel_tool_calls: false` returns the first call, as OpenAI and
+    /// vLLM do, instead of failing a response that made a second one.
+    func testParallelCallsDisabledKeepTheFirstCall() throws {
+        let one = "<tool_call>\n<function=get_weather>\n<parameter=city>\nA\n</parameter>\n</function>\n</tool_call>"
+        let two = one.replacingOccurrences(of: "\nA\n", with: "\nB\n")
+        for streaming in [true, false] {
+            var parallel = try output(Self.weather + #","parallel_tool_calls":false"#, streaming: streaming)
+            _ = try parallel.append("</think>" + one + two)
+            let finished = try parallel.finish()
+            XCTAssertEqual(finished.result.calls.map(\.function.arguments), [["city": .string("A")]])
+            XCTAssertEqual(try trace(finished.events).filter { $0.hasPrefix("F:") }, [#"F:get_weather{"city":"A"}"#])
+        }
+        var parallel = try output(Self.weather)
+        _ = try parallel.append("</think>" + one + two)
+        XCTAssertEqual(try parallel.finish().result.calls.count, 2)
     }
 
     func testStructuredOutputIsWithheldValidatedAndNormalized() throws {

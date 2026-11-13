@@ -144,6 +144,14 @@ struct QwenJSONSchemaRewriteTests {
             #expect(ResponseSchemaRewrite.subset(try Self.json(input), relaxingAssertions: true) == (try Self.json(expected)),
                     "\(input)")
         }
+        // Beside a reference or composition the target may be a closed object: a key count or dependency stays, and
+        // the wrapper is refused (an object root then falls back to a JSON object).
+        let closed = #"{"type":"object","properties":{"a":{"type":"string"}},"required":["a"]}"#
+        for input in [#"{"allOf":["# + closed + #"],"minProperties":2}"#,
+                      #"{"anyOf":["# + closed + #",{"type":"null"}],"dependentRequired":{"a":["z"]}}"#,
+                      ##"{"$ref":"#/$defs/A","not":{"maxProperties":1},"$defs":{"A":"## + closed + "}}"] {
+            #expect(ResponseSchemaRewrite.subset(try Self.json(input), relaxingAssertions: true) == nil, "\(input)")
+        }
         // The exact rewrite keeps every assertion.
         let pattern = try Self.json(#"{"type":"string","pattern":"^a"}"#)
         #expect(ResponseSchemaRewrite.subset(pattern) == pattern)

@@ -28,10 +28,11 @@ import MLXLMCommon
 /// generates only those keys): each rewritten node also loses its
 /// `valueAssertions` and an item bound beyond
 /// `ToolConstraintSchemaCompiler.maxArrayItems` (an array without one is
-/// unbounded). A node that declares no properties also loses its
-/// `keyAssertions`, and an `additionalProperties` schema there becomes `true`;
-/// beside declared properties those could demand keys the closed object never
-/// generates, so they stay for the compiler to refuse.
+/// unbounded). A node that declares no properties and wraps no reference or
+/// composition also loses its `keyAssertions`, and an `additionalProperties`
+/// schema there becomes `true`; beside declared properties, or beside a target
+/// that may be a closed object, those could demand keys the closed object never
+/// generates, so they stay for the compiler (or the wrapper check) to refuse.
 enum ResponseSchemaRewrite {
     /// Bounds the walk's work: a node it visits costs one plus its keys and
     /// the members of its `type` and `required` arrays, a reference or a
@@ -202,6 +203,7 @@ enum ResponseSchemaRewrite {
             object.removeValue(forKey: bound)
         }
         if case .object(let properties)? = object["properties"], !properties.isEmpty { return }
+        guard object["$ref"] == nil, object["allOf"] == nil, object["anyOf"] == nil else { return }
         for keyword in keyAssertions { object.removeValue(forKey: keyword) }
         if case .object? = object["additionalProperties"] { object["additionalProperties"] = .bool(true) }
     }

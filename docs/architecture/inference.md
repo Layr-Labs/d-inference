@@ -3773,13 +3773,14 @@ inlined, a one-branch `allOf`, `anyOf` with null made nullable, a draft-06 to
 2020-12 `$schema` dropped). Otherwise its value assertions are dropped
 (`ResponseSchemaRewrite.valueAssertions`: `minimum`, `maximum`, `pattern`,
 `format`, `minLength`, `maxLength`, `multipleOf`, `uniqueItems`, …; item bounds
-beyond 16; on an object that declares no properties also `keyAssertions` such
-as `minProperties` or `not`, and an `additionalProperties` schema becomes
-`true`): the grammar keeps the structure, types, enums and required keys, and
+beyond 16; on an open node, one that declares no properties and wraps no
+reference or composition, also `keyAssertions` such as `minProperties` or
+`not`, and an `additionalProperties` schema becomes `true`): the grammar keeps the structure, types, enums and required keys, and
 the values are the model's. This is a superset of the schema under the subset's
 closed objects (an object that declares properties generates only those keys,
 as for every constrained schema), so a catch-all or a key count beside declared
-properties stays and the schema falls back. An object root the subset still
+properties, or beside a reference or composition, stays and the schema falls
+back. An object root the subset still
 cannot shape (a union, `patternProperties`, …) is held to a JSON object. A
 widened answer is best effort, as these requests were unconstrained before: the
 provider's check when generation ends passes it (`JSONAnswerFormat.unchecked`;

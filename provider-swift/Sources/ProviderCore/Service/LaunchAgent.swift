@@ -446,6 +446,7 @@ public enum LaunchAgent: Sendable {
     /// default; an off word (`off`, `false`, `0`, `none`, `no`, `disabled`)
     /// refuses them and stops advertising them.
     static let inferencePassthroughEnvKeys = [
+        HarmonyFinalHeaderFilter.commentaryEnvironmentKey,
         EngineV2Factory.maxPartialPrefillsKey,
         EngineV2Factory.prefillChunkKey,
         EngineV2Factory.stepTokenBudgetKey,

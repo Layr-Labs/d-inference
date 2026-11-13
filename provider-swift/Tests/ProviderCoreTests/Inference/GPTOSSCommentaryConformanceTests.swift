@@ -1,4 +1,5 @@
 import Foundation
+import MLXLMCommon
 import MLXLMServer
 import XCTest
 @testable import ProviderCore
@@ -53,6 +54,61 @@ final class GPTOSSCommentaryConformanceTests: XCTestCase {
             for width in [1, 3, 4096] { XCTAssertEqual(filtered(output, width: width), output) }
         }
     }
+
+    func testBodyMarkersOtherRolesAndOversizedHeadersStayLiteral() {
+        let channel = "<|channel|>commentary<|message|>text"
+        for output in [
+            "<|start|>user" + channel,
+            "<|start|>tool" + channel,
+            "<|start|>assistant " + String(repeating: " ", count: 256) + channel,
+            "<|channel|>final<|message|>Literal " + channel,
+        ] {
+            for width in [1, 3, 4096] { XCTAssertEqual(filtered(output, width: width), output) }
+        }
+        XCTAssertTrue(LaunchAgent.inferencePassthroughEnvKeys.contains(flag))
+    }
+
+    #if DEBUG
+    func testPreambleArrivesBeforeTheToolThroughTheEngineStream() async throws {
+        let body = Data(#"{"model":"gpt-oss-20b","messages":[{"role":"user","content":"Check Paris"}],"stream":true,"reasoning_parser":"harmony","tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}}]}"#.utf8)
+        var request = try JSONDecoder().decode(OpenAIChatCompletionRequest.self, from: body)
+        request.streamToolCallDeltas = true
+        let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "gpt_oss")
+        for recipient in [
+            "assistant to=functions.get_weather<|channel|>commentary",
+            "assistant<|channel|>commentary to=functions.get_weather",
+        ] {
+            let handler = try ToolStreamPreparation.makeHandler(request: request, prepared: prepared,
+                modelType: "gpt_oss", streamToolCalls: true)
+            let output = "<|channel|>commentary<|message|>Checking Paris.<|end|><|start|>"
+                + recipient + "<|message|>{\"city\":\"Paris\"}<|call|>"
+            let upstream = AsyncStream<GenerationEvent> { continuation in
+                for char in output { continuation.yield(.chunk(String(char))) }
+                continuation.yield(.info(promptTokens: 9, completionTokens: output.count,
+                    tokensPerSecond: 0, finishReason: "stop"))
+                continuation.finish()
+            }
+            let stream = try MultiModelBatchSchedulerEngine(registryProvider: { [:] })._testMakeEventStream(
+                upstream: upstream, cancelUpstream: {}, prepared: prepared,
+                releaseBox: OneShotRelease(release: { _ in }, modelId: request.model),
+                toolHandler: handler, rewriteHarmonyFinalHeaders: true)
+            var parser = StreamingReasoningParser(format: .harmony)
+            var content = ""
+            var calls = [ToolCall]()
+            for try await event in stream {
+                if case .content(let text) = event { content += parser.parse(text).map(\.content).joined() }
+                if case .toolCallDelta(let delta) = event {
+                    XCTAssertEqual(content, "Checking Paris.", "The preamble must precede the call")
+                    if let call = delta.completed { calls.append(call) }
+                }
+            }
+            content += parser.finish().map(\.content).joined()
+            XCTAssertEqual(content, "Checking Paris.")
+            XCTAssertEqual(calls.count, 1)
+            XCTAssertEqual(calls.first?.function.arguments["city"], .string("Paris"))
+        }
+    }
+    #endif
 
     func testOffAndAbsentKeepCommentaryDropped() {
         let output = "<|channel|>commentary<|message|>Checking Paris.<|end|>"

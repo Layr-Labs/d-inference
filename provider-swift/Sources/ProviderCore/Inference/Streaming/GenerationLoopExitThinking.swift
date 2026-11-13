@@ -16,10 +16,14 @@ public struct GenerationLoopExitThinking: Sendable {
     let openMarker: String
     /// Text that closes it.
     let closeMarker: String
-    /// The tokens appended to end the thought: the close marker's token.
+    /// The tokens appended to end the thought: the family's closing text, with
+    /// the close marker as its own special token.
     let exitTokens: [Int]
     /// Their text, as the client's stream shows them.
     let exitText: String
+    /// The close marker's own token. A row that produced it after the stop
+    /// closed its thought itself.
+    let closeToken: Int
     /// The prompt itself left the reasoning channel open.
     let startsInside: Bool
     /// Shared with the continuation: the row's tokens and the guard's request.
@@ -28,6 +32,21 @@ public struct GenerationLoopExitThinking: Sendable {
     /// budget: a model that wrote a loop may write a near-verbatim one next,
     /// which the guard does not see.
     var answerTokenLimit = GenerationLoopExitThinkingPolicy.answerTokenLimit
+
+    init(
+        openMarker: String, closeMarker: String, exitTokens: [Int], exitText: String, closeToken: Int? = nil,
+        startsInside: Bool, record: GenerationLoopExitRecord,
+        answerTokenLimit: Int = GenerationLoopExitThinkingPolicy.answerTokenLimit
+    ) {
+        self.openMarker = openMarker
+        self.closeMarker = closeMarker
+        self.exitTokens = exitTokens
+        self.exitText = exitText
+        self.closeToken = closeToken ?? exitTokens.first ?? -1
+        self.startsInside = startsInside
+        self.record = record
+        self.answerTokenLimit = answerTokenLimit
+    }
 }
 
 /// One request's generated tokens and whether its loop guard asked to end
@@ -37,6 +56,7 @@ public final class GenerationLoopExitRecord: @unchecked Sendable {
     private let lock = NSLock()
     private var tokens: [Int] = []
     private var detection: GenerationLoopDetector.Detection?
+    private var closedAfter = false
 
     func append(_ new: [Int]) {
         guard !new.isEmpty else { return }
@@ -52,14 +72,26 @@ public final class GenerationLoopExitRecord: @unchecked Sendable {
 
     /// Every token the row produced, the in-flight ones after the stop included.
     var generatedTokens: [Int] { lock.withLock { tokens } }
+
+    func noteClosedAfterStop() {
+        lock.withLock { closedAfter = true }
+    }
+
+    /// The row's text after the stop closed the thought: a close whose token
+    /// came before its text, or one spelled as ordinary pieces.
+    var closedAfterStop: Bool { lock.withLock { closedAfter } }
 }
 
 /// Which requests may end a repeating thought instead of the whole answer.
 ///
-/// On by default for Gemma 4 only, whose thought closes with one special
-/// token (`<channel|>`). The guard keeps ending every other loop as `length`:
-/// a loop outside the thought, a family without a listed marker, a request
-/// that asked for logprobs (the forced token has none), a pair's request.
+/// On by default for Gemma 4, whose thought closes with one special token
+/// (`<channel|>`). Qwen 3.5/3.6 (`qwen3_5_moe`, `qwen3_5`), whose template
+/// closes a thought with `\n</think>\n\n` (`</think>` is one special token),
+/// are listed but off by default: their thought loops were too rare in the A/B
+/// to show rescues, and `qwen3_5` is also Qwen 3.8 27B. The guard keeps ending
+/// every other loop as `length`: a loop outside the thought, a family that is
+/// not on, a request that asked for logprobs (the forced tokens have none), a
+/// pair's request.
 ///
 /// `DARKBLOOM_LOOP_EXIT_THINKING`: unset, `1` or `on` keeps the default list;
 /// `0` or `off` turns it off; any other value is the comma-separated list of
@@ -70,13 +102,23 @@ enum GenerationLoopExitThinkingPolicy {
     struct Markers: Sendable, Equatable {
         let open: String
         let close: String
+        /// What the family's template writes around the close marker when the
+        /// model ends its own thought (Qwen: `\n</think>\n\n`).
+        var before = ""
+        var after = ""
     }
 
     /// The families whose thought this can end, by `model_type`.
     static let markersByModelType: [String: Markers] = [
         "gemma4": .init(open: "<|channel>", close: "<channel|>"),
         "gemma4_text": .init(open: "<|channel>", close: "<channel|>"),
+        "qwen3_5": qwenThink,
+        "qwen3_5_moe": qwenThink,
     ]
+
+    /// As the Qwen 3.5/3.6 template writes a closed thought:
+    /// `<think>\n…\n</think>\n\n` before the answer.
+    static let qwenThink = Markers(open: "<think>", close: "</think>", before: "\n", after: "\n\n")
 
     static let defaultModelTypes: Set<String> = ["gemma4", "gemma4_text"]
 
@@ -122,9 +164,18 @@ enum GenerationLoopExitThinkingPolicy {
         let tail = tokenizer.decode(
             tokenIds: Array(promptTokens.suffix(ReasoningPromptProbe.tailTokenCount)),
             skipSpecialTokens: false)
+        // The marker is its own token, so the text on each side tokenizes as
+        // it does in the template's whole closing text.
+        func spell(_ text: String) -> [Int] {
+            text.isEmpty ? [] : tokenizer.encode(text: text, addSpecialTokens: false)
+        }
+        let exitTokens = spell(markers.before) + [close] + spell(markers.after)
+        let exitText = markers.before + markers.close + markers.after
+        // The model must be fed what the client is shown.
+        guard tokenizer.decode(tokenIds: exitTokens, skipSpecialTokens: false) == exitText else { return nil }
         return GenerationLoopExitThinking(
             openMarker: markers.open, closeMarker: markers.close,
-            exitTokens: [close], exitText: markers.close,
+            exitTokens: exitTokens, exitText: exitText, closeToken: close,
             startsInside: endsInside(tail, open: markers.open, close: markers.close),
             record: GenerationLoopExitRecord())
     }

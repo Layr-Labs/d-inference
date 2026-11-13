@@ -12,11 +12,12 @@ import Logging
 /// for the row's stream to finish, and submits one continuation (its `submit`
 /// first waits for the row to release its serving slot:
 /// `EngineV2Bridge.waitForRowRelease`): the same prompt, every token the row
-/// produced, then the family's end-of-thinking marker, with the output budget
-/// the row left (at most `GenerationLoopExitThinking.answerTokenLimit`). The
-/// client sees one answer: the thought, the marker, then the continuation's
-/// text, and one terminal whose usage is the original prompt and every token
-/// produced (the row's, the marker, the continuation's).
+/// produced, then the family's end of thinking (`GenerationLoopExitThinking.exitTokens`),
+/// with the output budget the row left (at most
+/// `GenerationLoopExitThinking.answerTokenLimit`). The client sees one answer:
+/// the thought, the exit text, then the continuation's text, and one terminal
+/// whose usage is the original prompt and every token produced (the row's, the
+/// exit's, the continuation's).
 ///
 /// Anything that keeps the continuation from starting (under
 /// `minimumAnswerBudget` tokens of budget left, a row that closed its thought
@@ -125,10 +126,11 @@ enum LoopExitThinkingContinuation {
             onOutcome?(.endedAsLength(reason: reason))
         }
         let generated = exit.record.generatedTokens
-        // A row that closed its thought itself, in the tokens it produced
-        // after the stop, has no thought left to end.
-        if let detection = exit.record.requested,
-           generated.dropFirst(detection.generatedTokens).contains(where: exit.exitTokens.contains) {
+        // A row that closed its thought itself after the stop has no thought
+        // left to end: the marker's own token says so (not the text around
+        // it: Qwen's newlines are any text), or the text the guard followed.
+        if let detection = exit.record.requested, exit.record.closedAfterStop
+            || generated.dropFirst(detection.generatedTokens).contains(exit.closeToken) {
             return endAsLength("the row closed its thought itself")
         }
         let budget = min(outputBudget - held.completion - exit.exitTokens.count, exit.answerTokenLimit)

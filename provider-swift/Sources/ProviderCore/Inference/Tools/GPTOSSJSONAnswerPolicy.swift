@@ -35,7 +35,29 @@ enum GPTOSSJSONAnswerPolicy {
         promptTokens: [Int]?,
         enabled: Bool = enabled
     ) -> GPTOSSJSONAnswerConstraint? {
-        nil
+        guard enabled, modelType == "gpt_oss",
+              let format = request.responseFormat, format.requiresJSONOutput,
+              request.tools?.isEmpty ?? true, request.toolChoice == nil,
+              request.stop?.isEmpty ?? true, !MediaIngest.hasMedia(request) else { return nil }
+        let profile = JSONAnswerProfile.gptOSSAnswer
+        guard let answer = try? JSONAnswerFormat(format, forbidding: profile.contentMarkers, family: "GPT-OSS") else {
+            return declined("schema outside the constrained subset")
+        }
+        guard let promptTokens, !promptTokens.isEmpty,
+              tokenizer.inner.decode(tokenIds: Array(promptTokens.suffix(32)), skipSpecialTokens: false)
+                  .hasSuffix(GPTOSSAnswerFraming.promptBoundary) else {
+            return declined("unrecognized prompt boundary")
+        }
+        guard let vocabulary = try? JSONAnswerVocabulary.cached(for: tokenizer, profile: profile,
+                                                                 stopTokenIDs: stopTokenIDs) else {
+            return declined("tokenizer does not match the pinned vocabulary")
+        }
+        guard let constraint = try? GPTOSSJSONAnswerConstraint(format: answer, tokenizer: tokenizer.inner,
+                                                                vocabulary: vocabulary, profile: profile,
+                                                                maxTokens: request.maxTokens ?? defaultMaxTokens) else {
+            return declined("no positive output budget or unverified Harmony framing")
+        }
+        return constraint
     }
 
     /// Fixed reasons only: never schema text, prompt content or token IDs.

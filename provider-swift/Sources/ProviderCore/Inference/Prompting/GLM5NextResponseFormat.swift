@@ -144,13 +144,28 @@ struct GLM5NextResponseFormatOutput {
         }
     }
 
+    /// Whether the retained answer passes the check `finalAnswer` makes
+    /// without tool calls.
+    func answerValidates(finishReason: String) -> Bool {
+        (try? format.validatedContent(content, finishReason: finishReason)) != nil
+    }
+
     /// The answer as one content event at the end of generation. The format
     /// governs an answer, not calls: beside tool calls the retained text
     /// leaves as generated, as the service exposes the other families'
     /// content beside calls; otherwise the validated answer, or a typed 422.
-    func finalAnswer(finishReason: String, hasToolCalls: Bool) throws -> MLXServerGenerationEvent? {
+    /// An answer the token limit cut (`cutAtLimit`) ends `length`
+    /// (`TokenLimitCutPolicy`): normalized when it already holds a whole valid
+    /// value, as before, and otherwise as generated instead of a 422.
+    func finalAnswer(finishReason: String, hasToolCalls: Bool, cutAtLimit: Bool = false) throws
+        -> MLXServerGenerationEvent?
+    {
         guard !hasToolCalls else {
             return content.isEmpty ? nil : .parsed(.init(content: content, reasoningContent: nil))
+        }
+        if cutAtLimit {
+            let answer = (try? format.validatedContent(content, finishReason: finishReason)) ?? content
+            return answer.isEmpty ? nil : .parsed(.init(content: answer, reasoningContent: nil))
         }
         return .parsed(.init(content: try format.validatedContent(content, finishReason: finishReason),
             reasoningContent: nil))

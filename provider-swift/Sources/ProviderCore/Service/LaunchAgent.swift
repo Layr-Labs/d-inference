@@ -411,6 +411,10 @@ public enum LaunchAgent: Sendable {
     /// is the GLM default; its serial-target rollback must reach the job.
     /// `DARKBLOOM_GLM_JSON_SCHEMA_MISS=release`: a GLM JSON answer that parses
     /// but misses its schema is exposed instead of refused.
+    /// `DARKBLOOM_LENGTH_FINISH_AT_LIMIT` / `DARKBLOOM_STRICT_CALLS_AS_GENERATED`:
+    /// an answer cut at the token limit ends as `length`, and a streamed
+    /// `strict` call that fails its check after the start leaves as generated,
+    /// by default; `0`, `off` or `false` restores each refusal.
     /// `DARKBLOOM_GLM_DECODE_STEPS_BETWEEN_CHUNKS` and
     /// `DARKBLOOM_NEMOTRON_SUPER_DECODE_STEPS_BETWEEN_CHUNKS`: GLM and the
     /// Super owner run decode-only steps between prompt chunks by default; `0`
@@ -423,6 +427,10 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_LOOP_GUARD` / `DARKBLOOM_LOOP_EXIT_THINKING`: the loop guard
     /// and its exit from a repeating Gemma 4 thought are on by default; `0`
     /// turns each off, a list of `model_type`s replaces its default list.
+    /// `DARKBLOOM_QWEN35_9B_PRESENCE_PENALTY`: Qwen3.5-9B keeps the card's
+    /// presence penalty by default; its `0` rollback must reach the job.
+    /// `DARKBLOOM_GLM_TOOL_TEXT_FALLBACK`: unparsed `auto` GLM tool output is
+    /// text by default; exact `0` restores the 500.
     static let inferencePassthroughEnvKeys = [
         EngineV2Factory.maxPartialPrefillsKey,
         EngineV2Factory.prefillChunkKey,
@@ -447,6 +455,8 @@ public enum LaunchAgent: Sendable {
         ChatTemplateLoopRewrites.environmentKey,
         WorkFIFOPolicy.coldLoadReleaseEnvironmentKey,
         ModelCalibrationPolicy.shapeWarmupEnvironmentKey,
+        TokenLimitCutPolicy.environmentKey,
+        StrictToolCallPolicy.environmentKey,
         GLM5NextProtectedModel.rectangularVerifyEnvironmentKey,
         GLM5NextSchemaMiss.environmentKey,
         EngineV2Factory.glm5NextDecodeStepsKey,
@@ -456,6 +466,8 @@ public enum LaunchAgent: Sendable {
         "DARKBLOOM_GEMMA4_NAX_ROW_MAP",
         GenerationLoopGuardPolicy.environmentKey,
         GenerationLoopExitThinkingPolicy.environmentKey,
+        EngineV2SamplingDefaults.qwen35NineBPenaltyEnvironmentKey,
+        GLM5ToolSuffix.environmentKey,
     ] + MiMoV26DecodeDefaults.environmentKeys + MiMoV26DecodeDefaults.verifyEnvironmentKeys
 
     static let passthroughEnvKeys = [

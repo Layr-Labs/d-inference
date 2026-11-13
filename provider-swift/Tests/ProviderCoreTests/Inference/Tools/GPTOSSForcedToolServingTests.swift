@@ -170,9 +170,14 @@ struct GPTOSSForcedToolCutTests {
         prepared.cutAnswersEndAtLength = endsAtLength
         let handler = try #require(try ToolStreamPreparation.makeHandler(request: request, prepared: prepared,
             modelType: "gpt_oss"))
+        // One chunk per token, as the engine delivers them.
+        let tokens = HarmonyByteTestTokenizer.tokens(output)
         let upstream = AsyncStream<GenerationEvent> { continuation in
-            continuation.yield(.chunk(output))
-            continuation.yield(.info(promptTokens: 1, completionTokens: 40, tokensPerSecond: 0,
+            for token in tokens {
+                continuation.yield(.chunk(HarmonyByteTestTokenizer().decode(tokenIds: [token],
+                    skipSpecialTokens: false)))
+            }
+            continuation.yield(.info(promptTokens: 1, completionTokens: tokens.count, tokensPerSecond: 0,
                 finishReason: "length"))
             continuation.finish()
         }

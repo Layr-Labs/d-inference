@@ -63,7 +63,7 @@ extension EngineV2Bridge {
         performanceMeasurements.observe(value.phase, tps: value.tps, prompt: value.prompt,
             context: value.context, cache: value.cache, overlap: value.overlap, at: value.at,
             deadlinePostureEpoch: value.postureEpoch, recordAggregate: value.aggregate && !shortNativeSample,
-            restartEstimate: (calibration || (native && resetIsolated)) && value.aggregate)
+            restartEstimate: (calibration || (nativeClock && resetIsolated)) && value.aggregate)
         guard !isDecode, value.aggregate, value.cache == "cold", !shortNativeSample else { return }
         if resetIsolated || calibration { isolatedPrefillEwmaInitialized = false }
         if resetPrefill || calibration { prefillEwmaInitialized = false }

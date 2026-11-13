@@ -126,19 +126,18 @@ enum IsolatedPrefillAdmissionRate {
 /// before their first calibration cell, their own recovery admits only
 /// prompts of up to 1,024 tokens once their evidence expires.
 ///
-/// A short cold prompt measures mostly the request's fixed cost: on idle GLM
-/// M5 Ultras a 13-20-token prompt measured 9-140 tok/s, against 1,378-2,031
-/// tok/s for prompts above 4K tokens. One such sample set the estimate, every
-/// longer prompt was refused, and a refusal measures nothing. So a cold sample
-/// from a prompt of at most `sampleTokensAbove` tokens may raise the estimate
-/// (a short prompt's rate bounds a longer prompt's from below) but never lower
-/// it; calibration cells and longer prompts move it either way and alone date
-/// the evidence and, once the Mac has a calibration cell, restart the estimate
-/// after a gap (`countsAsRateSample`). A
-/// slower short sample stays in its prompt-size bucket only, out of the
-/// published isolated and observed prefill rates that routing reads. The
-/// smallest bucket never tightens a prompt (`bucketTightens`); larger buckets
-/// still do.
+/// A short cold prompt measures mostly the request's fixed cost: on idle GLM M5
+/// Ultras a 13-20-token prompt measured 9-140 tok/s, against 1,378-2,031 tok/s
+/// for prompts above 4K tokens. One such sample set the estimate, every longer
+/// prompt was refused, and a refusal measures nothing. So a cold sample from a
+/// prompt of at most `sampleTokensAbove` tokens may raise the estimate (a short
+/// prompt's rate bounds a longer prompt's from below) but never lower it;
+/// calibration cells and longer prompts move it either way and alone date the
+/// evidence and, once the Mac has a calibration cell, restart the estimate
+/// after a gap (`countsAsRateSample`). A slower short sample stays in its
+/// prompt-size bucket only, out of the published isolated and observed prefill
+/// rates that routing reads. The smallest bucket never tightens a prompt
+/// (`bucketTightens`); larger buckets still do.
 ///
 /// On an idle Mac at nominal posture, counted evidence older than the
 /// 120-second freshness window is priced at no less than the calibration

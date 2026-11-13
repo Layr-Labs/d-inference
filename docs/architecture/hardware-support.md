@@ -1004,7 +1004,7 @@ serving Mac, so the same request can project differently on other hardware:
   left never counts.
 
 The anchor, floor and refusal streak shape admission only. The published
-prefill rates (apart from GLM's and MiMo's slower short samples above),
+prefill rates (apart from GLM's and MiMo's short-sample handling above),
 capacity wire fields and the external platform's memory contract are
 unchanged.
 

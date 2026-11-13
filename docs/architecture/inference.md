@@ -1851,8 +1851,9 @@ It renders reasoning that OpenRouter returns on earlier assistant turns
 template's `clear_thinking` (`RawControls.contextClearThinking`). It serves
 `strict` tools by validating each `auto` call against its schema before
 exposure (`ToolConstraintValidation.validate`), not by constraining decoding.
-GLM's native engine refuses sampler token constraints, so a JSON
-`response_format` is likewise prompt-steered and validated, not constrained:
+Without `DARKBLOOM_GLM_JSON_ANSWERS` a JSON `response_format` is likewise
+prompt-steered and validated, not constrained (with it, the answer is also
+sampled under a grammar: [Constrained Qwen JSON answers](#constrained-qwen-json-answers)):
 the service's instruction message renders through the template, reasoning
 streams on a separate typed channel, and the answer is withheld until
 generation ends, then decoded and checked (`json_schema` against the caller's
@@ -3698,7 +3699,8 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Tools/GemmaJSONAnswerPol
 
 ### Constrained Qwen JSON answers
 
-Qwen, Bonsai 2 27B and Nemotron 3.5 Lightning share this machinery.
+Qwen, Bonsai 2 27B, Nemotron 3.5 Lightning and GLM-5.3-Flash share this
+machinery.
 The format instruction alone leaves some answers outside the requested schema:
 a near-miss key, a string for an integer, an invented key under
 `additionalProperties: false`, a raw newline inside a string, or prose. On the
@@ -3714,6 +3716,7 @@ when its model is admitted (`JSONAnswerPolicy.profile`):
 | Qwen 3.5, 3.6, 3.8 | `model_type` `qwen3_5` or `qwen3_5_moe` | `qwen35` |
 | PrismML Bonsai 2 27B | `prism_hadamard_qwen35` and a 27B listing id (`EngineV2SupportedModels.isBonsai2ListingModelID`; the 9B shares the type) | `bonsai2`: Qwen 3.5's tokenizer and ids, its own name in messages, `<|im_end|>` its one terminator |
 | Nemotron 3.5 Lightning | `nemotron_h` and a Lightning listing id (`EngineV2SupportedModels.isNemotron35ListingModelID`; Nano shares the type) | `nemotron35` |
+| GLM-5.3-Flash | `glm5_next`, `DARKBLOOM_GLM_JSON_ANSWERS` on, and an engine that runs token constraints (`EngineV2Bridge.acceptsTokenConstraints`) | `glm5Next` |
 
 Bonsai and Lightning are admitted for their answers only
 (`JSONAnswerProfile.constrainsReasoning` false): a prompt that opens a thought
@@ -3726,6 +3729,15 @@ constraint before reserving (`constrainedDecodingUnsupported`); their pairs
 keep prompt-only service. Qwen keeps both, as before. The Bonsai 2 9B is not
 admitted: it drafts, and its JSON prompts render thinking off by default, so
 each of its JSON rows would stop its whole decode cohort from speculating.
+
+GLM-5.3-Flash is admitted only with `DARKBLOOM_GLM_JSON_ANSWERS` `1`, `on`,
+`true` or `yes` (read once per process; forwarded to the LaunchAgent), and only
+where its engine runs token constraints: the native page-bank profiles qualify
+them in the SDK (`CBv2NativeExecutionContract.supportsTokenConstraints`, the
+profiles that qualify logprob rows: every target row samples with the ordinary
+sampler), a cluster pair does not. Its reasoning-first prompts, the JSON
+default, are constrained too, so such a request decodes target-only throughout.
+Declined GLM requests keep the withheld answer and its check below.
 
 `DARKBLOOM_JSON_ANSWER_GRAMMAR=qwen` (or `0`, `off`, `false`, `no`, `none`)
 keeps the grammar to the Qwen types, as before Bonsai and Lightning were
@@ -3757,7 +3769,11 @@ Qwen's terminators are `<|im_end|>` 248046 and `<|endoftext|>` 248044, Bonsai's
 at 248044 never samples it). Lightning: its 1,000 special and added tokens come
 first, BPE ids 1000–131071, the markers `<think>` 12 and `</think>` 13 (ordinary
 output pieces), terminators `<|im_end|>` 11 and `</s>` 2 (the checkpoint's two
-EOS ids). Before constraining, it checks that every terminator is an engine
+EOS ids). GLM-5.3-Flash: BPE ids below `<|endoftext|>` (154820), padding up to
+154,880, the markers `<think>` 154841 and `</think>` 154842, terminators
+`<|user|>` 154827 and `<|endoftext|>` 154820; neither its reasoning nor its
+answer can spell `<|user|>`, `<|assistant|>`, `<|system|>`, `<|observation|>` or
+`<|endoftext|>`, and the answer none of its tool-call markers. Before constraining, it checks that every terminator is an engine
 stop token (first, so a mismatched slot never decodes the vocabulary), each
 marker and terminator by id, spelling, encoding and decoding, and that every id
 in the BPE range decodes as a byte-level piece. It is built on the first such

@@ -67,6 +67,8 @@ enum JSONAnswerPolicy {
             return EngineV2SupportedModels.isBonsai2ListingModelID(modelID) ? .bonsai2 : nil
         case "nemotron_h" where families == .all && !servesDistributedPair:
             return EngineV2SupportedModels.isNemotron35ListingModelID(modelID) ? .nemotron35 : nil
+        case "glm5_next" where glm && acceptsTokenConstraints:
+            return .glm5Next
         default:
             return nil
         }

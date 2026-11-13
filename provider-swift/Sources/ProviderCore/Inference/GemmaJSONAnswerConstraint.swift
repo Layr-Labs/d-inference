@@ -1,12 +1,21 @@
 // Copyright © 2026 Eigen Labs.
 //
-// JSON `response_format` answers on Gemma 4: the API only (red). Nothing here
-// constrains output yet.
+// JSON `response_format` answers on Gemma 4. Its tokenizer is SentencePiece
+// BPE, not byte-level: pieces spell a space as U+2581 and reach other bytes
+// through 256 byte-fallback tokens. `GemmaAnswerPieces` gives each id the bytes
+// the stream decodes it to, so the shared byte-level JSON lexer
+// (`FlintJSONState`) drives the mask as it does for Qwen. The thought
+// (`<|channel>` ... `<channel|>`) stays free; the answer is one JSON value of
+// the request's format, then `<turn|>`.
 
 import Foundation
 import MLXLMCommon
 
 extension JSONAnswerProfile {
+    /// Gemma 4 (`gemma4`, `gemma4_text`): 262,144 SentencePiece ids, none of
+    /// them byte-level BPE. The thought markers are pieces so the thought can
+    /// open and close; every control spelling stays impossible in the answer.
+    /// Answers end with `<turn|>` or `<eos>`.
     static let gemma4 = JSONAnswerProfile(
         family: "Gemma",
         thinkClose: GemmaAnswerPieces.thoughtClose,
@@ -19,39 +28,200 @@ extension JSONAnswerProfile {
         vocabularySize: 262_144)
 }
 
+/// Gemma 4's vocabulary as the bytes its decoder produces (U+2581 to a space,
+/// byte fallback, fuse; no strip).
 enum GemmaAnswerPieces {
     static let thoughtOpen = "<|channel>"
     static let thoughtClose = "<channel|>"
+    /// Gemma 4's added tokens. None is text, and no answer may spell one:
+    /// the stream's parsers read them as framing.
     static let controlSpellings = [
         "<pad>", "<eos>", "<bos>", "<unk>", "<mask>", "<|tool>", "<tool|>", "<|tool_call>", "<tool_call|>",
         "<|tool_response>", "<tool_response|>", "<|\"|>", "<|think|>", "<|channel>", "<channel|>", "<|turn>",
         "<turn|>", "<|image>", "<|audio>", "<|image|>", "<|audio|>", "<image|>", "<audio|>", "<|video|>",
     ]
+    private static let controls = Set(controlSpellings)
+    private static let cache = TokenizerVocabularyCache<Set<Int>, JSONAnswerVocabulary>(capacity: 2)
 
-    static func bytes(_ raw: String) -> [UInt8]? { nil }
-
-    static func cachedVocabulary(for handle: TokenizerHandle, stopTokenIDs: Set<Int>) throws -> JSONAnswerVocabulary {
-        try vocabulary(tokenizer: handle.inner, stopTokenIDs: stopTokenIDs)
+    /// The bytes one vocabulary entry decodes to, or nil for an entry that is
+    /// never answer text: a control token, an `<unusedN>` slot, or an ASCII
+    /// byte-fallback token. The decoder turns a run of byte-fallback tokens
+    /// that is not UTF-8 into one U+FFFD per token, so an ASCII byte spelled
+    /// that way could vanish (a quote after a stray lead byte). Every ASCII
+    /// character JSON needs has its own piece; non-ASCII bytes occur only
+    /// inside strings, where U+FFFD is still a character.
+    static func bytes(_ raw: String) -> [UInt8]? {
+        if raw.utf8.count == 6, raw.hasPrefix("<0x"), raw.hasSuffix(">"),
+           let byte = UInt8(raw.dropFirst(3).dropLast(), radix: 16) {
+            return byte >= 0x80 ? [byte] : nil
+        }
+        if controls.contains(raw) { return nil }
+        if raw.hasPrefix("<unused"), raw.hasSuffix(">"), raw.count > 8,
+           raw.dropFirst(7).dropLast().allSatisfy({ $0.isASCII && $0.isNumber }) {
+            return nil
+        }
+        let bytes = Array(raw.replacingOccurrences(of: "\u{2581}", with: " ").utf8)
+        return bytes.isEmpty ? nil : bytes
     }
 
+    static func cachedVocabulary(for handle: TokenizerHandle, stopTokenIDs: Set<Int>) throws -> JSONAnswerVocabulary {
+        try cache.value(for: handle, key: stopTokenIDs) {
+            try vocabulary(tokenizer: handle.inner, stopTokenIDs: stopTokenIDs)
+        }
+    }
+
+    /// Verifies the thought markers and terminators by id, spelling, encoding
+    /// and decoding, and that the tokenizer has exactly the model's ids.
     static func vocabulary(tokenizer: any MLXLMCommon.Tokenizer, profile: JSONAnswerProfile = .gemma4,
                            stopTokenIDs: Set<Int>) throws -> JSONAnswerVocabulary {
-        throw ToolConstraintSchemaError.unsupported("Gemma JSON answers are not constrained")
+        for token in profile.pieceTokens + profile.answerEOS {
+            guard tokenizer.convertTokenToId(token.spelling) == token.id,
+                  tokenizer.convertIdToToken(token.id) == token.spelling,
+                  tokenizer.encode(text: token.spelling, addSpecialTokens: false) == [token.id],
+                  tokenizer.decode(tokenIds: [token.id], skipSpecialTokens: false) == token.spelling else {
+                throw ToolConstraintSchemaError.invalid("Gemma vocabulary does not match the pinned marker contract")
+            }
+        }
+        guard tokenizer.convertIdToToken(profile.vocabularySize) == nil else {
+            throw ToolConstraintSchemaError.invalid("Gemma tokenizer is larger than the pinned vocabulary")
+        }
+        var pieces = [[UInt8]](repeating: [], count: profile.vocabularySize)
+        for id in 0..<profile.vocabularySize {
+            guard let raw = tokenizer.convertIdToToken(id) else {
+                throw ToolConstraintSchemaError.invalid("Incomplete Gemma vocabulary")
+            }
+            pieces[id] = bytes(raw) ?? []
+        }
+        for token in profile.pieceTokens { pieces[token.id] = Array(token.spelling.utf8) }
+        return try JSONAnswerVocabulary(pieces: pieces, profile: profile, stopTokenIDs: stopTokenIDs)
     }
 }
 
+/// Interned parse position of a constrained Gemma answer: the phase, the
+/// rolling marker window, the JSON lexer once answering, and the current run
+/// of whitespace outside strings. No thought text or string body is kept.
 struct GemmaJSONAnswerBoundary: Hashable {
     enum Phase: Hashable {
+        /// The prompt ends at the model's turn: a thought may open, or the
+        /// answer starts.
         case opening
+        /// Free text until `<channel|>`.
         case thought
+        /// One JSON value of the grammar.
         case answer
     }
 
+    /// Consecutive JSON whitespace bytes allowed outside strings: room for any
+    /// indentation, while a model that keeps reaching for a refused spelling
+    /// (a code fence) cannot fill its budget with blank lines.
     static let maximumWhitespaceRun = 64
+    private static let open = Array(GemmaAnswerPieces.thoughtOpen.utf8)
+    private static let close = [Array(GemmaAnswerPieces.thoughtClose.utf8)]
+
+    private(set) var phase: Phase
+    private(set) var window: [UInt8] = []
+    private(set) var json: FlintJSONState?
+    private(set) var whitespace = 0
+
+    init(phase: Phase, grammar: FlintJSONGrammar) {
+        self.phase = phase
+        if phase == .answer { json = FlintJSONState(grammar: grammar) }
+    }
+
+    /// Free string bodies admit every piece without a sensitive byte.
+    var inStringBody: Bool { json?.inStringBody == true }
+
+    /// The value is complete; `isClosed` when it also delimits itself (a
+    /// number or an integer literal could still grow).
+    func isComplete(_ grammar: FlintJSONGrammar) -> Bool { json?.isComplete(grammar) == true }
+    var isClosed: Bool { json.map { $0.stack.isEmpty && $0.lexer == .afterValue } == true }
+
+    mutating func consume(_ byte: UInt8, grammar: FlintJSONGrammar, markers: [[UInt8]]) -> Bool {
+        switch phase {
+        case .opening:
+            if !window.isEmpty || byte == 0x3C {
+                window.append(byte)
+                guard Self.open.starts(with: window) else { return false }
+                if window.count == Self.open.count {
+                    phase = .thought
+                    window = []
+                    whitespace = 0
+                }
+                return true
+            }
+            if FlintJSONState.whitespace(byte) { return countWhitespace() }
+            phase = .answer
+            json = FlintJSONState(grammar: grammar)
+            return consumeAnswer(byte, grammar: grammar, markers: markers)
+        case .thought:
+            if Self.advance(&window, with: byte, markers: Self.close) != nil {
+                phase = .answer
+                window = []
+                json = FlintJSONState(grammar: grammar)
+            }
+            return true
+        case .answer:
+            return consumeAnswer(byte, grammar: grammar, markers: markers)
+        }
+    }
+
+    private mutating func consumeAnswer(_ byte: UInt8, grammar: FlintJSONGrammar, markers: [[UInt8]]) -> Bool {
+        // A closed value is followed by its terminator only, never by text
+        // the client would have to strip (a fence, blank lines).
+        guard var json, !isClosed, Self.advance(&window, with: byte, markers: markers) == nil else { return false }
+        if FlintJSONState.whitespace(byte), !json.inString {
+            guard countWhitespace() else { return false }
+        } else {
+            whitespace = 0
+        }
+        guard json.consume(byte, grammar: grammar) else { return false }
+        self.json = json
+        return true
+    }
+
+    private mutating func countWhitespace() -> Bool {
+        whitespace += 1
+        return whitespace <= Self.maximumWhitespaceRun
+    }
+
+    /// Keeps the longest window suffix that still starts a marker and returns
+    /// a marker this byte completed, however the output was split into tokens.
+    private static func advance(_ window: inout [UInt8], with byte: UInt8, markers: [[UInt8]]) -> [UInt8]? {
+        window.append(byte)
+        while !window.isEmpty && !markers.contains(where: { $0.starts(with: window) }) {
+            window.removeFirst()
+        }
+        return markers.first { window.count >= $0.count && window.suffix($0.count).elementsEqual($0) }
+    }
 }
 
+private extension FlintJSONState {
+    /// Inside a string or a declared key, where whitespace is content.
+    var inString: Bool {
+        switch lexer {
+        case .string, .key: return true
+        default: return false
+        }
+    }
+}
+
+/// Constrains one Gemma 4 answer to a single JSON value of a compiled grammar,
+/// after an optional free thought. The answer may end only once the value is
+/// complete, and a self-delimited value only with its terminator. Best effort
+/// by design, unlike `JSONAnswerConstraint`: the stream is not validated
+/// afterwards, a budget cut stays `length`, and a request whose states outgrow
+/// the cap continues unconstrained rather than failing. Per-request and
+/// host-only; interning collapses free text to bounded framing states.
 final class GemmaJSONAnswerConstraint: CBv2TokenConstraint, @unchecked Sendable {
     static let defaultMaximumStates = 16_384
+    private static let maximumMaskEntries = 4
+
+    /// An interned state: a parse position, or unconstrained output after the
+    /// state cap.
+    private enum Node: Hashable {
+        case bounded(GemmaJSONAnswerBoundary)
+        case free
+    }
 
     let mode = CBv2TokenConstraintMode.auto
     let maxTokens: Int
@@ -60,18 +230,138 @@ final class GemmaJSONAnswerConstraint: CBv2TokenConstraint, @unchecked Sendable 
     let format: JSONAnswerFormat
     let initialPhase: GemmaJSONAnswerBoundary.Phase
     let maximumStates: Int
+    private let vocabulary: JSONAnswerVocabulary
+    private let markers: [[UInt8]]
+    private let vocabularySize: Int
+    private let lock = NSLock()
+    private var nodes: [Node]
+    private var nodeIndex: [Node: Int]
+    private var allowedCache: [(state: Int, tokens: [Int])] = []
+    private var broadMasks: [(rejected: Set<Int>, tokens: [Int])] = []
 
     init(format: JSONAnswerFormat, vocabulary: JSONAnswerVocabulary, profile: JSONAnswerProfile = .gemma4,
          initialPhase: GemmaJSONAnswerBoundary.Phase, maxTokens: Int,
          maximumStates: Int = defaultMaximumStates) throws {
+        guard maxTokens > 0 else {
+            throw ToolConstraintSchemaError.invalid("Gemma JSON answers require a positive output budget")
+        }
         self.format = format
+        self.vocabulary = vocabulary
         self.initialPhase = initialPhase
         self.maxTokens = maxTokens
-        self.maximumStates = maximumStates
+        self.maximumStates = max(2, maximumStates)
+        markers = profile.contentMarkers
+        vocabularySize = vocabulary.pieces.count
         fallbackTokenID = vocabulary.fallbackTokenID
+        let initial = Node.bounded(GemmaJSONAnswerBoundary(phase: initialPhase, grammar: format.grammar))
+        nodes = [initial]
+        nodeIndex = [initial: 0]
     }
 
-    func allowedTokenIDs(state: Int, remainingTokens: Int) -> [Int] { [] }
-    func nextState(state: Int, tokenID: Int) -> Int? { nil }
-    var cachedStateCount: Int { 0 }
+    func allowedTokenIDs(state: Int, remainingTokens: Int) -> [Int] {
+        lock.lock(); defer { lock.unlock() }
+        guard remainingTokens > 0, nodes.indices.contains(state) else { return [] }
+        if let index = allowedCache.firstIndex(where: { $0.state == state }) {
+            let entry = allowedCache.remove(at: index)
+            allowedCache.append(entry)
+            return entry.tokens
+        }
+        let allowed: [Int]
+        switch nodes[state] {
+        case .free:
+            allowed = Array(0..<vocabularySize)
+        case .bounded(let boundary):
+            allowed = allowedTokens(boundary)
+        }
+        if allowedCache.count == Self.maximumMaskEntries { allowedCache.removeFirst() }
+        allowedCache.append((state, allowed))
+        return allowed
+    }
+
+    /// The allowed set depends on the budget only through `remainingTokens > 0`,
+    /// and interned state ids are never reused, so the CBv2 sampler may keep
+    /// one uploaded device mask per state.
+    func maskCacheKey(state: Int, remainingTokens: Int) -> Int? {
+        lock.lock(); defer { lock.unlock() }
+        guard remainingTokens > 0, nodes.indices.contains(state) else { return nil }
+        return state
+    }
+
+    /// `allowedTokenIDs` has no observable effect beyond its result, and
+    /// `nextState` interns only host-confirmed tokens, so CBv2 may sample one
+    /// step ahead and redraw it when the confirmed token changes the state.
+    var allowsChainedDecode: Bool { true }
+
+    func nextState(state: Int, tokenID: Int) -> Int? {
+        lock.lock(); defer { lock.unlock() }
+        guard nodes.indices.contains(state), (0..<vocabularySize).contains(tokenID) else { return nil }
+        let boundary: GemmaJSONAnswerBoundary
+        switch nodes[state] {
+        case .free:
+            return vocabulary.stopTokenIDs.contains(tokenID) ? -1 : state
+        case .bounded(let current):
+            boundary = current
+        }
+        if vocabulary.stopTokenIDs.contains(tokenID) {
+            return vocabulary.answerEOS.contains(tokenID) && boundary.phase == .answer
+                && boundary.isComplete(format.grammar) ? -1 : nil
+        }
+        guard let next = transition(boundary, token: tokenID) else { return nil }
+        let node = Node.bounded(next)
+        if let known = nodeIndex[node] { return known }
+        // Past the cap the answer continues as today's unconstrained output,
+        // never as an impossible state or a fabricated stop.
+        let interned = nodes.count < maximumStates - 1 ? node : .free
+        if let known = nodeIndex[interned] { return known }
+        nodes.append(interned)
+        nodeIndex[interned] = nodes.count - 1
+        return nodes.count - 1
+    }
+
+    var cachedStateCount: Int { lock.lock(); defer { lock.unlock() }; return nodes.count }
+
+    private func allowedTokens(_ boundary: GemmaJSONAnswerBoundary) -> [Int] {
+        let grammar = format.grammar
+        if boundary.phase == .answer, boundary.isClosed { return vocabulary.answerEOS }
+        var allowed: [Int]
+        if let sensitive = broadCandidates(boundary) {
+            // Opaque spans: only sensitive pieces can be refused, so the rest
+            // of the vocabulary is admitted without simulation.
+            let rejected = Set(sensitive.filter { transition(boundary, token: $0) == nil })
+            if let index = broadMasks.firstIndex(where: { $0.rejected == rejected }) {
+                let mask = broadMasks.remove(at: index)
+                broadMasks.append(mask)
+                allowed = mask.tokens
+            } else {
+                allowed = rejected.isEmpty ? vocabulary.pieceTokenIDs
+                    : vocabulary.pieceTokenIDs.filter { !rejected.contains($0) }
+                if broadMasks.count == Self.maximumMaskEntries { broadMasks.removeFirst() }
+                broadMasks.append((rejected, allowed))
+            }
+        } else {
+            let markers = markers
+            allowed = vocabulary.acceptedTokens(from: boundary) { $0.consume($1, grammar: grammar, markers: markers) }
+        }
+        if boundary.phase == .answer, boundary.isComplete(grammar) {
+            allowed = (allowed + vocabulary.answerEOS).sorted()
+        }
+        return allowed
+    }
+
+    /// The thought and free string bodies are opaque spans; structural
+    /// positions search the byte-ordered vocabulary instead.
+    private func broadCandidates(_ boundary: GemmaJSONAnswerBoundary) -> [Int]? {
+        if boundary.phase == .thought { return vocabulary.reasoningSensitive }
+        return boundary.inStringBody ? vocabulary.stringSensitive : nil
+    }
+
+    private func transition(_ boundary: GemmaJSONAnswerBoundary, token: Int) -> GemmaJSONAnswerBoundary? {
+        let piece = vocabulary.pieces[token]
+        guard !piece.isEmpty else { return nil }
+        var next = boundary
+        for byte in piece {
+            guard next.consume(byte, grammar: format.grammar, markers: markers) else { return nil }
+        }
+        return next
+    }
 }

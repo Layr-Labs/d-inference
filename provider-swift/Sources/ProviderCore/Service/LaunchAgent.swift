@@ -405,6 +405,8 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_TTFT_TEMPLATE_LOOPS=0` renders cached prompts with the
     /// template as served. `DARKBLOOM_TTFT_COLD_LOAD_RELEASE=0` restores the
     /// fully serial FIFO.
+    /// `DARKBLOOM_GEMMA_JSON_ANSWERS`: Gemma 4 JSON `response_format` answers
+    /// are grammar-constrained by default; `off` restores prompt-only answers.
     /// `DARKBLOOM_TTFT_SHAPE_WARMUP`: the load-time shape warmup is on by
     /// default; its `0` rollback must reach the job too.
     /// `DARKBLOOM_GLM_RECTANGULAR_VERIFY`: rectangular adaptive MTP verification
@@ -439,6 +441,7 @@ public enum LaunchAgent: Sendable {
         SSDPrefixCachePolicy.terminalBeforePublicationFlag,
         "DARKBLOOM_TTFT_GDN_BLOCKED",
         EngineV2SlotFactory.mimoRectangularVerifyEnvironmentKey,
+        GemmaJSONAnswerPolicy.environmentKey,
         PromptTokenCachePolicy.environmentKey,
         PromptTokenCachePolicy.capacityEnvironmentKey,
         PromptTokenCachePolicy.verifyEnvironmentKey,

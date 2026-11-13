@@ -94,18 +94,66 @@ struct GemmaJSONAnswerPolicyTests {
         #expect(try make(request, stops: [1, 50]) == nil)
     }
 
+    @Test func clientSchemaShapesAreRewrittenIntoTheSubsetExactly() throws {
+        // Pydantic / OpenAI strict conversion, zod-to-json-schema and one-branch allOf shapes.
+        let rewritten = [
+            ##"{"type":"object","properties":{"a":{"$ref":"#/$defs/A"}},"$defs":{"A":{"type":"string"}},"required":["a"]}"##,
+            #"{"type":"object","properties":{"a":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null}}}"#,
+            ##"{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","properties":{}}"##,
+            ##"{"$schema":"http://json-schema.org/draft-07/schema#","definitions":{"B":{"type":"integer"}},"type":"object","properties":{"b":{"$ref":"#/definitions/B","description":"n"}}}"##,
+            ##"{"type":"object","properties":{"c":{"allOf":[{"$ref":"#/$defs/C"}],"title":"C"}},"$defs":{"C":{"type":"boolean"}}}"##,
+            ##"{"type":"object","properties":{"e":{"anyOf":[{"$ref":"#/$defs/E"},{"type":"null"}]}},"$defs":{"E":{"type":"string","enum":["x","y"]}}}"##,
+        ]
+        for schema in rewritten {
+            let constraint = try #require(try make(Self.request(format: F.schemaFormat(schema)))
+                as? GemmaJSONAnswerConstraint, "\(schema)")
+            #expect(constraint.format.schema != nil, "enforced as written: \(schema)")
+        }
+        // The nullable enum admits its values and null, nothing else.
+        let e = try F.constraint(F.schemaFormat(rewritten[5]))
+        for value in [#""x""#, #""y""#, "null"] {
+            #expect(F.walk(F.ids(#"{"e": "# + value + "}"), e) != nil, "\(value)")
+        }
+        #expect(F.walk(F.ids(#"{"e": "z"#), e) == nil)
+    }
+
+    @Test func aPydanticSchemaKeepsItsKeysAndRequirements() throws {
+        // The GPU check's one miss before the rewrite: a stray token became a key of the JSON-object fallback.
+        let person = ##"""
+        {"$defs":{"Address":{"properties":{"street":{"title":"Street","type":"string"},"city":{"title":"City","type":"string"}},
+          "required":["street","city"],"title":"Address","type":"object","additionalProperties":false}},
+         "properties":{"name":{"title":"Name","type":"string"},"address":{"$ref":"#/$defs/Address"},
+          "nickname":{"anyOf":[{"type":"string"},{"type":"null"}],"title":"Nickname"}},
+         "required":["name","address","nickname"],"title":"Person","type":"object","additionalProperties":false}
+        """##
+        let constraint = try F.constraint(F.schemaFormat(person))
+        #expect(constraint.format.schema != nil)
+        for nickname in ["null", #""Sofi""#] {
+            let c = try F.constraint(F.schemaFormat(person))
+            let end = try #require(F.walk(F.ids(#"{"address": {"city": "Bogotá", "street": "Carrera 7"}, "name": "Sofía", "nickname": "#
+                + nickname + "}"), c), "\(nickname)")
+            #expect(c.nextState(state: end, tokenID: F.turnEnd) == -1)
+        }
+        let key = try #require(F.walk(F.ids(#"{"address": {""#), constraint))
+        #expect(!F.allows(constraint, key, F.space), "no undeclared key, not even a stray space")
+        let missing = try #require(F.walk(F.ids(#"{"address": {"city": "B""#), constraint))
+        #expect(!F.allows(constraint, missing, F.id("}")), "street is required")
+    }
+
     @Test func schemasOutsideTheSubsetFallBackToAnObjectOrToPromptOnly() throws {
         let objectRoots = [
-            ##"{"type":"object","properties":{"a":{"$ref":"#/$defs/A"}},"$defs":{"A":{"type":"string"}}}"##,
             #"{"type":"object","properties":{"a":{"type":"string","pattern":"^x"}}}"#,
-            ##"{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","properties":{}}"##,
-            #"{"type":"object","properties":{"a":{"anyOf":[{"type":"string"},{"type":"null"}]}}}"#,
+            #"{"type":"object","properties":{"a":{"type":"string","format":"email"}}}"#,
+            ##"{"type":"object","properties":{"n":{"$ref":"#/$defs/N"}},"$defs":{"N":{"type":"object","properties":{"next":{"$ref":"#/$defs/N"}}}}}"##,
+            ##"{"type":"object","properties":{"a":{"$ref":"#/$defs/A","minLength":2}},"$defs":{"A":{"type":"string"}}}"##,
+            #"{"type":"object","properties":{"a":{"anyOf":[{"type":"string"},{"type":"integer"}]}}}"#,
             #"{"type":"object","properties":{"a":{"type":"string","enum":["ok","<eos>"]}}}"#,
+            ##"{"type":"object","properties":{"a":{"$ref":"https://example.com/a.json"}}}"##,
         ]
         for schema in objectRoots {
             let constraint = try #require(try make(Self.request(format: F.schemaFormat(schema)))
                 as? GemmaJSONAnswerConstraint, "\(schema)")
-            #expect(constraint.format.schema == nil, "held to a JSON object")
+            #expect(constraint.format.schema == nil, "held to a JSON object: \(schema)")
             #expect(F.walk(F.ids(#"{"anything": [1]}"#), constraint) != nil)
             #expect(!F.allows(constraint, 0, F.id("[")))
         }

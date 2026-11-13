@@ -81,12 +81,21 @@ enum GemmaJSONAnswerPolicy {
         return nil
     }
 
-    /// The request's format, or a JSON-object answer (`heldToObject`) for a
-    /// `json_schema` outside the shared subset whose root is an object.
+    /// The request's format (a `json_schema` rewritten into the shared subset
+    /// where that is exact, `ResponseSchemaRewrite`), or a JSON-object answer
+    /// (`heldToObject`) for a `json_schema` outside it whose root is an object.
     static func answerFormat(_ format: OpenAIResponseFormat) -> (format: JSONAnswerFormat, heldToObject: Bool)? {
         let profile = JSONAnswerProfile.gemma4
         if let exact = try? JSONAnswerFormat(format, forbidding: profile.contentMarkers, family: profile.family) {
             return (exact, false)
+        }
+        if format.type == .jsonSchema, var payload = format.jsonSchema,
+           let rewritten = ResponseSchemaRewrite.subset(payload.schema) {
+            payload.schema = rewritten
+            if let exact = try? JSONAnswerFormat(.jsonSchema(payload), forbidding: profile.contentMarkers,
+                                                 family: profile.family) {
+                return (exact, false)
+            }
         }
         guard format.type == .jsonSchema, let schema = format.jsonSchema?.schema, rootIsObject(schema),
               let object = try? JSONAnswerFormat(.jsonObject(), forbidding: profile.contentMarkers,

@@ -311,6 +311,24 @@ struct GLM5ToolFailureTests {
         }
     }
 
+    /// A frame's tag in top-level text also takes back the malformed header
+    /// read as a mention before it: a think marker in that header's region,
+    /// either way, still fails.
+    @Test(arguments: ["stop", "length"], [1, 5, 4096])
+    func orphanTagsTakeBackAnEarlierMention(finishReason: String, width: Int) async throws {
+        let headerTools = #"[{"type":"function","function":{"name":"echo","parameters":{"type":"object","properties":{"text":{"type":"string"}}}}},{"type":"function","function":{"name":"x"}}]"#
+        let orphan = "<tool_call>x</tool_call><arg_key>text</arg_key><arg_value>v</arg_value></tool_call>"
+        for (output, visible) in [
+            ("<tool_call>echo<bad></think>PRIVATE" + orphan, ""),
+            ("Done.</think><tool_call>echo<bad><think>PRIVATE" + orphan, "Done.</think>"),
+        ] {
+            let result = try await run(output, forced: false, width: width, finishReason: finishReason,
+                tool: headerTools)
+            #expect(result.calls.isEmpty && result.visible == visible, "\(output)")
+            #expect(result.failure == .generationFailed("native GLM tool output is invalid"), "\(output)")
+        }
+    }
+
     /// Declared keys (byte for byte) and additional properties keep their
     /// types after a mention: the final call parses.
     @Test func declaredAndAdditionalKeysStillParse() async throws {
@@ -374,6 +392,17 @@ struct GLM5ToolFailureTests {
             return
         }
         #expect(text == "<tool_call>." && calls.count == 1 && calls.first?.function.arguments.count == 5_000)
+    }
+
+    /// And many quote-free frames discarded before the end against many
+    /// tools: only frames whose boundary needs it, and the final run, are
+    /// checked by the SDK's parser.
+    @Test func manyDiscardedFramesAgainstManyTools() throws {
+        let tools: [[String: any Sendable]] = (0 ..< 500).map {
+            ["type": "function", "function": ["name": "f\($0)"] as [String: any Sendable]]
+        }
+        let suffix = "<tool_call>." + String(repeating: "<tool_call>f0</tool_call>.", count: 20_000)
+        #expect(GLM5ToolSuffix.split(suffix, tools: tools) == .text(suffix, calls: []))
     }
 
     /// And a long generated name with many arguments: the name is looked up

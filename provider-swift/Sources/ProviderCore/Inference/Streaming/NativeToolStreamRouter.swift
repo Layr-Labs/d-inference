@@ -64,6 +64,12 @@ struct NativeToolStreamRouter {
     /// True when calls leave as `.toolCallDelta` events while generated.
     var streamsToolCalls: Bool { streamedCallPolicy != nil }
 
+    /// The engine stopped at the token limit (`length`): a thought it cut off
+    /// promotes none of its frames.
+    mutating func outputReachedTokenLimit() {
+        parser?.outputReachedTokenLimit()
+    }
+
     /// Reasoning classified since the last call but withheld from the events
     /// at the caller's request. Its owner counts it as generated reasoning; it
     /// is never emitted, logged or part of the response hash.

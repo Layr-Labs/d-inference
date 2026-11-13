@@ -44,12 +44,14 @@ private final class ScriptedQwenEngine: CBv2Engine, Sendable {
 #if DEBUG
 /// The forwarder alone over the same output, with the route chosen by the
 /// caller: `nativeReasoningPrefix` nil is the raw-text route, the seed is the
-/// native split. Prompt policy, parser and handler are production's.
+/// native split (`promotes`: with the trailing-call rule, as production runs
+/// it). Prompt policy, parser and handler are production's.
 private struct RoutedQwenEngine: MLXServerEngine {
     let chunks: [String]
     let modelType: String
     let seed: String
     let native: Bool
+    let promotes: Bool
     let finish: String
 
     func availableModels() async throws -> [MLXServerModel] { [] }
@@ -68,7 +70,8 @@ private struct RoutedQwenEngine: MLXServerEngine {
         return try MultiModelBatchSchedulerEngine(registryProvider: { [:] })._testMakeEventStream(
             upstream: upstream.stream, cancelUpstream: {}, prepared: prepared,
             releaseBox: OneShotRelease(release: { _ in }, modelId: request.model),
-            reasoningPrefix: seed, toolHandler: handler, nativeReasoningPrefix: native ? seed : nil)
+            reasoningPrefix: seed, toolHandler: handler, nativeReasoningPrefix: native ? seed : nil,
+            promotesTrailingReasoningCalls: native && promotes)
     }
 
     func tokenize(_ request: TokenizeRequest) async throws -> TokenizeResponse { .init(tokens: []) }
@@ -292,8 +295,9 @@ struct QwenReasoningBeforeToolsTests {
               calls: [weather("Bern")], content: "Let me check the weather.\n</think>", reasoning: ""),
     ]
 
-    /// What the raw route got wrong (CONFORMANCE's replay cases, `replay/out/qwen38*`, and the shapes around them):
-    /// each of these fails without the split.
+    /// Where the split differs from the raw route, each failing without it: what the raw route got wrong
+    /// (CONFORMANCE's replay cases, `replay/out/qwen38*`, and the shapes around them) and, last, the trade-off it
+    /// documents for calls in a thought that never closes.
     static let fixed: [QwenToolOutputCase] = [
         .init(name: "a lone <tool_call> mentioned in the thought, then the call",
               output: "I should wrap it in <tool_call> tags.\n</think>\n\n" + call("Bern"),
@@ -328,15 +332,30 @@ struct QwenReasoningBeforeToolsTests {
         .init(name: "a call drafted in a thought cut off by the token limit",
               output: "Maybe " + call("Paris") + " but I am still thinking", lengthStop: true,
               calls: [], reasoning: "Maybe " + call("Paris") + " but I am still thinking"),
+        .init(name: "a call at the end of a thought cut off by the token limit",
+              output: "I need the weather.\n" + call("Bern"), lengthStop: true,
+              calls: [], reasoning: "I need the weather.\n" + call("Bern")),
+        .init(name: "a mention that opens like a call, then a call, in a thought that never closes",
+              output: "I'll emit <tool_call>\n<function=get_weather> for Bern.\n" + call("Bern"),
+              calls: [weather("Bern")], streamsWhileGenerated: false),
         .init(name: "thinking off: a stray thought that mentions the tag, then the call",
               output: "<think>\nWrap it in <tool_call> tags.\n</think>\n\n" + call("Bern"), choice: .thinkingOff,
               calls: [weather("Bern")], reasoning: "Wrap it in <tool_call> tags."),
         .init(name: "required: a stray thought that mentions the tag, then the call",
               output: "<think>\nWrap it in <tool_call> tags.\n</think>\n\n" + call("Bern"), choice: .required,
               calls: [weather("Bern")], reasoning: "Wrap it in <tool_call> tags."),
+        .init(name: "required: a stray thought that never closes and ends in the call",
+              output: "<think>\nI need the weather.\n" + call("Bern"), choice: .required,
+              calls: [weather("Bern")], streamsWhileGenerated: false),
+        // The trade-off: only the frames at the very end of the thought are calls. A draft and a second real call
+        // cannot be told apart, so a call separated from them by text stays reasoning (the raw route ran both).
+        .init(name: "two calls with text between them in a thought that never closes: the last one",
+              output: "I need both.\n" + call("Zürich") + "\nAnd Paris too:\n" + call("Paris"),
+              calls: [weather("Paris")], streamsWhileGenerated: false),
     ]
 
     static let cases = clean + unchanged + fixed
+    static let callsFromUnclosedThoughts = unchanged.filter { !$0.streamsWhileGenerated }
 
     /// The route is the Qwen 3.5 types' alone: native families keep their own, other Qwen types the raw one,
     /// and `auto` calls keep streaming (their deltas key on the native-channel predicate, which stays false).
@@ -357,8 +376,9 @@ struct QwenReasoningBeforeToolsTests {
         }
     }
 
-    /// Only complete frames that end an open thought, whitespace aside, are promoted: never a mentioned tag, a frame
-    /// with more thought after it, a tag inside an argument, or an unfinished frame.
+    /// Only complete frames that parse and end an open thought, whitespace aside, are promoted: never a mentioned
+    /// tag (even one that opens like a call), a frame with more thought after it, a tag inside an argument, or an
+    /// unfinished frame.
     @Test func trailingCallsAreCompleteFramesAtTheEndOfTheThought() {
         let paris = Self.call("Paris"), bern = Self.call("Bern")
         let nested = "<tool_call>\n<function=save_note>\n<parameter=body>\nsee <tool_call>\n<function=x>\n</parameter>\n"
@@ -368,20 +388,28 @@ struct QwenReasoningBeforeToolsTests {
             ("I need the weather.\n" + bern + "\n \n", bern + "\n \n"),
             ("Two.\n" + paris + "\n" + bern, paris + "\n" + bern),
             ("Maybe " + paris + " no.\n" + bern, bern),
+            ("Both.\n" + paris + "\nAnd Bern:\n" + bern, bern),
             ("Use <tool_call> tags.\n" + bern, bern),
+            ("I'll emit <tool_call>\n<function=get_weather> for Bern.\n" + bern, bern),
+            ("Emit <tool_call>{name, arguments}.\n" + bern, bern),
             ("Saving.\n" + nested, nested),
             ("Saving.\n" + Self.jsonCallInThought, Self.jsonCallInThought),
         ] {
             #expect(NativeChannelSplitter.trailingCalls(in: thought) == trailing, "\(thought)")
         }
         for thought in ["Maybe " + paris + " no.", "Use <tool_call> tags", "Use <tool_call> tags </tool_call>",
+                        "Broken <tool_call>\n<function=get_weather>\nnot a parameter\n</tool_call>",
                         "Half " + String(bern.dropLast(3)), "", "No calls at all."] {
             #expect(NativeChannelSplitter.trailingCalls(in: thought) == nil, "\(thought)")
         }
+        // Thousands of mentions that open like calls, each running on to the last frame's end: the work stays
+        // bounded, and past the bound nothing is promoted.
+        let degenerate = String(repeating: "<tool_call>\n<function=get_weather> again ", count: 3_000) + bern
+        #expect(NativeChannelSplitter.trailingCalls(in: degenerate) == nil)
         // At any chunking, the frames that end an open thought also leave as content at the end of the output, and
-        // only then; a closed thought or the option off leaves them reasoning.
+        // only then; a closed thought, a cut at the token limit or the option off leaves them reasoning.
         for width in [1, 3, 1_000] {
-            func split(_ text: String, promotes: Bool = true) -> (reasoning: String, content: String) {
+            func split(_ text: String, promotes: Bool, cut: Bool) -> (reasoning: String, content: String) {
                 var splitter = NativeChannelSplitter(prefix: "<think>", protectToolFrames: true,
                     qwenStructuredFrames: true, promotesTrailingCalls: promotes)
                 let characters = Array(text)
@@ -389,16 +417,18 @@ struct QwenReasoningBeforeToolsTests {
                 for start in stride(from: 0, to: characters.count, by: width) {
                     pieces += splitter.parse(String(characters[start..<min(start + width, characters.count)]))
                 }
+                if cut { splitter.outputReachedTokenLimit() }
                 pieces += splitter.finish()
                 return (pieces.compactMap(\.reasoningContent).joined(), pieces.map(\.content).joined())
             }
-            for (text, promotes, reasoning, content) in [
-                ("Need it.\n" + bern, true, "Need it.\n" + bern, bern),
-                ("Need it.\n" + bern, false, "Need it.\n" + bern, ""),
-                ("Need it.\n" + bern + "</think>", true, "Need it.\n" + bern, ""),
-                ("Plan.</think>\n\n<think>Need it.\n" + bern, true, "Plan.Need it.\n" + bern, "\n\n" + bern),
+            for (text, promotes, cut, reasoning, content) in [
+                ("Need it.\n" + bern, true, false, "Need it.\n" + bern, bern),
+                ("Need it.\n" + bern, false, false, "Need it.\n" + bern, ""),
+                ("Need it.\n" + bern, true, true, "Need it.\n" + bern, ""),
+                ("Need it.\n" + bern + "</think>", true, false, "Need it.\n" + bern, ""),
+                ("Plan.</think>\n\n<think>Need it.\n" + bern, true, false, "Plan.Need it.\n" + bern, "\n\n" + bern),
             ] {
-                let result = split(text, promotes: promotes)
+                let result = split(text, promotes: promotes, cut: cut)
                 #expect(result.reasoning == reasoning && result.content == content, "\(width): \(text)")
             }
         }
@@ -457,6 +487,30 @@ struct QwenReasoningBeforeToolsTests {
             #expect(native.finishReason == raw.finishReason, "\(chunking.rawValue): \(raw) | \(native)")
         }
     }
+
+    /// Calls at the end of a thought that never closes: the split returns the
+    /// raw route's calls, content and finish reason, once the output ends, and
+    /// the whole thought, calls included, stays its reasoning.
+    @Test(arguments: Self.callsFromUnclosedThoughts)
+    func callsFromAnUnclosedThoughtMatchTheRawRoute(expected: QwenToolOutputCase) async throws {
+        let thought = expected.output.hasPrefix("<think>")
+            ? String(expected.output.dropFirst("<think>".count)) : expected.output
+        for chunking in Chunking.allCases {
+            let chunks = chunking.split(expected.output)
+            let raw = try await Self.route(expected, chunks: chunks, native: false)
+            let native = try await Self.route(expected, chunks: chunks, native: true, promotes: true)
+            let label = "\(chunking.rawValue): \(raw) | \(native)"
+            #expect(raw.error == nil && native.error == nil, "\(label)")
+            #expect(raw.calls.count == expected.calls.count && native.calls.count == raw.calls.count, "\(label)")
+            for (call, want) in zip(native.calls, raw.calls) {
+                #expect(call.name == want.name && Self.sameJSON(call.arguments, want.arguments), "\(label)")
+            }
+            #expect(native.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                == raw.content.trimmingCharacters(in: .whitespacesAndNewlines), "\(label)")
+            #expect(native.finishReason == raw.finishReason, "\(label)")
+            #expect(native.reasoning == thought, "\(label)")
+        }
+    }
     #endif
 
     private static func body(_ build: QwenToolBuild, _ expected: QwenToolOutputCase, stream: Bool) -> [String: Any] {
@@ -502,7 +556,9 @@ struct QwenReasoningBeforeToolsTests {
 
     #if DEBUG
     /// The forwarder alone, on the raw route or the native split, streamed.
-    private static func route(_ expected: QwenToolOutputCase, chunks: [String], native: Bool) async throws -> Served {
+    private static func route(
+        _ expected: QwenToolOutputCase, chunks: [String], native: Bool, promotes: Bool = false
+    ) async throws -> Served {
         let build = builds[0]
         let data = try JSONSerialization.data(withJSONObject: body(build, expected, stream: true))
         var request = try ProviderLoop.decodeOpenAIRequest(data, modelType: build.modelType)
@@ -510,7 +566,7 @@ struct QwenReasoningBeforeToolsTests {
         request.streamOptions = .init(includeUsage: true)
         let seed = expected.choice == .auto ? "<think>" : "<think></think>"
         let engine = RoutedQwenEngine(chunks: chunks, modelType: build.modelType, seed: seed, native: native,
-                                      finish: expected.lengthStop ? "length" : "stop")
+                                      promotes: promotes, finish: expected.lengthStop ? "length" : "stop")
         return try await collect(MLXOpenAIService(engine: engine), request, stream: true)
     }
     #endif

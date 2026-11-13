@@ -1809,6 +1809,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         // which MLXOpenAIService emits as finish_reason —
                         // max_tokens truncations now reach clients as "length".
                         if let reason { stopReason = reason }
+                        if stopReason == "length" { router.outputReachedTokenLimit() }
                     case .error(let message):
                         observedEngineTerminal = true
                         failed = message
@@ -2075,6 +2076,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         reasoningPrefix: String? = nil,
         toolHandler: BatchedToolStreamHandler? = nil,
         nativeReasoningPrefix: String? = nil,
+        promotesTrailingReasoningCalls: Bool = false,
         recordsWithheldOutput: Bool = false,
         usageSignal: EngineV2RequestUsageSignal = EngineV2RequestUsageSignal(),
         answerStopFilter: FlintAnswerStopFilter? = nil,
@@ -2084,6 +2086,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             toolHandler: toolHandler, prepared: prepared, releaseBox: releaseBox,
             usageSignal: usageSignal, reasoningPrefix: reasoningPrefix,
             nativeReasoningPrefix: nativeReasoningPrefix, recordsWithheldOutput: recordsWithheldOutput,
+            promotesTrailingReasoningCalls: promotesTrailingReasoningCalls,
             answerStopFilter: answerStopFilter, answerFormat: answerFormat)
     }
     #endif

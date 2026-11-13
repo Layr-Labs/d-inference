@@ -22,7 +22,7 @@ struct NativeChannelSplitter {
     private var flintScanner: FlintToolFrameScanner?
     private let preserveInnerReasoningSpans: Bool
     private let absorbStrayThinkClose: Bool
-    private let promotesTrailingCalls: Bool
+    private var promotesTrailingCalls: Bool
     /// The open thought's text (kept only with `promotesTrailingCalls`).
     private var openThought = ""
     private var innerReasoningDepth = 0
@@ -38,7 +38,8 @@ struct NativeChannelSplitter {
     /// was the model calling from inside it, a known Qwen 3.5 failure mode;
     /// at the end of the output those frames are also returned as content,
     /// so they parse as calls. A frame followed by more thought, or by
-    /// `</think>`, stays reasoning.
+    /// `</think>`, stays reasoning, and so does a thought the token limit cut
+    /// off (`outputReachedTokenLimit`).
     init(prefix: String, protectToolFrames: Bool, qwenStructuredFrames: Bool = false, flintFrames: Bool = false,
          tools: [[String: any Sendable]]? = nil,
          preserveInnerReasoningSpans: Bool = false, absorbStrayThinkClose: Bool = false,
@@ -71,48 +72,61 @@ struct NativeChannelSplitter {
         return pieces
     }
 
-    /// The complete `<tool_call>` frames that end `thought`, with the
-    /// whitespace between them, or nil. A frame opens on `<function=` or `{`
-    /// (a mentioned tag does not), and its end follows the Qwen tool parser's
-    /// own scanner (JSON strings and XML parameter values are opaque, so a tag
-    /// inside an argument is not a frame).
-    static func trailingCalls(in thought: String) -> String? {
-        var start: String.Index?
-        var end = thought.endIndex
-        while true {
-            var last = end
-            while last > thought.startIndex, thought[thought.index(before: last)].isWhitespace {
-                last = thought.index(before: last)
-            }
-            guard thought[..<last].hasSuffix("</tool_call>"),
-                let frame = outermostFrame(in: thought, closingAt: last) else { break }
-            start = frame
-            end = frame
-        }
-        return start.map { String(thought[$0...]) }
+    /// The engine stopped at the token limit: a thought it cut off ends
+    /// undecided, so none of its frames is promoted.
+    mutating func outputReachedTokenLimit() {
+        promotesTrailingCalls = false
     }
 
-    /// The first `<tool_call>` before `end` whose frame opens a call and
-    /// closes exactly at `end`.
-    private static func outermostFrame(in thought: String, closingAt end: String.Index) -> String.Index? {
+    /// The complete `<tool_call>` frames that end `thought`, with the
+    /// whitespace between them, or nil. Frames are read left to right as the
+    /// Qwen tool parser frames content: one opens at a `<tool_call>` whose
+    /// payload starts a call (`<function=` or `{`; a mentioned tag does not),
+    /// ends where the parser's own scanner ends it (JSON strings and XML
+    /// parameter values are opaque, so a tag inside an argument is not a
+    /// frame), and counts only if it parses; one that does not is read as a
+    /// mention. The work is bounded by a few passes over the thought; past
+    /// that bound nothing is promoted.
+    static func trailingCalls(in thought: String) -> String? {
         let scalars = thought.unicodeScalars
+        let parser = Qwen35ToolCallParser(startTag: "<tool_call>", endTag: "</tool_call>")
+        var budget = 8 * scalars.count + 4_096
+        var frames: [Range<String.Index>] = []
         var from = thought.startIndex
-        while let open = thought.range(of: "<tool_call>", range: from..<end) {
+        while let open = thought.range(of: "<tool_call>", range: from..<thought.endIndex) {
             from = open.upperBound
-            let payload = thought[open.upperBound..<end].drop { $0.isWhitespace }
+            let payload = thought[open.upperBound...].drop { $0.isWhitespace }
             guard payload.hasPrefix("<function=") || payload.hasPrefix("{") else { continue }
             var scanner = Qwen35ToolFrameScanner(endTag: "</tool_call>")
             var index = open.upperBound
-            while index < end {
+            var frameEnd: String.Index?
+            while index < thought.endIndex, budget > 0 {
+                budget -= 1
                 let next = scalars.index(after: index)
-                if scanner.consume(scalars[index]) {
-                    if next == end { return open.lowerBound }
-                    break
-                }
+                if scanner.consume(scalars[index]) { frameEnd = next; break }
                 index = next
             }
+            // A frame that never closes holds the rest of the thought.
+            guard let close = frameEnd, budget > 0 else { break }
+            let frame = String(thought[open.lowerBound..<close])
+            budget -= 2 * frame.unicodeScalars.count
+            if parser.parse(content: frame, tools: nil) != nil {
+                frames.append(open.lowerBound..<close)
+                from = close
+            }
         }
-        return nil
+        guard budget > 0 else { return nil }
+        var start: String.Index?
+        var end = thought.endIndex
+        for frame in frames.reversed() {
+            while end > thought.startIndex, thought[thought.index(before: end)].isWhitespace {
+                end = thought.index(before: end)
+            }
+            guard frame.upperBound == end else { break }
+            start = frame.lowerBound
+            end = frame.lowerBound
+        }
+        return start.map { String(thought[$0...]) }
     }
 
     private mutating func drain(final: Bool) -> [ParsedReasoning] {

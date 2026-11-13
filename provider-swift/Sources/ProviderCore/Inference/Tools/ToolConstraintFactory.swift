@@ -4,7 +4,8 @@
 // constraints. Vocabulary decoding is cached per loaded tokenizer; schemas
 // and grammar state remain per request. Qwen4 uses its rendered native channel
 // boundary and opaque framed arguments; Gemma keeps its own schema automaton;
-// tool-free Qwen 3.5 JSON answers use JSONAnswerConstraint.
+// GPT-OSS frames its Harmony call (GPTOSSForcedToolConstraint); tool-free
+// Qwen 3.5 JSON answers use JSONAnswerConstraint.
 
 import Foundation
 import ProviderCoreFoundation
@@ -68,6 +69,11 @@ enum ToolConstraintFactory {
         } else {
             let strategy = try ToolChoiceEnforcementPolicy.forcedStrategy(
                 mode: prepared.mode, modelContext: modelContext)
+            if strategy == .harmonyFraming {
+                return try GPTOSSForcedToolConstraint.make(prepared: prepared, tokenizer: tokenizer,
+                    maxTokens: request.maxTokens ?? defaultMaxTokens, stopTokenIDs: stopTokenIDs,
+                    promptTokens: nativePromptTokens)
+            }
             if strategy == .structuredPostValidation {
                 if Qwen4ModelIdentity.isQualified(modelContext.modelId),
                    modelContext.modelType == "qwen4_exp" {

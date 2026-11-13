@@ -392,10 +392,12 @@ enum CoordinatorInboundFrame: Equatable {
 
 // MARK: - Errors
 
-public enum CoordinatorError: Error, CustomStringConvertible {
+/// `LocalizedError` so that the reconnect log and telemetry, which read
+/// `localizedDescription`, give this text and not a generic error number.
+public enum CoordinatorError: LocalizedError, CustomStringConvertible {
     case invalidURL(String)
     case encodingFailed
-    case pongTimeout
+    case pongTimeout(after: Duration)
     case connectionClosed(Error)
     case suspensionDetected
     case handshakeTimeout(seconds: TimeInterval)
@@ -404,12 +406,14 @@ public enum CoordinatorError: Error, CustomStringConvertible {
         switch self {
         case .invalidURL(let url): return "Invalid coordinator URL: \(url)"
         case .encodingFailed: return "Failed to encode message"
-        case .pongTimeout: return "WebSocket pong timeout (no response in 30s)"
+        case .pongTimeout(let bound): return "WebSocket pong timeout (no frame from the coordinator in \(bound.components.seconds)s)"
         case .connectionClosed(let err): return "WebSocket connection closed: \(err.localizedDescription)"
         case .suspensionDetected: return "Process suspension detected (timer gap); forcing reconnect"
         case .handshakeTimeout(let seconds): return "WebSocket handshake did not complete in \(Int(seconds))s"
         }
     }
+
+    public var errorDescription: String? { description }
 }
 
 extension CoordinatorClientConfig {

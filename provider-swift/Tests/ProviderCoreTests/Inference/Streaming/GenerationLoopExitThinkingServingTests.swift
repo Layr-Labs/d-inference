@@ -7,11 +7,26 @@ import Testing
 
 @testable import ProviderCore
 
-/// A Gemma 4 row that repeats one clause verbatim, inside its thought or in
-/// its answer, one token per delta; the guard's cancel ends it `.cancelled`
-/// (a row nobody cancels ends `.length` after a short wait). Any later
-/// submission is the continuation: it answers "Answer: B" and stops.
+/// A row that repeats one clause verbatim, inside its thought or in its
+/// answer, one token per delta; the guard's cancel ends it `.cancelled` (a row
+/// nobody cancels ends `.length` after a short wait). Any later submission is
+/// the continuation: it answers "Answer: B" and stops.
 private final class ThoughtLoopCBv2Engine: CBv2Engine, @unchecked Sendable {
+    /// How one family's row spells its text, opens its thought (when the
+    /// prompt has not) and closes it.
+    struct Family: Sendable {
+        let tokens: @Sendable (String) -> [Int]
+        let opening: [String]
+        let closing: [String]
+
+        static let gemma = Family(
+            tokens: { GemmaThoughtTestTokenizer.tokens($0) }, opening: ["<|channel>", "thought\n"],
+            closing: ["ok", "<channel|>"])
+        /// The served Qwen 3.5/3.6 template opens the thought in the prompt.
+        static let qwen = Family(
+            tokens: { QwenByteTestTokenizer.tokens($0) }, opening: [], closing: ["ok\n", "</think>", "\n\n"])
+    }
+
     private let lock = NSLock()
     private var continuations: [AsyncStream<CBv2Event>.Continuation] = []
     private var submitted: [CBv2Request] = []
@@ -19,10 +34,12 @@ private final class ThoughtLoopCBv2Engine: CBv2Engine, @unchecked Sendable {
     private var cancels = 0
     let loopInsideThought: Bool
     let loopTokens: Int
+    let family: Family
 
-    init(loopInsideThought: Bool, loopTokens: Int = 4_200) {
+    init(loopInsideThought: Bool, loopTokens: Int = 4_200, family: Family = .gemma) {
         self.loopInsideThought = loopInsideThought
         self.loopTokens = loopTokens
+        self.family = family
     }
 
     var requests: [CBv2Request] { lock.withLock { submitted } }
@@ -38,17 +55,13 @@ private final class ThoughtLoopCBv2Engine: CBv2Engine, @unchecked Sendable {
             return submitted.count - 1
         }
         func emit(_ text: String) {
-            let tokens = GemmaThoughtTestTokenizer.tokens(text)
+            let tokens = family.tokens(text)
             lock.withLock { produced[index] += tokens }
             continuation.yield(.delta(text: text, tokens: tokens, logprobs: nil))
         }
         if index == 0 {
-            emit("<|channel>")
-            emit("thought\n")
-            if !loopInsideThought {
-                emit("ok")
-                emit("<channel|>")
-            }
+            family.opening.forEach(emit)
+            if !loopInsideThought { family.closing.forEach(emit) }
             let clause = Array("Wait, the carbon count is 19. ")
             for position in 0..<loopTokens {
                 emit(String(clause[position % clause.count]))
@@ -200,6 +213,20 @@ struct GenerationLoopExitThinkingServingTests {
     private let modelID = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
     private static let tokenizer = TokenizerHandle(GemmaThoughtTestTokenizer())
 
+    /// One family as the scheduler serves it: Gemma 4 unless a test says otherwise.
+    private struct Served: Sendable {
+        var modelID = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
+        var modelType = "gemma4"
+        var tokenizer = GenerationLoopExitThinkingServingTests.tokenizer
+        var eosTokenIds: Set<Int> = [GemmaThoughtTestTokenizer.turnClose, GemmaThoughtTestTokenizer.eos]
+        var parser = ReasoningParserFormat.gemma4
+    }
+
+    /// Qwen 3.6 35B with thinking on: the prompt ends `<think>\n`.
+    private static let qwen = Served(
+        modelID: "qwen3.6-35b-a3b-vl-mtp-mxfp8", modelType: "qwen3_5_moe",
+        tokenizer: TokenizerHandle(QwenByteTestTokenizer()), eosTokenIds: [248_046, 248_044], parser: .qwen3)
+
     private struct Outcome {
         var content = ""
         var reasoning = ""
@@ -221,31 +248,43 @@ struct GenerationLoopExitThinkingServingTests {
         }
     }
 
+    /// Qwen's exit is listed but off by default: the Qwen tests turn it on.
+    private static let qwenOn = GenerationLoopExitThinkingPolicy.Setting.modelTypes(
+        GenerationLoopExitThinkingPolicy.defaultModelTypes.union(["qwen3_5_moe"]))
+
+    /// A clean process's setting. The scheduler's default reads the process's environment; these tests take this
+    /// one unless they pass their own, so a runner with DARKBLOOM_LOOP_EXIT_THINKING set (an A/B box) gets the same
+    /// results.
+    private static let cleanProcess = GenerationLoopExitThinkingPolicy.setting(environment: [:])
+
     private func serve(
-        _ engine: ThoughtLoopCBv2Engine, modelType: String = "gemma4", maxTokens: Int = 8_192
+        _ engine: ThoughtLoopCBv2Engine, served: Served = Served(), maxTokens: Int = 8_192, extra: String = "",
+        usage: EngineV2RequestUsageSignal? = nil, exitThinking: GenerationLoopExitThinkingPolicy.Setting? = nil
     ) async throws -> Outcome {
         let telemetry = TelemetrySink()
-        let bridge = EngineV2Bridge(engine: engine, modelId: modelID, tokenizer: Self.tokenizer,
-            eosTokenIds: [GemmaThoughtTestTokenizer.turnClose, GemmaThoughtTestTokenizer.eos], defaultMaxTokens: 64,
+        let bridge = EngineV2Bridge(engine: engine, modelId: served.modelID, tokenizer: served.tokenizer,
+            eosTokenIds: served.eosTokenIds, defaultMaxTokens: 64,
             maxConcurrentRequests: 1, emitTelemetry: { telemetry.add($0) })
-        let id = modelID
-        let tokenizer = Self.tokenizer
-        let scheduler = MultiModelBatchSchedulerEngine(registryProvider: {
-            [id: .init(tokenizer: tokenizer, modelType: modelType, engineV2Bridge: bridge)]
-        })
-        var outcome = try await consume(scheduler, maxTokens: maxTokens)
+        var scheduler = MultiModelBatchSchedulerEngine(registryProvider: {
+            [served.modelID: .init(tokenizer: served.tokenizer, modelType: served.modelType, engineV2Bridge: bridge)]
+        }, engineV2Usage: usage)
+        scheduler.exitThinkingSetting = exitThinking ?? Self.cleanProcess
+        var outcome = try await consume(scheduler, served: served, maxTokens: maxTokens, extra: extra)
         await bridge.shutdown()
         outcome.loopGuardStops = telemetry.loopGuardStops
         return outcome
     }
 
-    private func consume(_ scheduler: MultiModelBatchSchedulerEngine, maxTokens: Int) async throws -> Outcome {
+    /// `extra`: more top-level request fields, each with its leading comma.
+    private func consume(
+        _ scheduler: MultiModelBatchSchedulerEngine, served: Served = Served(), maxTokens: Int, extra: String = ""
+    ) async throws -> Outcome {
         let request = try JSONDecoder().decode(OpenAIChatCompletionRequest.self, from: Data("""
-        {"model":"\(modelID)","messages":[{"role":"user","content":"hi"}],"reasoning_parser":"gemma4",\
-        "max_tokens":\(maxTokens)}
+        {"model":"\(served.modelID)","messages":[{"role":"user","content":"hi"}],\
+        "reasoning_parser":"\(served.parser.rawValue)","max_tokens":\(maxTokens)\(extra)}
         """.utf8))
         var outcome = Outcome()
-        var parser = StreamingReasoningParser(format: .gemma4)
+        var parser = StreamingReasoningParser(format: served.parser)
         func apply(_ parsed: ParsedReasoning) {
             outcome.content += parsed.content
             outcome.reasoning += parsed.reasoningContent ?? ""
@@ -354,9 +393,10 @@ struct GenerationLoopExitThinkingServingTests {
         await bridge.updatePrefillTpsEwma(2_000, isolated: true)
         let id = modelID
         let tokenizer = Self.tokenizer
-        let scheduler = MultiModelBatchSchedulerEngine(
+        var scheduler = MultiModelBatchSchedulerEngine(
             registryProvider: { [id: .init(tokenizer: tokenizer, modelType: "gemma4", engineV2Bridge: bridge)] },
             firstContentDeadline: FirstContentDeadline(relativeBudgetMilliseconds: 60_000))
+        scheduler.exitThinkingSetting = Self.cleanProcess
         let outcome = try await consume(scheduler, maxTokens: 8_192)
         await bridge.shutdown()
         #expect(outcome.error == nil)
@@ -365,10 +405,84 @@ struct GenerationLoopExitThinkingServingTests {
         #expect(outcome.content == "Answer: B")
     }
 
+    @Test("Qwen 3.6: a loop inside the thought ends it with `\\n</think>\\n\\n`, and stops apply to the answer")
+    func qwenThoughtLoopEndsInAnAnswer() async throws {
+        let engine = ThoughtLoopCBv2Engine(loopInsideThought: true, family: .qwen)
+        let outcome = try await serve(engine, served: Self.qwen, exitThinking: Self.qwenOn)
+        #expect(outcome.error == nil)
+        #expect(engine.cancelCount == 1)
+        let requests = engine.requests
+        #expect(requests.count == 2)
+        let first = try #require(requests.first)
+        let continuation = try #require(requests.last)
+        let firstOutput = try #require(engine.outputs.first)
+        // The row's tokens, then the close as Qwen's template writes it: the
+        // marker is its own special token.
+        #expect(continuation.promptTokens == first.promptTokens + firstOutput + [10, 248_069, 10, 10])
+        #expect(continuation.maxTokens == first.maxTokens - firstOutput.count - 4)
+        // The row's output starts inside the thought the prompt opened; the
+        // continuation's starts after `</think>`, so stop strings apply to it.
+        #expect(first.stopStringScope
+            == CBv2StopStringScope(excluding: [ReasoningStopScope.think], startingInside: true))
+        #expect(continuation.stopStringScope
+            == CBv2StopStringScope(excluding: [ReasoningStopScope.think], startingInside: false))
+        #expect(outcome.reasoning.hasPrefix("Wait, the carbon count is 19."))
+        // As after a thought the model closes itself: the answer follows `</think>\n\n`.
+        #expect(outcome.content == "\n\nAnswer: B")
+        #expect(outcome.info?.stopReason == "stop")
+        #expect(outcome.info?.completionTokens == firstOutput.count + 4 + 9)
+        #expect(outcome.loopGuardStops == [true])
+    }
+
+    @Test("Qwen 3.6: a loop in the answer, after `</think>`, still ends as length")
+    func qwenAnswerLoopEndsAsLength() async throws {
+        let engine = ThoughtLoopCBv2Engine(loopInsideThought: false, family: .qwen)
+        let outcome = try await serve(engine, served: Self.qwen, exitThinking: Self.qwenOn)
+        #expect(outcome.error == nil)
+        #expect(engine.requests.count == 1)
+        #expect(outcome.info?.stopReason == "length")
+        #expect(outcome.loopGuardStops == [false])
+    }
+
+    @Test("a stop string that ends the answer is the request's matched stop sequence")
+    func qwenStopInTheAnswer() async throws {
+        let engine = ThoughtLoopCBv2Engine(loopInsideThought: true, family: .qwen)
+        let usage = EngineV2RequestUsageSignal()
+        let outcome = try await serve(engine, served: Self.qwen, extra: #","stop":["B"]"#, usage: usage,
+                                      exitThinking: Self.qwenOn)
+        #expect(outcome.error == nil)
+        #expect(engine.requests.count == 2)
+        #expect(engine.requests.last?.stopStrings == ["B"])
+        #expect(outcome.info?.stopReason == "stop")
+        // The row ended `length`; the stop that ended the answer is the continuation's.
+        #expect(usage.matchedStopSequence == "B")
+    }
+
+    @Test("Qwen 3.5/3.6 35B keep today's length by default: the exit is listed, not on")
+    func qwenKeepsLengthByDefault() async throws {
+        let engine = ThoughtLoopCBv2Engine(loopInsideThought: true, family: .qwen)
+        let outcome = try await serve(engine, served: Self.qwen)
+        #expect(engine.requests.count == 1)
+        #expect(outcome.info?.stopReason == "length")
+        #expect(outcome.loopGuardStops == [false])
+    }
+
+    @Test("Qwen 3.8 27B shares `qwen3_5` with the 9B and keeps today's length")
+    func qwen38KeepsLength() async throws {
+        let engine = ThoughtLoopCBv2Engine(loopInsideThought: true, family: .qwen)
+        var served = Self.qwen
+        served.modelID = "EigenLabs/Qwen3.8-27B-4bit-mtp"
+        served.modelType = "qwen3_5"
+        let outcome = try await serve(engine, served: served, exitThinking: Self.qwenOn)
+        #expect(engine.requests.count == 1)
+        #expect(outcome.info?.stopReason == "length")
+        #expect(outcome.loopGuardStops == [false])
+    }
+
     @Test("a family without the exit keeps today's length")
     func otherFamilyKeepsLength() async throws {
         let engine = ThoughtLoopCBv2Engine(loopInsideThought: true)
-        let outcome = try await serve(engine, modelType: "qwen3_5")
+        let outcome = try await serve(engine, served: Served(modelType: "gpt_oss"))
         #expect(engine.requests.count == 1)
         #expect(outcome.info?.stopReason == "length")
         #expect(outcome.loopGuardStops == [false])

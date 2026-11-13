@@ -109,9 +109,13 @@ struct GemmaQuotedArgumentConformanceTests {
              "tools":[{"type":"function","function":{"name":"count_items","strict":true,"parameters":{
                "type":"object","properties":{"count":\(schema)},"required":["count"],"additionalProperties":false}}}]}
             """.utf8)
-        var request = try ProviderLoop.decodeOpenAIRequest(body)
+        let inbound = try ProviderLoop.decodeInboundChatRequest(body)
+        var request = inbound.request
         request.streamToolCallDeltas = stream
-        let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "gemma4")
+        var prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "gemma4")
+        // Mirror the scheduler: validate against caller declarations, not the
+        // normalized render types passed to the Gemma parser/template.
+        prepared.declaredTools = try #require(inbound.extensions.templateControls.declaredTools)
         let handler = try #require(try ToolStreamPreparation.makeHandler(
             request: request, prepared: prepared, modelType: "gemma4", streamToolCalls: stream))
         return (prepared, handler)

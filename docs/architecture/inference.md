@@ -3622,8 +3622,12 @@ breaking a contract, and OpenRouter does not count a call cut by the caller's
   ends `length` (`ToolConstraintValidation.validateWithheld`). More calls than
   `parallel_tool_calls: false` allows, or a call under `tool_choice: none`,
   are the model's and still refused. A native GLM, Flint or MiMo frame the
-  limit left unparsed is dropped, never published as text. Calls that pass
-  still leave, and the response then finishes `tool_calls`, as before.
+  limit left unparsed is dropped, never published as text. A withheld `auto`
+  frame of another family (Qwen without `stream`, or with
+  `DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0`) that the end-of-generation parse cannot
+  read stays text, as before (the parser fallback); the coordinator path
+  streams such calls and leaves a cut one open. Calls that pass still leave,
+  and the response then finishes `tool_calls`, as before.
 - The text the end of generation flushes leaves after the calls' checks, so a
   refusal with nothing else sent stays one the router can fail over on. This
   order does not depend on the switch: with it off, such a refusal also comes

@@ -1,6 +1,6 @@
 # Model registry format
 
-> Last updated: 2026-11-05
+> Last updated: 2026-11-13
 
 Exact shapes for everything the model registry stores or accepts: the
 `manifest.json` a publisher uploads to R2, the registration and admin requests,
@@ -45,6 +45,13 @@ and validated by `ValidateModelManifest` ([coordinator/internal/api/catalog/regi
 (`chat_template.jinja`, `chat_template.json`), `preprocessor`
 (`preprocessor_config.json`, `processor_config.json`,
 `video_preprocessor_config.json`), `other`.
+
+A `template` file is verified and loaded as published. The provider renames the
+`string` filter of a Qwen, Bonsai, MiMo, GLM or GPT-OSS template in memory at
+load, so a request can ask for
+[Transformers' tool JSON](../architecture/inference.md#tool-json-as-transformers-renders-it)
+(`provider-swift/Sources/ProviderCoreFoundation/HFTemplateFilters.swift`); the
+file, its hash and the prompt contract stay the same.
 
 ### Raw GLM discovery quotation
 

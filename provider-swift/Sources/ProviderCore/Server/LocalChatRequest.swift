@@ -6,7 +6,7 @@ import ProviderCoreFoundation
 /// messages, tool schemas, or inline media.
 struct LocalChatRequest: Decodable {
     var request: OpenAIChatCompletionRequest
-    let templateControls: ChatTemplateControls
+    var templateControls: ChatTemplateControls
 
     init(from decoder: any Decoder) throws {
         request = try AliasedChatRequest(from: decoder).request

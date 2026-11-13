@@ -9,6 +9,7 @@ extension ChatTemplateControls: Decodable {
         case clearThinking = "clear_thinking"
         case kwargs = "chat_template_kwargs"
         case promptDate = "_darkbloom_prompt_date"
+        case templateJSON = "_darkbloom_template_json"
         case reasoning
         case stream
     }
@@ -45,6 +46,8 @@ extension ChatTemplateControls: Decodable {
         rawMiMoTools = MiMoV26ToolEvidence(from: decoder)
         rawGLM5Controls = GLM5NextPromptPolicy.RawControls.capture(from: decoder)
         rawFlintControls = FlintRequestPolicy.RawControls.capture(from: decoder)
+        templateJSON.requested =
+            (try? values.decode(String.self, forKey: .templateJSON)) == TemplateJSONOrder.transformers
         clientStreams = (try? values.decode(Bool.self, forKey: .stream)) == true
     }
 }

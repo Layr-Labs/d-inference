@@ -3857,6 +3857,60 @@ client sends ([reasoning effort](#reasoning-effort)), on text and media
 requests alike. Media preparation rethrows typed request errors instead of
 wrapping them as a retryable 503 construction refusal.
 
+### Tool JSON as Transformers renders it
+
+A request that carries `"_darkbloom_template_json": "transformers"` (from the
+network, only one the coordinator did not plan; see below) renders its tool
+declarations, earlier tool calls and tool results exactly as Hugging Face
+Transformers renders the model's template, for Qwen 3.5, 3.6 and 3.8, Ternary
+Bonsai 2, MiMo v2.6, GLM-5.3 and GPT-OSS:
+- `tojson` is Python `json.dumps(value, ensure_ascii=False, indent=None,
+  separators=None, sort_keys=False)` with any of those arguments a template
+  passes (`", "` and `": "`, non-ASCII and `/` as written), and `string` is
+  Python `str` (`True`, `None`); swift-jinja's sort keys, write compact JSON,
+  escape `/` and non-ASCII, and print `true`/`none`
+  (`provider-swift/Sources/ProviderCoreFoundation/HFTemplateFilters.swift`);
+- tools and each call's arguments reach the template as ordered values: the
+  normalized content (schema repairs, family rules) in the request's own member
+  order, with the `null` members and items the generic sanitizer drops, the
+  number types as written (`1.0` stays a float) and the declaration's own
+  members (`strict` included) restored. Tools come from the body's `tools`, read
+  with an order-preserving parser; arguments from each call's own string
+  (`provider-swift/Sources/ProviderCore/Inference/Prompting/TemplateJSONOrder.swift`).
+  Nemotron 3.5 Lightning takes only the order: its own filters already match.
+
+The `string` filter of those templates is renamed at load and bound to
+swift-jinja's, so every other request renders the same bytes as before.
+`DARKBLOOM_TEMPLATE_JSON_LEGACY=1` turns the rendering off. Gemma 4 sorts in
+its template and Nemotron 3.5 Super's owner already renders the body as
+written, so neither changes.
+
+Which requests render this way:
+- **Coordinator requests:** only one the coordinator did not plan for its
+  prompt cache, so it carries no cache scope or receipt nonce
+  (`ChatTemplateControls.servingCoordinatorRequest`). The prompt sidecar plans
+  a request for the prompt as rendered before; a planned request that rendered
+  another prompt would contradict its cache receipts, and the coordinator
+  would quarantine this Mac's cache affinity for the model. A coordinator that
+  forwards unknown body fields would also carry a caller's own field to a
+  planned request, which therefore renders as before. A coordinator that sets
+  the field for a build (darkbloom-platform#919) does not plan such tool
+  requests, so they are served without a cache scope.
+- **Local API:** a single chat request that carries the field, or every one
+  while the provider runs with `DARKBLOOM_TEMPLATE_JSON=transformers` (the
+  variable does not apply to coordinator requests).
+- **Rendered as before:** media requests, which render outside the text path
+  (their prompt recounts too); the local batch route and `/v1/responses`, which
+  do not read the request's bytes; `/apply-template`, which renders the
+  template as published; and a body whose `tools` the order-preserving parser
+  refuses (more than 64 levels, an integer outside 64 bits, a lone surrogate).
+  None of these renders Transformers' filters over sorted tool declarations.
+  A request that does ask still reads members sorted where it gives no order:
+  tool-call arguments that do not parse or match a call, tools that share a
+  name, and a body whose sender sorted its members (today's coordinator
+  re-encodes the bodies it forwards sorted; darkbloom-platform#919 keeps the
+  caller's order for the builds it names).
+
 ### Reasoning effort
 
 Every model that reasons takes each effort a client names (`none`,

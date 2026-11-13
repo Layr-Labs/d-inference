@@ -43,13 +43,14 @@ extension ProviderLoop {
         if repaired == data,
             let decoded = try? JSONDecoder().decode(InboundChatRequest.self, from: data)
         {
-            return decoded
+            return InboundChatRequest(
+                request: decoded.request, extensions: decoded.extensions.capturingTemplateJSON(from: data))
         }
         // The extensions always come from the original bytes, like the
         // per-field extractors; the request keeps the strict and repair paths.
         return InboundChatRequest(
             request: try decodeRepairedOpenAIRequest(repaired),
-            extensions: InboundChatExtensions(from: data))
+            extensions: InboundChatExtensions(from: data).capturingTemplateJSON(from: data))
     }
 
     private static func repairedRequestBody(_ data: Data, modelType: String? = nil) throws -> Data {
@@ -109,7 +110,8 @@ extension ProviderLoop {
     internal static func extractChatTemplateControls(
         from data: Data
     ) -> ChatTemplateControls {
-        (try? JSONDecoder().decode(ChatTemplateControls.self, from: data)) ?? .init()
+        ((try? JSONDecoder().decode(ChatTemplateControls.self, from: data)) ?? .init())
+            .capturingTemplateJSON(from: data)
     }
 
     /// OpenAI `logprobs` / `top_logprobs` for this request. Like
@@ -154,7 +156,8 @@ extension ProviderLoop {
     ) -> Int {
         guard let request = try? templateControls.rawMiMoTools.restoring(request, modelType: modelType),
             let prepared = try? ToolChoicePromptPolicy.prepare(request, modelType: modelType) else { return 0 }
-        if modelType == "mimo_v2" || GLM5NextPromptPolicy.applies(modelType: modelType) {
+        if modelType == "mimo_v2" || GLM5NextPromptPolicy.applies(modelType: modelType)
+            || (TemplateJSONOrder.asks(templateControls.templateJSON) && !MediaIngest.hasMedia(request)) {
             return (try? ProviderPromptContractPipeline.tokenize(
                 prepared: prepared, request: request, tokenizer: tokenizer.inner,
                 modelType: modelType, templateControls: templateControls).count) ?? 0
@@ -242,6 +245,14 @@ struct InboundChatExtensions {
             init(from decoder: any Decoder) throws { extensions = InboundChatExtensions(decoder: decoder) }
         }
         if let whole = try? JSONDecoder().decode(Whole.self, from: data) { self = whole.extensions }
+    }
+
+    /// These extensions with the ordered tool declarations of `data`, the
+    /// bytes they were decoded from.
+    func capturingTemplateJSON(from data: Data) -> Self {
+        var copy = self
+        copy.templateControls = templateControls.capturingTemplateJSON(from: data)
+        return copy
     }
 
     init(decoder: any Decoder) {

@@ -540,6 +540,22 @@ curl -s "$OPENAI_BASE_URL/chat/completions" \
   -d '{"model":"EigenLabs/Qwen3.8-27B-4bit-mtp","reasoning_effort":"max","messages":[{"role":"user","content":"hi"}]}'
 ```
 
+### Tool JSON as the model was trained on
+
+Add `"_darkbloom_template_json": "transformers"` to a request on
+`/v1/chat/completions`, or start the provider with
+`DARKBLOOM_TEMPLATE_JSON=transformers` for every such request on this API, and
+Qwen 3.5, 3.6 and 3.8, Ternary Bonsai 2, MiMo v2.6, GLM-5.3 and GPT-OSS read
+your tool declarations and earlier tool calls as Hugging Face Transformers
+renders their templates: members in the order you sent them, `", "` and `": "`
+separators, non-ASCII text as written and `null` arguments kept. Without
+either, they read them as before: members sorted and compact. Nemotron 3.5
+Lightning takes the order; Gemma 4 and Nemotron 3.5 Super already read them as
+Transformers does. Requests with images, audio or video, batch requests and
+`/v1/responses` render as before, and the variable does not change requests
+the network sends your Mac. `DARKBLOOM_TEMPLATE_JSON_LEGACY=1` turns this off
+([inference architecture](../architecture/inference.md#tool-json-as-transformers-renders-it)).
+
 ### Refused request shapes
 
 The chat routes and Responses input answer these shapes with an OpenAI error

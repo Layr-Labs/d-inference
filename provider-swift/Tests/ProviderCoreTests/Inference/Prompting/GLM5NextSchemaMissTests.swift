@@ -53,7 +53,8 @@ struct GLM5NextSchemaMissTests {
     ])
     func refuseKeepsThe422(answer: String) throws {
         let format = try Self.format(Self.schemaFormat(Self.weather), schemaMiss: .refuse)
-        #expect(throws: MLXOpenAIServiceError.self) { try format.validatedContent(answer, finishReason: "stop") }
+        let error = #expect(throws: MLXOpenAIServiceError.self) { try format.validatedContent(answer, finishReason: "stop") }
+        #expect(!String(describing: error).contains("PRIVATE"))
     }
 
     @Test("release exposes a schema miss as the normalized JSON", arguments: [
@@ -91,7 +92,23 @@ struct GLM5NextSchemaMissTests {
     func releaseStillRefusesNonJSON(answer: String, finish: String, kind: String) throws {
         let responseFormat = kind == "json_object" ? ["type": "json_object"] : Self.schemaFormat(Self.weather)
         let format = try Self.format(responseFormat, schemaMiss: .release)
-        #expect(throws: MLXOpenAIServiceError.self) { try format.validatedContent(answer, finishReason: finish) }
+        let error = #expect(throws: MLXOpenAIServiceError.self) { try format.validatedContent(answer, finishReason: finish) }
+        #expect(!String(describing: error).contains("PRIVATE"))
+    }
+
+    @Test("release covers a miss only the compiled subset sees")
+    func releaseCoversCompiledSubsetMisses() throws {
+        // The service's own check ignores `minItems`; the compiled subset enforces it.
+        let tags: [String: Any] = [
+            "type": "object",
+            "properties": ["tags": ["type": "array", "items": ["type": "string"], "minItems": 2]] as [String: Any],
+            "required": ["tags"], "additionalProperties": false,
+        ]
+        let released = try Self.format(Self.schemaFormat(tags), schemaMiss: .release)
+        #expect(released.schema != nil)
+        #expect(try released.validatedContent(#"{"tags":["a"]}"#, finishReason: "stop") == #"{"tags":["a"]}"#)
+        let refused = try Self.format(Self.schemaFormat(tags), schemaMiss: .refuse)
+        #expect(throws: MLXOpenAIServiceError.self) { try refused.validatedContent(#"{"tags":["a"]}"#, finishReason: "stop") }
     }
 
     @Test("a truncated root number is refused in both modes")

@@ -1847,3 +1847,24 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/C
 The wizard’s optional local stopDrain token is saved with stopped intent and retained after a local timeout. Leases preserve the peer’s prior intent until the local supervisor retires its owned part and outstanding lease. The token is not a wire or user-facing configuration field; older records decode without it. A new serve is refused while it remains, and a model change retries the shared stop first.
 
 Every write of the wizard's record (`~/.darkbloom/cluster-setup/wizard.json`) takes the `wizard.json.lock` flock. When another writer holds that lock, the write waits up to 2 seconds for it (`ClusterSetupStore.recordLockWaitSeconds`). After 2 seconds the write fails with "Configuration or native device lease is currently held". The cluster service writes the record while it holds its own service lock, so it tries once and writes again on its next supervision cycle. Source: `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterSetupWizardStore.swift` (`ClusterSetupStore.updateRecord`).
+
+
+## Qwen forced-call thinking
+
+| Variable | Values | Default | Reader | Scope |
+|---|---|---|---|---|
+| `DARKBLOOM_QWEN_FORCED_TOOL_THINKING` | `1`, `on`, `true`, `yes` enable, ignoring case and surrounding whitespace; other values disable | off (existing behavior) | `Qwen35TemplateFix.preservesForcedThinking` | [Qwen forced-call thinking](../architecture/inference.md#qwen-forced-call-thinking); forwarded by `LaunchAgent` |
+
+
+## GPT-OSS commentary content
+
+| Variable | Values | Default | Reader | Scope |
+|---|---|---|---|---|
+| `DARKBLOOM_GPTOSS_COMMENTARY_CONTENT` | `1`, `on`, `true`, `yes` enable, ignoring case and surrounding whitespace; other values disable | off (existing behavior) | `HarmonyFinalHeaderFilter` | [GPT-OSS commentary content](../architecture/inference.md#gpt-oss-commentary-content); forwarded by `LaunchAgent` |
+
+
+## Qwen stray thinking-close markers
+
+| Variable | Values | Default | Reader | Scope |
+|---|---|---|---|---|
+| `DARKBLOOM_QWEN_ABSORB_STRAY_THINK_CLOSE` | `1`, `on`, `true`, `yes` enable, ignoring case and surrounding whitespace; other values disable | off (existing behavior) | `QwenStrayThinkClose` | [Qwen stray thinking-close markers](../architecture/inference.md#qwen-stray-thinking-close-markers); forwarded by `LaunchAgent` |

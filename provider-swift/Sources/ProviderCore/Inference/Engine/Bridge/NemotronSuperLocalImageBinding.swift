@@ -87,6 +87,7 @@ actor NemotronSuperLocalImageBinding {
         /// TEST SEAM: runs after the answer has ended, before the request's
         /// native settlement, as a slow settlement would (`execute`).
         var testSettlement: (@Sendable () async -> Void)?
+        var testPreparation: (@Sendable (String, Bool) async -> Void)?
         #endif
 
         var isEnded: Bool { lock.withLock { ended } }
@@ -119,6 +120,11 @@ actor NemotronSuperLocalImageBinding {
     private var testSettlement: (@Sendable () async -> Void)?
     /// TEST SEAM: the next requests' answers run `hook` once they end.
     func setTestSettlement(_ hook: (@Sendable () async -> Void)?) { testSettlement = hook }
+    /// Observes the real preparation interval; never supplies features or completion.
+    private var testPreparation: (@Sendable (String, Bool) async -> Void)?
+    func setTestPreparation(_ hook: (@Sendable (String, Bool) async -> Void)?) {
+        testPreparation = hook
+    }
     #endif
 
     /// Only the exact installed Owner creates this binding. There is no API
@@ -314,6 +320,7 @@ actor NemotronSuperLocalImageBinding {
         let progress = MediaProgress(onFirstChunk: { owner.recordMediaFirstChunk($0) })
         #if DEBUG
         progress.testSettlement = testSettlement
+        progress.testPreparation = testPreparation
         #endif
         return progress
     }
@@ -329,7 +336,19 @@ actor NemotronSuperLocalImageBinding {
         let activity = owner.imageServiceBudget.beginUnboundedActivity()
         do {
             try Task.checkCancellation()
+            #if DEBUG
+            await progress.testPreparation?(requestID, true)
+            let prepared: EngineV2VisionPrefill.PreparedSubmission
+            do {
+                prepared = try await prepare(construction)
+            } catch {
+                await progress.testPreparation?(requestID, false)
+                throw error
+            }
+            await progress.testPreparation?(requestID, false)
+            #else
             let prepared = try await prepare(construction)
+            #endif
             activity.finish()
             try Task.checkCancellation()
             try await execute(bridge: owner.bridge, prepared: prepared,

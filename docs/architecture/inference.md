@@ -3715,7 +3715,8 @@ frame closes ([streamed auto tool calls](#streamed-auto-tool-calls)), after the
 answer has started, so on the Qwen 3.5 template family (`qwen3_5`,
 `qwen3_5_moe`: Qwen 3.5 9B and 35B, 3.6 and 3.8) the provider can also
 constrain such calls in the sampler. By default it does so on the MoE builds
-(`qwen3_5_moe`: Qwen 3.6 and Qwen 3.5 35B), which do not draft with MTP; the
+(`qwen3_5_moe`: Qwen 3.6 and Qwen 3.5 35B), which do not draft with MTP by
+default (their cards' presence penalty); the
 dense builds (Qwen 3.8, Qwen 3.5 9B) draft, which a constrained row stops (see
 below), so a Mac opts them in (`DARKBLOOM_STRICT_TOOL_GRAMMAR=on` or a list,
 [configuration](../reference/configuration.md)). `QwenStrictToolGrammar` (in

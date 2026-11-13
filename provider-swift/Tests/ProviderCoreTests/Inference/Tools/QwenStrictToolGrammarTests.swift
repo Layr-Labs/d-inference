@@ -555,7 +555,7 @@ struct QwenStrictToolGrammarTests {
     @Test func theSwitchIsPerModelAndReachesTheProviderJob() {
         typealias G = QwenStrictToolGrammar
         #expect(G.environmentKey == "DARKBLOOM_STRICT_TOOL_GRAMMAR")
-        // By default only the MoE builds (Qwen 3.6, Qwen 3.5 35B), which do not draft with MTP: a constrained
+        // By default only the MoE builds (Qwen 3.6, Qwen 3.5 35B), which do not draft by default: a constrained
         // row stops drafting on its Mac, so Qwen 3.8 and the 9B take the grammar only when a Mac opts in.
         let byDefault = G.setting(environment: [:])
         #expect(byDefault == .models(["qwen3_5_moe"]))
@@ -875,7 +875,8 @@ struct QwenStrictToolServingTests {
         + "<parameter=city>\nRome\n</parameter>\n<parameter=offset>\n\"5\"\n</parameter>\n"
         + "<parameter=zone>\n{\"dst\": yes true}\n</parameter>\n</function>\n</tool_call><|im_end|>"
 
-    /// A build the grammar is on for by default (Qwen 3.6), and one a Mac opts in (Qwen 3.8).
+    /// A build the grammar is on for by default (Qwen 3.6), and one a Mac opts in (Qwen 3.8). The scheduler
+    /// reads the switch from the process environment, so these expect `DARKBLOOM_STRICT_TOOL_GRAMMAR` unset.
     private static let moe = (id: "qwen3.6-35b-a3b-vl-mtp-mxfp8", type: "qwen3_5_moe")
     private static let dense = (id: StrictToolFixture.model, type: "qwen3_5")
 

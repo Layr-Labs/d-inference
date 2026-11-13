@@ -1861,6 +1861,10 @@ The wizard’s optional local stopDrain token is saved with stopped intent and r
 
 Every write of the wizard's record (`~/.darkbloom/cluster-setup/wizard.json`) takes the `wizard.json.lock` flock. When another writer holds that lock, the write waits up to 2 seconds for it (`ClusterSetupStore.recordLockWaitSeconds`). After 2 seconds the write fails with "Configuration or native device lease is currently held". The cluster service writes the record while it holds its own service lock, so it tries once and writes again on its next supervision cycle. Source: `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterSetupWizardStore.swift` (`ClusterSetupStore.updateRecord`).
 
+### SDK feature defaults
+
+Some switches are read by the SDK itself (`libs/mlx-swift-lm`), which keeps each of them off unless set. `darkbloom start` and `darkbloom benchmark` turn on the ones listed in `SDKFeatureDefaults.onByDefault` before any engine or parser reads them, but only where the environment (the shell, or the LaunchAgent plist, which forwards each key) sets nothing: an operator value always wins, and `<KEY>=0` restores the 0.10.12 behaviour. The start log names the switches it turned on. Source: `provider-swift/Sources/ProviderCore/Config/SDKFeatureDefaults.swift` (`SDKFeatureDefaults`).
+
 ### Gemma o4 conformance
 
 | Variable | Values / type | Default | Read in | Effect |

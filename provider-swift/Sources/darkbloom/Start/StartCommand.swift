@@ -530,6 +530,12 @@ struct Start: AsyncParsableCommand {
             }
         }
 
+        // SDK-read feature switches this release turns on by default; an
+        // operator value (shell or LaunchAgent) wins, `0` = 0.10.12. Before any
+        // engine or parser reads them (several are read once per process).
+        let sdkDefaults = SDKFeatureDefaults.apply()
+        if !sdkDefaults.isEmpty { print("SDK feature defaults on: \(sdkDefaults.joined(separator: ", "))") }
+
         // These controls are process-start latches in MLX/MLXLM. Project the
         // authoritative TOML, bind the immutable default runtime metallib, and
         // only then let requireMetal() perform the first MLX touch.

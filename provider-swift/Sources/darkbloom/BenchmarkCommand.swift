@@ -260,6 +260,8 @@ struct Benchmark: AsyncParsableCommand {
                 """)
             throw ExitCode.failure
         }
+        // Mirror the serve path's SDK feature defaults (StartCommand).
+        SDKFeatureDefaults.apply()
         do {
             try ServeRuntimePreparer.prepareRuntime(settings: gemmaSettings)
         } catch {

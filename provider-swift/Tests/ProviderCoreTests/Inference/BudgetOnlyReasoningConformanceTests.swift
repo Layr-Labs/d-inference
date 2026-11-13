@@ -60,6 +60,26 @@ final class BudgetOnlyReasoningConformanceTests: XCTestCase {
         }
     }
 
+    /// Off must be 0.10.12 byte for byte, including which refusal a client
+    /// gets: an unusable `max_tokens` beside an unknown effort is still the
+    /// effort refusal (`unsupported_reasoning_control`), not a payload error.
+    func testOffKeepsTodaysRefusalClassForUnusableBudgetBesideUnknownEffort() {
+        for budget in ["null", #""512""#, "2.5", "true"] {
+            let data = Data("""
+            {"model":"mimo-v2.6-flash-mopd","messages":[{"role":"user","content":"Hello"}],
+             "reasoning":{"max_tokens":\(budget),"effort":"bogus"}}
+            """.utf8)
+            for value in ["0", nil] as [String?] {
+                if let value { setenv(flag, value, 1) } else { unsetenv(flag) }
+                XCTAssertThrowsError(try MiMoV26TemplateFix.validateRawControls(data)) {
+                    XCTAssertEqual(
+                        $0 as? MultiModelBatchSchedulerEngineError,
+                        .unsupportedReasoningEffort(.reasoningObject), "max_tokens \(budget), flag \(value ?? "unset")")
+                }
+            }
+        }
+    }
+
     func testOffAndAbsentKeepTodaysRefusal() {
         for value in ["0", "off", "false", "no"] {
             setenv(flag, value, 1)

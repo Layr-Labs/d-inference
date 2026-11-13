@@ -169,6 +169,25 @@ struct TemplateJSONOrderTests {
         #expect(!legacy.captured)
     }
 
+    /// A media request's prompt is prepared outside the text path, as before,
+    /// so its recounts (usage floor, admission forecast) render that prompt.
+    @Test func aMediaRequestRendersAsBefore() throws {
+        let body = Data(#"""
+            {"model":"m","messages":[{"role":"user","content":[{"type":"text","text":"What is this?"},\#
+            {"type":"image_url","image_url":{"url":"https://example.com/a.png"}}]}],\#
+            "tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object"}}}],\#
+            "_darkbloom_template_json":"transformers"}
+            """#.utf8)
+        let inbound = try ProviderLoop.decodeInboundChatRequest(body)
+        #expect(MediaIngest.hasMedia(inbound.request))
+        #expect(TemplateJSONOrder.asks(inbound.extensions.templateControls.templateJSON, environment: [:]))
+        let input = TemplateJSONOrder.apply(
+            messages: [["role": "user", "content": "x"]], tools: [["type": "function"]], additionalContext: nil,
+            request: inbound.request, evidence: inbound.extensions.templateControls.templateJSON,
+            modelType: "qwen3_5", environment: [:])
+        #expect(input.tools?.count == 1 && input.additionalContext == nil)
+    }
+
     @Test func overlayKeepsContentAndTakesOrderNullsAndNumberTypes() throws {
         let sent = try NemotronSuperOrderedJSON.parse(#"{"z": 1.0, "drop": null, "a": [null, 2, null], "k": "v", "gone": 3}"#)
         // Content as the sanitizer and a schema repair leave it.

@@ -3617,11 +3617,11 @@ wrapping them as a retryable 503 construction refusal.
 
 ### Tool JSON as Transformers renders it
 
-A request that carries `"_darkbloom_template_json": "transformers"` (the
-coordinator sets it for the builds it names) renders its tool declarations,
-earlier tool calls and tool results exactly as Hugging Face Transformers
-renders the model's template, for Qwen 3.5, 3.6 and 3.8, Ternary Bonsai 2,
-MiMo v2.6, GLM-5.3 and GPT-OSS:
+A request that carries `"_darkbloom_template_json": "transformers"` (from the
+network, only one the coordinator did not plan; see below) renders its tool
+declarations, earlier tool calls and tool results exactly as Hugging Face
+Transformers renders the model's template, for Qwen 3.5, 3.6 and 3.8, Ternary
+Bonsai 2, MiMo v2.6, GLM-5.3 and GPT-OSS:
 - `tojson` is Python `json.dumps(value, ensure_ascii=False, indent=None,
   separators=None, sort_keys=False)` with any of those arguments a template
   passes (`", "` and `": "`, non-ASCII and `/` as written), and `string` is
@@ -3657,11 +3657,17 @@ Which requests render this way:
 - **Local API:** a single chat request that carries the field, or every one
   while the provider runs with `DARKBLOOM_TEMPLATE_JSON=transformers` (the
   variable does not apply to coordinator requests).
-- **Rendered as before:** media requests, which render outside the text path;
-  the local batch route, `/v1/responses` and `/apply-template`, which do not
-  read the request's bytes; and a body whose `tools` the order-preserving
-  parser refuses (more than 64 levels, an integer outside 64 bits, a lone
-  surrogate). None renders Transformers' filters over sorted members.
+- **Rendered as before:** media requests, which render outside the text path
+  (their prompt recounts too); the local batch route and `/v1/responses`, which
+  do not read the request's bytes; `/apply-template`, which renders the
+  template as published; and a body whose `tools` the order-preserving parser
+  refuses (more than 64 levels, an integer outside 64 bits, a lone surrogate).
+  None of these renders Transformers' filters over sorted tool declarations.
+  A request that does ask still reads members sorted where it gives no order:
+  tool-call arguments that do not parse or match a call, tools that share a
+  name, and a body whose sender sorted its members (today's coordinator
+  re-encodes the bodies it forwards sorted; darkbloom-platform#919 keeps the
+  caller's order for the builds it names).
 
 ### Reasoning effort
 

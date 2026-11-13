@@ -81,7 +81,8 @@ enum TemplateJSONOrder {
     /// parameter takes dictionaries it would sort) and ordered tool-call
     /// arguments. Unchanged unless the request asks and its family is listed
     /// in `HFTemplateFilters`, or is Nemotron-H, whose own filters already
-    /// match Transformers' and which takes only the order.
+    /// match Transformers' and which takes only the order. A media request is
+    /// prepared outside this path and renders as before, so its recounts do too.
     static func apply(
         messages: [[String: any Sendable]], tools: [[String: any Sendable]]?,
         additionalContext: [String: any Sendable]?, request: OpenAIChatCompletionRequest,
@@ -91,7 +92,8 @@ enum TemplateJSONOrder {
           additionalContext: [String: any Sendable]?) {
         let transformersFilters = HFTemplateFilters.applies(modelType: modelType, environment: environment)
         guard asks(evidence, environment: environment),
-            transformersFilters || NemotronTemplateFilters.applies(modelType: modelType)
+            transformersFilters || NemotronTemplateFilters.applies(modelType: modelType),
+            !MediaIngest.hasMedia(request)
         else { return (messages, tools, additionalContext) }
         var context = additionalContext ?? [:]
         if transformersFilters {

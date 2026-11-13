@@ -246,6 +246,123 @@ final class ClusterLinkSessionKeyTests: XCTestCase {
         }
     }
 
+    /// Rekey per connection: every connection of one edge (first connect,
+    /// reconnects) carries two fresh, canonical public keys.
+    func testEveryConnectionUsesFreshEphemeralKeys() throws {
+        let listener = try ClusterLinkControlListener(configuration: .init(interface: "lo0", port: 0,
+            policy: .loopbackForTests, edges: [makeEdge()])) { _, _ in }
+        let port = try listener.start()
+        defer { listener.stop() }
+        let relay = try LinkCaptureRelay(target: port)
+        defer { relay.stop() }
+        let log = LinkEventLog()
+        let client = try ClusterLinkControlClient(configuration: .init(interface: "lo0", port: relay.port,
+            policy: .loopbackForTests, edge: makeEdge())) { event, _ in log.record(event) }
+        client.start()
+        defer { client.stop() }
+        for round in 1...3 {
+            XCTAssertTrue(client.peer.waitUntilConnected(timeout: .seconds(3)))
+            XCTAssertTrue(log.wait { events in events.filter { if case .connected = $0 { return true }; return false }.count == round })
+            if round < 3 { client.peer.dropConnectionForTesting() }
+        }
+        relay.stop()
+        let sessions = relay.sessions.filter { $0.toConnector.count >= LinkHandshake.challengeBytes
+            && $0.toListener.count >= LinkHandshake.helloBytes }
+        XCTAssertGreaterThanOrEqual(sessions.count, 3)
+        var keys = Set<Data>()
+        for session in sessions {
+            let listenerKey = Data(session.toConnector.dropFirst(40).prefix(32))
+            let connectorKey = Data(session.toListener.dropFirst(72).prefix(32))
+            XCTAssertEqual(session.toConnector[session.toConnector.startIndex + 4], LinkHandshake.version)
+            XCTAssertTrue(nativeCanonicalX25519PublicKey(listenerKey) && nativeCanonicalX25519PublicKey(connectorKey))
+            keys.insert(listenerKey); keys.insert(connectorKey)
+        }
+        XCTAssertEqual(keys.count, 2 * sessions.count, "no public key is reused across connections or ends")
+    }
+
+    /// Both tags cover both public keys: a key changed after it was tagged
+    /// (the connector's in the hello, the listener's in the challenge the
+    /// connector tagged) is refused before anything is keyed.
+    func testTamperedEphemeralKeysAreRefused() throws {
+        let log = LinkEventLog()
+        let edge = try makeEdge()
+        let listener = try ClusterLinkControlListener(configuration: .init(interface: "lo0", port: 0,
+            policy: .loopbackForTests, edges: [edge])) { event, _ in log.record(event) }
+        let port = try listener.start()
+        defer { listener.stop() }
+        for tamperChallenge in [false, true] {
+            let raw = try RawLinkConnector(port: port)
+            var challenge = try raw.read(LinkHandshake.challengeBytes)
+            if tamperChallenge { challenge.replaceSubrange((challenge.startIndex + 40)..<(challenge.startIndex + 72),
+                with: Curve25519.KeyAgreement.PrivateKey().publicKey.rawRepresentation) }
+            var hello = try raw.hello(edge: edge, challenge: challenge)
+            if !tamperChallenge {
+                hello.replaceSubrange((hello.startIndex + 72)..<(hello.startIndex + 104),
+                    with: Curve25519.KeyAgreement.PrivateKey().publicKey.rawRepresentation)
+            }
+            try raw.write(hello)
+            XCTAssertTrue(raw.closedByPeer(seconds: 2))
+            raw.socket.close()
+        }
+        XCTAssertTrue(log.wait { _ in (listener.refusals["authenticationFailed"] ?? 0) >= 2 })
+        XCTAssertEqual(listener.peer(for: edgeID)?.status.sessions, 0)
+    }
+
+    /// Per-direction counters: a record sent ahead of its turn ends the
+    /// session and nothing is delivered.
+    func testReorderedRecordsEndTheSession() throws {
+        let log = LinkEventLog()
+        let edge = try makeEdge()
+        let listener = try ClusterLinkControlListener(configuration: .init(interface: "lo0", port: 0,
+            policy: .loopbackForTests, edges: [edge])) { event, _ in log.record(event) }
+        let port = try listener.start()
+        defer { listener.stop() }
+        let raw = try RawLinkConnector(port: port)
+        defer { raw.socket.close() }
+        let records = try raw.handshake(edge: edge)
+        let status = ClusterLinkControlMessage.status(.init(epoch: epoch, rank: 1, state: .ready, linkReady: true))
+        let first = try raw.sealMessage(records, id: 1, status)
+        let second = try raw.sealMessage(records, id: 2, status)
+        try raw.write(second)
+        try raw.write(first)
+        XCTAssertTrue(log.wait { _ in log.disconnects.contains(.authenticationFailed) })
+        XCTAssertEqual(log.messages.count, 0)
+    }
+
+    /// The key schedule itself: both ends agree; another connection's
+    /// ephemeral key gives other keys under the same transcript; a peer key
+    /// that is all zero, non-canonical, of low order or this end's own is refused.
+    func testSessionKeysNeedTheEphemeralAgreement() throws {
+        let key = try ClusterLinkControlKey.qualification(secret: secret, epoch: epoch, edgeID: edgeID)
+        let transcript = Data(SHA256.hash(data: Data("transcript".utf8)))
+        let listener = Curve25519.KeyAgreement.PrivateKey(), connector = Curve25519.KeyAgreement.PrivateKey()
+        let atListener = try key.sessionKeys(ephemeralPrivateKey: listener, peerEphemeralPublicKey: connector.publicKey.rawRepresentation,
+            transcriptSHA256: transcript, epoch: epoch, edgeID: edgeID)
+        let atConnector = try key.sessionKeys(ephemeralPrivateKey: connector, peerEphemeralPublicKey: listener.publicKey.rawRepresentation,
+            transcriptSHA256: transcript, epoch: epoch, edgeID: edgeID)
+        func bytes(_ value: SymmetricKey) -> Data { value.withUnsafeBytes { Data($0) } }
+        XCTAssertEqual(bytes(atListener.connectorToListener), bytes(atConnector.connectorToListener))
+        XCTAssertEqual(bytes(atListener.listenerToConnector), bytes(atConnector.listenerToConnector))
+        XCTAssertNotEqual(bytes(atListener.connectorToListener), bytes(atListener.listenerToConnector))
+        let other = try key.sessionKeys(ephemeralPrivateKey: Curve25519.KeyAgreement.PrivateKey(),
+            peerEphemeralPublicKey: listener.publicKey.rawRepresentation, transcriptSHA256: transcript, epoch: epoch, edgeID: edgeID)
+        XCTAssertNotEqual(bytes(other.connectorToListener), bytes(atListener.connectorToListener))
+        let otherEdgeKey = try ClusterLinkControlKey.qualification(secret: Data(repeating: 0x5A, count: 32), epoch: epoch, edgeID: edgeID)
+        let withOtherEdgeKey = try otherEdgeKey.sessionKeys(ephemeralPrivateKey: listener,
+            peerEphemeralPublicKey: connector.publicKey.rawRepresentation, transcriptSHA256: transcript, epoch: epoch, edgeID: edgeID)
+        XCTAssertNotEqual(bytes(withOtherEdgeKey.connectorToListener), bytes(atListener.connectorToListener))
+        // Low order: 0 and 1 (and the canonical form of p - 1); non-canonical: p itself.
+        var one = Data(count: 32); one[0] = 1
+        var pMinusOne = Data(repeating: 0xff, count: 32); pMinusOne[0] = 0xec; pMinusOne[31] = 0x7f
+        var p = Data(repeating: 0xff, count: 32); p[0] = 0xed; p[31] = 0x7f
+        for bad in [Data(count: 32), one, pMinusOne, p, Data(count: 31), listener.publicKey.rawRepresentation] {
+            XCTAssertThrowsError(try key.sessionKeys(ephemeralPrivateKey: listener, peerEphemeralPublicKey: bad,
+                transcriptSHA256: transcript, epoch: epoch, edgeID: edgeID))
+        }
+        XCTAssertThrowsError(try key.sessionKeys(ephemeralPrivateKey: listener, peerEphemeralPublicKey: connector.publicKey.rawRepresentation,
+            transcriptSHA256: Data(count: 31), epoch: epoch, edgeID: edgeID))
+    }
+
     /// No downgrade: a listener refuses a version-1 hello, whatever its tag,
     /// and closes before it sends anything that keys a session.
     func testListenerRefusesTheVersionOneHandshake() throws {

@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import DarkbloomClusterSecurity
 import Foundation
@@ -180,11 +181,17 @@ public final class ClusterLinkControlListener: @unchecked Sendable {
         let deadline = linkNow() &+ handshakeTimeout
         var edgeID: UUID?
         do {
-            let challenge = LinkHandshake.challenge(nonce: LinkHandshake.randomNonce())
+            // This connection's own key pair: in memory only, gone with the handshake.
+            let ephemeral = Curve25519.KeyAgreement.PrivateKey()
+            let challenge = LinkHandshake.challenge(nonce: LinkHandshake.randomNonce(),
+                ephemeralPublicKey: ephemeral.publicKey.rawRepresentation)
             try connection.writeAll(challenge, deadline: deadline)
-            // Exact-size read: nothing beyond the hello is consumed here.
+            // Exact-size reads: nothing beyond the hello is consumed here (the
+            // connector sends nothing more before the accept).
             let reader = LinkReader(socket: connection, capacity: 128)
-            let helloBytes = try reader.readExact(LinkHandshake.helloBytes, deadline: deadline)
+            var helloBytes = try reader.readExact(LinkHandshake.headerBytes, deadline: deadline)
+            try LinkHandshake.requireVersion(helloBytes, hello: true)
+            helloBytes.append(try reader.readExact(LinkHandshake.helloBytes - LinkHandshake.headerBytes, deadline: deadline))
             let (hello, tag) = try LinkHandshake.parseHello(helloBytes)
             edgeID = hello.edgeID
             guard let peer = peers[hello.edgeID] else { throw ClusterLinkControlRefusal.unknownEdge }
@@ -205,7 +212,8 @@ public final class ClusterLinkControlListener: @unchecked Sendable {
             accept.append(peer.edge.key.handshakeTag(role: .listener, transcript: covered))
             try connection.writeAll(accept, deadline: deadline)
             let transcript = LinkHandshake.transcriptSHA256(challenge: challenge, hello: helloBytes, accept: accept)
-            let records = try LinkRecordPair(role: .listener, key: peer.edge.key, transcriptSHA256: transcript,
+            let records = try LinkRecordPair(role: .listener, key: peer.edge.key, ephemeralPrivateKey: ephemeral,
+                peerEphemeralPublicKey: hello.ephemeralPublicKey, transcriptSHA256: transcript,
                 epoch: peer.edge.epoch, edgeID: peer.edgeID, limits: limits)
             guard lock.withLock({ running && pending[id] != nil }) else { throw ClusterLinkControlRefusal.evictedPendingHandshake }
             lock.withLock { _ = pending.removeValue(forKey: id) }
@@ -376,13 +384,20 @@ public final class ClusterLinkControlClient: @unchecked Sendable {
         let deadline = linkNow() &+ edge.limits.handshakeTimeout.clusterLinkNanoseconds
         do {
             let reader = LinkReader(socket: socket, capacity: 64)
-            let challenge: Data
-            do { challenge = try reader.readExact(LinkHandshake.challengeBytes, deadline: deadline) } catch {
+            var challenge: Data
+            do { challenge = try reader.readExact(LinkHandshake.headerBytes, deadline: deadline) } catch {
                 throw ClusterLinkControlRefusal.handshakeRejected
             }
-            _ = try LinkHandshake.parseChallenge(challenge)
+            // Another version stops here, before this end sends anything.
+            try LinkHandshake.requireVersion(challenge, hello: false)
+            do { challenge.append(try reader.readExact(LinkHandshake.challengeBytes - LinkHandshake.headerBytes, deadline: deadline)) }
+            catch { throw ClusterLinkControlRefusal.handshakeRejected }
+            let listenerPublicKey = try LinkHandshake.parseChallenge(challenge)
+            // This connection's own key pair: in memory only, gone with the handshake.
+            let ephemeral = Curve25519.KeyAgreement.PrivateKey()
             let limits = try edge.limits.recordLimits()
             let hello = LinkHandshake.Hello(epoch: edge.epoch, edgeID: edge.edgeID, nonce: LinkHandshake.randomNonce(),
+                ephemeralPublicKey: ephemeral.publicKey.rawRepresentation,
                 resume: peer.resumeInfo(), maximumPlaintextBytes: UInt32(limits.maximumPlaintextBytes),
                 maximumRecords: limits.maximumRecordsPerDirection,
                 maximumCumulativeBytes: limits.maximumCumulativePlaintextBytesPerDirection)
@@ -400,7 +415,8 @@ public final class ClusterLinkControlClient: @unchecked Sendable {
                 throw ClusterLinkControlRefusal.serverAuthenticationFailed
             }
             let transcript = LinkHandshake.transcriptSHA256(challenge: challenge, hello: helloBytes, accept: acceptBytes)
-            let records = try LinkRecordPair(role: .connector, key: edge.key, transcriptSHA256: transcript,
+            let records = try LinkRecordPair(role: .connector, key: edge.key, ephemeralPrivateKey: ephemeral,
+                peerEphemeralPublicKey: listenerPublicKey, transcriptSHA256: transcript,
                 epoch: edge.epoch, edgeID: edge.edgeID, limits: limits)
             return (LinkConnection(socket: socket, records: records, peerIncarnation: resume.incarnation,
                 limits: edge.limits), resume)

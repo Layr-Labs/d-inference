@@ -3254,8 +3254,9 @@ stops such a row early.
   the default list.
 - **A loop inside a Gemma 4 or Qwen 3.5/3.6 35B thought ends the thought, not
   the answer** (`GenerationLoopExitThinkingPolicy`, `LoopExitThinkingContinuation`).
-  For `gemma4`, `gemma4_text` and `qwen3_5_moe` (on by default) and `qwen3_5`
-  (Qwen 3.5 9B and Qwen 3.8 27B: listed, off by default), the guard also
+  For `gemma4` and `gemma4_text` (on by default) and `qwen3_5_moe` (Qwen 3.5/3.6
+  35B) and `qwen3_5` (Qwen 3.5 9B, Qwen 3.8 27B), listed and off by default (their
+  thought loops were too rare in the A/B to show rescues), the guard also
   follows the thought channel (`<|channel>` … `<channel|>`, `<think>` …
   `</think>`; the prompt's tail seeds the state: Qwen's served template opens
   `<think>` in the prompt) and records

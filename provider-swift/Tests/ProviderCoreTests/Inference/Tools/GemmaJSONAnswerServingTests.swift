@@ -168,8 +168,14 @@ struct GemmaJSONAnswerPolicyTests {
             ##"{"$ref":"#/$defs/a~1b","$defs":{"a/b":{"type":"string"}}}"##,
             ##"{"$ref":"#/$defs/a%2Fb","$defs":{"a/b":{"type":"string"}}}"##,
             ##"{"$ref":"#/$defs/A","$defs":{"A":{"$ref":"#/$defs/A"}}}"##,
+            // The compiler refuses a key longer than additionalProperties; a definition name is at most 256 bytes.
+            #"{"type":"string","\#(String(repeating: "k", count: 21))":0}"#,
+            ##"{"$ref":"#/$defs/\##(String(repeating: "d", count: 257))","$defs":{"\##(String(repeating: "d", count: 257))":{"type":"string"}}}"##,
         ]
         for schema in refused { #expect(try Self.rewrite(schema) == nil, "\(schema)") }
+        let longest = String(repeating: "d", count: 256)
+        #expect(try Self.rewrite(##"{"$ref":"#/$defs/\##(longest)","$defs":{"\##(longest)":{"type":"string"}}}"##)
+                == Self.json(#"{"type":"string"}"#))
         // Every definition refers to the next: directly, through a property, or through two properties.
         func chain(_ count: Int, _ body: (Int) -> String) -> String {
             ##"{"$ref":"#/$defs/D0","$defs":{"## + (0..<count).map { ##""D\##($0)":"## + body($0) }.joined(separator: ",")

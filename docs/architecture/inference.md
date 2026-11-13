@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-12
+> Last updated: 2026-11-13
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -3496,7 +3496,12 @@ as `"nullable": true` beside one type (`ToolSchemaNormalization`). The SDK adds
 null to that node's types, so a model's `null` (also `none` or `nil`) becomes
 JSON null, and its `ToolSchemaValidator` lets null through that node's type
 check while `enum`, `const` and combinators still apply; the provider's own
-validator already accepts null there (`ToolConstraintValidation`). Sources:
+validator already accepts null there (`ToolConstraintValidation`). A Gemma 4
+value written without its `<|"|>` marker (`zip:01000`) is read the same way, at
+any depth: where the schema admits a string but not the value's JSON type, the
+written text is kept (`"01000"`, `"1.10"`), as vLLM does; other parameters, and
+calls without a schema, keep the JSON reading (`GemmaArgumentValueParser`,
+`ToolArgumentNormalization.bareLiteral`). Sources:
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/ToolArgumentNormalization.swift`
 (`declaredTypes`),
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/ToolSchemaValidator.swift`.

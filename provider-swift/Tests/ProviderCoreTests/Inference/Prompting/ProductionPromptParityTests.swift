@@ -124,7 +124,7 @@ struct ProductionPromptParityTests {
         #expect(vectors.cases.map(\.id) == [
             "gpqa_string_system", "gpqa_developer_system", "gpqa_list_system_user", "list_parts_whitespace",
             "no_system", "no_system_thinking_off", "system_thinking_off", "tools_string_system",
-            "tools_no_system", "tau2_policy",
+            "tools_no_system", "tau2_policy", "assistant_list_parts", "later_system_list", "empty_system",
         ])
         let gpqa = try #require(vectors.cases.first)
         #expect(gpqa.contract1TokenIDs.count == 87 && gpqa.contract2TokenIDs.count == 88)
@@ -138,17 +138,28 @@ struct ProductionPromptParityTests {
             for try await _ in frames {}
             let generationRequest = try #require(await engine.request)
             let controls = ProviderLoop.extractChatTemplateControls(from: providerBody).resolvingPromptDate()
-            func tokens(contract: Int?) throws -> [Int] {
+            func tokens(contract: Int?, promptCacheScope: String? = nil) throws -> [Int] {
                 try ProviderPromptContractPipeline.tokenize(
                     prepared: ToolChoicePromptPolicy.prepare(generationRequest, modelType: modelType),
                     request: generationRequest,
                     tokenizer: tokenizer,
                     modelType: modelType,
-                    templateControls: controls.askingGemmaPromptContract(contract, enabled: true))
+                    templateControls: controls.askingGemmaPromptContract(contract, enabled: true),
+                    promptCacheScope: promptCacheScope)
             }
             let contract1 = try tokens(contract: nil)
             let contract2 = try tokens(contract: 2)
             #expect(try tokens(contract: 1) == contract1, "\(fixture.id): asking for contract 1 changed the render")
+            // Planned requests, the ones that ask for contract 2, render through
+            // the prompt-token cache: the same tokens cold and warm, one scope
+            // shared by both contracts.
+            let scope = "gemma-prompt-contract-parity-" + fixture.id
+            for _ in 0..<2 {
+                #expect(try tokens(contract: nil, promptCacheScope: scope) == contract1,
+                        "\(fixture.id): the prompt-token cache changed contract 1")
+                #expect(try tokens(contract: 2, promptCacheScope: scope) == contract2,
+                        "\(fixture.id): the prompt-token cache changed contract 2")
+            }
             if fixture.providerMatchesTransformers {
                 #expect(contract1 == fixture.contract1TokenIDs,
                         "\(fixture.id): contract 1 \(contract1.count) tokens, vectors \(fixture.contract1TokenIDs.count); first difference at \(firstDifference(contract1, fixture.contract1TokenIDs) ?? -1)")

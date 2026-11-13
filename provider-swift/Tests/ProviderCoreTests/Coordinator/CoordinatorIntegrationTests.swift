@@ -130,7 +130,8 @@ struct CoordinatorIntegrationTests {
             firstContentBudgetMs: 60_000,
             cacheReceiptNonce: "nonce-int-1",
             cacheScope: "authenticated-account-route",
-            serviceReservationID: serviceReservationID
+            serviceReservationID: serviceReservationID,
+            gemmaPromptContract: 2
         )
 
         // Run a tiny "fake provider loop":
@@ -157,9 +158,11 @@ struct CoordinatorIntegrationTests {
                 switch event {
                 case .inferenceRequest(
                     let rid, let ciphertext, let senderKey, let nonce, let scope, _, _, _, _,
-                    let firstContentDeadline, _, _, let reservationID, _, _
+                    let firstContentDeadline, _, _, let reservationID, _, let gemmaPromptContract
                 ):
                     #expect(rid == requestId)
+                    // The frame's Gemma prompt contract reaches the loop's event.
+                    #expect(gemmaPromptContract == 2)
                     #expect(nonce == "nonce-int-1")
                     #expect(scope == "authenticated-account-route")
                     #expect(reservationID == serviceReservationID)

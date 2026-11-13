@@ -65,14 +65,16 @@ struct GLM5NextResponseFormat: Sendable {
 
     /// The answer to expose: the JSON text the instruction asked for, without
     /// markdown fences or surrounding prose, or a typed 422 when no complete
-    /// valid value exists. Messages never quote generated content.
+    /// valid value exists (with `release`, when no complete value exists).
+    /// Messages never quote generated content.
     func validatedContent(_ content: String, finishReason: String) throws -> String {
         let mismatch = Self.failure(format.type == .jsonSchema
             ? "GLM content does not satisfy the json_schema" : "GLM content is not a JSON object")
         // The service's candidate extraction (whole text, fenced block, first
         // balanced value) and its own checks; its messages can name generated
         // keys, so they are replaced by fixed ones.
-        guard let text = try? OpenAIResponseFormatSupport.normalizedContent(content, for: format),
+        let checked = try? OpenAIResponseFormatSupport.normalizedContent(content, for: format)
+        guard let text = checked ?? releasableCandidate(content),
             let value = try? JSONDecoder().decode(MLXLMCommon.JSONValue.self, from: Data(text.utf8))
         else { throw mismatch }
         if finishReason == "length" {
@@ -84,15 +86,28 @@ struct GLM5NextResponseFormat: Sendable {
                 break
             }
         }
-        let satisfied = schema.map { ToolConstraintValidation.satisfies(value, schema: $0) }
-            ?? rawSchema.map { ToolConstraintValidation.satisfies(value, jsonSchema: $0) } ?? true
-        guard satisfied else {
+        guard checked != nil, satisfiesSchema(value) else {
             guard schemaMiss == .release else { throw mismatch }
             Self.logger.info("GLM JSON response_format answer released past a schema miss")
             return text
         }
         return text
     }
+
+    private func satisfiesSchema(_ value: MLXLMCommon.JSONValue) -> Bool {
+        if let schema, !ToolConstraintValidation.satisfies(value, schema: schema) { return false }
+        if let rawSchema, !ToolConstraintValidation.satisfies(value, jsonSchema: rawSchema) { return false }
+        return true
+    }
+
+    /// With `release`, the `json_schema` candidate the service's own schema
+    /// check rejected: the same extraction, checked against no schema.
+    private func releasableCandidate(_ content: String) -> String? {
+        guard schemaMiss == .release, format.type == .jsonSchema else { return nil }
+        return try? OpenAIResponseFormatSupport.normalizedContent(content, for: Self.anyJSONValue)
+    }
+
+    private static let anyJSONValue = OpenAIResponseFormat(type: .jsonSchema, jsonSchema: .init(schema: .object([:])))
 
     private static let logger = ProviderLogger(
         subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "json-answer")

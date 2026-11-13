@@ -3607,7 +3607,7 @@ there. Every refusal that remains names its check on the error frame
 | Undeclared or unresolvable name | Never exposed early: completes in one piece, returned as generated (refused under `strict`), or the existing text fallback when it does not parse |
 | Parse failure or divergence after exposure | The arguments already sent stay as generated (OpenAI's raw `arguments` string) and the call closes; `finish_reason` is `tool_calls`. Under `strict`, the same once the response started; before it, a typed `tool_choice` violation |
 | Schema violation after exposure | Returned as generated; under `strict`, the same once the response started; before it, a typed `tool_choice` violation |
-| Call cut off by `max_tokens`, whether the end-of-generation parse of its partial frame fails, diverges or completes it | Fragments stop and the call stays open; `finish_reason` is `length` |
+| Call cut off by `max_tokens`, whether the end-of-generation parse of its partial frame fails, diverges or completes it | Fragments stop, unclosed, and the call stays open; `finish_reason` is `length` |
 | Required or named `tool_choice`, native-channel families, other formats, non-chat surfaces, `DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0` | Complete calls released at the engine terminal after validation (for `auto`, as above) |
 
 The response hash adds one `tool_call` marker per fragment in wire order; a
@@ -3628,33 +3628,49 @@ breaking a contract, and OpenRouter does not count a call cut by the caller's
 
 - What already left stays as generated, including reasoning that spent the
   whole budget.
-- A streamed `auto` call stays open with its fragments, and the end-of-generation
-  parse completes no call (`NativeToolStreamRouter.finishToolCalls`), so the
-  stream finishes `length`; a call not yet exposed is not exposed.
+- A streamed `auto` call stays open with the fragments it sent, and the
+  end-of-generation parse completes no call
+  (`NativeToolStreamRouter.finishToolCalls`): the provider closes nothing (the
+  parse's remainder is its own closure, not generated text), so the arguments
+  end unparseable, as in an OpenAI stream the limit cut, and no client can run
+  the call; the stream finishes `length`. A call not yet exposed is not
+  exposed.
 - A constrained JSON answer (exact Flint, constrained Qwen) skips its final
-  check; GLM's withheld JSON answer leaves as generated
-  (`GLM5NextResponseFormatOutput.finalAnswer`).
+  check. GLM's withheld JSON answer leaves normalized when it already holds a
+  whole valid value (the candidate extraction, as before), and otherwise as
+  generated (`GLM5NextResponseFormatOutput.finalAnswer`).
 - Withheld calls (forced choices, native families, `DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0`)
-  that fail their checks are dropped instead of refused, and a forced choice
-  with no call ends `length` (`ToolConstraintValidation.validateWithheld`).
-  A call under `tool_choice: none` is the model's and still refused;
+  whose set fails its checks are checked one by one: whole calls leave, only
+  the last, which the limit may have cut, is held to the declarations, and a
+  call that fails is dropped instead of refused; a forced choice left with no
+  call ends `length` (`ToolConstraintValidation.validateWithheld`). A call
+  under `tool_choice: none` is the model's and still refused;
   `parallel_tool_calls: false` keeps only the first call before any check
   (`ParallelToolCallPolicy`). A native Flint or MiMo frame, or a forced GLM
   frame, the limit left unparsed is dropped, never published as text; an
-  `auto` GLM suffix that does not parse stays text (`GLM5ToolSuffix`), and one
-  that cannot be released is dropped. Calls that pass still leave, and the
-  response then finishes `tool_calls`, as before.
+  `auto` GLM suffix that does not parse stays text (`GLM5ToolSuffix`) up to
+  the frame the limit left open, which is dropped, and one that cannot be
+  released is dropped. Calls that pass still leave, and the response then
+  finishes `tool_calls`, as before.
+- The text the end of generation flushes leaves after the calls' checks, so a
+  refusal with nothing else sent stays one the router can fail over on.
 - Super's output (`NemotronSuperLocalOutput.finish(cutAtLimit:)`) does the same
-  for its unterminated frame, its calls and its withheld JSON answer. Its
-  internal qualification route stays strict.
+  for its unterminated frame, its calls and its withheld JSON answer, and a
+  thought the limit cut is not promoted to the answer by
+  `force_nonempty_content`. Its internal qualification route stays strict.
+- A loop the loop guard stops, and an exit-thinking continuation that ends as
+  `length`, end `length` too and count as cuts.
 
 The coordinator relays such a response as any `length` finish: it settles and
 bills its usage. Its own length finish for a refusal after commit (platform
 #897, `EIGENINFERENCE_LENGTH_FINISH_AFTER_TOOL_CHECK`) then only covers older
 providers. A local request without `stream` still gets the service's 422
 `responseFormatCutOffByMaxTokens` when its cut content is not one JSON value:
-the service checks complete responses itself. `DARKBLOOM_LENGTH_FINISH_AT_LIMIT=0`
-(or `off`, `false`) restores the refusal; it reaches the launchd job.
+the service checks complete responses itself. Telemetry
+`tool_constraint_cut` records each outcome (`open_call`, `dropped_calls`,
+`unchecked_answer`) in place of the refusals it replaces.
+`DARKBLOOM_LENGTH_FINISH_AT_LIMIT=0` (or `off`, `false`, `no`) restores the
+refusal; it is read once per process and reaches the launchd job.
 
 ### Strict calls after the response started
 
@@ -3672,10 +3688,14 @@ path serves every request as a stream, so the client's own `stream` is read
 from the body (`ChatTemplateControls.clientStreams`). The forwarder marks the
 response started at the first event it yields
 (`NativeToolStreamRouter.responseStarted`); a call validated in the same chunk
-as its first fragment is refused before it leaves. Forced choices, `none` and
-`parallel_tool_calls: false` keep their checks; Super's output keeps refusing.
-`DARKBLOOM_STRICT_CALLS_AS_GENERATED=0` (or `off`, `false`) restores the
-refusal; it reaches the launchd job.
+as its first fragment is refused before it leaves. A streamed call's name
+leaves before its arguments close, so in practice only a withheld call (or one
+whose whole frame arrives in one chunk) can still be refused before anything
+left. Forced choices, `none` and `parallel_tool_calls: false` keep their
+checks; Super's output keeps refusing. Telemetry
+`tool_constraint_strict_as_generated` counts the responses that returned such
+a call. `DARKBLOOM_STRICT_CALLS_AS_GENERATED=0` (or `off`, `false`, `no`)
+restores the refusal; it is read once per process and reaches the launchd job.
 
 ### Chat-template render check
 

@@ -549,6 +549,33 @@ struct GLM5NextOpenRouterCapabilityTests {
         #expect(served.toolCalls.isEmpty && served.content.isEmpty)
     }
 
+    /// An `auto` call frame the budget cut is dropped, never published as text.
+    @Test func autoCallCutAtTheLimitEndsAsLength() async throws {
+        let served = try await serve(try Self.forcedToolBody("auto"), output: [String(Self.weatherCall.prefix(60))],
+            finish: .length)
+        #expect(served.error == nil && served.finishReason == "length", "\(String(describing: served.error))")
+        #expect(served.toolCalls.isEmpty && served.content.isEmpty)
+    }
+
+    /// A `strict` call that fails its check after the reasoning left, on the
+    /// coordinator path, which serves every request as a stream: the body's own
+    /// `stream` decides (`StrictToolCallPolicy`). A streaming client gets the
+    /// call as generated; one that does not stream keeps the typed refusal.
+    @Test(arguments: [true, false])
+    func strictCallAfterReasoningFollowsTheClientsStream(clientStreams: Bool) async throws {
+        let body = try Self.forcedToolBody("auto", replacing: ["reasoning": ["enabled": true], "stream": clientStreams])
+        let kelvin = Self.weatherCall.replacingOccurrences(of: "fahrenheit", with: "kelvin")
+        let served = try await serve(body, output: ["Checking.", "</think>", kelvin])
+        #expect(served.reasoning == "Checking.")
+        if clientStreams {
+            #expect(served.error == nil && served.finishReason == "tool_calls", "\(String(describing: served.error))")
+            #expect(served.toolCalls.map(\.name) == ["get_current_weather"])
+        } else {
+            #expect(served.toolCalls.isEmpty && served.finishReason == nil)
+            #expect(classifyToolNoncomplianceCheck(try #require(served.error)) == .schema)
+        }
+    }
+
     /// The coordinator routes required/named GLM requests only to providers
     /// that list the concrete model under tool-constraint protocol v1.
     @Test func providerAdvertisesForcedToolChoiceForTheGLMServingIdentity() throws {

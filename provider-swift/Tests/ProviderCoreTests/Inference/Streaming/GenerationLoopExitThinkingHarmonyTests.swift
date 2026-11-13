@@ -717,6 +717,19 @@ struct GenerationLoopExitThinkingHarmonyTests {
         #expect(outcome.loopGuardStops == [false])
     }
 
+    @Test("tools declared with tool_choice none: none are rendered, so an analysis loop ends as length")
+    func noneChoiceKeepsLength() async throws {
+        let engine = HarmonyLoopTestEngine(.analysisLoop)
+        // `none` drops the tools before rendering (`prepared.tools` is nil): the exit follows the prompt the
+        // model saw, not the request's `tools`.
+        let outcome = try await serve(engine, extra: Self.tools + #","tool_choice":"none""#)
+        #expect(engine.requests.count == 1)
+        #expect(outcome.info?.stopReason == "length")
+        #expect(outcome.content.isEmpty)
+        #expect(outcome.calls.isEmpty)
+        #expect(outcome.loopGuardStops == [false])
+    }
+
     @Test("off: an analysis loop ends as length with nothing more submitted, as 0.10.12",
           arguments: ["0", "gemma4,gemma4_text"])
     func offKeepsLength(switchValue: String) async throws {

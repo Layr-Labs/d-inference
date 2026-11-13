@@ -482,8 +482,8 @@ struct GenerationLoopExitThinkingServingTests {
     @Test("a family without the exit keeps today's length")
     func otherFamilyKeepsLength() async throws {
         let engine = ThoughtLoopCBv2Engine(loopInsideThought: true)
-        // Gemma's test tokenizer has no `<|end|>`, so GPT-OSS's Harmony exit cannot resolve here.
-        let outcome = try await serve(engine, served: Served(modelType: "gpt_oss"))
+        // Nemotron 3.5 Lightning: guarded, with no thought marker listed.
+        let outcome = try await serve(engine, served: Served(modelType: "nemotron_h"))
         #expect(engine.requests.count == 1)
         #expect(outcome.info?.stopReason == "length")
         #expect(outcome.loopGuardStops == [false])

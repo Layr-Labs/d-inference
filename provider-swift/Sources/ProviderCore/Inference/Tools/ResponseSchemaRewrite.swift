@@ -16,9 +16,11 @@ import MLXLMCommon
 /// (a recursive, remote or escaped reference, an older or unknown `$schema`, a
 /// wider `anyOf`, more than `ToolConstraintSchemaCompiler.maxDepth` levels,
 /// `maximumUnwraps` references or compositions in a row, more than
-/// `maximumWork`), so the caller keeps its fallback. It rewrites `properties`
-/// and `items` whatever the node's type, so a reference the compiler would
-/// ignore there must resolve too.
+/// `maximumWork`, a definition name over 256 bytes, or a node the compiler
+/// could never take whose copies it would read at length: a key over 20
+/// bytes, a `type` name over 7, more than 128 `required` names or one over
+/// 64), so the caller keeps its fallback. It rewrites `properties` and `items`
+/// whatever the node's type, so those checks and references hold there too.
 enum ResponseSchemaRewrite {
     /// Bounds the walk's work: a node it visits costs one plus its keys, a
     /// reference or a property name one per 64 bytes it hashes, and an enum
@@ -77,10 +79,11 @@ enum ResponseSchemaRewrite {
         mutating func rewrite(_ schema: MLXLMCommon.JSONValue, depth: Int, unwraps: Int) -> MLXLMCommon.JSONValue? {
             guard depth <= ToolConstraintSchemaCompiler.maxDepth, unwraps <= maximumUnwraps, spend(1) else { return nil }
             guard case .object(var object) = schema else { return schema }
-            // Paid before any change below copies the node. The compiler
-            // refuses every key longer than `additionalProperties` (20 bytes):
-            // refused here first, every lookup below compares short keys.
-            guard spend(object.count), object.keys.allSatisfy({ $0.utf8.count <= 20 }) else { return nil }
+            // Paid before any change below copies the node. Where the compiler
+            // compiles, it refuses a key longer than `additionalProperties`
+            // (20 bytes): refused here first, every lookup compares short keys.
+            guard spend(object.count), object.keys.allSatisfy({ $0.utf8.count <= 20 }), readsBounded(object)
+            else { return nil }
             object.removeValue(forKey: "$comment")
             if let reference = object["$ref"] {
                 guard case .string(let path) = reference, spend(path.utf8.count / 64),
@@ -133,6 +136,31 @@ enum ResponseSchemaRewrite {
             }
             object["nullable"] = .bool(true)
             return .object(object)
+        }
+
+        /// The compiler reads `type` and `required` on every copy of a node,
+        /// so each is bounded as the compiler could ever take it: a type name
+        /// (lowercased; `boolean` and `integer`, 7 bytes, are the longest),
+        /// and at most 128 required property names of at most 64 bytes.
+        /// Arrays are paid per member.
+        private mutating func readsBounded(_ object: [String: MLXLMCommon.JSONValue]) -> Bool {
+            func names(_ value: MLXLMCommon.JSONValue, longest: Int) -> Bool {
+                guard case .string(let name) = value else { return false }
+                return name.utf8.count <= longest
+            }
+            switch object["type"] {
+            case .string(let name)?:
+                guard name.utf8.count <= 7 else { return false }
+            case .array(let types)?:
+                guard spend(types.count), types.allSatisfy({ names($0, longest: 7) }) else { return false }
+            default:
+                break
+            }
+            if case .array(let required)? = object["required"] {
+                guard required.count <= ToolConstraintSchemaCompiler.maxProperties, spend(required.count),
+                      required.allSatisfy({ names($0, longest: 64) }) else { return false }
+            }
+            return true
         }
 
         private mutating func spend(_ cost: Int) -> Bool {

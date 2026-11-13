@@ -170,9 +170,18 @@ struct GemmaJSONAnswerPolicyTests {
             ##"{"$ref":"#/$defs/A","$defs":{"A":{"$ref":"#/$defs/A"}}}"##,
             // The compiler refuses a key longer than additionalProperties; a definition name is at most 256 bytes.
             #"{"type":"string","\#(String(repeating: "k", count: 21))":0}"#,
+            // Read on every copy: type names of at most 7 bytes, 128 required names of at most 64.
+            #"{"type":"integers"}"#, #"{"type":["string","nullable"]}"#,
+            #"{"type":["string"\#(String(repeating: #","null""#, count: 20_000))]}"#,
+            #"{"type":"object","properties":{"a":{"type":"string"}},"required":["\#(String(repeating: "a", count: 65))"]}"#,
+            #"{"type":"object","properties":{"a":{"type":"string"}},"required":[\#(Array(repeating: #""a""#, count: 129).joined(separator: ","))]}"#,
             ##"{"$ref":"#/$defs/\##(String(repeating: "d", count: 257))","$defs":{"\##(String(repeating: "d", count: 257))":{"type":"string"}}}"##,
         ]
         for schema in refused { #expect(try Self.rewrite(schema) == nil, "\(schema)") }
+        for accepted in [#"{"type":"INTEGER"}"#, #"{"type":["boolean","null","null"]}"#,
+                         #"{"type":"object","properties":{"a":{"type":"string"}},"required":["a"]}"#] {
+            #expect(try Self.rewrite(accepted) == Self.json(accepted), "\(accepted)")
+        }
         let longest = String(repeating: "d", count: 256)
         #expect(try Self.rewrite(##"{"$ref":"#/$defs/\##(longest)","$defs":{"\##(longest)":{"type":"string"}}}"##)
                 == Self.json(#"{"type":"string"}"#))

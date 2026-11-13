@@ -3307,15 +3307,14 @@ message, so `MultiModelBatchSchedulerEngine.makeEventStream` first passes the
 raw output of a GPT-OSS request on the `harmony` parser through
 `HarmonyFinalHeaderFilter`. A `final` header that carries attributes and no
 recipient becomes `<|channel|>final<|message|>`, as does a whitespace-padded
-`final`; a `final` header holding another control marker is left as it is.
+`final`; a `final` header holding a control marker other than `<|constrain|>` is
+left as it is.
 Analysis, commentary and call headers, and the text of well-formed Harmony
 messages, pass byte for byte (the filter does not track message bodies, so a
 body that literally spells a `final` header is read as one). It holds back at
 most a partial `<|channel|>` marker, or a header of up to 256 bytes and a partial
 `<|message|>`
 (`provider-swift/Sources/ProviderCore/Inference/Streaming/HarmonyFinalHeaderFilter.swift`).
-The SDK parser is the better long-term home for this rule; until it routes by
-channel name, the filter does.
 
 Only qualified Nemotron Lightning listings absorb a stray `</think>` already
 in content state, leaving preceding text as content and tool arguments opaque.

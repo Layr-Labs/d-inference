@@ -4,11 +4,12 @@ import Foundation
 import MLXLMServer
 
 /// Rewrites a GPT-OSS answer header that carries attributes, such as
-/// `<|channel|>final <|constrain|>json<|message|>`, to the plain
-/// `<|channel|>final<|message|>`. The Harmony reasoning parser routes only the
-/// exact header `final` to content and drops every other message, so without
+/// `<|channel|>final <|constrain|>json<|message|>`, or whitespace, to the plain
+/// `<|channel|>final<|message|>`. The Harmony reasoning parsers route only the
+/// exact header `final` to content and drop every other message, so without
 /// this filter such an answer reaches the client as empty content. Other
-/// headers, and all text outside headers, pass through byte for byte.
+/// headers and the messages of well-formed Harmony output pass byte for byte;
+/// message bodies are not tracked.
 struct HarmonyFinalHeaderFilter: Sendable {
     private static let channelMarker = "<|channel|>"
     private static let messageMarker = "<|message|>"
@@ -33,7 +34,7 @@ struct HarmonyFinalHeaderFilter: Sendable {
             if inHeader {
                 guard let end = pending.range(of: Self.messageMarker) else {
                     // Past the limit plus a partial `<|message|>`: whatever ends it, the header is too long.
-                    if pending.utf8.count > Self.maximumHeaderBytes + Self.messageMarker.utf8.count {
+                    if pending.utf8.count >= Self.maximumHeaderBytes + Self.messageMarker.utf8.count {
                         output += pending
                         pending = ""
                         inHeader = false
@@ -65,7 +66,7 @@ struct HarmonyFinalHeaderFilter: Sendable {
     }
 
     /// `final` for an answer header: its first word is `final`, it names no
-    /// recipient (`to=` is a call) and it holds no control marker but
+    /// recipient (`to=` is a call) and it holds no control marker other than
     /// `<|constrain|>` (another one means the header was cut short and a new
     /// message began). Any other header as given.
     private static func answerHeader(_ header: String) -> String {
@@ -76,9 +77,9 @@ struct HarmonyFinalHeaderFilter: Sendable {
     }
 
     /// Length of the longest suffix of `text` that is a proper prefix of
-    /// `<|channel|>`, in bytes. The caller holds that many Characters: the
-    /// suffix is ASCII, so this is the same text, or one cluster more when a
-    /// prepended mark joins its first byte. Text is held, never split.
+    /// `<|channel|>`, in bytes. The suffix is ASCII, so the caller holds as many
+    /// Characters; when a prepend mark joins its first one, that mark is held
+    /// with it. Text is held, never split.
     private static func markerPrefixLength(_ text: String) -> Int {
         let marker = Array(channelMarker.utf8)
         let bytes = Array(text.utf8.suffix(marker.count - 1))

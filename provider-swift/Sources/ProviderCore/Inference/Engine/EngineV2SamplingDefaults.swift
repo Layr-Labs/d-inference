@@ -25,9 +25,10 @@
 //   The catalog Qwen 3.5/3.6 builds take their model cards' thinking-mode
 //   values instead of the greedy decoding that looped to `max_tokens`,
 //   including the cards' presence penalty 1.5 (`qwen35CardDefaults`).
-//   0.10.12 dropped it on Qwen3.5-9B, whose answers then ran to
-//   `max_tokens` about three times as often in production; 0.10.13 gives it
-//   back (`DARKBLOOM_QWEN35_9B_PRESENCE_PENALTY=0` is the rollback).
+//   0.10.12 dropped it on Qwen3.5-9B, whose long answers then ran to
+//   `max_tokens` about three times as often in production (5.5 % against
+//   1.7 %); 0.10.13 gives it back (`DARKBLOOM_QWEN35_9B_PRESENCE_PENALTY=0`
+//   is the rollback).
 //   Every other model keeps the legacy defaults byte-for-byte.
 // * `do_sample: false` in the file means greedy (legacy), matching HF
 //   semantics; an absent or unreadable file is legacy.
@@ -81,23 +82,25 @@ public struct EngineV2SamplingDefaults: Sendable, Equatable {
         temperature: 1.0, topP: 0.95, topK: 20, presencePenalty: 1.5)
     /// Qwen3.5-9B under `DARKBLOOM_QWEN35_9B_PRESENCE_PENALTY=0`: the card's
     /// values without the penalty, 0.10.12's default. Its 31-draw gate saw no
-    /// loop under exact acceptance. In production (0.10.12 against 0.10.11 in
-    /// the same hour) its answers ran to `max_tokens` about three times as
-    /// often, and its JSON `response_format` answers, rows that never
-    /// speculate (a token constraint), ran out about twice as often: the
-    /// penalty alone made that difference. The registry's `presence_penalty`
-    /// 1.5 restored it on 2026-11-12.
+    /// loop under exact acceptance. In production, 0.10.12 against 0.10.11
+    /// Macs over the same period, its answers with `max_tokens` ≥ 8,192 ran
+    /// to the limit about three times as often (5.5 % against 1.7 %), and
+    /// its constrained JSON `response_format` rows, which never speculate,
+    /// ran out and failed about twice as often (51 % against 23 % in the same
+    /// 10-minute windows). The penalty is the difference we can establish:
+    /// with nothing else running those rows failed 32.7 % against 13.6 %.
+    /// The registry's `presence_penalty` 1.5 restored it on 2026-11-12.
     static let qwen35NineBNoPenaltyDefaults = EngineV2SamplingDefaults(
         temperature: 1.0, topP: 0.95, topK: 20)
     static let qwen35NineBModelID = "Qwen3.5-9B"
 
-    /// `DARKBLOOM_QWEN35_9B_PRESENCE_PENALTY`: unset (or `1`, `on`, `true`)
-    /// keeps the card's 1.5 for Qwen3.5-9B requests that omit a presence
-    /// penalty; `0`, `off`, `false` or `no` restores 0.10.12's no-penalty
-    /// default.
-    /// Any other value keeps the card's. Only the 9B reads it. A request's own
+    /// `DARKBLOOM_QWEN35_9B_PRESENCE_PENALTY`: `0`, `off`, `false` or `no`
+    /// (trimmed, case-insensitive) restores 0.10.12's no-penalty default for
+    /// Qwen3.5-9B requests that omit a presence penalty; unset or any other
+    /// value keeps the card's 1.5. Only the 9B reads it. A request's own
     /// `presence_penalty`, the coordinator's registry default included, always
-    /// wins.
+    /// wins, so while the registry sets one the switch does not reach routed
+    /// traffic.
     static let qwen35NineBPenaltyEnvironmentKey = "DARKBLOOM_QWEN35_9B_PRESENCE_PENALTY"
 
     static func qwen35NineBKeepsCardPenalty(environment: [String: String]) -> Bool {
@@ -106,6 +109,7 @@ public struct EngineV2SamplingDefaults: Sendable, Equatable {
         else { return true }
         return !["0", "off", "false", "no"].contains(raw)
     }
+
     static let qwen35CardModelTypes = [
         "Qwen3.5-9B": "qwen3_5",
         "qwen3.5-35b-a3b": "qwen3_5_moe",

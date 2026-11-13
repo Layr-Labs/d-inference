@@ -11,8 +11,8 @@ import Testing
 /// A Qwen 3.5/3.6 request with the model card's presence penalty (1.5) cannot speculate: on
 /// `qwen3.5-35b-a3b` and `Qwen3.5-9B` alike that is the provider's default for a request that
 /// sends no sampling field (`EngineV2SamplingDefaults.qwen35CardDefaults`; 0.10.12 had none on
-/// the 9B). On the production paged assembly, with the inline MTP
-/// assistant and the encrypted complete-checkpoint store, such a request must still donate its
+/// the 9B). On the production paged assembly, with the inline MTP assistant and the encrypted
+/// complete-checkpoint store, such a request must still donate its
 /// prompt's checkpoints, answer exactly as it does with the cache off, and let the next
 /// identical request restore them and answer exactly as its cold run. Synthetic weights, no
 /// model load.

@@ -31,9 +31,11 @@ struct NativeToolStreamRouter {
     /// call that fails its check may then leave as generated
     /// (`StrictToolCallPolicy`).
     var responseStarted = false
-    /// Telemetry: streamed calls left open at a cut, and `strict` calls that
-    /// failed their check and left as generated because the response started.
+    /// Telemetry: at a cut, streamed calls left open and calls never exposed
+    /// that were dropped; `strict` calls that failed their check and left as
+    /// generated because the response started.
     private(set) var callsLeftOpenAtCut = 0
+    private(set) var callsDroppedAtCut = 0
     private(set) var strictCallsReturnedAsGenerated = 0
 
     // Pass the same prepared schemas used by the handler: Flint's raw-string
@@ -124,19 +126,25 @@ struct NativeToolStreamRouter {
         for segment in handler.finishSegments() {
             switch segment {
             case .callFailed where truncated:
-                if cutAtLimit, openCallIndex != nil { callsLeftOpenAtCut += 1 }
+                if cutAtLimit { recordCut(leftOpen: openCallIndex != nil) }
                 openCallIndex = nil
             case .callCompleted where cutAtLimit:
                 // Its remainder is the parse's closure, not generated text.
-                if openCallIndex != nil { callsLeftOpenAtCut += 1 }
+                recordCut(leftOpen: openCallIndex != nil)
                 openCallIndex = nil
-            case .callStarted where cutAtLimit, .call where cutAtLimit:
+            case .callStarted where cutAtLimit:
                 continue
+            case .call where cutAtLimit:
+                recordCut(leftOpen: false)
             default:
                 events += try routeToolSegment(segment, prepared: prepared, truncated: truncated)
             }
         }
         return events
+    }
+
+    private mutating func recordCut(leftOpen: Bool) {
+        if leftOpen { callsLeftOpenAtCut += 1 } else { callsDroppedAtCut += 1 }
     }
 
     private func checkReasoningState() throws {

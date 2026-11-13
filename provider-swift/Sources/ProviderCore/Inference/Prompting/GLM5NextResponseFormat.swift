@@ -103,6 +103,12 @@ struct GLM5NextResponseFormatOutput {
         }
     }
 
+    /// Whether the retained answer passes the check `finalAnswer` makes
+    /// without tool calls.
+    func answerValidates(finishReason: String) -> Bool {
+        (try? format.validatedContent(content, finishReason: finishReason)) != nil
+    }
+
     /// The answer as one content event at the end of generation. The format
     /// governs an answer, not calls: beside tool calls the retained text
     /// leaves as generated, as the service exposes the other families'

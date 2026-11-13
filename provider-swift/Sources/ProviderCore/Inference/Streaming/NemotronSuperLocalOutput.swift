@@ -80,7 +80,7 @@ struct NemotronSuperLocalOutput {
                 events += try route([.init(content: reasoning, reasoningContent: nil)])
             }
         } else {
-            let split = channel.complete(raw, promotingUnterminated: !cutAtLimit)
+            let split = channel.complete(raw, promoting: !cutAtLimit)
             reasoning = split.reasoning ?? ""
             _ = try route([.init(content: split.content ?? "", reasoningContent: nil)])
         }

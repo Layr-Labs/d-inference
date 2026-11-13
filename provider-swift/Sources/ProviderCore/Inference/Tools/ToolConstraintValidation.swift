@@ -118,10 +118,11 @@ enum ToolConstraintValidation {
 
     /// Calls withheld until the end of generation. When the token limit cut
     /// the answer (`cutAtLimit`, `TokenLimitCutPolicy`), a set that fails is
-    /// checked one call at a time: the whole calls leave, and only the last,
-    /// which the limit may have cut, is held to the declarations
-    /// (`truncated`); a call that fails is dropped, and a forced choice left
-    /// with none ends `length`. More calls than `parallel_tool_calls: false`
+    /// checked one call at a time and a call that fails is dropped: forced
+    /// choices hold every call to its schema, as always, and for `auto` only
+    /// the last, which the limit may have cut, is held to the declarations
+    /// without `strict` (`truncated`). A forced choice left with none ends
+    /// `length`. More calls than `parallel_tool_calls: false`
     /// allows, or a call under `tool_choice: none`, are the model's and still
     /// refused. Returns how many calls it dropped.
     @discardableResult

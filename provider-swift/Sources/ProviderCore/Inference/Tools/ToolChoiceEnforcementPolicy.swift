@@ -13,6 +13,10 @@ enum ToolChoiceEnforcementPolicy {
         case none
         case gemmaGrammar
         case structuredPostValidation
+        /// GPT-OSS: the sampler frames the Harmony call after the analysis
+        /// message (`GPTOSSForcedToolConstraint`); the call is still parsed
+        /// and validated before it is exposed.
+        case harmonyFraming
     }
 
     /// Per-model wire capability, never inferred from a caller's model label.
@@ -181,6 +185,11 @@ enum ToolChoiceEnforcementPolicy {
             guard format == .gemma else {
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
                     "inference-enforced Gemma tool_choice requires the gemma tool parser")
+            }
+        case .harmonyFraming:
+            guard format == .harmony else {
+                throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
+                    "GPT-OSS tool_choice requires the Harmony tool parser")
             }
         case .structuredPostValidation:
             if modelContext?.modelType == "flint" {

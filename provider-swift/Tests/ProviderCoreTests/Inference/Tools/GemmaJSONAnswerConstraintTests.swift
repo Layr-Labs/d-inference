@@ -429,9 +429,14 @@ struct GemmaJSONAnswerConstraintTests {
         let leading = vocabulary.leadingWhitespace
         // An id without a piece is never a transition, so the pieces and the stops cover every candidate.
         let candidates = Set(vocabulary.json.pieceTokenIDs).union(F.stops).sorted()
-        for (phase, prefix) in [(GemmaJSONAnswerBoundary.Phase.opening, ""), (.answer, "{"), (.answer, #"{"a": [1,"#),
-                                (.answer, #"{"a": 1"#)] {
-            for run in Set([0, 1, 2, 63 - leading, 64 - leading, 65 - leading, 63, 64]) {
+        let runs = Set([0, 1, 2, 63 - leading, 64 - leading, 65 - leading, 63, 64])
+        // Inside a string a space is content; after the closed value only a terminator follows.
+        let cases: [(GemmaJSONAnswerBoundary.Phase, String, Set<Int>)] = [
+            (.opening, "", runs), (.answer, "{", runs), (.answer, #"{"a": [1,"#, runs), (.answer, #"{"a": 1"#, runs),
+            (.answer, #"{"a": "x"#, runs), (.answer, #"{"a": 1}"#, [0]),
+        ]
+        for (phase, prefix, lengths) in cases {
+            for run in lengths {
                 let constraint = try F.constraint(phase: phase)
                 let start = try #require(F.walk(F.ids(prefix) + Array(repeating: F.space, count: run), constraint))
                 let allowed = constraint.allowedTokenIDs(state: start, remainingTokens: 10)

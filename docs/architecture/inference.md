@@ -3445,11 +3445,14 @@ before. A request whose interned states reach the cap
 (`GemmaJSONAnswerConstraint.defaultMaximumStates`, 16,384) continues
 unconstrained instead of failing. A `json_schema` in the shapes common clients
 generate is first rewritten into the shared subset where the result admits
-exactly the same instances (`ResponseSchemaRewrite`: local `$ref`s into the
-root's `$defs`/`definitions` inlined, a one-branch `allOf` unwrapped, `anyOf` of
-one schema and `{"type": "null"}` made nullable, the root's `$schema`/`$id`
-dropped); one still outside it (`pattern`, `format`, a recursive `$ref`, a wider
-`anyOf`, …) whose root is `"type": "object"` is held to a JSON object; any other
+exactly the same instances (`ResponseSchemaRewrite`: `$ref`s to plainly named
+entries of the root's `$defs`/`definitions` inlined, a one-branch `allOf`
+unwrapped, `anyOf` of one schema and `{"type": "null"}` made nullable, with only
+annotations beside them; `$comment`, the root's `$id` and a draft-06 to 2020-12
+`$schema` dropped; at most 16 levels, 8 references in a row and 4,096 nodes).
+One still outside it (`pattern`, `format`, a recursive `$ref`, a wider `anyOf`,
+an older `$schema`, a nullable enum of 128 values, …) whose root is
+`"type": "object"` is held to a JSON object; any other
 unsupported schema, an unpinned template or tokenizer, another
 prompt end or a nonpositive budget keeps prompt-only steering with one
 content-free line (category `json-answer`). An engine that runs no token

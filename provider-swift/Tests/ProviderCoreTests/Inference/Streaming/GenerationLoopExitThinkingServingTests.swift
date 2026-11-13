@@ -252,6 +252,11 @@ struct GenerationLoopExitThinkingServingTests {
     private static let qwenOn = GenerationLoopExitThinkingPolicy.Setting.modelTypes(
         GenerationLoopExitThinkingPolicy.defaultModelTypes.union(["qwen3_5_moe"]))
 
+    /// A clean process's setting. The scheduler's default reads the process's environment; these tests take this
+    /// one unless they pass their own, so a runner with DARKBLOOM_LOOP_EXIT_THINKING set (an A/B box) gets the same
+    /// results.
+    private static let cleanProcess = GenerationLoopExitThinkingPolicy.setting(environment: [:])
+
     private func serve(
         _ engine: ThoughtLoopCBv2Engine, served: Served = Served(), maxTokens: Int = 8_192, extra: String = "",
         usage: EngineV2RequestUsageSignal? = nil, exitThinking: GenerationLoopExitThinkingPolicy.Setting? = nil
@@ -263,7 +268,7 @@ struct GenerationLoopExitThinkingServingTests {
         var scheduler = MultiModelBatchSchedulerEngine(registryProvider: {
             [served.modelID: .init(tokenizer: served.tokenizer, modelType: served.modelType, engineV2Bridge: bridge)]
         }, engineV2Usage: usage)
-        if let exitThinking { scheduler.exitThinkingSetting = exitThinking }
+        scheduler.exitThinkingSetting = exitThinking ?? Self.cleanProcess
         var outcome = try await consume(scheduler, served: served, maxTokens: maxTokens, extra: extra)
         await bridge.shutdown()
         outcome.loopGuardStops = telemetry.loopGuardStops
@@ -388,9 +393,10 @@ struct GenerationLoopExitThinkingServingTests {
         await bridge.updatePrefillTpsEwma(2_000, isolated: true)
         let id = modelID
         let tokenizer = Self.tokenizer
-        let scheduler = MultiModelBatchSchedulerEngine(
+        var scheduler = MultiModelBatchSchedulerEngine(
             registryProvider: { [id: .init(tokenizer: tokenizer, modelType: "gemma4", engineV2Bridge: bridge)] },
             firstContentDeadline: FirstContentDeadline(relativeBudgetMilliseconds: 60_000))
+        scheduler.exitThinkingSetting = Self.cleanProcess
         let outcome = try await consume(scheduler, maxTokens: 8_192)
         await bridge.shutdown()
         #expect(outcome.error == nil)

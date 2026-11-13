@@ -456,8 +456,8 @@ jobs:
             --output-dir "$RUNNER_TEMP/provider-test-diagnostics" \
             --diagnostic-after-seconds 900 --timeout-seconds 1800 \
             -- ../scripts/run-provider-tests.sh
-      - name: Test Gemma o5 conformance switches
-        if: ${{ !cancelled() && matrix.shard == 1 && steps.test-products.outcome == 'success' }}
+      - name: Test Gemma reopened thought conformance switches
+        if: ${{ !cancelled() && matrix.shard == strategy.job-total && steps.test-products.outcome == 'success' }}
         working-directory: provider-swift
         timeout-minutes: 5
         run: |

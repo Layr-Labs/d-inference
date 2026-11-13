@@ -1675,6 +1675,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     ? WithheldReasoningLogprobsFilter(
                         startsInThought: nativeReasoningPrefix == ReasoningPromptProbe.thinkOpen)
                     : nil
+                // That filter reads think tags. Muse Glimmer's reasoning is a
+                // framed message it cannot tell from the answer, so a request
+                // that declines reasoning gets no logprob entries at all,
+                // never its withheld reasoning's.
+                let withholdsEveryLogprob = nativeGlimmerChannels && withholdReasoning
                 // Raw output passes this holdback before channel/tool parsing,
                 // so a matched answer stop and its tail are never parsed.
                 var answerStops = answerStopFilter
@@ -1750,7 +1755,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     }
                     switch event {
                     case .logprobs(let entries):
-                        guard let engineV2Logprobs else { continue }
+                        guard let engineV2Logprobs, !withholdsEveryLogprob else { continue }
                         let requested = engineV2Logprobs.requested(entries)
                         let visible = reasoningLogprobs?.visible(requested) ?? requested
                         // Before the chunk these entries precede, as the frames

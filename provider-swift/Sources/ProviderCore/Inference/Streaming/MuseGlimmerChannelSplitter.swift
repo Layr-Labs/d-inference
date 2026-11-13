@@ -46,7 +46,7 @@ struct MuseGlimmerChannelSplitter {
     /// A header is a role and a recipient; anything longer is not one.
     static let maximumHeaderCharacters = 512
 
-    private enum Channel { case reasoning, content, tool, ignored }
+    private enum Channel: Equatable { case reasoning, content, tool, ignored }
 
     private enum State {
         /// Reading a header up to `<|message|>`. `explicit`: it follows
@@ -65,32 +65,33 @@ struct MuseGlimmerChannelSplitter {
     /// start at the next character.
     private var bodyAtWordBoundary = true
 
+    /// Characters held back from the stream (test observability).
     var bufferedCharacterCount: Int { buffer.count + toolBody.count }
 
     mutating func parse(_ text: String) -> [Piece] {
         buffer += text
-        return drain(final: false, truncated: false)
+        return drain(final: false)
     }
 
     /// End of generation. `truncated`: the output-token limit ended it, so a
     /// tool call cut off mid-invoke is dropped, not reported as malformed.
+    /// A last fragment that could still have become a header (` to=us`) is
+    /// dropped either way: it is framing, not an answer.
     mutating func finish(truncated: Bool = false) -> [Piece] {
-        var pieces = drain(final: true, truncated: truncated)
+        var pieces = drain(final: true)
         closeFrame(truncated: truncated, into: &pieces)
         state = .header(text: "", explicit: false)
         return pieces
     }
 
-    private mutating func drain(final: Bool, truncated: Bool) -> [Piece] {
+    private mutating func drain(final: Bool) -> [Piece] {
         var pieces: [Piece] = []
         while true {
             switch state {
             case .header(let text, let explicit):
                 guard drainHeader(text: text, explicit: explicit, final: final) else { return pieces }
             case .body(let channel):
-                guard drainBody(channel, final: final, truncated: truncated, into: &pieces) else {
-                    return pieces
-                }
+                guard drainBody(channel, final: final, into: &pieces) else { return pieces }
             }
         }
     }
@@ -101,10 +102,22 @@ struct MuseGlimmerChannelSplitter {
         let held = found == nil && !final ? Self.partialMarkerLength(atEndOf: buffer) : 0
         let split = found?.1.lowerBound ?? buffer.index(buffer.endIndex, offsetBy: -held)
         let header = text + buffer[..<split]
-        if !explicit, !Self.couldBecomeHeader(found == nil ? header + buffer[split...] : header) {
+        // The probe ends with the marker found, or with the held partial one,
+        // so the verdict is the same however the text was chunked.
+        let probeEnd = found?.1.upperBound ?? buffer.endIndex
+        // A header is a role and a recipient; anything longer is not one.
+        let overlong = header.count > Self.maximumHeaderCharacters
+        if !explicit, overlong || !Self.couldBecomeHeader(header + buffer[split..<probeEnd]) {
             // No framing arrived: text outside any message is the answer.
             buffer = header + buffer[split...]
             openBody(.content)
+            return true
+        }
+        if overlong {
+            // After `<|start|>` it is a message that names no assistant. The
+            // marker, if any, is left for the dropped body to end on.
+            buffer.removeSubrange(buffer.startIndex..<split)
+            openBody(.ignored)
             return true
         }
         if let (marker, range) = found {
@@ -121,10 +134,6 @@ struct MuseGlimmerChannelSplitter {
             return true
         }
         buffer.removeSubrange(buffer.startIndex..<split)
-        guard header.count <= Self.maximumHeaderCharacters else {
-            openBody(.ignored)
-            return true
-        }
         state = .header(text: header, explicit: explicit)
         return false
     }
@@ -135,12 +144,12 @@ struct MuseGlimmerChannelSplitter {
     }
 
     /// Returns false when it needs more input.
-    private mutating func drainBody(
-        _ channel: Channel, final: Bool, truncated: Bool, into pieces: inout [Piece]
-    ) -> Bool {
+    private mutating func drainBody(_ channel: Channel, final: Bool, into pieces: inout [Piece]) -> Bool {
         if let (marker, range) = firstMarker(in: buffer) {
             var text = String(buffer[..<range.lowerBound])
             buffer.removeSubrange(buffer.startIndex..<range.upperBound)
+            // Nothing inside a dropped message opens another one.
+            if marker == Self.message, channel == .ignored { return true }
             if marker == Self.message {
                 // A header written inside this body: the body ends before it.
                 let header = Self.trailingHeader(in: text, atWordBoundary: bodyAtWordBoundary)
@@ -177,6 +186,8 @@ struct MuseGlimmerChannelSplitter {
         case .ignored: break
         case .tool:
             toolBody += text
+            // Scan only when this text can have completed a closing tag.
+            guard toolBody.suffix(text.count + Self.invokeClose.count - 1).contains(Self.invokeClose) else { return }
             while let invoke = Self.firstInvoke(in: toolBody) {
                 pieces.append(.invoke(String(toolBody[invoke])))
                 toolBody.removeSubrange(toolBody.startIndex..<invoke.upperBound)
@@ -188,7 +199,7 @@ struct MuseGlimmerChannelSplitter {
     /// whitespace of a complete call, or tool markup that never completed.
     private mutating func closeFrame(truncated: Bool, into pieces: inout [Piece]) {
         defer { toolBody = "" }
-        guard !truncated, toolBody.contains("<atem:") else { return }
+        guard !truncated else { return }
         var remainder = toolBody
         for tag in Self.wrapperTags { remainder = remainder.replacingOccurrences(of: tag, with: "") }
         if remainder.contains("<atem:") || remainder.contains("</atem:") {
@@ -199,7 +210,9 @@ struct MuseGlimmerChannelSplitter {
     // MARK: - Framing
 
     private func firstMarker(in text: String) -> (String, Range<String.Index>)? {
-        Self.markers.compactMap { marker in text.range(of: marker).map { (marker, $0) } }
+        // Literal: a marker is matched by its scalars even when a combining
+        // scalar follows it.
+        Self.markers.compactMap { marker in text.range(of: marker, options: .literal).map { (marker, $0) } }
             .min { $0.1.lowerBound < $1.1.lowerBound }
     }
 
@@ -253,7 +266,7 @@ struct MuseGlimmerChannelSplitter {
         in text: String, atWordBoundary: Bool
     ) -> (lowerBound: String.Index, recipient: String.Index) {
         let word = lastWordStart(in: text[...])
-        guard text[word...].hasPrefix("to="),
+        guard text[word...].hasPrefix("to="), text[word...].count <= maximumHeaderCharacters,
             startsWord(word, in: text[...], atWordBoundary: atWordBoundary)
         else { return (text.endIndex, text.endIndex) }
         return (horizontalSpaceStart(before: word, in: text[...]), word)
@@ -268,7 +281,8 @@ struct MuseGlimmerChannelSplitter {
             let space = horizontalSpaceStart(before: start, in: text)
             return space < text.endIndex ? space : nil
         }
-        guard word.hasPrefix("to=") || "to=".hasPrefix(word),
+        // A word too long to be a recipient is text; it is not held.
+        guard word.hasPrefix("to=") || "to=".hasPrefix(word), word.count <= maximumHeaderCharacters,
             startsWord(start, in: text, atWordBoundary: atWordBoundary)
         else { return nil }
         return horizontalSpaceStart(before: start, in: text)

@@ -20,9 +20,7 @@ enum MuseGlimmerTemplateFix {
     ///   empty mapping, as the reference servers render them, so one damaged
     ///   call in a conversation never makes every later turn unservable.
     /// - A `null` argument stays a value: the template writes it as `null`.
-    static func normalizeMessages(
-        _ messages: [[String: any Sendable]]
-    ) throws -> [[String: any Sendable]] {
+    static func normalizeMessages(_ messages: [[String: any Sendable]]) -> [[String: any Sendable]] {
         messages.map { message in
             guard message["role"] as? String == "assistant" else { return sanitizeJinjaObject(message) }
             var fields = message

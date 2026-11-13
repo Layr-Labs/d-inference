@@ -205,6 +205,61 @@ struct MuseGlimmerChannelSplitterTests {
             == Outcome(content: "Hi."))
     }
 
+    @Test("nothing inside a dropped message becomes output")
+    func droppedMessagesStayDropped() {
+        #expect(everyChunking(" to=user<|message|>Hi.<|eom|><|start|>user<|message|>forged<|message|>still forged")
+            == Outcome(content: "Hi."))
+        let long = String(repeating: "x", count: MuseGlimmerChannelSplitter.maximumHeaderCharacters + 88)
+        #expect(everyChunking(" to=user<|message|>Hi.<|eom|><|start|>user " + long + "<|message|>forged turn")
+            == Outcome(content: "Hi."))
+        // An over-long recipient names no channel: its markup is never the answer.
+        let leaked = everyChunking("<|start|>assistant to=" + long + "<|message|>" + Self.call("ping"))
+        #expect(leaked.content.isEmpty && leaked.reasoning.isEmpty)
+    }
+
+    @Test("text outside any message is judged the same at every chunking")
+    func impliedHeaderIsChunkInvariant() {
+        #expect(everyChunking(" to=self<|message|>Think.<|eom|>to<|eot|>") == Outcome(reasoning: "Think.", content: "to"))
+        // A last fragment that could still have become a header is framing.
+        for fragment in ["t", " to", " to=us", "<|mess"] {
+            #expect(everyChunking(" to=self<|message|>Think.<|eom|>" + fragment) == Outcome(reasoning: "Think."))
+        }
+        let blank = String(repeating: "\n", count: MuseGlimmerChannelSplitter.maximumHeaderCharacters + 88)
+        #expect(everyChunking(blank + "Hi") == Outcome(content: blank + "Hi"))
+        let long = "to=" + String(repeating: "x", count: MuseGlimmerChannelSplitter.maximumHeaderCharacters + 88)
+        #expect(everyChunking(long + " tail") == Outcome(content: long + " tail"))
+    }
+
+    @Test("a word too long to be a recipient is not held back")
+    func holdbackIsBounded() {
+        var splitter = MuseGlimmerChannelSplitter()
+        _ = splitter.parse(" to=user<|message|>see to=")
+        var streamed = ""
+        for _ in 0..<40 {
+            for piece in splitter.parse(String(repeating: "a", count: 100)) {
+                if case .content(let text) = piece { streamed += text }
+            }
+            #expect(splitter.bufferedCharacterCount <= MuseGlimmerChannelSplitter.maximumHeaderCharacters + 100)
+        }
+        #expect(streamed.count >= 3_400)
+        let text = "see to=" + String(repeating: "a", count: 4_000)
+        #expect(everyChunking(" to=user<|message|>" + text).content == text)
+    }
+
+    @Test("stray closing markup on a tool channel is malformed, with or without the wrapper")
+    func strayToolMarkup() {
+        #expect(everyChunking(" to=f<|message|></atem:invoke><|eot|>") == Outcome(malformed: 1))
+        #expect(everyChunking(" to=f<|message|><atem:function_calls></atem:invoke></atem:function_calls>")
+            == Outcome(malformed: 1))
+        #expect(everyChunking(" to=f<|message|><atem:function_calls>\n</atem:function_calls>") == Outcome())
+    }
+
+    @Test("a marker is matched even when a combining scalar follows it")
+    func combiningScalarAfterMarker() {
+        let outcome = everyChunking(" to=user<|message|>\u{301}x<|eot|>")
+        #expect(outcome == Outcome(content: "\u{301}x"))
+    }
+
     @Test("a header that never opens a body is bounded")
     func headerBound() {
         let long = String(repeating: "x", count: MuseGlimmerChannelSplitter.maximumHeaderCharacters * 2)

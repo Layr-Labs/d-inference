@@ -5,7 +5,8 @@ public enum MTPAutomaticVerificationPolicy {
     public static let initialDraftTokens = 1
 
     /// Qwen retains its request-stateful controller and drafter-owned cap.
-    /// Exact Muse Glimmer drafts adaptively up to its own cap.
+    /// Exact Muse Glimmer drafts adaptively up to its own cap, with or without
+    /// an offline verification control.
     /// Exact Gemma QAT can alternate ordinary decode with one draft token;
     /// all other stateless assistants retain fixed depth one. Explicit offline
     /// verification controls retain fixed depth one for comparable measurements.

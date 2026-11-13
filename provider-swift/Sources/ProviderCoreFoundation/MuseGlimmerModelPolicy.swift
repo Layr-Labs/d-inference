@@ -29,7 +29,8 @@ public enum MuseGlimmerModelPolicy {
     /// ModelOpt mixed precision led by NVFP4 weights; the scan reports it.
     public static let quantizationLabel = "nvfp4"
 
-    /// The deepest draft a row may take: the engine's tested window.
+    /// The deepest draft a row may take. The depth policy also holds it to
+    /// the engine's tested window.
     public static let maximumDraftTokens = 7
 
     public static func matchesModelID(_ id: String?) -> Bool {

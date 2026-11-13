@@ -304,5 +304,32 @@ struct MuseGlimmerToolStreamTests {
         #expect(try !Fixture(tools: nil).withholdsReasoning)
         #expect(try !Fixture(tools: nil, extra: ["reasoning": ["effort": "none"]]).withholdsReasoning)
     }
+
+    @Test("with reasoning declined, no logprob entry leaves: the filter cannot tell reasoning from the answer")
+    func withheldReasoningLogprobs() async throws {
+        func entries(withholding: Bool) async throws -> [SSETokenLogprob] {
+            let fixture = try Fixture(tools: nil, extra: withholding ? ["reasoning": ["exclude": true]] : [:])
+            let upstream = AsyncStream<GenerationEvent> { continuation in
+                for (token, text) in [("secret", " to=self<|message|>secret<|eom|><|start|>assistant"),
+                                      ("answer", " to=user<|message|>answer")] {
+                    continuation.yield(.logprobs([SSETokenLogprob(token: token, logprob: -0.1, bytes: nil, topLogprobs: [])]))
+                    continuation.yield(.chunk(text))
+                }
+                continuation.yield(.info(promptTokens: 4, completionTokens: 2, tokensPerSecond: 1, finishReason: "stop"))
+                continuation.finish()
+            }
+            let scheduler = MultiModelBatchSchedulerEngine(
+                registryProvider: { [:] }, engineV2Logprobs: EngineV2LogprobsPlumbing(topLogprobs: 0))
+            let output = try scheduler._testMakeEventStream(
+                upstream: upstream, cancelUpstream: {}, prepared: fixture.prepared,
+                releaseBox: OneShotRelease(release: { _ in }, modelId: Self.modelID),
+                withholdReasoning: fixture.withholdsReasoning, nativeGlimmerChannels: true)
+            var seen: [SSETokenLogprob] = []
+            for try await event in output { if case .logprobs(let batch) = event { seen += batch } }
+            return seen
+        }
+        #expect(try await entries(withholding: false).map(\.token) == ["secret", "answer"])
+        #expect(try await entries(withholding: true).isEmpty)
+    }
     #endif
 }

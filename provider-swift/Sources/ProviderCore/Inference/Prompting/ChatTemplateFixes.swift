@@ -38,7 +38,7 @@ enum ChatTemplateFixes {
         }
         if MuseGlimmerTemplateFix.applies(to: context) {
             try validateGenericToolHistory(messages)
-            return try MuseGlimmerTemplateFix.normalizeMessages(messages)
+            return MuseGlimmerTemplateFix.normalizeMessages(messages)
         }
         let sanitized = sanitizeJinjaMessages(messages)
         var normalized = Qwen35TemplateFix.applies(to: context)

@@ -44,9 +44,10 @@ struct NativeToolStreamRouter {
          streamedCalls: ToolChoicePromptPolicy.Prepared? = nil,
          nativeGlimmerChannels: Bool = false) {
         self.handler = handler
-        self.declaredToolNames = Set((tools ?? []).compactMap { tool in
-            ((tool["function"] as? [String: any Sendable]) ?? tool)["name"] as? String
-        })
+        self.declaredToolNames = nativeGlimmerChannels
+            ? Set((tools ?? []).compactMap { tool in
+                ((tool["function"] as? [String: any Sendable]) ?? tool)["name"] as? String
+            }) : []
         self.withholdReasoning = withholdReasoning
         self.requiresToolCall = requiresToolCall
         self.nativeGemmaReasoningEnabled = nativeGemmaReasoningEnabled
@@ -165,6 +166,18 @@ struct NativeToolStreamRouter {
         throw MultiModelBatchSchedulerEngineError.generationFailed(message)
     }
 
+    /// Under a forced tool choice, visible text is either framing whitespace
+    /// around and between call frames (true: not an answer on any path,
+    /// including legacy Qwen text without native channels) or a violation.
+    private func isFramingOnly(_ visible: String) throws -> Bool {
+        guard requiresToolCall else { return false }
+        guard ToolChoiceEnforcementPolicy.isFramingWhitespace(visible) else {
+            throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(
+                "forced tool_choice produced visible text before a validated call")
+        }
+        return true
+    }
+
     /// Muse Glimmer's channels are already scoped: reasoning and the answer
     /// never pass the tool parser, and only a tool channel's invokes reach it.
     /// A call leaves at the engine terminal, validated like any complete call.
@@ -181,12 +194,8 @@ struct NativeToolStreamRouter {
                     events.append(.parsed(.init(content: "", reasoningContent: text)))
                 }
             case .content(let text):
-                if requiresToolCall {
-                    if ToolChoiceEnforcementPolicy.isFramingWhitespace(text) { continue }
-                    throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(
-                        "forced tool_choice produced visible text before a validated call")
-                }
-                events.append(.parsed(.init(content: text, reasoningContent: nil)))
+                if try isFramingOnly(text) { continue }
+                events.append(visibleEvent(text))
             case .invoke(let element):
                 // Without declared tools there is no parser: the call is invalid.
                 guard let handler else {
@@ -242,14 +251,7 @@ struct NativeToolStreamRouter {
             // their existing fallback contract.
             try checkNativeToolFailure()
             guard let visible, !visible.isEmpty else { continue }
-            if requiresToolCall {
-                // Framing whitespace around and between call frames is not an
-                // answer on any path, including legacy Qwen text without
-                // native channels.
-                if ToolChoiceEnforcementPolicy.isFramingWhitespace(visible) { continue }
-                throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(
-                    "forced tool_choice produced visible text before a validated call")
-            }
+            if try isFramingOnly(visible) { continue }
             events.append(visibleEvent(visible))
         }
         return events

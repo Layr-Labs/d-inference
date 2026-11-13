@@ -8,8 +8,9 @@ import MLXLMServer
 ///
 /// Its template reads one reasoning control, `reasoning_strength` (`low`,
 /// `medium`, `high` or `xhigh`; `high` when absent), and nothing switches its
-/// reasoning off. A caller that declines reasoning gets the lowest strength
-/// and, like Flint's, the answer without the reasoning text.
+/// reasoning off. A thinking switch set to off selects the lowest strength.
+/// Separately, a caller that declines to receive reasoning gets, like
+/// Flint's, the answer without the reasoning text.
 enum MuseGlimmerRequestPolicy {
     static let strengthKey = "reasoning_strength"
 

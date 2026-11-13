@@ -22,7 +22,7 @@ enum PythonJSONTemplateFilter {
         }
     }
 
-    struct Writer {
+    private struct Writer {
         private var bytes = Data()
         private let family: String
         private let limit: Int

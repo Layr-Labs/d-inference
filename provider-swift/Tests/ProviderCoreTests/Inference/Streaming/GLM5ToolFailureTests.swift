@@ -261,6 +261,56 @@ struct GLM5ToolFailureTests {
         }
     }
 
+    /// A frame the SDK refuses keeps its boundary only when no reading could
+    /// move it: a `"` in it may open a JSON string that runs past its
+    /// `</arg_value>` (a raw guess for a schema the SDK refuses), or a raw
+    /// string a JSON reading runs past (swallowing the next frame's opening).
+    /// Such a frame owns the rest. And a frame's tags in top-level text, here
+    /// after a closed frame that follows a malformed header, own the rest too.
+    /// No call either way, at a stop or the token limit.
+    @Test(arguments: ["stop", "length"], [1, 7, 4096])
+    func refusedFramesWithAMovableBoundaryOwnTheRest(finishReason: String, width: Int) async throws {
+        let refusedObject = #"{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"x":{"type":"object","anyOf":[{"type":"object"}]}}}}}"#
+        let arrayTools = #"[{"type":"function","function":{"name":"put","parameters":{"type":"object","properties":{"m":{"type":"array"}}}}},{"type":"function","function":{"name":"g","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"h","parameters":{"type":"object","properties":{"z":{"type":"string"}}}}}]"#
+        let headerTools = #"[{"type":"function","function":{"name":"store","parameters":{"type":"object","properties":{"doc":{"type":"object"}}}}},{"type":"function","function":{"name":"x"}},{"type":"function","function":{"name":"g","parameters":{"type":"object","properties":{}}}}]"#
+        let cases: [(output: String, tool: String)] = [
+            (#"<tool_call>f<arg_key>x</arg_key><arg_value>]{"y":"</arg_value></tool_call><tool_call>f</tool_call>"#,
+             refusedObject),
+            (#"<tool_call>g<arg_key>x</arg_key><arg_value>]{"y":"</arg_value></tool_call><tool_call>f</tool_call>"#,
+             refusedObject),
+            (#"<tool_call>put<arg_key>m</arg_key><arg_value>"x</arg_value></tool_call><tool_call>put<arg_key>m</arg_key><arg_value>["</arg_value></tool_call><tool_call>g</tool_call><tool_call>h<arg_key>z</arg_key><arg_value>"]</arg_value></tool_call>"#,
+             arrayTools),
+            (#"<tool_call>store<bad><tool_call>x</tool_call><arg_key>doc</arg_key><arg_value>{"x":"<tool_call>g</tool_call>"#,
+             headerTools),
+        ]
+        for shape in cases {
+            let result = try await run(shape.output, forced: false, width: width, finishReason: finishReason,
+                tool: shape.tool)
+            #expect(result.failure == nil && result.calls.isEmpty, "\(shape.output)")
+            #expect(result.visible == shape.output, "\(shape.output)")
+        }
+    }
+
+    /// Their think markers are then inside a frame: released text holding one
+    /// still fails, at a stop or the token limit.
+    @Test(arguments: ["stop", "length"], [1, 5, 4096])
+    func thinkMarkersAfterAMovableBoundaryStillFail(finishReason: String, width: Int) async throws {
+        let refusedObject = #"{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"x":{"type":"object","anyOf":[{"type":"object"}]}}}}}"#
+        let headerTools = #"[{"type":"function","function":{"name":"echo","parameters":{"type":"object","properties":{"text":{"type":"string"}}}}},{"type":"function","function":{"name":"x"}}]"#
+        let cases: [(output: String, tool: String)] = [
+            (#"<tool_call>f<arg_key>x</arg_key><arg_value>]{"y":"</arg_value></tool_call></think>PRIVATE</think>Answer"#,
+             refusedObject),
+            ("<tool_call>echo<bad><tool_call>x</tool_call><arg_key>text</arg_key><arg_value></think></arg_value></tool_call>PRIVATE</think>Answer",
+             headerTools),
+        ]
+        for shape in cases {
+            let result = try await run(shape.output, forced: false, width: width, finishReason: finishReason,
+                tool: shape.tool)
+            #expect(result.calls.isEmpty && result.visible.isEmpty, "\(shape.output)")
+            #expect(result.failure == .generationFailed("native GLM tool output is invalid"), "\(shape.output)")
+        }
+    }
+
     /// Declared keys (byte for byte) and additional properties keep their
     /// types after a mention: the final call parses.
     @Test func declaredAndAdditionalKeysStillParse() async throws {
@@ -324,6 +374,15 @@ struct GLM5ToolFailureTests {
             return
         }
         #expect(text == "<tool_call>." && calls.count == 1 && calls.first?.function.arguments.count == 5_000)
+    }
+
+    /// And a long generated name with many arguments: the name is looked up
+    /// once per frame, not once per argument.
+    @Test func longNameWithManyArguments() throws {
+        let tools: [[String: any Sendable]] = [["type": "function", "function": ["name": "echo"] as [String: any Sendable]]]
+        let suffix = "<tool_call>" + String(repeating: "a", count: 200_000)
+            + String(repeating: "<arg_key>x</arg_key><arg_value>v</arg_value>", count: 5_000) + "</tool_call>"
+        #expect(GLM5ToolSuffix.split(suffix, tools: tools) == .text(suffix, calls: []))
     }
 
     /// `DARKBLOOM_GLM_TOOL_TEXT_FALLBACK=0` restores the whole-suffix failure.
@@ -392,7 +451,8 @@ struct GLM5ToolFailureTests {
     }
 
     /// The production event stream on the legacy text path (no native
-    /// channel), fed `width` characters at a time.
+    /// channel), fed `width` characters at a time. `tool` is one tool or a
+    /// JSON array of tools.
     private func run(_ output: String, forced: Bool, width: Int, finishReason: String? = nil,
                      tool: String? = nil, choice forcedChoice: String = #""required""#) async throws -> Outcome {
         let choice = forced ? forcedChoice : #""auto""#
@@ -400,7 +460,8 @@ struct GLM5ToolFailureTests {
         if let tool {
             var body = try #require(JSONSerialization.jsonObject(with: MiMoConsumerFixture.body(
                 choice: choice)) as? [String: Any])
-            body["tools"] = [try JSONSerialization.jsonObject(with: Data(tool.utf8))]
+            let tools = try JSONSerialization.jsonObject(with: Data(tool.utf8))
+            body["tools"] = (tools as? [Any]) ?? [tools]
             request = try ProviderLoop.decodeOpenAIRequest(JSONSerialization.data(withJSONObject: body))
         }
         let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "glm5_next")

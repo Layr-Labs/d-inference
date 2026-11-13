@@ -688,7 +688,8 @@ struct GenerationLoopExitThinkingServingTests {
         #expect(outcome.content == "Answer: B")
     }
 
-    @Test("a continuation goes to the engine with priority 1, and the bridge reads the queue in the engine's order")
+    @Test("a continuation goes to the engine with priority 1, and the bridge reads the queue in the engine's order",
+          .timeLimit(.minutes(1)))
     func queueStateFollowsPriority() async throws {
         let engine = HeldQueueEngine()
         let bridge = EngineV2Bridge(engine: engine, modelId: modelID, tokenizer: Self.tokenizer,
@@ -711,12 +712,14 @@ struct GenerationLoopExitThinkingServingTests {
             }
         })
         #expect(engine.submittedPriorities == [0, 0, 1])
-        // One request waits. The engine admits the continuation first, then
-        // the older request, so the newer one is the one that waits. The
-        // bridge counts only the requests a request can't overtake, so it
-        // reads the newer one as waiting and the older one as admitted; the
-        // continuation could be either and reads as waiting (errors lean that
-        // way), but me first treats it as admitted: it never gives way.
+        // One request waits. If all three arrived while the engine was full,
+        // it admits the continuation first, then the older request, so the
+        // newer one waits; otherwise the continuation waits and the newer one
+        // misreads as waiting (an error toward waiting). The bridge counts
+        // only the requests that can't overtake a request, so it reads the
+        // newer one as waiting and the older one as admitted; the
+        // continuation reads as waiting too, but me first treats it as
+        // admitted: it never gives way.
         engine.setWaiting(1)
         #expect(await bridge.queueState(of: "newer")?.waiting == true)
         #expect(await bridge.queueState(of: "older")?.waiting == false)

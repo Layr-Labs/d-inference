@@ -3423,8 +3423,8 @@ stops such a row early.
   running row is evicted instead (it re-prefills); at the queue's head, a
   continuation whose reservation fails holds back the requests behind it, as
   any head does. The bridge's queue reading (`queueState(of:)`, me first's and
-  the held local head's) counts only requests it can't overtake, so it still
-  errs toward "waiting"; me first treats a continuation as admitted (it never
+  the held local head's) counts only the requests that can't overtake it, so it
+  still errs toward "waiting"; me first treats a continuation as admitted (it never
   gives way). Exact MTP drafting stays on for it and its batch; a cancelled row donates no KV, so the
   continuation prefills the thought again (its prompt part can hit the prefix
   cache). When the continuation cannot start (under 256 tokens of budget left,

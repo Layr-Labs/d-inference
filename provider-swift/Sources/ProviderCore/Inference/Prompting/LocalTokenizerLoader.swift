@@ -103,7 +103,7 @@ private struct LocalTokenizerBridge: @unchecked Sendable, MLXLMCommon.Tokenizer,
             promptTokenCache = PromptTokenCache(
                 upstream: pretrained, configurations: promptCacheConfigurations,
                 chatTemplate: template,
-                selfCheckContext: NemotronTemplateFilters.additionalContext(modelType: modelType),
+                selfCheckContext: ReferenceTemplateFilters.additionalContext(modelType: modelType),
                 environment: environment)
         } else {
             promptTokenCache = nil
@@ -210,7 +210,7 @@ private struct LocalTokenizerBridge: @unchecked Sendable, MLXLMCommon.Tokenizer,
 
     private func effectiveContext(_ additionalContext: [String: any Sendable]?) -> [String: any Sendable]? {
         var effectiveContext = additionalContext ?? [:]
-        if let filters = NemotronTemplateFilters.additionalContext(modelType: modelType) {
+        if let filters = ReferenceTemplateFilters.additionalContext(modelType: modelType) {
             effectiveContext.merge(filters) { _, referenceFilter in referenceFilter }
         }
         return effectiveContext.isEmpty ? nil : effectiveContext

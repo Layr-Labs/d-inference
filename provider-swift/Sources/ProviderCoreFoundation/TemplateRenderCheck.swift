@@ -129,7 +129,7 @@ public enum TemplateRenderCheck {
                 do {
                     let context = try renderContext(for: fixture, specialTokens: specialTokens)
                     let environment = Environment()
-                    NemotronTemplateFilters.install(in: environment, modelType: modelType)
+                    ReferenceTemplateFilters.install(in: environment, modelType: modelType)
                     _ = try template.render(context, environment: environment)
                 } catch {
                     return false

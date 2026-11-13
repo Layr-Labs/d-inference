@@ -212,8 +212,10 @@ struct GPTOSSJSONAnswerTests {
         #expect(constraint.allowedTokenIDs(state: reasoning, remainingTokens: constraint.analysisReserve) == [T.end])
         #expect(constraint.allowedTokenIDs(state: reasoning, remainingTokens: constraint.analysisReserve + 1)
             .count > 200)
-        // A budget smaller than the reserve still yields the header and an answer.
-        let tight = try F.constraint(maxTokens: 24)
+        // A budget smaller than the reserve still yields the header and an answer
+        // (31 tokens with this byte tokenizer).
+        let tight = try F.constraint(maxTokens: 40)
+        #expect(tight.maxTokens < tight.analysisReserve)
         let early = try #require(F.walk("<|channel|>analysis<|message|>", tight))
         #expect(tight.allowedTokenIDs(state: early, remainingTokens: 21) == [T.end])
         #expect(F.walk("<|channel|>analysis<|message|><|end|>" + F.answerHeader + "{}<|return|>", tight) == -1)
@@ -227,10 +229,16 @@ struct GPTOSSJSONAnswerTests {
         #expect(throws: ToolConstraintSchemaError.self) {
             try GPTOSSJSONAnswerConstraint(format: answer, tokenizer: T(), vocabulary: F.vocabulary(), maxTokens: 0)
         }
-        var moved = T()
-        moved.controls = T.controls.map { $0.0 == "<|message|>" ? ($0.0, 200_009) : $0 }
-        #expect(throws: ToolConstraintSchemaError.self) {
-            try GPTOSSJSONAnswerConstraint(format: answer, tokenizer: moved, vocabulary: F.vocabulary(), maxTokens: 64)
+        // A control token missing, or spelled by an ordinary piece below `<|startoftext|>`.
+        var missing = T()
+        missing.controls = T.controls.filter { $0.0 != "<|channel|>" }
+        var ordinary = T()
+        ordinary.controls = T.controls.map { $0.0 == "<|message|>" ? ($0.0, 1_000) : $0 }
+        for tokenizer in [missing, ordinary] {
+            #expect(throws: ToolConstraintSchemaError.self) {
+                try GPTOSSJSONAnswerConstraint(format: answer, tokenizer: tokenizer, vocabulary: F.vocabulary(),
+                    maxTokens: 64)
+            }
         }
     }
 

@@ -199,17 +199,46 @@ struct StreamedToolCallTests {
         #expect(call.completed?.function.name == "delete_everything")
     }
 
-    @Test func secondCallIsRefusedWhenParallelCallsAreDisabled() throws {
-        var router = try Self.router(Self.request(parallel: false))
-        let first = Self.gemmaCall(#"location:<|"|>Paris<|"|>"#)
-        var exposed: [ServerToolCallDelta] = []
-        for character in Self.characters(first) { exposed += Self.deltas(try router.process(character)) }
-        #expect(exposed.last?.completed != nil)
-        var thrown: Error?
-        for character in Self.characters(first) {
-            do { _ = try router.process(character) } catch { thrown = error; break }
+    /// `parallel_tool_calls: false` returns the first call, as OpenAI and vLLM
+    /// do. The calls the model makes after it, valid or not, are consumed and
+    /// dropped; none fails the stream after the first call already left.
+    @Test func laterCallsAreDroppedWhenParallelCallsAreDisabled() throws {
+        for strict in [false, true] {
+            let request = try Self.request(parallel: false, strict: strict)
+            var router = try Self.router(request)
+            let text = Self.gemmaCall(#"location:<|"|>Paris<|"|>"#)
+                + Self.gemmaCall(#"location:<|"|>Rome<|"|>,days:3"#)
+                + Self.gemmaCall(#"path:<|"|>a.py<|"|>,content:<|"|>x<|"|>"#, name: "write_file")
+                // Off the schema: `strict` would refuse it if it were returned.
+                + Self.gemmaCall(#"location:<|"|>Oslo<|"|>,unit:<|"|>kelvin<|"|>"#)
+            var events: [MLXServerGenerationEvent] = []
+            for character in Self.characters(text) { events += try router.process(character) }
+            events += try router.finishText()
+            events += try router.finishToolCalls(truncated: false)
+            let deltas = Self.deltas(events)
+            #expect(events.count == deltas.count, "strict \(strict): no visible text from a dropped frame")
+            #expect(deltas.allSatisfy { $0.index == 0 }, "strict \(strict)")
+            #expect(deltas.compactMap(\.name) == ["get_weather"], "strict \(strict)")
+            #expect(deltas.compactMap(\.completed).map(\.function.arguments) == [["location": .string("Paris")]],
+                "strict \(strict)")
+            #expect(router.completedToolCalls.map(\.function.arguments) == [["location": .string("Paris")]])
+            try ToolConstraintValidation.validate(router.completedToolCalls,
+                prepared: ToolChoicePromptPolicy.prepare(request, modelType: "gemma4"))
         }
-        #expect(thrown is MultiModelBatchSchedulerEngineError)
+    }
+
+    /// A later call that completes without being exposed (a name the request
+    /// did not declare) is dropped too, before validation could refuse it.
+    @Test func laterUnexposedCallIsDroppedUnvalidated() throws {
+        var router = try Self.router(Self.request(parallel: false, strict: true), modelType: "qwen3_5")
+        let text = "<tool_call>\n<function=get_weather>\n<parameter=location>\nParis\n</parameter>\n</function>\n</tool_call>\n"
+            + "<tool_call>\n<function=delete_everything>\n<parameter=path>\n/\n</parameter>\n</function>\n</tool_call>"
+        var events: [MLXServerGenerationEvent] = []
+        for character in Self.characters(text) { events += try router.process(character) }
+        events += try router.finishText()
+        events += try router.finishToolCalls(truncated: false)
+        #expect(Self.deltas(events).compactMap(\.completed).map(\.function.name) == ["get_weather"])
+        #expect(router.completedToolCalls.map(\.function.name) == ["get_weather"])
     }
 
     /// The second partial holds a `}`, so Gemma's lenient EOS parse reads a

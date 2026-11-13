@@ -121,16 +121,23 @@ struct GenerationLoopGuardMediaServingTests {
         var error: (any Error)?
     }
 
-    /// One prepared video submission, as the vision tower would hand it over.
-    private static func prepared() -> EngineV2VisionPrefill.PreparedSubmission {
+    /// One prepared video submission, as the vision tower would hand it over;
+    /// `positioned` adds model positions for the prompt (as Qwen's M-RoPE does).
+    private static func prepared(positioned: Bool = false) -> EngineV2VisionPrefill.PreparedSubmission {
         EngineV2VisionPrefill.PreparedSubmission(
             promptTokens: prompt, spans: [span],
             embeddings: [MLXArray(Array(0..<12).map(Float.init)).reshaped([3, 4])],
-            attention: .bidirectionalSpans, positionState: nil, mediaKind: .video)
+            attention: .bidirectionalSpans,
+            positionState: positioned
+                ? CBv2PositionState(
+                    promptPositionIds: MLXArray.zeros([3, 1, prompt.count], dtype: .int32), decodeDeltas: [0])
+                : nil,
+            mediaKind: .video)
     }
 
     private func serve(
-        _ engine: MediaThoughtLoopCBv2Engine, modelType: String = "gemma4", maxTokens: Int = 8_192
+        _ engine: MediaThoughtLoopCBv2Engine, modelType: String = "gemma4", maxTokens: Int = 8_192,
+        positioned: Bool = false
     ) async throws -> Outcome {
         let bridge = EngineV2Bridge(engine: engine, modelId: modelID, tokenizer: Self.tokenizer,
             eosTokenIds: [GemmaThoughtTestTokenizer.turnClose, GemmaThoughtTestTokenizer.eos], defaultMaxTokens: 64,
@@ -146,7 +153,7 @@ struct GenerationLoopGuardMediaServingTests {
                            engineV2Bridge: bridge)]
             },
             engineV2Vision: EngineV2VisionPlumbing(
-                prepare: { _, _, _ in Self.prepared() }, emitTelemetry: { _ in }))
+                prepare: { _, _, _ in Self.prepared(positioned: positioned) }, emitTelemetry: { _ in }))
         let outcome = try await consume(scheduler, maxTokens: maxTokens)
         await bridge.shutdown()
         return outcome
@@ -214,6 +221,20 @@ struct GenerationLoopGuardMediaServingTests {
         #expect(engine.requests.count == 1)
         #expect(outcome.info?.stopReason == "length")
         #expect(outcome.content.hasPrefix("The red circle appears again."))
+    }
+
+    @Test("a media prompt with model positions keeps the guard, and its thought loop ends as length")
+    func positionedPromptEndsAsLength() async throws {
+        // The continuation's longer prompt would run past the prompt's
+        // positions (`CBv2PositionState.promptLength`), so it is never submitted.
+        let engine = MediaThoughtLoopCBv2Engine(loopInsideThought: true)
+        let outcome = try await serve(engine, positioned: true)
+        #expect(outcome.error == nil)
+        #expect(engine.cancelCount == 1)
+        #expect(engine.requests.count == 1)
+        #expect(engine.requests.first?.multimodal?.positionState?.promptLength == Self.prompt.count)
+        #expect(outcome.info?.stopReason == "length")
+        #expect(outcome.content.isEmpty)
     }
 
     @Test("a family outside the guard's list keeps its media rows unguarded")

@@ -3635,14 +3635,21 @@ would otherwise fail its lookup receipt (`prompt_anchor_mismatch`,
 request carrying an exact prompt-work count (`exact_contract`) would otherwise
 lose its calibrated deadline admission (`PromptWork.reconciled`). Other
 coordinator requests carry no cache scope and reuse no prefix cache. On the
-network most Gemma requests are planned or counted, so they count as before
-until the sidecar renders the parts too. Media requests, other models and
-`DARKBLOOM_GEMMA_SYSTEM_PARTS_RENDER=off` keep the string render. The parts of
-a user list are trimmed one by one and join without a separator, as in
-Transformers and vLLM. Because vLLM hands any template the same one-part lists,
-the parts are vLLM's prompt on every Gemma 4 template.
+network nearly every Gemma request is planned or counted (count-only accounting
+counts it even with cache routing off), so it counts as before until the
+sidecar renders the parts too. A network request the sidecar did not count
+(sampled out, throttled, a sidecar error) renders the parts, so the same body
+can count one token more under coordinator load. Media requests, other models
+and `DARKBLOOM_GEMMA_SYSTEM_PARTS_RENDER=off` keep the string render. The parts
+of a user list are trimmed one by one and join without a separator, as in
+Transformers and vLLM. vLLM hands the parts to templates it reads as OpenAI
+content format, which both Gemma 4 templates we serve are. A Gemma
+`calibrated_template` count, if one is ever reviewed, must be fitted on the
+render the provider serves.
 `ProductionPromptParityTests` checks both renders against Transformers' on the
-served artifacts (`fixtures/prompt-contract/v1/gemma4_system_parts_vectors.json`).
+served artifacts (`fixtures/prompt-contract/v1/gemma4_system_parts_vectors.json`);
+for the Tau2 body, whose `$ref` tools already render differently, it checks the
+parts render relative to the provider's own render.
 
 ### Constrained Gemma 4 JSON answers
 

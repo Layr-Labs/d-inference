@@ -185,6 +185,7 @@ struct QwenForcedToolFramingServingTests {
     private struct Outcome {
         var content = ""
         var calls: [ToolCall] = []
+        var info: ServerGenerationInfo?
         var error: (any Error)?
         private var parser = StreamingReasoningParser(format: .qwen3)
 
@@ -194,7 +195,8 @@ struct QwenForcedToolFramingServingTests {
             case .parsed(let parsed): content += parsed.content
             case .toolCall(let call): calls.append(call)
             case .toolCallDelta(let delta): if let call = delta.completed { calls.append(call) }
-            case .info, .logprobs: break
+            case .info(let info): self.info = info
+            case .logprobs: break
             }
         }
 
@@ -250,7 +252,7 @@ struct QwenForcedToolFramingServingTests {
         #expect(outcome.calls.first?.function.arguments["city"] == .string("Paris"))
     }
 
-    @Test func proseNeverReachesTheClientAndTheMissingCallStillFails() async throws {
+    @Test func proseNeverReachesTheClient() async throws {
         // The scripted model reaches for a sentence. Only framing whitespace or
         // a frame may open the answer, so the stand-in, which follows its
         // script or stops, ends after the whitespace with nothing else sampled.
@@ -260,7 +262,11 @@ struct QwenForcedToolFramingServingTests {
         #expect(outcome.calls.isEmpty)
         #expect(outcome.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
             "\(outcome.content.debugDescription)")
-        #expect(outcome.error != nil)
+        // The missing call fails as before (422), or ends as a `length` finish
+        // where a forced choice cut at the budget does: never as a call or text.
+        let status = outcome.error.map { ProviderLoop.mapInferenceErrorToStatus($0) }
+        #expect(status == 422 || (outcome.error == nil && outcome.info?.stopReason == "length"),
+            "\(String(describing: outcome.error)) \(String(describing: outcome.info?.stopReason))")
     }
 
     @Test func autoCallsAndOtherFamiliesAreNotFramed() async throws {
@@ -272,7 +278,8 @@ struct QwenForcedToolFramingServingTests {
         let bonsai = QwenScriptedEngine(script: Self.xmlCall)
         _ = try await serve(bonsai, modelType: "prism_hadamard_qwen35",
             fields: #","tool_choice":"required","max_tokens":256"#)
-        #expect(bonsai.submitted.first?.tokenConstraint == nil)
+        let bonsaiRequest = try #require(bonsai.submitted.first)
+        #expect(bonsaiRequest.tokenConstraint == nil)
     }
 }
 

@@ -3532,10 +3532,10 @@ On one Mac the Qwen 3.5-family text route (`qwen3_5`, `qwen3_5_moe`: Qwen 3.5
 (`QwenForcedToolFraming`), so that text cannot be sampled. The scheduler's text
 path asks for it when the request is forced, its parser is `.qwen35` and the
 engine runs token constraints (`EngineV2Bridge.runsTokenConstraints`: not a
-cluster pair, not a native-tracked engine); `ToolConstraintFactory` then returns the native Qwen4 framing
-constraint (`Qwen4NativeToolConstraint`) with the prefix `<think></think>`,
-because this route renders forced calls with thinking off
-(`templateAdditionalContext`). Only a declared `<tool_call><function=NAME>`
+cluster pair, not a native-tracked engine); `ToolConstraintFactory` then
+returns the native Qwen4 framing constraint (`Qwen4NativeToolConstraint`) with
+the prefix `<think></think>`, because this route renders forced calls with
+thinking off (`templateAdditionalContext`). Only a declared `<tool_call><function=NAME>`
 (the named function, or any declared one for `required`), or the dialect's
 framed JSON, can open the answer; framing whitespace may surround the frames,
 another frame may follow only when `parallel_tool_calls` allows it, and the

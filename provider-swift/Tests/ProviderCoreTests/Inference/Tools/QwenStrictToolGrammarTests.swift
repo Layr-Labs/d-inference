@@ -45,7 +45,8 @@ enum StrictToolFixture {
       "required":["passengers","lead"],"additionalProperties":false}}}]
     """#
 
-    /// `anyOf` with null, and a reference beside an open object (tau2's shape).
+    /// `anyOf` with null, and a reference beside an open object (tau2's shape), also as the coordinator forwards
+    /// it inlined, with the render repair's `type` and empty `properties` beside the union.
     static let unions = #"""
     [{"type":"function","function":{"name":"f","strict":true,"parameters":{"type":"object",
       "$defs":{"Flight":{"type":"object","properties":{"number":{"type":"string"}},"required":["number"]}},
@@ -53,7 +54,10 @@ enum StrictToolFixture {
         "limit":{"anyOf":[{"type":"integer"},{"type":"null"}]},
         "label":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null},
         "flight":{"type":"object","properties":{"leg":{"anyOf":[{"$ref":"#/$defs/Flight"},
-                  {"type":"object","additionalProperties":true}]}}}},
+                  {"type":"object","additionalProperties":true}]}}},
+        "legs":{"type":"array","items":{"anyOf":[{"type":"object","title":"FlightInfo",
+                  "properties":{"number":{"type":"string"},"seats":{"type":"integer"}},"required":["number"]},
+                  {"additionalProperties":true,"properties":{},"type":"object"}],"properties":{},"type":"object"}}},
       "required":["limit","label","flight"],"additionalProperties":false}}}]
     """#
 
@@ -315,6 +319,7 @@ struct QwenStrictToolGrammarTests {
                 state = try #require(constraint.nextState(state: state, tokenID: Int(byte)))
             }
             #expect(try F.calls(mention, request, prepared).isEmpty)
+            #expect(try F.streamedCalls(mention, body).isEmpty)
         }
         #expect(!F.allows("{\"name\"", constraint, after: "<tool_call>\n"))
         #expect(!F.allows("\u{00A0}", constraint, after: "<tool_call>"))
@@ -374,11 +379,18 @@ struct QwenStrictToolGrammarTests {
         #expect(F.allows("null\n</parameter>\n", constraint, after: call))
         #expect(!F.allows("\"5\"", constraint, after: call))
         let text = call + "null\n</parameter>\n<parameter=label>\nx\n</parameter>\n<parameter=flight>\n"
-            + "{\"leg\": {\"anything\": [1, 2]}}\n</parameter>\n</function>\n</tool_call>"
+            + "{\"leg\": {\"anything\": [1, 2]}}\n</parameter>\n<parameter=legs>\n"
+            + "[{\"number\": \"HAT1\", \"seats\": 2}, {\"x\": true}]\n</parameter>\n</function>\n</tool_call>"
+        // The forwarded form's empty `properties` beside the union asserts nothing: any object.
+        let legs = call + "null\n</parameter>\n<parameter=label>\nx\n</parameter>\n<parameter=legs>\n"
+        #expect(F.allows("[{\"number\": \"HAT1\", \"seats\": 2}, {\"x\": true}]\n</parameter>\n", constraint, after: legs))
+        #expect(!F.allows("[\"HAT1\"]", constraint, after: legs))
         #expect(F.walk(text, constraint) != nil)
         let (request, prepared) = try F.prepared(body)
         let arguments = try #require(try F.calls(text, request, prepared).first.map(F.arguments))
         #expect(arguments["limit"] == .null && arguments["label"] == .string("x"))
+        #expect(arguments["legs"] == .array([.object(["number": .string("HAT1"), "seats": .int(2)]),
+                                             .object(["x": .bool(true)])]))
         // A union of several types has no exact grammar here: unconstrained.
         let several = #"[{"type":"function","function":{"name":"f","strict":true,"parameters":{"type":"object","#
             + #""properties":{"v":{"anyOf":[{"type":"string"},{"type":"integer"}]}}}}}]"#
@@ -392,6 +404,7 @@ struct QwenStrictToolGrammarTests {
         #"{"type":"object","patternProperties":{"^x":{"type":"string"}}}"#, #"{"not":{"type":"string"}}"#,
         #"{"type":"array","items":{"type":"string"},"uniqueItems":true}"#, #"{"description":"anything"}"#,
         #"{"$ref":"https://example.com/schema.json"}"#, #"{"type":"null"}"#,
+        #"{"anyOf":[{"type":"object"},{"type":"null"}],"properties":{"a":{}},"type":"object"}"#,
     ])
     func unsupportedSchemasStayUnconstrainedWithoutAnError(_ property: String) throws {
         let tools = #"[{"type":"function","function":{"name":"f","strict":true,"parameters":{"type":"object","#
@@ -554,8 +567,21 @@ struct QwenStrictToolGrammarTests {
     @Test func theSwitchIsPerModelAndReachesTheProviderJob() {
         typealias G = QwenStrictToolGrammar
         #expect(G.environmentKey == "DARKBLOOM_STRICT_TOOL_GRAMMAR")
-        #expect(G.setting(environment: [:]) == .models(["qwen3_5", "qwen3_5_moe"]))
+        // By default the MoE builds (Qwen 3.6, Qwen 3.5 35B), which do not draft by default, and Qwen 3.8 27B,
+        // whose strict calls are its main failure (a coordinator switch turns it off centrally); the 9B only when a
+        // Mac opts in.
+        let byDefault = G.setting(environment: [:])
+        #expect(byDefault == .models(["qwen3_5_moe", "qwen3.8-27b"]))
+        #expect(G.isEnabled(modelId: "qwen3.6-35b-a3b-vl-mtp-mxfp8", modelType: "qwen3_5_moe", setting: byDefault))
+        #expect(G.isEnabled(modelId: "Qwen3.5-35B-A3B", modelType: "qwen3_5_moe", setting: byDefault))
+        #expect(G.isEnabled(modelId: "EigenLabs/Qwen3.8-27B-4bit-mtp", modelType: "qwen3_5", setting: byDefault))
+        #expect(!G.isEnabled(modelId: "Qwen3.5-9B", modelType: "qwen3_5", setting: byDefault))
+        #expect(!G.isEnabled(modelId: "EigenLabs/Qwen3.5-9B-MLX-4bit-mtp", modelType: "qwen3_5", setting: byDefault))
+        #expect(G.setting(environment: [G.environmentKey: ""]) == byDefault)
+        // An on word opts every Qwen 3.5-family build in.
         #expect(G.setting(environment: [G.environmentKey: " On "]) == .models(["qwen3_5", "qwen3_5_moe"]))
+        #expect(G.isEnabled(modelId: "EigenLabs/Qwen3.8-27B-4bit-mtp", modelType: "qwen3_5",
+                            setting: G.setting(environment: [G.environmentKey: "1"])))
         for off in ["off", "0", "FALSE", " no ", "none", "Disabled"] {
             #expect(G.setting(environment: [G.environmentKey: off]) == .off, "\(off)")
         }
@@ -564,6 +590,9 @@ struct QwenStrictToolGrammarTests {
         #expect(G.isEnabled(modelId: "EigenLabs/Qwen3.8-27B-4bit-mtp", modelType: "qwen3_5", setting: listed))
         #expect(!G.isEnabled(modelId: "EigenLabs/Qwen3.5-9B-MLX-4bit-mtp", modelType: "qwen3_5", setting: listed))
         #expect(G.isEnabled(modelId: "qwen3.6-35b-a3b-vl-mtp-mxfp8", modelType: "qwen3_5_moe", setting: listed))
+        // A list replaces the default builds: one without Qwen 3.8 turns it off on that Mac.
+        #expect(!G.isEnabled(modelId: "EigenLabs/Qwen3.8-27B-4bit-mtp", modelType: "qwen3_5",
+                             setting: G.setting(environment: [G.environmentKey: "qwen3_5_moe"])))
         // Only the Qwen 3.5 template's builds qualify, whatever the list says.
         #expect(!G.isEnabled(modelId: "gemma-4-26b", modelType: "gemma4",
                              setting: G.setting(environment: [G.environmentKey: "gemma4,gemma"])))
@@ -606,6 +635,132 @@ struct QwenStrictToolGrammarTests {
                 == completed.function.arguments, "chunks of \(chunking)")
             #expect(router.completedToolCalls == [completed])
         }
+    }
+}
+
+/// Whole answers drawn from the masks from the first token on, over a
+/// vocabulary with multi-byte pieces (split and spelled markers, mentions,
+/// Unicode whitespace, the JSON dialect, escapes): every mask is exactly the
+/// set `nextState` accepts, and every call either reader returns is one the
+/// grammar opened and closed.
+@Suite("Strict tool grammar: whole answers over multi-byte pieces")
+struct QwenStrictToolWholeAnswerTests {
+    private typealias F = StrictToolFixture
+    static let multiBytePieces: [String] = [
+        "<tool", "_call", ">", " tags", "\n<", "<function=", "<function=get_time>", "\n<function=get_time>\n",
+        " {", "{\"", "\u{00A0}", " \u{00A0}", "\u{2028}", "\u{0085}", "\n\n", "  ", "x>", "<b>", "<func", "tion=",
+        "get_time", "place_order", ">\n", "\n<parameter=city>\n", "<parameter=", "city", ">\nRome",
+        "Rome\n</parameter>\n", "\n</parameter>\n", "</parameter>", "</function>\n</tool_call>", "</function>",
+        "\n</tool_call>", "</tool_call>", "\t<", "\n<function=place_order>\n", "<tool_call>\n<function=get_time>\n",
+        "é", "\\u", "ud83d", "\r\n", " \n", "<|im_end|>", "<think>", "</think>", "<tool_call> ",
+        " {\"name\": \"get_time\", \"arguments\": {\"city\": \"x\"}}", "<tool_call>{", "\n<function=zzz>",
+        "\u{00A0}<function=get_time>", " \u{0085}\n", "<tool_call>\n<b>", "s>",
+        "\n<function=get_time>\n<parameter=city>\nRome\n</parameter>\n</function>\n</tool_call>",
+    ]
+    static let firstMultiBytePiece = 300
+
+    static func vocabulary() throws -> JSONAnswerVocabulary {
+        let profile = QwenStrictToolGrammar.profile
+        var pieces = [[UInt8]](repeating: [], count: profile.vocabularySize)
+        for byte in 0..<256 { pieces[byte] = [UInt8(byte)] }
+        for (offset, text) in multiBytePieces.enumerated() { pieces[firstMultiBytePiece + offset] = Array(text.utf8) }
+        for token in profile.pieceTokens + profile.answerEOS { pieces[token.id] = Array(token.spelling.utf8) }
+        return try JSONAnswerVocabulary(pieces: pieces, profile: profile, stopTokenIDs: F.stops)
+    }
+
+    static func constraint(parallel: Bool, vocabulary: JSONAnswerVocabulary) throws -> QwenStrictToolConstraint {
+        let (_, prepared) = try F.prepared(F.body(tools: F.order, parallel: parallel))
+        let schema = try QwenStrictToolSchema(declared: try #require(prepared.declaredTools),
+            rendered: try #require(prepared.tools), forbidding: QwenStrictToolGrammar.forbiddenMarkers,
+            family: QwenStrictToolGrammar.profile.family)
+        return try QwenStrictToolConstraint(schema: schema, vocabulary: vocabulary,
+            forbidding: QwenStrictToolGrammar.forbiddenMarkers, startsInReasoning: false,
+            allowsParallelCalls: parallel, maxTokens: 4096)
+    }
+
+    /// The mask is the sorted set of pieces and stops `nextState` accepts, the same on every call.
+    static func maskMatchesSimulation(_ constraint: QwenStrictToolConstraint, _ vocabulary: JSONAnswerVocabulary,
+                                      state: Int) -> Bool {
+        let mask = constraint.allowedTokenIDs(state: state, remainingTokens: 100)
+        let expected = (vocabulary.pieceTokenIDs + F.stops).sorted()
+            .filter { constraint.nextState(state: state, tokenID: $0) != nil }
+        return mask == expected && constraint.allowedTokenIDs(state: state, remainingTokens: 100) == mask
+    }
+
+    @Test(arguments: [true, false])
+    func openingMasksMatchSimulation(_ parallel: Bool) throws {
+        let vocabulary = try Self.vocabulary()
+        let constraint = try Self.constraint(parallel: parallel, vocabulary: vocabulary)
+        let call = "<tool_call>\n<function=get_time>\n<parameter=city>\nRome\n</parameter>\n</function>\n</tool_call>"
+        for prefix in ["", "<tool_call>", "<tool_call>\n", "<tool_call> \t\n", "<tool_call>\n<", "<tool_call>\n<func",
+                       "<tool_call>\n<function", "x <tool_call>", "<tool_call>\n<b", call, call + "\n",
+                       "<tool_call> tags <tool_call>\n"] {
+            var state = constraint.initialState
+            for byte in prefix.utf8 {
+                state = try #require(constraint.nextState(state: state, tokenID: Int(byte)), "\(prefix.debugDescription)")
+            }
+            #expect(Self.maskMatchesSimulation(constraint, vocabulary, state: state), "\(prefix.debugDescription)")
+        }
+    }
+
+    @Test(arguments: [(UInt64(1), true), (UInt64(2), false)])
+    func answersDrawnFromTheMasksOnlyCallWhatTheGrammarHeld(_ seed: UInt64, _ parallel: Bool) throws {
+        let vocabulary = try Self.vocabulary()
+        let constraint = try Self.constraint(parallel: parallel, vocabulary: vocabulary)
+        let body = F.body(tools: F.order, parallel: parallel)
+        let (request, prepared) = try F.prepared(body)
+        let parser = Qwen35ToolCallParser(startTag: "<tool_call>", endTag: "</tool_call>")
+        let specs = try #require(prepared.tools).map { $0.toolSpec() }
+        let markers = QwenStrictToolMarkers(forbidding: QwenStrictToolGrammar.forbiddenMarkers, singleCall: !parallel)
+        let ascii = Set(Array(32...126) + [10])
+        let multiBytePieces = Set(Self.firstMultiBytePiece..<(Self.firstMultiBytePiece + Self.multiBytePieces.count))
+        var random = StrictGrammarRandom(seed: seed)
+        var finished = 0
+        for _ in 0..<100 {
+            var state = constraint.initialState
+            var bytes: [UInt8] = []
+            var ended = false
+            for step in 0..<500 {
+                let allowed = constraint.allowedTokenIDs(state: state, remainingTokens: 100)
+                if step % 25 == 0 { #expect(Self.maskMatchesSimulation(constraint, vocabulary, state: state)) }
+                if allowed.contains(F.imEnd), step > 30, Int.random(in: 0..<40, using: &random) == 0 {
+                    ended = true
+                    break
+                }
+                let multi = allowed.filter(multiBytePieces.contains)
+                let pool = !multi.isEmpty && Bool.random(using: &random) ? multi : allowed.filter(ascii.contains)
+                let token = try #require(pool.randomElement(using: &random))
+                state = try #require(constraint.nextState(state: state, tokenID: token))
+                bytes += vocabulary.pieces[token]
+            }
+            guard ended else { continue }
+            finished += 1
+            // Replay the bytes: the calls the grammar opened at `<function=` and closed.
+            var boundary = QwenStrictToolBoundary(reasoning: false)
+            var held: [[String: MLXLMCommon.JSONValue]] = []
+            var frame: [UInt8] = []
+            for byte in bytes {
+                let inside = !boundary.isFree
+                let consumed = boundary.consume(byte, schema: constraint.schema, markers: markers)
+                #expect(consumed)
+                if inside { frame.append(byte) }
+                if inside, boundary.isFree {
+                    let call = parser.parse(content: "<tool_call>\n<function=" + String(decoding: frame, as: UTF8.self),
+                                            tools: specs)
+                    #expect(call != nil, "\(frame)")
+                    if let call { held.append(call.function.arguments) }
+                    frame = []
+                }
+            }
+            let text = String(decoding: bytes, as: UTF8.self)
+            let calls = try F.calls(text, request, prepared)
+            let streamed = try F.streamedCalls(text, body)
+            #expect(parallel || calls.count <= 1)
+            for call in calls + streamed {
+                #expect(held.contains(call.function.arguments), "\(text.debugDescription)")
+            }
+        }
+        #expect(finished > 80)
     }
 }
 
@@ -737,17 +892,24 @@ struct QwenStrictToolServingTests {
         + "<parameter=city>\nRome\n</parameter>\n<parameter=offset>\n\"5\"\n</parameter>\n"
         + "<parameter=zone>\n{\"dst\": yes true}\n</parameter>\n</function>\n</tool_call><|im_end|>"
 
+    /// Builds the grammar is on for by default (Qwen 3.6, Qwen 3.8), and one a Mac opts in (the 9B). The
+    /// scheduler reads the switch from the process environment, so these expect `DARKBLOOM_STRICT_TOOL_GRAMMAR`
+    /// unset.
+    private static let moe = (id: "qwen3.6-35b-a3b-vl-mtp-mxfp8", type: "qwen3_5_moe")
+    private static let qwen38 = (id: StrictToolFixture.model, type: "qwen3_5")
+    private static let nineB = (id: "Qwen3.5-9B", type: "qwen3_5")
+
     private func serve(_ engine: MaskedScriptEngine, tools: String = tools, strict: Bool = true,
-                       setting: String? = nil) async throws -> StrictToolOutcome {
-        let id = StrictToolFixture.model
+                       build: (id: String, type: String) = moe) async throws -> StrictToolOutcome {
+        let id = build.id
         let bridge = EngineV2Bridge(engine: engine, modelId: id, tokenizer: Self.tokenizer,
             eosTokenIds: [248046, 248044], defaultMaxTokens: 512, maxConcurrentRequests: 1)
         let tokenizer = Self.tokenizer
         let scheduler = MultiModelBatchSchedulerEngine(registryProvider: {
-            [id: .init(tokenizer: tokenizer, modelType: "qwen3_5", engineV2Bridge: bridge)]
+            [id: .init(tokenizer: tokenizer, modelType: build.type, engineV2Bridge: bridge)]
         })
         let declared = strict ? tools : tools.replacingOccurrences(of: #""strict":true,"#, with: "")
-        let body = StrictToolFixture.body(tools: declared)
+        let body = StrictToolFixture.body(tools: declared, model: id)
         var request = try JSONDecoder().decode(OpenAIChatCompletionRequest.self,
             from: ToolSchemaNormalization.ensureParameterTypes(in: Data(body.utf8)))
         request.stream = true
@@ -782,6 +944,19 @@ struct QwenStrictToolServingTests {
         #expect(engine.submitted.first?.tokenConstraint == nil)
         #expect(outcome.error == nil)
         #expect(outcome.calls.first?.function.arguments["offset"] == .string("\"5\""))
+    }
+
+    /// Qwen 3.8 takes the grammar by default; the 9B, which drafts with MTP
+    /// that a constrained row stops, is served as before unless the Mac opts in.
+    @Test func qwen38TakesTheGrammarByDefaultAndThe9BDoesNot() async throws {
+        let engine = MaskedScriptEngine(script: Self.script)
+        let outcome = try await serve(engine, build: Self.qwen38)
+        #expect(engine.submitted.first?.tokenConstraint is QwenStrictToolConstraint)
+        #expect(outcome.error == nil && outcome.calls.first?.function.arguments["offset"] == .int(5))
+        let nineB = MaskedScriptEngine(script: Self.script)
+        _ = try await serve(nineB, build: Self.nineB)
+        #expect(!nineB.submitted.isEmpty)
+        #expect(nineB.submitted.first?.tokenConstraint == nil)
     }
 }
 

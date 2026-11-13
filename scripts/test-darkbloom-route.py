@@ -28,11 +28,18 @@ import time
 import unittest
 
 
+def run_labels(labels, run_id="40408691758"):
+    """The profile label is replaced, so an older run cannot match these labels."""
+    return [*labels[:-1], f"{labels[-1]}-run-{run_id}"]
+
+
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOWS = ROOT / ".github/workflows"
 ROUTER = WORKFLOWS / "darkbloom-route.yml"
-LINUX = ["self-hosted", "linux", "ARM64", "darkbloom-linux-arm64"]
-MACOS = ["self-hosted", "macOS", "ARM64", "darkbloom-macos-arm64"]
+LINUX_BASE = ["self-hosted", "linux", "ARM64", "darkbloom-linux-arm64"]
+MACOS_BASE = ["self-hosted", "macOS", "ARM64", "darkbloom-macos-arm64"]
+LINUX = run_labels(LINUX_BASE)
+MACOS = run_labels(MACOS_BASE)
 LINUX_FALLBACK = "blacksmith-4vcpu-ubuntu-2404"
 MACOS_FALLBACK = "blacksmith-12vcpu-macos-27"
 LANES = (f"release-integrity linux_arm64 {LINUX_FALLBACK}\n"
@@ -287,14 +294,9 @@ def plan_lanes_text(outcome="1"):
     return evaluate_counts("\n".join(lane_lines(route)[1:]) + "\n", outcome)
 
 
-def run_labels(labels, run_id="40408691758"):
-    """The profile label is replaced, so an older run cannot match these labels."""
-    return [*labels[:-1], f"{labels[-1]}-run-{run_id}"]
-
-
 def sized(size):
     """The Darkbloom macOS labels of a lane sent with this size."""
-    return [*MACOS[:-1], f"{MACOS[-1]}-{size}"]
+    return run_labels([*MACOS_BASE[:-1], f"{MACOS_BASE[-1]}-{size}"])
 
 
 def permissions(block, indent):
@@ -428,9 +430,9 @@ class RouteStepTests(unittest.TestCase):
         self.assertEqual(set(body), {"repository", "run_id", "run_attempt", "lanes"})
 
     def test_accepts_only_current_run_labels_for_both_profiles_and_sizes(self):
-        cases = (("linux_arm64", LINUX, LINUX_FALLBACK, ""),
-                 ("macos_arm64", MACOS, MACOS_FALLBACK, ""),
-                 ("macos_arm64", [*MACOS[:-1], f"{MACOS[-1]}-4x24"], MACOS_FALLBACK, "4x24"))
+        cases = (("linux_arm64", LINUX_BASE, LINUX_FALLBACK, ""),
+                 ("macos_arm64", MACOS_BASE, MACOS_FALLBACK, ""),
+                 ("macos_arm64", [*MACOS_BASE[:-1], f"{MACOS_BASE[-1]}-4x24"], MACOS_FALLBACK, "4x24"))
         for run_id in ("40408691758", "40408691759"):
             for profile, plain, fallback, shape in cases:
                 with self.subTest(run_id=run_id, shape=shape, profile=profile):
@@ -443,8 +445,8 @@ class RouteStepTests(unittest.TestCase):
                     self.assertRoutes(result, routes, {"probe": labels})
 
     def test_legacy_or_other_run_grants_keep_the_blacksmith_fallback(self):
-        for labels in (MACOS, run_labels(MACOS, "40408691757"),
-                       [*MACOS, f"{MACOS[-1]}-run-40408691758"]):
+        for labels in (MACOS_BASE, run_labels(MACOS_BASE, "40408691757"),
+                       [*MACOS_BASE, f"{MACOS_BASE[-1]}-run-40408691758"]):
             with self.subTest(labels=labels):
                 offer = reply(probe={"target": "darkbloom", "runs_on": labels})
                 with self.plane((200, offer, 0)) as plane:
@@ -454,19 +456,19 @@ class RouteStepTests(unittest.TestCase):
 
     def test_two_runs_do_not_select_each_others_registered_runner(self):
         old, new = "40408691758", "40408691759"
-        responses = [(200, reply(probe={"target": "darkbloom", "runs_on": run_labels(MACOS, run)}), 0)
+        responses = [(200, reply(probe={"target": "darkbloom", "runs_on": run_labels(MACOS_BASE, run)}), 0)
                      for run in (old, new)]
         with self.plane(*responses) as plane:
             actual = []
             for run in (old, new):
                 result, routes, _ = self.route(plane.url, RUN_ID=run,
                                               lanes=f"probe macos_arm64 {MACOS_FALLBACK}\n")
-                self.assertRoutes(result, routes, {"probe": run_labels(MACOS, run)})
+                self.assertRoutes(result, routes, {"probe": run_labels(MACOS_BASE, run)})
                 actual.append(routes["probe"])
         # GitHub requires every requested label. The old runner retains only
         # its own run-qualified profile label, never the generic one.
         self.assertFalse(set(actual[1]).issubset(set(actual[0])))
-        self.assertNotIn(MACOS[-1], actual[0])
+        self.assertNotIn(MACOS_BASE[-1], actual[0])
 
     def test_request_contract_and_exact_label_grants(self):
         for suffix in ("", "/"):
@@ -484,7 +486,7 @@ class RouteStepTests(unittest.TestCase):
                               {"lane": "test-provider", "profile": "macos_arm64", "count": 1},
                               {"lane": "warm", "profile": "macos_arm64", "count": 2}]})
                 self.assertIn("route route-1, expires 2026-10-26T23:00:00Z", summary)
-                self.assertIn("| `warm` | macos_arm64 | 2 | - | `self-hosted, macOS, ARM64, darkbloom-macos-arm64` "
+                self.assertIn("| `warm` | macos_arm64 | 2 | - | `self-hosted, macOS, ARM64, darkbloom-macos-arm64-run-40408691758` "
                               "| darkbloom: granted |", summary)
 
     def test_only_an_exact_profile_label_array_is_used(self):
@@ -685,9 +687,9 @@ class RouteStepTests(unittest.TestCase):
                     self.assertIn("Job sizes are off: DARKBLOOM_JOB_SHAPES is not 'on'. No size was requested.",
                                   summary)
                     self.assertIn("| `test-cluster-2` | macos_arm64 | 2 | - | `self-hosted, macOS, ARM64, "
-                                  "darkbloom-macos-arm64` | darkbloom: granted |", summary)
+                                  "darkbloom-macos-arm64-run-40408691758` | darkbloom: granted |", summary)
                     self.assertIn("| `cluster-release-checks` | macos_arm64 | 1 | - | `self-hosted, macOS, ARM64, "
-                                  "darkbloom-macos-arm64` | darkbloom: granted |", summary)
+                                  "darkbloom-macos-arm64-run-40408691758` | darkbloom: granted |", summary)
         # Byte for byte the request of the table without sizes, for every value but `on`.
         self.assertEqual([request["body"] for request in plane.requests], [expected] * (1 + len(values)))
 
@@ -713,7 +715,7 @@ class RouteStepTests(unittest.TestCase):
             self.assertIn(f"| `{lane}` | macos_arm64 | {lane_jobs(count)} | {size} | `{MACOS_FALLBACK}` "
                           f"| fallback: plane: {reason} |", summary)
         self.assertIn("| `build-cluster` | macos_arm64 | 1 | 8x16 | `self-hosted, macOS, ARM64, "
-                      "darkbloom-macos-arm64-8x16` | darkbloom: granted |", summary)
+                      "darkbloom-macos-arm64-8x16-run-40408691758` | darkbloom: granted |", summary)
 
     def test_a_sized_lane_takes_only_the_labels_of_its_size(self):
         lanes = f"test-cluster-1 macos_arm64 {MACOS_FALLBACK} 1 4x24\n"
@@ -835,7 +837,7 @@ class RouteWorkflowTests(unittest.TestCase):
         self.assertIn('if [ "${ROUTING:-}" != on ]; then\n', script)
         self.assertIn('if [ "${JOB_SHAPES:-}" = on ]; then\n', script)
         profiles = json.loads(re.search(r"^profiles='(.+)'$", script, re.MULTILINE).group(1))
-        self.assertEqual(profiles, {"linux_arm64": LINUX, "macos_arm64": MACOS})
+        self.assertEqual(profiles, {"linux_arm64": LINUX_BASE, "macos_arm64": MACOS_BASE})
         actionlint = (ROOT / ".github/actionlint.yaml").read_text()
         for label in ("darkbloom-linux-arm64", "darkbloom-macos-arm64"):
             self.assertIn(f"    - {label}\n", actionlint)

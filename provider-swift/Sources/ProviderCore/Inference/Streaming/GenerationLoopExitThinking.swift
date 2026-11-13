@@ -85,15 +85,18 @@ public final class GenerationLoopExitRecord: @unchecked Sendable {
 /// Which requests may end a repeating thought instead of the whole answer.
 ///
 /// On by default for Gemma 4, whose thought closes with one special token
-/// (`<channel|>`). Qwen 3.5/3.6 (`qwen3_5_moe`, `qwen3_5`), whose template
-/// closes a thought with `\n</think>\n\n` (`</think>` is one special token),
-/// are listed but off by default: their thought loops were too rare in the A/B
-/// to show rescues, and `qwen3_5` is also Qwen 3.8 27B. The guard keeps ending
-/// every other loop as `length`: a loop outside the thought, a family that is
-/// not on, a request that asked for logprobs (the forced tokens have none), a
-/// pair's request. Nemotron 3.5 Super (`nemotron_h_omni`) has the marker and
-/// is off by default until its A/B; it takes its owner's own route
-/// (`NemotronSuperLocalBinding`), which continues the answer the same way.
+/// (`<channel|>`), and GPT-OSS (`gpt_oss`, for a request that declares
+/// tools), whose Harmony analysis message ends with `<|end|>` and is followed
+/// by the next assistant message (`harmonyAnalysis`). Qwen 3.5/3.6
+/// (`qwen3_5_moe`, `qwen3_5`), whose template closes a thought with
+/// `\n</think>\n\n` (`</think>` is one special token), are listed but off by
+/// default: their thought loops were too rare in the A/B to show rescues, and
+/// `qwen3_5` is also Qwen 3.8 27B. The guard keeps ending every other loop as
+/// `length`: a loop outside the thought, a family that is not on, a request
+/// that asked for logprobs (the forced tokens have none), a pair's request.
+/// Nemotron 3.5 Super (`nemotron_h_omni`) has the marker and is off by default
+/// until its A/B; it takes its owner's own route (`NemotronSuperLocalBinding`),
+/// which continues the answer the same way.
 ///
 /// `DARKBLOOM_LOOP_EXIT_THINKING`: unset, `1` or `on` keeps the default list;
 /// `0` or `off` turns it off; any other value is the comma-separated list of
@@ -108,10 +111,14 @@ enum GenerationLoopExitThinkingPolicy {
         /// model ends its own thought (Qwen: `\n</think>\n\n`).
         var before = ""
         var after = ""
+        /// Control tokens spelled in `after` (Harmony's `<|start|>`): each must
+        /// be fed as its own token, never as ordinary pieces of its text.
+        var controls: [String] = []
     }
 
     /// The families whose thought this can end, by `model_type`.
     static let markersByModelType: [String: Markers] = [
+        "gpt_oss": harmonyAnalysis,
         "gemma4": .init(open: "<|channel>", close: "<channel|>"),
         "gemma4_text": .init(open: "<|channel>", close: "<channel|>"),
         "qwen3_5": qwenThink,
@@ -120,11 +127,26 @@ enum GenerationLoopExitThinkingPolicy {
         "nemotron_h_omni": .init(open: "<think>", close: "</think>"),
     ]
 
+    /// GPT-OSS's Harmony analysis message (`<|channel|>analysis<|message|>` …
+    /// `<|end|>`). The exit ends that message and starts the next assistant
+    /// message, `<|end|><|start|>assistant`, as the model does after its own
+    /// analysis: the model then picks the channel itself, `final` for an
+    /// answer or `commentary to=functions.…` for a tool call.
+    static let harmonyAnalysis = Markers(
+        open: "<|channel|>analysis", close: "<|end|>", after: "<|start|>assistant", controls: ["<|start|>"])
+
     /// As the Qwen 3.5/3.6 template writes a closed thought:
     /// `<think>\n…\n</think>\n\n` before the answer.
     static let qwenThink = Markers(open: "<think>", close: "</think>", before: "\n", after: "\n\n")
 
-    static let defaultModelTypes: Set<String> = ["gemma4", "gemma4_text"]
+    static let defaultModelTypes: Set<String> = ["gemma4", "gemma4_text", "gpt_oss"]
+
+    /// Families whose exit applies only to a request that declares tools.
+    /// GPT-OSS without tools reopened its analysis after the exit and looped
+    /// again in 10 of 10 GPQA loopers on the GPU A/B (effort high, T 0), so
+    /// those requests keep today's `length` (and are not billed the extra
+    /// tokens); with tools it wrote the call or the reply in 40 of 66 Tau2 loopers.
+    static let toolRequestsOnly: Set<String> = ["gpt_oss"]
 
     /// The answer's own cap. Gemma's GPQA answers after a thought are under
     /// 1,000 tokens; a Tau2 reply or call is shorter.
@@ -157,11 +179,13 @@ enum GenerationLoopExitThinkingPolicy {
         tokenizer: any MLXLMCommon.Tokenizer,
         promptTokens: [Int],
         logprobs: Bool,
+        declaresTools: Bool = false,
         setting: Setting = current
     ) -> GenerationLoopExitThinking? {
         guard case .modelTypes(let enabled) = setting,
               let modelType = modelType?.lowercased(), enabled.contains(modelType),
               let markers = markersByModelType[modelType], !logprobs,
+              declaresTools || !toolRequestsOnly.contains(modelType),
               let close = tokenizer.convertTokenToId(markers.close),
               tokenizer.convertIdToToken(close) == markers.close
         else { return nil }
@@ -175,8 +199,15 @@ enum GenerationLoopExitThinkingPolicy {
         }
         let exitTokens = spell(markers.before) + [close] + spell(markers.after)
         let exitText = markers.before + markers.close + markers.after
-        // The model must be fed what the client is shown.
-        guard tokenizer.decode(tokenIds: exitTokens, skipSpecialTokens: false) == exitText else { return nil }
+        // The model must be fed what the client is shown, its control tokens
+        // as themselves.
+        guard tokenizer.decode(tokenIds: exitTokens, skipSpecialTokens: false) == exitText,
+              markers.controls.allSatisfy({ control in
+                  tokenizer.convertTokenToId(control).map {
+                      tokenizer.convertIdToToken($0) == control && exitTokens.contains($0)
+                  } ?? false
+              })
+        else { return nil }
         return GenerationLoopExitThinking(
             openMarker: markers.open, closeMarker: markers.close,
             exitTokens: exitTokens, exitText: exitText, closeToken: close,

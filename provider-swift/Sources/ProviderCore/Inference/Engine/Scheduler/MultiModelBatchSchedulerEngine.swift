@@ -1115,7 +1115,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // single Mac's text row without logprobs (`GenerationLoopExitThinkingPolicy`).
         var exitThinking = GenerationLoopExitThinkingPolicy.resolve(
             modelType: modelType, tokenizer: tokenizer.inner, promptTokens: promptTokens,
-            logprobs: engineV2Logprobs != nil, setting: exitThinkingSetting)
+            logprobs: engineV2Logprobs != nil, declaresTools: prepared.tools?.isEmpty == false,
+            setting: exitThinkingSetting)
         if exitThinking != nil, await engineV2Bridge?.servesDistributedPair != false { exitThinking = nil }
         let loopGuard = GenerationLoopGuardPolicy.resolve(
             modelType: modelType, request: request, prepared: prepared, tokenConstraint: tokenConstraint,

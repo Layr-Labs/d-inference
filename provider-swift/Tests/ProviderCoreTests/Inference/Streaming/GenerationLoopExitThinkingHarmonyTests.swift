@@ -375,7 +375,8 @@ struct GenerationLoopExitThinkingHarmonyTests {
         // exit's `<|end|>` is what lets an answer through.
         var streaming = StreamingReasoningParser(format: .harmony)
         let streamed = (skipped + ["Answer"]).flatMap { streaming.parse($0) } + streaming.finish()
-        #expect(streamed.allSatisfy(\.content.isEmpty))
+        let streamedContent = streamed.map(\.content).joined()
+        #expect(streamedContent.isEmpty)
         let collected = ReasoningParser(format: .harmony).parse(skipped.joined() + "Answer")
         #expect(collected.content.isEmpty)
         #expect(collected.reasoningContent?.hasSuffix("Answer") == true)

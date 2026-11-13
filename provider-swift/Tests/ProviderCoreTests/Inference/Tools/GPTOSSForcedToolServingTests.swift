@@ -6,7 +6,8 @@ import Testing
 
 /// Samples a fixed script through the submitted constraint, like a model that
 /// honors the masks: the script's next token when allowed, otherwise the first
-/// allowed stop, else the request ends there. Records each submission.
+/// allowed stop, else the request stops there (a natural stop, never the
+/// token limit). Records each submission.
 private final class HarmonyScriptedEngine: CBv2Engine, @unchecked Sendable {
     private let script: [Int]
     private let lock = NSLock()
@@ -37,7 +38,10 @@ private final class HarmonyScriptedEngine: CBv2Engine, @unchecked Sendable {
             } else {
                 token = wanted ?? request.stopTokens.min()
             }
-            guard let token else { break }
+            guard let token else {
+                finish = .stop
+                break
+            }
             if request.stopTokens.contains(token) {
                 deltas.append(("", token))
                 finish = .stop
@@ -61,11 +65,12 @@ private final class HarmonyScriptedEngine: CBv2Engine, @unchecked Sendable {
 }
 
 /// What a client receives: the Harmony analysis as reasoning, visible content,
-/// the calls, and the error that ended the stream, if any.
+/// the calls, the terminal info, and the error that ended the stream, if any.
 private struct HarmonyOutcome {
     var reasoning = ""
     var content = ""
     var calls: [ToolCall] = []
+    var info: ServerGenerationInfo?
     var error: (any Error)?
     private var parser = StreamingReasoningParser(format: .harmony)
 
@@ -74,7 +79,8 @@ private struct HarmonyOutcome {
         case .content(let text): parser.parse(text).forEach { apply($0) }
         case .parsed(let parsed): apply(parsed)
         case .toolCall(let call): calls.append(call)
-        case .info, .toolCallDelta, .logprobs: break
+        case .info(let info): self.info = info
+        case .toolCallDelta, .logprobs: break
         }
     }
 
@@ -130,8 +136,8 @@ struct GPTOSSForcedToolServingTests {
         }
     }
 
-    @Test("a model that would answer instead is held to the call header, and fails closed without one")
-    func answerIsNeverExposed() async throws {
+    @Test("a forced response that stops in the call header fails closed, showing nothing")
+    func stopBeforeTheCallFailsClosed() async throws {
         let engine = HarmonyScriptedEngine(script: F.analysis("No tool is needed.")
             + "<|start|>assistant<|channel|>final<|message|>It is sunny.<|return|>")
         let outcome = try await serve(engine, choice: F.namedWeather)
@@ -149,3 +155,51 @@ struct GPTOSSForcedToolServingTests {
         #expect(outcome.error == nil && outcome.content == "Sunny.")
     }
 }
+
+#if DEBUG
+/// A forced GPT-OSS response the token limit cuts before its call is whole
+/// (`TokenLimitCutPolicy`): a normal `length` finish with nothing of the call
+/// shown, or the refusal again with `DARKBLOOM_LENGTH_FINISH_AT_LIMIT` off.
+@Suite("GPT-OSS forced calls cut at the token limit")
+struct GPTOSSForcedToolCutTests {
+    private typealias F = GPTOSSForcedFixture
+
+    private func serve(_ output: String, endsAtLength: Bool) async throws -> HarmonyOutcome {
+        let request = try F.request(choice: "required")
+        var prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "gpt_oss")
+        prepared.cutAnswersEndAtLength = endsAtLength
+        let handler = try #require(try ToolStreamPreparation.makeHandler(request: request, prepared: prepared,
+            modelType: "gpt_oss"))
+        let upstream = AsyncStream<GenerationEvent> { continuation in
+            continuation.yield(.chunk(output))
+            continuation.yield(.info(promptTokens: 1, completionTokens: 40, tokensPerSecond: 0,
+                finishReason: "length"))
+            continuation.finish()
+        }
+        let stream = try MultiModelBatchSchedulerEngine(registryProvider: { [:] })._testMakeEventStream(
+            upstream: upstream, cancelUpstream: {}, prepared: prepared,
+            releaseBox: OneShotRelease(release: { _ in }, modelId: "gpt-oss-20b"), toolHandler: handler)
+        var outcome = HarmonyOutcome()
+        do {
+            for try await event in stream { outcome.record(event) }
+        } catch { outcome.error = error }
+        outcome.finish()
+        return outcome
+    }
+
+    @Test("a cut in the call header or its arguments ends as length", arguments: [
+        GPTOSSForcedFixture.analysis("Paris.") + "<|start|>assistant<|channel|>commentary to=functions.get_wea",
+        GPTOSSForcedFixture.analysis("Paris.") + GPTOSSForcedFixture.call("get_weather", #"{"city":"Par"#),
+    ])
+    func cutCallEndsAsLength(output: String) async throws {
+        let cut = try await serve(output, endsAtLength: true)
+        #expect(cut.error == nil, "\(String(describing: cut.error))")
+        #expect(cut.info?.stopReason == "length")
+        #expect(cut.calls.isEmpty && cut.content.isEmpty)
+        #expect(cut.reasoning == "Paris.")
+        let refused = try await serve(output, endsAtLength: false)
+        #expect(refused.error.map { ProviderLoop.mapInferenceErrorToStatus($0) } == 422)
+        #expect(refused.calls.isEmpty && refused.content.isEmpty)
+    }
+}
+#endif

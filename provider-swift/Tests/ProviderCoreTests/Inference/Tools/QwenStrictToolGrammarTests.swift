@@ -380,7 +380,7 @@ struct QwenStrictToolGrammarTests {
         let constraint = try #require(try F.constraint(body))
         let (request, prepared) = try F.prepared(body)
         let closers = ["\n</parameter>\n", "\"", "]", "}", "</function>\n</tool_call>"]
-        var random = SplitMix64(seed: UInt64(function.utf8.count))
+        var random = StrictGrammarRandom(seed: UInt64(function.utf8.count))
         for _ in 0..<60 {
             var text = "<tool_call>\n<function=\(function)>\n"
             var state = try #require(F.walk(text, constraint))
@@ -507,7 +507,7 @@ struct QwenStrictToolGrammarTests {
 }
 
 /// Deterministic generator for the property test.
-struct SplitMix64: RandomNumberGenerator {
+private struct StrictGrammarRandom: RandomNumberGenerator {
     private var state: UInt64
     init(seed: UInt64) { state = seed }
     mutating func next() -> UInt64 {
@@ -679,5 +679,48 @@ struct QwenStrictToolServingTests {
         #expect(engine.submitted.first?.tokenConstraint == nil)
         #expect(outcome.error == nil)
         #expect(outcome.calls.first?.function.arguments["offset"] == .string("\"5\""))
+    }
+}
+
+/// Run against a local Qwen 3.5/3.6/3.8 snapshot (tokenizer and template files
+/// only; no weights are read): `DARKBLOOM_TEST_QWEN_TOKENIZER_DIR=<snapshot>`.
+@Suite("Strict tool grammar real tokenizer",
+       .enabled(if: ProcessInfo.processInfo.environment["DARKBLOOM_TEST_QWEN_TOKENIZER_DIR"] != nil))
+struct QwenStrictToolRealTokenizerTests {
+    @Test func theShippedTokenizerWalksARealCall() async throws {
+        let directory = URL(fileURLWithPath: try #require(
+            ProcessInfo.processInfo.environment["DARKBLOOM_TEST_QWEN_TOKENIZER_DIR"]))
+        let tokenizer = try await LocalTokenizerLoader(environment: [:]).load(from: directory)
+        let clock = ContinuousClock()
+        let started = clock.now
+        let vocabulary = try JSONAnswerVocabulary(tokenizer: tokenizer, profile: QwenStrictToolGrammar.profile,
+            stopTokenIDs: StrictToolFixture.stops)
+        let elapsed = clock.now - started
+        // The base pieces and the four markers; stop tokens are sampled separately.
+        #expect(vocabulary.pieceTokenIDs.count == 248_044 + 4)
+        let (request, prepared) = try StrictToolFixture.prepared(StrictToolFixture.body(tools: StrictToolFixture.order))
+        let tools = try #require(prepared.tools).map { $0.toolSpec() }
+        for thinking in [true, false] {
+            let prompt = try tokenizer.applyChatTemplate(messages: [["role": "user", "content": "Order it."]],
+                tools: tools, additionalContext: ["enable_thinking": thinking])
+            let schema = try QwenStrictToolSchema(declared: try #require(prepared.declaredTools),
+                rendered: try #require(prepared.tools), forbidding: QwenStrictToolGrammar.forbiddenMarkers,
+                family: QwenStrictToolGrammar.profile.family)
+            let tail = tokenizer.decode(tokenIds: Array(prompt.suffix(ReasoningPromptProbe.tailTokenCount)),
+                skipSpecialTokens: false)
+            let prefix = try #require(ReasoningPromptProbe.streamingPrefix(forPromptTail: tail))
+            #expect((prefix == ReasoningPromptProbe.thinkOpen) == thinking)
+            let constraint = try QwenStrictToolConstraint(schema: schema, vocabulary: vocabulary,
+                forbidding: QwenStrictToolGrammar.forbiddenMarkers, startsInReasoning: thinking, maxTokens: 4096)
+            let answer = (thinking ? "The user wants an order.\n</think>\n\n" : "") + StrictToolFixture.validOrder
+            var state = constraint.initialState
+            for token in tokenizer.encode(text: answer, addSpecialTokens: false) {
+                #expect(constraint.allowedTokenIDs(state: state, remainingTokens: 100).contains(token), "token \(token)")
+                state = try #require(constraint.nextState(state: state, tokenID: token), "token \(token)")
+            }
+            #expect(constraint.nextState(state: state, tokenID: 248046) == -1)
+            _ = request
+        }
+        print("qwen-strict-tool-vocabulary-build: \(elapsed)")
     }
 }

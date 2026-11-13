@@ -1004,7 +1004,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     modelId: request.model, modelType: modelType),
                 defaultMaxTokens: bridge.defaultMaxTokens,
                 stopTokenIDs: bridge.stopTokenIds,
-                nativePromptTokens: promptTokens)
+                nativePromptTokens: promptTokens,
+                servesDistributedPair: await bridge.servesDistributedPair)
             // Grammar compile (Gemma) can take the tool-constraint lock on the
             // first build per stop-set, and a JSON answer builds its vocabulary
             // on the first request per tokenizer; only those are worth a lock.

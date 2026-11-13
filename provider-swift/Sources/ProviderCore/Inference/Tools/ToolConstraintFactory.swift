@@ -23,7 +23,8 @@ enum ToolConstraintFactory {
         modelContext: ChatTemplateFixContext,
         defaultMaxTokens: Int,
         stopTokenIDs: Set<Int>,
-        nativePromptTokens: [Int]? = nil
+        nativePromptTokens: [Int]? = nil,
+        servesDistributedPair: Bool = false
     ) throws -> (any CBv2TokenConstraint)? {
         // Flint's automatic reasoning protocol needs framing even for no-tool
         // and auto requests. Do not broaden another family's admission policy.
@@ -55,7 +56,8 @@ enum ToolConstraintFactory {
         // verifies; otherwise it keeps prompt-only steering, never a refusal.
         if let answer = JSONAnswerPolicy.constraint(request: request, tokenizer: tokenizer,
             modelID: modelContext.modelId, modelType: modelContext.modelType, defaultMaxTokens: defaultMaxTokens,
-            stopTokenIDs: stopTokenIDs, promptTokens: nativePromptTokens) {
+            stopTokenIDs: stopTokenIDs, promptTokens: nativePromptTokens,
+            servesDistributedPair: servesDistributedPair) {
             return answer
         }
         guard prepared.mode.requiresInferenceConstraint else { return nil }

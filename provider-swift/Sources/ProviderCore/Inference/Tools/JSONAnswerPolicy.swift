@@ -10,9 +10,10 @@ import MLXLMServer
 /// instruction still steers the model, and every request this policy declines
 /// keeps that prompt-only behavior without a new refusal.
 enum JSONAnswerPolicy {
-    /// `DARKBLOOM_JSON_ANSWER_GRAMMAR=qwen` keeps the grammar to the Qwen 3.5,
-    /// 3.6 and 3.8 types, as before Bonsai and Lightning were admitted; unset
-    /// or any other value admits every family below. Read at launch.
+    /// `DARKBLOOM_JSON_ANSWER_GRAMMAR=qwen` (or `0`, `off`, `false`, `no`,
+    /// `none`) keeps the grammar to the Qwen 3.5, 3.6 and 3.8 types, as before
+    /// Bonsai and Lightning were admitted; unset or any other value admits
+    /// every family below. Read once per process.
     static let familiesEnvironmentKey = "DARKBLOOM_JSON_ANSWER_GRAMMAR"
 
     enum Families: Equatable, Sendable {
@@ -22,27 +23,32 @@ enum JSONAnswerPolicy {
         static let current = Families(environmentValue: ProcessInfo.processInfo.environment[familiesEnvironmentKey])
 
         init(environmentValue: String?) {
-            self = environmentValue?.trimmingCharacters(in: .whitespaces).lowercased() == "qwen" ? .qwenOnly : .all
+            let value = environmentValue?.trimmingCharacters(in: .whitespaces).lowercased() ?? ""
+            self = ["qwen", "0", "off", "false", "no", "none"].contains(value) ? .qwenOnly : .all
         }
     }
 
     private static let logger = ProviderLogger(
         subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "json-answer")
 
-    /// The answer contract of an admitted model, or nil. Admission is per
-    /// family and, where a `model_type` is shared, per listed build: Bonsai's
-    /// type is PrismML's alone, and Lightning shares `nemotron_h` with Nano.
-    static func profile(modelID: String?, modelType: String?, families: Families = .current)
-        -> JSONAnswerProfile?
+    /// The answer contract of an admitted model, or nil. The Qwen types are
+    /// admitted by `model_type` alone; `prism_hadamard_qwen35` and
+    /// `nemotron_h`, which Lightning shares with Nano, only for a listed
+    /// build, and only on a single Mac: a cluster pair refuses any token
+    /// constraint before reserving (`constrainedDecodingUnsupported`), so their
+    /// pairs keep today's prompt-only service instead of gaining that refusal.
+    /// A Qwen pair's refusal predates them and is failed over upstream.
+    static func profile(modelID: String?, modelType: String?, families: Families = .current,
+                        servesDistributedPair: Bool = false) -> JSONAnswerProfile?
     {
         switch modelType {
         case "qwen3_5", "qwen3_5_moe":
             return .qwen35
-        case "prism_hadamard_qwen35" where families == .all:
+        case "prism_hadamard_qwen35" where families == .all && !servesDistributedPair:
             let listed = EngineV2SupportedModels.isBonsai2ListingModelID(modelID)
-                || Bonsai9BModelPolicy.matches(modelId: modelID, modelType: modelType)
+                || Bonsai9BModelPolicy.matchesModelID(modelID)
             return listed ? .bonsai2 : nil
-        case "nemotron_h" where families == .all:
+        case "nemotron_h" where families == .all && !servesDistributedPair:
             return EngineV2SupportedModels.isNemotron35ListingModelID(modelID) ? .nemotron35 : nil
         default:
             return nil
@@ -61,9 +67,11 @@ enum JSONAnswerPolicy {
         defaultMaxTokens: Int,
         stopTokenIDs: Set<Int>,
         promptTokens: [Int]?,
+        servesDistributedPair: Bool = false,
         families: Families = .current
     ) -> JSONAnswerConstraint? {
-        guard let profile = profile(modelID: modelID, modelType: modelType, families: families),
+        guard let profile = profile(modelID: modelID, modelType: modelType, families: families,
+                                    servesDistributedPair: servesDistributedPair),
               let format = request.responseFormat, format.requiresJSONOutput,
               request.tools?.isEmpty ?? true, request.toolChoice == nil,
               request.reasoningParser == .qwen3, !MediaIngest.hasMedia(request) else { return nil }
@@ -76,6 +84,9 @@ enum JSONAnswerPolicy {
                   tokenIds: Array(promptTokens.suffix(ReasoningPromptProbe.tailTokenCount)),
                   skipSpecialTokens: false)) else {
             return declined(profile, "unrecognized prompt boundary")
+        }
+        guard phase == .answer || profile.constrainsReasoning else {
+            return declined(profile, "the prompt opens a thought")
         }
         guard let vocabulary = try? JSONAnswerVocabulary.cached(for: tokenizer, profile: profile,
                                                                  stopTokenIDs: stopTokenIDs) else {

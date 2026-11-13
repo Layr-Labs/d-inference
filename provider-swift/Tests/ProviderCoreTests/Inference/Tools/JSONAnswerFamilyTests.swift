@@ -76,35 +76,42 @@ struct JSONAnswerFamilyTests {
     private static let qwenHandle = TokenizerHandle(QwenByteTestTokenizer())
     private static let nemotronHandle = TokenizerHandle(NemotronByteTestTokenizer())
     private static let nemotronStops: Set<Int> = [2, 11]
+    /// Rendered with thinking off, so output starts in the answer.
+    private static let qwenPrompt = QwenByteTestTokenizer.tokens(QwenByteTestTokenizer.prompt(thinking: false))
+    private static let nemotronPrompt = NemotronByteTestTokenizer.tokens(
+        NemotronByteTestTokenizer.prompt(thinking: false))
 
     static let bonsaiIDs = ["ternary-bonsai-2-27b", "EigenLabs/Ternary-Bonsai-2-27B-MLX-2bit",
                             EngineV2SupportedModels.bonsai2ModelID, Bonsai9BModelPolicy.modelID,
                             Bonsai9BModelPolicy.eigenModelID]
     static let lightningIDs = ["nvidia-nemotron-3.5-lightning", EngineV2SupportedModels.nemotron35LightningModelID,
-                               EngineV2SupportedModels.nemotron35LightningMTPModelID]
+                               EngineV2SupportedModels.nemotron35LightningMTPModelID,
+                               EngineV2SupportedModels.nemotron35LightningHybrid8BuildID,
+                               EngineV2SupportedModels.nemotron35LightningRollback4bitBuildID]
 
-    private func request(_ format: String, model: String, maxTokens: Int = 64) throws -> OpenAIChatCompletionRequest {
-        var request = try F.request(format: format, maxTokens: maxTokens)
+    private func request(_ format: String, model: String) throws -> OpenAIChatCompletionRequest {
+        var request = try F.request(format: format)
         request.model = model
         return request
     }
 
     private func make(_ request: OpenAIChatCompletionRequest, modelType: String, handle: TokenizerHandle,
-                      prompt: [Int], stops: Set<Int>, families: JSONAnswerPolicy.Families = .all)
-        -> JSONAnswerConstraint? {
+                      prompt: [Int], stops: Set<Int>, pair: Bool = false,
+                      families: JSONAnswerPolicy.Families = .all) -> JSONAnswerConstraint? {
         JSONAnswerPolicy.constraint(request: request, tokenizer: handle, modelID: request.model,
             modelType: modelType, defaultMaxTokens: 100, stopTokenIDs: stops, promptTokens: prompt,
-            families: families)
+            servesDistributedPair: pair, families: families)
     }
 
-    @Test func bonsaiBuildsAnswerUnderTheQwenContract() throws {
+    /// Bonsai 27B's artifact stops at `<|im_end|>` alone, the 9B's at both
+    /// Qwen terminators: either way the answer ends with `<|im_end|>`.
+    @Test func bonsaiBuildsAnswerUnderTheQwenIDs() throws {
         for model in Self.bonsaiIDs {
-            for (thinking, phase) in [(false, JSONAnswerPhase.answer), (true, .reasoning)] {
+            for stops: Set<Int> in [[F.imEnd], F.stops] {
                 let constraint = try #require(make(request(F.schemaFormat(F.schema), model: model),
-                    modelType: "prism_hadamard_qwen35", handle: Self.qwenHandle,
-                    prompt: QwenByteTestTokenizer.tokens(QwenByteTestTokenizer.prompt(thinking: thinking)),
-                    stops: F.stops), "\(model)")
-                #expect(constraint.initialPhase == phase && constraint.format.family == "Bonsai")
+                    modelType: "prism_hadamard_qwen35", handle: Self.qwenHandle, prompt: Self.qwenPrompt,
+                    stops: stops), "\(model) \(stops)")
+                #expect(constraint.initialPhase == .answer && constraint.format.family == "Bonsai")
                 #expect(constraint.maxTokens == 64 && constraint.fallbackTokenID == F.imEnd)
             }
         }
@@ -112,56 +119,82 @@ struct JSONAnswerFamilyTests {
 
     @Test func lightningAnswersUnderItsOwnContract() throws {
         for model in Self.lightningIDs {
-            for (thinking, phase) in [(false, JSONAnswerPhase.answer), (true, .reasoning)] {
-                let constraint = try #require(make(request(F.jsonObject, model: model), modelType: "nemotron_h",
-                    handle: Self.nemotronHandle,
-                    prompt: NemotronByteTestTokenizer.tokens(NemotronByteTestTokenizer.prompt(thinking: thinking)),
-                    stops: Self.nemotronStops), "\(model)")
-                #expect(constraint.initialPhase == phase && constraint.format.family == "Nemotron")
-                #expect(constraint.fallbackTokenID == 11)
-            }
+            let constraint = try #require(make(request(F.jsonObject, model: model), modelType: "nemotron_h",
+                handle: Self.nemotronHandle, prompt: Self.nemotronPrompt, stops: Self.nemotronStops), "\(model)")
+            #expect(constraint.initialPhase == .answer && constraint.format.family == "Nemotron")
+            #expect(constraint.fallbackTokenID == 11)
         }
     }
 
-    /// A shared `model_type` admits only the listed builds, and the switch's
-    /// `qwen` value keeps the grammar where it was before these families.
-    @Test func unlistedBuildsAndTheQwenOnlySwitchStayPromptOnly() throws {
-        let qwenPrompt = QwenByteTestTokenizer.tokens(QwenByteTestTokenizer.prompt(thinking: false))
-        let nemotronPrompt = NemotronByteTestTokenizer.tokens(NemotronByteTestTokenizer.prompt(thinking: false))
+    /// Both new families constrain answer-first prompts only: a prompt that
+    /// opens a thought stays prompt-only, as does any request on a cluster
+    /// pair (which refuses token constraints). Qwen keeps both as before.
+    @Test func reasoningFirstPromptsAndPairsStayPromptOnly() throws {
+        let qwenThinking = QwenByteTestTokenizer.tokens(QwenByteTestTokenizer.prompt(thinking: true))
+        let nemotronThinking = NemotronByteTestTokenizer.tokens(NemotronByteTestTokenizer.prompt(thinking: true))
+        let bonsai = try request(F.jsonObject, model: "ternary-bonsai-2-27b")
+        let lightning = try request(F.jsonObject, model: "nvidia-nemotron-3.5-lightning")
+        #expect(make(bonsai, modelType: "prism_hadamard_qwen35", handle: Self.qwenHandle, prompt: qwenThinking,
+            stops: F.stops) == nil)
+        #expect(make(lightning, modelType: "nemotron_h", handle: Self.nemotronHandle, prompt: nemotronThinking,
+            stops: Self.nemotronStops) == nil)
+        #expect(make(bonsai, modelType: "prism_hadamard_qwen35", handle: Self.qwenHandle, prompt: Self.qwenPrompt,
+            stops: F.stops, pair: true) == nil)
+        #expect(make(lightning, modelType: "nemotron_h", handle: Self.nemotronHandle, prompt: Self.nemotronPrompt,
+            stops: Self.nemotronStops, pair: true) == nil)
+        let qwen = try request(F.jsonObject, model: "EigenLabs/Qwen3.8-27B-4bit-mtp")
+        #expect(make(qwen, modelType: "qwen3_5", handle: Self.qwenHandle, prompt: qwenThinking,
+            stops: F.stops)?.initialPhase == .reasoning)
+        #expect(make(qwen, modelType: "qwen3_5", handle: Self.qwenHandle, prompt: Self.qwenPrompt,
+            stops: F.stops, pair: true) != nil)
+    }
+
+    /// A shared `model_type` admits only the listed builds.
+    @Test func unlistedBuildsOfAnAdmittedTypeStayPromptOnly() throws {
         for model in ["PrismML/Some-Other-Hadamard-Qwen", "EigenLabs/Qwen3.5-9B-MLX-4bit-mtp"] {
             #expect(make(try request(F.jsonObject, model: model), modelType: "prism_hadamard_qwen35",
-                handle: Self.qwenHandle, prompt: qwenPrompt, stops: F.stops) == nil, "\(model)")
+                handle: Self.qwenHandle, prompt: Self.qwenPrompt, stops: F.stops) == nil, "\(model)")
         }
         for model in ["nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B", "nvidia-nemotron-3.5-super"] {
-            #expect(make(try request(F.jsonObject, model: model), modelType: "nemotron_h",
-                handle: Self.nemotronHandle, prompt: nemotronPrompt, stops: Self.nemotronStops) == nil, "\(model)")
+            #expect(make(try request(F.jsonObject, model: model), modelType: "nemotron_h", handle: Self.nemotronHandle,
+                prompt: Self.nemotronPrompt, stops: Self.nemotronStops) == nil, "\(model)")
         }
-        #expect(make(try request(F.jsonObject, model: "ternary-bonsai-2-27b"), modelType: "prism_hadamard_qwen35",
-            handle: Self.qwenHandle, prompt: qwenPrompt, stops: F.stops, families: .qwenOnly) == nil)
-        #expect(make(try request(F.jsonObject, model: "nvidia-nemotron-3.5-lightning"), modelType: "nemotron_h",
-            handle: Self.nemotronHandle, prompt: nemotronPrompt, stops: Self.nemotronStops,
-            families: .qwenOnly) == nil)
-        // Today's Qwen admission is unchanged under either value.
-        for families in [JSONAnswerPolicy.Families.all, .qwenOnly] {
-            #expect(make(try request(F.jsonObject, model: "EigenLabs/Qwen3.8-27B-4bit-mtp"), modelType: "qwen3_5",
-                handle: Self.qwenHandle, prompt: qwenPrompt, stops: F.stops, families: families)?.format.family
-                == "Qwen")
-        }
-        #expect(JSONAnswerPolicy.Families(environmentValue: nil) == .all)
-        #expect(JSONAnswerPolicy.Families(environmentValue: " Qwen ") == .qwenOnly)
-        #expect(JSONAnswerPolicy.Families(environmentValue: "all") == .all)
     }
 
-    /// The Lightning stop set must hold both answer terminators, and a
-    /// tokenizer that moves a pinned marker is not constrained.
+    /// The switch's `qwen` value keeps the grammar to the Qwen types, which
+    /// are admitted under either value.
+    @Test func theQwenOnlySwitchAdmitsOnlyTheQwenTypes() throws {
+        #expect(make(try request(F.jsonObject, model: "ternary-bonsai-2-27b"), modelType: "prism_hadamard_qwen35",
+            handle: Self.qwenHandle, prompt: Self.qwenPrompt, stops: F.stops, families: .qwenOnly) == nil)
+        #expect(make(try request(F.jsonObject, model: "nvidia-nemotron-3.5-lightning"), modelType: "nemotron_h",
+            handle: Self.nemotronHandle, prompt: Self.nemotronPrompt, stops: Self.nemotronStops,
+            families: .qwenOnly) == nil)
+        for families in [JSONAnswerPolicy.Families.all, .qwenOnly] {
+            #expect(make(try request(F.jsonObject, model: "EigenLabs/Qwen3.8-27B-4bit-mtp"), modelType: "qwen3_5",
+                handle: Self.qwenHandle, prompt: Self.qwenPrompt, stops: F.stops, families: families)?.format.family
+                == "Qwen")
+        }
+        for value in [" Qwen ", "qwen", "0", "off", "FALSE", "no", "none"] {
+            #expect(JSONAnswerPolicy.Families(environmentValue: value) == .qwenOnly, "\(value)")
+        }
+        for value in [nil, "", "all", "1", "on", "bonsai"] as [String?] {
+            #expect(JSONAnswerPolicy.Families(environmentValue: value) == .all, "\(value ?? "unset")")
+        }
+    }
+
+    /// The Lightning stop set must hold both answer terminators (Bonsai's
+    /// `<|im_end|>`), and a tokenizer that moves a pinned marker is not
+    /// constrained.
     @Test func aMismatchedNemotronContractStaysPromptOnly() throws {
         let request = try request(F.jsonObject, model: "nvidia-nemotron-3.5-lightning")
-        let prompt = NemotronByteTestTokenizer.tokens(NemotronByteTestTokenizer.prompt(thinking: false))
-        #expect(make(request, modelType: "nemotron_h", handle: Self.nemotronHandle, prompt: prompt, stops: [11]) == nil)
+        #expect(make(request, modelType: "nemotron_h", handle: Self.nemotronHandle, prompt: Self.nemotronPrompt,
+            stops: [11]) == nil)
         let moved = NemotronByteTestTokenizer.pinned.map { $0.0 == "</think>" ? ($0.0, 16) : $0 }
         #expect(make(request, modelType: "nemotron_h",
-            handle: TokenizerHandle(NemotronByteTestTokenizer(markers: moved)), prompt: prompt,
+            handle: TokenizerHandle(NemotronByteTestTokenizer(markers: moved)), prompt: Self.nemotronPrompt,
             stops: Self.nemotronStops) == nil)
+        #expect(make(try self.request(F.jsonObject, model: "ternary-bonsai-2-27b"), modelType: "prism_hadamard_qwen35",
+            handle: Self.qwenHandle, prompt: Self.qwenPrompt, stops: [F.endOfText]) == nil)
     }
 
     /// Ids below 1,000 are special or added tokens: only the think markers are
@@ -197,36 +230,64 @@ struct JSONAnswerFamilyTests {
             answer = try #require(constraint.nextState(state: answer, tokenID: token))
         }
         #expect(constraint.nextState(state: answer, tokenID: 1000 + Int(UInt8(ascii: ">"))) == nil)
+        // `</s>` has no piece, so its spelling (an HTML close tag) stays writable.
+        var html = try #require(constraint.nextState(state: constraint.initialState, tokenID: 13))
+        for token in NemotronByteTestTokenizer.tokens("{\"a\": \"<s>gone</s>\"}") {
+            html = try #require(constraint.nextState(state: html, tokenID: token), "token \(token)")
+        }
+        #expect(constraint.nextState(state: html, tokenID: 11) == -1)
     }
 }
 
-/// Run against a local Nemotron 3.5 Lightning snapshot (tokenizer and template
-/// files only; no weights are read): `DARKBLOOM_TEST_NEMOTRON_TOKENIZER_DIR=<snapshot>`.
-@Suite("Nemotron JSON answer real tokenizer",
-       .enabled(if: ProcessInfo.processInfo.environment["DARKBLOOM_TEST_NEMOTRON_TOKENIZER_DIR"] != nil))
-struct NemotronJSONAnswerRealTokenizerTests {
-    @Test func theShippedTokenizerMatchesThePinnedContract() async throws {
-        let directory = URL(fileURLWithPath: try #require(
-            ProcessInfo.processInfo.environment["DARKBLOOM_TEST_NEMOTRON_TOKENIZER_DIR"]))
+/// Run against local snapshots (tokenizer, template and config files only; no
+/// weights are read): `DARKBLOOM_TEST_NEMOTRON_TOKENIZER_DIR=<Lightning snapshot>`,
+/// `DARKBLOOM_TEST_BONSAI_TOKENIZER_DIR=<Bonsai 2 snapshot>`. The stop set is the
+/// one the slot gets: the artifact's EOS (`ModelEOSPolicy`) plus the tokenizer's.
+@Suite("Bonsai and Nemotron JSON answer real tokenizers")
+struct JSONAnswerFamilyRealTokenizerTests {
+    private static let environment = ProcessInfo.processInfo.environment
+
+    private func load(_ key: String) async throws -> (any MLXLMCommon.Tokenizer, Set<Int>) {
+        let directory = URL(fileURLWithPath: try #require(Self.environment[key]))
         let tokenizer = try await LocalTokenizerLoader(environment: [:]).load(from: directory)
-        let vocabulary = try JSONAnswerVocabulary(tokenizer: tokenizer, profile: .nemotron35, stopTokenIDs: [2, 11])
-        #expect(vocabulary.pieceTokenIDs.count == 131_072 - 1_000 + 2)
+        var stops = try #require(ModelEOSPolicy.artifactEOSTokenIds(modelDirectory: directory))
+        if let eos = tokenizer.eosToken.flatMap(tokenizer.convertTokenToId) { stops.insert(eos) }
+        return (tokenizer, stops)
+    }
+
+    private func check(_ tokenizer: any MLXLMCommon.Tokenizer, stops: Set<Int>, profile: JSONAnswerProfile,
+                       pieceCount: Int, end: Int) throws {
+        let vocabulary = try JSONAnswerVocabulary(tokenizer: tokenizer, profile: profile, stopTokenIDs: stops)
+        #expect(vocabulary.pieceTokenIDs.count == pieceCount)
         for (thinking, phase) in [(false, JSONAnswerPhase.answer), (true, .reasoning)] {
             let tokens = try tokenizer.applyChatTemplate(messages: [["role": "user", "content": "Extract the name."]],
                 tools: nil, additionalContext: ["enable_thinking": thinking])
             let tail = tokenizer.decode(tokenIds: Array(tokens.suffix(ReasoningPromptProbe.tailTokenCount)),
                 skipSpecialTokens: false)
-            #expect(JSONAnswerProfile.nemotron35.initialPhase(promptTail: tail) == phase)
+            #expect(profile.initialPhase(promptTail: tail) == phase)
         }
-        let answer = try JSONAnswerFormat(.jsonObject(), forbidding: JSONAnswerProfile.nemotron35.contentMarkers,
-            family: "Nemotron")
-        let constraint = try JSONAnswerConstraint(format: answer, profile: .nemotron35, vocabulary: vocabulary,
+        let answer = try JSONAnswerFormat(.jsonObject(), forbidding: profile.contentMarkers, family: profile.family)
+        let constraint = try JSONAnswerConstraint(format: answer, profile: profile, vocabulary: vocabulary,
             initialPhase: .answer, maxTokens: 256)
         var state = constraint.initialState
         for token in tokenizer.encode(text: "{\"name\": \"Ada Lovelace\", \"born\": 1815, \"tags\": [\"é\", null]}",
                                       addSpecialTokens: false) {
             state = try #require(constraint.nextState(state: state, tokenID: token), "token \(token)")
         }
-        #expect(constraint.nextState(state: state, tokenID: 11) == -1)
+        #expect(constraint.nextState(state: state, tokenID: end) == -1)
+    }
+
+    @Test(.enabled(if: environment["DARKBLOOM_TEST_NEMOTRON_TOKENIZER_DIR"] != nil))
+    func lightningMatchesItsContract() async throws {
+        let (tokenizer, stops) = try await load("DARKBLOOM_TEST_NEMOTRON_TOKENIZER_DIR")
+        #expect(stops == [2, 11])
+        try check(tokenizer, stops: stops, profile: .nemotron35, pieceCount: 131_072 - 1_000 + 2, end: 11)
+    }
+
+    @Test(.enabled(if: environment["DARKBLOOM_TEST_BONSAI_TOKENIZER_DIR"] != nil))
+    func bonsaiMatchesItsContract() async throws {
+        let (tokenizer, stops) = try await load("DARKBLOOM_TEST_BONSAI_TOKENIZER_DIR")
+        #expect(stops.contains(248_046))
+        try check(tokenizer, stops: stops, profile: .bonsai2, pieceCount: 248_044 + 2, end: 248_046)
     }
 }

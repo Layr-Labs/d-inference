@@ -43,6 +43,12 @@ final class JSONAnswerVocabulary: ByteOrderedPieceVocabulary, Sendable {
     /// byte-level piece.
     convenience init(tokenizer: any MLXLMCommon.Tokenizer, profile: JSONAnswerProfile,
                      stopTokenIDs: Set<Int>) throws {
+        // Cheap checks first: a slot whose stop set lacks a terminator never
+        // pays for decoding the whole vocabulary.
+        guard profile.answerEOS.allSatisfy({ stopTokenIDs.contains($0.id) }) else {
+            throw ToolConstraintSchemaError.invalid(
+                "\(profile.family) JSON answers require the pinned answer EOS among the stop tokens")
+        }
         for token in profile.pieceTokens + profile.answerEOS {
             guard tokenizer.convertTokenToId(token.spelling) == token.id,
                   tokenizer.convertIdToToken(token.id) == token.spelling,
@@ -53,7 +59,7 @@ final class JSONAnswerVocabulary: ByteOrderedPieceVocabulary, Sendable {
             }
         }
         var pieces = [[UInt8]](repeating: [], count: profile.vocabularySize)
-        for id in profile.pieceIDs {
+        for id in profile.bpeIDs {
             guard let raw = tokenizer.convertIdToToken(id), let bytes = ByteLevelBPE.bytes(raw), !bytes.isEmpty else {
                 throw ToolConstraintSchemaError.invalid("Incomplete \(profile.family) byte-level vocabulary")
             }

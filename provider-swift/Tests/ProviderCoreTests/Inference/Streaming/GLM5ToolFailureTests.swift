@@ -86,11 +86,13 @@ struct GLM5ToolFailureTests {
 
     /// A required call keeps failing closed when its suffix does not parse: the
     /// parser's own refusal, or the visible-text check when text precedes it.
-    @Test func forcedChoiceStillRefusesAStraySuffix() async throws {
-        let stray = try await run("<tool_call>.</tool_call>" + valid, forced: true, width: 1)
+    @Test(arguments: [#""required""#, #"{"type":"function","function":{"name":"echo"}}"#])
+    func forcedChoiceStillRefusesAStraySuffix(choice: String) async throws {
+        let stray = try await run("<tool_call>.</tool_call>" + valid, forced: true, width: 1, choice: choice)
         #expect(stray.calls.isEmpty && stray.visible.isEmpty)
         #expect(stray.failure == .toolChoiceViolation("native GLM tool output is invalid"))
-        let mentioned = try await run("Wrap it in <tool_call> tags.</think>" + valid, forced: true, width: 1)
+        let mentioned = try await run("Wrap it in <tool_call> tags.</think>" + valid, forced: true, width: 1,
+            choice: choice)
         #expect(mentioned.calls.isEmpty && mentioned.visible.isEmpty)
         let failure = try #require(mentioned.failure)
         #expect(ProviderLoop.mapInferenceErrorToStatus(failure) == 422)
@@ -120,13 +122,16 @@ struct GLM5ToolFailureTests {
         #expect(result.visible == output)
     }
 
-    /// Calls are never split out of an output the token limit cut off.
+    /// Calls are never split out of a suffix that did not parse in an output
+    /// the token limit cut off; a suffix that parses keeps its calls, as before.
     @Test func truncatedOutputIsNotSplit() async throws {
         let output = "Wrap it in <tool_call> tags.</think>" + valid
         let result = try await run(output, forced: false, width: 4, finishReason: "length")
         #expect(result.failure == nil)
         #expect(result.calls.isEmpty)
         #expect(result.visible == output)
+        let clean = try await run("Need it.</think>" + valid, forced: false, width: 4, finishReason: "length")
+        #expect(clean.failure == nil && clean.calls.count == 1 && clean.visible == "Need it.</think>")
     }
 
     /// The search for the calls' first frame is bounded.
@@ -207,8 +212,8 @@ struct GLM5ToolFailureTests {
     /// The production event stream on the legacy text path (no native
     /// channel), fed `width` characters at a time.
     private func run(_ output: String, forced: Bool, width: Int, finishReason: String? = nil,
-                     tool: String? = nil) async throws -> Outcome {
-        let choice = forced ? #""required""# : #""auto""#
+                     tool: String? = nil, choice forcedChoice: String = #""required""#) async throws -> Outcome {
+        let choice = forced ? forcedChoice : #""auto""#
         var request = try MiMoConsumerFixture.request(choice: choice)
         if let tool {
             var body = try #require(JSONSerialization.jsonObject(with: MiMoConsumerFixture.body(

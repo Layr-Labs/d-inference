@@ -3538,8 +3538,10 @@ sampled. Within the output kept back for the call (`<|end|>`, the longest call
 header, 128 argument tokens and `<|call|>`) the analysis must end. The headers'
 token sequences are the tokenizer's own encodings, checked by round trip; a
 tokenizer that fails the check, or a prompt that does not end at the assistant
-boundary, refuses the request (400 `unsupported_forced_tool_choice`). One call
-per response, as Harmony's `<|call|>` stops generation: `parallel_tool_calls`
+boundary, refuses the request (400 `unsupported_forced_tool_choice`), as does a
+schema outside the shared forced-choice subset (`$ref`, `anyOf`, …; the
+coordinator refuses those first, 422 `tool_schema_unsupported`). One call per
+response, as Harmony's `<|call|>` stops generation: `parallel_tool_calls`
 changes nothing. The call is withheld, parsed by `HarmonyToolCallParser` and
 validated like every forced call; the only text the router lets through first is
 the analysis message (`HarmonyForcedCallText`), which the Harmony reasoning

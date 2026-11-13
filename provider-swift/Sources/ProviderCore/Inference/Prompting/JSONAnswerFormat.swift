@@ -31,6 +31,15 @@ struct JSONAnswerFormat: Sendable {
         schema = compiled
     }
 
+    /// A forced call's arguments: one JSON object of the function's compiled
+    /// parameters, never spelling the family's markup.
+    init(arguments tool: CompiledToolSchema, profile: JSONAnswerProfile) throws {
+        grammar = try FlintJSONGrammar(schema: tool.parameters, forbidding: profile.contentMarkers,
+            family: profile.family)
+        schema = tool.parameters
+        family = profile.family
+    }
+
     /// Defense in depth after constrained decoding. A failure, including a
     /// budget that ended before the value completed, is a typed 422 and never
     /// a successful completion. Messages never quote generated content.

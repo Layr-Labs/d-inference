@@ -187,12 +187,13 @@ struct NativeToolStreamRouter {
             // their existing fallback contract.
             try checkNativeToolFailure()
             guard let visible, !visible.isEmpty else { continue }
-            if harmonyAnalysis != nil {
+            if var analysis = harmonyAnalysis {
                 // Harmony analysis is reasoning to the stream's Harmony parser.
-                guard let shown = harmonyAnalysis!.filter(visible) else {
+                guard let shown = analysis.filter(visible) else {
                     throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(
                         "forced tool_choice produced visible text before a validated call")
                 }
+                harmonyAnalysis = analysis
                 if !shown.isEmpty { events.append(visibleEvent(shown)) }
                 continue
             }

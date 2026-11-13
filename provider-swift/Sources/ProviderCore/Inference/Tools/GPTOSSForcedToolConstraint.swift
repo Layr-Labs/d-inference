@@ -37,39 +37,6 @@ enum GPTOSSForcedToolCalls {
     }
 }
 
-extension JSONAnswerProfile {
-    /// Harmony control spellings. None may appear as text in a forced
-    /// response: the stream's parsers read them as framing.
-    static let harmonyMarkers = [
-        "<|start|>", "<|end|>", "<|message|>", "<|channel|>", "<|constrain|>", "<|return|>", "<|call|>",
-        "<|endoftext|>", "<|startoftext|>", "<|endofprompt|>",
-    ]
-
-    /// GPT-OSS (`gpt_oss`, o200k Harmony): byte-level BPE below
-    /// `<|startoftext|>`, Harmony control tokens above it and never pieces.
-    /// Call arguments end with `<|call|>`. The model's vocabulary pads the
-    /// tokenizer's 200,019 ids to 201,088.
-    static let gptOSS = JSONAnswerProfile(
-        family: "GPT-OSS",
-        thinkClose: "<|end|>",
-        reasoningStops: harmonyMarkers,
-        contentMarkers: harmonyMarkers,
-        firstAddedTokenID: 199998,
-        pieceTokens: [],
-        answerEOS: [.init(spelling: "<|call|>", id: 200012)],
-        vocabularySize: 201088)
-}
-
-extension JSONAnswerFormat {
-    /// One function's arguments: a JSON object of its compiled parameters.
-    init(arguments tool: CompiledToolSchema, profile: JSONAnswerProfile) throws {
-        grammar = try FlintJSONGrammar(schema: tool.parameters, forbidding: profile.contentMarkers,
-            family: profile.family)
-        schema = tool.parameters
-        family = profile.family
-    }
-}
-
 /// The Harmony control tokens and exact header sequences a forced call needs,
 /// resolved from the loaded tokenizer and checked by round trip.
 struct GPTOSSHarmonyFraming: Sendable {
@@ -129,17 +96,22 @@ struct GPTOSSHarmonyFraming: Sendable {
 final class GPTOSSForcedToolConstraint: CBv2TokenConstraint, @unchecked Sendable {
     /// Arguments budget kept back while the model reasons.
     static let argumentsAllowance = 128
-    static let maximumStates = 16_384
+    /// The arguments' delegate interns at most its own maximum; the analysis
+    /// windows and header prefixes add a few hundred more.
+    static let maximumStates = 2 * JSONAnswerConstraint.maximumStates
+    private static let maximumTokenSets = 4
 
     private enum Phase: Hashable {
         case analysisHeader(Int)
+        /// The suffix of the reasoning that still starts a Harmony spelling.
         case analysis(window: [UInt8])
         case callHeader(node: Int)
         case arguments(tool: Int, state: Int)
     }
 
-    private struct HeaderNode {
+    private struct CallHeaderNode {
         var next: [Int: Int] = [:]
+        /// Set where a declared function's whole header ends.
         var tool: Int?
     }
 
@@ -152,17 +124,16 @@ final class GPTOSSForcedToolConstraint: CBv2TokenConstraint, @unchecked Sendable
     let analysisReserve: Int
     private let framing: GPTOSSHarmonyFraming
     private let vocabulary: JSONAnswerVocabulary
-    private let markers: [[UInt8]]
-    private let arguments: [JSONAnswerConstraint]
-    private let headerNodes: [HeaderNode]
+    private let markers = JSONAnswerProfile.gptOSS.contentMarkers
+    private let argumentConstraints: [JSONAnswerConstraint]
+    private let callHeaderTrie: [CallHeaderNode]
     private let lock = NSLock()
     private var phases: [Phase] = [.analysisHeader(0)]
     private var phaseIndex: [Phase: Int] = [.analysisHeader(0): 0]
-    private var analysisMasks: [(rejected: Set<Int>, tokens: [Int])] = []
-    private static let maximumMaskEntries = 4
+    private var analysisTokenSets: [(rejected: Set<Int>, tokens: [Int])] = []
 
     init(mode: ToolConstraintMode, tools: [CompiledToolSchema], tokenizer: any MLXLMCommon.Tokenizer,
-         vocabulary: JSONAnswerVocabulary, profile: JSONAnswerProfile = .gptOSS, maxTokens: Int) throws {
+         vocabulary: JSONAnswerVocabulary, maxTokens: Int) throws {
         guard maxTokens > 0 else {
             throw ToolConstraintSchemaError.invalid("GPT-OSS forced tool calls require a positive output budget")
         }
@@ -181,33 +152,33 @@ final class GPTOSSForcedToolConstraint: CBv2TokenConstraint, @unchecked Sendable
               selected.allSatisfy({ ToolChoicePromptPolicy.isValidFunctionName($0.name) }) else {
             throw ToolConstraintSchemaError.invalid("GPT-OSS call framing requires valid declared function names")
         }
+        let profile = JSONAnswerProfile.gptOSS
         framing = try GPTOSSHarmonyFraming(tokenizer: tokenizer, names: selected.map(\.name),
             firstAddedTokenID: profile.firstAddedTokenID)
         guard !vocabulary.stopTokenIDs.contains(framing.end) else {
             throw ToolConstraintSchemaError.invalid("GPT-OSS analysis must not end the request")
         }
-        arguments = try selected.map {
+        argumentConstraints = try selected.map {
             try JSONAnswerConstraint(format: JSONAnswerFormat(arguments: $0, profile: profile), profile: profile,
                 vocabulary: vocabulary, initialPhase: .answer, maxTokens: maxTokens)
         }
-        var nodes = [HeaderNode()]
+        var trie = [CallHeaderNode()]
         for (tool, tokens) in framing.callHeaders.enumerated() {
             var node = 0
             for token in tokens {
-                if let child = nodes[node].next[token] {
+                if let child = trie[node].next[token] {
                     node = child
                 } else {
-                    nodes.append(HeaderNode())
-                    nodes[node].next[token] = nodes.count - 1
-                    node = nodes.count - 1
+                    trie.append(CallHeaderNode())
+                    trie[node].next[token] = trie.count - 1
+                    node = trie.count - 1
                 }
             }
-            nodes[node].tool = tool
+            trie[node].tool = tool
         }
-        headerNodes = nodes
+        callHeaderTrie = trie
         self.vocabulary = vocabulary
         self.maxTokens = maxTokens
-        markers = profile.contentMarkers
         fallbackTokenID = vocabulary.fallbackTokenID
         analysisReserve = 1 + (framing.callHeaders.map(\.count).max() ?? 0) + Self.argumentsAllowance + 1
     }
@@ -247,9 +218,9 @@ final class GPTOSSForcedToolConstraint: CBv2TokenConstraint, @unchecked Sendable
         case .analysis(let window):
             return remainingTokens <= analysisReserve ? [framing.end] : analysisTokens(window)
         case .callHeader(let node):
-            return headerNodes[node].next.keys.sorted()
+            return callHeaderTrie[node].next.keys.sorted()
         case .arguments(let tool, let inner):
-            return arguments[tool].allowedTokenIDs(state: inner, remainingTokens: remainingTokens)
+            return argumentConstraints[tool].allowedTokenIDs(state: inner, remainingTokens: remainingTokens)
         }
     }
 
@@ -285,14 +256,14 @@ final class GPTOSSForcedToolConstraint: CBv2TokenConstraint, @unchecked Sendable
                 next = .analysis(window: advanced)
             }
         case .callHeader(let node):
-            guard let child = headerNodes[node].next[tokenID] else { return nil }
-            if let tool = headerNodes[child].tool {
-                next = .arguments(tool: tool, state: arguments[tool].initialState)
+            guard let child = callHeaderTrie[node].next[tokenID] else { return nil }
+            if let tool = callHeaderTrie[child].tool {
+                next = .arguments(tool: tool, state: argumentConstraints[tool].initialState)
             } else {
                 next = .callHeader(node: child)
             }
         case .arguments(let tool, let inner):
-            guard let advanced = arguments[tool].nextState(state: inner, tokenID: tokenID) else { return nil }
+            guard let advanced = argumentConstraints[tool].nextState(state: inner, tokenID: tokenID) else { return nil }
             if advanced == -1 { return -1 }
             next = .arguments(tool: tool, state: advanced)
         }
@@ -309,21 +280,21 @@ final class GPTOSSForcedToolConstraint: CBv2TokenConstraint, @unchecked Sendable
     /// spelling (only pieces holding a marker's final byte can), and `<|end|>`.
     private func analysisTokens(_ window: [UInt8]) -> [Int] {
         let rejected = Set(vocabulary.reasoningSensitive.filter { advance(window, vocabulary.pieces[$0]) == nil })
-        if let index = analysisMasks.firstIndex(where: { $0.rejected == rejected }) {
-            let mask = analysisMasks.remove(at: index)
-            analysisMasks.append(mask)
-            return mask.tokens
+        if let index = analysisTokenSets.firstIndex(where: { $0.rejected == rejected }) {
+            let entry = analysisTokenSets.remove(at: index)
+            analysisTokenSets.append(entry)
+            return entry.tokens
         }
         var tokens = rejected.isEmpty ? vocabulary.pieceTokenIDs
             : vocabulary.pieceTokenIDs.filter { !rejected.contains($0) }
         tokens.insert(framing.end, at: tokens.firstIndex { $0 > framing.end } ?? tokens.endIndex)
-        if analysisMasks.count == Self.maximumMaskEntries { analysisMasks.removeFirst() }
-        analysisMasks.append((rejected, tokens))
+        if analysisTokenSets.count == Self.maximumTokenSets { analysisTokenSets.removeFirst() }
+        analysisTokenSets.append((rejected, tokens))
         return tokens
     }
 
-    /// The longest suffix of `window + piece` that still starts a marker, or
-    /// nil when the piece completes one.
+    /// The longest suffix of `window + piece` that still starts a Harmony
+    /// spelling, or nil when the piece completes one.
     private func advance(_ window: [UInt8], _ piece: [UInt8]) -> [UInt8]? {
         var window = window
         for byte in piece {

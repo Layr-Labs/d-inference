@@ -5,7 +5,8 @@ import MLXLMCommon
 import MLXLMServer
 
 /// Selects the enforcement boundary for forced tool choices. Gemma keeps its
-/// token-level grammar; supported native structured formats are prompt-forced and
+/// token-level grammar and GPT-OSS frames its Harmony call in the sampler;
+/// supported native structured formats are prompt-forced. Every forced call is
 /// then rejected fail-closed unless parsing, function selection, and schema
 /// validation all succeed before any call is exposed to the client.
 enum ToolChoiceEnforcementPolicy {

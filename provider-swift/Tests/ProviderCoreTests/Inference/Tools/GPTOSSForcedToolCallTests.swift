@@ -59,11 +59,11 @@ struct HarmonyByteTestTokenizer: MLXLMCommon.Tokenizer {
     var bosToken: String? { nil }
     var eosToken: String? { "<|return|>" }
     var unknownToken: String? { nil }
+    /// A rendered prompt: it ends at the assistant boundary, as Harmony's does.
+    static let prompt = tokens("<|start|>user<|message|>hi<|end|><|start|>assistant")
+
     func applyChatTemplate(messages: [[String: any Sendable]], tools: [[String: any Sendable]]?,
-        additionalContext: [String: any Sendable]?) throws -> [Int] {
-        Self.tokens("<|start|>system<|message|>Reasoning: \(additionalContext?["reasoning_effort"] ?? "medium")"
-            + "<|end|><|start|>user<|message|>hi<|end|><|start|>assistant")
-    }
+        additionalContext: [String: any Sendable]?) throws -> [Int] { Self.prompt }
 }
 
 enum GPTOSSForcedFixture {
@@ -328,7 +328,6 @@ struct GPTOSSForcedToolCallTests {
     @Test("auto and none are unchanged: same messages and tools, no constraint, no gate")
     func autoAndNoneAreUnchanged() throws {
         let handle = TokenizerHandle(T())
-        let prompt = T.tokens("<|start|>user<|message|>hi<|end|><|start|>assistant")
         for choice in [nil, "auto"] as [String?] {
             let request = try F.request(choice: choice)
             let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "gpt_oss")
@@ -337,14 +336,14 @@ struct GPTOSSForcedToolCallTests {
             #expect(prepared.tools == request.tools)
             #expect(try ToolConstraintFactory.make(prepared: prepared, request: request, tokenizer: handle,
                 modelContext: .init(modelId: "gpt-oss-20b", modelType: "gpt_oss"), defaultMaxTokens: 256,
-                stopTokenIDs: T.stops, nativePromptTokens: prompt) == nil)
+                stopTokenIDs: T.stops, nativePromptTokens: T.prompt) == nil)
         }
         let none = try F.request(choice: "none")
         let preparedNone = try ToolChoicePromptPolicy.prepare(none, modelType: "gpt_oss")
         #expect(preparedNone.mode == .none && preparedNone.tools == nil)
         #expect(try ToolConstraintFactory.make(prepared: preparedNone, request: none, tokenizer: handle,
             modelContext: .init(modelId: "gpt-oss-20b", modelType: "gpt_oss"), defaultMaxTokens: 256,
-            stopTokenIDs: T.stops, nativePromptTokens: prompt) == nil)
+            stopTokenIDs: T.stops, nativePromptTokens: T.prompt) == nil)
         // Auto text and calls route exactly as before: visible text is content.
         let request = try F.request(choice: "auto")
         let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "gpt_oss")
@@ -359,13 +358,12 @@ struct GPTOSSForcedToolCallTests {
     @Test("the factory builds the constraint at the assistant boundary for forced choice")
     func factoryBuildsTheConstraint() throws {
         let handle = TokenizerHandle(T())
-        let prompt = T.tokens("<|start|>user<|message|>hi<|end|><|start|>assistant")
         for (choice, mode) in [("required", CBv2TokenConstraintMode.required), (F.namedWeather, .named)] as [(Any, CBv2TokenConstraintMode)] {
             let request = try F.request(choice: choice, maxTokens: 300)
             let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "gpt_oss")
             let constraint = try #require(try ToolConstraintFactory.make(prepared: prepared, request: request,
                 tokenizer: handle, modelContext: .init(modelId: "gpt-oss-20b", modelType: "gpt_oss"),
-                defaultMaxTokens: 1_000, stopTokenIDs: T.stops, nativePromptTokens: prompt)
+                defaultMaxTokens: 1_000, stopTokenIDs: T.stops, nativePromptTokens: T.prompt)
                 as? GPTOSSForcedToolConstraint)
             #expect(constraint.mode == mode)
             #expect(constraint.maxTokens == 300)

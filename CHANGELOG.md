@@ -8,9 +8,41 @@ or console deployment, feature activation, model promotion or hardware
 qualification. Sections marked historical retain the original candidate's
 qualification, opt-in and deployment limits rather than claiming activation.
 
-## v0.10.12 — candidate (unpublished)
+## v0.10.13 — candidate (unpublished)
 
-Prepared on 2026-11-12; tagging and publication are separate steps.
+Prepared on 2026-11-13; tagging and publication are separate steps.
+
+### Upgrade and rollout notes
+
+**Highlights**
+
+Plain-language summary of provider 0.10.13. The full technical changelog, the pull requests and the build's
+verification details are on this page too.
+
+- Gemma 4 no longer gets stuck repeating a thought: when its reasoning starts to loop, it stops thinking and answers.
+- When you set up a two-Mac pair, the second Mac no longer says "Stopped" while the first Mac downloads the model.
+
+- **A Gemma 4 thought that repeats itself verbatim now ends in an answer:** the loop guard closes the thought and the model answers in the same response (at most 8,192 tokens, within the request's budget), instead of ending as `length` with no answer. A loop in the answer still ends as `length`. Gemma 4 only; never with logprobs or on a pair; `DARKBLOOM_LOOP_EXIT_THINKING=0` turns it off (#2040).
+- **Setting up a pair no longer says "Stopped" while the leading Mac downloads:** the joining Mac ends its screen only on a stop someone asked for, and such a stop now ends the leading Mac's start at once, also during the download or the load (#2042).
+- **Rollout:** a patch release over 0.10.12 with only the fixes below; nothing else from `dev` rides. Pairs: both Macs must run the same version, and a pair on 0.10.12 updates itself. `darkbloom update --rollback` puts back 0.10.12.
+- The registration keeps 0.10.12's fields and cluster runtime facts; `libs/mlx` (72dffa2d), `libs/mlx-swift` (b1c94d29) and the Xcode 27.2 toolchain are unchanged, so `mlx.metallib` is unchanged.
+- The 2 entries below are the pending fragments rendered verbatim, except where the release notes reword one; CI-only entries change no provider behaviour.
+
+### A pair being set up is no longer called stopped while the leading Mac downloads
+
+- During `darkbloom cluster` setup, the Mac that joined ended its screen about 20 s into the leading Mac's download (or a long copy) of the chosen model with "Stopped (by `darkbloom cluster stop` on one of the Macs): the pair isn't starting any more", though nobody had stopped anything and the leading Mac's start went on (0.10.9 to 0.10.12). It took the leading Mac's status, which reads "Stopped" until both Macs' parts start, for a stop. The leading Mac now counts each stop someone asks for (`darkbloom cluster stop` on either Mac, and `darkbloom stop` or `darkbloom restart` once the pair runs) and its status carries the count; the Mac that joined ends only on a stop asked since the start began, and then at once instead of 20 s later. A leading Mac on an older build sends no count, so the Mac that joined follows its start to the end.
+- On the leading Mac, such a stop now ends the start at once too: during the model's download or copy (what arrived stays, and the next start goes on from there; before, both Macs were started once it finished), while both Macs load the model (before, a ✗ with Retry after 15 minutes), and at the test (before, "✓ Serving" or "the test failed"). The registration no longer starts again a pair stopped during the test. The pair's own stops (the registration's restart, the cluster service's restart for a changed approval) no longer end the leading Mac's wait for the coordinator with that line.
+
+### A Gemma 4 thought that repeats itself verbatim now ends in an answer
+
+- When the loop guard stops a verbatim loop inside Gemma 4's thought, the request no longer ends as `length` with no answer. The provider ends the thought (`<channel|>`), and the model writes its answer in the same response. The client sees the thought close and the answer start. The usage counts every token produced, as one completion. A loop in the answer still ends as `length`, as in 0.10.12.
+- The answer gets what is left of the request's output budget, at most 8,192 tokens. If it cannot start (under 256 tokens left, the stopped row not released within 5 s, a full Mac, a cancel), the request ends as `length`, as before; if it fails after its first token, the answer ends there as `length`.
+- Gemma 4 only (`gemma4`, `gemma4_text`). Never with logprobs or on a cluster pair. `DARKBLOOM_LOOP_EXIT_THINKING=0` turns it off.
+- `DARKBLOOM_LOOP_EXIT_THINKING` and 0.10.12's `DARKBLOOM_LOOP_GUARD` now reach a provider started by `darkbloom start` (launchd). Before, both worked only in the foreground or with `--local`.
+
+## v0.10.12
+
+Published 2026-11-12 ([release](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.12)).
 
 ### Upgrade and rollout notes
 

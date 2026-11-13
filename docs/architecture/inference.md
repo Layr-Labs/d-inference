@@ -450,7 +450,27 @@ over the cable and ends with the same ✓/✗ block, bounded like the leader's s
   rows. Plain output prints each whole line.
 - **How the wait ends.** A refusal ends the wait at once with the leader's ✗ (`followRefused`; different builds:
   `differentBuildsLines`). Running out of time ends it with a ✗ and next steps (`notStartedReason`,
-  `notStartedLines`).
+  `notStartedLines`). A stop someone asked for ends it at once with the leading Mac's line (`ClusterOnboardingStopped`):
+  `darkbloom cluster stop` on either Mac, and `darkbloom stop` or `restart` once the pair runs (before that, `darkbloom
+  stop` stops only what runs on its own Mac). The leading Mac runs each such stop (`OnboardingLive.stop`) and counts it
+  in its setup record, in the same write as the stopped intent (`ClusterSetupRecord.stopsAsked`,
+  `OnboardingLive.recordStop`); the start's own stops (a model change, the registration's restart) and the cluster
+  service's don't count. Its status reply carries the count (`ClusterControlReply.stopsAsked`, 0 before the first; nil
+  from an older build, which an older Mac ignores). The start begins at its first step on the leading Mac, the model's
+  transfer or the start itself (`ClusterOnboardingLeaderStep.startBegun`); that step carries the count read then
+  (`ClusterOnboardingLeaderStep.stopsBefore`), so both Macs compare with the same number. The Mac that joins ends once
+  it grew (`ClusterOnboardingFollowedStop`; a look that read no count tells nothing), and so does the leading Mac: in
+  the model's download or copy (what arrived stays, and the next start goes on from there), in its waits for the
+  parts and for the coordinator (`ClusterOnboardingDriver.endsOnStopAsked`, asked about once a second off the console's
+  thread, `ClusterOnboardingLooker`), at its test, and before both Macs start (`startBothMacs`, also when the same start
+  goes on after the single-Mac or version question). The leading Mac compares the count again under the command lock
+  its start takes (`OnboardingLive.localServe(unlessStoppedSince:)`, `ClusterControlRequest.stopsBefore`), so a stop
+  that took the lock first is never undone, and its registration neither registers nor starts again a pair stopped
+  since its start (`OnboardingLive.localRegister`). Retry after a ✗ is a new start. The status' words never tell
+  a stop: it reads "Stopped" until both parts start, so through a whole download or copy of the model, and again while
+  the registration restarts them. 0.10.9 to 0.10.12 took "Stopped" held 20 s for a stop on the Mac that joins (an
+  external pair's said it 20 s into a download, 2026-11-12), and the saved start turned off for one in the leading
+  Mac's coordinator wait, which the cluster service's own restarts turn off too.
 - **The leader's own Local Network wait** has a bound too (`ClusterOnboardingOperations.localNetworkWaitSeconds`,
   `localNetworkOffLines`).
 
@@ -3216,9 +3236,10 @@ stops such a row early.
   engine's cancelled terminal into a `length` finish with the engine's usage:
   `finish_reason: "length"`, the tokens produced, no error frame, paid like
   any completion. It logs one line (category `engine_v2_loop_guard`: model,
-  `model_type`, period, span, tokens) and emits an `engine_v2_loop_guard`
-  engine-health event with the same fields. To the coordinator it is a
-  `length` finish below the request's bound.
+  `model_type`, period, span, tokens, and whether the stop ended a thought)
+  and emits an `engine_v2_loop_guard` engine-health event with the same fields
+  (`ends_thought`). To the coordinator it is a `length` finish below the
+  request's bound.
 - **Never on:** the first 4,096 tokens; a request with a token constraint, a
   forced tool call or a JSON `response_format`; the rest of a row once its text
   shows a tool-call frame (`<tool_call>`, `<|tool_call>`, `<function=`,
@@ -3231,6 +3252,38 @@ stops such a row early.
   (Super, text only), `glm5_next` and `mimo_v2`. `DARKBLOOM_LOOP_GUARD=0`
   (or `off`) turns it off; a comma-separated list of `model_type`s replaces
   the default list.
+- **A loop inside a Gemma 4 thought ends the thought, not the answer**
+  (`GenerationLoopExitThinkingPolicy`, `LoopExitThinkingContinuation`). For
+  `gemma4` and `gemma4_text`, the guard also follows the thought channel
+  (`<|channel>` … `<channel|>`; the prompt's tail seeds the state) and records
+  every token the row produces, the in-flight ones after its stop included. A
+  detection inside the thought stops the row as above; the scheduler
+  (`prepareCompletion`) then holds the row's `length` terminal, waits until the
+  row has released its serving slot (`EngineV2Bridge.waitForRowRelease`, as
+  model calibration waits: its pump's retirement cleanup and its whole-Mac
+  service charge; a row with a retirement handle, the coordinator's atomic
+  admission path, ends its stream before that; at most 5 s), and submits one
+  continuation on the same bridge: the prompt, every generated
+  token and `<channel|>`, with `max_tokens` = the output the bridge resolved
+  for the row minus the tokens produced minus 1, at most 8,192; the same
+  sampling, stop strings and cache scope; and a loop guard without the exit, so
+  a loop in the answer still ends as `length`. The client's stream carries the
+  thought, a `<channel|>` chunk and the answer, then one terminal: the original
+  prompt, completion = the row's tokens + 1 + the answer's, the continuation's
+  finish reason. The continuation is an ordinary row, so exact MTP drafting
+  stays on for it and its batch; a cancelled row donates no KV, so the
+  continuation prefills the thought again (its prompt part can hit the prefix
+  cache). When the continuation cannot start (under 256 tokens of budget left,
+  the row closed its thought itself, the row did not release its slot in time,
+  a refused submission, a failure before its first token, a cancel), the held
+  `length` terminal is
+  delivered as before; a failure after its first token ends the answer there,
+  as `length` (only the client's cancel keeps its error). Never with
+  logprobs or on a cluster pair. `DARKBLOOM_LOOP_EXIT_THINKING=0` (or `off`)
+  turns it off; a comma-separated list keeps it to the listed `model_type`s
+  that have a marker. `darkbloom start` passes it, and `DARKBLOOM_LOOP_GUARD`,
+  to the launchd daemon (`LaunchAgent.inferencePassthroughEnvKeys`). One `darkbloom.loop-guard.exit-thinking` line per ended
+  thought gives the outcome.
 
 ### Collected and streaming reasoning state
 

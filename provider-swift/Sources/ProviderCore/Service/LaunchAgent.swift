@@ -418,6 +418,9 @@ public enum LaunchAgent: Sendable {
     /// on by default; exact `0` is each rollback.
     /// `DARKBLOOM_GEMMA4_NAX_ROW_MAP`: eligible Gemma expert prefill uses the
     /// row-mapped NAX route by default; exact `0` restores its original graph.
+    /// `DARKBLOOM_LOOP_GUARD` / `DARKBLOOM_LOOP_EXIT_THINKING`: the loop guard
+    /// and its exit from a repeating Gemma 4 thought are on by default; `0`
+    /// turns each off, a list of `model_type`s replaces its default list.
     static let inferencePassthroughEnvKeys = [
         EngineV2Factory.maxPartialPrefillsKey,
         EngineV2Factory.prefillChunkKey,
@@ -448,6 +451,8 @@ public enum LaunchAgent: Sendable {
         ToolStreamPreparation.streamToolCallsEnvironmentKey,
         ReasoningPromptProbe.plainTailContentSeedEnvironmentKey,
         "DARKBLOOM_GEMMA4_NAX_ROW_MAP",
+        GenerationLoopGuardPolicy.environmentKey,
+        GenerationLoopExitThinkingPolicy.environmentKey,
     ] + MiMoV26DecodeDefaults.environmentKeys + MiMoV26DecodeDefaults.verifyEnvironmentKeys
 
     static let passthroughEnvKeys = [

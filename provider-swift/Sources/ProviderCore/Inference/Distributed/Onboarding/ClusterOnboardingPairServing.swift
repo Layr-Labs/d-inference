@@ -393,11 +393,52 @@ public struct ClusterOnboardingPairWait: Sendable {
 }
 
 /// A stop from anywhere (`darkbloom cluster stop` in another window, or on the other Mac) while a screen waits for the
-/// pair: the wait ends at once with this, on both Macs.
+/// pair: the wait ends at once with this, on both Macs. The leading Mac counts each stop a person asks for
+/// (`ClusterSetupRecord.stopsAsked`) and its status carries the count (`ClusterOnboardingLeaderStatus.stopsAsked`), so a
+/// screen knows such a stop from the start's own: a status that reads "Stopped" tells nothing of who stopped.
 public enum ClusterOnboardingStopped {
     public static let line = "Stopped (by `darkbloom cluster stop` on one of the Macs): the pair isn't starting any more. "
         + "Run `darkbloom cluster` on the leading Mac to start it again."
     /// What a screen that leaves the coordinator's wait says: what keeps going, and how to check.
     public static let leftPairWaitLine = "Left the wait: both Macs stay registered and the pair keeps trying to be paired by "
         + "the coordinator by itself. Check with `darkbloom status`."
+    /// Under `line` on the leading Mac when the stop ended its download or copy of the model.
+    public static let transferKeptLine = "What was downloaded or copied so far stays: the next start goes on from there."
+
+    /// A stop a person asked for since the count was `before`. A count not known then or now (a status that couldn't be
+    /// read, a leader on an older build, which counts none) never tells one.
+    public static func asked(since before: Int?, now: Int?) -> Bool {
+        guard let before, let now else { return false }
+        return now > before
+    }
+}
+
+/// The stop the Mac that joined ends its follow on (`ClusterOnboardingDriver.followStart`): one a person asked for since
+/// the start began. The leading Mac's status reads "Stopped" until both parts start, so through a whole download or copy
+/// of the model, and again while the start stops both parts to register them: none of that is a stop (an external pair
+/// on 0.10.12, 2026-11-12: the joining Mac said "Stopped (by `darkbloom cluster stop` …)" 20 s into a download nobody
+/// stopped). Each look before the start began takes the count as the one to compare with, so a stop then (the leading
+/// Mac still at its model list, whose start goes on) is no stop of this start.
+public struct ClusterOnboardingFollowedStop: Sendable {
+    private var before: Int?
+    /// The count the leading Mac read when its start began, as its step carries it (`ClusterOnboardingLeaderStep.stopsBefore`).
+    private var startStops: Int?
+
+    public init() {}
+
+    /// One look at the leading Mac's status: the stops it counts (nil: not read, or a leader on an older build), whether
+    /// the start had begun by then, and the count its start began with when its step says it. True when a stop asked
+    /// since the start began ends it: compared with the leading Mac's own count where it says it, so both Macs count the
+    /// same stops, else with this Mac's last look before the start began. A count lower than before (a record made
+    /// again) is the one to compare with from then on.
+    public mutating func look(_ stopsAsked: Int?, begun: Bool, startStops: Int? = nil) -> Bool {
+        if let startStops { self.startStops = startStops }
+        guard let stopsAsked else { return false }
+        if begun, let startStops = self.startStops { return ClusterOnboardingStopped.asked(since: startStops, now: stopsAsked) }
+        guard begun, let before, stopsAsked >= before else {
+            self.before = stopsAsked
+            return false
+        }
+        return stopsAsked > before
+    }
 }

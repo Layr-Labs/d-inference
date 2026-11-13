@@ -3319,10 +3319,14 @@ mentions, or a call that it drafts, stays reasoning, and the calls after
 included: one mentioned tag opened a frame that swallowed the real call and
 came back as text, and a drafted call was executed. Their `auto` calls still
 stream while generated (`ToolStreamPreparation` keys on `usesNativeTextChannels`,
-which these families are not), and forced calls keep their prompt policy. A
-request without tools, an explicit non-think parser and a prompt whose think
-state the probe cannot read keep the raw-text route. A collected local
-response carries content and reasoning untrimmed, as on the native families.
+which these families are not). Forced calls keep their prompt policy (thinking
+stays off); a stray thought before one is now reasoning instead of a 422. A
+call written in a thought that never closes stays reasoning, as on the native
+families. A request without tools and an explicit non-think parser keep the
+raw-text route; so does a prompt whose think state the probe cannot read,
+unless the request has the local server's streamed content seed. A collected
+local response carries content and reasoning untrimmed, as on the native
+families.
 
 `ReasoningPromptProbe.streamingPrefix` in
 `provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningPromptProbe.swift`

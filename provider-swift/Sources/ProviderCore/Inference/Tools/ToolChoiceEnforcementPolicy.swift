@@ -156,7 +156,8 @@ enum ToolChoiceEnforcementPolicy {
     /// as on the native families: tool syntax that a thought mentions or
     /// drafts stays reasoning, never a call, and cannot swallow the real call.
     static func splitsQwenReasoningBeforeTools(_ context: ChatTemplateFixContext) -> Bool {
-        context.modelType == "qwen3_5" || context.modelType == "qwen3_5_moe"
+        let type = context.modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return type == "qwen3_5" || type == "qwen3_5_moe"
     }
 
     /// Only the qualified Nemotron parser absorbs a close already in content.

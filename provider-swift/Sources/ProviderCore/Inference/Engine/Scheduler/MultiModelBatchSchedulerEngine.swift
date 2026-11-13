@@ -1167,11 +1167,31 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             events = spliced.events
             cancelEvents = spliced.cancel
         }
-        // Qwen 3.5-family tool output takes the native split from the prompt's
-        // own think state (the parser seed above): reasoning is classified
-        // before tool parsing. Without a seed it keeps the raw-text route.
-        let qwenReasoningFirst = toolHandler != nil && ToolChoiceEnforcementPolicy.splitsQwenReasoningBeforeTools(
-            .init(modelId: modelId, modelType: modelType)) ? reasoningPrefix : nil
+        let modelContext = ChatTemplateFixContext(modelId: modelId, modelType: modelType)
+        // The native channel's initial state; nil keeps the raw-text route
+        // (the tool handler first, then the downstream think parser).
+        let nativeReasoningPrefix: String?
+        if modelType == "mimo_v2" {
+            // MiMo ON/unset emits only the assistant header, not an open think
+            // span. Empty initial content state keeps native splitting active
+            // without fabricating prompt/seed bytes. Output permission is the
+            // independently validated Boolean, never this generic probe.
+            nativeReasoningPrefix = ""
+        } else if let channelPrefix = jsonAnswer?.channelPrefix {
+            nativeReasoningPrefix = channelPrefix
+        } else if ToolChoiceEnforcementPolicy.usesNativeTextChannels(modelContext) || withholdsGLMOutput
+            || glmWithholdsReasoning {
+            nativeReasoningPrefix = ReasoningPromptProbe.streamingPrefix(forPromptTail:
+                tokenizer.inner.decode(tokenIds: Array(promptTokens.suffix(ReasoningPromptProbe.tailTokenCount)),
+                                       skipSpecialTokens: false)) ?? "<think></think>"
+        } else if toolHandler != nil, ToolChoiceEnforcementPolicy.splitsQwenReasoningBeforeTools(modelContext) {
+            // The think parser's own seed, the prompt's think state, starts the
+            // split: reasoning is classified before tool parsing. Without a
+            // seed the output keeps the raw-text route.
+            nativeReasoningPrefix = reasoningPrefix
+        } else {
+            nativeReasoningPrefix = nil
+        }
 
         return try await makeDeadlineCheckedEventStream(
             upstream: events,
@@ -1181,27 +1201,15 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             releaseBox: releaseBox,
             usageSignal: requestUsage,
             reasoningPrefix: reasoningPrefix,
-            // MiMo ON/unset emits only the assistant header, not an open think
-            // span. Empty initial content state keeps native splitting active
-            // without fabricating prompt/seed bytes. Output permission is the
-            // independently validated Boolean, never this generic probe.
-            nativeReasoningPrefix: modelType == "mimo_v2" ? "" : (jsonAnswer?.channelPrefix
-                ?? (ToolChoiceEnforcementPolicy.usesNativeTextChannels(
-                ChatTemplateFixContext(modelId: modelId, modelType: modelType)) || withholdsGLMOutput
-                || glmWithholdsReasoning
-                ? (ReasoningPromptProbe.streamingPrefix(forPromptTail:
-                    tokenizer.inner.decode(tokenIds: Array(promptTokens.suffix(ReasoningPromptProbe.tailTokenCount)),
-                                           skipSpecialTokens: false)) ?? "<think></think>") : qwenReasoningFirst)),
+            nativeReasoningPrefix: nativeReasoningPrefix,
             recordsWithheldOutput: withholdsGLMOutput,
-            preserveInnerReasoningSpans: ToolChoiceEnforcementPolicy.preservesInnerReasoningSpans(
-                .init(modelId: modelId, modelType: modelType)),
+            preserveInnerReasoningSpans: ToolChoiceEnforcementPolicy.preservesInnerReasoningSpans(modelContext),
             nativeGemmaChannels: modelType == "diffusion_gemma",
             nativeGemmaReasoningEnabled: modelType != "diffusion_gemma"
                 || DiffusionGemmaReasoningControl.enabled(for: request, controls: templateControls),
             nativeMiMoChannels: modelType == "mimo_v2",
             nativeMiMoThinkingEnabled: nativeMiMoThinkingEnabled,
-            absorbStrayThinkClose: ToolChoiceEnforcementPolicy.absorbsStrayThinkClose(
-                .init(modelId: modelId, modelType: modelType)),
+            absorbStrayThinkClose: ToolChoiceEnforcementPolicy.absorbsStrayThinkClose(modelContext),
             answerStopFilter: answerStopFilter,
             answerFormat: jsonAnswer?.format,
             withholdReasoning: withholdsReasoning

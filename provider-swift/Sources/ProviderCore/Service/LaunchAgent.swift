@@ -423,6 +423,8 @@ public enum LaunchAgent: Sendable {
     /// turns each off, a list of `model_type`s replaces its default list.
     /// `DARKBLOOM_QWEN35_9B_PRESENCE_PENALTY`: Qwen3.5-9B keeps the card's
     /// presence penalty by default; its `0` rollback must reach the job.
+    /// `DARKBLOOM_GLM_TOOL_TEXT_FALLBACK`: unparsed `auto` GLM tool output is
+    /// text by default; exact `0` restores the 500.
     static let inferencePassthroughEnvKeys = [
         EngineV2Factory.maxPartialPrefillsKey,
         EngineV2Factory.prefillChunkKey,
@@ -456,6 +458,7 @@ public enum LaunchAgent: Sendable {
         GenerationLoopGuardPolicy.environmentKey,
         GenerationLoopExitThinkingPolicy.environmentKey,
         EngineV2SamplingDefaults.qwen35NineBPenaltyEnvironmentKey,
+        GLM5ToolSuffix.environmentKey,
     ] + MiMoV26DecodeDefaults.environmentKeys + MiMoV26DecodeDefaults.verifyEnvironmentKeys
 
     static let passthroughEnvKeys = [

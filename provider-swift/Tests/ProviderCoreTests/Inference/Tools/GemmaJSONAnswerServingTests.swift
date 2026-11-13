@@ -96,13 +96,15 @@ struct GemmaJSONAnswerPolicyTests {
 
     @Test func clientSchemaShapesAreRewrittenIntoTheSubsetExactly() throws {
         // Pydantic / OpenAI strict conversion, zod-to-json-schema (named: a root $ref) and one-branch allOf shapes.
+        let nullableEnum =
+            ##"{"type":"object","properties":{"e":{"anyOf":[{"$ref":"#/$defs/E"},{"type":"null"}]}},"$defs":{"E":{"type":"string","enum":["x","y"]}}}"##
         let rewritten = [
             ##"{"type":"object","properties":{"a":{"$ref":"#/$defs/A"}},"$defs":{"A":{"type":"string"}},"required":["a"]}"##,
             #"{"type":"object","properties":{"a":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null}}}"#,
             ##"{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","properties":{}}"##,
             ##"{"$schema":"http://json-schema.org/draft-07/schema#","definitions":{"B":{"type":"integer"}},"type":"object","properties":{"b":{"$ref":"#/definitions/B","description":"n"}}}"##,
             ##"{"type":"object","properties":{"c":{"allOf":[{"$ref":"#/$defs/C"}],"title":"C"}},"$defs":{"C":{"type":"boolean"}}}"##,
-            ##"{"type":"object","properties":{"e":{"anyOf":[{"$ref":"#/$defs/E"},{"type":"null"}]}},"$defs":{"E":{"type":"string","enum":["x","y"]}}}"##,
+            nullableEnum,
             ##"{"$ref":"#/definitions/P","definitions":{"P":{"type":"object","properties":{"p":{"type":"string"}},"required":["p"]}},"$schema":"http://json-schema.org/draft-07/schema#"}"##,
         ]
         for schema in rewritten {
@@ -111,7 +113,7 @@ struct GemmaJSONAnswerPolicyTests {
             #expect(constraint.format.schema != nil, "enforced as written: \(schema)")
         }
         // The nullable enum admits its values and null, nothing else.
-        let e = try F.constraint(F.schemaFormat(rewritten[5]))
+        let e = try F.constraint(F.schemaFormat(nullableEnum))
         for value in [#""x""#, #""y""#, "null"] {
             #expect(F.walk(F.ids(#"{"e": "# + value + "}"), e) != nil, "\(value)")
         }

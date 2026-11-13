@@ -14,8 +14,9 @@ import MLXLMCommon
 /// 2020-12 are dropped. A reference or composition may carry annotations
 /// beside it, nothing else. Nil when anything else would be needed (a
 /// recursive, remote or escaped reference, an older or unknown `$schema`, a
-/// wider `anyOf`, more than `ToolConstraintSchemaCompiler.maxDepth` levels or
-/// `maximumUnwraps` references in a row), so the caller keeps its fallback.
+/// wider `anyOf`, more than `ToolConstraintSchemaCompiler.maxDepth` levels,
+/// `maximumUnwraps` references or compositions in a row or `maximumNodes`
+/// visits), so the caller keeps its fallback.
 enum ResponseSchemaRewrite {
     /// Bounds the inlined size: a definition used from many places is copied
     /// each time.
@@ -86,10 +87,11 @@ enum ResponseSchemaRewrite {
             }
             if let union = object["anyOf"] {
                 guard case .array(let branches) = union, branches.count == 2, onlyAnnotations(object, besides: "anyOf"),
-                      let nullIndex = branches.firstIndex(where: isNull), !isNull(branches[1 - nullIndex]),
-                      let other = rewrite(branches[1 - nullIndex], depth: depth, unwraps: unwraps + 1)
+                      let nullIndex = branches.firstIndex(where: isNull) else { return nil }
+                let other = branches[1 - nullIndex]
+                guard !isNull(other), let rewritten = rewrite(other, depth: depth, unwraps: unwraps + 1)
                 else { return nil }
-                return nullable(other)
+                return nullable(rewritten)
             }
             if case .object(let properties)? = object["properties"] {
                 var rewritten: [String: MLXLMCommon.JSONValue] = [:]

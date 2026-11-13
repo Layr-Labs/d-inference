@@ -86,20 +86,18 @@ enum GemmaJSONAnswerPolicy {
     /// (`heldToObject`) for a `json_schema` outside it whose root is an object.
     static func answerFormat(_ format: OpenAIResponseFormat) -> (format: JSONAnswerFormat, heldToObject: Bool)? {
         let profile = JSONAnswerProfile.gemma4
-        if let exact = try? JSONAnswerFormat(format, forbidding: profile.contentMarkers, family: profile.family) {
-            return (exact, false)
+        func compiled(_ candidate: OpenAIResponseFormat) -> JSONAnswerFormat? {
+            try? JSONAnswerFormat(candidate, forbidding: profile.contentMarkers, family: profile.family)
         }
-        if format.type == .jsonSchema, var payload = format.jsonSchema,
-           let rewritten = ResponseSchemaRewrite.subset(payload.schema) {
+        if let exact = compiled(format) { return (exact, false) }
+        guard format.type == .jsonSchema, var payload = format.jsonSchema else { return nil }
+        let schema = payload.schema
+        if let rewritten = ResponseSchemaRewrite.subset(schema) {
             payload.schema = rewritten
-            if let exact = try? JSONAnswerFormat(.jsonSchema(payload), forbidding: profile.contentMarkers,
-                                                 family: profile.family) {
-                return (exact, false)
-            }
+            if let exact = compiled(.jsonSchema(payload)) { return (exact, false) }
         }
-        guard format.type == .jsonSchema, let schema = format.jsonSchema?.schema, rootIsObject(schema),
-              let object = try? JSONAnswerFormat(.jsonObject(), forbidding: profile.contentMarkers,
-                                                 family: profile.family) else { return nil }
+        // The fallback reads the request's own root, not the rewrite's.
+        guard rootIsObject(schema), let object = compiled(.jsonObject()) else { return nil }
         return (object, true)
     }
 

@@ -16,16 +16,18 @@ import MLXLMCommon
 /// (a recursive, remote or escaped reference, an older or unknown `$schema`, a
 /// wider `anyOf`, more than `ToolConstraintSchemaCompiler.maxDepth` levels,
 /// `maximumUnwraps` references or compositions in a row, more than
-/// `maximumWork`, a definition name over 256 bytes, or a node the compiler
-/// could never take whose copies it would read at length: a key over 20
-/// bytes, a `type` name over 7, more than 128 `required` names or one over
-/// 64), so the caller keeps its fallback. It rewrites `properties` and `items`
-/// whatever the node's type, so those checks and references hold there too.
+/// `maximumWork`, a definition name over 256 bytes, or what the compiler
+/// refuses wherever it reads it, refused here at every node so that no copy
+/// is read at length: a key over 20 bytes, a `type` name over 7, more than
+/// 128 `required` names or one over 64), so the caller keeps its fallback. It
+/// rewrites `properties` and `items` whatever the node's type, so those
+/// checks and references hold there too.
 enum ResponseSchemaRewrite {
-    /// Bounds the walk's work: a node it visits costs one plus its keys, a
-    /// reference or a property name one per 64 bytes it hashes, and an enum
-    /// made nullable its values. A definition used from many places is
-    /// copied, and paid for, each time.
+    /// Bounds the walk's work: a node it visits costs one plus its keys and
+    /// the members of its `type` and `required` arrays, a reference or a
+    /// property name one per 64 bytes it hashes, and an enum made nullable
+    /// its values. A definition used from many places is copied, and paid
+    /// for, each time.
     static let maximumWork = 16_384
     /// Bounds the references and compositions one position unwraps in a row.
     static let maximumUnwraps = 8
@@ -139,10 +141,10 @@ enum ResponseSchemaRewrite {
         }
 
         /// The compiler reads `type` and `required` on every copy of a node,
-        /// so each is bounded as the compiler could ever take it: a type name
-        /// (lowercased; `boolean` and `integer`, 7 bytes, are the longest),
-        /// and at most 128 required property names of at most 64 bytes.
-        /// Arrays are paid per member.
+        /// so each is bounded to what the compiler takes where it reads it: a
+        /// type name (lowercased; `boolean` and `integer`, 7 bytes, are the
+        /// longest), and at most 128 required property names of at most 64
+        /// bytes. Arrays are paid per member.
         private mutating func readsBounded(_ object: [String: MLXLMCommon.JSONValue]) -> Bool {
             func names(_ value: MLXLMCommon.JSONValue, longest: Int) -> Bool {
                 guard case .string(let name) = value else { return false }

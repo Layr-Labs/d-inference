@@ -3410,9 +3410,10 @@ byte-fallback tokens: a byte-fallback run is decoded as a whole, so what one byt
 becomes depends on its neighbours (a run that is not UTF-8 reads as U+FFFD),
 while every ASCII character JSON needs has a piece of its own. Non-ASCII bytes
 occur only inside strings, where U+FFFD is still a character.
-Before constraining, it checks `<|channel>` 100, `<channel|>` 101, `<turn|>` 106
-and `<eos>` 1 by id, spelling, encoding and decoding, that the tokenizer has
-exactly 262,144 ids, and that `<turn|>` and `<eos>` are engine stop tokens. The
+Before constraining, `GemmaAnswerPieces.vocabulary` checks `<|channel>` 100,
+`<channel|>` 101, `<turn|>` 106 and `<eos>` 1 by id, spelling, encoding and
+decoding, that the tokenizer has exactly 262,144 ids, and that `<turn|>` and
+`<eos>` are engine stop tokens. The
 vocabulary is built on the first such request per loaded tokenizer and stop set
 and cached (two entries).
 
@@ -3421,16 +3422,18 @@ and cached (two entries).
 thought (`<|turn>model\n<|channel>thought\n<channel|>`), so output starts in the
 answer. Thinking on ends at `<|turn>model\n`, so a thought may open with
 `<|channel>`, or the answer may start at once (whitespace before either stays
-content, so an answer can read `"\n{...}"`, still one JSON value). The thought is free text: no EOS
-or other added token, and the first `<channel|>`, as its token or spelled from
-ordinary pieces (the stream's Gemma parser reads text), ends it. The answer is
-one JSON value of the request's grammar (`JSONAnswerFormat`, `FlintJSONGrammar`);
+content, so an answer can read `"\n{...}"`, still one JSON value). The thought
+is free text: no EOS or added token other than the two thought markers, and the
+first `<channel|>`, as its token or spelled from ordinary pieces (the stream's
+Gemma parser reads text), ends it. The answer is one JSON value of the request's
+grammar (`JSONAnswerFormat`, `FlintJSONGrammar`);
 no Gemma control spelling can complete in it, strings included. `<turn|>` or
 `<eos>` is allowed once the value is complete, and a value that delimits itself
 (an object, array, string or literal) is followed by the terminator only, never
 by text a client would have to strip. JSON whitespace outside strings runs at
-most 64 bytes, so a model that keeps reaching for a refused spelling (a code
-fence) cannot fill its budget with blank lines. States that differ only in a run
+most 64 bytes (`GemmaJSONAnswerBoundary.maximumWhitespaceRun`), so a model that
+keeps reaching for a refused spelling (a code fence) cannot fill its budget with
+blank lines. States that differ only in a run
 no piece can push past that cap share one mask key (`maskEquivalent`), so
 indentation does not multiply mask builds; a request keeps at most two broad
 allowed sets (about 2 MB each) and the sampler its per-key device masks.
@@ -3438,10 +3441,12 @@ allowed sets (about 2 MB each) and the sampler its per-key device masks.
 **Best effort.** Unlike constrained Qwen answers, nothing is validated after
 generation (`MultiModelBatchSchedulerEngine` checks only `JSONAnswerConstraint`
 answers): a budget that ends first stays `length` with the partial value, as
-before. A request whose interned states pass 16,384 continues unconstrained
-instead of failing. A `json_schema` outside the shared subset (`$ref`, `anyOf`,
-`pattern`, `$schema`, …) whose root is `"type": "object"` is held to a JSON
-object; any other unsupported schema, an unpinned template or tokenizer, another
+before. A request whose interned states reach the cap
+(`GemmaJSONAnswerConstraint.defaultMaximumStates`, 16,384) continues
+unconstrained instead of failing. A `json_schema` outside the shared subset
+(`$ref`, `anyOf`, `pattern`, `$schema`, …) whose root is `"type": "object"` is
+held to a JSON object; any other unsupported schema, an unpinned template or
+tokenizer, another
 prompt end or a nonpositive budget keeps prompt-only steering with one
 content-free line (category `json-answer`). An engine that runs no token
 constraint (a cluster pair or a native-tracked engine) would refuse one, so

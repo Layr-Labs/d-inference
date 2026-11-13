@@ -118,9 +118,9 @@ struct GemmaPieceTestTokenizer: MLXLMCommon.Tokenizer {
 enum GemmaAnswerFixture {
     static let stops: Set<Int> = [1, 50, 106]
     static let eos = 1, turnEnd = 106, toolResponse = 50, thoughtOpen = 100, thoughtClose = 101
+    static let newline = 107, blankLine = 108, space = 1032
     static let tokenizer = GemmaPieceTestTokenizer()
-    private static let shared = try? GemmaAnswerVocabulary(
-        GemmaAnswerPieces.vocabulary(tokenizer: tokenizer, stopTokenIDs: stops))
+    private static let shared = try? GemmaAnswerVocabulary(vocabulary())
 
     static let schema = #"""
     {"type":"object","properties":{
@@ -169,12 +169,14 @@ enum GemmaAnswerFixture {
 
     static func pieces(_ pieces: String...) -> [Int] { pieces.map(GemmaPieceTestTokenizer.id) }
 
+    static func id(_ piece: String) -> Int { GemmaPieceTestTokenizer.id(piece) }
+
     /// Walks `tokens`, checking that the mask admits each one before it is
     /// taken: the transition and the mask must agree.
     static func walk(_ tokens: [Int], _ constraint: GemmaJSONAnswerConstraint, from initial: Int = 0) -> Int? {
         var state = initial
         for token in tokens {
-            guard constraint.allowedTokenIDs(state: state, remainingTokens: 1_000).contains(token),
+            guard allows(constraint, state, token),
                   let next = constraint.nextState(state: state, tokenID: token) else { return nil }
             state = next
         }
@@ -214,7 +216,7 @@ struct GemmaAnswerPiecesTests {
         for id in [0, 1, 2, 48, 50, 52, 98, 105, 106, 6, 99, 5_000, 262_143] { #expect(!usable.contains(id), "\(id)") }
         for byte in 0..<0x80 { #expect(!usable.contains(GemmaPieceTestTokenizer.byteFallback(UInt8(byte)))) }
         for byte in 0x80...0xFF { #expect(usable.contains(GemmaPieceTestTokenizer.byteFallback(UInt8(byte)))) }
-        #expect(vocabulary.pieces[1032] == [0x20] && vocabulary.pieces[107] == [0x0A])
+        #expect(vocabulary.pieces[F.space] == [0x20] && vocabulary.pieces[F.newline] == [0x0A])
         #expect(vocabulary.answerEOS == [1, 106] && vocabulary.fallbackTokenID == 106)
     }
 
@@ -288,9 +290,9 @@ struct GemmaJSONAnswerConstraintTests {
         for admitted in F.pieces("{", "▁{", "{\"", "\n", "\n\n", "▁▁▁▁") { #expect(F.allows(constraint, 0, admitted)) }
         // A model reaching for a fence cannot fill its budget with blank lines.
         var state = 0
-        for _ in 0..<32 { state = try #require(constraint.nextState(state: state, tokenID: 108)) }
-        #expect(!F.allows(constraint, state, 107) && !F.allows(constraint, state, 1032))
-        #expect(F.allows(constraint, state, GemmaPieceTestTokenizer.id("{")))
+        for _ in 0..<32 { state = try #require(constraint.nextState(state: state, tokenID: F.blankLine)) }
+        #expect(!F.allows(constraint, state, F.newline) && !F.allows(constraint, state, F.space))
+        #expect(F.allows(constraint, state, F.id("{")))
         // Indentation inside the value is a fresh run after every token.
         let indented = try #require(F.walk(F.ids("{") + F.pieces("\n▁▁") + F.ids(#""a": 1"#)
             + F.pieces("\n▁▁") + F.ids("}"), try F.constraint()))
@@ -299,14 +301,14 @@ struct GemmaJSONAnswerConstraintTests {
 
     @Test func aThoughtStaysFreeThenTheAnswerIsJSON() throws {
         let constraint = try F.constraint(phase: .opening)
-        #expect(F.allows(constraint, 0, F.thoughtOpen) && F.allows(constraint, 0, GemmaPieceTestTokenizer.id("{")))
+        #expect(F.allows(constraint, 0, F.thoughtOpen) && F.allows(constraint, 0, F.id("{")))
         #expect(!F.allows(constraint, 0, F.thoughtClose) && !F.allows(constraint, 0, F.turnEnd))
         let thought = try #require(F.walk([F.thoughtOpen] + F.pieces("thought", "\n") + F.ids(#"say {"x": } "#)
             + F.pieces("```json", "<b>"), constraint))
         // The thought never ends the turn and may not open a tool call.
         for refused in [F.turnEnd, F.eos, F.toolResponse, 48, 105] { #expect(!F.allows(constraint, thought, refused)) }
         let answer = try #require(F.walk([F.thoughtClose], constraint, from: thought))
-        #expect(!F.allows(constraint, answer, GemmaPieceTestTokenizer.id("s")))
+        #expect(!F.allows(constraint, answer, F.id("s")))
         let end = try #require(F.walk(F.ids(#"{"x": 1}"#), constraint, from: answer))
         #expect(constraint.nextState(state: end, tokenID: F.turnEnd) == -1)
 
@@ -320,7 +322,7 @@ struct GemmaJSONAnswerConstraintTests {
         let constraint = try F.constraint(phase: .opening)
         let thought = try #require(F.walk([F.thoughtOpen] + F.ids("hm "), constraint))
         let spelled = try #require(F.walk(F.ids("<") + F.pieces("channel") + F.ids("|>"), constraint, from: thought))
-        #expect(!F.allows(constraint, spelled, GemmaPieceTestTokenizer.id("s")))
+        #expect(!F.allows(constraint, spelled, F.id("s")))
         #expect(try #require(F.walk(F.ids(#"{}"#), constraint, from: spelled)) > 0)
         // One piece may close the thought and open the value.
         let fused = try #require(F.walk(F.ids("<") + F.pieces("channel", "|>{") + F.ids("}"), constraint, from: thought))
@@ -334,7 +336,7 @@ struct GemmaJSONAnswerConstraintTests {
         let string = try #require(F.walk(F.ids(#"{"k": "a"#), constraint))
         for marker in [F.thoughtOpen, F.thoughtClose] { #expect(!F.allows(constraint, string, marker)) }
         let almost = try #require(F.walk(F.ids("<") + F.pieces("turn") + F.ids("|"), constraint, from: string))
-        #expect(!F.allows(constraint, almost, GemmaPieceTestTokenizer.id(">")))
+        #expect(!F.allows(constraint, almost, F.id(">")))
         #expect(try #require(F.walk(F.ids(#" >"}"#), constraint, from: almost)) > 0)
         #expect(F.walk(F.ids("<b>"), constraint, from: string) != nil, "other markup is text")
     }
@@ -354,7 +356,7 @@ struct GemmaJSONAnswerConstraintTests {
         for (prefix, next) in refusals {
             let c = try F.constraint(format)
             let state = try #require(F.walk(F.ids(prefix), c), "\(prefix)")
-            #expect(!F.allows(c, state, GemmaPieceTestTokenizer.id(next)), "\(prefix) then \(next)")
+            #expect(!F.allows(c, state, F.id(next)), "\(prefix) then \(next)")
         }
         // A key appears at most once.
         let c = try F.constraint(format)
@@ -365,7 +367,7 @@ struct GemmaJSONAnswerConstraintTests {
     @Test func rootScalarsEndWhenComplete() throws {
         let integer = try F.constraint(F.schemaFormat(#"{"type":"integer"}"#))
         let digits = try #require(F.walk(F.ids("12"), integer))
-        #expect(F.allows(integer, digits, GemmaPieceTestTokenizer.id("3")) && F.allows(integer, digits, F.turnEnd))
+        #expect(F.allows(integer, digits, F.id("3")) && F.allows(integer, digits, F.turnEnd))
         let string = try F.constraint(F.schemaFormat(#"{"type":"string"}"#))
         let closed = try #require(F.walk(F.ids(#""ok""#), string))
         #expect(string.allowedTokenIDs(state: closed, remainingTokens: 5) == [F.eos, F.turnEnd])
@@ -407,16 +409,16 @@ struct GemmaJSONAnswerConstraintTests {
     @Test func whitespaceRunsShareAMaskUntilTheCapIsInReach() throws {
         let constraint = try F.constraint()
         let open = try #require(F.walk(F.ids("{"), constraint))
-        let one = try #require(F.walk([107], constraint, from: open))
-        let two = try #require(F.walk([107], constraint, from: one))
+        let one = try #require(F.walk([F.newline], constraint, from: open))
+        let two = try #require(F.walk([F.newline], constraint, from: one))
         #expect(constraint.maskCacheKey(state: one, remainingTokens: 1) == constraint.maskCacheKey(state: two, remainingTokens: 1))
         #expect(constraint.maskCacheKey(state: open, remainingTokens: 1) == constraint.maskCacheKey(state: one, remainingTokens: 1))
         #expect(constraint.allowedTokenIDs(state: one, remainingTokens: 1) == constraint.allowedTokenIDs(state: two, remainingTokens: 1))
         // 62 bytes in, a 4-space piece no longer fits: that state has its own mask.
         var state = open
-        for _ in 0..<31 { state = try #require(constraint.nextState(state: state, tokenID: 108)) }
+        for _ in 0..<31 { state = try #require(constraint.nextState(state: state, tokenID: F.blankLine)) }
         #expect(constraint.maskCacheKey(state: state, remainingTokens: 1) != constraint.maskCacheKey(state: open, remainingTokens: 1))
-        #expect(!F.allows(constraint, state, GemmaPieceTestTokenizer.id("▁▁▁▁")) && F.allows(constraint, state, 1032))
+        #expect(!F.allows(constraint, state, F.id("▁▁▁▁")) && F.allows(constraint, state, F.space))
     }
 
     @Test func pastTheStateCapTheAnswerContinuesUnconstrained() throws {
@@ -427,7 +429,7 @@ struct GemmaJSONAnswerConstraintTests {
         let allowed = constraint.allowedTokenIDs(state: free, remainingTokens: 5)
         #expect(allowed.count == 262_144)
         // Unconstrained means today's behavior: any token, any stop, never an impossible state.
-        #expect(constraint.nextState(state: free, tokenID: GemmaPieceTestTokenizer.id("`")) == free)
+        #expect(constraint.nextState(state: free, tokenID: F.id("`")) == free)
         #expect(constraint.nextState(state: free, tokenID: F.toolResponse) == -1)
     }
 }

@@ -107,7 +107,7 @@ struct GemmaJSONAnswerPolicyTests {
                 as? GemmaJSONAnswerConstraint, "\(schema)")
             #expect(constraint.format.schema == nil, "held to a JSON object")
             #expect(F.walk(F.ids(#"{"anything": [1]}"#), constraint) != nil)
-            #expect(!F.allows(constraint, 0, GemmaPieceTestTokenizer.id("[")))
+            #expect(!F.allows(constraint, 0, F.id("[")))
         }
         let otherRoots = [
             ##"{"$ref":"#/$defs/A","type":"object","$defs":{"A":{"type":"string"}}}"##,
@@ -267,7 +267,7 @@ struct GemmaJSONAnswerServingTests {
         return outcome
     }
 
-    private let objectFormat = #""response_format":{"type":"json_object""# + "}"
+    private let objectFormat = #""response_format":"# + GemmaAnswerFixture.jsonObject
 
     @Test func aConstrainedAnswerStreamsWithoutItsFence() async throws {
         // The scripted model wraps its answer in a fence; the masks admit only the value.

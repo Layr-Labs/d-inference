@@ -6,7 +6,7 @@
 // the stream decodes it to, so the shared byte-level JSON lexer
 // (`FlintJSONState`) drives the mask as it does for Qwen. The thought
 // (`<|channel>` ... `<channel|>`) stays free; the answer is one JSON value of
-// the request's format, then `<turn|>`.
+// the request's format, then `<turn|>` or `<eos>`.
 
 import Foundation
 import MLXLMCommon
@@ -130,8 +130,8 @@ struct GemmaJSONAnswerBoundary: Hashable {
     /// indentation, while a model that keeps reaching for a refused spelling
     /// (a code fence) cannot fill its budget with blank lines.
     static let maximumWhitespaceRun = 64
-    private static let open = Array(GemmaAnswerPieces.thoughtOpen.utf8)
-    private static let close = [Array(GemmaAnswerPieces.thoughtClose.utf8)]
+    private static let thoughtOpen = Array(GemmaAnswerPieces.thoughtOpen.utf8)
+    private static let thoughtCloseMarkers = [Array(GemmaAnswerPieces.thoughtClose.utf8)]
 
     private(set) var phase: Phase
     private(set) var window: [UInt8] = []
@@ -166,20 +166,20 @@ struct GemmaJSONAnswerBoundary: Hashable {
         case .opening:
             if !window.isEmpty || byte == 0x3C {
                 window.append(byte)
-                guard Self.open.starts(with: window) else { return false }
-                if window.count == Self.open.count {
+                guard Self.thoughtOpen.starts(with: window) else { return false }
+                if window.count == Self.thoughtOpen.count {
                     phase = .thought
                     window = []
                     whitespace = 0
                 }
                 return true
             }
-            if FlintJSONState.whitespace(byte) { return countWhitespace() }
+            if FlintJSONState.whitespace(byte) { return extendWhitespaceRun() }
             phase = .answer
             json = FlintJSONState(grammar: grammar)
             return consumeAnswer(byte, grammar: grammar, markers: markers)
         case .thought:
-            if Self.advance(&window, with: byte, markers: Self.close) != nil {
+            if Self.advance(&window, with: byte, markers: Self.thoughtCloseMarkers) != nil {
                 phase = .answer
                 window = []
                 json = FlintJSONState(grammar: grammar)
@@ -195,7 +195,7 @@ struct GemmaJSONAnswerBoundary: Hashable {
         // the client would have to strip (a fence, blank lines).
         guard var json, !isClosed, Self.advance(&window, with: byte, markers: markers) == nil else { return false }
         if FlintJSONState.whitespace(byte), !json.inString {
-            guard countWhitespace() else { return false }
+            guard extendWhitespaceRun() else { return false }
         } else {
             whitespace = 0
         }
@@ -204,7 +204,7 @@ struct GemmaJSONAnswerBoundary: Hashable {
         return true
     }
 
-    private mutating func countWhitespace() -> Bool {
+    private mutating func extendWhitespaceRun() -> Bool {
         whitespace += 1
         return whitespace <= Self.maximumWhitespaceRun
     }
@@ -249,6 +249,11 @@ final class GemmaJSONAnswerConstraint: CBv2TokenConstraint, @unchecked Sendable 
     private enum Node: Hashable {
         case bounded(GemmaJSONAnswerBoundary)
         case free
+
+        func maskEquivalent(leadingWhitespace: Int) -> Node {
+            guard case .bounded(let boundary) = self else { return self }
+            return .bounded(boundary.maskEquivalent(leadingWhitespace: leadingWhitespace))
+        }
     }
 
     let mode = CBv2TokenConstraintMode.auto
@@ -265,8 +270,8 @@ final class GemmaJSONAnswerConstraint: CBv2TokenConstraint, @unchecked Sendable 
     private let lock = NSLock()
     private var nodes: [Node]
     private var nodeIndex: [Node: Int]
-    /// Per state, its mask key: states admitting the same tokens share one,
-    /// so the sampler builds and uploads that mask once.
+    /// Per state, its mask key: states with the same `maskEquivalent` share
+    /// one, so the sampler builds and uploads that mask once.
     private var maskKeys: [Int]
     private var maskKeyIndex: [Node: Int]
     private var broadMasks: [(rejected: Set<Int>, tokens: [Int])] = []
@@ -321,12 +326,8 @@ final class GemmaJSONAnswerConstraint: CBv2TokenConstraint, @unchecked Sendable 
     func nextState(state: Int, tokenID: Int) -> Int? {
         lock.lock(); defer { lock.unlock() }
         guard nodes.indices.contains(state), (0..<vocabularySize).contains(tokenID) else { return nil }
-        let boundary: GemmaJSONAnswerBoundary
-        switch nodes[state] {
-        case .free:
+        guard case .bounded(let boundary) = nodes[state] else {
             return vocabulary.stopTokenIDs.contains(tokenID) ? -1 : state
-        case .bounded(let current):
-            boundary = current
         }
         if vocabulary.stopTokenIDs.contains(tokenID) {
             return vocabulary.answerEOS.contains(tokenID) && boundary.phase == .answer
@@ -339,21 +340,14 @@ final class GemmaJSONAnswerConstraint: CBv2TokenConstraint, @unchecked Sendable 
         // never as an impossible state or a fabricated stop.
         let interned = nodes.count < maximumStates - 1 ? node : .free
         if let known = nodeIndex[interned] { return known }
+        let index = nodes.count
         nodes.append(interned)
-        nodeIndex[interned] = nodes.count - 1
-        let equivalent: Node
-        if case .bounded(let fresh) = interned {
-            equivalent = .bounded(fresh.maskEquivalent(leadingWhitespace: leadingWhitespace))
-        } else {
-            equivalent = .free
-        }
-        if let key = maskKeyIndex[equivalent] {
-            maskKeys.append(key)
-        } else {
-            maskKeys.append(nodes.count - 1)
-            maskKeyIndex[equivalent] = nodes.count - 1
-        }
-        return nodes.count - 1
+        nodeIndex[interned] = index
+        let equivalent = interned.maskEquivalent(leadingWhitespace: leadingWhitespace)
+        let maskKey = maskKeyIndex[equivalent] ?? index
+        maskKeyIndex[equivalent] = maskKey
+        maskKeys.append(maskKey)
+        return index
     }
 
     var cachedStateCount: Int { lock.lock(); defer { lock.unlock() }; return nodes.count }

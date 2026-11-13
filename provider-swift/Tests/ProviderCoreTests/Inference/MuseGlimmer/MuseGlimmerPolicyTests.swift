@@ -53,14 +53,20 @@ struct MuseGlimmerPolicyTests {
             modelId: "other", modelType: Self.type, nativeContextTokens: 131_072) == nil)
     }
 
-    @Test("the family is not advertised before the engine can serve it")
-    func notYetInTheSupportedSet() {
-        // The engine adapter for this type arrives with the SDK's native
-        // model. Until then no provider may advertise or load it.
-        #expect(!EngineV2SupportedModels.isSupported(modelType: Self.type))
+    @Test("only the exact identity is advertised; the type alone never is")
+    func supportedSet() {
         for id in Self.ids {
+            #expect(EngineV2SupportedModels.isSupported(model: model(id, Self.type)))
+            #expect(!EngineV2SupportedModels.isSupported(model: model(id, "muse_glimmer_text")))
+        }
+        // A renamed or look-alike copy of the architecture is never advertised.
+        for id in Self.lookalikes {
             #expect(!EngineV2SupportedModels.isSupported(model: model(id, Self.type)))
         }
+        #expect(!EngineV2SupportedModels.isSupported(modelType: Self.type))
+        let (supported, unsupported) = EngineV2SupportedModels.partition(
+            [model(Self.ids[0], Self.type), model(Self.lookalikes[0], Self.type)])
+        #expect(supported.map(\.id) == [Self.ids[0]] && unsupported.map(\.id) == [Self.lookalikes[0]])
     }
 
     @Test("automatic KV selection is paged")

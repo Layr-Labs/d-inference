@@ -61,6 +61,11 @@ extension EngineV2Factory {
                 layerKinds = flint.cbv2LayerKinds
                 modelCapabilities = .attentionOnly
                 newCaches = { make in try flint.newCacheV2(makeLayerCache: make) }
+            case let glimmer as MuseGlimmerTextModel:
+                // Its capabilities require paged KV: it has no contiguous form.
+                layerKinds = glimmer.cbv2LayerKinds
+                modelCapabilities = glimmer.cbv2Capabilities
+                newCaches = { make in try glimmer.newCacheV2(makeLayerCache: make) }
             case let gemma as Gemma4TextModel:
                 layerKinds = gemma.cbv2LayerKinds
                 modelCapabilities = .attentionOnly

@@ -76,7 +76,7 @@ extension ProviderLoop {
     ) throws -> OpenAIChatCompletionRequest {
         let decoder = JSONDecoder()
         do {
-            return try decoder.decode(OpenAIChatCompletionRequest.self, from: data)
+            return try decoder.decode(AliasedChatRequest.self, from: data).request
         } catch let primaryError {
             let normalized: Data
             do {
@@ -96,7 +96,7 @@ extension ProviderLoop {
             // tools, content-less messages, and role aliases have already
             // been handled, so it cannot be the #252 `tools[0].function`
             // red herring.
-            return try decoder.decode(OpenAIChatCompletionRequest.self, from: normalized)
+            return try decoder.decode(AliasedChatRequest.self, from: normalized).request
         }
     }
 
@@ -217,7 +217,7 @@ struct InboundChatRequest: Decodable {
 
     /// The strict request and its extensions from the same parse.
     init(from decoder: any Decoder) throws {
-        request = try OpenAIChatCompletionRequest(from: decoder)
+        request = try AliasedChatRequest(from: decoder).request
         extensions = InboundChatExtensions(decoder: decoder)
     }
 }

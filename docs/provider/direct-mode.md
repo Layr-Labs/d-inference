@@ -1,6 +1,6 @@
 # The local API: an OpenAI-compatible server on your Mac
 
-> Last updated: 2026-11-12
+> Last updated: 2026-11-13
 
 Your Mac's models as an OpenAI-compatible HTTP server for your own tools,
 served two ways: **Both**, the default (`darkbloom start`: beside the Darkbloom
@@ -359,6 +359,9 @@ next request reads it again, with no restart.
   that value as `max_tokens`; with both, `max_tokens` wins
   (`LocalChatRequest`, `provider-swift/Sources/ProviderCore/Server/LocalChatRequest.swift`).
   Passed on, the body goes unchanged, as the coordinator reads all three names.
+- **A past turn's `reasoning` or `thinking`:** every local API reads it as that
+  turn's `reasoning_content`, as Darkbloom requests do
+  ([History reasoning under another name](../reference/protocol-messages.md#history-reasoning-under-another-name)).
 - **Cost on this Mac's path:** none of the above runs for a request this Mac
   serves. It stays in the process, its body is collected once (the engine
   collects it anyway) and not parsed by the router, no Keychain read happens,

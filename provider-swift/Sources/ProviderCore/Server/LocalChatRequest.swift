@@ -9,7 +9,7 @@ struct LocalChatRequest: Decodable {
     let templateControls: ChatTemplateControls
 
     init(from decoder: any Decoder) throws {
-        request = try OpenAIChatCompletionRequest(from: decoder)
+        request = try AliasedChatRequest(from: decoder).request
         templateControls = try ChatTemplateControls(from: decoder).withPromptDate(.capture())
         // Newer OpenAI clients send the output limit as `max_completion_tokens`, which the coordinator also reads;
         // the request type knows only `max_tokens`, which wins when both are sent.

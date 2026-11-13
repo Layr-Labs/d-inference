@@ -3408,7 +3408,16 @@ stops such a row early.
   Harmony tool-call parser holds `<|start|>assistant` until a call header
   completes in the continuation; the prompt is reused as rendered, its
   `Reasoning: low|medium|high` included.) The continuation is an ordinary row,
-  so exact MTP drafting stays on for it and its batch; a cancelled row donates no KV, so the
+  admitted ahead of the requests waiting in the engine's queue
+  (`LoopExitThinkingContinuation.admissionPriority`, `CBv2Request.priority` 1
+  through `EngineAdmissionPriority`; every other request has 0): it takes its
+  stopped row's place. On a busy Mac the waiting requests take the slot the row
+  frees, and a continuation queued behind them in arrival order waited past the
+  engine's 120 s admission lease and ended `admission_timeout`, the held
+  `length` (21 of 29 exits on 0.10.13 `.181` at 12-on-8 concurrency); ahead of
+  them it starts at the next free slot. The bridge's queue reading
+  (`queueState(of:)`, me first's and the held local head's) follows the same
+  order. Exact MTP drafting stays on for it and its batch; a cancelled row donates no KV, so the
   continuation prefills the thought again (its prompt part can hit the prefix
   cache). When the continuation cannot start (under 256 tokens of budget left,
   the row closed its thought itself (its in-flight tokens after the stop hold

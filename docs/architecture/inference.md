@@ -3572,9 +3572,12 @@ complete parse must agree with everything already exposed
 (`libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/ToolCallStreaming.swift`).
 `NativeToolStreamRouter` admits `parallel_tool_calls` cardinality at the first
 fragment: with `parallel_tool_calls: false` it exposes the first call only and
-consumes every later frame without exposing or validating it, as OpenAI
-returns one call and vLLM keeps the first; the complete-call paths, Nemotron
-Super's included, keep the first the same way (`ParallelToolCallPolicy`). When
+drops every later call frame, unexposed and unvalidated, as OpenAI returns one
+call and vLLM keeps the first; the complete-call paths, Nemotron Super's
+included, keep the first the same way (`ParallelToolCallPolicy`). A later
+frame keeps its family's malformed-output rule: one the parser returns as
+text (an undeclared name it cannot read) stays visible text, and one that does
+not parse still fails a GLM, MiMo, Flint or Nemotron Super response. When
 the request is `strict` (below), it validates name and schema at frame close;
 the service renders OpenAI fragments (`index`, `id`, `type`
 and `function.name` first, then `function.arguments` pieces). A response that

@@ -6,9 +6,10 @@ import MLXLMCommon
 /// returns at most one, and vLLM keeps the first
 /// (`maybe_filter_parallel_tool_calls`). The calls a model makes after it are
 /// dropped instead of failing a response that may already have streamed the
-/// first; no template reads the flag, so nothing in the prompt asked for one
-/// call. `ToolConstraintValidation.validate` keeps its cardinality check as
-/// defense in depth.
+/// first; under automatic choice the prompt does not ask for one call (only a
+/// GLM pair's does). A later frame that does not parse keeps its family's
+/// malformed-output rule. `ToolConstraintValidation.validate` keeps its
+/// cardinality check as defense in depth.
 enum ParallelToolCallPolicy {
     /// The calls a response returns from those withheld until the end.
     static func admitted(_ calls: [ToolCall], prepared: ToolChoicePromptPolicy.Prepared) -> [ToolCall] {

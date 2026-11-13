@@ -13,7 +13,7 @@ import MLXLMCommon
 
 extension JSONAnswerProfile {
     /// Gemma 4 (`gemma4`, `gemma4_text`): 262,144 SentencePiece ids. No id is
-    /// byte-level BPE (`firstAddedTokenID` 0): `GemmaAnswerPieces` spells them.
+    /// byte-level BPE (`bpeIDs` empty): `GemmaAnswerPieces` spells them.
     /// The thought markers are pieces so the thought can open and close; every
     /// control spelling stays impossible in the answer. Answers end with
     /// `<turn|>` or `<eos>`.
@@ -22,7 +22,7 @@ extension JSONAnswerProfile {
         thinkClose: GemmaAnswerPieces.thoughtClose,
         reasoningStops: [],
         contentMarkers: GemmaAnswerPieces.controlSpellings,
-        firstAddedTokenID: 0,
+        bpeIDs: 0..<0,
         pieceTokens: [.init(spelling: GemmaAnswerPieces.thoughtOpen, id: 100),
                       .init(spelling: GemmaAnswerPieces.thoughtClose, id: 101)],
         answerEOS: [.init(spelling: "<turn|>", id: 106), .init(spelling: "<eos>", id: 1)],

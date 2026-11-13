@@ -157,7 +157,7 @@ enum QwenStrictToolGrammar {
         thinkClose: "</think>",
         reasoningStops: ["<tool_call>", "</parameter>"] + forbiddenSpellings,
         contentMarkers: forbiddenSpellings + ["</parameter>"],
-        firstAddedTokenID: 248044,
+        bpeIDs: 0..<248044,
         pieceTokens: [.init(spelling: "<think>", id: 248068), .init(spelling: "</think>", id: 248069),
                       .init(spelling: "<tool_call>", id: 248058), .init(spelling: "</tool_call>", id: 248059)],
         answerEOS: [.init(spelling: "<|im_end|>", id: 248046), .init(spelling: "<|endoftext|>", id: 248044)],

@@ -1094,7 +1094,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     modelId: request.model, modelType: modelType),
                 defaultMaxTokens: bridge.defaultMaxTokens,
                 stopTokenIDs: bridge.stopTokenIds,
-                nativePromptTokens: promptTokens)
+                nativePromptTokens: promptTokens,
+                servesDistributedPair: request.responseFormat?.requiresJSONOutput == true
+                    ? await bridge.servesDistributedPair : false)
             // Grammar compile (Gemma) can take the tool-constraint lock on the
             // first build per stop-set, and a JSON answer builds its vocabulary
             // on the first request per tokenizer; only those are worth a lock.
@@ -2037,10 +2039,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 let cutAtLimit = prepared.cutAtLimit(finishReason: stopReason)
                     && answerStops?.matchedSequence == nil
                 /// The answer's own end checks, after the calls': constrained
-                /// response_format (exact Flint, Qwen) holds the completed
-                /// content, not a truncated or schema-invalid prefix, and GLM's
-                /// withheld JSON answer leaves only once it validates; a cut
-                /// answer leaves as generated.
+                /// response_format (exact Flint, the JSON-answer families) holds
+                /// the completed content, not a truncated or schema-invalid
+                /// prefix, and GLM's withheld JSON answer leaves only once it
+                /// validates; a cut answer leaves as generated.
                 /// At a cut: a structured answer whose check, which the cut
                 /// skips, would have refused it.
                 var answerLeftUnchecked = false
@@ -2270,6 +2272,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         promotesTrailingReasoningCalls: Bool = false,
         recordsWithheldOutput: Bool = false,
         usageSignal: EngineV2RequestUsageSignal = EngineV2RequestUsageSignal(),
+        preserveInnerReasoningSpans: Bool = false,
+        absorbStrayThinkClose: Bool = false,
         answerStopFilter: FlintAnswerStopFilter? = nil,
         answerFormat: JSONAnswerFormat? = nil,
         rewriteHarmonyFinalHeaders: Bool = false
@@ -2278,7 +2282,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             toolHandler: toolHandler, prepared: prepared, releaseBox: releaseBox,
             usageSignal: usageSignal, reasoningPrefix: reasoningPrefix,
             nativeReasoningPrefix: nativeReasoningPrefix, recordsWithheldOutput: recordsWithheldOutput,
-            promotesTrailingReasoningCalls: promotesTrailingReasoningCalls,
+            preserveInnerReasoningSpans: preserveInnerReasoningSpans,
+            promotesTrailingReasoningCalls: promotesTrailingReasoningCalls, absorbStrayThinkClose: absorbStrayThinkClose,
             answerStopFilter: answerStopFilter, answerFormat: answerFormat,
             rewriteHarmonyFinalHeaders: rewriteHarmonyFinalHeaders)
     }

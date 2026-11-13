@@ -1,0 +1,109 @@
+// Copyright © 2026 Eigen Labs.
+
+import Foundation
+import MLXLMServer
+
+/// Grammar-constrained JSON `response_format` answers on the text path of the
+/// families with a pinned answer contract (`JSONAnswerProfile`): Qwen 3.5, 3.6
+/// and 3.8, PrismML Bonsai 2 27B, and Nemotron 3.5 Lightning.
+/// Eligibility never changes the rendered prompt: the service's format
+/// instruction still steers the model, and every request this policy declines
+/// keeps that prompt-only behavior without a new refusal.
+enum JSONAnswerPolicy {
+    /// `DARKBLOOM_JSON_ANSWER_GRAMMAR=qwen` (or `0`, `off`, `false`, `no`,
+    /// `none`) keeps the grammar to the Qwen 3.5, 3.6 and 3.8 types, as before
+    /// Bonsai and Lightning were admitted; unset or any other value admits
+    /// every family below. Read once per process.
+    static let familiesEnvironmentKey = "DARKBLOOM_JSON_ANSWER_GRAMMAR"
+
+    enum Families: Equatable, Sendable {
+        case all
+        case qwenOnly
+
+        static let current = Families(environmentValue: ProcessInfo.processInfo.environment[familiesEnvironmentKey])
+
+        init(environmentValue: String?) {
+            let value = environmentValue?.trimmingCharacters(in: .whitespaces).lowercased() ?? ""
+            self = ["qwen", "0", "off", "false", "no", "none"].contains(value) ? .qwenOnly : .all
+        }
+    }
+
+    private static let logger = ProviderLogger(
+        subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "json-answer")
+
+    /// The answer contract of an admitted model, or nil. The Qwen types are
+    /// admitted by `model_type` alone; `prism_hadamard_qwen35` and
+    /// `nemotron_h`, which Lightning shares with Nano, only for a listed
+    /// build, and only on a single Mac: a cluster pair refuses any token
+    /// constraint before reserving (`constrainedDecodingUnsupported`), so their
+    /// pairs keep today's prompt-only service instead of gaining that refusal.
+    /// A Qwen pair's refusal predates them and is failed over upstream. The
+    /// Bonsai 2 9B is not admitted: it drafts, and its JSON rows (thinking off
+    /// by default) would stop its whole decode cohort from speculating.
+    static func profile(modelID: String?, modelType: String?, families: Families = .current,
+                        servesDistributedPair: Bool = false) -> JSONAnswerProfile?
+    {
+        switch modelType {
+        case "qwen3_5", "qwen3_5_moe":
+            return .qwen35
+        case "prism_hadamard_qwen35" where families == .all && !servesDistributedPair:
+            return EngineV2SupportedModels.isBonsai2ListingModelID(modelID) ? .bonsai2 : nil
+        case "nemotron_h" where families == .all && !servesDistributedPair:
+            return EngineV2SupportedModels.isNemotron35ListingModelID(modelID) ? .nemotron35 : nil
+        default:
+            return nil
+        }
+    }
+
+    /// The constraint for an eligible request, or nil. Requests with media,
+    /// tools or a `tool_choice` are out of scope, and so is a prompt that
+    /// opens a thought on a family admitted for its answers alone (Lightning's
+    /// default). An unsupported schema, an unrecognized prompt boundary, an
+    /// unverified tokenizer or a nonpositive budget falls back with a
+    /// content-free log line.
+    static func constraint(
+        request: OpenAIChatCompletionRequest,
+        tokenizer: TokenizerHandle,
+        modelID: String?,
+        modelType: String?,
+        defaultMaxTokens: Int,
+        stopTokenIDs: Set<Int>,
+        promptTokens: [Int]?,
+        servesDistributedPair: Bool,
+        families: Families = .current
+    ) -> JSONAnswerConstraint? {
+        guard let profile = profile(modelID: modelID, modelType: modelType, families: families,
+                                    servesDistributedPair: servesDistributedPair),
+              let format = request.responseFormat, format.requiresJSONOutput,
+              request.tools?.isEmpty ?? true, request.toolChoice == nil,
+              request.reasoningParser == .qwen3, !MediaIngest.hasMedia(request) else { return nil }
+        let phase = promptTokens.flatMap { tokens in
+            tokens.isEmpty ? nil : profile.initialPhase(promptTail: tokenizer.inner.decode(
+                tokenIds: Array(tokens.suffix(ReasoningPromptProbe.tailTokenCount)), skipSpecialTokens: false))
+        }
+        if phase == .reasoning, !profile.constrainsReasoning { return nil }
+        guard let answer = try? JSONAnswerFormat(format, forbidding: profile.contentMarkers,
+                                                 family: profile.family) else {
+            return declined(profile, "schema outside the constrained subset")
+        }
+        guard let phase else {
+            return declined(profile, "unrecognized prompt boundary")
+        }
+        guard let vocabulary = try? JSONAnswerVocabulary.cached(for: tokenizer, profile: profile,
+                                                                 stopTokenIDs: stopTokenIDs) else {
+            return declined(profile, "tokenizer does not match the pinned vocabulary")
+        }
+        guard let constraint = try? JSONAnswerConstraint(format: answer, profile: profile, vocabulary: vocabulary,
+                                                         initialPhase: phase,
+                                                         maxTokens: request.maxTokens ?? defaultMaxTokens) else {
+            return declined(profile, "no positive output budget")
+        }
+        return constraint
+    }
+
+    /// Fixed reasons only: never schema text, prompt content or token IDs.
+    private static func declined(_ profile: JSONAnswerProfile, _ reason: StaticString) -> JSONAnswerConstraint? {
+        logger.info("\(profile.family) JSON response_format served prompt-only: \(reason)")
+        return nil
+    }
+}

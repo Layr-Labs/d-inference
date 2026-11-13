@@ -10,5 +10,6 @@
   and after the engine has been idle 30 seconds; a request that arrives while
   the previous one is still publishing its prefix checkpoint waits up to 10
   seconds for it instead of failing. `DARKBLOOM_NATIVE_SEGMENT_RELEASE` sets the
-  idle seconds, and any value that is not a positive number (`0`, `off`)
-  restores the former behavior; it is forwarded to the launchd provider job.
+  idle seconds, and any value that is not a positive number below a day (`0`,
+  `off`) restores the former behavior; it is forwarded to the launchd provider
+  job.

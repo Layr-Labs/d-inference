@@ -60,10 +60,11 @@ Behind another proxy, set `DARKBLOOM_TRUSTED_CLIENT_IP_HEADER` to the header
 that proxy overwrites or appends to; its last entry must be a bare IP address
 (no port), and IPv6 visitors are grouped by /64. Without either, client-supplied
 headers are ignored and all visitors share one bucket, as do requests whose
-entry is not an address. The chat route accepts at most 16 KiB of request body
-and the provider-story route 50,000 bytes, counted on the bytes received rather
-than the declared `Content-Length`, so a chunked or HTTP/2 body cannot exceed
-them.
+entry is not an address. The chat route reads at most 16 KiB of request body
+and the provider-story route 50,000 bytes. Each counts the bytes it receives,
+not the declared `Content-Length`, and stops reading once past its limit, so a
+chunked or HTTP/2 body cannot exceed it. API routes are outside the `proxy.ts`
+matcher, which would otherwise buffer the whole body before the route ran.
 
 Use a budget-capped coordinator key for the public demo. The chat route's
 in-memory rate limiter is per instance; distributed enforcement belongs in

@@ -21,8 +21,7 @@ const MAX_RATE_BUCKETS = 10_000;
 // client values (https://vercel.com/docs/headers/request-headers#x-forwarded-for).
 // Other hosts must name the header their own proxy sets; without one,
 // every visitor shares a single bucket rather than choosing their own.
-const TRUSTED_CLIENT_IP_HEADER = process.env.DARKBLOOM_TRUSTED_CLIENT_IP_HEADER?.trim()
-  || (process.env.VERCEL === "1" ? "x-forwarded-for" : "");
+const TRUSTED_CLIENT_IP_HEADER = trustedClientIPHeader();
 const SHARED_IDENTITY = "shared";
 const PROVIDER_EARNINGS_SHARE = 0.9;
 const EARNINGS_LOOKUP_TIMEOUT_MS = 2_500;
@@ -44,6 +43,15 @@ function jsonError(status: number, message: string, headers?: HeadersInit) {
     { error: { message, type: status === 429 ? "rate_limit_exceeded" : "request_error" } },
     { status, headers: { "cache-control": "no-store", ...headers } },
   );
+}
+
+function trustedClientIPHeader() {
+  const configured = process.env.DARKBLOOM_TRUSTED_CLIENT_IP_HEADER?.trim();
+  if (!configured) return process.env.VERCEL === "1" ? "x-forwarded-for" : "";
+  // An invalid name would make every Headers.get throw; refuse it once here.
+  if (/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(configured)) return configured;
+  console.warn("DARKBLOOM_TRUSTED_CLIENT_IP_HEADER is not a valid header name; chat visitors share one rate-limit bucket.");
+  return "";
 }
 
 function requestIdentity(request: NextRequest) {
@@ -95,6 +103,11 @@ function takeRateLimit(identity: string) {
     rateBuckets.delete(key);
   }
   let bucket = rateBuckets.get(identity);
+  // Only a clock that stepped back can leave an expired bucket behind a live one.
+  if (bucket && bucket.resetAt <= now) {
+    rateBuckets.delete(identity);
+    bucket = undefined;
+  }
   if (!bucket) {
     if (rateBuckets.size >= MAX_RATE_BUCKETS) {
       // Every bucket is live: drop the oldest, the one closest to renewal.

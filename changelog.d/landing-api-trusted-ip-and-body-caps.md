@@ -8,7 +8,11 @@
 - The limiter's bucket map is capped at 10,000 entries and drops only expired
   buckets from its front, instead of scanning every bucket on each request once
   it held more than 10,000.
-- `/api/chat` accepts at most 16 KiB of request body and `/api/provider-stories`
+- `/api/chat` reads at most 16 KiB of request body and `/api/provider-stories`
   50,000 bytes, counted on the bytes received, and answer HTTP 413 above that.
   A body without `Content-Length` (chunked or HTTP/2) can no longer skip the
   provider-story limit, and neither route parses an oversized body.
+- API routes are no longer matched by the site's proxy, which made Next buffer
+  every request body (up to 10 MB) before a route could refuse it.
+- An invalid `DARKBLOOM_TRUSTED_CLIENT_IP_HEADER` name is ignored with a warning
+  instead of failing every chat request.

@@ -91,6 +91,8 @@ export async function proxy(request: NextRequest) {
 
 // Next removes Flight headers before calling proxy(), so exclude RSC at the
 // matcher boundary where the original protocol headers are still available.
+// API routes are excluded too: proxy() leaves them unchanged, and running it
+// would make Next buffer each request body before the route can refuse it.
 export const config = {
-  matcher: [{ source: "/:path*", missing: [{ type: "header", key: "rsc", value: "1" }] }],
+  matcher: [{ source: "/((?!api/).*)", missing: [{ type: "header", key: "rsc", value: "1" }] }],
 };

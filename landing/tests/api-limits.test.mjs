@@ -1,6 +1,27 @@
 import assert from "node:assert/strict";
+import { once } from "node:events";
+import { connect } from "node:net";
 import { after, before, describe, test } from "node:test";
 import { startSiteServer } from "./helpers/site-server.mjs";
+
+// Sends only a request head that declares `contentLength` body bytes and
+// returns the response status line, or null if none arrives in time.
+async function statusLineForDeclaredBody(origin, path, contentLength) {
+  const { hostname, port } = new URL(origin);
+  const socket = connect(Number(port), hostname);
+  await once(socket, "connect");
+  socket.write(`POST ${path} HTTP/1.1\r\nHost: ${hostname}\r\nContent-Type: application/json\r\n`
+    + `Content-Length: ${contentLength}\r\n\r\n`);
+  const timeout = AbortSignal.timeout(5_000);
+  try {
+    const [chunk] = await once(socket, "data", { signal: timeout });
+    return chunk.toString("latin1").split("\r\n")[0];
+  } catch {
+    return null;
+  } finally {
+    socket.destroy();
+  }
+}
 
 // A body sent in pieces without Content-Length, as chunked HTTP/1.1 and
 // HTTP/2 clients can.
@@ -59,6 +80,14 @@ describe("request bodies are bounded while they are read", () => {
     assert.equal(await post(site.origin, "/api/chat", { body: streamed(chat) }), 503);
     assert.equal(await post(site.origin, "/api/provider-stories", { body: streamed(JSON.stringify(story)) }), 503);
   });
+
+  test("a declared oversized body is refused before it is sent", async () => {
+    // Nothing buffers the body ahead of the route, so the refusal does not
+    // wait for bytes the client has not sent.
+    for (const path of ["/api/chat", "/api/provider-stories"]) {
+      assert.match(await statusLineForDeclaredBody(site.origin, path, 1_000_000) ?? "no response", /^HTTP\/1\.1 413 /, path);
+    }
+  });
 });
 
 describe("chat rate limiting without a trusted client address header", () => {
@@ -109,5 +138,24 @@ describe("chat rate limiting behind a proxy that records the client address", ()
     // Values that are not addresses share one bucket instead of each getting one.
     assert.equal(await statusFor("not-an-address"), 503);
     assert.equal(await statusFor("also-not-an-address"), 429);
+  });
+});
+
+describe("chat rate limiting with an invalid trusted header name", () => {
+  let site;
+  before(async () => {
+    site = await startSiteServer({
+      env: { DARKBLOOM_CHAT_RPM: "1", DARKBLOOM_TRUSTED_CLIENT_IP_HEADER: "X-Forwarded-For:", VERCEL: "" },
+    });
+  });
+  after(async () => site?.close());
+
+  test("the name is ignored: requests are answered and share one bucket", async () => {
+    const body = JSON.stringify({ prompt: "What is Darkbloom?" });
+    const statuses = [];
+    for (const address of ["198.51.100.1", "198.51.100.2"]) {
+      statuses.push(await post(site.origin, "/api/chat", { body, headers: { "x-forwarded-for": address } }));
+    }
+    assert.deepEqual(statuses, [503, 429]);
   });
 });

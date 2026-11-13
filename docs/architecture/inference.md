@@ -3296,12 +3296,17 @@ stops such a row early.
   turns it off; a comma-separated list keeps it to the listed `model_type`s
   that have a marker (`gemma4,gemma4_text` keeps Gemma's alone;
   `gemma4,gemma4_text,qwen3_5_moe,qwen3_5` adds the 9B and Qwen 3.8 27B).
-  Nemotron 3.5 Super (`nemotron_h_omni`, on by default) takes its owner's own
-  route: its request plan resolves the exit from the rendered prompt
+  Nemotron 3.5 Super (`nemotron_h_omni`: listed, off by default until its A/B;
+  `…,nemotron_h_omni` turns it on) takes its owner's own route: its request
+  plan resolves the exit from the rendered prompt
   (`NemotronSuperRequestPlan.exitThinking`; the exit is `</think>` alone, as its
   template writes a thought) and `NemotronSuperLocalBinding` continues the
-  answer the same way, within the same admitted request, then waits for both
-  rows' terminal observations. `darkbloom start` passes it, and `DARKBLOOM_LOOP_GUARD`,
+  answer the same way, within the same admitted request. A cancel or drain
+  during the hand-off submits no second row; the request joins the splice and
+  then waits for both rows' terminal observations before the owner's admission
+  returns. The guard follows the last thought marker, Super's reasoning channel
+  the first `</think>`: a model that writes `<think>` in its answer and then
+  loops is continued, and its `</think>` reaches the client as content. `darkbloom start` passes it, and `DARKBLOOM_LOOP_GUARD`,
   to the launchd daemon (`LaunchAgent.inferencePassthroughEnvKeys`). One `darkbloom.loop-guard.exit-thinking` line per ended
   thought gives the outcome.
 

@@ -1143,6 +1143,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     guard await bridge.waitForRowRelease(requestId: requestId, within: .seconds(5)) else {
                         throw LoopExitThinkingContinuation.RowNotReleased()
                     }
+                    // A client that left during the wait gets no continuation row.
+                    try Task.checkCancellation()
                     var next = base
                     next.maxTokens = budget
                     // As model calibration submits: the request's prompt progress

@@ -13,6 +13,7 @@ private struct SpanStreamTokenizer: MLXLMCommon.Tokenizer {
     static let promptID = 900
     static let firstPiece = 1000
     let pieces: [String]
+    var thinking = true
     private let bytes = QwenByteTestTokenizer()
 
     func encode(text: String, addSpecialTokens: Bool) -> [Int] {
@@ -21,7 +22,7 @@ private struct SpanStreamTokenizer: MLXLMCommon.Tokenizer {
 
     func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String {
         tokenIds.map { id in
-            if id == Self.promptID { return QwenByteTestTokenizer.prompt(thinking: true) }
+            if id == Self.promptID { return QwenByteTestTokenizer.prompt(thinking: thinking) }
             if pieces.indices.contains(id - Self.firstPiece) { return pieces[id - Self.firstPiece] }
             return bytes.decode(tokenIds: [id], skipSpecialTokens: skipSpecialTokens)
         }.joined()
@@ -31,7 +32,7 @@ private struct SpanStreamTokenizer: MLXLMCommon.Tokenizer {
     func convertIdToToken(_ id: Int) -> String? {
         let piece: String
         if id == Self.promptID {
-            piece = QwenByteTestTokenizer.prompt(thinking: true)
+            piece = QwenByteTestTokenizer.prompt(thinking: thinking)
         } else if pieces.indices.contains(id - Self.firstPiece) {
             piece = pieces[id - Self.firstPiece]
         } else {
@@ -44,7 +45,7 @@ private struct SpanStreamTokenizer: MLXLMCommon.Tokenizer {
     var unknownToken: String? { nil }
     func applyChatTemplate(messages: [[String: any Sendable]], tools: [[String: any Sendable]]?,
                            additionalContext: [String: any Sendable]?) throws -> [Int] {
-        #expect(additionalContext?["enable_thinking"] as? Bool != false)
+        #expect((additionalContext?["enable_thinking"] as? Bool ?? true) == thinking)
         return [Self.promptID]
     }
 }
@@ -129,7 +130,7 @@ struct QwenConstraintSpanServingTests {
     /// A small real Gemma target carries a fixed token code through native
     /// layers and KV updates. This qualifies provider/engine wiring, not a
     /// full Qwen model or the production Qwen assistant's history ownership.
-    private func target() throws -> Gemma4TextModel {
+    private func target(pieces: [String] = Self.pieces) throws -> Gemma4TextModel {
         let configuration = #"""
         {"model_type":"gemma4_text","hidden_size":64,"num_hidden_layers":6,
          "intermediate_size":128,"num_attention_heads":2,"head_dim":32,
@@ -143,7 +144,7 @@ struct QwenConstraintSpanServingTests {
         let model = Gemma4TextModel(try JSONDecoder().decode(
             Gemma4TextConfiguration.self, from: Data(configuration.utf8)))
         let path = [SpanStreamTokenizer.promptID]
-            + Array(SpanStreamTokenizer.firstPiece ..< SpanStreamTokenizer.firstPiece + Self.pieces.count)
+            + Array(SpanStreamTokenizer.firstPiece ..< SpanStreamTokenizer.firstPiece + pieces.count)
             + [StrictToolFixture.imEnd]
         let width = 64
         var embedding = [Float](repeating: 0, count: 248320 * width)
@@ -171,10 +172,11 @@ struct QwenConstraintSpanServingTests {
         return model
     }
 
-    private func engine(_ target: Gemma4TextModel, enabled: Bool)
+    private func engine(_ target: Gemma4TextModel, enabled: Bool,
+                        pieces: [String] = Self.pieces, thinking: Bool = true)
         -> (EngineV2, SpanStreamDrafter, SpanStreamTokenizer) {
-        let tokenizer = SpanStreamTokenizer(pieces: Self.pieces)
-        let tokens = Array(SpanStreamTokenizer.firstPiece ..< SpanStreamTokenizer.firstPiece + Self.pieces.count)
+        let tokenizer = SpanStreamTokenizer(pieces: pieces, thinking: thinking)
+        let tokens = Array(SpanStreamTokenizer.firstPiece ..< SpanStreamTokenizer.firstPiece + pieces.count)
             + [StrictToolFixture.imEnd]
         let drafter = SpanStreamDrafter(target: target, tokens: tokens)
         let kinds = target.cbv2LayerKinds
@@ -246,6 +248,162 @@ struct QwenConstraintSpanServingTests {
                 #expect(metrics.rounds == 0 && drafter.starts.isEmpty)
                 baseline = outcome
             }
+        }
+    }
+
+    @Test(.timeLimit(.minutes(3)), arguments: [false, true])
+    func multipleCallsReturnToFreeTextWithThinkingOnOrOff(thinking: Bool) async throws {
+        var pieces = thinking ? ["Let", " me", " check", " both", " clocks", ".", "</think>"] : []
+        let before = pieces.count
+        pieces += ["First", " city", " is", " next", ".", " "]
+        let firstCall = pieces.count
+        pieces += ["<tool", "_call>\n", "<function=get_time>\n", "<parameter=city>\n",
+                   "Ro", "me", "\n</parameter>\n</function>\n</tool_call>"]
+        let between = pieces.count
+        pieces += ["One", " more", " city", " to", " check", ".", " "]
+        let secondCall = pieces.count
+        pieces += ["<tool_call>\n<function=get_time>\n<parameter=city>\n",
+                   "Pa", "ris", "\n</parameter>\n", "</function>\n", "</tool_call>"]
+        let after = pieces.count
+        pieces += ["All", " done", ",", " thank", " you", "."]
+        let target = try target(pieces: pieces)
+        var baseline: SpanStreamOutcome?
+        for enabled in [false, true] {
+            let (native, drafter, tokenizer) = engine(target, enabled: enabled, pieces: pieces, thinking: thinking)
+            let outcome = try await stream(native, tokenizer: tokenizer, thinking: thinking,
+                extra: #""tools":\#(Self.tools)"#)
+            let metrics = try #require(native.mtpMetricsSnapshot())
+            #expect(outcome.reasoning == (thinking ? "Let me check both clocks." : ""))
+            #expect(outcome.content == "First city is next. One more city to check. All done, thank you.")
+            let calls = outcome.deltas.compactMap(\.completed)
+            #expect(calls.map(\.function.name) == ["get_time", "get_time"])
+            #expect(calls.map(\.function.arguments) == [["city": .string("Rome")], ["city": .string("Paris")]])
+            #expect(outcome.deltas.count > 4 && outcome.terminals == 1)
+            if enabled {
+                #expect(metrics.acceptedTokens > 0)
+                #expect(drafter.starts.contains { (before..<firstCall).contains($0) })
+                #expect(drafter.starts.contains { (between..<secondCall).contains($0) })
+                #expect(drafter.starts.contains { $0 >= after })
+                #expect(!drafter.starts.contains {
+                    ((firstCall + 1)..<between).contains($0) || ((secondCall + 1)..<after).contains($0)
+                })
+                #expect(outcome.info?.completionTokens == baseline?.info?.completionTokens)
+                #expect(outcome.info?.stopReason == baseline?.info?.stopReason)
+            } else {
+                #expect(metrics.rounds == 0 && drafter.starts.isEmpty)
+                baseline = outcome
+            }
+        }
+    }
+
+    /// Next vertical slice: the same public serving path must draft while
+    /// thinking, then remain protected through the JSON value and trailing space.
+    @Test(.timeLimit(.minutes(3)), arguments: [false, true])
+    func jsonAnswerDraftsOnlyBeforeTheValue(thinking: Bool) async throws {
+        var pieces = thinking ? ["Let", " me", " check", " the", " value", ".", "</think>"] : []
+        let answerStart = pieces.count
+        pieces += ["{", "\"city\"", ":", "\"", "Ro", "me", "\"", "}", " ", "\n", " "]
+        let target = try target(pieces: pieces)
+        var baseline: SpanStreamOutcome?
+        for enabled in [false, true] {
+            let (native, drafter, tokenizer) = engine(target, enabled: enabled, pieces: pieces, thinking: thinking)
+            let outcome = try await stream(native, tokenizer: tokenizer, thinking: thinking,
+                extra: #""response_format":{"type":"json_object"}"#)
+            let metrics = try #require(native.mtpMetricsSnapshot())
+            #expect(outcome.reasoning == (thinking ? "Let me check the value." : ""))
+            #expect(outcome.content == "{\"city\":\"Rome\"} \n ")
+            #expect(outcome.deltas.isEmpty && outcome.terminals == 1)
+            #expect(!drafter.starts.contains { $0 >= answerStart })
+            if enabled && thinking {
+                #expect(metrics.acceptedTokens > 0)
+                #expect(!drafter.starts.isEmpty)
+            } else {
+                #expect(metrics.rounds == 0 && drafter.starts.isEmpty)
+            }
+            if let baseline {
+                #expect(outcome.info?.completionTokens == baseline.info?.completionTokens)
+                #expect(outcome.info?.stopReason == baseline.info?.stopReason)
+            } else { baseline = outcome }
+        }
+    }
+
+    @Test func strictPreviewDoesNotInternDiscardedBoundaries() throws {
+        let pieces = ["ordinary", "<", "<not-a-call",
+            "<tool_call>\n<function=get_time>\n<parameter=city>\nRome\n</parameter>\n</function>\n</tool_call>",
+            "<tool_call>\n<function=get_time>\n<parameter=city>\n", "Rome"]
+        let (request, prepared) = try StrictToolFixture.prepared(StrictToolFixture.body(tools: Self.tools))
+        let tokenizer = TokenizerHandle(SpanStreamTokenizer(pieces: pieces, thinking: false))
+        let constraint = try #require(QwenStrictToolGrammar.constraint(
+            prepared: prepared, request: request, parser: .qwen35, tokenizer: tokenizer,
+            modelType: "qwen3_5", defaultMaxTokens: 64, stopTokenIDs: StrictToolFixture.stops,
+            promptTokens: [SpanStreamTokenizer.promptID], runsTokenConstraints: true))
+        let state = constraint.initialState
+        let count = constraint.cachedStateCount
+        #expect(constraint.isFreeSpan(state: state))
+        for _ in 0..<10 {
+            #expect(constraint.isFreeSpanContinuation(state: state, tokenID: 1000))
+            for token in [1001, 1002, 1003, 1004, StrictToolFixture.imEnd, 248300, -1] {
+                #expect(!constraint.isFreeSpanContinuation(state: state, tokenID: token))
+            }
+            #expect(!constraint.isFreeSpan(state: QwenStrictToolConstraint.releasedState))
+            #expect(!constraint.isFreeSpan(state: -1))
+        }
+        #expect(constraint.cachedStateCount == count)
+        #expect(constraint.nextState(state: state, tokenID: 1000) == state)
+        // This token ends in the original state but transiently touched '<'.
+        #expect(constraint.nextState(state: state, tokenID: 1002) == state)
+        let partial = try #require(constraint.nextState(state: state, tokenID: 1001))
+        let argument = try #require(constraint.nextState(state: state, tokenID: 1004))
+        #expect(!constraint.isFreeSpan(state: partial))
+        #expect(!constraint.isFreeSpan(state: argument))
+        #expect(!constraint.isFreeSpanContinuation(state: argument, tokenID: 1005))
+        let complete = try #require(constraint.nextState(state: state, tokenID: 1003))
+        #expect(constraint.isFreeSpan(state: complete))
+        #expect(constraint.allowedTokenIDs(state: complete, remainingTokens: 1)
+            == constraint.allowedTokenIDs(state: complete, remainingTokens: 100))
+    }
+
+    @Test func installedProviderReceivesTheExplicitSpanSwitch() throws {
+        for value: String? in [nil, "0", "1", "false", " true "] {
+            let key = "DARKBLOOM_CONSTRAINT_SPANS"
+            var environment = ["UNRELATED_SECRET": "excluded"]
+            environment[key] = value
+            let plist = LaunchAgent.makeServicePlist(label: LaunchAgent.label,
+                programArguments: ["/test/darkbloom", "start", "--foreground"],
+                logPath: "/test/provider.log", environment: environment)
+            let encoded = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+            let decoded = try #require(try PropertyListSerialization.propertyList(from: encoded, format: nil)
+                as? [String: Any])
+            let forwarded = decoded["EnvironmentVariables"] as? [String: String]
+            #expect(forwarded?[key] == value)
+            #expect(forwarded?["UNRELATED_SECRET"] == nil)
+        }
+    }
+
+    private func stream(_ native: EngineV2, tokenizer: SpanStreamTokenizer,
+                        thinking: Bool, extra: String) async throws -> SpanStreamOutcome {
+        let handle = TokenizerHandle(tokenizer)
+        let id = StrictToolFixture.model
+        let bridge = EngineV2Bridge(engine: native, modelId: id, tokenizer: handle,
+            eosTokenIds: StrictToolFixture.stops, defaultMaxTokens: 64, maxConcurrentRequests: 1)
+        let scheduler = MultiModelBatchSchedulerEngine(registryProvider: {
+            [id: .init(tokenizer: handle, modelType: "qwen3_5", engineV2Bridge: bridge)]
+        })
+        let body = #"{"model":"\#(id)","messages":[{"role":"user","content":"check"}],"#
+            + #""temperature":0,"reasoning":{"enabled":\#(thinking)},"reasoning_parser":"qwen3","#
+            + #""max_tokens":64,\#(extra)}"#
+        var request = try JSONDecoder().decode(OpenAIChatCompletionRequest.self, from: Data(body.utf8))
+        request.stream = true
+        request.streamToolCallDeltas = true
+        var outcome = SpanStreamOutcome()
+        do {
+            for try await event in try await scheduler.streamChatCompletion(request: request) { outcome.record(event) }
+            outcome.finish()
+            await bridge.shutdown()
+            return outcome
+        } catch {
+            await bridge.shutdown()
+            throw error
         }
     }
 }

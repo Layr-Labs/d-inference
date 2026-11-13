@@ -22,6 +22,9 @@ struct NativeChannelSplitter {
     private var flintScanner: FlintToolFrameScanner?
     private let preserveInnerReasoningSpans: Bool
     private let absorbStrayThinkClose: Bool
+    private var promotesTrailingCalls: Bool
+    /// The open thought's text (kept only with `promotesTrailingCalls`).
+    private var openThought = ""
     private var innerReasoningDepth = 0
     private(set) var reasoningNestingLimitExceeded = false
     static let maximumInnerReasoningDepth = 32
@@ -30,9 +33,17 @@ struct NativeChannelSplitter {
             + (flintScanner?.bufferedCharacterCount ?? 0)
     }
 
+    /// `promotesTrailingCalls`: a thought that never closes and ends in
+    /// complete `<tool_call>` frames (whitespace only between and after them)
+    /// was the model calling from inside it, a known Qwen 3.5 failure mode;
+    /// at the end of the output those frames are also returned as content,
+    /// so they parse as calls. A frame followed by more thought, or by
+    /// `</think>`, stays reasoning, and so does a thought the token limit cut
+    /// off (`outputReachedTokenLimit`).
     init(prefix: String, protectToolFrames: Bool, qwenStructuredFrames: Bool = false, flintFrames: Bool = false,
          tools: [[String: any Sendable]]? = nil,
-         preserveInnerReasoningSpans: Bool = false, absorbStrayThinkClose: Bool = false) {
+         preserveInnerReasoningSpans: Bool = false, absorbStrayThinkClose: Bool = false,
+         promotesTrailingCalls: Bool = false) {
         state = prefix == "<think>" ? .reasoning : .content
         self.protectToolFrames = protectToolFrames
         self.qwenStructuredFrames = qwenStructuredFrames
@@ -40,6 +51,7 @@ struct NativeChannelSplitter {
         self.tools = tools
         self.preserveInnerReasoningSpans = preserveInnerReasoningSpans
         self.absorbStrayThinkClose = absorbStrayThinkClose
+        self.promotesTrailingCalls = promotesTrailingCalls
     }
 
     mutating func parse(_ text: String) -> [ParsedReasoning] {
@@ -50,10 +62,91 @@ struct NativeChannelSplitter {
 
     mutating func finish() -> [ParsedReasoning] {
         guard !reasoningNestingLimitExceeded else { return [] }
-        let pieces = drain(final: true)
+        var pieces = drain(final: true)
         toolScanner = nil
         flintScanner = nil
+        if promotesTrailingCalls, case .reasoning = state,
+            let calls = Self.trailingCalls(in: openThought, tools: tools) {
+            pieces.append(.init(content: calls, reasoningContent: nil))
+        }
+        openThought = ""
         return pieces
+    }
+
+    /// The engine stopped at the token limit: a thought it cut off ends
+    /// undecided, so none of its frames is promoted.
+    mutating func outputReachedTokenLimit() {
+        promotesTrailingCalls = false
+    }
+
+    /// The complete `<tool_call>` frames that end `thought`, with the
+    /// whitespace between them, or nil. Frames are read left to right as the
+    /// Qwen tool parser frames content: one opens at a `<tool_call>` whose
+    /// payload starts a call (`opensCall`), ends where the parser's own
+    /// scanner ends it (JSON strings and XML parameter values are opaque, so a
+    /// tag inside an argument is not a frame), and counts only if it parses
+    /// with a declared name (any name without `tools`); any other
+    /// `<tool_call>` is read as a mention. A frame that never closes holds the
+    /// rest of the thought. The work is bounded by a fixed multiple of the
+    /// thought's length; past that bound nothing is promoted.
+    static func trailingCalls(in thought: String, tools: [[String: any Sendable]]? = nil) -> String? {
+        let scalars = thought.unicodeScalars
+        let parser = Qwen35ToolCallParser(startTag: "<tool_call>", endTag: "</tool_call>")
+        var budget = 16 * scalars.count + 4_096
+        var frames: [Range<String.Index>] = []
+        var from = thought.startIndex
+        while let open = thought.range(of: "<tool_call>", range: from..<thought.endIndex) {
+            from = open.upperBound
+            guard opensCall(thought[open.upperBound...]) else { continue }
+            var scanner = Qwen35ToolFrameScanner(endTag: "</tool_call>")
+            var index = open.upperBound
+            var frameEnd: String.Index?
+            while index < thought.endIndex, budget > 0 {
+                budget -= 1
+                let next = scalars.index(after: index)
+                if scanner.consume(scalars[index]) { frameEnd = next; break }
+                index = next
+            }
+            guard budget > 0, let close = frameEnd else { break }
+            let frame = String(thought[open.lowerBound..<close])
+            budget -= 2 * frame.unicodeScalars.count
+            if parser.parse(content: frame, tools: tools) != nil {
+                frames.append(open.lowerBound..<close)
+                from = close
+            }
+        }
+        guard budget > 0 else { return nil }
+        var start: String.Index?
+        var end = thought.endIndex
+        for frame in frames.reversed() {
+            while end > thought.startIndex, thought[thought.index(before: end)].isWhitespace {
+                end = thought.index(before: end)
+            }
+            guard frame.upperBound == end else { break }
+            start = frame.lowerBound
+            end = frame.lowerBound
+        }
+        return start.map { String(thought[$0...]) }
+    }
+
+    /// Whether a `<tool_call>`'s payload starts a call as the Qwen parser
+    /// reads one: `<function=NAME>` (a name shorter than 256 scalars) and then
+    /// a parameter or the function's close, or a JSON object (`{` and then a
+    /// key, `}`, or the redundant outer brace the JSON parser also accepts). A
+    /// mention fails here at once, so it costs nothing of the budget.
+    private static func opensCall(_ payload: Substring) -> Bool {
+        var scalars = payload.unicodeScalars.drop { $0.properties.isWhitespace }
+        if scalars.first == "{" {
+            scalars = scalars.dropFirst().drop { $0.properties.isWhitespace }
+            return scalars.first == "\"" || scalars.first == "}" || scalars.first == "{"
+        }
+        guard scalars.starts(with: "<function=".unicodeScalars) else { return false }
+        scalars = scalars.dropFirst("<function=".unicodeScalars.count)
+        guard let angle = scalars.prefix(256).firstIndex(of: ">") else { return false }
+        let name = scalars[..<angle]
+        guard !name.isEmpty, !name.contains(where: { $0.properties.isWhitespace }) else { return false }
+        let body = scalars[scalars.index(after: angle)...].drop { $0.properties.isWhitespace }
+        return body.starts(with: "<parameter=".unicodeScalars) || body.starts(with: "</function>".unicodeScalars)
     }
 
     private mutating func drain(final: Bool) -> [ParsedReasoning] {
@@ -122,7 +215,7 @@ struct NativeChannelSplitter {
                 switch state {
                 case .content:
                     append(String(buffer[..<range.lowerBound]), reasoning: false, to: &result)
-                    if marker == "<think>" { state = .reasoning }
+                    if marker == "<think>" { state = .reasoning; openThought = "" }
                     else if marker == "</think>" {
                         // Stray close after a prompt-side `<think></think>` (or a
                         // duplicate close): drop the marker, stay in content.
@@ -152,6 +245,7 @@ struct NativeChannelSplitter {
                     } else {
                         append(String(buffer[..<range.lowerBound]), reasoning: true, to: &result)
                         state = .content
+                        openThought = ""
                     }
                 case .tool:
                     append(String(buffer[..<range.upperBound]), reasoning: false, to: &result)
@@ -178,8 +272,9 @@ struct NativeChannelSplitter {
         return result
     }
 
-    private func append(_ text: String, reasoning: Bool, to result: inout [ParsedReasoning]) {
+    private mutating func append(_ text: String, reasoning: Bool, to result: inout [ParsedReasoning]) {
         guard !text.isEmpty else { return }
+        if reasoning && promotesTrailingCalls { openThought += text }
         result.append(.init(content: reasoning ? "" : text, reasoningContent: reasoning ? text : nil))
     }
 }

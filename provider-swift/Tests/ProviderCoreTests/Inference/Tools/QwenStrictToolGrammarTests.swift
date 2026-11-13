@@ -184,6 +184,12 @@ struct QwenStrictToolGrammarTests {
         // A value never spells the tag that would end it early, nor a turn marker.
         #expect(!F.allows("[{\"sku\": \"a</parameter>", constraint, after: items))
         #expect(!F.allows("[{\"sku\": \"a<|im_end|>", constraint, after: items))
+        // JSONSerialization refuses a lone surrogate escape (the value would stay a
+        // string), so none is written; other escapes and characters as such are.
+        for escape in ["\\ud83d", "\\uDFFF", "\\udBff"] {
+            #expect(!F.allows("[{\"sku\": \"a" + escape, constraint, after: items), "\(escape)")
+        }
+        #expect(F.allows("[{\"sku\": \"\\u00e9 \u{1F600}\", \"qty\": 1}]\n</parameter>\n", constraint, after: items))
     }
 
     @Test func requiredOptionalUndeclaredAndDuplicateParameters() throws {
@@ -393,10 +399,8 @@ struct QwenStrictToolGrammarTests {
                     text += closer
                     continue
                 }
-                // No `\u` escapes: the shared JSON lexer admits lone surrogates.
-                let previous = text.utf8.last
                 let candidates = constraint.allowedTokenIDs(state: state, remainingTokens: 10)
-                    .filter { ((32...126).contains($0) || $0 == 10) && !(previous == 92 && $0 == 117) }
+                    .filter { (32...126).contains($0) || $0 == 10 }
                 let token = try #require(candidates.randomElement(using: &random))
                 state = try #require(constraint.nextState(state: state, tokenID: token))
                 text += String(UnicodeScalar(UInt8(token)))

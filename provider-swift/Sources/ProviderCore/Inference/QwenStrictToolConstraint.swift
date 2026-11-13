@@ -36,6 +36,19 @@ enum QwenStrictToolFraming: Int8, Hashable, Sendable {
     private static let callCloseBytes = Array("</function>\n</tool_call>".utf8)
 }
 
+/// The spellings each span of a call watches, built once per constraint.
+struct QwenStrictToolMarkers: Sendable {
+    /// A text value: its closing tag ends it; any other is refused.
+    let text: [[UInt8]]
+    /// A JSON value: every one is refused.
+    let value: [[UInt8]]
+
+    init(forbidding markers: [[UInt8]]) {
+        text = markers + [QwenStrictToolBoundary.parameterClose]
+        value = markers + [QwenStrictToolBoundary.parameterClose] + QwenStrictToolBoundary.surrogateEscapes
+    }
+}
+
 /// Interned parse position of a Qwen 3.5 response under the strict-tool
 /// grammar. Reasoning and text outside calls are free and only watched for
 /// the marker that leaves them; inside a call every byte follows the call
@@ -64,6 +77,14 @@ struct QwenStrictToolBoundary: Hashable {
     static let thinkClose = Array("</think>".utf8)
     static let callOpen = Array("<tool_call>".utf8)
     static let parameterClose = Array("</parameter>".utf8)
+    private static let reasoningMarkers = [thinkClose]
+    private static let contentMarkers = [callOpen]
+    /// `\uD800`…`\uDFFF`: the parser's JSONSerialization refuses a lone
+    /// surrogate escape, which would leave the whole value a string, so a JSON
+    /// value never writes one (a character outside the BMP is written as is).
+    static let surrogateEscapes: [[UInt8]] = "dD".utf8.flatMap { first in
+        "89abcdefABCDEF".utf8.map { second in [92, 117, first, second] }
+    }
 
     private(set) var step: Step
     private(set) var window: [UInt8] = []
@@ -97,16 +118,16 @@ struct QwenStrictToolBoundary: Hashable {
         return false
     }
 
-    mutating func consume(_ byte: UInt8, schema: QwenStrictToolSchema, forbidden: [[UInt8]]) -> Bool {
+    mutating func consume(_ byte: UInt8, schema: QwenStrictToolSchema, markers: QwenStrictToolMarkers) -> Bool {
         switch step {
         case .reasoning:
-            if Self.advance(&window, with: byte, markers: [Self.thinkClose]) != nil {
+            if Self.advance(&window, with: byte, markers: Self.reasoningMarkers) != nil {
                 window = []
                 step = .content
             }
             return true
         case .content:
-            if Self.advance(&window, with: byte, markers: [Self.callOpen]) != nil {
+            if Self.advance(&window, with: byte, markers: Self.contentMarkers) != nil {
                 window = []
                 step = .fixed(.callOpen, 0)
             }
@@ -164,7 +185,7 @@ struct QwenStrictToolBoundary: Hashable {
             step = .key(extended)
             return true
         case .text:
-            guard let marker = Self.advance(&window, with: byte, markers: forbidden + [Self.parameterClose]) else {
+            guard let marker = Self.advance(&window, with: byte, markers: markers.text) else {
                 return true
             }
             guard marker == Self.parameterClose else { return false }
@@ -194,8 +215,9 @@ struct QwenStrictToolBoundary: Hashable {
                 step = .fixed(.valueClose, 1)
                 return true
             }
-            // A value may never spell a marker, nor the tag that ends it.
-            guard Self.advance(&window, with: byte, markers: forbidden + [Self.parameterClose]) == nil,
+            // A value may never spell a marker, the tag that ends it, or a
+            // surrogate escape.
+            guard Self.advance(&window, with: byte, markers: markers.value) == nil,
                   state.consume(byte, grammar: grammar) else { return false }
             step = .json(state)
             return true
@@ -257,7 +279,7 @@ final class QwenStrictToolConstraint: CBv2TokenConstraint, @unchecked Sendable {
     let schema: QwenStrictToolSchema
     let startsInReasoning: Bool
     private let vocabulary: JSONAnswerVocabulary
-    private let forbidden: [[UInt8]]
+    private let markers: QwenStrictToolMarkers
     /// Stop tokens sampled outside calls end the answer, as without a grammar.
     private let freeStops: [Int]
     private let lock = NSLock()
@@ -277,7 +299,7 @@ final class QwenStrictToolConstraint: CBv2TokenConstraint, @unchecked Sendable {
         }
         self.schema = schema
         self.vocabulary = vocabulary
-        forbidden = markers
+        self.markers = QwenStrictToolMarkers(forbidding: markers)
         self.startsInReasoning = startsInReasoning
         self.maxTokens = maxTokens
         fallbackTokenID = vocabulary.fallbackTokenID
@@ -315,7 +337,7 @@ final class QwenStrictToolConstraint: CBv2TokenConstraint, @unchecked Sendable {
             }
         } else {
             allowed = vocabulary.acceptedTokens(from: boundary) {
-                $0.consume($1, schema: schema, forbidden: forbidden)
+                $0.consume($1, schema: schema, markers: markers)
             }
         }
         if boundary.isFree { allowed = (allowed + freeStops).sorted() }
@@ -368,7 +390,7 @@ final class QwenStrictToolConstraint: CBv2TokenConstraint, @unchecked Sendable {
         guard !piece.isEmpty else { return nil }
         var next = boundary
         for byte in piece {
-            guard next.consume(byte, schema: schema, forbidden: forbidden) else { return nil }
+            guard next.consume(byte, schema: schema, markers: markers) else { return nil }
         }
         return next
     }

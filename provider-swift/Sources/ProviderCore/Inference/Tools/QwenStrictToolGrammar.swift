@@ -24,8 +24,9 @@ import MLXLMServer
 /// unrecognized prompt boundary, an unverified tokenizer, a cluster pair) is
 /// served exactly as before, never refused.
 ///
-/// A token constraint keeps the engine from drafting with MTP on that row, so
-/// a constrained answer that runs alone on its Mac decodes without MTP.
+/// A token constraint keeps the engine from drafting with MTP on that row
+/// and, on these engines, on every row of a decode step it shares
+/// (`EngineLoopV2.mtpDraftBatchRows`), as for constrained JSON answers.
 enum QwenStrictToolGrammar {
     /// Unset, `on`, `1` or `true`: the Qwen 3.5-family builds (`qwen3_5`,
     /// `qwen3_5_moe`). An off word (`off`, `0`, `false`, `no`, `none`,

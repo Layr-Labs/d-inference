@@ -3744,9 +3744,14 @@ enum's values), and a value it converts is one JSON value of the declared
 schema (`FlintJSONGrammar`); where the two disagree (a top-level `$ref` the
 render repair typed as a string), the request stays unconstrained. No value can
 spell `</parameter>` or a turn, reasoning or call marker. The validator still
-checks every call. The engine drafts no MTP tokens for a row with a token
-constraint, so a constrained answer that runs alone on its Mac decodes without
-MTP; the loop guard stays on (`GenerationLoopGuardPolicy`).
+checks every call. As with constrained JSON answers (above), a constrained row
+never drafts MTP tokens and, on these engines, no row of a decode step it
+shares speculates (`ineligibleRowsDecodeBesideSpeculation` is false): where a
+Mac would draft (one or a few decode rows) the whole answer, reasoning
+included, decodes target-only. A JSON value never writes a surrogate escape
+(`\uD800`…`\uDFFF`; the parser's JSONSerialization refuses a lone one and the
+value would stay a string), nor a backslash followed by such text. The loop
+guard stays on (`GenerationLoopGuardPolicy`).
 
 ### Vision constraints
 

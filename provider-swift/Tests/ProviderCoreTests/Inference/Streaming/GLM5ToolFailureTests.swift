@@ -495,9 +495,21 @@ struct GLM5ToolFailureTests {
         let headerTools = #"[{"type":"function","function":{"name":"echo","parameters":{"type":"object","properties":{"text":{"type":"string"}}}}},{"type":"function","function":{"name":"x"}}]"#
         let orphan = "<tool_call>x</tool_call><arg_key>text</arg_key><arg_value>v</arg_value></tool_call>"
         let echo = "<tool_call>echo<arg_key>text</arg_key><arg_value>x</arg_value></tool_call>"
+        let refusedObject = #"{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"x":{"type":"object","anyOf":[{"type":"object"}]}}}}}"#
+        let store = GLM5ToolFailureTests.storeTool
         return [
-            (open + #"{"x": ],"y":""# + "</tool_call>" + inner, "", GLM5ToolFailureTests.storeTool),
-            ("<tool_call>store<arg_value>" + inner, "", GLM5ToolFailureTests.storeTool),
+            (open + #"{"x": ],"y":""# + "</tool_call>" + inner, "", store),
+            (open + #"{"x": <bad>,"y":""# + "</tool_call>" + inner, "", store),
+            (open + #"{"x": 1 "y":""# + "</tool_call>" + inner, "", store),
+            ("<tool_call>store<arg_value>" + inner, "", store),
+            ("<tool_call>store</arg_value>" + inner, "", store),
+            ("<tool_call>store</arg_key>" + inner, "", store),
+            ("<tool_call>store<arg_key>e\u{301}</arg_key><arg_value>{\"x\":\"</arg_value></tool_call><tool_call>store</tool_call>",
+             "", GLM5ToolFailureTests.accentTool),
+            (#"<tool_call>f<arg_key>x</arg_key><arg_value>]{"y":"</arg_value></tool_call></think>PRIVATE</think>Answer"#,
+             "", refusedObject),
+            ("<tool_call>echo<bad><tool_call>x</tool_call><arg_key>text</arg_key><arg_value></think></arg_value></tool_call>PRIVATE</think>Answer",
+             "", headerTools),
             ("Draft <tool_call>echo<arg_key>text</arg_key><arg_value></think></arg_value></tool_call>PRIVATE</think>Answer",
              "Draft ", nil),
             ("Draft <tool_call>. <tool_call>echo<arg_key>text</arg_key><arg_value></think>PRIVATE</arg_value></tool_call>",

@@ -590,6 +590,9 @@ struct QwenStrictToolGrammarTests {
         #expect(G.isEnabled(modelId: "EigenLabs/Qwen3.8-27B-4bit-mtp", modelType: "qwen3_5", setting: listed))
         #expect(!G.isEnabled(modelId: "EigenLabs/Qwen3.5-9B-MLX-4bit-mtp", modelType: "qwen3_5", setting: listed))
         #expect(G.isEnabled(modelId: "qwen3.6-35b-a3b-vl-mtp-mxfp8", modelType: "qwen3_5_moe", setting: listed))
+        // A list replaces the default builds: one without Qwen 3.8 turns it off on that Mac.
+        #expect(!G.isEnabled(modelId: "EigenLabs/Qwen3.8-27B-4bit-mtp", modelType: "qwen3_5",
+                             setting: G.setting(environment: [G.environmentKey: "qwen3_5_moe"])))
         // Only the Qwen 3.5 template's builds qualify, whatever the list says.
         #expect(!G.isEnabled(modelId: "gemma-4-26b", modelType: "gemma4",
                              setting: G.setting(environment: [G.environmentKey: "gemma4,gemma"])))

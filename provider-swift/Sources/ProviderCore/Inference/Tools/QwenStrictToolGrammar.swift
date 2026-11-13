@@ -29,9 +29,10 @@ import MLXLMServer
 /// (`EngineLoopV2.mtpDraftBatchRows`), as for constrained JSON answers. So by
 /// default the grammar takes the MoE builds (Qwen 3.6, Qwen 3.5 35B), whose
 /// cards' presence penalty keeps them from drafting, and Qwen 3.8 27B, whose
-/// strict calls are its main failure; the coordinator turns it off for a build
-/// by forwarding no `strict` flag (`EIGENINFERENCE_STRICT_TOOLS_UNMARK_MODELS`).
-/// The 9B drafts too, and a Mac opts it in.
+/// strict calls missing their schemas were its main remaining failure; the
+/// coordinator turns it off for a build by forwarding no `strict` flag
+/// (`EIGENINFERENCE_STRICT_TOOLS_UNMARK_MODELS`). The 9B drafts too, and a Mac
+/// opts it in.
 enum QwenStrictToolGrammar {
     /// Unset: the default builds (`qwen3_5_moe` and `qwen3.8-27b`). `on`, `1`,
     /// `true` or `yes`: every Qwen 3.5-family build (`qwen3_5`, `qwen3_5_moe`).

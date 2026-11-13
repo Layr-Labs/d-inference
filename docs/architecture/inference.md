@@ -3717,8 +3717,8 @@ answer has started, so on the Qwen 3.5 template family (`qwen3_5`,
 constrain such calls in the sampler. By default it does so on the MoE builds
 (`qwen3_5_moe`: Qwen 3.6 and Qwen 3.5 35B), which do not draft with MTP by
 default (their cards' presence penalty), and on Qwen 3.8 27B (`qwen3.8-27b`),
-whose strict calls are its main failure, at the cost of its MTP on those
-answers (see below). The coordinator turns the grammar off for a build by
+whose strict calls that missed their schemas were its main remaining failure,
+at the cost of its MTP on those answers (see below). The coordinator turns the grammar off for a build by
 forwarding its tools without `strict` (`EIGENINFERENCE_STRICT_TOOLS_UNMARK_MODELS`).
 The 9B drafts too, so a Mac opts it in (`DARKBLOOM_STRICT_TOOL_GRAMMAR=on` or a
 list, [configuration](../reference/configuration.md)). `QwenStrictToolGrammar` (in

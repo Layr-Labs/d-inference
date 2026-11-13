@@ -405,6 +405,42 @@ private final class QueueingThoughtLoopEngine: CBv2Engine, @unchecked Sendable {
     func shutdown() async {}
 }
 
+/// Holds every request (no token, no end until it is cancelled) and reports
+/// the waiting count the test sets, as the engine publishes it.
+private final class HeldQueueEngine: CBv2Engine, @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuations: [CBv2RequestID: AsyncStream<CBv2Event>.Continuation] = [:]
+    private var priorities: [Int] = []
+    private var waitingCount = 0
+
+    var submittedPriorities: [Int] { lock.withLock { priorities } }
+    func setWaiting(_ count: Int) { lock.withLock { waitingCount = count } }
+
+    func submit(_ request: CBv2Request) throws -> AsyncStream<CBv2Event> {
+        let (stream, continuation) = AsyncStream<CBv2Event>.makeStream()
+        lock.withLock {
+            continuations[request.id] = continuation
+            priorities.append(request.priority)
+        }
+        return stream
+    }
+
+    func cancel(_ id: CBv2RequestID) {
+        let continuation = lock.withLock { continuations.removeValue(forKey: id) }
+        continuation?.yield(.finished(reason: .cancelled, usage: CBv2Usage(promptTokens: 1, completionTokens: 0)))
+        continuation?.finish()
+    }
+
+    func capacity() -> CBv2CapacitySnapshot {
+        lock.withLock {
+            .init(activeRequests: 0, waitingRequests: waitingCount, kvBytesInUse: 0, kvBytesCapacity: 0,
+                  activeTokens: 0)
+        }
+    }
+
+    func shutdown() async {}
+}
+
 @Suite("Loop guard: a repeating thought ends in an answer (scheduler text path)")
 struct GenerationLoopExitThinkingServingTests {
     private let modelID = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
@@ -649,6 +685,36 @@ struct GenerationLoopExitThinkingServingTests {
         #expect(engine.admitted.prefix(4) == [0, 1, 2, 4])
         #expect(outcome.stop == "stop")
         #expect(outcome.content == "Answer: B")
+    }
+
+    @Test("a continuation goes to the engine with priority 1, and the bridge reads the queue in the engine's order")
+    func queueStateFollowsPriority() async throws {
+        let engine = HeldQueueEngine()
+        let bridge = EngineV2Bridge(engine: engine, modelId: modelID, tokenizer: Self.tokenizer,
+            eosTokenIds: [GemmaThoughtTestTokenizer.turnClose, GemmaThoughtTestTokenizer.eos], defaultMaxTokens: 64,
+            maxConcurrentRequests: 8)
+        let request = MultiModelBatchSchedulerEngine.translate(
+            openAIRequest: try JSONDecoder().decode(OpenAIChatCompletionRequest.self, from: Data("""
+            {"model":"\(modelID)","messages":[{"role":"user","content":"hi"}],"max_tokens":256}
+            """.utf8)), defaultMaxTokens: 64)
+        let prompt = GemmaThoughtTestTokenizer.tokens("<|turn>user\nhi<turn|>\n<|turn>model\n")
+        var streams: [AsyncStream<GenerationEvent>] = []
+        for id in ["older", "newer"] {
+            streams.append(await bridge.submitTokenized(promptTokens: prompt, request: request, requestId: id))
+        }
+        streams.append(await EngineAdmissionPriority.$current.withValue(LoopExitThinkingContinuation.admissionPriority) {
+            await bridge.submitTokenized(promptTokens: prompt, request: request, requestId: "continuation")
+        })
+        #expect(engine.submittedPriorities == [0, 0, 1])
+        // One request waits. The engine admits the continuation first, then
+        // the older request, so the newer one is the one that waits.
+        engine.setWaiting(1)
+        #expect(await bridge.queueState(of: "newer")?.waiting == true)
+        #expect(await bridge.queueState(of: "older")?.waiting == false)
+        #expect(await bridge.queueState(of: "continuation")?.waiting == false)
+        for id in ["older", "newer", "continuation"] { await bridge.cancel(requestId: id) }
+        for stream in streams { for await _ in stream {} }
+        await bridge.shutdown()
     }
 
     @Test("Qwen 3.6: a loop inside the thought ends it with `\\n</think>\\n\\n`, and stops apply to the answer")

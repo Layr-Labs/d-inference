@@ -45,7 +45,8 @@ enum StrictToolFixture {
       "required":["passengers","lead"],"additionalProperties":false}}}]
     """#
 
-    /// `anyOf` with null, and a reference beside an open object (tau2's shape).
+    /// `anyOf` with null, and a reference beside an open object (tau2's shape), also as the coordinator forwards
+    /// it inlined, with the render repair's `type` and empty `properties` beside the union.
     static let unions = #"""
     [{"type":"function","function":{"name":"f","strict":true,"parameters":{"type":"object",
       "$defs":{"Flight":{"type":"object","properties":{"number":{"type":"string"}},"required":["number"]}},
@@ -53,7 +54,10 @@ enum StrictToolFixture {
         "limit":{"anyOf":[{"type":"integer"},{"type":"null"}]},
         "label":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null},
         "flight":{"type":"object","properties":{"leg":{"anyOf":[{"$ref":"#/$defs/Flight"},
-                  {"type":"object","additionalProperties":true}]}}}},
+                  {"type":"object","additionalProperties":true}]}}},
+        "legs":{"type":"array","items":{"anyOf":[{"type":"object","title":"FlightInfo",
+                  "properties":{"number":{"type":"string"},"seats":{"type":"integer"}},"required":["number"]},
+                  {"additionalProperties":true,"properties":{},"type":"object"}],"properties":{},"type":"object"}}},
       "required":["limit","label","flight"],"additionalProperties":false}}}]
     """#
 
@@ -376,6 +380,10 @@ struct QwenStrictToolGrammarTests {
         #expect(!F.allows("\"5\"", constraint, after: call))
         let text = call + "null\n</parameter>\n<parameter=label>\nx\n</parameter>\n<parameter=flight>\n"
             + "{\"leg\": {\"anything\": [1, 2]}}\n</parameter>\n</function>\n</tool_call>"
+        // The forwarded form's empty `properties` beside the union asserts nothing: any object.
+        let legs = call + "null\n</parameter>\n<parameter=label>\nx\n</parameter>\n<parameter=legs>\n"
+        #expect(F.allows("[{\"number\": \"HAT1\", \"seats\": 2}, {\"x\": true}]\n</parameter>\n", constraint, after: legs))
+        #expect(!F.allows("[\"HAT1\"]", constraint, after: legs))
         #expect(F.walk(text, constraint) != nil)
         let (request, prepared) = try F.prepared(body)
         let arguments = try #require(try F.calls(text, request, prepared).first.map(F.arguments))

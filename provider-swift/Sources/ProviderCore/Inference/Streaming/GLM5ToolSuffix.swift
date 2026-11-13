@@ -10,8 +10,8 @@ import MLXLMCommon
 /// batch. Reference GLM parsers (vLLM, SGLang) never fail a response on tool
 /// syntax; here such a suffix is text too, under a stricter, provider-specific
 /// rule for what is still a call: the trailing run of top-level frames,
-/// separated only by whitespace and ending the response, from just after the
-/// run's last frame that does not parse. Everything before them is text.
+/// separated only by whitespace and ending the response, when every frame of
+/// it parses. Everything before them is text.
 ///
 /// Only text the lexer can place outside every frame's arguments starts a
 /// frame. A frame that has started its arguments must follow the SDK's grammar
@@ -52,15 +52,14 @@ enum GLM5ToolSuffix {
                 end = frame.lowerBound
             }
             run.reverse()
-            // Each frame parses on its own, so the starts that parse to the
-            // end are exactly those after the run's last frame that does not.
-            let first = run.lastIndex { !lexer.accepted[$0] }.map { $0 + 1 } ?? 0
-            if first < run.count {
-                let from = lexer.frames[run[first]].lowerBound
+            // The run is the response's call batch: like the SDK, take all of
+            // it or none, so a member the SDK refuses runs no other member.
+            if let head = run.first, run.allSatisfy({ lexer.verdicts[$0] ?? lexer.accepts(lexer.frames[$0]) }) {
+                let from = lexer.frames[head].lowerBound
                 let parsed = GLM5ToolCallParser().parseEOS(
                     String(decoding: bytes[from...], as: UTF8.self), tools: tools)
                 // The SDK reads the same frames; anything else stays text.
-                if parsed.count == run.count - first {
+                if parsed.count == run.count {
                     start = from
                     calls = parsed
                 }
@@ -89,12 +88,16 @@ enum GLM5ToolSuffix {
         private let parameters: [String: [String: any Sendable]]
         /// Closed top-level frames, in order.
         private(set) var frames: [Range<Int>] = []
-        /// Whether the SDK's parser accepts each frame on its own.
-        private(set) var accepted: [Bool] = []
+        /// Whether the SDK's parser accepts each frame on its own, where that
+        /// was needed while lexing (a frame with a `"`); nil: not asked yet.
+        private(set) var verdicts: [Bool?] = []
         /// Start of a frame whose arguments break the grammar, are still open
         /// at the end or end where another reading would not; it owns the
-        /// rest of the response. Also a frame's tag in top-level text.
+        /// rest of the response. For a frame's tag in top-level text, the
+        /// first mention before it, or the tag.
         private(set) var unclosed: Int?
+        /// The first `<tool_call>` read as a mention.
+        private var firstMention: Int?
         private var index = 0
 
         init(bytes: [UInt8], tools: [[String: any Sendable]]?) {
@@ -128,9 +131,10 @@ enum GLM5ToolSuffix {
             while true {
                 let next = find("<tool_call>", from: index)
                 // A frame's tag in top-level text belongs to no frame: what
-                // follows it may be that frame's arguments.
+                // follows it may be that frame's arguments, and a header read
+                // as a mention before it may be that frame's.
                 if let stray = first(of: Self.frameTags, in: index ..< (next ?? bytes.count)) {
-                    unclosed = stray
+                    unclosed = firstMention ?? stray
                     return
                 }
                 guard let start = next, let tag = find("<", from: start + 11) else { return }
@@ -138,8 +142,7 @@ enum GLM5ToolSuffix {
                     index = tag + 12
                     guard record(start ..< index) else { return }
                 } else if starts("<arg_key>", at: tag) {
-                    let name = String(decoding: bytes[start + 11 ..< tag], as: UTF8.self)
-                        .trimmingCharacters(in: CharacterSet(charactersIn: " \t\r\n"))
+                    let name = frameName(start ..< tag)
                     let declared = Self.isFunctionName(name) ? parameters[name] : nil
                     guard let end = arguments(from: tag, parameters: declared) else {
                         unclosed = start
@@ -156,25 +159,44 @@ enum GLM5ToolSuffix {
                         unclosed = start
                         return
                     }
+                    firstMention = firstMention ?? start
                     index = following
                 }
             }
         }
 
-        /// Records a closed frame and whether the SDK accepts it on its own. A
-        /// frame the SDK refuses keeps its boundary only without a `"`: one may
-        /// open a JSON string that a raw reading ends inside, or end a raw
-        /// string that a JSON reading runs past. False when it owns the rest.
+        /// Records a closed frame. A frame the SDK refuses keeps its boundary
+        /// only without a `"`: one may open a JSON string that a raw reading
+        /// ends inside, or end a raw string that a JSON reading runs past. Only
+        /// such a frame is checked here; false when it owns the rest.
         private mutating func record(_ frame: Range<Int>) -> Bool {
-            let accepts = GLM5ToolCallParser().parse(
-                content: String(decoding: bytes[frame], as: UTF8.self), tools: tools) != nil
-            if !accepts, bytes[frame].contains(34) {
+            guard bytes[frame].contains(34) else {
+                frames.append(frame)
+                verdicts.append(nil)
+                return true
+            }
+            guard accepts(frame) else {
                 unclosed = frame.lowerBound
                 return false
             }
             frames.append(frame)
-            accepted.append(accepts)
+            verdicts.append(true)
             return true
+        }
+
+        /// Whether the SDK's parser accepts `frame` on its own. A name it
+        /// would refuse before reading arguments is refused without asking it.
+        func accepts(_ frame: Range<Int>) -> Bool {
+            guard let tag = find("<", from: frame.lowerBound + 11) else { return false }
+            let name = frameName(frame.lowerBound ..< tag)
+            guard Self.isFunctionName(name), parameters[name] != nil else { return false }
+            return GLM5ToolCallParser().parse(content: String(decoding: bytes[frame], as: UTF8.self), tools: tools) != nil
+        }
+
+        /// The name of the frame opening at `header.lowerBound`, up to its first `<`.
+        private func frameName(_ header: Range<Int>) -> String {
+            String(decoding: bytes[header.lowerBound + 11 ..< header.upperBound], as: UTF8.self)
+                .trimmingCharacters(in: CharacterSet(charactersIn: " \t\r\n"))
         }
 
         /// The tags of a frame after its `<tool_call>`.

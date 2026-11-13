@@ -21,6 +21,9 @@ struct NativeToolStreamRouter {
     /// An `auto` GLM tool suffix that does not parse at EOS is text
     /// (`GLM5ToolSuffix`).
     private let glmUnparsedOutputIsText: Bool
+    /// The request's tool choice is `auto`: the only mode whose residual text
+    /// the caller publishes.
+    private let autoToolChoice: Bool
     /// `finishCompleteCalls` has released the EOS suffix that way, which
     /// answers its parse failure.
     private var glmSuffixSplit = false
@@ -55,6 +58,8 @@ struct NativeToolStreamRouter {
         self.nativeMiMoRequiresConstraint = nativeMiMoRequiresConstraint
         self.rejectMiMoThought = nativeMiMoChannels && !nativeMiMoThinkingEnabled
         self.streamedCallPolicy = handler?.streamsCalls == true ? streamedCalls : nil
+        // The scheduler passes the prepared choice here on every path.
+        self.autoToolChoice = streamedCalls.map { $0.mode == .auto } ?? !requiresToolCall
         if nativeGemmaChannels {
             gemmaParser = DiffusionGemmaChannelSplitter()
         } else if let nativePrefix {
@@ -183,7 +188,7 @@ struct NativeToolStreamRouter {
     }
 
     private var returnsUnparsedGLMOutputAsText: Bool {
-        handler?.format == .glm5 && glmUnparsedOutputIsText && !requiresToolCall
+        handler?.format == .glm5 && glmUnparsedOutputIsText && autoToolChoice
     }
 
     private mutating func route(_ pieces: [ParsedReasoning]) throws -> [MLXServerGenerationEvent] {

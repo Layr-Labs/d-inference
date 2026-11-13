@@ -130,7 +130,10 @@ public struct ChatTemplateControls: Sendable, Equatable {
     func askingGemmaPromptContract(
         _ version: Int?, enabled: Bool = GemmaPromptContract.enabled
     ) -> Self {
-        self
+        guard enabled, version == GemmaPromptContract.partsVersion else { return self }
+        var copy = self
+        copy.gemmaPromptContract = version
+        return copy
     }
 
     func resolvingPromptDate(at now: Date = Date()) -> Self {

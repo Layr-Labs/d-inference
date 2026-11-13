@@ -1128,6 +1128,9 @@ extension ProviderMessage: Codable {
             }
             try container.encodeIfPresent(
                 r.toolConstraintModels, forKey: .toolConstraintModels)
+            if let version = r.gemmaPromptContract, version > 1 {
+                try container.encode(version, forKey: .gemmaPromptContract)
+            }
             try Self.encodeBusy(r.busy, into: &container)
 
         case .heartbeat(let h):
@@ -1412,7 +1415,8 @@ extension ProviderMessage: Codable {
                 memberRegistrationNonce: try container.decodeIfPresent(String.self, forKey: .memberRegistrationNonce),
                 clusterModels: try container.decodeIfPresent([ModelInfo].self, forKey: .clusterModels),
                 clusterMembership: try container.decodeIfPresent(ClusterMembership.self, forKey: .clusterMembership),
-                busy: try Self.decodeBusy(from: container)
+                busy: try Self.decodeBusy(from: container),
+                gemmaPromptContract: try container.decodeIfPresent(Int.self, forKey: .gemmaPromptContract)
             ))
 
         case .heartbeat:
@@ -1992,6 +1996,7 @@ extension CoordinatorMessage: Codable {
                 forKey: .toolSchemaMetadataProtocol)
             try container.encodeIfPresent(r.serviceReservationID, forKey: .serviceReservationID)
             try container.encodeIfPresent(r.promptWork, forKey: .promptWork)
+            try container.encodeIfPresent(r.gemmaPromptContract, forKey: .gemmaPromptContract)
 
         case .cancel(let c):
             try container.encode(TypeValue.cancel, forKey: .type)
@@ -2113,7 +2118,9 @@ extension CoordinatorMessage: Codable {
                 // Advisory evidence must never discard the request itself.
                 // Missing/malformed evidence keeps actual tokenization and
                 // ordinary observed-rate deadline admission authoritative.
-                promptWork: try? container.decodeIfPresent(PromptWork.self, forKey: .promptWork)
+                promptWork: try? container.decodeIfPresent(PromptWork.self, forKey: .promptWork),
+                // A malformed value renders version 1, never refuses the request.
+                gemmaPromptContract: try? container.decodeIfPresent(Int.self, forKey: .gemmaPromptContract)
             ))
 
         case .cancel:

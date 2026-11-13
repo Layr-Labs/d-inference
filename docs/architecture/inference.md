@@ -3613,6 +3613,40 @@ spliced across a boundary the reasoning parser later hides. Required and named
 (`provider-swift/Sources/ProviderCore/Inference/Tools/GemmaNoToolTokenConstraint.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Tools/GemmaTokenVocabulary.swift`).
 
+### Gemma 4 prompt contracts
+
+Gemma 4's template renders a string system message as is and a list of text
+parts with a space after each part (`item['text'] | trim + ' '`); it trims each
+part of a list-shaped user message on its own and joins the parts without a
+separator. Two renders follow from it (`GemmaPromptContract`):
+
+- **Contract 1** (0.10.12, and what the coordinator's prompt sidecar plans and
+  counts unless told otherwise): message content as one string, list parts
+  joined first (`OpenAIMessageContent.text`).
+- **Contract 2**: the system message (string or list) and a user message's list
+  content as the template's text parts. vLLM reads this template as OpenAI
+  content format and hands it every string as one text part, so this is
+  vLLM-served endpoints' prompt: one more token before the system turn closes
+  (OpenRouter's GPQA prompt is 88 tokens, not 87), and Transformers' render of
+  list content.
+
+The provider registers `gemma_prompt_contract: 2` and renders contract 2 only
+for a coordinator `inference_request` that carries `gemma_prompt_contract: 2`
+(`ChatTemplateControls.askingGemmaPromptContract`), on a Gemma 4 (`gemma4`,
+`gemma4_text`) text request. The coordinator sends it only for a request it
+planned and counted with contract 2, so a cache plan or exact prompt-work count
+never meets a prompt it was not made for (a mismatching prompt fails its cache
+receipt with `prompt_anchor_mismatch` and fences the provider's cache routing;
+it also withdraws calibrated deadline admission, `PromptWork.reconciled`).
+Every other request, the local API, media requests and other models render
+contract 1, so the capability is dormant until the coordinator switches a model
+on. The usage floor recounts through the same pipeline
+(`ProviderPromptContractPipeline.normalizedInput`). A body cannot ask: only the
+authenticated coordinator frame can. `DARKBLOOM_GEMMA_PROMPT_CONTRACT_V2=off`
+stops advertising contract 2 and renders contract 1 everywhere.
+`ProductionPromptParityTests.gemmaPromptContractVectors` checks both contracts
+on the served artifacts against `fixtures/prompt-contract/v1/gemma4_prompt_contract_vectors.json`.
+
 ### Constrained Gemma 4 JSON answers
 
 Gemma 4 answers to a JSON `response_format` are sampled under the same JSON

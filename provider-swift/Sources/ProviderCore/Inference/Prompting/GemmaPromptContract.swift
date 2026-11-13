@@ -43,7 +43,7 @@ enum GemmaPromptContract {
     static var advertisedVersion: Int? { advertisedVersion(enabled: enabled) }
 
     static func advertisedVersion(enabled: Bool) -> Int? {
-        nil
+        enabled ? partsVersion : nil
     }
 
     /// Whether `request` renders version 2: the coordinator asked for it, and
@@ -51,13 +51,26 @@ enum GemmaPromptContract {
     static func rendersParts(
         _ request: OpenAIChatCompletionRequest, modelType: String?, controls: ChatTemplateControls
     ) -> Bool {
-        false
+        guard controls.gemmaPromptContract == partsVersion, let modelType,
+              modelTypes.contains(modelType.lowercased()) else { return false }
+        return !MediaIngest.hasMedia(request)
     }
 
     /// The version 2 template content of `message`: a system message's string
     /// or list, or a user message's list, as text parts. Nil keeps its string.
     static func textParts(of message: OpenAIChatMessage) -> [any Sendable]? {
-        nil
+        switch (message.role, message.content) {
+        case (.system, .text(let text)):
+            return [part(text)]
+        case (.system, .parts(let parts)), (.user, .parts(let parts)):
+            let texts = parts.compactMap { item -> (any Sendable)? in
+                if case .text(let text) = item { return part(text) }
+                return nil
+            }
+            return texts.isEmpty ? nil : texts
+        default:
+            return nil
+        }
     }
 
     private static func part(_ text: String) -> [String: any Sendable] {

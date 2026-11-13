@@ -91,7 +91,9 @@ public final class GenerationLoopExitRecord: @unchecked Sendable {
 /// Qwen 3.8 27B, whose thought loops are rare. The guard keeps ending every
 /// other loop as `length`: a loop outside the thought, a family that is not
 /// on, a request that asked for logprobs (the forced tokens have none), a
-/// pair's request.
+/// pair's request. Nemotron 3.5 Super (`nemotron_h_omni`) takes its owner's
+/// own route (`NemotronSuperLocalBinding`), which continues the answer the
+/// same way.
 ///
 /// `DARKBLOOM_LOOP_EXIT_THINKING`: unset, `1` or `on` keeps the default list;
 /// `0` or `off` turns it off; any other value is the comma-separated list of
@@ -114,13 +116,15 @@ enum GenerationLoopExitThinkingPolicy {
         "gemma4_text": .init(open: "<|channel>", close: "<channel|>"),
         "qwen3_5": qwenThink,
         "qwen3_5_moe": qwenThink,
+        // Super's template writes `reasoning + "</think>" + content`: nothing around the marker.
+        "nemotron_h_omni": .init(open: "<think>", close: "</think>"),
     ]
 
     /// As the Qwen 3.5/3.6 template writes a closed thought:
     /// `<think>\n…\n</think>\n\n` before the answer.
     static let qwenThink = Markers(open: "<think>", close: "</think>", before: "\n", after: "\n\n")
 
-    static let defaultModelTypes: Set<String> = ["gemma4", "gemma4_text", "qwen3_5_moe"]
+    static let defaultModelTypes: Set<String> = ["gemma4", "gemma4_text", "qwen3_5_moe", "nemotron_h_omni"]
 
     /// The answer's own cap. Gemma's GPQA answers after a thought are under
     /// 1,000 tokens; a Tau2 reply or call is shorter.

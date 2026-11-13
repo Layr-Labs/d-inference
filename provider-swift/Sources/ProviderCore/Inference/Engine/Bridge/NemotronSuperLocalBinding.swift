@@ -6,6 +6,35 @@ import Foundation
 /// come from the existing atomic provider acquire path after its container/bridge builder
 /// has gained a qualified Super adapter. Installing SDK weights alone cannot provide it.
 /// This type neither loads weights nor manufactures admission, trust, or registry entries.
+private extension ChatCompletionRequest {
+    /// The same request with another output budget.
+    func withMaxTokens(_ maxTokens: Int) -> ChatCompletionRequest {
+        ChatCompletionRequest(
+            model: model, messages: messages, temperature: temperature, top_p: top_p, top_k: top_k,
+            max_tokens: maxTokens, repetition_penalty: repetition_penalty, presence_penalty: presence_penalty,
+            frequency_penalty: frequency_penalty, stream: stream, stop: stop, seed: seed, tools: tools,
+            tool_choice: tool_choice, response_format: response_format, user: user,
+            prompt_cache_key: prompt_cache_key, logit_bias: logit_bias, logprobs: logprobs,
+            top_logprobs: top_logprobs, min_p: min_p)
+    }
+}
+
+/// Cancels the request's running row: the first, or once a continuation can
+/// start, both (`LoopExitThinkingContinuation.splice`'s cancel).
+private final class RowCancel: @unchecked Sendable {
+    private let lock = NSLock()
+    private var action: @Sendable () async -> Void
+
+    init(_ action: @escaping @Sendable () async -> Void) { self.action = action }
+
+    func replace(with action: @escaping @Sendable () async -> Void) { lock.withLock { self.action = action } }
+
+    func run() async {
+        let action = lock.withLock { self.action }
+        await action()
+    }
+}
+
 actor NemotronSuperLocalBinding {
     /// The qualification hook's model id; a managed slot serves its registry id.
     static let modelID = "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4"
@@ -62,7 +91,9 @@ actor NemotronSuperLocalBinding {
     /// receives the engine's prefix-cache outcome and drives its receipts;
     /// `donationDemand` is the coordinator's fleet repeat hint for a durable
     /// checkpoint write (nil: write). `loopGuard` stops a row that repeats
-    /// verbatim (`NemotronSuperRequestPlan.loopGuard()`; nil: none).
+    /// verbatim (`NemotronSuperRequestPlan.loopGuard()`; nil: none); one that
+    /// carries an exit continues a thought it stopped as the scheduler's text
+    /// path does (`LoopExitThinkingContinuation`), within this request.
     func run(request: ChatCompletionRequest, promptTokens: [Int],
              hasMedia: Bool = false, cacheScope: String? = "", logprobs: EngineV2LogprobsChannel? = nil,
              usageSignal: EngineV2RequestUsageSignal? = nil,
@@ -183,11 +214,45 @@ actor NemotronSuperLocalBinding {
         onEvent: @escaping @Sendable (GenerationEvent) async -> Void
     ) async throws {
         let usage = usageSignal ?? EngineV2RequestUsageSignal()
+        // A usage signal belongs to one engine request: a continuation has its own.
+        let continuationUsage = EngineV2RequestUsageSignal()
+        let cancel = RowCancel { await bridge.cancel(requestId: requestID) }
         await withTaskCancellationHandler {
-            let stream = await bridge.submitTokenized(
+            var stream = await bridge.submitTokenized(
                 promptTokens: tokens, request: request, requestId: requestID,
                 cacheScope: cacheScope ?? "", cacheEnabled: cacheScope != nil,
                 usageSignal: usage, donationDemand: donationDemand, loopGuard: loopGuard)
+            if let loopGuard, let exit = loopGuard.exitThinking, !(await bridge.servesDistributedPair) {
+                let continuationID = requestID + "-exit"
+                let spliced = LoopExitThinkingContinuation.splice(
+                    first: stream,
+                    cancelFirst: { await bridge.cancel(requestId: requestID) },
+                    exit: exit,
+                    promptTokens: tokens,
+                    outputBudget: bridge.outputTokens(requested: request.max_tokens, promptTokens: tokens.count),
+                    submit: { continuationPrompt, budget in
+                        guard await bridge.waitForRowRelease(requestId: requestID, within: .seconds(5)) else {
+                            throw LoopExitThinkingContinuation.RowNotReleased()
+                        }
+                        return await bridge.submitTokenized(
+                            promptTokens: continuationPrompt, request: request.withMaxTokens(budget),
+                            requestId: continuationID,
+                            cacheScope: cacheScope ?? "", cacheEnabled: cacheScope != nil,
+                            usageSignal: continuationUsage, donationDemand: donationDemand,
+                            loopGuard: loopGuard.withoutExit())
+                    },
+                    cancelContinuation: { await bridge.cancel(requestId: continuationID) },
+                    onOutcome: { outcome in
+                        if case .continued = outcome {
+                            usage.record(matchedStopSequence: continuationUsage.matchedStopSequence)
+                        }
+                        LoopExitThinkingContinuation.logger.notice(
+                            "loop guard ended a thought", metadata: [
+                                "request_id": .string(requestID), "outcome": .string(outcome.description)])
+                    })
+                stream = spliced.events
+                cancel.replace(with: spliced.cancel)
+            }
             for await event in stream {
                 if Task.isCancelled { break }
                 // The bridge yields a delta's entries just before its text;
@@ -195,11 +260,12 @@ actor NemotronSuperLocalBinding {
                 if case .logprobs(let entries) = event { logprobs?.append(entries); continue }
                 await onEvent(event)
             }
-            if Task.isCancelled { await bridge.cancel(requestId: requestID) }
+            if Task.isCancelled { await cancel.run() }
             // A terminal event alone does not prove pump/native cleanup has completed.
             await usage.waitForTerminalObservation()
+            await continuationUsage.waitForTerminalObservation()
         } onCancel: {
-            Task { await bridge.cancel(requestId: requestID) }
+            Task { await cancel.run() }
         }
         try Task.checkCancellation()
     }

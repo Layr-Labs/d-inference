@@ -10,6 +10,11 @@ struct NativeToolStreamRouter {
     private let requiresToolCall: Bool
     private var parser: NativeChannelSplitter?
     private var gemmaParser: DiffusionGemmaChannelSplitter?
+    private var glimmerParser: MuseGlimmerChannelSplitter?
+    /// Declared tool names, for the doubled name Muse Glimmer sometimes emits.
+    private let declaredToolNames: Set<String>
+    /// Muse Glimmer tool channels that held no parseable call.
+    private var glimmerToolFailures = 0
     private let nativeGemmaReasoningEnabled: Bool
     private let nativeMiMoChannels: Bool
     private let nativeMiMoRequiresConstraint: Bool
@@ -36,8 +41,12 @@ struct NativeToolStreamRouter {
          nativeGemmaReasoningEnabled: Bool = true, nativeMiMoChannels: Bool = false,
          nativeMiMoThinkingEnabled: Bool = true, nativeMiMoRequiresConstraint: Bool = false,
          absorbStrayThinkClose: Bool = false, withholdReasoning: Bool = false,
-         streamedCalls: ToolChoicePromptPolicy.Prepared? = nil) {
+         streamedCalls: ToolChoicePromptPolicy.Prepared? = nil,
+         nativeGlimmerChannels: Bool = false) {
         self.handler = handler
+        self.declaredToolNames = Set((tools ?? []).compactMap { tool in
+            ((tool["function"] as? [String: any Sendable]) ?? tool)["name"] as? String
+        })
         self.withholdReasoning = withholdReasoning
         self.requiresToolCall = requiresToolCall
         self.nativeGemmaReasoningEnabled = nativeGemmaReasoningEnabled
@@ -47,6 +56,8 @@ struct NativeToolStreamRouter {
         self.streamedCallPolicy = handler?.streamsCalls == true ? streamedCalls : nil
         if nativeGemmaChannels {
             gemmaParser = DiffusionGemmaChannelSplitter()
+        } else if nativeGlimmerChannels {
+            glimmerParser = MuseGlimmerChannelSplitter()
         } else if let nativePrefix {
             self.parser = NativeChannelSplitter(prefix: nativePrefix, protectToolFrames: handler != nil,
                 qwenStructuredFrames: handler?.format == .qwen35 || handler?.format == .mimoV2,
@@ -57,7 +68,7 @@ struct NativeToolStreamRouter {
         }
     }
 
-    var usesNativeChannels: Bool { parser != nil || gemmaParser != nil }
+    var usesNativeChannels: Bool { parser != nil || gemmaParser != nil || glimmerParser != nil }
 
     /// True when calls leave as `.toolCallDelta` events while generated.
     var streamsToolCalls: Bool { streamedCallPolicy != nil }
@@ -71,6 +82,7 @@ struct NativeToolStreamRouter {
     }
 
     mutating func process(_ text: String) throws -> [MLXServerGenerationEvent] {
+        if glimmerParser != nil { return try route(glimmerParser!.parse(text)) }
         let pieces: [ParsedReasoning]
         if gemmaParser != nil { pieces = gemmaParser!.parse(text) }
         else { pieces = parser != nil ? parser!.parse(text) : [.init(content: text, reasoningContent: nil)] }
@@ -79,7 +91,10 @@ struct NativeToolStreamRouter {
         return try route(pieces)
     }
 
-    mutating func finishText() throws -> [MLXServerGenerationEvent] {
+    /// `truncated`: the output-token limit ended generation. Muse Glimmer
+    /// then drops a tool call cut off mid-invoke instead of failing it.
+    mutating func finishText(truncated: Bool = false) throws -> [MLXServerGenerationEvent] {
+        if glimmerParser != nil { return try route(glimmerParser!.finish(truncated: truncated)) }
         let pieces = gemmaParser != nil ? gemmaParser!.finish() : (parser?.finish() ?? [])
         try checkReasoningState()
         try checkNativeToolFailure()
@@ -138,14 +153,57 @@ struct NativeToolStreamRouter {
     /// Also called after the SDK EOS flush, before residual text or any call
     /// is published. GLM validates the entire retained suffix only at EOS.
     func checkNativeToolFailure() throws {
-        guard nativeMiMoChannels || handler?.format == .glm5 || handler?.format == .flint,
-            (handler?.parseFailureCount ?? 0) > 0 else { return }
-        let model = handler?.format == .glm5 ? "GLM" : handler?.format == .flint ? "Flint" : "MiMo"
+        guard nativeMiMoChannels || handler?.format == .glm5 || handler?.format == .flint
+                || glimmerParser != nil,
+            (handler?.parseFailureCount ?? 0) + glimmerToolFailures > 0 else { return }
+        let model = glimmerParser != nil ? "Muse Glimmer"
+            : handler?.format == .glm5 ? "GLM" : handler?.format == .flint ? "Flint" : "MiMo"
         let message = "native \(model) tool output is invalid"
         if requiresToolCall || nativeMiMoRequiresConstraint {
             throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(message)
         }
         throw MultiModelBatchSchedulerEngineError.generationFailed(message)
+    }
+
+    /// Muse Glimmer's channels are already scoped: reasoning and the answer
+    /// never pass the tool parser, and only a tool channel's invokes reach it.
+    /// A call leaves at the engine terminal, validated like any complete call.
+    private mutating func route(
+        _ pieces: [MuseGlimmerChannelSplitter.Piece]
+    ) throws -> [MLXServerGenerationEvent] {
+        var events: [MLXServerGenerationEvent] = []
+        for piece in pieces {
+            switch piece {
+            case .reasoning(let text):
+                if withholdReasoning {
+                    withheldReasoning += text
+                } else {
+                    events.append(.parsed(.init(content: "", reasoningContent: text)))
+                }
+            case .content(let text):
+                if requiresToolCall {
+                    if ToolChoiceEnforcementPolicy.isFramingWhitespace(text) { continue }
+                    throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(
+                        "forced tool_choice produced visible text before a validated call")
+                }
+                events.append(.parsed(.init(content: text, reasoningContent: nil)))
+            case .invoke(let element):
+                // Without declared tools there is no parser: the call is invalid.
+                guard let handler else {
+                    glimmerToolFailures += 1
+                    continue
+                }
+                // The parser returns a frame it rejects as text. On a tool
+                // channel that text is protocol, never an answer: the count
+                // below fails the request instead.
+                _ = handler.processChunk(
+                    MuseGlimmerToolFrame.block(invoke: element, declaredNames: declaredToolNames))
+            case .malformedToolFrame:
+                glimmerToolFailures += 1
+            }
+        }
+        try checkNativeToolFailure()
+        return events
     }
 
     private mutating func route(_ pieces: [ParsedReasoning]) throws -> [MLXServerGenerationEvent] {

@@ -74,9 +74,12 @@ enum ToolChoiceEnforcementPolicy {
         if Gemma4TemplateFix.applies(to: modelContext) { return .gemmaGrammar }
         // GLM's native engine refuses sampler constraints: its forced calls
         // are prompt-forced, withheld and validated like Qwen and Nemotron.
+        // Muse Glimmer's calls leave only at the engine terminal, after its
+        // tool channel parsed and the call validated.
         if Qwen35TemplateFix.applies(to: modelContext) || nativeStructuredTarget(modelContext)
             || modelContext.modelType == "mimo_v2"
-            || GLM5NextPromptPolicy.applies(modelType: modelContext.modelType) {
+            || GLM5NextPromptPolicy.applies(modelType: modelContext.modelType)
+            || MuseGlimmerModelPolicy.isModelType(modelContext.modelType) {
             return .structuredPostValidation
         }
         throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
@@ -107,6 +110,11 @@ enum ToolChoiceEnforcementPolicy {
         // choice before any media work.
         if GLM5NextPromptPolicy.applies(modelType: model.modelType),
             GLM5NextCoordinatorServing.isManagedModelID(model.id) {
+            return true
+        }
+        // Muse Glimmer prompt-forces a required or named call and withholds
+        // every call until its tool channel parses and the call validates.
+        if MuseGlimmerModelPolicy.matches(modelId: model.id, modelType: model.modelType) {
             return true
         }
         if let admittedType = structuredForcedToolModelTypes[model.id] {
@@ -147,7 +155,8 @@ enum ToolChoiceEnforcementPolicy {
 
     /// Consumer routing is not a public qualification/catalog advertisement.
     static func usesNativeTextChannels(_ context: ChatTemplateFixContext) -> Bool {
-        context.modelType == "mimo_v2" || nativeStructuredTarget(context)
+        context.modelType == "mimo_v2" || MuseGlimmerModelPolicy.isModelType(context.modelType)
+            || nativeStructuredTarget(context)
     }
 
     /// Only the qualified Nemotron parser absorbs a close already in content.
@@ -194,6 +203,13 @@ enum ToolChoiceEnforcementPolicy {
                 guard format == .mimoV2 else {
                     throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
                         "native MiMo tool_choice requires the native MiMo parser")
+                }
+                return
+            }
+            if MuseGlimmerModelPolicy.isModelType(modelContext?.modelType) {
+                guard format == .atem else {
+                    throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
+                        "Muse Glimmer tool_choice requires the native ATEM parser")
                 }
                 return
             }

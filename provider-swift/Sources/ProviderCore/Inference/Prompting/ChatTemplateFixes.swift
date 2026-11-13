@@ -36,6 +36,10 @@ enum ChatTemplateFixes {
             try validateGenericToolHistory(messages)
             return messages.map(FlintTemplateNormalization.object)
         }
+        if MuseGlimmerTemplateFix.applies(to: context) {
+            try validateGenericToolHistory(messages)
+            return try MuseGlimmerTemplateFix.normalizeMessages(messages)
+        }
         let sanitized = sanitizeJinjaMessages(messages)
         var normalized = Qwen35TemplateFix.applies(to: context)
             ? Qwen35TemplateFix.normalizeMessages(sanitized)
@@ -72,7 +76,8 @@ enum ChatTemplateFixes {
         if MiMoV26TemplateFix.applies(to: context) {
             return MiMoV26TemplateFix.normalizeTools(metadataScoped)
         }
-        if context.modelType == "flint" {
+        if context.modelType == "flint" || MuseGlimmerTemplateFix.applies(to: context) {
+            // Both templates write a schema's `null` as a value.
             return metadataScoped?.map(FlintTemplateNormalization.object)
         }
         guard let sanitized = sanitizeTools(metadataScoped) else { return nil }
@@ -130,11 +135,15 @@ enum ChatTemplateFixes {
         if Gemma4TemplateFix.applies(to: context) {
             ids.formUnion(Gemma4TemplateFix.extraEOSTokenIds(tokenToId: tokenToId))
         }
+        if MuseGlimmerTemplateFix.applies(to: context) {
+            ids = MuseGlimmerTemplateFix.stopTokenIds(base: ids, tokenToId: tokenToId)
+        }
         return ids
     }
 
     static func stopStringScope(context: ChatTemplateFixContext) -> CBv2StopStringScope? {
-        GPTOSSHarmonyTemplateFix.applies(to: context)
+        if MuseGlimmerTemplateFix.applies(to: context) { return MuseGlimmerTemplateFix.answerStopScope }
+        return GPTOSSHarmonyTemplateFix.applies(to: context)
             ? GPTOSSHarmonyTemplateFix.finalChannelStopScope : nil
     }
 

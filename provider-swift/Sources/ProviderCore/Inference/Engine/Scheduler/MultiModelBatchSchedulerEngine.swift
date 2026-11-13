@@ -1199,7 +1199,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 .init(modelId: modelId, modelType: modelType)),
             answerStopFilter: answerStopFilter,
             answerFormat: jsonAnswer?.format,
-            withholdReasoning: withholdsReasoning
+            withholdReasoning: withholdsReasoning,
+            nativeGlimmerChannels: MuseGlimmerModelPolicy.isModelType(modelType)
         )
     }
 
@@ -1568,7 +1569,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         absorbStrayThinkClose: Bool = false,
         answerStopFilter: FlintAnswerStopFilter? = nil,
         answerFormat: JSONAnswerFormat? = nil,
-        withholdReasoning: Bool = false
+        withholdReasoning: Bool = false,
+        nativeGlimmerChannels: Bool = false
     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         do {
             try checkFirstContentDeadline()
@@ -1596,7 +1598,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 absorbStrayThinkClose: absorbStrayThinkClose,
                 answerStopFilter: answerStopFilter,
                 answerFormat: answerFormat,
-                withholdReasoning: withholdReasoning)
+                withholdReasoning: withholdReasoning,
+                nativeGlimmerChannels: nativeGlimmerChannels)
             try checkFirstContentDeadline()
             return stream
         } catch {
@@ -1632,7 +1635,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         absorbStrayThinkClose: Bool = false,
         answerStopFilter: FlintAnswerStopFilter? = nil,
         answerFormat: JSONAnswerFormat? = nil,
-        withholdReasoning: Bool = false
+        withholdReasoning: Bool = false,
+        nativeGlimmerChannels: Bool = false
     ) throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         // One forwarding implementation preserves all parser/event bytes. The
         // native path changes only task ownership and cancellation handoff.
@@ -1662,7 +1666,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     nativeMiMoThinkingEnabled: nativeMiMoThinkingEnabled,
                     nativeMiMoRequiresConstraint: nativeMiMoChannels && prepared.mode.requiresInferenceConstraint,
                     absorbStrayThinkClose: absorbStrayThinkClose,
-                    withholdReasoning: withholdReasoning, streamedCalls: prepared)
+                    withholdReasoning: withholdReasoning, streamedCalls: prepared,
+                    nativeGlimmerChannels: nativeGlimmerChannels)
                 // Withheld reasoning must not return as logprob entry tokens. A
                 // prompt that opens the thought (GLM with thinking on, which
                 // seeds the native channel with an open block) starts inside it.
@@ -1872,7 +1877,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     if let tail = answerStops?.finish(), !tail.isEmpty {
                         events += try router.process(tail)
                     }
-                    events += try router.finishText()
+                    events += try router.finishText(truncated: stopReason == "length")
                     usageSignal.recordWithheldReasoning(router.takeWithheldReasoning())
                     for routed in events { emit(routed) }
                 } catch {
@@ -2055,13 +2060,16 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         recordsWithheldOutput: Bool = false,
         usageSignal: EngineV2RequestUsageSignal = EngineV2RequestUsageSignal(),
         answerStopFilter: FlintAnswerStopFilter? = nil,
-        answerFormat: JSONAnswerFormat? = nil
+        answerFormat: JSONAnswerFormat? = nil,
+        withholdReasoning: Bool = false,
+        nativeGlimmerChannels: Bool = false
     ) throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         try makeEventStream(upstream: upstream, cancelUpstream: cancelUpstream,
             toolHandler: toolHandler, prepared: prepared, releaseBox: releaseBox,
             usageSignal: usageSignal, reasoningPrefix: reasoningPrefix,
             nativeReasoningPrefix: nativeReasoningPrefix, recordsWithheldOutput: recordsWithheldOutput,
-            answerStopFilter: answerStopFilter, answerFormat: answerFormat)
+            answerStopFilter: answerStopFilter, answerFormat: answerFormat,
+            withholdReasoning: withholdReasoning, nativeGlimmerChannels: nativeGlimmerChannels)
     }
     #endif
 

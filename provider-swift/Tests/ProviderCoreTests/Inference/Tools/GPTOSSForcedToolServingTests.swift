@@ -181,9 +181,12 @@ struct GPTOSSForcedToolCutTests {
                 finishReason: "length"))
             continuation.finish()
         }
+        // With the `final` header filter production installs for GPT-OSS, which holds a header until its
+        // `<|message|>` and releases a cut one at the end.
         let stream = try MultiModelBatchSchedulerEngine(registryProvider: { [:] })._testMakeEventStream(
             upstream: upstream, cancelUpstream: {}, prepared: prepared,
-            releaseBox: OneShotRelease(release: { _ in }, modelId: "gpt-oss-20b"), toolHandler: handler)
+            releaseBox: OneShotRelease(release: { _ in }, modelId: "gpt-oss-20b"), toolHandler: handler,
+            rewriteHarmonyFinalHeaders: true)
         var outcome = HarmonyOutcome()
         do {
             for try await event in stream { outcome.record(event) }

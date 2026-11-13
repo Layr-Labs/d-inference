@@ -3658,10 +3658,10 @@ breaking a contract, and OpenRouter does not count a call cut by the caller's
   `auto` GLM suffix that does not parse is not split into calls at a cut and
   stays text (`GLM5ToolSuffix`) without the run of whitespace-separated frames
   that ends the output, whose last frame closed or was left unfinished by the
-  limit (in its name, a tag or its arguments): that run is dropped
-  (`GLM5ToolSuffix.droppingCutFrames`). A `<tool_call>` the lexer reads as a
-  mention, and frames followed by text, stay. A suffix that cannot be released
-  (a think marker inside a frame) is dropped. A
+  limit (in its name, a tag or its arguments): that run is dropped, whether or
+  not its frames parse (`GLM5ToolSuffix.droppingCutFrames`). A `<tool_call>`
+  the lexer reads as a mention, and frames followed by text, stay. A suffix
+  that cannot be released (a think marker inside a frame) is dropped. A
   withheld `auto` frame of another family (Qwen without `stream`, or with
   `DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0`) that the end-of-generation parse cannot
   read stays text, as before (the parser fallback); the coordinator path
@@ -3686,7 +3686,8 @@ providers. A local request without `stream` still gets the service's 422
 the service checks complete responses itself. Telemetry
 `tool_constraint_cut` records each outcome by reason: `open_call` (a streamed
 call left open), `dropped_calls` (calls dropped, withheld or never exposed),
-`dropped_frame` (a native frame the cut left unparsed), `forced_no_call` (a
+`dropped_frame` (a native frame the cut left unparsed, or the frames that end
+a cut `auto` GLM suffix, closed or not), `forced_no_call` (a
 forced choice that ends with no call) and `unchecked_answer` (a structured
 answer whose skipped check would have refused it). Super's output records none.
 `DARKBLOOM_LENGTH_FINISH_AT_LIMIT=0` (or `off`, `false`, `no`) restores the

@@ -37,9 +37,10 @@ struct NativeToolStreamRouter {
     /// (`StrictToolCallPolicy`).
     var responseStarted = false
     /// Telemetry: at a cut, streamed calls left open and calls never exposed
-    /// that were dropped, and whether an `auto` GLM suffix lost frames the
-    /// limit left unfinished (`finishCompleteCalls`); `strict` calls that
-    /// failed their check and left as generated because the response started.
+    /// that were dropped, and whether an `auto` GLM suffix lost the frames
+    /// that end the cut output, closed or not (`finishCompleteCalls`);
+    /// `strict` calls that failed their check and left as generated because
+    /// the response started.
     private(set) var callsLeftOpenAtCut = 0
     private(set) var callsDroppedAtCut = 0
     private(set) var glmFramesDroppedAtCut = false

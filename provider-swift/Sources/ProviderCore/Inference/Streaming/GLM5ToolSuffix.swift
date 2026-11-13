@@ -68,10 +68,38 @@ enum GLM5ToolSuffix {
             ? .text(suffix, calls: []) : .text(String(decoding: bytes[..<start], as: UTF8.self), calls: calls)
     }
 
+    /// The text an output the token limit cut releases, when the cut ends it
+    /// as `length` (`TokenLimitCutPolicy`): it is not split into calls, as in
+    /// `split(truncated:)`, and the frames that end it are dropped, never
+    /// published as text: from the frame that owns the rest (`Lexer.unclosed`:
+    /// open at the end or broken, or from the first frame or mention before a
+    /// frame's tag in top-level text), or from a header the end cut
+    /// (`Lexer.cutHeader`), or from the end, back over the closed frames
+    /// separated from it only by whitespace. Mentions, frames followed by
+    /// text, and the text before them stay. Nil when that text would still
+    /// put a think marker from inside a frame before the reasoning parser:
+    /// the whole suffix is then dropped. Decided on exactly the text released.
+    static func textAtCut(_ suffix: String, tools: [[String: any Sendable]]?) -> String? {
+        let bytes = Array(suffix.utf8)
+        var lexer = Lexer(bytes: bytes, tools: tools)
+        lexer.run()
+        var start = lexer.unclosed ?? lexer.cutHeader ?? bytes.count
+        var head = lexer.frames.endIndex
+        while head > 0, lexer.frames[head - 1].upperBound <= start,
+            Lexer.isWhitespace(bytes[lexer.frames[head - 1].upperBound ..< start])
+        {
+            head -= 1
+            start = lexer.frames[head].lowerBound
+        }
+        if lexer.holdsThinkMarker(before: start) { return nil }
+        return String(decoding: bytes[..<start], as: UTF8.self)
+    }
+
     /// Top-level GLM frames, read by the SDK parser's grammar: a name up to `<`,
     /// then `</tool_call>`, or `<arg_key>` pairs. A `<tool_call>` followed by
     /// anything else is a mention and stays text, unless a frame's own tags
-    /// follow it before the next `<tool_call>`. A string-typed value runs raw
+    /// follow it before the next `<tool_call>`, or the response ends in it
+    /// after the start of a declared name (`cutHeader`). A string-typed value runs raw
     /// to `</arg_value>` (the template writes strings raw) and may not hold the
     /// frame tags the SDK refuses there; any other value is JSON, structurally
     /// checked as the SDK reads it, so quoted delimiters are data. An argument
@@ -94,12 +122,20 @@ enum GLM5ToolSuffix {
         /// rest of the response. For a frame's tag in top-level text, the
         /// first frame or mention before it, or the tag.
         private(set) var unclosed: Int?
+        /// A `<tool_call>` the response ends in, in its name or a cut-off
+        /// first tag, after the start of a declared name (or none yet): the
+        /// header of a frame the end cut, not a mention.
+        private(set) var cutHeader: Int?
         /// The first `<tool_call>` read as a mention.
         private var firstMention: Int?
+        /// Every function name the request declares, whether or not the SDK
+        /// accepts its declaration: what a header the end cut may be the start of.
+        private let declaredNames: [String]
         private var index = 0
 
         init(bytes: [UInt8], tools: [[String: any Sendable]]?) {
             self.bytes = bytes
+            declaredNames = (tools ?? []).compactMap { (($0["function"] as? [String: any Sendable]) ?? $0)["name"] as? String }
             // Only a declaration the SDK's parser accepts types arguments: one
             // per name, an object schema without indirect types. A `function`
             // that is not an object makes it refuse every name.
@@ -154,7 +190,11 @@ enum GLM5ToolSuffix {
                     unclosed = min(stray, firstMention ?? stray, frames.first?.lowerBound ?? stray)
                     return
                 }
-                guard let start = next, let tag = find("<", from: start + 11) else { return }
+                guard let start = next else { return }
+                guard let tag = find("<", from: start + 11) else {
+                    if beginsDeclaredName(frameName(start ..< bytes.count)) { cutHeader = start }
+                    return
+                }
                 if starts("</tool_call>", at: tag) {
                     index = tag + 12
                     guard record(start ..< index) else { return }
@@ -174,6 +214,10 @@ enum GLM5ToolSuffix {
                     let following = find("<tool_call>", from: tag) ?? bytes.count
                     if holdsAny(Self.frameTags, in: tag ..< following) {
                         unclosed = start
+                        return
+                    }
+                    if endsInFrameTag(at: tag), beginsDeclaredName(frameName(start ..< tag)) {
+                        cutHeader = start
                         return
                     }
                     firstMention = firstMention ?? start
@@ -217,6 +261,19 @@ enum GLM5ToolSuffix {
         private func frameName(_ header: Range<Int>) -> String {
             String(decoding: bytes[header.lowerBound + 11 ..< header.upperBound], as: UTF8.self)
                 .trimmingCharacters(in: CharacterSet(charactersIn: " \t\r\n"))
+        }
+
+        /// What follows a `<tool_call>` the response ends in: nothing yet, or
+        /// the start of a declared function's name.
+        private func beginsDeclaredName(_ name: String) -> Bool {
+            name.isEmpty || declaredNames.contains { $0.hasPrefix(name) }
+        }
+
+        /// The response ends inside the tag at `tag`, which would have opened
+        /// the frame's arguments or closed it.
+        private func endsInFrameTag(at tag: Int) -> Bool {
+            let rest = bytes[tag...]
+            return ["<arg_key>", "</tool_call>"].contains { $0.utf8.count > rest.count && $0.utf8.starts(with: rest) }
         }
 
         /// The tags of a frame after its `<tool_call>`.

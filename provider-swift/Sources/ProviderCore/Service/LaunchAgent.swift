@@ -409,6 +409,10 @@ public enum LaunchAgent: Sendable {
     /// default; its `0` rollback must reach the job too.
     /// `DARKBLOOM_GLM_RECTANGULAR_VERIFY`: rectangular adaptive MTP verification
     /// is the GLM default; its serial-target rollback must reach the job.
+    /// `DARKBLOOM_LENGTH_FINISH_AT_LIMIT` / `DARKBLOOM_STRICT_CALLS_AS_GENERATED`:
+    /// an answer cut at the token limit ends as `length`, and a streamed
+    /// `strict` call that fails its check after the start leaves as generated,
+    /// by default; `0`, `off` or `false` restores each refusal.
     /// `DARKBLOOM_GLM_DECODE_STEPS_BETWEEN_CHUNKS` and
     /// `DARKBLOOM_NEMOTRON_SUPER_DECODE_STEPS_BETWEEN_CHUNKS`: GLM and the
     /// Super owner run decode-only steps between prompt chunks by default; `0`
@@ -449,6 +453,8 @@ public enum LaunchAgent: Sendable {
         ChatTemplateLoopRewrites.environmentKey,
         WorkFIFOPolicy.coldLoadReleaseEnvironmentKey,
         ModelCalibrationPolicy.shapeWarmupEnvironmentKey,
+        TokenLimitCutPolicy.environmentKey,
+        StrictToolCallPolicy.environmentKey,
         GLM5NextProtectedModel.rectangularVerifyEnvironmentKey,
         EngineV2Factory.glm5NextDecodeStepsKey,
         NemotronSuperLocalPrefill.decodeStepsKey,

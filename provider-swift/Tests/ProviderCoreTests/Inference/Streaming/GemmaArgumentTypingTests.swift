@@ -71,4 +71,34 @@ struct GemmaArgumentTypingTests {
         #expect(calls.map(\.function.arguments) == [Self.expected])
         try ToolConstraintValidation.validate(calls, prepared: prepared)
     }
+
+    /// The parse reads the schema Gemma is shown, after ingress
+    /// `ToolSchemaNormalization`: a property declared without a type (`{}`
+    /// or a description only) is shown as STRING, and a union as its first
+    /// member's type, so their bare values follow that type. vLLM, reading
+    /// the caller's schema, keeps 5, true and 3 there. Every result is valid
+    /// against the caller's schema (`strict` validates it).
+    @Test("an untyped property or a string-first union reads a bare value as the type Gemma is shown")
+    func normalizedSchemasDecideBareValues() throws {
+        let body = Data(#"""
+            {"model":"gemma-4-26b-qat-4bit","messages":[{"role":"user","content":"Store it."}],"stream":true,
+             "tools":[{"type":"function","function":{"name":"store","strict":true,"parameters":{"type":"object",
+               "properties":{"any":{},"described":{"description":"Any value"},
+                 "either":{"anyOf":[{"type":"string"},{"type":"integer"}]},
+                 "number_first":{"anyOf":[{"type":"integer"},{"type":"string"}]},
+                 "count":{"type":"integer"}}}}}]}
+            """#.utf8)
+        let request = try ProviderLoop.decodeOpenAIRequest(body)
+        let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "gemma4")
+        let handler = try #require(try ToolStreamPreparation.makeHandler(
+            request: request, prepared: prepared, modelType: "gemma4", streamToolCalls: false))
+        _ = handler.processChunk(
+            "<|tool_call>call:store{any:5,described:true,either:3,number_first:3,count:3}<tool_call|>")
+        let calls = handler.finish()
+        #expect(calls.map(\.function.arguments) == [[
+            "any": .string("5"), "described": .string("true"), "either": .string("3"),
+            "number_first": .int(3), "count": .int(3),
+        ]])
+        try ToolConstraintValidation.validate(calls, prepared: prepared)
+    }
 }

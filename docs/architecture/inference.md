@@ -1681,13 +1681,15 @@ request on an idle engine then could not reserve its fixed bytes and its first
 step's scratch beside that floor: the refused step finished it
 `kv_capacity_exhausted` (`capacity_busy` to the coordinator, which cooled the
 Mac). The engine now returns the pool's whole free segments, and refunds their
-floor, once it has been idle `DARKBLOOM_NATIVE_SEGMENT_RELEASE` seconds (default
-1), and before retrying such a lone row; the row waits up to 10 s while another
+floor, before retrying such a lone row, and once it has been idle
+`DARKBLOOM_NATIVE_SEGMENT_RELEASE` seconds (default 30, the idle sweep other
+pools' retained segments use); the row waits up to 10 s while another
 request's checkpoint publication or retirement keeps the pool busy, and is
 retried once after a release (`PagedKVPool.releaseIssuedNativeFreeSegments`,
 `EngineLoopV2.keepLoneRowForNativeSegmentRelease`). The release drains the
 streams and trims in `retireIssuedNativePool`'s order, outside the native
-commit, with no other native work live. `0` keeps the former behavior.
+commit, with no other native work live. Any value that is not a positive
+number of seconds keeps the former behavior.
 The engine's activation check prices step scratch for every row at the full
 context against the same capacity, so the protected scheduler's running-row
 cap is the largest value that check admits

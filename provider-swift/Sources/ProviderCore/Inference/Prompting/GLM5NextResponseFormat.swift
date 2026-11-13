@@ -4,6 +4,22 @@ import Foundation
 import MLXLMCommon
 import MLXLMServer
 
+/// What a GLM JSON answer that parses but misses its schema becomes.
+/// `refuse` (the default) is the typed 422 of the strict contract. `release`
+/// exposes the normalized answer, so the caller's own validator judges it.
+/// An answer that is not JSON stays a 422 either way.
+/// `DARKBLOOM_GLM_JSON_SCHEMA_MISS=release` selects it; read once at launch.
+enum GLM5NextSchemaMiss: String, Sendable {
+    case refuse, release
+
+    static let environmentKey = "DARKBLOOM_GLM_JSON_SCHEMA_MISS"
+    static let current = parse(ProcessInfo.processInfo.environment[environmentKey])
+
+    static func parse(_ value: String?) -> GLM5NextSchemaMiss {
+        value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "release" ? .release : .refuse
+    }
+}
+
 /// GLM-5.3-Flash JSON output contract. GLM's native engine refuses sampler
 /// constraints, so this is not constrained decoding: the service's
 /// `response_format` instruction steers the model
@@ -20,11 +36,14 @@ struct GLM5NextResponseFormat: Sendable {
     let schema: ToolValueSchema?
     /// The caller's schema when the subset does not cover it.
     let rawSchema: MLXLMCommon.JSONValue?
+    let schemaMiss: GLM5NextSchemaMiss
 
-    init(format: OpenAIResponseFormat, schema: ToolValueSchema?, rawSchema: MLXLMCommon.JSONValue? = nil) {
+    init(format: OpenAIResponseFormat, schema: ToolValueSchema?, rawSchema: MLXLMCommon.JSONValue? = nil,
+         schemaMiss: GLM5NextSchemaMiss = .current) {
         self.format = format
         self.schema = schema
         self.rawSchema = rawSchema
+        self.schemaMiss = schemaMiss
     }
 
     /// `nil` for other families and non-JSON formats.

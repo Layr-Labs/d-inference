@@ -1828,7 +1828,7 @@ that holds a JSON value (the whole text, a fenced block, or the first balanced
 object or array) that misses its schema is exposed as that value instead, for
 the caller's own validator to judge, when the model stopped by itself; output
 with no complete JSON value is still a 422, and an output the token limit cut
-is judged as without the switch (so it leaves as generated). It applies to
+is judged as without the switch. It applies to
 streamed responses (every coordinator request): a non-streamed local API request
 still gets the service's own schema check. One Mac
 serves it with image or video input the same way: the instruction turn renders

@@ -4,9 +4,10 @@ import MLXLMServer
 import Testing
 @testable import ProviderCore
 
-/// `DARKBLOOM_GLM_JSON_SCHEMA_MISS`: a GLM JSON answer that parses but misses
-/// its schema is the typed 422 by default, or with `release` the normalized
-/// answer, for the caller's own validator to judge. Non-JSON stays a 422.
+/// `DARKBLOOM_GLM_JSON_SCHEMA_MISS`: a GLM JSON answer whose value misses its
+/// schema is the typed 422 by default, or with `release` at a natural stop that
+/// value, for the caller's own validator to judge. A cut output is judged as
+/// with `refuse`; no complete JSON value stays a 422.
 @Suite("GLM JSON schema-miss switch")
 struct GLM5NextSchemaMissTests {
     static var weather: [String: Any] { [
@@ -123,6 +124,19 @@ struct GLM5NextSchemaMissTests {
         _ = output.withholding(.content(answer))
         let withheld = output
         #expect(throws: MLXOpenAIServiceError.self) { try withheld.finalAnswer(finishReason: "length", hasToolCalls: false) }
+    }
+
+    @Test("at a cut, release leaves the answer as generated and counted, as refuse does")
+    func releaseAtACutMatchesRefuse() throws {
+        let cut = #"Example: {"city":"x"}. Answer: {"city":"Aus"#
+        for mode in [GLM5NextSchemaMiss.refuse, .release] {
+            var output = GLM5NextResponseFormatOutput(try Self.format(Self.schemaFormat(Self.weather), schemaMiss: mode))
+            _ = output.withholding(.content(cut))
+            #expect(!output.answerValidates(finishReason: "length"))
+            let event = try output.finalAnswer(finishReason: "length", hasToolCalls: false, cutAtLimit: true)
+            guard case .parsed(let parsed)? = event else { Issue.record("no answer event"); continue }
+            #expect(parsed.content == cut)
+        }
     }
 
     @Test("release exposes the candidate the service checks: a root scalar, or the first balanced value")

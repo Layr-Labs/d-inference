@@ -163,13 +163,13 @@ struct QwenForcedToolFramingTests {
 @Suite("Qwen forced tool calls, real tokenizers",
        .enabled(if: ProcessInfo.processInfo.environment["DARKBLOOM_TEST_QWEN_TOKENIZER_DIRS"] != nil))
 struct QwenForcedToolFramingRealTokenizerTests {
-    private static let tools: [[String: Any]] = [
+    private static var tools: [[String: Any]] { [
         ["type": "function", "function": ["name": "get_weather", "description": "Get the current weather in a city.",
             "parameters": ["type": "object", "properties": ["location": ["type": "string"],
                 "unit": ["type": "string", "enum": ["celsius", "fahrenheit"]]], "required": ["location"]]]],
         ["type": "function", "function": ["name": "get_time", "description": "Get the local time in a city.",
             "parameters": ["type": "object", "properties": ["location": ["type": "string"]], "required": ["location"]]]],
-    ]
+    ] }
 
     @Test func theServedTokenizersFrameAForcedCall() async throws {
         let directories = try #require(ProcessInfo.processInfo.environment["DARKBLOOM_TEST_QWEN_TOKENIZER_DIRS"])
@@ -209,7 +209,8 @@ struct QwenForcedToolFramingRealTokenizerTests {
                             "\(label) \(choice) token \(token) at \(offset)")
                         state = try #require(constraint.nextState(state: state, tokenID: token))
                     }
-                    #expect(try constraint.nextState(state: state, tokenID: #require(tokenizer.convertTokenToId("<|im_end|>"))) == -1)
+                    let imEnd = try #require(tokenizer.convertTokenToId("<|im_end|>"))
+                    #expect(constraint.nextState(state: state, tokenID: imEnd) == -1)
                     // The model's usual openings other than a call cannot be sampled.
                     let first = Set(constraint.allowedTokenIDs(state: 0, remainingTokens: 4_096))
                     for opening in ["I'll check the weather.", "Sure", "Let me", "```", "{\"name\"", "<think>", "Okay"] {
@@ -237,7 +238,8 @@ struct QwenForcedToolFramingRealTokenizerTests {
     }
 
     private static func body(model: String, choice: String, reasoning: Bool) throws -> Data {
-        let toolChoice: Any = choice == "named" ? ["type": "function", "function": ["name": "get_weather"]] : "required"
+        var toolChoice: Any = "required"
+        if choice == "named" { toolChoice = ["type": "function", "function": ["name": "get_weather"]] as [String: Any] }
         return try JSONSerialization.data(withJSONObject: [
             "model": model, "messages": [["role": "user", "content": "What is the weather like in Paris today?"]],
             "tools": tools, "tool_choice": toolChoice, "reasoning": ["enabled": reasoning], "stream": true,

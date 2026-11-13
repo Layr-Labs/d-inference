@@ -39,9 +39,8 @@ struct QwenJSONAnswerPolicyTests {
 
     @Test func unsupportedSchemasKeepPromptOnlySteeringWithoutAnError() throws {
         let schemas = [
-            "{}", #"{"description":"anything"}"#, #"{"type":"string","pattern":"^a"}"#,
+            "{}", #"{"description":"anything"}"#,
             #"{"anyOf":[{"type":"string"},{"type":"integer"}]}"#,
-            #"{"type":"array","items":{"type":"string"},"maxItems":64}"#,
             #"{"type":"string","enum":["<think>"]}"#, #"{"type":"string","enum":["say <|im_end|>"]}"#,
             #"{"type":"number","enum":[1.5]}"#,
         ]

@@ -22,6 +22,17 @@ import MLXLMCommon
 /// 128 `required` names or one over 64), so the caller keeps its fallback. It
 /// rewrites `properties` and `items` whatever the node's type, so those
 /// checks and references hold there too.
+///
+/// With `relaxingAssertions` the result may admit more instances, never fewer,
+/// under the subset's closed objects (an object that declares properties
+/// generates only those keys): each rewritten node also loses its
+/// `valueAssertions` and an item bound beyond
+/// `ToolConstraintSchemaCompiler.maxArrayItems` (an array without one is
+/// unbounded). A node that declares no properties and wraps no reference or
+/// composition also loses its `keyAssertions`, and an `additionalProperties`
+/// schema there becomes `true`; beside declared properties, or beside a target
+/// that may be a closed object, those could demand keys the closed object never
+/// generates, so they stay for the compiler (or the wrapper check) to refuse.
 enum ResponseSchemaRewrite {
     /// Bounds the walk's work: a node it visits costs one plus its keys and
     /// the members of its `type` and `required` arrays, a reference or a
@@ -31,6 +42,19 @@ enum ResponseSchemaRewrite {
     static let maximumWork = 16_384
     /// Bounds the references and compositions one position unwraps in a row.
     static let maximumUnwraps = 8
+    /// Assertions on values the subset cannot spell. Dropping one only widens
+    /// what a node admits, so a relaxed rewrite keeps the structure and leaves
+    /// these values to the model.
+    static let valueAssertions: Set<String> = [
+        "pattern", "format", "minLength", "maxLength", "contentEncoding", "contentMediaType",
+        "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
+        "uniqueItems", "maxProperties", "propertyNames",
+    ]
+    /// Assertions that can demand keys or a key count, dropped only where the
+    /// object is open.
+    static let keyAssertions: Set<String> = [
+        "minProperties", "dependentRequired", "dependentSchemas", "dependencies", "not", "if", "then", "else",
+    ]
     private static let annotations: Set<String> = [
         "title", "description", "default", "examples", "deprecated", "readOnly", "writeOnly", "$comment",
     ]
@@ -41,13 +65,13 @@ enum ResponseSchemaRewrite {
         "json-schema.org/draft/2019-09/schema", "json-schema.org/draft/2020-12/schema",
     ]
 
-    static func subset(_ schema: MLXLMCommon.JSONValue) -> MLXLMCommon.JSONValue? {
+    static func subset(_ schema: MLXLMCommon.JSONValue, relaxingAssertions: Bool = false) -> MLXLMCommon.JSONValue? {
         guard case .object(var root) = schema else { return nil }
         if let metaSchema = root.removeValue(forKey: "$schema") {
             guard case .string(let uri) = metaSchema, readsAsTheSubset(uri) else { return nil }
         }
         root.removeValue(forKey: "$id")
-        var walk = Walk()
+        var walk = Walk(relaxing: relaxingAssertions)
         for container in ["$defs", "definitions"] {
             guard let value = root.removeValue(forKey: container) else { continue }
             guard case .object(let entries) = value else { return nil }
@@ -70,6 +94,7 @@ enum ResponseSchemaRewrite {
     }
 
     private struct Walk {
+        let relaxing: Bool
         var definitions: [String: MLXLMCommon.JSONValue] = [:]
         var budget = maximumWork
         /// The references being inlined on the current path.
@@ -87,6 +112,7 @@ enum ResponseSchemaRewrite {
             guard spend(object.count), object.keys.allSatisfy({ $0.utf8.count <= 20 }), readsBounded(object)
             else { return nil }
             object.removeValue(forKey: "$comment")
+            if relaxing { relax(&object) }
             if let reference = object["$ref"] {
                 guard case .string(let path) = reference, spend(path.utf8.count / 64),
                       onlyAnnotations(object, besides: "$ref"), let target = definitions[path],
@@ -168,6 +194,25 @@ enum ResponseSchemaRewrite {
         private mutating func spend(_ cost: Int) -> Bool {
             budget -= cost
             return budget >= 0
+        }
+    }
+
+    private static func relax(_ object: inout [String: MLXLMCommon.JSONValue]) {
+        for keyword in valueAssertions { object.removeValue(forKey: keyword) }
+        for bound in ["minItems", "maxItems"] where exceedsArrayBounds(object[bound]) {
+            object.removeValue(forKey: bound)
+        }
+        if case .object(let properties)? = object["properties"], !properties.isEmpty { return }
+        guard object["$ref"] == nil, object["allOf"] == nil, object["anyOf"] == nil else { return }
+        for keyword in keyAssertions { object.removeValue(forKey: keyword) }
+        if case .object? = object["additionalProperties"] { object["additionalProperties"] = .bool(true) }
+    }
+
+    private static func exceedsArrayBounds(_ bound: MLXLMCommon.JSONValue?) -> Bool {
+        switch bound {
+        case .int(let count)?: count > ToolConstraintSchemaCompiler.maxArrayItems
+        case .double(let count)?: count > Double(ToolConstraintSchemaCompiler.maxArrayItems)
+        default: false
         }
     }
 

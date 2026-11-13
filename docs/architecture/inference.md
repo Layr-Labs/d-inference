@@ -3762,9 +3762,40 @@ for a `json_object` without a JSON-shaped prompt may put its prose in a key.
 These rows have no loop guard; a long one ends at `max_tokens` as a `length`
 finish with its answer as generated (unchecked).
 
+**Client schemas outside the subset (Qwen).** On the Qwen profile a
+`json_schema` the subset refuses is widened before it is declined
+(`QwenJSONSchemaRewrite`; `DARKBLOOM_QWEN_JSON_SCHEMA_REWRITE`, on by default,
+an off word restores the decline; read once per process; forwarded to the
+LaunchAgent). It is rewritten exactly when it can be, as Pydantic, OpenAI's
+strict mode and zod write it (`ResponseSchemaRewrite`, as for
+[Gemma](#constrained-gemma-4-json-answers): `$defs`/`definitions` references
+inlined, a one-branch `allOf`, `anyOf` with null made nullable, a draft-06 to
+2020-12 `$schema` dropped). Otherwise its value assertions are dropped
+(`ResponseSchemaRewrite.valueAssertions`: `minimum`, `maximum`, `pattern`,
+`format`, `minLength`, `maxLength`, `multipleOf`, `uniqueItems`, …; item bounds
+beyond 16; on an open node, one that declares no properties and wraps no
+reference or composition, also `keyAssertions` such as `minProperties` or
+`not`, and an `additionalProperties` schema becomes `true`): the grammar keeps the structure, types, enums and required keys, and
+the values are the model's. This is a superset of the schema under the subset's
+closed objects (an object that declares properties generates only those keys,
+as for every constrained schema), so a catch-all or a key count beside declared
+properties, or beside a reference or composition, stays and the schema falls
+back. An object root the subset still
+cannot shape (a union, `patternProperties`, …) is held to a JSON object. A
+widened answer is best effort, as these requests were unconstrained before: the
+provider's check when generation ends passes it (`JSONAnswerFormat.unchecked`;
+Gemma's exact rewrite keeps its check), so that check never refuses it,
+whatever its values or finish. Two refusals remain as on any path: the local
+non-streaming API checks the request's own schema in the SDK
+(`OpenAIResponseFormatSupport`), as it does for prompt-only answers, and an
+answer that exhausts the grammar's interned states fails like any constrained
+answer (`tool_constraint_impossible_state`). The grammar's integers have at
+most 15 digits. Each widened answer logs one content-free line. Bonsai and
+Lightning keep declining these schemas.
+
 Every other case keeps prompt-only steering and gains no refusal. A schema
-outside the subset (including an enum value containing a forbidden spelling), a
-tokenizer that fails the checks, a prompt tail without a think marker or a
+outside the subset that is not widened (including an enum value containing a
+forbidden spelling), a tokenizer that fails the checks, a prompt tail without a think marker or a
 nonpositive budget logs one content-free private line (category `json-answer`);
 a Bonsai or Lightning prompt that opens a thought logs nothing.
 Tools or `tool_choice` beside the format keep today's behavior; Flint's
@@ -3785,6 +3816,8 @@ every Lightning row sharing their decode step, thinking or not, stops
 speculating meanwhile.
 
 Sources: `provider-swift/Sources/ProviderCore/Inference/Tools/JSONAnswerPolicy.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Tools/QwenJSONSchemaRewrite.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Tools/ResponseSchemaRewrite.swift`,
 `provider-swift/Sources/ProviderCore/Inference/JSONAnswerProfile.swift`,
 `provider-swift/Sources/ProviderCore/Inference/JSONAnswerVocabulary.swift`,
 `provider-swift/Sources/ProviderCore/Inference/JSONAnswerConstraint.swift`,

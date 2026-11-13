@@ -1340,9 +1340,12 @@ A decrypted Chat body's message with no `reasoning_content` (absent or null) but
 decodes with that string as its `reasoning_content`, the field the chat templates read. As transformers'
 `apply_chat_template` aliases them, the first non-null of `reasoning_content`, `thinking` and `reasoning` wins; an
 empty or non-string value aliases nothing and is otherwise ignored. Unlike transformers, which copies the first
-non-null value even when it is empty or not a string, such a value leaves `reasoning_content` unset; outside GLM the
-renders then differ only when that turn's `content` holds `</think>`, which the Qwen 3.5-family templates split off
-as the thought. `reasoning_details` is read only by the [GLM contract](#glm-native-prompt-contract), where an alias
+non-null value even when it is empty or not a string, such a value leaves `reasoning_content` unset; outside GLM and
+Gemma 4 the renders then differ only when that turn's `content` holds `</think>`, which the Qwen 3.5-family templates
+split off as the thought. Gemma 4's template reads `reasoning` before `reasoning_content`, and only
+`reasoning_content` reaches it here, so a Gemma tool-call turn whose `reasoning` string differs from the value used
+(`thinking: ""` or `reasoning_content: "X"` beside `reasoning: "R"`) renders without R, where transformers renders R.
+`reasoning_details` is read only by the [GLM contract](#glm-native-prompt-contract), where an alias
 wins over GLM's own reading of `reasoning` and `reasoning_details` (so `thinking` beats `reasoning`), and a turn that
 aliases nothing keeps that reading, which transformers does not have. Every serving decode applies it, through
 `AliasedChatRequest`

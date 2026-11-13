@@ -22,8 +22,11 @@ struct GemmaPieceTestTokenizer: MLXLMCommon.Tokenizer {
     ]
     static let extras = [
         "▁{", "{\"", "\":", "\",", "▁\"", "\"}", "}}", "▁hello", "▁▁", "é", "<b>", "```", "```json", "json",
-        "|>{", "channel", "turn", "thought", "▁world", "▁▁▁▁", "\n▁▁",
+        "|>{", "channel", "turn", "thought", "▁world", "▁▁▁▁", "\n▁▁", "model",
     ]
+    /// Words the encoder keeps whole, as the shipped tokenizer does: the
+    /// rendered prompt's tail then fits `ReasoningPromptProbe.tailTokenCount`.
+    static let words = ["model", "thought"]
 
     var specials = Self.specials
     var size = Self.vocabularySize
@@ -60,6 +63,11 @@ struct GemmaPieceTestTokenizer: MLXLMCommon.Tokenizer {
             if let special = specials.filter({ rest.hasPrefix($0.value) }).max(by: { $0.value.count < $1.value.count }) {
                 ids.append(special.key)
                 rest = rest.dropFirst(special.value.count)
+                continue
+            }
+            if let word = Self.words.first(where: { rest.hasPrefix($0) }) {
+                ids.append(Self.id(word))
+                rest = rest.dropFirst(word.count)
                 continue
             }
             rest = rest.dropFirst()
@@ -412,8 +420,9 @@ struct GemmaJSONAnswerConstraintTests {
     }
 
     @Test func pastTheStateCapTheAnswerContinuesUnconstrained() throws {
+        // A string body is one state, so the fourth state is the colon's.
         let constraint = try F.constraint(maximumStates: 4)
-        let free = try #require(F.walk(F.ids(#"{"a"#), constraint))
+        let free = try #require(F.walk(F.ids(#"{"abc": "#), constraint))
         #expect(constraint.cachedStateCount <= 4)
         let allowed = constraint.allowedTokenIDs(state: free, remainingTokens: 5)
         #expect(allowed.count == 262_144)

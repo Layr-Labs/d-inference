@@ -142,16 +142,21 @@ struct GLM5ToolFailureTests {
     @Test(arguments: [nil, "length"], [1, 7, 4096])
     func framesInsideAFrameAreNeverCalls(finishReason: String?, width: Int) async throws {
         let nested = "<tool_call>store<arg_key>doc</arg_key><arg_value>{}</arg_value></tool_call>"
-        let cases: [(output: String, tool: String?)] = [
-            ("<tool_call>store<arg_key>doc</arg_key><arg_value>{\"x\":\"" + nested, Self.storeTool),
-            ("<tool_call>echo<arg_key>text</arg_key><arg_value>draft " + valid, nil),
-            ("Use <tool_call>.</think><tool_call>echo<arg_key>text</arg_key><arg_value>a</arg_value>junk" + valid, nil),
+        // `openAtCut`: the outer frame is still open at the end, so a cut that
+        // ends as `length` drops it (`TokenLimitCutPolicy`) instead of
+        // publishing it as text.
+        let cases: [(output: String, tool: String?, openAtCut: Bool)] = [
+            ("<tool_call>store<arg_key>doc</arg_key><arg_value>{\"x\":\"" + nested, Self.storeTool, true),
+            ("<tool_call>echo<arg_key>text</arg_key><arg_value>draft " + valid, nil, false),
+            ("Use <tool_call>.</think><tool_call>echo<arg_key>text</arg_key><arg_value>a</arg_value>junk" + valid, nil,
+             false),
         ]
         for shape in cases {
             let result = try await run(shape.output, forced: false, width: width, finishReason: finishReason,
                 tool: shape.tool)
             #expect(result.failure == nil && result.calls.isEmpty, "\(shape.output)")
-            #expect(result.visible == shape.output, "\(shape.output)")
+            #expect(result.visible == (finishReason == "length" && shape.openAtCut ? "" : shape.output),
+                "\(shape.output)")
         }
     }
 
@@ -165,6 +170,34 @@ struct GLM5ToolFailureTests {
             #expect(result.calls.isEmpty && result.visible == "Draft ")
             #expect(result.failure == .generationFailed("native GLM tool output is invalid"))
         }
+    }
+
+    /// Outputs the token limit cut, and their visible text when the cut ends
+    /// as `length`: the frame the limit left unfinished (in its name, a tag, a
+    /// key or a value) is dropped with the run of frames before it, a whole
+    /// call included, and never published as text; a `<tool_call>` the lexer
+    /// reads as a mention stays text with what follows it.
+    static let cutCases: [(output: String, visible: String)] = {
+        let call = "<tool_call>echo<arg_key>text</arg_key><arg_value>SAFE</arg_value></tool_call>"
+        return [
+            (call + "<tool_call>echo<arg_key>text", ""),
+            ("Calling.</think>" + call + "\n<tool_call>echo<arg_key>text</arg_key><arg_value>MO", "Calling.</think>"),
+            ("Calling.</think>" + call + "\n<tool_call>ec", "Calling.</think>"),
+            ("Calling.</think><tool_call>", "Calling.</think>"),
+            ("Calling.</think>" + call + "<tool_call>echo<arg_", "Calling.</think>"),
+            ("The tool would need <tool_call> syntax, but I can answer.</think>Zürich is cool.",
+             "The tool would need <tool_call> syntax, but I can answer.</think>Zürich is cool."),
+            ("Simple.</think>To call a tool, GLM writes <tool_call> first.",
+             "Simple.</think>To call a tool, GLM writes <tool_call> first."),
+        ]
+    }()
+
+    @Test(arguments: GLM5ToolFailureTests.cutCases.indices, [1, 7, 4096])
+    func framesTheLimitCutAreDroppedAndMentionsStay(index: Int, width: Int) async throws {
+        let shape = Self.cutCases[index]
+        let result = try await run(shape.output, forced: false, width: width, finishReason: "length")
+        #expect(result.failure == nil && result.calls.isEmpty, "\(shape.output)")
+        #expect(result.visible == shape.visible, "\(shape.output)")
     }
 
     /// The same suffix in an answer the token limit cut: the cut ends it as

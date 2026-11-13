@@ -194,10 +194,12 @@ struct NativeToolStreamRouter {
     /// End of generation on the complete-call path: the handler's calls and
     /// its residual text. An `auto` GLM suffix that did not parse as one batch
     /// is split into text and its final calls (`GLM5ToolSuffix`), except in an
-    /// output the token limit cut off, where it stays text. A suffix whose
-    /// release would expose a think marker from inside a tool frame keeps
-    /// failing, as before, unless the cut ends the answer as `length`
-    /// (`cutAtLimit`, `TokenLimitCutPolicy`): it is then dropped.
+    /// output the token limit cut off, where it stays text; when the cut ends
+    /// the answer as `length` (`cutAtLimit`, `TokenLimitCutPolicy`), without
+    /// the frames the limit left unfinished (`GLM5ToolSuffix.droppingCutFrames`).
+    /// A suffix whose release would expose a think marker from inside a tool
+    /// frame keeps failing, as before, unless the cut ends the answer as
+    /// `length`: it is then dropped.
     func finishCompleteCalls(truncated: Bool, cutAtLimit: Bool = false) throws
         -> (calls: [ToolCall], residual: String?)
     {
@@ -208,21 +210,13 @@ struct NativeToolStreamRouter {
         switch GLM5ToolSuffix.split(residual, tools: tools) {
         case .text(let text, calls: let found):
             guard truncated else { return (found, text) }
-            // A cut that ends as `length` drops the frame the limit left open,
-            // never published as text; the text before it stays.
-            return ([], cutAtLimit ? Self.droppingUnclosedFrame(residual) : residual)
+            // A cut that ends as `length` drops the frames the limit left
+            // unfinished, never published as text; mentions and the text
+            // before them stay.
+            return ([], cutAtLimit ? GLM5ToolSuffix.droppingCutFrames(residual, tools: tools) : residual)
         case .ambiguous where cutAtLimit: return ([], nil)
         case .ambiguous: throw MultiModelBatchSchedulerEngineError.generationFailed("native GLM tool output is invalid")
         }
-    }
-
-    /// `text` up to a trailing `<tool_call>` that never closed; all of it when
-    /// every frame closed.
-    static func droppingUnclosedFrame(_ text: String) -> String {
-        guard let open = text.range(of: "<tool_call>", options: .backwards),
-            text.range(of: "</tool_call>", range: open.upperBound..<text.endIndex) == nil
-        else { return text }
-        return String(text[..<open.lowerBound])
     }
 
     private var returnsUnparsedGLMOutputAsText: Bool {

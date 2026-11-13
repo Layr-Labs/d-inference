@@ -1795,7 +1795,10 @@ reasoning parser then splits at `</think>`. A frame that has started its
 arguments owns everything up to its `</tool_call>`, so a frame inside or after an
 argument is data, never a call. A suffix with no such run (a malformed or cut-off
 final frame, text after the calls) is all text, and so is a suffix that did not
-parse in an output cut at the token limit; no frame is completed or salvaged. A
+parse in an output cut at the token limit, except that a cut that ends the answer
+as `length` drops the frame the limit left unfinished, with the run of frames
+before it (`GLM5ToolSuffix.droppingCutFrames`, see
+[cut answers](#answers-cut-at-the-token-limit)); no frame is completed or salvaged. A
 suffix whose release would put a think marker from inside a frame before the
 reasoning parser keeps failing, as does a required or named call (422). Unlike
 vLLM and SGLang, a call followed by text or by a malformed frame commits nothing,
@@ -3647,10 +3650,13 @@ breaking a contract, and OpenRouter does not count a call cut by the caller's
   under `tool_choice: none` is the model's and still refused;
   `parallel_tool_calls: false` keeps only the first call before any check
   (`ParallelToolCallPolicy`). A native Flint or MiMo frame, or a forced GLM
-  frame, the limit left unparsed is dropped, never published as text; an
-  `auto` GLM suffix that does not parse stays text (`GLM5ToolSuffix`) up to
-  the frame the limit left open, which is dropped, and one that cannot be
-  released is dropped. Calls that pass still leave, and the response then
+  frame, the limit left unparsed is dropped, never published as text. An
+  `auto` GLM suffix that does not parse stays text (`GLM5ToolSuffix`) without
+  the frame the limit left unfinished (in its name, a tag or its arguments) and
+  the run of whitespace-separated frames before it, which are dropped
+  (`GLM5ToolSuffix.droppingCutFrames`); a `<tool_call>` the lexer reads as a
+  mention stays. A suffix that cannot be released (a think marker inside a
+  frame) is dropped. Calls that pass still leave, and the response then
   finishes `tool_calls`, as before.
 - The text the end of generation flushes leaves after the calls' checks, so a
   refusal with nothing else sent stays one the router can fail over on.

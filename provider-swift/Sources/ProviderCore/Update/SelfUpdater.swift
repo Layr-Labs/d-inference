@@ -764,6 +764,16 @@ public struct SelfUpdater: Sendable {
                         fileManager: fm,
                         signaturePolicy: signaturePolicy)
                 }
+                // The coordinator's `version` only labels the bundle; the
+                // Info.plist the signature seals names the build. An older
+                // signed release offered under a newer label otherwise passes
+                // every hash and signature check and installs as an update.
+                let signedVersion = UpdateRecoveryStore.signedVersion(ofApp: extractedApp)
+                guard signedVersion == release.version else {
+                    throw UpdateError.replaceFailed(
+                        "\(identity.appBundleName) is signed as version \(signedVersion ?? "(none)"), "
+                            + "not release \(release.version)")
+                }
             }
 
             let stagedTreeHash = try UpdateAtomicFilesystem.treeHash(root: extractedApp)

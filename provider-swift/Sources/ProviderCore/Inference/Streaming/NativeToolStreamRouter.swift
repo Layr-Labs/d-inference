@@ -31,6 +31,10 @@ struct NativeToolStreamRouter {
     /// call that fails its check may then leave as generated
     /// (`StrictToolCallPolicy`).
     var responseStarted = false
+    /// Telemetry: streamed calls left open at a cut, and `strict` calls that
+    /// failed their check and left as generated because the response started.
+    private(set) var callsLeftOpenAtCut = 0
+    private(set) var strictCallsReturnedAsGenerated = 0
 
     // Pass the same prepared schemas used by the handler: Flint's raw-string
     // boundaries must agree before and after reasoning-channel separation.
@@ -109,9 +113,9 @@ struct NativeToolStreamRouter {
     /// lenient EOS parse reads its partial arguments as a different call;
     /// any other unfinished exposed call is model noncompliance. When the cut
     /// ends as `length` (`cutAtLimit`, `TokenLimitCutPolicy`), the flush
-    /// completes no call: an exposed one stays open with the rest of its
-    /// arguments, so the stream finishes `length`, and one never exposed is
-    /// not exposed.
+    /// completes no call: an exposed one stays open with the fragments it sent,
+    /// unclosed, so the stream finishes `length` and no client can parse it,
+    /// and one never exposed is not exposed.
     mutating func finishToolCalls(truncated: Bool, cutAtLimit: Bool = false) throws
         -> [MLXServerGenerationEvent]
     {
@@ -120,11 +124,11 @@ struct NativeToolStreamRouter {
         for segment in handler.finishSegments() {
             switch segment {
             case .callFailed where truncated:
+                if cutAtLimit, openCallIndex != nil { callsLeftOpenAtCut += 1 }
                 openCallIndex = nil
-            case .callCompleted(_, let remainder) where cutAtLimit:
-                if let index = openCallIndex, !remainder.isEmpty {
-                    events.append(.toolCallDelta(.init(index: index, arguments: remainder)))
-                }
+            case .callCompleted where cutAtLimit:
+                // Its remainder is the parse's closure, not generated text.
+                if openCallIndex != nil { callsLeftOpenAtCut += 1 }
                 openCallIndex = nil
             case .callStarted where cutAtLimit, .call where cutAtLimit:
                 continue
@@ -248,8 +252,7 @@ struct NativeToolStreamRouter {
         case .callCompleted(let call, let remainder):
             guard let index = openCallIndex else { return [] }
             openCallIndex = nil
-            try ToolConstraintValidation.validate([call], prepared: prepared, truncated: truncated,
-                responseStarted: responseStarted)
+            try validate(call, prepared: prepared, truncated: truncated)
             completedToolCalls.append(call)
             return [.toolCallDelta(.init(index: index, arguments: remainder, completed: call))]
         case .callFailed(let failure):
@@ -260,6 +263,7 @@ struct NativeToolStreamRouter {
                 throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(
                     ToolNoncomplianceCheck.streamedCallViolation(failure))
             }
+            if !prepared.returnsAutoCallsAsGenerated { strictCallsReturnedAsGenerated += 1 }
             // Its arguments already left exactly as generated: OpenAI's raw
             // `arguments` string for JSON that does not parse. Only close the
             // call, so the response finishes with `tool_calls`; the closing
@@ -269,14 +273,27 @@ struct NativeToolStreamRouter {
                 completed: ToolCall(function: .init(name: name, arguments: [String: MLXLMCommon.JSONValue]()))))]
         case .call(let call):
             // Never exposed (e.g. an undeclared name): validate before showing.
-            try ToolConstraintValidation.validate([call], prepared: prepared, truncated: truncated,
-                responseStarted: responseStarted)
+            try validate(call, prepared: prepared, truncated: truncated)
             let index = try admitCall(prepared)
             completedToolCalls.append(call)
             let arguments = String(
                 decoding: try JSONEncoder.openAIServer.encode(call.function.arguments), as: UTF8.self)
             return [.toolCallDelta(.init(index: index, name: call.function.name, arguments: arguments,
                 completed: call))]
+        }
+    }
+
+    /// One call's check; counts a `strict` call that fails it but leaves as
+    /// generated because the response started.
+    private mutating func validate(_ call: ToolCall, prepared: ToolChoicePromptPolicy.Prepared, truncated: Bool)
+        throws
+    {
+        try ToolConstraintValidation.validate([call], prepared: prepared, truncated: truncated,
+            responseStarted: responseStarted)
+        if responseStarted, prepared.strictCallsAsGenerated, !prepared.returnsAutoCallsAsGenerated,
+            (try? ToolConstraintValidation.validate([call], prepared: prepared, truncated: truncated)) == nil
+        {
+            strictCallsReturnedAsGenerated += 1
         }
     }
 

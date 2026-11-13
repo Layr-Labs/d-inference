@@ -74,12 +74,13 @@ struct NemotronSuperLocalOutput {
         if streaming {
             events = try route(channel.finishStream())
             // The streamed reasoning stays; its copy is content and passes the
-            // same tool and response-format checks as any other.
-            if channel.promotesUnterminatedReasoning, !reasoning.isEmpty {
+            // same tool and response-format checks as any other. A thought the
+            // limit cut is not an answer: nothing is promoted.
+            if channel.promotesUnterminatedReasoning, !reasoning.isEmpty, !cutAtLimit {
                 events += try route([.init(content: reasoning, reasoningContent: nil)])
             }
         } else {
-            let split = channel.complete(raw)
+            let split = channel.complete(raw, promotingUnterminated: !cutAtLimit)
             reasoning = split.reasoning ?? ""
             _ = try route([.init(content: split.content ?? "", reasoningContent: nil)])
         }

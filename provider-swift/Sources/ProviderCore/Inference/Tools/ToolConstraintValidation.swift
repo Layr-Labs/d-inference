@@ -30,8 +30,9 @@ enum ToolConstraintValidation {
 
     /// `truncated`: generation stopped at `max_tokens`. A call parsed from a
     /// cut-off frame may be missing arguments, so it is held to the
-    /// declarations even without `strict`, as before; the serving path ends
-    /// such an answer as `length` instead of refusing it (`TokenLimitCutPolicy`).
+    /// declarations even without `strict`. When the cut ends as `length`
+    /// (`TokenLimitCutPolicy`) the forwarder completes no streamed call and
+    /// drops a withheld call that fails (`validateWithheld`) instead.
     /// `responseStarted`: an event of this response already left, so a
     /// `strict` call may leave as generated (`StrictToolCallPolicy`).
     static func validate(
@@ -116,25 +117,34 @@ enum ToolConstraintValidation {
     }
 
     /// Calls withheld until the end of generation. When the token limit cut
-    /// the answer (`cutAtLimit`, `TokenLimitCutPolicy`), calls that fail their
-    /// checks are the limit's (arguments it ended, a call it prevented): none
-    /// of them leaves, and the answer ends `length`. More calls than
-    /// `parallel_tool_calls: false` allows, or a call under `tool_choice: none`,
-    /// are the model's and still refused.
+    /// the answer (`cutAtLimit`, `TokenLimitCutPolicy`), a set that fails is
+    /// checked one call at a time: the whole calls leave, and only the last,
+    /// which the limit may have cut, is held to the declarations
+    /// (`truncated`); a call that fails is dropped, and a forced choice left
+    /// with none ends `length`. More calls than `parallel_tool_calls: false`
+    /// allows, or a call under `tool_choice: none`, are the model's and still
+    /// refused. Returns how many calls it dropped.
+    @discardableResult
     static func validateWithheld(
         _ calls: inout [ToolCall],
         prepared: ToolChoicePromptPolicy.Prepared,
         truncated: Bool = false,
         cutAtLimit: Bool,
         responseStarted: Bool = false
-    ) throws {
+    ) throws -> Int {
         do {
             try validate(calls, prepared: prepared, truncated: truncated, responseStarted: responseStarted)
+            return 0
         } catch {
             guard cutAtLimit, prepared.allowsParallelCalls || calls.count <= 1,
                 prepared.mode != .none || calls.isEmpty
             else { throw error }
-            calls = []
+            let held = calls
+            calls = held.indices.filter { index in
+                (try? validate([held[index]], prepared: prepared, truncated: truncated && index == held.count - 1,
+                    responseStarted: responseStarted)) != nil
+            }.map { held[$0] }
+            return held.count - calls.count
         }
     }
 

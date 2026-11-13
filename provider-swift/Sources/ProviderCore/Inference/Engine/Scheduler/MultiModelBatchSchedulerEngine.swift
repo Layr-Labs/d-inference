@@ -1895,14 +1895,35 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         continuation.yield(answer)
                     }
                 }
-                do {
-                    var events: [MLXServerGenerationEvent] = []
-                    if let answerTail, !answerTail.isEmpty {
-                        events += try router.process(answerTail)
+                /// What the cut and the strict leniency changed, so the
+                /// refusals they replace stay measurable.
+                func emitLeniencyTelemetry(droppedCalls: Int, strictAsGenerated: Bool) {
+                    if cutAtLimit {
+                        if router.callsLeftOpenAtCut > 0 {
+                            emitToolConstraintTelemetry(operation: "tool_constraint_cut", reason: "open_call")
+                        }
+                        if droppedCalls > 0 {
+                            emitToolConstraintTelemetry(operation: "tool_constraint_cut", reason: "dropped_calls")
+                        }
+                        if formatOutput != nil || glmAnswer != nil {
+                            emitToolConstraintTelemetry(operation: "tool_constraint_cut", reason: "unchecked_answer")
+                        }
                     }
-                    events += try router.finishText(cutAtLimit: cutAtLimit)
+                    if strictAsGenerated || router.strictCallsReturnedAsGenerated > 0 {
+                        emitToolConstraintTelemetry(operation: "tool_constraint_strict_as_generated",
+                            reason: prepared.mode.telemetryValue, severity: .warn)
+                    }
+                }
+                // The text the end of generation flushes leaves only after the
+                // calls' checks: a refusal with nothing else sent stays one the
+                // router can fail over on.
+                var flushed: [MLXServerGenerationEvent] = []
+                do {
+                    if let answerTail, !answerTail.isEmpty {
+                        flushed += try router.process(answerTail)
+                    }
+                    flushed += try router.finishText(cutAtLimit: cutAtLimit)
                     usageSignal.recordWithheldReasoning(router.takeWithheldReasoning())
-                    for routed in events { emit(routed) }
                 } catch {
                     await releaseBox.fire()
                     continuation.finish(throwing: error)
@@ -1914,11 +1935,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     // and re-check the whole set. The other terminal checks
                     // match the complete-call path below.
                     do {
-                        for routed in try router.finishToolCalls(truncated: stopReason == "length",
+                        let settled = try router.finishToolCalls(truncated: stopReason == "length",
                             cutAtLimit: cutAtLimit)
-                        {
-                            emit(routed)
-                        }
+                        for routed in flushed + settled { emit(routed) }
                         if !cutAtLimit { try router.checkNativeToolFailure() }
                         try ToolConstraintValidation.validate(router.completedToolCalls, prepared: prepared,
                             responseStarted: router.responseStarted)
@@ -1928,12 +1947,13 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         continuation.finish(throwing: error)
                         return
                     }
-                    if (toolHandler?.parseFailureCount ?? 0) > 0 {
+                    if !cutAtLimit, (toolHandler?.parseFailureCount ?? 0) > 0 {
                         emitToolConstraintTelemetry(
                             operation: "tool_constraint_fallback",
                             reason: "parser",
                             severity: .warn)
                     }
+                    emitLeniencyTelemetry(droppedCalls: 0, strictAsGenerated: false)
                     Self.yieldTerminalInfo(continuation, promptTokenCount: promptTokenCount,
                         completionTokens: completionTokens, startedAt: startedAt,
                         firstTokenAt: firstTokenAt, lastTokenAt: lastTokenAt,
@@ -1944,6 +1964,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     return
                 }
                 var toolCalls = toolHandler?.finish() ?? []
+                let residual = toolHandler?.takeResidualText()
                 do {
                     if !cutAtLimit { try router.checkNativeToolFailure() }
                 } catch {
@@ -1951,27 +1972,31 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     continuation.finish(throwing: error)
                     return
                 }
-                // A native frame the cut left unparsed is never published as text.
-                if prepared.mode == .auto,
-                    let residual = toolHandler?.takeResidualText(),
-                    !residual.isEmpty, !router.hasNativeToolFailure
-                {
-                    emit(router.visibleEvent(residual))
-                }
-                if prepared.mode == .auto, (toolHandler?.parseFailureCount ?? 0) > 0 {
-                    emitToolConstraintTelemetry(
-                        operation: "tool_constraint_fallback",
-                        reason: "parser",
-                        severity: .warn)
-                }
+                // Checked against what left before the flush (see `flushed`).
+                let strictAsGenerated = prepared.strictCallsAsGenerated && router.responseStarted
+                    && !prepared.returnsAutoCallsAsGenerated && !cutAtLimit && !toolCalls.isEmpty
+                    && (try? ToolConstraintValidation.validate(toolCalls, prepared: prepared,
+                        truncated: stopReason == "length")) == nil
+                let droppedCalls: Int
                 do {
-                    try ToolConstraintValidation.validateWithheld(&toolCalls, prepared: prepared,
+                    droppedCalls = try ToolConstraintValidation.validateWithheld(&toolCalls, prepared: prepared,
                         truncated: stopReason == "length", cutAtLimit: cutAtLimit,
                         responseStarted: router.responseStarted)
                 } catch {
                     await releaseBox.fire()
                     continuation.finish(throwing: error)
                     return
+                }
+                for routed in flushed { emit(routed) }
+                // A native frame the cut left unparsed is never published as text.
+                if prepared.mode == .auto, let residual, !residual.isEmpty, !router.hasNativeToolFailure {
+                    emit(router.visibleEvent(residual))
+                }
+                if prepared.mode == .auto, !cutAtLimit, (toolHandler?.parseFailureCount ?? 0) > 0 {
+                    emitToolConstraintTelemetry(
+                        operation: "tool_constraint_fallback",
+                        reason: "parser",
+                        severity: .warn)
                 }
                 do {
                     try finishAnswer(hasToolCalls: !toolCalls.isEmpty)
@@ -1985,6 +2010,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         operation: "tool_constraint_valid",
                         reason: prepared.mode.telemetryValue)
                 }
+                emitLeniencyTelemetry(droppedCalls: droppedCalls, strictAsGenerated: strictAsGenerated)
                 for toolCall in toolCalls {
                     continuation.yield(.toolCall(toolCall))
                 }

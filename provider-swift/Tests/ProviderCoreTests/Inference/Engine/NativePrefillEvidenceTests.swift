@@ -77,6 +77,12 @@ struct NativePrefillEvidenceTests {
         try #require(try await policy(bridge, prompt: prompt).conservativePrefillTokensPerSecond)
     }
 
+    /// The published `isolated_prefill` measurement that routing reads.
+    private func publishedIsolatedPrefill(_ bridge: EngineV2Bridge) async throws -> Double {
+        let measurements = try #require(await bridge.backendSlotCapacity().performanceMeasurements)
+        return try #require(measurements.isolatedPrefill).tokensPerSecond
+    }
+
     private func projectionEngine() -> EngineV2 {
         let model = DeadlineAdmissionFixtureModel()
         return EngineV2(model: model, layerKinds: model.kinds,
@@ -212,8 +218,8 @@ struct NativePrefillEvidenceTests {
         #expect(await bridge._testIsolatedPrefillTps() == raised)
         await serve(bridge, 100, prompt: 3_000, at: now - .seconds(20))
         #expect(await bridge._testIsolatedPrefillTps() == raised)
-        // The published rates, which routing reads, follow the estimate; the
-        // slower sample stays in its prompt-size bucket.
+        // The published rates, which routing reads, leave the slower sample out;
+        // it stays in its prompt-size bucket.
         let capacity = await bridge.backendSlotCapacity()
         #expect(capacity.observedPrefillTps == raised)
         let measurements = try #require(capacity.performanceMeasurements)
@@ -335,6 +341,36 @@ struct NativePrefillEvidenceTests {
         await serve(bridge, 2_500, prompt: 3_000, at: now - .seconds(10))
         await serve(bridge, 2_000, prompt: 3_000, at: now - .seconds(5))
         #expect(await bridge._testIsolatedPrefillTps() == 0.3 * 2_000 + 0.7 * (0.3 * 2_500 + 0.7 * 1_420))
+        await bridge.shutdown()
+    }
+
+    @Test("a long prompt after a gap restarts the published isolated rate with the estimate")
+    func longPromptRestartsThePublishedRate() async throws {
+        let (bridge, _) = try nativeBridge()
+        let now = ContinuousClock.now
+        await calibrate(bridge, at: now - .seconds(1_200))
+        // A faster short prompt after the gap: the estimate blends it in, while the
+        // published rate restarts on its own clock and reads above the estimate.
+        await serve(bridge, 2_500, prompt: 3_000, at: now - .seconds(60))
+        #expect(await bridge._testIsolatedPrefillTps() == 0.3 * 2_500 + 0.7 * 1_420)
+        #expect(try await publishedIsolatedPrefill(bridge) == 2_500)
+        // The next long prompt restarts both.
+        await serve(bridge, 1_950, prompt: 6_000, at: now - .seconds(5))
+        #expect(await bridge._testIsolatedPrefillTps() == 1_950)
+        #expect(try await publishedIsolatedPrefill(bridge) == 1_950)
+        await bridge.shutdown()
+    }
+
+    @Test("before its first calibration cell a faster sample after a gap replaces a low estimate, as on dev")
+    func uncalibratedNativeMacRestartsOnItsOwnClock() async throws {
+        let (bridge, _) = try nativeBridge()
+        let now = ContinuousClock.now
+        // The first prompt was a few tokens; no calibration cell yet.
+        await serve(bridge, 9, prompt: 13, at: now - .seconds(600))
+        #expect(await bridge._testIsolatedPrefillTps() == 9)
+        // A recovery-sized prompt after the gap replaces it instead of nudging it to 126.
+        await serve(bridge, 400, prompt: 384, at: now - .seconds(5))
+        #expect(await bridge._testIsolatedPrefillTps() == 400)
         await bridge.shutdown()
     }
 

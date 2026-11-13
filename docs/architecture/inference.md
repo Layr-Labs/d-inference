@@ -2643,27 +2643,32 @@ every long prompt, and a refusal measures nothing. A cold isolated sample from a
 prompt of at most 4,096 tokens now raises the estimate when it is faster and is
 otherwise left out of it, since a short prompt's rate bounds a longer one's from
 below. Calibration cells and longer prompts move the estimate either way, and
-only they date the evidence and restart the estimate 120 seconds after the
-newest of them; a faster short sample blends in. On an idle Mac at nominal
-posture, evidence older than 120 seconds, or none, is priced at no less than the
-calibration cell's rate; fresh evidence, a busy Mac or another posture keep the
-floor of one eighth of it. Old evidence never skips the projection: a native
-step cannot be preempted. The smallest prompt-size bucket (up to 1,024 tokens)
-no longer tightens a prompt, because it mixes a few-token prompt's fixed cost
-with real prefill; larger buckets still do. A slower short sample stays in its
-prompt-size bucket only: it enters neither the published `isolated_prefill`
-measurement (which restarts with the estimate) nor `observed_prefill_tps` nor
-the slot telemetry's `isolated_prefill_tps`; contended samples feed
-`observed_prefill_tps` as before. With a calibration cell, the Mac no longer
-takes the bounded recovery below: idle at nominal posture the floor already
-admits such a prompt, and a recovery sample could only raise the estimate.
-Before its first cell it still does. Because slower short samples no longer
-refresh the published measurement, it expires 120 seconds after the last sample
-that entered the estimate, even while short prompts arrive, so MiMo's
-maintenance calibration, which waits for an idle Mac and evidence older than 90
-seconds, runs on such a Mac as on one without traffic. Off nominal posture a
-short sample still cannot lower the estimate, so the first long prompt after a
-posture change is priced from the nominal estimate until it is measured.
+only they date the evidence; once the Mac has a calibration cell, only they
+restart the estimate 120 seconds after the newest of them, and a faster short
+sample blends in. Before the first cell, restarts follow the published
+measurement's own 120-second clock, as for other engines. On an idle Mac at
+nominal posture, evidence older than 120 seconds, or none, is priced at no less
+than the calibration cell's rate; fresh evidence, a busy Mac or another posture
+keep the floor of one eighth of it. Old evidence never skips the projection: a
+native step cannot be preempted. The smallest prompt-size bucket (up to 1,024
+tokens) no longer tightens a prompt, because it mixes a few-token prompt's fixed
+cost with real prefill; larger buckets still do. A slower short sample stays in
+its prompt-size bucket only: it enters neither the published `isolated_prefill`
+measurement nor `observed_prefill_tps` nor the slot telemetry's
+`isolated_prefill_tps`; contended samples feed `observed_prefill_tps` as before.
+The published measurement restarts whenever the estimate does; after an evidence
+gap a faster short sample also restarts it on its own clock while the estimate
+blends the sample in, so the published rate can read above admission's until the
+next long prompt or cell. With a calibration cell, the Mac no longer takes the
+bounded recovery below: idle at nominal posture the floor already admits such a
+prompt, and a recovery sample could only raise the estimate. Before its first
+cell it still does. Because slower short samples no longer refresh the published
+measurement, it expires 120 seconds after the last sample that entered the
+estimate, even while short prompts arrive, so MiMo's maintenance calibration,
+which waits for an idle Mac and evidence older than 90 seconds, runs on such a
+Mac as on one without traffic. Off nominal posture a short sample still cannot
+lower the estimate, so the first long prompt after a posture change is priced
+from the nominal estimate until it is measured.
 `DARKBLOOM_TTFT_NATIVE_PREFILL_EVIDENCE=0` restores the previous estimator, as
 does `DARKBLOOM_TTFT_ADMISSION_FIXES=0`. Other models, Diffusion Gemma's native
 block engine included, are unchanged.

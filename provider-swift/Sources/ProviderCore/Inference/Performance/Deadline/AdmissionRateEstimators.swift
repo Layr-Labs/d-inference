@@ -133,7 +133,8 @@ enum IsolatedPrefillAdmissionRate {
 /// from a prompt of at most `sampleTokensAbove` tokens may raise the estimate
 /// (a short prompt's rate bounds a longer prompt's from below) but never lower
 /// it; calibration cells and longer prompts move it either way and alone date
-/// the evidence and restart the estimate after a gap (`countsAsRateSample`). A
+/// the evidence and, once the Mac has a calibration cell, restart the estimate
+/// after a gap (`countsAsRateSample`). A
 /// slower short sample stays in its prompt-size bucket only, out of the
 /// published isolated and observed prefill rates that routing reads. The
 /// smallest bucket never tightens a prompt (`bucketTightens`); larger buckets

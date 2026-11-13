@@ -34,12 +34,14 @@ extension EngineV2Bridge {
         let shortNativeSample = native && !calibration && value.phase == "isolated_prefill"
             && !NativePrefillEvidence.countsAsRateSample(promptTokens: value.prompt)
             && isolatedPrefillEwmaInitialized && value.tps <= isolatedPrefillTpsEwma
-        // Only a calibration cell or a long prompt dates a native estimate and
-        // restarts it after a gap; a faster short sample blends in, so it can
-        // only raise the estimate, never replace it.
+        // Only a calibration cell or a long prompt dates a native estimate and,
+        // once the Mac has a calibration cell, restarts it after a gap; a faster
+        // short sample blends in, so it can only raise the estimate. Before the
+        // first cell, restarts follow the published measurement's own clock.
         let countedNativeSample = calibration || NativePrefillEvidence.countsAsRateSample(promptTokens: value.prompt)
+        let nativeClock = native && calibratedIsolatedPrefillTps != nil
         let resetIsolated = !isDecode && value.phase == "isolated_prefill" && !shortNativeSample
-            && (native ? countedNativeSample && nativeRateEvidenceExpired(at: value.at)
+            && (nativeClock ? countedNativeSample && nativeRateEvidenceExpired(at: value.at)
                 : isolatedPrefillEvidenceExpired(at: value.at))
         // A late completed sample older than the newest evidence is not an
         // evidence gap and must not restart the combined estimate.
@@ -57,7 +59,7 @@ extension EngineV2Bridge {
         }
         // The prompt-size bucket keeps a slower short sample; the published
         // isolated rate, which routing prices this Mac from, leaves it out and
-        // restarts with the native estimate.
+        // restarts whenever the native estimate does.
         performanceMeasurements.observe(value.phase, tps: value.tps, prompt: value.prompt,
             context: value.context, cache: value.cache, overlap: value.overlap, at: value.at,
             deadlinePostureEpoch: value.postureEpoch, recordAggregate: value.aggregate && !shortNativeSample,

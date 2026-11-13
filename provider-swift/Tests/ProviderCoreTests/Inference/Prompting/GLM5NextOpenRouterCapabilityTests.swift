@@ -314,17 +314,16 @@ struct GLM5NextOpenRouterCapabilityTests {
         }
     }
 
-    /// Nothing unvalidated reaches the client: prose, a schema violation, a
-    /// truncated value or an answer cut off in reasoning is a typed 422 after
-    /// the streamed reasoning, with no content frame. Errors never quote output.
+    /// Nothing unvalidated reaches the client: prose, a schema violation or a
+    /// truncated value is a typed 422 after the streamed reasoning, with no
+    /// content frame. Errors never quote output.
     @Test(arguments: [
         (["PRIVATE: it is sunny in Austin."], CBv2FinishReason.stop, "json_object"),
         (["[\"PRIVATE\"]"], .stop, "json_object"),
         ([#"{"city":"PRIVATE","temperature_f":75,"conditions":"hot"}"#], .stop, "json_schema"),
         ([#"{"city":"PRIVATE","temperature_f":75.5,"conditions":"sunny"}"#], .stop, "json_schema"),
         ([#"{"city":"PRIVATE","temperature_f":75,"conditions":"sunny","extra":1}"#], .stop, "json_schema"),
-        ([#"{"city":"PRIVATE","temp"#], .length, "json_object"),
-        (["PRIVATE reasoning that never ends"], .length, "json_schema"),
+        ([#"{"city":"PRIVATE","temp"#], .stop, "json_object"),
     ])
     func invalidJSONAnswerIsATyped422WithNoContent(
         output: [String], finish: CBv2FinishReason, format: String
@@ -339,6 +338,21 @@ struct GLM5NextOpenRouterCapabilityTests {
         }
         #expect(!message.contains("PRIVATE"))
         #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 422)
+    }
+
+    /// The budget, not the model, ended these (`TokenLimitCutPolicy`): the
+    /// withheld answer leaves as generated and the stream ends `length`, also
+    /// when the whole budget went to reasoning.
+    @Test(arguments: [
+        ([#"{"city":"Austin","temp"#], "json_object"),
+        (["reasoning that never ends"], "json_schema"),
+    ])
+    func answerCutAtTheLimitEndsAsLength(output: [String], format: String) async throws {
+        var body = format == "json_object" ? Self.jsonObjectBody() : Self.jsonSchemaBody()
+        body["reasoning"] = ["enabled": false]
+        let served = try await serve(body, output: output, finish: .length)
+        #expect(served.error == nil && served.finishReason == "length", "\(String(describing: served.error))")
+        if format == "json_object" { #expect(served.content == output.joined()) }
     }
 
     // MARK: - reasoning-content-return
@@ -499,15 +513,15 @@ struct GLM5NextOpenRouterCapabilityTests {
         #expect(refusal.hasPrefix(EngineV2Translation.unsupportedOutputControlPrefix))
     }
 
-    /// Prose, a missing call, the wrong function, a schema violation, a
-    /// truncated frame or a call with trailing text is a typed 422 and nothing
-    /// is exposed.
+    /// Prose, a missing call, the wrong function, a schema violation, an
+    /// unterminated frame or a call with trailing text is a typed 422 and
+    /// nothing is exposed.
     @Test(arguments: [
         ("required", ["PRIVATE: it is 72F in Boston."], CBv2FinishReason.stop),
         ("required", ["PRIVATE " + weatherCall], .stop),
         ("required", [weatherCall.replacingOccurrences(of: "fahrenheit", with: "kelvin")], .stop),
         ("named", ["<tool_call>get_forecast<arg_key>city</arg_key><arg_value>PRIVATE</arg_value></tool_call>"], .stop),
-        ("named", [String(weatherCall.prefix(60))], .length),
+        ("named", [String(weatherCall.prefix(60))], .stop),
         ("named", [weatherCall + "PRIVATE trailing"], .stop),
     ])
     func noncompliantForcedOutputIsATyped422WithNothingExposed(
@@ -522,6 +536,17 @@ struct GLM5NextOpenRouterCapabilityTests {
         }
         #expect(!message.contains("PRIVATE"))
         #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 422)
+    }
+
+    /// A forced call the budget cut is the limit's, not the model's
+    /// (`TokenLimitCutPolicy`): its frame is dropped, nothing is exposed and
+    /// the stream ends `length`.
+    @Test(arguments: ["required", "named"])
+    func forcedCallCutAtTheLimitEndsAsLength(choice: String) async throws {
+        let body = try Self.forcedToolBody(choice == "required" ? Self.requiredChoice : Self.namedChoice)
+        let served = try await serve(body, output: [String(Self.weatherCall.prefix(60))], finish: .length)
+        #expect(served.error == nil && served.finishReason == "length", "\(String(describing: served.error))")
+        #expect(served.toolCalls.isEmpty && served.content.isEmpty)
     }
 
     /// The coordinator routes required/named GLM requests only to providers

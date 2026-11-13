@@ -11,7 +11,7 @@ final class LoopbackWebSocketPeer: @unchecked Sendable {
         /// Reads and drops every message, and answers pings.
         case answersPings
         /// Never reads and never answers a ping, but sends `frame` as a text
-        /// message every `interval`: a busy stream whose pongs are late.
+        /// message every `interval`: a busy stream whose pongs never come.
         case streams(frame: Data, interval: DispatchTimeInterval)
     }
 

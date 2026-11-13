@@ -52,8 +52,8 @@ enum CoordinatorLinkVerdict: Equatable, Sendable {
     case suspended
 }
 
-/// The ping task's view of one session's link. It reads the time on the
-/// continuous clock, which keeps counting while the Mac sleeps, so a sleep
+/// The ping task's view of one session's link. The caller gives it times on
+/// the continuous clock, which keeps counting while the Mac sleeps, so a sleep
 /// shows as a late tick and a wall-clock change does not.
 struct CoordinatorLinkWatch {
     let liveness: CoordinatorLinkLiveness

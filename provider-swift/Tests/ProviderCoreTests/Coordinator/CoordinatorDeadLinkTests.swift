@@ -33,9 +33,10 @@ struct CoordinatorDeadLinkTests {
         let accepted = try await waitForAccepts(2, on: peer, within: .seconds(10))
         let reconnectAfter = accepted[1] - accepted[0]
         // Silence of more than 0.6 s, the next 0.1 s tick, a 0-0.25 s wait and a
-        // loopback reconnect. Before the change the bound alone was 30 s.
+        // loopback reconnect: about 1 s. The upper limit leaves room for a
+        // loaded CI Mac and is still far below a bound of 30 s.
         #expect(reconnectAfter > .milliseconds(600), "reconnected \(reconnectAfter) after connecting, before the bound")
-        #expect(reconnectAfter < .seconds(3), "reconnected \(reconnectAfter) after connecting")
+        #expect(reconnectAfter < .seconds(5), "reconnected \(reconnectAfter) after connecting")
     }
 
     @Test("a busy stream whose pongs never come keeps the link", .timeLimit(.minutes(1)))

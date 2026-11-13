@@ -435,7 +435,7 @@ struct CoordinatorIntegrationTests {
     /// for 1.5 s, so its ordinary close (code 1001) must reconnect after the
     /// stable session's first retry, 0-0.25 s.
     @Test("a session open past the stable duration reconnects within the first-retry range")
-    func stableSessionCloseReconnectsAfterShortestWait() async throws {
+    func stableSessionCloseReconnectsWithinFirstRetryRange() async throws {
         let policy = CoordinatorReconnectPolicy(stableSessionDuration: .seconds(1))
         try await withGrownReconnectBackoff(reconnectPolicy: policy) { mock in
             try await Task.sleep(for: .milliseconds(1500))

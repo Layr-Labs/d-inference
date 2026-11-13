@@ -1,7 +1,8 @@
 /// Reconnect policy rows: the backoff reset and the 0-0.25 s first retry after a
 /// session of 60 s or more, the 0-1 s wait without growth for close code 1012,
-/// and the unchanged backoff for every other end. The policy returns the range that `runLoop` draws the wait
-/// from, so each row checks exact ranges.
+/// and the unchanged backoff for every other end of a shorter session. The
+/// policy returns the range that `runLoop` draws the wait from, so each row
+/// checks exact ranges.
 
 import Foundation
 import Testing

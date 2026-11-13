@@ -24,6 +24,14 @@ struct CoordinatorLinkLivenessTests {
         #expect(Self.liveness.suspensionGap == .seconds(30))
     }
 
+    @Test("the reconnect log gives the dead-link reason, not a generic error number")
+    func deadLinkErrorReadsInTheLog() {
+        let error: Error = CoordinatorError.pongTimeout(after: Self.liveness.deadAfter)
+        #expect(error.localizedDescription == "WebSocket pong timeout (no frame from the coordinator in 6s)")
+        #expect(CoordinatorError.suspensionDetected.localizedDescription
+            == "Process suspension detected (timer gap); forcing reconnect")
+    }
+
     @Test("a silent peer is declared dead after the bound and before bound plus one ping interval")
     func silentPeerIsDeadWithinTheBound() throws {
         var watch = CoordinatorLinkWatch(liveness: Self.liveness, start: Self.start)

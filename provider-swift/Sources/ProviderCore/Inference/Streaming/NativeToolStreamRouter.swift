@@ -126,6 +126,9 @@ struct NativeToolStreamRouter {
         guard let handler, let prepared = streamedCallPolicy else { return [] }
         var events: [MLXServerGenerationEvent] = []
         for segment in handler.finishSegments() {
+            // `parallel_tool_calls: false` drops a later call at a cut as
+            // anywhere (`ParallelToolCallPolicy`): not the cut's to count.
+            if cutAtLimit, laterCalls.drops(segment, exposedCalls: exposedCallCount, prepared: prepared) { continue }
             switch segment {
             case .callFailed where truncated:
                 if cutAtLimit { recordCut(leftOpen: openCallIndex != nil) }

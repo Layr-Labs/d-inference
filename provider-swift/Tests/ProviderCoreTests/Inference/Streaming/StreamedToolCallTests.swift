@@ -292,6 +292,30 @@ struct StreamedToolCallTests {
         }
     }
 
+    /// At a cut that ends as `length` (`TokenLimitCutPolicy`) the same later
+    /// frames are `parallel_tool_calls: false`'s to drop, as anywhere: nothing
+    /// of them is exposed, and the cut counts none of them as its own.
+    @Test(arguments: [
+        #"<|tool_call>call:get_weather{location:<|"|>Rome<|"|>,location:<|"|>Oslo<|"|>}<tool_call|>"#,
+        #"<|tool_call>call:write_file{path:<|"|>a.py<|"|>,content:<|"|>print("#,
+        #"<|tool_call>call:write_file{path:<|"|>a.py<|"|>,content:<|"|>def f(): return {"a": 1}"#,
+        #"<|tool_call>call:get_weather{location:<|"|>Rome<|"|>}"#,
+    ])
+    func laterFramesAtACutAreDroppedByTheFilterNotCounted(later: String) throws {
+        var router = try Self.router(Self.request(parallel: false))
+        var events: [MLXServerGenerationEvent] = []
+        for character in Self.characters(Self.gemmaCall(#"location:<|"|>Paris<|"|>"#) + later) {
+            events += try router.process(character)
+        }
+        events += try router.finishText(cutAtLimit: true)
+        events += try router.finishToolCalls(truncated: true, cutAtLimit: true)
+        let deltas = Self.deltas(events)
+        #expect(deltas.allSatisfy { $0.index == 0 })
+        #expect(deltas.compactMap(\.name) == ["get_weather"])
+        #expect(router.completedToolCalls.map(\.function.arguments) == [["location": .string("Paris")]])
+        #expect(router.callsDroppedAtCut == 0 && router.callsLeftOpenAtCut == 0)
+    }
+
     /// The engine's complete-call terminal (here a forced choice, whose calls
     /// are withheld until generation ends) returns the first call as well.
     @Test func completeCallTerminalReturnsTheFirstCall() async throws {

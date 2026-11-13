@@ -23,6 +23,9 @@ struct Gemma4PlacementFamily: ClusterPlacementFamily {
     /// (`Gemma4TensorParallelRequestBudget`), set where the allocator's bound
     /// is known (`ClusterPlacementLayouts.layout`); nil in metadata-only layouts.
     var tensorParallelRequestAllowance: ClusterTensorParallelRequestAllowance?
+    /// What each lane after the first adds to that reservation (`Gemma4TensorParallelRequestBudget.laneBytes`); set
+    /// with it.
+    var tensorParallelLaneBytes: Int?
 
     /// The row a manifest names, or, without one, the first row of this
     /// configuration: the two 8-bit catalog entries are one artifact (one
@@ -164,7 +167,7 @@ struct Gemma4PlacementFamily: ClusterPlacementFamily {
                 reductionsPerLayer: plan.reductionsPerLayer, reductionsPerStep: plan.reductionsPerStep,
                 partialBytesPerToken: plan.feedForwardPartialBytesPerToken,
                 layerPartialBytesPerToken: plan.layerPartialBytesPerToken, stateDividesByHeads: true,
-                requestAllowance: tensorParallelRequestAllowance, choice: .fastest)
+                requestAllowance: tensorParallelRequestAllowance, laneBytes: tensorParallelLaneBytes, choice: .fastest)
         }
     }
 

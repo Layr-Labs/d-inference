@@ -15,7 +15,8 @@ public enum ClusterMemberRunEnd: Equatable, Sendable {
     /// check), or production serves here. A wait, never a failure.
     case gpuHeld
     /// Any other exit, including a zero exit the supervisor did not ask for:
-    /// an unrequested clean exit is a crash, not an operator stop.
+    /// it spends the restart budget like a crash, but a clean one is not a
+    /// candidate's failed start (`ClusterCandidateRecovery.endIsFailedStart`).
     case failure(exitCode: Int32)
     /// Killed by a signal the supervisor did not send.
     case signaled(Int32)

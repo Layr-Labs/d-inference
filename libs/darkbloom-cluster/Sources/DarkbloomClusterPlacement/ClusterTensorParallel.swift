@@ -49,6 +49,13 @@ public struct ClusterTensorParallelFamilyPlan: Codable, Equatable, Sendable {
     public let shareUnits: Int?
     /// Optional complete native request reservation; nil preserves existing families.
     public let requestAllowance: ClusterTensorParallelRequestAllowance?
+    /// What each concurrent request beyond the first adds to a rank's reservation at the memory plan's request: what
+    /// the family's owner reserves at LOAD for each lane of a saved width after the first (Gemma 4: one request's whole
+    /// charge, as it admits every lane; GLM: a lane's state, its pages and its page pool's growth). It is added on top
+    /// of what the rank is priced for one request (its allowance, or the layout's state where the family states none).
+    /// The planner prices a width with it (`ClusterPlacementPolicy.tensorParallelLanes`). Nil: no width is priced this
+    /// way (one request at a time, or a family whose own native quote prices its widths), and nil encodes nothing.
+    public let laneBytes: Int?
     /// Allocator-bounded weights outside the text layout, charged whole to
     /// every TP rank. Nil preserves existing layout bytes and behavior.
     public let additionalResidentBytes: Int?
@@ -64,7 +71,8 @@ public struct ClusterTensorParallelFamilyPlan: Codable, Equatable, Sendable {
     public init(plan: String, ranks: [Int], reductionsPerLayer: Int, reductionsPerStep: Int,
                 partialBytesPerToken: Int, layerPartialBytesPerToken: Int? = nil, stateDividesByHeads: Bool,
                 shareOptions: [[Int]]? = nil, shareUnits: Int? = nil,
-                requestAllowance: ClusterTensorParallelRequestAllowance? = nil, additionalResidentBytes: Int? = nil,
+                requestAllowance: ClusterTensorParallelRequestAllowance? = nil, laneBytes: Int? = nil,
+                additionalResidentBytes: Int? = nil,
                 speculativeHead: ClusterTensorParallelSpeculativeHead? = nil, choice: ClusterTensorParallelChoice? = nil) {
         self.plan = plan; self.ranks = ranks; self.reductionsPerLayer = reductionsPerLayer
         self.reductionsPerStep = reductionsPerStep; self.partialBytesPerToken = partialBytesPerToken
@@ -73,6 +81,7 @@ public struct ClusterTensorParallelFamilyPlan: Codable, Equatable, Sendable {
         self.shareOptions = shareOptions?.isEmpty == true ? nil : shareOptions
         self.shareUnits = shareUnits
         self.requestAllowance = requestAllowance
+        self.laneBytes = laneBytes
         self.additionalResidentBytes = additionalResidentBytes
         self.speculativeHead = speculativeHead
         self.choice = choice
@@ -81,6 +90,10 @@ public struct ClusterTensorParallelFamilyPlan: Codable, Equatable, Sendable {
     /// True when the provider's tensor-parallel-first rule does not apply to
     /// this plan: it is chosen only where predicted faster.
     public var choosesFastest: Bool { choice == .fastest }
+
+    /// What `lanes` concurrent requests add to a rank's reservation beyond the first one's: the lane charge for each
+    /// lane after the first. Zero for one request or nil lanes.
+    func laneGrowthBytes(lanes: Int?) -> Int { max(0, (lanes ?? 1) - 1) * (laneBytes ?? 0) }
 
     /// Bytes a selection reduction carries (the head's best value and token
     /// per rank, a few floats), as the prefill prediction has always charged it.
@@ -229,6 +242,14 @@ public struct ClusterTensorParallelLayout: Codable, Equatable, Sendable {
             }
         }
         try f.requestAllowance?.validate(layout: layout, partialBytesPerToken: f.partialBytesPerToken)
+        if let lane = f.laneBytes {
+            // A lane is one more request beside the one the rank is priced for: positive and bounded, and never more
+            // than the request part of a family's own allowance where it states one (Gemma 4's whole request).
+            guard (1...ClusterWorkerLimits.capacityBytes).contains(lane),
+                  f.requestAllowance.map({ lane <= $0.requestBytesExcludingCollectives }) ?? true else {
+                throw ClusterPlacementError("Model layout's tensor-parallel lane charge is outside its bounds or its request allowance")
+            }
+        }
         try f.speculativeHead?.validate(layout: layout)
     }
 

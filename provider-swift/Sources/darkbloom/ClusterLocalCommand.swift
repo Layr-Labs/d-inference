@@ -15,8 +15,9 @@ extension Cluster {
                 network of the leading Mac (LAN or tailnet) unless --bind names an address, and always needs its API \
                 key: `\(ClusterPairSummary.cli) local` on that Mac shows the address and the key.
 
-                The choice is kept: both Macs serve this way after restarts, until `\(ClusterPairSummary.cli) cluster` is used to \
-                serve through Darkbloom again (choose Serve through Darkbloom there). Run it on a cluster that already serves to switch it.
+                The choice is kept: both Macs serve this way after restarts, until `\(ClusterPairSummary.cli) cluster` on the \
+                leading Mac serves the pair through Darkbloom again, with its local API beside it (or this command's own list \
+                switches it). Run it on a cluster that already serves to switch it.
                 """)
         @OptionGroup var configOptions: ConfigOptions
         @Argument(help: "The model to serve, by its id or name as `\(ClusterPairSummary.cli) cluster` lists it; without one, the list is shown.")

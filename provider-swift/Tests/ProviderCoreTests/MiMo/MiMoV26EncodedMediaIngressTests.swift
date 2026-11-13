@@ -340,6 +340,11 @@ final class MiMoV26EncodedMediaIngressTests: XCTestCase {
         ]]]
         requests.append(("/v1/chat/completions", try JSONSerialization.data(withJSONObject:mixed)))
         let immutableRequests = requests
+        // Each request's media reservation settles on an engine-queue callback
+        // after its terminal event, so wait for that settlement, not the joins.
+        let removals = EventCounter()
+        value.transaction.setMediaReservationRemovalHookForTesting { removals.increment() }
+        let settled = removals.expectation(reaching: immutableRequests.count, "media reservations settled")
         try await app.test(.router) { client in
             for (index, request) in immutableRequests.enumerated() {
                 try await client.execute(uri:request.path, method:.post,
@@ -372,6 +377,7 @@ final class MiMoV26EncodedMediaIngressTests: XCTestCase {
         XCTAssertEqual(owners.acquisitions,5)
         XCTAssertEqual(actual.mtpMetricsSnapshot()?.draftedTokens,0,"media remains target-only")
         for lease in owners.all { await lease.joinFromOutside() }
+        await fulfillment(of:[settled],timeout:10)
         XCTAssertEqual(value.transaction.managedMediaReservationCountForTesting,0)
         try await drain(value,bundle,actual)
     }

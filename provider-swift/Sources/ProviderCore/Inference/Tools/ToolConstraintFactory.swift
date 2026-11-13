@@ -4,7 +4,9 @@
 // constraints. Vocabulary decoding is cached per loaded tokenizer; schemas
 // and grammar state remain per request. Qwen4 uses its rendered native channel
 // boundary and opaque framed arguments; Gemma keeps its own schema automaton;
-// tool-free Qwen 3.5 JSON answers use JSONAnswerConstraint.
+// GPT-OSS frames its Harmony call (GPTOSSForcedToolConstraint); tool-free
+// JSON answers of the families `JSONAnswerPolicy` admits use
+// JSONAnswerConstraint.
 
 import Foundation
 import ProviderCoreFoundation
@@ -22,7 +24,8 @@ enum ToolConstraintFactory {
         modelContext: ChatTemplateFixContext,
         defaultMaxTokens: Int,
         stopTokenIDs: Set<Int>,
-        nativePromptTokens: [Int]? = nil
+        nativePromptTokens: [Int]? = nil,
+        servesDistributedPair: Bool = false
     ) throws -> (any CBv2TokenConstraint)? {
         // Flint's automatic reasoning protocol needs framing even for no-tool
         // and auto requests. Do not broaden another family's admission policy.
@@ -50,11 +53,18 @@ enum ToolConstraintFactory {
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(error.localizedDescription)
             }
         }
-        // A tool-free Qwen JSON answer is constrained when everything it needs
-        // verifies; otherwise it keeps prompt-only steering, never a refusal.
-        if let answer = QwenJSONAnswerPolicy.constraint(request: request, tokenizer: tokenizer,
+        // A tool-free Gemma 4 JSON answer: a free thought, then one JSON value.
+        if let answer = GemmaJSONAnswerPolicy.constraint(request: request, tokenizer: tokenizer,
             modelType: modelContext.modelType, defaultMaxTokens: defaultMaxTokens,
             stopTokenIDs: stopTokenIDs, promptTokens: nativePromptTokens) {
+            return answer
+        }
+        // A tool-free JSON answer of a `JSONAnswerPolicy` family is constrained when everything it needs
+        // verifies; otherwise it keeps prompt-only steering, never a refusal.
+        if let answer = JSONAnswerPolicy.constraint(request: request, tokenizer: tokenizer,
+            modelID: modelContext.modelId, modelType: modelContext.modelType, defaultMaxTokens: defaultMaxTokens,
+            stopTokenIDs: stopTokenIDs, promptTokens: nativePromptTokens,
+            servesDistributedPair: servesDistributedPair) {
             return answer
         }
         guard prepared.mode.requiresInferenceConstraint else { return nil }
@@ -68,6 +78,11 @@ enum ToolConstraintFactory {
         } else {
             let strategy = try ToolChoiceEnforcementPolicy.forcedStrategy(
                 mode: prepared.mode, modelContext: modelContext)
+            if strategy == .harmonyFraming {
+                return try GPTOSSForcedToolConstraint.make(prepared: prepared, tokenizer: tokenizer,
+                    maxTokens: request.maxTokens ?? defaultMaxTokens, stopTokenIDs: stopTokenIDs,
+                    promptTokens: nativePromptTokens)
+            }
             if strategy == .structuredPostValidation {
                 if Qwen4ModelIdentity.isQualified(modelContext.modelId),
                    modelContext.modelType == "qwen4_exp" {

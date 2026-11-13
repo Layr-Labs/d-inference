@@ -21,6 +21,10 @@ extension Cluster {
 
         mutating func run() throws {
             Darkbloom.ensureLogging()
+            // This Mac's part of a pair: a cluster service its update left on an earlier release restarts once.
+            ClusterServiceStaleRestart.restartIfStale { text in
+                FileHandle.standardOutput.write(Data("\(ISO8601DateFormatter().string(from: Date())) cluster part: \(text)\n".utf8))
+            }
             let providerPath = try configOptions.config.map { URL(fileURLWithPath: $0) } ?? ConfigManager.defaultConfigPath()
             let selected = try ClusterConfigurationStore.installedReference(providerConfiguration: providerPath)
             // The owner this member launches reads the default setup: both must be the same.

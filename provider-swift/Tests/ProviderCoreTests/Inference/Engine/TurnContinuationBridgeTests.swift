@@ -97,7 +97,7 @@ struct TurnContinuationBridgeTests {
         let admits = await bridge._testCounters().admits
 
         // Every request on this Mac holds a foreground lease while it is served.
-        let lease = await fixture.budget.serviceBudget.idleCalibration.beginForeground()
+        let lease = try #require(await fixture.budget.serviceBudget.idleCalibration.admittedLease())
         await bridge.continueTurn(
             after: "a-1", source: source, shared: ContinuationFixture.tokens(300), cacheScope: "tenant-a")
         #expect(!(await bridge.turnContinuationScheduledTest()))

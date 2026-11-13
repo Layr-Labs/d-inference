@@ -192,7 +192,7 @@ struct NemotronSuperManagedSlotTests {
         consumer: NodeKeyPair, scope: String? = "tenant-a", deadline seconds: Int = 60,
         toolSchemaMetadataProtocol: Int? = nil, cacheReceiptNonce: String? = nil,
         prefixCacheProtocol: Int? = nil, cacheRepeatedPrefixTokens: Int? = nil,
-        cacheReceiptBoundaryMode: String? = nil,
+        cacheReceiptBoundaryMode: String? = nil, firstContentDeadline: FirstContentDeadline? = nil,
         whileRunning: (@Sendable (String) async -> Void)? = nil
     ) async throws -> (sse: String, terminal: OutboundMessage) {
         let id = "super-coordinator-\(UUID().uuidString)"
@@ -204,6 +204,7 @@ struct NemotronSuperManagedSlotTests {
             cacheReceiptBoundaryMode: cacheReceiptBoundaryMode,
             cacheRepeatedPrefixTokens: cacheRepeatedPrefixTokens,
             toolSchemaMetadataProtocol: toolSchemaMetadataProtocol,
+            firstContentDeadline: firstContentDeadline,
             send: SendHandle(recorder.record))
         if let whileRunning { await whileRunning(id) }
         let deadline = ContinuousClock.now + .seconds(seconds)

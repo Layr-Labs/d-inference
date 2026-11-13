@@ -55,7 +55,7 @@ struct IdleCalibrationCoordinatorTests {
 
         let admitted = ObservedFlag()
         let foreground = Task {
-            let lease = await coordinator.beginForeground()
+            let lease = await coordinator.admittedLease()
             admitted.set()
             return lease
         }
@@ -65,7 +65,7 @@ struct IdleCalibrationCoordinatorTests {
         }
         let admittedWhileSuccessorBlocked = admitted.isSet
         successor.release()
-        let lease = await foreground.value
+        let lease = try #require(await foreground.value)
         #expect(admittedWhileSuccessorBlocked,
             "a customer's deadline must not wait on cross-actor successor scheduling")
         try await Task.sleep(for: .milliseconds(50))
@@ -101,14 +101,14 @@ struct IdleCalibrationCoordinatorTests {
         let first = try #require(coordinator.startIfIdle(isIdle: { true }, operation: probe))
         #expect(coordinator.hasSession && coordinator.cancellationSource == nil)
         coordinator.cancel()
-        let lease = await coordinator.beginForeground()
+        let lease = try #require(await coordinator.admittedLease())
         await first.value
         #expect(coordinator.cancellationSource == "device work" && !coordinator.hasSession)
         lease.finish()
 
         let second = try #require(coordinator.startIfIdle(isIdle: { true }, operation: probe))
         #expect(coordinator.cancellationSource == nil)
-        let foreground = await coordinator.beginForeground()
+        let foreground = try #require(await coordinator.admittedLease())
         await second.value
         #expect(coordinator.cancellationSource == "request")
         foreground.finish()
@@ -138,7 +138,7 @@ struct IdleCalibrationCoordinatorTests {
 
         let arrival = try #require(coordinator.startIfIdle(
             isIdle: { budget.isIdle }, toleratesPrefixStoreTransfers: true, operation: probe))
-        let lease = await coordinator.beginForeground()
+        let lease = try #require(await coordinator.admittedLease())
         #expect(arrival.isCancelled && coordinator.cancellationSource == "request")
         lease.finish()
 
@@ -148,5 +148,54 @@ struct IdleCalibrationCoordinatorTests {
         await measuring.value
         #expect(coordinator.cancellationSource == "device work" && !coordinator.hasSession)
         later.finish()
+    }
+
+    @Test("a waiting request that is cancelled leaves at once and holds nothing")
+    func cancelledWaiterLeaves() async throws {
+        let coordinator = IdleCalibrationCoordinator()
+        // Ignores cancellation, as a probe whose engine stopped stepping does.
+        let engine = SuccessorSchedulingGate()
+        defer { engine.release() }
+        let stuck = try #require(coordinator.startIfIdle(isIdle: { true }) { await engine.enterAndWait() })
+        let waiter = Task { await coordinator.admitForeground() }
+        try await Task.sleep(for: .milliseconds(20))
+        waiter.cancel()
+        let outcome = await waiter.value
+        guard case .cancelled = outcome else {
+            Issue.record("a cancelled request must stop waiting for the probe")
+            return
+        }
+        #expect(!coordinator.isOverdue(stuck), "a cancel is not a stall")
+        #expect(coordinator.hasSession, "the probe is still running")
+    }
+
+    @Test("a probe that outlives the bound refuses the waiter and reads overdue until it retires")
+    func overdueProbeRefusesUntilItRetires() async throws {
+        let coordinator = IdleCalibrationCoordinator()
+        coordinator.retirementBound = .milliseconds(50)
+        let engine = SuccessorSchedulingGate()
+        defer { engine.release() }
+        let probe = try #require(coordinator.startIfIdle(isIdle: { true }) { await engine.enterAndWait() })
+        guard case .retirementOverdue = await coordinator.admitForeground() else {
+            Issue.record("a request must be refused once the bound passes")
+            return
+        }
+        #expect(coordinator.isOverdue(probe))
+        #expect(coordinator.startIfIdle(isIdle: { true }, operation: {}) == nil,
+            "no new probe while the overdue one still runs")
+        engine.release()
+        await probe.value
+        #expect(!coordinator.isOverdue(probe) && !coordinator.hasSession)
+        let lease = try #require(await coordinator.admittedLease(), "with no probe a request is admitted at once")
+        lease.finish()
+    }
+}
+
+extension IdleCalibrationCoordinator {
+    /// The lease of a request that waited for retirement, or nil if it was
+    /// refused or cancelled.
+    func admittedLease() async -> IdleCalibrationForegroundLease? {
+        guard case .admitted(let lease) = await admitForeground() else { return nil }
+        return lease
     }
 }

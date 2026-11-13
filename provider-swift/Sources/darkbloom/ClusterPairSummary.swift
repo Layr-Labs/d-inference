@@ -83,6 +83,9 @@ struct ClusterPairSummary: Sendable, Equatable {
     /// Rank 0's Mac can't be reached now, so this Mac's relay answers each request a 503 that says so
     /// (`ClusterServiceStatus.relayRankZeroAway`).
     var relayRankZeroAway = false
+    /// The pair's API on rank 0's Mac doesn't listen for now (its part starts again), so this Mac's relay keeps its port
+    /// and answers each request a 503 that says so (`ClusterServiceStatus.relayRankZeroAPIDown`).
+    var relayRankZeroAPIDown = false
 
     /// The pair's API listens on every address, so every Mac that doesn't run it relays it on its own port
     /// (`ClusterServingScope.answersOnEveryMac`).
@@ -136,11 +139,11 @@ struct ClusterPairSummary: Sendable, Equatable {
     var leadingMac: String { role == .member ? otherMac : ClusterOnboardingMacName.this }
 
     /// How the pair is set to serve; "not offered" while Darkbloom can't have it (never read as serving through it), and
-    /// with Both, me first its local API too.
+    /// with Both its local API too, "with you first" only where the pair's API reports its pause on (`[local] me_first`).
     var servesWords: String {
         guard !localOnly else { return "locally only" }
         return "through Darkbloom" + (ClusterOnboardingReady.isNotOffered(reason) ? " (not offered)" : "")
-            + (localAPI == nil ? "" : ", and on its local API with you first")
+            + (localAPI == nil ? "" : ", and on its local API" + (localAPI?.meFirst == nil ? "" : " with you first"))
     }
 
     /// The mode and each Mac's share, from the leader's deployment line ("pipeline", "M3 Ultra 40 layers / M5 Ultra 24
@@ -204,9 +207,10 @@ struct ClusterPairSummary: Sendable, Equatable {
     /// The line `darkbloom start` says in a terminal before the pair's screen, in words for what that screen does: on the
     /// leading Mac of a stopped pair, Enter starts the model last used (before one is chosen, the choice); otherwise the
     /// screen shows the pair as it is, and the Mac that follows starts nothing there. Never "starting": nothing starts
-    /// before a choice (journey 2a on pair-2, J2-d).
+    /// before a choice (journey 2a on pair-2, J2-d). Enter is named only while the other Mac answers: otherwise the
+    /// screen first offers Try again, Start over or Quit (#1908's review).
     var screenLine: String {
-        guard role == .leader, !started else { return actingLine("opening the pair's screen") }
+        guard role == .leader, !started, otherMacReachable else { return actingLine("opening the pair's screen") }
         let stopped = "This Mac is in a two-Mac cluster with \(otherMac), which is stopped."
         guard let model else { return stopped + " Choose its model to start it." }
         return stopped + " Press Enter to start it with \(model) (last used), or choose another model."
@@ -481,7 +485,7 @@ struct ClusterPairSummary: Sendable, Equatable {
 
     // MARK: - darkbloom status and doctor (no network)
 
-    /// One line for `darkbloom status --solo` and `darkbloom doctor`, from what this Mac knows by itself.
+    /// One line for `darkbloom status --solo` (this Mac's own view) and `darkbloom doctor` (status's read, `Doctor.clusterLine`).
     var statusLine: String {
         guard paired else { return "Cluster: not in a cluster" }
         if pairingUnreadable {
@@ -489,7 +493,8 @@ struct ClusterPairSummary: Sendable, Equatable {
                 + " · run `\(Self.cli) cluster` to check it (details: `\(Self.cli) cluster status`)"
         }
         if let idle = startedButNotRunningLine { return "Cluster: " + idle }
-        var parts = [role.map { $0 == .leader ? "this Mac leads" : "this Mac follows" } ?? "this Mac is paired", otherMac]
+        var parts = otherMacAnswers == false ? ["this Mac is paired", otherMac + " isn't answering"]
+            : [role.map { $0 == .leader ? "this Mac leads" : "this Mac follows" } ?? "this Mac is paired", otherMac]
         if let model { parts.append("\(model) \(servesWords)") }
         let now: String
         switch state {
@@ -723,9 +728,11 @@ extension ClusterPairSummary {
         return pairNotRunning ?? "The pair isn't running on this Mac (\(otherMac) isn't taking part)."
     }
 
-    /// "this Mac (Mac Studio) leads · the other Mac (Apple M5 Max, 128 GB) follows"
+    /// "this Mac (Mac Studio) leads · the other Mac (Apple M5 Max, 128 GB) follows"; no roles while the other Mac isn't
+    /// answering (journey 3, D3: after the leading Mac left, the Mac left behind said it led and the other followed).
     private var rolesWords: String {
         let this = thisMacName.map { "this Mac (\($0))" } ?? ClusterOnboardingMacName.this
+        if otherMacAnswers == false { return "\(this) is paired with \(otherMac), which isn't answering" }
         switch role {
         case .leader: return "\(this) leads · \(otherMac) follows"
         case .member: return "\(this) follows · \(otherMac) leads"

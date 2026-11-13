@@ -249,8 +249,9 @@ extension ProviderLoop {
                 return id
             }
         }
-        // Admission opens, the coordinator's and the local API's alike: a
-        // local request made during the canary has waited for this.
+        // Admission opens, the coordinator's and the local API's alike: its
+        // gate refused every request made during the canary (one already
+        // queued for a lane has waited for this).
         clusterPairAdmissionOpenSlotID = handle.id
         refreshClusterMemberAdmission()
         wakeClusterPairLocalWaiters()

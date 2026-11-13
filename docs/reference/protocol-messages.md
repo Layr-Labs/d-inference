@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-13
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon in
@@ -235,10 +235,11 @@ part of the WebSocket close frame, not of a JSON frame.
 | Close from the coordinator side | Wait before the next attempt |
 |---|---|
 | Code `1012` (service restart) | Drawn from `serviceRestartDelayRange`; the backoff does not grow |
-| Any other code, or no close frame | The next `ExponentialBackoff` range; the backoff grows |
+| Any other code, or no close frame, after a stable session | Drawn from `stableSessionRetryRange`; the backoff does not grow |
+| Any other code, or no close frame, after a shorter session | The next `ExponentialBackoff` range; the backoff grows |
 
-A session that stayed open for `stableSessionDuration` or more, counted from its
-`register` frame, resets the backoff before either wait. The values are in the
+A stable session stayed open for `stableSessionDuration` or more, counted from
+its `register` frame; it also resets the backoff. The values are in the
 [runtime constants](../provider/cli-reference.md#runtime-constants). Older
 providers handle `1012` like any other close, so the coordinator can send it to
 every provider version. Every reconnect sends a fresh `register`.
@@ -373,7 +374,8 @@ Go `ModelInfo` · Swift `ModelInfo` (`Types.swift`).
 | `model_type` | `string` | `String?` | req in Go | |
 | `quantization` | `string` | `String?` | req in Go | |
 | `weight_hash` | `string` | `String?` | opt | SHA-256 of the weight files |
-| `is_vision` | `bool` | `Bool?` | opt | v0.6.0+; Swift encodes only `true`; absent decodes `false` → never selected for media. A cluster member sends it (and `native_media_tools`) only when its pair's placed mode serves a media contract, GLM-5.3-Flash or Qwen3.8 27B in tensor parallel, whatever the artifact declares; that slot is published only while READY reports the contract (`provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterMemberPreparation.swift`, `registeredModel`, `requireRegisteredMedia`) |
+| `is_vision` | `bool` | `Bool?` | opt | v0.6.0+; Swift encodes only `true`; absent decodes `false` → never selected for media. A cluster member sends it (and `native_media_tools`, `native_media_controls`) only when its pair's placed mode serves a media contract, GLM-5.3-Flash or Qwen3.8 27B in tensor parallel, whatever the artifact declares; that slot is published only while READY reports the contract (`provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/ClusterMemberPreparation.swift`, `registeredModel`, `requireRegisteredMedia`) |
+| `native_media_controls` | `bool` | `Bool?` | opt | Per-model support for a JSON `response_format` and non-empty `tools` together with image or video input; absent/false is ineligible. Advertised only for the managed Nemotron Super serving identity with `is_vision` and a template that renders (`ToolChoiceEnforcementPolicy.advertisesNativeMediaControls`); a cluster member drops it with `is_vision`. Carried by registration and `models_update`; Swift omits nil and preserves explicit false. A coordinator with platform [#729](https://github.com/Layr-Labs/darkbloom-platform/pull/729) (on platform `dev`, not yet in production) sends such Nemotron Super requests only to a Mac that advertises it; one without #729 sends them to any Super Mac, and a Mac without this build refuses them. See [coordinator/registry/native_media_tools.go](https://github.com/Layr-Labs/darkbloom-platform/blob/820c2755a85b9a9e7b033ea488d2f8d53a0d57a6/coordinator/registry/native_media_tools.go) (`BuildNeedsNativeMediaControls`, `providerAdvertisesNativeMediaControlsLocked`) |
 | `native_media_tools` | `bool` | `Bool?` | opt | Per-model forced-media/tool-result-media support; absent/false is ineligible. Requires `is_vision` and matching `tool_constraint_protocol`/`tool_constraint_models`. Carried by registration and `models_update`; Swift omits nil and preserves explicit false. See [coordinator/registry/native_media_tools.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/native_media_tools.go) (`providerSupportsNativeMediaToolsLocked`) |
 | `template_render_ok` | `*bool` | `Bool?` | ptr | 0.6.5+; **explicit `false` survives the wire** and excludes the model from tool requests; absent = no opinion |
 | `tool_constraint_template_hash` | `string` | `String?` | opt | binds grammar capability to the loaded template bytes |
@@ -556,9 +558,9 @@ The first three are what the cluster serves in its generation mode
 (`DistributedResidentExecutionProfile.served`,
 `ClusterModelFeaturePolicy.servedProfile`). In tensor parallel, that is the
 worker's whole profile: for Qwen3.8 27B, 262,143 prompt tokens, 65,536 output
-tokens and a 262,144-token context; for Gemma 4 26B, 262,143 prompt tokens,
-32,768 output tokens and a 262,144-token context. In any other mode, a pipeline
-included, it is the memory plan's request: 32,768 prompt and
+tokens and a 262,144-token context. Gemma 4 26B serves its whole profile in the
+pipeline too: 262,143 prompt tokens, 32,768 output tokens and a 262,144-token
+context. In any other mode, it is the memory plan's request: 32,768 prompt and
 32,768 output tokens in a 65,536-token context, and the pipeline's ranks refuse
 any reservation beyond it. The leader refuses a prompt outside these limits
 before it asks any rank, and cuts a larger `max_tokens` to fit.
@@ -921,6 +923,9 @@ these fields: [../architecture/request-outcome-observability.md](https://github.
 | `feasible_after_ms` | `int64` | `Int64?` | opt | duration forecast, never a wall clock; Swift omits 0 |
 | `capacity_seq` | `uint64` | `UInt64?` | opt | the snapshot the gate decided from; Swift omits 0 |
 | `profile` | `json.RawMessage` | `InferenceProfile?` | opt | same contract as `inference_complete`; the sanitizer passes it through as opaque bytes |
+| `tool_check` | — (not yet read) | `ToolNoncomplianceCheck?` | opt | only beside `error_reason` `tool_noncompliance`: the check that failed, closed (`provider-swift/Sources/ProviderCore/Inference/Engine/InferenceFailure.swift`): `undeclared_name`, `schema`, `malformed`, `diverged`, `unterminated`, `parallel`, `response_format`, `forced_choice`, `native_output`, `other`. Names the check only, never the tool or its arguments. Also on the provider's local failure log line. Today's coordinator ignores the key (`sanitizeProviderInferenceError` copies named fields only); keeping it on the route row is a coordinator change |
+| `refusal_reason` | — (not yet read) | `InferenceRefusalReason?` | opt | only on a client refusal (before the inference task, or while the prompt is prepared): why it refused, closed (`provider-swift/Sources/ProviderCore/Inference/Engine/InferenceRefusalReason.swift`), the same reason as the provider's [refusal line](../provider/cli-reference.md#refusal-lines), such as `missing_user_query`, `unmatched_tool_result`, `invalid_tool_history` or `request_exceeds_context`. Never request text. Today's coordinator ignores the key (`sanitizeProviderInferenceError` copies named fields only), so the requester's error is unchanged; recording it (for example on the route or rejection row) is a coordinator change that reads this key. Unknown values decode to nil |
+| `refusal_message` | — (not yet read) | computed `String` (`InferenceRefusalReason.clientMessage`) | opt | beside `refusal_reason` only: one fixed sentence per reason, derived from the reason alone, safe to show the requester if the coordinator chooses to forward it. Never decoded |
 | — (`CoordinatorCause`) | `json:"-"` | — | never on the wire | coordinator-synthetic only (`provider_disconnected`) |
 
 `media_memory_unavailable` is a retryable `capacity`/503 failure for media
@@ -928,8 +933,12 @@ preparation, not a text/KV-budget observation. It carries no capacity enrichment
 fields, does not strike model-wide capacity or health trackers, and still uses
 the bounded failover budget. A contradictory native `terminal_cause` retains
 normal terminal handling instead of this exemption. The provider emits it
-through `MiMoV26EncodedMediaIngress.outwardFailure`; the coordinator enforces
-the contract in `sanitizeProviderInferenceError`.
+(`MultiModelBatchSchedulerEngineError.mediaMemoryUnavailable`) for a refused
+media reservation, for a video or audio reader that failed twice with a
+transient decoder fault (`EngineV2VisionPrefill.constructionRefusal`,
+`MiMoV26EncodedMediaIngress.outwardFailure`, `SuperHTTPErrors.map`), and for a
+spent Nemotron Super decode allowance (`SuperHTTPErrors.map`). The coordinator
+enforces the contract in `sanitizeProviderInferenceError`.
 
 A GLM slot refusal is a pre-stream `capacity`/503 failure with `error_reason`
 `token_budget_exhausted`, enriched like other capacity rejections
@@ -1326,6 +1335,24 @@ the part type and the service-validated cut-off
 (`handleInferenceRequest`), `provider-swift/Sources/ProviderCore/ProviderLoop+ErrorMapping.swift`
 (`mapInferenceErrorToStatus`).
 
+#### History reasoning under another name
+
+A decrypted Chat body's message with no `reasoning_content` (absent or null) but a `thinking` or `reasoning` string
+decodes with that string as its `reasoning_content`, the field the chat templates read. As transformers'
+`apply_chat_template` aliases them, the first non-null of `reasoning_content`, `thinking` and `reasoning` wins; an
+empty or non-string value aliases nothing and is otherwise ignored. Unlike transformers, which copies the first
+non-null value even when it is empty or not a string, such a value leaves `reasoning_content` unset; outside GLM and
+Gemma 4 the renders then differ only when that turn's `content` holds `</think>`, which the Qwen 3.5-family templates
+split off as the thought. Gemma 4's template reads `reasoning` before `reasoning_content`, and only
+`reasoning_content` reaches it here, so a Gemma tool-call turn whose `reasoning` string differs from the value used
+(`thinking: ""` or `reasoning_content: "X"` beside `reasoning: "R"`) renders without R, where transformers renders R.
+`reasoning_details` is read only by the [GLM contract](#glm-native-prompt-contract), where an alias
+wins over GLM's own reading of `reasoning` and `reasoning_details` (so `thinking` beats `reasoning`), and a turn that
+aliases nothing keeps that reading, which transformers does not have. Every serving decode applies it, through
+`AliasedChatRequest`
+(`provider-swift/Sources/ProviderCore/HistoryReasoningAliases.swift`): admission and the prompt pipeline
+(`ProviderLoop.decodeInboundChatRequest`, `ProviderLoop.decodeOpenAIRequest`) and the local API (`LocalChatRequest`).
+
 #### MiMo Chat tool-schema preservation
 
 The decrypted Chat body adds no envelope field or schema-metadata trust grant.
@@ -1354,8 +1381,8 @@ model names cannot authorize the raw-schema path.
 | `reasoning.enabled`, `enable_thinking`, `chat_template_kwargs.enable_thinking`, `chat_template_kwargs.thinking`, top-level `thinking` | Boolean only, except top-level `thinking`, which also takes GLM's API object `{"type": "enabled"\|"disabled", "clear_thinking": Boolean}` and the Anthropic object the coordinator's Messages lowering forwards unchanged: `type` `adaptive` enables thinking, `budget_tokens` is the budget above, and `display` `summarized` is a no-op while `omitted` hides the reasoning (below). All members are optional; other members are refused, and null top-level `thinking` is unset. `true` is a no-op that leaves the rendered prompt unchanged. `false`, like effort `none`/`off`, turns thinking off: the render context adds `enable_thinking: false` (`thinkingOffContextKey`) and the GLM tokenizer appends `</think>` to the template's open generation `<think>`, the empty block the template writes for an assistant turn without reasoning, so the answer is content only. The platform sidecar appends the same text. Thinking-off beside a `true` switch, an effort level or a budget (`reasoning.max_tokens` or `thinking.budget_tokens`) is refused with 400 `invalid_request`. | Same source (`RawControls`, `validate`, `additionalContext`); `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextThinkingTokenizer.swift` (`GLM5NextThinkingTokenizer`) |
 | `include_reasoning`, `reasoning.exclude`, `thinking.display` | Boolean or null (unset); `display` is a string. `include_reasoning: true` and `reasoning.exclude: false` are no-ops. `include_reasoning: false`, `reasoning.exclude: true` and `thinking.display: "omitted"` are OpenRouter's hidden reasoning: the prompt is unchanged, and with thinking on the reasoning is generated, classified on the native channel and withheld from every frame and logprob entry, while still counted in `reasoning_tokens`. With thinking off there is no reasoning to withhold. A cluster pair withholds it the same way on its text and media paths. | Same source (`RawControls`, `withholdsReasoning`); `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift` (`prepareCompletion`, `prepareClusterGLMMedia`, `prepareClusterGLMImage`); `provider-swift/Sources/ProviderCore/Inference/Streaming/WithheldReasoningLogprobsFilter.swift` |
 | `clear_thinking`, `chat_template_kwargs.clear_thinking`, `thinking.clear_thinking`, `reasoning.context` | Boolean only; top-level, then template value, then the `thinking` object; default `false`. `true` clears historical reasoning, not newly generated reasoning: the template then keeps only the reasoning of assistant turns after the last user turn. OpenRouter's `reasoning.context` spells the same switch: `current_turn` is `true`, `all_turns` is `false`, and `auto` or null is unset. Other context values, and a context that contradicts the effective Boolean, are refused with 400 `invalid_request`, never reconciled. | Same source (`RawControls.contextClearThinking`, `validate`, `additionalContext`) |
-| Tools and history | Preserve original schema values, nulls and correlated call IDs; reject reserved schema metadata and ambiguous native delimiters. An assistant turn without `reasoning_content` renders the reasoning it returns as OpenRouter's `reasoning` string, else its `reasoning_details` `reasoning.text` entries in order, as `reasoning_content`, in JSON-mode requests too (the service's inserted instruction turn is skipped when aligning); summary and encrypted entries are skipped. A history call with empty-string `arguments` renders as `{}`. A tool result pairs with its call by ID; its `name` is neither rendered nor compared with the call's function. A legacy assistant `function_call` and the `role: function` result right after it decode as one call and the result answering it (`InboundChatNormalization.normalizeLegacyFunctionCalls`). `strict` tools are served without constrained decoding: every `auto` call is validated against its declared schema before exposure, so a non-conforming call fails the request. | Same source (`normalizedTextInput`, `validateHistory`, `RawControls.returnedReasoning`); `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintValidation.swift` (`validate`); `provider-swift/Sources/ProviderCore/ProviderLoop+InboundDecode.swift` (`decodeOpenAIRequest`) |
-| `response_format` `json_object` / `json_schema` | Text requests, with or without tools. GLM's native engine refuses sampler constraints, so this is not constrained decoding: the service's instruction message renders as a system turn, reasoning streams as generated, and the answer is withheld until generation ends. The exposed content is the decoded JSON value (markdown fences and surrounding prose removed); `json_object` needs a root object, and a `json_schema` value must satisfy the caller's schema: through the shared compiled subset when the schema fits it, otherwise against the schema itself (`ToolConstraintValidation.satisfies(_:jsonSchema:)`, which leaves `$ref` targets, `format` and patterns beyond literal prefixes, suffixes and substrings unasserted). Otherwise the request fails with 422 (`MLXOpenAIServiceError.invalidResponseFormatOutput`, error reason `tool_noncompliance`, retryable on another sample) and no content. Beside tools the format governs only an answer: calls are exposed and validated as in any tool request, and text generated beside a call is exposed as generated. Image or video input is refused with 400 before any media decode, on one Mac and on a cluster pair alike. Withheld output ends the pre-content deadline interval when generated. | `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextResponseFormat.swift` (`GLM5NextResponseFormat`, `GLM5NextResponseFormatOutput`); `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintSchema.swift` (`compileResponseSchema`); `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintValidation.swift` (`satisfies`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2RequestUsageSignal.swift` (`recordWithheldOutput`) |
+| Tools and history | Preserve original schema values, nulls and correlated call IDs; reject reserved schema metadata and ambiguous native delimiters. An assistant turn without `reasoning_content` renders the reasoning it returns as `thinking` or OpenRouter's `reasoning` string ([aliases](#history-reasoning-under-another-name)), else its `reasoning_details` `reasoning.text` entries in order, as `reasoning_content`, in JSON-mode requests too (the service's inserted instruction turn is skipped when aligning); summary and encrypted entries are skipped. A history call with empty-string `arguments` renders as `{}`. A tool result pairs with its call by ID; its `name` is neither rendered nor compared with the call's function. A legacy assistant `function_call` and the `role: function` result right after it decode as one call and the result answering it (`InboundChatNormalization.normalizeLegacyFunctionCalls`). `strict` tools are served without constrained decoding: every `auto` call is validated against its declared schema before exposure, so a non-conforming call fails the request. | Same source (`normalizedTextInput`, `validateHistory`, `RawControls.returnedReasoning`); `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintValidation.swift` (`validate`); `provider-swift/Sources/ProviderCore/ProviderLoop+InboundDecode.swift` (`decodeOpenAIRequest`) |
+| `response_format` `json_object` / `json_schema` | Text requests, with or without tools. GLM's native engine refuses sampler constraints, so this is not constrained decoding: the service's instruction message renders as a system turn, reasoning streams as generated, and the answer is withheld until generation ends. The exposed content is the decoded JSON value (markdown fences and surrounding prose removed); `json_object` needs a root object, and a `json_schema` value must satisfy the caller's schema: through the shared compiled subset when the schema fits it, otherwise against the schema itself (`ToolConstraintValidation.satisfies(_:jsonSchema:)`, which leaves `$ref` targets, `format` and patterns beyond literal prefixes, suffixes and substrings unasserted). Otherwise the request fails with 422 (`MLXOpenAIServiceError.invalidResponseFormatOutput`, error reason `tool_noncompliance`, retryable on another sample) and no content; with `DARKBLOOM_GLM_JSON_SCHEMA_MISS=release` on the Mac, a streamed answer whose value only misses the schema, at a natural stop, is exposed as that value instead ([configuration](configuration.md)). Beside tools the format governs only an answer: calls are exposed and validated as in any tool request, and text generated beside a call is exposed as generated. Image or video input is refused with 400 before any media decode, on one Mac and on a cluster pair alike. Withheld output ends the pre-content deadline interval when generated. | `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextResponseFormat.swift` (`GLM5NextResponseFormat`, `GLM5NextResponseFormatOutput`); `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintSchema.swift` (`compileResponseSchema`); `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintValidation.swift` (`satisfies`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2RequestUsageSignal.swift` (`recordWithheldOutput`) |
 | `tool_choice` `required` / named function | Text requests. Served by structured post-validation, as Qwen 3.5/3.8 and Nemotron are: `ToolChoicePromptPolicy` renders its forcing instruction in the system and last user turns, a named choice offers only that function, reasoning streams on a separate typed channel, and the native GLM parser withholds the call until end of stream. It is exposed only after it parses and passes `ToolConstraintValidation.validate` (declared or named function, compiled schema, cardinality); visible text, a missing, malformed, truncated or schema-invalid call is a 422 `tool_noncompliance` with nothing exposed. Advertised under tool-constraint protocol v1 for the managed GLM identities, so the coordinator routes these requests to such providers. Image or video input with a forced choice is refused with 400 before any media decode, on one Mac and on a cluster pair alike. | `provider-swift/Sources/ProviderCore/Inference/Tools/ToolChoiceEnforcementPolicy.swift` (`forcedStrategy`, `validateParser`, `advertisesCapability`); `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextPromptPolicy.swift` (`normalizedTextInput`); `provider-swift/Sources/ProviderCore/Inference/Streaming/NativeToolStreamRouter.swift` (`checkNativeToolFailure`) |
 | Unqualified modes | Reject `preserve_thinking`, other `reasoning` or `chat_template_kwargs` keys and media. GLM image and video input use the native causal media path when the slot's engine accepts prepared causal media; otherwise local HTTP refuses with 400 before media decode or vision-tower work. A parser or prompt template is not constrained-decoding or media qualification. | Same policy (`normalizedTextInput`); `provider-swift/Sources/ProviderCore/Inference/Prompting/ProviderPromptContractPipeline.swift`; `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift` |
 
@@ -1376,8 +1403,18 @@ See the [integration gates](../design/glm53-flash-native.md).
 
 ### `cancel`
 
-Go `CancelMessage` · Swift `Cancel`. `request_id` (req). Sent on the strict
-control lane.
+Go `CancelMessage` · Swift `Cancel`. Sent on the strict control lane.
+
+| Field | Go | Swift | Presence | Notes |
+|---|---|---|---|---|
+| `request_id` | `string` | `String` | req | |
+| `reason` | `string` | `CoordinatorCancelReason.code` | opt | The coordinator's cancel cause: `client_gone_post`, `client_gone_pre`, `hedge_loser`, `first_chunk_timeout`, `late_content`, `stream_timeout`, `overflow`, `pair_ended`, `stray_chunk`. Absent from coordinators before the field; Swift reads absent, empty or not a string as no reason, and still applies the cancel |
+| `paid` | `bool` | `CoordinatorCancelReason.paid` | opt | True when the coordinator settles, and pays for, the partial `inference_complete` the provider sends after this cancel (today: a requester who left mid-answer, whose billing record waits 30 s). Read only with a `reason`; absent or not a boolean is false |
+
+The provider counts each request that ended early under its cause for
+`darkbloom status` (`EndedEarlyCounts`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/InferenceEarlyEnd.swift`).
+A provider from before these fields ignores them, as it ignores any unknown key.
 
 ### `attestation_challenge`
 

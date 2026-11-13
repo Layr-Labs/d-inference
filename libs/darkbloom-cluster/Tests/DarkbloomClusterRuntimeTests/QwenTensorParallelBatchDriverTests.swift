@@ -54,7 +54,7 @@ struct QwenTensorParallelBatchDriverTests {
         /// Each rank's driver builds steps ahead (`QwenTensorParallelBatchDriver.serveAhead`).
         let ahead: [Bool]
         /// Each rank's live memory check at a step boundary (D6): true when it refuses.
-        var memoryRefused: [() -> Bool] = [{ false }, { false }]
+        var memoryRefused: [() throws -> Bool] = [{ false }, { false }]
         init(_ capacity: Int, ahead: Bool = false, aheadByRank: [Bool]? = nil) {
             self.capacity = capacity
             self.ahead = aheadByRank ?? [ahead, ahead]
@@ -270,11 +270,14 @@ struct QwenTensorParallelBatchDriverTests {
             let pair = Pair(4, ahead: ahead)
             let older = try pair.request(output: 24), newer = try pair.request(length: 5, output: 24)
             try pair.reserve(older); try pair.reserve(newer)
-            // Once both lanes hold tokens, the refusing rank's check refuses once.
+            // Once both lanes hold tokens, the refusing rank's check refuses once: Gemma's own
+            // tensor-parallel gate on a Mac whose memory is taken (a real refusal, no fault).
             pair.memoryRefused[refusing] = {
                 let both = pair.native[refusing].sessions.count == 2
                     && pair.native[refusing].sessions.values.allSatisfy { $0.committedTokens > $0.request.promptCount + 2 }
-                guard both, !pair.flag("refused") else { return false }
+                guard both, !pair.flag("refused"),
+                      try TakenMemory.refusesLane({ try Gemma4TensorParallelResidentRuntime.requireLiveMemory(bytes: 0) })
+                else { return false }
                 pair.set("refused"); return true
             }
             try pair.run()

@@ -4,6 +4,10 @@ extension EngineV2Bridge {
     /// Capacity refusal of a Mac whose serving concurrency is full; thrown
     /// before any stream exists (503 locally, retriable capacity upstream).
     static let serviceAllowanceExhausted = "token_budget_exhausted: whole-Mac service allowance exhausted"
+    /// Capacity refusal of a request whose wait for the idle calibration
+    /// probe's retirement reached its bound (`IdleCalibrationCoordinator`).
+    static let idleCalibrationRetirementOverdue =
+        "token_budget_exhausted: the idle calibration probe did not retire"
 
     func retainDeadlinePostureMonitoring() {
         guard deadlineProfile != nil || nativeTransactionID != nil,
@@ -57,15 +61,17 @@ extension EngineV2Bridge {
         let effectiveDeadlineProfile = currentDeadlineProfile(allowQualifiedPosture: expansionAllowed)
         // A suspended submission already owns its allowance. Count its ID once
         // even while terminal handling also retains it in the active map.
+        let pendingOnlyCount = pendingSubmissionIDs.count(where: { active[$0] == nil })
         if usesMemoryLimitedConcurrency {
-            let pendingOnlyCount = pendingSubmissionIDs.count(where: { active[$0] == nil })
             let occupiedConcurrency = max(activeRequestCount(), active.count + pendingOnlyCount)
             if occupiedConcurrency >= effectiveServingConcurrency(allowExpansion: expansionAllowed) {
                 return false
             }
         }
+        // The same once-per-ID count: a local stream holding its head
+        // (`holdHeadUntilAdmitted`) is in both sets until its submit returns.
         if hasPostureGatedWidth, !expansionAllowed,
-            active.count + pendingSubmissionIDs.count >= unqualifiedMaxConcurrentRequests {
+            active.count + pendingOnlyCount >= unqualifiedMaxConcurrentRequests {
             return false
         }
         let work: WholeMacServiceBudget.Work? = promptTokens.flatMap { prompt in maxOutputTokens.map { output in

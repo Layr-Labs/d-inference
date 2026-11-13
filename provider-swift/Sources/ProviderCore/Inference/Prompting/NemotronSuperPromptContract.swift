@@ -177,7 +177,7 @@ enum NemotronSuperPromptContract {
     /// tool-choice and response-format instructions; tool declarations are
     /// taken from the raw body in request order and filtered to `declared`.
     /// `videoSlot` renders a video part in an image part's slot; only
-    /// ``videoPrompt(messages:body:templateBytes:tokenizer:labels:)`` sets it.
+    /// `videoPrompt` sets it.
     static func render(messages: [OpenAIChatMessage], body: Data, declared: [OpenAITool]?,
         controls: Controls, templateBytes: Data, tokenizer: any MLXLMCommon.Tokenizer,
         addGenerationPrompt: Bool = true, videoSlot: Bool = false) throws -> [Int] {
@@ -282,13 +282,16 @@ enum NemotronSuperPromptContract {
         return .array(selected)
     }
 
-    /// Reference image prompt: the pinned template over the request's messages
-    /// and controls, then each `<image>` slot expanded with its image's feature
-    /// count. The image owner refuses tools and structured output beforehand.
-    static func imagePrompt(messages: [OpenAIChatMessage], body: Data, templateBytes: Data,
-        tokenizer: any MLXLMCommon.Tokenizer, featureCounts: [Int], contextLength: Int) throws -> [Int] {
-        let tokens = try render(messages: messages, body: body, declared: nil,
-            controls: controls(body: body), templateBytes: templateBytes, tokenizer: tokenizer)
+    /// Reference image prompt: the pinned template over the request's messages,
+    /// declared tools and controls, rendered as `render` renders text, then
+    /// each `<image>` slot expanded with its image's feature count. Text or a
+    /// tool declaration that names `<image>` changes the slot count and is
+    /// refused as `unsupportedMedia`.
+    static func imagePrompt(messages: [OpenAIChatMessage], body: Data, declared: [OpenAITool]?,
+        controls: Controls, templateBytes: Data, tokenizer: any MLXLMCommon.Tokenizer,
+        featureCounts: [Int], contextLength: Int) throws -> [Int] {
+        let tokens = try render(messages: messages, body: body, declared: declared,
+            controls: controls, templateBytes: templateBytes, tokenizer: tokenizer)
         return try expandImagePlaceholders(tokens, featureCounts: featureCounts,
                                            contextLength: contextLength)
     }
@@ -361,8 +364,10 @@ enum NemotronSuperPromptContract {
     /// Text naming either placeholder is refused: the template would drop the
     /// video's slot, and the processor replaces the first literal `<video>`
     /// of the whole prompt.
-    static func videoPrompt(messages: [OpenAIChatMessage], body: Data, templateBytes: Data,
-        tokenizer: any MLXLMCommon.Tokenizer, labels: [String]) throws -> VideoPrompt {
+    /// `declared` and `controls` render as for text.
+    static func videoPrompt(messages: [OpenAIChatMessage], body: Data, declared: [OpenAITool]?,
+        controls: Controls, templateBytes: Data, tokenizer: any MLXLMCommon.Tokenizer,
+        labels: [String]) throws -> VideoPrompt {
         var videos = 0, images = 0
         for message in messages {
             guard case .parts(let parts) = message.content else { continue }
@@ -374,7 +379,7 @@ enum NemotronSuperPromptContract {
         guard videos == 1, images == 0, !labels.isEmpty, !namesPlaceholder(messages) else {
             throw Failure.unsupportedMedia
         }
-        let tokens = try render(messages: messages, body: body, declared: nil, controls: controls(body: body),
+        let tokens = try render(messages: messages, body: body, declared: declared, controls: controls,
             templateBytes: templateBytes, tokenizer: tokenizer, videoSlot: true)
         guard let slot = tokens.firstIndex(of: imageTokenID), tokens.lastIndex(of: imageTokenID) == slot else {
             throw Failure.unsupportedMedia

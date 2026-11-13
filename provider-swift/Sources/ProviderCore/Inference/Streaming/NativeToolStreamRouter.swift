@@ -34,6 +34,19 @@ struct NativeToolStreamRouter {
     /// `ToolConstraintValidation` (which returns `auto` calls as generated
     /// unless the request is `strict`).
     private(set) var completedToolCalls: [ToolCall] = []
+    /// Set by the owner once an event of this response has left: a `strict`
+    /// call that fails its check may then leave as generated
+    /// (`StrictToolCallPolicy`).
+    var responseStarted = false
+    /// Telemetry: at a cut, streamed calls left open and calls never exposed
+    /// that were dropped, and whether an `auto` GLM suffix lost the frames
+    /// that end the cut output, closed or not (`finishCompleteCalls`);
+    /// `strict` calls that failed their check and left as generated because
+    /// the response started.
+    private(set) var callsLeftOpenAtCut = 0
+    private(set) var callsDroppedAtCut = 0
+    private(set) var glmFramesDroppedAtCut = false
+    private(set) var strictCallsReturnedAsGenerated = 0
 
     // Pass the same prepared schemas used by the handler: Flint's raw-string
     // boundaries must agree before and after reasoning-channel separation.
@@ -90,18 +103,22 @@ struct NativeToolStreamRouter {
         return try route(pieces)
     }
 
-    mutating func finishText() throws -> [MLXServerGenerationEvent] {
+    /// `cutAtLimit`: the engine cut the answer at the token limit and it ends
+    /// as `length` (`TokenLimitCutPolicy`). What the flush releases is then an
+    /// unfinished frame: forced-choice text is dropped and a native frame
+    /// that no longer parses is not refused (the caller drops its text).
+    mutating func finishText(cutAtLimit: Bool = false) throws -> [MLXServerGenerationEvent] {
         let pieces = gemmaParser != nil ? gemmaParser!.finish() : (parser?.finish() ?? [])
         try checkReasoningState()
         try checkNativeToolFailure()
-        let events = try route(pieces)
+        let events = try route(pieces, cutAtLimit: cutAtLimit)
         if handler?.format == .flint {
             // EOF can expose an incomplete frame only when the handler flushes.
             // Validate it here, before the caller's generic auto-mode residual
             // fallback can publish tool syntax as ordinary content. finish() is
             // idempotent for completed frames and does not drain validated calls.
             _ = handler?.finish()
-            try checkNativeToolFailure()
+            if !cutAtLimit { try checkNativeToolFailure() }
         }
         return events
     }
@@ -110,18 +127,41 @@ struct NativeToolStreamRouter {
     /// is a stop token and flushes unexposed buffers. A call cut off by the
     /// output-token limit stays truncated, as in OpenAI streams, even when a
     /// lenient EOS parse reads its partial arguments as a different call;
-    /// any other unfinished exposed call is model noncompliance.
-    mutating func finishToolCalls(truncated: Bool) throws -> [MLXServerGenerationEvent] {
+    /// any other unfinished exposed call is model noncompliance. When the cut
+    /// ends as `length` (`cutAtLimit`, `TokenLimitCutPolicy`), the flush
+    /// completes no call: an exposed one stays open with the fragments it sent,
+    /// unclosed, so the stream finishes `length` and no client can parse it,
+    /// and one never exposed is not exposed.
+    mutating func finishToolCalls(truncated: Bool, cutAtLimit: Bool = false) throws
+        -> [MLXServerGenerationEvent]
+    {
         guard let handler, let prepared = streamedCallPolicy else { return [] }
         var events: [MLXServerGenerationEvent] = []
         for segment in handler.finishSegments() {
-            if truncated, case .callFailed = segment {
+            // `parallel_tool_calls: false` drops a later call at a cut as
+            // anywhere (`ParallelToolCallPolicy`): not the cut's to count.
+            if cutAtLimit, laterCalls.drops(segment, exposedCalls: exposedCallCount, prepared: prepared) { continue }
+            switch segment {
+            case .callFailed where truncated:
+                if cutAtLimit { recordCut(leftOpen: openCallIndex != nil) }
                 openCallIndex = nil
+            case .callCompleted where cutAtLimit:
+                // Its remainder is the parse's closure, not generated text.
+                recordCut(leftOpen: openCallIndex != nil)
+                openCallIndex = nil
+            case .callStarted where cutAtLimit:
                 continue
+            case .call where cutAtLimit:
+                recordCut(leftOpen: false)
+            default:
+                events += try routeToolSegment(segment, prepared: prepared, truncated: truncated)
             }
-            events += try routeToolSegment(segment, prepared: prepared, truncated: truncated)
         }
         return events
+    }
+
+    private mutating func recordCut(leftOpen: Bool) {
+        if leftOpen { callsLeftOpenAtCut += 1 } else { callsDroppedAtCut += 1 }
     }
 
     private func checkReasoningState() throws {
@@ -146,14 +186,20 @@ struct NativeToolStreamRouter {
             ? .toolChoiceViolation(message) : .generationFailed(message)
     }
 
+    /// A native family's (MiMo, GLM, Flint) own call frame failed to parse.
+    /// An `auto` GLM suffix that does not parse is text instead
+    /// (`finishCompleteCalls`), not a failure.
+    var hasNativeToolFailure: Bool {
+        (nativeMiMoChannels || handler?.format == .glm5 || handler?.format == .flint)
+            && (handler?.parseFailureCount ?? 0) > 0 && !returnsUnparsedGLMOutputAsText
+    }
+
     /// Also called after the SDK EOS flush, before residual text or any call
     /// is published. GLM validates the entire retained suffix only at EOS; on
     /// an `auto` request a suffix that does not parse is text
     /// (`finishCompleteCalls`), not a failure.
     func checkNativeToolFailure() throws {
-        guard nativeMiMoChannels || handler?.format == .glm5 || handler?.format == .flint,
-            (handler?.parseFailureCount ?? 0) > 0 else { return }
-        if returnsUnparsedGLMOutputAsText { return }
+        guard hasNativeToolFailure else { return }
         let model = handler?.format == .glm5 ? "GLM" : handler?.format == .flint ? "Flint" : "MiMo"
         let message = "native \(model) tool output is invalid"
         if requiresToolCall || nativeMiMoRequiresConstraint {
@@ -165,16 +211,32 @@ struct NativeToolStreamRouter {
     /// End of generation on the complete-call path: the handler's calls and
     /// its residual text. An `auto` GLM suffix that did not parse as one batch
     /// is split into text and its final calls (`GLM5ToolSuffix`), except in an
-    /// output the token limit cut off, where it stays text. A suffix whose
-    /// release would expose a think marker from inside a tool frame keeps
-    /// failing, as before.
-    func finishCompleteCalls(truncated: Bool) throws -> (calls: [ToolCall], residual: String?) {
+    /// output the token limit cut off, where it stays text; when the cut ends
+    /// the answer as `length` (`cutAtLimit`, `TokenLimitCutPolicy`), without
+    /// the frames that end it (`GLM5ToolSuffix.droppingCutFrames`).
+    /// A suffix whose release would expose a think marker from inside a tool
+    /// frame keeps failing, as before, unless the cut ends the answer as
+    /// `length`: it is then dropped.
+    mutating func finishCompleteCalls(truncated: Bool, cutAtLimit: Bool = false) throws
+        -> (calls: [ToolCall], residual: String?)
+    {
         guard let handler else { return ([], nil) }
         let calls = handler.finish()
         let residual = handler.takeResidualText()
         guard returnsUnparsedGLMOutputAsText, calls.isEmpty, let residual else { return (calls, residual) }
         switch GLM5ToolSuffix.split(residual, tools: tools) {
-        case .text(let text, calls: let found): return truncated ? ([], residual) : (found, text)
+        case .text(let text, calls: let found):
+            guard truncated else { return (found, text) }
+            guard cutAtLimit else { return ([], residual) }
+            // A cut that ends as `length` drops the frames that end the
+            // output, unfinished or not, never published as text; mentions
+            // and the text before them stay.
+            let kept = GLM5ToolSuffix.droppingCutFrames(residual, tools: tools)
+            glmFramesDroppedAtCut = kept.utf8.count < residual.utf8.count
+            return ([], kept)
+        case .ambiguous where cutAtLimit:
+            glmFramesDroppedAtCut = true
+            return ([], nil)
         case .ambiguous: throw MultiModelBatchSchedulerEngineError.generationFailed("native GLM tool output is invalid")
         }
     }
@@ -183,7 +245,9 @@ struct NativeToolStreamRouter {
         handler?.format == .glm5 && glmUnparsedOutputIsText && !requiresToolCall
     }
 
-    private mutating func route(_ pieces: [ParsedReasoning]) throws -> [MLXServerGenerationEvent] {
+    private mutating func route(_ pieces: [ParsedReasoning], cutAtLimit: Bool = false) throws
+        -> [MLXServerGenerationEvent]
+    {
         var events: [MLXServerGenerationEvent] = []
         for piece in pieces {
             if let reasoning = piece.reasoningContent, !reasoning.isEmpty {
@@ -232,8 +296,8 @@ struct NativeToolStreamRouter {
             if requiresToolCall {
                 // Framing whitespace around and between call frames is not an
                 // answer on any path, including legacy Qwen text without
-                // native channels.
-                if ToolChoiceEnforcementPolicy.isFramingWhitespace(visible) { continue }
+                // native channels. Neither is the unfinished frame a cut flushes.
+                if cutAtLimit || ToolChoiceEnforcementPolicy.isFramingWhitespace(visible) { continue }
                 throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(
                     "forced tool_choice produced visible text before a validated call")
             }
@@ -245,7 +309,8 @@ struct NativeToolStreamRouter {
     /// Streamed calls are `auto` only. Each is validated (declared name,
     /// schema, cardinality) as soon as that is decidable: the cardinality at
     /// its first fragment, the arguments when its frame closes. Without
-    /// `strict` only the cardinality is (`returnsAutoCallsAsGenerated`).
+    /// `strict`, or once the response started (`StrictToolCallPolicy`), only
+    /// the cardinality is (`returnsAutoCallsAsGenerated(afterResponseStarted:)`).
     private mutating func routeToolSegment(
         _ segment: ToolCallStreamSegment, prepared: ToolChoicePromptPolicy.Prepared, truncated: Bool = false
     ) throws -> [MLXServerGenerationEvent] {
@@ -264,16 +329,18 @@ struct NativeToolStreamRouter {
         case .callCompleted(let call, let remainder):
             guard let index = openCallIndex else { return [] }
             openCallIndex = nil
-            try ToolConstraintValidation.validate([call], prepared: prepared, truncated: truncated)
+            try validate(call, prepared: prepared, truncated: truncated)
             completedToolCalls.append(call)
             return [.toolCallDelta(.init(index: index, arguments: remainder, completed: call))]
         case .callFailed(let failure):
             defer { openCallIndex = nil }
-            guard prepared.returnsAutoCallsAsGenerated, let index = openCallIndex, let name = openCallName
+            guard prepared.returnsAutoCallsAsGenerated(afterResponseStarted: responseStarted),
+                let index = openCallIndex, let name = openCallName
             else {
                 throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(
                     ToolNoncomplianceCheck.streamedCallViolation(failure))
             }
+            if !prepared.returnsAutoCallsAsGenerated { strictCallsReturnedAsGenerated += 1 }
             // Its arguments already left exactly as generated: OpenAI's raw
             // `arguments` string for JSON that does not parse. Only close the
             // call, so the response finishes with `tool_calls`; the closing
@@ -283,13 +350,27 @@ struct NativeToolStreamRouter {
                 completed: ToolCall(function: .init(name: name, arguments: [String: MLXLMCommon.JSONValue]()))))]
         case .call(let call):
             // Never exposed (e.g. an undeclared name): validate before showing.
-            try ToolConstraintValidation.validate([call], prepared: prepared, truncated: truncated)
+            try validate(call, prepared: prepared, truncated: truncated)
             let index = try admitCall(prepared)
             completedToolCalls.append(call)
             let arguments = String(
                 decoding: try JSONEncoder.openAIServer.encode(call.function.arguments), as: UTF8.self)
             return [.toolCallDelta(.init(index: index, name: call.function.name, arguments: arguments,
                 completed: call))]
+        }
+    }
+
+    /// One call's check; counts a `strict` call that fails it but leaves as
+    /// generated because the response started.
+    private mutating func validate(_ call: ToolCall, prepared: ToolChoicePromptPolicy.Prepared, truncated: Bool)
+        throws
+    {
+        try ToolConstraintValidation.validate([call], prepared: prepared, truncated: truncated,
+            responseStarted: responseStarted)
+        if responseStarted, prepared.strictCallsAsGenerated, !prepared.returnsAutoCallsAsGenerated,
+            (try? ToolConstraintValidation.validate([call], prepared: prepared, truncated: truncated)) == nil
+        {
+            strictCallsReturnedAsGenerated += 1
         }
     }
 

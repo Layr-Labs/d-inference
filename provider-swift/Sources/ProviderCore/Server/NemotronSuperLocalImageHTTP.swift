@@ -435,17 +435,19 @@ actor SuperImageHTTPRelay {
         }
     }
     /// Validation runs only after native terminal usage; held tool calls and
-    /// structured content leave only if it succeeds.
+    /// structured content leave only if it succeeds, or as generated when the
+    /// token limit cut the answer (`TokenLimitCutPolicy`).
     func complete() {
         if let failure { fail(failure); return }
         guard let terminal else {
             fail(MultiModelBatchSchedulerEngineError.generationFailed("native stream ended without terminal usage"))
             return
         }
-        do { yield(try output.finish().events) }
+        let cutAtLimit = output.plan.toolPolicy.cutAtLimit(finishReason: terminal.stopReason)
+        do { yield(try output.finish(cutAtLimit: cutAtLimit).events) }
         catch { fail(SuperHTTPErrors.map(error, media: false)); return }
         // Before the stream ends: the response reads its entries once it has.
-        logprobs?.finish()
+        logprobs?.finish(cutAtLimit: cutAtLimit)
         if let failure { fail(failure); return }
         yield([.info(terminal)])
         if let failure { fail(failure); return }

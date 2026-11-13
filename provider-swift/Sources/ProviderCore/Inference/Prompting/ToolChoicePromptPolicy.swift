@@ -27,6 +27,18 @@ enum ToolChoicePromptPolicy {
         /// (`ToolSchemaNormalization`) filled in render types. Validation of
         /// `auto` calls reads these; nil falls back to `tools`.
         var declaredTools: [OpenAITool]? = nil
+        /// An answer the engine cut at the token limit ends as a normal
+        /// `length` finish, as generated (`TokenLimitCutPolicy`).
+        var cutAnswersEndAtLength = TokenLimitCutPolicy.endsAtLength
+        /// The client streams and the switch is on: a `strict` call that fails
+        /// its check once the response has started leaves as generated
+        /// (`StrictToolCallPolicy`). Set by the serving path, which knows the
+        /// client's own `stream`.
+        var strictCallsAsGenerated = false
+
+        /// The engine cut the answer at the token limit (`finishReason`
+        /// `length`) and it ends as a normal `length` finish.
+        func cutAtLimit(finishReason: String) -> Bool { cutAnswersEndAtLength && finishReason == "length" }
 
         var requiresToolCall: Bool {
             switch mode {
@@ -42,9 +54,13 @@ enum ToolChoicePromptPolicy {
         /// A function declared `strict: true` keeps every call of the request
         /// validated, and a request that declares no tools never receives a
         /// call. `parallel_tool_calls: false` holds either way.
-        var returnsAutoCallsAsGenerated: Bool {
+        var returnsAutoCallsAsGenerated: Bool { returnsAutoCallsAsGenerated(afterResponseStarted: false) }
+
+        /// Once a streamed response has started, `strict` calls leave as
+        /// generated too when `strictCallsAsGenerated` (`StrictToolCallPolicy`).
+        func returnsAutoCallsAsGenerated(afterResponseStarted started: Bool) -> Bool {
             guard mode == .auto, let tools, !tools.isEmpty else { return false }
-            return !tools.contains { $0.function.strict == true }
+            return !tools.contains { $0.function.strict == true } || (started && strictCallsAsGenerated)
         }
     }
 

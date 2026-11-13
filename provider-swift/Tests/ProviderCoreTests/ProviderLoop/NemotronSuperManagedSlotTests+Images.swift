@@ -57,12 +57,14 @@ extension NemotronSuperManagedSlotTests {
         #expect(SuperSSE(json.sse).content == #"{"ok": true}"#, "\(json.terminal)")
         #expect(script.prompt.contains("<image>")
             && script.prompt.contains("You must respond with a single valid JSON object."))
-        let invalid = try await Self.send(image(["not", " json"], ["response_format": ["type": "json_object"]]),
-                                          to: loop, recorder: recorder, consumer: consumer)
-        #expect(SuperSSE(invalid.sse).content.isEmpty, "\(invalid.terminal)")
-        // The model broke the format, not the request: 422, retryable elsewhere.
-        #expect(Self.failure(invalid.terminal)?.statusCode == 422, "\(invalid.terminal)")
-        #expect(Self.failure(invalid.terminal)?.code == .generationFailure, "\(invalid.terminal)")
+        // Every script ends at its `max_tokens`: the budget cut this answer, so
+        // it leaves as generated and the stream ends `length`, with no refusal
+        // (`TokenLimitCutPolicy`; at a natural stop it is a 422, `SuperImageHTTPRelay`).
+        let cut = try await Self.send(image(["not", " json"], ["response_format": ["type": "json_object"]]),
+                                      to: loop, recorder: recorder, consumer: consumer)
+        #expect(SuperSSE(cut.sse).content == "not json" && SuperSSE(cut.sse).finishReason == "length",
+                "\(cut.terminal)")
+        #expect(Self.failure(cut.terminal) == nil, "\(cut.terminal)")
         let weather: [String: Any] = ["type": "function", "function": ["name": "get_weather",
             "parameters": ["type": "object", "properties": ["city": ["type": "string"]], "required": ["city"]]]]
         let call = ["<tool_call>", "\n<function=get_weather>", "\n<parameter=city>", "\nParis",

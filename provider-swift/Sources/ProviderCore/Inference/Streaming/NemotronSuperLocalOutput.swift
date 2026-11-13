@@ -62,40 +62,53 @@ struct NemotronSuperLocalOutput {
     }
 
     /// Remaining events, then validated tool calls; nothing is exposed if
-    /// validation fails.
-    mutating func finish() throws -> (events: [MLXServerGenerationEvent], result: Result) {
+    /// validation fails. `cutAtLimit`: the engine cut the answer at the token
+    /// limit and it ends as `length` (`TokenLimitCutPolicy`): an unfinished
+    /// frame is dropped, calls that fail their checks are dropped
+    /// (`ToolConstraintValidation.validateWithheld`), and a withheld
+    /// structured answer leaves as generated.
+    mutating func finish(cutAtLimit: Bool = false) throws -> (events: [MLXServerGenerationEvent], result: Result) {
         guard !finished else { throw Failure.alreadyFinished }
         finished = true
         var events: [MLXServerGenerationEvent] = []
         if streaming {
             events = try route(channel.finishStream())
             // The streamed reasoning stays; its copy is content and passes the
-            // same tool and response-format checks as any other.
-            if channel.promotesUnterminatedReasoning, !reasoning.isEmpty {
+            // same tool and response-format checks as any other. A thought the
+            // limit cut is not an answer: nothing is promoted.
+            if channel.promotesUnterminatedReasoning, !reasoning.isEmpty, !cutAtLimit {
                 events += try route([.init(content: reasoning, reasoningContent: nil)])
             }
         } else {
-            let split = channel.complete(raw)
+            let split = channel.complete(raw, promoting: !cutAtLimit)
             reasoning = split.reasoning ?? ""
             _ = try route([.init(content: split.content ?? "", reasoningContent: nil)])
         }
-        let calls = ParallelToolCallPolicy.admitted(handler?.finish() ?? [], prepared: plan.toolPolicy)
-        let residual = handler?.takeResidualText() ?? ""
+        var calls = ParallelToolCallPolicy.admitted(handler?.finish() ?? [], prepared: plan.toolPolicy)
+        var residual = handler?.takeResidualText() ?? ""
         let forced = plan.toolPolicy.requiresToolCall
         // route refuses mid-stream parse failures, so any failure here is the
         // end-of-stream remainder: a complete opening tag is an unterminated
         // frame; a bare `<to…` prefix was only withheld while being probed.
         let unterminated = (handler?.parseFailureCount ?? 0) > 0
             && Self.frameOpenings.contains(where: residual.contains)
-        guard !unterminated, !forced || ToolChoiceEnforcementPolicy.isFramingWhitespace(residual)
-        else { throw Failure.malformedToolFrame }
-        try ToolConstraintValidation.validate(calls, prepared: plan.toolPolicy)
+        if unterminated || (forced && !ToolChoiceEnforcementPolicy.isFramingWhitespace(residual)) {
+            guard cutAtLimit else { throw Failure.malformedToolFrame }
+            residual = ""
+        }
+        try ToolConstraintValidation.validateWithheld(&calls, prepared: plan.toolPolicy, cutAtLimit: cutAtLimit)
         // A response format shapes the final answer; a turn that calls tools
         // is not one, so its text (none for a forced choice) passes unchanged.
         let text = forced ? "" : content + residual
-        let validatedContent = calls.isEmpty
-            ? try OpenAIResponseFormatSupport.normalizedContent(text, for: plan.request.responseFormat)
-            : text
+        let validatedContent: String
+        do {
+            validatedContent = calls.isEmpty
+                ? try OpenAIResponseFormatSupport.normalizedContent(text, for: plan.request.responseFormat)
+                : text
+        } catch {
+            guard cutAtLimit else { throw error }
+            validatedContent = text
+        }
         let validatedReasoning = reasoning.isEmpty ? nil : reasoning
         // Streamed reasoning and plain streamed content (never JSON-normalized)
         // already left through route; only the parser's residual text remains.

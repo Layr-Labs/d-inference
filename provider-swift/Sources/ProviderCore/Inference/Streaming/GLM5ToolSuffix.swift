@@ -65,13 +65,32 @@ enum GLM5ToolSuffix {
         return lexer.releasesThinkMarker(before: bytes.count) ? .ambiguous : .text(suffix, calls: [])
     }
 
+    /// `suffix` without the run of whitespace-separated frames that ends an
+    /// output the token limit cut, whose last frame closed or was left
+    /// unfinished by the end (`Lexer.cutFrameStart`). Such frames are never
+    /// published as text (`TokenLimitCutPolicy`), and a suffix that did not
+    /// parse is not split into calls at a cut, so they are dropped. Mentions,
+    /// frames followed by text, and the text before the run stay.
+    static func droppingCutFrames(_ suffix: String, tools: [[String: any Sendable]]?) -> String {
+        let bytes = Array(suffix.utf8)
+        var lexer = Lexer(bytes: bytes, tools: tools)
+        lexer.run()
+        var start = lexer.cutFrameStart ?? bytes.count
+        for frame in lexer.frames.reversed() where frame.range.upperBound <= start {
+            guard Lexer.isWhitespace(bytes[frame.range.upperBound ..< start]) else { break }
+            start = frame.range.lowerBound
+        }
+        return String(decoding: bytes[..<start], as: UTF8.self)
+    }
+
     /// Top-level GLM frames, read as the SDK's parser reads them: a name up to
     /// `<`, then `<arg_key>`/`<arg_value>` pairs to `</tool_call>`. A
     /// `<tool_call>` not followed by a name and `<arg_key>` or `</tool_call>`
-    /// is a mention and stays text. Once a frame has an argument it owns
-    /// everything up to its `</tool_call>`; a string-typed value runs to
-    /// `</arg_value>` (the template writes strings raw), any other value is
-    /// JSON, whose quoted delimiters are data.
+    /// is a mention and stays text, unless the response ends in it after the
+    /// start of a declared name (`cutFrameStart`). Once a frame has an
+    /// argument it owns everything up to its `</tool_call>`; a string-typed
+    /// value runs to `</arg_value>` (the template writes strings raw), any
+    /// other value is JSON, whose quoted delimiters are data.
     struct Lexer {
         struct Frame {
             let range: Range<Int>
@@ -84,6 +103,11 @@ enum GLM5ToolSuffix {
         private(set) var frames: [Frame] = []
         /// A frame's arguments were still open at the end of the response.
         private(set) var openAtEnd = false
+        /// Where the frame the end of the response left unfinished starts: one
+        /// whose arguments are still open (`openAtEnd`), or one that ends in
+        /// its name or a cut-off first tag, the name being the start of a
+        /// declared one (otherwise the `<tool_call>` is a mention).
+        private(set) var cutFrameStart: Int?
         private var openFrameHoldsThinkMarker = false
         private var index = 0
 
@@ -95,15 +119,21 @@ enum GLM5ToolSuffix {
         mutating func run() {
             while let start = find("<tool_call>", from: index) {
                 index = start + 11
-                guard let tag = find("<", from: index) else { return }
-                let name = Self.string(bytes, index ..< tag).trimmingCharacters(in: CharacterSet(charactersIn: " \t\r\n"))
+                guard let tag = find("<", from: index) else {
+                    if beginsDeclaredName(Self.string(bytes, index ..< bytes.count)) { cutFrameStart = start }
+                    return
+                }
+                let name = Self.string(bytes, index ..< tag)
                 if starts("</tool_call>", at: tag) {
                     index = tag + 12
                     frames.append(Frame(range: start ..< index, holdsThinkMarker: false))
                 } else if starts("<arg_key>", at: tag) {
                     index = tag
-                    guard let frame = arguments(start: start, name: name) else { return }
+                    guard let frame = arguments(start: start, name: Self.trimmed(name)) else { return }
                     frames.append(frame)
+                } else if endsInFrameTag(at: tag), beginsDeclaredName(name) {
+                    cutFrameStart = start
+                    return
                 } else {
                     index = tag
                 }
@@ -144,6 +174,7 @@ enum GLM5ToolSuffix {
                 }
             }
             openAtEnd = true
+            cutFrameStart = start
             openFrameHoldsThinkMarker = thinkMarker || containsThinkMarker(index ..< bytes.count)
             return nil
         }
@@ -176,6 +207,22 @@ enum GLM5ToolSuffix {
                 }
             }
             return nil
+        }
+
+        /// What follows a `<tool_call>` the response ends in: nothing yet, or
+        /// the start of a declared function's name.
+        private func beginsDeclaredName(_ text: String) -> Bool {
+            let name = Self.trimmed(text)
+            return name.isEmpty || (tools ?? []).contains {
+                ((($0["function"] as? [String: any Sendable]) ?? $0)["name"] as? String)?.hasPrefix(name) == true
+            }
+        }
+
+        /// The response ends inside the tag at `tag`, which would have opened
+        /// the frame's arguments or closed it.
+        private func endsInFrameTag(at tag: Int) -> Bool {
+            let rest = bytes[tag...]
+            return ["<arg_key>", "</tool_call>"].contains { $0.utf8.count > rest.count && $0.utf8.starts(with: rest) }
         }
 
         /// The template writes a string value raw and any other value as JSON;
@@ -222,6 +269,10 @@ enum GLM5ToolSuffix {
 
         static func string(_ bytes: [UInt8], _ range: Range<Int>) -> String {
             String(decoding: bytes[range], as: UTF8.self)
+        }
+
+        static func trimmed(_ name: String) -> String {
+            name.trimmingCharacters(in: CharacterSet(charactersIn: " \t\r\n"))
         }
     }
 }

@@ -56,6 +56,7 @@ public final class GenerationLoopExitRecord: @unchecked Sendable {
     private let lock = NSLock()
     private var tokens: [Int] = []
     private var detection: GenerationLoopDetector.Detection?
+    private var closedAfter = false
 
     func append(_ new: [Int]) {
         guard !new.isEmpty else { return }
@@ -71,6 +72,13 @@ public final class GenerationLoopExitRecord: @unchecked Sendable {
 
     /// Every token the row produced, the in-flight ones after the stop included.
     var generatedTokens: [Int] { lock.withLock { tokens } }
+
+    func noteClosedAfterStop() {
+        lock.withLock { closedAfter = true }
+    }
+
+    /// The row's text after the stop closed the thought.
+    var closedAfterStop: Bool { lock.withLock { closedAfter } }
 }
 
 /// Which requests may end a repeating thought instead of the whole answer.

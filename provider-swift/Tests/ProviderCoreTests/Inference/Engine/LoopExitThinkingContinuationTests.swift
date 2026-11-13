@@ -197,6 +197,18 @@ struct LoopExitThinkingContinuationTests {
         #expect(closed.submits.isEmpty)
     }
 
+    @Test("a row whose in-flight text closed its thought, without the close token, is not continued")
+    func closedInFlightText() async {
+        let calls = Calls()
+        let exit = exit(requested: true, tokens: thought)
+        exit.record.noteClosedAfterStop()
+        let first = stream([.chunk("think</think>A"),
+                            .info(promptTokens: 5, completionTokens: 4_200, tokensPerSecond: 10, finishReason: "length")])
+        let out = await drain(splice(first: first, exit: exit, calls: calls) { self.stream([.chunk("never")]) }.events)
+        #expect(out == ["chunk:think</think>A", "info:5/4200/length"])
+        #expect(calls.submits.isEmpty)
+    }
+
     @Test("no output budget left: nothing is submitted")
     func noBudget() async {
         let calls = Calls()

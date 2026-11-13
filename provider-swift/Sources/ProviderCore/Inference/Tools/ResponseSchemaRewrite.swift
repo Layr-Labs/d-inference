@@ -5,74 +5,106 @@ import MLXLMCommon
 
 /// Rewrites a `json_schema` in the shapes common clients generate (Pydantic,
 /// OpenAI's strict conversion, zod-to-json-schema) into the shared constrained
-/// subset, where the result admits exactly the same instances: local
-/// references into the root's `$defs` or `definitions` are inlined, a
-/// one-branch `allOf` is its branch, an `anyOf` of one schema and
-/// `{"type": "null"}` is that schema made nullable, and the root's `$schema`,
-/// `$id` and `$comment` are dropped. Nil when anything else would be needed (a
-/// recursive, remote or escaped reference, a reference or composition with
-/// constraints beside it, a wider `anyOf`), so the caller keeps its fallback.
+/// subset, where the result admits exactly the same instances: references to
+/// plainly named entries of the root's `$defs` or `definitions` (no `~`, `/`
+/// or `%`) are inlined, a one-branch `allOf` is its branch, an `anyOf` of one
+/// schema and `{"type": "null"}` is that schema made nullable (null joins its
+/// finite values, so a 128-value enum outgrows the subset), and `$comment`
+/// everywhere, the root's `$id` and a root `$schema` naming draft-06 to
+/// 2020-12 are dropped. A reference or composition may carry annotations
+/// beside it, nothing else. Nil when anything else would be needed (a
+/// recursive, remote or escaped reference, an older or unknown `$schema`, a
+/// wider `anyOf`, more than `ToolConstraintSchemaCompiler.maxDepth` levels or
+/// `maximumUnwraps` references in a row), so the caller keeps its fallback.
 enum ResponseSchemaRewrite {
     /// Bounds the inlined size: a definition used from many places is copied
     /// each time.
     static let maximumNodes = 4_096
+    /// Bounds the references and compositions one position unwraps in a row.
+    static let maximumUnwraps = 8
     private static let annotations: Set<String> = [
         "title", "description", "default", "examples", "deprecated", "readOnly", "writeOnly", "$comment",
+    ]
+    /// Draft-04 has no `const` and draft-03 spells `required` as a boolean, so
+    /// only these read as the subset does.
+    private static let metaSchemas: Set<String> = [
+        "json-schema.org/draft-06/schema", "json-schema.org/draft-07/schema",
+        "json-schema.org/draft/2019-09/schema", "json-schema.org/draft/2020-12/schema",
     ]
 
     static func subset(_ schema: MLXLMCommon.JSONValue) -> MLXLMCommon.JSONValue? {
         guard case .object(var root) = schema else { return nil }
-        var definitions: [String: MLXLMCommon.JSONValue] = [:]
+        if let metaSchema = root.removeValue(forKey: "$schema") {
+            guard case .string(let uri) = metaSchema, readsAsTheSubset(uri) else { return nil }
+        }
+        root.removeValue(forKey: "$id")
+        var walk = Walk()
         for container in ["$defs", "definitions"] {
             guard let value = root.removeValue(forKey: container) else { continue }
             guard case .object(let entries) = value else { return nil }
-            // A name a pointer must escape (`~`, `/`) or percent-encode is
-            // never resolved, so no reference can reach the wrong definition.
+            // A name a pointer must escape or percent-encode is never
+            // resolved, so no reference can reach the wrong definition.
             for (name, definition) in entries where !name.contains(where: { "~/%".contains($0) }) {
-                definitions["#/\(container)/\(name)"] = definition
+                walk.definitions["#/\(container)/\(name)"] = definition
             }
         }
-        for annotation in ["$schema", "$id", "$comment"] { root.removeValue(forKey: annotation) }
-        var budget = maximumNodes
-        return rewrite(.object(root), definitions: definitions, expanding: [], budget: &budget)
+        return walk.rewrite(.object(root), depth: 0, unwraps: 0)
     }
 
-    private static func rewrite(_ schema: MLXLMCommon.JSONValue, definitions: [String: MLXLMCommon.JSONValue], expanding: Set<String>,
-                                budget: inout Int) -> MLXLMCommon.JSONValue? {
-        budget -= 1
-        guard budget >= 0, case .object(var object) = schema else { return budget >= 0 ? schema : nil }
-        if let reference = object["$ref"] {
-            guard case .string(let path) = reference, onlyAnnotations(object, besides: "$ref"),
-                  let target = definitions[path], !expanding.contains(path) else { return nil }
-            return rewrite(target, definitions: definitions, expanding: expanding.union([path]), budget: &budget)
-        }
-        if let composition = object["allOf"] {
-            guard case .array(let branches) = composition, branches.count == 1,
-                  onlyAnnotations(object, besides: "allOf") else { return nil }
-            return rewrite(branches[0], definitions: definitions, expanding: expanding, budget: &budget)
-        }
-        if let union = object["anyOf"] {
-            guard case .array(let branches) = union, branches.count == 2, onlyAnnotations(object, besides: "anyOf"),
-                  let nullIndex = branches.firstIndex(where: isNull), !isNull(branches[1 - nullIndex]),
-                  let other = rewrite(branches[1 - nullIndex], definitions: definitions, expanding: expanding,
-                                      budget: &budget) else { return nil }
-            return nullable(other)
-        }
-        if case .object(let properties)? = object["properties"] {
-            var rewritten: [String: MLXLMCommon.JSONValue] = [:]
-            for (name, property) in properties {
-                guard let value = rewrite(property, definitions: definitions, expanding: expanding, budget: &budget)
-                else { return nil }
-                rewritten[name] = value
-            }
-            object["properties"] = .object(rewritten)
-        }
-        if let items = object["items"] {
-            guard let value = rewrite(items, definitions: definitions, expanding: expanding, budget: &budget)
+    private static func readsAsTheSubset(_ uri: String) -> Bool {
+        var name = Substring(uri)
+        if name.hasSuffix("#") { name = name.dropLast() }
+        for scheme in ["http://", "https://"] where name.hasPrefix(scheme) { name = name.dropFirst(scheme.count) }
+        return metaSchemas.contains(String(name))
+    }
+
+    private struct Walk {
+        var definitions: [String: MLXLMCommon.JSONValue] = [:]
+        var budget = maximumNodes
+        /// The references being inlined on the current path.
+        var expanding: Set<String> = []
+
+        /// `depth` counts levels as the compiler does (a property or the
+        /// items one deeper); `unwraps` counts the references and
+        /// compositions replaced in a row at this position.
+        mutating func rewrite(_ schema: MLXLMCommon.JSONValue, depth: Int, unwraps: Int) -> MLXLMCommon.JSONValue? {
+            budget -= 1
+            guard budget >= 0, depth <= ToolConstraintSchemaCompiler.maxDepth, unwraps <= maximumUnwraps
             else { return nil }
-            object["items"] = value
+            guard case .object(var object) = schema else { return schema }
+            object.removeValue(forKey: "$comment")
+            if let reference = object["$ref"] {
+                guard case .string(let path) = reference, onlyAnnotations(object, besides: "$ref"),
+                      let target = definitions[path], expanding.insert(path).inserted else { return nil }
+                defer { expanding.remove(path) }
+                return rewrite(target, depth: depth, unwraps: unwraps + 1)
+            }
+            if let composition = object["allOf"] {
+                guard case .array(let branches) = composition, branches.count == 1,
+                      onlyAnnotations(object, besides: "allOf") else { return nil }
+                return rewrite(branches[0], depth: depth, unwraps: unwraps + 1)
+            }
+            if let union = object["anyOf"] {
+                guard case .array(let branches) = union, branches.count == 2, onlyAnnotations(object, besides: "anyOf"),
+                      let nullIndex = branches.firstIndex(where: isNull), !isNull(branches[1 - nullIndex]),
+                      let other = rewrite(branches[1 - nullIndex], depth: depth, unwraps: unwraps + 1)
+                else { return nil }
+                return nullable(other)
+            }
+            if case .object(let properties)? = object["properties"] {
+                var rewritten: [String: MLXLMCommon.JSONValue] = [:]
+                for (name, property) in properties {
+                    guard let value = rewrite(property, depth: depth + 1, unwraps: 0) else { return nil }
+                    rewritten[name] = value
+                }
+                object["properties"] = .object(rewritten)
+            }
+            if let items = object["items"] {
+                guard let value = rewrite(items, depth: depth + 1, unwraps: 0) else { return nil }
+                object["items"] = value
+            }
+            return .object(object)
         }
-        return .object(object)
     }
 
     private static func onlyAnnotations(_ object: [String: MLXLMCommon.JSONValue], besides keyword: String) -> Bool {

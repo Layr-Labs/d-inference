@@ -118,28 +118,74 @@ struct GemmaJSONAnswerPolicyTests {
         #expect(F.walk(F.ids(#"{"e": "z"#), e) == nil)
     }
 
-    @Test func theRewriteResolvesOnlyPlainNamesWithinItsNodeBudget() throws {
-        func rewrite(_ text: String) throws -> MLXLMCommon.JSONValue? {
-            ResponseSchemaRewrite.subset(try JSONDecoder().decode(MLXLMCommon.JSONValue.self, from: Data(text.utf8)))
+    private static func json(_ text: String) throws -> MLXLMCommon.JSONValue {
+        try JSONDecoder().decode(MLXLMCommon.JSONValue.self, from: Data(text.utf8))
+    }
+
+    private static func rewrite(_ text: String) throws -> MLXLMCommon.JSONValue? {
+        ResponseSchemaRewrite.subset(try json(text))
+    }
+
+    @Test func theRewriteWritesTheSubsetsSpellings() throws {
+        let cases = [
+            // anyOf [S, null] over an object, an array (through a reference), const, a type array, an enum with null.
+            (#"{"anyOf":[{"type":"object","properties":{"x":{"type":"string"}}},{"type":"null"}]}"#,
+             #"{"type":"object","properties":{"x":{"type":"string"}},"nullable":true}"#),
+            (##"{"anyOf":[{"type":"array","items":{"$ref":"#/$defs/I"}},{"type":"null"}],"$defs":{"I":{"type":"integer"}}}"##,
+             #"{"type":"array","items":{"type":"integer"},"nullable":true}"#),
+            (#"{"anyOf":[{"type":"null"},{"const":"a","title":"A"}]}"#, #"{"enum":["a",null],"title":"A","nullable":true}"#),
+            (#"{"anyOf":[{"type":["string","null"],"enum":["x"]},{"type":"null"}]}"#,
+             #"{"type":["string","null"],"enum":["x",null],"nullable":true}"#),
+            (#"{"anyOf":[{"type":"string","enum":["x",null]},{"type":"null"}]}"#,
+             #"{"type":"string","enum":["x",null],"nullable":true}"#),
+            // Annotations beside a reference or a one-branch allOf go, $comment everywhere, the root's $id and $schema.
+            (##"{"$ref":"#/definitions/P","description":"d","definitions":{"P":{"type":"boolean","$comment":"c"}}}"##,
+             #"{"type":"boolean"}"#),
+            (#"{"allOf":[{"type":"integer"}],"title":"t"}"#, #"{"type":"integer"}"#),
+            (##"{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://example.com/s","type":"string"}"##,
+             #"{"type":"string"}"#),
+            (##"{"$schema":"http://json-schema.org/draft-07/schema#","type":"string"}"##, #"{"type":"string"}"#),
+        ]
+        for (input, expected) in cases {
+            #expect(try Self.rewrite(input) == Self.json(expected), "\(input)")
         }
-        // A pointer reads `a/b` as a path and `a~1b` as the name `a/b`: none of these is guessed.
-        for reference in ["#/$defs/a/b", "#/$defs/a~1b", "#/$defs/a%2Fb"] {
-            #expect(try rewrite(##"{"type":"object","properties":{"x":{"$ref":""## + reference
-                + ##""}},"$defs":{"a/b":{"type":"string"},"a":{"type":"object","b":{"type":"integer"}}}}"##) == nil,
-                "\(reference)")
+    }
+
+    @Test func theRewriteRefusesWhatItCannotSayExactlyWithinItsBounds() throws {
+        let refused = [
+            // Draft-04 has no const, and draft-03 spells required as a boolean.
+            ##"{"$schema":"http://json-schema.org/draft-04/schema#","type":"string","const":"a"}"##,
+            #"{"$schema":4,"type":"string"}"#,
+            #"{"allOf":[{"type":"string"},{"type":"string"}]}"#,
+            #"{"anyOf":[{"type":"string"},{"type":"null"}],"minLength":1}"#,
+            #"{"anyOf":[{"type":"string"},{"type":["null"]}]}"#,
+            #"{"anyOf":[{"type":"null"},{"type":"null"}]}"#,
+            #"{"type":"object","$defs":[]}"#,
+            // A pointer reads `a/b` as a path and `a~1b` as the name `a/b`: none of these is guessed.
+            ##"{"$ref":"#/$defs/a/b","$defs":{"a/b":{"type":"string"},"a":{"type":"object","b":{"type":"integer"}}}}"##,
+            ##"{"$ref":"#/$defs/a~1b","$defs":{"a/b":{"type":"string"}}}"##,
+            ##"{"$ref":"#/$defs/a%2Fb","$defs":{"a/b":{"type":"string"}}}"##,
+            ##"{"$ref":"#/$defs/A","$defs":{"A":{"$ref":"#/$defs/A"}}}"##,
+        ]
+        for schema in refused { #expect(try Self.rewrite(schema) == nil, "\(schema)") }
+        // Every definition refers to the next: directly, through a property, or through two properties.
+        func chain(_ count: Int, _ body: (Int) -> String) -> String {
+            ##"{"$ref":"#/$defs/D0","$defs":{"## + (0..<count).map { ##""D\##($0)":"## + body($0) }.joined(separator: ",")
+                + ##","D\##(count)":{"type":"string"}}}"##
         }
-        // Each definition references the next twice, so inlining doubles the copies at every level.
-        func doubling(_ levels: Int) -> String {
-            let definitions = (0..<levels).map { level in
-                level == levels - 1 ? ##""D\##(level)":{"type":"string"}"##
-                    : ##""D\##(level)":{"type":"object","properties":{"l":{"$ref":"#/$defs/D\##(level + 1)"},"##
-                    + ##""r":{"$ref":"#/$defs/D\##(level + 1)"}}}"##
-            }
-            return ##"{"type":"object","properties":{"d":{"$ref":"#/$defs/D0"}},"$defs":{"##
-                + definitions.joined(separator: ",") + "}}"
+        let reference = { (level: Int) in ##"{"$ref":"#/$defs/D\##(level + 1)"}"## }
+        let property = { (level: Int) in
+            ##"{"type":"object","properties":{"n":{"$ref":"#/$defs/D\##(level + 1)"}}}"##
         }
-        #expect(try rewrite(doubling(4)) != nil)
-        #expect(try rewrite(doubling(14)) == nil, "past \(ResponseSchemaRewrite.maximumNodes) nodes")
+        let twice = { (level: Int) in
+            ##"{"type":"object","properties":{"l":{"$ref":"#/$defs/D\##(level + 1)"},"r":{"$ref":"#/$defs/D\##(level + 1)"}}}"##
+        }
+        #expect(try Self.rewrite(chain(4, reference)) == Self.json(#"{"type":"string"}"#))
+        #expect(try Self.rewrite(chain(4_000, reference)) == nil, "at most \(ResponseSchemaRewrite.maximumUnwraps) in a row")
+        #expect(try Self.rewrite(chain(ToolConstraintSchemaCompiler.maxDepth, property)) != nil)
+        #expect(try Self.rewrite(chain(100, property)) == nil, "at most \(ToolConstraintSchemaCompiler.maxDepth) levels")
+        #expect(try Self.rewrite(chain(4, twice)) != nil)
+        #expect(try Self.rewrite(chain(12, twice)) == nil, "at most \(ResponseSchemaRewrite.maximumNodes) nodes")
     }
 
     @Test func aPydanticSchemaKeepsItsKeysAndRequirements() throws {
@@ -174,6 +220,11 @@ struct GemmaJSONAnswerPolicyTests {
             #"{"type":"object","properties":{"a":{"anyOf":[{"type":"string"},{"type":"integer"}]}}}"#,
             #"{"type":"object","properties":{"a":{"type":"string","enum":["ok","<eos>"]}}}"#,
             ##"{"type":"object","properties":{"a":{"$ref":"https://example.com/a.json"}}}"##,
+            // The rewrite leaves these to the compiler, which refuses them.
+            ##"{"type":"object","properties":{"a":{"$id":"https://example.com/a","type":"string"}}}"##,
+            ##"{"type":"object","properties":{"a":{"$anchor":"a","type":"string"}}}"##,
+            ##"{"type":"object","properties":{"a":{"$defs":{"B":{"type":"string"}},"type":"string"}}}"##,
+            ##"{"$schema":"http://json-schema.org/draft-04/schema#","type":"object","properties":{"a":{"const":"x"}}}"##,
         ]
         for schema in objectRoots {
             let constraint = try #require(try make(Self.request(format: F.schemaFormat(schema)))

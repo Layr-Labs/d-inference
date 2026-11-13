@@ -27,6 +27,8 @@ struct NativeToolStreamRouter {
     /// `finishCompleteCalls` has released the EOS suffix that way, which
     /// answers its parse failure.
     private var glmSuffixSplit = false
+    /// Forced GPT-OSS calls: the analysis text before the call.
+    private var harmonyAnalysis: HarmonyForcedCallText?
     /// Validation contract for calls exposed while generated; nil keeps the
     /// complete-call path (calls flushed at the engine terminal).
     private let streamedCallPolicy: ToolChoicePromptPolicy.Prepared?
@@ -76,6 +78,7 @@ struct NativeToolStreamRouter {
         self.streamedCallPolicy = handler?.streamsCalls == true ? streamedCalls : nil
         // The scheduler passes the prepared choice here on every path.
         self.autoToolChoice = streamedCalls.map { $0.mode == .auto } ?? !requiresToolCall
+        if requiresToolCall, handler?.format == .harmony { harmonyAnalysis = HarmonyForcedCallText() }
         if nativeGemmaChannels {
             gemmaParser = DiffusionGemmaChannelSplitter()
         } else if let nativePrefix {
@@ -300,6 +303,16 @@ struct NativeToolStreamRouter {
             // their existing fallback contract.
             try checkNativeToolFailure()
             guard let visible, !visible.isEmpty else { continue }
+            if var analysis = harmonyAnalysis {
+                // Harmony analysis is reasoning to the stream's Harmony parser.
+                guard let shown = analysis.filter(visible) else {
+                    throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(
+                        "forced tool_choice produced visible text before a validated call")
+                }
+                harmonyAnalysis = analysis
+                if !shown.isEmpty { events.append(visibleEvent(shown)) }
+                continue
+            }
             if requiresToolCall {
                 // Framing whitespace around and between call frames is not an
                 // answer on any path, including legacy Qwen text without

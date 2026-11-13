@@ -431,6 +431,9 @@ public enum LaunchAgent: Sendable {
     /// presence penalty by default; its `0` rollback must reach the job.
     /// `DARKBLOOM_GLM_TOOL_TEXT_FALLBACK`: unparsed `auto` GLM tool output is
     /// text by default; exact `0` restores the 500.
+    /// `DARKBLOOM_GPTOSS_FORCED_TOOLS`: GPT-OSS forced tool calls are on by
+    /// default; an off word (`off`, `false`, `0`, `none`, `no`, `disabled`)
+    /// refuses them and stops advertising them.
     static let inferencePassthroughEnvKeys = [
         EngineV2Factory.maxPartialPrefillsKey,
         EngineV2Factory.prefillChunkKey,
@@ -468,6 +471,7 @@ public enum LaunchAgent: Sendable {
         GenerationLoopExitThinkingPolicy.environmentKey,
         EngineV2SamplingDefaults.qwen35NineBPenaltyEnvironmentKey,
         GLM5ToolSuffix.environmentKey,
+        GPTOSSForcedToolCalls.environmentKey,
     ] + MiMoV26DecodeDefaults.environmentKeys + MiMoV26DecodeDefaults.verifyEnvironmentKeys
 
     static let passthroughEnvKeys = [

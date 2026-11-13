@@ -5,7 +5,8 @@ import MLXLMCommon
 import MLXLMServer
 
 /// Selects the enforcement boundary for forced tool choices. Gemma keeps its
-/// token-level grammar; supported native structured formats are prompt-forced and
+/// token-level grammar and GPT-OSS frames its Harmony call in the sampler;
+/// supported native structured formats are prompt-forced. Every forced call is
 /// then rejected fail-closed unless parsing, function selection, and schema
 /// validation all succeed before any call is exposed to the client.
 enum ToolChoiceEnforcementPolicy {
@@ -13,6 +14,10 @@ enum ToolChoiceEnforcementPolicy {
         case none
         case gemmaGrammar
         case structuredPostValidation
+        /// GPT-OSS: the sampler frames the Harmony call after the analysis
+        /// message (`GPTOSSForcedToolConstraint`); the call is still parsed
+        /// and validated before it is exposed.
+        case harmonyFraming
     }
 
     /// Per-model wire capability, never inferred from a caller's model label.
@@ -79,6 +84,7 @@ enum ToolChoiceEnforcementPolicy {
             || GLM5NextPromptPolicy.applies(modelType: modelContext.modelType) {
             return .structuredPostValidation
         }
+        if GPTOSSForcedToolCalls.applies(to: modelContext) { return .harmonyFraming }
         throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
             "inference-enforced tool_choice is unsupported for this model family")
     }
@@ -112,6 +118,7 @@ enum ToolChoiceEnforcementPolicy {
         if let admittedType = structuredForcedToolModelTypes[model.id] {
             return model.modelType == admittedType
         }
+        if GPTOSSForcedToolCalls.advertises(model) { return true }
         return ModelRuntimeRequirements.qwen38ConcreteModelIDs.contains(model.id)
             && Qwen35TemplateFix.applies(to: context)
     }
@@ -191,6 +198,11 @@ enum ToolChoiceEnforcementPolicy {
             guard format == .gemma else {
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
                     "inference-enforced Gemma tool_choice requires the gemma tool parser")
+            }
+        case .harmonyFraming:
+            guard format == .harmony else {
+                throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
+                    "GPT-OSS tool_choice requires the Harmony tool parser")
             }
         case .structuredPostValidation:
             if modelContext?.modelType == "flint" {

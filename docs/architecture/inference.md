@@ -1672,6 +1672,24 @@ held requests and gate reservations (`EngineV2Bridge.heartbeatCommittedBytes`).
 The engine's reserved bytes also keep the paged pool's retained segments after
 every request retires, which the engine reuses, so reporting them read an idle
 GLM slot as 90–99 % full and the coordinator turned its requests away.
+Those retained segments were charged as well. The issued pool kept every
+segment it ever committed until it retired (`PagedKVPool.trimFreeSegments`
+skips native pools), and each complete-checkpoint restore attached the staged
+checkpoint's segments, so on a 256 GB M5 Ultra the committed floor ratcheted to
+the slot's grant (idle MLX active memory 169 → 214 GiB, never back). A lone
+request on an idle engine then could not reserve its fixed bytes and its first
+step's scratch beside that floor: the refused step finished it
+`kv_capacity_exhausted` (`capacity_busy` to the coordinator, which cooled the
+Mac). The engine now returns the pool's whole free segments, and refunds their
+floor, before retrying such a lone row, and once it has been idle
+`DARKBLOOM_NATIVE_SEGMENT_RELEASE` seconds (default 30, the idle sweep other
+pools' retained segments use); the row waits up to 10 s while another
+request's checkpoint publication or retirement keeps the pool busy, and is
+retried once after a release (`PagedKVPool.releaseIssuedNativeFreeSegments`,
+`EngineLoopV2.keepLoneRowForNativeSegmentRelease`). The release drains the
+streams and trims in `retireIssuedNativePool`'s order, outside the native
+commit, with no other native work live. Any value that is not a positive
+number of seconds keeps the former behavior.
 The engine's activation check prices step scratch for every row at the full
 context against the same capacity, so the protected scheduler's running-row
 cap is the largest value that check admits

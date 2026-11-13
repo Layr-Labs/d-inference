@@ -124,6 +124,18 @@ extension ReasoningEffort {
         }
     }
 
+    /// Muse Glimmer's template renders `Reasoning strength:` `low`, `medium`,
+    /// `high` (its default) or `xhigh`, from its own `reasoning_strength`
+    /// variable. It has no thinking switch, so `none` gets `low`.
+    var museGlimmerStrength: ReasoningEffort {
+        switch self {
+        case .none, .minimal, .low: .low
+        case .medium: .medium
+        case .high: .high
+        case .xhigh, .max: .xhigh
+        }
+    }
+
     /// GPT-OSS's Harmony levels are `low`, `medium` (its default) and `high`.
     /// Harmony can't switch its reasoning off, so `none` gets `low`. The
     /// coordinator caps OpenRouter's traffic at `medium` (#703); a direct
@@ -159,7 +171,8 @@ public enum ReasoningEffortField: String, Sendable {
 /// Which models reason, and the `reasoning_effort` the template context
 /// `MultiModelBatchSchedulerEngine.templateAdditionalContext` builds. MiMo,
 /// GLM-5.3, Flint and Nemotron 3.5 Super read the effort in their own prompt
-/// policies, through their tables above.
+/// policies, through their tables above; Muse Glimmer's effort becomes its
+/// template's `reasoning_strength` (`MuseGlimmerRequestPolicy`).
 enum ReasoningEffortPolicy {
     // The sets below are listed in `reasoning_effort_vectors.json`, and each
     // copy that keeps one checks it for equality
@@ -173,6 +186,7 @@ enum ReasoningEffortPolicy {
         "qwen3_5", "qwen3_5_moe", "prism_hadamard_qwen35", "qwen4_exp", "qwen4_exp_text",
         "gemma4", "gemma4_text", "gemma4_vision", "diffusion_gemma", "gpt_oss",
         "nemotron_h", "nemotron_h_omni", "mimo_v2", "glm5_next", "glm5_next_text", "glm5_next_mtp", "flint",
+        MuseGlimmerModelPolicy.modelType,
     ]
 
     /// The Qwen 3.5 template family's model types.

@@ -111,6 +111,12 @@ extension MultiModelBatchSchedulerEngine {
         if let date = controls.promptDate {
             context.merge(date.templateContext()) { _, pinned in pinned }
         }
+        if MuseGlimmerModelPolicy.isModelType(modelType) {
+            // Its template reads one reasoning control and no thinking switch.
+            context.merge(MuseGlimmerRequestPolicy.templateContext(
+                effort: effort, request: request, controls: controls)) { _, strength in strength }
+            return context.isEmpty ? nil : context
+        }
         let fixContext = ChatTemplateFixContext(
             modelId: request.model,
             modelType: modelType)

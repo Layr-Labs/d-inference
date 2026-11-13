@@ -154,7 +154,9 @@ final class QwenStrayThinkCloseConformanceTests: XCTestCase {
             XCTAssertEqual(try content("before</think>after", width: 1, type: "qwen3_5_moe"), "beforeafter", value)
         }
         unsetenv(flag)
-        for type in ["gpt_oss", "gemma4", "nemotron_h", "mimo_v2", "prism_hadamard_qwen35"] {
+        // Qwen3-VL keeps its route: its bare Instruct tail is a synthetic content
+        // seed (`EngineV2ProductionWiringTests.plainQwen3VLPromptTailSeedsContent`).
+        for type in ["gpt_oss", "gemma4", "nemotron_h", "mimo_v2", "prism_hadamard_qwen35", "qwen3_vl", "qwen3_vl_moe"] {
             XCTAssertFalse(QwenStrayThinkClose.applies(.init(modelId: "Qwen3.5-9B", modelType: type)), type)
         }
     }

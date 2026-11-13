@@ -167,7 +167,8 @@ enum ToolChoiceEnforcementPolicy {
         return type == "qwen3_5" || type == "qwen3_5_moe"
     }
 
-    /// Nemotron's existing behavior, plus the explicit Qwen opt-in.
+    /// Nemotron's existing behavior, plus the Qwen types (`QwenStrayThinkClose`,
+    /// on by default).
     static func absorbsStrayThinkClose(_ context: ChatTemplateFixContext) -> Bool {
         QwenStrayThinkClose.applies(context)
             || (context.modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "nemotron_h"

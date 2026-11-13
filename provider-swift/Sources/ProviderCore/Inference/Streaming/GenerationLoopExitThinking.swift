@@ -28,6 +28,9 @@ public struct GenerationLoopExitThinking: Sendable {
     let startsInside: Bool
     /// Shared with the continuation: the row's tokens and the guard's request.
     let record: GenerationLoopExitRecord
+    /// Where the continuation's stop strings apply when the exit itself opens
+    /// the answer (GPT-OSS's final header); nil keeps the request's scope.
+    let answerStopScope: CBv2StopStringScope?
     /// The most the answer after the thought may take, within the request's own
     /// budget: a model that wrote a loop may write a near-verbatim one next,
     /// which the guard does not see.
@@ -35,7 +38,7 @@ public struct GenerationLoopExitThinking: Sendable {
 
     init(
         openMarker: String, closeMarker: String, exitTokens: [Int], exitText: String, closeToken: Int? = nil,
-        startsInside: Bool, record: GenerationLoopExitRecord,
+        startsInside: Bool, record: GenerationLoopExitRecord, answerStopScope: CBv2StopStringScope? = nil,
         answerTokenLimit: Int = GenerationLoopExitThinkingPolicy.answerTokenLimit
     ) {
         self.openMarker = openMarker
@@ -45,6 +48,7 @@ public struct GenerationLoopExitThinking: Sendable {
         self.closeToken = closeToken ?? exitTokens.first ?? -1
         self.startsInside = startsInside
         self.record = record
+        self.answerStopScope = answerStopScope
         self.answerTokenLimit = answerTokenLimit
     }
 }
@@ -159,6 +163,14 @@ enum GenerationLoopExitThinkingPolicy {
 
     static let current = setting(environment: ProcessInfo.processInfo.environment)
 
+    static let finalExitEnvironmentKey = "DARKBLOOM_GPTOSS_FINAL_EXIT"
+
+    static let finalExitCurrent = finalExit(environment: ProcessInfo.processInfo.environment)
+
+    static func finalExit(environment: [String: String]) -> Bool {
+        true
+    }
+
     static func setting(environment: [String: String]) -> Setting {
         guard let raw = environment[environmentKey]?.trimmingCharacters(in: .whitespacesAndNewlines),
               !raw.isEmpty else { return .modelTypes(defaultModelTypes) }
@@ -180,7 +192,8 @@ enum GenerationLoopExitThinkingPolicy {
         promptTokens: [Int],
         logprobs: Bool,
         declaresTools: Bool = false,
-        setting: Setting = current
+        setting: Setting = current,
+        finalExit: Bool = finalExitCurrent
     ) -> GenerationLoopExitThinking? {
         guard case .modelTypes(let enabled) = setting,
               let modelType = modelType?.lowercased(), enabled.contains(modelType),

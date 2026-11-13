@@ -38,6 +38,8 @@ enum GPTOSSHarmonyTemplateFix {
         opener: "<|channel|>final", openerEnd: "<|message|>",
         closers: ["<|end|>", "<|return|>", "<|call|>", "<|start|>"])
 
+    static let insideFinalChannelStopScope = finalChannelStopScope
+
     private static func isHarmonyModelHint(_ value: String?) -> Bool {
         guard let value else { return false }
         let normalized = value.lowercased()

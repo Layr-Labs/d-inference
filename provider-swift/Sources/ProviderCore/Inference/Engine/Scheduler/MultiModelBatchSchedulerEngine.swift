@@ -122,6 +122,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// Which families may end a repeating thought (`GenerationLoopExitThinkingPolicy`):
     /// the process's `DARKBLOOM_LOOP_EXIT_THINKING` unless a test sets it.
     var exitThinkingSetting = GenerationLoopExitThinkingPolicy.current
+    var gptossFinalExit = GenerationLoopExitThinkingPolicy.finalExitCurrent
     /// Per-request logprobs plumbing. Non-nil means the sealed request asked for
     /// logprobs: the v2 translation flips `logprobs`/`top_logprobs` on so
     /// the engine captures them, and the bridge yields OpenAI-shaped entries

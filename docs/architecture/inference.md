@@ -3732,26 +3732,44 @@ request as before, with a content-free log line, never a refusal.
 `QwenStrictToolConstraint` is a byte-level automaton over the shared Qwen
 vocabulary contract (`JSONAnswerVocabulary` with the call markers as pieces).
 Reasoning and text are free and only watched for `</think>` and `<tool_call>`;
-an answer can end wherever it could before. Inside a call every byte follows
-the template's framing (`<tool_call>\n<function=NAME>\n`,
-`<parameter=KEY>\nVALUE\n</parameter>\n`, `</function>\n</tool_call>`):
-a declared function, declared parameters at most once, required ones before
-`</function>`. A value's grammar follows how `Qwen35ToolCallParser` reads it
+they admit every byte-level piece, the think and call markers and the stop
+tokens, so an answer can end wherever it could before (the other added tokens,
+such as `<|im_start|>` or the media placeholders, are not sampled). After
+`<tool_call>`, whitespace may precede `<function=`, where the call commits; a
+first other byte is no call the parser can read, so the answer goes on as text,
+as without the grammar (`{`, the JSON dialect, and a non-ASCII byte, which could
+be whitespace the parser skips, are refused). Inside a call every byte follows
+the template's framing (`<function=NAME>\n`, `<parameter=KEY>\nVALUE\n</parameter>\n`,
+`</function>\n</tool_call>`): a declared function, declared parameters at most
+once, required ones before `</function>`; with `parallel_tool_calls: false` no
+second call opens. A value's grammar follows how `Qwen35ToolCallParser` reads it
 under the rendered schema (`QwenStrictToolSchema.parserConversion`, a mirror of
 the SDK's `ToolArgumentNormalization` that `QwenStrictToolGrammarTests` checks
 against the parser): text the parser keeps as a string is free (or one of an
 enum's values), and a value it converts is one JSON value of the declared
-schema (`FlintJSONGrammar`); where the two disagree (a top-level `$ref` the
-render repair typed as a string), the request stays unconstrained. No value can
-spell `</parameter>` or a turn, reasoning or call marker. The validator still
-checks every call. As with constrained JSON answers (above), a constrained row
-never drafts MTP tokens and, on these engines, no row of a decode step it
-shares speculates (`ineligibleRowsDecodeBesideSpeculation` is false): where a
-Mac would draft (one or a few decode rows) the whole answer, reasoning
-included, decodes target-only. A JSON value never writes a surrogate escape
-(`\uD800`…`\uDFFF`; the parser's JSONSerialization refuses a lone one and the
-value would stay a string), nor a backslash followed by such text. The loop
-guard stays on (`GenerationLoopGuardPolicy`).
+schema (`FlintJSONGrammar`). The request stays unconstrained where the parser's
+reading and the declared type disagree (a top-level `$ref` the render repair
+typed as a string) or where the streamed call would expose a converted value as
+text (`QwenStrictToolSchema.streamsAsText`, the mirror of
+`Qwen35ArgumentStreamer`, for example a `{"type":"null"}` parameter). No value
+can spell `</parameter>` or a turn, reasoning or call marker, and a JSON value
+never writes a surrogate escape (`\uD800`…`\uDFFF`; the parser's
+JSONSerialization refuses a lone one and the value would stay a string; an
+escaped backslash followed by such text is refused too). The validator still
+checks every call.
+
+Calls drafted inside the thought are reasoning to the grammar. Where the Qwen
+route parses calls before it splits off the reasoning, such a call is parsed
+and checked like any other, unconstrained; where the reasoning is split first,
+only a call at the end of a thought that never closes is. The loop guard stays on
+(`GenerationLoopGuardPolicy`); the continuation after an exited thought runs
+without the grammar. As with constrained JSON answers (above), a constrained row
+never drafts MTP tokens and, on these engines, no row of a decode step it shares
+speculates (`ineligibleRowsDecodeBesideSpeculation` is false). Where a Mac would
+draft (at most `maxSpeculativeBatch` decode rows, 8 by default; the 3.6 and 35B
+cards' presence penalty already keeps those builds from drafting), the whole
+constrained answer, reasoning included, and every answer decoding beside it run
+target-only while it decodes.
 
 ### Vision constraints
 

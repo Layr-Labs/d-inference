@@ -124,7 +124,7 @@ enum QwenStrictToolGrammar {
         }
         guard let constraint = try? QwenStrictToolConstraint(schema: schema, vocabulary: vocabulary,
             forbidding: forbiddenMarkers, startsInReasoning: prefix == ReasoningPromptProbe.thinkOpen,
-            maxTokens: request.maxTokens ?? defaultMaxTokens) else {
+            allowsParallelCalls: prepared.allowsParallelCalls, maxTokens: request.maxTokens ?? defaultMaxTokens) else {
             return declined("no positive output budget")
         }
         return constraint

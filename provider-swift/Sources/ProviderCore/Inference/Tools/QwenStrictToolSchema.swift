@@ -76,8 +76,14 @@ struct QwenStrictToolSchema: Sendable {
             var parameters: [Parameter] = []
             var required = FlintJSONPropertySet()
             for (index, property) in properties.enumerated() {
-                let value = try Self.value(property.schema, conversion: Self.parserConversion(parsedProperties[property.name]),
-                                           forbidding: markers, family: family)
+                let rendered = parsedProperties[property.name]
+                let conversion = Self.parserConversion(rendered)
+                // A value the parser converts must not stream as text: the
+                // streamed call would then disagree with the parsed one.
+                guard conversion.kind == .text || !Self.streamsAsText(rendered) else {
+                    throw ToolConstraintSchemaError.unsupported("a parameter the streamed call exposes as text")
+                }
+                let value = try Self.value(property.schema, conversion: conversion, forbidding: markers, family: family)
                 parameters.append(Parameter(name: Array(property.name.utf8), value: value))
                 if property.required { required.insert(index) }
             }
@@ -165,6 +171,20 @@ struct QwenStrictToolSchema: Sendable {
         let kind: Kind
         /// `null` (also `none`, `nil`) is read as JSON null.
         let acceptsNull: Bool
+    }
+
+    /// Whether the streamed call exposes the parameter's text as a string while
+    /// it is generated: a mirror of the SDK's `Qwen35ArgumentStreamer`
+    /// (`streamsAsString`), which reads only a string `type` of the rendered
+    /// schema. Other parameters are exposed when they close, converted as the
+    /// parser converts them.
+    static func streamsAsText(_ schema: MLXLMCommon.JSONValue?) -> Bool {
+        guard case .object(let object)? = schema, case .string(let raw)? = object["type"] else { return true }
+        let type = raw.lowercased()
+        if ["string", "str", "text", "varchar", "char", "enum"].contains(type) { return true }
+        let converts = ["int", "uint", "long", "short", "unsigned", "num", "float", "dict", "list"]
+            .contains(where: type.hasPrefix) || ["boolean", "bool", "binary", "object", "array"].contains(type)
+        return !converts
     }
 
     static func parserConversion(_ schema: MLXLMCommon.JSONValue?) -> ParserConversion {

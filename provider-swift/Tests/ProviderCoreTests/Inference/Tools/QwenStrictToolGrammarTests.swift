@@ -33,6 +33,30 @@ enum StrictToolFixture {
       "properties":{"city":{"type":"string"}},"required":["city"],"additionalProperties":false}}}]
     """#
 
+    /// Local `$ref`/`$defs`, nested and in array items.
+    static let refs = #"""
+    [{"type":"function","function":{"name":"book","strict":true,"parameters":{"type":"object",
+      "$defs":{"Passenger":{"type":"object","properties":{"name":{"type":"string"},"age":{"$ref":"#/$defs/Age"}},
+               "required":["name","age"],"additionalProperties":false},
+               "Age":{"type":"integer","description":"years"}},
+      "properties":{"passengers":{"type":"array","items":{"$ref":"#/$defs/Passenger"}},
+                    "lead":{"type":"object","properties":{"who":{"$ref":"#/$defs/Passenger"}},
+                            "required":["who"],"additionalProperties":false}},
+      "required":["passengers","lead"],"additionalProperties":false}}}]
+    """#
+
+    /// `anyOf` with null, and a reference beside an open object (tau2's shape).
+    static let unions = #"""
+    [{"type":"function","function":{"name":"f","strict":true,"parameters":{"type":"object",
+      "$defs":{"Flight":{"type":"object","properties":{"number":{"type":"string"}},"required":["number"]}},
+      "properties":{
+        "limit":{"anyOf":[{"type":"integer"},{"type":"null"}]},
+        "label":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null},
+        "flight":{"type":"object","properties":{"leg":{"anyOf":[{"$ref":"#/$defs/Flight"},
+                  {"type":"object","additionalProperties":true}]}}}},
+      "required":["limit","label","flight"],"additionalProperties":false}}}]
+    """#
+
     static let validOrder = """
         <tool_call>
         <function=place_order>
@@ -113,6 +137,29 @@ enum StrictToolFixture {
         let calls = handler.finish()
         try ToolConstraintValidation.validate(calls, prepared: prepared)
         return calls
+    }
+
+    /// Calls the streamed path completes from `content` (OpenAI fragments fed
+    /// in chunks), and their check; a streamed call that disagrees with its
+    /// parse throws.
+    static func streamedCalls(_ content: String, _ body: String, chunking: Int = 7) throws -> [ToolCall] {
+        var (request, prepared) = try prepared(body)
+        request.streamToolCallDeltas = true
+        let declared = prepared.declaredTools
+        prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "qwen3_5")
+        prepared.declaredTools = declared
+        let handler = try #require(try ToolStreamPreparation.makeHandler(
+            request: request, prepared: prepared, modelType: "qwen3_5", streamToolCalls: true))
+        var router = NativeToolStreamRouter(handler: handler, requiresToolCall: false, nativePrefix: nil,
+            streamedCalls: prepared)
+        let characters = Array(content)
+        for start in stride(from: 0, to: characters.count, by: chunking) {
+            _ = try router.process(String(characters[start..<min(start + chunking, characters.count)]))
+        }
+        _ = try router.finishText()
+        _ = try router.finishToolCalls(truncated: false)
+        try ToolConstraintValidation.validate(router.completedToolCalls, prepared: prepared)
+        return router.completedToolCalls
     }
 
     static func arguments(_ call: ToolCall) -> [String: MLXLMCommon.JSONValue] { call.function.arguments }
@@ -207,7 +254,8 @@ struct QwenStrictToolGrammarTests {
         #expect(F.allows("<parameter=note>\nfragile\n</parameter>\n", constraint, after: order))
         // Undeclared functions are never opened; the framing is the template's.
         #expect(!F.allows("<tool_call>\n<function=delete_everything>", constraint, after: ""))
-        #expect(!F.allows("<tool_call><function=get_time>", constraint, after: ""))
+        // Whitespace before `<function=` is optional, as for the parser.
+        #expect(F.allows("<tool_call><function=get_time>", constraint, after: ""))
         #expect(!F.allows("<tool_call>\n{\"name\": \"get_time\"", constraint, after: ""))
     }
 
@@ -250,20 +298,50 @@ struct QwenStrictToolGrammarTests {
         #expect(!F.allows("\n<tool_call>\n<function=get_time>\n<parameter=count>", constraint, after: F.validOrder))
     }
 
+    /// Text that only mentions the call marker is not a call the parser can
+    /// read, so it stays text, as without the grammar; a call commits at
+    /// `<function=`, and the JSON dialect is never opened.
+    @Test func aMentionOfTheCallMarkerStaysText() throws {
+        let body = F.body(tools: F.order)
+        let constraint = try #require(try F.constraint(body))
+        let (request, prepared) = try F.prepared(body)
+        for mention in ["Wrap each call in <tool_call> tags.", "The <tool_call>\n<b>frame</b> is XML.",
+                        "Use <tool_call>\n<functions> sparingly."] {
+            // As the added token and as ordinary byte pieces alike.
+            let end = try #require(F.walk(mention, constraint), "\(mention)")
+            #expect(constraint.nextState(state: end, tokenID: F.imEnd) == -1)
+            var state = constraint.initialState
+            for byte in mention.utf8 {
+                state = try #require(constraint.nextState(state: state, tokenID: Int(byte)))
+            }
+            #expect(try F.calls(mention, request, prepared).isEmpty)
+        }
+        #expect(!F.allows("{\"name\"", constraint, after: "<tool_call>\n"))
+        #expect(!F.allows("\u{00A0}", constraint, after: "<tool_call>"))
+        #expect(!F.allows("x", constraint, after: "<tool_call>\n<function="))
+        // Text after a mention is watched from its first byte on.
+        #expect(!F.allows("<tool_call>\n<function=zzz", constraint, after: "<tool_call>"))
+        #expect(F.allows("<tool_call>\n<function=get_time>", constraint, after: "<tool_call>"))
+        // An answer may still end right after the marker, as before.
+        let opened = try #require(F.walk("<tool_call>\n", constraint))
+        #expect(constraint.nextState(state: opened, tokenID: F.imEnd) == -1)
+    }
+
+    /// `parallel_tool_calls: false`: no call opens after the first one closed.
+    @Test func parallelToolCallsFalseAllowsOneCall() throws {
+        let single = try #require(try F.constraint(F.body(tools: F.order, parallel: false)))
+        let first = "<tool_call>\n<function=get_time>\n<parameter=city>\nRome\n</parameter>\n</function>\n</tool_call>"
+        let closed = try #require(F.walk(first, single))
+        #expect(F.walk("\n<tool_call>", single, from: closed) == nil)
+        #expect(single.nextState(state: closed, tokenID: F.imEnd) == -1)
+        let parallel = try #require(try F.constraint(F.body(tools: F.order, parallel: true)))
+        #expect(F.walk(first + "\n" + first, parallel) != nil)
+    }
+
     // MARK: - Schemas
 
     @Test func refsAndDefsAreInlinedLikeTheCoordinator() throws {
-        let tools = #"""
-        [{"type":"function","function":{"name":"book","strict":true,"parameters":{"type":"object",
-          "$defs":{"Passenger":{"type":"object","properties":{"name":{"type":"string"},"age":{"$ref":"#/$defs/Age"}},
-                   "required":["name","age"],"additionalProperties":false},
-                   "Age":{"type":"integer","description":"years"}},
-          "properties":{"passengers":{"type":"array","items":{"$ref":"#/$defs/Passenger"}},
-                        "lead":{"type":"object","properties":{"who":{"$ref":"#/$defs/Passenger"}},
-                                "required":["who"],"additionalProperties":false}},
-          "required":["passengers","lead"],"additionalProperties":false}}}]
-        """#
-        let body = F.body(tools: tools)
+        let body = F.body(tools: F.refs)
         let constraint = try #require(try F.constraint(body))
         let call = "<tool_call>\n<function=book>\n<parameter=passengers>\n[{\"name\": \"Mia\", \"age\": "
         // The integer inside the referenced definition keeps its JSON type.
@@ -289,17 +367,7 @@ struct QwenStrictToolGrammarTests {
     }
 
     @Test func anyOfWithNullAndOpenObjectUnionsCompile() throws {
-        let tools = #"""
-        [{"type":"function","function":{"name":"f","strict":true,"parameters":{"type":"object",
-          "$defs":{"Flight":{"type":"object","properties":{"number":{"type":"string"}},"required":["number"]}},
-          "properties":{
-            "limit":{"anyOf":[{"type":"integer"},{"type":"null"}]},
-            "label":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null},
-            "flight":{"type":"object","properties":{"leg":{"anyOf":[{"$ref":"#/$defs/Flight"},
-                      {"type":"object","additionalProperties":true}]}}}},
-          "required":["limit","label","flight"],"additionalProperties":false}}}]
-        """#
-        let body = F.body(tools: tools)
+        let body = F.body(tools: F.unions)
         let constraint = try #require(try F.constraint(body))
         let call = "<tool_call>\n<function=f>\n<parameter=limit>\n"
         #expect(F.allows("5\n</parameter>\n", constraint, after: call))
@@ -323,7 +391,7 @@ struct QwenStrictToolGrammarTests {
         #"{"type":"array","items":{"type":"string"},"maxItems":64}"#, #"{"type":"array","items":{}}"#,
         #"{"type":"object","patternProperties":{"^x":{"type":"string"}}}"#, #"{"not":{"type":"string"}}"#,
         #"{"type":"array","items":{"type":"string"},"uniqueItems":true}"#, #"{"description":"anything"}"#,
-        #"{"$ref":"https://example.com/schema.json"}"#,
+        #"{"$ref":"https://example.com/schema.json"}"#, #"{"type":"null"}"#,
     ])
     func unsupportedSchemasStayUnconstrainedWithoutAnError(_ property: String) throws {
         let tools = #"[{"type":"function","function":{"name":"f","strict":true,"parameters":{"type":"object","#
@@ -374,15 +442,43 @@ struct QwenStrictToolGrammarTests {
         }
     }
 
+    /// The streamed reading mirrored by `QwenStrictToolSchema.streamsAsText`:
+    /// a parameter streamed as text whose parsed value is not that text makes
+    /// the streamed call diverge, which is why such parameters are declined.
+    @Test func theStreamedReadingMatchesTheStreamer() throws {
+        let schemas = [
+            #"{"type":"string"}"#, #"{"type":"integer"}"#, #"{"type":"number"}"#, #"{"type":"boolean"}"#,
+            #"{"type":"object"}"#, #"{"type":"array"}"#, #"{"type":"null"}"#, #"{"type":"integer","nullable":true}"#,
+            #"{"type":"weird"}"#, #"{"type":"Integer"}"#, #"{"type":"enum"}"#, #"{"type":"dict"}"#, "{}",
+            #"{"anyOf":[{"type":"integer"},{"type":"null"}]}"#, #"{"type":["integer","null"]}"#,
+        ]
+        let parser = Qwen35ToolCallParser(startTag: "<tool_call>", endTag: "</tool_call>")
+        for raw in schemas {
+            let schema = try JSONDecoder().decode(MLXLMCommon.JSONValue.self, from: Data(raw.utf8))
+            let tool = OpenAITool(function: .init(name: "f", parameters: .object([
+                "type": .string("object"), "properties": .object(["v": schema])])))
+            for probe in ["5", "true", "null", "{}", "x"] {
+                let frame = "<tool_call>\n<function=f>\n<parameter=v>\n\(probe)\n</parameter>\n</function>\n</tool_call>"
+                let parsed = try #require(parser.parse(content: frame, tools: [tool.toolSpec()])?.function.arguments["v"])
+                let handler = BatchedToolStreamHandler(format: .qwen35, tools: [tool.toolSpec()],
+                    streaming: ToolCallStreamingOptions(exposesName: { _ in true }))
+                let segments = handler.processChunkSegments(frame) + handler.finishSegments()
+                let failed = segments.contains { if case .callFailed = $0 { true } else { false } }
+                let expected = QwenStrictToolSchema.streamsAsText(schema) && parsed != .string(probe)
+                #expect(failed == expected, "\(raw) streaming \(probe): \(segments)")
+            }
+        }
+    }
+
     // MARK: - Property: whatever the masks admit parses to valid arguments
 
     /// Random calls drawn from the masks alone (printable bytes, any order of
     /// parameters, any lengths), closed with the shortest framing once long
     /// enough. Every call they produce must parse to arguments the strict
-    /// check accepts.
-    @Test(arguments: ["place_order", "get_time"])
+    /// check accepts, and stream as the same call.
+    @Test(arguments: ["place_order", "get_time", "book", "f"])
     func callsDrawnFromTheMasksAlwaysValidate(_ function: String) throws {
-        let body = F.body(tools: F.order)
+        let body = F.body(tools: ["book": F.refs, "f": F.unions][function] ?? F.order)
         let constraint = try #require(try F.constraint(body))
         let (request, prepared) = try F.prepared(body)
         let closers = ["\n</parameter>\n", "\"", "]", "}", "</function>\n</tool_call>"]
@@ -408,6 +504,9 @@ struct QwenStrictToolGrammarTests {
             #expect(steps < 4_000, "the draw closed its call")
             let calls = try F.calls(text, request, prepared)
             #expect(calls.count == 1 && calls[0].function.name == function, "\(text)")
+            let streamed = try F.streamedCalls(text, body)
+            #expect(streamed.map(\.function.name) == calls.map(\.function.name), "\(text)")
+            #expect(streamed.map(\.function.arguments) == calls.map(\.function.arguments), "\(text)")
         }
     }
 

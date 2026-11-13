@@ -522,6 +522,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 allowInternalSchemaMetadata: allowInternalToolSchemaMetadata,
                 glm5PairPostValidation: glm5PairPostValidation)
             policy.declaredTools = templateControls.declaredTools
+            // The coordinator path serves every request as a stream; the body
+            // says whether the client streams (`StrictToolCallPolicy`).
+            policy.strictCallsAsGenerated = StrictToolCallPolicy.returnsAsGenerated
+                && (templateControls.clientStreams ?? (request.stream == true))
             prepared = policy
             try checkFirstContentDeadline()
         } catch {
@@ -1691,7 +1695,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         continuation.yield(routed)
                     } else if let visible = glmAnswer?.withholding(routed) {
                         continuation.yield(visible)
+                    } else {
+                        return
                     }
+                    router.responseStarted = true
                 }
                 startedAt = Date()
 
@@ -1873,17 +1880,70 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 // Flush and validate parsed calls. Gemma required/named are
                 // sampler-constrained; Qwen required/named are prompt-forced
                 // and fail closed here before a call is exposed. This remains
-                // defense in depth for every mode.
-                do {
-                    var events: [MLXServerGenerationEvent] = []
-                    var tail = answerStops?.finish() ?? ""
-                    if var filter = finalHeaders { tail = filter.ingest(tail) + filter.finish() }
-                    if !tail.isEmpty {
-                        events += try router.process(tail)
+                // defense in depth for every mode. An answer the engine cut
+                // at the token limit ends as a normal `length` finish instead
+                // (`TokenLimitCutPolicy`): what left stays as generated, a
+                // withheld answer leaves as generated, and checks the cut
+                // broke drop what they would refuse. A stop sequence matched
+                // on the last budgeted token ended the answer, not the limit.
+                var answerTail = answerStops?.finish()
+                // Text the GPT-OSS header filter still holds leaves with that tail.
+                if var filter = finalHeaders { answerTail = filter.ingest(answerTail ?? "") + filter.finish() }
+                let cutAtLimit = prepared.cutAtLimit(finishReason: stopReason)
+                    && answerStops?.matchedSequence == nil
+                /// The answer's own end checks, after the calls': constrained
+                /// response_format (exact Flint, Qwen) holds the completed
+                /// content, not a truncated or schema-invalid prefix, and GLM's
+                /// withheld JSON answer leaves only once it validates; a cut
+                /// answer leaves as generated.
+                /// At a cut: a structured answer whose check, which the cut
+                /// skips, would have refused it.
+                var answerLeftUnchecked = false
+                func finishAnswer(hasToolCalls: Bool) throws {
+                    if cutAtLimit {
+                        answerLeftUnchecked =
+                            (formatOutput.map { (try? $0.validate(finishReason: stopReason)) == nil } ?? false)
+                            || (!hasToolCalls && (glmAnswer.map { !$0.answerValidates(finishReason: stopReason) }
+                                ?? false))
+                    } else {
+                        try formatOutput?.validate(finishReason: stopReason)
                     }
-                    events += try router.finishText()
+                    if let answer = try glmAnswer?.finalAnswer(finishReason: stopReason,
+                        hasToolCalls: hasToolCalls, cutAtLimit: cutAtLimit)
+                    {
+                        continuation.yield(answer)
+                    }
+                }
+                /// What the cut and the strict leniency changed, so the
+                /// refusals they replace stay measurable.
+                func emitLeniencyTelemetry(hasToolCalls: Bool, droppedCalls: Int, strictAsGenerated: Bool) {
+                    if cutAtLimit {
+                        let outcomes = [
+                            ("open_call", router.callsLeftOpenAtCut > 0),
+                            ("dropped_calls", droppedCalls + router.callsDroppedAtCut > 0),
+                            ("dropped_frame", router.hasNativeToolFailure || router.glmFramesDroppedAtCut),
+                            ("forced_no_call", prepared.requiresToolCall && !hasToolCalls),
+                            ("unchecked_answer", answerLeftUnchecked),
+                        ]
+                        for (reason, happened) in outcomes where happened {
+                            emitToolConstraintTelemetry(operation: "tool_constraint_cut", reason: reason)
+                        }
+                    }
+                    if strictAsGenerated || router.strictCallsReturnedAsGenerated > 0 {
+                        emitToolConstraintTelemetry(operation: "tool_constraint_strict_as_generated",
+                            reason: prepared.mode.telemetryValue, severity: .warn)
+                    }
+                }
+                // The text the end of generation flushes leaves only after the
+                // calls' checks: a refusal with nothing else sent stays one the
+                // router can fail over on.
+                var flushed: [MLXServerGenerationEvent] = []
+                do {
+                    if let answerTail, !answerTail.isEmpty {
+                        flushed += try router.process(answerTail)
+                    }
+                    flushed += try router.finishText(cutAtLimit: cutAtLimit)
                     usageSignal.recordWithheldReasoning(router.takeWithheldReasoning())
-                    for routed in events { emit(routed) }
                 } catch {
                     await releaseBox.fire()
                     continuation.finish(throwing: error)
@@ -1895,28 +1955,26 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     // and re-check the whole set. The other terminal checks
                     // match the complete-call path below.
                     do {
-                        for routed in try router.finishToolCalls(truncated: stopReason == "length") {
-                            emit(routed)
-                        }
-                        try router.checkNativeToolFailure()
-                        try ToolConstraintValidation.validate(router.completedToolCalls, prepared: prepared)
-                        try formatOutput?.validate(finishReason: stopReason)
-                        if let answer = try glmAnswer?.finalAnswer(
-                            finishReason: stopReason, hasToolCalls: !router.completedToolCalls.isEmpty)
-                        {
-                            continuation.yield(answer)
-                        }
+                        let settled = try router.finishToolCalls(truncated: stopReason == "length",
+                            cutAtLimit: cutAtLimit)
+                        for routed in flushed + settled { emit(routed) }
+                        if !cutAtLimit { try router.checkNativeToolFailure() }
+                        try ToolConstraintValidation.validate(router.completedToolCalls, prepared: prepared,
+                            responseStarted: router.responseStarted)
+                        try finishAnswer(hasToolCalls: !router.completedToolCalls.isEmpty)
                     } catch {
                         await releaseBox.fire()
                         continuation.finish(throwing: error)
                         return
                     }
-                    if (toolHandler?.parseFailureCount ?? 0) > 0 {
+                    if !cutAtLimit, (toolHandler?.parseFailureCount ?? 0) > 0 {
                         emitToolConstraintTelemetry(
                             operation: "tool_constraint_fallback",
                             reason: "parser",
                             severity: .warn)
                     }
+                    emitLeniencyTelemetry(hasToolCalls: !router.completedToolCalls.isEmpty, droppedCalls: 0,
+                        strictAsGenerated: false)
                     Self.yieldTerminalInfo(continuation, promptTokenCount: promptTokenCount,
                         completionTokens: completionTokens, startedAt: startedAt,
                         firstTokenAt: firstTokenAt, lastTokenAt: lastTokenAt,
@@ -1926,55 +1984,58 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     continuation.finish()
                     return
                 }
-                let toolCalls = toolHandler?.finish() ?? []
+                let finished: (calls: [ToolCall], residual: String?)
                 do {
-                    try router.checkNativeToolFailure()
+                    finished = try router.finishCompleteCalls(truncated: stopReason == "length",
+                        cutAtLimit: cutAtLimit)
+                    if !cutAtLimit { try router.checkNativeToolFailure() }
                 } catch {
                     await releaseBox.fire()
                     continuation.finish(throwing: error)
                     return
                 }
-                if prepared.mode == .auto,
-                    let residual = toolHandler?.takeResidualText(),
-                    !residual.isEmpty
-                {
+                var toolCalls = ParallelToolCallPolicy.admitted(finished.calls, prepared: prepared)
+                let residual = finished.residual
+                // Checked against what left before the flush (see `flushed`).
+                let strictAsGenerated = prepared.strictCallsAsGenerated && router.responseStarted
+                    && !prepared.returnsAutoCallsAsGenerated && !cutAtLimit && !toolCalls.isEmpty
+                    && (try? ToolConstraintValidation.validate(toolCalls, prepared: prepared,
+                        truncated: stopReason == "length")) == nil
+                let droppedCalls: Int
+                do {
+                    droppedCalls = try ToolConstraintValidation.validateWithheld(&toolCalls, prepared: prepared,
+                        truncated: stopReason == "length", cutAtLimit: cutAtLimit,
+                        responseStarted: router.responseStarted)
+                } catch {
+                    await releaseBox.fire()
+                    continuation.finish(throwing: error)
+                    return
+                }
+                for routed in flushed { emit(routed) }
+                // A native frame the cut left unparsed is never published as text.
+                if prepared.mode == .auto, let residual, !residual.isEmpty, !router.hasNativeToolFailure {
                     emit(router.visibleEvent(residual))
                 }
-                if prepared.mode == .auto, (toolHandler?.parseFailureCount ?? 0) > 0 {
+                if prepared.mode == .auto, !cutAtLimit, (toolHandler?.parseFailureCount ?? 0) > 0 {
                     emitToolConstraintTelemetry(
                         operation: "tool_constraint_fallback",
                         reason: "parser",
                         severity: .warn)
                 }
                 do {
-                    try ToolConstraintValidation.validate(
-                        toolCalls, prepared: prepared, truncated: stopReason == "length")
+                    try finishAnswer(hasToolCalls: !toolCalls.isEmpty)
                 } catch {
                     await releaseBox.fire()
                     continuation.finish(throwing: error)
                     return
                 }
-                do {
-                    // Constrained response_format (exact Flint, Qwen): the
-                    // completed content, not a truncated or schema-invalid
-                    // prefix, reaches success.
-                    try formatOutput?.validate(finishReason: stopReason)
-                    // GLM's withheld JSON answer leaves only once it validates.
-                    if let answer = try glmAnswer?.finalAnswer(
-                        finishReason: stopReason, hasToolCalls: !toolCalls.isEmpty)
-                    {
-                        continuation.yield(answer)
-                    }
-                } catch {
-                    await releaseBox.fire()
-                    continuation.finish(throwing: error)
-                    return
-                }
-                if prepared.mode.requiresInferenceConstraint {
+                if prepared.mode.requiresInferenceConstraint, !cutAtLimit || !toolCalls.isEmpty {
                     emitToolConstraintTelemetry(
                         operation: "tool_constraint_valid",
                         reason: prepared.mode.telemetryValue)
                 }
+                emitLeniencyTelemetry(hasToolCalls: !toolCalls.isEmpty, droppedCalls: droppedCalls,
+                    strictAsGenerated: strictAsGenerated)
                 for toolCall in toolCalls {
                     continuation.yield(.toolCall(toolCall))
                 }

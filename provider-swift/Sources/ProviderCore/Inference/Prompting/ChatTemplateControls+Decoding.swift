@@ -10,6 +10,7 @@ extension ChatTemplateControls: Decodable {
         case kwargs = "chat_template_kwargs"
         case promptDate = "_darkbloom_prompt_date"
         case reasoning
+        case stream
     }
 
     private enum ReasoningKeys: String, CodingKey {
@@ -44,5 +45,6 @@ extension ChatTemplateControls: Decodable {
         rawMiMoTools = MiMoV26ToolEvidence(from: decoder)
         rawGLM5Controls = GLM5NextPromptPolicy.RawControls.capture(from: decoder)
         rawFlintControls = FlintRequestPolicy.RawControls.capture(from: decoder)
+        clientStreams = (try? values.decode(Bool.self, forKey: .stream)) == true
     }
 }

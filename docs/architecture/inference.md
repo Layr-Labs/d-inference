@@ -1781,6 +1781,30 @@ commit a partial call batch. Its retained suffix is capped at 1 MiB; rejection
 returns the original text through the existing parser-failure path. Ambiguous
 string unions and unsupported indirect schemas are not inferred. This parser
 does not implement constrained decoding or advertise function calling.
+The suffix starts at the response's first `<tool_call>`, and GLM `auto` tool
+requests do not split reasoning off first, so it also holds a tag the model only
+mentioned or a call it drafted in its thought, or a tag its answer mentions.
+Such a suffix does not parse as one batch. On an `auto` request it is no longer a
+failure: like the reference GLM parsers (vLLM, SGLang), which never fail a
+response on tool syntax, the provider returns it as text, under its own stricter
+rule for what still counts as a call (`NativeToolStreamRouter.finishCompleteCalls`,
+`GLM5ToolSuffix`). The calls are the trailing run of top-level frames, separated
+only by whitespace and ending the response, from just after the last frame of the
+run that does not parse; everything before them is text, which the service's
+reasoning parser then splits at `</think>`. A frame that has started its
+arguments owns everything up to its `</tool_call>`, so a frame inside or after an
+argument is data, never a call. A suffix with no such run (a malformed or cut-off
+final frame, text after the calls) is all text, and so is a suffix that did not
+parse in an output cut at the token limit, except that a cut that ends the answer
+as `length` drops the run of frames that ends it, whether its last frame closed
+or the limit left it unfinished (`GLM5ToolSuffix.droppingCutFrames`, see
+[cut answers](#answers-cut-at-the-token-limit)); no frame is completed or salvaged. A
+suffix whose release would put a think marker from inside a frame before the
+reasoning parser keeps failing, as does a required or named call (422). Unlike
+vLLM and SGLang, a call followed by text or by a malformed frame commits nothing,
+and a call drafted inside a closed thought stays reasoning. A suffix that parses
+keeps its calls as before. `DARKBLOOM_GLM_TOOL_TEXT_FALLBACK=0` restores the
+whole-suffix failure (500).
 The request-local [GLM prompt contract](../reference/protocol-messages.md#glm-native-prompt-contract)
 also preserves original schema values only after a trusted loaded-model check.
 It renders reasoning that OpenRouter returns on earlier assistant turns
@@ -1797,7 +1821,9 @@ streams on a separate typed channel, and the answer is withheld until
 generation ends, then decoded and checked (`json_schema` against the caller's
 schema, through the shared compiled subset when the schema fits it) before it
 is exposed; invalid output is a 422 with no
-content (`GLM5NextResponseFormat`, `GLM5NextResponseFormatOutput`). One Mac
+content (`GLM5NextResponseFormat`, `GLM5NextResponseFormatOutput`), and an
+answer the token limit cut leaves as generated with `finish_reason: "length"`.
+One Mac
 serves it with image or video input the same way: the instruction turn renders
 in the media prompt (`EngineV2VisionPrefill.glm5NextUserInput`), and the media
 path routes reasoning to the typed channel and records the withheld answer as
@@ -2958,7 +2984,9 @@ When neither a global nor a per-model acceptance value is configured, serving
 defaults to typical acceptance for eligible sampled target-prefix rows, except
 on the builds whose built-in rule is exact (`MTPAcceptancePolicy.builtInIsExact`):
 the owned Bonsai 9B candidate; the catalog `Qwen3.5-9B`, which looped under
-typical acceptance in the 0.10.12 gate (see the Qwen 3.5/3.6 defaults below);
+typical acceptance in the 0.10.12 gate (its default carries the card's presence
+penalty again, so only its rows with `presence_penalty` 0 draft; see the Qwen
+3.5/3.6 defaults below);
 the catalog `gemma-4-26b-qat-4bit`, which drafted every answer of OpenRouter's
 10-31 GPQA run, 30 % of which ended at the 32,768-token cap; and every Qwen 3.8
 27B build (`EigenLabs/Qwen3.8-27B-4bit-mtp` and its head-less target,
@@ -3095,7 +3123,7 @@ production assembly and encrypted store.
 | `top_p` | `topP` | artifact default, else `1.0` |
 | `top_k` | `topK` | artifact default, else `0` |
 | `repetition_penalty` | `repetitionPenalty` | artifact default, else `1.0` |
-| `frequency_penalty` / `presence_penalty` | `frequencyPenalty` / `presencePenalty` | `0`; `presence_penalty` takes a model-card default on the catalog 35B Qwen 3.5/3.6 builds (`Qwen3.5-9B` has none) |
+| `frequency_penalty` / `presence_penalty` | `frequencyPenalty` / `presencePenalty` | `0`; `presence_penalty` takes the model card's 1.5 on the catalog Qwen 3.5/3.6 builds (`DARKBLOOM_QWEN35_9B_PRESENCE_PENALTY=0` drops it on `Qwen3.5-9B`) |
 | `seed` | `seed`; also keys a stable engine request id | nil |
 | `logit_bias` | `logitBias` — string keys parsed to non-negative `Int`; invalid keys dropped and counted | `[:]` |
 | `logprobs` + `top_logprobs` | `topLogprobs = logprobs ? min(20, max(1, top_logprobs ?? 0)) : 0` | `0` |
@@ -3153,29 +3181,27 @@ The catalog `Qwen3.5-9B`, `qwen3.5-35b-a3b` and `qwen3.6-35b-a3b-vl-mtp-mxfp8`
 builds (`EngineV2SamplingDefaults.qwen35CardModelTypes`, each bound to its
 `model_type`) take their model cards' thinking-mode values for omitted knobs:
 `temperature 1.0`, `top_p 0.95`, `top_k 20`. Greedy decoding made them repeat
-themselves until `max_tokens` (#1530). The cards' `presence_penalty 1.5` is a
-per-build default, set by the 0.10.12 gate on the signed 0.10.11 (temperature 1
-/ 0.95 / 20; #1652's four loopers and five tool transcripts at 32,768 tokens and
-nineteen everyday prompts at 8,192, three seeds each; the Studio M3 Ultra for
-the 9B, an M5 Ultra for the 35B):
+themselves until `max_tokens` (#1530). Every build also takes the cards'
+`presence_penalty 1.5` for a request that omits one (`qwen35CardDefaults`):
 
-| Build | Omitted `presence_penalty` | Built-in MTP acceptance | The gate without the penalty |
+| Build | Omitted `presence_penalty` | Built-in MTP acceptance | Without the penalty |
 |---|---|---|---|
-| `qwen3.5-35b-a3b`, `qwen3.6-35b-a3b-vl-mtp-mxfp8` (`qwen35CardDefaults`) | 1.5 | typical | `qwen3.5-35b-a3b` ran away under typical acceptance (5 of 19 everyday prompts, 8 of 12 loopers to 32,768, MTP running at concurrency 1) and under exact (2 of 12 loopers); the 3.6 build shares its architecture |
-| `Qwen3.5-9B` (`qwen35NineBCardDefaults`) | none | **exact** (`MTPAcceptancePolicy.builtInIsExact`) | ran away on 13 of 31 draws under typical acceptance and on 0 of 31 under exact, MTP running; the penalty-free body cached 8,192 tokens on the second send, the penalty body none |
+| `qwen3.5-35b-a3b`, `qwen3.6-35b-a3b-vl-mtp-mxfp8` | 1.5 | typical | The 0.10.12 gate on the signed 0.10.11 (temperature 1 / 0.95 / 20; #1652's four loopers and five tool transcripts at 32,768 tokens, nineteen everyday prompts at 8,192, three seeds each; an M5 Ultra): `qwen3.5-35b-a3b` ran away under typical acceptance (5 of 19 everyday prompts, 8 of 12 loopers to 32,768, MTP running at concurrency 1) and under exact (2 of 12 loopers); the 3.6 build shares its architecture |
+| `Qwen3.5-9B` | 1.5; none under `DARKBLOOM_QWEN35_9B_PRESENCE_PENALTY=0` (`qwen35NineBNoPenaltyDefaults`, 0.10.12's default) | **exact** (`MTPAcceptancePolicy.builtInIsExact`) | The same gate (the Studio M3 Ultra) saw it run away on 13 of 31 draws under typical acceptance and on 0 of 31 under exact, so 0.10.12 shipped it without the penalty. In production that was a regression. On 2026-11-12, on 0.10.12 Macs against 0.10.11 Macs (the penalty, MTP off) in the same 10-minute windows, answers with `max_tokens` ≥ 8,192 hit the cap on 6.1 % against 1.5 %. On the 4,096-token JSON `response_format` workload, answers ran out and failed in 51 % of requests against 23 %. Those rows never speculate (a token constraint) and their template is unchanged since 0.10.4, so the penalty alone made the difference. A registry `presence_penalty` 1.5 brought both back within the hour |
 
 A row with a penalty does not speculate (`EngineLoopV2.mtpBasicEligible`), so
-the 35B builds' requests that omit the penalty stay without MTP, the cost the
-gate accepted for loop safety; they still stage prefix checkpoints
+these builds' requests that omit the penalty stay without MTP, the cost taken
+for loop safety. They still stage prefix checkpoints
 ([prefix caching](prefix-cache.md#invariants), invariant 9). A request's own
-`presence_penalty` always wins: `0` on a 35B build speculates under typical
-acceptance and donates checkpoints (the configuration that looped in the gate,
-now the caller's choice); a nonzero value on the 9B turns its MTP off for that
-request (it still donates checkpoints). The coordinator forwards a build's
-registry runtime defaults for the fields a request omits
-([`requestRuntimeDefaultKeys`](https://github.com/Layr-Labs/darkbloom-platform/blob/c69380d91fd3f9e4ef3ff1e3775690d80adbbe57/coordinator/api/inference/request/model_runtime_defaults.go));
-on 2026-11-10 the registry set `temperature`, `top_p` and `top_k` for these
-builds and no `presence_penalty`, so the provider default above decides it.
+`presence_penalty` always wins: `0` speculates (typical acceptance on the 35B
+builds, the configuration that looped in the gate; exact on the 9B) and donates
+checkpoints. The coordinator forwards a build's registry runtime defaults for
+the fields a request omits
+([`requestRuntimeDefaultKeys`](https://github.com/Layr-Labs/darkbloom-platform/blob/a9c111db3e235fa979a914d6a46bf93cba8e4268/coordinator/api/inference/request/model_runtime_defaults.go),
+`presence_penalty` included). Since 2026-11-12 19:17Z the registry sets
+`presence_penalty` 1.5 on `Qwen3.5-9B`, which reaches 0.10.12 Macs too; to
+the provider it is the request's own value, so `DARKBLOOM_QWEN35_9B_PRESENCE_PENALTY=0`
+changes nothing while the registry sets it.
 
 Other model identities keep the legacy defaults in the table byte-for-byte. `do_sample: false` or an absent/unreadable file is legacy. The
 sampler is not part of prompt or cache identity, so prefix-cache and SSD
@@ -3445,10 +3471,12 @@ request before it builds any token constraint, Qwen's and Flint's.
 The request streams through the native reasoning split (`NativeToolStreamRouter`
 seeded from `JSONAnswerConstraint.channelPrefix`), so `JSONAnswerOutput` checks
 only the answer when generation ends: content that is not one JSON value of the
-schema, or a budget that ends first, is a 422
-`MLXOpenAIServiceError.invalidResponseFormatOutput` (`tool_noncompliance`) after
-the content has streamed. Engine `stop` strings still apply as for the other
-Qwen requests; a stop that cuts the value short fails the same check.
+schema is a 422 `MLXOpenAIServiceError.invalidResponseFormatOutput`
+(`tool_noncompliance`) after the content has streamed. A budget that ends first
+ends the answer as a normal `length` finish with its content as generated
+([cut answers](#answers-cut-at-the-token-limit)). Engine `stop` strings still
+apply as for the other Qwen requests; a stop that cuts the value short fails the
+same check.
 
 Every other case keeps prompt-only steering and gains no refusal. A schema
 outside the subset (including an enum value containing a forbidden spelling), a
@@ -3554,8 +3582,15 @@ read bare scalars and composites as raw strings. When the frame closes, the
 complete parse must agree with everything already exposed
 (`libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/ToolCallStreaming.swift`).
 `NativeToolStreamRouter` admits `parallel_tool_calls` cardinality at the first
-fragment and, when the request is `strict` (below), validates name and schema
-at frame close; the service renders OpenAI fragments (`index`, `id`, `type`
+fragment: with `parallel_tool_calls: false` it exposes the first call only and
+drops every later call frame, unexposed and unvalidated, as OpenAI returns one
+call and vLLM keeps the first; the complete-call paths, Nemotron Super's
+included, keep the first the same way (`ParallelToolCallPolicy`). A later
+frame keeps its family's malformed-output rule: one the parser returns as
+text (an undeclared name it cannot read) stays visible text, and one that does
+not parse still fails a GLM, MiMo, Flint or Nemotron Super response. When
+the request is `strict` (below), it validates name and schema at frame close;
+the service renders OpenAI fragments (`index`, `id`, `type`
 and `function.name` first, then `function.arguments` pieces). A response that
 begins with a call therefore reaches its first content frame at the function
 name instead of the engine terminal, which also ends the frame loop's
@@ -3568,9 +3603,12 @@ function and arguments off the declared schema are returned instead of
 failing a response whose reasoning has already streamed. The request stays
 validated when any declared function sets `strict: true`, when it declares no
 tools (a call is then never returned), and for `required`, named and `none`
-choices; `parallel_tool_calls: false` holds either way, and a call parsed from
-a frame that `max_tokens` cut off is still validated (it may be missing
-arguments). Strict `auto` checks
+choices; `parallel_tool_calls: false` holds either way, and a call that
+`max_tokens` cut off is never completed by the end-of-generation parse
+([cut answers](#answers-cut-at-the-token-limit)). A `strict` call that fails
+its check once an event of a streaming client's response has left returns as
+generated too ([strict calls after the start](#strict-calls-after-the-response-started)).
+Strict `auto` checks
 each call against the caller's schema as sent
 (`Prepared.declaredTools`, from the body before ingress normalization
 (`ToolSchemaNormalization`) filled `type: "string"` into typeless properties
@@ -3584,15 +3622,107 @@ there. Every refusal that remains names its check on the error frame
 | Case | Behavior |
 |---|---|
 | Undeclared or unresolvable name | Never exposed early: completes in one piece, returned as generated (refused under `strict`), or the existing text fallback when it does not parse |
-| Parse failure or divergence after exposure | The arguments already sent stay as generated (OpenAI's raw `arguments` string) and the call closes; `finish_reason` is `tool_calls`. Under `strict`: typed `tool_choice` violation on the stream |
-| Schema violation after exposure | Returned as generated; under `strict`, typed `tool_choice` violation on the stream |
-| Call cut off by `max_tokens`, even when the end-of-generation parse of its partial frame fails or diverges | Fragments stop; `finish_reason` is `length` |
+| Parse failure or divergence after exposure | The arguments already sent stay as generated (OpenAI's raw `arguments` string) and the call closes; `finish_reason` is `tool_calls`. Under `strict`, the same once the response started; before it, a typed `tool_choice` violation |
+| Schema violation after exposure | Returned as generated; under `strict`, the same once the response started; before it, a typed `tool_choice` violation |
+| Call cut off by `max_tokens`, whether the end-of-generation parse of its partial frame fails, diverges or completes it | Fragments stop, unclosed, and the call stays open; `finish_reason` is `length` |
 | Required or named `tool_choice`, native-channel families, other formats, non-chat surfaces, `DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0` | Complete calls released at the engine terminal after validation (for `auto`, as above) |
 
 The response hash adds one `tool_call` marker per fragment in wire order; a
 complete call encodes exactly as before
 (`provider-swift/Sources/ProviderCore/ProviderLoop+SSEParser.swift`,
 `encodeToolCallsForHash`).
+
+### Answers cut at the token limit
+
+When the engine finishes `length`, the answer ends as a normal completion with
+`finish_reason: "length"` and its usage, never as a `tool_noncompliance` refusal
+or a native frame failure (`TokenLimitCutPolicy`,
+`provider-swift/Sources/ProviderCore/Inference/Tools/ToolOutputLeniency.swift`).
+The limit is the request's `max_tokens` or this Mac's clamp of it, not the model
+breaking a contract, and OpenRouter does not count a call cut by the caller's
+`max_tokens` against the provider. In the forwarder
+(`MultiModelBatchSchedulerEngine.makeEventStream`, `Prepared.cutAtLimit`):
+
+- What already left stays as generated, including reasoning that spent the
+  whole budget.
+- A streamed `auto` call stays open with the fragments it sent, and the
+  end-of-generation parse completes no call
+  (`NativeToolStreamRouter.finishToolCalls`): the provider closes nothing (the
+  parse's remainder is its own closure, not generated text), so the arguments
+  end unparseable, as in an OpenAI stream the limit cut, and no client can run
+  the call; the stream finishes `length`. A call not yet exposed is not
+  exposed.
+- A constrained JSON answer (exact Flint, constrained Qwen) skips its final
+  check. GLM's withheld JSON answer leaves normalized when it already holds a
+  whole valid value (the candidate extraction, as before), and otherwise as
+  generated (`GLM5NextResponseFormatOutput.finalAnswer`).
+- Withheld calls (forced choices, native families, `DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0`)
+  whose set fails its checks are checked one by one, and a call that fails is
+  dropped instead of refused: forced choices hold every call to its schema, as
+  always, and for `auto` only the last call, which the limit may have cut, is
+  held to the declarations without `strict`. A forced choice left with no call
+  ends `length` (`ToolConstraintValidation.validateWithheld`). A call under
+  `tool_choice: none` is the model's and still refused;
+  `parallel_tool_calls: false` keeps only the first call before any check
+  (`ParallelToolCallPolicy`). A native Flint or MiMo frame, or a forced GLM
+  frame, the limit left unparsed is dropped, never published as text. An
+  `auto` GLM suffix that does not parse is not split into calls at a cut and
+  stays text (`GLM5ToolSuffix`) without the run of whitespace-separated frames
+  that ends the output, whose last frame closed or was left unfinished by the
+  limit (in its name, a tag or its arguments): that run is dropped
+  (`GLM5ToolSuffix.droppingCutFrames`). A `<tool_call>` the lexer reads as a
+  mention, and frames followed by text, stay. A suffix that cannot be released
+  (a think marker inside a frame) is dropped. Calls that pass still leave, and the response then
+  finishes `tool_calls`, as before.
+- The text the end of generation flushes leaves after the calls' checks, so a
+  refusal with nothing else sent stays one the router can fail over on. This
+  order does not depend on the switch: with it off, such a refusal also comes
+  before that text instead of after it.
+- Super's output (`NemotronSuperLocalOutput.finish(cutAtLimit:)`) does the same
+  for its unterminated frame, its calls and its withheld JSON answer, and a
+  thought the limit cut is not promoted to the answer by
+  `force_nonempty_content`. Its internal qualification route stays strict.
+- A loop the loop guard stops, and an exit-thinking continuation that ends as
+  `length`, end `length` too and count as cuts.
+
+The coordinator relays such a response as any `length` finish: it settles and
+bills its usage. Its own length finish for a refusal after commit (platform
+#897, `EIGENINFERENCE_LENGTH_FINISH_AFTER_TOOL_CHECK`) then only covers older
+providers. A local request without `stream` still gets the service's 422
+`responseFormatCutOffByMaxTokens` when its cut content is not one JSON value:
+the service checks complete responses itself. Telemetry
+`tool_constraint_cut` records each outcome by reason: `open_call` (a streamed
+call left open), `dropped_calls` (calls dropped, withheld or never exposed),
+`dropped_frame` (a native frame the cut left unparsed), `forced_no_call` (a
+forced choice that ends with no call) and `unchecked_answer` (a structured
+answer whose skipped check would have refused it). Super's output records none.
+`DARKBLOOM_LENGTH_FINISH_AT_LIMIT=0` (or `off`, `false`, `no`) restores the
+refusal; it is read once per process and reaches the launchd job.
+
+### Strict calls after the response started
+
+A call to a `strict` function of an `auto` request that fails this provider's
+check (schema, declared name, arguments that parse) returns as generated, as a
+non-strict call does, once an event of the response has left and the client
+streams (`StrictToolCallPolicy`, `Prepared.strictCallsAsGenerated`,
+`returnsAutoCallsAsGenerated(afterResponseStarted:)`). By then the client
+holds part of the answer, so a refusal could only break the stream partway,
+which OpenRouter counts as a failed response; a returned call is the client's
+to check, as with any unconstrained server. Before anything left the refusal
+stays, a status the coordinator can fail over on; so does every refusal for a
+client that does not stream, which OpenRouter does not count. The coordinator
+path serves every request as a stream, so the client's own `stream` is read
+from the body (`ChatTemplateControls.clientStreams`). The forwarder marks the
+response started at the first event it yields
+(`NativeToolStreamRouter.responseStarted`); a call validated in the same chunk
+as its first fragment is refused before it leaves. A streamed call's name
+leaves before its arguments close, so in practice only a withheld call (or one
+whose whole frame arrives in one chunk) can still be refused before anything
+left. Forced choices, `none` and `parallel_tool_calls: false` keep their
+checks; Super's output keeps refusing. Telemetry
+`tool_constraint_strict_as_generated` counts the responses that returned such
+a call. `DARKBLOOM_STRICT_CALLS_AS_GENERATED=0` (or `off`, `false`, `no`)
+restores the refusal; it is read once per process and reaches the launchd job.
 
 ### Chat-template render check
 
@@ -4716,8 +4846,9 @@ value of the compiled grammar; declared object properties are the only keys
 generated. A schema outside the subset is a 400 before generation.
 `JSONAnswerFormat.validate`, shared with
 [constrained Qwen answers](#constrained-qwen-json-answers), decodes and checks
-the completed content again; a failure, including an output budget that ends
-before the value completes, is a typed 422 rather than a successful completion.
+the completed content again; a failure is a typed 422 rather than a successful
+completion, and an output budget that ends before the value completes ends the
+answer as `length` ([cut answers](#answers-cut-at-the-token-limit)).
 Tools plus a response format
 get only the response format, whatever `tool_choice` asked: the prompt renders
 as it would without the format, so the coordinator prompt sidecar needs no
@@ -9191,8 +9322,8 @@ configuration declares, and answers each request shape as one Mac does.
    `response_format` answer the service validates that stopped at
    `max_tokens` before it was complete is
    `MLXOpenAIServiceError.responseFormatCutOffByMaxTokens` (422), not an
-   internal failure; GLM's withheld JSON keeps its own typed 422
-   (`GLM5NextResponseFormat.validatedContent`). `GLMSlotParityTests` serves
+   internal failure; GLM's withheld JSON keeps its own typed 422 at any other
+   finish (`GLM5NextResponseFormat.validatedContent`). `GLMSlotParityTests` serves
    each of these GLM requests on a single-Mac slot and on a pair slot and
    compares what the local API returns. Media the model's processor refuses is
    the request's own fault on every provider:

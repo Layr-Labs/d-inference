@@ -36,6 +36,10 @@ public struct ChatTemplateControls: Sendable, Equatable {
     var rawMiMoTools = MiMoV26ToolEvidence()
     var rawGLM5Controls = GLM5NextPromptPolicy.RawControls()
     var rawFlintControls = FlintRequestPolicy.RawControls()
+    /// The body's own `stream`; nil when the controls were not read from a
+    /// body. The coordinator path serves every request as a stream and the
+    /// coordinator reassembles a complete one (`StrictToolCallPolicy`).
+    var clientStreams: Bool?
 
     public init(
         reasoningEffort: String? = nil,

@@ -83,18 +83,18 @@ struct EngineV2SamplingDefaultsTests {
     }
 
     /// The catalog Qwen 3.5/3.6 builds have no generation_config.json: omitted
-    /// knobs take the model cards' thinking-mode values, explicit ones win.
+    /// knobs take the model cards' thinking-mode values, the presence penalty
+    /// 1.5 included, on every build; explicit ones win.
     @Test func qwen35CatalogBuildsUseTheirModelCardDefaults() throws {
         for (id, type) in EngineV2SamplingDefaults.qwen35CardModelTypes {
-            #expect(EngineV2SamplingDefaults.resolve(modelId: id, modelType: type, modelDirectory: nil)
-                == (id == "Qwen3.5-9B" ? EngineV2SamplingDefaults(temperature: 1.0, topP: 0.95, topK: 20)
-                    : EngineV2SamplingDefaults.qwen35CardDefaults))
+            #expect(EngineV2SamplingDefaults.resolve(modelId: id, modelType: type, modelDirectory: nil, environment: [:])
+                == EngineV2SamplingDefaults(temperature: 1.0, topP: 0.95, topK: 20, presencePenalty: 1.5), "\(id)")
         }
         let defaults = EngineV2SamplingDefaults.resolve(
-            modelId: "Qwen3.5-9B", modelType: "qwen3_5", modelDirectory: nil)
+            modelId: "Qwen3.5-9B", modelType: "qwen3_5", modelDirectory: nil, environment: [:])
         let omitted = EngineV2Translation.samplingParams(from: try request(bareRequest), defaults: defaults)
         #expect(omitted.temperature == 1 && omitted.topP == 0.95 && omitted.topK == 20)
-        #expect(omitted.presencePenalty == 0 && omitted.repetitionPenalty == 1)
+        #expect(omitted.presencePenalty == 1.5 && omitted.repetitionPenalty == 1)
         let explicit = EngineV2Translation.samplingParams(
             from: try request(#"{"model":"m","messages":[],"temperature":0,"presence_penalty":0}"#),
             defaults: defaults)
@@ -104,27 +104,27 @@ struct EngineV2SamplingDefaultsTests {
         }
     }
 
-    /// The 0.10.12 gate on the signed 0.10.11 (temperature 1, top_p 0.95,
-    /// top_k 20) decided each build's omitted presence penalty. Without the
-    /// cards' 1.5, qwen3.5-35b-a3b looped under both MTP acceptance rules, so
-    /// the two 35B builds (one architecture) keep it. Qwen3.5-9B looped only
-    /// under typical acceptance and not under exact (13 against 0 of 31 draws
-    /// with MTP running), so it has no default penalty (its rows can speculate
-    /// and stage prefix checkpoints) and takes exact acceptance
-    /// (MTPAcceptancePolicy). The coordinator's body adds the registry's
-    /// temperature, top_p and top_k, and no penalty unless the registry sets
-    /// one. A request's own presence_penalty wins on every build.
+    /// Every catalog Qwen 3.5/3.6 build keeps the cards' 1.5 for a request
+    /// that omits the penalty. Without it qwen3.5-35b-a3b looped under both MTP
+    /// acceptance rules in the 0.10.12 gate. Qwen3.5-9B passed that gate under
+    /// exact acceptance (0 of 31 draws), so 0.10.12 dropped its penalty; in
+    /// production its answers then ran to `max_tokens` about three times as
+    /// often, and its JSON `response_format` answers (rows that never
+    /// speculate) ran out about twice as often as on 0.10.11 in the same hour
+    /// (9B-MIDFAIL). The coordinator's body adds the registry's temperature,
+    /// top_p and top_k, and the penalty only where the registry sets one. A
+    /// request's own presence_penalty wins on every build.
     @Test func qwen35OmittedPresencePenaltyFollowsEachBuildsGate() throws {
         let coordinatorBody =
             #"{"model":"m","messages":[{"role":"user","content":"hi"}],"temperature":1,"top_p":0.95,"top_k":20}"#
         let builds: [(id: String, type: String, penalty: Float)] = [
-            ("Qwen3.5-9B", "qwen3_5", 0),
+            ("Qwen3.5-9B", "qwen3_5", 1.5),
             ("qwen3.5-35b-a3b", "qwen3_5_moe", 1.5),
             ("qwen3.6-35b-a3b-vl-mtp-mxfp8", "qwen3_5_moe", 1.5),
         ]
         for build in builds {
             let defaults = EngineV2SamplingDefaults.resolve(
-                modelId: build.id, modelType: build.type, modelDirectory: nil)
+                modelId: build.id, modelType: build.type, modelDirectory: nil, environment: [:])
             for body in [bareRequest, coordinatorBody] {
                 let sampling = EngineV2Translation.samplingParams(from: try request(body), defaults: defaults)
                 #expect(sampling.temperature == 1 && sampling.topP == 0.95 && sampling.topK == 20, "\(build.id)")
@@ -138,6 +138,48 @@ struct EngineV2SamplingDefaultsTests {
                 #expect(explicit.presencePenalty == Float(own), "\(build.id): a request's own \(own)")
             }
         }
+    }
+
+    /// `DARKBLOOM_QWEN35_9B_PRESENCE_PENALTY=0` (or `off`, `false`, `no`) restores
+    /// 0.10.12's no-penalty default on Qwen3.5-9B alone; anything else keeps
+    /// the card's 1.5, and the 35B builds ignore it. A request's own value
+    /// still wins under the rollback.
+    @Test func qwen35NineBPresencePenaltyRollbackSwitch() throws {
+        let key = EngineV2SamplingDefaults.qwen35NineBPenaltyEnvironmentKey
+        #expect(key == "DARKBLOOM_QWEN35_9B_PRESENCE_PENALTY")
+        func nineB(_ environment: [String: String]) -> EngineV2SamplingDefaults {
+            EngineV2SamplingDefaults.resolve(
+                modelId: "Qwen3.5-9B", modelType: "qwen3_5", modelDirectory: nil, environment: environment)
+        }
+        let card = EngineV2SamplingDefaults(temperature: 1.0, topP: 0.95, topK: 20, presencePenalty: 1.5)
+        let noPenalty = EngineV2SamplingDefaults(temperature: 1.0, topP: 0.95, topK: 20)
+        for value in ["0", "off", "false", "no", " OFF\n", "False"] {
+            #expect(nineB([key: value]) == noPenalty, "\(value)")
+        }
+        for value in ["", "1", "on", "true", "1.5", "card", "yes"] {
+            #expect(nineB([key: value]) == card, "\(value)")
+        }
+        #expect(nineB([:]) == card)
+        let rolledBack = EngineV2Translation.samplingParams(from: try request(bareRequest), defaults: nineB([key: "0"]))
+        #expect(rolledBack.presencePenalty == 0 && rolledBack.temperature == 1)
+        let ownUnderRollback = EngineV2Translation.samplingParams(
+            from: try request(#"{"model":"m","messages":[],"presence_penalty":1.5}"#), defaults: nineB([key: "0"]))
+        #expect(ownUnderRollback.presencePenalty == 1.5)
+        for (id, type) in [("qwen3.5-35b-a3b", "qwen3_5_moe"), ("qwen3.6-35b-a3b-vl-mtp-mxfp8", "qwen3_5_moe")] {
+            #expect(EngineV2SamplingDefaults.resolve(
+                modelId: id, modelType: type, modelDirectory: nil, environment: [key: "0"]) == card, "\(id)")
+        }
+        // Other families never read it.
+        #expect(EngineV2SamplingDefaults.resolve(
+            modelId: "mlx-community/Qwen3.5-397B", modelType: "qwen3_5", modelDirectory: nil,
+            environment: [key: "on"]) == .legacy)
+    }
+
+    @Test("darkbloom start passes the 9B penalty rollback switch to the launchd daemon")
+    func qwen35NineBPenaltySwitchReachesTheDaemon() {
+        let key = EngineV2SamplingDefaults.qwen35NineBPenaltyEnvironmentKey
+        #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))
+        #expect(LaunchAgent.passthroughEnvironment(from: [key: "0"])[key] == "0")
     }
 
     /// The exact locally qualified GLM artifact declares temperature 1.0 and

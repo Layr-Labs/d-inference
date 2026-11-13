@@ -59,10 +59,7 @@ public final class GenerationLoopExitRecord: @unchecked Sendable {
 /// On by default for Gemma 4 only, whose thought closes with one special
 /// token (`<channel|>`). The guard keeps ending every other loop as `length`:
 /// a loop outside the thought, a family without a listed marker, a request
-/// that asked for logprobs (the forced token has none), a pair's request, and
-/// a media prompt with model positions (Qwen's M-RoPE): on one Mac's media
-/// path the answer is one more row over the same media input, which only a
-/// prompt with plain positions (Gemma's) can extend.
+/// that asked for logprobs (the forced token has none), a pair's request.
 ///
 /// `DARKBLOOM_LOOP_EXIT_THINKING`: unset, `1` or `on` keeps the default list;
 /// `0` or `off` turns it off; any other value is the comma-separated list of
@@ -107,7 +104,7 @@ enum GenerationLoopExitThinkingPolicy {
         }
     }
 
-    /// The exit for one guarded request, or nil when its loops must
+    /// The exit for one guarded text request, or nil when its loops must
     /// keep ending as `length`.
     static func resolve(
         modelType: String?,

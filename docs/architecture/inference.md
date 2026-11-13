@@ -3280,16 +3280,19 @@ stops such a row early.
   a refused submission, a failure before its first token, a cancel), the held
   `length` terminal is
   delivered as before; a failure after its first token ends the answer there,
-  as `length` (only the client's cancel keeps its error). On one Mac's
-  image and video requests the continuation is the same row over the same
-  evaluated media input (`PreparedSubmission.multimodalInput()`: the same
-  spans and embeddings), so it runs only for a media prompt with plain
-  positions (Gemma's); a prompt with model positions (Qwen's M-RoPE) keeps
-  ending its loops as `length`. Never with logprobs or on a cluster pair. `DARKBLOOM_LOOP_EXIT_THINKING=0` (or `off`)
+  as `length` (only the client's cancel keeps its error). Never with
+  logprobs or on a cluster pair. `DARKBLOOM_LOOP_EXIT_THINKING=0` (or `off`)
   turns it off; a comma-separated list keeps it to the listed `model_type`s
   that have a marker. `darkbloom start` passes it, and `DARKBLOOM_LOOP_GUARD`,
   to the launchd daemon (`LaunchAgent.inferencePassthroughEnvKeys`). One `darkbloom.loop-guard.exit-thinking` line per ended
   thought gives the outcome.
+- **Image and video requests on one Mac** (`prepareCompletion`'s media path,
+  `EngineV2VisionPrefill`) take the same guard and, for a family with an exit,
+  the same exit. The continuation re-submits the same evaluated media input
+  (`PreparedSubmission.multimodalInput()`: the same spans and embeddings) with
+  the longer prompt, so it runs only for a media prompt with plain positions
+  (Gemma's): a prompt with model positions (`CBv2PositionState`, Qwen's
+  M-RoPE) covers only its own length, and its loops keep ending as `length`.
 
 ### Collected and streaming reasoning state
 

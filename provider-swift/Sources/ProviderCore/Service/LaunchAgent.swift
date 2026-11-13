@@ -451,6 +451,9 @@ public enum LaunchAgent: Sendable {
         ToolStreamPreparation.streamToolCallsEnvironmentKey,
         ReasoningPromptProbe.plainTailContentSeedEnvironmentKey,
         "DARKBLOOM_GEMMA4_NAX_ROW_MAP",
+        // SDK-read (`EngineLoopV2.nativeSegmentReleaseEnvironmentKey`): idle seconds
+        // before an issued GLM pool returns its free segments; `0` is the rollback.
+        "DARKBLOOM_NATIVE_SEGMENT_RELEASE",
         GenerationLoopGuardPolicy.environmentKey,
         GenerationLoopExitThinkingPolicy.environmentKey,
     ] + MiMoV26DecodeDefaults.environmentKeys + MiMoV26DecodeDefaults.verifyEnvironmentKeys

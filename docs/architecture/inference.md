@@ -1804,7 +1804,7 @@ accepts a frame on its own, the lexer reads it as the SDK does; a frame the SDK
 refuses keeps its end only without a `"` (one may open a JSON string that a raw
 reading ends inside, or end a raw string that a JSON reading runs past), else it
 owns the rest too, as does a frame's tag in top-level text (from the first
-`<tool_call>` read as a mention before it). A `<tool_call>`
+frame or `<tool_call>` read as a mention before it). A `<tool_call>`
 followed by anything else, with no frame tags before the next `<tool_call>`, is a
 mention; a thought that spells out the tags in order (`<arg_key>` … `</arg_value>`)
 therefore owns the rest, and fails as before when its `</think>` follows. A suffix

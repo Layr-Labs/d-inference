@@ -92,7 +92,7 @@ enum GLM5ToolSuffix {
         /// Start of a frame whose arguments break the grammar, are still open
         /// at the end or end where another reading would not; it owns the
         /// rest of the response. For a frame's tag in top-level text, the
-        /// first mention before it, or the tag.
+        /// first frame or mention before it, or the tag.
         private(set) var unclosed: Int?
         /// The first `<tool_call>` read as a mention.
         private var firstMention: Int?
@@ -148,9 +148,10 @@ enum GLM5ToolSuffix {
                 let next = find("<tool_call>", from: index)
                 // A frame's tag in top-level text belongs to no frame: what
                 // follows it may be that frame's arguments, and a header read
-                // as a mention before it may be that frame's.
+                // as a mention before it, or a closed frame whose raw value
+                // runs on through it, may be that frame's. Own from the first.
                 if let stray = first(of: Self.frameTags, in: index ..< (next ?? bytes.count)) {
-                    unclosed = firstMention ?? stray
+                    unclosed = min(stray, firstMention ?? stray, frames.first?.lowerBound ?? stray)
                     return
                 }
                 guard let start = next, let tag = find("<", from: start + 11) else { return }

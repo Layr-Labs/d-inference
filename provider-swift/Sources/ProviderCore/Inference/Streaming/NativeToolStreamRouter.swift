@@ -27,6 +27,10 @@ struct NativeToolStreamRouter {
     /// `ToolConstraintValidation` (which returns `auto` calls as generated
     /// unless the request is `strict`).
     private(set) var completedToolCalls: [ToolCall] = []
+    /// Set by the owner once an event of this response has left: a `strict`
+    /// call that fails its check may then leave as generated
+    /// (`StrictToolCallPolicy`).
+    var responseStarted = false
 
     // Pass the same prepared schemas used by the handler: Flint's raw-string
     // boundaries must agree before and after reasoning-channel separation.
@@ -79,7 +83,7 @@ struct NativeToolStreamRouter {
         return try route(pieces)
     }
 
-    mutating func finishText() throws -> [MLXServerGenerationEvent] {
+    mutating func finishText(cutAtLimit: Bool = false) throws -> [MLXServerGenerationEvent] {
         let pieces = gemmaParser != nil ? gemmaParser!.finish() : (parser?.finish() ?? [])
         try checkReasoningState()
         try checkNativeToolFailure()

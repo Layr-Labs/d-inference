@@ -63,7 +63,7 @@ struct NemotronSuperLocalOutput {
 
     /// Remaining events, then validated tool calls; nothing is exposed if
     /// validation fails.
-    mutating func finish() throws -> (events: [MLXServerGenerationEvent], result: Result) {
+    mutating func finish(cutAtLimit: Bool = false) throws -> (events: [MLXServerGenerationEvent], result: Result) {
         guard !finished else { throw Failure.alreadyFinished }
         finished = true
         var events: [MLXServerGenerationEvent] = []

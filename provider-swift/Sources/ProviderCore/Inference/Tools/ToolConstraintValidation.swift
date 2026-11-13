@@ -34,7 +34,8 @@ enum ToolConstraintValidation {
     static func validate(
         _ calls: [ToolCall],
         prepared: ToolChoicePromptPolicy.Prepared,
-        truncated: Bool = false
+        truncated: Bool = false,
+        responseStarted: Bool = false
     ) throws {
         if !prepared.allowsParallelCalls, calls.count > 1 {
             throw violation(ToolNoncomplianceCheck.parallelViolation)

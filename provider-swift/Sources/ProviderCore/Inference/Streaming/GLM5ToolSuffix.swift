@@ -75,11 +75,13 @@ enum GLM5ToolSuffix {
 
     /// Top-level GLM frames, read by the SDK parser's grammar: a name up to `<`,
     /// then `</tool_call>`, or `<arg_key>` pairs. A `<tool_call>` followed by
-    /// anything but those or another frame tag is a mention and stays text. A
-    /// string-typed value runs raw to `</arg_value>` (the template writes
-    /// strings raw); any other value is JSON, structurally checked as the SDK
-    /// reads it, so quoted delimiters are data. An argument whose declared type
-    /// is unknown is JSON if it opens like JSON, raw otherwise.
+    /// anything else is a mention and stays text, unless a frame's own tags
+    /// follow it before the next `<tool_call>`. A string-typed value runs raw
+    /// to `</arg_value>` (the template writes strings raw) and may not hold the
+    /// frame tags the SDK refuses there; any other value is JSON, structurally
+    /// checked as the SDK reads it, so quoted delimiters are data. An argument
+    /// whose declared type is unknown is JSON if it opens like JSON, raw
+    /// otherwise.
     struct Lexer {
         let bytes: [UInt8]
         private let parameters: [String: [String: any Sendable]]
@@ -92,13 +94,25 @@ enum GLM5ToolSuffix {
 
         init(bytes: [UInt8], tools: [[String: any Sendable]]?) {
             self.bytes = bytes
+            // Only a declaration the SDK's parser accepts types arguments: one
+            // per name, an object schema without indirect types.
             var parameters: [String: [String: any Sendable]] = [:]
+            var seen: Set<String> = []
             var duplicates: Set<String> = []
             for tool in tools ?? [] {
                 let function = (tool["function"] as? [String: any Sendable]) ?? tool
                 guard let name = function["name"] as? String else { continue }
-                if parameters[name] != nil { duplicates.insert(name) }
-                parameters[name] = (function["parameters"] as? [String: any Sendable]) ?? [:]
+                if !seen.insert(name).inserted { duplicates.insert(name) }
+                guard let declared = function["parameters"] else {
+                    parameters[name] = [:]
+                    continue
+                }
+                guard let schema = declared as? [String: any Sendable],
+                    schema["type"] == nil || schema["type"] as? String == "object",
+                    !Self.hasIndirectType(schema),
+                    schema["properties"].map({ $0 is [String: any Sendable] }) ?? true
+                else { continue }
+                parameters[name] = schema
             }
             for name in duplicates { parameters[name] = nil }
             self.parameters = parameters
@@ -119,15 +133,24 @@ enum GLM5ToolSuffix {
                     }
                     index = end
                     frames.append(start ..< end)
-                } else if ["</arg_key>", "<arg_value>", "</arg_value>"].contains(where: { starts($0, at: tag) }) {
-                    // A frame's own tags out of order: a malformed frame, not a mention.
-                    unclosed = start
-                    return
                 } else {
-                    index = tag
+                    // Anything else after the name is a mention, unless a
+                    // frame's own tags follow before the next `<tool_call>`:
+                    // then it is a malformed frame, which owns the rest.
+                    let next = find("<tool_call>", from: tag) ?? bytes.count
+                    if holdsAny(Self.frameTags, in: tag ..< next) {
+                        unclosed = start
+                        return
+                    }
+                    index = next
                 }
             }
         }
+
+        /// The tags of a frame after its `<tool_call>`.
+        private static let frameTags = ["</tool_call>", "<arg_key>", "</arg_key>", "<arg_value>", "</arg_value>"]
+        /// The tags the SDK refuses inside a raw value.
+        private static let rawValueCollisions = ["<tool_call>", "</tool_call>", "<arg_key>", "</arg_key>", "<arg_value>"]
 
         /// Whether text released before `end` holds a think marker inside a frame.
         func holdsThinkMarker(before end: Int) -> Bool {
@@ -151,7 +174,11 @@ enum GLM5ToolSuffix {
                 index += 11
                 guard let raw = readsRaw(name: name, key: key, value: index) else { return nil }
                 if raw {
-                    guard let end = find("</arg_value>", from: index) else { return nil }
+                    // A raw value holding frame tags is refused by the SDK; its
+                    // `</arg_value>` may be a nested frame's.
+                    guard let end = find("</arg_value>", from: index),
+                        !holdsAny(Self.rawValueCollisions, in: index ..< end)
+                    else { return nil }
                     index = end + 12
                 } else {
                     guard jsonValue(&index, depth: 0) else { return nil }
@@ -162,18 +189,31 @@ enum GLM5ToolSuffix {
             }
         }
 
-        /// The SDK reads a value raw only when its declared type is `string`
-        /// (the declared key byte for byte, as the SDK matches it). A union of
-        /// `string` with `object` or `array` could have been written either way,
-        /// ending in different places: nil, the frame owns the rest. A union
-        /// with bare literals ends where its raw reading does (the SDK refuses
-        /// any union with `string`).
+        /// The SDK reads a value raw only when its declared type is `string`.
+        /// It takes the type of a declared key only from the key as declared,
+        /// byte for byte, and refuses one that only canonically equals it (nil:
+        /// the frame owns the rest); an undeclared key takes
+        /// `additionalProperties`. A union of `string` with `object` or `array`
+        /// could have been written either way, ending in different places: nil
+        /// too. A union with bare literals ends where its raw reading does (the
+        /// SDK refuses any union with `string`). Without a type the SDK accepts,
+        /// a value that opens like JSON is read as JSON, which never ends before
+        /// its raw reading would; any other value is raw (a JSON literal has no
+        /// delimiters to end early on).
         private func readsRaw(name: String, key: String, value: Int) -> Bool? {
             if let parameters = parameters[name] {
-                let properties = parameters["properties"] as? [String: any Sendable]
-                let schema = properties?.first(where: { $0.key.utf8.elementsEqual(key.utf8) })?.value
-                    ?? parameters["additionalProperties"]
-                if let type = (schema as? [String: any Sendable])?["type"] {
+                let schema: (any Sendable)?
+                if let properties = parameters["properties"] as? [String: any Sendable],
+                    let declared = properties.index(forKey: key)
+                {
+                    guard properties[declared].key.utf8.elementsEqual(key.utf8) else { return nil }
+                    schema = properties[declared].value
+                } else {
+                    schema = parameters["additionalProperties"]
+                }
+                if let schema = schema as? [String: any Sendable], !Self.hasIndirectType(schema),
+                    let type = schema["type"]
+                {
                     if let type = type as? String { return type == "string" }
                     if let types = type as? [String], types.contains("string") {
                         return types.contains("object") || types.contains("array") ? nil : true
@@ -239,10 +279,15 @@ enum GLM5ToolSuffix {
         }
 
         private func containsThinkMarker(_ range: Range<Int>) -> Bool {
+            holdsAny(["<think>", "</think>"], in: range)
+        }
+
+        /// Whether one of `tags` (each opening with `<`) starts in `range`.
+        private func holdsAny(_ tags: [String], in range: Range<Int>) -> Bool {
             var index = range.lowerBound
-            while let tag = find("<", from: index), tag < range.upperBound {
-                if starts("<think>", at: tag) || starts("</think>", at: tag) { return true }
-                index = tag + 1
+            while index < range.upperBound {
+                if bytes[index] == 60, tags.contains(where: { starts($0, at: index) }) { return true }
+                index += 1
             }
             return false
         }
@@ -272,6 +317,10 @@ enum GLM5ToolSuffix {
         private func starts(_ literal: String, at index: Int) -> Bool {
             let marker = literal.utf8
             return index + marker.count <= bytes.count && bytes[index ..< index + marker.count].elementsEqual(marker)
+        }
+
+        private static func hasIndirectType(_ schema: [String: any Sendable]) -> Bool {
+            ["$ref", "$dynamicRef", "anyOf", "oneOf", "allOf", "not", "if", "then", "else"].contains { schema[$0] != nil }
         }
 
         static func isWhitespace(_ bytes: ArraySlice<UInt8>) -> Bool {

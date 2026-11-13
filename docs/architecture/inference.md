@@ -1794,11 +1794,14 @@ run that does not parse; everything before them is text, which the service's
 reasoning parser then splits at `</think>`. A frame that has started its
 arguments must follow the SDK parser's grammar to its own `</tool_call>` (a
 string-typed value raw to `</arg_value>`, any other value structurally valid
-JSON, whose quoted delimiters are data). One that does not (malformed JSON, its
-own tags out of order after its name, a value whose declared type is a union of
-`string` with `object` or `array`, which the template could have written either
-way) or that is still open at the end owns the rest of the response: no frame
-inside or after its arguments is ever a call. A suffix with no such run (a
+JSON, whose quoted delimiters are data). One that does not (malformed JSON, a raw
+value holding frame tags, which the SDK refuses, its own tags after a malformed
+header, a key that only canonically equals a declared one, a value whose declared
+type is a union of `string` with `object` or `array`, which the template could
+have written either way) or that is still open at the end owns the rest of the
+response: no frame inside or after its arguments is ever a call. A `<tool_call>`
+followed by anything else, with no frame tags before the next `<tool_call>`, is a
+mention. A suffix with no such run (a
 malformed or cut-off final frame, text after the calls) is all text, and so is a
 suffix that did not parse in an output cut at the token limit; no frame is
 completed or salvaged. A suffix whose release would put a think marker from

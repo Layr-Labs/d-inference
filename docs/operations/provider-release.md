@@ -28,7 +28,7 @@ chain for one environment. To find the newest dev release, read
 `https://api.dev.darkbloom.dev/v1/releases/latest`.
 
 `ProviderCore.version` is prepared as `0.10.13`, a patch release over `v0.10.12`
-with only the fixes listed in the [`v0.10.13` changelog entry](../../CHANGELOG.md): a Gemma 4 thought the loop guard stops ends in an answer (#2040); a pair being set up is no longer called stopped during the leader's download (#2042).
+with only the fixes listed in the [`v0.10.13` changelog entry](../../CHANGELOG.md): a Gemma 4 thought the loop guard stops ends in an answer (#2040); a pair being set up is no longer called stopped during the leader's download (#2042); a dead coordinator link is found in 6–8 s and the provider reconnects at once (#2047); Qwen 3.5 9B keeps its model card's presence penalty (#2051); Gemma 4 keeps a string parameter's unquoted `01000` as "01000" (#2050, SDK #405); a past turn's `reasoning`/`thinking` reaches the model (#2048); `parallel_tool_calls: false` returns the first call (#2049); a stray `<tool_call>` no longer fails a GLM response (#2052); an answer cut at `max_tokens` ends as `length`; strict calls after the start return as generated (#2053); the loop guard covers image and video requests (#2054); Qwen 3.5/3.6 exit-thinking, off by default (#2046); Qwen 3.5/3.6/3.8 parse tool calls after the thinking (#2057); tool JSON as Transformers renders it, on request (#2058); GPT-OSS answers under a `final` header with attributes reach the client (#2063); an optional release of GLM JSON schema misses, off by default (#2065); GPT-OSS serves forced tool choices (#2045); GLM and MiMo no longer refuse long prompts because of a short prompt's speed (#2072); GLM no longer refuses requests on idle Macs whose KV pool kept its free memory (#2060).
 
 Before tagging `v0.10.13`:
 
@@ -36,8 +36,8 @@ Before tagging `v0.10.13`:
   sets `DARKBLOOM_PROVIDER_TOOLCHAIN: release` and asserts
   `build_sdk_version == '27.2'`; the release build runs
   `scripts/check-provider-weak-imports.py`.
-- Pins: `libs/mlx` `72dffa2d`, `libs/mlx-swift` `b1c94d29` and
-  `libs/mlx-swift-lm` `44ab1755` as v0.10.12, so the tag build's
+- Pins: `libs/mlx` `72dffa2d` and `libs/mlx-swift` `b1c94d29` as v0.10.12;
+  `libs/mlx-swift-lm` moves to fork `main` `859f641529` (SDK #405 and #406) (Swift only), so the tag build's
   `metallib_hash` should equal v0.10.12's `5b97893c…70ac`.
 - Cluster runtime facts: run the release's facts step read-only on the exact tag
   tree; expect the same models and grants as v0.10.12.

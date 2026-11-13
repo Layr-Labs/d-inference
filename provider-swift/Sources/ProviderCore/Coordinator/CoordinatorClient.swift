@@ -154,6 +154,8 @@ public actor CoordinatorClient {
 
     /// Initial reconnect policy; `runLoop` owns the working copy.
     internal let reconnectPolicy: CoordinatorReconnectPolicy
+    /// Ping interval and dead-link bound of every session.
+    internal let linkLiveness: CoordinatorLinkLiveness
 
     public init(
         config: CoordinatorClientConfig,
@@ -161,7 +163,8 @@ public actor CoordinatorClient {
         state: ProviderState,
         liveAPNsToken: (@Sendable () -> String?)? = nil,
         appAttestResumeResponder: (@Sendable (AppAttestResumeChallenge, String) throws -> AppAttestResumeResponse)? = nil,
-        reconnectPolicy: CoordinatorReconnectPolicy = CoordinatorReconnectPolicy()
+        reconnectPolicy: CoordinatorReconnectPolicy = CoordinatorReconnectPolicy(),
+        linkLiveness: CoordinatorLinkLiveness = CoordinatorLinkLiveness()
     ) {
         self.config = config
         self.ordinaryServingModelIDs = Set(config.models.map(\.id))
@@ -171,6 +174,7 @@ public actor CoordinatorClient {
         self.liveAPNsToken = liveAPNsToken ?? { APNsBridge.shared.currentDeviceToken() }
         self.appAttestResumeResponder = appAttestResumeResponder
         self.reconnectPolicy = reconnectPolicy
+        self.linkLiveness = linkLiveness
 
         // Inference-chunk fast path. The encode closure is the same pure static
         // codec the control path uses; on the (effectively impossible) encode

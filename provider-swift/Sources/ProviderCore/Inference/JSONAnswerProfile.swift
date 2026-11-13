@@ -128,4 +128,25 @@ extension JSONAnswerProfile {
         answerEOS: [.init(spelling: "<|im_end|>", id: 11), .init(spelling: "</s>", id: 2)],
         vocabularySize: 131072,
         constrainsReasoning: false)
+
+    /// GPT-OSS (`gpt_oss`, o200k Harmony): the arguments of a forced call
+    /// (`GPTOSSForcedToolConstraint`). Byte-level BPE below `<|startoftext|>`;
+    /// the Harmony control tokens above it are never pieces, and no argument
+    /// may spell one. Arguments end with `<|call|>`. The model's vocabulary
+    /// pads the tokenizer's 200,019 ids to 201,088.
+    static let gptOSS = JSONAnswerProfile(
+        family: "GPT-OSS",
+        thinkClose: "<|end|>",
+        reasoningStops: harmonyMarkers,
+        contentMarkers: harmonyMarkers,
+        bpeIDs: 0..<199998,
+        pieceTokens: [],
+        answerEOS: [.init(spelling: "<|call|>", id: 200012)],
+        vocabularySize: 201088)
+
+    /// The Harmony spellings the stream's parsers read as framing.
+    static let harmonyMarkers = [
+        "<|start|>", "<|end|>", "<|message|>", "<|channel|>", "<|constrain|>", "<|return|>", "<|call|>",
+        "<|endoftext|>", "<|startoftext|>", "<|endofprompt|>",
+    ]
 }

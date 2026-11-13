@@ -43,7 +43,7 @@ struct HarmonyFinalHeaderFilterTests {
 
     @Test("a bare content type or no space before the constraint is an answer too", arguments: widths)
     func otherAttributeSpellingsAreContent(width: Int) {
-        for header in ["final json", "final<|constrain|>json", "final <|constrain|>JSON "] {
+        for header in ["final json", "final<|constrain|>json", "final <|constrain|>JSON ", " final json"] {
             let output = Self.analysis + "<|channel|>\(header)<|message|>" + Self.answer
             #expect(Self.received(output, width: width).content == Self.answer, "\(header)")
         }
@@ -57,6 +57,7 @@ struct HarmonyFinalHeaderFilterTests {
             "<|channel|>commentary<|message|>Checking the weather.<|end|>",
             "<|channel|>final to=functions.x<|message|>{}",
             "<|channel|>finalize<|message|>x",
+            "<|channel|> final <|message|>Plain answer.",
             "No markers <|chan at all, a < and |>.",
             "Unicode é 🙂 <|channel|>analysis<|message|>Ünïcode<|end|>",
         ]
@@ -70,7 +71,7 @@ struct HarmonyFinalHeaderFilterTests {
         let unterminated = Self.analysis + "<|channel|>final <|constrain|>js"
         #expect(Self.filtered(unterminated, width: 3) == unterminated)
         let oversized = "<|channel|>final " + String(repeating: "a", count: 300) + "<|message|>{}"
-        #expect(Self.filtered(oversized, width: 7) == oversized)
+        for width in Self.widths { #expect(Self.filtered(oversized, width: width) == oversized, "width \(width)") }
         var partial = HarmonyFinalHeaderFilter()
         #expect(partial.ingest("text <|chan") == "text ")
         #expect(partial.finish() == "<|chan")
@@ -108,7 +109,7 @@ struct HarmonyFinalHeaderFilterTests {
         let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "gpt_oss")
         let scheduler = MultiModelBatchSchedulerEngine(registryProvider: { [:] })
         let events = try scheduler._testMakeEventStream(upstream: upstream, cancelUpstream: {}, prepared: prepared,
-            releaseBox: OneShotRelease(release: { _ in }, modelId: "fixture"), harmonyFinalHeaders: true)
+            releaseBox: OneShotRelease(release: { _ in }, modelId: "fixture"), rewriteHarmonyFinalHeaders: true)
         var parser = StreamingReasoningParser(format: .harmony)
         var content = ""
         var reasoning = ""

@@ -1200,7 +1200,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             answerStopFilter: answerStopFilter,
             answerFormat: jsonAnswer?.format,
             withholdReasoning: withholdsReasoning,
-            harmonyFinalHeaders: HarmonyFinalHeaderFilter.applies(to: request, modelId: modelId, modelType: modelType)
+            rewriteHarmonyFinalHeaders: HarmonyFinalHeaderFilter.applies(to: request, modelId: modelId, modelType: modelType)
         )
     }
 
@@ -1570,7 +1570,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         answerStopFilter: FlintAnswerStopFilter? = nil,
         answerFormat: JSONAnswerFormat? = nil,
         withholdReasoning: Bool = false,
-        harmonyFinalHeaders: Bool = false
+        rewriteHarmonyFinalHeaders: Bool = false
     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         do {
             try checkFirstContentDeadline()
@@ -1599,7 +1599,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 answerStopFilter: answerStopFilter,
                 answerFormat: answerFormat,
                 withholdReasoning: withholdReasoning,
-                harmonyFinalHeaders: harmonyFinalHeaders)
+                rewriteHarmonyFinalHeaders: rewriteHarmonyFinalHeaders)
             try checkFirstContentDeadline()
             return stream
         } catch {
@@ -1636,7 +1636,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         answerStopFilter: FlintAnswerStopFilter? = nil,
         answerFormat: JSONAnswerFormat? = nil,
         withholdReasoning: Bool = false,
-        harmonyFinalHeaders: Bool = false
+        rewriteHarmonyFinalHeaders: Bool = false
     ) throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         // One forwarding implementation preserves all parser/event bytes. The
         // native path changes only task ownership and cancellation handoff.
@@ -1678,7 +1678,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 // so a matched answer stop and its tail are never parsed.
                 var answerStops = answerStopFilter
                 // GPT-OSS answers under `final <|constrain|>json` reach the Harmony parser as `final`.
-                var finalHeaders = harmonyFinalHeaders ? HarmonyFinalHeaderFilter() : nil
+                var finalHeaders = rewriteHarmonyFinalHeaders ? HarmonyFinalHeaderFilter() : nil
                 // Exact Flint's prepared format, or the format a constrained
                 // Qwen answer was compiled with.
                 var formatOutput = (answerFormat ?? prepared.responseFormat).map(JSONAnswerOutput.init)
@@ -1764,8 +1764,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         // Before any frame: generated output ends the
                         // pre-content interval even while it is withheld.
                         if recordsWithheldOutput, !generated.isEmpty { usageSignal.recordWithheldOutput() }
-                        let stopped = answerStops?.ingest(generated) ?? generated
-                        let text = finalHeaders?.ingest(stopped) ?? stopped
+                        let released = answerStops?.ingest(generated) ?? generated
+                        let text = finalHeaders?.ingest(released) ?? released
                         if !text.isEmpty {
                             do {
                                 let events = try router.process(text)
@@ -2065,14 +2065,14 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         usageSignal: EngineV2RequestUsageSignal = EngineV2RequestUsageSignal(),
         answerStopFilter: FlintAnswerStopFilter? = nil,
         answerFormat: JSONAnswerFormat? = nil,
-        harmonyFinalHeaders: Bool = false
+        rewriteHarmonyFinalHeaders: Bool = false
     ) throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         try makeEventStream(upstream: upstream, cancelUpstream: cancelUpstream,
             toolHandler: toolHandler, prepared: prepared, releaseBox: releaseBox,
             usageSignal: usageSignal, reasoningPrefix: reasoningPrefix,
             nativeReasoningPrefix: nativeReasoningPrefix, recordsWithheldOutput: recordsWithheldOutput,
             answerStopFilter: answerStopFilter, answerFormat: answerFormat,
-            harmonyFinalHeaders: harmonyFinalHeaders)
+            rewriteHarmonyFinalHeaders: rewriteHarmonyFinalHeaders)
     }
     #endif
 

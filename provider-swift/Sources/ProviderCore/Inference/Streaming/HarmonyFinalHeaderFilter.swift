@@ -5,14 +5,14 @@ import MLXLMServer
 /// Rewrites a GPT-OSS answer header that carries attributes, such as
 /// `<|channel|>final <|constrain|>json<|message|>`, to the plain
 /// `<|channel|>final<|message|>`. The Harmony reasoning parser routes only the
-/// exact header `final` to content and drops every other message, so such an
-/// answer reached the client as empty content. Other headers, and all text
-/// outside headers, pass through byte for byte.
+/// exact header `final` to content and drops every other message, so without
+/// this filter such an answer reaches the client as empty content. Other
+/// headers, and all text outside headers, pass through byte for byte.
 struct HarmonyFinalHeaderFilter: Sendable {
-    static let channelMarker = "<|channel|>"
-    static let messageMarker = "<|message|>"
+    private static let channelMarker = "<|channel|>"
+    private static let messageMarker = "<|message|>"
     /// A header is a few tokens; longer text after `<|channel|>` passes unchanged.
-    static let maximumHeaderBytes = 256
+    private static let maximumHeaderBytes = 256
 
     private var pending = ""
     private var inHeader = false
@@ -30,14 +30,17 @@ struct HarmonyFinalHeaderFilter: Sendable {
         while true {
             if inHeader {
                 guard let end = pending.range(of: Self.messageMarker) else {
-                    if pending.utf8.count > Self.maximumHeaderBytes {
+                    // Past the limit plus a partial `<|message|>`: whatever ends it, the header is too long.
+                    if pending.utf8.count > Self.maximumHeaderBytes + Self.messageMarker.utf8.count {
                         output += pending
                         pending = ""
                         inHeader = false
                     }
                     return output
                 }
-                output += Self.answerHeader(String(pending[..<end.lowerBound])) + Self.messageMarker
+                let header = String(pending[..<end.lowerBound])
+                output += (header.utf8.count > Self.maximumHeaderBytes ? header : Self.answerHeader(header))
+                    + Self.messageMarker
                 pending = String(pending[end.upperBound...])
                 inHeader = false
             } else if let start = pending.range(of: Self.channelMarker) {
@@ -60,20 +63,23 @@ struct HarmonyFinalHeaderFilter: Sendable {
     }
 
     /// `final` for an answer header with attributes; any other header as given.
-    /// A header with a recipient (`to=`) is a call, not an answer.
-    static func answerHeader(_ header: String) -> String {
-        let name = header.prefix { !$0.isWhitespace && $0 != "<" }
-        guard name == "final", header != "final", !header.contains("to=") else { return header }
+    /// A header with a recipient (`to=`) is a call, not an answer. Surrounding
+    /// whitespace alone is left as is: the parser trims it.
+    private static func answerHeader(_ header: String) -> String {
+        let name = header.drop { $0.isWhitespace }.prefix { !$0.isWhitespace && $0 != "<" }
+        guard name == "final", !header.contains("to="),
+              header.trimmingCharacters(in: .whitespaces) != "final" else { return header }
         return "final"
     }
 
-    /// Length of the longest suffix of `text` that is a proper prefix of `<|channel|>`.
+    /// Length of the longest suffix of `text` that is a proper prefix of
+    /// `<|channel|>`. The marker is ASCII, so its bytes and characters count alike.
     private static func markerPrefixLength(_ text: String) -> Int {
         let marker = Array(channelMarker.utf8)
         let bytes = Array(text.utf8.suffix(marker.count - 1))
         for length in stride(from: bytes.count, through: 1, by: -1)
         where marker.starts(with: bytes.suffix(length)) {
-            return String(decoding: bytes.suffix(length), as: UTF8.self).count
+            return length
         }
         return 0
     }

@@ -56,7 +56,7 @@ struct JSONAnswerBoundary: Hashable {
 /// once the value is complete. Per-request and host-only: as in
 /// `FlintNativeProtocolConstraint`, interning collapses free text to bounded
 /// framing states, and it never forces a value or repairs a truncated one.
-final class JSONAnswerConstraint: CBv2TokenConstraint, @unchecked Sendable {
+final class JSONAnswerConstraint: CBv2FreeSpanTokenConstraint, @unchecked Sendable {
     let mode = CBv2TokenConstraintMode.auto
     let maxTokens: Int
     let initialState = 0
@@ -144,6 +144,31 @@ final class JSONAnswerConstraint: CBv2TokenConstraint, @unchecked Sendable {
     /// `nextState` interns only host-confirmed tokens, so CBv2 may sample one
     /// step ahead and redraw it when the confirmed token changes the state.
     var allowsChainedDecode: Bool { true }
+
+    func isFreeSpan(state: Int) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return !resourceExhausted && states.indices.contains(state) && isFree(states[state])
+    }
+
+    /// Preview never interns a state. Even a token that returns to reasoning
+    /// is protected if any byte enters a marker prefix along the way.
+    func isFreeSpanContinuation(state: Int, tokenID: Int) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard !resourceExhausted, states.indices.contains(state), isFree(states[state]),
+              vocabulary.pieces.indices.contains(tokenID),
+              !vocabulary.stopTokenIDs.contains(tokenID), !vocabulary.pieces[tokenID].isEmpty else {
+            return false
+        }
+        var next = states[state]
+        for byte in vocabulary.pieces[tokenID] {
+            guard next.consume(byte, profile: profile, grammar: format.grammar), isFree(next) else { return false }
+        }
+        return next == states[state]
+    }
+
+    private func isFree(_ boundary: JSONAnswerBoundary) -> Bool {
+        profile.family == "Qwen" && boundary.phase == .reasoning && boundary.window.isEmpty
+    }
 
     func nextState(state: Int, tokenID: Int) -> Int? {
         lock.lock(); defer { lock.unlock() }

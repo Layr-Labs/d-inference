@@ -123,15 +123,20 @@ No model weights or live provider state are needed.
 
 ## Provider And SDK
 
-`QwenConstraintSpanServingTests` sends a strict-auto request through the public
-scheduler, bridge and real `EngineV2`. A tiny native target with deterministic
-weights supplies literal reasoning, content and call arguments; an unconstrained
-control proves that it can draft. The constrained test requires drafting before
-and after protected calls, none inside, and unchanged output and accounting
-with the span switch off. Cases include multiple calls, thinking on/off, pure
-preview state accounting, and JSON reasoning followed by a protected value. Run it with the normal source-matched provider test
-products and isolated runner below. It does not qualify the production Qwen
-assistant's persistent history, full model throughput or native-tracked engines.
+`QwenConstraintSpanServingTests` sends strict-auto and JSON requests through
+the public scheduler, bridge and real `EngineV2`. Deterministic native targets
+supply literal reasoning, content and call arguments; an unconstrained control
+proves drafting works. Tests require drafting around protected calls, unchanged
+off/on output and accounting, multiple calls, thinking on/off and JSON that
+never returns to a free span after its value starts. Tiny Qwen target/inline
+assistant fixtures also verify committed history through protected entry and
+return to text, cancellation with request-ID reuse, short output budgets, and
+bridge refusal recovery. `QwenJSONFreeSpanTests` checks preview purity, partial
+markers, scalar/string answers, exhaustion and non-Qwen fallback.
+
+Run these with the normal source-matched provider test products and isolated
+runner below. Tiny fixtures do not qualify full-model throughput, production
+resource use or native completion-tracked engines.
 
 From the repository root, use the [MiMo regression fixture recipe](#mimo-regression-fixtures)
 to prepare the inputs and run `make provider-test`.

@@ -380,8 +380,183 @@ struct QwenConstraintSpanServingTests {
         }
     }
 
+    @Test(.timeLimit(.minutes(3)), arguments: [false, true], [false, true])
+    func nativeQwenKeepsHistoryAcrossProviderSpans(thinking: Bool, json: Bool) async throws {
+        let pieces: [String]
+        if json {
+            pieces = (thinking ? ["Let", " me", " check", " the", " value", ".", "</think>"] : [])
+                + ["{", "\"city\"", ":", "\"", "Ro", "me", "\"", "}", " ", "\n", " "]
+        } else {
+            // No-thinking begins immediately with a protected call, then returns to text.
+            pieces = thinking ? Self.pieces : Array(Self.pieces.dropFirst(13))
+        }
+        let tokenizer = SpanStreamTokenizer(pieces: pieces, thinking: thinking)
+        let tokens = Array(SpanStreamTokenizer.firstPiece ..< SpanStreamTokenizer.firstPiece + pieces.count)
+        for enabled in [false, true] {
+            let (target, assistant) = try makeProviderQwenSpanFixture(outputTokens: tokens,
+                promptToken: SpanStreamTokenizer.promptID, stopToken: StrictToolFixture.imEnd)
+            let (native, observed) = try makeProviderQwenSpanEngine(target: target, native: assistant,
+                tokenizer: tokenizer, enabled: enabled)
+            let outcome = try await stream(native, tokenizer: tokenizer, thinking: thinking,
+                extra: json ? #""response_format":{"type":"json_object"}"# : #""tools":\#(Self.tools)"#)
+            #expect(outcome.reasoning == (thinking
+                ? (json ? "Let me check the value." : "Let me check the time.") : ""))
+            #expect(outcome.content == (json ? "{\"city\":\"Rome\"} \n "
+                : (thinking ? "One moment, please. All done, thank you." : "All done, thank you.")))
+            #expect(outcome.terminals == 1 && outcome.info?.stopReason == "stop")
+            #expect(outcome.info?.completionTokens == (json ? (thinking ? 19 : 12) : (thinking ? 28 : 15)))
+            let calls = outcome.deltas.compactMap(\.completed)
+            #expect(calls.count == (json ? 0 : 1))
+            if !json { #expect(calls.first?.function.arguments == ["city": .string("Rome")]) }
+            let metrics = try #require(native.mtpMetricsSnapshot())
+            if enabled && (thinking || !json) {
+                #expect(metrics.acceptedTokens > 0 && !observed.starts.isEmpty)
+                var indices: [Int] = []
+                for start in observed.starts {
+                    let seed = Int(start.token.item(Int32.self))
+                    let index = try #require(tokens.firstIndex(of: seed))
+                    indices.append(index)
+                    #expect(start.history == index, "seed \(seed) has \(start.history) trusted transitions")
+                }
+                if json {
+                    #expect(indices.allSatisfy { $0 < 6 })
+                } else {
+                    let firstCall = thinking ? 13 : 0
+                    let lastClose = thinking ? 20 : 7
+                    if thinking { #expect(indices.contains { $0 < firstCall }) }
+                    #expect(indices.contains { $0 >= lastClose })
+                    #expect(!indices.contains { (firstCall..<lastClose).contains($0) })
+                }
+            } else {
+                #expect(metrics.rounds == 0 && observed.starts.isEmpty)
+            }
+        }
+    }
+
+    private func strictConstraint(tokenizer: SpanStreamTokenizer, maxTokens: Int) throws -> QwenStrictToolConstraint {
+        let (request, prepared) = try StrictToolFixture.prepared(
+            StrictToolFixture.body(tools: Self.tools, maxTokens: maxTokens))
+        return try #require(QwenStrictToolGrammar.constraint(prepared: prepared, request: request,
+            parser: .qwen35, tokenizer: TokenizerHandle(tokenizer), modelType: "qwen3_5",
+            defaultMaxTokens: maxTokens, stopTokenIDs: StrictToolFixture.stops,
+            promptTokens: [SpanStreamTokenizer.promptID], runsTokenConstraints: true))
+    }
+
+    @Test(.timeLimit(.minutes(3)), arguments: [false, true])
+    func cancelledNativeQwenReleasesHistoryAndReusesTheRequestID(enabled: Bool) async throws {
+        let tokenizer = SpanStreamTokenizer(pieces: [" word"], thinking: false)
+        let (target, assistant) = try makeProviderQwenSpanFixture(outputTokens: [SpanStreamTokenizer.firstPiece],
+            promptToken: SpanStreamTokenizer.promptID, stopToken: StrictToolFixture.imEnd, repeatsSingleToken: true)
+        let (native, _) = try makeProviderQwenSpanEngine(target: target, native: assistant,
+            tokenizer: tokenizer, enabled: enabled)
+        do {
+            let id = CBv2RequestID(99)
+            let constraint = try strictConstraint(tokenizer: tokenizer, maxTokens: 4096)
+            var count = 0, terminals = 0
+            var requested = false
+            for await event in try native.submit(.init(id: id, promptTokens: [SpanStreamTokenizer.promptID],
+                sampling: .init(temperature: 0), maxTokens: 4096, stopTokens: StrictToolFixture.stops,
+                tokenConstraint: constraint)) {
+                switch event {
+                case .delta(_, let tokens, _):
+                    count += tokens.count
+                    if !requested { native.cancel(id); requested = true }
+                case .finished(let reason, let usage):
+                    terminals += 1
+                    #expect(reason == .cancelled)
+                    #expect(usage.completionTokens == count && usage.promptTokens == 1)
+                }
+            }
+            #expect(requested && count > 0 && count < 4096 && terminals == 1)
+            var reused: [Int] = []
+            terminals = 0
+            for await event in try native.submit(.init(id: id, promptTokens: [SpanStreamTokenizer.promptID],
+                sampling: .init(temperature: 0), maxTokens: 3, stopTokens: StrictToolFixture.stops,
+                tokenConstraint: strictConstraint(tokenizer: tokenizer, maxTokens: 3))) {
+                switch event {
+                case .delta(_, let tokens, _): reused += tokens
+                case .finished(let reason, let usage):
+                    terminals += 1
+                    #expect(reason == .length && usage.completionTokens == 3)
+                }
+            }
+            #expect(reused == [1000, 1000, 1000] && terminals == 1)
+            await native.shutdown()
+        } catch {
+            await native.shutdown()
+            throw error
+        }
+    }
+
+
+    @Test(.timeLimit(.minutes(3)), arguments: [1, 2, 4, 7, 17])
+    func shortOutputBudgetsPreserveTheStreamAndUsage(limit: Int) async throws {
+        let target = try target()
+        let expectedReasoning = [1: "Let", 2: "Let me", 4: "Let me check the",
+                                 7: "Let me check the time.", 17: "Let me check the time."]
+        var baseline: SpanStreamOutcome?
+        for enabled in [false, true] {
+            let (native, _, tokenizer) = engine(target, enabled: enabled)
+            let outcome = try await stream(native, tokenizer: tokenizer, thinking: true,
+                extra: #""tools":\#(Self.tools)"#, maxTokens: limit)
+            #expect(outcome.reasoning == expectedReasoning[limit])
+            #expect(outcome.terminals == 1 && outcome.info?.stopReason == "length")
+            #expect(outcome.info?.completionTokens == limit)
+            #expect(outcome.deltas.compactMap(\.completed).isEmpty)
+            if let baseline {
+                #expect(outcome.content == baseline.content)
+                #expect(outcome.deltas.map(\.arguments).joined() == baseline.deltas.map(\.arguments).joined())
+                #expect(outcome.deltas.compactMap(\.name) == baseline.deltas.compactMap(\.name))
+            } else { baseline = outcome }
+        }
+    }
+
+    @Test(.timeLimit(.minutes(3)))
+    func bridgeErrorDoesNotPublishSuccessOrPoisonTheNextRequest() async throws {
+        let target = try target()
+        var baselineError: [String]?
+        for enabled in [false, true] {
+            let (native, _, tokenizer) = engine(target, enabled: enabled)
+            let bridge = EngineV2Bridge(engine: native, modelId: StrictToolFixture.model,
+                tokenizer: TokenizerHandle(tokenizer), eosTokenIds: StrictToolFixture.stops,
+                defaultMaxTokens: 64, maxConcurrentRequests: 1)
+            let constraint = try strictConstraint(tokenizer: tokenizer, maxTokens: 4)
+            var errors: [String] = [], text = ""
+            var terminals = 0
+            for await event in await bridge.submitTokenized(promptTokens: [SpanStreamTokenizer.promptID],
+                request: ChatCompletionRequest(model: StrictToolFixture.model, messages: [], temperature: 0, max_tokens: 3),
+                requestId: "reused-after-refusal", cacheEnabled: false, tokenConstraint: constraint) {
+                switch event {
+                case .error(let message): errors.append(message)
+                case .info: terminals += 1
+                case .chunk(let value): text += value
+                case .terminal, .logprobs: Issue.record("unexpected error-path event")
+                }
+            }
+            #expect(errors.count == 1 && terminals == 0 && text.isEmpty)
+            if let baselineError { #expect(errors == baselineError) } else { baselineError = errors }
+            errors = []
+            let nextConstraint = try strictConstraint(tokenizer: tokenizer, maxTokens: 4)
+            for await event in await bridge.submitTokenized(promptTokens: [SpanStreamTokenizer.promptID],
+                request: ChatCompletionRequest(model: StrictToolFixture.model, messages: [], temperature: 0, max_tokens: 4),
+                requestId: "reused-after-refusal", cacheEnabled: false,
+                tokenConstraint: nextConstraint) {
+                switch event {
+                case .chunk(let value): text += value
+                case .info(_, let count, _, let reason):
+                    terminals += 1
+                    #expect(count == 4 && reason == "length")
+                case .error(let message): errors.append(message)
+                case .terminal, .logprobs: Issue.record("unexpected success-path event")
+                }
+            }
+            #expect(errors.isEmpty && terminals == 1 && text == "Let me check the")
+            await bridge.shutdown()
+        }
+    }
+
     private func stream(_ native: EngineV2, tokenizer: SpanStreamTokenizer,
-                        thinking: Bool, extra: String) async throws -> SpanStreamOutcome {
+                        thinking: Bool, extra: String, maxTokens: Int = 64) async throws -> SpanStreamOutcome {
         let handle = TokenizerHandle(tokenizer)
         let id = StrictToolFixture.model
         let bridge = EngineV2Bridge(engine: native, modelId: id, tokenizer: handle,
@@ -391,7 +566,7 @@ struct QwenConstraintSpanServingTests {
         })
         let body = #"{"model":"\#(id)","messages":[{"role":"user","content":"check"}],"#
             + #""temperature":0,"reasoning":{"enabled":\#(thinking)},"reasoning_parser":"qwen3","#
-            + #""max_tokens":64,\#(extra)}"#
+            + #""max_tokens":\#(maxTokens),\#(extra)}"#
         var request = try JSONDecoder().decode(OpenAIChatCompletionRequest.self, from: Data(body.utf8))
         request.stream = true
         request.streamToolCallDeltas = true

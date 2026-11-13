@@ -4314,20 +4314,30 @@ the owner's go.
 
 ### Strict tool-call grammar
 
-**Free-span qualification in progress.** With `DARKBLOOM_CONSTRAINT_SPANS=1`,
-`QwenStrictToolConstraint` exposes ordinary reasoning and content as free spans
-through `CBv2FreeSpanTokenConstraint`. Its pure preview accepts only tokens that
-stay in the same state without touching a marker prefix. Call openings, framing,
+With `DARKBLOOM_CONSTRAINT_SPANS=1`, `QwenStrictToolConstraint` exposes
+ordinary reasoning and content as free spans through
+`CBv2FreeSpanTokenConstraint`. Its pure preview accepts only tokens that stay
+in the same state without touching a marker prefix. Call openings, framing,
 arguments and partial markers remain protected; text after a closed call can
-become free again. Existing masks and engine eligibility remain authoritative.
-The switch defaults off, retaining request-wide target-only constrained decoding.
-JSON free-span support is still under test in this candidate.
+become free again. `JSONAnswerConstraint` exposes only Qwen reasoning before
+the answer: the JSON value, string bodies and trailing whitespace stay protected.
+Other JSON families retain target-only decoding. Neither constraint mutates
+its interned states while previewing a speculative token.
 
-The native scheduler and bridge regression in
-`provider-swift/Tests/ProviderCoreTests/Inference/Tools/QwenConstraintSpanServingTests.swift`
-checks exact streamed content, reasoning, calls and accounting, including multiple
-calls and thinking on/off. Its tiny target qualifies provider wiring, not the
-production Qwen assistant's history, native-tracked engines or full-model speed.
+The switch defaults off, retaining request-wide target-only constrained decoding.
+Existing grammar admission, masks and sampler/model/lifecycle eligibility remain
+authoritative. Required/named calls acquire no new strict-auto grammar. An
+eligible native Qwen assistant retains committed history through protected
+spans, but starts no draft there. Engines with native completion tracking remain
+ineligible. The LaunchAgent forwards the flag at installation; the SDK snapshots
+it at engine construction.
+
+`QwenConstraintSpanServingTests` checks streamed content, reasoning, calls and
+accounting through the scheduler, bridge and engine. Coverage includes multiple
+calls, thinking on/off, short budgets, cancellation and refusal recovery. Tiny
+native Qwen target/assistant fixtures check committed history across protected
+entry and return to free text. These are bounded integration fixtures, not
+full-model throughput or production qualification.
 
 A `strict` `auto` call is checked against the caller's schema only when its
 frame closes ([streamed auto tool calls](#streamed-auto-tool-calls)), after the

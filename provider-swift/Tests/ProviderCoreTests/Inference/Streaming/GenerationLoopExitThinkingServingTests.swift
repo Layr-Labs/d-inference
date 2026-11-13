@@ -437,7 +437,8 @@ struct GenerationLoopExitThinkingServingTests {
         #expect(outcome.content == "Answer: B")
     }
 
-    @Test("a local client that leaves while the stopped row releases its slot gets no continuation row")
+    @Test("a local client that leaves while the stopped row releases its slot gets no continuation row",
+          .timeLimit(.minutes(1)))
     func localDisconnectDuringTheReleaseWait() async throws {
         let engine = AdmittedThoughtLoopEngine(holdFirstRetirement: true)
         let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
@@ -456,22 +457,29 @@ struct GenerationLoopExitThinkingServingTests {
         scheduler.exitThinkingSetting = Self.cleanProcess
         let served = scheduler
         let scope = LocalRequestCancellationScope()
-        let request = Task {
+        let request = Task { () -> (stop: String?, content: String) in
             await LocalRequestCancellation.$current.withValue(scope) {
-                _ = try? await self.consume(served, maxTokens: 8_192)
+                let outcome = try? await self.consume(served, maxTokens: 8_192)
+                return (outcome?.info?.stopReason, outcome?.content ?? "")
             }
         }
         // The guard stopped the row and its `length` went out, but the row
         // still holds its slot: the splice waits in `waitForRowRelease`. The
         // local API's disconnect hook then reaches only the splice's control.
+        // The 200 ms let the splice pass its own pre-submit check first (a
+        // cancel before it would end the request there, without reaching the
+        // owner's check; the red run shows the wait is reached).
         await engine.waitUntilFirstFinished()
         try await Task.sleep(for: .milliseconds(200))
         scope.cancel()
         try await Task.sleep(for: .milliseconds(100))
         engine.releaseFirstRetirement()
-        await request.value
+        let result = await request.value
         await bridge.shutdown()
         #expect(engine.requests.count == 1)
+        // The held `length`, with no answer.
+        #expect(result.stop == "length")
+        #expect(result.content.isEmpty)
     }
 
     @Test("Qwen 3.6: a loop inside the thought ends it with `\\n</think>\\n\\n`, and stops apply to the answer")

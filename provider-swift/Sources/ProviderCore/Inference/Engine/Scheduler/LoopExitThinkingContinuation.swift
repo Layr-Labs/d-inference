@@ -149,7 +149,8 @@ enum LoopExitThinkingContinuation {
         do {
             continuation = try await submit(promptTokens + generated + exit.exitTokens, budget, { control.isCancelled })
         } catch {
-            return endAsLength(control.isCancelled ? "cancelled" : "continuation refused: \(error)")
+            return endAsLength(control.isCancelled || error is CancellationError
+                ? "cancelled" : "continuation refused: \(error)")
         }
         guard control.markStarted() else {
             await cancelContinuation()

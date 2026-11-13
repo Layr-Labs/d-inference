@@ -45,7 +45,7 @@ struct QwenStrictToolMarkers: Sendable {
 
     init(forbidding markers: [[UInt8]]) {
         text = markers + [QwenStrictToolBoundary.parameterClose]
-        value = markers + [QwenStrictToolBoundary.parameterClose] + QwenStrictToolBoundary.surrogateEscapes
+        value = text + QwenStrictToolBoundary.surrogateEscapes
     }
 }
 
@@ -101,8 +101,6 @@ struct QwenStrictToolBoundary: Hashable {
         default: false
         }
     }
-
-    var isInsideCall: Bool { !isFree }
 
     /// Free spans whose bytes can only be refused by completing a marker:
     /// reasoning, text, text values (every marker ends in `>`).

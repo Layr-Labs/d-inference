@@ -158,7 +158,7 @@ struct QwenStrictToolSchema: Sendable {
 
     /// How `Qwen35ToolCallParser` reads one parameter's text: a mirror of the
     /// SDK's `ToolArgumentNormalization.normalize` for a top-level string,
-    /// over the rendered schema (`QwenStrictToolSchemaTests` checks it against
+    /// over the rendered schema (`QwenStrictToolGrammarTests` checks it against
     /// the parser itself).
     struct ParserConversion: Equatable, Sendable {
         enum Kind: Equatable, Sendable { case text, integer, number, boolean, object, array, null }

@@ -1199,7 +1199,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 .init(modelId: modelId, modelType: modelType)),
             answerStopFilter: answerStopFilter,
             answerFormat: jsonAnswer?.format,
-            withholdReasoning: withholdsReasoning
+            withholdReasoning: withholdsReasoning,
+            harmonyFinalHeaders: HarmonyFinalHeaderFilter.applies(to: request, modelId: modelId, modelType: modelType)
         )
     }
 
@@ -1568,7 +1569,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         absorbStrayThinkClose: Bool = false,
         answerStopFilter: FlintAnswerStopFilter? = nil,
         answerFormat: JSONAnswerFormat? = nil,
-        withholdReasoning: Bool = false
+        withholdReasoning: Bool = false,
+        harmonyFinalHeaders: Bool = false
     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         do {
             try checkFirstContentDeadline()
@@ -1596,7 +1598,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 absorbStrayThinkClose: absorbStrayThinkClose,
                 answerStopFilter: answerStopFilter,
                 answerFormat: answerFormat,
-                withholdReasoning: withholdReasoning)
+                withholdReasoning: withholdReasoning,
+                harmonyFinalHeaders: harmonyFinalHeaders)
             try checkFirstContentDeadline()
             return stream
         } catch {
@@ -1632,7 +1635,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         absorbStrayThinkClose: Bool = false,
         answerStopFilter: FlintAnswerStopFilter? = nil,
         answerFormat: JSONAnswerFormat? = nil,
-        withholdReasoning: Bool = false
+        withholdReasoning: Bool = false,
+        harmonyFinalHeaders: Bool = false
     ) throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         // One forwarding implementation preserves all parser/event bytes. The
         // native path changes only task ownership and cancellation handoff.
@@ -1673,6 +1677,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 // Raw output passes this holdback before channel/tool parsing,
                 // so a matched answer stop and its tail are never parsed.
                 var answerStops = answerStopFilter
+                // GPT-OSS answers under `final <|constrain|>json` reach the Harmony parser as `final`.
+                var finalHeaders = harmonyFinalHeaders ? HarmonyFinalHeaderFilter() : nil
                 // Exact Flint's prepared format, or the format a constrained
                 // Qwen answer was compiled with.
                 var formatOutput = (answerFormat ?? prepared.responseFormat).map(JSONAnswerOutput.init)
@@ -1758,7 +1764,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         // Before any frame: generated output ends the
                         // pre-content interval even while it is withheld.
                         if recordsWithheldOutput, !generated.isEmpty { usageSignal.recordWithheldOutput() }
-                        let text = answerStops?.ingest(generated) ?? generated
+                        let stopped = answerStops?.ingest(generated) ?? generated
+                        let text = finalHeaders?.ingest(stopped) ?? stopped
                         if !text.isEmpty {
                             do {
                                 let events = try router.process(text)
@@ -1869,7 +1876,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 // defense in depth for every mode.
                 do {
                     var events: [MLXServerGenerationEvent] = []
-                    if let tail = answerStops?.finish(), !tail.isEmpty {
+                    var tail = answerStops?.finish() ?? ""
+                    if var filter = finalHeaders { tail = filter.ingest(tail) + filter.finish() }
+                    if !tail.isEmpty {
                         events += try router.process(tail)
                     }
                     events += try router.finishText()
@@ -2055,13 +2064,15 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         recordsWithheldOutput: Bool = false,
         usageSignal: EngineV2RequestUsageSignal = EngineV2RequestUsageSignal(),
         answerStopFilter: FlintAnswerStopFilter? = nil,
-        answerFormat: JSONAnswerFormat? = nil
+        answerFormat: JSONAnswerFormat? = nil,
+        harmonyFinalHeaders: Bool = false
     ) throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         try makeEventStream(upstream: upstream, cancelUpstream: cancelUpstream,
             toolHandler: toolHandler, prepared: prepared, releaseBox: releaseBox,
             usageSignal: usageSignal, reasoningPrefix: reasoningPrefix,
             nativeReasoningPrefix: nativeReasoningPrefix, recordsWithheldOutput: recordsWithheldOutput,
-            answerStopFilter: answerStopFilter, answerFormat: answerFormat)
+            answerStopFilter: answerStopFilter, answerFormat: answerFormat,
+            harmonyFinalHeaders: harmonyFinalHeaders)
     }
     #endif
 

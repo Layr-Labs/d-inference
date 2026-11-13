@@ -1,4 +1,0 @@
-### A past turn's reasoning sent back as `reasoning` or `thinking` reaches the model
-
-- A client that sends an earlier assistant turn back as OpenRouter returned it carries that turn's thought in `reasoning`; some clients use `thinking`. The provider read only `reasoning_content`, so the thought was dropped: Qwen 3.8, Bonsai 2 27B and MiMo, whose templates replay every earlier thought, saw an empty thought on each of those turns, and Qwen 3.5/3.6 and Gemma 4 lost the thoughts of the tool calls since the last user message.
-- Darkbloom requests and the local API now read such a turn's `thinking` or `reasoning` as its `reasoning_content`, as Hugging Face's chat template rendering does: the first non-null of `reasoning_content`, `thinking` and `reasoning` wins. An empty or non-string value changes nothing.

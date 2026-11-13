@@ -717,7 +717,8 @@ struct GemmaToolConstraintTests {
         // The deepest shape the compiler accepts still compiles quickly.
         let request = request(
             choice: .mode(.required),
-            tools: [tool(parameters: nestedOptionalParameters(depth: 15))])
+            tools: [tool(parameters: nestedOptionalParameters(
+                depth: ToolConstraintSchemaCompiler.maxDepth))])
         let prepared = try ToolChoicePromptPolicy.prepare(request)
         let clock = ContinuousClock()
         let start = clock.now
@@ -736,7 +737,7 @@ struct GemmaToolConstraintTests {
     @Test("a grammar over the state limit is refused while it is built")
     func stateLimitStopsConstruction() throws {
         // Built directly, past the compiler's cost ceiling: eight objects of
-        // 128 properties, each a 32-value string enum (~650,000 states).
+        // 128 properties, each a 32-value string enum (~800,000 states).
         let names = (0 ..< 128).map { "property_\($0)" }
         let leaf = ToolValueSchema.string(values: Array(names.prefix(32)), nullable: false)
         let object = ToolValueSchema.object(
@@ -746,13 +747,16 @@ struct GemmaToolConstraintTests {
             properties: (0 ..< 8).map { .init(name: "o\($0)", schema: object, required: true) },
             allowsAdditional: false, nullable: false)
         var builder = GemmaByteNFABuilder()
-        #expect(throws: ToolConstraintSchemaError.self) {
+        #expect(throws: GemmaByteNFABuilder.stateLimitError) {
             _ = try builder.build(
                 tools: [CompiledToolSchema(name: "wide", parameters: parameters)],
                 allowsParallel: false)
         }
         // Stopped within one value of the limit rather than after the whole grammar.
         #expect(builder.nodes.count < GemmaByteNFABuilder.maxStates + 10_000)
+        // The refusal detail clients receive through `invalidToolPayload`.
+        #expect(GemmaByteNFABuilder.stateLimitError == .unsupported(
+            "compiled tool grammar exceeds the 100000-state safety limit"))
     }
 
     @Test("nullable branches count toward the grammar complexity ceiling")

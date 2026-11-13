@@ -3625,9 +3625,9 @@ enters it both after a comma and without one, so an optional nested object
 costs its own size once however many optional siblings precede it; a
 grammar's state count grows with the schema, as its cost does. The
 100,000-state limit is checked while the automaton is built
-(`GemmaByteNFABuilder.maxStates`), so a schema past it is refused one value
-past the limit, before the minimum-distance pass, instead of after building
-the whole grammar
+(`GemmaByteNFABuilder.maxStates`), so a schema past it is refused within one
+value of the limit, before the minimum-distance pass, instead of after
+building the whole grammar
 (`provider-swift/Sources/ProviderCore/Inference/Tools/GemmaToolConstraintGrammar.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Tools/GemmaToolCallTokenConstraint.swift`).
 

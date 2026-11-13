@@ -28,9 +28,9 @@ struct GemmaByteNFABuilder {
         let end: Int
     }
 
-    /// The most states a tool grammar may have. Construction stops as soon as
-    /// it passes this, so an oversized grammar costs at most one value past
-    /// the limit rather than its whole size.
+    /// The most states a tool grammar may have. `value` and `members` check it
+    /// before building, so an oversized grammar stops within one value of the
+    /// limit instead of being built in full.
     static let maxStates = 100_000
     static let stateLimitError = ToolConstraintSchemaError.unsupported(
         "compiled tool grammar exceeds the \(maxStates)-state safety limit")
@@ -221,8 +221,11 @@ struct GemmaByteNFABuilder {
             epsilon(result.start, result.end)
             return result
         }
+        // The comma is built before the member so its edge points to a later
+        // state; the reverse-order distance pass needs a sweep per backward edge.
+        let comma = emitted ? literal(",") : nil
         let member = try emittedMember(properties, scope: scope, index: index)
-        let include = emitted ? sequence([literal(","), member]) : member
+        let include = comma.map { sequence([$0, member]) } ?? member
         epsilon(result.start, include.start)
         epsilon(include.end, result.end)
         if properties[index].required {
@@ -236,11 +239,11 @@ struct GemmaByteNFABuilder {
     }
 
     /// `name:value` and the members after it, built once per property and
-    /// entered from both emitted states (after a comma or not). Building it
-    /// per state copied a nested optional object once per path to it, which
-    /// doubles at every level and is invisible to the schema's grammar cost.
-    /// Every member list in a scope ends where the object closes, so sharing
-    /// the tail leaves the language unchanged.
+    /// entered from both emitted states (after a comma or not). A copy per
+    /// state would repeat a nested optional object once per path to it,
+    /// doubling at every level, which the schema's grammar cost does not
+    /// charge. Sharing is exact: every member list of a scope ends where the
+    /// object closes, so the tail may exit into either state's end.
     private mutating func emittedMember(
         _ properties: [ToolValueSchema.Property],
         scope: Int,

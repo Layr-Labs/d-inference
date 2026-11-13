@@ -178,8 +178,10 @@ struct GemmaJSONAnswerPolicyTests {
             ##"{"$ref":"#/$defs/\##(String(repeating: "d", count: 257))","$defs":{"\##(String(repeating: "d", count: 257))":{"type":"string"}}}"##,
         ]
         for schema in refused { #expect(try Self.rewrite(schema) == nil, "\(schema)") }
+        let widest = String(repeating: "a", count: 64)
         for accepted in [#"{"type":"INTEGER"}"#, #"{"type":["boolean","null","null"]}"#,
-                         #"{"type":"object","properties":{"a":{"type":"string"}},"required":["a"]}"#] {
+                         #"{"type":"object","properties":{"a":{"type":"string"}},"required":["a"]}"#,
+                         #"{"type":"object","properties":{"\#(widest)":{"type":"string"}},"required":["\#(widest)"]}"#] {
             #expect(try Self.rewrite(accepted) == Self.json(accepted), "\(accepted)")
         }
         let longest = String(repeating: "d", count: 256)

@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-12
+> Last updated: 2026-11-13
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -3299,6 +3299,17 @@ template controls while allowing parser selection before service creation
 markers. It emits unclosed-frame payload incrementally and retains only a
 possible closing-marker suffix; it does not buffer an entire unfinished tool
 call (`provider-swift/Sources/ProviderCore/Inference/Streaming/NativeChannelSplitter.swift`).
+
+GPT-OSS can open its answer with Harmony header attributes, as in
+`<|channel|>final <|constrain|>json<|message|>`. The SDK's Harmony reasoning
+parser routes only the exact header `final` to content and drops every other
+message, so `MultiModelBatchSchedulerEngine.makeEventStream` first passes the
+raw output of a GPT-OSS request on the `harmony` parser through
+`HarmonyFinalHeaderFilter`. A `final` header that carries attributes and no
+recipient becomes `<|channel|>final<|message|>`. Analysis, commentary and call
+headers, and all text outside headers, pass byte for byte. The filter holds back
+at most a partial `<|channel|>` marker or one header of up to 256 bytes
+(`provider-swift/Sources/ProviderCore/Inference/Streaming/HarmonyFinalHeaderFilter.swift`).
 
 Only qualified Nemotron Lightning listings absorb a stray `</think>` already
 in content state, leaving preceding text as content and tool arguments opaque.

@@ -8,7 +8,8 @@ import MLXLMServer
 /// `<|channel|>final<|message|>`. The Harmony reasoning parsers route only the
 /// exact header `final` to content and drop every other message, so without
 /// this filter such an answer reaches the client as empty content. Other
-/// headers and message bodies pass byte for byte. The opt-in commentary mode
+/// headers and message bodies pass byte for byte. The commentary mode (on by
+/// default, `DARKBLOOM_GPTOSS_COMMENTARY_CONTENT` an off word turns it off)
 /// also maps recipientless assistant commentary to content, retaining bounded
 /// header context so a recipient before the channel remains a tool call.
 struct HarmonyFinalHeaderFilter: Sendable {
@@ -31,9 +32,16 @@ struct HarmonyFinalHeaderFilter: Sendable {
     private var oversizedLeadingHeader = false
 
     init(environment: [String: String] = ProcessInfo.processInfo.environment) {
-        includesCommentary = ["1", "on", "true", "yes"].contains(
-            environment[Self.commentaryEnvironmentKey]?.trimmingCharacters(in: .whitespacesAndNewlines)
-                .lowercased() ?? "")
+        includesCommentary = Self.commentaryEnabled(environment[Self.commentaryEnvironmentKey])
+    }
+
+    /// On by default. An off word (`off`, `false`, `0`, `none`, `no` or
+    /// `disabled`, in any case, surrounding space ignored) is the kill switch:
+    /// recipientless commentary is dropped, as in 0.10.12.
+    static func commentaryEnabled(_ value: String?) -> Bool {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !value.isEmpty else { return true }
+        return !["off", "false", "0", "none", "no", "disabled"].contains(value)
     }
 
     private var pending = ""
@@ -97,7 +105,7 @@ struct HarmonyFinalHeaderFilter: Sendable {
         return pending
     }
 
-    /// Normalize `final` or opt-in recipientless assistant `commentary`.
+    /// Normalize `final` or (commentary mode) recipientless assistant `commentary`.
     /// An answer names no
     /// recipient (`to=` is a call) and it holds no control marker other than
     /// `<|constrain|>` (another one means the header was cut short and a new

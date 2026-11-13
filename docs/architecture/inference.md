@@ -9987,5 +9987,5 @@ Where it measured faster and byte-equal, a cohort's verify rows go through one k
 
 GPT-OSS streams using the Harmony reasoning parser normalize recipientless assistant commentary to the answer channel before tool extraction and reasoning parsing. This keeps the preamble as content for both streamed and collected responses. Recipients before or after the channel marker remain tool calls; header context is bounded and message bodies are not promoted.
 
-The [rollout switch](../reference/configuration.md#gpt-oss-commentary-content) defaults off.
+It is on by default; its [kill switch](../reference/configuration.md#gpt-oss-commentary-content), `DARKBLOOM_GPTOSS_COMMENTARY_CONTENT=0`, restores 0.10.12, where the preamble is dropped.
 CPU parser fixtures do not establish full-model output quality or GPU performance.

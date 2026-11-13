@@ -31,8 +31,10 @@ struct HistoryReasoningAliasTests {
         }
         let local = try JSONDecoder().decode(LocalChatRequest.self, from: localBody)
             .request.messages.map(\.reasoningContent)
+        let batch = try JSONDecoder().decode([LocalChatRequest].self, from: Data("[".utf8) + localBody + Data("]".utf8))
         #expect(inbound == pipeline)
         #expect(pipeline == local)
+        #expect(batch.map { $0.request.messages.map(\.reasoningContent) } == [local])
         #expect(try PromptPreparationProbe.bodyDecodesAgree(body))
         return inbound
     }
@@ -44,6 +46,8 @@ struct HistoryReasoningAliasTests {
         (#""thinking":null,"reasoning":"R1""#, "R1"),
         (#""thinking":"T1","reasoning":"R1""#, "T1"),
         (#""reasoning_content":"C1","thinking":"T1","reasoning":"R1""#, "C1"),
+        // The native field wins when it is not null, even empty.
+        (#""reasoning_content":"","reasoning":"R1""#, ""),
     ])
     func aliasesFollowTransformersPrecedence(fields: String, expected: String) throws {
         #expect(try Self.reasoning(Self.body(fields)) == [nil, expected, nil])

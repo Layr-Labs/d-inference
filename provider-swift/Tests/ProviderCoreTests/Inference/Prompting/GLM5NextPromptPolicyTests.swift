@@ -852,6 +852,13 @@ struct GLM5NextPromptPolicyTests {
             ["reasoning": "", "reasoning_details": [text(thought)]],
             ["content": NSNull(), "reasoning_details": [text(thought)]],
             ["reasoning_content": thought, "reasoning": "stale", "reasoning_details": [text("stale")]],
+            // `thinking` is read as `reasoning_content` on every family, and
+            // beats `reasoning`, as in transformers; one that aliases nothing
+            // (not a string, or empty) leaves GLM's own reading in place.
+            ["thinking": thought],
+            ["thinking": thought, "reasoning": "stale", "reasoning_details": [text("stale")]],
+            ["thinking": 7, "reasoning": thought],
+            ["thinking": "", "reasoning_details": [text(thought)]],
         ] {
             #expect(try rendered(spelling) == expected, "\(spelling.keys.sorted())")
         }

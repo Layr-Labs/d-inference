@@ -124,6 +124,18 @@ public struct ChatTemplateControls: Sendable, Equatable {
         return copy
     }
 
+    /// The controls a coordinator `inference_request` renders with: the prompt
+    /// its plan was made for, in the Gemma 4 prompt contract the frame asks
+    /// for, with the request's date.
+    func servingCoordinatorRequest(
+        planned: Bool, gemmaPromptContract: Int?,
+        enabled: Bool = GemmaPromptContract.enabled, at now: Date = Date()
+    ) -> Self {
+        servingCoordinatorRequest(planned: planned)
+            .askingGemmaPromptContract(gemmaPromptContract, enabled: enabled)
+            .resolvingPromptDate(at: now)
+    }
+
     /// The controls with the Gemma 4 prompt contract a coordinator request
     /// carries: version 2 only while this provider advertises it, else as
     /// before. Only the authenticated coordinator frame sets it, never a body.

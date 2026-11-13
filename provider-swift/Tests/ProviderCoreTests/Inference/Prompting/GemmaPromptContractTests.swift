@@ -122,6 +122,33 @@ struct GemmaPromptContractTests {
         #expect(!GemmaPromptContract.rendersParts(media, modelType: "gemma4", controls: asked))
     }
 
+    /// The handler renders a coordinator request with exactly these controls.
+    @Test func aCoordinatorRequestRendersTheContractItsFrameAsksFor() throws {
+        let body = try Self.body([["role": "system", "content": Self.system],
+                                  ["role": "user", "content": Self.question]])
+        let controls = ProviderLoop.extractChatTemplateControls(from: body)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        for planned in [false, true] {
+            let asked = controls.servingCoordinatorRequest(
+                planned: planned, gemmaPromptContract: 2, enabled: true, at: now)
+            #expect(asked.gemmaPromptContract == 2)
+            #expect(asked == controls.servingCoordinatorRequest(planned: planned)
+                .askingGemmaPromptContract(2, enabled: true).resolvingPromptDate(at: now))
+            for version in [nil, 1, 3] as [Int?] {
+                #expect(controls.servingCoordinatorRequest(
+                    planned: planned, gemmaPromptContract: version, enabled: true, at: now).gemmaPromptContract == nil)
+            }
+            #expect(controls.servingCoordinatorRequest(
+                planned: planned, gemmaPromptContract: 2, enabled: false, at: now).gemmaPromptContract == nil)
+        }
+        let request = try ProviderLoop.decodeOpenAIRequest(body)
+        let served = try ProviderPromptContractPipeline.normalizedInput(
+            prepared: ToolChoicePromptPolicy.prepare(request, modelType: "gemma4"), request: request,
+            modelType: "gemma4", templateControls: controls.servingCoordinatorRequest(
+                planned: true, gemmaPromptContract: 2, enabled: true, at: now)).messages
+        #expect(Self.texts(served[0]["content"]) == [Self.system])
+    }
+
     @Test func emptyMissingAndOtherRolesFollowVLLM() throws {
         let empty = try #require(GemmaPromptContract.textParts(of: OpenAIChatMessage(role: .system, content: .text(""))))
         #expect(Self.texts(empty) == [""])

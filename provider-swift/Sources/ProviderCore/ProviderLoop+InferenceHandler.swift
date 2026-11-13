@@ -430,10 +430,9 @@ extension ProviderLoop {
         // vision, and both prompt-token recount paths. A request planned for
         // the coordinator's prompt cache renders the prompt of its plan, in
         // the Gemma 4 prompt contract the coordinator planned and counted it with.
-        let templateControls = inbound.extensions.templateControls
-            .servingCoordinatorRequest(planned: remoteCache.scope != nil || remoteCache.receiptNonce != nil)
-            .askingGemmaPromptContract(gemmaPromptContract)
-            .resolvingPromptDate()
+        let templateControls = inbound.extensions.templateControls.servingCoordinatorRequest(
+            planned: remoteCache.scope != nil || remoteCache.receiptNonce != nil,
+            gemmaPromptContract: gemmaPromptContract)
         // Cache identity is coordinator-authored and authenticated outside the
         // sealed OpenAI body. Never trust caller-controlled prompt_cache_key/user
         // for remote cache partitioning. Legacy coordinators omit the outer

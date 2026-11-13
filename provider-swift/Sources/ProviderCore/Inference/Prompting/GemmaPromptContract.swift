@@ -2,25 +2,32 @@
 //
 // Gemma 4 prompt contracts. The chat template renders a string system message
 // as is (`messages[0]['content'] | trim`) but a list of text parts with a space
-// after each part (`item['text'] | trim + ' '`), and trims each part of a
-// list-shaped user message on its own.
+// after each part (`item['text'] | trim + ' '`), and trims each part of any
+// other list-shaped message on its own.
 //
 // - Version 1 (0.10.12 and the coordinator's prompt sidecar today): content as
 //   one string, list parts joined first (`OpenAIMessageContent.text`).
-// - Version 2: the system message (string or list) and a user message's list
-//   content as the template's text parts. That is the prompt vLLM renders,
-//   since vLLM reads this template as OpenAI content format and hands it every
-//   string as one text part: OpenRouter's GPQA prompt is 88 tokens, not 87.
-//   For list content it is also Transformers' render.
+// - Version 2: every system message (string or list) and a user message's list
+//   content as the template's text parts; assistant and tool content as in
+//   version 1. vLLM reads this template as OpenAI content format and hands it
+//   every string as one text part, so for system and user content, and for
+//   strings of any role, this is vLLM's prompt: OpenRouter's GPQA prompt is 88
+//   tokens, not 87. vLLM renders list-shaped assistant content part by part;
+//   version 2 keeps it joined, because `Gemma4TurnStructure` merges only
+//   string assistant turns. The template joins tool parts as they are, so tool
+//   lists render the same either way.
 //
 // A provider advertises version 2 at registration and renders it only for a
 // coordinator request that asks for it (`InferenceRequest.gemmaPromptContract`),
-// which the coordinator does only for requests it planned and counted with
-// version 2. Every other request renders version 1, so the provider stays
-// dormant until the coordinator switches a model on, and a cache plan or exact
-// count never meets a prompt it was not made for. Media requests render
-// version 1. `DARKBLOOM_GEMMA_PROMPT_CONTRACT_V2=off` stops advertising
-// version 2 and renders version 1 everywhere.
+// for the model types `gemma4` and `gemma4_text` (not `gemma4_vision` or
+// `diffusion_gemma`, which the coordinator's prompt sidecar also renders in
+// version 1 either way) and only for text requests. The coordinator asks only
+// a provider that registered version 2, only for text requests, and chooses
+// again for every attempt, with that version's cache plan and exact count. So
+// a cache plan or exact count never meets a prompt it was not made for. Every
+// other request renders version 1, so the provider stays dormant until the
+// coordinator switches a model on. `DARKBLOOM_GEMMA_PROMPT_CONTRACT_V2=off`
+// stops advertising version 2 and renders version 1 everywhere.
 
 import Foundation
 import MLXLMServer
@@ -57,7 +64,8 @@ enum GemmaPromptContract {
     }
 
     /// The version 2 template content of `message`: a system message's string
-    /// or list, or a user message's list, as text parts. Nil keeps its string.
+    /// or list, or a user message's list, as text parts. Nil keeps its version
+    /// 1 string: user strings, and assistant and tool content.
     static func textParts(of message: OpenAIChatMessage) -> [any Sendable]? {
         switch (message.role, message.content) {
         case (.system, .text(let text)):

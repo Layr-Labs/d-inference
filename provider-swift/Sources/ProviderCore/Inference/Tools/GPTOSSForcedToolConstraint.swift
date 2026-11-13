@@ -12,8 +12,9 @@ import MLXLMCommon
 
 /// The process switch and the catalog build GPT-OSS forced calls are served for.
 enum GPTOSSForcedToolCalls {
-    /// `off`, `0`, `false` or `no` restores 0.10.12: forced choice is refused
-    /// and the model is not advertised for it. Read once at launch.
+    /// An off word (`off`, `false`, `0`, `none`, `no` or `disabled`, in any
+    /// case, surrounding space ignored) restores 0.10.12: forced choice is
+    /// refused and the model is not advertised for it. Read once at launch.
     static let environmentKey = "DARKBLOOM_GPTOSS_FORCED_TOOLS"
     static let enabled = isEnabled(ProcessInfo.processInfo.environment[environmentKey])
 
@@ -25,7 +26,7 @@ enum GPTOSSForcedToolCalls {
     static func isEnabled(_ value: String?) -> Bool {
         guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
               !value.isEmpty else { return true }
-        return !["off", "0", "false", "no"].contains(value)
+        return !["off", "false", "0", "none", "no", "disabled"].contains(value)
     }
 
     static func applies(to context: ChatTemplateFixContext, enabled: Bool = enabled) -> Bool {
@@ -88,14 +89,19 @@ struct GPTOSSHarmonyFraming: Sendable {
 /// Token automaton of one forced GPT-OSS response:
 /// `<|channel|>analysis<|message|>` reasoning `<|end|>`, then a declared
 /// function's call header, its arguments and `<|call|>`. Reasoning is free text
-/// that never spells a Harmony control token; within the output kept back for
-/// the call (`analysisReserve`) the analysis must end. Arguments are delegated
-/// to a `JSONAnswerConstraint` of the function's schema, which admits
-/// `<|call|>` only once the object is complete. A call cut by the budget is
-/// never completed or repaired.
+/// that never spells a Harmony control token; the analysis must end within the
+/// output kept back for the call (`analysisReserve`) and once `analysisCap`
+/// tokens are out. Arguments are delegated to a `JSONAnswerConstraint` of the
+/// function's schema, which admits `<|call|>` only once the object is
+/// complete. A call cut by the budget is never completed or repaired.
 final class GPTOSSForcedToolConstraint: CBv2TokenConstraint, @unchecked Sendable {
     /// Arguments budget kept back while the model reasons.
     static let argumentsAllowance = 128
+    /// Output after which the analysis ends whatever the budget, so a
+    /// reasoning loop (the loop guard is off for constrained output) reaches
+    /// the call instead of running to the context limit. The longest forced
+    /// GPT-OSS response measured was 3,519 tokens.
+    static let analysisCap = 16_384
     /// The arguments' delegate interns at most its own maximum; the analysis
     /// windows and header prefixes add a few hundred more.
     static let maximumStates = 2 * JSONAnswerConstraint.maximumStates
@@ -216,7 +222,7 @@ final class GPTOSSForcedToolConstraint: CBv2TokenConstraint, @unchecked Sendable
         case .analysisHeader(let position):
             return [framing.analysisHeader[position]]
         case .analysis(let window):
-            return remainingTokens <= analysisReserve ? [framing.end] : analysisTokens(window)
+            return analysisMustEnd(remainingTokens: remainingTokens) ? [framing.end] : analysisTokens(window)
         case .callHeader(let node):
             return callHeaderTrie[node].next.keys.sorted()
         case .arguments(let tool, let inner):
@@ -225,13 +231,18 @@ final class GPTOSSForcedToolConstraint: CBv2TokenConstraint, @unchecked Sendable
     }
 
     /// The allowed set depends on the budget only through `remainingTokens > 0`
-    /// and, while reasoning, whether the call's reserve has been reached.
-    /// Interned state ids are never reused.
+    /// and, while reasoning, whether the analysis must end. Interned state ids
+    /// are never reused.
     func maskCacheKey(state: Int, remainingTokens: Int) -> Int? {
         lock.lock(); defer { lock.unlock() }
         guard remainingTokens > 0, phases.indices.contains(state) else { return nil }
-        if case .analysis = phases[state], remainingTokens <= analysisReserve { return -1 }
+        if case .analysis = phases[state], analysisMustEnd(remainingTokens: remainingTokens) { return -1 }
         return state
+    }
+
+    /// Within the call's reserve, or once `analysisCap` tokens are out.
+    private func analysisMustEnd(remainingTokens: Int) -> Bool {
+        remainingTokens <= analysisReserve || maxTokens - remainingTokens >= Self.analysisCap
     }
 
     /// `allowedTokenIDs` has no observable effect beyond its result, and

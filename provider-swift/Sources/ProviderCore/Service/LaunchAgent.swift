@@ -422,7 +422,8 @@ public enum LaunchAgent: Sendable {
     /// and its exit from a repeating Gemma 4 thought are on by default; `0`
     /// turns each off, a list of `model_type`s replaces its default list.
     /// `DARKBLOOM_GPTOSS_FORCED_TOOLS`: GPT-OSS forced tool calls are on by
-    /// default; `off` refuses them and stops advertising them.
+    /// default; an off word (`off`, `false`, `0`, `none`, `no`, `disabled`)
+    /// refuses them and stops advertising them.
     static let inferencePassthroughEnvKeys = [
         EngineV2Factory.maxPartialPrefillsKey,
         EngineV2Factory.prefillChunkKey,

@@ -3535,7 +3535,10 @@ JSON object of that function's compiled schema (a `JSONAnswerConstraint` on the
 `JSONAnswerProfile.gptOSS` byte vocabulary) and `<|call|>`. A final answer, a
 commentary preamble, an undeclared function and off-schema arguments cannot be
 sampled. Within the output kept back for the call (`<|end|>`, the longest call
-header, 128 argument tokens and `<|call|>`) the analysis must end. The headers'
+header, 128 argument tokens and `<|call|>`) the analysis must end, and it ends
+once 16,384 tokens are out whatever the budget (`analysisCap`): the loop guard
+is off for constrained output, so a looping analysis reaches the call instead
+of the context limit. The headers'
 token sequences are the tokenizer's own encodings, checked by round trip; a
 tokenizer that fails the check, or a prompt that does not end at the assistant
 boundary, refuses the request (400 `unsupported_forced_tool_choice`), as does a
@@ -3545,8 +3548,9 @@ response, as Harmony's `<|call|>` stops generation: `parallel_tool_calls`
 changes nothing. The call is withheld, parsed by `HarmonyToolCallParser` and
 validated like every forced call; the only text the router lets through first is
 the analysis message (`HarmonyForcedCallText`), which the Harmony reasoning
-parser turns into reasoning. `DARKBLOOM_GPTOSS_FORCED_TOOLS=off` (or `0`,
-`false`, `no`; read at launch, passed to the launchd daemon) restores 0.10.12:
+parser turns into reasoning. `DARKBLOOM_GPTOSS_FORCED_TOOLS=off` (or `false`,
+`0`, `none`, `no`, `disabled`, in any case; read at launch, passed to the
+launchd daemon) restores 0.10.12:
 the model is not listed and forced choice is refused. The coordinator also
 routes these requests only to providers at or above its GPT-OSS floor
 (darkbloom-platform `modelarch.ForcedToolsMinimumProviderVersion`, 0.10.13), and

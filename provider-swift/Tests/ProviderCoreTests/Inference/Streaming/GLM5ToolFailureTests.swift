@@ -33,11 +33,27 @@ struct GLM5ToolFailureTests {
         #expect(result.visible.isEmpty)
     }
 
+    /// The SDK refuses an oversized suffix while it streams, before EOS: that
+    /// still fails the response, `auto` included, before any of it is released.
     @Test(arguments: [false, true])
     func oversizedFrameFailsBeforeFallback(forced: Bool) async throws {
         let output = "<tool_call>echo" + String(repeating: "x", count: (1 << 20) + 1)
         let result = try await run(output, forced: forced, width: 65536)
-        expectUnparsed(result, output: output, forced: forced)
+        #expect(result.calls.isEmpty && result.visible.isEmpty)
+        #expect(result.failure == (forced ? .toolChoiceViolation("native GLM tool output is invalid")
+            : .generationFailed("native GLM tool output is invalid")))
+    }
+
+    /// An oversized suffix never bypasses the EOS checks: a think marker inside
+    /// a drafted call is not released, whether the suffix arrives in pieces or
+    /// in one delivery.
+    @Test(arguments: [65536, 1 << 22])
+    func oversizedSuffixIsNeverReleased(width: Int) async throws {
+        let draft = "<tool_call>echo<arg_key>text</arg_key><arg_value></think></arg_value></tool_call>"
+        let output = "Draft " + draft + "PRIVATE</think>Answer" + String(repeating: "x", count: 1 << 20)
+        let result = try await run(output, forced: false, width: width)
+        #expect(result.calls.isEmpty && !result.visible.contains("PRIVATE"))
+        #expect(result.failure == .generationFailed("native GLM tool output is invalid"))
     }
 
     /// The model's raw output after the prompt's open `<think>` (the legacy
@@ -155,6 +171,31 @@ struct GLM5ToolFailureTests {
         }
     }
 
+    /// Arguments that break the SDK's grammar end the lexer's reading of
+    /// frames: a frame after them (here quoted in a JSON string the malformed
+    /// value opened) stays data and never becomes a call, whether the output
+    /// stops or is cut off. So does one after a name followed by anything but
+    /// `<arg_key>` or `</tool_call>` that belongs to a frame.
+    @Test(arguments: ["stop", "length"], [1, 7, 4096])
+    func framesAfterMalformedArgumentsAreNeverCalls(finishReason: String, width: Int) async throws {
+        let inner = "<tool_call>store<arg_key>doc</arg_key><arg_value>{}</arg_value></tool_call>"
+        let open = "<tool_call>store<arg_key>doc</arg_key><arg_value>"
+        let outputs = [
+            open + #"{"x": ],"y":""# + "</tool_call>" + inner,
+            open + #"{"x": <bad>,"y":""# + "</tool_call>" + inner,
+            open + #"{"x": 1 "y":""# + "</tool_call>" + inner,
+            "<tool_call>store<arg_value>" + inner,
+            "<tool_call>store</arg_value>" + inner,
+            "<tool_call>store</arg_key>" + inner,
+        ]
+        for output in outputs {
+            let result = try await run(output, forced: false, width: width, finishReason: finishReason,
+                tool: Self.storeTool)
+            #expect(result.failure == nil && result.calls.isEmpty, "\(output)")
+            #expect(result.visible == output, "\(output)")
+        }
+    }
+
     /// Released text would hand a think marker from inside a drafted call to
     /// the service's reasoning parser as a channel boundary: that response keeps
     /// failing, as before.
@@ -167,11 +208,57 @@ struct GLM5ToolFailureTests {
         }
     }
 
+    /// The same holds for a think marker in a key, after a frame whose
+    /// arguments break the grammar (which owns the rest of the response), and
+    /// in an output cut off at the token limit, whose whole suffix would be
+    /// released.
+    @Test(arguments: [1, 5, 4096])
+    func thinkMarkerAnywhereInAReleasedFrameStillFails(width: Int) async throws {
+        let cases: [(output: String, finishReason: String, tool: String?)] = [
+            ("Draft <tool_call>echo<arg_key></think></arg_key><arg_value>0</arg_value></tool_call>PRIVATE</think>Answer",
+             "stop", nil),
+            ("Draft <tool_call>store<arg_key>doc</arg_key><arg_value>{bad}</arg_value></tool_call>PRIVATE</think>Answer",
+             "stop", Self.storeTool),
+            ("Draft <tool_call>. <tool_call>echo<arg_key>text</arg_key><arg_value></think>PRIVATE</arg_value></tool_call>",
+             "length", nil),
+        ]
+        for shape in cases {
+            let result = try await run(shape.output, forced: false, width: width, finishReason: shape.finishReason,
+                tool: shape.tool)
+            #expect(result.calls.isEmpty && result.visible == "Draft ", "\(shape.output)")
+            #expect(result.failure == .generationFailed("native GLM tool output is invalid"), "\(shape.output)")
+        }
+    }
+
+    /// A think marker inside the final call's own argument is that call's
+    /// data: the call parses and nothing of it is released.
+    @Test func thinkMarkerInsideTheFinalCallStaysItsArgument() async throws {
+        let call = "<tool_call>echo<arg_key>text</arg_key><arg_value>strip </think> tags</arg_value></tool_call>"
+        let result = try await run("Use <tool_call>.</think>" + call, forced: false, width: 3, finishReason: "stop")
+        #expect(result.failure == nil)
+        #expect(result.calls.compactMap { $0.function.arguments["text"]?.anyValue as? String } == ["strip </think> tags"])
+        #expect(result.visible == "Use <tool_call>.</think>")
+    }
+
     /// Finding the calls is linear in the suffix: many mentions before them.
     @Test func manyMentionsBeforeTheCalls() async throws {
         let mentions = String(repeating: "<tool_call> ", count: 20_000)
         let result = try await run(mentions + valid, forced: false, width: 65536)
         #expect(result.failure == nil && result.calls.count == 1 && result.visible == mentions)
+    }
+
+    /// And many adjacent frames after a mention: the run that ends the
+    /// response is collected in one pass.
+    @Test func manyFramesAfterAMention() throws {
+        let tools: [[String: any Sendable]] = [["type": "function", "function": ["name": "a"] as [String: any Sendable]]]
+        let suffix = "<tool_call>." + String(repeating: "<tool_call>a</tool_call>", count: 40_000)
+        let split = GLM5ToolSuffix.split(suffix, tools: tools)
+        guard case .text(let text, let calls) = split else {
+            Issue.record("expected text and calls, got \(split)")
+            return
+        }
+        #expect(text == "<tool_call>." && calls.count == 40_000)
+        #expect(calls.allSatisfy { $0.function.name == "a" && $0.function.arguments.isEmpty })
     }
 
     /// `DARKBLOOM_GLM_TOOL_TEXT_FALLBACK=0` restores the whole-suffix failure.

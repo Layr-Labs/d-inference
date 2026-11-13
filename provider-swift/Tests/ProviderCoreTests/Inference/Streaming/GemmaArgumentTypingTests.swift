@@ -76,8 +76,8 @@ struct GemmaArgumentTypingTests {
     /// `ToolSchemaNormalization`: a property declared without a type (`{}`
     /// or a description only) is shown as STRING, and a union as its first
     /// member's type, so their bare values follow that type. vLLM, reading
-    /// the caller's schema, keeps 5, true and 3 there. Every result is valid
-    /// against the caller's schema (`strict` validates it).
+    /// the caller's schema, keeps 5, true and 3 there. Each result here is
+    /// valid for the caller's schema, and the `strict` validator accepts it.
     @Test("an untyped property or a string-first union reads a bare value as the type Gemma is shown")
     func normalizedSchemasDecideBareValues() throws {
         let body = Data(#"""

@@ -3507,7 +3507,8 @@ for any parameter. The schema read is the one Gemma is shown, after
 `ToolSchemaNormalization`: a property declared without a type (or `{}`) is
 shown as STRING and a union as its first member's type, so `any:5` there reads
 `"5"` where vLLM, reading the declared schema, returns 5 (both valid for the
-declared schema). Sources:
+declared schema, except for an untyped `enum` that mixes types, such as
+`["a", 1]`, whose unquoted `1` reads `"1"`). Sources:
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/ToolArgumentNormalization.swift`
 (`declaredTypes`, `bareLiteral`),
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/Parsers/GemmaFunctionParser.swift`,

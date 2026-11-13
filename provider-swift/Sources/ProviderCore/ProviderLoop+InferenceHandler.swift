@@ -198,6 +198,7 @@ extension ProviderLoop {
         profile requestProfile: RequestProfileBuilder? = nil,
         serviceReservationID: String? = nil,
         promptWork: PromptWork? = nil,
+        gemmaPromptContract: Int? = nil,
         send: SendHandle,
         workFIFOGate: WorkFIFOGate? = nil
     ) async {
@@ -427,9 +428,11 @@ extension ProviderLoop {
         // Recover the one out-of-band template-control value once from the
         // authenticated plaintext body. The same value is used by text,
         // vision, and both prompt-token recount paths. A request planned for
-        // the coordinator's prompt cache renders the prompt of its plan.
+        // the coordinator's prompt cache renders the prompt of its plan, in
+        // the Gemma 4 prompt contract the coordinator planned and counted it with.
         let templateControls = inbound.extensions.templateControls
             .servingCoordinatorRequest(planned: remoteCache.scope != nil || remoteCache.receiptNonce != nil)
+            .askingGemmaPromptContract(gemmaPromptContract)
             .resolvingPromptDate()
         // Cache identity is coordinator-authored and authenticated outside the
         // sealed OpenAI body. Never trust caller-controlled prompt_cache_key/user

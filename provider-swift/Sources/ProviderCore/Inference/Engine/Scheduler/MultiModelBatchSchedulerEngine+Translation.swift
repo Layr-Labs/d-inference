@@ -43,6 +43,10 @@ public struct ChatTemplateControls: Sendable, Equatable {
     /// body. The coordinator path serves every request as a stream and the
     /// coordinator reassembles a complete one (`StrictToolCallPolicy`).
     var clientStreams: Bool?
+    /// The Gemma 4 prompt contract the coordinator asked for
+    /// (`askingGemmaPromptContract`): 2 renders the template's text parts
+    /// (`GemmaPromptContract`); nil renders version 1, as before.
+    private(set) var gemmaPromptContract: Int?
 
     public init(
         reasoningEffort: String? = nil,
@@ -118,6 +122,15 @@ public struct ChatTemplateControls: Sendable, Equatable {
         var copy = self
         copy.templateJSON = .init()
         return copy
+    }
+
+    /// The controls with the Gemma 4 prompt contract a coordinator request
+    /// carries: version 2 only while this provider advertises it, else as
+    /// before. Only the authenticated coordinator frame sets it, never a body.
+    func askingGemmaPromptContract(
+        _ version: Int?, enabled: Bool = GemmaPromptContract.enabled
+    ) -> Self {
+        self
     }
 
     func resolvingPromptDate(at now: Date = Date()) -> Self {

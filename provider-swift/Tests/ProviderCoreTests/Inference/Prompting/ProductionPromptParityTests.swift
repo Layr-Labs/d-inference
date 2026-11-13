@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import MLXLMServer
 import MLXLMCommon
@@ -87,6 +88,132 @@ struct ProductionPromptParityTests {
                 }
             }
         }
+    }
+
+    /// Gemma 4 prompt contracts on the served artifacts: a request that asks
+    /// for nothing renders contract 1 (0.10.12, the sidecar's plans), and one
+    /// the coordinator asks for contract 2 renders vLLM's prompt. The vectors
+    /// are Transformers' chat-template render of the same artifacts
+    /// (`gemma4_prompt_contract_vectors.json`).
+    @Test("Gemma 4 prompt contract 1 and 2 render the vectors")
+    func gemmaPromptContractVectors() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let vectorsPath = environment["PROMPT_PARITY_VECTORS"],
+              let artifactRootPath = environment["PROMPT_PARITY_ARTIFACT_ROOT"]
+        else {
+            #expect(
+                environment["PROMPT_PARITY_REQUIRED"] != "1",
+                "production parity gate requires PROMPT_PARITY_VECTORS and PROMPT_PARITY_ARTIFACT_ROOT")
+            return
+        }
+        let vectorsURL = URL(fileURLWithPath: vectorsPath)
+        let vectors = try JSONDecoder().decode(GemmaPromptContractVectors.self, from: Data(contentsOf:
+            vectorsURL.deletingLastPathComponent().appendingPathComponent("gemma4_prompt_contract_vectors.json")))
+        let corpus = try JSONDecoder().decode(Corpus.self, from: Data(contentsOf: vectorsURL))
+        let model = try #require(corpus.models.first { $0.modelID == vectors.modelID })
+        let modelDirectory = URL(fileURLWithPath: artifactRootPath, isDirectory: true)
+            .appendingPathComponent(model.promptContractID, isDirectory: true)
+        #expect(Gemma4ToolConstraintContract.templateSHA256(at: modelDirectory) == vectors.templateSHA256)
+        let tokenizerFile = try Data(contentsOf: modelDirectory.appendingPathComponent("tokenizer.json"))
+        #expect(SHA256.hash(data: tokenizerFile).map { String(format: "%02x", $0) }.joined()
+                == vectors.tokenizerSHA256)
+        let tokenizer = try await LocalTokenizerLoader().load(from: modelDirectory)
+        let modelType = ModelScanner.parseConfigJSON(
+            at: modelDirectory.appendingPathComponent("config.json")).modelType
+        #expect(modelType == "gemma4")
+        #expect(vectors.cases.map(\.id) == [
+            "gpqa_string_system", "gpqa_developer_system", "gpqa_list_system_user", "list_parts_whitespace",
+            "no_system", "no_system_thinking_off", "system_thinking_off", "tools_string_system",
+            "tools_no_system", "tau2_policy",
+        ])
+        let gpqa = try #require(vectors.cases.first)
+        #expect(gpqa.contract1TokenIDs.count == 87 && gpqa.contract2TokenIDs.count == 88)
+        for fixture in vectors.cases {
+            let providerBody = try JSONSerialization.data(
+                withJSONObject: fixture.providerBody.foundationObject())
+            let request = try ProviderLoop.decodeOpenAIRequest(providerBody)
+            let engine = PromptPreparationCaptureEngine()
+            let frames = try await MLXOpenAIService(engine: engine)
+                .streamChatCompletionFrames(request: request)
+            for try await _ in frames {}
+            let generationRequest = try #require(await engine.request)
+            let controls = ProviderLoop.extractChatTemplateControls(from: providerBody).resolvingPromptDate()
+            func tokens(contract: Int?) throws -> [Int] {
+                try ProviderPromptContractPipeline.tokenize(
+                    prepared: ToolChoicePromptPolicy.prepare(generationRequest, modelType: modelType),
+                    request: generationRequest,
+                    tokenizer: tokenizer,
+                    modelType: modelType,
+                    templateControls: controls.askingGemmaPromptContract(contract, enabled: true))
+            }
+            let contract1 = try tokens(contract: nil)
+            let contract2 = try tokens(contract: 2)
+            #expect(try tokens(contract: 1) == contract1, "\(fixture.id): asking for contract 1 changed the render")
+            if fixture.providerMatchesTransformers {
+                #expect(contract1 == fixture.contract1TokenIDs,
+                        "\(fixture.id): contract 1 \(contract1.count) tokens, vectors \(fixture.contract1TokenIDs.count); first difference at \(firstDifference(contract1, fixture.contract1TokenIDs) ?? -1)")
+                #expect(contract2 == fixture.contract2TokenIDs,
+                        "\(fixture.id): contract 2 \(contract2.count) tokens, vectors \(fixture.contract2TokenIDs.count); first difference at \(firstDifference(contract2, fixture.contract2TokenIDs) ?? -1)")
+            }
+            // Contract 2 against the provider's own contract 1: no change, or
+            // the one token the parts add where the vectors' two renders first differ.
+            switch firstDifference(fixture.contract1TokenIDs, fixture.contract2TokenIDs) {
+            case nil:
+                #expect(contract2 == contract1, "\(fixture.id): contract 2 differs from contract 1")
+            case let index? where fixture.contract2TokenIDs.count == fixture.contract1TokenIDs.count + 1:
+                var expected = contract1
+                expected.insert(fixture.contract2TokenIDs[index], at: min(index, expected.count))
+                #expect(Array(contract1.prefix(index)) == Array(fixture.contract1TokenIDs.prefix(index)),
+                        "\(fixture.id): contract 1 differs from the vectors before contract 2's token")
+                #expect(contract2 == expected,
+                        "\(fixture.id): contract 2 is not contract 1 plus the token at \(index); first difference at \(firstDifference(contract2, expected) ?? -1)")
+            default:
+                #expect(fixture.providerMatchesTransformers, "\(fixture.id): checked only against the vectors")
+            }
+        }
+    }
+}
+
+private struct GemmaPromptContractVectors: Decodable {
+    let modelID: String
+    let templateSHA256: String
+    let tokenizerSHA256: String
+    let cases: [Case]
+
+    struct Case: Decodable {
+        let id: String
+        let providerBody: JSONValue
+        let contract1TokenIDs: [Int]
+        let contract2TokenIDs: [Int]
+        /// False where the provider's render of the body already differs
+        /// from Transformers' for another reason (the Tau2 body's `$ref`
+        /// tool declarations, which the coordinator inlines in production).
+        let providerMatchesTransformers: Bool
+
+        enum CodingKeys: String, CodingKey {
+            case id
+            case providerBody = "provider_body"
+            case contract1TokenIDs = "contract_1_token_ids"
+            case contract2TokenIDs = "contract_2_token_ids"
+            case providerMatchesTransformers = "provider_matches_transformers"
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(String.self, forKey: .id)
+            providerBody = try container.decode(JSONValue.self, forKey: .providerBody)
+            contract1TokenIDs = try container.decode([Int].self, forKey: .contract1TokenIDs)
+            contract2TokenIDs = try container.decode([Int].self, forKey: .contract2TokenIDs)
+            providerMatchesTransformers = try container.decodeIfPresent(
+                Bool.self, forKey: .providerMatchesTransformers) ?? true
+        }
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case modelID = "model_id"
+        case templateSHA256 = "template_sha256"
+        case tokenizerSHA256 = "tokenizer_sha256"
+        case cases
     }
 }
 

@@ -254,6 +254,12 @@ public enum ProviderMessage: Sendable, Equatable {
         /// only with concrete model IDs whose Gemma contract is enforced.
         public var toolConstraintProtocol: Int?
         public var toolConstraintModels: [String]?
+        /// The highest Gemma 4 prompt contract this provider renders when a
+        /// request asks for it (`InferenceRequest.gemmaPromptContract`).
+        /// Version 2 is the template's text-parts render of the system
+        /// message, as vLLM renders it; a request that asks for none renders
+        /// version 1. Omitted when only version 1 is rendered.
+        public var gemmaPromptContract: Int?
         /// Present while an add-on hold refuses work, so a fresh connection
         /// is excluded from routing before its first heartbeat. Omitted
         /// otherwise; older coordinators ignore it.
@@ -292,8 +298,10 @@ public enum ProviderMessage: Sendable, Equatable {
             memberRegistrationNonce: String? = nil,
             clusterModels: [ModelInfo]? = nil,
             clusterMembership: ClusterMembership? = nil,
-            busy: ProviderBusy? = nil
+            busy: ProviderBusy? = nil,
+            gemmaPromptContract: Int? = nil
         ) {
+            self.gemmaPromptContract = gemmaPromptContract
             self.executionRole = executionRole
             self.memberRegistrationNonce = memberRegistrationNonce
             self.clusterModels = clusterModels
@@ -977,6 +985,7 @@ extension ProviderMessage: Codable {
         case prefixCacheDonationOutcomes = "prefix_cache_donation_outcomes"
         case toolConstraintProtocol = "tool_constraint_protocol"
         case toolConstraintModels = "tool_constraint_models"
+        case gemmaPromptContract = "gemma_prompt_contract"
         case modelAutopilot = "model_autopilot"
         case autopilotInventory = "autopilot_inventory"
         // Heartbeat
@@ -1702,6 +1711,11 @@ public enum CoordinatorMessage: Sendable, Equatable {
         /// Opaque coordinator reservation identity, independent of requestId.
         /// Nil preserves compatibility with coordinators without service leases.
         public var serviceReservationID: String?
+        /// The Gemma 4 prompt contract the coordinator planned and counted
+        /// this request with. 2 asks a provider that advertised it for the
+        /// template's text-parts render; nil (an older coordinator, or a
+        /// coordinator that has not switched the model on) keeps version 1.
+        public var gemmaPromptContract: Int?
 
         public init(
             requestId: String,
@@ -1714,8 +1728,10 @@ public enum CoordinatorMessage: Sendable, Equatable {
             cacheRepeatedPrefixTokens: Int? = nil,
             toolSchemaMetadataProtocol: Int? = nil,
             serviceReservationID: String? = nil,
-            promptWork: PromptWork? = nil
+            promptWork: PromptWork? = nil,
+            gemmaPromptContract: Int? = nil
         ) {
+            self.gemmaPromptContract = gemmaPromptContract
             self.requestId = requestId
             self.encryptedBody = encryptedBody
             self.firstContentBudgetMs = firstContentBudgetMs.flatMap { $0 > 0 ? $0 : nil }
@@ -1921,6 +1937,7 @@ extension CoordinatorMessage: Codable {
         case cacheReceiptBoundaryMode = "cache_receipt_boundary_mode"
         case cacheRepeatedPrefixTokens = "cache_repeated_prefix_tokens"
         case toolSchemaMetadataProtocol = "tool_schema_metadata_protocol"
+        case gemmaPromptContract = "gemma_prompt_contract"
         case nonce, timestamp
         case codeChallenge = "code_challenge"
         case payload

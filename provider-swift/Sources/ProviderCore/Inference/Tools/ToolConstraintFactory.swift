@@ -3,8 +3,9 @@
 // Production bridge from a normalized OpenAI request to native CBv2 token
 // constraints. Vocabulary decoding is cached per loaded tokenizer; schemas
 // and grammar state remain per request. Qwen4 uses its rendered native channel
-// boundary and opaque framed arguments; Gemma keeps its own schema automaton;
-// tool-free Qwen 3.5 JSON answers use JSONAnswerConstraint.
+// boundary and opaque framed arguments, and Qwen 3.5-family forced calls on
+// one Mac reuse that framing (QwenForcedToolFraming); Gemma keeps its own
+// schema automaton; tool-free Qwen 3.5 JSON answers use JSONAnswerConstraint.
 
 import Foundation
 import ProviderCoreFoundation

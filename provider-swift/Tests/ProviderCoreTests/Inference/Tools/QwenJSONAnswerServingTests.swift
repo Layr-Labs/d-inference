@@ -191,7 +191,7 @@ struct QwenJSONAnswerOutputTests {
 /// Samples a fixed script through the submitted constraint, like a model that
 /// honors the masks: the script's next token when allowed, otherwise an
 /// allowed stop. Records each submission.
-private final class QwenScriptedEngine: CBv2Engine, @unchecked Sendable {
+final class QwenScriptedEngine: CBv2Engine, @unchecked Sendable {
     private let script: [Int]
     private let lock = NSLock()
     private var requests: [CBv2Request] = []

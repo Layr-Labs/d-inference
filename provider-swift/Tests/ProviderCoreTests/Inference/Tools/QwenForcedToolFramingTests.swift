@@ -134,13 +134,13 @@ struct QwenForcedToolFramingTests {
         let required = try ToolChoicePromptPolicy.prepare(request(choice: #""required""#), modelType: "qwen3_5")
         let named = try ToolChoicePromptPolicy.prepare(request(choice: Self.named), modelType: "qwen3_5")
         let auto = try ToolChoicePromptPolicy.prepare(request(choice: #""auto""#), modelType: "qwen3_5")
-        #expect(QwenForcedToolFraming.appliesToStream(prepared: required, parser: .qwen35))
-        #expect(QwenForcedToolFraming.appliesToStream(prepared: named, parser: .qwen35))
-        #expect(!QwenForcedToolFraming.appliesToStream(prepared: auto, parser: .qwen35))
+        #expect(QwenForcedToolFraming.isCandidate(prepared: required, parser: .qwen35))
+        #expect(QwenForcedToolFraming.isCandidate(prepared: named, parser: .qwen35))
+        #expect(!QwenForcedToolFraming.isCandidate(prepared: auto, parser: .qwen35))
         for parser in [ToolCallFormat.xmlFunction, .json, .nemotron, .mimoV2] {
-            #expect(!QwenForcedToolFraming.appliesToStream(prepared: required, parser: parser), "\(parser)")
+            #expect(!QwenForcedToolFraming.isCandidate(prepared: required, parser: parser), "\(parser)")
         }
-        #expect(!QwenForcedToolFraming.appliesToStream(prepared: required, parser: nil))
+        #expect(!QwenForcedToolFraming.isCandidate(prepared: required, parser: nil))
     }
 
     @Test func theSwitchTurnsTheFramingOffAndReachesTheDaemon() {
@@ -155,11 +155,119 @@ struct QwenForcedToolFramingTests {
         }
         #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))
     }
+
+    @Test func onlyAnEngineThatRunsTokenConstraintsTakesTheFraming() {
+        #expect(EngineV2Bridge.runsTokenConstraints(servesDistributedPair: false, tracksNativeShutdown: false))
+        // A cluster pair refuses constraints before reserving; a native-tracked engine at submit.
+        #expect(!EngineV2Bridge.runsTokenConstraints(servesDistributedPair: true, tracksNativeShutdown: false))
+        #expect(!EngineV2Bridge.runsTokenConstraints(servesDistributedPair: false, tracksNativeShutdown: true))
+        #expect(!EngineV2Bridge.runsTokenConstraints(servesDistributedPair: true, tracksNativeShutdown: true))
+    }
+}
+
+/// The scheduler's text path on one Mac: what the engine is handed and what
+/// the client sees, through the real `.qwen35` parser and validation.
+@Suite("Qwen forced tool calls through the scheduler and bridge")
+struct QwenForcedToolFramingServingTests {
+    private let modelID = "EigenLabs/Qwen3.5-9B-MLX-4bit-mtp"
+    private static let tokenizer = TokenizerHandle(QwenByteTestTokenizer())
+    private static let tools = #"""
+    "tools":[{"type":"function","function":{"name":"weather","parameters":{"type":"object",
+      "properties":{"city":{"type":"string"}},"required":["city"]}}},
+     {"type":"function","function":{"name":"time","parameters":{"type":"object","properties":{}}}}]
+    """#
+    private static let xmlCall = "<tool_call>\n<function=weather>\n<parameter=city>\nParis\n</parameter>\n"
+        + "</function>\n</tool_call>"
+
+    private struct Outcome {
+        var content = ""
+        var calls: [ToolCall] = []
+        var error: (any Error)?
+    }
+
+    private func serve(_ engine: QwenScriptedEngine, modelType: String = "qwen3_5", fields: String) async throws
+        -> Outcome {
+        let bridge = EngineV2Bridge(engine: engine, modelId: modelID, tokenizer: Self.tokenizer,
+            eosTokenIds: [248046, 248044], defaultMaxTokens: 64, maxConcurrentRequests: 1)
+        #expect(await bridge.runsTokenConstraints)
+        let id = modelID
+        let tokenizer = Self.tokenizer
+        let scheduler = MultiModelBatchSchedulerEngine(registryProvider: {
+            [id: .init(tokenizer: tokenizer, modelType: modelType, engineV2Bridge: bridge)]
+        })
+        let request = try JSONDecoder().decode(OpenAIChatCompletionRequest.self, from: Data("""
+        {"model":"\(modelID)","messages":[{"role":"user","content":"hi"}],"reasoning_parser":"qwen3",\(Self.tools)\(fields)}
+        """.utf8))
+        var outcome = Outcome()
+        do {
+            for try await event in try await scheduler.streamChatCompletion(request: request) {
+                switch event {
+                case .content(let text): outcome.content += text
+                case .parsed(let parsed): outcome.content += parsed.content
+                case .toolCall(let call): outcome.calls.append(call)
+                case .toolCallDelta(let delta): if let call = delta.completed { outcome.calls.append(call) }
+                case .info, .logprobs: break
+                }
+            }
+        } catch { outcome.error = error }
+        await bridge.shutdown()
+        return outcome
+    }
+
+    @Test func aRequiredCallIsFramedAndReachesTheClientAsACall() async throws {
+        let engine = QwenScriptedEngine(script: Self.xmlCall)
+        let outcome = try await serve(engine, fields: #","tool_choice":"required","max_tokens":64"#)
+        let request = try #require(engine.submitted.first)
+        let constraint = try #require(request.tokenConstraint as? Qwen4NativeToolConstraint)
+        #expect(constraint.maxTokens == request.maxTokens)
+        #expect(outcome.error == nil)
+        #expect(outcome.calls.map(\.function.name) == ["weather"])
+        #expect(outcome.calls.first?.function.arguments["city"] == .string("Paris"))
+        #expect(outcome.content.allSatisfy(\.isWhitespace))
+    }
+
+    @Test func aNamedCallInTheFramedJSONDialectUsesTheBridgeDefaultBudget() async throws {
+        // An omitted max_tokens: the engine resolves the bridge default (64,
+        // not the scheduler's 4096), and the constraint must share it.
+        let engine = QwenScriptedEngine(script: #"<tool_call>{"name":"weather","arguments":{"city":"Paris"}}</tool_call>"#)
+        let outcome = try await serve(engine,
+            fields: #","tool_choice":{"type":"function","function":{"name":"weather"}}"#)
+        let request = try #require(engine.submitted.first)
+        let constraint = try #require(request.tokenConstraint as? Qwen4NativeToolConstraint)
+        #expect(request.maxTokens == 64 && constraint.maxTokens == 64)
+        #expect(outcome.error == nil)
+        #expect(outcome.calls.map(\.function.name) == ["weather"])
+        #expect(outcome.calls.first?.function.arguments["city"] == .string("Paris"))
+    }
+
+    @Test func proseNeverReachesTheClientAndTheMissingCallStillFails() async throws {
+        // The scripted model reaches for a sentence. Only framing whitespace or
+        // a frame may open the answer, so the stand-in, which follows its
+        // script or stops, ends after the whitespace with nothing else sampled.
+        let engine = QwenScriptedEngine(script: "  I will check the weather in Paris.")
+        let outcome = try await serve(engine, fields: #","tool_choice":"required","max_tokens":64"#)
+        #expect(engine.submitted.first?.tokenConstraint is Qwen4NativeToolConstraint)
+        #expect(outcome.calls.isEmpty && outcome.content.allSatisfy(\.isWhitespace))
+        #expect(outcome.error != nil)
+    }
+
+    @Test func autoCallsAndOtherFamiliesAreNotFramed() async throws {
+        let auto = QwenScriptedEngine(script: Self.xmlCall)
+        let outcome = try await serve(auto, fields: #","tool_choice":"auto","max_tokens":64"#)
+        let request = try #require(auto.submitted.first)
+        #expect(request.tokenConstraint == nil)
+        #expect(outcome.error == nil && outcome.calls.map(\.function.name) == ["weather"])
+        let bonsai = QwenScriptedEngine(script: Self.xmlCall)
+        _ = try await serve(bonsai, modelType: "prism_hadamard_qwen35",
+            fields: #","tool_choice":"required","max_tokens":64"#)
+        #expect(bonsai.submitted.first?.tokenConstraint == nil)
+    }
 }
 
 /// The production tokenizers and templates (tokenizer and template files only,
 /// no weights): `DARKBLOOM_TEST_QWEN_TOKENIZER_DIRS=<dir>:<dir>…`, each holding a
-/// build's `tokenizer.json`, `tokenizer_config.json` and `chat_template.jinja`.
+/// build's `tokenizer.json`, `tokenizer_config.json`, `chat_template.jinja` and
+/// `config.json` (for `model_type`).
 @Suite("Qwen forced tool calls, real tokenizers",
        .enabled(if: ProcessInfo.processInfo.environment["DARKBLOOM_TEST_QWEN_TOKENIZER_DIRS"] != nil))
 struct QwenForcedToolFramingRealTokenizerTests {
@@ -192,7 +300,8 @@ struct QwenForcedToolFramingRealTokenizerTests {
                     let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: modelType)
                     let prompt = try ProviderPromptContractPipeline.tokenize(prepared: prepared, request: request,
                         tokenizer: tokenizer, modelType: modelType, templateControls: controls)
-                    let tail = tokenizer.decode(tokenIds: Array(prompt.suffix(8)), skipSpecialTokens: false)
+                    let tail = tokenizer.decode(tokenIds: Array(prompt.suffix(ReasoningPromptProbe.tailTokenCount)),
+                        skipSpecialTokens: false)
                     // The route renders the forced call with thinking off, whatever was asked.
                     #expect(ReasoningPromptProbe.streamingPrefix(forPromptTail: tail) == "<think></think>",
                         "\(label) \(choice) reasoning=\(reasoning): \(tail.debugDescription)")
@@ -212,7 +321,9 @@ struct QwenForcedToolFramingRealTokenizerTests {
                     let imEnd = try #require(tokenizer.convertTokenToId("<|im_end|>"))
                     #expect(constraint.nextState(state: state, tokenID: imEnd) == -1)
                     // The model's usual openings other than a call cannot be sampled.
+                    let maskStarted = clock.now
                     let first = Set(constraint.allowedTokenIDs(state: 0, remainingTokens: 4_096))
+                    let firstMask = clock.now - maskStarted
                     for opening in ["I'll check the weather.", "Sure", "Let me", "```", "{\"name\"", "<think>", "Okay"] {
                         let token = try #require(tokenizer.encode(text: opening, addSpecialTokens: false).first)
                         #expect(!first.contains(token), "\(label) \(opening.debugDescription) → \(token)")
@@ -226,7 +337,7 @@ struct QwenForcedToolFramingRealTokenizerTests {
                         #expect(walked == nil, "\(label) named admits another function")
                     }
                     print("qwen-forced-framing \(label) \(choice) reasoning=\(reasoning) prompt=\(prompt.count) "
-                        + "allowed-first=\(first.count)")
+                        + "allowed-first=\(first.count) first-mask=\(firstMask)")
                 }
             }
         }

@@ -33,9 +33,9 @@ enum QwenForcedToolFraming {
 
     /// Whether a request may take the framing: a forced call on this route's
     /// dual-dialect parser, whose two dialects are exactly the frames the
-    /// constraint admits. The engine must also run token constraints, which a
-    /// cluster pair and a native-tracked engine refuse.
-    static func appliesToStream(prepared: ToolChoicePromptPolicy.Prepared, parser: ToolCallFormat?) -> Bool {
+    /// constraint admits. The engine must also run token constraints
+    /// (`EngineV2Bridge.runsTokenConstraints`).
+    static func isCandidate(prepared: ToolChoicePromptPolicy.Prepared, parser: ToolCallFormat?) -> Bool {
         prepared.requiresToolCall && parser == .qwen35
     }
 

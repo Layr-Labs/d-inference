@@ -91,7 +91,9 @@ public final class GenerationLoopExitRecord: @unchecked Sendable {
 /// to show rescues, and `qwen3_5` is also Qwen 3.8 27B. The guard keeps ending
 /// every other loop as `length`: a loop outside the thought, a family that is
 /// not on, a request that asked for logprobs (the forced tokens have none), a
-/// pair's request.
+/// pair's request. Nemotron 3.5 Super (`nemotron_h_omni`) has the marker and
+/// is off by default until its A/B; it takes its owner's own route
+/// (`NemotronSuperLocalBinding`), which continues the answer the same way.
 ///
 /// `DARKBLOOM_LOOP_EXIT_THINKING`: unset, `1` or `on` keeps the default list;
 /// `0` or `off` turns it off; any other value is the comma-separated list of
@@ -114,6 +116,8 @@ enum GenerationLoopExitThinkingPolicy {
         "gemma4_text": .init(open: "<|channel>", close: "<channel|>"),
         "qwen3_5": qwenThink,
         "qwen3_5_moe": qwenThink,
+        // Super's template writes `reasoning + "</think>" + content`: nothing around the marker.
+        "nemotron_h_omni": .init(open: "<think>", close: "</think>"),
     ]
 
     /// As the Qwen 3.5/3.6 template writes a closed thought:

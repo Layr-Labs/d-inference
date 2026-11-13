@@ -179,7 +179,8 @@ private struct SuperHTTPEngine: MLXServerEngine {
                 let translated = plan.bridgeRequest
                 let cacheScope = self.cacheScope, usageSignal = self.usageSignal ?? EngineV2RequestUsageSignal()
                 let donationDemand = self.donationDemand
-                let loopGuard = plan.loopGuard()
+                let loopGuard = plan.loopGuard(
+                    exitThinking: plan.exitThinking(promptTokens: tokens, tokenizer: tokenizer.inner))
                 textUsage = usageSignal
                 execute = { onEvent in
                     try await binding.run(request: translated, promptTokens: tokens,

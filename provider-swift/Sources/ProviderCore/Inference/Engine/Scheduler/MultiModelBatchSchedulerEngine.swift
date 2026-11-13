@@ -1230,6 +1230,13 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     guard await bridge.waitForRowRelease(requestId: requestId, within: .seconds(5)) else {
                         throw LoopExitThinkingContinuation.RowNotReleased()
                     }
+                    // A consumer that stopped reading the spliced stream (its
+                    // `onTermination(.cancelled)` cancels this task) gets no
+                    // continuation row. A cancel that reaches only the splice's
+                    // `Control` (the local API's disconnect hook) is seen once the
+                    // row is submitted, and cancels it at once (closing that
+                    // window is a follow-up).
+                    try Task.checkCancellation()
                     var next = base
                     next.maxTokens = budget
                     // As model calibration submits: the request's prompt progress

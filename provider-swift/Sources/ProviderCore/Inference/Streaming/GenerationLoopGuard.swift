@@ -51,6 +51,13 @@ public struct GenerationLoopGuard: Sendable {
         self.insideThinking = exitThinking?.startsInside ?? false
     }
 
+    /// A fresh guard for the same request without the exit: the continuation's,
+    /// so a loop in the answer still ends as `length`.
+    func withoutExit() -> GenerationLoopGuard {
+        GenerationLoopGuard(modelType: modelType, toolCallMarkers: toolCallMarkers,
+                            thresholds: detector.thresholds)
+    }
+
     /// One delta of the row: its text and the tokens behind it. Returns the
     /// detection that should stop the row, at most once.
     mutating func observe(text: String, tokens: [Int]) -> GenerationLoopDetector.Detection? {

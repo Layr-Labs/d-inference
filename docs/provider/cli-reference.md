@@ -4099,6 +4099,10 @@ Positive Gemma caps retain the 128-token floor; `0` defers prefill while decodin
 Pure-prefill stripes are unchanged. These variables are not forwarded to a LaunchAgent;
 see the [scheduler environment reference](../reference/configuration.md#engine-and-scheduler).
 
+### Gemma o4 parser switch
+
+Set `DARKBLOOM_GEMMA_SCHEMA_COERCION` before starting the process; the LaunchAgent forwards it to the installed service. The [configuration reference](../reference/configuration.md#engine-and-scheduler) defines activation and rollback.
+
 ## LaunchAgent environment passthrough
 
 `DARKBLOOM_NATIVE_REASONING_BUDGET` is forwarded to the service. Set it before
@@ -4424,7 +4428,3 @@ Source: `provider-swift/Sources/darkbloom/ClusterServiceCommand.swift`
 for the bounds and process custody rules.
 
 Qwen3.8 27B automatic cluster capacity changes keep the current tensor split and native request execution path. Widening occurs only when the complete reservation fits that split; otherwise the current capacity remains available. No additional command or user setting is required. Implementation: `DistributedAutomaticBatchPlanner` and `ClusterPlacementFlow` in `provider-swift/Sources/ProviderCore/Inference/Distributed/`.
-
-### Gemma o4 parser switch
-
-Set `DARKBLOOM_GEMMA_SCHEMA_COERCION` before starting the process; the LaunchAgent forwards it to the installed service. The [configuration reference](../reference/configuration.md#gemma-o4-conformance) defines activation and rollback.

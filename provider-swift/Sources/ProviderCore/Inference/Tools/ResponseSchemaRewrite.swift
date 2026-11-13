@@ -26,7 +26,11 @@ enum ResponseSchemaRewrite {
         for container in ["$defs", "definitions"] {
             guard let value = root.removeValue(forKey: container) else { continue }
             guard case .object(let entries) = value else { return nil }
-            for (name, definition) in entries { definitions["#/\(container)/\(name)"] = definition }
+            // A name a pointer must escape (`~`, `/`) or percent-encode is
+            // never resolved, so no reference can reach the wrong definition.
+            for (name, definition) in entries where !name.contains(where: { "~/%".contains($0) }) {
+                definitions["#/\(container)/\(name)"] = definition
+            }
         }
         for annotation in ["$schema", "$id", "$comment"] { root.removeValue(forKey: annotation) }
         var budget = maximumNodes

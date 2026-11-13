@@ -95,7 +95,7 @@ struct GemmaJSONAnswerPolicyTests {
     }
 
     @Test func clientSchemaShapesAreRewrittenIntoTheSubsetExactly() throws {
-        // Pydantic / OpenAI strict conversion, zod-to-json-schema and one-branch allOf shapes.
+        // Pydantic / OpenAI strict conversion, zod-to-json-schema (named: a root $ref) and one-branch allOf shapes.
         let rewritten = [
             ##"{"type":"object","properties":{"a":{"$ref":"#/$defs/A"}},"$defs":{"A":{"type":"string"}},"required":["a"]}"##,
             #"{"type":"object","properties":{"a":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null}}}"#,
@@ -103,6 +103,7 @@ struct GemmaJSONAnswerPolicyTests {
             ##"{"$schema":"http://json-schema.org/draft-07/schema#","definitions":{"B":{"type":"integer"}},"type":"object","properties":{"b":{"$ref":"#/definitions/B","description":"n"}}}"##,
             ##"{"type":"object","properties":{"c":{"allOf":[{"$ref":"#/$defs/C"}],"title":"C"}},"$defs":{"C":{"type":"boolean"}}}"##,
             ##"{"type":"object","properties":{"e":{"anyOf":[{"$ref":"#/$defs/E"},{"type":"null"}]}},"$defs":{"E":{"type":"string","enum":["x","y"]}}}"##,
+            ##"{"$ref":"#/definitions/P","definitions":{"P":{"type":"object","properties":{"p":{"type":"string"}},"required":["p"]}},"$schema":"http://json-schema.org/draft-07/schema#"}"##,
         ]
         for schema in rewritten {
             let constraint = try #require(try make(Self.request(format: F.schemaFormat(schema)))
@@ -115,6 +116,30 @@ struct GemmaJSONAnswerPolicyTests {
             #expect(F.walk(F.ids(#"{"e": "# + value + "}"), e) != nil, "\(value)")
         }
         #expect(F.walk(F.ids(#"{"e": "z"#), e) == nil)
+    }
+
+    @Test func theRewriteResolvesOnlyPlainNamesWithinItsNodeBudget() throws {
+        func rewrite(_ text: String) throws -> MLXLMCommon.JSONValue? {
+            ResponseSchemaRewrite.subset(try JSONDecoder().decode(MLXLMCommon.JSONValue.self, from: Data(text.utf8)))
+        }
+        // A pointer reads `a/b` as a path and `a~1b` as the name `a/b`: none of these is guessed.
+        for reference in ["#/$defs/a/b", "#/$defs/a~1b", "#/$defs/a%2Fb"] {
+            #expect(try rewrite(##"{"type":"object","properties":{"x":{"$ref":""## + reference
+                + ##""}},"$defs":{"a/b":{"type":"string"},"a":{"type":"object","b":{"type":"integer"}}}}"##) == nil,
+                "\(reference)")
+        }
+        // Each definition references the next twice, so inlining doubles the copies at every level.
+        func doubling(_ levels: Int) -> String {
+            let definitions = (0..<levels).map { level in
+                level == levels - 1 ? ##""D\##(level)":{"type":"string"}"##
+                    : ##""D\##(level)":{"type":"object","properties":{"l":{"$ref":"#/$defs/D\##(level + 1)"},"##
+                    + ##""r":{"$ref":"#/$defs/D\##(level + 1)"}}}"##
+            }
+            return ##"{"type":"object","properties":{"d":{"$ref":"#/$defs/D0"}},"$defs":{"##
+                + definitions.joined(separator: ",") + "}}"
+        }
+        #expect(try rewrite(doubling(4)) != nil)
+        #expect(try rewrite(doubling(14)) == nil, "past \(ResponseSchemaRewrite.maximumNodes) nodes")
     }
 
     @Test func aPydanticSchemaKeepsItsKeysAndRequirements() throws {

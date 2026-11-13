@@ -1396,7 +1396,7 @@ SHA-256 in the commit. A provider change to the rendered prompt, such as the
 Qwen JSON `response_format` thinking default, lands with the regenerated
 vectors and must pass `scripts/verify-prompt-parity.sh` before review.
 
-`fixtures/prompt-contract/v1/gemma4_prompt_contract_vectors.json` (13 cases) is
+`fixtures/prompt-contract/v1/gemma4_prompt_contract_vectors.json` (14 cases) is
 this repository's: Transformers' chat-template render (jinja2 with Transformers'
 environment and `tojson`) of the served `gemma-4-26b-qat-4bit` template and
 tokenizer, whose SHA-256s it records, in both

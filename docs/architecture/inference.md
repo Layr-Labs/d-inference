@@ -3632,7 +3632,9 @@ message's parts as they are. Two renders follow from it (`GemmaPromptContract`):
   before the first system turn closes (OpenRouter's GPQA prompt is 88 tokens,
   not 87). vLLM renders list-shaped assistant content part by part; contract 2
   keeps it joined, because `Gemma4TurnStructure` merges only string assistant
-  turns. Tool lists render the same either way.
+  turns. Tool lists render the same either way. A null system content stays
+  contract 1's empty string, with no part and no trailing space (an empty
+  string is a part: one space).
 
 The provider registers `gemma_prompt_contract: 2` and renders contract 2 only
 for a coordinator `inference_request` that carries `gemma_prompt_contract: 2`

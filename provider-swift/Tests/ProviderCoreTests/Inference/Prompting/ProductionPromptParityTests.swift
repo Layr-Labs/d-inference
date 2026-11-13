@@ -125,6 +125,7 @@ struct ProductionPromptParityTests {
             "gpqa_string_system", "gpqa_developer_system", "gpqa_list_system_user", "list_parts_whitespace",
             "no_system", "no_system_thinking_off", "system_thinking_off", "tools_string_system",
             "tools_no_system", "tau2_policy", "assistant_list_parts", "later_system_list", "empty_system",
+            "null_system",
         ])
         let gpqa = try #require(vectors.cases.first)
         #expect(gpqa.contract1TokenIDs.count == 87 && gpqa.contract2TokenIDs.count == 88)

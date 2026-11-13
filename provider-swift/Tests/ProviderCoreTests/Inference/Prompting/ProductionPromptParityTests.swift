@@ -58,12 +58,15 @@ struct ProductionPromptParityTests {
                     .streamChatCompletionFrames(request: request)
                 for try await _ in frames {}
                 let generationRequest = try #require(await engine.request)
+                // The vectors are the prompt sidecar's plans, and a request the
+                // coordinator planned renders the prompt of its plan.
                 let actual = try ProviderPromptContractPipeline.tokenize(
                     prepared: ToolChoicePromptPolicy.prepare(generationRequest, modelType: modelType),
                     request: generationRequest,
                     tokenizer: tokenizer,
                     modelType: modelType,
                     templateControls: ProviderLoop.extractChatTemplateControls(from: providerBody)
+                        .servingCoordinatorRequest(planned: true)
                         .resolvingPromptDate())
                 let difference = firstDifference(actual, fixture.tokenIDs).map { index in
                     let actualToken = actual.indices.contains(index)
@@ -87,6 +90,95 @@ struct ProductionPromptParityTests {
                 }
             }
         }
+    }
+
+    /// A Gemma 4 request the coordinator did not plan renders vLLM's prompt
+    /// (`Gemma4SystemPartsRender`); a planned one renders the string prompt
+    /// the sidecar plans, as 0.10.12 does. The vectors are Transformers'
+    /// chat-template render of the served artifacts: `vllm_token_ids` with
+    /// string content as text parts, `string_token_ids` with list content
+    /// joined.
+    @Test("Gemma 4 unplanned prompts render as vLLM's, planned ones as their plan")
+    func gemmaSystemPartsVectors() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let vectorsPath = environment["PROMPT_PARITY_VECTORS"],
+              let artifactRootPath = environment["PROMPT_PARITY_ARTIFACT_ROOT"]
+        else {
+            #expect(
+                environment["PROMPT_PARITY_REQUIRED"] != "1",
+                "production parity gate requires PROMPT_PARITY_VECTORS and PROMPT_PARITY_ARTIFACT_ROOT")
+            return
+        }
+        let vectorsURL = URL(fileURLWithPath: vectorsPath)
+        let vectors = try JSONDecoder().decode(GemmaSystemPartsVectors.self, from: Data(contentsOf:
+            vectorsURL.deletingLastPathComponent().appendingPathComponent("gemma4_system_parts_vectors.json")))
+        let corpus = try JSONDecoder().decode(Corpus.self, from: Data(contentsOf: vectorsURL))
+        let model = try #require(corpus.models.first { $0.modelID == vectors.modelID })
+        let modelDirectory = URL(fileURLWithPath: artifactRootPath, isDirectory: true)
+            .appendingPathComponent(model.promptContractID, isDirectory: true)
+        #expect(Gemma4ToolConstraintContract.templateSHA256(at: modelDirectory) == vectors.templateSHA256)
+        let tokenizer = try await LocalTokenizerLoader().load(from: modelDirectory)
+        let modelType = ModelScanner.parseConfigJSON(
+            at: modelDirectory.appendingPathComponent("config.json")).modelType
+        #expect(modelType == "gemma4")
+        #expect(vectors.cases.map(\.id) == [
+            "gpqa_string_system", "gpqa_developer_system", "gpqa_list_system_user", "list_parts_whitespace",
+            "no_system", "no_system_thinking_off", "system_thinking_off", "tools_string_system",
+            "tools_no_system", "tau2_policy",
+        ])
+        let gpqa = try #require(vectors.cases.first)
+        #expect(gpqa.vllmTokenIDs.count == 88 && gpqa.stringTokenIDs.count == 87)
+        for fixture in vectors.cases {
+            let providerBody = try JSONSerialization.data(
+                withJSONObject: fixture.providerBody.foundationObject())
+            let request = try ProviderLoop.decodeOpenAIRequest(providerBody)
+            let engine = PromptPreparationCaptureEngine()
+            let frames = try await MLXOpenAIService(engine: engine)
+                .streamChatCompletionFrames(request: request)
+            for try await _ in frames {}
+            let generationRequest = try #require(await engine.request)
+            let controls = ProviderLoop.extractChatTemplateControls(from: providerBody).resolvingPromptDate()
+            func tokens(planned: Bool) throws -> [Int] {
+                try ProviderPromptContractPipeline.tokenize(
+                    prepared: ToolChoicePromptPolicy.prepare(generationRequest, modelType: modelType),
+                    request: generationRequest,
+                    tokenizer: tokenizer,
+                    modelType: modelType,
+                    templateControls: controls.servingCoordinatorRequest(planned: planned))
+            }
+            let unplanned = try tokens(planned: false)
+            let planned = try tokens(planned: true)
+            #expect(unplanned == fixture.vllmTokenIDs,
+                    "\(fixture.id): unplanned \(unplanned.count) tokens, vLLM \(fixture.vllmTokenIDs.count); first difference at \(firstDifference(unplanned, fixture.vllmTokenIDs) ?? -1)")
+            #expect(planned == fixture.stringTokenIDs,
+                    "\(fixture.id): planned \(planned.count) tokens, string render \(fixture.stringTokenIDs.count); first difference at \(firstDifference(planned, fixture.stringTokenIDs) ?? -1)")
+        }
+    }
+}
+
+private struct GemmaSystemPartsVectors: Decodable {
+    let modelID: String
+    let templateSHA256: String
+    let cases: [Case]
+
+    struct Case: Decodable {
+        let id: String
+        let providerBody: JSONValue
+        let stringTokenIDs: [Int]
+        let vllmTokenIDs: [Int]
+
+        enum CodingKeys: String, CodingKey {
+            case id
+            case providerBody = "provider_body"
+            case stringTokenIDs = "string_token_ids"
+            case vllmTokenIDs = "vllm_token_ids"
+        }
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case modelID = "model_id"
+        case templateSHA256 = "template_sha256"
+        case cases
     }
 }
 

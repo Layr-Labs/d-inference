@@ -11,9 +11,11 @@ import Testing
 struct NemotronSuperConcurrentImageLifecycleTests {
     private typealias Binding = NemotronSuperLocalImageBinding
 
-    @Test(.timeLimit(.minutes(2)))
-    func encodedImagesBothEnterTheEngineBeforeEitherCompletes() async throws {
-        let session = try await ConcurrentImageSession.make(encoded: true)
+    /// On by default: unset, empty or any value other than an off word lets two
+    /// images share an owner that serves at least three requests.
+    @Test(.timeLimit(.minutes(2)), arguments: ["1", "", "garbage"])
+    func encodedImagesBothEnterTheEngineBeforeEitherCompletes(flag: String) async throws {
+        let session = try await ConcurrentImageSession.make(flag: flag, encoded: true)
         let latch = ConcurrentImagePreparationLatch()
         await session.images.setTestPreparation { _, entering in await latch.observe(entering) }
         let engine = try #require(await session.owner.bridge.ownedEngine as? EngineV2)
@@ -48,8 +50,10 @@ struct NemotronSuperConcurrentImageLifecycleTests {
         try await session.close()
     }
 
-    @Test(.timeLimit(.minutes(2)), arguments: [("", 4), ("0", 4), ("true", 4), ("1", 2)])
-    func disabledOrNarrowOwnerKeepsSingleMediaAdmission(flag: String, width: Int) async throws {
+    /// The kill switch (an off word) restores 0.10.12's single-media admission;
+    /// an owner narrower than three keeps it whatever the switch says.
+    @Test(.timeLimit(.minutes(2)), arguments: [("0", 4), ("off", 4), (" FALSE ", 4), ("", 2), ("1", 2)])
+    func killSwitchOrNarrowOwnerKeepsSingleMediaAdmission(flag: String, width: Int) async throws {
         let session = try await ConcurrentImageSession.make(flag: flag, width: width)
         let latch = ConcurrentImagePreparationLatch()
         await session.images.setTestPreparation { _, entering in await latch.observe(entering) }

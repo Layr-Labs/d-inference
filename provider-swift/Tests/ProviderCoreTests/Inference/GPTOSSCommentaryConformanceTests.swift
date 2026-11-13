@@ -110,13 +110,25 @@ final class GPTOSSCommentaryConformanceTests: XCTestCase {
     }
     #endif
 
-    func testOffAndAbsentKeepCommentaryDropped() {
+    /// The kill switch: an off word restores 0.10.12, where the preamble is dropped.
+    func testOffWordsKeepCommentaryDropped() {
         let output = "<|channel|>commentary<|message|>Checking Paris.<|end|>"
-        for value in ["0", "off", "false", "no"] {
+        for value in ["0", "off", "false", "no", "none", "disabled", " OFF "] {
             setenv(flag, value, 1)
-            XCTAssertEqual(filtered(output, width: 1), output)
+            XCTAssertEqual(filtered(output, width: 1), output, value)
         }
+    }
+
+    /// On by default: unset, empty or any other value maps the preamble to content.
+    func testCommentaryIsContentByDefault() {
+        let output = "<|channel|>commentary<|message|>Checking Paris.<|end|>"
+        let expected = "<|channel|>final<|message|>Checking Paris.<|end|>"
         unsetenv(flag)
-        XCTAssertEqual(filtered(output, width: 1), output)
+        XCTAssertEqual(filtered(output, width: 1), expected)
+        XCTAssertEqual(ReasoningParser(format: .harmony).parse(filtered(output, width: 3)).content, "Checking Paris.")
+        for value in ["", "1", "on", "yes", "garbage"] {
+            setenv(flag, value, 1)
+            XCTAssertEqual(filtered(output, width: 1), expected, value)
+        }
     }
 }

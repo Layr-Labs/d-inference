@@ -404,9 +404,15 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_TTFT_PROMPT_CACHE` and its `_MB` / `_VERIFY` knobs: scoped
     /// prompt-token reuse is on by default; `0` / `false` / `off` / `no` is
     /// the rollback.
+    /// `DARKBLOOM_STRICT_TOOL_GRAMMAR` / `DARKBLOOM_STRICT_TOOL_GRAMMAR_ALL_TOOLS`:
+    /// `strict` Qwen 3.5-family calls follow their schemas in the sampler by
+    /// default (an off word restores unconstrained calls, a list picks the
+    /// builds); `on` extends it to calls of tools that are not `strict`.
     /// `DARKBLOOM_TTFT_TEMPLATE_LOOPS=0` renders cached prompts with the
     /// template as served. `DARKBLOOM_TTFT_COLD_LOAD_RELEASE=0` restores the
     /// fully serial FIFO.
+    /// `DARKBLOOM_GEMMA_JSON_ANSWERS`: Gemma 4 JSON `response_format` answers
+    /// are grammar-constrained by default; `off` restores prompt-only answers.
     /// `DARKBLOOM_TTFT_SHAPE_WARMUP`: the load-time shape warmup is on by
     /// default; its `0` rollback must reach the job too.
     /// `DARKBLOOM_GLM_RECTANGULAR_VERIFY`: rectangular adaptive MTP verification
@@ -455,9 +461,12 @@ public enum LaunchAgent: Sendable {
         SSDPrefixCachePolicy.terminalBeforePublicationFlag,
         "DARKBLOOM_TTFT_GDN_BLOCKED",
         EngineV2SlotFactory.mimoRectangularVerifyEnvironmentKey,
+        GemmaJSONAnswerPolicy.environmentKey,
         PromptTokenCachePolicy.environmentKey,
         PromptTokenCachePolicy.capacityEnvironmentKey,
         PromptTokenCachePolicy.verifyEnvironmentKey,
+        QwenStrictToolGrammar.environmentKey,
+        QwenStrictToolGrammar.allToolsEnvironmentKey,
         ChatTemplateLoopRewrites.environmentKey,
         WorkFIFOPolicy.coldLoadReleaseEnvironmentKey,
         ModelCalibrationPolicy.shapeWarmupEnvironmentKey,

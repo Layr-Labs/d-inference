@@ -168,6 +168,8 @@ extension EngineV2Bridge {
         /// (`GenerationLoopGuardPolicy`); nil leaves it unguarded.
         loopGuard: GenerationLoopGuard? = nil
     ) async throws -> AsyncStream<GenerationEvent> {
+        let tokenConstraint = Self.admittedConstraint(tokenConstraint, servesDistributedPair: servesDistributedPair,
+            tracksNativeShutdown: tracksNativeShutdown)
         if let clusterStillImages {
             guard mimoClusterImages == nil, multimodal == nil,
                   let binding = try clusterGLMImageIngress() else { throw DistributedEngineError.refused(.mediaUnsupported) }

@@ -1071,7 +1071,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         }
 
         // Parser resolution precedes both text and qualified native media.
-        let tokenConstraint: (any CBv2TokenConstraint)?
+        var tokenConstraint: (any CBv2TokenConstraint)?
         do {
             try checkFirstContentDeadline()
             guard let bridge = engineV2Bridge else {
@@ -1107,6 +1107,22 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         } catch {
             await releaseBox.fire()
             throw error
+        }
+        // `strict` calls on the Qwen 3.5 text route: their arguments follow the
+        // declared schemas in the sampler. A request the grammar declines, or
+        // a slot that cannot run it, is served as before.
+        if tokenConstraint == nil, let bridge = engineV2Bridge,
+           QwenStrictToolGrammar.isEnabled(modelId: request.model, modelType: modelType),
+           QwenStrictToolGrammar.isCandidate(prepared: prepared, parser: toolHandler?.format) {
+            let start = SuspendingClock.now
+            let pair = await bridge.servesDistributedPair
+            let native = await bridge.tracksNativeShutdown
+            tokenConstraint = QwenStrictToolGrammar.constraint(
+                prepared: prepared, request: request, parser: toolHandler?.format, tokenizer: tokenizer,
+                modelType: modelType, defaultMaxTokens: bridge.defaultMaxTokens, stopTokenIDs: bridge.stopTokenIds,
+                promptTokens: promptTokens, runsTokenConstraints: !pair && !native)
+            // The first such request per tokenizer builds its vocabulary.
+            profile?.markDuration(.toolConstraint, start: start)
         }
         let answerStopFilter = (tokenConstraint as? FlintAnswerStopConstraint)?.makeStreamFilter()
         // A constrained JSON answer is validated when generation ends, so its

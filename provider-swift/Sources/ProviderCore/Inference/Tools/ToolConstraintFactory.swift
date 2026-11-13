@@ -53,7 +53,13 @@ enum ToolConstraintFactory {
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(error.localizedDescription)
             }
         }
-        // A tool-free JSON answer is constrained when everything it needs
+        // A tool-free Gemma 4 JSON answer: a free thought, then one JSON value.
+        if let answer = GemmaJSONAnswerPolicy.constraint(request: request, tokenizer: tokenizer,
+            modelType: modelContext.modelType, defaultMaxTokens: defaultMaxTokens,
+            stopTokenIDs: stopTokenIDs, promptTokens: nativePromptTokens) {
+            return answer
+        }
+        // A tool-free JSON answer of a `JSONAnswerPolicy` family is constrained when everything it needs
         // verifies; otherwise it keeps prompt-only steering, never a refusal.
         if let answer = JSONAnswerPolicy.constraint(request: request, tokenizer: tokenizer,
             modelID: modelContext.modelId, modelType: modelContext.modelType, defaultMaxTokens: defaultMaxTokens,

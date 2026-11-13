@@ -43,19 +43,16 @@ enum GLM5ToolSuffix {
         var calls: [ToolCall] = []
         if !truncated, lexer.unclosed == nil {
             // The run of whitespace-separated frames that ends the response.
-            var run: [Int] = []
-            var end = bytes.count
-            for frameIndex in lexer.frames.indices.reversed() {
-                let frame = lexer.frames[frameIndex]
-                guard Lexer.isWhitespace(bytes[frame.upperBound ..< end]) else { break }
-                run.append(frameIndex)
-                end = frame.lowerBound
+            var head = lexer.frames.endIndex
+            var from = bytes.count
+            while head > 0, Lexer.isWhitespace(bytes[lexer.frames[head - 1].upperBound ..< from]) {
+                head -= 1
+                from = lexer.frames[head].lowerBound
             }
-            run.reverse()
+            let run = head ..< lexer.frames.endIndex
             // The run is the response's call batch: like the SDK, take all of
             // it or none, so a member the SDK refuses runs no other member.
-            if let head = run.first, run.allSatisfy({ lexer.verdicts[$0] ?? lexer.accepts(lexer.frames[$0]) }) {
-                let from = lexer.frames[head].lowerBound
+            if !run.isEmpty, run.allSatisfy({ lexer.verdicts[$0] ?? lexer.accepts(lexer.frames[$0]) }) {
                 let parsed = GLM5ToolCallParser().parseEOS(
                     String(decoding: bytes[from...], as: UTF8.self), tools: tools)
                 // The SDK reads the same frames; anything else stays text.
@@ -84,7 +81,8 @@ enum GLM5ToolSuffix {
     /// move it.
     struct Lexer {
         let bytes: [UInt8]
-        private let tools: [[String: any Sendable]]?
+        /// Each declaration the SDK's parser accepts, by name, and its schema.
+        private let declarations: [String: [String: any Sendable]]
         private let parameters: [String: [String: any Sendable]]
         /// Closed top-level frames, in order.
         private(set) var frames: [Range<Int>] = []
@@ -102,28 +100,46 @@ enum GLM5ToolSuffix {
 
         init(bytes: [UInt8], tools: [[String: any Sendable]]?) {
             self.bytes = bytes
-            self.tools = tools
             // Only a declaration the SDK's parser accepts types arguments: one
-            // per name, an object schema without indirect types.
+            // per name, an object schema without indirect types. A `function`
+            // that is not an object makes it refuse every name.
+            var declarations: [String: [String: any Sendable]] = [:]
             var parameters: [String: [String: any Sendable]] = [:]
             var seen: Set<String> = []
             var duplicates: Set<String> = []
             for tool in tools ?? [] {
-                let function = (tool["function"] as? [String: any Sendable]) ?? tool
+                let function: [String: any Sendable]
+                if let wrapped = tool["function"] {
+                    guard let object = wrapped as? [String: any Sendable] else {
+                        declarations = [:]
+                        parameters = [:]
+                        break
+                    }
+                    function = object
+                } else {
+                    function = tool
+                }
                 guard let name = function["name"] as? String else { continue }
                 if !seen.insert(name).inserted { duplicates.insert(name) }
-                guard let declared = function["parameters"] else {
-                    parameters[name] = [:]
-                    continue
+                let schema: [String: any Sendable]
+                if let declared = function["parameters"] {
+                    guard let object = declared as? [String: any Sendable],
+                        object["type"] == nil || object["type"] as? String == "object",
+                        !Self.hasIndirectType(object),
+                        object["properties"].map({ $0 is [String: any Sendable] }) ?? true
+                    else { continue }
+                    schema = object
+                } else {
+                    schema = [:]
                 }
-                guard let schema = declared as? [String: any Sendable],
-                    schema["type"] == nil || schema["type"] as? String == "object",
-                    !Self.hasIndirectType(schema),
-                    schema["properties"].map({ $0 is [String: any Sendable] }) ?? true
-                else { continue }
+                declarations[name] = tool
                 parameters[name] = schema
             }
-            for name in duplicates { parameters[name] = nil }
+            for name in duplicates {
+                declarations[name] = nil
+                parameters[name] = nil
+            }
+            self.declarations = declarations
             self.parameters = parameters
         }
 
@@ -185,12 +201,15 @@ enum GLM5ToolSuffix {
         }
 
         /// Whether the SDK's parser accepts `frame` on its own. A name it
-        /// would refuse before reading arguments is refused without asking it.
+        /// would refuse before reading arguments is refused without asking it;
+        /// otherwise it is asked with that name's one declaration, which it
+        /// resolves the same way as from the whole list, without scanning it.
         func accepts(_ frame: Range<Int>) -> Bool {
             guard let tag = find("<", from: frame.lowerBound + 11) else { return false }
             let name = frameName(frame.lowerBound ..< tag)
-            guard Self.isFunctionName(name), parameters[name] != nil else { return false }
-            return GLM5ToolCallParser().parse(content: String(decoding: bytes[frame], as: UTF8.self), tools: tools) != nil
+            guard Self.isFunctionName(name), let declaration = declarations[name] else { return false }
+            return GLM5ToolCallParser().parse(
+                content: String(decoding: bytes[frame], as: UTF8.self), tools: [declaration]) != nil
         }
 
         /// The name of the frame opening at `header.lowerBound`, up to its first `<`.

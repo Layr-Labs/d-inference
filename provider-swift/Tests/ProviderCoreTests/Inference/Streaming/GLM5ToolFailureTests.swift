@@ -421,6 +421,20 @@ struct GLM5ToolFailureTests {
         #expect(GLM5ToolSuffix.split(suffix, tools: tools) == .text(suffix, calls: []))
     }
 
+    /// And many discarded frames that the SDK must check (they hold a `"`)
+    /// against many tools: each check resolves the frame's one declaration.
+    @Test func manyQuotedDiscardedFramesAgainstManyTools() throws {
+        var tools: [[String: any Sendable]] = (1 ..< 500).map {
+            ["type": "function", "function": ["name": "f\($0)"] as [String: any Sendable]]
+        }
+        tools.insert(["type": "function", "function": ["name": "f0", "parameters": ["type": "object",
+            "properties": ["x": ["type": "string"] as [String: any Sendable]] as [String: any Sendable]]
+            as [String: any Sendable]] as [String: any Sendable]], at: 0)
+        let frame = #"<tool_call>f0<arg_key>x</arg_key><arg_value>"</arg_value></tool_call>."#
+        let suffix = "<tool_call>." + String(repeating: frame, count: 12_000)
+        #expect(GLM5ToolSuffix.split(suffix, tools: tools) == .text(suffix, calls: []))
+    }
+
     /// And a long generated name with many arguments: the name is looked up
     /// once per frame, not once per argument.
     @Test func longNameWithManyArguments() throws {

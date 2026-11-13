@@ -17,6 +17,9 @@ struct NativeToolStreamRouter {
     private var rejectedNativeGemmaReasoning = false
     private let withholdReasoning: Bool
     private var withheldReasoning = ""
+    private let tools: [[String: any Sendable]]?
+    /// An `auto` GLM tool suffix that does not parse is text (`GLM5ToolSuffix`).
+    private let glmUnparsedOutputIsText: Bool
     /// Validation contract for calls exposed while generated; nil keeps the
     /// complete-call path (calls flushed at the engine terminal).
     private let streamedCallPolicy: ToolChoicePromptPolicy.Prepared?
@@ -42,9 +45,12 @@ struct NativeToolStreamRouter {
          nativeGemmaReasoningEnabled: Bool = true, nativeMiMoChannels: Bool = false,
          nativeMiMoThinkingEnabled: Bool = true, nativeMiMoRequiresConstraint: Bool = false,
          absorbStrayThinkClose: Bool = false, withholdReasoning: Bool = false,
-         streamedCalls: ToolChoicePromptPolicy.Prepared? = nil) {
+         streamedCalls: ToolChoicePromptPolicy.Prepared? = nil,
+         glmUnparsedOutputIsText: Bool = GLM5ToolSuffix.returnsUnparsedOutputAsTextByDefault) {
         self.handler = handler
         self.withholdReasoning = withholdReasoning
+        self.tools = tools
+        self.glmUnparsedOutputIsText = glmUnparsedOutputIsText
         self.requiresToolCall = requiresToolCall
         self.nativeGemmaReasoningEnabled = nativeGemmaReasoningEnabled
         self.nativeMiMoChannels = nativeMiMoChannels
@@ -160,13 +166,17 @@ struct NativeToolStreamRouter {
     }
 
     /// A native family's (MiMo, GLM, Flint) own call frame failed to parse.
+    /// An `auto` GLM suffix that does not parse is text instead
+    /// (`finishCompleteCalls`), not a failure.
     var hasNativeToolFailure: Bool {
         (nativeMiMoChannels || handler?.format == .glm5 || handler?.format == .flint)
-            && (handler?.parseFailureCount ?? 0) > 0
+            && (handler?.parseFailureCount ?? 0) > 0 && !returnsUnparsedGLMOutputAsText
     }
 
     /// Also called after the SDK EOS flush, before residual text or any call
-    /// is published. GLM validates the entire retained suffix only at EOS.
+    /// is published. GLM validates the entire retained suffix only at EOS; on
+    /// an `auto` request a suffix that does not parse is text
+    /// (`finishCompleteCalls`), not a failure.
     func checkNativeToolFailure() throws {
         guard hasNativeToolFailure else { return }
         let model = handler?.format == .glm5 ? "GLM" : handler?.format == .flint ? "Flint" : "MiMo"
@@ -175,6 +185,31 @@ struct NativeToolStreamRouter {
             throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(message)
         }
         throw MultiModelBatchSchedulerEngineError.generationFailed(message)
+    }
+
+    /// End of generation on the complete-call path: the handler's calls and
+    /// its residual text. An `auto` GLM suffix that did not parse as one batch
+    /// is split into text and its final calls (`GLM5ToolSuffix`), except in an
+    /// output the token limit cut off, where it stays text. A suffix whose
+    /// release would expose a think marker from inside a tool frame keeps
+    /// failing, as before, unless the cut ends the answer as `length`
+    /// (`cutAtLimit`, `TokenLimitCutPolicy`): it is then dropped.
+    func finishCompleteCalls(truncated: Bool, cutAtLimit: Bool = false) throws
+        -> (calls: [ToolCall], residual: String?)
+    {
+        guard let handler else { return ([], nil) }
+        let calls = handler.finish()
+        let residual = handler.takeResidualText()
+        guard returnsUnparsedGLMOutputAsText, calls.isEmpty, let residual else { return (calls, residual) }
+        switch GLM5ToolSuffix.split(residual, tools: tools) {
+        case .text(let text, calls: let found): return truncated ? ([], residual) : (found, text)
+        case .ambiguous where cutAtLimit: return ([], nil)
+        case .ambiguous: throw MultiModelBatchSchedulerEngineError.generationFailed("native GLM tool output is invalid")
+        }
+    }
+
+    private var returnsUnparsedGLMOutputAsText: Bool {
+        handler?.format == .glm5 && glmUnparsedOutputIsText && !requiresToolCall
     }
 
     private mutating func route(_ pieces: [ParsedReasoning], cutAtLimit: Bool = false) throws

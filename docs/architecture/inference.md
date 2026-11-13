@@ -1781,6 +1781,27 @@ commit a partial call batch. Its retained suffix is capped at 1 MiB; rejection
 returns the original text through the existing parser-failure path. Ambiguous
 string unions and unsupported indirect schemas are not inferred. This parser
 does not implement constrained decoding or advertise function calling.
+The suffix starts at the response's first `<tool_call>`, and GLM `auto` tool
+requests do not split reasoning off first, so it also holds a tag the model only
+mentioned or a call it drafted in its thought, or a tag its answer mentions.
+Such a suffix does not parse as one batch. On an `auto` request it is no longer a
+failure: like the reference GLM parsers (vLLM, SGLang), which never fail a
+response on tool syntax, the provider returns it as text, under its own stricter
+rule for what still counts as a call (`NativeToolStreamRouter.finishCompleteCalls`,
+`GLM5ToolSuffix`). The calls are the trailing run of top-level frames, separated
+only by whitespace and ending the response, from just after the last frame of the
+run that does not parse; everything before them is text, which the service's
+reasoning parser then splits at `</think>`. A frame that has started its
+arguments owns everything up to its `</tool_call>`, so a frame inside or after an
+argument is data, never a call. A suffix with no such run (a malformed or cut-off
+final frame, text after the calls) is all text, and so is a suffix that did not
+parse in an output cut at the token limit; no frame is completed or salvaged. A
+suffix whose release would put a think marker from inside a frame before the
+reasoning parser keeps failing, as does a required or named call (422). Unlike
+vLLM and SGLang, a call followed by text or by a malformed frame commits nothing,
+and a call drafted inside a closed thought stays reasoning. A suffix that parses
+keeps its calls as before. `DARKBLOOM_GLM_TOOL_TEXT_FALLBACK=0` restores the
+whole-suffix failure (500).
 The request-local [GLM prompt contract](../reference/protocol-messages.md#glm-native-prompt-contract)
 also preserves original schema values only after a trusted loaded-model check.
 It renders reasoning that OpenRouter returns on earlier assistant turns
@@ -3618,10 +3639,11 @@ breaking a contract, and OpenRouter does not count a call cut by the caller's
   with no call ends `length` (`ToolConstraintValidation.validateWithheld`).
   A call under `tool_choice: none` is the model's and still refused;
   `parallel_tool_calls: false` keeps only the first call before any check
-  (`ParallelToolCallPolicy`). A native GLM, Flint
-  or MiMo frame the limit left unparsed is dropped, never published as text.
-  Calls that pass still leave, and the response then finishes `tool_calls`,
-  as before.
+  (`ParallelToolCallPolicy`). A native Flint or MiMo frame, or a forced GLM
+  frame, the limit left unparsed is dropped, never published as text; an
+  `auto` GLM suffix that does not parse stays text (`GLM5ToolSuffix`), and one
+  that cannot be released is dropped. Calls that pass still leave, and the
+  response then finishes `tool_calls`, as before.
 - Super's output (`NemotronSuperLocalOutput.finish(cutAtLimit:)`) does the same
   for its unterminated frame, its calls and its withheld JSON answer. Its
   internal qualification route stays strict.

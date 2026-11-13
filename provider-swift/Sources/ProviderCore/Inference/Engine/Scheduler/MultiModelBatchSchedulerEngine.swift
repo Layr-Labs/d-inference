@@ -1943,18 +1943,21 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     continuation.finish()
                     return
                 }
-                var toolCalls = ParallelToolCallPolicy.admitted(toolHandler?.finish() ?? [], prepared: prepared)
+                let finished: (calls: [ToolCall], residual: String?)
                 do {
+                    finished = try router.finishCompleteCalls(truncated: stopReason == "length",
+                        cutAtLimit: cutAtLimit)
                     if !cutAtLimit { try router.checkNativeToolFailure() }
                 } catch {
                     await releaseBox.fire()
                     continuation.finish(throwing: error)
                     return
                 }
-                // A native frame the cut left unparsed is never published as text.
-                if prepared.mode == .auto,
-                    let residual = toolHandler?.takeResidualText(),
-                    !residual.isEmpty, !router.hasNativeToolFailure
+                var toolCalls = ParallelToolCallPolicy.admitted(finished.calls, prepared: prepared)
+                // A native frame the cut left unparsed is never published as
+                // text (an `auto` GLM suffix that does not parse is text).
+                if prepared.mode == .auto, let residual = finished.residual, !residual.isEmpty,
+                    !router.hasNativeToolFailure
                 {
                     emit(router.visibleEvent(residual))
                 }

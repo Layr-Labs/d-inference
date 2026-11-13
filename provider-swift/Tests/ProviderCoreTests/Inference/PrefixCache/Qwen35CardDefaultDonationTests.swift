@@ -9,9 +9,9 @@ import Testing
 @testable import ProviderCore
 
 /// A Qwen 3.5/3.6 request with the model card's presence penalty (1.5) cannot speculate: on
-/// `qwen3.5-35b-a3b` that is the provider's default for a request that sends no sampling field
-/// (`EngineV2SamplingDefaults.qwen35CardDefaults`); on `Qwen3.5-9B` the request sends it, since
-/// the 9B's default may carry no penalty. On the production paged assembly, with the inline MTP
+/// `qwen3.5-35b-a3b` and `Qwen3.5-9B` alike that is the provider's default for a request that
+/// sends no sampling field (`EngineV2SamplingDefaults.qwen35CardDefaults`; 0.10.12 had none on
+/// the 9B). On the production paged assembly, with the inline MTP
 /// assistant and the encrypted complete-checkpoint store, such a request must still donate its
 /// prompt's checkpoints, answer exactly as it does with the cache off, and let the next
 /// identical request restore them and answer exactly as its cold run. Synthetic weights, no
@@ -182,7 +182,8 @@ struct Qwen35CardDefaultDonationTests {
             let bridge = EngineV2Bridge(
                 engine: build.engine, modelId: self.build.rawValue, tokenizer: TokenizerHandle(tokenizer),
                 eosTokenIds: [], samplingDefaults: EngineV2SamplingDefaults.resolve(
-                    modelId: self.build.rawValue, modelType: self.build.modelType, modelDirectory: nil),
+                    modelId: self.build.rawValue, modelType: self.build.modelType, modelDirectory: nil,
+                    environment: [:]),
                 maxConcurrentRequests: 1, prefillDeadlineMode: .off,
                 fixedRequestBytes: build.fixedRequestBytes, ssdHybridCheckpointStore: store,
                 kvBackendKind: .paged)
@@ -212,7 +213,7 @@ struct Qwen35CardDefaultDonationTests {
     static func request(_ build: Build, _ extra: Extra) -> ChatCompletionRequest {
         ChatCompletionRequest(
             model: build.rawValue, messages: [ChatMessage(role: "user", content: "pre-tokenized")],
-            max_tokens: maxTokens, presence_penalty: build == .dense ? 1.5 : nil,
+            max_tokens: maxTokens,
             stop: extra == .stop ? .single("<never-matches>") : nil,
             seed: 77, logprobs: extra == .logprobs ? true : nil,
             top_logprobs: extra == .logprobs ? 5 : nil)
@@ -275,11 +276,9 @@ struct Qwen35CardDefaultDonationTests {
             let defaults = await coldBridge.samplingDefaults
             #expect(defaults.temperature == 1 && defaults.topP == 0.95 && defaults.topK == 20,
                     "the card's sampling defaults apply")
-            if build == .moe {
-                #expect(defaults == EngineV2SamplingDefaults.qwen35CardDefaults,
-                        "the 35B build keeps the card's presence penalty by default")
-                #expect(defaults.presencePenalty == 1.5)
-            }
+            #expect(defaults == EngineV2SamplingDefaults.qwen35CardDefaults,
+                    "every catalog build keeps the card's presence penalty by default")
+            #expect(defaults.presencePenalty == 1.5)
             let cold = try await Self.serve(coldBridge, request, id: "cold")
             #expect(cold.finish == "length")
             #expect(cold.hit == 0)

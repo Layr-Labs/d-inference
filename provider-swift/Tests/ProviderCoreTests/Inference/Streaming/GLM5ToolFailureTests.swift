@@ -221,12 +221,59 @@ struct GLM5ToolFailureTests {
              "stop", Self.storeTool),
             ("Draft <tool_call>. <tool_call>echo<arg_key>text</arg_key><arg_value></think>PRIVATE</arg_value></tool_call>",
              "length", nil),
+            ("Draft <tool_call>echo<bad><arg_key>text</arg_key><arg_value></think></arg_value></tool_call>PRIVATE</think>Answer",
+             "stop", nil),
+            ("Draft <tool_call>echo<bad><arg_key>text</arg_key><arg_value></think></arg_value></tool_call>PRIVATE</think>Answer",
+             "length", nil),
         ]
         for shape in cases {
             let result = try await run(shape.output, forced: false, width: width, finishReason: shape.finishReason,
                 tool: shape.tool)
             #expect(result.calls.isEmpty && result.visible == "Draft ", "\(shape.output)")
             #expect(result.failure == .generationFailed("native GLM tool output is invalid"), "\(shape.output)")
+        }
+    }
+
+    /// `store` with a declared object key `é` (U+00E9) and string-typed
+    /// additional properties.
+    static let accentTool = #"{"type":"function","function":{"name":"store","parameters":{"type":"object","properties":{"\u00e9":{"type":"object"}},"additionalProperties":{"type":"string"}}}}"#
+
+    /// A frame never borrows a later frame's closing tags: a raw value holding
+    /// the SDK's frame tags (which the SDK refuses), a malformed header that
+    /// leads into arguments, and a key the SDK refuses because it only
+    /// canonically equals a declared one each make the frame own the rest, so
+    /// no frame after it is a call, at a stop or the token limit.
+    @Test(arguments: ["stop", "length"], [1, 7, 4096])
+    func framesNeverBorrowALaterFramesClose(finishReason: String, width: Int) async throws {
+        let echo = { (text: String) in "<tool_call>echo<arg_key>text</arg_key><arg_value>\(text)</arg_value></tool_call>" }
+        let inner = "<tool_call>store<arg_key>doc</arg_key><arg_value>{}</arg_value></tool_call>"
+        let cases: [(output: String, tool: String?)] = [
+            ("<tool_call>echo<arg_key>text</arg_key><arg_value>draft " + echo("ONE") + echo("TWO"), nil),
+            ("<tool_call>store<bad><arg_key>doc</arg_key><arg_value>{\"x\":\"" + inner, Self.storeTool),
+            ("<tool_call>store<arg_key>e\u{301}</arg_key><arg_value>{\"x\":\"</arg_value></tool_call><tool_call>store</tool_call>",
+             Self.accentTool),
+        ]
+        for shape in cases {
+            let result = try await run(shape.output, forced: false, width: width, finishReason: finishReason,
+                tool: shape.tool)
+            #expect(result.failure == nil && result.calls.isEmpty, "\(shape.output)")
+            #expect(result.visible == shape.output, "\(shape.output)")
+        }
+    }
+
+    /// Declared keys (byte for byte) and additional properties keep their
+    /// types after a mention: the final call parses.
+    @Test func declaredAndAdditionalKeysStillParse() async throws {
+        for (frame, key, value) in [
+            ("<tool_call>store<arg_key>\u{e9}</arg_key><arg_value>{}</arg_value></tool_call>", "\u{e9}",
+             JSONValue.object([:])),
+            ("<tool_call>store<arg_key>note</arg_key><arg_value>plain {text}</arg_value></tool_call>", "note",
+             JSONValue.string("plain {text}")),
+        ] {
+            let result = try await run("Use <tool_call>.</think>" + frame, forced: false, width: 3, finishReason: "stop",
+                tool: Self.accentTool)
+            #expect(result.failure == nil && result.visible == "Use <tool_call>.</think>", "\(frame)")
+            #expect(result.calls.map { $0.function.arguments } == [[key: value]], "\(frame)")
         }
     }
 
@@ -259,6 +306,24 @@ struct GLM5ToolFailureTests {
         }
         #expect(text == "<tool_call>." && calls.count == 40_000)
         #expect(calls.allSatisfy { $0.function.name == "a" && $0.function.arguments.isEmpty })
+    }
+
+    /// And many additional properties against a large declared schema: each
+    /// key's type is one lookup.
+    @Test func manyAdditionalKeysAgainstALargeSchema() throws {
+        var properties: [String: any Sendable] = [:]
+        for index in 0 ..< 5_000 { properties["p\(index)"] = ["type": "string"] as [String: any Sendable] }
+        let parameters: [String: any Sendable] = ["type": "object", "properties": properties,
+                                                  "additionalProperties": ["type": "string"] as [String: any Sendable]]
+        let tools: [[String: any Sendable]] = [["type": "function",
+            "function": ["name": "f", "parameters": parameters] as [String: any Sendable]]]
+        let arguments = (0 ..< 5_000).map { "<arg_key>x\($0)</arg_key><arg_value>v</arg_value>" }.joined()
+        let split = GLM5ToolSuffix.split("<tool_call>.<tool_call>f" + arguments + "</tool_call>", tools: tools)
+        guard case .text(let text, let calls) = split else {
+            Issue.record("expected text and calls, got \(split)")
+            return
+        }
+        #expect(text == "<tool_call>." && calls.count == 1 && calls.first?.function.arguments.count == 5_000)
     }
 
     /// `DARKBLOOM_GLM_TOOL_TEXT_FALLBACK=0` restores the whole-suffix failure.

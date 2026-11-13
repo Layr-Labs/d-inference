@@ -329,6 +329,22 @@ struct GLM5ToolFailureTests {
         }
     }
 
+    /// And a closed frame before it: its value may run on, unescaped, through
+    /// the orphan tags (the template writes strings raw), so a think marker
+    /// between them, either way, still fails.
+    @Test(arguments: ["stop", "length"], [1, 5, 4096])
+    func orphanTagsTakeBackAnEarlierFrame(finishReason: String, width: Int) async throws {
+        let echo = "<tool_call>echo<arg_key>text</arg_key><arg_value>x</arg_value></tool_call>"
+        for (output, visible) in [
+            (echo + "</think>PRIVATE</arg_value></tool_call>", ""),
+            ("Done.</think>" + echo + "<think>HIDDEN</arg_value></tool_call>", "Done.</think>"),
+        ] {
+            let result = try await run(output, forced: false, width: width, finishReason: finishReason)
+            #expect(result.calls.isEmpty && result.visible == visible, "\(output)")
+            #expect(result.failure == .generationFailed("native GLM tool output is invalid"), "\(output)")
+        }
+    }
+
     /// A trailing run with a member the SDK refuses is not a batch to take
     /// part of: no member of it runs, as the SDK's own batch rule says (an
     /// undeclared name, a missing required argument).

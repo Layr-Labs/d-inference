@@ -233,10 +233,15 @@ struct GenerationLoopExitThinkingTests {
     private static let qwen = QwenByteTestTokenizer()
     private static let qwenThinking = QwenByteTestTokenizer.tokens(QwenByteTestTokenizer.prompt(thinking: true))
 
-    private func qwenExit(_ modelType: String = "qwen3_5_moe") -> GenerationLoopExitThinking? {
+    /// Qwen's exit is listed but off by default: these tests turn it on.
+    private static let qwenOn = GenerationLoopExitThinkingPolicy.Setting.modelTypes(
+        GenerationLoopExitThinkingPolicy.defaultModelTypes.union(["qwen3_5_moe"]))
+
+    private func qwenExit(_ modelType: String = "qwen3_5_moe",
+                          setting: GenerationLoopExitThinkingPolicy.Setting = Self.qwenOn) -> GenerationLoopExitThinking? {
         GenerationLoopExitThinkingPolicy.resolve(
             modelType: modelType, tokenizer: Self.qwen, promptTokens: Self.qwenThinking, logprobs: false,
-            setting: .modelTypes(GenerationLoopExitThinkingPolicy.defaultModelTypes))
+            setting: setting)
     }
 
     @Test("Qwen 3.5/3.6 end the thought as their template does: `\\n</think>\\n\\n`, the marker as its own token")
@@ -251,8 +256,13 @@ struct GenerationLoopExitThinkingTests {
             // The served template opens the thought in the prompt.
             #expect(exit.startsInside)
         }
-        // On by default for the two 35B models (`qwen3_5_moe`) only: `qwen3_5`
-        // also covers Qwen 3.8 27B, whose loops are rare, and the 9B was not A/B'd.
+        // Off by default (the A/B found too few Qwen loops to show rescues):
+        // the env list turns the 35B models (`qwen3_5_moe`) on. `qwen3_5` also
+        // covers Qwen 3.8 27B.
+        let defaults = GenerationLoopExitThinkingPolicy.Setting.modelTypes(
+            GenerationLoopExitThinkingPolicy.defaultModelTypes)
+        #expect(qwenExit("qwen3_5_moe", setting: defaults) == nil)
+        #expect(qwenExit("qwen3_5", setting: defaults) == nil)
         #expect(qwenExit("qwen3_5_moe") != nil)
         #expect(qwenExit("qwen3_5") == nil)
         // A prompt whose earlier turns closed their thoughts still opens this one.
@@ -261,11 +271,11 @@ struct GenerationLoopExitThinkingTests {
             + "<|im_start|>assistant\n<think>\n")
         #expect(GenerationLoopExitThinkingPolicy.resolve(
             modelType: "qwen3_5_moe", tokenizer: Self.qwen, promptTokens: history, logprobs: false,
-            setting: .modelTypes(GenerationLoopExitThinkingPolicy.defaultModelTypes))?.startsInside == true)
+            setting: Self.qwenOn)?.startsInside == true)
         let closed = QwenByteTestTokenizer.tokens(QwenByteTestTokenizer.prompt(thinking: false))
         #expect(GenerationLoopExitThinkingPolicy.resolve(
             modelType: "qwen3_5_moe", tokenizer: Self.qwen, promptTokens: closed, logprobs: false,
-            setting: .modelTypes(GenerationLoopExitThinkingPolicy.defaultModelTypes))?.startsInside == false)
+            setting: Self.qwenOn)?.startsInside == false)
         // Qwen 3.8 (`qwen4_exp`) is not listed: its thought loops are rare in production.
         #expect(qwenExit("qwen4_exp") == nil)
         // The env list still turns Qwen's off and keeps Gemma's.
@@ -300,7 +310,7 @@ struct GenerationLoopExitThinkingTests {
         let closedPrompt = QwenByteTestTokenizer.tokens(QwenByteTestTokenizer.prompt(thinking: false))
         let exit = try #require(GenerationLoopExitThinkingPolicy.resolve(
             modelType: "qwen3_5_moe", tokenizer: Self.qwen, promptTokens: closedPrompt, logprobs: false,
-            setting: .modelTypes(GenerationLoopExitThinkingPolicy.defaultModelTypes)))
+            setting: Self.qwenOn))
         #expect(!exit.startsInside)
         var reopened = GenerationLoopGuard(
             modelType: "qwen3_5_moe", toolCallMarkers: GenerationLoopGuardPolicy.genericToolCallMarkers, exitThinking: exit)
@@ -370,7 +380,7 @@ struct GenerationLoopExitThinkingTests {
         }
         #expect(GenerationLoopExitThinkingPolicy.resolve(
             modelType: "qwen3_5_moe", tokenizer: Prefixing(), promptTokens: Self.qwenThinking, logprobs: false,
-            setting: .modelTypes(GenerationLoopExitThinkingPolicy.defaultModelTypes)) == nil)
+            setting: Self.qwenOn) == nil)
     }
 
     @Test("darkbloom start passes the loop guard's and the exit's switches to the launchd daemon")

@@ -6,35 +6,6 @@ import Foundation
 /// come from the existing atomic provider acquire path after its container/bridge builder
 /// has gained a qualified Super adapter. Installing SDK weights alone cannot provide it.
 /// This type neither loads weights nor manufactures admission, trust, or registry entries.
-private extension ChatCompletionRequest {
-    /// The same request with another output budget.
-    func withMaxTokens(_ maxTokens: Int) -> ChatCompletionRequest {
-        ChatCompletionRequest(
-            model: model, messages: messages, temperature: temperature, top_p: top_p, top_k: top_k,
-            max_tokens: maxTokens, repetition_penalty: repetition_penalty, presence_penalty: presence_penalty,
-            frequency_penalty: frequency_penalty, stream: stream, stop: stop, seed: seed, tools: tools,
-            tool_choice: tool_choice, response_format: response_format, user: user,
-            prompt_cache_key: prompt_cache_key, logit_bias: logit_bias, logprobs: logprobs,
-            top_logprobs: top_logprobs, min_p: min_p)
-    }
-}
-
-/// Cancels the request's running row: the first, or once a continuation can
-/// start, both (`LoopExitThinkingContinuation.splice`'s cancel).
-private final class RowCancel: @unchecked Sendable {
-    private let lock = NSLock()
-    private var action: @Sendable () async -> Void
-
-    init(_ action: @escaping @Sendable () async -> Void) { self.action = action }
-
-    func replace(with action: @escaping @Sendable () async -> Void) { lock.withLock { self.action = action } }
-
-    func run() async {
-        let action = lock.withLock { self.action }
-        await action()
-    }
-}
-
 actor NemotronSuperLocalBinding {
     /// The qualification hook's model id; a managed slot serves its registry id.
     static let modelID = "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4"
@@ -218,6 +189,7 @@ actor NemotronSuperLocalBinding {
         let continuationUsage = EngineV2RequestUsageSignal()
         let cancel = RowCancel { await bridge.cancel(requestId: requestID) }
         await withTaskCancellationHandler {
+            var spliceFinished: (@Sendable () async -> Void)?
             var stream = await bridge.submitTokenized(
                 promptTokens: tokens, request: request, requestId: requestID,
                 cacheScope: cacheScope ?? "", cacheEnabled: cacheScope != nil,
@@ -234,12 +206,24 @@ actor NemotronSuperLocalBinding {
                         guard await bridge.waitForRowRelease(requestId: requestID, within: .seconds(5)) else {
                             throw LoopExitThinkingContinuation.RowNotReleased()
                         }
-                        return await bridge.submitTokenized(
-                            promptTokens: continuationPrompt, request: request.withMaxTokens(budget),
-                            requestId: continuationID,
-                            cacheScope: cacheScope ?? "", cacheEnabled: cacheScope != nil,
-                            usageSignal: continuationUsage, donationDemand: donationDemand,
-                            loopGuard: loopGuard.withoutExit())
+                        // A request cancelled or drained during the wait gets no second row.
+                        guard !cancel.cancelled else { throw CancellationError() }
+                        // As `run` checks the first prompt.
+                        guard !continuationPrompt.contains(18),
+                              continuationPrompt.allSatisfy({ (0..<131072).contains($0) })
+                        else { throw Failure.invalidTokens }
+                        // As the scheduler's continuation: the request's prompt progress
+                        // has ended, and the owner's make-room hook is the first row's.
+                        return await LocalPrefillProgress.$current.withValue(nil) {
+                            await MeFirstOwnerRequest.$makeRoom.withValue(nil) {
+                                await bridge.submitTokenized(
+                                    promptTokens: continuationPrompt, request: request.withMaxTokens(budget),
+                                    requestId: continuationID,
+                                    cacheScope: cacheScope ?? "", cacheEnabled: cacheScope != nil,
+                                    usageSignal: continuationUsage, donationDemand: donationDemand,
+                                    loopGuard: loopGuard.withoutExit())
+                            }
+                        }
                     },
                     cancelContinuation: { await bridge.cancel(requestId: continuationID) },
                     onOutcome: { outcome in
@@ -252,6 +236,7 @@ actor NemotronSuperLocalBinding {
                     })
                 stream = spliced.events
                 cancel.replace(with: spliced.cancel)
+                spliceFinished = spliced.finished
             }
             for await event in stream {
                 if Task.isCancelled { break }
@@ -261,6 +246,9 @@ actor NemotronSuperLocalBinding {
                 await onEvent(event)
             }
             if Task.isCancelled { await cancel.run() }
+            // A continuation a cancel overtook during the hand-off is cancelled by
+            // the time the splice is over: only then can its row have a pump.
+            await spliceFinished?()
             // A terminal event alone does not prove pump/native cleanup has completed.
             await usage.waitForTerminalObservation()
             await continuationUsage.waitForTerminalObservation()
@@ -268,5 +256,41 @@ actor NemotronSuperLocalBinding {
             Task { await cancel.run() }
         }
         try Task.checkCancellation()
+    }
+}
+
+private extension ChatCompletionRequest {
+    /// The same request with another output budget.
+    func withMaxTokens(_ maxTokens: Int) -> ChatCompletionRequest {
+        ChatCompletionRequest(
+            model: model, messages: messages, temperature: temperature, top_p: top_p, top_k: top_k,
+            max_tokens: maxTokens, repetition_penalty: repetition_penalty, presence_penalty: presence_penalty,
+            frequency_penalty: frequency_penalty, stream: stream, stop: stop, seed: seed, tools: tools,
+            tool_choice: tool_choice, response_format: response_format, user: user,
+            prompt_cache_key: prompt_cache_key, logit_bias: logit_bias, logprobs: logprobs,
+            top_logprobs: top_logprobs, min_p: min_p)
+    }
+}
+
+/// Cancels the request's running row: the first, or once a continuation can
+/// start, both (`LoopExitThinkingContinuation.splice`'s cancel). Once run, a
+/// continuation still being handed off is not submitted.
+private final class RowCancel: @unchecked Sendable {
+    private let lock = NSLock()
+    private var action: @Sendable () async -> Void
+    private var ran = false
+
+    init(_ action: @escaping @Sendable () async -> Void) { self.action = action }
+
+    func replace(with action: @escaping @Sendable () async -> Void) { lock.withLock { self.action = action } }
+
+    var cancelled: Bool { lock.withLock { ran } }
+
+    func run() async {
+        let action = lock.withLock { () -> @Sendable () async -> Void in
+            ran = true
+            return self.action
+        }
+        await action()
     }
 }

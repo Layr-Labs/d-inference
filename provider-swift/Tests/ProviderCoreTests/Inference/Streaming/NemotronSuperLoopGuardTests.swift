@@ -63,12 +63,12 @@ private final class SuperLoopingEngine: CBv2Engine, @unchecked Sendable {
     func shutdown() async {}
 }
 
-/// Super's markers in a byte-spelled test vocabulary below Super's 131,072
-/// (the binding refuses ids outside it).
+/// Super's markers at their real ids (`<|im_end|>` 11, `<think>` 12, `</think>`
+/// 13) in a byte-spelled test vocabulary; the test text holds no byte 11-13.
 private enum SuperThoughtVocabulary {
-    static let think = 1012
-    static let thinkClose = 1013
-    static let imEnd = 1011
+    static let think = 12
+    static let thinkClose = 13
+    static let imEnd = 11
     static let markers: [(String, Int)] = [("<think>", think), ("</think>", thinkClose), ("<|im_end|>", imEnd)]
     static let tokenizer = GemmaThoughtTestTokenizer(markers: markers)
     static func tokens(_ text: String) -> [Int] { GemmaThoughtTestTokenizer.tokens(text, markers: markers) }
@@ -84,6 +84,10 @@ private final class SuperThoughtLoopEngine: CBv2Engine, @unchecked Sendable {
     private var continuations: [AsyncStream<CBv2Event>.Continuation] = []
     private var submitted: [CBv2Request] = []
     private var produced: [[Int]] = []
+    /// The row closes its thought first and loops in its answer.
+    let loopInAnswer: Bool
+
+    init(loopInAnswer: Bool = false) { self.loopInAnswer = loopInAnswer }
 
     var requests: [CBv2Request] { lock.withLock { submitted } }
     var outputs: [[Int]] { lock.withLock { produced } }
@@ -102,6 +106,10 @@ private final class SuperThoughtLoopEngine: CBv2Engine, @unchecked Sendable {
             continuation.yield(.delta(text: text, tokens: tokens, logprobs: nil))
         }
         if index == 0 {
+            if loopInAnswer {
+                emit("ok.")
+                emit("</think>")
+            }
             let clause = Array("Wait, the reaction is: CO + Cu -> CO2 + Cu (No). ")
             for position in 0..<4_200 { emit(String(clause[position % clause.count])) }
             Task { [weak self] in
@@ -142,10 +150,13 @@ private actor SuperLoopEvents {
     var stopReason: String?
     var completionTokens = 0
     var errors = 0
+    /// Terminal `info` events: a spliced answer has exactly one.
+    var infos = 0
     func record(_ event: GenerationEvent) {
         switch event {
         case .chunk(let chunk): text += chunk
         case .info(_, let completion, _, let reason):
+            infos += 1
             stopReason = reason
             completionTokens = completion
         case .error, .terminal: errors += 1
@@ -228,24 +239,31 @@ struct NemotronSuperLoopGuardTests {
 
     private static let exitDefaults = GenerationLoopExitThinkingPolicy.Setting.modelTypes(
         GenerationLoopExitThinkingPolicy.defaultModelTypes)
+    /// Super's exit is listed but off by default until its A/B.
+    private static let exitOn = GenerationLoopExitThinkingPolicy.Setting.modelTypes(
+        GenerationLoopExitThinkingPolicy.defaultModelTypes.union(["nemotron_h_omni"]))
 
     @Test("Super's exit is `</think>` alone, as its template writes a thought; its prompt opens the thought")
     func superExit() throws {
         let plan = try plan()
+        // Off by default until its A/B.
+        #expect(plan.exitThinking(
+            promptTokens: SuperThoughtVocabulary.thinkingPrompt, tokenizer: SuperThoughtVocabulary.tokenizer,
+            setting: Self.exitDefaults) == nil)
         let exit = try #require(plan.exitThinking(
             promptTokens: SuperThoughtVocabulary.thinkingPrompt, tokenizer: SuperThoughtVocabulary.tokenizer,
-            setting: Self.exitDefaults))
+            setting: Self.exitOn))
         #expect(exit.exitTokens == [SuperThoughtVocabulary.thinkClose])
         #expect(exit.exitText == "</think>")
         #expect(exit.startsInside)
         // Thinking off: the prompt closed an empty thought.
         let off = SuperThoughtVocabulary.tokens("<|im_start|>assistant\n<think></think>")
         #expect(plan.exitThinking(promptTokens: off, tokenizer: SuperThoughtVocabulary.tokenizer,
-                                  setting: Self.exitDefaults)?.startsInside == false)
+                                  setting: Self.exitOn)?.startsInside == false)
         // Never with logprobs; the env list can leave Super's off.
         #expect(try self.plan(",\"logprobs\":true,\"top_logprobs\":2").exitThinking(
             promptTokens: SuperThoughtVocabulary.thinkingPrompt, tokenizer: SuperThoughtVocabulary.tokenizer,
-            setting: Self.exitDefaults) == nil)
+            setting: Self.exitOn) == nil)
         #expect(plan.exitThinking(
             promptTokens: SuperThoughtVocabulary.thinkingPrompt, tokenizer: SuperThoughtVocabulary.tokenizer,
             setting: .modelTypes(["gemma4", "gemma4_text", "qwen3_5_moe"])) == nil)
@@ -254,9 +272,16 @@ struct NemotronSuperLoopGuardTests {
         #expect(loopGuard.exitThinking?.record === exit.record)
     }
 
-    @Test("a repeating Super thought ends in an answer on the owner's route; a stop in the answer is the request's")
-    func superThoughtLoopEndsInAnAnswer() async throws {
-        let engine = SuperThoughtLoopEngine()
+    private struct Served {
+        let engine: SuperThoughtLoopEngine
+        let events: SuperLoopEvents
+        let usage: EngineV2RequestUsageSignal
+        let prompt: [Int]
+    }
+
+    /// One text request through the binding, with Super's exit on.
+    private func serveExit(_ engine: SuperThoughtLoopEngine, prompt: [Int] = SuperThoughtVocabulary.thinkingPrompt,
+                           fields: String = "") async throws -> Served {
         let modelID = NemotronSuperLocalBinding.modelID
         let tokenizer = TokenizerHandle(SuperThoughtVocabulary.tokenizer)
         let bridge = EngineV2Bridge(engine: engine, modelId: modelID, tokenizer: tokenizer,
@@ -265,30 +290,59 @@ struct NemotronSuperLoopGuardTests {
             .init(tokenizer: tokenizer, releaseToken: OneShotRelease(release: { _ in }, modelId: model),
                   engineV2Bridge: bridge)
         })
-        let plan = try plan(#","stop":["B"]"#)
-        let prompt = SuperThoughtVocabulary.thinkingPrompt
+        let plan = try plan(fields)
         let exit = plan.exitThinking(promptTokens: prompt, tokenizer: SuperThoughtVocabulary.tokenizer,
-                                     setting: Self.exitDefaults)
+                                     setting: Self.exitOn)
         let usage = EngineV2RequestUsageSignal()
         let events = SuperLoopEvents()
         try await binding.run(request: plan.bridgeRequest, promptTokens: prompt, usageSignal: usage,
                               loopGuard: plan.loopGuard(setting: Self.defaults, exitThinking: exit),
                               onEvent: { await events.record($0) })
         await bridge.shutdown()
-        let requests = engine.requests
+        return Served(engine: engine, events: events, usage: usage, prompt: prompt)
+    }
+
+    @Test("a repeating Super thought ends in an answer on the owner's route; a stop in the answer is the request's")
+    func superThoughtLoopEndsInAnAnswer() async throws {
+        let served = try await serveExit(SuperThoughtLoopEngine(), fields: #","stop":["B"],"temperature":0.5,"seed":7"#)
+        let requests = served.engine.requests
         #expect(requests.count == 2)
         let first = try #require(requests.first)
         let continuation = try #require(requests.last)
-        let firstOutput = try #require(engine.outputs.first)
-        // The same prompt, every token the row produced, then `</think>`.
-        #expect(continuation.promptTokens == first.promptTokens + firstOutput + [SuperThoughtVocabulary.thinkClose])
+        let firstOutput = try #require(served.engine.outputs.first)
+        // The same prompt, every token the row produced, then `</think>` (13).
+        #expect(continuation.promptTokens == first.promptTokens + firstOutput + [13])
         #expect(continuation.maxTokens == first.maxTokens - firstOutput.count - 1)
+        // The same sampling and stops.
         #expect(continuation.stopStrings == ["B"])
+        #expect(continuation.sampling.temperature == 0.5)
+        #expect(continuation.sampling.seed == 7)
+        #expect(continuation.sampling.temperature == first.sampling.temperature)
+        #expect(continuation.sampling.topP == first.sampling.topP)
+        #expect(continuation.sampling.topK == first.sampling.topK)
+        #expect(continuation.sampling.presencePenalty == first.sampling.presencePenalty)
+        #expect(continuation.sampling.repetitionPenalty == first.sampling.repetitionPenalty)
+        let events = served.events
         #expect(await events.errors == 0)
+        #expect(await events.infos == 1)
         #expect(await events.text.hasSuffix("</think>Answer: B"))
         #expect(await events.stopReason == "stop")
         #expect(await events.completionTokens == firstOutput.count + 1 + 9)
-        #expect(usage.matchedStopSequence == "B")
+        #expect(served.usage.matchedStopSequence == "B")
+    }
+
+    @Test("with Super's exit on, a loop in the answer or after a thinking-off prompt still ends as length")
+    func superExitKeepsLengthOutsideTheThought() async throws {
+        let answer = try await serveExit(SuperThoughtLoopEngine(loopInAnswer: true))
+        #expect(answer.engine.requests.count == 1)
+        #expect(await answer.events.infos == 1)
+        #expect(await answer.events.stopReason == "length")
+
+        let thinkingOff = SuperThoughtVocabulary.tokens(
+            "<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n<think></think>")
+        let off = try await serveExit(SuperThoughtLoopEngine(), prompt: thinkingOff)
+        #expect(off.engine.requests.count == 1)
+        #expect(await off.events.stopReason == "length")
     }
 
     @Test("with the switch off the row runs to the engine's own end")

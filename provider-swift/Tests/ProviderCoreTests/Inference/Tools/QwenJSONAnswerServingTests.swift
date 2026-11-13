@@ -125,9 +125,10 @@ struct QwenJSONAnswerOutputTests {
     private typealias F = QwenAnswerFixture
 
     private func run(_ format: String, output: [String], finish: String, prefix: String? = "<think></think>",
-                     constrained: Bool = true) async throws -> QwenAnswerOutcome {
+                     constrained: Bool = true, endsAtLength: Bool = true) async throws -> QwenAnswerOutcome {
         let request = try F.request(format: format)
-        let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "qwen3_5")
+        var prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "qwen3_5")
+        prepared.cutAnswersEndAtLength = endsAtLength
         let scheduler = MultiModelBatchSchedulerEngine(registryProvider: { [:] })
         let upstream = AsyncStream<GenerationEvent> { continuation in
             for chunk in output { continuation.yield(.chunk(chunk)) }
@@ -161,23 +162,43 @@ struct QwenJSONAnswerOutputTests {
 
     @Test(arguments: [
         (["PRIVATE not json"], "stop"), ([#"{"tables_used":["PRIVATE"]}"#], "stop"),
-        ([#"{"tables_used":["PRIVATE"],"#], "length"), ([#"{"count":12}"#, " trailing PRIVATE"], "stop"),
+        ([#"{"count":12}"#, " trailing PRIVATE"], "stop"),
     ])
-    func invalidOrTruncatedAnswersAreTyped422s(output: [String], finish: String) async throws {
+    func invalidAnswersAreTyped422s(output: [String], finish: String) async throws {
         let outcome = try await run(F.schemaFormat(F.schema), output: output, finish: finish)
         let error = try #require(outcome.error as? MLXOpenAIServiceError)
         guard case .invalidResponseFormatOutput(let message) = error else {
             Issue.record("unexpected \(error)"); return
         }
         #expect(message.hasPrefix("Qwen ") && !message.contains("PRIVATE"), "errors never quote generated content")
-        #expect(finish != "length" || message.contains("budget"))
         #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 422)
     }
 
-    @Test func reasoningThatSpendsTheBudgetIsATyped422() async throws {
-        let outcome = try await run(F.jsonObject, output: ["still thinking"], finish: "length", prefix: "<think>")
-        #expect(outcome.reasoning == "still thinking" && outcome.content.isEmpty)
-        #expect(outcome.error.map { ProviderLoop.mapInferenceErrorToStatus($0) } == 422)
+    /// The budget, not the model, ended these: a normal `length` finish with
+    /// the answer as generated, including reasoning that spent the budget.
+    @Test func answersCutAtTheLimitEndAsLength() async throws {
+        let cut = try await run(F.schemaFormat(F.schema), output: [#"{"tables_used":["a"],"#], finish: "length")
+        #expect(cut.error == nil && cut.info?.stopReason == "length")
+        #expect(cut.content == #"{"tables_used":["a"],"#)
+        let thinking = try await run(F.jsonObject, output: ["still thinking"], finish: "length", prefix: "<think>")
+        #expect(thinking.error == nil && thinking.info?.stopReason == "length")
+        #expect(thinking.reasoning == "still thinking" && thinking.content.isEmpty)
+    }
+
+    /// `DARKBLOOM_LENGTH_FINISH_AT_LIMIT=0`: each stays a typed 422.
+    @Test func theSwitchOffKeepsCutAnswersTyped422s() async throws {
+        let cut = try await run(F.schemaFormat(F.schema), output: [#"{"tables_used":["PRIVATE"],"#],
+            finish: "length", endsAtLength: false)
+        let error = try #require(cut.error as? MLXOpenAIServiceError)
+        guard case .invalidResponseFormatOutput(let message) = error else {
+            Issue.record("unexpected \(error)"); return
+        }
+        #expect(message == "Qwen output budget ended before the JSON value was complete")
+        #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 422)
+        let thinking = try await run(F.jsonObject, output: ["still thinking"], finish: "length", prefix: "<think>",
+            endsAtLength: false)
+        #expect(thinking.reasoning == "still thinking" && thinking.content.isEmpty)
+        #expect(thinking.error.map { ProviderLoop.mapInferenceErrorToStatus($0) } == 422)
     }
 
     @Test func unconstrainedRequestsKeepTodaysPassThrough() async throws {
@@ -299,16 +320,11 @@ struct QwenJSONAnswerServingTests {
         #expect(outcome.content == #"{"tables_used":["orders"],"count":12}"#)
     }
 
-    @Test func aTruncatedAnswerStreamsThenFailsWithATyped422() async throws {
+    @Test func aTruncatedAnswerStreamsThenEndsAsLength() async throws {
         let engine = QwenScriptedEngine(script: #"{"tables_used":["orders"],"count":12}"#)
         let outcome = try await serve(engine, fields: #""max_tokens":10,"# + schemaFormat)
-        #expect(outcome.content == #"{"tables_u"#, "the prefix streamed before the failure")
-        let error = try #require(outcome.error as? MLXOpenAIServiceError)
-        guard case .invalidResponseFormatOutput(let message) = error else {
-            Issue.record("unexpected \(error)"); return
-        }
-        #expect(message == "Qwen output budget ended before the JSON value was complete")
-        #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 422)
+        #expect(outcome.content == #"{"tables_u"#, "the prefix streams as generated")
+        #expect(outcome.error == nil && outcome.info?.stopReason == "length")
     }
 
     @Test func requestedThinkingIsSplitBeforeTheAnswerIsValidated() async throws {
@@ -323,11 +339,11 @@ struct QwenJSONAnswerServingTests {
     @Test func aWrongKeyIsNeverEmitted() async throws {
         // The scripted model reaches for "tables" instead of "tables_used". The
         // masks admit only "_" there, so the stand-in, which follows its script
-        // or stops, ends early and the unfinished value fails as truncated.
+        // or stops, ends early as at its budget, with the unfinished value.
         let engine = QwenScriptedEngine(script: #"{"tables":["orders"],"count":1}"#)
         let outcome = try await serve(engine, fields: #""max_tokens":64,"# + schemaFormat)
         #expect(outcome.content == #"{"tables"#)
-        #expect(outcome.error.map { ProviderLoop.mapInferenceErrorToStatus($0) } == 422)
+        #expect(outcome.error == nil && outcome.info?.stopReason == "length")
     }
 
     @Test func toolsAndOtherFamiliesKeepTheirUnconstrainedPaths() async throws {

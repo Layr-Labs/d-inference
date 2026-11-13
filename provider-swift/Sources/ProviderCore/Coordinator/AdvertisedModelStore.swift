@@ -8,7 +8,7 @@ import Foundation
 /// ordinary reconnect uses the latest intended inventory, including a switch
 /// whose commit receipt was lost.
 ///
-/// A lock (matching `OutboundRouter`/`PongTracker`) is used rather than actor
+/// A lock (matching `OutboundRouter`/`LinkActivityTracker`) is used rather than actor
 /// isolation so the synchronous registration encoder can read it without an
 /// `await`, and so a re-advertise from the `ProviderLoop` actor can update it
 /// without hopping onto the `CoordinatorClient` actor.

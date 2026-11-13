@@ -248,17 +248,27 @@ struct GenerationLoopExitThinkingServingTests {
         }
     }
 
+    /// Qwen's exit is listed but off by default: the Qwen tests turn it on.
+    private static let qwenOn = GenerationLoopExitThinkingPolicy.Setting.modelTypes(
+        GenerationLoopExitThinkingPolicy.defaultModelTypes.union(["qwen3_5_moe"]))
+
+    /// A clean process's setting. The scheduler's default reads the process's environment; these tests take this
+    /// one unless they pass their own, so a runner with DARKBLOOM_LOOP_EXIT_THINKING set (an A/B box) gets the same
+    /// results.
+    private static let cleanProcess = GenerationLoopExitThinkingPolicy.setting(environment: [:])
+
     private func serve(
         _ engine: ThoughtLoopCBv2Engine, served: Served = Served(), maxTokens: Int = 8_192, extra: String = "",
-        usage: EngineV2RequestUsageSignal? = nil
+        usage: EngineV2RequestUsageSignal? = nil, exitThinking: GenerationLoopExitThinkingPolicy.Setting? = nil
     ) async throws -> Outcome {
         let telemetry = TelemetrySink()
         let bridge = EngineV2Bridge(engine: engine, modelId: served.modelID, tokenizer: served.tokenizer,
             eosTokenIds: served.eosTokenIds, defaultMaxTokens: 64,
             maxConcurrentRequests: 1, emitTelemetry: { telemetry.add($0) })
-        let scheduler = MultiModelBatchSchedulerEngine(registryProvider: {
+        var scheduler = MultiModelBatchSchedulerEngine(registryProvider: {
             [served.modelID: .init(tokenizer: served.tokenizer, modelType: served.modelType, engineV2Bridge: bridge)]
         }, engineV2Usage: usage)
+        scheduler.exitThinkingSetting = exitThinking ?? Self.cleanProcess
         var outcome = try await consume(scheduler, served: served, maxTokens: maxTokens, extra: extra)
         await bridge.shutdown()
         outcome.loopGuardStops = telemetry.loopGuardStops
@@ -383,9 +393,10 @@ struct GenerationLoopExitThinkingServingTests {
         await bridge.updatePrefillTpsEwma(2_000, isolated: true)
         let id = modelID
         let tokenizer = Self.tokenizer
-        let scheduler = MultiModelBatchSchedulerEngine(
+        var scheduler = MultiModelBatchSchedulerEngine(
             registryProvider: { [id: .init(tokenizer: tokenizer, modelType: "gemma4", engineV2Bridge: bridge)] },
             firstContentDeadline: FirstContentDeadline(relativeBudgetMilliseconds: 60_000))
+        scheduler.exitThinkingSetting = Self.cleanProcess
         let outcome = try await consume(scheduler, maxTokens: 8_192)
         await bridge.shutdown()
         #expect(outcome.error == nil)
@@ -397,7 +408,7 @@ struct GenerationLoopExitThinkingServingTests {
     @Test("Qwen 3.6: a loop inside the thought ends it with `\\n</think>\\n\\n`, and stops apply to the answer")
     func qwenThoughtLoopEndsInAnAnswer() async throws {
         let engine = ThoughtLoopCBv2Engine(loopInsideThought: true, family: .qwen)
-        let outcome = try await serve(engine, served: Self.qwen)
+        let outcome = try await serve(engine, served: Self.qwen, exitThinking: Self.qwenOn)
         #expect(outcome.error == nil)
         #expect(engine.cancelCount == 1)
         let requests = engine.requests
@@ -426,7 +437,7 @@ struct GenerationLoopExitThinkingServingTests {
     @Test("Qwen 3.6: a loop in the answer, after `</think>`, still ends as length")
     func qwenAnswerLoopEndsAsLength() async throws {
         let engine = ThoughtLoopCBv2Engine(loopInsideThought: false, family: .qwen)
-        let outcome = try await serve(engine, served: Self.qwen)
+        let outcome = try await serve(engine, served: Self.qwen, exitThinking: Self.qwenOn)
         #expect(outcome.error == nil)
         #expect(engine.requests.count == 1)
         #expect(outcome.info?.stopReason == "length")
@@ -437,7 +448,8 @@ struct GenerationLoopExitThinkingServingTests {
     func qwenStopInTheAnswer() async throws {
         let engine = ThoughtLoopCBv2Engine(loopInsideThought: true, family: .qwen)
         let usage = EngineV2RequestUsageSignal()
-        let outcome = try await serve(engine, served: Self.qwen, extra: #","stop":["B"]"#, usage: usage)
+        let outcome = try await serve(engine, served: Self.qwen, extra: #","stop":["B"]"#, usage: usage,
+                                      exitThinking: Self.qwenOn)
         #expect(outcome.error == nil)
         #expect(engine.requests.count == 2)
         #expect(engine.requests.last?.stopStrings == ["B"])
@@ -446,13 +458,22 @@ struct GenerationLoopExitThinkingServingTests {
         #expect(usage.matchedStopSequence == "B")
     }
 
-    @Test("Qwen 3.8 27B shares `qwen3_5` with the 9B and keeps today's length by default")
+    @Test("Qwen 3.5/3.6 35B keep today's length by default: the exit is listed, not on")
+    func qwenKeepsLengthByDefault() async throws {
+        let engine = ThoughtLoopCBv2Engine(loopInsideThought: true, family: .qwen)
+        let outcome = try await serve(engine, served: Self.qwen)
+        #expect(engine.requests.count == 1)
+        #expect(outcome.info?.stopReason == "length")
+        #expect(outcome.loopGuardStops == [false])
+    }
+
+    @Test("Qwen 3.8 27B shares `qwen3_5` with the 9B and keeps today's length")
     func qwen38KeepsLength() async throws {
         let engine = ThoughtLoopCBv2Engine(loopInsideThought: true, family: .qwen)
         var served = Self.qwen
         served.modelID = "EigenLabs/Qwen3.8-27B-4bit-mtp"
         served.modelType = "qwen3_5"
-        let outcome = try await serve(engine, served: served)
+        let outcome = try await serve(engine, served: served, exitThinking: Self.qwenOn)
         #expect(engine.requests.count == 1)
         #expect(outcome.info?.stopReason == "length")
         #expect(outcome.loopGuardStops == [false])
@@ -461,8 +482,8 @@ struct GenerationLoopExitThinkingServingTests {
     @Test("a family without the exit keeps today's length")
     func otherFamilyKeepsLength() async throws {
         let engine = ThoughtLoopCBv2Engine(loopInsideThought: true)
-        // Gemma's test tokenizer has no `<|end|>`, so GPT-OSS's Harmony exit cannot resolve here.
-        let outcome = try await serve(engine, served: Served(modelType: "gpt_oss"))
+        // Nemotron 3.5 Lightning: guarded, with no thought marker listed.
+        let outcome = try await serve(engine, served: Served(modelType: "nemotron_h"))
         #expect(engine.requests.count == 1)
         #expect(outcome.info?.stopReason == "length")
         #expect(outcome.loopGuardStops == [false])

@@ -233,11 +233,27 @@ struct GenerationLoopExitThinkingHarmonyTests {
 
     private func resolve(
         _ modelType: String? = "gpt_oss", tokenizer: HarmonyTestTokenizer = Self.tokenizer,
-        prompt: [Int] = Self.prompt, logprobs: Bool = false,
+        prompt: [Int] = Self.prompt, logprobs: Bool = false, declaresTools: Bool = true,
         setting: GenerationLoopExitThinkingPolicy.Setting = Self.defaults
     ) -> GenerationLoopExitThinking? {
         GenerationLoopExitThinkingPolicy.resolve(
-            modelType: modelType, tokenizer: tokenizer, promptTokens: prompt, logprobs: logprobs, setting: setting)
+            modelType: modelType, tokenizer: tokenizer, promptTokens: prompt, logprobs: logprobs,
+            declaresTools: declaresTools, setting: setting)
+    }
+
+    @Test("only for requests that declare tools: without tools a GPT-OSS loop keeps today's length")
+    func toolRequestsOnly() throws {
+        #expect(resolve(declaresTools: true) != nil)
+        // On the GPU A/B (11-13, effort high, T 0) the model reopened its analysis after the exit and looped again
+        // in 10 of 10 GPQA loopers without tools; with tools it wrote the call or the reply in 40 of 66 Tau2 loopers.
+        #expect(resolve(declaresTools: false) == nil)
+        #expect(GenerationLoopExitThinkingPolicy.toolRequestsOnly == ["gpt_oss"])
+        // The other families do not depend on tools.
+        let gemma = GenerationLoopExitThinkingPolicy.resolve(
+            modelType: "gemma4", tokenizer: GemmaThoughtTestTokenizer(),
+            promptTokens: GemmaThoughtTestTokenizer.tokens("<|turn>user\nhi<turn|>\n<|turn>model\n"), logprobs: false,
+            declaresTools: false, setting: Self.defaults)
+        #expect(gemma != nil)
     }
 
     // MARK: Policy
@@ -452,16 +468,19 @@ struct GenerationLoopExitThinkingHarmonyTests {
 
     private func serve(
         _ engine: HarmonyLoopTestEngine, tokenizer: HarmonyTestTokenizer = Self.tokenizer, effort: String? = nil,
-        maxTokens: Int = 8_192, extra: String = "", streamCalls: Bool = false
+        maxTokens: Int = 8_192, extra: String = Self.tools, streamCalls: Bool = false,
+        exitSetting: GenerationLoopExitThinkingPolicy.Setting = Self.defaults
     ) async throws -> Outcome {
         let telemetry = TelemetrySink()
         let handle = TokenizerHandle(tokenizer)
         let bridge = EngineV2Bridge(engine: engine, modelId: "gpt-oss-20b", tokenizer: handle,
             eosTokenIds: HarmonyTestTokenizer.stops, defaultMaxTokens: 64,
             maxConcurrentRequests: 1, emitTelemetry: { telemetry.add($0) })
-        let scheduler = MultiModelBatchSchedulerEngine(registryProvider: {
+        var scheduler = MultiModelBatchSchedulerEngine(registryProvider: {
             ["gpt-oss-20b": .init(tokenizer: handle, modelType: "gpt_oss", engineV2Bridge: bridge)]
         }, templateControls: ChatTemplateControls(reasoningEffort: effort))
+        // The switch as a clean process reads it, whatever this process's environment says.
+        scheduler.exitThinkingSetting = exitSetting
         var request = try JSONDecoder().decode(OpenAIChatCompletionRequest.self, from: Data("""
         {"model":"gpt-oss-20b","messages":[{"role":"user","content":"hi"}],\
         "reasoning_parser":"harmony","temperature":0,"max_tokens":\(maxTokens)\(extra)}
@@ -543,13 +562,14 @@ struct GenerationLoopExitThinkingHarmonyTests {
     func streamingDeltas() async throws {
         let engine = HarmonyLoopTestEngine(.analysisLoop)
         let outcome = try await serve(engine)
-        let exitIndex = try #require(outcome.chunks.firstIndex(of: "<|end|><|start|>assistant"))
-        #expect(outcome.chunks.filter { $0 == "<|end|><|start|>assistant" }.count == 1)
-        // Before it: the row's analysis header and loop; after it: the continuation.
-        #expect(Array(outcome.chunks.prefix(3)) == Self.analysis)
-        #expect(outcome.chunks[..<exitIndex].allSatisfy { !$0.contains("<|end|>") })
-        #expect(Array(outcome.chunks[(exitIndex + 1)...].prefix(3)) == ["<|channel|>", "final", "<|message|>"])
-        #expect(outcome.chunks[(exitIndex + 4)...].joined() == "Answer: B")
+        // The row's text, the exit once, then the continuation's text, in order and whole. Chunk boundaries are
+        // the stream's own: the tool handler may hold `<|start|>assistant` (a call header's prefix) and the
+        // Harmony header filter a header in progress, until the next chunk shows what they are.
+        let joined = outcome.chunks.joined()
+        let exitRange = try #require(joined.range(of: "<|end|><|start|>assistant"))
+        #expect(joined.components(separatedBy: "<|end|>").count == 2)
+        #expect(String(joined[..<exitRange.lowerBound]).hasPrefix("<|channel|>analysis<|message|>" + Self.loopText))
+        #expect(String(joined[exitRange.upperBound...]) == "<|channel|>final<|message|>Answer: B")
         // Event order: every text event precedes the one terminal.
         let infoIndex = try #require(outcome.events.firstIndex { event in
             if case .info = event { return true }
@@ -687,14 +707,45 @@ struct GenerationLoopExitThinkingHarmonyTests {
         }
     }
 
-    @Test("off: an analysis loop ends as length with nothing more submitted, as 0.10.12")
-    func offKeepsLength() async throws {
+    @Test("without tools, an analysis loop ends as length with nothing more submitted, as 0.10.12")
+    func noToolsKeepsLength() async throws {
         let engine = HarmonyLoopTestEngine(.analysisLoop)
-        let outcome = try await serve(engine, tokenizer: Self.withoutExit)
+        let outcome = try await serve(engine, extra: "")
         #expect(engine.requests.count == 1)
         #expect(outcome.info?.stopReason == "length")
         #expect(outcome.content.isEmpty)
         #expect(outcome.loopGuardStops == [false])
+    }
+
+    @Test("tools declared with tool_choice none: none are rendered, so an analysis loop ends as length")
+    func noneChoiceKeepsLength() async throws {
+        let engine = HarmonyLoopTestEngine(.analysisLoop)
+        // `none` drops the tools before rendering (`prepared.tools` is nil): the exit follows the prompt the
+        // model saw, not the request's `tools`.
+        let outcome = try await serve(engine, extra: Self.tools + #","tool_choice":"none""#)
+        #expect(engine.requests.count == 1)
+        #expect(outcome.info?.stopReason == "length")
+        #expect(outcome.content.isEmpty)
+        #expect(outcome.calls.isEmpty)
+        #expect(outcome.loopGuardStops == [false])
+    }
+
+    @Test("off: an analysis loop ends as length with nothing more submitted, as 0.10.12",
+          arguments: ["0", "gemma4,gemma4_text"])
+    func offKeepsLength(switchValue: String) async throws {
+        let setting = GenerationLoopExitThinkingPolicy.setting(
+            environment: [GenerationLoopExitThinkingPolicy.environmentKey: switchValue])
+        let engine = HarmonyLoopTestEngine(.analysisLoop)
+        let outcome = try await serve(engine, exitSetting: setting)
+        #expect(engine.requests.count == 1)
+        #expect(outcome.info?.stopReason == "length")
+        #expect(outcome.content.isEmpty)
+        #expect(outcome.loopGuardStops == [false])
+        // The exit that cannot resolve (a tokenizer without `<|end|>`) is the same path.
+        let unresolved = HarmonyLoopTestEngine(.analysisLoop)
+        let same = try await serve(unresolved, tokenizer: Self.withoutExit)
+        #expect(same.chunks == outcome.chunks)
+        #expect(same.info?.completionTokens == outcome.info?.completionTokens)
     }
 }
 
@@ -748,7 +799,7 @@ struct GenerationLoopExitThinkingHarmonyRealTokenizerTests {
                 #expect(text.contains("Reasoning: \(effort ?? "medium")"), "\(effort ?? "default") tools=\(tools)")
                 let exit = try #require(GenerationLoopExitThinkingPolicy.resolve(
                     modelType: "gpt_oss", tokenizer: tokenizer, promptTokens: prompt, logprobs: false,
-                    setting: .modelTypes(GenerationLoopExitThinkingPolicy.defaultModelTypes)))
+                    declaresTools: true, setting: .modelTypes(GenerationLoopExitThinkingPolicy.defaultModelTypes)))
                 #expect(exit.exitTokens == [200_007, 200_006, 173_781])
                 #expect(exit.closeToken == 200_007)
                 #expect(tokenizer.decode(tokenIds: exit.exitTokens, skipSpecialTokens: false)

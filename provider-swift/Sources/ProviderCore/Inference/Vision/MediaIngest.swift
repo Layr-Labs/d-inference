@@ -537,7 +537,12 @@ public enum MediaIngest {
     /// Image-count defaults above 16, by served model id: the Qwen3VL-family
     /// builds, whose per-request image budget (`modelImageBudget`) holds a
     /// request past 16 images to at most 16,384 visual tokens however many
-    /// images it carries (first-token times in the PR and changelog).
+    /// images it carries. A release build of this change on an M5 Ultra, VGI
+    /// video frames (~1280x720) at full size, time to first content: Qwen 3.8
+    /// 27B 16 frames 9.3-9.6 s, 32 frames 9.8-10.0 s, 64 frames 11.4-11.5 s
+    /// (15.4-16.4K prompt tokens); the 9B 4.5-4.7 s at 32 and 5.5 s at 64; the
+    /// 35B 4.8-6.6 s at 64. Without the budget 64 frames took 41-44 s and
+    /// 17-18 s (signed 0.10.13 with the cap lifted).
     /// Gemma 4 26B pools every image to 280 soft tokens, so its cost grows with
     /// the count alone (signed 0.10.13 on an M5 Ultra: 16 frames 2.5 s, 24
     /// frames 3.8 s, 32 frames 5.0-5.1 s to first content; ~2x on an M5 Max,

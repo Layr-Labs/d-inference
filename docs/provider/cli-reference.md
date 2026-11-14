@@ -3239,6 +3239,16 @@ box has loaded, let alone proved, the backend it was configured for. Under
 `--strict` (and therefore `darkbloom verify`) that warning exits non-zero,
 which is the point: an unproven paged rollout must not certify.
 
+### Nemotron Super concurrent images
+
+`DARKBLOOM_NEMOTRON_SUPER_CONCURRENT_IMAGES` controls the opt-in image overlap
+when a Super owner is constructed. Its exact values, width requirement and
+default are in the [engine configuration table](../reference/configuration.md#engine-and-scheduler).
+It is not forwarded to a LaunchAgent. Keep it unset to retain current behavior.
+The [native image path](../architecture/inference.md#managed-nemotron-super-slot)
+keeps encoding serial and memory charged through cleanup; full-checkpoint
+concurrent-image qualification remains pending.
+
 ### GLM-5.3-Flash GPU wired-memory limit
 
 On a 256 GB M5 Mac where GLM-5.3-Flash is downloaded, named in `[backend]`
@@ -4099,7 +4109,15 @@ Positive Gemma caps retain the 128-token floor; `0` defers prefill while decodin
 Pure-prefill stripes are unchanged. These variables are not forwarded to a LaunchAgent;
 see the [scheduler environment reference](../reference/configuration.md#engine-and-scheduler).
 
+### Gemma o4 parser switch
+
+`DARKBLOOM_GEMMA_SCHEMA_COERCION` is read once when the process starts; the LaunchAgent forwards an operator value to the installed service (`0` turns it off, `1` on). The [configuration reference](../reference/configuration.md#engine-and-scheduler) gives its default ([SDK feature defaults](../reference/configuration.md#sdk-feature-defaults)) and rollback.
+
 ## LaunchAgent environment passthrough
+
+`DARKBLOOM_NATIVE_REASONING_BUDGET` is forwarded to the service when the operator
+sets it (`0` turns budgets off for every family, `1` on); see [native reasoning budgets](../reference/configuration.md#native-reasoning-budgets)
+for its default, values and supported request behavior.
 
 The SDK's [Gemma row-mapped NAX route](../reference/configuration.md#gemma-4-row-mapped-nax)
 is enabled by default within its hardware and model guards. The provider forwards
@@ -4237,6 +4255,10 @@ The watchdog plist carries its own list: `DARKBLOOM_NO_UPDATE_CHECK`,
 (`provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift`).
 `DARKBLOOM_NO_UPDATE_CHECK` is **not** forwarded to the provider daemon; disable
 automatic updates with `darkbloom autoupdate disable`.
+
+### Gemma o5 parser switch
+
+Set `DARKBLOOM_GEMMA_REOPENED_THOUGHTS` before `darkbloom start`, or before installing the service: the LaunchAgent forwards the operator's value to the provider job. The [configuration reference](../reference/configuration.md#gemma-o5-conformance) defines activation and rollback.
 
 ## Runtime constants
 
@@ -4420,3 +4442,27 @@ Source: `provider-swift/Sources/darkbloom/ClusterServiceCommand.swift`
 for the bounds and process custody rules.
 
 Qwen3.8 27B automatic cluster capacity changes keep the current tensor split and native request execution path. Widening occurs only when the complete reservation fits that split; otherwise the current capacity remains available. No additional command or user setting is required. Implementation: `DistributedAutomaticBatchPlanner` and `ClusterPlacementFlow` in `provider-swift/Sources/ProviderCore/Inference/Distributed/`.
+
+
+## Qwen forced-call thinking
+
+The daemon allow-list forwards `DARKBLOOM_QWEN_FORCED_TOOL_THINKING`; see its
+[values, default and behavior](../reference/configuration.md#qwen-forced-call-thinking).
+Set it before starting or restarting the daemon. An environment change does
+not alter an already-running daemon.
+
+
+## GPT-OSS commentary content
+
+The daemon allow-list forwards `DARKBLOOM_GPTOSS_COMMENTARY_CONTENT`; see its
+[values, default and behavior](../reference/configuration.md#gpt-oss-commentary-content).
+Set it before starting or restarting the daemon. An environment change does
+not alter an already-running daemon.
+
+
+## Qwen stray thinking-close markers
+
+The daemon allow-list forwards `DARKBLOOM_QWEN_ABSORB_STRAY_THINK_CLOSE`; see its
+[values, default and behavior](../reference/configuration.md#qwen-stray-thinking-close-markers).
+Set it before starting or restarting the daemon. An environment change does
+not alter an already-running daemon.

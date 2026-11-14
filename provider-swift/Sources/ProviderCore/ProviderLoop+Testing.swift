@@ -164,6 +164,12 @@ extension ProviderLoop {
 
     func releasedAdmissionCountForTesting() -> Int { releasedAdmissions.count }
 
+    func setCoordinatorQueueBudgetForTesting(requests: Int, bytes: Int) {
+        coordinatorQueueBudget = CoordinatorQueueBudget(requests: requests, bytes: bytes)
+    }
+
+    func queuedCoordinatorBytesForTesting() -> Int { queuedCoordinatorBytes }
+
     /// Test seam: replace `ensureModelLoaded` in the startup preload driver
     /// with a scripted loader (no weights, no disk).
     func setStartupPreloadLoadOverrideForTesting(

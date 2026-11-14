@@ -104,13 +104,18 @@ public struct ClusterConfigurationStore: Sendable {
             capability: capabilityDestination.path, capabilitySHA256: capabilitySHA256, deviceLeaseFile: paths.deviceLeaseFile.path)
     }
 
+    /// A pairing's secret is in this Mac's Keychain (a file there is 0.10.12's, until the first read moves it in): the
+    /// start checks the pairing still holds it. Any other secret must be a private regular file of this user.
     private func validateLinkSecret(_ attachment: ClusterLinkControlAttachment?) throws {
-        guard let attachment else { return }
+        guard let attachment, !ClusterLinkControlAttachment.namesPairingSecret(attachment.secretFile, in: paths.pairingDirectory) else {
+            return
+        }
         try ClusterConfigurationFiles.credentialMetadata(URL(fileURLWithPath: attachment.secretFile), privateMode: true)
     }
 
-    /// A link control setup has no SSH trust; its edge secret must be a
-    /// private regular file of this user instead.
+    /// An SSH setup's identity file must be a private regular file of this user
+    /// and its known hosts must match their pin (a link control setup has no SSH
+    /// trust; its edge secret is checked above).
     private func validateTrust(_ trust: ClusterConfiguration.Trust?) throws {
         guard let trust else { return }
         try ClusterConfigurationFiles.credentialMetadata(URL(fileURLWithPath: trust.identityFile), privateMode: true)

@@ -86,7 +86,11 @@ enum GenerationLoopGuardPolicy {
             guard !parser.supportsBareJSON, !parser.supportsMarkerlessNamedJSON else { return nil }
             markers += [parser.startTag].compactMap { $0 } + parser.alternateStartTags
         }
+        // A row the strict-tool grammar constrains keeps its guard but not the
+        // exit: the continuation is submitted without the grammar, so its call
+        // could miss the schema the request asked for.
         return GenerationLoopGuard(
-            modelType: modelType, toolCallMarkers: markers, thresholds: thresholds, exitThinking: exitThinking)
+            modelType: modelType, toolCallMarkers: markers, thresholds: thresholds,
+            exitThinking: tokenConstraint == nil ? exitThinking : nil)
     }
 }

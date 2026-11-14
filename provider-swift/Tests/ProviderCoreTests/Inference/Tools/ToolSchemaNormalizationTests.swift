@@ -52,6 +52,25 @@ struct ToolSchemaNormalizationTests {
         #expect(items["type"] as? String == "string")
     }
 
+    /// One tool whose `x` property is an `anyOf` of `count` empty schemas,
+    /// each of which normalization rewrites into a two-key map.
+    private func emptyUnionBody(count: Int) -> Data {
+        let members = Array(repeating: "{}", count: count).joined(separator: ",")
+        return Data((#"{"model":"m","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"x":{"type":"string","anyOf":["#
+            + members + "]}}}}}]}").utf8)
+    }
+
+    @Test("past the node budget the body is left unchanged instead of rewritten")
+    func nodeBudgetLeavesOversizedSchemasUnchanged() throws {
+        // Under the budget the same shape is still normalized.
+        let small = emptyUnionBody(count: 8)
+        #expect(ToolSchemaNormalization.ensureParameterTypes(in: small) != small)
+        // Just past the budget (the parameters root and `x` count too),
+        // rewriting would grow ~300 KB of `{}` about twentyfold.
+        let large = emptyUnionBody(count: ToolSchemaNormalization.maxNormalizedNodes)
+        #expect(ToolSchemaNormalization.ensureParameterTypes(in: large) == large)
+    }
+
     @Test func nonToolBodyReturnedUnchanged() {
         let noTools = #"{"model":"m","messages":[]}"#.data(using: .utf8)!
         #expect(ToolSchemaNormalization.ensureParameterTypes(in: noTools) == noTools)

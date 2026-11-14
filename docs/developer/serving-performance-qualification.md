@@ -1,6 +1,6 @@
 # Qualify a serving performance profile
 
-> Last updated: 2026-10-21
+> Last updated: 2026-11-14
 
 This procedure prepares an exact model/runtime/hardware profile for code review.
 It never installs a profile or changes a running provider. The deadline catalog
@@ -127,7 +127,10 @@ collects new GPU measurements or changes runtime behavior.
    The builder first runs `swift package clean`, then builds the isolated release
    tests, stages the matching metallib and runs the executable-identity test.
    Its record binds the unchanged committed source, SDK, toolchain, command log
-   and resulting binary/metallib hashes. Reuse that record across cohorts only
+   and resulting binary/metallib hashes. The source digest covers the paths that
+   `scripts/serving_performance/source_provenance.py` lists, including the
+   vendored TOMLKit in `libs/TOMLKit`, which no `Package.resolved` pin
+   identifies. Reuse that record across cohorts only
    while those exact bytes and identities remain unchanged. A stale test bundle
    cannot acquire the identity of a newer checkout through the runner.
 

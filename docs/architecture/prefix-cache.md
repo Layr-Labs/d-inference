@@ -270,9 +270,17 @@ restored turns and native rows on none. The global
 per-model entry or `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` still selects a
 profile, as for Nemotron 3.5 Super.
 
-The type has no entry in the demanded short-checkpoint policy
-(`EngineV2Factory+DemandedCheckpoint.swift`), so a prompt reuses the checkpoint
-boundaries its prefill reached. With no drafter loaded, the checkpoint identity
+A checkpoint lands only where a prefill range ends on the SDK's 1,024-token
+capture stride (`CBv2RecurrentCheckpointGeometry.recordHistorical`): the
+2,048-token sliding window's ring keeps no row behind a range end
+(`PagedKVPool.ringPageCount`, `CBv2HistoricalWindow.reservationBytes`), so a
+point inside a range cannot be copied. The type's solo stripe is therefore
+1,024 tokens (`EngineV2Factory.museGlimmerSoloPrefillStripeTokens`), and a
+growing conversation reuses the deepest multiple of 1,024 below an earlier
+turn's prompt end. Cold and restored requests run on the same 1,024-token grid.
+The type has no entry in the demanded short-checkpoint or latest-checkpoint
+policy (`EngineV2Factory+DemandedCheckpoint.swift`): their 256-token boundaries
+are not on the capture stride. With no drafter loaded, the checkpoint identity
 records MTP as disabled.
 
 ### Block hashing

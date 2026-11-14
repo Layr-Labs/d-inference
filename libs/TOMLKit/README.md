@@ -39,9 +39,16 @@ Changed files: `Sources/CTOML/include/CTOML/CTOML.h`, `Sources/CTOML/Sources/Nod
 `TOMLArray/TOMLArray.swift`, `TOMLArray/TOMLArray+CollectionConformance.swift`. Every other copied
 source file, and `LICENSE`, is byte-identical to upstream.
 
-The public API, toml++ and TOMLKit's parsing, comparison and formatting are unchanged. As upstream,
-an edit that replaces or removes a nested table or array deletes that node, so a wrapper still
-referring to it must not be used afterwards.
+The public API, toml++ and TOMLKit's parsing, comparison and formatting are unchanged. Inserting a
+table, array or value copies it into the destination, so no node ever moves between trees. Two
+hazards of 0.6.0 are unchanged too:
+
+- An edit that replaces or removes a nested node (assignment, `remove(at:)`, `clear()`, and
+  `TOMLArray.replaceSubrange` when it grows the array, which overwrites elements before it reads
+  them) deletes that node, so a wrapper still referring to it must not be used afterwards.
+- toml++ v3.4.0 fails an `assert` in `parse_key` on a table header that starts `[[[` or `[[ [`, and
+  SwiftPM keeps `assert` in release builds, so parsing such a file aborts the process. toml++ fixed
+  this after v3.4.0 (marzer/tomlplusplus#301), in no release yet.
 
 ## Checks
 

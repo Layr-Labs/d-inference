@@ -13,8 +13,8 @@ import CTOML
 /// Owns one C++ node tree the bridge allocated: a table, an array or a value, with every node it holds.
 ///
 /// Every ``TOMLTable``, ``TOMLArray`` and ``TOMLValue`` that refers to a node of the tree holds its owner, so the tree
-/// is deleted once, after the last of them is gone. A node inside the tree is never deleted on its own (an edit of its
-/// parent that replaces or removes it still deletes it, as toml++ always did).
+/// is deleted once, after the last of them is gone. The owner deletes only its root; an edit that replaces or removes
+/// a nested node still deletes that node, as toml++ always did.
 final class TOMLNodeOwner {
 	private let root: OpaquePointer
 

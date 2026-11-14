@@ -1772,6 +1772,8 @@ that group or others can access
 saved again or its mode is corrected by hand, `darkbloom cluster status` and
 `darkbloom cluster doctor` report the saved setup as `invalid`.
 
+### Provider configuration parsing
+
 The provider parses `provider.toml` with TOMLKit, built from `libs/TOMLKit`
 ([vendored TOMLKit](../developer/build.md#vendored-tomlkit)), which frees a parsed
 table once nothing refers to it. `ConfigManager.parseValidating` also remembers the

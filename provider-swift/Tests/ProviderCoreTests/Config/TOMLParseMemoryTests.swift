@@ -119,8 +119,9 @@ import TOMLKit
 private struct TOMLRoundTripMismatch: Error {}
 
 /// What TOMLKit reads, writes and refuses is unchanged by freeing its trees: the expected texts are the ones TOMLKit
-/// 0.6.0 produced. A value read from a table stays usable after the table itself is gone, and edits through a nested
-/// table still change the document it came from (`LocalSettings.updatingLocal` relies on that).
+/// 0.6.0 produced. A value read from a table stays usable after the table itself is gone, edits through a nested
+/// table still change the document it came from (`LocalSettings.updatingLocal` relies on that), and inserting copies,
+/// so the two trees are freed independently.
 @Suite struct TOMLTableBehaviorTests {
     static let document = #"""
         title = "fixture"
@@ -248,6 +249,20 @@ private struct TOMLRoundTripMismatch: Error {}
         local["port"] = 2
         local["bind"] = "127.0.0.1"
         #expect(table.convert() == "[local]\nbind = '127.0.0.1'\nport = 2")
+    }
+
+    @Test func insertingCopiesSoEitherTreeMayGoFirst() throws {
+        var source: TOMLTable? = try TOMLTable(string: Self.document)
+        let destination = TOMLTable()
+        destination["provider"] = source?["provider"]
+        destination["list"] = source?["list"]?.array
+        destination.insert(try #require(source), at: "all")
+        source?["provider"]?.table?["name"] = "changed"
+        #expect(source?["provider"]?["name"]?.string == "changed")
+        source = nil
+        #expect(destination["provider"]?["name"]?.string == "memory-fixture")
+        #expect(destination["all"]?["models"]?[1]?["id"]?.string == "second")
+        #expect(destination["list"]?[3]?[0]?.double == 4.5)
     }
 
     @Test func removedValuesKeepTheirContents() throws {

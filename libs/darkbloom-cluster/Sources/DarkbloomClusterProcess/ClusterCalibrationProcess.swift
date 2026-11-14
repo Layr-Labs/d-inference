@@ -20,7 +20,7 @@ public final class ClusterCalibrationProcess: @unchecked Sendable {
     // distinct from the raw config.json digest in expectedIdentity.
     private let normalizedConfigurationSHA256: String
     private let environmentSHA256: String
-    private let process = Process(), input = Pipe(), output = Pipe(), diagnostics = Pipe()
+    private let process: ClusterChildProcess, input = Pipe(), output = Pipe(), diagnostics = Pipe()
     private let exitObserver = ClusterProcessExit(), finished = WorkerCompletion()
     private let wakeup: WorkerPumpWakeup
     private let lock = NSLock()
@@ -96,8 +96,7 @@ public final class ClusterCalibrationProcess: @unchecked Sendable {
         self.renewalInterval = renewalInterval; leaseDeadline = initialLeaseDeadline
         wakeup = try WorkerPumpWakeup()
         outgoing = [(credential, 0, nil)]
-        process.executableURL = launch.executable; process.arguments = launch.arguments; process.environment = launch.environment
-        process.standardInput = input; process.standardOutput = output; process.standardError = diagnostics
+        process = ClusterChildProcess(launch: launch, standardInput: input, standardOutput: output, standardError: diagnostics)
         for handle in [input.fileHandleForWriting, output.fileHandleForReading, diagnostics.fileHandleForReading] {
             let fd = handle.fileDescriptor
             guard fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK) == 0,
@@ -112,6 +111,7 @@ public final class ClusterCalibrationProcess: @unchecked Sendable {
         try lock.withLock {
             guard !launched, failure == nil else { throw ClusterWorkerOwnerError.closed }
             launched = true; nextRenewal = DispatchTime.now().uptimeNanoseconds + renewalInterval
+            // The pump, the only writer of the child's input, starts after the check.
             do { try exitObserver.run(process); pid = process.processIdentifier; birthTime = ClusterProcessTable.startTime(of: process.processIdentifier) }
             catch {
                 terminal = .launchFailed; failure = .closed

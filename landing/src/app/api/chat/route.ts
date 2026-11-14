@@ -1,5 +1,7 @@
 import { createHmac } from "node:crypto";
+import { isIP } from "node:net";
 import type { NextRequest } from "next/server";
+import { readBoundedText } from "@/server/bounded-body";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -7,10 +9,20 @@ export const maxDuration = 60;
 const API_BASE_URL = (process.env.DARKBLOOM_API_BASE_URL ?? "https://api.darkbloom.dev/v1").replace(/\/$/, "");
 const CHAT_MODEL = process.env.DARKBLOOM_CHAT_MODEL ?? "gpt-oss-20b";
 const MAX_PROMPT_LENGTH = 500;
+// A 500-character prompt is at most a few KiB of JSON, even fully escaped.
+const MAX_REQUEST_BODY_BYTES = 16 * 1024;
 const MAX_OUTPUT_TOKENS = readBoundedInteger(process.env.DARKBLOOM_CHAT_MAX_OUTPUT_TOKENS, 300, 64, 1_024);
 const REQUEST_TIMEOUT_MS = readBoundedInteger(process.env.DARKBLOOM_CHAT_TIMEOUT_MS, 45_000, 10_000, 55_000);
 const RATE_LIMIT = readBoundedInteger(process.env.DARKBLOOM_CHAT_RPM, 6, 1, 60);
 const RATE_WINDOW_MS = 60_000;
+const MAX_RATE_BUCKETS = 10_000;
+// Forwarding headers carry whatever the client sent unless a proxy overwrites
+// them. Vercel replaces X-Forwarded-For with the connecting address and drops
+// client values (https://vercel.com/docs/headers/request-headers#x-forwarded-for).
+// Other hosts must name the header their own proxy sets; without one,
+// every visitor shares a single bucket rather than choosing their own.
+const TRUSTED_CLIENT_IP_HEADER = trustedClientIPHeader();
+const SHARED_IDENTITY = "shared";
 const PROVIDER_EARNINGS_SHARE = 0.9;
 const EARNINGS_LOOKUP_TIMEOUT_MS = 2_500;
 const SYSTEM_PROMPT = `You are the concise assistant on the Darkbloom website.
@@ -33,29 +45,79 @@ function jsonError(status: number, message: string, headers?: HeadersInit) {
   );
 }
 
-function requestIdentity(request: NextRequest) {
-  return request.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
-    || request.headers.get("x-real-ip")
-    || "unknown";
+function trustedClientIPHeader() {
+  const configured = process.env.DARKBLOOM_TRUSTED_CLIENT_IP_HEADER?.trim();
+  if (!configured) return process.env.VERCEL === "1" ? "x-forwarded-for" : "";
+  // An invalid name would make every Headers.get throw; refuse it once here.
+  if (/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(configured)) return configured;
+  console.warn("DARKBLOOM_TRUSTED_CLIENT_IP_HEADER is not a valid header name; chat visitors share one rate-limit bucket.");
+  return "";
 }
 
+function requestIdentity(request: NextRequest) {
+  if (!TRUSTED_CLIENT_IP_HEADER) return SHARED_IDENTITY;
+  // A proxy that appends records the address it saw last; earlier entries
+  // are client-supplied.
+  const address = request.headers.get(TRUSTED_CLIENT_IP_HEADER)?.split(",").at(-1)?.trim();
+  return (address && addressIdentity(address)) || SHARED_IDENTITY;
+}
+
+function addressIdentity(address: string) {
+  const family = isIP(address);
+  if (family === 4) return address;
+  if (family !== 6) return null;
+  const groups = ipv6Groups(address);
+  // An IPv4-mapped address is that IPv4 visitor.
+  if (groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff) {
+    return [groups[6] >> 8, groups[6] & 0xff, groups[7] >> 8, groups[7] & 0xff].join(".");
+  }
+  // One IPv6 host commonly holds a whole /64; keying each address would let
+  // it rotate into fresh buckets.
+  return `${groups.slice(0, 4).map((group) => group.toString(16)).join(":")}::/64`;
+}
+
+/** The eight 16-bit groups of an address `isIP` accepted as IPv6; a zone ID is ignored. */
+function ipv6Groups(address: string) {
+  const parse = (part: string) => (part ? part.split(":") : []).flatMap((group) => {
+    if (!group.includes(".")) return [Number.parseInt(group, 16)];
+    const [a, b, c, d] = group.split(".").map(Number);
+    return [(a << 8) | b, (c << 8) | d];
+  });
+  const [head, tail] = address.split("%")[0].split("::");
+  const leading = parse(head);
+  if (tail === undefined) return leading;
+  const trailing = parse(tail);
+  return [...leading, ...new Array<number>(8 - leading.length - trailing.length).fill(0), ...trailing];
+}
+
+// This is deliberately a bounded, best-effort edge guard. The coordinator's
+// account limits remain authoritative; a shared distributed limiter can
+// replace this without changing the browser contract.
 function takeRateLimit(identity: string) {
   const now = Date.now();
-  const current = rateBuckets.get(identity);
-  const bucket = !current || current.resetAt <= now
-    ? { count: 0, resetAt: now + RATE_WINDOW_MS }
-    : current;
-  bucket.count += 1;
-  rateBuckets.set(identity, bucket);
-
-  // This is deliberately a bounded, best-effort edge guard. The coordinator's
-  // account limits remain authoritative; a shared distributed limiter can
-  // replace this without changing the browser contract.
-  if (rateBuckets.size > 10_000) {
-    for (const [key, value] of rateBuckets) {
-      if (value.resetAt <= now) rateBuckets.delete(key);
-    }
+  // Buckets are kept in window-start order (a renewed window is re-inserted),
+  // so expired buckets are always at the front: each call removes only those,
+  // never scanning live ones.
+  for (const [key, bucket] of rateBuckets) {
+    if (bucket.resetAt > now) break;
+    rateBuckets.delete(key);
   }
+  let bucket = rateBuckets.get(identity);
+  // Only a clock that stepped back can leave an expired bucket behind a live one.
+  if (bucket && bucket.resetAt <= now) {
+    rateBuckets.delete(identity);
+    bucket = undefined;
+  }
+  if (!bucket) {
+    if (rateBuckets.size >= MAX_RATE_BUCKETS) {
+      // Every bucket is live: drop the oldest, the one closest to renewal.
+      const [oldest] = rateBuckets.keys();
+      rateBuckets.delete(oldest);
+    }
+    bucket = { count: 0, resetAt: now + RATE_WINDOW_MS };
+    rateBuckets.set(identity, bucket);
+  }
+  bucket.count += 1;
 
   return {
     allowed: bucket.count <= RATE_LIMIT,
@@ -204,7 +266,9 @@ export async function POST(request: NextRequest) {
 
   let prompt = "";
   try {
-    const body = (await request.json()) as { prompt?: unknown };
+    const text = await readBoundedText(request, MAX_REQUEST_BODY_BYTES);
+    if (text === null) return jsonError(413, "The request body is too large.", rateHeaders);
+    const body = JSON.parse(text) as { prompt?: unknown };
     prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
   } catch {
     return jsonError(400, "The request body is not valid JSON.", rateHeaders);

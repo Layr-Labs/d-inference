@@ -1,4 +1,4 @@
 ### Qwen constraint spans
 
-- Add default-off `DARKBLOOM_CONSTRAINT_SPANS` support for eligible Qwen strict-auto tool requests and JSON reasoning. Ordinary reasoning and content may draft; tool framing/arguments and JSON values remain protected. Text after a completed call may draft again.
+- Add `DARKBLOOM_CONSTRAINT_SPANS` support for eligible Qwen strict-auto tool requests and JSON reasoning, on by default since 0.10.13 for the measured Qwen 3.8 27B build only (`EigenLabs/Qwen3.8-27B-4bit-mtp`, measured there in its ON state; every other build stays off unless set to `1`; `0` restores 0.10.12). Ordinary reasoning and content may draft; tool framing/arguments and JSON values remain protected. Text after a completed call may draft again.
 - Forward the flag into the installed provider service. Preserve existing grammar admission, masks, engine eligibility and off behavior. No full-model speedup is claimed.

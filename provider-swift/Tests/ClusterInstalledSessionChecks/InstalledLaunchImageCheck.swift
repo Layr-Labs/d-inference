@@ -149,9 +149,10 @@ extension InstalledSessionCheck {
             try ownCheck(pid)
         }
         var refused = false
-        do { try resumed.launch() } catch { refused = true }
+        do { try resumed.launch() } catch let error as ClusterWorkerOwnerError
+            where error == .invalid("The launched child ran before its check was complete") { refused = true }
         try require(bench.received(resumed) == nil, "a child resumed before its check received the data-plane credential")
-        try require(refused && resumed.termination == .launchFailed, "a child resumed before its check was launched")
+        try require(refused && resumed.termination == .launchFailed, "a child resumed before its check was not refused as having run")
 
         // The worker, verified, then replaced; while the replacement waits suspended the verified bytes are put
         // back at the path, so the file on disk matches again and only the running image differs.

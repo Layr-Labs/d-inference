@@ -101,8 +101,9 @@ extension LaunchStates {
             states.record(pid)
         })
         var threw = false
-        do { try resumed.launch() } catch { threw = true }
-        try require(threw && resumed.termination == .launchFailed, "a child resumed before its check ended was launched")
+        do { try resumed.launch() } catch let error as ClusterWorkerOwnerError
+            where error == .invalid("The launched child ran before its check was complete") { threw = true }
+        try require(threw && resumed.termination == .launchFailed, "a child resumed before its check ended was not refused as having run")
         let pid = try require(states.states.first?.pid, "the check did not run")
         try require(launchedChildReaped(pid), "a refused resumed child was not reaped before its launch failed")
         Thread.sleep(forTimeInterval: 0.3)

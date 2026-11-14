@@ -77,7 +77,18 @@ public enum SDKFeatureDefaults {
         environment: [String: String],
         spansBuilds: Set<String> = constraintSpansBuilds, grammarBuilds: Set<String> = grammarMTPBuilds
     ) -> [String] {
-        []
+        var on: [String] = []
+        if followsDefault(constraintSpansKey, in: environment, injected: []),
+           matches(spansBuilds, modelId: modelId, modelType: modelType) {
+            config.freeSpanSpeculation = true
+            on.append(constraintSpansKey)
+        }
+        if followsDefault(grammarMTPKey, in: environment, injected: []),
+           matches(grammarBuilds, modelId: modelId, modelType: modelType) {
+            config.constrainedSpeculation = true
+            on.append(grammarMTPKey)
+        }
+        return on
     }
 
     /// The keys to set for `environment`: every listed key it leaves unset or
@@ -98,9 +109,24 @@ public enum SDKFeatureDefaults {
         var injected: [String] = []
     }
 
+    /// A key a parent `darkbloom` injected (named in its marker, value still
+    /// `1`) counts as unset, so this release's list decides it again: re-set
+    /// and recorded as injected if listed, unset if not. Every listed key the
+    /// environment leaves unset or empty is turned on; the marker names them.
     static func plan(onByDefault: [String] = onByDefault, environment: [String: String]) -> Plan {
-        let set = projection(onByDefault: onByDefault, environment: environment)
-        return Plan(set: set, injected: set.keys.sorted())
+        let inherited = Set((environment[injectedMarkerKey] ?? "").split(separator: ",").map(String.init))
+            .filter { environment[$0] == "1" }
+        var operatorEnvironment = environment
+        for key in inherited { operatorEnvironment[key] = nil }
+        var changes = Plan(set: projection(onByDefault: onByDefault, environment: operatorEnvironment))
+        changes.injected = changes.set.keys.sorted()
+        changes.unset = inherited.subtracting(changes.injected).sorted()
+        if !changes.injected.isEmpty {
+            changes.set[injectedMarkerKey] = changes.injected.joined(separator: ",")
+        } else if environment[injectedMarkerKey] != nil {
+            changes.unset.append(injectedMarkerKey)
+        }
+        return changes
     }
 
     /// Apply the plan to this process and remember what it injected.
@@ -117,12 +143,21 @@ public enum SDKFeatureDefaults {
         return changes.injected
     }
 
-    /// The `start` / `benchmark` line naming what is on by default; nil if nothing.
+    /// The `start` / `benchmark` line naming what is on by default (and for
+    /// which builds or families); nil if nothing.
     public static func summary(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         injected: Set<String> = injectedKeys
     ) -> String? {
-        injected.isEmpty ? nil : "SDK feature defaults on: \(injected.sorted().joined(separator: ", "))"
+        var on = injected.sorted().map { key in
+            key == NativeReasoningBudget.environmentKey
+                ? "\(key) (\(reasoningBudgetFamilies.map { "\($0)" }.sorted().joined(separator: ", ")))" : key
+        }
+        for (key, builds) in [(constraintSpansKey, constraintSpansBuilds), (grammarMTPKey, grammarMTPBuilds)]
+        where !builds.isEmpty && followsDefault(key, in: environment, injected: []) {
+            on.append("\(key) (\(builds.sorted().joined(separator: ", ")))")
+        }
+        return on.isEmpty ? nil : "SDK feature defaults on: \(on.joined(separator: "; "))"
     }
 
     /// Keys this process set itself (not the operator's): never persisted.

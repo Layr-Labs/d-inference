@@ -2286,7 +2286,23 @@ Python, jq and curl, matching the workflow runner.
 
 `python3 scripts/test_publish_model_revision.py` covers the immutable upload
 reservation. `actionlint .github/workflows/register-model.yml` checks workflow
-syntax. These checks do not establish native model quality or serving capacity;
+syntax.
+
+Run `python3 -m unittest discover -s scripts/models -p 'test_*.py'` for the
+**Model Requant Upload** workflow. Release Integrity runs it too. It needs no
+network and no credentials:
+- The input and manifest rules: the manifest must be what Register and every
+  provider read, and the published Qwen3.5-9B manifest must pass.
+- The workflow's jobs and steps, run in Bash with a fake `aws` and `python3`:
+  - a secret-free preflight, then a job in the `prod` environment;
+  - master only;
+  - the check tests both R2 key sets and prints only pass or fail;
+  - the upload holds only the chosen set, and only after this run's check
+    passed for it;
+  - tools pinned by hash, and the selftest before any secret.
+- `requant.py`'s range reads.
+- With numpy installed: the quantizer's selftest digests and a float64 oracle.
+  Without numpy those tests skip. These checks do not establish native model quality or serving capacity;
 use the [publication runbook](../operations/model-revisions.md) for those checks.
 
 ## Reporting Results

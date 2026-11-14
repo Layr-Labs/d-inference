@@ -37,6 +37,10 @@ public enum SDKFeatureDefaults {
     /// listed build only where constraint spans are on (measured together).
     static let grammarMTPBuilds: Set<String> = ["eigenlabs/qwen3.8-27b-4bit-mtp"]
 
+    /// SDK #409 on a native page bank, which has no constraint spans:
+    /// GLM-5.3-Flash, measured without them.
+    static let nativeGrammarMTPBuilds: Set<String> = ["eigenlabs/glm-5.3-flash-mlx-nvfp4-mtp"]
+
     /// #2099 / SDK #411: `reasoning.max_tokens` budgets, per family.
     static let reasoningBudgetFamilies: Set<NativeReasoningBudget.Family> = []
 
@@ -90,13 +94,14 @@ public enum SDKFeatureDefaults {
     /// reading of the environment (the operator's value; off when unset); a
     /// switch left unset, in the slot's environment and in the process's (what
     /// the SDK read), is turned on for the listed builds only, grammar MTP only
-    /// where constraint spans are on (measured together). Returns the switches
-    /// it turned on, for the load log.
+    /// where constraint spans are on (measured together) except on the native
+    /// builds, which have none. Returns the switches it turned on, for the load log.
     @discardableResult
     static func applyMTPDefaults(
         to config: inout CBv2MTPConfig, modelId: String, environment: [String: String],
         processEnvironment: [String: String] = ProcessInfo.processInfo.environment,
-        spansBuilds: Set<String> = constraintSpansBuilds, grammarBuilds: Set<String> = grammarMTPBuilds
+        spansBuilds: Set<String> = constraintSpansBuilds, grammarBuilds: Set<String> = grammarMTPBuilds,
+        nativeGrammarBuilds: Set<String> = nativeGrammarMTPBuilds
     ) -> [String] {
         func unset(_ key: String) -> Bool {
             followsDefault(key, in: environment, injected: [])
@@ -107,7 +112,9 @@ public enum SDKFeatureDefaults {
             config.freeSpanSpeculation = true
             on.append(constraintSpansKey)
         }
-        if unset(grammarMTPKey), config.freeSpanSpeculation, matches(grammarBuilds, modelId: modelId) {
+        if unset(grammarMTPKey),
+           (config.freeSpanSpeculation && matches(grammarBuilds, modelId: modelId))
+               || matches(nativeGrammarBuilds, modelId: modelId) {
             config.constrainedSpeculation = true
             on.append(grammarMTPKey)
         }
@@ -172,17 +179,20 @@ public enum SDKFeatureDefaults {
         injected: Set<String> = injectedKeys
     ) -> String? {
         summary(environment: environment, injected: injected,
-                spansBuilds: constraintSpansBuilds, grammarBuilds: grammarMTPBuilds)
+                spansBuilds: constraintSpansBuilds, grammarBuilds: grammarMTPBuilds,
+                nativeGrammarBuilds: nativeGrammarMTPBuilds)
     }
 
     static func summary(environment: [String: String], injected: Set<String>,
-                        spansBuilds: Set<String>, grammarBuilds: Set<String>) -> String? {
+                        spansBuilds: Set<String>, grammarBuilds: Set<String>,
+                        nativeGrammarBuilds: Set<String> = []) -> String? {
         var on = injected.sorted().map { key in
             key == NativeReasoningBudget.environmentKey
                 ? "\(key) (\(reasoningBudgetFamilies.map { "\($0)" }.sorted().joined(separator: ", ")))" : key
         }
         for (key, builds, scope) in [(constraintSpansKey, spansBuilds, ""),
-                                     (grammarMTPKey, grammarBuilds, ", where constraint spans are on")]
+                                     (grammarMTPKey, grammarBuilds, ", where constraint spans are on"),
+                                     (grammarMTPKey, nativeGrammarBuilds, ", native, no spans")]
         where !builds.isEmpty && followsDefault(key, in: environment, injected: []) {
             on.append("\(key) (\(builds.sorted().joined(separator: ", "))\(scope))")
         }

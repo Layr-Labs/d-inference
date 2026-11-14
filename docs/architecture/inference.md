@@ -3802,13 +3802,18 @@ where its engine runs token constraints: the native page-bank profiles qualify
 them in the SDK (`CBv2NativeExecutionContract.supportsTokenConstraints`, the
 profiles that qualify logprob rows: every target row samples with the ordinary
 sampler), a cluster pair does not. Its reasoning-first prompts, the JSON
-default, are constrained too, so such a request decodes target-only throughout
-(the speculation cost is below); on GLM's engine a constrained row also never
-chains its decode steps (`EngineLoopV2` in `libs/mlx-swift-lm`). Admitted or declined, GLM keeps its withheld answer and
-its check ([GLM5Next implementation boundary](#glm5next-implementation-boundary) above), and an admitted row donates no
-prefix checkpoint: GLM's assistant records no prompt history for a row that
-never drafts, so checkpoint capture declines it, and repeated JSON prompts do not
-reuse each other's prefix.
+default, are constrained too. Such a row still drafts: grammar-aware MTP
+verification (`DARKBLOOM_CBV2_MTP_GRAMMAR`, on by default for the GLM build,
+`SDKFeatureDefaults.nativeGrammarMTPBuilds`) samples each committed position
+under the grammar, and the page bank runs those samples under the native work
+protocol (`CBv2NativeExecutionContract.supportsConstrainedMTPVerification`).
+With it off, the row decodes target-only throughout (the speculation cost is
+below). On GLM's engine a constrained row never chains its decode steps
+(`EngineLoopV2` in `libs/mlx-swift-lm`). Admitted or declined, GLM keeps its withheld answer and
+its check ([GLM5Next implementation boundary](#glm5next-implementation-boundary) above). With grammar MTP off, an
+admitted row donates no prefix checkpoint: GLM's assistant records no prompt
+history for a row that never drafts, so checkpoint capture declines it, and
+repeated JSON prompts do not reuse each other's prefix.
 
 `DARKBLOOM_JSON_ANSWER_GRAMMAR=qwen` (or `0`, `off`, `false`, `no`, `none`)
 keeps the grammar to the Qwen types, as before Bonsai and Lightning were
@@ -3929,7 +3934,9 @@ Decoding such rows beside speculation needs that SDK capability and row-exactnes
 evidence for each target. Bonsai 2 27B has no drafter. Lightning drafts, so only
 its answer-first prompts (thinking off) are constrained: those trigger it, and
 every Lightning row sharing their decode step, thinking or not, stops
-speculating meanwhile. GLM's default rectangular profile drafts with at most two
+speculating meanwhile. GLM's JSON rows draft by default (grammar-aware
+verification, above), so neither they nor their neighbours lose MTP. With
+`DARKBLOOM_CBV2_MTP_GRAMMAR=0`, GLM's default rectangular profile drafts with at most two
 decode rows (the serial profile with one), so a lone GLM JSON request loses MTP
 for its whole reasoning and answer, a plain request sharing a two-row step with
 one loses it too, and at three or more rows nothing changes.

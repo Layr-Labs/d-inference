@@ -38,8 +38,12 @@ public enum SDKFeatureDefaults {
     static let grammarMTPBuilds: Set<String> = ["eigenlabs/qwen3.8-27b-4bit-mtp"]
 
     /// SDK #409 on a native page bank, which has no constraint spans:
-    /// GLM-5.3-Flash, measured without them.
-    static let nativeGrammarMTPBuilds: Set<String> = ["eigenlabs/glm-5.3-flash-mlx-nvfp4-mtp"]
+    /// GLM-5.3-Flash, measured without them, under both of its ids (the
+    /// coordinator's catalog id and the local opt-in's repository).
+    static let nativeGrammarMTPBuilds: Set<String> = [
+        GLM5NextCoordinatorServing.catalogModelID.lowercased(),
+        GLM5NextLocalQualification.modelID.lowercased(),
+    ]
 
     /// #2099 / SDK #411: `reasoning.max_tokens` budgets, per family.
     static let reasoningBudgetFamilies: Set<NativeReasoningBudget.Family> = []

@@ -3923,12 +3923,14 @@ Tools or `tool_choice` beside the format keep today's behavior; Flint's
 format-over-tools precedence does not apply. Image and video requests take the
 media path, which installs no token constraint.
 
-A constrained row never drafts (`EngineLoopV2.mtpBasicEligible`). The Qwen 3.5
+A constrained row never drafts (`EngineLoopV2.mtpBasicEligible`) unless
+grammar-aware MTP is on for its engine (`DARKBLOOM_CBV2_MTP_GRAMMAR`: by default
+Qwen 3.8 27B 4-bit MTP with constraint spans, and GLM-5.3-Flash). The Qwen 3.5
 targets, Lightning's and GLM's do not declare the row-exact recurrent fallback
 (`CBv2RecurrentMTPRequestScopedMediaFallback`), so
 `ineligibleRowsDecodeBesideSpeculation` is false for their MTP driver and
 `EngineLoopV2.mtpDraftBatchRows` keeps the whole cohort: while a constrained
-row is in a decode step, no row in that step speculates. A `stop`,
+row that does not draft is in a decode step, no row in that step speculates. A `stop`,
 `logit_bias`, penalty or logprob row has the same effect on these engines.
 Decoding such rows beside speculation needs that SDK capability and row-exactness
 evidence for each target. Bonsai 2 27B has no drafter. Lightning drafts, so only

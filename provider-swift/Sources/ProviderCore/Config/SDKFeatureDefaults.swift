@@ -31,7 +31,7 @@ public enum SDKFeatureDefaults {
 
     /// #2101 / SDK #413: MTP drafting through free Qwen reasoning and text
     /// spans. A build is a `model_type` or a case-insensitive model-id part.
-    static let constraintSpansBuilds: Set<String> = []
+    static let constraintSpansBuilds: Set<String> = ["qwen3.8-27b"]
 
     /// SDK #409: grammar-aware MTP verification of constrained rows (builds as above).
     static let grammarMTPBuilds: Set<String> = []

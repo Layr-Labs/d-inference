@@ -50,6 +50,20 @@ struct NemotronSuperConcurrentImageLifecycleTests {
         try await session.close()
     }
 
+    /// The kill switch reaches launchd providers, and its off words are exactly
+    /// the repository's (`GPTOSSForcedToolConstraint.isEnabled`).
+    @Test func killSwitchIsForwardedAndParsedLikeTheOthers() {
+        #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(NemotronSuperLocalBridgeBuilder.concurrentImagesKey))
+        for value in [nil, "", "1", "on", "true", "garbage", " On "] as [String?] {
+            #expect(NemotronSuperLocalBridgeBuilder.concurrentImagesEnabled(value), "\(String(describing: value))")
+            #expect(GPTOSSForcedToolConstraint.isEnabled(value), "\(String(describing: value))")
+        }
+        for value in ["off", "false", "0", "none", "no", "disabled", " OFF "] {
+            #expect(!NemotronSuperLocalBridgeBuilder.concurrentImagesEnabled(value), "\(value)")
+            #expect(!GPTOSSForcedToolConstraint.isEnabled(value), "\(value)")
+        }
+    }
+
     /// The kill switch (an off word) restores 0.10.12's single-media admission;
     /// an owner narrower than three keeps it whatever the switch says.
     @Test(.timeLimit(.minutes(2)), arguments: [("0", 4), ("off", 4), (" FALSE ", 4), ("", 2), ("1", 2)])

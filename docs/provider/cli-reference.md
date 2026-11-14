@@ -4238,6 +4238,10 @@ The watchdog plist carries its own list: `DARKBLOOM_NO_UPDATE_CHECK`,
 `DARKBLOOM_NO_UPDATE_CHECK` is **not** forwarded to the provider daemon; disable
 automatic updates with `darkbloom autoupdate disable`.
 
+### Gemma o5 parser switch
+
+Set `DARKBLOOM_GEMMA_REOPENED_THOUGHTS` before `darkbloom start`, or before installing the service: the LaunchAgent forwards the operator's value to the provider job. The [configuration reference](../reference/configuration.md#gemma-o5-conformance) defines activation and rollback.
+
 ## Runtime constants
 
 | Constant | Value | Source |

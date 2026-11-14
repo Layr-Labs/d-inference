@@ -3614,6 +3614,10 @@ not restore native KV state or grant model capacity. Its application-local
 history LRU and the SDK response-object store have different retention rules;
 see [Responses continuation and retention](../provider/direct-mode.md#responses-continuation-and-retention).
 
+### Gemma reopened thought channels
+
+The SDK parser behind `DARKBLOOM_GEMMA_REOPENED_THOUGHTS` is adopted through the `libs/mlx-swift-lm` gitlink. Every reopened thought span routes to reasoning, and stray channel-close markers are absorbed. The collected path shares the streaming state machine. Native, JSON and escape-quoted tool argument data stays opaque to channel routing. See the [process switch](../reference/configuration.md#gemma-o5-conformance). Source: `libs/mlx-swift-lm/Libraries/MLXLMServer/Parsing/StreamingGemma4ReasoningParser.swift` (`StreamingGemma4ReasoningParser`).
+
 ### Gemma with `tool_choice` `none`
 
 On a pinned Gemma 4 prompt contract, `tool_choice` `none` samples under

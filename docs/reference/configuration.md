@@ -674,6 +674,14 @@ Installed processes still use the source defaults.
 | `DARKBLOOM_QWEN4_QSA_PARALLEL_VALUE_PARTITIONS` | `1`, `2`, `4`, `8`, `16`, `32` | `32` for full KV; caller fallback for compact KV | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen4ExpParallelQSA.swift` (`valuePartitions`) | A valid explicit caller argument wins over the environment. Invalid explicit values retain the caller fallback. This changes scheduling, not arithmetic order, precision or MTP depth. |
 | `DARKBLOOM_QWEN4_LAYER_ASYNC` | unset or exact `1` enables; explicit `0` disables | on | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen4ExpLayerSubmission.swift` (`enabled`, `plan`) | Early singleton text layer submission on valid native paged caches at widths 1–6. Media/explicit positions, wider/batched shapes and faulted or unknown caches retain the existing scheduling. Other explicit spellings stay disabled. |
 
+### Gemma o5 conformance
+
+| Variable | Values / type | Default | Read in | Effect |
+|---|---|---|---|---|
+| `DARKBLOOM_GEMMA_REOPENED_THOUGHTS` | exact `1` enables | unset (off); `0` keeps legacy behavior | `libs/mlx-swift-lm/Libraries/MLXLMServer/Parsing/StreamingGemma4ReasoningParser.swift` (`StreamingGemma4ReasoningParser`) | Opts in to Gemma reopened thought channels. Read once per process. |
+
+Set this variable before starting the provider. The LaunchAgent forwards the operator's value (`0` included) to the installed provider job (`LaunchAgent.inferencePassthroughEnvKeys`), so it applies to a service Mac as well as a foreground process; the watchdog does not receive it. To roll back on a service Mac, run `DARKBLOOM_GEMMA_REOPENED_THOUGHTS=0 darkbloom start`: it re-installs the service plist, while `darkbloom restart` reuses the existing plist and keeps the old value. For a foreground process, restart it with the variable unset or `0`. See the [parser behavior](../architecture/inference.md#gemma-reopened-thought-channels).
+
 ### Native DiffusionGemma expert reduction
 
 These controls affect native DiffusionGemma inference, not its weights,

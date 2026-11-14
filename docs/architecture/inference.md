@@ -4669,14 +4669,17 @@ the 9B takes the grammar only when a Mac opts in.
   `maxImagePixels` 100 Mpx, `maxRequestImagePixels` 384 Mpx,
   `maxMediaDecodedBytes` 25 MiB, `maxVideoDurationSeconds` 600,
   `maxImagesPerRequest` 16 (per model through `imageCap(forModel:)`: 64 for the
-  four Qwen3VL-family builds, 32 for Gemma 4 26B; `DARKBLOOM_MAX_IMAGES_PER_REQUEST`
+  four Qwen3VL-family builds, 24 for Gemma 4 26B; `DARKBLOOM_MAX_IMAGES_PER_REQUEST`
   sets one cap for every model),
   `maxVideosPerRequest` 8, `maxRequestVideoFramePixels` 384 Mpx;
   `decodeOverheadFactor = 4`. Past 16 images a Qwen build's request shares an
-  image budget of 16 x 1,048,576 px among its images (`modelImageBudget`,
-  `imagePixelTarget`, `scaled`): each image above its share is Lanczos-scaled to
-  it, aspect kept, before the processor, so the visual tokens stay at most those
-  of 16 full-size images. The pixel caps still count source pixels.
+  image budget of 16 x 1,310,720 px (the processor's own per-image ceiling)
+  among its images (`modelImageBudget`, `imagePixelTarget`): `buildUserInput`
+  sets `UserInput.Processing.maxPixels` to the share, and the processor sizes
+  each image to it in its one resize, so the visual tokens stay about those of
+  16 full-size images. The pixel caps still count source pixels, and the media
+  gate reserves the budget's tokens plus a quarter instead of 1,024 an image
+  (`projectedImageTokens`).
 - **Media memory gate.** The scheduler's `VisionMemoryGate` reserves a media
   request's decode memory and its KV (1,024 tokens per image) before any
   decode. A reservation that doesn't fit is refused as a retryable 503 with

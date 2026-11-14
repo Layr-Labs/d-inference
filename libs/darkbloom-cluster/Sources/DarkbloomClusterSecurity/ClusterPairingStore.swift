@@ -57,6 +57,11 @@ public enum ClusterPairingStoreError: Error, Equatable, Sendable, CustomStringCo
     case malformed(String)
     case writeFailed(String)
     case notPaired
+    /// The pairing's link key is in this Mac's Keychain, which is locked until someone logs in after a restart.
+    case keychainLocked
+    case keychainUnavailable(Int32)
+    /// Neither the Keychain nor 0.10.12's file holds the pairing's link key.
+    case linkKeyMissing
 
     public var description: String {
         switch self {
@@ -65,6 +70,10 @@ public enum ClusterPairingStoreError: Error, Equatable, Sendable, CustomStringCo
         case .malformed(let name): return "\(name) is malformed; nothing is trusted from it"
         case .writeFailed(let name): return "\(name) could not be written"
         case .notPaired: return "no pairing with that key"
+        case .keychainLocked:
+            return "the pairing's link key is in this Mac's Keychain, which stays locked after a restart until someone logs in to this Mac"
+        case .keychainUnavailable(let status): return "this Mac's Keychain did not give the pairing's link key (OSStatus \(status))"
+        case .linkKeyMissing: return "the pairing's link key is gone: the Macs must pair again"
         }
     }
 }
@@ -77,6 +86,7 @@ public enum ClusterPairingStoreError: Error, Equatable, Sendable, CustomStringCo
 /// rests on these files, so a widened mode fails closed.
 public final class ClusterPairingStore: @unchecked Sendable {
     public let directory: URL
+    public let vault: (any ClusterEdgeSecretVault)?
     private let lock = NSLock()
     private let clock: @Sendable () -> Double
 
@@ -85,9 +95,17 @@ public final class ClusterPairingStore: @unchecked Sendable {
     public var auditFile: URL { directory.appendingPathComponent("audit.jsonl") }
     public func secretFile(peerPin: String) -> URL { directory.appendingPathComponent("edge-\(peerPin.prefix(16)).secret") }
 
-    public init(directory: URL, clock: @escaping @Sendable () -> Double = { Date().timeIntervalSince1970 }) {
-        self.directory = directory; self.clock = clock
+    public init(directory: URL, vault: (any ClusterEdgeSecretVault)? = nil,
+                clock: @escaping @Sendable () -> Double = { Date().timeIntervalSince1970 }) {
+        self.directory = directory; self.vault = vault; self.clock = clock
     }
+
+    /// Which ceremony made a pairing's secret, from its public values: every ceremony derives a new link epoch.
+    static func binding(of record: ClusterPairingRecord) -> String {
+        "link-epoch \(record.link.linkEpoch) edge \(record.link.edgeID)"
+    }
+
+    public func writeLegacyFilesForRollback() -> [String] { [] }
 
     // MARK: - Reading
 

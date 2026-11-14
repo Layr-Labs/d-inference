@@ -412,7 +412,8 @@ public final class MockCoordinator: @unchecked Sendable {
         cacheReceiptNonce: String? = nil,
         cacheScope: String? = nil,
         consumerKeyPair: NodeKeyPair? = nil,
-        serviceReservationID: String? = nil
+        serviceReservationID: String? = nil,
+        gemmaPromptContract: Int? = nil
     ) async throws {
         guard let providerPubKeyData = Data(base64Encoded: providerPublicKeyBase64),
               providerPubKeyData.count == 32
@@ -430,7 +431,8 @@ public final class MockCoordinator: @unchecked Sendable {
             firstContentBudgetMs: firstContentBudgetMs,
             cacheReceiptNonce: cacheReceiptNonce,
             cacheScope: cacheScope,
-            serviceReservationID: serviceReservationID
+            serviceReservationID: serviceReservationID,
+            gemmaPromptContract: gemmaPromptContract
         ))
         try await sendCoordinatorMessage(msg)
     }

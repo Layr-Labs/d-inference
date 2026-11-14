@@ -1,6 +1,0 @@
-### A Qwen 3.5 or 3.6 thought that repeats itself verbatim can end in an answer (off by default)
-
-- Once turned on, as for Gemma 4 in 0.10.13: when the loop guard stops a verbatim loop inside a Qwen 3.5 or 3.6 35B thought, the request no longer ends as `length` with no answer. The provider ends the thought as Qwen's template does (`\n</think>\n\n`), and the model writes its answer in the same response. The usage counts every token produced, as one completion. A loop in the answer still ends as `length`.
-- Since 0.10.12, 0.16 % (Qwen 3.6 35B) and 0.83 % (Qwen 3.5 35B) of GPQA-shaped requests ended that way with no answer.
-- Off by default: the A/B on Qwen 3.5/3.6 35B found too few thought loops to show rescues (Qwen 3.6 never looped in 198 greedy GPQA draws; Qwen 3.5 35B looped 3 times, once on the candidate, whose answer looped again). `DARKBLOOM_LOOP_EXIT_THINKING=gemma4,gemma4_text,qwen3_5_moe` turns it on for the 35B models; `…,qwen3_5` adds the 9B and Qwen 3.8 27B; `0` turns all of it off. Never with logprobs or on a cluster pair.
-- Client stop strings apply to the answer from its first token, and a stop string that ends the answer is reported as the matched stop sequence (Gemma 4's too).

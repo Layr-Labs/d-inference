@@ -455,6 +455,9 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_GPTOSS_FORCED_TOOLS`: GPT-OSS forced tool calls are on by
     /// default; an off word (`off`, `false`, `0`, `none`, `no`, `disabled`)
     /// refuses them and stops advertising them.
+    /// `DARKBLOOM_MUSE_GLIMMER_REFERENCE_TOOL_CALLS`: Muse Glimmer's calls are
+    /// read as the reference servers read them by default; `0`, `off` or
+    /// `false` restores the strict ATEM parser.
     static let inferencePassthroughEnvKeys = [
         Qwen35TemplateFix.forcedThinkingEnvironmentKey,
         HarmonyFinalHeaderFilter.commentaryEnvironmentKey,
@@ -515,6 +518,7 @@ public enum LaunchAgent: Sendable {
         EngineV2SamplingDefaults.qwen35NineBPenaltyEnvironmentKey,
         GLM5ToolSuffix.environmentKey,
         GPTOSSForcedToolCalls.environmentKey,
+        MuseGlimmerToolCallReading.environmentKey,
     ] + MiMoV26DecodeDefaults.environmentKeys + MiMoV26DecodeDefaults.verifyEnvironmentKeys
 
     static let passthroughEnvKeys = [

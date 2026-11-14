@@ -62,7 +62,10 @@ struct MuseGlimmerToolStreamTests {
             let data = try JSONSerialization.data(withJSONObject: body)
             request = try ProviderLoop.decodeOpenAIRequest(data, modelType: MuseGlimmerToolStreamTests.modelType)
             controls = ProviderLoop.extractChatTemplateControls(from: data)
-            prepared = try ToolChoicePromptPolicy.prepare(request, modelType: MuseGlimmerToolStreamTests.modelType)
+            var prepared = try ToolChoicePromptPolicy.prepare(request, modelType: MuseGlimmerToolStreamTests.modelType)
+            // As the scheduler sets it: the caller's declarations as sent.
+            prepared.declaredTools = controls.declaredTools
+            self.prepared = prepared
         }
 
         var withholdsReasoning: Bool {
@@ -91,7 +94,7 @@ struct MuseGlimmerToolStreamTests {
     #if DEBUG
     /// The scheduler's own forwarding body over a scripted engine stream.
     private func stream(
-        _ fixture: Fixture, _ output: String, chunk: Int = 5, finish: String = "stop"
+        _ fixture: Fixture, _ output: String, chunk: Int = 5, finish: String = "stop", reference: Bool = true
     ) async throws -> Outcome {
         var events: [GenerationEvent] = []
         var index = output.startIndex
@@ -108,7 +111,9 @@ struct MuseGlimmerToolStreamTests {
         }
         let handler = try ToolStreamPreparation.makeHandler(
             request: fixture.request, prepared: fixture.prepared, modelType: Self.modelType)
-        let scheduler = MultiModelBatchSchedulerEngine(registryProvider: { [:] })
+        var scheduler = MultiModelBatchSchedulerEngine(registryProvider: { [:] })
+        // The switch as a clean process reads it, whatever this process's environment says.
+        scheduler.museGlimmerReferenceToolCalls = reference
         let output = try scheduler._testMakeEventStream(
             upstream: upstream, cancelUpstream: {}, prepared: fixture.prepared,
             releaseBox: OneShotRelease(release: { _ in }, modelId: Self.modelID), toolHandler: handler,
@@ -244,18 +249,137 @@ struct MuseGlimmerToolStreamTests {
         #expect(outcome.info?.stopReason == "length")
     }
 
-    @Test("invalid tool output fails the request and never becomes answer text")
-    func invalidToolOutput() async throws {
-        let undeclared = Self.generated(Self.call("delete_everything", [("path", "/")]))
-        let unfinished = " to=get_weather<|message|><atem:function_calls>\n<atem:invoke name=\"get_weather\">"
-        let wrongType = Self.generated(Self.call("get_weather", [("city", "Paris"), ("days", "soon")]))
-        for (output, fixture) in [(undeclared, try Fixture()), (unfinished, try Fixture()),
-                                  (wrongType, try Fixture()),
-                                  // No declared tools: there is nothing to call.
-                                  (Self.generated(Self.call("get_weather", [("city", "Paris")])), try Fixture(tools: nil))] {
-            await #expect(throws: MultiModelBatchSchedulerEngineError.self) {
-                _ = try await stream(fixture, output)
+    /// The request failed as the model's noncompliance (422), never as the provider's (500).
+    private func expectNoncompliance(
+        _ fixture: Fixture, _ output: String, reference: Bool = true,
+        sourceLocation: SourceLocation = #_sourceLocation
+    ) async {
+        do {
+            let outcome = try await stream(fixture, output, reference: reference)
+            Issue.record("expected a refusal, got \(outcome.calls.map(\.function.name)) \(outcome.content)",
+                         sourceLocation: sourceLocation)
+        } catch let error as MultiModelBatchSchedulerEngineError {
+            guard case .toolChoiceViolation = error else {
+                Issue.record("expected a 422 refusal, got \(error)", sourceLocation: sourceLocation)
+                return
             }
+            #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 422, sourceLocation: sourceLocation)
+        } catch {
+            Issue.record("unexpected \(error)", sourceLocation: sourceLocation)
+        }
+    }
+
+    private static var strictTools: [[String: Any]] {
+        tools.map { tool in
+            var tool = tool
+            var function = tool["function"] as! [String: Any]
+            function["strict"] = true
+            tool["function"] = function
+            return tool
+        }
+    }
+
+    private static var closedTools: [[String: Any]] {
+        tools.map { tool in
+            var tool = tool
+            var function = tool["function"] as! [String: Any]
+            var parameters = function["parameters"] as! [String: Any]
+            parameters["additionalProperties"] = false
+            function["parameters"] = parameters
+            tool["function"] = function
+            return tool
+        }
+    }
+
+    @Test("auto without strict: each call the strict parser rejects is returned as generated, as vLLM returns it")
+    func autoCallsAsGenerated() async throws {
+        // The strict parser's rejections, each a 500 before.
+        let cases: [(String, [[String: Any]], String, [String: MLXLMCommon.JSONValue])] = [
+            ("undeclared name", Self.tools, "delete_everything", ["path": .string("/")]),
+            ("missing required parameter", Self.tools, "get_weather", ["days": .int(3)]),
+            ("extra parameter under additionalProperties false", Self.closedTools, "get_weather",
+             ["city": .string("Paris"), "mood": .string("sunny")]),
+            ("integral float for an integer", Self.tools, "get_weather", ["city": .string("Paris"), "days": .int(6)]),
+            ("wrong type", Self.tools, "get_weather", ["city": .string("Paris"), "days": .string("soon")]),
+            ("invalid JSON for an array", Self.tools, "get_weather",
+             ["city": .string("Paris"), "tags": .string("[a, b")]),
+        ]
+        let written: [String: [(String, String)]] = [
+            "undeclared name": [("path", "/")],
+            "missing required parameter": [("days", "3")],
+            "extra parameter under additionalProperties false": [("city", "Paris"), ("mood", "sunny")],
+            "integral float for an integer": [("city", "Paris"), ("days", "6.0")],
+            "wrong type": [("city", "Paris"), ("days", "soon")],
+            "invalid JSON for an array": [("city", "Paris"), ("tags", "[a, b")],
+        ]
+        for (label, tools, name, arguments) in cases {
+            let output = " to=self<|message|>Call.<|eom|>" + Self.call(name, written[label]!)
+            let outcome = try await stream(try Fixture(tools: tools), output)
+            #expect(outcome.calls.map { $0.function.name } == [name], "\(label)")
+            #expect(outcome.calls.first?.function.arguments == arguments, "\(label)")
+            #expect(outcome.content.isEmpty, "\(label)")
+            #expect(outcome.info?.stopReason == "stop", "\(label)")
+            expectNoFraming(outcome)
+            // The strict parser, kept behind the switch, refuses each, now as the model's failure.
+            await expectNoncompliance(try Fixture(tools: tools), output, reference: false)
+        }
+    }
+
+    @Test("a string parameter keeps its text byte for byte; any other value is decoded")
+    func referenceTyping() async throws {
+        for text in ["12345", "true", "null", " padded "] {
+            let outcome = try await stream(try Fixture(), Self.generated(Self.call("get_weather", [("city", text)])))
+            #expect(outcome.calls.first?.function.arguments["city"] == .string(text), "\(text)")
+        }
+        let typed = try await stream(try Fixture(), Self.generated(Self.call("get_weather", [
+            ("city", "Paris"), ("days", "6.0"), ("detail", "false"), ("tags", "[\"a\"]")])))
+        #expect(typed.calls.first?.function.arguments == [
+            "city": .string("Paris"), "days": .int(6), "detail": .bool(false), "tags": .array([.string("a")])])
+    }
+
+    @Test("strict tools hold the call to the declarations: off the schema is refused as noncompliance (422)")
+    func strictToolsRefuse() async throws {
+        let strict = try Fixture(tools: Self.strictTools)
+        for (name, parameters) in [("delete_everything", [("path", "/")]), ("get_weather", [("days", "3")]),
+                                   ("get_weather", [("city", "Paris"), ("days", "soon")])] {
+            await expectNoncompliance(strict, Self.generated(Self.call(name, parameters)))
+        }
+        // Draft 7: an integral float is an integer, and the reader types it as one.
+        let integral = try await stream(strict, Self.generated(Self.call("get_weather", [
+            ("city", "Paris"), ("days", "6.0")])))
+        #expect(integral.calls.first?.function.arguments == ["city": .string("Paris"), "days": .int(6)])
+        // A string parameter whose text looks like a number is still the string the schema asks for.
+        let numeric = try await stream(strict, Self.generated(Self.call("get_weather", [("city", "12345")])))
+        #expect(numeric.calls.first?.function.arguments == ["city": .string("12345")])
+    }
+
+    @Test("forced choice holds the call to the declarations: off the schema is refused as noncompliance (422)")
+    func forcedChoiceRefuses() async throws {
+        let required = try Fixture(extra: ["tool_choice": "required"])
+        for (name, parameters) in [("delete_everything", [("path", "/")]), ("get_weather", [("days", "3")])] {
+            await expectNoncompliance(required, Self.generated(Self.call(name, parameters)))
+        }
+        let named = try Fixture(extra: ["tool_choice": ["type": "function", "function": ["name": "docs_read"]]])
+        await expectNoncompliance(named, Self.generated(Self.call("get_weather", [("city", "Paris")])))
+        let passes = try await stream(required, Self.generated(Self.call("get_weather", [("city", "Paris")])))
+        #expect(passes.calls.map(\.function.name) == ["get_weather"])
+    }
+
+    @Test("a frame that holds no call is refused as noncompliance (422), never a provider failure, either way")
+    func invalidToolOutput() async throws {
+        let unfinished = " to=get_weather<|message|><atem:function_calls>\n<atem:invoke name=\"get_weather\">"
+        let unnamed = " to=get_weather<|message|><atem:function_calls>\n<atem:invoke>\n"
+            + "<atem:parameter name=\"city\">Paris</atem:parameter>\n</atem:invoke>\n</atem:function_calls>"
+        for reference in [true, false] {
+            for output in [unfinished, unnamed] {
+                await expectNoncompliance(try Fixture(), output, reference: reference)
+            }
+        }
+        // No declared tools, or `tool_choice: none`: there is nothing to call. Never answer text either.
+        let call = Self.generated(Self.call("get_weather", [("city", "Paris")]))
+        for reference in [true, false] {
+            await expectNoncompliance(try Fixture(tools: nil), call, reference: reference)
+            await expectNoncompliance(try Fixture(extra: ["tool_choice": "none"]), call, reference: reference)
         }
     }
 

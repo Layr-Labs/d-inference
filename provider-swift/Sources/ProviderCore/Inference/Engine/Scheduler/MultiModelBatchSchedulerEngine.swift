@@ -128,6 +128,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// Whether a GPT-OSS request without tools gets its exit into the final
     /// channel: the process's `DARKBLOOM_GPTOSS_FINAL_EXIT` unless a test sets it.
     var gptossFinalExit = GenerationLoopExitThinkingPolicy.finalExitCurrent
+    /// How Muse Glimmer's invokes are read (`MuseGlimmerToolCallReading`): the
+    /// process's `DARKBLOOM_MUSE_GLIMMER_REFERENCE_TOOL_CALLS` unless a test sets it.
+    var museGlimmerReferenceToolCalls = MuseGlimmerToolCallReading.current
     /// Per-request logprobs plumbing. Non-nil means the sealed request asked for
     /// logprobs: the v2 translation flips `logprobs`/`top_logprobs` on so
     /// the engine captures them, and the bridge yields OpenAI-shaped entries
@@ -1836,6 +1839,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         rewriteHarmonyFinalHeaders: Bool = false,
         nativeGlimmerChannels: Bool = false
     ) throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
+        let glimmerReferenceCalls = museGlimmerReferenceToolCalls
         // One forwarding implementation preserves all parser/event bytes. The
         // native path changes only task ownership and cancellation handoff.
         let forward: @Sendable (AsyncThrowingStream<MLXServerGenerationEvent, Error>.Continuation,
@@ -1866,7 +1870,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     nativeMiMoRequiresConstraint: nativeMiMoChannels && prepared.mode.requiresInferenceConstraint,
                     absorbStrayThinkClose: absorbStrayThinkClose,
                     withholdReasoning: withholdReasoning, streamedCalls: prepared,
-                    nativeGlimmerChannels: nativeGlimmerChannels)
+                    nativeGlimmerChannels: nativeGlimmerChannels,
+                    glimmerReferenceCalls: glimmerReferenceCalls,
+                    glimmerDeclaredTools: nativeGlimmerChannels ? prepared.declaredTools?.map { $0.toolSpec() } : nil)
                 // Withheld reasoning must not return as logprob entry tokens. A
                 // prompt that opens the thought (GLM with thinking on, which
                 // seeds the native channel with an open block) starts inside it.

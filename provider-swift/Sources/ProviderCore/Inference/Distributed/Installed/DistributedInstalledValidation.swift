@@ -54,7 +54,7 @@ struct DistributedInstalledValidation: Sendable {
                 expectedSHA256: trust.knownHostsSHA256, maximumBytes: 64 * 1024, deadline: deadline))
         }
         if let link = plan.configuration.linkControl {
-            try Self.linkSecretMetadata(link.secretFile)
+            try Self.linkSecretMetadata(link.secretFile, pairingDirectory: paths.pairingDirectory)
         }
         // Recompute native profile/Plan/arithmetic metadata using the verified
         // installed worker. The command does not construct a model or request.
@@ -73,7 +73,7 @@ struct DistributedInstalledValidation: Sendable {
             try ClusterConfigurationFiles.credentialMetadata(URL(fileURLWithPath: trust.identityFile), privateMode: true)
         }
         if let link = plan.configuration.linkControl {
-            try Self.linkSecretMetadata(link.secretFile)
+            try Self.linkSecretMetadata(link.secretFile, pairingDirectory: plan.paths.pairingDirectory)
         }
         // These are the exact file candidates opened by the existing local
         // tokenizer loader. An unpinned fallback must not become active.
@@ -87,18 +87,23 @@ struct DistributedInstalledValidation: Sendable {
         }
     }
 
-    /// A link key made by the pairing ceremony (S17) lives in this install's
-    /// pairing store as `edge-<pin>.secret` (production's
-    /// `~/.darkbloom/cluster-pairing`). When that file
-    /// is gone the Macs were unpaired (`darkbloom cluster pair --forget`), so
-    /// say that instead of a missing credential. Either way the start fails.
-    static func linkSecretMetadata(_ path: String) throws {
+    /// A link key made by the pairing ceremony (S17) is named by its pairing's
+    /// `edge-<pin>.secret` in this install's pairing store (production's
+    /// `~/.darkbloom/cluster-pairing`) and kept in this Mac's Keychain
+    /// (`DistributedInstalledLinkSecret`). When the pairing or its key is gone
+    /// the Macs were unpaired (`darkbloom cluster pair --forget`), so say that
+    /// instead of a missing credential; a locked Keychain says to log in. Any
+    /// other secret is a private file. Either way the start fails.
+    static func linkSecretMetadata(_ path: String,
+                                   pairingDirectory: URL = DistributedInstalledLinkSecret.installPairingDirectory,
+                                   vaults: DistributedInstalledLinkSecret.Vaults = DistributedInstalledLinkSecret.installVaults) throws {
+        if try DistributedInstalledLinkSecret.requirePresent(path, pairingDirectory: pairingDirectory, vaults: vaults) { return }
         do { try ClusterConfigurationFiles.credentialMetadata(URL(fileURLWithPath: path), privateMode: true) } catch {
             let url = URL(fileURLWithPath: path)
             var value = stat()
             if url.deletingLastPathComponent().lastPathComponent == "cluster-pairing", url.lastPathComponent.hasPrefix("edge-"),
                lstat(path, &value) != 0, errno == ENOENT {
-                throw ClusterConfigurationError.invalid("Run `darkbloom cluster` on both Macs; it pairs again by itself. (The link key of this Mac's pairing is gone: the Macs were unpaired.)")
+                throw ClusterConfigurationError.invalid(DistributedInstalledLinkSecret.unpaired)
             }
             throw error
         }

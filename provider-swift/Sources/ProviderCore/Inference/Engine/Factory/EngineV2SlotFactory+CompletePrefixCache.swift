@@ -27,6 +27,13 @@ extension EngineV2SlotFactory {
         guard let preparedBackend,
             preparedBackend.modelCapabilities.supportsRecurrentCheckpointReuse || historicalTarget
         else { return nil }
+        // The resident bank and complete SSD checkpoints are alternatives: the
+        // engine keeps a durable store's checkpoints, never the bank's. Paged
+        // storage carves a bank only for a config that opted in, so that bank
+        // is the tier this slot serves.
+        if preparedBackend.kind == .paged, preparedBackend.hybridPrefixCache != nil {
+            return .init(cache: nil, status: .configDisabled)
+        }
         guard PrefixCachePolicy.isEnabled(modelId: modelId, environment: environment) else {
             return .init(cache: nil, status: .configDisabled)
         }

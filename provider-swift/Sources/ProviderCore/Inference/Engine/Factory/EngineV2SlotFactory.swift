@@ -368,6 +368,14 @@ enum EngineV2SlotFactory {
             hasMTPDrafter: assistantHandle?.drafter != nil,
             supportsMTPPrefixCheckpoint: assistantHandle?.drafter is any CBv2MTPPrefixCheckpointDrafter,
             environment: environment) : nil
+        // Paged storage hosts the bank only for an artifact qualified on it,
+        // at that artifact's budget. Contiguous storage keeps the config above.
+        let pagedHybridPrefixCache = hostsResidentTiers ? PagedRecurrentBankPolicy.config(
+            modelId: modelId, modelType: modelType, promptContractID: promptContractID,
+            kvBytesCapacity: engineKVBytesCapacity,
+            hasMTPDrafter: assistantHandle?.drafter != nil,
+            supportsMTPPrefixCheckpoint: assistantHandle?.drafter is any CBv2MTPPrefixCheckpointDrafter,
+            environment: environment) : nil
         let preparedBackend: EngineV2Factory.ProductionBackendPreparation?
         if makeEngineOverride == nil {
             do {
@@ -390,6 +398,7 @@ enum EngineV2SlotFactory {
                     environment: environment,
                     residentPrefixCache: residentPrefixCache,
                     hybridPrefixCache: hybridPrefixCache,
+                    pagedHybridPrefixCache: pagedHybridPrefixCache,
                     nativeKVLayerIndices: EngineV2KVQuantizationPolicy.nativeAssistantAccessLayers(
                         layerKinds: (servingModel as? Gemma4TextModel)?.cbv2LayerKinds ?? [],
                         gemmaAssistantActive: assistantHandle?.drafter != nil && mtpConfig.effectiveEnabled),
@@ -656,6 +665,14 @@ enum EngineV2SlotFactory {
         if let store = bridge.ssdHybridCheckpointStore {
             logInfo("engine_v2: \(modelId) checkpoint KV precision \(bridge.kvCheckpointQuantization.rawValue) "
                 + "layout=\(store.config.backendLayout)")
+        }
+        // The engine decides whether its pages can host the bank. The SSD
+        // checkpoints were already given up for it, so say when it did not.
+        if preparedBackend?.kind == .paged, preparedBackend?.hybridPrefixCache != nil,
+            await !bridge.hostsRecurrentBank {
+            logWarning(
+                "engine_v2: \(modelId) built no recurrent checkpoint bank on paged KV; serving "
+                    + "without a prefix tier until \(PrefixCachePolicy.memoryEnvironmentFlag) is unset")
         }
         logInfo(
             "engine_v2: \(modelId) prefix cache "

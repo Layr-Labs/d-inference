@@ -35,6 +35,9 @@ extension EngineV2Bridge {
         return durablePrefixCacheEvidenceSource.prefixCacheAdvertisement(base: prefixCacheBaseStatus).status
     }
 
+    /// Whether the constructed engine hosts a recurrent checkpoint bank.
+    var hostsRecurrentBank: Bool { (ownedEngine as? EngineV2)?.hybridPrefixCache != nil }
+
     /// Slot KV grant for contiguous/segmented storage; physical capacity for
     /// an explicit fixed-reference paged pool. Actual segmented ownership is
     /// tracked by native Admission and the shared process ledger.

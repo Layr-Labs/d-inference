@@ -977,7 +977,10 @@ and 512 GiB; on 192 GiB the speculating owner's whole claim (110.0 GiB) and
 activation reserve leave 60.8 GiB of the cap for other memory, on 128 GiB
 (a 5.25 GiB bank) 13.9 GiB. `DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES` overrides it, other checkpoints
 keep `PrefixCachePolicy.hybridConfig`'s `min(1 GiB, grant / 8)`, and the bank
-holds up to one entry per 256 MiB (at least 32). The managed slot's
+holds up to one entry per 256 MiB (at least 32). A `Qwen3.5-9B` slot on
+paged KV with the same switch takes `PagedRecurrentBankPolicy`'s bank instead:
+`min(4 GiB, grant / 4)` in 256 MiB steps, none under 1 GiB, 32 entries (see
+[`prefix-cache.md`](prefix-cache.md)). The managed slot's
 `loadPlan` sizes the same bank from the same grant, requests and keys, turns
 the switch on only when it is non-zero and adds it to the LOAD claim's KV
 headroom. The backend carves the bank from the KV

@@ -482,9 +482,9 @@ struct GenerationLoopExitThinkingServingTests {
         }
     }
 
-    /// Qwen's exit is listed but off by default: the Qwen tests turn it on.
-    private static let qwenOn = GenerationLoopExitThinkingPolicy.Setting.modelTypes(
-        GenerationLoopExitThinkingPolicy.defaultModelTypes.union(["qwen3_5_moe"]))
+    /// The Qwen 3.6 tests turn its exit on with a list set on the Mac: by default only the Qwen 3.5 builds the A/B
+    /// proved take it.
+    private static let qwenOn = GenerationLoopExitThinkingPolicy.Setting.modelTypes(["qwen3_5_moe"])
 
     /// A clean process's setting. The scheduler's default reads the process's environment; these tests take this
     /// one unless they pass their own, so a runner with DARKBLOOM_LOOP_EXIT_THINKING set (an A/B box) gets the same
@@ -837,25 +837,52 @@ struct GenerationLoopExitThinkingServingTests {
         #expect(usage.matchedStopSequence == "B")
     }
 
-    @Test("Qwen 3.5/3.6 35B keep today's length by default: the exit is listed, not on")
-    func qwenKeepsLengthByDefault() async throws {
-        let engine = ThoughtLoopCBv2Engine(loopInsideThought: true, family: .qwen)
-        let outcome = try await serve(engine, served: Self.qwen)
-        #expect(engine.requests.count == 1)
-        #expect(outcome.info?.stopReason == "length")
-        #expect(outcome.loopGuardStops == [false])
+    /// `Self.qwen` as another Qwen 3.5-family build.
+    private static func qwenBuild(_ modelID: String, _ modelType: String) -> Served {
+        var served = qwen
+        served.modelID = modelID
+        served.modelType = modelType
+        return served
     }
 
-    @Test("Qwen 3.8 27B shares `qwen3_5` with the 9B and keeps today's length")
-    func qwen38KeepsLength() async throws {
-        let engine = ThoughtLoopCBv2Engine(loopInsideThought: true, family: .qwen)
-        var served = Self.qwen
-        served.modelID = "EigenLabs/Qwen3.8-27B-4bit-mtp"
-        served.modelType = "qwen3_5"
-        let outcome = try await serve(engine, served: served, exitThinking: Self.qwenOn)
-        #expect(engine.requests.count == 1)
-        #expect(outcome.info?.stopReason == "length")
-        #expect(outcome.loopGuardStops == [false])
+    @Test("by default the Qwen 3.5 builds the A/B proved, the 9B and the 35B, end a looping thought in an answer")
+    func qwen35BuildsTakeTheExitByDefault() async throws {
+        for (id, type) in [("Qwen3.5-9B", "qwen3_5"), ("qwen3.5-35b-a3b", "qwen3_5_moe")] {
+            let engine = ThoughtLoopCBv2Engine(loopInsideThought: true, family: .qwen)
+            let outcome = try await serve(engine, served: Self.qwenBuild(id, type))
+            #expect(outcome.error == nil, "\(id)")
+            #expect(engine.requests.count == 2, "\(id)")
+            #expect(outcome.content == "\n\nAnswer: B", "\(id)")
+            #expect(outcome.info?.stopReason == "stop", "\(id)")
+            #expect(outcome.loopGuardStops == [true], "\(id)")
+        }
+    }
+
+    @Test("by default Qwen 3.6 and the Qwen 3.8 27B builds keep today's length: their families, not the A/B's builds")
+    func otherQwenBuildsKeepLengthByDefault() async throws {
+        let builds = [("qwen3.6-35b-a3b-vl-mtp-mxfp8", "qwen3_5_moe")]
+            + ModelRuntimeRequirements.qwen38ConcreteModelIDs.sorted().map { ($0, "qwen3_5") }
+        for (id, type) in builds {
+            let engine = ThoughtLoopCBv2Engine(loopInsideThought: true, family: .qwen)
+            let outcome = try await serve(engine, served: Self.qwenBuild(id, type))
+            #expect(outcome.error == nil, "\(id)")
+            #expect(engine.requests.count == 1, "\(id)")
+            #expect(outcome.info?.stopReason == "length", "\(id)")
+            #expect(outcome.loopGuardStops == [false], "\(id)")
+        }
+    }
+
+    @Test("a list set on the Mac turns the exit on for every build of its families")
+    func aListTakesEveryBuild() async throws {
+        let listed = GenerationLoopExitThinkingPolicy.setting(
+            environment: [GenerationLoopExitThinkingPolicy.environmentKey: "qwen3_5_moe,qwen3_5"])
+        let builds = [("qwen3.6-35b-a3b-vl-mtp-mxfp8", "qwen3_5_moe"), ("EigenLabs/Qwen3.8-27B-4bit-mtp", "qwen3_5")]
+        for (id, type) in builds {
+            let engine = ThoughtLoopCBv2Engine(loopInsideThought: true, family: .qwen)
+            let outcome = try await serve(engine, served: Self.qwenBuild(id, type), exitThinking: listed)
+            #expect(engine.requests.count == 2, "\(id)")
+            #expect(outcome.info?.stopReason == "stop", "\(id)")
+        }
     }
 
     @Test("a family without the exit keeps today's length")

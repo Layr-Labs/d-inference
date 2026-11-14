@@ -233,9 +233,8 @@ struct GenerationLoopExitThinkingTests {
     private static let qwen = QwenByteTestTokenizer()
     private static let qwenThinking = QwenByteTestTokenizer.tokens(QwenByteTestTokenizer.prompt(thinking: true))
 
-    /// Qwen's exit is listed but off by default: these tests turn it on.
-    private static let qwenOn = GenerationLoopExitThinkingPolicy.Setting.modelTypes(
-        GenerationLoopExitThinkingPolicy.defaultModelTypes.union(["qwen3_5_moe"]))
+    /// The 35B families' exit alone, as a list set on the Mac turns it on.
+    private static let qwenOn = GenerationLoopExitThinkingPolicy.Setting.modelTypes(["qwen3_5_moe"])
 
     private func qwenExit(_ modelType: String = "qwen3_5_moe",
                           setting: GenerationLoopExitThinkingPolicy.Setting = Self.qwenOn) -> GenerationLoopExitThinking? {
@@ -256,13 +255,13 @@ struct GenerationLoopExitThinkingTests {
             // The served template opens the thought in the prompt.
             #expect(exit.startsInside)
         }
-        // Off by default (the A/B found too few Qwen loops to show rescues):
-        // the env list turns the 35B models (`qwen3_5_moe`) on. `qwen3_5` also
-        // covers Qwen 3.8 27B.
-        let defaults = GenerationLoopExitThinkingPolicy.Setting.modelTypes(
-            GenerationLoopExitThinkingPolicy.defaultModelTypes)
-        #expect(qwenExit("qwen3_5_moe", setting: defaults) == nil)
-        #expect(qwenExit("qwen3_5", setting: defaults) == nil)
+        // Both families are on by default. By default the scheduler keeps the
+        // exit to the builds the A/B proved (the 9B, the 35B), not Qwen 3.6
+        // (`qwen3_5_moe`) or Qwen 3.8 27B (`qwen3_5`). A list set on the Mac
+        // names the families it turns on.
+        let defaults = GenerationLoopExitThinkingPolicy.setting(environment: [:])
+        #expect(qwenExit("qwen3_5_moe", setting: defaults) != nil)
+        #expect(qwenExit("qwen3_5", setting: defaults) != nil)
         #expect(qwenExit("qwen3_5_moe") != nil)
         #expect(qwenExit("qwen3_5") == nil)
         // A prompt whose earlier turns closed their thoughts still opens this one.

@@ -168,6 +168,18 @@ extension EngineV2Bridge {
         /// (`GenerationLoopGuardPolicy`); nil leaves it unguarded.
         loopGuard: GenerationLoopGuard? = nil
     ) async throws -> AsyncStream<GenerationEvent> {
+        let reasoningBudget: CBv2ReasoningBudget?
+        do {
+            if let budget = request.nativeReasoningBudget {
+                guard supportsNativeReasoningBudgets, tokenConstraint == nil, loopGuard?.exitThinking == nil else {
+                    throw NativeReasoningBudget.refusal("this engine route cannot preserve a reasoning budget")
+                }
+                reasoningBudget = try budget.resolved(tokenizer: tokenizer.inner)
+            } else { reasoningBudget = nil }
+        } catch {
+            usageSignal?.finalizeLookup(failure: .policy, fallbackTier: prefixCacheFallbackTier)
+            throw error
+        }
         let tokenConstraint = Self.admittedConstraint(tokenConstraint, servesDistributedPair: servesDistributedPair,
             tracksNativeShutdown: tracksNativeShutdown)
         if let clusterStillImages {
@@ -304,7 +316,8 @@ extension EngineV2Bridge {
             recoverPrefillEvidence: canRecoverPrefillEvidence(
                 promptTokens: promptTokens.count, maxOutputTokens: maxOutputTokens,
                 deadline: firstContentDeadline,
-                isMultimodal: multimodal != nil || mediaKind != nil)) else {
+                isMultimodal: multimodal != nil || mediaKind != nil),
+            takesStoppedRowPlace: EngineAdmissionPriority.current > 0) else {
             // A full Mac refuses as capacity before any stream exists, so
             // routing moves on and a local client gets 503, not a 200 stream
             // that fails at once.
@@ -377,12 +390,15 @@ extension EngineV2Bridge {
         // The engine is asked for the output resolved above, which the service
         // allowance was sized for, not the translation's `max_tokens ?? default`.
         cbv2Request.maxTokens = maxOutputTokens
+        // 0, but for a loop exit's continuation (`EngineAdmissionPriority`).
+        cbv2Request.priority = EngineAdmissionPriority.current
         cbv2Request.mimoClusterImages = mimoClusterImages
         cbv2Request.clusterStillImages = clusterStillImages
         cbv2Request.clusterGLMMedia = clusterGLMMedia
         cbv2Request.clusterQwenMedia = clusterQwenMedia
         cbv2Request.positionState = positionState ?? multimodal?.positionState
         cbv2Request.hybridPrefixIdentity = hybridPrefixIdentity
+        cbv2Request.reasoningBudget = reasoningBudget
         if let minP = request.min_p { cbv2Request.sampling.minP = minP }
         let checkpointScope = cbv2Request.checkpointCacheSalt ?? ""
         try await checkFirstContentDeadline(
@@ -1147,7 +1163,8 @@ extension EngineV2Bridge {
             submittedAt: engineAdmittedAt,
             profile: profile,
             prefillReceipt: prefillReceipt,
-            darkbloomRequestId: MeFirstDarkbloomRequest.id
+            darkbloomRequestId: MeFirstDarkbloomRequest.id,
+            priority: cbv2Request.priority
         )
         consumePrefillReceipt(id: id, receipt: prefillReceipt)
         // Me first: while the owner's request waits in the queue, Darkbloom work still queued gives way.

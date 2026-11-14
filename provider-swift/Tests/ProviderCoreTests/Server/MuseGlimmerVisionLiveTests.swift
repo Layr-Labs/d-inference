@@ -27,7 +27,7 @@ import Testing
 ///   DARKBLOOM_MUSE_GLIMMER_RECEIPT_MAX_CER=<fraction>                (default 0.05)
 ///
 /// Three runs make the proofs:
-/// 1. switch off: the text cases, and every image refused with its reason;
+/// 1. switch off: the text cases, and every image refused (`unsupported_media`);
 /// 2. switch on, reference = run 1: the image cases, and the text cases
 ///    unchanged with vision on;
 /// 3. switch on with the drafter, reference = run 2: every case, images and

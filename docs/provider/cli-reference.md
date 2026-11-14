@@ -1474,7 +1474,7 @@ and the reason and the next step say so; the pair resumes by itself after the lo
 
 ```text
 This Mac's pairing record couldn't be read (the pairing's link key is in this Mac's Keychain, which stays locked after a restart until someone logs in to this Mac), so it may be in a two-Mac cluster.
-Next: Log in to this Mac once since it started (at its screen or with Screen Sharing); the pair resumes by itself.
+Next: Log in to this Mac once after its restart (at its screen or with Screen Sharing); the pair resumes by itself.
 ```
 
 `--json` prints one object with the same exit status. Schema 1; every key is

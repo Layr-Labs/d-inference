@@ -1,7 +1,6 @@
 import Foundation
 import Darwin
 import DarkbloomClusterProtocol
-import DarkbloomClusterSecurity
 import ProviderCoreFoundation
 
 /// Shared read-only installed metadata checks. This does not publish the JACCL
@@ -97,8 +96,8 @@ struct DistributedInstalledValidation: Sendable {
     /// other secret is a private file. Either way the start fails.
     static func linkSecretMetadata(_ path: String,
                                    pairingDirectory: URL = DistributedInstalledLinkSecret.installPairingDirectory,
-                                   vault: (any ClusterEdgeSecretVault)? = ClusterKeychainEdgeSecretVault.install()) throws {
-        if try DistributedInstalledLinkSecret.requirePresent(path, pairingDirectory: pairingDirectory, vault: vault) { return }
+                                   vaults: DistributedInstalledLinkSecret.Vaults = DistributedInstalledLinkSecret.installVaults) throws {
+        if try DistributedInstalledLinkSecret.requirePresent(path, pairingDirectory: pairingDirectory, vaults: vaults) { return }
         do { try ClusterConfigurationFiles.credentialMetadata(URL(fileURLWithPath: path), privateMode: true) } catch {
             let url = URL(fileURLWithPath: path)
             var value = stat()

@@ -19,6 +19,10 @@ extension PairingCheck {
         private(set) var adds = 0, replaces = 0, deletes = 0
         /// Runs after an item was stored (inside the vault's lock).
         var afterStore: ((MemoryVault) -> Void)?
+        private var reads = 0
+        private var readHook: (number: Int, body: () -> Void)?
+        /// Runs `body` right after the `number`-th read from now has answered: another process acting at that moment.
+        func onRead(_ number: Int, _ body: @escaping () -> Void) { lock.withLock { reads = 0; readHook = (number, body) } }
 
         var mode: Mode { get { lock.withLock { _mode } } set { lock.withLock { _mode = newValue } } }
         /// The next `count` reads fail with a transient status.
@@ -32,11 +36,16 @@ extension PairingCheck {
         }
 
         func read(peerPin: String) -> ClusterEdgeSecretVaultRead {
-            lock.withLock {
-                if let refusal = refusal() { return .failed(refusal) }
-                if _failReads > 0 { _failReads -= 1; return .failed(.status(errSecIO)) }
-                return items[peerPin].map(ClusterEdgeSecretVaultRead.found) ?? .absent
+            let (answer, hook) = lock.withLock { () -> (ClusterEdgeSecretVaultRead, (() -> Void)?) in
+                reads += 1
+                var hook: (() -> Void)?
+                if let pending = readHook, pending.number == reads { hook = pending.body; readHook = nil }
+                if let refusal = refusal() { return (.failed(refusal), hook) }
+                if _failReads > 0 { _failReads -= 1; return (.failed(.status(errSecIO)), hook) }
+                return (items[peerPin].map(ClusterEdgeSecretVaultRead.found) ?? .absent, hook)
             }
+            hook?()
+            return answer
         }
 
         func add(peerPin: String, _ item: ClusterEdgeSecretItem) -> ClusterEdgeSecretVaultWrite {
@@ -67,6 +76,14 @@ extension PairingCheck {
             }
         }
 
+        func deleteAll() -> ClusterEdgeSecretVaultWrite {
+            lock.withLock {
+                if let refusal = refusal() { return .failed(refusal) }
+                items = [:]; deletes += 1
+                return .done
+            }
+        }
+
         func protection(peerPin: String) -> Result<ClusterEdgeSecretItemProtection?, ClusterEdgeSecretVaultFailure> {
             lock.withLock {
                 if let refusal = refusal() { return .failure(refusal) }
@@ -89,6 +106,12 @@ extension PairingCheck {
         private(set) var adds: [[String: Any]] = [], copies: [[String: Any]] = [], updates: [([String: Any], [String: Any])] = []
         private(set) var deletes: [[String: Any]] = []
         var status: OSStatus?
+        /// Whether the process holds a keychain access group (a signed build).
+        var holds = false
+        /// Stores an item as a broken writer would: without its binding.
+        func storeWithoutBinding(service: String, account: String, data: Data) {
+            lock.withLock { stored["\(service)/\(account)"] = [kSecValueData as String: data] }
+        }
 
         private static func key(_ query: [String: Any]) -> String {
             "\(query[kSecAttrService as String] as? String ?? "")/\(query[kSecAttrAccount as String] as? String ?? "")"
@@ -130,9 +153,16 @@ extension PairingCheck {
                     self.lock.withLock {
                         self.deletes.append(query)
                         if let status = self.status { return status }
+                        guard query[kSecAttrAccount as String] != nil else {
+                            let service = "\(query[kSecAttrService as String] as? String ?? "")/"
+                            let matching = self.stored.keys.filter { $0.hasPrefix(service) }
+                            matching.forEach { self.stored[$0] = nil }
+                            return matching.isEmpty ? errSecItemNotFound : errSecSuccess
+                        }
                         return self.stored.removeValue(forKey: Self.key(query)) == nil ? errSecItemNotFound : errSecSuccess
                     }
-                })
+                },
+                holdsKeychainAccessGroups: { self.lock.withLock { self.holds } })
         }
     }
 
@@ -499,6 +529,101 @@ extension PairingCheck {
             + [ClusterPairingStoreError.keychainLocked, .keychainUnavailable(-1), .linkKeyMissing].map(String.init(describing:)) {
             expect(!text.contains(hex), "no secret in \"\(text.prefix(60))\"")
         }
+    }
+
+    /// Two orders of two processes the lock-free reads must survive, and a pairing replaced under a stale reader.
+    static func keychainInterleavings() {
+        // P1 reads the Keychain under the lock (nothing yet); a writer that took no lock then stores the item and removes
+        // the file; P1 finds no file and reads the Keychain again.
+        let vault = MemoryVault()
+        guard case let (_, store, outcome, record)? = legacyPairing("kc-interleave", vault: vault) else { return }
+        let file = store.secretFile(peerPin: outcome.peer.pin)
+        vault.onRead(2) {
+            vault.put(outcome.peer.pin, ClusterEdgeSecretItem(secret: outcome.edgeSecret, binding: ClusterPairingStore.binding(of: record)))
+            unlink(file.path)
+        }
+        expectEqual(try? store.edgeSecret(for: record), outcome.edgeSecret,
+                    "a process whose file another process just moved reads the item, never \"gone\"")
+        expectEqual(secretFiles(store), [], "and no file is left")
+        // A reader holding the previous pairing while a new ceremony replaced it: nothing of the new pairing is touched.
+        let identities = (SoftwareIdentity(), SoftwareIdentity())
+        let runs = (1...2).map { _ in runInMemory(TestPairing.participant(identities.0, interface: "en7"),
+                                                  TestPairing.participant(identities.1, interface: "en6")) }
+        guard let older = runs[0].outcomes[.listener], let newer = runs[1].outcomes[.listener] else { expect(false, "two ceremonies"); return }
+        let directory = freshDirectory("kc-stale-reader").appendingPathComponent("cluster-pairing")
+        let fileMode = ClusterPairingStore(directory: directory), keychain = ClusterPairingStore(directory: directory, vault: vault)
+        _ = try? fileMode.commit(older, edgeID: UUID())
+        guard let olderRecord = (try? fileMode.load())?.pairing(peerPin: older.peer.pin) else { expect(false, "older record"); return }
+        backdate(fileMode.secretFile(peerPin: older.peer.pin))
+        _ = try? keychain.commit(newer, edgeID: UUID())
+        let newItem = vault.item(newer.peer.pin)
+        // The earlier pairing's file is back (an earlier release's process wrote it), next to the new pairing's item.
+        let olderFile = keychain.secretFile(peerPin: older.peer.pin)
+        FileManager.default.createFile(atPath: olderFile.path, contents: hexLine(older.edgeSecret), attributes: [.posixPermissions: 0o600])
+        backdate(olderFile)
+        expectEqual(storeError { try keychain.edgeSecret(for: olderRecord) }, .pairingChanged, "a reader holding the earlier pairing is refused")
+        expectEqual(vault.item(newer.peer.pin), newItem, "and the new pairing's item is untouched")
+    }
+
+    /// A signed build that gets errSecMissingEntitlement (a group it lacks) fails closed and writes no file.
+    static func keychainSignedBuildNeverFallsBack() {
+        let recorder = KeychainRecorder()
+        recorder.status = errSecMissingEntitlement
+        recorder.holds = true
+        let store = ClusterPairingStore(directory: freshDirectory("kc-signed-34018").appendingPathComponent("cluster-pairing"),
+            vault: ClusterKeychainEdgeSecretVault(service: "s", accessGroup: "TEAM.other", calls: recorder.calls))
+        let (outcome, _) = pairedOutcomes()
+        expectEqual(storeError { try store.commit(outcome, edgeID: UUID()) }, .keychainUnavailable(errSecMissingEntitlement),
+                    "a pairing is refused, as the status it is")
+        expectEqual(secretFiles(store), [], "and no secret file is written")
+        let legacy = MemoryVault()
+        guard case let (_, _, legacyOutcome, legacyRecord)? = legacyPairing("kc-signed-read", vault: legacy) else { return }
+        let reader = ClusterPairingStore(directory: URL(fileURLWithPath: legacyRecord.link.secretFile).deletingLastPathComponent(),
+            vault: ClusterKeychainEdgeSecretVault(service: "s", accessGroup: "TEAM.other", calls: recorder.calls))
+        expectEqual(storeError { try reader.edgeSecret(for: legacyRecord) }, .keychainUnavailable(errSecMissingEntitlement),
+                    "a read fails closed instead of taking the file")
+        expectEqual(contents(reader.secretFile(peerPin: legacyOutcome.peer.pin)), hexLine(legacyOutcome.edgeSecret), "which is kept")
+    }
+
+    /// An item without its binding (a broken writer) is an earlier pairing's: a pairing replaces it, unpairing deletes it,
+    /// and the last unpairing sweeps every item of the store.
+    static func keychainBrokenAndOrphanItems() {
+        let recorder = KeychainRecorder()
+        let vault = ClusterKeychainEdgeSecretVault(service: "io.example.edge", accessGroup: "TEAM.io.example", calls: recorder.calls)
+        let store = ClusterPairingStore(directory: freshDirectory("kc-broken").appendingPathComponent("cluster-pairing"), vault: vault)
+        let (outcome, _) = pairedOutcomes()
+        recorder.storeWithoutBinding(service: "io.example.edge", account: outcome.peer.pin, data: Data(repeating: 1, count: 32))
+        recorder.storeWithoutBinding(service: "io.example.edge", account: String(repeating: "c", count: 64), data: Data(repeating: 2, count: 32))
+        expect((try? store.commit(outcome, edgeID: UUID())) != nil, "a pairing replaces an item without a binding")
+        guard let record = (try? store.load())?.pairing(peerPin: outcome.peer.pin) else { expect(false, "record"); return }
+        expectEqual(try? store.edgeSecret(for: record), outcome.edgeSecret, "and reads its own")
+        expect((try? store.forget(peerPin: outcome.peer.pin)) != nil, "unpairing works")
+        expectEqual(vault.read(peerPin: outcome.peer.pin), .absent, "and deletes its item")
+        expectEqual(vault.read(peerPin: String(repeating: "c", count: 64)), .absent,
+                    "the last unpairing sweeps the store's orphan items too")
+        expect(recorder.deletes.contains { $0[kSecAttrAccount as String] == nil && $0[kSecAttrService as String] as? String == "io.example.edge" },
+               "through one delete of the store's service")
+    }
+
+    /// The rollback's second write (`rewrite`) makes a new file, so a process started between the two writes leaves it.
+    static func keychainRollbackRewrite() {
+        let vault = MemoryVault()
+        guard case let (_, store, outcome, record)? = legacyPairing("kc-rewrite", vault: vault) else { return }
+        _ = try? store.edgeSecret(for: record)
+        let file = store.secretFile(peerPin: outcome.peer.pin)
+        _ = store.writeLegacyFilesForRollback()
+        backdate(file)
+        var before = stat(); _ = lstat(file.path, &before)
+        let kept = store.writeLegacyFilesForRollback()
+        var unchanged = stat(); _ = lstat(file.path, &unchanged)
+        expect(unchanged.st_ino == before.st_ino && kept.first?.contains("there already") == true, "without rewrite a file there is kept")
+        _ = store.writeLegacyFilesForRollback(rewrite: true)
+        var after = stat(); _ = lstat(file.path, &after)
+        expect(after.st_ino != before.st_ino && after.st_mtimespec.tv_sec >= Int(ClusterPairingStore.processStart),
+               "rewrite makes a new file, newer than this process's start")
+        expectEqual(contents(file), hexLine(outcome.edgeSecret), "with the same key in 0.10.12's format")
+        expectEqual(try? store.edgeSecret(for: record), outcome.edgeSecret, "a process started before it reads the item")
+        expectEqual(contents(file), hexLine(outcome.edgeSecret), "and leaves the file")
     }
 
     /// This Mac's real Keychain, with a throwaway service: skipped where the build is not entitled (every unsigned

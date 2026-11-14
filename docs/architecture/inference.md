@@ -6063,40 +6063,50 @@ the data-protection Keychain (`ClusterKeychainEdgeSecretVault`): `kSecUseDataPro
 access group (`SLDQ2GJ6TL.io.darkbloom.provider`, the Secure Enclave key's; `DARKBLOOM_KEYCHAIN_ACCESS_GROUP`
 overrides both), `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, not synchronisable, no access control, so the
 signed CLI and its LaunchAgents read it without a prompt once the Mac was unlocked since it started. One item per
-other Mac: service `<install's keychain prefix>.cluster-pairing.edge-secret` (production `io.darkbloom.…`, DevNet
-`io.darkbloom.dev.…`), account its pin, `kSecAttrGeneric` the pairing's link epoch and edge
-(`ClusterPairingStore.binding(of:)`), so an item left from an earlier ceremony with the same Mac is never used.
-`ClusterPairingStore.default` opens the store with that vault; a store without one, or a build the Keychain refuses
-(`errSecMissingEntitlement`: ad-hoc and local builds, tests), keeps 0.10.12's `edge-<pin>.secret` (one hex line,
-0600). `pairings.json` keeps each record's `link.secretFile` path, so 0.10.12 still reads the store, and that path stays
-the name a setup's `linkControl` gives the pairing's secret.
+other Mac: service `<install's keychain prefix>.cluster-pairing.edge-secret.<store>` (production `io.darkbloom.…`,
+DevNet `io.darkbloom.dev.…`; `<store>` is 12 hex digits of SHA-256 of the store's path, `storeTag`, so two stores of one
+build in two homes never share an item), account its pin, `kSecAttrGeneric` the pairing's link epoch and edge
+(`ClusterPairingStore.binding(of:)`), so an item left from an earlier ceremony with the same Mac is never used; an item
+without that binding reads as such an earlier one. `ClusterPairingStore.default` opens the store with that vault. A
+store without one, or a process that holds no keychain access group at all (ad-hoc and local builds, tests: the
+Keychain answers `errSecMissingEntitlement`), keeps 0.10.12's `edge-<pin>.secret` (one hex line, 0600); a signed build
+that gets that status fails closed instead. `pairings.json` keeps each record's `link.secretFile` path, so 0.10.12
+still reads the store, and that path stays the name a setup's `linkControl` gives the pairing's secret.
 
-`ClusterPairingStore.edgeSecret` reads the item. With no item of this pairing and 0.10.12's file there, it moves the
-file in: add the item (create-if-absent; another process's add wins and the read-back decides), or replace an earlier
-pairing's item; read it back and compare; then overwrite the file in place (the inode it read), fsync and unlink. Any
-step may be cut short and the next read finishes it; a corrupt or unsafe file is refused and kept. A file still beside
-an item of this pairing is removed only by a process started after the file was last written: the rollback path
-writes such a file while the release it rolls back still runs. A locked Keychain (`errSecInteractionNotAllowed`)
+`ClusterPairingStore.edgeSecret` reads the item. With no item of this pairing, it takes `.edge-secrets.lock` in the
+store (`flock`, as `commit`, `forget` and the rollback write-back do), checks the caller's record is still the store's
+(`pairingChanged` otherwise), reads the Keychain again, and moves 0.10.12's file in: add the item (create-if-absent), or
+replace an earlier pairing's item; read it back and compare; then overwrite the file in place (the inode it read),
+fsync and unlink. Any step may be cut short and the next read finishes it; a corrupt or unsafe file is refused and
+kept; a file that vanished in between sends it back to the Keychain before it says the key is gone. A file still
+beside an item of this pairing is removed only by a process started after the file was last written: the rollback
+path writes such a file while the release it rolls back still runs. A locked Keychain (`errSecInteractionNotAllowed`)
 refuses with `keychainLocked` and changes nothing; `ClusterSetupLinkExchange.pairing` callers that take an unreadable
 store for "nothing changed" retry it each tick, and `cluster status` says to log in once. Pairing and unpairing while
-locked are refused before anything changes; unpairing deletes the item.
+locked are refused before anything changes; unpairing deletes the item, and the last unpairing every item of the
+store's service. The move does not rotate the secret: a copy of 0.10.12's file (a backup, a snapshot) stays valid
+until the Macs pair again.
 
 A saved setup's `linkControl.secretFile` that names this install's `cluster-pairing/edge-<16 hex>.secret`
 (`ClusterLinkControlAttachment.namesPairingSecret`) resolves through the pairing store
 (`DistributedInstalledLinkSecret`: the link keying, the start's `DistributedInstalledValidation.linkSecretMetadata`;
 the setup save needs no file for it). Any other name is a private file, as before.
 
-Every updater rollback (`update --rollback`, the pair's follow-rollback, the cluster candidate recovery, the watchdog)
-runs `UpdateSession.rollback` in the release being rolled back: it writes each pairing's key back from the Keychain into
-its `edge-<pin>.secret` (`ClusterPairingStore.writeLegacyFilesForRollback`) before the swap and again after it, so
-0.10.12 finds its files. The items stay; the next release that keeps keys in the Keychain moves the files in again, and
-a pairing 0.10.12 made in between wins by its binding. A 0.10.12 installed by hand finds no file and asks to pair again.
+A rollback to a release older than `ClusterLinkKeyRollback.firstKeychainRelease` (0.10.13), which reads link keys only
+from files, gets them back: `UpdateRecoveryStore.rollback` (every updater rollback: `update --rollback`, the pair's
+follow-rollback, the cluster candidate recovery, the watchdog) writes each pairing's key from the Keychain into its
+`edge-<pin>.secret` once the predecessor is verified and staged, and again, as new files, once the rollback is complete;
+`recoverInterruptedTransaction` writes them when it finishes an interrupted rollback or restores a predecessor. The
+items stay; the next release that keeps keys in the Keychain moves the files in again, and a pairing 0.10.12 made in
+between wins by its binding. A rollback to a later release writes no file. A 0.10.12 installed by hand finds no file
+and asks to pair again.
 
 Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterEdgeSecretVault.swift`,
 `libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterPairingStore.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Distributed/LinkControl/DistributedInstalledLinkSecret.swift`,
-`provider-swift/Sources/ProviderCore/Inference/Distributed/Pairing/ClusterPairingStore+Install.swift` and
-`provider-swift/Sources/ProviderCore/Update/UpdateSession.swift`.
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Pairing/ClusterPairingStore+Install.swift`,
+`provider-swift/Sources/ProviderCore/Update/ClusterLinkKeyRollback.swift` and
+`provider-swift/Sources/ProviderCore/Update/UpdateRecoveryStore.swift`.
 
 ## A paired cable port's own address
 

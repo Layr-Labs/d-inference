@@ -21,7 +21,8 @@ public enum ClusterEdgeSecretVaultFailure: Error, Equatable, Sendable {
     /// `errSecInteractionNotAllowed`: the data-protection Keychain stays locked after a restart until someone logs in
     /// to this Mac (its items are readable after the first unlock).
     case locked
-    /// `errSecMissingEntitlement`: this build may not use the app's access group (ad-hoc and local builds, tests).
+    /// `errSecMissingEntitlement` in a process that holds no keychain access group at all (ad-hoc and local builds,
+    /// tests): such a build keeps 0.10.12's files. A signed build that gets it reads `status` instead (fail closed).
     case notEntitled
     case status(Int32)
 }
@@ -71,6 +72,8 @@ public protocol ClusterEdgeSecretVault: Sendable {
     func replace(peerPin: String, _ item: ClusterEdgeSecretItem) -> ClusterEdgeSecretVaultWrite
     /// Deleting nothing is not an error.
     func delete(peerPin: String) -> ClusterEdgeSecretVaultWrite
+    /// Deletes every item of this vault (its store's): no pairing is left, so none is used.
+    func deleteAll() -> ClusterEdgeSecretVaultWrite
     /// The item's protection without its data; nil when there is no item.
     func protection(peerPin: String) -> Result<ClusterEdgeSecretItemProtection?, ClusterEdgeSecretVaultFailure>
 }
@@ -115,14 +118,15 @@ public struct ClusterKeychainEdgeSecretVault: ClusterEdgeSecretVault, CustomStri
         let (status, attributes) = calls.copyMatching(query)
         switch status {
         case errSecSuccess:
-            guard let attributes, let secret = attributes[kSecValueData as String] as? Data,
-                  let binding = (attributes[kSecAttrGeneric as String] as? Data).flatMap({ String(data: $0, encoding: .utf8) })
-            else { return .failed(.status(errSecDecode)) }
+            // An item without its data or binding is no pairing's: it reads as an earlier pairing's, which a move,
+            // a pairing or an unpairing replaces or deletes.
+            let secret = attributes?[kSecValueData as String] as? Data ?? Data()
+            let binding = (attributes?[kSecAttrGeneric as String] as? Data).flatMap { String(data: $0, encoding: .utf8) } ?? ""
             return .found(ClusterEdgeSecretItem(secret: secret, binding: binding))
         case errSecItemNotFound:
             return .absent
         default:
-            return .failed(Self.failure(status))
+            return .failed(failure(status))
         }
     }
 
@@ -135,7 +139,7 @@ public struct ClusterKeychainEdgeSecretVault: ClusterEdgeSecretVault, CustomStri
         switch calls.add(attributes) {
         case errSecSuccess: return .done
         case errSecDuplicateItem: return .exists
-        case let status: return .failed(Self.failure(status))
+        case let status: return .failed(failure(status))
         }
     }
 
@@ -146,14 +150,23 @@ public struct ClusterKeychainEdgeSecretVault: ClusterEdgeSecretVault, CustomStri
         switch calls.update(identity(peerPin), changes) {
         case errSecSuccess: return .done
         case errSecItemNotFound: return .absent
-        case let status: return .failed(Self.failure(status))
+        case let status: return .failed(failure(status))
         }
     }
 
     public func delete(peerPin: String) -> ClusterEdgeSecretVaultWrite {
         switch calls.delete(identity(peerPin)) {
         case errSecSuccess, errSecItemNotFound: return .done
-        case let status: return .failed(Self.failure(status))
+        case let status: return .failed(failure(status))
+        }
+    }
+
+    public func deleteAll() -> ClusterEdgeSecretVaultWrite {
+        var query = identity("")
+        query[kSecAttrAccount as String] = nil
+        switch calls.delete(query) {
+        case errSecSuccess, errSecItemNotFound: return .done
+        case let status: return .failed(failure(status))
         }
     }
 
@@ -173,26 +186,29 @@ public struct ClusterKeychainEdgeSecretVault: ClusterEdgeSecretVault, CustomStri
         case errSecItemNotFound:
             return .success(nil)
         default:
-            return .failure(Self.failure(status))
+            return .failure(failure(status))
         }
     }
 
-    static func failure(_ status: OSStatus) -> ClusterEdgeSecretVaultFailure {
+    /// `errSecMissingEntitlement` means "this build keeps files" only in a process that holds no keychain access group
+    /// at all; a signed build that gets it (a named group it lacks, `DARKBLOOM_KEYCHAIN_ACCESS_GROUP`) fails closed.
+    func failure(_ status: OSStatus) -> ClusterEdgeSecretVaultFailure {
         switch status {
         case errSecInteractionNotAllowed: return .locked
-        case errSecMissingEntitlement: return .notEntitled
+        case errSecMissingEntitlement where !calls.holdsKeychainAccessGroups(): return .notEntitled
         default: return .status(status)
         }
     }
 }
 
-/// The four `SecItem` calls the Keychain vault makes, so tests check its queries and its answers to each status
-/// against a recorder instead of a real Keychain.
+/// The four `SecItem` calls the Keychain vault makes, and whether this process holds a keychain access group, so
+/// tests check its queries and its answers to each status against a recorder instead of a real Keychain.
 struct ClusterKeychainCalls: Sendable {
     var copyMatching: @Sendable ([String: Any]) -> (OSStatus, [String: Any]?)
     var add: @Sendable ([String: Any]) -> OSStatus
     var update: @Sendable ([String: Any], [String: Any]) -> OSStatus
     var delete: @Sendable ([String: Any]) -> OSStatus
+    var holdsKeychainAccessGroups: @Sendable () -> Bool
 
     static let system = ClusterKeychainCalls(
         copyMatching: { query in
@@ -202,5 +218,13 @@ struct ClusterKeychainCalls: Sendable {
         },
         add: { SecItemAdd($0 as CFDictionary, nil) },
         update: { SecItemUpdate($0 as CFDictionary, $1 as CFDictionary) },
-        delete: { SecItemDelete($0 as CFDictionary) })
+        delete: { SecItemDelete($0 as CFDictionary) },
+        holdsKeychainAccessGroups: { ClusterKeychainCalls.processHoldsKeychainAccessGroups })
+
+    /// From this process's own signature (`keychain-access-groups`), read once.
+    static let processHoldsKeychainAccessGroups: Bool = {
+        guard let task = SecTaskCreateFromSelf(kCFAllocatorDefault),
+              let value = SecTaskCopyValueForEntitlement(task, "keychain-access-groups" as CFString, nil) else { return false }
+        return ((value as? [String]) ?? []).isEmpty == false
+    }()
 }

@@ -128,8 +128,8 @@ struct ClusterPairSummary: Sendable, Equatable {
     /// What to do when the pairing record couldn't be read.
     static let checkPairingLine = "Run `\(Self.cli) cluster` on this Mac to check it."
 
-    /// What to do while this Mac's Keychain is locked since it started: nothing is wrong with the pairing.
-    static let logInLine = "Log in to this Mac once since it started (at its screen or with Screen Sharing); the pair resumes by itself."
+    /// What to do while this Mac's Keychain is locked after a restart: nothing is wrong with the pairing.
+    static let logInLine = "Log in to this Mac once after its restart (at its screen or with Screen Sharing); the pair resumes by itself."
 
     /// What to do about a pairing record that couldn't be read: log in when the Keychain is locked, else check it.
     var unreadableNext: String { keychainLocked ? Self.logInLine : Self.checkPairingLine }
@@ -498,7 +498,7 @@ struct ClusterPairSummary: Sendable, Equatable {
     var statusLine: String {
         guard paired else { return "Cluster: not in a cluster" }
         if pairingUnreadable, keychainLocked {
-            return "Cluster: this Mac's Keychain, which holds the pair's link key, is locked since it started · log in to this "
+            return "Cluster: this Mac's Keychain, which holds the pair's link key, is locked after a restart · log in to this "
                 + "Mac once (at its screen or with Screen Sharing); the pair resumes by itself"
         }
         if pairingUnreadable {

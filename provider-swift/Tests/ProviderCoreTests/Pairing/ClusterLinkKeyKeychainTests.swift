@@ -61,20 +61,28 @@ struct ClusterLinkKeyKeychainTests {
         do { _ = try body(); return nil } catch { return "\(error)" }
     }
 
-    @Test func theInstallKeepsItsOwnItemsInTheAppsAccessGroup() throws {
-        let production = ClusterKeychainEdgeSecretVault.install(environment: .prod, processEnvironment: [:])
-        #expect(production.service == "io.darkbloom.cluster-pairing.edge-secret")
+    @Test func eachStoreKeepsItsOwnItemsInTheAppsAccessGroup() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("link-key-home-\(UUID().uuidString)")
+        let directory = ClusterUserPaths.pairingDirectory(home: home, environment: .prod)
+        let production = ClusterKeychainEdgeSecretVault.install(pairingDirectory: directory, environment: .prod, processEnvironment: [:])
+        let tag = ClusterKeychainEdgeSecretVault.storeTag(directory)
+        #expect(tag.count == 12 && tag.allSatisfy(\.isHexDigit))
+        #expect(production.service == "io.darkbloom.cluster-pairing.edge-secret." + tag)
         #expect(production.accessGroup == PersistentEnclaveKey.defaultAccessGroup)
-        let devnet = ClusterKeychainEdgeSecretVault.install(environment: .dev, processEnvironment: [:])
-        #expect(devnet.service == "io.darkbloom.dev.cluster-pairing.edge-secret")
-        #expect(devnet.accessGroup == PersistentEnclaveKey.defaultAccessGroup)
-        #expect(ClusterKeychainEdgeSecretVault.install(environment: .prod,
+        let devnet = ClusterKeychainEdgeSecretVault.install(pairingDirectory: directory, environment: .dev, processEnvironment: [:])
+        #expect(devnet.service == "io.darkbloom.dev.cluster-pairing.edge-secret." + tag, "another install, another service")
+        let otherHome = ClusterKeychainEdgeSecretVault.install(
+            pairingDirectory: ClusterUserPaths.pairingDirectory(home: home.appendingPathComponent("second"), environment: .prod),
+            environment: .prod, processEnvironment: [:])
+        #expect(otherHome.service != production.service, "another store of the same build, another service")
+        #expect(ClusterKeychainEdgeSecretVault.install(pairingDirectory: URL(fileURLWithPath: directory.path + "/"), environment: .prod,
+            processEnvironment: [:]).service == production.service, "the same store, however its path is spelled")
+        #expect(ClusterKeychainEdgeSecretVault.install(pairingDirectory: directory, environment: .prod,
             processEnvironment: ["DARKBLOOM_KEYCHAIN_ACCESS_GROUP": "TEAM.io.example"]).accessGroup == "TEAM.io.example",
             "the SE key's override applies to the link keys too")
-        let home = FileManager.default.temporaryDirectory.appendingPathComponent("link-key-home-\(UUID().uuidString)")
         let store = ClusterPairingStore.default(home: home, environment: .dev)
         #expect((store.vault as? ClusterKeychainEdgeSecretVault)?.service == devnet.service,
-                "every command and service opens the store with the install's vault")
+                "every command and service opens the store with its own vault")
     }
 
     @Test func aSetupNamingAPairingReadsItsKeyFromTheKeychain() throws {
@@ -84,22 +92,22 @@ struct ClusterLinkKeyKeychainTests {
         let path = record.link.secretFile, directory = stores.0.directory
         #expect(!FileManager.default.fileExists(atPath: path), "the pairing wrote no secret file")
         let item = try #require(vault.item(record.peerPin))
-        #expect(try DistributedInstalledLinkSecret.read(path, pairingDirectory: directory, vault: vault) == item.secret)
-        #expect(try DistributedInstalledLinkSecret.requirePresent(path, pairingDirectory: directory, vault: vault))
-        try DistributedInstalledValidation.linkSecretMetadata(path, pairingDirectory: directory, vault: vault)
+        #expect(try DistributedInstalledLinkSecret.read(path, pairingDirectory: directory, vaults: { _ in vault }) == item.secret)
+        #expect(try DistributedInstalledLinkSecret.requirePresent(path, pairingDirectory: directory, vaults: { _ in vault }))
+        try DistributedInstalledValidation.linkSecretMetadata(path, pairingDirectory: directory, vaults: { _ in vault })
         // A restart, and no login since: the start and the link both say to log in, and nothing changes.
         vault.locked = true
-        for refusal in [Self.error { try DistributedInstalledLinkSecret.read(path, pairingDirectory: directory, vault: vault) },
-                        Self.error { try DistributedInstalledValidation.linkSecretMetadata(path, pairingDirectory: directory, vault: vault) }] {
-            #expect(refusal?.contains("Log in to this Mac once since it started") == true, "\(String(describing: refusal))")
+        for refusal in [Self.error { try DistributedInstalledLinkSecret.read(path, pairingDirectory: directory, vaults: { _ in vault }) },
+                        Self.error { try DistributedInstalledValidation.linkSecretMetadata(path, pairingDirectory: directory, vaults: { _ in vault }) }] {
+            #expect(refusal?.contains("Log in to this Mac once after its restart") == true, "\(String(describing: refusal))")
         }
         vault.locked = false
-        #expect(try DistributedInstalledLinkSecret.read(path, pairingDirectory: directory, vault: vault) == item.secret, "after the login")
+        #expect(try DistributedInstalledLinkSecret.read(path, pairingDirectory: directory, vaults: { _ in vault }) == item.secret, "after the login")
         // Unpaired: the start names the unpairing.
         _ = try stores.0.forget(peerPin: record.peerPin)
         #expect(vault.item(record.peerPin) == nil, "unpairing deleted the item")
-        for refusal in [Self.error { try DistributedInstalledLinkSecret.read(path, pairingDirectory: directory, vault: vault) },
-                        Self.error { try DistributedInstalledValidation.linkSecretMetadata(path, pairingDirectory: directory, vault: vault) }] {
+        for refusal in [Self.error { try DistributedInstalledLinkSecret.read(path, pairingDirectory: directory, vaults: { _ in vault }) },
+                        Self.error { try DistributedInstalledValidation.linkSecretMetadata(path, pairingDirectory: directory, vaults: { _ in vault }) }] {
             #expect(refusal?.contains("the Macs were unpaired") == true, "\(String(describing: refusal))")
         }
     }
@@ -110,8 +118,8 @@ struct ClusterLinkKeyKeychainTests {
         let path = record.link.secretFile
         let legacy = try #require(FileManager.default.contents(atPath: path), "0.10.12's code path wrote its file")
         let vault = Vault()
-        try DistributedInstalledValidation.linkSecretMetadata(path, pairingDirectory: stores.0.directory, vault: vault)
-        let secret = try DistributedInstalledLinkSecret.read(path, pairingDirectory: stores.0.directory, vault: vault)
+        try DistributedInstalledValidation.linkSecretMetadata(path, pairingDirectory: stores.0.directory, vaults: { _ in vault })
+        let secret = try DistributedInstalledLinkSecret.read(path, pairingDirectory: stores.0.directory, vaults: { _ in vault })
         #expect(Self.hexLine(secret) == legacy)
         #expect(vault.item(record.peerPin)?.secret == secret, "the first read moved it into the Keychain")
         #expect(!FileManager.default.fileExists(atPath: path), "and removed the file")
@@ -124,15 +132,15 @@ struct ClusterLinkKeyKeychainTests {
         FileManager.default.createFile(atPath: file.path, contents: Self.hexLine(secret), attributes: [.posixPermissions: 0o600])
         let vault = Vault()
         let pairing = root.appendingPathComponent("cluster-pairing")
-        #expect(try DistributedInstalledLinkSecret.read(file.path, pairingDirectory: pairing, vault: vault) == secret)
-        #expect(try !DistributedInstalledLinkSecret.requirePresent(file.path, pairingDirectory: pairing, vault: vault))
+        #expect(try DistributedInstalledLinkSecret.read(file.path, pairingDirectory: pairing, vaults: { _ in vault }) == secret)
+        #expect(try !DistributedInstalledLinkSecret.requirePresent(file.path, pairingDirectory: pairing, vaults: { _ in vault }))
         #expect(!ClusterLinkControlAttachment.namesPairingSecret(file.path, in: pairing))
         #expect(ClusterLinkControlAttachment.namesPairingSecret(pairing.appendingPathComponent("edge-0123456789abcdef.secret").path, in: pairing))
         #expect(!ClusterLinkControlAttachment.namesPairingSecret(pairing.appendingPathComponent("edge-0123.secret").path, in: pairing))
         #expect(!ClusterLinkControlAttachment.namesPairingSecret(root.appendingPathComponent("other/edge-0123456789abcdef.secret").path, in: pairing),
                 "only this install's store names a pairing's secret")
         let missing = root.appendingPathComponent("gone.secret").path
-        let refusal = Self.error { try DistributedInstalledValidation.linkSecretMetadata(missing, pairingDirectory: pairing, vault: vault) }
+        let refusal = Self.error { try DistributedInstalledValidation.linkSecretMetadata(missing, pairingDirectory: pairing, vaults: { _ in vault }) }
         #expect(refusal != nil && refusal?.contains("unpaired") == false)
     }
 
@@ -149,29 +157,119 @@ struct ClusterLinkKeyKeychainTests {
         #expect(ClusterPairCommandLine.linkKeyWords(.file).contains("owner-only file"))
     }
 
-    @Test func aRollbackWritesTheLinkKeysBackForTheOlderRelease() async throws {
-        let installed = try await InstalledUpdate.make(promote: true)
-        defer { Task { await installed.shutdown() } }
-        let vault = Vault()
-        let store = ClusterPairingStore(directory: installed.fixture.installRoot.appendingPathComponent("cluster-pairing"), vault: vault)
-        let (record, _) = try ClusterPairingProviderTests.pair(SoftwareSigner(), SoftwareSigner(),
-                                                               stores: (store, ClusterPairingProviderTests.temporaryStore()))
-        let secret = try #require(vault.item(record.peerPin)?.secret)
-        #expect(!FileManager.default.fileExists(atPath: record.link.secretFile))
+    /// An install updated from `old` to `new` by the updater (with `old` kept for rollback), its pairing's key moved into
+    /// `vault` (no file), and the updater's recovery store with that vault and `faults`.
+    struct Rollback {
+        let fixture: UpdateRecoveryFixture
+        let mock: MockCoordinator
+        let vault: Vault
+        let record: ClusterPairingRecord
+        let secret: Data
+        var keyFile: String { record.link.secretFile }
 
-        let session = try installed.updater.beginUpdateSession(operation: "test-rollback")
-        defer { session.release() }
-        session.linkKeyVault = vault
-        try session.recover(now: 500)
-        #expect(try session.rollback(now: 500, reason: "operator rollback") == "1.0.0")
-        #expect(try installed.liveRelease() == "1.0.0")
-        #expect(FileManager.default.contents(atPath: record.link.secretFile) == Self.hexLine(secret),
-                "the rollback wrote 0.10.12's file back")
+        static func make(old: String, new: String) async throws -> Rollback {
+            let fixture = try UpdateRecoveryFixture(oldVersion: old, newVersion: new)
+            let mock = MockCoordinator(release: fixture.mockReleaseFixture(), releaseArtifact: fixture.artifact)
+            let outcome = await fixture.updater(baseURL: try await mock.start()).update()
+            guard case .updated(_, new) = outcome else { throw InstalledUpdateSetupError.installFailed("\(outcome)") }
+            let vault = Vault()
+            let store = ClusterPairingStore(directory: ClusterLinkKeyRollback.pairingDirectory(installRoot: fixture.installRoot), vault: vault)
+            let (record, _) = try ClusterPairingProviderTests.pair(SoftwareSigner(), SoftwareSigner(),
+                                                                   stores: (store, ClusterPairingProviderTests.temporaryStore()))
+            let secret = try #require(vault.item(record.peerPin)?.secret)
+            return Rollback(fixture: fixture, mock: mock, vault: vault, record: record, secret: secret)
+        }
+
+        func store(faults: @escaping @Sendable (UpdateRecoveryStore.FaultPoint) throws -> Void = { _ in }) -> UpdateRecoveryStore {
+            UpdateRecoveryStore(installRoot: fixture.installRoot, verifyCodeSignatures: false, faultInjector: faults,
+                                linkKeyVaults: { [vault] _ in vault })
+        }
+
+        /// Rolls back under the update lease, as `UpdateSession.rollback` does.
+        func rollBack(_ store: UpdateRecoveryStore) throws -> String {
+            let lock = try UpdateProcessLock.acquire(at: store.lockPath, operation: "test-rollback")
+            defer { lock.release() }
+            return try store.rollback(now: 500, reason: "operator rollback")
+        }
+
+        func live() throws -> String {
+            let binary = try String(contentsOf: fixture.installRoot.appendingPathComponent("Darkbloom.app/Contents/MacOS/darkbloom"),
+                                    encoding: .utf8)
+            return String(binary.split(separator: "-").first ?? "")
+        }
+
+        func shutdown() async { await mock.shutdown(); fixture.cleanup() }
+    }
+
+    final class Seen: @unchecked Sendable {
+        let lock = NSLock()
+        var keyFileBeforeSwap: Bool?
+        func set(_ value: Bool) { lock.withLock { if keyFileBeforeSwap == nil { keyFileBeforeSwap = value } } }
+    }
+
+    @Test func aRollbackTo0_10_12WritesTheKeyBackBeforeAndAfterTheSwap() async throws {
+        let rollback = try await Rollback.make(old: "0.10.12", new: "0.10.13")
+        defer { Task { await rollback.shutdown() } }
+        #expect(!FileManager.default.fileExists(atPath: rollback.keyFile))
+        let seen = Seen()
+        let keyFile = rollback.keyFile
+        let store = rollback.store(faults: { point in
+            switch point {
+            case .transactionPersisted:
+                // Before the swap: the key is there for 0.10.12 already.
+                seen.set(FileManager.default.fileExists(atPath: keyFile))
+            case .liveLayoutReplaced:
+                // A process of the rolled-back release started between the two writes removes the first one.
+                unlink(keyFile)
+            default: break
+            }
+        })
+        #expect(try rollback.rollBack(store) == "0.10.12")
+        #expect(try rollback.live() == "0.10.12")
+        #expect(seen.keyFileBeforeSwap == true, "the key was written back before the swap")
+        #expect(FileManager.default.contents(atPath: keyFile) == Self.hexLine(rollback.secret),
+                "and written again after it, in 0.10.12's format")
         var info = stat()
-        let found = lstat(record.link.secretFile, &info) == 0
+        let found = lstat(keyFile, &info) == 0
         #expect(found && info.st_mode & 0o777 == 0o600, "owner-only")
-        #expect(try ClusterPairingStore(directory: store.directory).edgeSecret(for: record) == secret,
-                "0.10.12's way of reading gets the key")
-        #expect(vault.item(record.peerPin)?.secret == secret, "the item stays for the next update")
+        let fileMode = ClusterPairingStore(directory: URL(fileURLWithPath: keyFile).deletingLastPathComponent())
+        #expect(try fileMode.edgeSecret(for: rollback.record) == rollback.secret, "0.10.12's way of reading gets the key")
+        #expect(rollback.vault.item(rollback.record.peerPin)?.secret == rollback.secret, "the item stays for the next update")
+    }
+
+    @Test func aRollbackToAReleaseThatKeepsKeysInTheKeychainWritesNoFile() async throws {
+        let rollback = try await Rollback.make(old: "0.10.13", new: "0.10.14")
+        defer { Task { await rollback.shutdown() } }
+        #expect(try rollback.rollBack(rollback.store()) == "0.10.13")
+        #expect(!FileManager.default.fileExists(atPath: rollback.keyFile), "0.10.13 reads the Keychain: no key file")
+        #expect(ClusterLinkKeyRollback.restoresFileRelease("0.10.12"))
+        #expect(ClusterLinkKeyRollback.restoresFileRelease("0.10.13-dev.branch.181"), "a DevNet build before 0.10.13")
+        #expect(!ClusterLinkKeyRollback.restoresFileRelease("0.10.13"))
+        #expect(!ClusterLinkKeyRollback.restoresFileRelease("0.10.14"))
+        #expect(ClusterLinkKeyRollback.restoresFileRelease("not a version"), "unreadable: write (harmless)")
+        #expect(SemanticVersion(ClusterLinkKeyRollback.firstKeychainRelease)! <= SemanticVersion(ProviderCore.version)!,
+                "this tree ships the Keychain keys")
+    }
+
+    @Test func aRollbackInterruptedAfterTheSwapIsFinishedWithTheKey() async throws {
+        enum ProcessDeath: Error { case injected }
+        let rollback = try await Rollback.make(old: "0.10.12", new: "0.10.13")
+        defer { Task { await rollback.shutdown() } }
+        let keyFile = rollback.keyFile
+        let dying = rollback.store(faults: { point in
+            if point == .liveLayoutExchanged {
+                unlink(keyFile)   // a process of the rolled-back release removed the first write, then the rollback died
+                throw ProcessDeath.injected
+            }
+        })
+        #expect(throws: ProcessDeath.self) { _ = try rollback.rollBack(dying) }
+        #expect(!FileManager.default.fileExists(atPath: keyFile))
+        // The next lease holder (a watchdog tick, a provider start) finishes the rollback, and the key with it.
+        let next = rollback.store()
+        let lock = try UpdateProcessLock.acquire(at: next.lockPath, operation: "next-tick")
+        try next.recoverInterruptedTransaction(now: 501)
+        lock.release()
+        #expect(try rollback.live() == "0.10.12")
+        #expect(FileManager.default.contents(atPath: keyFile) == Self.hexLine(rollback.secret), "recovery wrote the key back")
     }
 }

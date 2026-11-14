@@ -25,7 +25,7 @@ public enum SDKFeatureDefaults {
     static let constraintSpans: [String] = []
 
     /// SDK #409: grammar-aware MTP verification of constrained rows.
-    static let grammarMTP: [String] = []
+    static let grammarMTP: [String] = ["DARKBLOOM_CBV2_MTP_GRAMMAR"]
 
     /// #2090 / SDK #408: Gemma quoted numeric tool arguments typed by the schema.
     static let gemmaQuotedNumbers: [String] = []

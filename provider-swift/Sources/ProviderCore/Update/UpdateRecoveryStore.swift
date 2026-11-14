@@ -369,7 +369,7 @@ final class UpdateRecoveryStore: @unchecked Sendable {
     /// that names no version, or does not verify, is removed (fail closed).
     private func reconcileRollbackCopy(_ copy: VerifiedPredecessor, in state: inout UpdateRecoveryState,
                                        now: Double) throws -> UpdateRecoveryReconciliation? {
-        let signed = try signedVersion(ofApp: resolvedRecoveryPath(copy.bundlePath))
+        let signed = try Self.signedVersion(ofApp: resolvedRecoveryPath(copy.bundlePath))
         guard signed != copy.release.version else { return nil }
         if let signed, (try? verifyPredecessor(copy)) != nil {
             var relabelled = copy

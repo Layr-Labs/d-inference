@@ -25,7 +25,8 @@ public struct ClusterPairingRecord: Codable, Sendable, Equatable {
         public let peerInterface: String
     }
     public let peerPin: String
-    /// Standard base64 of the other Mac's 65-byte Secure Enclave key.
+    /// Standard base64 of the other Mac's 65-byte identity key, the one it
+    /// proved it holds (its own Secure Enclave key, by its report).
     public let peerIdentityKey: String
     public let peerName: String
     public let peerPosture: ClusterPairingPeerPosture

@@ -1,6 +1,6 @@
 # Provider Encryption And Privacy
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-13
 
 This page describes the provider's plaintext boundary, encrypted network traffic
 and local cache storage. Backend cryptographic implementation and consumer
@@ -189,14 +189,21 @@ Operator steps: [cache storage](../../provider/cache-storage.md).
 A [two-Mac cluster](../../provider/two-mac-cluster.md) keeps the same rules
 across the Thunderbolt cable:
 
-- **Pairing.** Each Mac's Secure Enclave identity signs the pairing (S17); both
-  screens show the same six-digit code and both owners confirm it. The peer's
-  pin is stored owner-only (0600), and both Macs verify each other before any
-  data-plane key exists. A DEBUG build without the signed build's keychain
-  entitlement may keep its Secure Enclave key's opaque handle in an owner-only
-  file (`DARKBLOOM_DEBUG_SE_KEY_FILE`, `SecureEnclaveIdentity.debugPersisted`);
-  the key itself never leaves the Secure Enclave, and a release build has no
-  such path.
+- **Pairing.** Each Mac's Secure Enclave identity signs the pairing (S17).
+  Each Mac checks that the other's attestation is signed by the key it pairs
+  with, binds this ceremony's ephemeral key and is fresh. That proves
+  possession of the paired key, not that a Secure Enclave holds it: nothing
+  Apple-rooted in the pairing vouches for the other Mac's key or for the
+  hardware and boot posture its attestation reports. The posture shown gates
+  nothing; `darkbloom cluster pair` marks it as reported by the other Mac, not
+  verified (`ClusterPairingTerminal.reportedPosture`). Both screens show the
+  same six-digit code, which commits to both keys, and both owners confirm it.
+  The peer's pin is stored owner-only (0600) before any data-plane key exists.
+  A DEBUG build without the signed build's keychain entitlement may keep its
+  Secure Enclave key's opaque handle in an owner-only file
+  (`DARKBLOOM_DEBUG_SE_KEY_FILE`, `SecureEnclaveIdentity.debugPersisted`); the
+  key itself never leaves the Secure Enclave, and a release build has no such
+  path.
 - **Cable bytes.** The link control channel (commands, control leases, model
   copies) is keyed by the pairing's edge secret with fresh nonces both ways;
   the data plane (activations, KV hand-offs, cache transfers) is encrypted and

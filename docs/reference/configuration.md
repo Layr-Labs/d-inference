@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-11-13
+> Last updated: 2026-11-14
 
 Provider CLI and native-runtime environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -579,7 +579,8 @@ and rollback are defined in the [provider configuration reference](../provider/c
 | `DARKBLOOM_LENGTH_FINISH_AT_LIMIT` | `0`, `off`, `false`, `no` disable (trimmed, case-insensitive) | on | `provider-swift/Sources/ProviderCore/Inference/Tools/ToolOutputLeniency.swift` (`TokenLimitCutPolicy`) | An answer the engine cut at the token limit ends as a normal `length` completion as generated: a streamed call stays open with its fragments, unclosed; a withheld JSON answer leaves unchecked (GLM's normalized when it holds a whole value); withheld calls are checked one by one and those that fail are dropped (for `auto`, only the last, possibly cut, call is held to the declarations without `strict`). Off restores the `tool_noncompliance` refusal. Read once per process. See [cut answers](../architecture/inference.md#answers-cut-at-the-token-limit). Forwarded to the LaunchAgent. |
 | `DARKBLOOM_STRICT_CALLS_AS_GENERATED` | `0`, `off`, `false`, `no` disable (trimmed, case-insensitive) | on | `provider-swift/Sources/ProviderCore/Inference/Tools/ToolOutputLeniency.swift` (`StrictToolCallPolicy`) | A `strict` `auto` call that fails its check returns as generated once a streaming client's response has started; before that, and for a client that does not stream, it is refused. Off restores the refusal. Read once per process. See [strict calls after the start](../architecture/inference.md#strict-calls-after-the-response-started). Forwarded to the LaunchAgent. |
 | `DARKBLOOM_TTFT_THINK_CONTENT_SEED` | exact `0` disables | on | `provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningPromptProbe.swift` (`seedsPlainTailContentByDefault`) | Qwen3-VL (`qwen3_vl_moe`, `plainTailContentModelTypes`) requests on the `qwen3` reasoning parser whose prompt tail has no think marker start in content state, so the answer streams instead of waiting for a tag or the end of generation. Other model types, including close-only Qwen reasoners, keep undecided parsing. `0` restores undecided parsing. Forwarded to the LaunchAgent. |
-| `DARKBLOOM_JSON_ANSWER_GRAMMAR` | `qwen`, `0`, `off`, `false`, `no`, `none` (trimmed, case-insensitive) narrow; any other value or unset admits every family | every admitted family | `provider-swift/Sources/ProviderCore/Inference/Tools/JSONAnswerPolicy.swift` (`JSONAnswerPolicy.Families`) | Which families sample a tool-free JSON `response_format` answer under the grammar ([constrained Qwen JSON answers](../architecture/inference.md#constrained-qwen-json-answers)): Qwen 3.5/3.6/3.8, and for answer-first prompts on a single Mac Bonsai 2 27B and Nemotron 3.5 Lightning. The narrowing values keep it to the Qwen types, as before Bonsai and Lightning were admitted; the others then keep prompt-only steering. Read once per process. Forwarded to the LaunchAgent. |
+| `DARKBLOOM_JSON_ANSWER_GRAMMAR` | `qwen`, `0`, `off`, `false`, `no`, `none` (trimmed, case-insensitive) narrow; any other value or unset admits every family | every admitted family | `provider-swift/Sources/ProviderCore/Inference/Tools/JSONAnswerPolicy.swift` (`JSONAnswerPolicy.Families`) | Which families sample a tool-free JSON `response_format` answer under the grammar ([constrained Qwen JSON answers](../architecture/inference.md#constrained-qwen-json-answers)): Qwen 3.5/3.6/3.8, and for answer-first prompts on a single Mac Bonsai 2 27B and Nemotron 3.5 Lightning. The narrowing values keep it to the Qwen types, as before Bonsai and Lightning were admitted; the others then keep prompt-only steering. Read once per process. Forwarded to the LaunchAgent. GLM-5.3-Flash has its own switch (`DARKBLOOM_GLM_JSON_ANSWERS`). |
+| `DARKBLOOM_GLM_JSON_ANSWERS` | `1`, `on`, `true`, `yes` (trimmed, case-insensitive) enable; anything else is off | off | `provider-swift/Sources/ProviderCore/Inference/Tools/JSONAnswerPolicy.swift` (`glmEnvironmentKey`) | On: a GLM-5.3-Flash text request with a JSON `response_format`, no tools and no `tool_choice` is sampled under the JSON answer grammar (`JSONAnswerProfile.glm5Next`) wherever its engine runs token constraints; off keeps the prompt-steered, withheld and checked answer. Forwarded to the launchd provider job. |
 | `DARKBLOOM_QWEN_JSON_SCHEMA_REWRITE` | `off`, `0`, `false`, `no` (trimmed, case-insensitive) disable; unset or any other value enables | on | `provider-swift/Sources/ProviderCore/Inference/Tools/QwenJSONSchemaRewrite.swift` (`QwenJSONSchemaRewrite.enabled`) | Qwen JSON answers constrain a `json_schema` outside the subset: rewritten exactly (Pydantic, OpenAI strict, zod), else without its value assertions (`minimum`, `pattern`, `format`, …; never refused for those values), else, for an object root, as a JSON object ([constrained Qwen JSON answers](../architecture/inference.md#constrained-qwen-json-answers)). The off words restore today's prompt-only decline for them. Read once per process. Forwarded to the LaunchAgent. |
 | `DARKBLOOM_GEMMA_SCHEMA_COERCION` | exact `1` enables; any other non-empty value is off | **on** (provider default since 0.10.13, `SDKFeatureDefaults`, process-wide); `0` restores 0.10.12's strings | `libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/Parsers/GemmaFunctionParser.swift` (`GemmaFunctionParser`) | Gemma quoted numeric tool arguments: a marker-quoted number for an integer/number parameter is typed by the tool's schema at frame close ([parser behavior](../architecture/inference.md#gemma-quoted-numeric-tool-arguments)). Read once per process; set it before starting the provider (reinstall for the service), `0` and a restart roll back. Forwarded by the LaunchAgent. |
 
@@ -596,7 +597,7 @@ Some switches are read by the SDK itself (`libs/mlx-swift-lm`), which keeps each
 
 | Variable | Values | Default | Source | Effect |
 |---|---|---|---|---|
-| `DARKBLOOM_NATIVE_REASONING_BUDGET` | `1`, `true`, `yes`, `on` (case-insensitive) enable for every family; every other non-empty value disables | off | `provider-swift/Sources/ProviderCore/Inference/Prompting/NativeReasoningBudget.swift` (`isEnabled(for:)`); SDK `CBv2ReasoningBudget.enabled` | Enables validated `reasoning.max_tokens` on supported local Super/MiMo routes. Set before engine construction; forwarded to the daemon. |
+| `DARKBLOOM_NATIVE_REASONING_BUDGET` | `1`, `true`, `yes`, `on` (case-insensitive) enable for every family; every other non-empty value disables | **on for Nemotron 3.5 Super and MiMo V2.6** (provider default since 0.10.13, `SDKFeatureDefaults`); `0` restores 0.10.12 for every family | `provider-swift/Sources/ProviderCore/Inference/Prompting/NativeReasoningBudget.swift` (`isEnabled(for:)`); SDK `CBv2ReasoningBudget.enabled` | Enables validated `reasoning.max_tokens` on supported local Super/MiMo routes. Set before engine construction; forwarded to the daemon. |
 
 The request budget is a positive JSON integer no greater than 2,147,483,647;
 an explicit thinking-off setting conflicts with it. The total output ceiling
@@ -702,9 +703,9 @@ Installed processes still use the source defaults.
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
-| `DARKBLOOM_GEMMA_REOPENED_THOUGHTS` | exact `1` enables | unset (off); `0` keeps legacy behavior | `libs/mlx-swift-lm/Libraries/MLXLMServer/Parsing/StreamingGemma4ReasoningParser.swift` (`StreamingGemma4ReasoningParser`) | Opts in to Gemma reopened thought channels. Read once per process. |
+| `DARKBLOOM_GEMMA_REOPENED_THOUGHTS` | exact `1` enables (any other value is off) | **on** (provider default since 0.10.13, `SDKFeatureDefaults`: unset or empty means on); `0` restores 0.10.12 | `libs/mlx-swift-lm/Libraries/MLXLMServer/Parsing/StreamingGemma4ReasoningParser.swift` (`StreamingGemma4ReasoningParser`) | Routes reopened Gemma 4 thoughts to reasoning and absorbs stray channel closes, for every model served with the `gemma4` reasoning parser. Read once per process. |
 
-Set this variable before starting the provider. The LaunchAgent forwards the operator's value (`0` included) to the installed provider job (`LaunchAgent.inferencePassthroughEnvKeys`), so it applies to a service Mac as well as a foreground process; the watchdog does not receive it. Unset it or use `0` and restart the provider to roll back. See the [parser behavior](../architecture/inference.md#gemma-reopened-thought-channels).
+Set this variable before starting the provider. The LaunchAgent forwards the operator's value (`0` included) to the installed provider job (`LaunchAgent.inferencePassthroughEnvKeys`), so it applies to a service Mac as well as a foreground process; the watchdog does not receive it. Since 0.10.13 the provider turns it on when it is unset or empty (`SDKFeatureDefaults`). To roll back to 0.10.12's parsing on a service Mac, run `DARKBLOOM_GEMMA_REOPENED_THOUGHTS=0 darkbloom start`, which re-installs the service plist with the kill switch (`darkbloom restart` reuses the existing plist). For a foreground process, restart it with `=0`. See the [parser behavior](../architecture/inference.md#gemma-reopened-thought-channels).
 
 ### Native DiffusionGemma expert reduction
 
@@ -1771,6 +1772,15 @@ that group or others can access
 `installedReference` and `optionalInstalledReference`), so until such a file is
 saved again or its mode is corrected by hand, `darkbloom cluster status` and
 `darkbloom cluster doctor` report the saved setup as `invalid`.
+
+### Provider configuration parsing
+
+The provider parses `provider.toml` with TOMLKit, built from `libs/TOMLKit`
+([vendored TOMLKit](../developer/build.md#vendored-tomlkit)), which frees a parsed
+table once nothing refers to it. `ConfigManager.parseValidating` also remembers the
+last 8 texts it decoded (`RememberedProviderConfigurations` in
+`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`), so the cluster
+service's read on every tick parses the file again only after it changes.
 
 ## Automatic cluster chunk policy
 

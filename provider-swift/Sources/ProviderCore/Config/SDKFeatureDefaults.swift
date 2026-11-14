@@ -181,9 +181,10 @@ public enum SDKFeatureDefaults {
             key == NativeReasoningBudget.environmentKey
                 ? "\(key) (\(reasoningBudgetFamilies.map { "\($0)" }.sorted().joined(separator: ", ")))" : key
         }
-        for (key, builds) in [(constraintSpansKey, spansBuilds), (grammarMTPKey, grammarBuilds)]
+        for (key, builds, scope) in [(constraintSpansKey, spansBuilds, ""),
+                                     (grammarMTPKey, grammarBuilds, ", where constraint spans are on")]
         where !builds.isEmpty && followsDefault(key, in: environment, injected: []) {
-            on.append("\(key) (\(builds.sorted().joined(separator: ", ")))")
+            on.append("\(key) (\(builds.sorted().joined(separator: ", "))\(scope))")
         }
         return on.isEmpty ? nil : "SDK feature defaults on: \(on.joined(separator: "; "))"
     }

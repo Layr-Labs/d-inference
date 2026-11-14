@@ -596,7 +596,7 @@ Some switches are read by the SDK itself (`libs/mlx-swift-lm`), which keeps each
 
 | Variable | Values | Default | Source | Effect |
 |---|---|---|---|---|
-| `DARKBLOOM_NATIVE_REASONING_BUDGET` | `1`, `true`, `yes`, `on` (case-insensitive) enable for every family; every other non-empty value disables | off | `provider-swift/Sources/ProviderCore/Inference/Prompting/NativeReasoningBudget.swift` (`isEnabled(for:)`); SDK `CBv2ReasoningBudget.enabled` | Enables validated `reasoning.max_tokens` on supported local Super/MiMo routes. Set before engine construction; forwarded to the daemon. |
+| `DARKBLOOM_NATIVE_REASONING_BUDGET` | `1`, `true`, `yes`, `on` (case-insensitive) enable for every family; every other non-empty value disables | **on for Nemotron 3.5 Super and MiMo V2.6** (provider default since 0.10.13, `SDKFeatureDefaults`); `0` restores 0.10.12 for every family | `provider-swift/Sources/ProviderCore/Inference/Prompting/NativeReasoningBudget.swift` (`isEnabled(for:)`); SDK `CBv2ReasoningBudget.enabled` | Enables validated `reasoning.max_tokens` on supported local Super/MiMo routes. Set before engine construction; forwarded to the daemon. |
 
 The request budget is a positive JSON integer no greater than 2,147,483,647;
 an explicit thinking-off setting conflicts with it. The total output ceiling

@@ -1984,7 +1984,15 @@ the [qualification procedure](../developer/serving-performance-qualification.md)
 is required before any width above 8 or model-specific chunk policy activates.
 Qualified engines share one whole-Mac service allowance and retain physical KV,
 architecture and explicit operator caps. A reservation is released only after
-engine retirement, not when a caller merely requests cancellation. Atomic
+engine retirement, not when a caller merely requests cancellation. A request
+refused for capacity while a cancelled row is still retiring (the engine drops
+it at its next step, then its pump releases it) waits for that release, at most
+`CancelledRowAdmissionWait.bound` (2 s), and asks once more
+(`EngineV2Bridge.waitForCancelledRowRelease`); nothing is admitted before the
+release, and with no cancelled row the refusal is immediate.
+`DARKBLOOM_CANCELLED_ROW_ADMISSION_WAIT=0` refuses at once. A stream its client
+closed normally counts as cancelled only once a chunk can't be written (input
+half-close is allowed), so a request sent before then is still refused. Atomic
 deadline admission passes its retirement acknowledgement to the event pump;
 an early terminal returns to the caller while the service and KV reservations
 remain owned until that acknowledgement completes. With

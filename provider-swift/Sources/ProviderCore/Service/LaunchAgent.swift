@@ -462,6 +462,9 @@ public enum LaunchAgent: Sendable {
     /// reference servers' prompt by default (caller's tool declarations,
     /// merged system messages, appended instructions); `0`, `off` or `false`
     /// renders the earlier one.
+    /// `DARKBLOOM_CANCELLED_ROW_ADMISSION_WAIT`: a capacity refusal waits up to
+    /// 2 s for a cancelled row's release by default; `0`, `off` or `false`
+    /// refuses at once.
     static let inferencePassthroughEnvKeys = [
         Qwen35TemplateFix.forcedThinkingEnvironmentKey,
         HarmonyFinalHeaderFilter.commentaryEnvironmentKey,
@@ -524,6 +527,7 @@ public enum LaunchAgent: Sendable {
         GPTOSSForcedToolCalls.environmentKey,
         MuseGlimmerToolCallReading.environmentKey,
         MuseGlimmerReferencePrompt.environmentKey,
+        CancelledRowAdmissionWait.environmentKey,
     ] + MiMoV26DecodeDefaults.environmentKeys + MiMoV26DecodeDefaults.verifyEnvironmentKeys
 
     static let passthroughEnvKeys = [

@@ -28,8 +28,18 @@ extension EngineV2Bridge {
         } else if pendingSubmissionIDs.contains(requestId) {
             latchPendingCancel(id: requestId)
         }
+        noteCancelledRowHoldsSlot(requestId)
         if let cbv2Id = idMap[requestId] {
             ownedEngine?.cancel(cbv2Id)
+        }
+    }
+
+    /// A cancelled row keeps its slot until its pump releases it, after the
+    /// engine's next step: until then a capacity refusal may wait for it
+    /// (`waitForCancelledRowRelease`).
+    private func noteCancelledRowHoldsSlot(_ requestId: String) {
+        if active[requestId] != nil || pendingSubmissionIDs.contains(requestId) {
+            cancelledRowsAwaitingRelease.insert(requestId)
         }
     }
 
@@ -106,6 +116,7 @@ extension EngineV2Bridge {
             } else if pendingSubmissionIDs.contains(requestId) {
                 latchPendingCancel(id: requestId)
             }
+            noteCancelledRowHoldsSlot(requestId)
             engine.cancel(cbv2Id)
             return true
         }

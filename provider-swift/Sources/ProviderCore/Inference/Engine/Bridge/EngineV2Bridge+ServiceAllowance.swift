@@ -131,6 +131,46 @@ extension EngineV2Bridge {
         if nativeMediaBootstrapRequestID == requestID {
             nativeMediaBootstrapRequestID = nil
         }
+        cancelledRowsAwaitingRelease.remove(requestID)
         serviceBudget?.release(ownerID: serviceOwnerPrefix + ":" + requestID)
+    }
+
+    /// For a capacity refusal that a cancelled row's release would admit. A
+    /// row whose client went away keeps its slot, its whole-Mac share and its
+    /// KV until the engine drops it at its next step and its pump releases
+    /// them (`EngineV2Bridge+Events`); work that arrives meanwhile on a full
+    /// Mac was refused for a slot already being freed. Waits for one such
+    /// row's release, at most `CancelledRowAdmissionWait.bound`: false when
+    /// none is draining, the switch is off, or the bound passes first. The
+    /// caller then asks again, so nothing is admitted before an actual release.
+    func waitForCancelledRowRelease() async -> Bool {
+        guard waitsForCancelledRows else { return false }
+        // Only rows that still hold something; a stale entry is never waited on.
+        cancelledRowsAwaitingRelease = cancelledRowsAwaitingRelease.filter {
+            active[$0] != nil || pendingSubmissionIDs.contains($0) || pumpTasks[$0] != nil
+        }
+        guard let row = cancelledRowsAwaitingRelease.first else { return false }
+        return await waitForRowRelease(requestId: row, within: CancelledRowAdmissionWait.bound)
+    }
+}
+
+/// Whether a capacity refusal first waits for a cancelled row's release
+/// (`EngineV2Bridge.waitForCancelledRowRelease`). On by default for every
+/// model: it only delays a refusal while a cancelled row is retiring, and
+/// admits nothing before the release.
+///
+/// `DARKBLOOM_CANCELLED_ROW_ADMISSION_WAIT`: `0`, `off` or `false` refuses at
+/// once, as before.
+enum CancelledRowAdmissionWait {
+    static let environmentKey = "DARKBLOOM_CANCELLED_ROW_ADMISSION_WAIT"
+    /// A decode step at full width and the pump's cleanup usually take well
+    /// under a second (Muse Glimmer at 8 rows: about 50 ms a step); past this
+    /// the row may be wedged, and the request is refused.
+    static let bound: Duration = .seconds(2)
+    static let current = enabled(environment: ProcessInfo.processInfo.environment)
+
+    static func enabled(environment: [String: String]) -> Bool {
+        let raw = environment[environmentKey]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return !["0", "off", "false"].contains(raw ?? "")
     }
 }

@@ -309,15 +309,31 @@ extension EngineV2Bridge {
         try checkBeforeServiceAdmission(firstContentDeadline, profile: profile, usageSignal: usageSignal)
         let retirementTransfer = EngineV2RetirementTransfer()
         let maxOutputTokens = outputTokens(requested: request.max_tokens, promptTokens: promptTokens.count)
-        guard acquireServiceAllowance(requestID: id, serviceReservationID: serviceReservationID,
-            serviceReservation: serviceReservation, promptTokens: promptTokens.count,
-            maxOutputTokens: max(0, maxOutputTokens),
-            qualifiedTextWork: multimodal == nil && mediaKind == nil,
-            recoverPrefillEvidence: canRecoverPrefillEvidence(
-                promptTokens: promptTokens.count, maxOutputTokens: maxOutputTokens,
-                deadline: firstContentDeadline,
-                isMultimodal: multimodal != nil || mediaKind != nil),
-            takesStoppedRowPlace: EngineAdmissionPriority.current > 0) else {
+        func acquireAllowance() -> Bool {
+            acquireServiceAllowance(requestID: id, serviceReservationID: serviceReservationID,
+                serviceReservation: serviceReservation, promptTokens: promptTokens.count,
+                maxOutputTokens: max(0, maxOutputTokens),
+                qualifiedTextWork: multimodal == nil && mediaKind == nil,
+                recoverPrefillEvidence: canRecoverPrefillEvidence(
+                    promptTokens: promptTokens.count, maxOutputTokens: maxOutputTokens,
+                    deadline: firstContentDeadline,
+                    isMultimodal: multimodal != nil || mediaKind != nil),
+                takesStoppedRowPlace: EngineAdmissionPriority.current > 0)
+        }
+        var allowed = acquireAllowance()
+        // A cancelled row still holds the slot this request needs until the
+        // engine's next step: wait for its release, then ask once more.
+        if !allowed, await waitForCancelledRowRelease() {
+            // The wait is an actor suspension: revalidate as after the calibration wait.
+            guard canSubmitWithNativeOwner(), active[id] == nil, !pendingSubmissionIDs.contains(id) else {
+                continuation.yield(.error("token_budget_exhausted: request ownership changed while a cancelled row retired"))
+                continuation.finish()
+                return stream
+            }
+            try checkBeforeServiceAdmission(firstContentDeadline, profile: profile, usageSignal: usageSignal)
+            allowed = acquireAllowance()
+        }
+        guard allowed else {
             // A full Mac refuses as capacity before any stream exists, so
             // routing moves on and a local client gets 503, not a 200 stream
             // that fails at once.

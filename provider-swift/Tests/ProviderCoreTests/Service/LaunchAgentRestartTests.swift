@@ -275,6 +275,28 @@ struct LaunchAgentEnvironmentTests {
         #expect(LaunchAgent.passthroughEnvironment(from: [:])[key] == nil)
     }
 
+    @Test func forwardsSDKFeatureSwitchesToProviderJob() {
+        // 0.10.13 phase D: the SDK reads these switches itself (grammar-aware
+        // MTP, Gemma quoted numeric arguments). Whatever their default, the
+        // operator's value (`0` = 0.10.12's behaviour) only reaches the launchd
+        // provider job if the plist carries it. The watchdog never runs inference.
+        for key in ["DARKBLOOM_CBV2_MTP_GRAMMAR", "DARKBLOOM_GEMMA_SCHEMA_COERCION"] {
+            #expect(LaunchAgent.passthroughEnvKeys.contains(key))
+            #expect(!WatchdogAgent.passthroughEnvKeys.contains(key))
+            for value in ["0", "1"] {
+                let out = LaunchAgent.passthroughEnvironment(from: [key: value, "UNRELATED_SECRET": "excluded"])
+                #expect(out == [key: value])
+                let plist = LaunchAgent.makeServicePlist(
+                    label: "io.darkbloom.provider",
+                    programArguments: ["/usr/local/bin/darkbloom", "start", "--foreground"],
+                    logPath: "/tmp/p.log",
+                    environment: out)
+                #expect(plist["EnvironmentVariables"] as? [String: String] == [key: value])
+            }
+            #expect(LaunchAgent.passthroughEnvironment(from: [:])[key] == nil)
+        }
+    }
+
     @Test func forwardsMiMoResidencyRollbackToProviderJob() {
         // Standing MiMo residency is the default; the operator's rollback is
         // only effective if it reaches the launchd-managed provider process.

@@ -1,5 +1,0 @@
-### GLM-5.3-Flash and MiMo Macs no longer refuse long prompts because of a short prompt's speed
-
-- An idle GLM or MiMo Mac priced every prompt's prefill from its last short prompts. A prompt of a few tokens takes about as long as its fixed setup, so it read as 9-140 tokens per second on GLM Macs that read long prompts at 1,400-2,000; the Macs then refused nearly every longer request as `deadline_unreachable` (1,300 of the 1,452 requests of OpenRouter's Tau2 run on GLM), and a refusal measures nothing, so the estimate never recovered.
-- A prompt of at most 4,096 tokens may now raise that estimate but never lower it, and readings from prompts of up to 1,024 tokens no longer lower the estimate for a prompt of their size either. An idle GLM or MiMo Mac with no calibration or longer-prompt reading in the last two minutes prices prefill at no less than its own calibration, instead of re-measuring with a short prompt. A fresh slow reading from a longer prompt, or a busy Mac, still prices below it.
-- Other models are unchanged. `DARKBLOOM_TTFT_NATIVE_PREFILL_EVIDENCE=0` restores the previous estimate (it reaches a provider started by `darkbloom start`).

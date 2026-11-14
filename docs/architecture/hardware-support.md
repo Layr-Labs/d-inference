@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-11-10
+> Last updated: 2026-11-13
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -16,6 +16,11 @@ grant is widened by frame association.
 The native [cross-stream fence ordering](inference.md#cross-stream-fence-ordering)
 uses the same memory reservations and command-buffer limits. Its component
 tests do not change a model's hardware qualification or usable-memory grant.
+
+[Native reasoning token budgets](inference.md#native-reasoning-token-budgets)
+use the existing model admission and native retirement owners. They add no
+hardware eligibility or memory grant; target-only budget rows can reduce mixed
+batch chaining, so the feature carries no throughput qualification.
 
 ## Context
 
@@ -153,6 +158,13 @@ its tower and projector bound; a video's largest, `videoMediaChargeBytes`, is
 13.9 GiB of the cap, so a 16-image request (25.6 GiB of media) does not fit
 beside it. A resident slot's media
 probe is quoted against the ledger room its reservation is admitted by.
+The [concurrent image path](inference.md#managed-nemotron-super-slot) (on by default)
+does not widen that ledger room or discount a reservation after vision encoding.
+Each admitted image retains its full media charge until native settlement;
+overlapping decodes therefore require both quotes to fit. The owner's selected
+width remains authoritative (`NemotronSuperLocalBridgeBuilder.make`,
+`NemotronSuperLocalImageBinding`). The single-image measurements below do not
+measure concurrent images.
 At 65,536 tokens the round work would be 4.7 GiB. A dedicated 128 GiB Mac was emulated on the 256 GB
 machine at the earlier 65,536-token context (cap, OS-available memory and MLX
 limits of the smaller Mac, before the speculating admission split); prompts
@@ -977,7 +989,22 @@ serving Mac, so the same request can project differently on other hardware:
   floors the aggregate rate
   (`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`,
   `IsolatedPrefillAdmissionRate.anchorFloorFraction`). Native engines keep
-  their recovery probe instead.
+  their recovery probe instead (GLM and MiMo only until their first
+  calibration cell, below).
+- GLM-5.3-Flash and native MiMo V2.6 let a cold prompt of at most 4,096
+  tokens raise their prefill estimate but never lower it: its rate is mostly the
+  request's fixed cost. Idle at nominal posture, with no calibration cell or
+  longer prompt in 120 seconds, they price prefill at no less than their
+  calibration cell
+  (`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`,
+  `NativePrefillEvidence`; `DARKBLOOM_TTFT_NATIVE_PREFILL_EVIDENCE=0` turns it off),
+  so once calibrated they take no short-prompt recovery. A busy Mac or another
+  posture keeps one eighth of the cell as its floor. A slower isolated short
+  sample stays in its prompt-size bucket only, out of their published
+  `isolated_prefill` measurement, `observed_prefill_tps` and slot telemetry's
+  `isolated_prefill_tps`, and the smallest bucket no longer tightens their
+  prompts. Off nominal posture a short sample still cannot lower the estimate,
+  so it keeps its nominal value until a longer prompt measures the new posture.
 - Three consecutive refusals that isolated prefill evidence older than 120
   seconds explains on an idle Mac re-run the idle calibration probe once
   (`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`,
@@ -989,8 +1016,9 @@ serving Mac, so the same request can project differently on other hardware:
   left never counts.
 
 The anchor, floor and refusal streak shape admission only. The published
-isolated rate, capacity wire fields and the external platform's memory
-contract are unchanged.
+prefill rates (apart from GLM's and MiMo's short-sample handling above),
+capacity wire fields and the external platform's memory contract are
+unchanged.
 
 ### Cross-repository agreement
 
@@ -1187,6 +1215,10 @@ Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Metadata/GLM5NextImageBudget.swift`, and
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Metadata/GLM5NextServingMetadata.swift`.
 
+### Gemma o4 parser qualification
+
+The [Gemma quoted numeric tool arguments change](inference.md#gemma-quoted-numeric-tool-arguments) operates on CPU text and schema values. Parser tests do not establish full-model numerical, memory, throughput or concurrency qualification. This parser switch does not change hardware admission or model memory allowances.
+
 ### Gemma batch arithmetic evidence boundary
 
 The ordinary Gemma stage decode scope preserves per-request projection, value
@@ -1318,6 +1350,10 @@ frame boundaries and introduces no additional state type or weight allocation.
 Source and CPU frame checks do not clear earlier full-artifact negative
 qualifications; rerun each affected rank orientation and schedule with the
 unchanged numerical comparator.
+
+## Gemma o5 parser qualification
+
+The [Gemma reopened thought channels change](inference.md#gemma-reopened-thought-channels) operates on CPU text and schema values. Parser tests do not establish full-model numerical, memory, throughput or concurrency qualification. This switch (on by default since 0.10.13) does not change hardware admission or model memory allowances.
 
 ## Gemma prefix frame preservation
 
@@ -1601,3 +1637,24 @@ memory is free. Admission limits and native memory guards are unchanged. See
 [planned cluster stop ordering](inference.md#planned-cluster-stop-ordering) and
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterService.swift`
 (`ClusterService.stopLocalPart`).
+
+
+## Qwen forced-call thinking
+
+The [qwen forced-call thinking](inference.md#qwen-forced-call-thinking) switch changes prompt/output
+processing only. It adds no hardware capability or memory grant; parser
+fixtures do not qualify model residency, throughput or concurrent GPU loads.
+
+
+## GPT-OSS commentary content
+
+The [gpt-oss commentary content](inference.md#gpt-oss-commentary-content) switch changes prompt/output
+processing only. It adds no hardware capability or memory grant; parser
+fixtures do not qualify model residency, throughput or concurrent GPU loads.
+
+
+## Qwen stray thinking-close markers
+
+The [qwen stray thinking-close markers](inference.md#qwen-stray-thinking-close-markers) switch changes prompt/output
+processing only. It adds no hardware capability or memory grant; parser
+fixtures do not qualify model residency, throughput or concurrent GPU loads.

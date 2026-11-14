@@ -28,13 +28,14 @@ struct ClusterLinkMemberLogStandIn: Sendable {
 /// serves each session through its own local owner, enforcing the rank lease
 /// the leader renews on the link.
 enum DistributedInstalledLinkEdge {
-    /// The edge of this setup: its key from the private secret file, bound
+    /// The edge of this setup: its key from the secret its attachment names
+    /// (a pairing's, from the Keychain: `DistributedInstalledLinkSecret`), bound
     /// to the setup's link epoch and edge.
     static func edge(configuration: ClusterConfiguration, peerAddress: ClusterLinkIPv4Address?) throws -> ClusterLinkControlEdge {
         guard let link = configuration.linkControl else {
             throw ClusterConfigurationError.invalid("This setup does not reach its follower over the link control channel")
         }
-        let secret = try readSecret(URL(fileURLWithPath: link.secretFile))
+        let secret = try DistributedInstalledLinkSecret.read(link.secretFile)
         let key = try ClusterLinkControlKey.qualification(secret: secret, epoch: link.linkEpochUUID, edgeID: link.edgeUUID)
         return try ClusterLinkControlEdge(edgeID: link.edgeUUID, epoch: link.linkEpochUUID, key: key, peerAddress: peerAddress)
     }
@@ -81,6 +82,7 @@ final class DistributedInstalledLinkLeader: @unchecked Sendable {
             throw ClusterConfigurationError.invalid("Only a link control leader hosts the follower's edge")
         }
         let edge = try DistributedInstalledLinkEdge.edge(configuration: configuration, peerAddress: nil)
+            .authenticated(by: DistributedInstalledLinkIdentity.resolve(configuration: configuration))
         let local = configuration.peers[configuration.localRank]
         // A follower whose link closed or went silent and did not resume in
         // the edge's own re-dial time is lost: its sessions fail at once with
@@ -99,7 +101,8 @@ final class DistributedInstalledLinkLeader: @unchecked Sendable {
             switch event {
             case .connected: clusterLinkMemberLog.info("link edge: follower connected")
             case .disconnected(_, let reason): clusterLinkMemberLog.info("link edge: follower disconnected (\(reason))")
-            case .refused(_, let reason): clusterLinkMemberLog.warning("link edge: refused a connection (\(reason))")
+            case .refused(_, let reason):
+                clusterLinkMemberLog.warning("link edge: refused a connection (\(DistributedInstalledLinkIdentity.describe(reason)))")
             default: break
             }
             monitor.handle(event)
@@ -192,6 +195,7 @@ public enum DistributedInstalledLinkFollower {
         try plan.requireLocalRankGranted(chipClass: ClusterChipClass.local())
         let leader = try DistributedInstalledLinkEdge.leaderAddress(plan.configuration)
         let edge = try DistributedInstalledLinkEdge.edge(configuration: plan.configuration, peerAddress: leader)
+            .authenticated(by: DistributedInstalledLinkIdentity.resolve(configuration: plan.configuration))
         final class Box: @unchecked Sendable {
             let lock = NSLock(); var server: ClusterLinkWorkerServer?; weak var client: ClusterLinkControlClient?
             func handle(_ event: ClusterLinkControlEvent) { lock.withLock { server }?.handle(event) }
@@ -208,7 +212,7 @@ public enum DistributedInstalledLinkFollower {
             case .disconnected: events(.disconnected)
             case .refused(_, let reason):
                 let detail = reason == .connectFailed ? box.connectFailure.map { " (\($0))" } ?? "" : ""
-                events(.linkRefused("\(reason)" + detail))
+                events(.linkRefused(DistributedInstalledLinkIdentity.describe(reason) + detail))
             default: break
             }
             box.handle(event)

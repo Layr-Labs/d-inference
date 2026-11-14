@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-13
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -20,6 +20,11 @@ loads a narrower owner, down to one request from 85.6 GiB available. Only
 is in
 [hardware support](../architecture/hardware-support.md#context); the slot is
 described in [the inference architecture](../architecture/inference.md#managed-nemotron-super-slot).
+
+The concurrent-image setting (on by default) does not lower Super's RAM
+requirement or raise an owner's configured width. Each image must fit its full
+media quote through native cleanup; see the [configuration control](../reference/configuration.md#engine-and-scheduler)
+and [memory ownership](../architecture/hardware-support.md#context).
 
 For a paired cluster, the registered Qwen3.5 and Qwen3.6 35B A3B text targets
 support two equal tensor-parallel shares. Both Macs still need to pass their independent
@@ -92,6 +97,9 @@ period. `doctor` does not name the reason.
 | Confirmed notification interest | The coordinator acknowledged persistence, or authenticated readback matched the selected hardware; this does not change hardware eligibility | [coordinator/api/accounts/small_models_interest.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/accounts/small_models_interest.go) (`HandleRegisterSmallModelsInterest`, `HandleGetSmallModelsInterest`) |
 
 Follow the [authenticated registration steps](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/consumer/authentication.md#6-register-hardware-interest). Registration is an opt-in record; email delivery is a separate operation.
+
+[Native reasoning budgets](../architecture/inference.md#native-reasoning-token-budgets)
+do not widen model eligibility, memory limits or hardware qualification.
 
 ## Minimum requirements
 

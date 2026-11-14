@@ -77,11 +77,13 @@ enum GLM5NextCalibrationLaunch {
         // The installed owner supplies/rechecks pairing, model custody, device,
         // bootstrap routing and authorized budget. No caller-controlled catalog entry.
         try requireCurrentSelection()
+        let appFile = try DistributedInstalledFiles.verify(installedApp, expectedSHA256: appSHA256,
+            maximumBytes: 256 << 20, executable: true, deadline: leaseDeadline)
+        let workerFile = try DistributedInstalledFiles.verify(worker, expectedSHA256: p.environment.binarySHA256,
+            maximumBytes: 256 << 20, executable: true, deadline: leaseDeadline)
         let files = try [
-            DistributedInstalledFiles.verify(installedApp, expectedSHA256: appSHA256,
-                maximumBytes: 256 << 20, executable: true, deadline: leaseDeadline),
-            DistributedInstalledFiles.verify(worker, expectedSHA256: p.environment.binarySHA256,
-                maximumBytes: 256 << 20, executable: true, deadline: leaseDeadline),
+            appFile,
+            workerFile,
             DistributedInstalledFiles.verify(metallib, expectedSHA256: p.environment.metallibSHA256,
                 maximumBytes: 256 << 20, executable: false, deadline: leaseDeadline),
             verifyDocument(document, authorized: authorized, deadline: leaseDeadline)
@@ -97,7 +99,8 @@ enum GLM5NextCalibrationLaunch {
             "--peer1-id", id.peers[1].id, "--peer1-build-sha256", id.peers[1].buildSHA256,
             "--deadline-uptime-nanoseconds", String(leaseDeadline),
             "--startup-deadline-uptime-nanoseconds", String(experimentDeadline)] + attachment.workerArguments
+        // The credential is written only to a child whose running image is the verified worker.
         return .init(executable: worker, arguments: arguments, environment: environment,
-            initialInput: authorized.credentialInput)
+            initialInput: authorized.credentialInput, verifyLaunched: try workerFile.launchVerifier())
     }
 }

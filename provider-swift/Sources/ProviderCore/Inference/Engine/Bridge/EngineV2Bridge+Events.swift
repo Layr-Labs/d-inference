@@ -27,7 +27,8 @@ extension EngineV2Bridge {
         let retirementReceipt = nativeRetirement == nil ? nil : active[id]?.prefillReceipt
         retirementReceipt?.retainUntilRetirement()
         usageSignal?.beginTerminalObservation()
-        let task = Task {
+        // The pump submits nothing; it must not carry a continuation's admission priority (a task local).
+        let task = Task { await EngineAdmissionPriority.$current.withValue(0) {
             await bridge.pump(
                 id: id, events: events, continuation: continuation,
                 holdsSharedReservation: holdsSharedReservation,
@@ -45,7 +46,7 @@ extension EngineV2Bridge {
             )
             retirementReceipt?.endAfterRetirement()
             await bridge.clearPumpTask(id: id, releaseNativeIdentity: nativeRetirement != nil)
-        }
+        } }
         pumpTasks[id] = task
         if nativeShutdownClosed { nativeShutdownTasks.append(task) }
     }
@@ -151,9 +152,13 @@ extension EngineV2Bridge {
                 if !text.isEmpty {
                     continuation.yield(.chunk(text))
                 }
-                if loopStop == nil, let detection = loopGuard?.observe(text: text, tokens: tokens) {
+                // The guard sees every delta, the in-flight ones after its stop
+                // included (a thought it ends resumes after all of them).
+                if let detection = loopGuard?.observe(text: text, tokens: tokens), loopStop == nil {
                     loopStop = detection
-                    stopRepeatingRow(id: id, modelType: loopGuard?.modelType, detection: detection)
+                    stopRepeatingRow(
+                        id: id, modelType: loopGuard?.modelType, detection: detection,
+                        endsThought: loopGuard?.endsThought == true)
                 }
             case .finished(let engineReason, let usage):
                 // The guard's own stop is a complete answer cut at its length,

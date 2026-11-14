@@ -119,9 +119,11 @@ struct NemotronSuperMediaControlsHTTPTests {
                 _ = try await send(body(media, ["not", " json"], stream: false,
                     ["enable_thinking": false, "response_format": ["type": "json_object"]]),
                     status: .unprocessableContent)
-                let failed = try await send(body(media, ["not", " json"], stream: true,
-                    ["enable_thinking": false, "response_format": ["type": "json_object"]]))
-                #expect(failed.contains(#""finish_reason":"error""#) && SuperSSE(failed).content.isEmpty, "\(name)")
+                // The script ends at its `max_tokens`: streamed, the cut
+                // answer leaves as generated and ends `length` (`TokenLimitCutPolicy`).
+                let cut = SuperSSE(try await send(body(media, ["not", " json"], stream: true,
+                    ["enable_thinking": false, "response_format": ["type": "json_object"]])))
+                #expect(cut.content == "not json" && cut.finishReason == "length", "\(name)")
 
                 // Tools: the declaration reaches the media prompt; a call
                 // leaves as validated `tool_calls`.
@@ -162,9 +164,10 @@ struct NemotronSuperMediaControlsHTTPTests {
                 #expect(none.content == "Sunny." && none.toolCalls.isEmpty, "\(name)")
                 #expect(!script.prompt.contains("<name>get_weather</name>")
                     && script.prompt.contains("Do not call any tool."), "\(name)")
-                // `parallel_tool_calls: false` with two calls: the model broke the contract (422).
-                _ = try await send(body(media, Self.twoCalls, stream: false,
-                    ["tools": [Self.weather], "parallel_tool_calls": false]), status: .unprocessableContent)
+                // `parallel_tool_calls: false` with two calls: the first is returned, as OpenAI and vLLM do.
+                let single = try SuperJSON(try await send(body(media, Self.twoCalls, stream: false,
+                    ["tools": [Self.weather], "parallel_tool_calls": false])))
+                #expect(single.toolCalls.map(\.arguments) == [#"{"city":"Paris"}"#], "\(name)")
                 // Media in a tool result, which `native_media_tools` advertises.
                 let result = try SuperJSON(try await send(toolResultBody(media, ["</think>", "Sunny."])))
                 #expect(result.content == "Sunny.", "\(name)")

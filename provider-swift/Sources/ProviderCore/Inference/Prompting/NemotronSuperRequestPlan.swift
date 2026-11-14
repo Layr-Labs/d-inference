@@ -60,21 +60,41 @@ struct NemotronSuperRequestPlan: Sendable {
     /// The text request's loop guard: the scheduler's text path policy
     /// (`GenerationLoopGuardPolicy`), so the same model list, exclusions and
     /// `DARKBLOOM_LOOP_GUARD` switch. Media requests get none, as there.
+    /// `exitThinking`: this request's way out of a repeating thought
+    /// (`exitThinking(promptTokens:tokenizer:)`).
     func loopGuard(
-        setting: GenerationLoopGuardPolicy.Setting = GenerationLoopGuardPolicy.current
+        setting: GenerationLoopGuardPolicy.Setting = GenerationLoopGuardPolicy.current,
+        exitThinking: GenerationLoopExitThinking? = nil
     ) -> GenerationLoopGuard? {
         guard !hasMedia else { return nil }
         return GenerationLoopGuardPolicy.resolve(modelType: Self.modelType, request: request,
-            prepared: toolPolicy, tokenConstraint: nil, setting: setting)
+            prepared: toolPolicy, tokenConstraint: nil, setting: setting, exitThinking: exitThinking)
+    }
+
+    /// The exit for a text request's rendered prompt, as the scheduler's text
+    /// path resolves it (`GenerationLoopExitThinkingPolicy`): never with
+    /// logprobs, or with media.
+    func exitThinking(
+        promptTokens: [Int], tokenizer: any MLXLMCommon.Tokenizer,
+        setting: GenerationLoopExitThinkingPolicy.Setting = GenerationLoopExitThinkingPolicy.current
+    ) -> GenerationLoopExitThinking? {
+        guard !hasMedia, nativeReasoningBudget == nil else { return nil }
+        return GenerationLoopExitThinkingPolicy.resolve(modelType: Self.modelType, tokenizer: tokenizer,
+            promptTokens: promptTokens, logprobs: topLogprobs > 0, setting: setting)
     }
 
     /// The request the bridge executes, for text and media alike. `translate`
     /// keeps the request's `max_tokens` (nil: the bridge default) and drops
     /// tools and the response format: they are prompt instructions here, and
     /// `NemotronSuperLocalOutput` validates the answer.
+    var nativeReasoningBudget: NativeReasoningBudget? {
+        controls.reasoningBudgetTokens.map { .init(maximumTokens: $0, family: .nemotronSuper) }
+    }
+
     var bridgeRequest: ChatCompletionRequest {
         MultiModelBatchSchedulerEngine.translate(openAIRequest: request, defaultMaxTokens: 1,
-            logprobs: topLogprobs > 0 ? true : nil, topLogprobs: topLogprobs > 0 ? topLogprobs : nil)
+            logprobs: topLogprobs > 0 ? true : nil, topLogprobs: topLogprobs > 0 ? topLogprobs : nil,
+            nativeReasoningBudget: nativeReasoningBudget)
     }
 
     /// Reference prompt for a text request. Media requests are rendered by

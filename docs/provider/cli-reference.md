@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-12
+> Last updated: 2026-11-14
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -1466,6 +1466,15 @@ to do, and `--json` gives `paired`, `role`, `other_mac`, `model` and `serves` as
 ```text
 This Mac's pairing record couldn't be read (pairings.json is malformed; nothing is trusted from it), so it may be in a two-Mac cluster.
 Next: Run `darkbloom cluster` on this Mac to check it.
+```
+
+The pairing's link key is kept in this Mac's data-protection Keychain (this Mac only, after its first unlock, never
+synchronised), which stays locked after a restart until someone logs in. Until then the pair doesn't link (fail closed),
+and the reason and the next step say so; the pair resumes by itself after the login:
+
+```text
+This Mac's pairing record couldn't be read (the pairing's link key is in this Mac's Keychain, which stays locked after a restart until someone logs in to this Mac), so it may be in a two-Mac cluster.
+Next: Log in to this Mac once after its restart (at its screen or with Screen Sharing); the pair resumes by itself.
 ```
 
 `--json` prints one object with the same exit status. Schema 1; every key is
@@ -3239,6 +3248,16 @@ box has loaded, let alone proved, the backend it was configured for. Under
 `--strict` (and therefore `darkbloom verify`) that warning exits non-zero,
 which is the point: an unproven paged rollout must not certify.
 
+### Nemotron Super concurrent images
+
+`DARKBLOOM_NEMOTRON_SUPER_CONCURRENT_IMAGES` controls the image overlap (on by
+default) when a Super owner is constructed. Its exact values, width requirement
+and default are in the [engine configuration table](../reference/configuration.md#engine-and-scheduler).
+The daemon allow-list forwards it: set an off word (`0`) before starting or
+restarting the daemon to restore single-media admission.
+The [native image path](../architecture/inference.md#managed-nemotron-super-slot)
+keeps encoding serial and memory charged through cleanup.
+
 ### GLM-5.3-Flash GPU wired-memory limit
 
 On a 256 GB M5 Mac where GLM-5.3-Flash is downloaded, named in `[backend]`
@@ -4099,7 +4118,15 @@ Positive Gemma caps retain the 128-token floor; `0` defers prefill while decodin
 Pure-prefill stripes are unchanged. These variables are not forwarded to a LaunchAgent;
 see the [scheduler environment reference](../reference/configuration.md#engine-and-scheduler).
 
+### Gemma o4 parser switch
+
+`DARKBLOOM_GEMMA_SCHEMA_COERCION` is read once when the process starts; the LaunchAgent forwards an operator value to the installed service (`0` turns it off, `1` on). The [configuration reference](../reference/configuration.md#engine-and-scheduler) gives its default ([SDK feature defaults](../reference/configuration.md#sdk-feature-defaults)) and rollback.
+
 ## LaunchAgent environment passthrough
+
+`DARKBLOOM_NATIVE_REASONING_BUDGET` is forwarded to the service when the operator
+sets it (`0` turns budgets off for every family, `1` on); see [native reasoning budgets](../reference/configuration.md#native-reasoning-budgets)
+for its default, values and supported request behavior.
 
 The SDK's [Gemma row-mapped NAX route](../reference/configuration.md#gemma-4-row-mapped-nax)
 is enabled by default within its hardware and model guards. The provider forwards
@@ -4201,6 +4228,8 @@ must support the checkpoint contract described in
 | `DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` (`terminalBeforePublication`); an affirmative value answers an unseeded donor before its complete-checkpoint write settles (default off) |
 | `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26WiredResidency.swift` (`isEnabled`) |
 | `DARKBLOOM_GLM_PERSISTENT_WIRED_RESIDENCY` | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextWiredResidency.swift` (`isEnabled`); on by default, `0`/`false`/`no`/`off` rolls back to per-command-buffer residency |
+| `DARKBLOOM_GLM_JSON_ANSWERS` | `provider-swift/Sources/ProviderCore/Inference/Tools/JSONAnswerPolicy.swift` (`glmEnvironmentKey`); `1`/`on`/`true`/`yes` constrains GLM-5.3-Flash JSON answers with the JSON answer grammar |
+| `DARKBLOOM_GLM_JSON_SCHEMA_MISS` | `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextResponseFormat.swift` (`GLM5NextSchemaMiss`); `release` exposes a GLM JSON answer that misses its schema at a natural stop |
 | `DARKBLOOM_MLX_RESOURCE_DEBUG` | forwarded to `mlx-swift-lm` |
 | `DARKBLOOM_TTFT_GDN_BLOCKED` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/GatedDelta.swift` (`GatedDeltaPrefill.mode`); `0` keeps the stock Qwen GDN prompt kernel |
 | `DARKBLOOM_GEMMA4_NAX_ROW_MAP` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/Gemma4RowMappedNAX.swift` (`requested`, `tryPair`); exact `0` restores the original Gemma expert-prefill graph |
@@ -4218,9 +4247,11 @@ must support the checkpoint contract described in
 | `DARKBLOOM_PREFILL_DEADLINE_MODE` | `provider-swift/Sources/ProviderCore/Inference/Engine/PrefillDeadlineMode.swift` (`environmentKey`) |
 | `DARKBLOOM_TTFT_ADMISSION_FIXES` | `provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift` (`DeadlineAdmissionFixes.environmentKey`) |
 | `DARKBLOOM_TTFT_REFUSAL_PROBE` | `provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift` (`DeadlineRefusalProbe.environmentKey`); `0` turns the refusal streak's idle probe off |
+| `DARKBLOOM_TTFT_NATIVE_PREFILL_EVIDENCE` | `provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift` (`NativePrefillEvidence.environmentKey`); `0` restores GLM's and MiMo's previous prefill estimate |
 | `DARKBLOOM_TTFT_IDLE_CACHE_SWEEP` | `provider-swift/Sources/ProviderCore/Inference/Memory/GlobalKVCacheBudget.swift` (`idleCacheSweepEnvironmentKey`) |
 | `DARKBLOOM_TTFT_SEGMENT_RETENTION` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+SegmentedBackend.swift` (`segmentRetentionEnvironmentKey`) |
 | `DARKBLOOM_TTFT_SEGMENT_HOST_ZEROS` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+SegmentedBackend.swift` (`segmentHostZerosEnvironmentKey`) |
+| `DARKBLOOM_NATIVE_SEGMENT_RELEASE` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift` (`nativeSegmentReleaseIdleNanosDefault`); idle seconds (default 30), and any value that is not a positive number below a day (`0`, `off`) keeps an issued GLM pool's free segments until the pool retires |
 | `MLX_GATHER_QMM_EXPERT_SLICES` | only when the shell value is exactly `1` (`GemmaOptimizationEnvironment.daemonDrainPassthrough`, `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationEnvironment.swift`) |
 | `DARKBLOOM_APP_ATTEST_WORKER_QUALIFICATION` | only when the shell value is exactly `1`; selects the [opt-in worker candidate](../reference/configuration.md#app-attest-worker-qualification) (`AppAttestWorkerSelection`, `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`) |
 
@@ -4235,6 +4266,10 @@ The watchdog plist carries its own list: `DARKBLOOM_NO_UPDATE_CHECK`,
 `DARKBLOOM_NO_UPDATE_CHECK` is **not** forwarded to the provider daemon; disable
 automatic updates with `darkbloom autoupdate disable`.
 
+### Gemma o5 parser switch
+
+Set `DARKBLOOM_GEMMA_REOPENED_THOUGHTS` before `darkbloom start`, or before installing the service: the LaunchAgent forwards the operator's value to the provider job. The [configuration reference](../reference/configuration.md#gemma-o5-conformance) defines activation and rollback.
+
 ## Runtime constants
 
 | Constant | Value | Source |
@@ -4242,7 +4277,9 @@ automatic updates with `darkbloom autoupdate disable`.
 | Coordinator reconnect backoff | `ExponentialBackoff(base: 1.0, max: 30.0)` s | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorReconnectPolicy.swift` (`CoordinatorReconnectPolicy`) |
 | Backoff reset after a stable session | `stableSessionDuration = .seconds(60)`, counted from the `register` frame | same |
 | Reconnect wait after close code `1012` (service restart) | `serviceRestartDelayRange = 0...1` s, drawn at random; the backoff does not grow | same |
-| WebSocket ping interval / pong timeout | `pingInterval = 10.0` s / `pongTimeout = 30.0` s | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift` |
+| First reconnect wait after a stable session (any other end) | `stableSessionRetryRange = 0...0.25` s, drawn at random; the backoff does not grow | same |
+| WebSocket ping interval / dead-link bound | `pingInterval = .seconds(2)` / `deadAfter = .seconds(6)`: no inbound frame (pong, ping or message) for more than 6 s declares the link dead, checked at each ping | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorLinkLiveness.swift` (`CoordinatorLinkLiveness`) |
+| Suspension gap | `suspensionGap = .seconds(30)`: a ping tick this late (sleep) reconnects once; a shorter late tick restarts the silence window | same |
 | Coordinator handshake deadline (TCP, TLS and WebSocket upgrade to `.ready`) | `defaultTimeout = 30` s; a stalled handshake is cancelled and retried with the reconnect backoff | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorConnectionHandshake.swift` (`CoordinatorConnectionHandshake`) |
 | State-file and capacity refresh | every `max(1, heartbeat_interval_secs / 2)` s; the heartbeat default is in the [`provider.toml` table](#providertoml-keys-read-by-the-cli) | `provider-swift/Sources/ProviderCore/ProviderLoop+Capacity.swift` |
 | State-file stale threshold | `isStale(maxAge: 90)` s; `doctor` calls the daemon wedged after `max(8 × refresh period, 90)` s | `provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift`; `provider-swift/Sources/darkbloom/Diagnostics/KVBackendPosture.swift` (`wedgedAfterSeconds`) |
@@ -4415,3 +4452,27 @@ Source: `provider-swift/Sources/darkbloom/ClusterServiceCommand.swift`
 for the bounds and process custody rules.
 
 Qwen3.8 27B automatic cluster capacity changes keep the current tensor split and native request execution path. Widening occurs only when the complete reservation fits that split; otherwise the current capacity remains available. No additional command or user setting is required. Implementation: `DistributedAutomaticBatchPlanner` and `ClusterPlacementFlow` in `provider-swift/Sources/ProviderCore/Inference/Distributed/`.
+
+
+## Qwen forced-call thinking
+
+The daemon allow-list forwards `DARKBLOOM_QWEN_FORCED_TOOL_THINKING`; see its
+[values, default and behavior](../reference/configuration.md#qwen-forced-call-thinking).
+Set it before starting or restarting the daemon. An environment change does
+not alter an already-running daemon.
+
+
+## GPT-OSS commentary content
+
+The daemon allow-list forwards `DARKBLOOM_GPTOSS_COMMENTARY_CONTENT`; see its
+[values, default and behavior](../reference/configuration.md#gpt-oss-commentary-content).
+Set it before starting or restarting the daemon. An environment change does
+not alter an already-running daemon.
+
+
+## Qwen stray thinking-close markers
+
+The daemon allow-list forwards `DARKBLOOM_QWEN_ABSORB_STRAY_THINK_CLOSE`; see its
+[values, default and behavior](../reference/configuration.md#qwen-stray-thinking-close-markers).
+Set it before starting or restarting the daemon. An environment change does
+not alter an already-running daemon.

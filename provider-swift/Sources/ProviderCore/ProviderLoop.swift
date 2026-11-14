@@ -588,6 +588,10 @@ public actor ProviderLoop {
     /// (`ProviderLoop+WorkFIFO.swift`).
     internal var unreturnedCoordinatorAdmissions: [String: Int] = [:]
     internal var cancelsAwaitingAdmission: Set<String> = []
+    /// The ciphertext bytes those requests hold, against
+    /// `coordinatorQueueBudget` (`ProviderLoop+WorkFIFO.swift`).
+    internal var queuedCoordinatorBytes = 0
+    internal var coordinatorQueueBudget = CoordinatorQueueBudget.standard
     /// The reason of a coordinator cancel `handleCancellation` has not applied yet.
     internal var coordinatorCancelReasons: [String: CoordinatorCancelReason] = [:]
     internal let localResponseTracker = LocalResponseTracker()

@@ -1,6 +1,6 @@
 # Provider process
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-14
 
 The provider is the Apple Silicon Mac that decrypts prompts and runs inference.
 It ships as one Swift package (`provider-swift/`) producing the `darkbloom` CLI,
@@ -101,6 +101,19 @@ because the load already holds the memory the check sized for a second copy.
 Native MiMo requests keep the serial consumer.
 `DARKBLOOM_TTFT_COLD_LOAD_RELEASE=0` restores the fully serial consumer.
 
+Requests read off the connection hold their ciphertext until their admission
+returns. The reader queues at most 64 of them, and 512 MiB of ciphertext, at
+once (`CoordinatorQueueBudget`, `queueCoordinatorAdmission` in
+`provider-swift/Sources/ProviderCore/ProviderLoop+WorkFIFO.swift`). The
+coordinator keeps at most a provider's width pending, so this binds only while
+admission is stalled (a serial load) and expired or cancelled requests keep
+arriving. A request past it is refused on arrival with `queue_full` on a
+capacity 429, as the engine's own queue refuses, its service reservation
+released, and is never queued. Unlike a `draining` refusal, the coordinator
+spends a capacity retry on it and counts it against this Mac's capacity for
+the model. The reader never waits for room, so cancels, challenges and trust
+updates keep flowing.
+
 - **In-process inference.** The MLX stack is linked into the `darkbloom`
   binary; there is no Python interpreter and no inference subprocess. Runtime verification can launch a child for paged-kernel preflight
   (`PagedKernelPreflight`, `runtime-smoke`); platform checks and service
@@ -129,6 +142,15 @@ whether the new connection may serve. Unexpected disconnect still cancels that
 connection's inference requests; this does not resume interrupted completions
 or prove two-minute engine continuity.
 
+A link can die with no TCP reset and no close frame, for example when the
+coordinator node is hard-reset. `sessionLoop` pings every `pingInterval` and
+declares the link dead when no frame comes in for more than `deadAfter`
+(`CoordinatorLinkLiveness`). Every inbound frame counts, not only a pong, so a
+busy stream whose pongs are late keeps its link. The ping task reads the
+continuous clock: a tick that is `suspensionGap` late (the Mac slept) reconnects
+once, and a shorter late tick restarts the silence window instead of counting
+as missed pongs.
+
 When a connection attempt fails or a session ends with an error,
 `CoordinatorClient.runLoop` waits before the next attempt.
 `CoordinatorReconnectPolicy` chooses the range of that wait from how the last
@@ -138,8 +160,10 @@ attempt ended, and `runLoop` draws the wait at random from that range.
 side. A session that stayed open for `stableSessionDuration` or more resets the
 backoff. A drop after a long session then does not pay the waits that earlier
 drops grew. A close frame with code `1012` (service restart) gives
-`serviceRestartDelayRange`, and the backoff does not grow. Every other end takes
-the next `ExponentialBackoff` range and grows the backoff. The receive callback
+`serviceRestartDelayRange`, and the backoff does not grow. Any other end of a
+stable session gives `stableSessionRetryRange`, so a dead link reconnects at
+once, and the backoff does not grow. Every other end takes the next
+`ExponentialBackoff` range and grows the backoff. The receive callback
 records the close code on the connection queue, because the transport state
 change that follows the frame can end the session first. Network.framework
 reports a code that it does not name, such as `1012`, as `noStatusReceived`;
@@ -150,10 +174,12 @@ and the [runtime constants](../../provider/cli-reference.md#runtime-constants)
 give the codes and the values. Sources:
 `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorReconnectPolicy.swift`
 (`CoordinatorReconnectPolicy`),
+`provider-swift/Sources/ProviderCore/Coordinator/CoordinatorLinkLiveness.swift`
+(`CoordinatorLinkLiveness`, `CoordinatorLinkWatch`),
 `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientState.swift`
-(`CoordinatorSessionRecorder`) and
+(`CoordinatorSessionRecorder`, `LinkActivityTracker`) and
 `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift`
-(`runLoop`, `receiveLoop`, `sentCloseCode`).
+(`runLoop`, `sessionLoop`, `receiveLoop`, `sentCloseCode`).
 
 Apple exchanges use `AppAttestShadowReply`, a capability bound to their original
 `NWConnection`, rather than the reconnectable outbound router. Late results are

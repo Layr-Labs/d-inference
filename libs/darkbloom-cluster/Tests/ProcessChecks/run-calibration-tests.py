@@ -66,6 +66,7 @@ def source_map():
             result[path] = Path("Sources") / module / path.relative_to(base)
     result[HERE / "CalibrationFixture.swift"] = Path("Sources/CalibrationFixture/CalibrationFixture.swift")
     result[HERE / "ClusterCalibrationProcessTests.swift"] = Path("Tests/ProcessTests/ClusterCalibrationProcessTests.swift")
+    result[ROOT / "Tests/Support/LaunchStates.swift"] = Path("Tests/ProcessTests/LaunchStates.swift")
     # Hash the controller too, even though it is not a Swift package input.
     result[ROOT / "Tests/SecurityChecks/owned_process.py"] = None
     result[Path(__file__).resolve()] = None

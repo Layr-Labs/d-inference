@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-12
+> Last updated: 2026-11-14
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -356,7 +356,13 @@ and `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementBa
 ## Cluster setup presentation
 
 `ClusterOnboardingDriver` presents connection, pairing, model choice and
-startup (with its test response) as four steps. Completion requires the test response to
+startup (with its test response) as four steps. Its pairing step shows the
+code and its question but not the other Mac's hardware and boot posture
+(`ClusterOnboardingPairing.handle`); `darkbloom cluster pair` shows that
+posture as the other Mac's own report (`ClusterPairingTerminal.reportedPosture`):
+its attestation proves possession of the key it pairs with, not where the key
+lives ([pairing](security/encryption.md#two-mac-cluster-experimental)).
+Completion requires the test response to
 succeed; a failed response retains the saved setup for a later retry. After
 the test response succeeds, the control leader registers the pair with the
 coordinator when the coordinator serves a cluster approval for this pair
@@ -450,7 +456,27 @@ over the cable and ends with the same ✓/✗ block, bounded like the leader's s
   rows. Plain output prints each whole line.
 - **How the wait ends.** A refusal ends the wait at once with the leader's ✗ (`followRefused`; different builds:
   `differentBuildsLines`). Running out of time ends it with a ✗ and next steps (`notStartedReason`,
-  `notStartedLines`).
+  `notStartedLines`). A stop someone asked for ends it at once with the leading Mac's line (`ClusterOnboardingStopped`):
+  `darkbloom cluster stop` on either Mac, and `darkbloom stop` or `restart` once the pair runs (before that, `darkbloom
+  stop` stops only what runs on its own Mac). The leading Mac runs each such stop (`OnboardingLive.stop`) and counts it
+  in its setup record, in the same write as the stopped intent (`ClusterSetupRecord.stopsAsked`,
+  `OnboardingLive.recordStop`); the start's own stops (a model change, the registration's restart) and the cluster
+  service's don't count. Its status reply carries the count (`ClusterControlReply.stopsAsked`, 0 before the first; nil
+  from an older build, which an older Mac ignores). The start begins at its first step on the leading Mac, the model's
+  transfer or the start itself (`ClusterOnboardingLeaderStep.startBegun`); that step carries the count read then
+  (`ClusterOnboardingLeaderStep.stopsBefore`), so both Macs compare with the same number. The Mac that joins ends once
+  it grew (`ClusterOnboardingFollowedStop`; a look that read no count tells nothing), and so does the leading Mac: in
+  the model's download or copy (what arrived stays, and the next start goes on from there), in its waits for the
+  parts and for the coordinator (`ClusterOnboardingDriver.endsOnStopAsked`, asked about once a second off the console's
+  thread, `ClusterOnboardingLooker`), at its test, and before both Macs start (`startBothMacs`, also when the same start
+  goes on after the single-Mac or version question). The leading Mac compares the count again under the command lock
+  its start takes (`OnboardingLive.localServe(unlessStoppedSince:)`, `ClusterControlRequest.stopsBefore`), so a stop
+  that took the lock first is never undone, and its registration neither registers nor starts again a pair stopped
+  since its start (`OnboardingLive.localRegister`). Retry after a ✗ is a new start. The status' words never tell
+  a stop: it reads "Stopped" until both parts start, so through a whole download or copy of the model, and again while
+  the registration restarts them. 0.10.9 to 0.10.12 took "Stopped" held 20 s for a stop on the Mac that joins (an
+  external pair's said it 20 s into a download, 2026-11-12), and the saved start turned off for one in the leading
+  Mac's coordinator wait, which the cluster service's own restarts turn off too.
 - **The leader's own Local Network wait** has a bound too (`ClusterOnboardingOperations.localNetworkWaitSeconds`,
   `localNetworkOffLines`).
 
@@ -733,16 +759,31 @@ tests serve PNG, JPEG, WebP, GIF and BMP variants through the tiny synthetic own
 tokenizer parity, RADIO peak workspace and full-checkpoint image qualification
 remain required.
 
+By default (`DARKBLOOM_NEMOTRON_SUPER_CONCURRENT_IMAGES`; an off word turns
+it off), an owner that serves at least three requests may admit two image
+requests concurrently. Images
+prepare one at a time through the evaluated native fence, then enter the same
+engine for concurrent decode. Each image retains its full ingress, decoded
+media, feature and tower-workspace reservation through native terminal
+settlement; this switch supplies no extra memory credit or wider engine grant.
+Two media rows leave at least one configured owner slot for text. A second
+image whose full quote does not fit is still refused. An off word restores
+0.10.12's single-media behavior below. Video remains
+exclusive with all other media. Draining closes admission, cancels every
+tracked image and waits for every cleanup; a retained native fault keeps its
+charges.
+
 The same binding serves one inline video as the only media of a request
 (`data:video/mp4;base64,` or `data:video/quicktime;base64,`; one media request
-at a time, like images). A request that arrives while the owner's request, or
+at a time; two images at once by default on an owner serving three or more). A request that arrives while the
+owner's request, or
 the binding's media request, has finished its answer and only its settlement
 remains (native retirement, the media charge's release) waits up to
 `NemotronSuperServingPolicy.finishingWait` (1 s) for it instead of a 429
 `queue_full` (`NemotronSuperLocalBridgeBuilder.Owner.admitLocalRequest(waitingUpTo:stackedUntil:cancelled:)`,
-`NemotronSuperLocalImageBinding.admit(stackedUntil:)`). The managed slot's owner
+`NemotronSuperLocalImageBinding.admit(concurrentImage:stackedUntil:)`). The managed slot's owner
 admits up to eight requests at once (`loadPlan`, halved by the load fit), so its
-media requests meet the binding's one-at-a-time limit long before the owner's
+media requests meet the binding's default one-at-a-time limit before the owner's
 request limit. A media request that
 arrives while the media request ahead of it is already streaming its answer
 (its first chunk has passed; images end about 2 s later), at the binding, or at
@@ -1652,6 +1693,24 @@ held requests and gate reservations (`EngineV2Bridge.heartbeatCommittedBytes`).
 The engine's reserved bytes also keep the paged pool's retained segments after
 every request retires, which the engine reuses, so reporting them read an idle
 GLM slot as 90–99 % full and the coordinator turned its requests away.
+Those retained segments were charged as well. The issued pool kept every
+segment it ever committed until it retired (`PagedKVPool.trimFreeSegments`
+skips native pools), and each complete-checkpoint restore attached the staged
+checkpoint's segments, so on a 256 GB M5 Ultra the committed floor ratcheted to
+the slot's grant (idle MLX active memory 169 → 214 GiB, never back). A lone
+request on an idle engine then could not reserve its fixed bytes and its first
+step's scratch beside that floor: the refused step finished it
+`kv_capacity_exhausted` (`capacity_busy` to the coordinator, which cooled the
+Mac). The engine now returns the pool's whole free segments, and refunds their
+floor, before retrying such a lone row, and once it has been idle
+`DARKBLOOM_NATIVE_SEGMENT_RELEASE` seconds (default 30, the idle sweep other
+pools' retained segments use); the row waits up to 10 s while another
+request's checkpoint publication or retirement keeps the pool busy, and is
+retried once after a release (`PagedKVPool.releaseIssuedNativeFreeSegments`,
+`EngineLoopV2.keepLoneRowForNativeSegmentRelease`). The release drains the
+streams and trims in `retireIssuedNativePool`'s order, outside the native
+commit, with no other native work live. Any value that is not a positive
+number of seconds keeps the former behavior.
 The engine's activation check prices step scratch for every row at the full
 context against the same capacity, so the protected scheduler's running-row
 cap is the largest value that check admits
@@ -1761,6 +1820,49 @@ commit a partial call batch. Its retained suffix is capped at 1 MiB; rejection
 returns the original text through the existing parser-failure path. Ambiguous
 string unions and unsupported indirect schemas are not inferred. This parser
 does not implement constrained decoding or advertise function calling.
+The suffix starts at the response's first `<tool_call>`, and GLM `auto` tool
+requests do not split reasoning off first, so it also holds a tag the model only
+mentioned or a call it drafted in its thought, or a tag its answer mentions.
+Such a suffix does not parse as one batch. On an `auto` request it is no longer a
+failure: like the reference GLM parsers (vLLM, SGLang), which never fail a
+response on tool syntax, the provider returns it as text, under its own stricter
+rule for what still counts as a call (`NativeToolStreamRouter.finishCompleteCalls`,
+`GLM5ToolSuffix`). The calls are the trailing run of top-level frames, separated
+only by whitespace and ending the response, when the SDK parser accepts every one
+of them (like the SDK, the batch is taken whole or not at all); everything before
+them is text, which the service's reasoning parser then splits at `</think>`. A frame that has started its
+arguments must follow the SDK parser's grammar to its own `</tool_call>` (a
+string-typed value raw to `</arg_value>`, any other value structurally valid
+JSON, whose quoted delimiters are data). One that does not (malformed JSON, a raw
+value holding frame tags, which the SDK refuses, its own tags after a malformed
+header, a key that only canonically equals a declared one, a value whose declared
+type is a union of `string` with `object` or `array`, which the template could
+have written either way) or that is still open at the end owns the rest of the
+response: no frame inside or after its arguments is ever a call. Where the SDK
+accepts a frame on its own, the lexer reads it as the SDK does; a frame the SDK
+refuses keeps its end only without a `"` (one may open a JSON string that a raw
+reading ends inside, or end a raw string that a JSON reading runs past), else it
+owns the rest too, as does a frame's tag in top-level text (from the first
+frame or `<tool_call>` read as a mention before it). A `<tool_call>`
+followed by anything else, with no frame tags before the next `<tool_call>`, is a
+mention; a thought that spells out the tags in order (`<arg_key>` … `</arg_value>`)
+therefore owns the rest, and fails as before when its `</think>` follows. A suffix
+with no such run (a malformed or cut-off final frame, text after the calls) is
+all text, and so is a suffix that did not parse in an output cut at the token
+limit, except that a cut that ends the answer as `length` drops the frames that
+end it, closed or not, from a frame that owns the rest or a header the limit cut
+(`GLM5ToolSuffix.textAtCut`, see
+[cut answers](#answers-cut-at-the-token-limit)); no frame is completed or salvaged. A suffix whose release would put a think marker from
+inside a frame (its name, a key or a value, or anything after a frame that owns
+the rest) before the reasoning parser keeps failing (500), at a stop or at the
+token limit (a cut that ends the answer as `length` drops it instead, when the
+text it would keep still holds such a marker), as does a suffix the SDK refuses as oversized while it streams, and
+a required or named call (422). Unlike vLLM and SGLang, a call followed by text
+or by a malformed frame, or next to one in the final run, commits nothing, and a
+call drafted inside a closed thought stays reasoning. A suffix that parses keeps its calls as before. The
+rule follows the handler's `glm5` parser format, so a request that selects that
+parser for another family gets it too. `DARKBLOOM_GLM_TOOL_TEXT_FALLBACK=0`
+restores the whole-suffix failure (500).
 The request-local [GLM prompt contract](../reference/protocol-messages.md#glm-native-prompt-contract)
 also preserves original schema values only after a trusted loaded-model check.
 It renders reasoning that OpenRouter returns on earlier assistant turns
@@ -1770,14 +1872,24 @@ It renders reasoning that OpenRouter returns on earlier assistant turns
 template's `clear_thinking` (`RawControls.contextClearThinking`). It serves
 `strict` tools by validating each `auto` call against its schema before
 exposure (`ToolConstraintValidation.validate`), not by constraining decoding.
-GLM's native engine refuses sampler token constraints, so a JSON
-`response_format` is likewise prompt-steered and validated, not constrained:
+Without `DARKBLOOM_GLM_JSON_ANSWERS` a JSON `response_format` is likewise
+prompt-steered and validated, not constrained (with it, the answer is also
+sampled under a grammar: [Constrained Qwen JSON answers](#constrained-qwen-json-answers)):
 the service's instruction message renders through the template, reasoning
 streams on a separate typed channel, and the answer is withheld until
 generation ends, then decoded and checked (`json_schema` against the caller's
 schema, through the shared compiled subset when the schema fits it) before it
 is exposed; invalid output is a 422 with no
-content (`GLM5NextResponseFormat`, `GLM5NextResponseFormatOutput`). One Mac
+content (`GLM5NextResponseFormat`, `GLM5NextResponseFormatOutput`), and an
+answer the token limit cut leaves as generated with `finish_reason: "length"`.
+With `DARKBLOOM_GLM_JSON_SCHEMA_MISS=release` (`GLM5NextSchemaMiss`), an answer
+that holds a JSON value (the whole text, a fenced block, or the first balanced
+object or array) that misses its schema is exposed as that value instead, for
+the caller's own validator to judge, when the model stopped by itself; output
+with no complete JSON value is still a 422, and an output the token limit cut
+is judged as without the switch. It applies to
+streamed responses (every coordinator request): a non-streamed local API request
+still gets the service's own schema check. One Mac
 serves it with image or video input the same way: the instruction turn renders
 in the media prompt (`EngineV2VisionPrefill.glm5NextUserInput`), and the media
 path routes reasoning to the typed channel and records the withheld answer as
@@ -2611,6 +2723,49 @@ that floor, because the anchor comes from a short calibration cell
 evidence expires after 120 seconds. The published isolated rate is unchanged.
 A late older cold sample no longer restarts the combined prefill EWMA.
 
+GLM-5.3-Flash and native MiMo V2.6 bridges do not take that bound (before their
+first calibration cell they keep the bounded recovery probe below) and price
+prefill from evidence that can speak for a long prompt
+(`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/AdmissionRateEstimators.swift`,
+`NativePrefillEvidence`; `EngineV2Bridge.nativePrefillEvidenceApplies`). A short
+cold prompt measures mostly the request's fixed cost: on idle GLM M5 Ultras a
+13-20-token prompt measured 9-140 tok/s against 1,378-2,031 tok/s for prompts
+above 4K tokens. Before this, one such sample set the estimate, the Macs refused
+every long prompt, and a refusal measures nothing. A cold isolated sample from a
+prompt of at most 4,096 tokens now raises the estimate when it is faster and is
+otherwise left out of it, since a short prompt's rate bounds a longer one's from
+below. Calibration cells and longer prompts move the estimate either way, and
+only they date the evidence; once the Mac has a calibration cell, only they
+restart the estimate 120 seconds after the newest of them, and a faster short
+sample blends in. Before the first cell, restarts follow the published
+measurement's own 120-second clock, which slower short samples do not refresh.
+On an idle Mac at nominal posture, evidence older than 120 seconds, or none, is
+priced at no less than the calibration cell's rate; fresh evidence, a busy Mac
+or another posture keep the floor of one eighth of it. Old evidence never skips
+the projection: a native step cannot be preempted. The smallest prompt-size
+bucket (up to 1,024 tokens) no longer tightens a prompt, because it mixes a
+few-token prompt's fixed cost with real prefill; larger buckets still do. A
+slower short sample stays in its prompt-size bucket only: it enters neither the
+published `isolated_prefill` measurement nor `observed_prefill_tps` nor the slot
+telemetry's `isolated_prefill_tps`; contended samples feed
+`observed_prefill_tps` as before. The published measurement restarts whenever
+the estimate does. Once calibrated, after an evidence gap a faster short sample
+also restarts it on its own clock while the estimate blends the sample in, so
+the published rate can read above admission's until the next long prompt or
+cell. With a calibration cell, the Mac no longer takes the bounded recovery
+below: idle at nominal posture the floor already admits such a prompt, and a
+recovery sample could only raise the estimate. Before its first cell it still
+does. Because slower short samples no longer refresh the published measurement,
+it expires 120 seconds after the last sample that entered the estimate, even
+while short prompts arrive, so MiMo's maintenance calibration, which waits for
+an idle Mac and evidence older than 90 seconds, runs on such a Mac as on one
+without traffic. Off nominal posture a short sample still cannot lower the
+estimate, so the first long prompt after a posture change is priced from the
+nominal estimate until it is measured.
+`DARKBLOOM_TTFT_NATIVE_PREFILL_EVIDENCE=0` restores the previous estimator, as
+does `DARKBLOOM_TTFT_ADMISSION_FIXES=0`. Other models, Diffusion Gemma's native
+block engine included, are unchanged.
+
 A refusal admits nothing, so it measures nothing: those idle rules are the
 only way expired evidence that refuses is replaced, and with no anchor or off
 nominal posture they keep it for 30 minutes. Ordinary engines therefore count
@@ -2938,7 +3093,9 @@ When neither a global nor a per-model acceptance value is configured, serving
 defaults to typical acceptance for eligible sampled target-prefix rows, except
 on the builds whose built-in rule is exact (`MTPAcceptancePolicy.builtInIsExact`):
 the owned Bonsai 9B candidate; the catalog `Qwen3.5-9B`, which looped under
-typical acceptance in the 0.10.12 gate (see the Qwen 3.5/3.6 defaults below);
+typical acceptance in the 0.10.12 gate (its default carries the card's presence
+penalty again, so only its rows with `presence_penalty` 0 draft; see the Qwen
+3.5/3.6 defaults below);
 the catalog `gemma-4-26b-qat-4bit`, which drafted every answer of OpenRouter's
 10-31 GPQA run, 30 % of which ended at the 32,768-token cap; and every Qwen 3.8
 27B build (`EigenLabs/Qwen3.8-27B-4bit-mtp` and its head-less target,
@@ -3075,7 +3232,7 @@ production assembly and encrypted store.
 | `top_p` | `topP` | artifact default, else `1.0` |
 | `top_k` | `topK` | artifact default, else `0` |
 | `repetition_penalty` | `repetitionPenalty` | artifact default, else `1.0` |
-| `frequency_penalty` / `presence_penalty` | `frequencyPenalty` / `presencePenalty` | `0`; `presence_penalty` takes a model-card default on the catalog 35B Qwen 3.5/3.6 builds (`Qwen3.5-9B` has none) |
+| `frequency_penalty` / `presence_penalty` | `frequencyPenalty` / `presencePenalty` | `0`; `presence_penalty` takes the model card's 1.5 on the catalog Qwen 3.5/3.6 builds (`DARKBLOOM_QWEN35_9B_PRESENCE_PENALTY=0` drops it on `Qwen3.5-9B`) |
 | `seed` | `seed`; also keys a stable engine request id | nil |
 | `logit_bias` | `logitBias` — string keys parsed to non-negative `Int`; invalid keys dropped and counted | `[:]` |
 | `logprobs` + `top_logprobs` | `topLogprobs = logprobs ? min(20, max(1, top_logprobs ?? 0)) : 0` | `0` |
@@ -3133,29 +3290,27 @@ The catalog `Qwen3.5-9B`, `qwen3.5-35b-a3b` and `qwen3.6-35b-a3b-vl-mtp-mxfp8`
 builds (`EngineV2SamplingDefaults.qwen35CardModelTypes`, each bound to its
 `model_type`) take their model cards' thinking-mode values for omitted knobs:
 `temperature 1.0`, `top_p 0.95`, `top_k 20`. Greedy decoding made them repeat
-themselves until `max_tokens` (#1530). The cards' `presence_penalty 1.5` is a
-per-build default, set by the 0.10.12 gate on the signed 0.10.11 (temperature 1
-/ 0.95 / 20; #1652's four loopers and five tool transcripts at 32,768 tokens and
-nineteen everyday prompts at 8,192, three seeds each; the Studio M3 Ultra for
-the 9B, an M5 Ultra for the 35B):
+themselves until `max_tokens` (#1530). Every build also takes the cards'
+`presence_penalty 1.5` for a request that omits one (`qwen35CardDefaults`):
 
-| Build | Omitted `presence_penalty` | Built-in MTP acceptance | The gate without the penalty |
+| Build | Omitted `presence_penalty` | Built-in MTP acceptance | Without the penalty |
 |---|---|---|---|
-| `qwen3.5-35b-a3b`, `qwen3.6-35b-a3b-vl-mtp-mxfp8` (`qwen35CardDefaults`) | 1.5 | typical | `qwen3.5-35b-a3b` ran away under typical acceptance (5 of 19 everyday prompts, 8 of 12 loopers to 32,768, MTP running at concurrency 1) and under exact (2 of 12 loopers); the 3.6 build shares its architecture |
-| `Qwen3.5-9B` (`qwen35NineBCardDefaults`) | none | **exact** (`MTPAcceptancePolicy.builtInIsExact`) | ran away on 13 of 31 draws under typical acceptance and on 0 of 31 under exact, MTP running; the penalty-free body cached 8,192 tokens on the second send, the penalty body none |
+| `qwen3.5-35b-a3b`, `qwen3.6-35b-a3b-vl-mtp-mxfp8` | 1.5 | typical | The 0.10.12 gate on the signed 0.10.11 (temperature 1 / 0.95 / 20; #1652's four loopers and five tool transcripts at 32,768 tokens, nineteen everyday prompts at 8,192, three seeds each; an M5 Ultra): `qwen3.5-35b-a3b` ran away under typical acceptance (5 of 19 everyday prompts, 8 of 12 loopers to 32,768, MTP running at concurrency 1) and under exact (2 of 12 loopers); the 3.6 build shares its architecture |
+| `Qwen3.5-9B` | 1.5; none under `DARKBLOOM_QWEN35_9B_PRESENCE_PENALTY=0` (`qwen35NineBNoPenaltyDefaults`, 0.10.12's default) | **exact** (`MTPAcceptancePolicy.builtInIsExact`) | The same gate (the Studio M3 Ultra) saw it run away on 13 of 31 draws under typical acceptance and on 0 of 31 under exact, so 0.10.12 shipped it without the penalty. In production that was a regression. On 2026-11-12, on 0.10.12 Macs against 0.10.11 Macs (the penalty, MTP off) over the same period, answers with `max_tokens` ≥ 8,192 hit the cap on 5.5 % against 1.7 %, about three times as often. On the 4,096-token JSON `response_format` workload, in the same 10-minute windows, answers ran out and failed in 51 % of requests against 23 %. Its constrained JSON rows never speculate and their template is unchanged since 0.10.4, so the penalty is the difference we can establish: with nothing else running they failed 32.7 % against 13.6 %. A registry `presence_penalty` 1.5 brought both back within the hour |
 
 A row with a penalty does not speculate (`EngineLoopV2.mtpBasicEligible`), so
-the 35B builds' requests that omit the penalty stay without MTP, the cost the
-gate accepted for loop safety; they still stage prefix checkpoints
+these builds' requests that omit the penalty stay without MTP, the cost taken
+for loop safety. They still stage prefix checkpoints
 ([prefix caching](prefix-cache.md#invariants), invariant 9). A request's own
-`presence_penalty` always wins: `0` on a 35B build speculates under typical
-acceptance and donates checkpoints (the configuration that looped in the gate,
-now the caller's choice); a nonzero value on the 9B turns its MTP off for that
-request (it still donates checkpoints). The coordinator forwards a build's
-registry runtime defaults for the fields a request omits
-([`requestRuntimeDefaultKeys`](https://github.com/Layr-Labs/darkbloom-platform/blob/c69380d91fd3f9e4ef3ff1e3775690d80adbbe57/coordinator/api/inference/request/model_runtime_defaults.go));
-on 2026-11-10 the registry set `temperature`, `top_p` and `top_k` for these
-builds and no `presence_penalty`, so the provider default above decides it.
+`presence_penalty` always wins: `0` speculates (typical acceptance on the 35B
+builds, the configuration that looped in the gate; exact on the 9B) and donates
+checkpoints. The coordinator forwards a build's registry runtime defaults for
+the fields a request omits
+([`requestRuntimeDefaultKeys`](https://github.com/Layr-Labs/darkbloom-platform/blob/a9c111db3e235fa979a914d6a46bf93cba8e4268/coordinator/api/inference/request/model_runtime_defaults.go),
+`presence_penalty` included). Since 2026-11-12 19:17Z the registry sets
+`presence_penalty` 1.5 on `Qwen3.5-9B`, which reaches 0.10.12 Macs too; to
+the provider it is the request's own value, so `DARKBLOOM_QWEN35_9B_PRESENCE_PENALTY=0`
+changes nothing while the registry sets it.
 
 Other model identities keep the legacy defaults in the table byte-for-byte. `do_sample: false` or an absent/unreadable file is legacy. The
 sampler is not part of prompt or cache identity, so prefix-cache and SSD
@@ -3206,7 +3361,10 @@ stops such a row early.
   sees every generated token of every engine, for the requests that take the
   scheduler's text path (`MultiModelBatchSchedulerEngine.prepareCompletion`):
   single-Mac MLX slots, the native GLM-5.3 and MiMo engines, and the cluster
-  pairs. Super's coordinator and local text requests take the owner's own
+  pairs; and for one Mac's image and video requests
+  (`EngineV2VisionPrefill`, the same function's media path), with the same
+  rule. The pairs' media routes, MiMo's native media and Super's media pass no
+  guard. Super's coordinator and local text requests take the owner's own
   route (`ProviderLoop+InferenceHandler`, `superOwner.chatEngine` →
   `NemotronSuperLocalImageHTTP` → `NemotronSuperLocalBinding.executeBridge`),
   which resolves the same guard from its request plan
@@ -3216,21 +3374,152 @@ stops such a row early.
   engine's cancelled terminal into a `length` finish with the engine's usage:
   `finish_reason: "length"`, the tokens produced, no error frame, paid like
   any completion. It logs one line (category `engine_v2_loop_guard`: model,
-  `model_type`, period, span, tokens) and emits an `engine_v2_loop_guard`
-  engine-health event with the same fields. To the coordinator it is a
-  `length` finish below the request's bound.
+  `model_type`, period, span, tokens, and whether the stop ended a thought)
+  and emits an `engine_v2_loop_guard` engine-health event with the same fields
+  (`ends_thought`). To the coordinator it is a `length` finish below the
+  request's bound.
 - **Never on:** the first 4,096 tokens; a request with a token constraint, a
   forced tool call or a JSON `response_format`; the rest of a row once its text
   shows a tool-call frame (`<tool_call>`, `<|tool_call>`, `<function=`,
   `to=functions.`, `<start_function_call>` and the request parser's own tags);
-  a request with tools whose parser also reads untagged calls (bare JSON);
-  media requests.
+  a request with tools whose parser also reads untagged calls (bare JSON).
 - **Models** (`GenerationLoopGuardPolicy`, by `model_type`): on by default
   for `gemma4`, `gemma4_text`, `qwen3_5`, `qwen3_5_moe`, `qwen4_exp`,
   `qwen4_exp_text`, `gpt_oss`, `nemotron_h` (Lightning), `nemotron_h_omni`
   (Super, text only), `glm5_next` and `mimo_v2`. `DARKBLOOM_LOOP_GUARD=0`
   (or `off`) turns it off; a comma-separated list of `model_type`s replaces
   the default list.
+- **A loop inside a Gemma 4, GPT-OSS or Qwen 3.5 9B/35B thought (or a named Qwen 3.6, Qwen 3.8
+  27B or Nemotron 3.5 Super one) ends the thought, not the answer** (`GenerationLoopExitThinkingPolicy`, `LoopExitThinkingContinuation`).
+  For `gemma4`, `gemma4_text` and `gpt_oss` (on by default) and `qwen3_5_moe` (Qwen 3.5/3.6
+  35B) and `qwen3_5` (Qwen 3.5 9B, Qwen 3.8 27B), on by default for the builds the GPU
+  A/B proved only, `Qwen3.5-9B` and `qwen3.5-35b-a3b` (`provenBuilds`, each with its own
+  `model_type`; on the GPU A/B at OpenRouter's GPQA settings, T 0.5, on its loop-prone questions, the
+  35B answered 14 of the 27 thoughts the guard ended, 6 right, and the 9B 11 of 29, 3 right; the
+  others looped again and still ended `length`; no change where the guard did not fire), while
+  Qwen 3.6, Qwen 3.8 27B and any other build
+  of these families keep `length` unless a list set on the Mac names them (`keepsLength`),
+  the guard also
+  follows the thought channel (`<|channel>` … `<channel|>`, `<think>` …
+  `</think>`, `<|channel|>analysis` … `<|end|>`; the prompt's tail seeds the state: Qwen's served template opens
+  `<think>` in the prompt) and records
+  every token the row produces, the in-flight ones after its stop included. A
+  detection inside the thought stops the row as above; the scheduler
+  (`prepareCompletion`) then holds the row's `length` terminal, waits until the
+  row has released its serving slot (`EngineV2Bridge.waitForRowRelease`, as
+  model calibration waits: its pump's retirement cleanup and its whole-Mac
+  service charge; a row with a retirement handle, the coordinator's atomic
+  admission path, ends its stream before that; at most 5 s), and submits one
+  continuation on the same bridge: the prompt, every generated
+  token and the family's end of thinking (the exit tokens: Gemma's
+  `<channel|>`; Qwen's `\n</think>\n\n`, as its template closes a thought, with
+  `</think>` as its own token and the newlines tokenized on each side;
+  GPT-OSS's `<|end|><|start|>assistant` (`harmonyAnalysis`): the analysis
+  message ends and the next assistant message starts, as after the model's own
+  analysis, so the model picks `final` for the answer or a
+  `commentary to=functions.…` call; `<|end|>` and `<|start|>` must resolve as
+  their own tokens. For a GPT-OSS request without tools (or with
+  `tool_choice: "none"`, which renders none) the exit also opens the final
+  channel, `<|end|><|start|>assistant<|channel|>final<|message|>`
+  (`harmonyAnalysisToFinal`; `<|channel|>` and `<|message|>` as their own
+  tokens too): left to pick its channel, the model reopened its analysis and
+  looped again in 10 of 10 GPQA loopers on the GPU A/B, and without tools there
+  is no call to pick. `DARKBLOOM_GPTOSS_FINAL_EXIT=0` (or `off`) keeps those
+  requests' `length` stop, as with the tools-only exit), with
+  `max_tokens` = the output the bridge resolved for the row minus the tokens
+  produced minus the exit tokens, at most 8,192; the same sampling, stop strings
+  and cache scope, the stop strings scoped as for output that starts outside the
+  thought (GPT-OSS's final exit: as for output that starts inside the final
+  channel, `GPTOSSHarmonyTemplateFix.insideFinalChannelStopScope`, since the
+  model's own scope would wait for a header the exit already fed; a stop that
+  ends the answer is the request's matched stop sequence);
+  and a loop guard without the exit, so a loop in the answer still ends
+  as `length`. The client's stream carries the thought, the exit text as one
+  chunk and the answer, then one terminal: the original prompt, completion =
+  the row's tokens + the exit tokens + the answer's, the continuation's finish
+  reason. (GPT-OSS: the Harmony reasoning parser, streaming and collected, reads
+  `<|end|>` as the analysis's end and `<|start|>assistant` as the next
+  message's role (and the final exit's `<|channel|>final<|message|>` as the
+  answer's header), so none of them reaches `content` or `reasoning_content`, and the
+  Harmony tool-call parser holds `<|start|>assistant` until a call header
+  completes in the continuation; the prompt is reused as rendered, its
+  `Reasoning: low|medium|high` included.) The continuation is an ordinary row,
+  admitted ahead of the requests waiting in the engine's queue
+  (`LoopExitThinkingContinuation.admissionPriority`, `CBv2Request.priority` 1
+  through `EngineAdmissionPriority`; every other request has 0): it takes its
+  stopped row's place. On a busy Mac the waiting requests take the slot the row
+  frees, and a continuation queued behind them in arrival order waited past the
+  engine's 120 s admission lease and ended `admission_timeout`, the held
+  `length` (21 of 29 exits on 0.10.13 `.181` at 12-on-8 concurrency); ahead of
+  them it starts at the next free slot (the slot its own row freed has gone to
+  the queue's head by then, so on a Mac whose every slot holds a generation
+  longer than the lease past the exit it can still time out). The same holds
+  for the whole-Mac service allowance: the row's share was released before the
+  continuation asks, and on a full Mac work waiting for a slot takes it first,
+  so the continuation is never refused for width
+  (`acquireServiceAllowance(takesStoppedRowPlace:)`,
+  `WholeMacServiceBudget.acquire(overcommit:)`): each continuation may exceed
+  the width by one row until it ends (on a width-1 profile, a second whole
+  Mac), while other work waits; never beside the idle prefill-evidence
+  recovery before its prompt completes (`Charge.exclusive`). What the budget
+  reports (`whole_mac_service_used`, each model's deadline work) stays capped
+  at 1. The engine's KV
+  preemption reads the same priority: the continuation is evicted after
+  ordinary rows, and when its own chunk doesn't fit, the youngest ordinary
+  running row is evicted instead (it re-prefills); at the queue's head, a
+  continuation whose reservation fails holds back the requests behind it, as
+  any head does. The bridge's queue reading (`queueState(of:)`, me first's and
+  the held local head's) counts only the requests that can't overtake it, so it
+  still errs toward "waiting"; me first treats a continuation as admitted (it never
+  gives way). Exact MTP drafting stays on for it and its batch; a cancelled row donates no KV, so the
+  continuation prefills the thought again (its prompt part can hit the prefix
+  cache). When the continuation cannot start (under 256 tokens of budget left,
+  the row closed its thought itself (its in-flight tokens after the stop hold
+  the close marker's token, or its in-flight text closes the thought; a close
+  token in the stopping delta whose text has not arrived keeps the stop a
+  `length`), the row did not release its slot in time,
+  a refused submission, a failure before its first token, a cancel), the held
+  `length` terminal is
+  delivered as before; a failure after its first token ends the answer there,
+  as `length` (only the client's cancel keeps its error). Never with
+  logprobs or on a cluster pair. Never when the exit's tokens do not decode to
+  its text. `DARKBLOOM_LOOP_EXIT_THINKING=0` (or `off`)
+  turns it off; a comma-separated list keeps it to the listed `model_type`s
+  that have a marker (`gemma4,gemma4_text,gpt_oss,qwen3_5,qwen3_5_moe` is the default;
+  `gemma4,gemma4_text,gpt_oss` turns Qwen's off, and `gemma4,gemma4_text` GPT-OSS's too).
+  In any list Qwen's families take only the builds above, and another build when the list
+  names it, its family listed too, by a case-insensitive part of its id with a `.`, `-` or
+  `/` (`…,qwen3.6` adds Qwen 3.6, `…,qwen3.8-27b` both Qwen 3.8 27B builds; `qwen3`, `mtp`
+  or `4bit` name no build, while a punctuated part such as `-4bit` names every build that
+  contains it). A row the strict-tool grammar constrains keeps its guard but
+  not the exit (the continuation would answer without the grammar).
+  Nemotron 3.5 Super (`nemotron_h_omni`: listed, off by default until its A/B;
+  `…,nemotron_h_omni` turns it on) takes its owner's own route: its request
+  plan resolves the exit from the rendered prompt
+  (`NemotronSuperRequestPlan.exitThinking`; the exit is `</think>` alone, as its
+  template writes a thought) and `NemotronSuperLocalBinding` continues the
+  answer the same way, within the same admitted request. A cancel or drain
+  during the stopped row's release wait submits no second row (one that races
+  the submission cancels it at once); the request joins the splice and then
+  waits for both rows' terminal observations before the owner's admission
+  returns. The guard follows the last thought marker, Super's reasoning channel
+  the first `</think>`: a model that writes `<think>` in its answer and then
+  loops is continued, and its `</think>` reaches the client as content. `darkbloom start` passes it, and `DARKBLOOM_LOOP_GUARD`,
+  to the launchd daemon (`LaunchAgent.inferencePassthroughEnvKeys`). One `darkbloom.loop-guard.exit-thinking` line per ended
+  thought gives the outcome.
+- **Image and video requests on one Mac** (`prepareCompletion`'s media path,
+  `EngineV2VisionPrefill`) take the same guard and, for a family with an exit,
+  the same exit. The continuation re-submits the same evaluated media input
+  (`PreparedSubmission.multimodalInput()`: the same spans and embeddings; the
+  vision tower does not run again) with the longer prompt, so it runs only for
+  a media prompt with plain positions (Gemma's): a prompt with model positions
+  (`CBv2PositionState`, Qwen's M-RoPE) covers only its own length, which the
+  engine checks at submit, and its loops keep ending as `length`. Unlike the
+  text continuation, it prefills the whole prompt again (media rows take no
+  prefix cache) and runs as a media row (target-only where the model's MTP
+  has a media fallback). It emits its own `engine_v2_vision` engagement event
+  (request id `…-exit`), and its outcome line carries `media_kind`. The pairs'
+  media routes, MiMo's native media and Super's media take neither.
 
 ### Collected and streaming reasoning state
 
@@ -3247,6 +3536,22 @@ markers. It emits unclosed-frame payload incrementally and retains only a
 possible closing-marker suffix; it does not buffer an entire unfinished tool
 call (`provider-swift/Sources/ProviderCore/Inference/Streaming/NativeChannelSplitter.swift`).
 
+GPT-OSS can open its answer with Harmony header attributes, as in
+`<|channel|>final <|constrain|>json<|message|>`. The SDK's Harmony reasoning
+parser routes only the exact header `final` to content and drops every other
+message, so `MultiModelBatchSchedulerEngine.makeEventStream` first passes the
+raw output of a GPT-OSS request on the `harmony` parser through
+`HarmonyFinalHeaderFilter`. A `final` header that carries attributes and no
+recipient becomes `<|channel|>final<|message|>`, as does a whitespace-padded
+`final`; a `final` header holding a control marker other than `<|constrain|>` is
+left as it is.
+Analysis, commentary and call headers, and the text of well-formed Harmony
+messages, pass byte for byte (the filter does not track message bodies, so a
+body that literally spells a `final` header is read as one). It holds back at
+most a partial `<|channel|>` marker, or a header of up to 256 bytes and a partial
+`<|message|>`
+(`provider-swift/Sources/ProviderCore/Inference/Streaming/HarmonyFinalHeaderFilter.swift`).
+
 Only qualified Nemotron Lightning listings absorb a stray `</think>` already
 in content state, leaving preceding text as content and tool arguments opaque.
 `ToolChoiceEnforcementPolicy.absorbsStrayThinkClose` gates the behavior by exact
@@ -3254,6 +3559,45 @@ listing and `nemotron_h` type; `MultiModelBatchSchedulerEngine.makeEventStream`
 passes it through `NativeToolStreamRouter` to the splitter. Other native-channel
 families retain their previous literal-close behavior
 (`provider-swift/Sources/ProviderCore/Inference/Tools/ToolChoiceEnforcementPolicy.swift`).
+
+Qwen 3.5, 3.6 and 3.8 (`qwen3_5`, `qwen3_5_moe`) keep their legacy tool
+framing, but a text request with tools and their own tool parser (`.qwen35`,
+the default) takes the same reasoning-first split
+(`ToolChoiceEnforcementPolicy.splitsQwenReasoningBeforeTools`):
+`MultiModelBatchSchedulerEngine.prepareCompletion` seeds `NativeChannelSplitter`
+with the prompt's own think state, the `ReasoningPromptProbe` prefix that would
+otherwise seed the downstream think parser. A `<tool_call>` that a thought
+mentions, or a call that it drafts, stays reasoning, and the calls after
+`</think>` parse. Before, the tool handler scanned the raw text, thinking
+included: one mentioned tag opened a frame that swallowed the real call and
+came back as text, and a drafted call was executed. Their `auto` calls still
+stream while generated (`ToolStreamPreparation` keys on `usesNativeTextChannels`,
+which these families are not). Forced calls keep their prompt policy (thinking
+stays off); a stray thought before one is now reasoning instead of a 422. A
+thought that never closes and ends in complete `<tool_call>` frames (whitespace
+aside) is the model calling from inside it, a known Qwen 3.5 failure mode
+(vLLM #35687): when the output ends there, the splitter
+(`promotesTrailingCalls`) also returns those frames as content, so they parse
+as calls, as on the raw route. Such a call leaves when the output ends, not
+while generated, and its text stays in the streamed reasoning too. Frames are
+read as the Qwen parser frames content, and only frames that parse with a
+declared name count: a mention never starts one, unless it reaches its first
+`<parameter=` (then it cannot be told from a call whose argument spells the
+tags, as on the raw route), and a frame that never closes holds the rest of the
+thought. Only the frames at the very end count: a frame followed by more
+thought, or by `</think>`, stays reasoning, and so does an earlier call that
+text separates from them (a drafted call and a second real call cannot be told
+apart; the raw route ran both). A thought the token limit cut off (`length`)
+promotes nothing (`NativeToolStreamRouter.outputReachedTokenLimit`). The search
+is bounded by a fixed multiple of the thought's length; past that bound nothing
+is promoted. Inside a thought a literal `</think>`, even in a call's arguments,
+ends it, as on every native family. A request without tools, another requested
+`tool_call_parser` and an explicit non-think reasoning parser keep the raw-text
+route; so does a prompt whose think state the probe cannot read, unless the
+request has the local server's streamed content seed. A collected local
+response carries content and reasoning untrimmed, as on the native families: a
+call's message keeps the `\n\n` after `</think>` as its content, and a
+collected Responses `output` has it as a message item before the calls.
 
 `ReasoningPromptProbe.streamingPrefix` in
 `provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningPromptProbe.swift`
@@ -3321,6 +3665,17 @@ not restore native KV state or grant model capacity. Its application-local
 history LRU and the SDK response-object store have different retention rules;
 see [Responses continuation and retention](../provider/direct-mode.md#responses-continuation-and-retention).
 
+### Gemma reopened thought channels
+
+The SDK parser behind `DARKBLOOM_GEMMA_REOPENED_THOUGHTS` is adopted through the `libs/mlx-swift-lm` gitlink. Every reopened thought span routes to reasoning, and stray channel-close markers are absorbed. The collected path shares the streaming state machine. Native, JSON and escape-quoted tool argument data stays opaque to channel routing. See the [process switch](../reference/configuration.md#gemma-o5-conformance). Source: `libs/mlx-swift-lm/Libraries/MLXLMServer/Parsing/StreamingGemma4ReasoningParser.swift` (`StreamingGemma4ReasoningParser`).
+
+On by default since 0.10.13 (`SDKFeatureDefaults`); `DARKBLOOM_GEMMA_REOPENED_THOUGHTS=0` restores 0.10.12. It applies to every model the provider serves with the `gemma4` reasoning parser (the `gemma*` model types; DiffusionGemma's native route uses its own channel splitter). Besides reopened thoughts, the shared state machine changes four ordinary cases:
+
+- an empty thought adds no reasoning text;
+- a bare `thought\n` prefix is stripped when streaming;
+- collected output keeps text before the first thought and absorbs a close with no opener (a caller that pre-opens the thought in its prompt must set `=0`; the provider never does);
+- `<turn|>`/`<eos>` before any channel are dropped.
+
 ### Gemma with `tool_choice` `none`
 
 On a pinned Gemma 4 prompt contract, `tool_choice` `none` samples under
@@ -3337,17 +3692,207 @@ spliced across a boundary the reasoning parser later hides. Required and named
 (`provider-swift/Sources/ProviderCore/Inference/Tools/GemmaNoToolTokenConstraint.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Tools/GemmaTokenVocabulary.swift`).
 
+### Gemma 4 prompt contracts
+
+Gemma 4's template renders a string system message as is and a list of text
+parts with a space after each part (`item['text'] | trim + ' '`); it trims each
+part of any other list-shaped message on its own (`strip_thinking` for the
+model's turns) and joins the parts without a separator, and it joins a tool
+message's parts as they are. Two renders follow from it (`GemmaPromptContract`):
+
+- **Contract 1** (0.10.12, and what the coordinator's prompt sidecar plans and
+  counts unless told otherwise): message content as one string, list parts
+  joined first (`OpenAIMessageContent.text`).
+- **Contract 2**: every system message (string or list) and a user message's
+  list content as the template's text parts; assistant and tool content as in
+  contract 1. vLLM reads this template as OpenAI content format and hands it
+  every string as one text part, so for system and user content, and for
+  strings of any role, this is vLLM-served endpoints' prompt: one more token
+  before the first system turn closes (OpenRouter's GPQA prompt is 88 tokens,
+  not 87). vLLM renders list-shaped assistant content part by part; contract 2
+  keeps it joined, because `Gemma4TurnStructure` merges only string assistant
+  turns. Tool lists render the same either way. A null system content stays
+  contract 1's empty string, with no part and no trailing space (an empty
+  string is a part: one space).
+
+The provider registers `gemma_prompt_contract: 2` and renders contract 2 only
+for a coordinator `inference_request` that carries `gemma_prompt_contract: 2`
+(`ChatTemplateControls.servingCoordinatorRequest(planned:gemmaPromptContract:)`),
+on a text request of the model types `gemma4` and `gemma4_text`. The model
+types `gemma4_vision` and `diffusion_gemma` render contract 1 either way, as
+the coordinator's prompt sidecar plans them. The coordinator asks only a
+provider that registered contract 2, only for text requests, choosing again for
+every attempt, with contract 2's cache plan and exact count, so a cache plan or
+exact prompt-work count never meets a prompt it was not made for (a mismatching
+prompt fails its cache receipt with `prompt_anchor_mismatch` and fences the
+provider's cache routing; it also withdraws calibrated deadline admission,
+`PromptWork.reconciled`).
+Every other request, the local API, media requests and other models render
+contract 1, so the capability is dormant until the coordinator switches a model
+on. The usage floor recounts through the same pipeline
+(`ProviderPromptContractPipeline.normalizedInput`). A body cannot ask: only the
+authenticated coordinator frame can. `DARKBLOOM_GEMMA_PROMPT_CONTRACT_V2=off`
+stops advertising contract 2 and renders contract 1 everywhere.
+`ProductionPromptParityTests.gemmaPromptContractVectors` checks both contracts
+on the served artifacts against `fixtures/prompt-contract/v1/gemma4_prompt_contract_vectors.json`.
+
+### Gemma required and named tool-call grammar
+
+Required and named `tool_choice` on the pinned Gemma 4 contract sample under
+`GemmaToolCallTokenConstraint`, a byte-level automaton of the exact call the
+template renders, built from the compiled tool schemas
+(`ToolConstraintSchemaCompiler`: at most 64 tools, 16 levels, 128 properties
+per object, 16 array items and 50,000 grammar-cost units). The builder makes
+each property's `name:value` and the members after it once per object and
+enters it both after a comma and without one, so an optional nested object
+costs its own size once however many optional siblings precede it; a
+grammar's state count grows with the schema, as its cost does. The
+100,000-state limit is checked while the automaton is built
+(`GemmaByteNFABuilder.maxStates`), so a schema past it is refused within one
+value of the limit, before the minimum-distance pass, instead of after
+building the whole grammar
+(`provider-swift/Sources/ProviderCore/Inference/Tools/GemmaToolConstraintGrammar.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Tools/GemmaToolCallTokenConstraint.swift`).
+
+### Constrained Gemma 4 JSON answers
+
+Gemma 4 answers to a JSON `response_format` are sampled under the same JSON
+grammar as constrained Qwen answers (below), with three differences: Gemma's
+vocabulary, its thought framing, and best-effort semantics.
+`ToolConstraintFactory.make` asks `GemmaJSONAnswerPolicy` first: a text request
+on `gemma4` or `gemma4_text` with a JSON `response_format`, no `tools`, no
+`tool_choice` (or a tool-free `auto`), no client `stop`, the `gemma4` reasoning
+parser and the pinned chat template (`TokenizerHandle.toolConstraintContractVerified`)
+gets a `GemmaJSONAnswerConstraint`. The prompt is unchanged.
+
+**Vocabulary.** Gemma's tokenizer is SentencePiece BPE with byte fallback, not
+byte-level BPE. `GemmaAnswerPieces` gives every id the bytes its decoder writes:
+U+2581 becomes a space, a `<0x80>`…`<0xFF>` token is that byte, other pieces are
+their UTF-8 (the provider's tokenizer runs no clean-up for Gemma). The 24 added
+tokens and the `<unusedN>` slots have no piece, and neither do the ASCII
+byte-fallback tokens: a byte-fallback run is decoded as a whole, so what one byte
+becomes depends on its neighbours (a run that is not UTF-8 reads as U+FFFD),
+while every ASCII character JSON needs has a piece of its own. Non-ASCII bytes
+occur only inside strings, where U+FFFD is still a character.
+Before constraining, `GemmaAnswerPieces.vocabulary` checks `<|channel>` 100,
+`<channel|>` 101, `<turn|>` 106 and `<eos>` 1 by id, spelling, encoding and
+decoding, that the tokenizer has exactly 262,144 ids, and that `<turn|>` and
+`<eos>` are engine stop tokens. The
+vocabulary is built on the first such request per loaded tokenizer and stop set
+and cached (two entries).
+
+**Phases.** The rendered prompt's tail selects the first phase
+(`GemmaJSONAnswerPolicy.initialPhase`). Thinking off renders an empty, closed
+thought (`<|turn>model\n<|channel>thought\n<channel|>`), so output starts in the
+answer. Thinking on ends at `<|turn>model\n`, so a thought may open with
+`<|channel>`, or the answer may start at once (whitespace before either stays
+content, so an answer can read `"\n{...}"`, still one JSON value). The thought
+is free text: no EOS or added token other than the two thought markers, and the
+first `<channel|>`, as its token or spelled from ordinary pieces (the stream's
+Gemma parser reads text), ends it. The answer is one JSON value of the request's
+grammar (`JSONAnswerFormat`, `FlintJSONGrammar`);
+no Gemma control spelling can complete in it, strings included. `<turn|>` or
+`<eos>` is allowed once the value is complete, and a value that delimits itself
+(an object, array, string or literal) is followed by the terminator only, never
+by text a client would have to strip. JSON whitespace outside strings runs at
+most 64 bytes (`GemmaJSONAnswerBoundary.maximumWhitespaceRun`), so a model that
+keeps reaching for a refused spelling (a code fence) cannot fill its budget with
+blank lines. States that differ only in a run
+no piece can push past that cap share one mask key (`maskEquivalent`), so
+indentation does not multiply mask builds; a request keeps at most two broad
+allowed sets (about 2 MB each) and the sampler its per-key device masks.
+
+**Best effort.** Unlike constrained Qwen answers, nothing is validated after
+generation (`MultiModelBatchSchedulerEngine` checks only `JSONAnswerConstraint`
+answers): a budget that ends first stays `length` with the partial value, as
+before. A request whose interned states reach the cap
+(`GemmaJSONAnswerConstraint.defaultMaximumStates`, 16,384) continues
+unconstrained instead of failing. A `json_schema` in the shapes common clients
+generate is first rewritten into the shared subset where the result admits
+exactly the same instances (`ResponseSchemaRewrite`: `$ref`s to plainly named
+entries of the root's `$defs`/`definitions` inlined, a one-branch `allOf`
+unwrapped, `anyOf` of one schema and `{"type": "null"}` made nullable, with only
+annotations beside them; `$comment` on every node it rewrites, the root's `$id`
+and a draft-06 to 2020-12 `$schema` dropped; at most 16 levels, 8 references or
+compositions in a row and a bounded amount of copying and hashing,
+`maximumWork`).
+One still outside it (`pattern`, `format`, a recursive `$ref`, a wider `anyOf`,
+an older `$schema`, a nullable enum of 128 values, …) whose root is
+`"type": "object"` is held to a JSON object; any other
+unsupported schema, an unpinned template or tokenizer, another
+prompt end or a nonpositive budget keeps prompt-only steering with one
+content-free line (category `json-answer`). An engine that runs no token
+constraint (a cluster pair or a native-tracked engine) would refuse one, so
+`EngineV2Bridge.admittedConstraint` submits the request there unconstrained.
+`DARKBLOOM_GEMMA_JSON_ANSWERS=off` restores prompt-only answers everywhere.
+
+**Speculative decoding.** A constrained row never drafts
+(`EngineLoopV2.mtpBasicEligible`), and Gemma's target is not recurrent, so a
+step that holds one runs target-only for every row in it, as for a `stop`,
+penalty or logprob row (see the Qwen notes below). Rows in steps without one
+are unchanged.
+
+Sources: `provider-swift/Sources/ProviderCore/Inference/Tools/GemmaJSONAnswerPolicy.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Tools/ResponseSchemaRewrite.swift`,
+`provider-swift/Sources/ProviderCore/Inference/GemmaJSONAnswerConstraint.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`.
+
+### Gemma quoted numeric tool arguments
+
+The SDK parser behind `DARKBLOOM_GEMMA_SCHEMA_COERCION` is adopted through the `libs/mlx-swift-lm` gitlink. Numeric marker strings become numbers at frame close only when the parameter schema unambiguously requests a numeric type. Potentially converted values stay withheld from argument deltas until the completed parse; unsupported or ambiguous schemas preserve their quoted text. The provider still validates strict calls. See the [process switch](../reference/configuration.md#engine-and-scheduler). Source: `libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/Parsers/GemmaFunctionParser.swift` (`GemmaFunctionParser`).
+
 ### Constrained Qwen JSON answers
 
-The format instruction alone leaves some Qwen answers outside the requested
-schema: a near-miss key, a string for an integer, or prose. On the Qwen text
-path the answer is therefore sampled under a grammar, as on
-[exact Flint](#native-flint). `ToolConstraintFactory.make` asks
-`QwenJSONAnswerPolicy` before any tool-choice constraint: a text request on
-`qwen3_5` or `qwen3_5_moe` with a JSON `response_format`, no `tools`, no
-`tool_choice` and the `qwen3` reasoning parser gets a `JSONAnswerConstraint`.
-The prompt is unchanged (the service's format instruction and the no-thinking
-default above), so the coordinator prompt sidecar needs no rule.
+Qwen, Bonsai 2 27B, Nemotron 3.5 Lightning and GLM-5.3-Flash share this
+machinery.
+The format instruction alone leaves some answers outside the requested schema:
+a near-miss key, a string for an integer, an invented key under
+`additionalProperties: false`, a raw newline inside a string, or prose. On the
+text path of the families with a pinned answer contract the answer is therefore
+sampled under a grammar, as on [exact Flint](#native-flint).
+`ToolConstraintFactory.make` asks `JSONAnswerPolicy` before any tool-choice
+constraint: a text request with a JSON `response_format`, no `tools`, no
+`tool_choice` and the `qwen3` reasoning parser gets a `JSONAnswerConstraint`
+when its model is admitted (`JSONAnswerPolicy.profile`):
+
+| Family | Admission | Contract (`JSONAnswerProfile`) |
+|---|---|---|
+| Qwen 3.5, 3.6, 3.8 | `model_type` `qwen3_5` or `qwen3_5_moe` | `qwen35` |
+| PrismML Bonsai 2 27B | `prism_hadamard_qwen35` and a 27B listing id (`EngineV2SupportedModels.isBonsai2ListingModelID`; the 9B shares the type) | `bonsai2`: Qwen 3.5's tokenizer and ids, its own name in messages, `<|im_end|>` its one terminator |
+| Nemotron 3.5 Lightning | `nemotron_h` and a Lightning listing id (`EngineV2SupportedModels.isNemotron35ListingModelID`; Nano shares the type) | `nemotron35` |
+| GLM-5.3-Flash | `glm5_next`, `DARKBLOOM_GLM_JSON_ANSWERS` on, and an engine that runs token constraints (`EngineV2Bridge.acceptsTokenConstraints`) | `glm5Next` |
+
+Bonsai and Lightning are admitted for their answers only
+(`JSONAnswerProfile.constrainsReasoning` false): a prompt that opens a thought
+keeps prompt-only steering, silently and before the schema compiles, as it is
+Lightning's default. A constrained row never drafts and, on Lightning's target,
+no row in its decode step does (below); Lightning's reasoning runs long, and
+both families' thinking answers met the schema in the checks that motivated
+them. Neither is constrained on a cluster pair, which refuses any token
+constraint before reserving (`constrainedDecodingUnsupported`); their pairs
+keep prompt-only service. Qwen keeps both, as before. The Bonsai 2 9B is not
+admitted: it drafts, and its JSON prompts render thinking off by default, so
+each of its JSON rows would stop its whole decode cohort from speculating.
+
+GLM-5.3-Flash is admitted only with `DARKBLOOM_GLM_JSON_ANSWERS` `1`, `on`,
+`true` or `yes` (read once per process; forwarded to the LaunchAgent), and only
+where its engine runs token constraints: the native page-bank profiles qualify
+them in the SDK (`CBv2NativeExecutionContract.supportsTokenConstraints`, the
+profiles that qualify logprob rows: every target row samples with the ordinary
+sampler), a cluster pair does not. Its reasoning-first prompts, the JSON
+default, are constrained too, so such a request decodes target-only throughout
+(the speculation cost is below); on GLM's engine a constrained row also never
+chains its decode steps (`EngineLoopV2` in `libs/mlx-swift-lm`). Admitted or declined, GLM keeps its withheld answer and
+its check ([GLM5Next implementation boundary](#glm5next-implementation-boundary) above), and an admitted row donates no
+prefix checkpoint: GLM's assistant records no prompt history for a row that
+never drafts, so checkpoint capture declines it, and repeated JSON prompts do not
+reuse each other's prefix.
+
+`DARKBLOOM_JSON_ANSWER_GRAMMAR=qwen` (or `0`, `off`, `false`, `no`, `none`)
+keeps the grammar to the Qwen types, as before Bonsai and Lightning were
+admitted (read once per process; forwarded to the LaunchAgent). The prompt is
+unchanged (the service's format instruction and the Qwen no-thinking default
+above), so the coordinator prompt sidecar needs no rule.
 
 The rendered prompt's tail selects the first phase
 (`JSONAnswerProfile.initialPhase`, through `ReasoningPromptProbe.streamingPrefix`).
@@ -3358,18 +3903,32 @@ reasoning, which stays free except that every EOS is masked, the spellings
 one JSON value of the grammar compiled from the schema (`JSONAnswerFormat`: the
 shared fail-closed subset and the byte-level `FlintJSONGrammar` automaton), so
 declared properties are the only keys generated. `<think>`, `</think>`,
-`<tool_call>`, `</tool_call>`, `<function=`, `<|im_start|>`, `<|im_end|>` and
-`<|endoftext|>` cannot complete anywhere in it, strings included, and
-`<|im_end|>` or `<|endoftext|>` is allowed only once the value is complete.
+`<tool_call>`, `</tool_call>`, `<function=`, `<|im_start|>`, `<|im_end|>` and,
+for Qwen and Bonsai, `<|endoftext|>` cannot complete anywhere in it, strings
+included, and an answer terminator is allowed only once the value is complete.
+Lightning's `</s>` has no piece, so its spelling (an HTML close tag) stays
+writable.
 
-`JSONAnswerVocabulary` admits the byte-level BPE ids below `<|endoftext|>`
-(248044) and the `<think>`/`</think>` tokens only. Other added and special tokens
-and the model's padding up to 248,320 ids are never allowed. Before constraining,
-it checks `<think>` 248068, `</think>` 248069, `<|im_end|>` 248046 and
-`<|endoftext|>` 248044 by id, spelling, encoding and decoding, that every base
-id decodes as a byte-level piece, and that both terminators are engine stop
-tokens. It is built on the first such request per loaded tokenizer and stop set
-and cached like Flint's (`TokenizerVocabularyCache`, four entries).
+`JSONAnswerVocabulary` admits the profile's byte-level BPE ids and its
+`<think>`/`</think>` tokens only; other added and special tokens and the model's
+padding are never allowed. Qwen and Bonsai: BPE ids below `<|endoftext|>`
+(248044), padding up to 248,320, the markers `<think>` 248068, `</think>` 248069;
+Qwen's terminators are `<|im_end|>` 248046 and `<|endoftext|>` 248044, Bonsai's
+`<|im_end|>` alone (its 27B artifact names no other EOS; a slot that also stops
+at 248044 never samples it). Lightning: its 1,000 special and added tokens come
+first, BPE ids 1000–131071, the markers `<think>` 12 and `</think>` 13 (ordinary
+output pieces), terminators `<|im_end|>` 11 and `</s>` 2 (the checkpoint's two
+EOS ids). GLM-5.3-Flash: BPE ids below `<|endoftext|>` (154820), padding up to
+154,880, the markers `<think>` 154841 and `</think>` 154842, terminators
+`<|user|>` 154827 and `<|endoftext|>` 154820; neither its reasoning nor its
+answer can spell `<|user|>`, `<|assistant|>`, `<|system|>`, `<|observation|>` or
+`<|endoftext|>`, and the answer none of its tool-call markers. Before
+constraining, it checks that every terminator is an engine
+stop token (first, so a mismatched slot never decodes the vocabulary), each
+marker and terminator by id, spelling, encoding and decoding, and that every id
+in the BPE range decodes as a byte-level piece. It is built on the first such
+request per loaded tokenizer and stop set and cached like Flint's
+(`TokenizerVocabularyCache`, four entries).
 
 A constraint's budget must equal the engine request's `maxTokens`, or the engine
 refuses it (`CBv2SchedulerError.tokenConstraintBudgetMismatch`). The bridge
@@ -3381,36 +3940,117 @@ request before it builds any token constraint, Qwen's and Flint's.
 The request streams through the native reasoning split (`NativeToolStreamRouter`
 seeded from `JSONAnswerConstraint.channelPrefix`), so `JSONAnswerOutput` checks
 only the answer when generation ends: content that is not one JSON value of the
-schema, or a budget that ends first, is a 422
-`MLXOpenAIServiceError.invalidResponseFormatOutput` (`tool_noncompliance`) after
-the content has streamed. Engine `stop` strings still apply as for the other
-Qwen requests; a stop that cuts the value short fails the same check.
+schema is a 422 `MLXOpenAIServiceError.invalidResponseFormatOutput`
+(`tool_noncompliance`) after the content has streamed (GLM's answer is withheld,
+so its 422 carries none). A budget that ends first
+ends the answer as a normal `length` finish with its content as generated
+([cut answers](#answers-cut-at-the-token-limit)). Engine `stop` strings still
+apply as for the other Qwen requests; a stop that cuts the value short fails the
+same check.
+
+Constraining keeps an answer inside the schema, not on topic: a model that wants
+a key the schema forbids may keep writing the string it is in (one Lightning
+answer ran 1,955 tokens repeating its `reply` before closing it), and one asked
+for a `json_object` without a JSON-shaped prompt may put its prose in a key.
+These rows have no loop guard; a long one ends at `max_tokens` as a `length`
+finish with its answer as generated (unchecked).
+
+**Client schemas outside the subset (Qwen).** On the Qwen profile a
+`json_schema` the subset refuses is widened before it is declined
+(`QwenJSONSchemaRewrite`; `DARKBLOOM_QWEN_JSON_SCHEMA_REWRITE`, on by default,
+an off word restores the decline; read once per process; forwarded to the
+LaunchAgent). It is rewritten exactly when it can be, as Pydantic, OpenAI's
+strict mode and zod write it (`ResponseSchemaRewrite`, as for
+[Gemma](#constrained-gemma-4-json-answers): `$defs`/`definitions` references
+inlined, a one-branch `allOf`, `anyOf` with null made nullable, a draft-06 to
+2020-12 `$schema` dropped). Otherwise its value assertions are dropped
+(`ResponseSchemaRewrite.valueAssertions`: `minimum`, `maximum`, `pattern`,
+`format`, `minLength`, `maxLength`, `multipleOf`, `uniqueItems`, …; item bounds
+beyond 16; on an open node, one that declares no properties and wraps no
+reference or composition, also `keyAssertions` such as `minProperties` or
+`not`, and an `additionalProperties` schema becomes `true`): the grammar keeps the structure, types, enums and required keys, and
+the values are the model's. This is a superset of the schema under the subset's
+closed objects (an object that declares properties generates only those keys,
+as for every constrained schema), so a catch-all or a key count beside declared
+properties, or beside a reference or composition, stays and the schema falls
+back. An object root the subset still
+cannot shape (a union, `patternProperties`, …) is held to a JSON object. A
+widened answer is best effort, as these requests were unconstrained before: the
+provider's check when generation ends passes it (`JSONAnswerFormat.unchecked`;
+Gemma's exact rewrite keeps its check), so that check never refuses it,
+whatever its values or finish. Two refusals remain as on any path: the local
+non-streaming API checks the request's own schema in the SDK
+(`OpenAIResponseFormatSupport`), as it does for prompt-only answers, and an
+answer that exhausts the grammar's interned states fails like any constrained
+answer (`tool_constraint_impossible_state`). The grammar's integers have at
+most 15 digits. Each widened answer logs one content-free line. Bonsai,
+Lightning and GLM keep declining these schemas.
 
 Every other case keeps prompt-only steering and gains no refusal. A schema
-outside the subset (including an enum value containing a forbidden spelling), a
-tokenizer that fails the checks, a prompt tail without a think marker or a
-nonpositive budget logs one content-free private line (category `json-answer`).
+outside the subset that is not widened (including an enum value containing a
+forbidden spelling), a tokenizer that fails the checks, a prompt tail without a think marker or a
+nonpositive budget logs one content-free private line (category `json-answer`);
+a Bonsai or Lightning prompt that opens a thought logs nothing.
 Tools or `tool_choice` beside the format keep today's behavior; Flint's
 format-over-tools precedence does not apply. Image and video requests take the
 media path, which installs no token constraint.
 
-A constrained row never drafts (`EngineLoopV2.mtpBasicEligible`). Qwen 3.5
-targets do not declare the row-exact recurrent fallback
+A constrained row never drafts (`EngineLoopV2.mtpBasicEligible`). The Qwen 3.5
+targets, Lightning's and GLM's do not declare the row-exact recurrent fallback
 (`CBv2RecurrentMTPRequestScopedMediaFallback`), so
 `ineligibleRowsDecodeBesideSpeculation` is false for their MTP driver and
 `EngineLoopV2.mtpDraftBatchRows` keeps the whole cohort: while a constrained
 row is in a decode step, no row in that step speculates. A `stop`,
 `logit_bias`, penalty or logprob row has the same effect on these engines.
 Decoding such rows beside speculation needs that SDK capability and row-exactness
-evidence for the Qwen target.
+evidence for each target. Bonsai 2 27B has no drafter. Lightning drafts, so only
+its answer-first prompts (thinking off) are constrained: those trigger it, and
+every Lightning row sharing their decode step, thinking or not, stops
+speculating meanwhile. GLM's default rectangular profile drafts with at most two
+decode rows (the serial profile with one), so a lone GLM JSON request loses MTP
+for its whole reasoning and answer, a plain request sharing a two-row step with
+one loses it too, and at three or more rows nothing changes.
 
-Sources: `provider-swift/Sources/ProviderCore/Inference/Tools/QwenJSONAnswerPolicy.swift`,
+Sources: `provider-swift/Sources/ProviderCore/Inference/Tools/JSONAnswerPolicy.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Tools/QwenJSONSchemaRewrite.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Tools/ResponseSchemaRewrite.swift`,
 `provider-swift/Sources/ProviderCore/Inference/JSONAnswerProfile.swift`,
 `provider-swift/Sources/ProviderCore/Inference/JSONAnswerVocabulary.swift`,
 `provider-swift/Sources/ProviderCore/Inference/JSONAnswerConstraint.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Prompting/JSONAnswerFormat.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift` (`makeEventStream`),
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPPlanning.swift`.
+
+### Request JSON limits before decoding
+
+A decrypted coordinator request that nests objects and arrays more than 64
+deep (`JSONNestingLimit.maximumDepth`) is refused before anything parses it,
+as `invalid_request` with the `malformed_body` reason, and so is one passed to
+`ProviderLoop.decodeInboundChatRequest` or `decodeOpenAIRequest` from
+elsewhere. `JSONSerialization`, `JSONDecoder` and the provider's schema walks
+recurse once per level on Swift concurrency's 512 KiB task stacks, where a
+body of a few KB nested a few hundred levels deep (128 in a debug build) ended
+the process with SIGBUS, below `JSONSerialization`'s own 512-level limit. The
+coordinator forwards such a body unchanged: it parses with Go's decoder and
+normalizes tool schemas only to depth 64. The scan counts levels without
+recursing and skips brackets inside strings. It also refuses a body holding a
+NUL byte: Foundation's parsers read UTF-16 and UTF-32 JSON too, whose bytes the
+scan cannot count, and every such body has one while no UTF-8 JSON text does.
+A tool call's `arguments` is JSON inside a string, which the scan skips and
+template rendering decodes and walks, so after decoding each one is checked
+against the same limit and refused as `invalid_tool_arguments`. The local API
+applies the same limits ([direct mode](../provider/direct-mode.md)).
+
+Tool-schema normalization (`ToolSchemaNormalization.ensureParameterTypes`)
+rewrites at most 100,000 schema nodes per request
+(`ToolSchemaNormalization.maxNormalizedNodes`). Each positional `{}` or boolean
+becomes a two-key map, so a few MiB of them rewrote into tens of MiB of JSON
+and hundreds of MiB of objects before the request was decoded. Past the budget
+the body is decoded as sent, as one above `maxNormalizationBytes` (4 MiB)
+already is
+(`provider-swift/Sources/ProviderCore/Protocol/JSONNestingLimit.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Tools/ToolSchemaNormalization.swift`,
+`provider-swift/Sources/ProviderCore/ProviderLoop+InboundDecode.swift`).
 
 ### Tool-call parsers
 
@@ -3443,9 +4083,23 @@ as `"nullable": true` beside one type (`ToolSchemaNormalization`). The SDK adds
 null to that node's types, so a model's `null` (also `none` or `nil`) becomes
 JSON null, and its `ToolSchemaValidator` lets null through that node's type
 check while `enum`, `const` and combinators still apply; the provider's own
-validator already accepts null there (`ToolConstraintValidation`). Sources:
+validator already accepts null there (`ToolConstraintValidation`). A Gemma 4
+value written without its `<|"|>` marker (`zip:01000`) is also read by the
+schema, the other way round: where the schema admits a string but not the
+value's JSON type, the written text is kept (`"01000"`, `"1.10"`), as vLLM's
+`convert_value` does, at any depth; other parameters, and calls without a
+schema, keep the JSON reading (`GemmaArgumentValueParser`,
+`ToolArgumentNormalization.bareLiteral`). A marker-quoted value stays a string
+for any parameter. The schema read is the one Gemma is shown, after
+`ToolSchemaNormalization`: a property declared without a type (or `{}`) is
+shown as STRING and a union as its first member's type, so `any:5` there reads
+`"5"` where vLLM, reading the declared schema, returns 5 (both valid for the
+declared schema, except for an `enum` that mixes types, such as `["a", 1]`,
+on a property shown as STRING, untyped or a string-first union: its unquoted
+`1` reads `"1"`). Sources:
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/ToolArgumentNormalization.swift`
-(`declaredTypes`),
+(`declaredTypes`, `bareLiteral`),
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/Parsers/GemmaFunctionParser.swift`,
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/ToolSchemaValidator.swift`.
 
 Required/named `tool_choice` on a Qwen 3.5-family checkpoint accepts its
@@ -3466,8 +4120,44 @@ its own `model_type`:
 
 These calls are prompt-forced, withheld and schema-validated
 (`ToolChoiceEnforcementPolicy.forcedStrategy` `.structuredPostValidation`).
-GPT-OSS (`gpt_oss`, `.harmony`) has no forced strategy and is not listed. In
-forced mode `NativeToolStreamRouter` drops framing whitespace (ASCII space,
+
+GPT-OSS (`gpt_oss`, `.harmony`) frames forced calls in the sampler
+(`.harmonyFraming`, `GPTOSSForcedToolConstraint`): the catalog build
+`gpt-oss-20b` is listed. The prompt is prepared as for the other families (the
+forcing instruction in the system and last user turns; a named function renders
+only its own declaration), so the coordinator sidecar's prompt-contract vectors
+hold. After the prompt's `<|start|>assistant` the sampler forces
+`<|channel|>analysis<|message|>`: the model reasons as unforced, at the
+request's `reasoning_effort`, in free text that can never spell a Harmony
+control token. `<|end|>` ends the analysis; then only
+`<|start|>assistant<|channel|>commentary to=functions.NAME <|constrain|>json<|message|>`
+of a declared function (the named one, or any declared one for `required`), one
+JSON object of that function's compiled schema (a `JSONAnswerConstraint` on the
+`JSONAnswerProfile.gptOSS` byte vocabulary) and `<|call|>`. A final answer, a
+commentary preamble, an undeclared function and off-schema arguments cannot be
+sampled. Within the output kept back for the call (`<|end|>`, the longest call
+header, 128 argument tokens and `<|call|>`) the analysis must end, and it ends
+once 16,384 tokens are out whatever the budget (`analysisCap`): the loop guard
+is off for constrained output, so a looping analysis reaches the call instead
+of the context limit. The headers'
+token sequences are the tokenizer's own encodings, checked by round trip; a
+tokenizer that fails the check, or a prompt that does not end at the assistant
+boundary, refuses the request (400 `unsupported_forced_tool_choice`), as does a
+schema outside the shared forced-choice subset (`$ref`, `anyOf`, …; the
+coordinator refuses those first, 422 `tool_schema_unsupported`). One call per
+response, as Harmony's `<|call|>` stops generation: `parallel_tool_calls`
+changes nothing. The call is withheld, parsed by `HarmonyToolCallParser` and
+validated like every forced call; the only text the router lets through first is
+the analysis message (`HarmonyForcedCallText`), which the Harmony reasoning
+parser turns into reasoning. `DARKBLOOM_GPTOSS_FORCED_TOOLS=off` (or `false`,
+`0`, `none`, `no`, `disabled`, in any case; read at launch, passed to the
+launchd daemon) restores 0.10.12:
+the model is not listed and forced choice is refused. The coordinator also
+routes these requests only to providers at or above its GPT-OSS floor
+(darkbloom-platform `modelarch.ForcedToolsMinimumProviderVersion`, 0.10.13), and
+never to a cluster pair, whose engine runs no constrained decoding.
+
+In forced mode `NativeToolStreamRouter` drops framing whitespace (ASCII space,
 tab, CR and LF; `ToolChoiceEnforcementPolicy.isFramingWhitespace`) around and
 between call frames on every path, including legacy Qwen text without native
 channels. Whitespace alone is still a missing call
@@ -3490,8 +4180,15 @@ read bare scalars and composites as raw strings. When the frame closes, the
 complete parse must agree with everything already exposed
 (`libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/ToolCallStreaming.swift`).
 `NativeToolStreamRouter` admits `parallel_tool_calls` cardinality at the first
-fragment and, when the request is `strict` (below), validates name and schema
-at frame close; the service renders OpenAI fragments (`index`, `id`, `type`
+fragment: with `parallel_tool_calls: false` it exposes the first call only and
+drops every later call frame, unexposed and unvalidated, as OpenAI returns one
+call and vLLM keeps the first; the complete-call paths, Nemotron Super's
+included, keep the first the same way (`ParallelToolCallPolicy`). A later
+frame keeps its family's malformed-output rule: one the parser returns as
+text (an undeclared name it cannot read) stays visible text, and one that does
+not parse still fails a GLM, MiMo, Flint or Nemotron Super response. When
+the request is `strict` (below), it validates name and schema at frame close;
+the service renders OpenAI fragments (`index`, `id`, `type`
 and `function.name` first, then `function.arguments` pieces). A response that
 begins with a call therefore reaches its first content frame at the function
 name instead of the engine terminal, which also ends the frame loop's
@@ -3504,9 +4201,12 @@ function and arguments off the declared schema are returned instead of
 failing a response whose reasoning has already streamed. The request stays
 validated when any declared function sets `strict: true`, when it declares no
 tools (a call is then never returned), and for `required`, named and `none`
-choices; `parallel_tool_calls: false` holds either way, and a call parsed from
-a frame that `max_tokens` cut off is still validated (it may be missing
-arguments). Strict `auto` checks
+choices; `parallel_tool_calls: false` holds either way, and a call that
+`max_tokens` cut off is never completed by the end-of-generation parse
+([cut answers](#answers-cut-at-the-token-limit)). A `strict` call that fails
+its check once an event of a streaming client's response has left returns as
+generated too ([strict calls after the start](#strict-calls-after-the-response-started)).
+Strict `auto` checks
 each call against the caller's schema as sent
 (`Prepared.declaredTools`, from the body before ingress normalization
 (`ToolSchemaNormalization`) filled `type: "string"` into typeless properties
@@ -3520,15 +4220,119 @@ there. Every refusal that remains names its check on the error frame
 | Case | Behavior |
 |---|---|
 | Undeclared or unresolvable name | Never exposed early: completes in one piece, returned as generated (refused under `strict`), or the existing text fallback when it does not parse |
-| Parse failure or divergence after exposure | The arguments already sent stay as generated (OpenAI's raw `arguments` string) and the call closes; `finish_reason` is `tool_calls`. Under `strict`: typed `tool_choice` violation on the stream |
-| Schema violation after exposure | Returned as generated; under `strict`, typed `tool_choice` violation on the stream |
-| Call cut off by `max_tokens`, even when the end-of-generation parse of its partial frame fails or diverges | Fragments stop; `finish_reason` is `length` |
+| Parse failure or divergence after exposure | The arguments already sent stay as generated (OpenAI's raw `arguments` string) and the call closes; `finish_reason` is `tool_calls`. Under `strict`, the same once the response started; before it, a typed `tool_choice` violation |
+| Schema violation after exposure | Returned as generated; under `strict`, the same once the response started; before it, a typed `tool_choice` violation |
+| Call cut off by `max_tokens`, whether the end-of-generation parse of its partial frame fails, diverges or completes it | Fragments stop, unclosed, and the call stays open; `finish_reason` is `length` |
 | Required or named `tool_choice`, native-channel families, other formats, non-chat surfaces, `DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0` | Complete calls released at the engine terminal after validation (for `auto`, as above) |
 
 The response hash adds one `tool_call` marker per fragment in wire order; a
 complete call encodes exactly as before
 (`provider-swift/Sources/ProviderCore/ProviderLoop+SSEParser.swift`,
 `encodeToolCallsForHash`).
+
+### Answers cut at the token limit
+
+When the engine finishes `length`, the answer ends as a normal completion with
+`finish_reason: "length"` and its usage, never as a `tool_noncompliance` refusal
+or a native frame failure (`TokenLimitCutPolicy`,
+`provider-swift/Sources/ProviderCore/Inference/Tools/ToolOutputLeniency.swift`);
+a GLM suffix the SDK refuses as oversized while it streams still fails before
+the end ([GLM5Next boundary](#glm5next-implementation-boundary)).
+The limit is the request's `max_tokens` or this Mac's clamp of it, not the model
+breaking a contract, and OpenRouter does not count a call cut by the caller's
+`max_tokens` against the provider. In the forwarder
+(`MultiModelBatchSchedulerEngine.makeEventStream`, `Prepared.cutAtLimit`):
+
+- What already left stays as generated, including reasoning that spent the
+  whole budget.
+- A streamed `auto` call stays open with the fragments it sent, and the
+  end-of-generation parse completes no call
+  (`NativeToolStreamRouter.finishToolCalls`): the provider closes nothing (the
+  parse's remainder is its own closure, not generated text), so the arguments
+  end unparseable, as in an OpenAI stream the limit cut, and no client can run
+  the call; the stream finishes `length`. A call not yet exposed is not
+  exposed.
+- A constrained JSON answer (exact Flint; Qwen, Bonsai 2 27B and Lightning
+  under the JSON-answer grammar) skips its final check. GLM's withheld JSON
+  answer leaves normalized when it already holds a whole valid value (the
+  candidate extraction, as before), and otherwise as generated
+  (`GLM5NextResponseFormatOutput.finalAnswer`).
+- Withheld calls (forced choices, native families, `DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0`)
+  whose set fails its checks are checked one by one, and a call that fails is
+  dropped instead of refused: forced choices hold every call to its schema, as
+  always, and for `auto` only the last call, which the limit may have cut, is
+  held to the declarations without `strict`. A forced choice left with no call
+  ends `length` (`ToolConstraintValidation.validateWithheld`). A call under
+  `tool_choice: none` is the model's and still refused;
+  `parallel_tool_calls: false` keeps only the first call before any check
+  (`ParallelToolCallPolicy`). A native Flint or MiMo frame, or a forced GLM
+  frame, the limit left unparsed is dropped, never published as text. An
+  `auto` GLM suffix that does not parse is not split into calls at a cut and
+  stays text (`GLM5ToolSuffix`) without the frames that end the output: from a
+  frame that owns the rest (open at the end, or broken, as the lexer reads it)
+  or a header the limit cut (in its name or a tag, after the start of a
+  declared name), or from the end, back over the closed frames separated from
+  it only by whitespace; they are dropped, whether or not they parse
+  (`GLM5ToolSuffix.textAtCut`). A `<tool_call>` the lexer reads as a mention,
+  and frames followed by text, stay, unless a frame's tag later in top-level
+  text makes the lexer own the rest from the first of them: everything from
+  there is dropped. If the text kept would still hold a think marker from
+  inside a frame, the whole suffix is dropped. A withheld `auto` frame of
+  another family (Qwen without `stream`, or with
+  `DARKBLOOM_TTFT_STREAM_TOOL_CALLS=0`) that the end-of-generation parse cannot
+  read stays text, as before (the parser fallback); the coordinator path
+  streams such calls and leaves a cut one open. Calls that pass still leave,
+  and the response then finishes `tool_calls`, as before.
+- The text the end of generation flushes leaves after the calls' checks, so a
+  refusal with nothing else sent stays one the router can fail over on. This
+  order does not depend on the switch: with it off, such a refusal also comes
+  before that text instead of after it.
+- Super's output (`NemotronSuperLocalOutput.finish(cutAtLimit:)`) does the same
+  for its unterminated frame, its calls and its withheld JSON answer, and a
+  thought the limit cut is not promoted to the answer by
+  `force_nonempty_content`. Its internal qualification route stays strict.
+- A loop the loop guard stops, and an exit-thinking continuation that ends as
+  `length`, end `length` too and count as cuts.
+
+The coordinator relays such a response as any `length` finish: it settles and
+bills its usage. Its own length finish for a refusal after commit (platform
+#897, `EIGENINFERENCE_LENGTH_FINISH_AFTER_TOOL_CHECK`) then only covers older
+providers. A local request without `stream` still gets the service's 422
+`responseFormatCutOffByMaxTokens` when its cut content is not one JSON value:
+the service checks complete responses itself. Telemetry
+`tool_constraint_cut` records each outcome by reason: `open_call` (a streamed
+call left open), `dropped_calls` (calls dropped, withheld or never exposed),
+`dropped_frame` (a native frame the cut left unparsed, or the frames that end
+a cut `auto` GLM suffix, closed or not), `forced_no_call` (a
+forced choice that ends with no call) and `unchecked_answer` (a structured
+answer whose skipped check would have refused it). Super's output records none.
+`DARKBLOOM_LENGTH_FINISH_AT_LIMIT=0` (or `off`, `false`, `no`) restores the
+refusal; it is read once per process and reaches the launchd job.
+
+### Strict calls after the response started
+
+A call to a `strict` function of an `auto` request that fails this provider's
+check (schema, declared name, arguments that parse) returns as generated, as a
+non-strict call does, once an event of the response has left and the client
+streams (`StrictToolCallPolicy`, `Prepared.strictCallsAsGenerated`,
+`returnsAutoCallsAsGenerated(afterResponseStarted:)`). By then the client
+holds part of the answer, so a refusal could only break the stream partway,
+which OpenRouter counts as a failed response; a returned call is the client's
+to check, as with any unconstrained server. Before anything left the refusal
+stays, a status the coordinator can fail over on; so does every refusal for a
+client that does not stream, which OpenRouter does not count. The coordinator
+path serves every request as a stream, so the client's own `stream` is read
+from the body (`ChatTemplateControls.clientStreams`). The forwarder marks the
+response started at the first event it yields
+(`NativeToolStreamRouter.responseStarted`); a call validated in the same chunk
+as its first fragment is refused before it leaves. A streamed call's name
+leaves before its arguments close, so in practice only a withheld call (or one
+whose whole frame arrives in one chunk) can still be refused before anything
+left. Forced choices, `none` and `parallel_tool_calls: false` keep their
+checks; Super's output keeps refusing. Telemetry
+`tool_constraint_strict_as_generated` counts the responses that returned such
+a call. `DARKBLOOM_STRICT_CALLS_AS_GENERATED=0` (or `off`, `false`, `no`)
+restores the refusal; it is read once per process and reaches the launchd job.
 
 ### Chat-template render check
 
@@ -3561,6 +4365,96 @@ and `xhigh` while thinking; they receive one of those for every effort a
 client sends ([reasoning effort](#reasoning-effort)), on text and media
 requests alike. Media preparation rethrows typed request errors instead of
 wrapping them as a retryable 503 construction refusal.
+
+### Tool JSON as Transformers renders it
+
+A request that carries `"_darkbloom_template_json": "transformers"` (from the
+network, only one the coordinator did not plan; see below) renders its tool
+declarations, earlier tool calls and tool results exactly as Hugging Face
+Transformers renders the model's template, for Qwen 3.5, 3.6 and 3.8, Ternary
+Bonsai 2, MiMo v2.6, GLM-5.3 and GPT-OSS:
+- `tojson` is Python `json.dumps(value, ensure_ascii=False, indent=None,
+  separators=None, sort_keys=False)` with any of those arguments a template
+  passes (`", "` and `": "`, non-ASCII and `/` as written), and `string` is
+  Python `str` (`True`, `None`); swift-jinja's sort keys, write compact JSON,
+  escape `/` and non-ASCII, and print `true`/`none`
+  (`provider-swift/Sources/ProviderCoreFoundation/HFTemplateFilters.swift`);
+- tools and each call's arguments reach the template as ordered values: the
+  normalized content (schema repairs, family rules) in the request's own member
+  order, with the `null` members and items the generic sanitizer drops, the
+  number types as written (`1.0` stays a float) and the declaration's own
+  members (`strict` included) restored. Tools come from the body's `tools`, read
+  with an order-preserving parser; arguments from each call's own string
+  (`provider-swift/Sources/ProviderCore/Inference/Prompting/TemplateJSONOrder.swift`).
+  Nemotron 3.5 Lightning takes only the order: its own filters already match.
+
+The `string` filter of those templates is renamed at load and bound to
+swift-jinja's, so every other request renders the same bytes as before.
+`DARKBLOOM_TEMPLATE_JSON_LEGACY=1` turns the rendering off. Gemma 4 sorts in
+its template and Nemotron 3.5 Super's owner already renders the body as
+written, so neither changes.
+
+Which requests render this way:
+- **Coordinator requests:** only one the coordinator did not plan for its
+  prompt cache, so it carries no cache scope or receipt nonce
+  (`ChatTemplateControls.servingCoordinatorRequest`). The prompt sidecar plans
+  a request for the prompt as rendered before; a planned request that rendered
+  another prompt would contradict its cache receipts, and the coordinator
+  would quarantine this Mac's cache affinity for the model. A coordinator that
+  forwards unknown body fields would also carry a caller's own field to a
+  planned request, which therefore renders as before. A coordinator that sets
+  the field for a build (darkbloom-platform#919) does not plan such tool
+  requests, so they are served without a cache scope.
+- **Local API:** a single chat request that carries the field, or every one
+  while the provider runs with `DARKBLOOM_TEMPLATE_JSON=transformers` (the
+  variable does not apply to coordinator requests).
+- **Rendered as before:** media requests, which render outside the text path
+  (their prompt recounts too); the local batch route and `/v1/responses`, which
+  do not read the request's bytes; `/apply-template`, which renders the
+  template as published; and a body whose `tools` the order-preserving parser
+  refuses (more than 64 levels, an integer outside 64 bits, a lone surrogate).
+  None of these renders Transformers' filters over sorted tool declarations.
+  A request that does ask still reads members sorted where it gives no order:
+  tool-call arguments that do not parse or match a call, tools that share a
+  name, and a body whose sender sorted its members (today's coordinator
+  re-encodes the bodies it forwards sorted; darkbloom-platform#919 keeps the
+  caller's order for the builds it names).
+
+### Native reasoning token budgets
+
+Supported local Super and MiMo requests can opt into a thought-token ceiling
+through [the default-off switch](../reference/configuration.md#native-reasoning-budgets).
+`NemotronSuperPromptContract` and `MiMoV26RawControlEvidence` retain validated
+`reasoning.max_tokens`; explicit thinking-off conflicts with the budget. MiMo
+retains the value across both Chat and Responses decoding. Super uses its bound
+Chat owner; this change does not register a Super Responses route.
+
+`NativeReasoningBudget` is an internal sidecar excluded from
+`ChatCompletionRequest` wire coding. Family owners set the initial thought
+state: Super's rendered prompt opens the thought, while MiMo waits for an open
+marker. `EngineV2Bridge.submitTokenized` checks its actual engine capability and
+validates atomic marker encode/decode round trips with the loaded tokenizer
+before admission. Distributed or unsupported engines refuse the control.
+
+The SDK default sampler counts confirmed thought payload tokens, permits an
+early natural close and forces the close at N before continuing the same
+request's answer. Markers do not spend N, later opens cannot reset it, and the
+original total output ceiling and stops still win. The close counts toward
+completion usage; logprobs remain the raw model probabilities. Budget rows use
+ordinary target decoding for their full lifetime; they do not chain or draft.
+Other rows keep their sampling semantics, but a mixed batch may lose chaining.
+A generic token constraint or cancel/resubmit thought-exit continuation cannot
+be combined with this first budget contract.
+
+Text and supported native image paths carry the same sidecar. Native media
+seals, admission, cancellation and retirement remain owned by the existing
+engine lifecycle. This capability changes no model memory limit or hardware
+qualification and makes no throughput or full-model quality claim.
+
+Sources: `provider-swift/Sources/ProviderCore/Inference/Prompting/NativeReasoningBudget.swift`
+(`resolved`), `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`
+(`submitTokenized`), and `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/ReasoningBudgetV2.swift`
+(`CBv2ReasoningBudget`).
 
 ### Reasoning effort
 
@@ -3654,6 +4548,109 @@ render `high`, which #703 capped at `medium` to avoid upstream timeouts. So a
 provider release with them is tagged without being published to auto-update,
 snapshotted into #721, and published only once #721 is deployed, each step on
 the owner's go.
+
+### Strict tool-call grammar
+
+When the [constraint-span setting](../reference/configuration.md#engine-and-scheduler)
+(`DARKBLOOM_CONSTRAINT_SPANS`) enables speculation, `QwenStrictToolConstraint`
+exposes ordinary reasoning and content as free spans through
+`CBv2FreeSpanTokenConstraint`. Its pure preview accepts only tokens that stay
+in the same state without touching a marker prefix. Call openings, framing,
+arguments and partial markers remain protected; text after a closed call can
+become free again. `QwenJSONAnswerConstraint` (the Qwen-family
+`JSONAnswerConstraint` that `JSONAnswerPolicy` builds) exposes only Qwen
+reasoning before the answer: the JSON value, string bodies and trailing
+whitespace stay protected. Other JSON families build the plain
+`JSONAnswerConstraint`, which does not conform to `CBv2FreeSpanTokenConstraint`,
+so they neither draft nor keep MTP history and retain target-only decoding.
+Neither constraint mutates its interned states while previewing a speculative
+token.
+
+Disabling the setting retains request-wide target-only constrained decoding.
+Existing grammar admission, masks and sampler/model/lifecycle eligibility remain
+authoritative. Required/named calls acquire no new strict-auto grammar. An
+eligible native Qwen assistant retains committed history through protected
+spans, but starts no draft there. Engines with native completion tracking remain
+ineligible. The LaunchAgent forwards the flag at installation; the SDK snapshots
+it at engine construction.
+
+`QwenConstraintSpanServingTests` checks streamed content, reasoning, calls and
+accounting through the scheduler, bridge and engine. Coverage includes multiple
+calls, thinking on/off, short budgets, cancellation and refusal recovery. Tiny
+native Qwen target/assistant fixtures check committed history across protected
+entry and return to free text. These are bounded integration fixtures, not
+full-model throughput or production qualification.
+
+A `strict` `auto` call is checked against the caller's schema only when its
+frame closes ([streamed auto tool calls](#streamed-auto-tool-calls)), after the
+answer has started, so on the Qwen 3.5 template family (`qwen3_5`,
+`qwen3_5_moe`: Qwen 3.5 9B and 35B, 3.6 and 3.8) the provider can also
+constrain such calls in the sampler. By default it does so on the MoE builds
+(`qwen3_5_moe`: Qwen 3.6 and Qwen 3.5 35B), which do not draft with MTP by
+default (their cards' presence penalty), and on Qwen 3.8 27B (`qwen3.8-27b`),
+whose strict calls that missed their schemas were its main remaining failure,
+at the cost of its MTP on those answers (see below). The coordinator turns the grammar off for a build by
+forwarding its tools without `strict` (`EIGENINFERENCE_STRICT_TOOLS_UNMARK_MODELS`).
+The 9B drafts too, so a Mac opts it in (`DARKBLOOM_STRICT_TOOL_GRAMMAR=on` or a
+list, [configuration](../reference/configuration.md)). `QwenStrictToolGrammar` (in
+`provider-swift/Sources/ProviderCore/Inference/Tools/`) admits a request that
+is `auto`, declares a `strict` function (any tools with
+`DARKBLOOM_STRICT_TOOL_GRAMMAR_ALL_TOOLS`), parses with `.qwen35`, has no media,
+runs on an engine that samples under token constraints (not a cluster pair, not
+a native-tracked engine) and whose prompt ends in an open or closed think
+block; the scheduler's text path asks it after `ToolConstraintFactory`. Every
+declared tool must compile (`QwenStrictToolSchema`): local `$ref`s are inlined
+(cycles refused), `anyOf`/`oneOf` of one schema and `null`, a single `allOf`
+branch and objects beside an open object are folded (also with the render
+repair's `type` and empty `properties` beside the union, as the coordinator
+forwards Tau2's tools), annotations (`format` included) are dropped, and the
+rest must fit the shared fail-closed subset
+(`ToolConstraintSchemaCompiler.compileResponseSchema`). Anything else, an
+unrecognized prompt boundary or a vocabulary that does not verify leaves the
+request as before, with a content-free log line, never a refusal.
+
+`QwenStrictToolConstraint` is a byte-level automaton over the shared Qwen
+vocabulary contract (`JSONAnswerVocabulary` with the call markers as pieces).
+Reasoning and text are free and only watched for `</think>` and `<tool_call>`;
+they admit every byte-level piece, the think and call markers and the stop
+tokens, so an answer can end wherever it could before (the other added tokens,
+such as `<|im_start|>` or the media placeholders, are not sampled). After
+`<tool_call>`, whitespace may precede `<function=`, where the call commits; a
+first other byte is no call the parser can read, so the answer goes on as text,
+as without the grammar (`{`, the JSON dialect, and a non-ASCII byte, which could
+be whitespace the parser skips, are refused). Inside a call every byte follows
+the template's framing (`<function=NAME>\n`, `<parameter=KEY>\nVALUE\n</parameter>\n`,
+`</function>\n</tool_call>`): a declared function, declared parameters at most
+once, required ones before `</function>`; with `parallel_tool_calls: false` no
+second call opens. A value's grammar follows how `Qwen35ToolCallParser` reads it
+under the rendered schema (`QwenStrictToolSchema.parserConversion`, a mirror of
+the SDK's `ToolArgumentNormalization` that `QwenStrictToolGrammarTests` checks
+against the parser): text the parser keeps as a string is free (or one of an
+enum's values), and a value it converts is one JSON value of the declared
+schema (`FlintJSONGrammar`). The request stays unconstrained where the parser's
+reading and the declared type disagree (a top-level `$ref` the render repair
+typed as a string) or where the streamed call would expose a converted value as
+text (`QwenStrictToolSchema.streamsAsText`, the mirror of
+`Qwen35ArgumentStreamer`, for example a `{"type":"null"}` parameter). No value
+can spell `</parameter>` or a turn, reasoning or call marker, and a JSON value
+never writes a surrogate escape (`\uD800`…`\uDFFF`; the parser's
+JSONSerialization refuses a lone one and the value would stay a string; an
+escaped backslash followed by such text is refused too). The validator still
+checks every call.
+
+Calls drafted inside the thought are reasoning to the grammar. Where the Qwen
+route parses calls before it splits off the reasoning, such a call is parsed
+and checked like any other, unconstrained; where the reasoning is split first,
+only a call at the end of a thought that never closes is. The loop guard stays on
+(`GenerationLoopGuardPolicy`); the continuation after an exited thought runs
+without the grammar. As with constrained JSON answers (above), a constrained row
+never drafts MTP tokens and, on these engines, no row of a decode step it shares
+speculates (`ineligibleRowsDecodeBesideSpeculation` is false). Where a Mac would
+draft (at most `maxSpeculativeBatch` decode rows, 8 by default; the 3.6 and 35B
+cards' presence penalty keeps those builds from drafting unless a request sets
+`presence_penalty: 0`), the whole constrained answer, reasoning included, and
+every answer decoding beside it run target-only while it decodes. That is why
+the 9B takes the grammar only when a Mac opts in.
 
 ### Vision constraints
 
@@ -4523,6 +5520,7 @@ evidence, not a change to the normal final-row contract or the near-tie rule
 | A pair's request ends mid-generation with 503 or a `request_exceeds_node_budget` error chunk; both workers keep serving, and their logs show `darkbloom-stage-abort-v1` | A pipeline stage's running memory check refused it; both ranks ended that request alone ([a pipeline stage's memory refusal](#a-pipeline-stages-memory-refusal-ends-that-request-alone)) | `QwenStageAbort.swift`, `WorkerCoordinator.swift`, `DistributedPipeExecutionOwner.swift` |
 | Provider exits with `Trace/BPT trap: 5`; its log shows `[metal::Device] Unable to build metal library from source` | MLX compiled a Metal kernel at runtime and the compile failed. mlx-swift builds MLX's JIT kernel path, and the release metallib holds no NAX attention kernels, so on M5 GPUs fused attention compiles on the Mac when a shape is first used; MLX throws on a failed compile and the Swift error handler stops the process. 0.10.2 failed this way for full attention with head dim 256 or 512 and at least 1,024 query tokens (`attention_nax_dsplit`), fixed in 0.10.3. Check an MLX pin change that touches `jit_kernels.cpp` or the NAX kernels on an M5 with a long Gemma 4 or Qwen prompt | `libs/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/jit_kernels.cpp`, `device.cpp` (`build_library_`) |
 | Provider crashes in a loop on a pre-release macOS 27.2 build (for example 26B5091g); the crash report shows a call to address 0 | The build was made with SDK 27.2 and compares Dates with `>=` or `<=`. SDK 27.2 back-deploys these two operators: Swift 6.4.2 calls them through weak Foundation imports behind an OS version check. These macOS builds pass the check but do not export the symbols. DevNet build `0.10.6-dev.branch.87` crashed this way. The cluster service's timed checks (memory replan, member sync, update and approval checks, part restart backoff, supervision wait, model manifest repair retry and deadline) compare with `timeIntervalSince(_:)` and keep the same thresholds. `scripts/check-date-comparisons.py` (the `Provider Tests` gate and Release Integrity) refuses the pattern in shipped source. To fix a hit, write `a.timeIntervalSince(b) >= 0` for `a >= b` and `a.timeIntervalSince(b) <= 0` for `a <= b`; `<`, `>` and `==` are safe. The release lane runs `scripts/check-provider-weak-imports.py` on the built binaries. A failure means a binary still imports `Date.>=` or `Date.<=`; the check names the calling functions. See the [build guide](../developer/build.md#sdk-27-release-builds-and-caches) | `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterService.swift`, `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterModelProvisioningStore.swift`; `scripts/check-date-comparisons.py`, `scripts/check-provider-weak-imports.py` |
+| A Mac's provider or cluster service grows by tens of KB for each saved setup or parse of `provider.toml`, for example while a paired leader keeps sending setups | Built with TOMLKit 0.6.0, which never freed a parsed table: saving a setup the other Mac sent parses `provider.toml` again, and so does every reader that does not reuse a remembered text. The provider now builds the copy in `libs/TOMLKit`, which frees each tree once nothing refers to it ([vendored TOMLKit](../developer/build.md#vendored-tomlkit)) | `libs/TOMLKit/Sources/TOMLKit/TOMLNodeOwner.swift` (`TOMLNodeOwner`); `provider-swift/Sources/ProviderCore/Config/ClusterConfigurationProviderStore.swift` (`updatingProviderData`) |
 
 ## Code map
 
@@ -4563,7 +5561,7 @@ these sources recursively (`provider-swift/Package.swift`, `package`).
 | MTP | `provider-swift/Sources/ProviderCore/Inference/MTP/MTPAutomaticVerificationPolicy.swift`, `provider-swift/Sources/ProviderCore/Inference/MTP/EngineV2MTPAssistant.swift`, `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/MTPContractsV2.swift` |
 | Vision | `provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift`, `provider-swift/Sources/ProviderCore/Inference/Vision/VisionTowerBudget.swift`, `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionTowerRun.swift`, `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionPrefill.swift` |
 | Tool constraints, reasoning probe | `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintFactory.swift`, `provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningPromptProbe.swift` |
-| Constrained JSON answers | `provider-swift/Sources/ProviderCore/Inference/Tools/QwenJSONAnswerPolicy.swift` (`QwenJSONAnswerPolicy`), `provider-swift/Sources/ProviderCore/Inference/Prompting/JSONAnswerFormat.swift` (`JSONAnswerFormat`, `JSONAnswerOutput`), `provider-swift/Sources/ProviderCore/Inference/JSONAnswerConstraint.swift`, `provider-swift/Sources/ProviderCore/Inference/ByteLevelVocabulary.swift` |
+| Constrained JSON answers | `provider-swift/Sources/ProviderCore/Inference/Tools/JSONAnswerPolicy.swift` (`JSONAnswerPolicy`), `provider-swift/Sources/ProviderCore/Inference/JSONAnswerProfile.swift` (`JSONAnswerProfile`), `provider-swift/Sources/ProviderCore/Inference/Prompting/JSONAnswerFormat.swift` (`JSONAnswerFormat`, `JSONAnswerOutput`), `provider-swift/Sources/ProviderCore/Inference/JSONAnswerConstraint.swift`, `provider-swift/Sources/ProviderCore/Inference/ByteLevelVocabulary.swift` |
 | Engine contracts, timing, scheduler, loop | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2Contracts.swift`, `SchedulerV2.swift`, `EngineLoopV2.swift`, `CBv2RequestTiming+Stamps.swift` |
 
 ### Native Flint
@@ -4652,8 +5650,9 @@ value of the compiled grammar; declared object properties are the only keys
 generated. A schema outside the subset is a 400 before generation.
 `JSONAnswerFormat.validate`, shared with
 [constrained Qwen answers](#constrained-qwen-json-answers), decodes and checks
-the completed content again; a failure, including an output budget that ends
-before the value completes, is a typed 422 rather than a successful completion.
+the completed content again; a failure is a typed 422 rather than a successful
+completion, and an output budget that ends before the value completes ends the
+answer as `length` ([cut answers](#answers-cut-at-the-token-limit)).
 Tools plus a response format
 get only the response format, whatever `tool_choice` asked: the prompt renders
 as it would without the format, so the coordinator prompt sidecar needs no
@@ -4945,6 +5944,61 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/C
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterSetupLinkExchange.swift`
 (`ClusterSetupLinkExchange.Responder`).
 
+## Link control handshake (v3)
+
+Every link control connection starts with three fixed-size records, version 3
+(`LinkHandshake`, `ClusterLinkControlFraming.swift`): the listener's CHALLENGE
+(a fresh nonce and X25519 key), the connector's HELLO and the listener's
+ACCEPT. Each end reads the other's first eight bytes before the rest; any
+other version (1 in 0.10.12, 2 in the DevNet builds that carried it) is
+refused there with `protocolVersionMismatch`, with no fallback either way.
+
+How an edge authenticates is the edge's own configuration
+(`ClusterLinkControlEdge.Authentication`), never read from the wire, and a
+listener or client refuses an edge whose authentication was not set:
+
+- **Serving edges** (`DistributedInstalledLinkLeader`,
+  `DistributedInstalledLinkFollower`, `DistributedMemberLinkFollower`: worker
+  commands with prompts, outputs, bootstrap rounds, leases) are attested.
+  Each end holds the other Mac's Secure Enclave key: for a coordinator-formed
+  pair, the other member's key in the roster both members countersigned and
+  the coordinator verified at registration; for `cluster local` and
+  `start --local --distributed`, the key the pairing record pinned. The
+  connector signs CHALLENGE + HELLO up to its signature (both pins, both
+  ephemeral keys, the listener's nonce); the listener checks the pins against
+  its own configuration and that signature under the pinned key, then signs
+  CHALLENGE + HELLO + ACCEPT up to its signature; the connector checks it.
+  Each signature also binds the role, epoch, edge and the setup's cluster ID
+  (`ClusterLinkIdentity`). The signed bytes start with `0xFF`, which no other
+  use of the key produces (its other signatures are UTF-8 text or start with
+  an ASCII `darkbloom/…` domain). Refusals: `peerNotPinned`,
+  `identityMismatch`, `peerSignatureRejected`; this Mac's own key unusable:
+  `localIdentityUnavailable`, or `localIdentityLocked` until someone logs in
+  once after a restart. The key is looked up at the first handshake, not when
+  the edge is built (`DistributedInstalledLinkDeferredSigner`), so a member
+  that starts before that login keeps running and links by itself after it.
+- **Edge-key-only edges** carry no prompt: the pairing ceremony's bootstrap
+  (the ceremony above it is signed and code-confirmed), the setup exchange
+  and model copies, GLM calibration's paired control (calibration traffic
+  under its own signed documents) and the hidden `cluster link-channel`
+  qualification. They send zero pins and signatures, and an attested end
+  refuses them.
+
+On both kinds the pairing's edge key tags each record up to its tag and is
+checked first, so a party without it never makes the listener verify or
+sign (a connector signs once per dial, for that dial's keys only), and it
+salts the session keys as a second factor. It is not what authenticates a
+serving edge: the edge secret alone neither completes a handshake with an
+attested end nor opens a recorded one. Session keys come from the X25519
+agreement of two keys made for this connection only, salted by the SHA-256 of
+all three records (pins and signatures included), one key per direction;
+every reconnect makes new ones.
+
+Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterLinkControlEndpoints.swift`
+(`LinkIdentityProof`), `libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterLinkPeerIdentity.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterLinkControlKey.swift` and
+`provider-swift/Sources/ProviderCore/Inference/Distributed/LinkControl/DistributedInstalledLinkIdentity.swift`.
+
 ## Link control session ends
 
 A link control edge has one live session at a time. When the connector
@@ -5155,6 +6209,62 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/C
 (`OnboardingLive.resume`, `otherMacAnswers`, `unpair`) and
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Pairing/ClusterUnpairing.swift`
 (`ClusterUnpairing`).
+
+## The pairing's link key in the Keychain
+
+A pairing's edge secret (the 32 bytes both Macs key their link control channel with) is a generic password in
+the data-protection Keychain (`ClusterKeychainEdgeSecretVault`): `kSecUseDataProtectionKeychain`, the signed app's
+access group (`SLDQ2GJ6TL.io.darkbloom.provider`, the Secure Enclave key's; `DARKBLOOM_KEYCHAIN_ACCESS_GROUP`
+overrides both), `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, not synchronisable, no access control, so the
+signed CLI and its LaunchAgents read it without a prompt once the Mac was unlocked since it started. One item per
+other Mac: service `<install's keychain prefix>.cluster-pairing.edge-secret.<store>` (production `io.darkbloom.…`,
+DevNet `io.darkbloom.dev.…`; `<store>` is 12 hex digits of SHA-256 of the store's real path, `storeTag`: the deepest existing
+ancestor through `realpath`, then the rest, so the tag is the same before and after the folder exists, and two stores of
+one build in two homes never share an item), account its pin, `kSecAttrGeneric` the pairing's link epoch and edge
+(`ClusterPairingStore.binding(of:)`), so an item left from an earlier ceremony with the same Mac is never used; an item
+without that binding reads as such an earlier one. `ClusterPairingStore.default` opens the store with that vault. A
+store without one, or a process that holds no keychain access group at all (ad-hoc and local builds, tests: the
+Keychain answers `errSecMissingEntitlement`), keeps 0.10.12's `edge-<pin>.secret` (one hex line, 0600); a signed build
+that gets that status fails closed instead. `pairings.json` keeps each record's `link.secretFile` path, so 0.10.12
+still reads the store, and that path stays the name a setup's `linkControl` gives the pairing's secret.
+
+`ClusterPairingStore.edgeSecret` reads the item. With no item of this pairing, it takes `.edge-secrets.lock` in the
+store (`flock`, as `commit`, `forget` and the rollback write-back do; a holder that doesn't let go within 10 s, 2 s for
+the write-back, is not waited for, and each step's own checks carry on), checks the caller's record is still the store's
+(`pairingChanged` otherwise), reads the Keychain again, and moves 0.10.12's file in: add the item (create-if-absent), or
+replace an earlier pairing's item; read it back and compare; then overwrite the file in place (the inode it read),
+fsync and unlink. Any step may be cut short and the next read finishes it; a corrupt or unsafe file is refused and
+kept; a file that vanished in between sends it back to the Keychain before it says the key is gone. A file still
+beside an item of this pairing is removed only by a process started after the file was last written: the rollback
+path writes such a file while the release it rolls back still runs. A locked Keychain (`errSecInteractionNotAllowed`)
+refuses with `keychainLocked` and changes nothing; `ClusterSetupLinkExchange.pairing` callers that take an unreadable
+store for "nothing changed" retry it each tick, and `cluster status` says to log in once. Pairing and unpairing while
+locked are refused before anything changes; unpairing deletes the item, and the last unpairing, while it holds the store's lock, every item of the store's
+service. The move does not rotate the secret: a copy of 0.10.12's file (a backup, a snapshot) stays valid
+until the Macs pair again.
+
+A saved setup's `linkControl.secretFile` that names this install's `cluster-pairing/edge-<16 hex>.secret`
+(`ClusterLinkControlAttachment.namesPairingSecret`) resolves through the pairing store
+(`DistributedInstalledLinkSecret`: the link keying, the start's `DistributedInstalledValidation.linkSecretMetadata`;
+the setup save needs no file for it). Any other name is a private file, as before.
+
+A rollback to a release older than `ClusterLinkKeyRollback.firstKeychainRelease` (0.10.13), which reads link keys only
+from files, gets them back: `UpdateRecoveryStore.rollback` (every updater rollback: `update --rollback`, the pair's
+follow-rollback, the cluster candidate recovery, the watchdog) writes each pairing's key from the Keychain into its
+`edge-<pin>.secret`, each time as a new file: once the predecessor is verified and staged, and again once the rollback
+is complete; `recoverInterruptedTransaction` writes them when it finishes an interrupted rollback or restores a
+predecessor (a process of the restored release that recovers has no such step). Between two DevNet builds of 0.10.13
+the files are written and the restored build removes them at its first read. The
+items stay; the next release that keeps keys in the Keychain moves the files in again, and a pairing 0.10.12 made in
+between wins by its binding. A rollback to a later release writes no file. A 0.10.12 installed by hand finds no file
+and asks to pair again.
+
+Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterEdgeSecretVault.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterPairingStore.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Distributed/LinkControl/DistributedInstalledLinkSecret.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Pairing/ClusterPairingStore+Install.swift`,
+`provider-swift/Sources/ProviderCore/Update/ClusterLinkKeyRollback.swift` and
+`provider-swift/Sources/ProviderCore/Update/UpdateRecoveryStore.swift`.
 
 ## A paired cable port's own address
 
@@ -8926,6 +10036,61 @@ candidate choice),
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledFiles.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledNativeStart.swift`.
 
+## Launched cluster children run the verified executable
+
+An installed executable is hashed against its pin and then started by path, so
+a binary that replaced it after the last check would be started instead. The
+children that are written secrets are therefore bound to the verified bytes:
+the native worker (data-plane credential, prefix-SSD key, then prompts), the
+coordinator member's local owner (its open frame carries the credential) and
+the GLM calibration and quotation workers.
+
+1. While `DistributedInstalledFiles.digest` hashes an executable it also reads,
+   from the same streamed bytes, the code-directory hash (cdhash) of each arm64
+   image (`DistributedInstalledCodeDirectory`): `LC_CODE_SIGNATURE`, the
+   CodeDirectory the kernel ranks highest (SHA-384, SHA-256, truncated SHA-256,
+   SHA-1), hashed and truncated to 20 bytes. It is kept in
+   `DistributedInstalledFiles.Identity.codeDirectoryHashes`.
+2. `Identity.launchVerifier()` refuses a file without one before any spawn
+   (release builds; debug builds let unit-test script fixtures through). The
+   launch carries the check as `ClusterWorkerLaunch.verifyLaunched`.
+3. The launchers (`ClusterWorkerProcess`, `ClusterRemoteWorkerEndpoint`,
+   `ClusterCalibrationProcess`, `GLM5NextCalibrationQuoteProcess`) start their
+   child through `ClusterChildProcess`. With a check it spawns the child
+   suspended (`POSIX_SPAWN_START_SUSPENDED`, inheriting only its three pipes,
+   every signal at its default): the kernel has mapped the image, the child
+   has run none of it. The check runs then; a check after an ordinary start
+   would come too late. `DistributedInstalledLaunchImage.require` needs Code
+   Signing Services to find the code valid, and both the kernel's cdhash of
+   the image (`CS_OPS_CDHASH`) and the reported one to be expected; the
+   reported one alone is read from the file on disk.
+4. Suspension does not stop another process of the same user from resuming
+   the child during the check, and a child that ran could have changed what
+   the check saw. So after the check accepts the child, and before resuming
+   it, `ClusterChildProcess` requires proof that it never ran: it is still
+   this process's stopped child, its user time is zero (`proc_pid_rusage`,
+   which counts across exec; a suspended child was measured at exactly zero)
+   and it has no process of its own. On any doubt it is refused.
+5. An accepted child is resumed (`SIGCONT`) and only then does the launcher
+   start the loop that writes its input. A refused child is killed and
+   reaped, having been written nothing, and the launch fails with a message
+   that names no path or hash. A launch without a check is a Foundation
+   `Process` as before; the exit of either kind is reported once, after the
+   child is reaped (`ClusterProcessExit`).
+
+This binds the main executable image only. Libraries the image loads are
+covered by library validation in release-signed builds (hardened runtime),
+not by this check, and not in ad-hoc builds.
+
+These launches carry no check: the local owner of a setup without a
+coordinator approval (`DistributedInstalledSession`), the link follower's
+owner (`DistributedInstalledLink`) and the SSH route (`/usr/bin/ssh`). Their
+owner is the provider's own `darkbloom` binary, which nothing pins. Code map:
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledLaunchImage.swift`,
+`DistributedInstalledOwner.nativeLaunch`, `NativePairMemberInstallation.launch`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterChildProcess.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterProcessExit.swift`.
+
 ## The pair's leader takes local requests beside Darkbloom
 
 The member that hosts a pair's slot (`ProviderLoop.hostsClusterPairSlot`, the
@@ -9127,8 +10292,8 @@ configuration declares, and answers each request shape as one Mac does.
    `response_format` answer the service validates that stopped at
    `max_tokens` before it was complete is
    `MLXOpenAIServiceError.responseFormatCutOffByMaxTokens` (422), not an
-   internal failure; GLM's withheld JSON keeps its own typed 422
-   (`GLM5NextResponseFormat.validatedContent`). `GLMSlotParityTests` serves
+   internal failure; GLM's withheld JSON keeps its own typed 422 at any other
+   finish (`GLM5NextResponseFormat.validatedContent`). `GLMSlotParityTests` serves
    each of these GLM requests on a single-Mac slot and on a pair slot and
    compares what the local API returns. Media the model's processor refuses is
    the request's own fault on every provider:
@@ -9250,3 +10415,27 @@ Each tensor-parallel rank reserves only the request state it holds (`QwenTensorP
 Concurrent speculative requests verify their draft windows in one target forward, and each request must emit exactly the tokens it emits alone. MLX picks a quantized matmul kernel from the product's total row count. Up to the device's vector limit (`get_qmv_batch_limit`: 12 rows at Qwen27's widths on the M3 Ultra, 13 on the M5 Max) a product runs `qmv_wide`; at or beyond it, split-K QMM, with a different reduction order. One request's three-column window is 3 rows; four requests' windows in one product are 12, so on the M3 they took the other kernel. In an installed run before this change, 5 of 30 concurrent requests, all in waves with four-request cohorts, chose a different near-tie token. `QwenTensorParallelTargetWindow.beginBatch` therefore runs the batched verify forward under `Qwen35BatchDecodeScope.verifyRows`. Every projection computes each request's `[1, S, H]` rows as that request's own window would, the row-parallel projections concatenate those partials into one collective per projection (two per dense layer), and the LM head follows the same rule. Below the vector limit, `qmv_wide` (and `qmv` before Apple GPU family 15) computes each vector the same way at any vector count: its tile size only decides which vectors share a weight read. So requests share a quantized call while their windows' total rows stay below the limit (`Qwen35QuantizedVectorLimit`, which mirrors `get_qmv_batch_limit` for the device MLX reads, including `MLX_METAL_GPU_ARCH`). At Qwen27's widths with depth 3 that is two four-column windows per call on the M3 Ultra and three on the M5 Max. `qmv_wide` still reads the weights once per tile of up to five vectors, so sharing saves launches and some weight reads rather than whole passes; the installed round profile (`darkbloom-tp-mtp-profile-v1`, c35) still shows about 44 ms of verify time per additional row. Only exact base `QuantizedLinear` modules in affine mode on the GPU share calls; the CPU, other quantizers, overridden forwards and MLX's 64/128-wide quad kernel keep one call per row. `QwenTensorParallelBatchMTPWindowTests.sharedWindowCallsKeepEveryRowsQuantizedArithmetic` checks the shared calls byte for byte against each row's own call at Qwen27's projection shapes. Attention and the recurrent layers were already per-request, so only the projection row count changed between alone and together. `QwenTensorParallelBatchMTPWindowTests.everyRectangleRowEqualsItsOwnSingleRequestWindowBitwise` compares every row of eight-request rectangles with its own window, byte for byte, on both ranks. The agreement carries `verify-rows=single-window-v1`.
 
 Where it measured faster and byte-equal, a cohort's verify rows go through one kernel instead of MLX's own calls (`Qwen35WideQuantizedKernel`, a port of `qmv_wide_impl`): each vector keeps `qmv_wide`'s lanes, sub-chunk sums and shuffle ladder, but up to eight vectors (two four-column windows) share a weight read instead of five, and a thread may carry two output rows so each input value is converted once for both. The layout follows the GPU family (`Qwen35WideQuantizedKernel.layout`). On the M5 Max (family 17), one row a thread for bfloat16 and float32 inputs, up to 20% faster than MLX's calls. On the M3 Ultra (family 15), two rows a thread for the row-parallel float32 partials, 1.5-2.1x faster, while its bfloat16 projections keep MLX's calls, which measured as fast or faster; one row a thread was up to 1.6x slower there. Other families keep MLX's calls. The figures come from `QwenTensorParallelVerifyBenchTests` (opt-in) on each Mac with Qwen27's shard shapes, and `QwenTensorParallelBatchMTPWindowTests.wideKernelRowsEqualEachRowsOwnWindowCall` checks both layouts byte for byte against each row's own call on whichever GPU runs it.
+
+
+## Qwen forced-call thinking
+
+Forced required/named calls on qwen3_5 and qwen3_5_moe retain the resolved thinking setting. Nested reasoning.enabled takes precedence over enable_thinking and effort. The family tool parser and its accepted XML override classify reasoning before validating the call; a complete trailing call at a natural stop uses the existing promotion rule.
+
+The [rollout switch](../reference/configuration.md#qwen-forced-call-thinking) defaults off.
+CPU parser fixtures do not establish full-model output quality or GPU performance.
+
+
+## GPT-OSS commentary content
+
+GPT-OSS streams using the Harmony reasoning parser normalize recipientless assistant commentary to the answer channel before tool extraction and reasoning parsing. This keeps the preamble as content for both streamed and collected responses. Recipients before or after the channel marker remain tool calls; header context is bounded and message bodies are not promoted.
+
+It is on by default; its [kill switch](../reference/configuration.md#gpt-oss-commentary-content), `DARKBLOOM_GPTOSS_COMMENTARY_CONTENT=0`, restores 0.10.12, where the preamble is dropped.
+CPU parser fixtures do not establish full-model output quality or GPU performance.
+
+
+## Qwen stray thinking-close markers
+
+Qwen native channel splitting absorbs complete stray </think> markers outside thoughts. A closed-thought prompt also selects native splitting for Qwen streams that had none (no tools, or a Qwen type outside the reasoning-before-tools split); Qwen3-VL keeps its route, since its bare Instruct tail is a synthetic content seed rather than a closed thought. Legacy media installs the family tool handler with that route so literal argument markers stay protected. Partial markers at end of stream remain literal. Unknown/open prompt states retain the existing media route; existing native routes remain selected as before.
+
+It is on by default for the Qwen types; its [kill switch](../reference/configuration.md#qwen-stray-thinking-close-markers), `DARKBLOOM_QWEN_ABSORB_STRAY_THINK_CLOSE=0`, restores 0.10.12, where the close stays literal.
+CPU parser fixtures do not establish full-model output quality or GPU performance.

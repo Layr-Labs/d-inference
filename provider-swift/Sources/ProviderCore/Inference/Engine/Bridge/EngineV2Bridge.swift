@@ -67,6 +67,9 @@ public actor EngineV2Bridge {
     var glm5NextStepSetupBytes = 0
     /// GLM requests between the capacity gate and `active`.
     var glm5NextGateReservations: [String: Int] = [:]
+    var supportsNativeReasoningBudgets: Bool {
+        !servesDistributedPair && ownedEngine?.supportsReasoningBudgets == true
+    }
     var tracksNativeShutdown: Bool {
         (ownedEngine as? EngineV2)?.nativeShutdownExecutionContractID != nil
     }
@@ -263,6 +266,8 @@ public actor EngineV2Bridge {
         var prefillReceipt: EnginePrefillReceipt? = nil
         /// A Darkbloom request's coordinator id (`MeFirstDarkbloomRequest`); nil for every other request.
         var darkbloomRequestId: String? = nil
+        /// Its engine admission priority (`EngineAdmissionPriority`): 0 but for a loop exit's continuation.
+        var priority: Int = 0
     }
 
     var active: [String: ActiveRequestState] = [:]
@@ -371,6 +376,8 @@ public actor EngineV2Bridge {
     let admissionFixes: Bool
     /// `DeadlineRefusalProbe`, resolved once per bridge.
     let refusalProbe: Bool
+    /// `NativePrefillEvidence`, resolved once per bridge.
+    let nativePrefillEvidence: Bool
     /// Whether the Mac draws from AC power now. The refusal streak's probe is
     /// optional work, so unlike the startup calibration it never runs on battery.
     let evidenceProbeOnACPower: @Sendable () -> Bool
@@ -391,6 +398,9 @@ public actor EngineV2Bridge {
     /// Latest published calibration-cell isolated rate: measured idle at
     /// nominal posture with caching off. Anchors admission's isolated rate.
     var calibratedIsolatedPrefillTps: Double?
+    /// Newest calibration cell or long-prompt sample that moved the isolated
+    /// EWMA under `NativePrefillEvidence`; it dates the evidence.
+    var nativeRateEvidenceAt: ContinuousClock.Instant?
     /// Deadline refusals since the last admission that stale isolated prefill
     /// evidence explains. A full streak re-runs the idle calibration probe.
     var deadlineRefusalStreak = DeadlineRefusalStreak()
@@ -475,6 +485,7 @@ public actor EngineV2Bridge {
         },
         admissionFixes: Bool? = nil,
         refusalProbe: Bool? = nil,
+        nativePrefillEvidence: Bool? = nil,
         evidenceProbeOnACPower: (@Sendable () -> Bool)? = nil,
         terminalBeforeCheckpointPublication: Bool? = nil,
         glm5NextNativeOwner: GLM5NextNativeOperationOwner? = nil,
@@ -491,6 +502,7 @@ public actor EngineV2Bridge {
         self.calibrationPosturePermitsWork = calibrationPosturePermitsWork
         self.admissionFixes = admissionFixes ?? DeadlineAdmissionFixes.enabled
         self.refusalProbe = refusalProbe ?? DeadlineRefusalProbe.enabled
+        self.nativePrefillEvidence = nativePrefillEvidence ?? NativePrefillEvidence.enabled
         self.evidenceProbeOnACPower = evidenceProbeOnACPower ?? { DeadlinePowerPolicyReader.activeSource() == "ac" }
         self.terminalBeforeCheckpointPublication =
             terminalBeforeCheckpointPublication ?? SSDPrefixCachePolicy.terminalBeforePublication()

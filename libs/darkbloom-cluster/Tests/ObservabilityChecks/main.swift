@@ -602,12 +602,14 @@ func statusChecks() throws {
     limits.heartbeatInterval = .milliseconds(200); limits.silenceTimeout = .seconds(2)
     let leaderBoard = ClusterLinkStatusBoard()
     let listener = try ClusterLinkControlListener(configuration: .init(interface: "lo0", port: 0, policy: .loopbackForTests,
-        edges: [try ClusterLinkControlEdge(edgeID: edgeID, epoch: epoch, key: key, peerAddress: .loopback, limits: limits)])) { event, _ in
+        edges: [try ClusterLinkControlEdge(edgeID: edgeID, epoch: epoch, key: key, peerAddress: .loopback, limits: limits)
+            .authenticatedByEdgeKeyOnly()])) { event, _ in
         if case .message(_, _, .status(let value)) = event { leaderBoard.receive(value) }
     }
     let port = try listener.start()
     let client = try ClusterLinkControlClient(configuration: .init(interface: "lo0", port: port, policy: .loopbackForTests,
-        edge: try ClusterLinkControlEdge(edgeID: edgeID, epoch: epoch, key: key, peerAddress: .loopback, limits: limits))) { _, _ in }
+        edge: try ClusterLinkControlEdge(edgeID: edgeID, epoch: epoch, key: key, peerAddress: .loopback, limits: limits)
+            .authenticatedByEdgeKeyOnly())) { _, _ in }
     client.start()
     let connected = client.peer.waitUntilConnected(timeout: .seconds(5))
     let follower = ClusterLinkStatusPublisher(peer: client.peer, epoch: epoch, rank: 1, interval: .milliseconds(200)) {

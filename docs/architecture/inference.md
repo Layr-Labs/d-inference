@@ -5745,10 +5745,15 @@ the SDK's `MuseGlimmerDFlashDraftModel.load` checks it against the pinned
 quantized DFlash drafter (`.museGlimmer30BQuantized`), a second check
 independent of the store's digests, so other bytes fail closed (`loadFailed`)
 even when a catalog publishes them. The drafter's settings
-(`MuseGlimmerDFlashDrafter.Settings.verifying`, one speculative row) require
+(`MuseGlimmerDFlashDrafter.Settings.verifying`, two speculative rows) require
 rectangular-exact verification on the exact tower: one target window scores each
 round, its columns attended as rows of one paged decode dispatch per layer, and
-accepted rows commit one by one. The drafter also requires exact acceptance: under
+accepted rows commit one by one. One decoding request drafts seven tokens a round;
+two decoding requests share a round at three each
+(`MuseGlimmerModelPolicy.pairedRoundDraftTokens`, `fixedDraftTokensByDecodeRows`
+`[7, 3]`), the same 8 verify rows; three or more decode without drafting.
+`DARKBLOOM_MTP_MUSE_GLIMMER_ROWS=1` restores one request per round
+(`MTPAutomaticVerificationPolicy.applyMuseGlimmerSpeculativeRows`). The drafter also requires exact acceptance: under
 an operator `typical` setting its requests run target only. Depth is fixed at seven
 (`MuseGlimmerModelPolicy.maximumDraftTokens`); `DARKBLOOM_MTP_MUSE_GLIMMER_DEPTH=adaptive`
 selects the adaptive controller bounded by seven

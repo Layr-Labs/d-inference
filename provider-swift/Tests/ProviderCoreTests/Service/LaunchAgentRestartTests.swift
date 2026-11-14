@@ -425,6 +425,28 @@ struct LaunchAgentEnvironmentTests {
             environment: LaunchAgent.passthroughEnvironment(from: [:])))
     }
 
+    @Test func forwardsMuseGlimmerSpeculativeRowsRollbackToProviderJob() {
+        // Paired Muse Glimmer rounds are the default; the one-row rollback
+        // works on an installed provider only if its plist carries the key.
+        let key = MTPAutomaticVerificationPolicy.museGlimmerSpeculativeRowsEnvironmentKey
+        #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))
+        #expect(!WatchdogAgent.passthroughEnvKeys.contains(key))
+        for value: String? in [nil, "", "1", " 1 ", "2", "typo"] {
+            var foreground = ["UNRELATED_SECRET": "excluded"]
+            foreground[key] = value
+            let plist = LaunchAgent.makeServicePlist(
+                label: LaunchAgent.label, programArguments: ["/test/darkbloom", "start", "--foreground"],
+                logPath: "/test/provider.log", environment: foreground)
+            let launchd = plist["EnvironmentVariables"] as? [String: String] ?? [:]
+            #expect(launchd["UNRELATED_SECRET"] == nil)
+            #expect(MTPAutomaticVerificationPolicy.museGlimmerSpeculativeRows(environment: launchd).rows
+                == MTPAutomaticVerificationPolicy.museGlimmerSpeculativeRows(environment: foreground).rows)
+        }
+        let rollback = LaunchAgent.passthroughEnvironment(from: [key: "1"])
+        #expect(rollback == [key: "1"])
+        #expect(MTPAutomaticVerificationPolicy.museGlimmerSpeculativeRows(environment: rollback).rows == .single)
+    }
+
     @Test func forwardsGemmaRowMappedNAXRollbackWithoutInventingAnOverride() throws {
         let key = "DARKBLOOM_GEMMA4_NAX_ROW_MAP"
         #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))

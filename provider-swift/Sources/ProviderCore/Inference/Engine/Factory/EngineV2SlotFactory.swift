@@ -315,6 +315,14 @@ enum EngineV2SlotFactory {
             verificationMode: mtpVerification.mode,
             maxAutomaticRectangularTokens: mtpVerification.automaticRectangularTokens,
             acceptance: mtpAcceptance.acceptance)
+        // Exact Muse Glimmer rounds hold two decoding requests at the paired
+        // depth unless the kill switch binds one.
+        if let unrecognized = MTPAutomaticVerificationPolicy.applyMuseGlimmerSpeculativeRows(
+            to: &mtpConfig, modelID: modelId, environment: environment) {
+            logWarning(
+                "engine_v2: unrecognized \(MTPAutomaticVerificationPolicy.museGlimmerSpeculativeRowsEnvironmentKey) "
+                    + "value \"\(unrecognized)\" for \(modelId) — using 2")
+        }
         // Per-build SDK switches this release turns on where they were measured;
         // the operator's value (read above by the SDK) wins.
         let sdkDefaults = SDKFeatureDefaults.applyMTPDefaults(

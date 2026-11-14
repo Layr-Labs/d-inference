@@ -146,6 +146,67 @@ struct MuseGlimmerPolicyTests {
         }
     }
 
+    @Test("two decoding requests share a speculative round at depth three; one row is the kill switch")
+    func speculativeRows() {
+        let key = MTPAutomaticVerificationPolicy.museGlimmerSpeculativeRowsEnvironmentKey
+        #expect(key == "DARKBLOOM_MTP_MUSE_GLIMMER_ROWS")
+        #expect(MuseGlimmerModelPolicy.pairedRoundDraftTokens == 3)
+        let paired = MTPAutomaticVerificationPolicy.MuseGlimmerSpeculativeRows.paired
+        let single = MTPAutomaticVerificationPolicy.MuseGlimmerSpeculativeRows.single
+        #expect(paired.rows == 2 && paired.depthByDecodeRows == [7, 3])
+        #expect(single.rows == 1 && single.depthByDecodeRows == nil)
+        // Two rows of 1 + 3 columns are the 8 verify rows one row of depth 7 takes.
+        #expect(paired.rows * (paired.depthByDecodeRows![1] + 1) == MuseGlimmerModelPolicy.maximumDraftTokens + 1)
+        let cases: [([String: String], MTPAutomaticVerificationPolicy.MuseGlimmerSpeculativeRows, String?)] = [
+            ([:], paired, nil), ([key: ""], paired, nil), ([key: "2"], paired, nil), ([key: " 2 "], paired, nil),
+            ([key: "1"], single, nil), ([key: " 1\n"], single, nil),
+            ([key: "3"], paired, "3"), ([key: "two"], paired, "two"), ([key: "0"], paired, "0"),
+        ]
+        for (environment, expected, unrecognized) in cases {
+            let resolved = MTPAutomaticVerificationPolicy.museGlimmerSpeculativeRows(environment: environment)
+            #expect(resolved.rows == expected, "\(environment)")
+            #expect(resolved.unrecognized == unrecognized, "\(environment)")
+        }
+        let depthKey = MTPAutomaticVerificationPolicy.museGlimmerDraftDepthEnvironmentKey
+        for id in Self.ids {
+            // Fixed depth: the table applies and the batch is the row count. The
+            // kill switch leaves the configuration as it was (the drafter binds one row).
+            for (environment, rows, table) in [
+                ([:], 2, [7, 3]), ([key: "1"], CBv2MTPConfig().maxSpeculativeBatch, nil), ([key: "2"], 2, [7, 3]),
+            ] as [([String: String], Int, [Int]?)] {
+                let depth = MTPAutomaticVerificationPolicy.draftDepthPolicy(
+                    usesRequestStatefulDrafter: true, modelID: id, environment: environment)
+                var config = CBv2MTPConfig(enabled: true, maxDraftTokens: depth.maximum, fixedDraftTokens: depth.fixed)
+                let unrecognized = MTPAutomaticVerificationPolicy.applyMuseGlimmerSpeculativeRows(
+                    to: &config, modelID: id, environment: environment)
+                #expect(unrecognized == nil)
+                #expect(config.maxSpeculativeBatch == rows, "\(environment)")
+                #expect(config.fixedDraftTokensByDecodeRows == table, "\(environment)")
+                #expect(config.fixedDraftTokens == 7 && config.maxDraftTokens == 7)
+            }
+            // Adaptive depth: two rows, no table (the controller keys its own row buckets).
+            var adaptive = CBv2MTPConfig(enabled: true, maxDraftTokens: 7, fixedDraftTokens: nil)
+            _ = MTPAutomaticVerificationPolicy.applyMuseGlimmerSpeculativeRows(
+                to: &adaptive, modelID: id, environment: [depthKey: "adaptive"])
+            #expect(adaptive.maxSpeculativeBatch == 2 && adaptive.fixedDraftTokensByDecodeRows == nil)
+            // An unreadable value keeps the default and is reported.
+            var odd = CBv2MTPConfig(enabled: true, maxDraftTokens: 7, fixedDraftTokens: 7)
+            #expect(MTPAutomaticVerificationPolicy.applyMuseGlimmerSpeculativeRows(
+                to: &odd, modelID: id, environment: [key: "4"]) == "4")
+            #expect(odd.maxSpeculativeBatch == 2 && odd.fixedDraftTokensByDecodeRows == [7, 3])
+        }
+        // Every other model's configuration is untouched, the variable set or not.
+        for id in Self.lookalikes + ["other"] {
+            for environment in [[:], [key: "1"], [key: "2"]] as [[String: String]] {
+                var config = CBv2MTPConfig(enabled: true, maxDraftTokens: 7, fixedDraftTokens: 1)
+                #expect(MTPAutomaticVerificationPolicy.applyMuseGlimmerSpeculativeRows(
+                    to: &config, modelID: id, environment: environment) == nil)
+                #expect(config.maxSpeculativeBatch == CBv2MTPConfig().maxSpeculativeBatch)
+                #expect(config.fixedDraftTokensByDecodeRows == nil)
+            }
+        }
+    }
+
     @Test("the built-in acceptance rule is exact; configuration still overrides it")
     func acceptance() {
         for id in Self.ids {

@@ -33,6 +33,10 @@ public enum MuseGlimmerModelPolicy {
     /// the engine's tested window.
     public static let maximumDraftTokens = 7
 
+    /// The depth of each row when two decoding requests share a round:
+    /// 2 × (3 + 1) target rows, the verify width of one row at the cap.
+    public static let pairedRoundDraftTokens = 3
+
     /// The SDK numerics profile this provider serves the tower with: what
     /// `MuseGlimmerTextModel.numericsProfile` reports once exact windows are
     /// on. A load whose tower reports anything else fails, and the checkpoint

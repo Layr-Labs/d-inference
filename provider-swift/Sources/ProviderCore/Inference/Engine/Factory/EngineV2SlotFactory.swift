@@ -219,10 +219,10 @@ enum EngineV2SlotFactory {
         let kvPrecision = try EngineV2KVQuantizationPolicy.resolve(
             modelType: modelType, global: kvQuantizationConfig,
             byModel: kvQuantizationConfigByModel, modelID: modelId, environment: environment)
-        let checkpointPrecision = try EngineV2KVQuantizationPolicy.resolve(
+        let checkpointPrecision = try EngineV2KVQuantizationPolicy.resolveProviderCheckpoint(
             modelType: modelType, global: checkpointQuantizationConfig,
             byModel: checkpointQuantizationConfigByModel, modelID: modelId,
-            environment: environment, purpose: .checkpoint)
+            environment: environment)
         environment[EngineV2KVQuantizationPolicy.environmentKey] = kvPrecision.rawValue
         logInfo("engine_v2: \(modelId) live KV precision \(kvPrecision.rawValue)")
         // Check explicit fixture ownership before any cache or model preparation.

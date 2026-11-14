@@ -2352,8 +2352,9 @@ streamed requests and samples process and MLX memory at load, prefill and
 decode; its numbers describe that machine and build only. `cache` runs a
 six-turn conversation under one cache scope, through an engine built as a
 coordinator request's is, repeats each turn under a fresh scope, and requires
-the fresh scope never to hit. Restored and cold outputs are required to agree
-only with `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION=native`.
+the fresh scope never to hit. With `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION`
+unset the slot must store native checkpoint rows, and restored and cold outputs
+are required to agree whenever its rows are native.
 
 ## Flint native validation
 

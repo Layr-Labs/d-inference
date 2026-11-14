@@ -262,12 +262,13 @@ GPU work. A process that never bound one (`bindRuntimeMetallibForMLX`, which
 `darkbloom start` does) reports `runtime_identity_unavailable` and serves
 without the cache.
 
-Checkpoint rows take the provider's checkpoint precision, whose default is
-`balanced` (k4v4): unlike Flint and Nemotron 3.5 Lightning, the type is not in
-`PagedKVQuantizationPolicy`'s native set, so a restored request may continue
-differently from a cold one. `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION=native`
-or a per-model `native` setting stores exact rows. Which default this model
-should have is not decided here.
+Checkpoint rows are native, so a restored request continues exactly as its cold
+run (`EngineV2KVQuantizationPolicy.resolveProviderCheckpoint`). Measured on one
+six-turn conversation, `balanced` rows changed the emitted tokens on 3 of 5
+restored turns and native rows on none. The global
+`engine_v2_kv_checkpoint_quantization` does not apply to this type; its own
+per-model entry or `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` still selects a
+profile, as for Nemotron 3.5 Super.
 
 The type has no entry in the demanded short-checkpoint policy
 (`EngineV2Factory+DemandedCheckpoint.swift`), so a prompt reuses the checkpoint

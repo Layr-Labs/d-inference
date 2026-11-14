@@ -4476,7 +4476,7 @@ Quantization is detected by name, in order: `4bit`|`q4`|`int4` → `4bit`;
 (`provider-swift/Sources/ProviderCore/Models/ModelScanner+Discovery.swift`,
 `detectQuantization`). Weight precision is independent of live KV and checkpoint
 precision. `EngineV2KVQuantizationPolicy` defaults to native live execution and
-separately requests balanced checkpoint storage (native for `nemotron_h`). Native `auto` backend selection
+separately requests balanced checkpoint storage (native for `nemotron_h` and `muse_glimmer`). Native `auto` backend selection
 is unchanged; storage compression never forces paging. Eligible native paged
 and contiguous checkpoints encode older attention rows and restore into native
 state, preserving exact recent and recurrent/auxiliary state. Older reconstructed

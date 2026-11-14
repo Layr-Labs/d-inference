@@ -85,6 +85,7 @@ struct MuseGlimmerLiveTests {
             try await server.ensureModelLoaded(id)
             let loadSeconds = MuseGlimmerLiveClient.seconds(since: loadStarted)
             try #require(await server.slots[id]?.bridge.kvBackendKind == .paged, "the slot must be paged")
+            let checkpointPrecision = try #require(await server.slots[id]?.bridge.kvCheckpointQuantization)
             try client.record(MuseGlimmerLiveClient.memory("after-load"))
             let (_, metrics) = try await client.get("/metrics")
             try client.record(["case": "slot", "kv_backend": "paged", "load_seconds": loadSeconds,
@@ -92,6 +93,7 @@ struct MuseGlimmerLiveTests {
                                "prompt_contract_id": contract ?? "none",
                                "weight_hash_present": model.weightHash?.isEmpty == false,
                                "checkpoint_precision_env": env["DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION"] ?? "default",
+                               "checkpoint_precision": checkpointPrecision.rawValue,
                                "metrics": metrics.split(separator: "\n").filter {
                                    $0.contains("kv_backend") || $0.contains("prefix_cache")
                                }.map(String.init)])
@@ -104,8 +106,10 @@ struct MuseGlimmerLiveTests {
             if phases.contains("http") { try await Self.http(client) }
             if phases.contains("speed") { try await Self.speed(client) }
             if phases.contains("cache") {
+                // Unset, Muse Glimmer's checkpoints store native rows.
+                if env["DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION"] == nil { #expect(checkpointPrecision == .native) }
                 try await Self.conversation(server: server, client: client,
-                    exactRows: env["DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION"] == "native")
+                    exactRows: checkpointPrecision == .native)
             }
         } catch {
             await server.stopAndWait()

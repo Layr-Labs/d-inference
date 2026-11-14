@@ -31,7 +31,7 @@ public enum SDKFeatureDefaults {
     static let gemmaQuotedNumbers: [String] = []
 
     /// #2099 / SDK #411: Super / MiMo `reasoning.max_tokens` budgets.
-    static let reasoningBudgets: [String] = []
+    static let reasoningBudgets: [String] = ["DARKBLOOM_NATIVE_REASONING_BUDGET"]
 
     /// The keys to set for `environment`: every listed key it leaves unset or
     /// empty (an empty value is what the LaunchAgent drops, so it means unset).

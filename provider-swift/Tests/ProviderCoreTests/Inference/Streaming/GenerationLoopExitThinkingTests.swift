@@ -286,33 +286,37 @@ struct GenerationLoopExitThinkingTests {
         #expect(resolve("gemma4", setting: gemmaOnly) != nil)
     }
 
-    @Test("by default Qwen's exit takes only the builds the A/B proved; a list set on the Mac takes every build")
-    func qwenDefaultBuilds() {
+    @Test("Qwen's exit takes the builds the A/B proved; another build only when a list set on the Mac names it")
+    func qwenProvenBuilds() {
         typealias Policy = GenerationLoopExitThinkingPolicy
         let defaults = Policy.setting(environment: [:])
         #expect(Policy.setting(environment: [Policy.environmentKey: "on"]) == defaults)
-        #expect(!Policy.keepsLengthByDefault(modelType: "qwen3_5", modelID: "Qwen3.5-9B", setting: defaults))
-        #expect(!Policy.keepsLengthByDefault(modelType: "qwen3_5_moe", modelID: "qwen3.5-35b-a3b", setting: defaults))
+        #expect(!Policy.keepsLength(modelType: "qwen3_5", modelID: "Qwen3.5-9B", setting: defaults))
+        #expect(!Policy.keepsLength(modelType: "qwen3_5_moe", modelID: "qwen3.5-35b-a3b", setting: defaults))
         // The same families' other builds: Qwen 3.6, Qwen 3.8 27B, another 9B build.
-        #expect(Policy.keepsLengthByDefault(
+        #expect(Policy.keepsLength(
             modelType: "qwen3_5_moe", modelID: "qwen3.6-35b-a3b-vl-mtp-mxfp8", setting: defaults))
         for id in ModelRuntimeRequirements.qwen38ConcreteModelIDs {
-            #expect(Policy.keepsLengthByDefault(modelType: "qwen3_5", modelID: id, setting: defaults), "\(id)")
+            #expect(Policy.keepsLength(modelType: "qwen3_5", modelID: id, setting: defaults), "\(id)")
         }
-        #expect(Policy.keepsLengthByDefault(
+        #expect(Policy.keepsLength(
             modelType: "qwen3_5", modelID: "EigenLabs/Qwen3.5-9B-MLX-4bit-mtp", setting: defaults))
         // A build counts only with its own `model_type`.
-        #expect(Policy.keepsLengthByDefault(modelType: "qwen3_5_moe", modelID: "Qwen3.5-9B", setting: defaults))
+        #expect(Policy.keepsLength(modelType: "qwen3_5_moe", modelID: "Qwen3.5-9B", setting: defaults))
         // Gemma's and GPT-OSS's exits take every build.
-        #expect(!Policy.keepsLengthByDefault(
+        #expect(!Policy.keepsLength(
             modelType: "gemma4", modelID: "mlx-community/gemma-4-26B-A4B-it-qat-4bit", setting: defaults))
-        #expect(!Policy.keepsLengthByDefault(modelType: "gpt_oss", modelID: "gpt-oss-20b", setting: defaults))
-        // A list set on the Mac turns its families on for every build.
-        let listed = Policy.setting(environment: [Policy.environmentKey: "qwen3_5,qwen3_5_moe"])
-        #expect(!Policy.keepsLengthByDefault(
-            modelType: "qwen3_5", modelID: "EigenLabs/Qwen3.8-27B-4bit-mtp", setting: listed))
-        #expect(!Policy.keepsLengthByDefault(
-            modelType: "qwen3_5_moe", modelID: "qwen3.6-35b-a3b-vl-mtp-mxfp8", setting: listed))
+        #expect(!Policy.keepsLength(modelType: "gpt_oss", modelID: "gpt-oss-20b", setting: defaults))
+        // A list that only names families keeps Qwen to its proven builds, whatever else it adds.
+        let families = Policy.setting(environment: [Policy.environmentKey: "qwen3_5,qwen3_5_moe,nemotron_h_omni"])
+        #expect(Policy.keepsLength(modelType: "qwen3_5", modelID: "EigenLabs/Qwen3.8-27B-4bit-mtp", setting: families))
+        #expect(!Policy.keepsLength(modelType: "qwen3_5", modelID: "Qwen3.5-9B", setting: families))
+        // A list adds a build by a case-insensitive part of its id; a family's own name is not an id part.
+        let named = Policy.setting(environment: [Policy.environmentKey: "qwen3_5,qwen3_5_moe,Qwen3.8-27B"])
+        for id in ModelRuntimeRequirements.qwen38ConcreteModelIDs {
+            #expect(!Policy.keepsLength(modelType: "qwen3_5", modelID: id, setting: named), "\(id)")
+        }
+        #expect(Policy.keepsLength(modelType: "qwen3_5_moe", modelID: "qwen3.6-35b-a3b-vl-mtp-mxfp8", setting: named))
     }
 
     @Test("a Qwen thought that loops asks to end the thought; a loop after `</think>` does not")

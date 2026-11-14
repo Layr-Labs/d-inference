@@ -95,10 +95,10 @@ public final class GenerationLoopExitRecord: @unchecked Sendable {
 /// channel's header (`harmonyAnalysisToFinal`). Qwen 3.5/3.6
 /// (`qwen3_5_moe`, `qwen3_5`), whose template closes a thought with
 /// `\n</think>\n\n` (`</think>` is one special token), are on by default for
-/// the builds the GPU A/B proved only, Qwen 3.5 9B and 35B (`defaultBuilds`):
+/// the builds the GPU A/B proved only, Qwen 3.5 9B and 35B (`provenBuilds`):
 /// the same families serve Qwen 3.6 (`qwen3_5_moe`) and Qwen 3.8 27B
-/// (`qwen3_5`), whose loops keep ending as `length` by default until their own
-/// A/B (`keepsLengthByDefault`). The guard keeps ending every other loop as
+/// (`qwen3_5`), whose loops keep ending as `length` unless a list set on the
+/// Mac names them (`keepsLength`). The guard keeps ending every other loop as
 /// `length`: a loop outside the thought, a family that is not on, a request
 /// that asked for logprobs (the forced tokens have none), a pair's request.
 /// Nemotron 3.5 Super (`nemotron_h_omni`) has the marker and is off by default
@@ -107,7 +107,8 @@ public final class GenerationLoopExitRecord: @unchecked Sendable {
 ///
 /// `DARKBLOOM_LOOP_EXIT_THINKING`: unset, `1` or `on` keeps the default list;
 /// `0` or `off` turns it off; any other value is the comma-separated list of
-/// `model_type`s to allow, among those with a listed marker, for every build.
+/// `model_type`s to allow, among those with a listed marker, and of model-id
+/// parts that add a build to a family with proven builds (`keepsLength`).
 /// `DARKBLOOM_GPTOSS_FINAL_EXIT`: `0`, `off` or `false` keeps GPT-OSS's exit to
 /// requests that declare tools (#2070's exit alone); anything else leaves it on.
 enum GenerationLoopExitThinkingPolicy {
@@ -166,21 +167,26 @@ enum GenerationLoopExitThinkingPolicy {
 
     static let defaultModelTypes: Set<String> = ["gemma4", "gemma4_text", "gpt_oss", "qwen3_5", "qwen3_5_moe"]
 
-    /// Families on by default for some of their builds only: the builds the GPU
+    /// Families whose exit takes only some of their builds: the builds the GPU
     /// A/B proved, by catalog id, each with its own `model_type` (as
     /// `EngineV2SamplingDefaults.qwen35CardModelTypes`).
-    static let defaultBuilds: [String: String] = [
+    static let provenBuilds: [String: String] = [
         "Qwen3.5-9B": "qwen3_5",
         "qwen3.5-35b-a3b": "qwen3_5_moe",
     ]
 
-    /// Whether the default list leaves this build's loops ending as `length`:
-    /// its family is on by default for other builds only (`defaultBuilds`). A
-    /// list set on the Mac turns its families on for every build.
-    static func keepsLengthByDefault(modelType: String?, modelID: String, setting: Setting = current) -> Bool {
-        guard setting == .modelTypes(defaultModelTypes), let type = modelType?.lowercased(),
-              defaultBuilds.values.contains(type) else { return false }
-        return defaultBuilds[modelID] != type
+    /// Whether this build's loops keep ending as `length` although its family
+    /// is on: a family with proven builds (`provenBuilds`) takes the exit on
+    /// those, and on another build only when the list names it by a
+    /// case-insensitive part of its id (`qwen3.6`, `qwen3.8-27b`; as
+    /// `QwenStrictToolGrammar`'s lists). The same in the default list and in a
+    /// list set on the Mac, so a list that adds a family never turns Qwen's exit
+    /// on for a build the A/B did not prove.
+    static func keepsLength(modelType: String?, modelID: String, setting: Setting = current) -> Bool {
+        guard case .modelTypes(let entries) = setting, let type = modelType?.lowercased(),
+              provenBuilds.values.contains(type), provenBuilds[modelID] != type else { return false }
+        let id = modelID.lowercased()
+        return !entries.contains { markersByModelType[$0] == nil && id.contains($0) }
     }
 
     /// The answer's own cap. Gemma's GPQA answers after a thought are under

@@ -22,7 +22,7 @@ final class IdleCalibrationCoordinator: @unchecked Sendable {
 
     private let lock = NSLock()
     private var foreground = Set<UUID>()
-    private var session: (id: UUID, task: Task<Void, Never>)?
+    private var session: (id: UUID, task: Task<Void, Never>, toleratesPrefixStoreTransfers: Bool)?
     /// First cancellation of the current session, for its outcome log.
     private var cancelledBy: String?
     /// Requests waiting for the current session to retire.
@@ -40,7 +40,11 @@ final class IdleCalibrationCoordinator: @unchecked Sendable {
         set { lock.withLock { bound = newValue } }
     }
 
+    /// - Parameter toleratesPrefixStoreTransfers: the session is a hidden
+    ///   request that restores from and writes to the prefix store itself, so
+    ///   that store's device transfers do not end it. Everything else does.
     func startIfIdle(isIdle: () -> Bool,
+        toleratesPrefixStoreTransfers: Bool = false,
         onRetired: (@Sendable () async -> Void)? = nil,
         operation: @escaping @Sendable () async -> Void) -> Task<Void, Never>? {
         lock.withLock {
@@ -51,7 +55,7 @@ final class IdleCalibrationCoordinator: @unchecked Sendable {
                 await operation()
                 self.finish(id)
             }
-            session = (id, task)
+            session = (id, task, toleratesPrefixStoreTransfers)
             // Foreground admission awaits only the session's retirement. Successor
             // scheduling crosses actors, so it runs after the global owner is
             // released without extending a customer request's deadline wait. A
@@ -111,10 +115,15 @@ final class IdleCalibrationCoordinator: @unchecked Sendable {
         }
     }
 
-    func cancel() {
-        let task = lock.withLock {
-            if session != nil, cancelledBy == nil { cancelledBy = "device work" }
-            return session?.task
+    /// Device work ends the session. A prefix-store transfer does not end a
+    /// session that tolerates them; it is not that session's canceller.
+    func cancel(prefixStoreTransfer: Bool = false) {
+        let task = lock.withLock { () -> Task<Void, Never>? in
+            guard let session, !(prefixStoreTransfer && session.toleratesPrefixStoreTransfers) else {
+                return nil
+            }
+            if cancelledBy == nil { cancelledBy = "device work" }
+            return session.task
         }
         task?.cancel()
     }

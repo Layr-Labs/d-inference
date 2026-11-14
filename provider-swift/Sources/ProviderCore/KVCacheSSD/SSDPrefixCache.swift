@@ -849,7 +849,7 @@ public final class SSDPrefixCache:
     ) {
         // Slicing/readback may run on the donation queue after request
         // retirement. Its device work is outside text-token service bounds.
-        let deviceActivity = kvBudget?.serviceBudget.beginUnboundedActivity()
+        let deviceActivity = kvBudget?.serviceBudget.beginUnboundedActivity(prefixStoreTransfer: true)
         defer { deviceActivity?.finish() }
         guard !isClosed else {
             settlement.settle(.cacheClosed)
@@ -1291,7 +1291,7 @@ public final class SSDPrefixCache:
     func stage(
         requestID: String, promptTokens: [Int], cacheScope: String
     ) async -> SSDPrefixCacheStageResult {
-        let deviceActivity = kvBudget?.serviceBudget.beginUnboundedActivity()
+        let deviceActivity = kvBudget?.serviceBudget.beginUnboundedActivity(prefixStoreTransfer: true)
         defer { deviceActivity?.finish() }
         let started = ContinuousClock.now
         let hasher = hasher(cacheSalt: cacheScope)

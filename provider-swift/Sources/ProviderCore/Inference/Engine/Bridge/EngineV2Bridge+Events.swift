@@ -206,9 +206,13 @@ extension EngineV2Bridge {
                 usageSignal?.record(
                     usage: usage,
                     fallbackTier: prefixCacheFallbackTier)
-                ssdPrefixCache?.recordPrefillTokensSaved(
-                    usage.prefixCachePrefillTokensSaved)
-                emitPrefixReuseTelemetry(requestId: id, usage: usage)
+                // A turn continuation serves no client: what it reuses is
+                // counted when the follow-up it prepared arrives.
+                if modelCalibration.requests[id]?.continuation != true {
+                    ssdPrefixCache?.recordPrefillTokensSaved(
+                        usage.prefixCachePrefillTokensSaved)
+                    emitPrefixReuseTelemetry(requestId: id, usage: usage)
+                }
                 finishAndEmit(
                     id: id, reason: reason, usage: usage,
                     sawFirstToken: sawFirstToken, continuation: continuation,

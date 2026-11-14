@@ -2674,10 +2674,128 @@ With the grid on:
 
 Both keys are `DARKBLOOM_CBV2_*` keys: they enter the complete-checkpoint
 numerics fingerprint and disqualify reviewed serving and deadline profiles.
-Scheduler-prefill benchmark receipts do not record the grid. No serving path
-submits a continuation request (`EngineV2.submitContinuation`) yet, so the
+Scheduler-prefill benchmark receipts do not record the grid. By itself the
 grid changes how prompts are chunked and where checkpoints can land, not when
-prefill starts.
+prefill starts. [Turn continuation](#turn-continuation) is the one serving path
+that submits a continuation request (`EngineV2.submitContinuation`).
+
+### Turn continuation
+
+Off by default. With the grid on, `DARKBLOOM_CBV2_TURN_CONTINUATION=1` lets a
+slot prefill the start of a conversation's next turn after a reply ends, while
+the Mac is idle. The next request of that conversation then finds state for
+tokens it shares with the reply it follows.
+
+A slot has continuation cells only when it has a canonical grid and either the
+resident recurrent bank or the complete-checkpoint store
+(`ProductionBuild.turnContinuationCells`, set in
+`EngineV2Factory.makeProductionEngine`). A slot whose only prefix tier is
+resident KV pages has none, and neither has a GLM5Next slot with a native
+owner. Requests with media take their own paths and start none.
+
+**Which replies.** The stream forwarder
+(`MultiModelBatchSchedulerEngine.makeEventStream`) starts a continuation only
+after it has sent the terminal frame and released the model pin, and only when
+all of these hold:
+
+- The request was a serving request with the prefix cache on, and it had no
+  response format, no JSON answer and no withheld GLM output.
+- The engine itself reported a `stop` finish. A reply cut by the token limit,
+  a cancelled row and a matched stop sequence start none.
+- The reply has no tool call, and its content is not empty.
+
+**What is prefilled.** `TurnContinuationSource.sharedPrefix`
+(`provider-swift/Sources/ProviderCore/Inference/Engine/TurnContinuation.swift`)
+renders the request twice through the request's own prompt path
+(`ToolChoicePromptPolicy.prepare`, `ProviderPromptContractPipeline.tokenize`),
+each time with the reply appended as an assistant message and a different
+one-letter user message. The tokens the two renders share, less the last one,
+are the tokens any next turn starts with. The reply is rebuilt from the
+stream's events as the `content` a client receives, without its reasoning
+(`TurnReplyCapture`). `TurnContinuationCells.plan` then cuts that prefix at
+the last position the slot's tiers keep:
+
+- With the resident bank: the last message boundary the slot's rule finds or
+  the last grid multiple, whichever is later. A slot without a boundary rule
+  has grid multiples only.
+- With the complete-checkpoint store: one token past the last grid multiple
+  below the end.
+
+When that position is one the turn that just ended already reached, nothing
+new is left to keep and no request is submitted. Without both the resident
+bank and a boundary rule, that is every reply that does not cross a grid
+multiple.
+
+**What it must find restored.** On the complete-checkpoint store a
+continuation only extends what its turn left there. The plan carries the last
+grid multiple that turn's own request should have written
+(`TurnContinuationPlan.restoreFloor`): the last grid multiple below the end of
+its prompt, counted over the tokens the prompt shares with the prediction.
+Before the hidden request is submitted, `EngineV2Bridge.submitTokenized`
+compares that floor with what the prefix tiers restore for it, which is the
+longer of the store's staged checkpoint and the resident tier's match. When
+they restore less, the request is refused before any prefill, a staged
+checkpoint is given back unconsumed, and the outcome is `skipped`. Without
+this check the hidden request would compute the turn's own prompt again from
+its first token and write it, and a request that arrives meanwhile waits for
+that write.
+
+Three cases follow from the rule:
+
+- When neither the turn's own request nor an earlier one left a checkpoint
+  at that grid multiple, no continuation starts, whatever kept the request
+  from writing.
+- The store keeps no position below its minimum
+  (`DARKBLOOM_PREFIX_CACHE_SSD_MIN_EFFECTIVE_TOKENS`, 1,024 by default), so a
+  turn whose last grid multiple is below it finds nothing there.
+- The floor is 0 when the turn's prompt fits inside the first grid cell, and
+  on a slot with the resident bank, whose plan asks nothing of the store.
+
+The prediction is never a correctness input. The engine reuses state only
+where a later prompt's tokens match, so a wrong prediction costs idle work and
+gives no reuse. A client that sends the reply back changed, or changes an
+earlier message, gets no reuse from it either.
+
+**How it runs.** `EngineV2Bridge.continueTurn`
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+TurnContinuation.swift`)
+waits for the source request to retire, then starts the work through the
+coordinator idle calibration uses (`IdleCalibrationCoordinator.startIfIdle`).
+It starts only when the slot has no active or pending request, no calibration
+session and an open posture, and the work is skipped, never queued. The hidden
+request has no client. It samples one greedy token, which is discarded, and it
+reads and writes the prefix tiers under the cache scope of the request it
+follows. `EngineV2.submitContinuation` admits it only while the engine has no
+other stream. Any arriving request cancels it, and it stops by itself after
+`turnContinuationMaximumSeconds` (60 s). Its own prefix-store transfers do not
+cancel it: the store's restore and checkpoint write still count as device work
+on the service budget and still invalidate idle evidence, but the session is
+started with `toleratesPrefixStoreTransfers` and
+`IdleCalibrationCoordinator.cancel(prefixStoreTransfer:)` leaves it running.
+Every other device activity ends it, as it ends a calibration session. A
+continuation that is cancelled or runs out of time publishes the positions it
+finished to the resident bank only. The complete-checkpoint store takes
+nothing from a cancelled request, so a slot with only that store loses the
+work.
+
+It is a warm-up cell, so calibration takes no measurement from it, and it is
+left out of the prefix-cache savings counter and the reuse telemetry. Its one
+log line carries the model ID, the outcome, two token counts and a duration,
+and no token IDs or text. The outcome is `completed` only when the engine
+prefilled every token and stopped by itself. A refused request logs `skipped`
+with the tokens the tiers restored and the floor.
+
+**Costs.** A request that arrives during a continuation waits for it to stop,
+and nothing bounds that wait except the time the engine takes to cancel a
+row. On the complete-checkpoint store the wait also covers a checkpoint write
+the hidden request has already started: cancelling the request does not stop
+the write. A refused continuation that found an older, shorter checkpoint has
+read it once before giving it back. The two renders run off the request path
+at utility priority. Idle GPU time is spent after each reply that has a cell
+to fill, whether or not a follow-up arrives. These costs have not been
+measured on a reviewed serving profile.
+
+The key is a `DARKBLOOM_CBV2_*` key: it enters the complete-checkpoint
+numerics fingerprint and disqualifies reviewed serving and deadline profiles.
 
 ### Deadlines
 

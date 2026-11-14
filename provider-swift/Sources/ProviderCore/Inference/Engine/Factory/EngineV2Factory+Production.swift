@@ -92,6 +92,9 @@ extension EngineV2Factory {
         /// The protected model's enforced context. The bridge advertises it so
         /// over-length requests fail before native admission.
         var glm5NextMaximumContextTokens: Int? = nil
+        /// The canonical positions this engine's prefix tiers keep; nil without
+        /// the grid or without a tier a continuation can feed.
+        var turnContinuationCells: TurnContinuationCells? = nil
         public let engine: any CBv2Engine
         /// Concrete engine residency, including MTP expansion.
         public let fixedRequestBytes: Int
@@ -431,6 +434,12 @@ extension EngineV2Factory {
         build.glm5NextNativeOwner = glmOwner
         if glmOwner != nil {
             build.glm5NextMaximumContextTokens = (model as? GLM5NextProtectedModel)?.maximumContextLength
+        } else if let grid = schedulerConfig.canonicalPrefillGridTokens,
+            engine.hybridPrefixCache != nil || engine.completePrefixCache != nil {
+            // A complete store answers the lookup first, so its positions decide.
+            build.turnContinuationCells = TurnContinuationCells(
+                gridTokens: grid, boundaryRule: schedulerConfig.canonicalBoundaryRule,
+                residentBank: engine.completePrefixCache == nil)
         }
         return build
     }

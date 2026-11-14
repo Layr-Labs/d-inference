@@ -315,14 +315,21 @@ final class WholeMacServiceBudget: @unchecked Sendable {
     /// Preparation, model loading and cache device transfers cannot borrow a
     /// token-work calibration. Each independent owner invalidates old guards;
     /// ending one owner cannot erase a later or overlapping activity.
-    func beginUnboundedActivity() -> WholeMacUnboundedActivity {
+    ///
+    /// A prefix-store transfer names itself. It ends a calibration or
+    /// shape-warmup session like any other device work, because those measure
+    /// rates. It does not end a turn continuation: that session is a hidden
+    /// request whose own restore and checkpoint write are such transfers, and
+    /// it records no rate. The activity still counts and still invalidates
+    /// evidence either way.
+    func beginUnboundedActivity(prefixStoreTransfer: Bool = false) -> WholeMacUnboundedActivity {
         let id = UUID()
         let notification = lock.withLock {
             unboundedActivities.insert(id)
             invalidateEvidenceLocked()
             return observer
         }
-        idleCalibration.cancel()
+        idleCalibration.cancel(prefixStoreTransfer: prefixStoreTransfer)
         notification?.yield()
         return WholeMacUnboundedActivity { [self] in endUnboundedActivity(id) }
     }

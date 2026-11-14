@@ -95,9 +95,15 @@ enum JSONAnswerPolicy {
                                                                  stopTokenIDs: stopTokenIDs) else {
             return declined(profile, "tokenizer does not match the pinned vocabulary")
         }
-        guard let constraint = try? JSONAnswerConstraint(format: answer, profile: profile, vocabulary: vocabulary,
-                                                         initialPhase: phase,
-                                                         maxTokens: request.maxTokens ?? defaultMaxTokens) else {
+        // Only Qwen answers can hold a free span; only they may conform to
+        // CBv2FreeSpanTokenConstraint (QwenJSONAnswerConstraint).
+        let maxTokens = request.maxTokens ?? defaultMaxTokens
+        let built: JSONAnswerConstraint? = profile.family == "Qwen"
+            ? try? QwenJSONAnswerConstraint(format: answer, profile: profile, vocabulary: vocabulary,
+                                            initialPhase: phase, maxTokens: maxTokens) as JSONAnswerConstraint
+            : try? JSONAnswerConstraint(format: answer, profile: profile, vocabulary: vocabulary,
+                                        initialPhase: phase, maxTokens: maxTokens)
+        guard let constraint = built else {
             return declined(profile, "no positive output budget")
         }
         if let widening { logger.info("\(profile.family) json_schema outside the constrained subset: \(widening.note)") }

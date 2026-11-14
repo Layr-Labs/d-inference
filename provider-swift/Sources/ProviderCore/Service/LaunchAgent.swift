@@ -469,9 +469,6 @@ public enum LaunchAgent: Sendable {
         "DARKBLOOM_TTFT_GDN_BLOCKED",
         EngineV2SlotFactory.mimoRectangularVerifyEnvironmentKey,
         GemmaJSONAnswerPolicy.environmentKey,
-        // SDK-read (`GemmaFunctionParser.schemaCoercionEnabled`): quoted Gemma
-        // numbers typed by the tool's schema at frame close; `0` keeps strings.
-        "DARKBLOOM_GEMMA_SCHEMA_COERCION",
         PromptTokenCachePolicy.environmentKey,
         PromptTokenCachePolicy.capacityEnvironmentKey,
         PromptTokenCachePolicy.verifyEnvironmentKey,
@@ -495,6 +492,9 @@ public enum LaunchAgent: Sendable {
         // before an issued GLM pool returns its free segments; `0` is the rollback.
         "DARKBLOOM_NATIVE_SEGMENT_RELEASE",
         NativeReasoningBudget.environmentKey,
+        // SDK-read (`GemmaFunctionParser.schemaCoercionEnabled`): quoted Gemma
+        // numbers typed by the tool's schema at frame close; `0` keeps strings.
+        "DARKBLOOM_GEMMA_SCHEMA_COERCION",
         GenerationLoopGuardPolicy.environmentKey,
         GenerationLoopExitThinkingPolicy.environmentKey,
         EngineV2SamplingDefaults.qwen35NineBPenaltyEnvironmentKey,

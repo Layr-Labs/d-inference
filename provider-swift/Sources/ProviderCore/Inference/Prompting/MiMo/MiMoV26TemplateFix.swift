@@ -97,10 +97,11 @@ struct MiMoV26RawControlEvidence: Sendable, Equatable, Decodable {
             if root.contains(Key("reasoning")), try !root.decodeNil(forKey: Key("reasoning")) {
                 let nested = try root.nestedContainer(keyedBy: Key.self, forKey: Key("reasoning"))
                 var allowed = surface == .chat ? ["enabled", "effort"] : ["effort"]
-                if NativeReasoningBudget.isEnabled { allowed.append("max_tokens") }
+                let budgets = NativeReasoningBudget.isEnabled(for: .mimoV26)
+                if budgets { allowed.append("max_tokens") }
                 // Off, `max_tokens` is only an unknown key (0.10.12); a value that
                 // is not an integer must never skip the effort check below.
-                if NativeReasoningBudget.isEnabled, nested.contains(Key("max_tokens")) {
+                if budgets, nested.contains(Key("max_tokens")) {
                     if let maximum = try? nested.decode(Int.self, forKey: Key("max_tokens")),
                        NativeReasoningBudget.acceptsMaximumTokens(maximum) {
                         evidence.reasoningBudgetTokens = maximum

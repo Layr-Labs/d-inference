@@ -551,7 +551,7 @@ public enum LaunchAgent: Sendable {
     ) -> [String: String] {
         var out = GemmaOptimizationEnvironment.daemonDrainPassthrough(
             from: environment)
-        for key in passthroughEnvKeys where !injected.contains(key) {
+        for key in passthroughEnvKeys where !SDKFeatureDefaults.isInjected(key, in: environment, injected: injected) {
             if let value = environment[key], !value.isEmpty {
                 out[key] = value
             }

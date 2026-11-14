@@ -245,6 +245,9 @@ public actor EngineV2Bridge {
     var slotPostureClosed = false
     var mtpActivationStatus = MTPActivationStatus.disabled(
         .configDisabled, configured: false)
+    /// Debug-only per-request MTP counts (`MTPRequestReceipt`); records
+    /// nothing unless `DARKBLOOM_DEBUG_MTP_RECEIPTS=1`.
+    var mtpRequestReceipts = MTPRequestReceiptRing.fromEnvironment()
     /// Injectable telemetry sink (tests); nil ⇒ `TelemetryClient.shared`.
     let emitTelemetry: (@Sendable (TelemetryEvent) -> Void)?
     /// Immutable request-envelope limit for this loaded candidate. Listing and

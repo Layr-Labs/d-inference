@@ -130,6 +130,9 @@ extension EngineV2Bridge {
         let deliveredTps = deliveredSeconds > 0 ? Double(deliveredTokens) / deliveredSeconds : 0
         recordPerformanceFinish(id: id, state: state, usage: usage, completion: completion,
             deliveredTps: deliveredTps, now: now)
+        mtpRequestReceipts.record(
+            model: modelId, usage: usage, promptTokens: prompt, completionTokens: completion,
+            finishReason: finishReason)
         return (prompt, completion, tps)
     }
 

@@ -5753,7 +5753,9 @@ two decoding requests share a round at three each
 (`MuseGlimmerModelPolicy.pairedRoundDraftTokens`, `fixedDraftTokensByDecodeRows`
 `[7, 3]`), the same 8 verify rows; three or more decode without drafting.
 `DARKBLOOM_MTP_MUSE_GLIMMER_ROWS=1` restores one request per round
-(`MTPAutomaticVerificationPolicy.applyMuseGlimmerSpeculativeRows`). The drafter also requires exact acceptance: under
+(`MTPAutomaticVerificationPolicy.applyMuseGlimmerSpeculativeRows`). To measure a drafter, `DARKBLOOM_DEBUG_MTP_RECEIPTS=1`
+keeps each finished request's round, proposed and accepted counts on the bridge (`MTPRequestReceiptRing`, recorded in
+`EngineV2Bridge+Accounting.swift` beside the usage), served only by an unkeyed local API. The drafter also requires exact acceptance: under
 an operator `typical` setting its requests run target only. Depth is fixed at seven
 (`MuseGlimmerModelPolicy.maximumDraftTokens`); `DARKBLOOM_MTP_MUSE_GLIMMER_DEPTH=adaptive`
 selects the adaptive controller bounded by seven

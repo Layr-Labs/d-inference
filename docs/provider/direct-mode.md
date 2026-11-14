@@ -443,6 +443,7 @@ chat-upload interception → the upstream `MLXLMServer` router
 | GET | `/health`, `/v1/health` | Unauthenticated |
 | GET | `/models`, `/v1/models` | Advertised catalog, not just resident models, merged by the [local router](#when-this-mac-cant-take-a-request-the-local-router) |
 | GET | `/props`, `/metrics` | `/metrics` adds per-slot MTP and serving-posture lines (`provider-swift/Sources/ProviderCore/Server/LocalMetricsResponder.swift`); see [SSD cache observations](../reference/ssd-kv-cache.md#verification) for `prefix_cache_status` |
+| GET | `/v1/debug/mtp-receipts` | Debug only: registered when `DARKBLOOM_DEBUG_MTP_RECEIPTS=1` and the API has no local key (`--local --no-auth`) and no pair key. The latest finished requests' speculative-decoding counts and engine timing, by model then finish order (`MTPRequestReceiptList`); no text, token ids or identity ([configuration](../reference/configuration.md)) |
 | POST | `/v1/chat/completions`, `/chat/completions` | Streaming and non-streaming; inline media; body capped at `localInferenceMaxUploadBytes` |
 | POST | `/v1/chat/completions/batch` | Same cap |
 | POST | `/v1/completions`, `/completions`, `/completion` | Text; upstream 2 MiB body ceiling |

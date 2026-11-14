@@ -526,6 +526,20 @@ struct EngineV2VisionSpanCarvingTests {
         ])
     }
 
+    @Test("Qwen video: timestamped frame-pair blocks carve one span each")
+    func qwenTimestampedVideoBlocks() throws {
+        // `<0.5 seconds>` start pads end `<2.5 seconds>` start pads end: each
+        // frame pair is its own run of 3 spatial tokens.
+        let tokens = [1, 30, 31, 57, v, v, v, 58, 30, 32, 57, v, v, v, 58, 9]
+        let carved = try EngineV2VisionPrefill.carveSpans(
+            tokens: tokens, imagePlaceholderId: nil, imageSpanLengths: [],
+            videoPlaceholderId: v, videoSpanLengths: [3, 3])
+        #expect(carved.map(\.span) == [
+            CBv2ImageSpan(tokenOffset: 4, length: 3),
+            CBv2ImageSpan(tokenOffset: 11, length: 3),
+        ])
+    }
+
     @Test("a disabled kind's id is an ordinary token (mirrors the processor)")
     func disabledKindIgnored() throws {
         // No video features ⇒ the video id is not watched: a stray 991 in

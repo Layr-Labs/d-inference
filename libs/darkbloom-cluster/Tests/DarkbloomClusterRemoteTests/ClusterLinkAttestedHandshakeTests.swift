@@ -5,16 +5,6 @@ import Foundation
 import XCTest
 @testable import DarkbloomClusterRemote
 
-private func isConnected(_ event: ClusterLinkControlEvent) -> Bool {
-    if case .connected = event { return true }
-    return false
-}
-
-private func isOpaque(_ event: ClusterLinkControlEvent) -> Bool {
-    if case .opaque = event { return true }
-    return false
-}
-
 /// Handshake v3: each end proves the identity key the other pinned (software
 /// P-256 keys stand in for the Secure Enclave). Everyone here holds the edge
 /// secret, the attacker too: the listener L and the connector C pin each
@@ -107,8 +97,8 @@ final class ClusterLinkAttestedHandshakeTests: XCTestCase {
         XCTAssertTrue(listenerLog.wait { _ in listenerLog.refusals.contains(.peerNotPinned) })
         XCTAssertFalse(fake.peer.waitUntilConnected(timeout: .milliseconds(300)))
         XCTAssertEqual(listener.peer(for: edgeID)?.status.sessions, 0)
-        XCTAssertFalse(listenerLog.all.contains(where: isConnected))
-        XCTAssertFalse(fakeLog.all.contains(where: isConnected))
+        XCTAssertFalse(listenerLog.all.contains(where: \.isConnected))
+        XCTAssertFalse(fakeLog.all.contains(where: \.isConnected))
     }
 
     /// A hand-rolled hello claiming C's pin, correctly tagged, signed by F
@@ -129,7 +119,7 @@ final class ClusterLinkAttestedHandshakeTests: XCTestCase {
         }
         XCTAssertTrue(log.wait { _ in self.refusals(listener, "peerSignatureRejected") >= 2 })
         XCTAssertEqual(listener.peer(for: edgeID)?.status.sessions, 0)
-        XCTAssertFalse(log.all.contains(where: isConnected))
+        XCTAssertFalse(log.all.contains(where: \.isConnected))
 
         let raw = try RawLinkConnector(port: port)
         defer { raw.socket.close() }
@@ -162,14 +152,14 @@ final class ClusterLinkAttestedHandshakeTests: XCTestCase {
             let log = LinkEventLog()
             let client = try startClient(connectorEdge(), port: server.port, log)
             if genuine {
-                XCTAssertTrue(log.wait { $0.contains(where: isConnected) }, "the hand-rolled records are well formed")
+                XCTAssertTrue(log.wait { $0.contains(where: \.isConnected) }, "the hand-rolled records are well formed")
                 client.stop()
                 continue
             }
             XCTAssertTrue(log.wait { _ in log.refusals.contains(.peerSignatureRejected) })
             XCTAssertEqual(client.lastRefusal, .peerSignatureRejected)
             client.stop()
-            XCTAssertFalse(log.all.contains(where: isConnected))
+            XCTAssertFalse(log.all.contains(where: \.isConnected))
             XCTAssertEqual(client.peer.status.sessions, 0)
             XCTAssertEqual(afterAccept.value.count, 0, "the connector wrote after an accept it refused")
         }
@@ -220,8 +210,8 @@ final class ClusterLinkAttestedHandshakeTests: XCTestCase {
         while fromConnector.value.count < 2, Date() < deadline { usleep(20_000) }
         client.stop()
         relay.stop()
-        XCTAssertFalse(listenerLog.all.contains(where: isConnected))
-        XCTAssertFalse(connectorLog.all.contains(where: isConnected))
+        XCTAssertFalse(listenerLog.all.contains(where: \.isConnected))
+        XCTAssertFalse(connectorLog.all.contains(where: \.isConnected))
         XCTAssertEqual(listener.peer(for: edgeID)?.status.sessions, 0)
         XCTAssertGreaterThanOrEqual(fromListener.value.count, 2)
         XCTAssertGreaterThanOrEqual(fromConnector.value.count, 2)
@@ -302,7 +292,7 @@ final class ClusterLinkAttestedHandshakeTests: XCTestCase {
             try leader.sendOpaque(tag: ClusterLinkWorkerWire.tag, packedPrompt)
             try follower.peer.send(reserve())
             XCTAssertTrue(followerLog.wait { _ in followerLog.messages.count == session })
-            XCTAssertTrue(followerLog.wait { $0.filter(isOpaque).count == session })
+            XCTAssertTrue(followerLog.wait { $0.filter(\.isOpaque).count == session })
             XCTAssertTrue(leaderLog.wait { _ in leaderLog.messages.count == session })
             try leader.waitUntilAcknowledged(timeout: .seconds(3))
             try follower.peer.waitUntilAcknowledged(timeout: .seconds(3))
@@ -404,7 +394,7 @@ final class ClusterLinkAttestedHandshakeTests: XCTestCase {
         while answered.value < 3, Date() < deadline { usleep(20_000) }
         XCTAssertGreaterThanOrEqual(answered.value, 2)
         XCTAssertEqual(victim.lastRefusal, .peerSignatureRejected)
-        XCTAssertFalse(victimLog.all.contains(where: isConnected))
+        XCTAssertFalse(victimLog.all.contains(where: \.isConnected))
     }
 
     // MARK: 6: a tampering relay that recomputes the tags
@@ -424,7 +414,7 @@ final class ClusterLinkAttestedHandshakeTests: XCTestCase {
         if let expectedAtListener {
             XCTAssertTrue(listenerLog.wait { _ in listenerLog.refusals.contains(expectedAtListener) },
                 "\(name): listener refusals \(listenerLog.refusals)", file: file, line: line)
-            XCTAssertFalse(listenerLog.all.contains(where: isConnected), "\(name): the listener connected", file: file, line: line)
+            XCTAssertFalse(listenerLog.all.contains(where: \.isConnected), "\(name): the listener connected", file: file, line: line)
             XCTAssertEqual(listener.peer(for: edgeID)?.status.sessions, 0, name, file: file, line: line)
         }
         if let expectedAtConnector {
@@ -434,7 +424,7 @@ final class ClusterLinkAttestedHandshakeTests: XCTestCase {
             XCTAssertTrue(connectorLog.wait(seconds: 2) { _ in !connectorLog.refusals.isEmpty }, name, file: file, line: line)
         }
         XCTAssertGreaterThan(relay.handshakes.value, 0, "\(name): the relay saw a handshake", file: file, line: line)
-        XCTAssertFalse(connectorLog.all.contains(where: isConnected), "\(name): the connector connected", file: file, line: line)
+        XCTAssertFalse(connectorLog.all.contains(where: \.isConnected), "\(name): the connector connected", file: file, line: line)
         XCTAssertEqual(client.peer.status.sessions, 0, name, file: file, line: line)
         XCTAssertEqual(listenerLog.messages.count, 0, "\(name): a message arrived", file: file, line: line)
     }
@@ -512,7 +502,7 @@ final class ClusterLinkAttestedHandshakeTests: XCTestCase {
         }
         XCTAssertTrue(log.wait { _ in self.refusals(listener, "protocolVersionMismatch") >= 2 })
         XCTAssertEqual(listener.peer(for: edgeID)?.status.sessions, 0)
-        XCTAssertFalse(log.all.contains(where: isConnected))
+        XCTAssertFalse(log.all.contains(where: \.isConnected))
     }
 
     func testAttestedConnectorRefusesOlderChallengesAndWritesNothing() throws {
@@ -533,7 +523,7 @@ final class ClusterLinkAttestedHandshakeTests: XCTestCase {
             server.stop()
             XCTAssertEqual(received.value.count, 0, "the connector wrote to a version-\(version) listener")
             XCTAssertEqual(client.lastRefusal, .protocolVersionMismatch)
-            XCTAssertFalse(log.all.contains(where: isConnected))
+            XCTAssertFalse(log.all.contains(where: \.isConnected))
         }
     }
 
@@ -560,8 +550,8 @@ final class ClusterLinkAttestedHandshakeTests: XCTestCase {
             try follower.peer.sendOpaque(tag: 9, Data([UInt8(round), 3]))
             XCTAssertTrue(followerLog.wait { _ in followerLog.messages.count == round })
             XCTAssertTrue(leaderLog.wait { _ in leaderLog.messages.count == round })
-            XCTAssertTrue(followerLog.wait { $0.filter(isOpaque).count == round })
-            XCTAssertTrue(leaderLog.wait { $0.filter(isOpaque).count == round })
+            XCTAssertTrue(followerLog.wait { $0.filter(\.isOpaque).count == round })
+            XCTAssertTrue(leaderLog.wait { $0.filter(\.isOpaque).count == round })
             try leader.waitUntilAcknowledged(timeout: .seconds(3))
             try follower.peer.waitUntilAcknowledged(timeout: .seconds(3))
             if round < 3 {
@@ -615,8 +605,8 @@ final class ClusterLinkAttestedHandshakeTests: XCTestCase {
         defer { client.stop() }
         XCTAssertTrue(listenerLog.wait { _ in listenerLog.refusals.contains(.peerNotPinned) })
         XCTAssertFalse(client.peer.waitUntilConnected(timeout: .milliseconds(300)))
-        XCTAssertFalse(listenerLog.all.contains(where: isConnected))
-        XCTAssertFalse(connectorLog.all.contains(where: isConnected))
+        XCTAssertFalse(listenerLog.all.contains(where: \.isConnected))
+        XCTAssertFalse(connectorLog.all.contains(where: \.isConnected))
     }
 
     func testAttestedConnectorIsRefusedByAnEdgeKeyOnlyListener() throws {
@@ -629,8 +619,8 @@ final class ClusterLinkAttestedHandshakeTests: XCTestCase {
             listenerLog.refusals.contains(.peerNotPinned) || connectorLog.refusals.contains(.peerNotPinned)
         }, "listener \(listenerLog.refusals), connector \(connectorLog.refusals)")
         XCTAssertFalse(client.peer.waitUntilConnected(timeout: .milliseconds(300)))
-        XCTAssertFalse(listenerLog.all.contains(where: isConnected))
-        XCTAssertFalse(connectorLog.all.contains(where: isConnected))
+        XCTAssertFalse(listenerLog.all.contains(where: \.isConnected))
+        XCTAssertFalse(connectorLog.all.contains(where: \.isConnected))
         XCTAssertEqual(listener.peer(for: edgeID)?.status.sessions, 0)
     }
 

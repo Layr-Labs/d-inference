@@ -47,9 +47,10 @@ final class LinkEventLog: @unchecked Sendable {
     }
 }
 
-private extension ClusterLinkControlEvent {
+extension ClusterLinkControlEvent {
     var isConnected: Bool { if case .connected = self { return true }; return false }
     var isDisconnected: Bool { if case .disconnected = self { return true }; return false }
+    var isOpaque: Bool { if case .opaque = self { return true }; return false }
 }
 
 /// Parks a session's reader before its next frame read until opened.

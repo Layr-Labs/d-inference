@@ -282,7 +282,7 @@ final class ClusterLinkSessionKeyTests: XCTestCase {
         defer { client.stop() }
         for round in 1...3 {
             XCTAssertTrue(client.peer.waitUntilConnected(timeout: .seconds(3)))
-            XCTAssertTrue(log.wait { events in events.filter { if case .connected = $0 { return true }; return false }.count == round })
+            XCTAssertTrue(log.wait { events in events.filter(\.isConnected).count == round })
             if round < 3 { client.peer.dropConnectionForTesting() }
         }
         relay.stop()
@@ -357,7 +357,7 @@ final class ClusterLinkSessionKeyTests: XCTestCase {
         }
         XCTAssertTrue(log.wait { _ in (listener.refusals["handshakeRejected"] ?? 0) >= 2 })
         XCTAssertEqual(listener.peer(for: edgeID)?.status.sessions, 0)
-        XCTAssertFalse(log.all.contains { if case .connected = $0 { return true }; return false })
+        XCTAssertFalse(log.all.contains(where: \.isConnected))
     }
 
     /// The mirror: a listener holding the edge key and the listener's own
@@ -389,7 +389,7 @@ final class ClusterLinkSessionKeyTests: XCTestCase {
         client.stop()
         XCTAssertGreaterThan(client.attempts, 0)
         XCTAssertEqual(client.peer.status.sessions, 0)
-        XCTAssertFalse(log.all.contains { if case .connected = $0 { return true }; return false })
+        XCTAssertFalse(log.all.contains(where: \.isConnected))
     }
 
     /// Both tags cover both public keys: a key changed after it was tagged
@@ -495,7 +495,7 @@ final class ClusterLinkSessionKeyTests: XCTestCase {
         }
         XCTAssertTrue(log.wait { _ in (listener.refusals["protocolVersionMismatch"] ?? 0) >= 2 })
         XCTAssertEqual(listener.peer(for: edgeID)?.status.sessions, 0)
-        XCTAssertFalse(log.all.contains { if case .connected = $0 { return true }; return false })
+        XCTAssertFalse(log.all.contains(where: \.isConnected))
     }
 
     /// No downgrade: a connector facing a version-1 or version-2 listener

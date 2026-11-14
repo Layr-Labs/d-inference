@@ -25,6 +25,11 @@ final class WholeMacServiceBudget: @unchecked Sendable {
         let lifetime: ServiceReservationLifetime?
         let work: Work?
         let deadlineProof: DeadlineProof?
+        /// Taken with `requiresIdle` (the idle prefill-evidence recovery): the
+        /// Mac is its alone until `reduceExclusiveAllowance`, so no
+        /// continuation over-commits beside it. A width-1 profile's ordinary
+        /// charge is a whole Mac too, but not exclusive.
+        var exclusive = false
     }
     struct Snapshot: Sendable, Equatable {
         let usedFraction: Double
@@ -119,9 +124,16 @@ final class WholeMacServiceBudget: @unchecked Sendable {
                 && now >= idleSince.advanced(by: .milliseconds(requirement.minimumWholeMacQuiescenceMs))
     }
 
+    /// `overcommit`: charged even when the Mac is full (a loop exit's continuation, which takes its stopped row's
+    /// place; `EngineV2Bridge.acquireServiceAllowance`): one row past the width per continuation, at most one per
+    /// stopped row (on a width-1 profile a row is the whole Mac). Its charge counts like any other until it is
+    /// released, so other work waits for the sum to drop below the width again. Never beside the idle
+    /// prefill-evidence recovery before its prompt completes (`Charge.exclusive`). What this budget reports
+    /// (`snapshot`, `usedFraction`) is capped at 1; admission keeps the real sum.
     func acquire(ownerID: String, concurrency: Int, serviceReservationID: String? = nil,
         serviceReservation: ServiceReservationLifetime? = nil, work: Work? = nil,
-        deadlineApplicability: DeadlineApplicability? = nil, requiresIdle: Bool = false) -> Bool {
+        deadlineApplicability: DeadlineApplicability? = nil, requiresIdle: Bool = false,
+        overcommit: Bool = false) -> Bool {
         // Correlation is optional. Malformed input gets no overlap credit; it
         // never bypasses the actual provider-side service allowance.
         let reservationID = serviceReservation?.id
@@ -133,7 +145,13 @@ final class WholeMacServiceBudget: @unchecked Sendable {
                 return (false, nil)
             }
             let charge = 1 / Double(concurrency)
-            guard charges.values.reduce(0, { $0 + $1.fraction }) + charge <= 1 + 1e-12 else { return (false, nil) }
+            guard overcommit || charges.values.reduce(0, { $0 + $1.fraction }) + charge <= 1 + 1e-12 else {
+                return (false, nil)
+            }
+            // A continuation joins any charge but the recovery's: at width 1 it shares the Mac with a whole-Mac charge,
+            // so that charge's sole-occupancy measurements rely on their overlap tracking from here on (the join
+            // invalidates the evidence guards below).
+            if overcommit, charges.values.contains(where: \.exclusive) { return (false, nil) }
             guard serviceReservation?.acquireLease() ?? true else { return (false, nil) }
             let now = clockNow()
             let captured = deadlineApplicability.flatMap { requirement in
@@ -147,7 +165,7 @@ final class WholeMacServiceBudget: @unchecked Sendable {
                     postureEpoch: captured.epoch, activityEpoch: activityEpoch)
             } else { proof = nil }
             charges[ownerID] = Charge(fraction: charge, reservationID: reservationID,
-                lifetime: serviceReservation, work: work, deadlineProof: proof)
+                lifetime: serviceReservation, work: work, deadlineProof: proof, exclusive: requiresIdle)
             return (true, observer)
         }
         notification?.yield()
@@ -216,12 +234,13 @@ final class WholeMacServiceBudget: @unchecked Sendable {
             for (model, epoch) in slotEpochs {
                 byModel[model] = deadlineWorkLocked(modelID: model, epoch: epoch, profileID: profileIDs[model])
             }
-            return Snapshot(usedFraction: charges.values.reduce(0, { $0 + $1.fraction }),
+            // A continuation's over-commit can take the sum past 1; what goes out is capped.
+            return Snapshot(usedFraction: min(1, charges.values.reduce(0, { $0 + $1.fraction })),
                 reservations: Array(reservations.prefix(64)), deadlineWorkByModel: byModel)
         }
     }
 
-    var usedFraction: Double { lock.withLock { charges.values.reduce(0, { $0 + $1.fraction }) } }
+    var usedFraction: Double { lock.withLock { min(1, charges.values.reduce(0, { $0 + $1.fraction })) } }
     var count: Int { lock.withLock { charges.count } }
     var isIdle: Bool { lock.withLock { charges.isEmpty && unboundedActivities.isEmpty } }
 
@@ -282,6 +301,8 @@ final class WholeMacServiceBudget: @unchecked Sendable {
     /// Keep the same reservation/lifetime at the ordinary serving fraction.
     func reduceExclusiveAllowance(ownerID: String, concurrency: Int) {
         let notification = lock.withLock { () -> AsyncStream<Void>.Continuation? in
+            // At any width: a continuation may take its row's place beside it again.
+            charges[ownerID]?.exclusive = false
             guard concurrency > 1, var charge = charges[ownerID], charge.fraction == 1 else { return nil }
             charge.fraction = 1 / Double(concurrency)
             charges[ownerID] = charge
@@ -433,6 +454,6 @@ final class WholeMacServiceBudget: @unchecked Sendable {
             }
             return DeadlineWork(version: 1, epoch: epoch, known: known,
                 prefillTokens: Int64(prefill), decodeTokens: Int64(decode), requestCount: count,
-                contextTokensMax: context, serviceFraction: fraction)
+                contextTokensMax: context, serviceFraction: min(1, fraction))
     }
 }

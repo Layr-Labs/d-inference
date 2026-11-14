@@ -67,6 +67,9 @@ public actor EngineV2Bridge {
     var glm5NextStepSetupBytes = 0
     /// GLM requests between the capacity gate and `active`.
     var glm5NextGateReservations: [String: Int] = [:]
+    var supportsNativeReasoningBudgets: Bool {
+        !servesDistributedPair && ownedEngine?.supportsReasoningBudgets == true
+    }
     var tracksNativeShutdown: Bool {
         (ownedEngine as? EngineV2)?.nativeShutdownExecutionContractID != nil
     }

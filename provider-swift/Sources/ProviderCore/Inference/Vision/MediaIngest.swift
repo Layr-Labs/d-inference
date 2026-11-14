@@ -19,6 +19,7 @@
 import AVFoundation
 import CoreGraphics
 import CoreImage
+import CoreImage.CIFilterBuiltins
 import Foundation
 import ImageIO
 import MLXLMCommon
@@ -284,6 +285,7 @@ public enum MediaIngest {
         maxRequestVideoFramePixels: Int = Self.maxRequestVideoFramePixels
     ) async throws -> UserInput {
         let maxImagesPerRequest = maxImagesPerRequest ?? imageCap(forModel: request.model)
+        let imagePixelTarget = imagePixelTarget(for: request)
         try rejectUnsupportedAudio(request)
         let tools = ChatTemplateFixes.normalizeToolMetadata(
             tools, context: .init(modelId: request.model, modelType: modelType))
@@ -305,7 +307,8 @@ public enum MediaIngest {
                 maxRequestImagePixels: maxRequestImagePixels,
                 maxImagesPerRequest: maxImagesPerRequest,
                 maxVideosPerRequest: maxVideosPerRequest,
-                maxRequestVideoFramePixels: maxRequestVideoFramePixels)
+                maxRequestVideoFramePixels: maxRequestVideoFramePixels,
+                imagePixelTarget: imagePixelTarget)
             switch message.role {
             case .user:
                 chatMessages.append(.user(text, images: images, videos: videos))
@@ -368,7 +371,8 @@ public enum MediaIngest {
         maxRequestImagePixels: Int,
         maxImagesPerRequest: Int,
         maxVideosPerRequest: Int,
-        maxRequestVideoFramePixels: Int
+        maxRequestVideoFramePixels: Int,
+        imagePixelTarget: Int? = nil
     ) async throws -> (text: String, images: [UserInput.Image], videos: [UserInput.Video]) {
         switch content {
         case .text(let string):
@@ -439,7 +443,7 @@ public enum MediaIngest {
                                     + "\(maxRequestImagePixels) px")
                         }
                     }
-                    images.append(image)
+                    images.append(imagePixelTarget.map { scaled(image, toPixels: $0) } ?? image)
                 case .videoURL(let uri):
                     // Per-request video caps: count + summed per-frame pixels.
                     // The model samples up to N frames PER video, so a per-video
@@ -512,21 +516,87 @@ public enum MediaIngest {
     static let maxImagesEnvironmentKey = "DARKBLOOM_MAX_IMAGES_PER_REQUEST"
     static let defaultMaxImagesPerRequest = 16
 
-    /// Image-count defaults above 16, by served model id. None in 0.10.12:
-    /// Qwen3.5-9B's 64 waits on its first-token check with 60 images.
-    static let modelMaxImagesPerRequest: [String: Int] = [:]
+    /// Image-count defaults above 16, by served model id: the Qwen3VL-family
+    /// builds, whose per-request image budget (`modelImageBudget`) keeps a
+    /// request's visual tokens at most those of 16 full-size images however many
+    /// it carries. Signed 0.10.13 on an M5 Ultra with VGI video frames
+    /// (~1280x720, ~900 visual tokens each): 16 frames reach first content in
+    /// 3.0-4.0 s (9B, 35B, 3.6) and 8.2-9.2 s (Qwen 3.8 27B); 32 and 64 frames
+    /// scaled to that budget in 3.9-4.4 s (9B) and 9.0-10.2 s (Qwen 3.8), where
+    /// 64 full-size frames took 16-18 s and 41-44 s. Gemma 4 26B pools every
+    /// image to 280 soft tokens, so its cost grows with the count alone: 16
+    /// frames 2.5 s, 32 frames 5.0-5.1 s, 64 frames 10.5-10.7 s; it takes 32.
+    /// Exact catalog ids; the pair's Qwen media path keeps its explicit 16, and
+    /// Super keeps `NemotronSuperServingPolicy.maximumImages`.
+    static let modelMaxImagesPerRequest: [String: Int] = [
+        "gemma-4-26b-qat-4bit": 32,
+        "Qwen3.5-9B": 64,
+        "qwen3.5-35b-a3b": 64,
+        "qwen3.6-35b-a3b-vl-mtp-mxfp8": 64,
+        "EigenLabs/Qwen3.8-27B-4bit-mtp": 64,
+    ]
 
-    /// A per-request image budget (stub: no model has one yet).
+    /// A per-request image budget: a request with more than `images` images has
+    /// each image larger than `pixels / imageCount` scaled down to it, aspect
+    /// kept, before the processor sees it. Requests within `images` are untouched.
     public struct ImageBudget: Equatable, Sendable {
         public let images: Int
         public let pixels: Int
     }
 
-    static func imageBudget(forModel model: String?) -> ImageBudget? { nil }
+    /// The Qwen3VL-family builds' budget: 16 images of 1,048,576 px, i.e. 1,024
+    /// visual tokens of 32x32 px each (patch 16, merge 2). Their processor's
+    /// own per-image ceiling (`longest_edge` 16,777,216 px) bounds one image,
+    /// not a request, so without this 64 frames cost 4x the first-token time.
+    static let qwenImageBudget = ImageBudget(images: 16, pixels: 16 * 1_048_576)
+
+    static let modelImageBudget: [String: ImageBudget] = [
+        "Qwen3.5-9B": qwenImageBudget,
+        "qwen3.5-35b-a3b": qwenImageBudget,
+        "qwen3.6-35b-a3b-vl-mtp-mxfp8": qwenImageBudget,
+        "EigenLabs/Qwen3.8-27B-4bit-mtp": qwenImageBudget,
+    ]
+
+    /// The image budget of `model`'s requests, if it has one.
+    static func imageBudget(forModel model: String?) -> ImageBudget? {
+        model.flatMap { modelImageBudget[$0] }
+    }
+
+    /// The pixels each image of `request` may keep: its model's budget shared
+    /// by its images when they exceed the budget's count, else nil (no scaling).
+    static func imagePixelTarget(for request: OpenAIChatCompletionRequest) -> Int? {
+        guard let budget = imageBudget(forModel: request.model) else { return nil }
+        var images = 0
+        for message in request.messages {
+            guard case .parts(let parts) = message.content else { continue }
+            for part in parts {
+                if case .imageURL = part { images += 1 }
+            }
+        }
+        return images > budget.images ? budget.pixels / images : nil
+    }
+
+    /// `image` scaled down (Lanczos, aspect kept, whole pixels, origin zero) to
+    /// at most `target` pixels; an image within it, or not a CIImage, as is.
+    static func scaled(_ image: UserInput.Image, toPixels target: Int) -> UserInput.Image {
+        guard case .ciImage(let ci) = image.source, target > 0 else { return image }
+        let width = ci.extent.width, height = ci.extent.height
+        let pixels = safeExtentPixels(ci.extent)
+        guard pixels > target else { return image }
+        let factor = (Double(target) / Double(pixels)).squareRoot()
+        let w = max(1, (width * factor).rounded(.down))
+        let h = max(1, (height * factor).rounded(.down))
+        let filter = CIFilter.lanczosScaleTransform()
+        filter.inputImage = ci
+        filter.scale = Float(h / height)
+        filter.aspectRatio = Float((w / width) / (h / height))
+        guard let output = filter.outputImage else { return image }
+        return .ciImage(normalizedExtent(output).cropped(to: CGRect(x: 0, y: 0, width: w, height: h)))
+    }
 
     /// The image cap for one request to `model`: the
     /// `DARKBLOOM_MAX_IMAGES_PER_REQUEST` override when set (every model), else
-    /// the model's own default, else 16.
+    /// the model's own default (`modelMaxImagesPerRequest`), else 16.
     static func imageCap(
         forModel model: String?,
         environment: [String: String] = ProcessInfo.processInfo.environment

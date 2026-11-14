@@ -44,7 +44,7 @@ public enum ClusterEdgeSecretVaultWrite: Equatable, Sendable {
 /// How the Keychain protects an item, as it reports it (no data): for `darkbloom cluster pair --status` and checks.
 public struct ClusterEdgeSecretItemProtection: Equatable, Sendable {
     public let accessGroup: String?
-    /// The `kSecAttrAccessible` class (`ck` = after first unlock, this device only).
+    /// The `kSecAttrAccessible` class, as the Keychain names it.
     public let accessible: String?
     public let synchronizable: Bool
     public let binding: String?
@@ -165,12 +165,10 @@ public struct ClusterKeychainEdgeSecretVault: ClusterEdgeSecretVault, CustomStri
         switch status {
         case errSecSuccess:
             guard let attributes else { return .failure(.status(errSecDecode)) }
-            let synchronizable = (attributes[kSecAttrSynchronizable as String] as? Bool)
-                ?? ((attributes[kSecAttrSynchronizable as String] as? NSNumber)?.boolValue ?? false)
             return .success(ClusterEdgeSecretItemProtection(
                 accessGroup: attributes[kSecAttrAccessGroup as String] as? String,
                 accessible: attributes[kSecAttrAccessible as String] as? String,
-                synchronizable: synchronizable,
+                synchronizable: (attributes[kSecAttrSynchronizable as String] as? NSNumber)?.boolValue ?? false,
                 binding: (attributes[kSecAttrGeneric as String] as? Data).flatMap { String(data: $0, encoding: .utf8) }))
         case errSecItemNotFound:
             return .success(nil)

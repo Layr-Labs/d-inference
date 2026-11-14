@@ -1,3 +1,4 @@
+import DarkbloomClusterSecurity
 import Foundation
 
 extension SelfUpdater {
@@ -38,9 +39,23 @@ extension SelfUpdater {
             try store.writeState(state)
         }
 
+        /// Where this install's cluster pairing keeps its link keys (`ClusterPairingStore.default()`'s); a stand-in in tests.
+        var linkKeyVault: (any ClusterEdgeSecretVault)? = ClusterKeychainEdgeSecretVault.install()
+
+        /// Every rollback (the operator's, the pair's follow, the candidate recovery, the watchdog) comes through here,
+        /// in the release that is rolled back. The release it restores may read the cluster pairing's link keys only
+        /// from files (0.10.12 and earlier), so they are written back from the Keychain into this install's pairing
+        /// store beside its app: before the swap (a process that dies after it still leaves them), and again after it
+        /// (for one a process started in between removed). Best effort; a later release that keeps the keys in the
+        /// Keychain removes the files again (`ClusterPairingStore.edgeSecret`).
         @discardableResult
         func rollback(now: Double, reason: String) throws -> String {
-            try store.rollback(now: now, reason: reason)
+            let pairing = ClusterPairingStore(directory: store.installRoot.appendingPathComponent("cluster-pairing", isDirectory: true),
+                                              vault: linkKeyVault)
+            _ = pairing.writeLegacyFilesForRollback()
+            let restored = try store.rollback(now: now, reason: reason)
+            _ = pairing.writeLegacyFilesForRollback()
+            return restored
         }
 
         func reconcileWithInstalledApp(runningVersion: String, now: Double) throws -> UpdateRecoveryReconciliation? {

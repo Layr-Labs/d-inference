@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-13
+> Last updated: 2026-11-14
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -6055,6 +6055,48 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/C
 (`OnboardingLive.resume`, `otherMacAnswers`, `unpair`) and
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Pairing/ClusterUnpairing.swift`
 (`ClusterUnpairing`).
+
+## The pairing's link key in the Keychain
+
+A pairing's edge secret (the 32 bytes both Macs key their link control channel with) is a generic password in
+the data-protection Keychain (`ClusterKeychainEdgeSecretVault`): `kSecUseDataProtectionKeychain`, the signed app's
+access group (`SLDQ2GJ6TL.io.darkbloom.provider`, the Secure Enclave key's; `DARKBLOOM_KEYCHAIN_ACCESS_GROUP`
+overrides both), `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, not synchronisable, no access control, so the
+signed CLI and its LaunchAgents read it without a prompt once the Mac was unlocked since it started. One item per
+other Mac: service `<install's keychain prefix>.cluster-pairing.edge-secret` (production `io.darkbloom.…`, DevNet
+`io.darkbloom.dev.…`), account its pin, `kSecAttrGeneric` the pairing's link epoch and edge
+(`ClusterPairingStore.binding(of:)`), so an item left from an earlier ceremony with the same Mac is never used.
+`ClusterPairingStore.default` opens the store with that vault; a store without one, or a build the Keychain refuses
+(`errSecMissingEntitlement`: ad-hoc and local builds, tests), keeps 0.10.12's `edge-<pin>.secret` (one hex line,
+0600). `pairings.json` keeps each record's `link.secretFile` path, so 0.10.12 still reads the store, and that path stays
+the name a setup's `linkControl` gives the pairing's secret.
+
+`ClusterPairingStore.edgeSecret` reads the item. With no item of this pairing and 0.10.12's file there, it moves the
+file in: add the item (create-if-absent; another process's add wins and the read-back decides), or replace an earlier
+pairing's item; read it back and compare; then overwrite the file in place (the inode it read), fsync and unlink. Any
+step may be cut short and the next read finishes it; a corrupt or unsafe file is refused and kept. A file still beside
+an item of this pairing is removed only by a process started after the file was last written: the rollback path
+writes such a file while the release it rolls back still runs. A locked Keychain (`errSecInteractionNotAllowed`)
+refuses with `keychainLocked` and changes nothing; `ClusterSetupLinkExchange.pairing` callers that take an unreadable
+store for "nothing changed" retry it each tick, and `cluster status` says to log in once. Pairing and unpairing while
+locked are refused before anything changes; unpairing deletes the item.
+
+A saved setup's `linkControl.secretFile` that names this install's `cluster-pairing/edge-<16 hex>.secret`
+(`ClusterLinkControlAttachment.namesPairingSecret`) resolves through the pairing store
+(`DistributedInstalledLinkSecret`: the link keying, the start's `DistributedInstalledValidation.linkSecretMetadata`;
+the setup save needs no file for it). Any other name is a private file, as before.
+
+Every updater rollback (`update --rollback`, the pair's follow-rollback, the cluster candidate recovery, the watchdog)
+runs `UpdateSession.rollback` in the release being rolled back: it writes each pairing's key back from the Keychain into
+its `edge-<pin>.secret` (`ClusterPairingStore.writeLegacyFilesForRollback`) before the swap and again after it, so
+0.10.12 finds its files. The items stay; the next release that keeps keys in the Keychain moves the files in again, and
+a pairing 0.10.12 made in between wins by its binding. A 0.10.12 installed by hand finds no file and asks to pair again.
+
+Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterEdgeSecretVault.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterPairingStore.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Distributed/LinkControl/DistributedInstalledLinkSecret.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Pairing/ClusterPairingStore+Install.swift` and
+`provider-swift/Sources/ProviderCore/Update/UpdateSession.swift`.
 
 ## A paired cable port's own address
 

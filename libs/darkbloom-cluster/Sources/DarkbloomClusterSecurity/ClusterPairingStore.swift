@@ -1,10 +1,12 @@
 import CryptoKit
 import Darwin
 import Foundation
+import Security
 
 /// One pairing as this Mac stored it: the other Mac's pinned key, the roster
 /// both countersigned, and the link edge both key their link control channel
-/// with. Public values only; the edge secret is in its own owner-only file.
+/// with. Public values only; the edge secret is in the Keychain (or, on a
+/// build without it, in its own owner-only file).
 public struct ClusterPairingRecord: Codable, Sendable, Equatable {
     public struct Roster: Codable, Sendable, Equatable {
         public let generation: UInt64
@@ -14,7 +16,10 @@ public struct ClusterPairingRecord: Codable, Sendable, Equatable {
         /// The link epoch and edge of the setup's `linkControl` block.
         public let linkEpoch: String
         public let edgeID: String
-        /// Owner-only file with the edge secret (one hex line).
+        /// The pairing's `edge-<pin>.secret` in this store: the edge secret's
+        /// file on 0.10.12 and on builds without the Keychain, and the name a
+        /// setup's `linkControl` gives the pairing's secret. Kept on every
+        /// build, so 0.10.12 still reads `pairings.json` after a rollback.
         public let secretFile: String
         public let localInterface: String
         public let peerInterface: String
@@ -80,10 +85,16 @@ public enum ClusterPairingStoreError: Error, Equatable, Sendable, CustomStringCo
 
 /// The pairing store: `cluster-pairing/` in the install's own folder (0700;
 /// production's `~/.darkbloom/cluster-pairing`, the provider picks it per
-/// install) with `pairings.json`, one `edge-<pin>.secret` per peer, `gate.json`
-/// (the lockout) and `audit.jsonl`, every file 0600 and written atomically. A
-/// file that is not private to this user is refused, never repaired: trust
-/// rests on these files, so a widened mode fails closed.
+/// install) with `pairings.json`, `gate.json` (the lockout) and `audit.jsonl`,
+/// every file 0600 and written atomically. A file that is not private to this
+/// user is refused, never repaired: trust rests on these files, so a widened
+/// mode fails closed.
+///
+/// Edge secrets are in `vault` (the provider's: the data-protection Keychain),
+/// one item per other Mac. Without a vault, or on a build the Keychain refuses
+/// (`notEntitled`: ad-hoc and local builds), each is in its own
+/// `edge-<pin>.secret` beside the records, as 0.10.12 keeps it; such a file is
+/// moved into the vault the first time a vault build reads it.
 public final class ClusterPairingStore: @unchecked Sendable {
     public let directory: URL
     public let vault: (any ClusterEdgeSecretVault)?
@@ -104,8 +115,6 @@ public final class ClusterPairingStore: @unchecked Sendable {
     static func binding(of record: ClusterPairingRecord) -> String {
         "link-epoch \(record.link.linkEpoch) edge \(record.link.edgeID)"
     }
-
-    public func writeLegacyFilesForRollback() -> [String] { [] }
 
     // MARK: - Reading
 
@@ -136,17 +145,194 @@ public final class ClusterPairingStore: @unchecked Sendable {
         return true
     }
 
-    /// The edge secret of a pairing, read from its owner-only file. Only the
-    /// link control keying calls this; nothing prints it.
+    /// The edge secret of a pairing. Only the link control keying calls this; nothing prints it.
+    ///
+    /// With a vault it is the item of the other Mac's pin that this pairing made (`binding(of:)`). The first read
+    /// after an update from 0.10.12 moves that release's file in: the item is stored and read back, and only an item
+    /// that reads back equal lets the file be overwritten and removed. Each step may be cut short (a crash, another
+    /// process moving the same file) and the next read finishes it. A locked Keychain refuses (`keychainLocked`) and
+    /// changes nothing, the file included.
     public func edgeSecret(for record: ClusterPairingRecord) throws -> Data {
+        try lock.withLock { try edgeSecretLocked(record) }
+    }
+
+    private func edgeSecretLocked(_ record: ClusterPairingRecord) throws -> Data {
+        let url = try legacySecretFile(of: record)
+        switch try secretHome(peerPin: record.peerPin) {
+        case .file:
+            guard let legacy = try readLegacySecret(url) else { throw ClusterPairingStoreError.linkKeyMissing }
+            return legacy.secret
+        case .keychain(let vault, let item):
+            if let item, item.binding == Self.binding(of: record), item.secret.count == 32 {
+                removeLeftoverLegacySecret(url)
+                return item.secret
+            }
+            return try moveIntoVault(record, from: url, vault: vault, replacing: item)
+        }
+    }
+
+    /// A file still beside the item that holds its key was left by a move cut short, or written back for a rollback
+    /// (`writeLegacyFilesForRollback`). Only one last written before this process started is removed: the rollback's
+    /// file is written while the release it rolls back still runs (its cluster service drives the rollback), and is
+    /// for the release it restores. The next process of a release that keeps keys in the Keychain removes it.
+    private func removeLeftoverLegacySecret(_ url: URL) {
+        var info = stat()
+        guard lstat(url.path, &info) == 0, Self.writtenBeforeThisProcessStarted(info) else { return }
+        removeLegacySecret(url, identity: FileIdentity(info))
+    }
+
+    /// This process's start (the kernel's), in seconds since 1970; minus infinity when it can't be read, which keeps
+    /// every leftover file.
+    static let processStart: Double = {
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()]
+        guard sysctl(&mib, 4, &info, &size, nil, 0) == 0 else { return -.infinity }
+        let start = info.kp_proc.p_un.__p_starttime
+        return Double(start.tv_sec) + Double(start.tv_usec) / 1_000_000
+    }()
+
+    static func writtenBeforeThisProcessStarted(_ info: stat) -> Bool {
+        Double(info.st_mtimespec.tv_sec) + Double(info.st_mtimespec.tv_nsec) / 1_000_000_000 < processStart
+    }
+
+    /// Where a pairing's edge secret goes next: the vault (with the item there now, any pairing's), or 0.10.12's file
+    /// (no vault, or a build the Keychain refuses). A locked or failing Keychain throws before anything changes.
+    private enum SecretHome {
+        case keychain(any ClusterEdgeSecretVault, ClusterEdgeSecretItem?)
+        case file
+
+        var inVault: Bool { if case .keychain = self { return true } else { return false } }
+        var item: ClusterEdgeSecretItem? { if case .keychain(_, let item) = self { return item } else { return nil } }
+    }
+
+    private func secretHome(peerPin: String) throws -> SecretHome {
+        guard let vault else { return .file }
+        switch vault.read(peerPin: peerPin) {
+        case .found(let item): return .keychain(vault, item)
+        case .absent: return .keychain(vault, nil)
+        case .failed(.notEntitled): return .file
+        case .failed(let failure): throw Self.error(failure)
+        }
+    }
+
+    static func error(_ failure: ClusterEdgeSecretVaultFailure) -> ClusterPairingStoreError {
+        switch failure {
+        case .locked: return .keychainLocked
+        case .notEntitled: return .keychainUnavailable(errSecMissingEntitlement)
+        case .status(let status): return .keychainUnavailable(status)
+        }
+    }
+
+    /// 0.10.12's file of a pairing: the record's `secretFile`, which must lie in this store.
+    private func legacySecretFile(of record: ClusterPairingRecord) throws -> URL {
         let url = URL(fileURLWithPath: record.link.secretFile)
-        guard url.deletingLastPathComponent().standardizedFileURL.path == directory.standardizedFileURL.path,
-              let data = try readPrivate(url, maximum: 256),
-              let line = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-              let secret = Self.hexDecode(line), secret.count == 32 else {
+        guard url.deletingLastPathComponent().standardizedFileURL.path == directory.standardizedFileURL.path else {
             throw ClusterPairingStoreError.malformed(url.lastPathComponent)
         }
-        return secret
+        return url
+    }
+
+    /// The move of 0.10.12's file into the vault (no item of this pairing there yet; `stale` is an earlier pairing's).
+    private func moveIntoVault(_ record: ClusterPairingRecord, from url: URL, vault: any ClusterEdgeSecretVault,
+                               replacing stale: ClusterEdgeSecretItem?) throws -> Data {
+        let binding = Self.binding(of: record)
+        let legacy: LegacySecret
+        do {
+            guard let read = try readLegacySecret(url) else { throw ClusterPairingStoreError.linkKeyMissing }
+            legacy = read
+        } catch ClusterPairingStoreError.malformed(let name) {
+            // Another process may be overwriting the file it has just moved: then its item answers.
+            if case .found(let item) = vault.read(peerPin: record.peerPin), item.binding == binding, item.secret.count == 32 {
+                return item.secret
+            }
+            throw ClusterPairingStoreError.malformed(name)
+        }
+        try store(ClusterEdgeSecretItem(secret: legacy.secret, binding: binding), peerPin: record.peerPin, in: vault,
+                  previous: stale, overwrite: false)
+        removeLegacySecret(url, identity: legacy.identity)
+        auditLocked("link_key_moved_to_keychain", ["peer_pin": String(record.peerPin.prefix(16))])
+        return legacy.secret
+    }
+
+    /// Stores `item` for `peerPin` (adding it, or replacing `previous`) and reads it back: only an item that reads
+    /// back equal counts as stored. A move (`overwrite` false) never overwrites an item another process added in
+    /// the meantime: the read-back then decides; a new pairing (`overwrite`) does.
+    private func store(_ item: ClusterEdgeSecretItem, peerPin: String, in vault: any ClusterEdgeSecretVault,
+                       previous: ClusterEdgeSecretItem?, overwrite: Bool) throws {
+        var write = previous == nil ? vault.add(peerPin: peerPin, item) : vault.replace(peerPin: peerPin, item)
+        if write == .absent { write = vault.add(peerPin: peerPin, item) }
+        if write == .exists, overwrite { write = vault.replace(peerPin: peerPin, item) }
+        switch write {
+        case .done, .exists: break
+        case .absent: throw ClusterPairingStoreError.keychainUnavailable(errSecItemNotFound)
+        case .failed(let failure): throw Self.error(failure)
+        }
+        switch vault.read(peerPin: peerPin) {
+        case .found(let stored) where stored == item: return
+        case .found: throw ClusterPairingStoreError.writeFailed("the Keychain item")
+        case .absent: throw ClusterPairingStoreError.keychainUnavailable(errSecItemNotFound)
+        case .failed(let failure): throw Self.error(failure)
+        }
+    }
+
+    /// Where a pairing's link key is now, without reading it.
+    public enum LinkKeyLocation: Equatable, Sendable {
+        /// The Keychain item of this pairing, as the Keychain protects it.
+        case keychain(ClusterEdgeSecretItemProtection)
+        /// 0.10.12's file (not moved yet, or a build that keeps files).
+        case file
+        case missing
+        case keychainLocked
+        case keychainUnavailable(Int32)
+    }
+
+    public func linkKeyLocation(for record: ClusterPairingRecord) -> LinkKeyLocation {
+        lock.withLock {
+            guard let url = try? legacySecretFile(of: record) else { return .missing }
+            var info = stat()
+            let file: LinkKeyLocation = lstat(url.path, &info) == 0 ? .file : .missing
+            guard let vault else { return file }
+            switch vault.protection(peerPin: record.peerPin) {
+            case .success(let protection?) where protection.binding == Self.binding(of: record): return .keychain(protection)
+            case .success, .failure(.notEntitled): return file
+            case .failure(.locked): return .keychainLocked
+            case .failure(.status(let status)): return .keychainUnavailable(status)
+            }
+        }
+    }
+
+    /// The rollback path to 0.10.12, which reads edge secrets only from files: when the updater restores an earlier
+    /// release, each pairing's secret is written back from the vault into its `edge-<pin>.secret`, in that release's
+    /// format (one hex line, owner-only). The items stay: a process of this release started before the write leaves
+    /// the file alone, the next update moves it in again, and a pairing the older release makes meanwhile wins by its
+    /// binding. A pairing whose file is there already, or whose item belongs to another pairing, is left as it is.
+    /// Never throws; one line per pairing for the updater's log, without key material.
+    public func writeLegacyFilesForRollback() -> [String] {
+        lock.withLock {
+            guard let vault, let records = try? loadLocked() else { return [] }
+            return records.pairings.map { record in
+                let name = "the pairing with \(record.peerPin.prefix(16))"
+                guard let url = try? legacySecretFile(of: record) else { return "\(name): its record names no file in this store" }
+                var info = stat()
+                if lstat(url.path, &info) == 0 { return "\(name): \(url.lastPathComponent) is there already" }
+                switch vault.read(peerPin: record.peerPin) {
+                case .found(let item) where item.binding == Self.binding(of: record) && item.secret.count == 32:
+                    do {
+                        try writePrivate(Data((Self.hex(item.secret) + "\n").utf8), to: url)
+                    } catch {
+                        return "\(name): \(url.lastPathComponent) could not be written"
+                    }
+                    auditLocked("link_key_written_for_rollback", ["peer_pin": String(record.peerPin.prefix(16))])
+                    return "\(name): its link key was written back to \(url.lastPathComponent)"
+                case .found: return "\(name): the Keychain holds another pairing's key"
+                case .absent: return "\(name): its link key is not in the Keychain"
+                case .failed(.locked): return "\(name): the Keychain is locked until someone logs in to this Mac"
+                case .failed(.notEntitled): return "\(name): this build keeps no link key in the Keychain"
+                case .failed(.status(let status)): return "\(name): the Keychain did not answer (OSStatus \(status))"
+                }
+            }
+        }
     }
 
     // MARK: - Writing
@@ -156,12 +342,16 @@ public final class ClusterPairingStore: @unchecked Sendable {
         let peerPin: String
         let previousRecords: ClusterPairingRecords?
         let previousSecret: Data?
+        /// The secret went into the vault, where `previousItem` was before.
+        let inVault: Bool
+        let previousItem: ClusterEdgeSecretItem?
     }
 
-    /// Stores a finished ceremony: the edge secret first, then the records
-    /// (atomic rename each). A failure at any point restores what was there.
-    /// A record set made under another local identity is replaced whole: its
-    /// pins name keys this Mac no longer signs with.
+    /// Stores a finished ceremony: the edge secret first (the vault's item, or
+    /// 0.10.12's file), then the records (atomic rename), then, with a vault,
+    /// the peer's 0.10.12 file is removed. A failure at any point restores what
+    /// was there. A record set made under another local identity is replaced
+    /// whole: its pins name keys this Mac no longer signs with.
     @discardableResult
     public func commit(_ outcome: ClusterPairingOutcome, edgeID: UUID) throws -> Commit {
         try lock.withLock {
@@ -169,6 +359,7 @@ public final class ClusterPairingStore: @unchecked Sendable {
             let previous = try loadLocked()
             let secretURL = secretFile(peerPin: outcome.peer.pin)
             let previousSecret = try readPrivate(secretURL, maximum: 256)
+            let home = try secretHome(peerPin: outcome.peer.pin)
             let record = ClusterPairingRecord(peerPin: outcome.peer.pin, peerIdentityKey: outcome.peer.identityKey.base64EncodedString(),
                 peerName: outcome.peer.name, peerPosture: outcome.peer.posture, role: outcome.role,
                 pairedAt: Self.timestamp(clock()), clusterID: outcome.clusterID,
@@ -186,13 +377,22 @@ public final class ClusterPairingStore: @unchecked Sendable {
             records.pairings.removeAll { $0.peerPin == record.peerPin }
             records.pairings.append(record)
             records.pairings.sort { $0.peerPin < $1.peerPin }
-            let token = Commit(peerPin: record.peerPin, previousRecords: previous, previousSecret: previousSecret)
+            let token = Commit(peerPin: record.peerPin, previousRecords: previous, previousSecret: previousSecret,
+                               inVault: home.inVault, previousItem: home.item)
             do {
-                try writePrivate(Data((Self.hex(outcome.edgeSecret) + "\n").utf8), to: secretURL)
+                switch home {
+                case .keychain(let vault, let item):
+                    try store(ClusterEdgeSecretItem(secret: outcome.edgeSecret, binding: Self.binding(of: record)),
+                              peerPin: record.peerPin, in: vault, previous: item, overwrite: true)
+                case .file:
+                    try writePrivate(Data((Self.hex(outcome.edgeSecret) + "\n").utf8), to: secretURL)
+                }
                 try writePrivate(try Self.encode(records), to: recordsFile)
+                if token.inVault { removeLegacySecret(secretURL) }
             } catch {
                 restoreLocked(token)
                 auditLocked("persist_failed", ["peer_pin": String(record.peerPin.prefix(16))])
+                if let error = error as? ClusterPairingStoreError, error == .keychainLocked { throw error }
                 throw ClusterPairingStoreError.writeFailed("pairings.json")
             }
             auditLocked("pair_stored", ["peer_pin": String(record.peerPin.prefix(16)), "cluster": record.clusterID,
@@ -210,22 +410,35 @@ public final class ClusterPairingStore: @unchecked Sendable {
     }
 
     private func restoreLocked(_ token: Commit) {
+        if token.inVault, let vault {
+            if let previous = token.previousItem {
+                if vault.replace(peerPin: token.peerPin, previous) == .absent { _ = vault.add(peerPin: token.peerPin, previous) }
+            } else {
+                _ = vault.delete(peerPin: token.peerPin)
+            }
+        }
         let secretURL = secretFile(peerPin: token.peerPin)
         if let previous = token.previousSecret { try? writePrivate(previous, to: secretURL) } else { unlink(secretURL.path) }
         if let previous = token.previousRecords, let data = try? Self.encode(previous) { try? writePrivate(data, to: recordsFile) }
         else { unlink(recordsFile.path) }
     }
 
-    /// Unpairs: removes the record (the trust anchor) first, then the edge secret.
+    /// Unpairs: removes the record (the trust anchor) first, then the edge
+    /// secret (the vault's item and any 0.10.12 file). A locked Keychain, which
+    /// could not delete the item, refuses before anything changes.
     @discardableResult
     public func forget(peerPin: String) throws -> ClusterPairingRecord {
         try lock.withLock {
             guard var records = try loadLocked(), let record = records.pairing(peerPin: peerPin) else {
                 throw ClusterPairingStoreError.notPaired
             }
+            let home = try secretHome(peerPin: peerPin)
             records.pairings.removeAll { $0.peerPin == peerPin }
             if records.pairings.isEmpty { unlink(recordsFile.path) } else { try writePrivate(try Self.encode(records), to: recordsFile) }
-            unlink(record.link.secretFile)
+            removeLegacySecret(secretFile(peerPin: peerPin))
+            if case .keychain(let vault, _) = home, case .failed = vault.delete(peerPin: peerPin) {
+                auditLocked("link_key_not_deleted", ["peer_pin": String(peerPin.prefix(16))])
+            }
             auditLocked("unpaired", ["peer_pin": String(peerPin.prefix(16))])
             return record
         }
@@ -329,8 +542,61 @@ public final class ClusterPairingStore: @unchecked Sendable {
         return true
     }
 
+    /// Which file was read (device and inode), so only that file is removed.
+    private struct FileIdentity: Equatable {
+        let device: dev_t
+        let inode: ino_t
+        init(_ info: stat) { device = info.st_dev; inode = info.st_ino }
+    }
+
+    private struct LegacySecret {
+        let secret: Data
+        let identity: FileIdentity
+    }
+
+    /// 0.10.12's file: one hex line of the 32 secret bytes in an owner-only regular file. Nil when there is none.
+    private func readLegacySecret(_ url: URL) throws -> LegacySecret? {
+        guard let (data, info) = try readPrivateFile(url, maximum: 256) else { return nil }
+        guard let line = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              let secret = Self.hexDecode(line), secret.count == 32 else {
+            throw ClusterPairingStoreError.malformed(url.lastPathComponent)
+        }
+        return LegacySecret(secret: secret, identity: FileIdentity(info))
+    }
+
+    /// Overwrites 0.10.12's file where it lies (never through a link), flushes it, then removes it; with `identity`,
+    /// only while it is still the file that was read (one put there since is left to the next read). A file that is
+    /// not this user's regular file is left alone. The overwrite is best effort: APFS snapshots and clones keep their
+    /// own copies. Returns whether no file is left.
+    @discardableResult
+    private func removeLegacySecret(_ url: URL, identity: FileIdentity? = nil) -> Bool {
+        var info = stat()
+        guard lstat(url.path, &info) == 0 else { return errno == ENOENT }
+        guard (info.st_mode & S_IFMT) == S_IFREG, info.st_uid == getuid(), identity.map({ $0 == FileIdentity(info) }) ?? true else {
+            return false
+        }
+        let fd = open(url.path, O_WRONLY | O_NOFOLLOW | O_CLOEXEC)
+        if fd >= 0 {
+            var opened = stat()
+            if fstat(fd, &opened) == 0, FileIdentity(opened) == FileIdentity(info) {
+                let zeros = [UInt8](repeating: 0, count: Int(min(max(opened.st_size, 0), 4096)))
+                _ = zeros.withUnsafeBytes { pwrite(fd, $0.baseAddress, $0.count, 0) }
+                _ = fsync(fd)
+            }
+            close(fd)
+        }
+        var now = stat()
+        guard lstat(url.path, &now) == 0 else { return errno == ENOENT }
+        guard FileIdentity(now) == FileIdentity(info) else { return false }
+        return unlink(url.path) == 0 || errno == ENOENT
+    }
+
     /// Nil when the file does not exist.
     private func readPrivate(_ url: URL, maximum: Int) throws -> Data? {
+        try readPrivateFile(url, maximum: maximum)?.data
+    }
+
+    private func readPrivateFile(_ url: URL, maximum: Int) throws -> (data: Data, info: stat)? {
         let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
         if fd < 0 {
             if errno == ENOENT { return nil }
@@ -347,7 +613,7 @@ public final class ClusterPairingStore: @unchecked Sendable {
         var data = Data(count: Int(info.st_size))
         let count = data.withUnsafeMutableBytes { read(fd, $0.baseAddress, $0.count) }
         guard count == Int(info.st_size) else { throw ClusterPairingStoreError.unreadable(url.lastPathComponent) }
-        return data
+        return (data, info)
     }
 
     /// Temporary file (0600, exclusive, no symlink) in the same directory, fsync, rename.

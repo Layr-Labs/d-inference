@@ -24,7 +24,8 @@ public struct ClusterSetupMemberFacts: Codable, Sendable, Equatable {
     public var modelDirectory: String
     public var runtimeBinarySHA256: String
     public var jacclDevice: String
-    /// This Mac's own copy of the pairing's edge secret (an owner-only file).
+    /// The name of this Mac's own copy of the pairing's edge secret: `edge-<pin>.secret` in its pairing store, whose
+    /// key is in its Keychain (a file there on builds without the Keychain).
     public var linkSecretFile: String
 
     public init(memberID: String, linkAddress: String, user: String, ownerExecutable: String, workerExecutable: String,
@@ -101,7 +102,7 @@ public enum ClusterSetupLinkExchange {
         /// The pairing's link epoch and edge, as stored (lowercase UUID text).
         public let linkEpoch: String
         public let edgeID: String
-        /// This Mac's owner-only copy of the edge secret.
+        /// The name of this Mac's copy of the edge secret (`ClusterPairingRecord.Link.secretFile`).
         public let secretFile: String
         let secret: Data
         init(localPin: String, peerPin: String, clusterID: String, linkEpoch: String, edgeID: String, secretFile: String, secret: Data) {
@@ -131,6 +132,12 @@ public enum ClusterSetupLinkExchange {
         guard let records = try store.load(), let record = records.pairings.max(by: { $0.pairedAt < $1.pairedAt }) else { return nil }
         return Pairing(localPin: records.localPin, peerPin: record.peerPin, clusterID: record.clusterID, linkEpoch: record.link.linkEpoch,
             edgeID: record.link.edgeID, secretFile: record.link.secretFile, secret: try store.edgeSecret(for: record))
+    }
+
+    /// `pairing()` failed only because this Mac's Keychain, which holds the link key, is locked after a restart until
+    /// someone logs in: nothing is wrong with the pairing, and it is read again once someone has.
+    public static func isKeychainLocked(_ error: Error) -> Bool {
+        (error as? ClusterPairingStoreError) == .keychainLocked
     }
 
     /// The edge of the exchange, keyed apart from serving.

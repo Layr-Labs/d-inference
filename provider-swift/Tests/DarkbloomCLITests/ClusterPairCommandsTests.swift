@@ -617,6 +617,23 @@ struct ClusterPairTruthTests {
         #expect((object["service"] as? [String: Any])?["running"] as? Bool == false)
     }
 
+    @Test("a Keychain locked since a restart: cluster status, status and doctor say to log in once, and the pair resumes by itself")
+    func lockedKeychainClusterStatus() throws {
+        let reason = "the pairing's link key is in this Mac's Keychain, which stays locked after a restart until someone logs in to this Mac"
+        var summary = ClusterPairSummary.membership(.unreadable(reason), serviceRunning: true, loginAgentInstalled: true, startsAtLogin: true)
+        summary.keychainLocked = true
+        let logIn = "Log in to this Mac once since it started (at its screen or with Screen Sharing); the pair resumes by itself."
+        #expect(summary.clusterStatusLines == ["This Mac's pairing record couldn't be read (\(reason)), so it may be in a two-Mac cluster.",
+                                               "Next: " + logIn])
+        #expect(summary.next == logIn && summary.exitCode == 7)
+        #expect(summary.statusLine == "Cluster: this Mac's Keychain, which holds the pair's link key, is locked since it started · log in "
+            + "to this Mac once (at its screen or with Screen Sharing); the pair resumes by itself")
+        let object = try jsonObject(summary)
+        #expect(object["state"] as? String == "pairing_unreadable" && object["reason"] as? String == reason && object["next"] as? String == logIn)
+        // Any other unreadable record keeps its words.
+        #expect(unreadable().next == "Run `darkbloom cluster` on this Mac to check it.")
+    }
+
     @Test("`darkbloom cluster status --json` exits 7 when the pairing record can't be read")
     func unreadableClusterStatusCommand() async throws {
         let result = await #expect(processExitsWith: .exitCode(7), observing: [\.standardOutputContent]) {

@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-11-13
+> Last updated: 2026-11-14
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -1466,6 +1466,15 @@ to do, and `--json` gives `paired`, `role`, `other_mac`, `model` and `serves` as
 ```text
 This Mac's pairing record couldn't be read (pairings.json is malformed; nothing is trusted from it), so it may be in a two-Mac cluster.
 Next: Run `darkbloom cluster` on this Mac to check it.
+```
+
+The pairing's link key is kept in this Mac's data-protection Keychain (this Mac only, after its first unlock, never
+synchronised), which stays locked after a restart until someone logs in. Until then the pair doesn't link (fail closed),
+and the reason and the next step say so; the pair resumes by itself after the login:
+
+```text
+This Mac's pairing record couldn't be read (the pairing's link key is in this Mac's Keychain, which stays locked after a restart until someone logs in to this Mac), so it may be in a two-Mac cluster.
+Next: Log in to this Mac once since it started (at its screen or with Screen Sharing); the pair resumes by itself.
 ```
 
 `--json` prints one object with the same exit status. Schema 1; every key is

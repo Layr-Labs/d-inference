@@ -8,10 +8,13 @@ import Foundation
 /// The leader listens on its link interface at `port`; the follower member
 /// (`darkbloom cluster link-follower`) dials the leader's link address (the
 /// native coordinator address of the setup) and serves the sessions the leader
-/// opens. The edge key is derived from the secret in `secretFile`, bound to
-/// `linkEpoch` and `edgeID` (the link control channel's qualification keying):
-/// a private file of this user, never an argument. Production keying from the
-/// native agreement or the pairing pins replaces only the key source.
+/// opens. The edge key is derived from the secret `secretFile` names, bound to
+/// `linkEpoch` and `edgeID` (the link control channel's qualification keying),
+/// never from an argument. A setup made from a pairing names the pairing's
+/// `edge-<pin>.secret` in this install's pairing store, whose secret is in the
+/// Keychain (`DistributedInstalledLinkSecret`); any other name is a private
+/// file of this user. Production keying from the native agreement or the
+/// pairing pins replaces only the key source.
 public struct ClusterLinkControlAttachment: Codable, Sendable, Equatable {
     public static let schemaName = "darkbloom_cluster_link_control_v1"
     public let schema: String
@@ -21,6 +24,17 @@ public struct ClusterLinkControlAttachment: Codable, Sendable, Equatable {
     public let secretFile: String
 
     static let fields: Set<String> = ["schema", "port", "linkEpoch", "edgeID", "secretFile"]
+
+    /// Whether `path` is a pairing's `edge-<16 hex>.secret` in the pairing store at `pairingDirectory`: a name for the
+    /// pairing's secret, which need not exist as a file (`ClusterPairingStore.secretFile(peerPin:)`).
+    static func namesPairingSecret(_ path: String, in pairingDirectory: URL) -> Bool {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        let name = url.lastPathComponent
+        guard url.deletingLastPathComponent().path == pairingDirectory.standardizedFileURL.path,
+              name.hasPrefix("edge-"), name.hasSuffix(".secret") else { return false }
+        let pin = name.dropFirst("edge-".count).dropLast(".secret".count)
+        return pin.utf8.count == 16 && pin.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+    }
 
     static func validateObject(_ object: [String: Any]) throws {
         guard Set(object.keys) == fields, object["schema"] as? String == schemaName,

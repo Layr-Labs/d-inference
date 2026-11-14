@@ -19,7 +19,7 @@ for task_name in FakeClusterWorker FakeOwner RemoteOwnerTests OwnerWriterWakeTes
   if [[ "$task_name" == FakeClusterWorker ]]; then task_source="$task_root/Tests/ProcessChecks/$task_name.swift"; fi
   task_sources=("$task_root/Tests/ProcessChecks/FixtureIdentity.swift" "$task_source")
   if [[ "$task_name" == RetirementShutdownTests ]]; then task_sources+=("$task_root/Tests/SSHChecks/RetirementOwnerConnection.swift"); fi
-  if [[ "$task_name" == RemoteOwnerTests ]]; then task_sources+=("$task_root/Tests/LinkWorkerChecks/NativeStartFixture.swift"); fi
+  if [[ "$task_name" == RemoteOwnerTests ]]; then task_sources+=("$task_root/Tests/LinkWorkerChecks/NativeStartFixture.swift" "$task_root/Tests/Support/LaunchStates.swift"); fi
   if [[ "$task_name" == OwnerWriterWakeTests ]]; then task_sources+=("$task_root/Tests/Support/WakeLatencyProbe.swift"); fi
   xcrun swiftc -j 2 -swift-version 6 -warnings-as-errors -target "$task_target" -parse-as-library -D OWNER_DIAGNOSTIC_DRAIN -D FAKE_WORKER_PRELUDE \
     -I "$task_build" -L "$task_build" -lDarkbloomClusterProtocol -lDarkbloomClusterProcess -lDarkbloomClusterBootstrap -lDarkbloomClusterSecurity -lDarkbloomClusterRemote \

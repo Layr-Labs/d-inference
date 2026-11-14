@@ -271,9 +271,10 @@ final class NativePairMemberSession: @unchecked Sendable {
             // credential its own Secure Enclave key certifies, pinned to the
             // peer member's roster key (never issued by another Mac).
             let trust = try installation.roster.map { try $0.dataPlaneTrust(start: start, signer: connection.memberSigner) }
+            let owner = pins[0]
             let created = try bootstrap.map { try installation.launch(start: start, until: firstGrant, bootstrap: $0,
-                    dataPlaneTrust: trust) }
-                ?? installation.launch(start: start, until: firstGrant, relay: relay!)
+                    dataPlaneTrust: trust, owner: owner) }
+                ?? installation.launch(start: start, until: firstGrant, relay: relay!, owner: owner)
             condition.lock(); endpoint = created; launched = true; let cancelled = stopped
             if !cancelled, servingHost != nil { serving = true }
             condition.unlock()

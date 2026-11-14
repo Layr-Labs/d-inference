@@ -49,6 +49,7 @@ verification details are on this page too.
 - Security: the link between the two Macs of a pair is protected; both Macs need 0.10.13 to pair.
 - Two-Mac pairs keep their link key in the Mac's Keychain instead of a file.
 - Security: each Mac of a two-Mac pair proves its identity on the link.
+- Security: a two-Mac pair checks the processes it starts.
 - GPT-OSS stops repeating its reasoning and answers on ordinary requests too.
 - GPT-OSS no longer drops the text it writes before a tool call.
 - Qwen answers no longer show a stray </think>.
@@ -111,9 +112,10 @@ verification details are on this page too.
 - **Qwen 3.5 9B and 35B now end a repeating thought in an answer by default, as Gemma 4 and GPT-OSS do:** when the loop guard stops a verbatim loop inside the thought, the provider closes it as Qwen's template does (`\n</think>\n\n`) and the model answers in the same response, instead of ending as `length` with no answer. On GPQA's looping questions (OpenRouter's settings, temperature 0.5) the 35B answered 14 of 27 such thoughts (6 right) and the 9B 11 of 29 (3 right); the others looped again and still end as `length`. Requests where the guard does not fire are unchanged. Only these two builds: Qwen 3.6, Qwen 3.8 27B and any other build keep `length` unless `DARKBLOOM_LOOP_EXIT_THINKING` names them (`…,qwen3_5_moe,qwen3.6`); `DARKBLOOM_LOOP_EXIT_THINKING=gemma4,gemma4_text,gpt_oss` turns Qwen's off (#2125).
 - **Off by default — GLM-5.3-Flash JSON answers under a grammar:** with `DARKBLOOM_GLM_JSON_ANSWERS=1` on a Mac, GLM's JSON `response_format` answers are sampled under the JSON grammar; unset keeps 0.10.12's path (#2114).
 - **Two-Mac pairs: each Mac proves its identity on the link (security).** Every connection between the two Macs of a pair now also checks that each Mac holds the key its pair pinned. Both Macs must run 0.10.13 to link; after a restart, the pair links once someone has logged in to the Mac (#2146).
+- **Two-Mac pairs: the processes a pair starts are checked before they run (security).** A pair's worker and owner start only if they are exactly the installed, pinned executable (#2139).
 - **Rollout:** a patch release over 0.10.12 with only the fixes below; nothing else from `dev` rides. Pairs: both Macs must run the same version, and a pair on 0.10.12 updates itself. `darkbloom update --rollback` puts back 0.10.12.
 - The registration keeps 0.10.12's fields and cluster runtime facts; `libs/mlx` (72dffa2d), `libs/mlx-swift` (b1c94d29) and the Xcode 27.2 toolchain are unchanged, so `mlx.metallib` is unchanged.
-- The 49 entries below are the pending fragments rendered verbatim, except where the release notes reword one; CI-only entries change no provider behaviour.
+- The 50 entries below are the pending fragments rendered verbatim, except where the release notes reword one; CI-only entries change no provider behaviour.
 - **Known issue:** A two-Mac pair that serves only you and is updated by hand on both Macs can stay stopped after the update (an older race between the update re-plan and the restart, not new in 0.10.13): run `darkbloom cluster local` (or `darkbloom start`) on the leading Mac to start it again. Pairs that serve through Darkbloom update at their slot and are not affected.
 - **Known limitation (since 0.10.0, unchanged in 0.10.13):** Nemotron 3.5 Super is served only by the provider daemon: `darkbloom start --local --here` (the standalone server) skips it ("it loads only in the provider daemon"). To use Super on your own Mac only, run the daemon with its local endpoint instead (`darkbloom start --foreground --local-endpoint`).
 
@@ -121,6 +123,10 @@ verification details are on this page too.
 
 - During `darkbloom cluster` setup, the Mac that joined ended its screen about 20 s into the leading Mac's download (or a long copy) of the chosen model with "Stopped (by `darkbloom cluster stop` on one of the Macs): the pair isn't starting any more", though nobody had stopped anything and the leading Mac's start went on (0.10.9 to 0.10.12). It took the leading Mac's status, which reads "Stopped" until both Macs' parts start, for a stop. The leading Mac now counts each stop someone asks for (`darkbloom cluster stop` on either Mac, and `darkbloom stop` or `darkbloom restart` once the pair runs) and its status carries the count; the Mac that joined ends only on a stop asked since the start began, and then at once instead of 20 s later. A leading Mac on an older build sends no count, so the Mac that joined follows its start to the end.
 - On the leading Mac, such a stop now ends the start at once too: during the model's download or copy (what arrived stays, and the next start goes on from there; before, both Macs were started once it finished), while both Macs load the model (before, a ✗ with Retry after 15 minutes), and at the test (before, "✓ Serving" or "the test failed"). The registration no longer starts again a pair stopped during the test. The pair's own stops (the registration's restart, the cluster service's restart for a changed approval) no longer end the leading Mac's wait for the coordinator with that line.
+
+### Cluster launch check (security)
+
+- The worker and owner processes a two-Mac pair starts run only if they are exactly the installed, pinned executable. Details will be published after the fleet has updated.
 
 ### Cluster link: each Mac proves its identity
 

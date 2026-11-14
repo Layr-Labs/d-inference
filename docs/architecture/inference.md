@@ -10036,6 +10036,61 @@ candidate choice),
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledFiles.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledNativeStart.swift`.
 
+## Launched cluster children run the verified executable
+
+An installed executable is hashed against its pin and then started by path, so
+a binary that replaced it after the last check would be started instead. The
+children that are written secrets are therefore bound to the verified bytes:
+the native worker (data-plane credential, prefix-SSD key, then prompts), the
+coordinator member's local owner (its open frame carries the credential) and
+the GLM calibration and quotation workers.
+
+1. While `DistributedInstalledFiles.digest` hashes an executable it also reads,
+   from the same streamed bytes, the code-directory hash (cdhash) of each arm64
+   image (`DistributedInstalledCodeDirectory`): `LC_CODE_SIGNATURE`, the
+   CodeDirectory the kernel ranks highest (SHA-384, SHA-256, truncated SHA-256,
+   SHA-1), hashed and truncated to 20 bytes. It is kept in
+   `DistributedInstalledFiles.Identity.codeDirectoryHashes`.
+2. `Identity.launchVerifier()` refuses a file without one before any spawn
+   (release builds; debug builds let unit-test script fixtures through). The
+   launch carries the check as `ClusterWorkerLaunch.verifyLaunched`.
+3. The launchers (`ClusterWorkerProcess`, `ClusterRemoteWorkerEndpoint`,
+   `ClusterCalibrationProcess`, `GLM5NextCalibrationQuoteProcess`) start their
+   child through `ClusterChildProcess`. With a check it spawns the child
+   suspended (`POSIX_SPAWN_START_SUSPENDED`, inheriting only its three pipes,
+   every signal at its default): the kernel has mapped the image, the child
+   has run none of it. The check runs then; a check after an ordinary start
+   would come too late. `DistributedInstalledLaunchImage.require` needs Code
+   Signing Services to find the code valid, and both the kernel's cdhash of
+   the image (`CS_OPS_CDHASH`) and the reported one to be expected; the
+   reported one alone is read from the file on disk.
+4. Suspension does not stop another process of the same user from resuming
+   the child during the check, and a child that ran could have changed what
+   the check saw. So after the check accepts the child, and before resuming
+   it, `ClusterChildProcess` requires proof that it never ran: it is still
+   this process's stopped child, its user time is zero (`proc_pid_rusage`,
+   which counts across exec; a suspended child was measured at exactly zero)
+   and it has no process of its own. On any doubt it is refused.
+5. An accepted child is resumed (`SIGCONT`) and only then does the launcher
+   start the loop that writes its input. A refused child is killed and
+   reaped, having been written nothing, and the launch fails with a message
+   that names no path or hash. A launch without a check is a Foundation
+   `Process` as before; the exit of either kind is reported once, after the
+   child is reaped (`ClusterProcessExit`).
+
+This binds the main executable image only. Libraries the image loads are
+covered by library validation in release-signed builds (hardened runtime),
+not by this check, and not in ad-hoc builds.
+
+These launches carry no check: the local owner of a setup without a
+coordinator approval (`DistributedInstalledSession`), the link follower's
+owner (`DistributedInstalledLink`) and the SSH route (`/usr/bin/ssh`). Their
+owner is the provider's own `darkbloom` binary, which nothing pins. Code map:
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledLaunchImage.swift`,
+`DistributedInstalledOwner.nativeLaunch`, `NativePairMemberInstallation.launch`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterChildProcess.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterProcessExit.swift`.
+
 ## The pair's leader takes local requests beside Darkbloom
 
 The member that hosts a pair's slot (`ProviderLoop.hostsClusterPairSlot`, the

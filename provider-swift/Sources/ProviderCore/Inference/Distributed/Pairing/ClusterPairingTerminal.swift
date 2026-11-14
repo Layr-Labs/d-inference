@@ -67,8 +67,8 @@ public final class ClusterPairingTerminal: @unchecked Sendable {
          "                key pin \(peer.pin.prefix(16))…, on its \(peer.interface)"]
     }
 
-    /// The other Mac's account of itself. It signs it with the key it pairs with, which proves possession of that key
-    /// and binds the ceremony, not where the key lives or how that Mac booted, so it is shown as reported.
+    /// The other Mac's posture as that Mac reports it, marked as such: its attestation proves possession of the key it
+    /// pairs with, not where that key lives or how the Mac booted (`ClusterPairingProvider.verifyAttestation`).
     public static func reportedPosture(_ posture: ClusterPairingPeerPosture) -> String {
         let security = [posture.sipEnabled ? "SIP on" : "SIP OFF", posture.secureBootEnabled ? "Secure Boot full" : "Secure Boot reduced",
                         posture.authenticatedRootEnabled ? "sealed system volume" : "system volume NOT sealed"].joined(separator: ", ")
@@ -193,7 +193,7 @@ public final class ClusterPairingTerminal: @unchecked Sendable {
         switch result {
         case .success(let paired):
             let record = paired.record
-            return ["Paired. This Mac pins the other Mac's Secure Enclave key \(record.peerPin.prefix(16))…",
+            return ["Paired. This Mac pins the other Mac's key \(record.peerPin.prefix(16))…",
                     "Roster \(record.clusterID), generation \(record.roster.generation), sha256 \(record.rosterSHA256.prefix(16))…, signed by both Macs.",
                     "Link key for the link control channel: epoch \(record.link.linkEpoch.prefix(8))…, edge \(record.link.edgeID.prefix(8))…",
                     "Stored in \(paired.store.path) (owner-only files). No SSH was used."]

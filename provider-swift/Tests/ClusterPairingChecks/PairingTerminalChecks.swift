@@ -188,7 +188,7 @@ extension PairingCheck {
         pair.connector.type("y")
         let listenerStatus = reap(pair.listenerPID, on: pair.listener, seconds: 20), connectorStatus = reap(pair.connectorPID, on: pair.connector, seconds: 20)
         expectEqual(listenerStatus, 0, "listener exits 0"); expectEqual(connectorStatus, 0, "connector exits 0")
-        expect(pair.listener.text.contains("Paired. This Mac pins the other Mac's Secure Enclave key"), "the listener says it paired")
+        expect(pair.listener.text.contains("Paired. This Mac pins the other Mac's key"), "the listener says it paired")
         expect(pair.connector.text.contains("Roster pty-pair, generation 1"), "the connector names the roster")
         expect(pair.connector.text.contains("No SSH was used."), "and that no SSH was used")
         expect(pair.listener.canonicalMode && pair.connector.canonicalMode, "both terminals are back in their normal mode")

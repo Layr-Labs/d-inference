@@ -131,10 +131,10 @@ public struct ClusterLinkControlKey: Sendable, CustomStringConvertible, CustomDe
     /// Fresh keys for one TCP connection (handshake v3), one per direction:
     /// HKDF of this connection's X25519 agreement between two ephemeral keys
     /// that exist only in the two processes, salted by the transcript digest
-    /// (both nonces, both public keys, the version, both identities and their
-    /// signatures) and mixed with this edge
-    /// key, bound to the epoch and the edge. The edge key alone derives
-    /// nothing: neither it nor the handshake records reveal the agreement.
+    /// (both nonces, both public keys, the version, both pins and both
+    /// signatures) and mixed with this edge key, bound to the epoch and the
+    /// edge. The edge key alone derives nothing: neither it nor the handshake
+    /// records reveal the agreement.
     /// Refuses a non-canonical, all-zero, low-order or reflected public key.
     public func sessionKeys(ephemeralPrivateKey: Curve25519.KeyAgreement.PrivateKey, peerEphemeralPublicKey: Data,
                             transcriptSHA256: Data, epoch: UUID, edgeID: UUID) throws

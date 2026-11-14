@@ -304,7 +304,8 @@ extension EngineV2Bridge {
             recoverPrefillEvidence: canRecoverPrefillEvidence(
                 promptTokens: promptTokens.count, maxOutputTokens: maxOutputTokens,
                 deadline: firstContentDeadline,
-                isMultimodal: multimodal != nil || mediaKind != nil)) else {
+                isMultimodal: multimodal != nil || mediaKind != nil),
+            takesStoppedRowPlace: EngineAdmissionPriority.current > 0) else {
             // A full Mac refuses as capacity before any stream exists, so
             // routing moves on and a local client gets 503, not a 200 stream
             // that fails at once.

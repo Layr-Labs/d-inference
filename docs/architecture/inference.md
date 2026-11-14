@@ -4673,14 +4673,17 @@ the 9B takes the grammar only when a Mac opts in.
   `maxVideosPerRequest` 8, `maxRequestVideoFramePixels` 384 Mpx;
   `decodeOverheadFactor = 4`.
 - **Inline video formats.** `MediaIngest.decodeVideo` decides by the bytes,
-  not the `data:` label: MP4 or QuickTime bytes are opened under any label
-  (`video/mov`, `video/x-m4v`, `application/octet-stream`, a `codecs`
-  parameter, another case or none; the coordinator also rewrites such a label
-  to `data:video/mp4;base64,` or `data:video/quicktime;base64,`). Bytes that
-  `MemoryBackedVideoAsset` refuses and that do not start with an ISO BMFF atom
-  (WebM, Matroska, MPEG streams, AVI, Ogg, anything else) are
-  `MediaError.unsupportedMedia`, failure code `unsupported_media` (415 at the
-  coordinator); a damaged ISO BMFF file, or an empty payload, stays
+  not the `data:` media type: MP4 or QuickTime bytes are opened under any
+  label (`video/mov`, `video/x-m4v`, `application/octet-stream`, a `codecs`
+  parameter or none; a coordinator release carrying darkbloom-platform #1038
+  also rewrites such a label to `data:video/mp4;base64,` or
+  `data:video/quicktime;base64,` unless switched off). The payload must be
+  base64 (`;base64`, in any case); anything else is `malformedDataURI`. Bytes
+  that `MemoryBackedVideoAsset` refuses and that do not start with an ISO BMFF
+  atom (`startsWithISOBMFFAtom`: WebM, Matroska, MPEG streams, AVI, Ogg,
+  anything else) are `MediaError.unsupportedMedia`, failure code
+  `unsupported_media` (415 at the coordinator; the local API answers 400 with
+  its fixed message); a damaged ISO BMFF file, or an empty payload, stays
   `malformedDataURI`, `invalid_media` (400). Nemotron Super's binding still
   admits only the two canonical labels before it calls `decodeVideo`.
 - **Media memory gate.** The scheduler's `VisionMemoryGate` reserves a media

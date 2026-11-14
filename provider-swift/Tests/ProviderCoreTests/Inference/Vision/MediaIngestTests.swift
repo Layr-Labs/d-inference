@@ -345,7 +345,7 @@ func vlmDecodeVideoDecidesByTheBytes() async throws {
     for header in [
         "data:video/mov;base64,", "data:video/x-m4v;base64,", "data:application/octet-stream;base64,",
         "data:video/mp4;codecs=avc1.64000b;base64,", "data:video/webm;base64,", "data:video/mpeg;base64,",
-        "data:;base64,", "data:VIDEO/MP4;base64,",
+        "data:;base64,", "data:VIDEO/MP4;base64,", "data:video/mov;BASE64,",
     ] {
         let (video, framePixels) = try await MediaIngest.decodeVideo(header + tinyMP4Base64)
         guard case .memoryBacked = video.source else {
@@ -364,6 +364,42 @@ func vlmDecodeVideoDamagedMP4IsMalformed() async {
         await expectVideoError("malformedDataURI") { _ = try await MediaIngest.decodeVideo(uri) }
     }
     await expectVideoError("malformedDataURI") { _ = try await MediaIngest.decodeVideo("data:video/mp4;base64,") }
+}
+
+@Test("decodeVideo requires a base64 payload: a URI without ;base64 is malformed, not a foreign container")
+func vlmDecodeVideoRequiresBase64() async {
+    // An MP4's base64 text sent without the parameter, and percent-encoded
+    // bytes: either way the URI, not the container, is wrong.
+    for uri in [
+        "data:video/mp4,\(tinyMP4Base64)",
+        "data:video/mp4;charset=binary,\(tinyMP4Base64)",
+        "data:video/mp4,%00%00%00%1Cftypmp42",
+    ] {
+        await expectVideoError("malformedDataURI") { _ = try await MediaIngest.decodeVideo(uri) }
+    }
+}
+
+@Test("startsWithISOBMFFAtom separates a damaged MP4 or QuickTime file from another container")
+func vlmStartsWithISOBMFFAtom() {
+    func atom(_ type: String) -> Data { Data([0, 0, 0, 8]) + Data(type.utf8) }
+    for type in ["ftyp", "moov", "mdat", "free", "skip", "wide", "pnot", "uuid", "styp", "moof"] {
+        #expect(MediaIngest.startsWithISOBMFFAtom(atom(type)), "\(type)")
+    }
+    for bytes in [
+        Data([0, 0, 0, 8]) + Data("sidx".utf8), Data([0, 0, 0, 8, 0x66, 0x74, 0x79]),
+        Data([0x1a, 0x45, 0xdf, 0xa3, 0x9f, 0x42, 0x86, 0x81]), Data("RIFF\u{0}\u{0}\u{0}\u{0}AVI ".utf8), Data(),
+    ] {
+        #expect(!MediaIngest.startsWithISOBMFFAtom(bytes), "\(Array(bytes))")
+    }
+}
+
+@Test("decodeVideo calls a legacy QuickTime file without mdat malformed, not foreign")
+func vlmDecodeVideoLegacyQuickTimeWithoutMdat() async {
+    // No ftyp: the asset needs both moov and mdat; this one is damaged.
+    let movie = Data([0, 0, 0, 8]) + Data("wide".utf8) + Data([0, 0, 0, 9]) + Data("moov".utf8) + Data([0])
+    await expectVideoError("malformedDataURI") {
+        _ = try await MediaIngest.decodeVideo("data:video/quicktime;base64,\(movie.base64EncodedString())")
+    }
 }
 
 @Test("a non-ISO-BMFF inline video reaches the coordinator as unsupported_media")

@@ -817,7 +817,18 @@ public enum MediaIngest {
         guard uri.hasPrefix("data:") else {
             throw MediaError.invalidURL(uri)
         }
-        let data = try dataFromDataURI(uri, maxMediaDecodedBytes: maxMediaDecodedBytes)
+        guard let commaIndex = uri.firstIndex(of: ",") else {
+            throw MediaError.malformedDataURI("missing ','")
+        }
+        // A movie is binary: only a base64 payload carries it. The parameter
+        // is matched in any case, which `dataFromDataURI` alone would not do.
+        guard uri[..<commaIndex].split(separator: ";").dropFirst()
+            .contains(where: { $0.lowercased() == "base64" })
+        else {
+            throw MediaError.malformedDataURI("inline video must be base64-encoded (data:…;base64,…)")
+        }
+        let data = try dataFromDataURI(
+            uri, maxMediaDecodedBytes: maxMediaDecodedBytes, isBase64: true)
         guard !data.isEmpty else {
             throw MediaError.malformedDataURI("empty inline video")
         }
@@ -927,9 +938,11 @@ public enum MediaIngest {
 
     /// Extract the raw bytes from a `data:` URI. The header before the
     /// first comma decides the encoding: `;base64` ⇒ base64, otherwise
-    /// the payload is percent-encoded UTF-8 text.
+    /// the payload is percent-encoded UTF-8 text. `isBase64` overrides the
+    /// header when the caller has already decided (`decodeVideo`).
     static func dataFromDataURI(
-        _ uri: String, maxMediaDecodedBytes: Int = Self.maxMediaDecodedBytes
+        _ uri: String, maxMediaDecodedBytes: Int = Self.maxMediaDecodedBytes,
+        isBase64: Bool? = nil
     ) throws -> Data {
         guard let commaIndex = uri.firstIndex(of: ",") else {
             throw MediaError.malformedDataURI("missing ','")
@@ -937,7 +950,7 @@ public enum MediaIngest {
         let header = uri[uri.startIndex..<commaIndex]
         let payload = String(uri[uri.index(after: commaIndex)...])
 
-        if header.contains(";base64") {
+        if isBase64 ?? header.contains(";base64") {
             let stripped = payload.filter { !$0.isWhitespace }
             // base64 decodes to (len/4)*3 minus the trailing '=' padding. Subtract
             // the padding so the cap boundary is exact (Swift rejects unpadded

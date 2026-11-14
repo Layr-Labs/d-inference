@@ -529,6 +529,14 @@ jobs:
         if: ${{ !cancelled() && matrix.shard == strategy.job-total && steps.test-products.outcome == 'success' }}
         timeout-minutes: 3
         run: python3 scripts/test-desktop-api.py provider-swift/.build/debug/darkbloom
+      - name: Test Gemma reopened thought conformance switches
+        if: ${{ !cancelled() && matrix.shard == strategy.job-total && steps.test-products.outcome == 'success' }}
+        working-directory: provider-swift
+        timeout-minutes: 5
+        run: |
+          for enabled in 0 1; do
+            env DARKBLOOM_GEMMA_REOPENED_THOUGHTS="$enabled" ../scripts/run-nested-suite.sh GemmaReopenedThoughtRoutingTests --no-parallel
+          done
       - name: Run isolated native MiMo startup gates
         if: ${{ !cancelled() && matrix.shard == strategy.job-total && steps.test-products.outcome == 'success' && steps.mimo-fixtures.outcome == 'success' }}
         working-directory: provider-swift

@@ -38,7 +38,7 @@ public enum SDKFeatureDefaults {
     static let grammarMTPBuilds: Set<String> = []
 
     /// #2099 / SDK #411: `reasoning.max_tokens` budgets, per family.
-    static let reasoningBudgetFamilies: Set<NativeReasoningBudget.Family> = []
+    static let reasoningBudgetFamilies: Set<NativeReasoningBudget.Family> = [.nemotronSuper]
 
     /// The process-wide switches. With a budget family listed, the budget
     /// switch is set too, so every engine accepts budget rows; only

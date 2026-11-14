@@ -3465,7 +3465,8 @@ stops such a row early.
   In any list Qwen's families take only the builds above, and another build when the list
   names it, its family listed too, by a case-insensitive part of its id with a `.`, `-` or
   `/` (`…,qwen3.6` adds Qwen 3.6, `…,qwen3.8-27b` both Qwen 3.8 27B builds; `qwen3`, `mtp`
-  or `4bit` name no build). A row the strict-tool grammar constrains keeps its guard but
+  or `4bit` name no build, while a punctuated part such as `-4bit` names every build that
+  contains it). A row the strict-tool grammar constrains keeps its guard but
   not the exit (the continuation would answer without the grammar).
   Nemotron 3.5 Super (`nemotron_h_omni`: listed, off by default until its A/B;
   `…,nemotron_h_omni` turns it on) takes its owner's own route: its request

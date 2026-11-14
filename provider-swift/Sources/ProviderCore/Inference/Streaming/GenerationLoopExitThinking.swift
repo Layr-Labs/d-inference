@@ -178,12 +178,14 @@ enum GenerationLoopExitThinkingPolicy {
     /// Whether this build's loops keep ending as `length` although its family
     /// is on: a family with proven builds (`provenBuilds`) takes the exit on
     /// those, and on another build only when the list, its family listed too,
-    /// names it by a case-insensitive part of its id (`qwen3.6`, `qwen3.8-27b`;
-    /// as `QwenStrictToolGrammar`'s lists). An id part is shaped like an id (a
-    /// `.`, `-` or `/`), never like a `model_type`, so `qwen3`, `mtp` or `4bit`
-    /// name no build. The same in the default list and in a list set on the
-    /// Mac, so a list that adds a family never turns Qwen's exit on for a build
-    /// the A/B did not prove.
+    /// names it by a case-insensitive part of its id (`qwen3.6`, `qwen3.8-27b`).
+    /// An id part is shaped like an id (a `.`, `-` or `/`), never like a
+    /// `model_type`, so `qwen3`, `mtp` or `4bit` name no build, while a
+    /// punctuated part such as `-4bit` names every build that contains it
+    /// (stricter than `QwenStrictToolGrammar`'s lists, which take any part).
+    /// The same in the default list and in a list set on the Mac, so a list
+    /// that adds a family never turns Qwen's exit on for a build the A/B did
+    /// not prove.
     static func keepsLength(modelType: String?, modelID: String, setting: Setting = current) -> Bool {
         guard case .modelTypes(let entries) = setting, let type = modelType?.lowercased(),
               provenBuilds.values.contains(type), provenBuilds[modelID] != type else { return false }

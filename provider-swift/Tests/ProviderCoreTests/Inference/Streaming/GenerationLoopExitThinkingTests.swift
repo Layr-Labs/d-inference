@@ -322,6 +322,15 @@ struct GenerationLoopExitThinkingTests {
         for id in ModelRuntimeRequirements.qwen38ConcreteModelIDs {
             #expect(Policy.keepsLength(modelType: "qwen3_5", modelID: id, setting: generic), "\(id)")
         }
+        let qwen36 = "qwen3.6-35b-a3b-vl-mtp-mxfp8"
+        #expect(Policy.keepsLength(modelType: "qwen3_5_moe", modelID: qwen36, setting: generic))
+        // Each separator makes an id part: `-` alone, `/` alone.
+        let dashed = Policy.setting(environment: [Policy.environmentKey: "qwen3_5_moe,35b-a3b-vl"])
+        #expect(!Policy.keepsLength(modelType: "qwen3_5_moe", modelID: qwen36, setting: dashed))
+        let slashed = Policy.setting(environment: [Policy.environmentKey: "qwen3_5,EigenLabs/"])
+        for id in ModelRuntimeRequirements.qwen38ConcreteModelIDs {
+            #expect(!Policy.keepsLength(modelType: "qwen3_5", modelID: id, setting: slashed), "\(id)")
+        }
         // A named build without its family stays off: the family's list entry turns the exit on.
         let buildOnly = Policy.setting(environment: [Policy.environmentKey: "qwen3.6"])
         #expect(qwenExit("qwen3_5_moe", setting: buildOnly) == nil)

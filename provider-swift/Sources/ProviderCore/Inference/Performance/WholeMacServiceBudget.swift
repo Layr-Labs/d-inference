@@ -120,8 +120,10 @@ final class WholeMacServiceBudget: @unchecked Sendable {
     }
 
     /// `overcommit`: charged even when the Mac is full (a loop exit's continuation, which takes its stopped row's
-    /// place; `EngineV2Bridge.acquireServiceAllowance`). Its charge counts like any other until it is released, so
-    /// other work waits for the sum to drop below the width again.
+    /// place; `EngineV2Bridge.acquireServiceAllowance`): one row past the width per continuation, at most one per
+    /// stopped row. Its charge counts like any other until it is released, so other work waits for the sum to drop
+    /// below the width again. Never beside an exclusive (whole-Mac) charge. What this budget reports (`snapshot`) is
+    /// capped at 1; admission keeps the real sum.
     func acquire(ownerID: String, concurrency: Int, serviceReservationID: String? = nil,
         serviceReservation: ServiceReservationLifetime? = nil, work: Work? = nil,
         deadlineApplicability: DeadlineApplicability? = nil, requiresIdle: Bool = false,
@@ -140,6 +142,7 @@ final class WholeMacServiceBudget: @unchecked Sendable {
             guard overcommit || charges.values.reduce(0, { $0 + $1.fraction }) + charge <= 1 + 1e-12 else {
                 return (false, nil)
             }
+            if overcommit, charges.values.contains(where: { $0.fraction >= 1 - 1e-12 }) { return (false, nil) }
             guard serviceReservation?.acquireLease() ?? true else { return (false, nil) }
             let now = clockNow()
             let captured = deadlineApplicability.flatMap { requirement in
@@ -222,7 +225,8 @@ final class WholeMacServiceBudget: @unchecked Sendable {
             for (model, epoch) in slotEpochs {
                 byModel[model] = deadlineWorkLocked(modelID: model, epoch: epoch, profileID: profileIDs[model])
             }
-            return Snapshot(usedFraction: charges.values.reduce(0, { $0 + $1.fraction }),
+            // A continuation's over-commit can take the sum past 1; what goes out is capped.
+            return Snapshot(usedFraction: min(1, charges.values.reduce(0, { $0 + $1.fraction })),
                 reservations: Array(reservations.prefix(64)), deadlineWorkByModel: byModel)
         }
     }
@@ -432,6 +436,6 @@ final class WholeMacServiceBudget: @unchecked Sendable {
             }
             return DeadlineWork(version: 1, epoch: epoch, known: known,
                 prefillTokens: Int64(prefill), decodeTokens: Int64(decode), requestCount: count,
-                contextTokensMax: context, serviceFraction: fraction)
+                contextTokensMax: context, serviceFraction: min(1, fraction))
     }
 }

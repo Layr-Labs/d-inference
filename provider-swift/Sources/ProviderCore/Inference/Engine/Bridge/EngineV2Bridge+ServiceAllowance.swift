@@ -52,8 +52,9 @@ extension EngineV2Bridge {
 
     /// `takesStoppedRowPlace`: a loop exit's continuation (`EngineAdmissionPriority` above 0). Its stopped row's
     /// slot was released before it asks, and on a full Mac work waiting for a slot takes it first, so a width check
-    /// would refuse the answer of a request already served. It is never refused for width: it may exceed it by
-    /// itself until it ends (other work waits meanwhile), and the engine admits it first.
+    /// would refuse the answer of a request already served. It is never refused for width: each continuation may
+    /// exceed it by one row until it ends, at most one per stopped row (other work waits meanwhile), and the engine
+    /// admits it first.
     func acquireServiceAllowance(requestID: String, serviceReservationID: String? = nil,
         serviceReservation: ServiceReservationLifetime? = nil,
         promptTokens: Int? = nil, maxOutputTokens: Int? = nil,

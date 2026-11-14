@@ -763,14 +763,25 @@ struct GenerationLoopExitThinkingServingTests {
             if case .error(let message) = event { refused.append(message) }
         }
         #expect(refused == [EngineV2Bridge.serviceAllowanceExhausted])
-        // The continuation is not: it reaches the engine.
+        // The continuation is not: it reaches the engine, one row past the width.
         let continuation = await EngineAdmissionPriority.$current.withValue(LoopExitThinkingContinuation.admissionPriority) {
             await bridge.submitTokenized(promptTokens: prompt, request: request, requestId: "continuation")
         }
         #expect(engine.submittedPriorities == [1])
+        #expect(budget.serviceBudget.count == width + 1)
+        // What the budget reports stays capped at the whole Mac.
+        #expect(budget.serviceBudget.snapshot().usedFraction == 1)
+        // Other work still waits while it runs.
+        var refusedAgain: [String] = []
+        for await event in await bridge.submitTokenized(promptTokens: prompt, request: request, requestId: "ordinary-2") {
+            if case .error(let message) = event { refusedAgain.append(message) }
+        }
+        #expect(refusedAgain == [EngineV2Bridge.serviceAllowanceExhausted])
         await bridge.cancel(requestId: "continuation")
         for await _ in continuation {}
         await bridge.shutdown()
+        // Its share is released when it ends.
+        #expect(budget.serviceBudget.count == width)
     }
 
     @Test("Qwen 3.6: a loop inside the thought ends it with `\\n</think>\\n\\n`, and stops apply to the answer")

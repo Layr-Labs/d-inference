@@ -70,8 +70,9 @@ public protocol LocalRouterTransport: Sendable {
 /// router's first upstream request. Body chunks are handed on as they arrive, so a streamed answer is never held back.
 public final class URLSessionLocalRouterTransport: LocalRouterTransport, @unchecked Sendable {
     /// The most of an answer held for a reader that fell behind the coordinator (the relay waiting on a client that
-    /// stopped reading). URLSession pushes each chunk as it arrives on one delegate queue that serves every request,
-    /// so nothing there waits for a reader: past this, the request is stopped instead (`UpstreamTaskHandler`).
+    /// stopped reading). It bounds what waits unread, not an answer: a reader that keeps up is handed any size.
+    /// URLSession pushes each chunk as it arrives on one delegate queue that serves every request, so nothing there
+    /// waits for a reader: past this, the request is stopped instead (`UpstreamTaskHandler`).
     static let backlogCeiling = 32 * 1024 * 1024
 
     private let session: URLSession
@@ -230,8 +231,8 @@ private final class UpstreamTaskHandler: NSObject, URLSessionDataDelegate, @unch
     }
 
     /// `body` as its reader pulls it: a chunk leaves the backlog when taken. Once the request was stopped for falling
-    /// behind, the next pull ends the body with that error; what still waits is never handed on, so the answer can't
-    /// read as whole.
+    /// behind, the next pull ends the body with that error, so the answer can't read as whole: what still waits (at
+    /// most the ceiling) is never handed on, and is freed when the reader lets go of the body.
     private func pulled(_ body: AsyncThrowingStream<ByteBuffer, Error>) -> AsyncThrowingStream<ByteBuffer, Error> {
         let chunks = BodyChunks(body)
         return AsyncThrowingStream(unfolding: { [self] in

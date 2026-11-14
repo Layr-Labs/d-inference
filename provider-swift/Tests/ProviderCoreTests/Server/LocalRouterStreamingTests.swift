@@ -199,6 +199,7 @@ struct LocalRouterStreamingTests {
             #expect(outcome.cut, "the whole answer was taken in while nothing read it: \(outcome)")
             // The ceiling, plus what the sockets on the way hold and what arrived before the cancel took effect.
             #expect(outcome.written < 2 * ceiling, "\(outcome)")
+            // The first read comes after the cut, so none of what still waits is handed on.
             var handedOn = 0
             do {
                 for try await chunk in stalled.body { handedOn += chunk.readableBytes }
@@ -206,7 +207,7 @@ struct LocalRouterStreamingTests {
             } catch let error as LocalRouterUpstreamError {
                 #expect(error == .readerFellBehind)
             }
-            #expect(handedOn <= ceiling)
+            #expect(handedOn == 0)
         }
     }
 

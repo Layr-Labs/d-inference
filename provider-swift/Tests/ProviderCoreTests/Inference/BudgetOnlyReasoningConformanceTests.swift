@@ -80,15 +80,14 @@ final class BudgetOnlyReasoningConformanceTests: XCTestCase {
         }
     }
 
-    func testOffKeepsTodaysRefusalAndAbsentFollowsTheReleaseDefault() throws {
+    func testOffAndAbsentKeepTodaysRefusal() {
         for value in ["0", "off", "false", "no"] {
             setenv(flag, value, 1)
             XCTAssertThrowsError(try NemotronSuperPromptContract.controls(body: body("512")))
             XCTAssertThrowsError(try MiMoV26TemplateFix.validateRawControls(body("512")))
         }
-        // Unset: on for Super since 0.10.13 (`SDKFeatureDefaults`); MiMo as 0.10.12.
         unsetenv(flag)
-        XCTAssertEqual(try NemotronSuperPromptContract.controls(body: body("512")).reasoningBudgetTokens, 512)
+        XCTAssertThrowsError(try NemotronSuperPromptContract.controls(body: body("512")))
         XCTAssertThrowsError(try MiMoV26TemplateFix.validateRawControls(body("512")))
     }
 }

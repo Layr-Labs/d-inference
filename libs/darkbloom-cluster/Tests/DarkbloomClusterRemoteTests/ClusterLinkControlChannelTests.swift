@@ -110,9 +110,11 @@ final class RawLinkConnector: @unchecked Sendable {
     }
 
     func hello(edge: ClusterLinkControlEdge, key: ClusterLinkControlKey? = nil, challenge: Data,
-               epoch: UUID? = nil, incarnation: UUID = UUID()) throws -> Data {
+               epoch: UUID? = nil, incarnation: UUID = UUID(),
+               ephemeral: Curve25519.KeyAgreement.PrivateKey = .init()) throws -> Data {
         let limits = try edge.limits.recordLimits()
         let hello = LinkHandshake.Hello(epoch: epoch ?? edge.epoch, edgeID: edge.edgeID, nonce: LinkHandshake.randomNonce(),
+            ephemeralPublicKey: ephemeral.publicKey.rawRepresentation,
             resume: .init(incarnation: incarnation, knownPeerIncarnation: nil, deliveredThrough: 0),
             maximumPlaintextBytes: UInt32(limits.maximumPlaintextBytes), maximumRecords: limits.maximumRecordsPerDirection,
             maximumCumulativeBytes: limits.maximumCumulativePlaintextBytesPerDirection)
@@ -125,11 +127,14 @@ final class RawLinkConnector: @unchecked Sendable {
     /// Full handshake; returns the connector's record pair.
     func handshake(edge: ClusterLinkControlEdge) throws -> LinkRecordPair {
         let challenge = try read(LinkHandshake.challengeBytes)
-        let hello = try hello(edge: edge, challenge: challenge)
+        let listenerKey = try LinkHandshake.parseChallenge(challenge)
+        let ephemeral = Curve25519.KeyAgreement.PrivateKey()
+        let hello = try hello(edge: edge, challenge: challenge, ephemeral: ephemeral)
         try write(hello)
         let accept = try read(LinkHandshake.acceptBytes)
         let transcript = LinkHandshake.transcriptSHA256(challenge: challenge, hello: hello, accept: accept)
-        return try LinkRecordPair(role: .connector, key: edge.key, transcriptSHA256: transcript, epoch: edge.epoch,
+        return try LinkRecordPair(role: .connector, key: edge.key, ephemeralPrivateKey: ephemeral,
+            peerEphemeralPublicKey: listenerKey, transcriptSHA256: transcript, epoch: edge.epoch,
             edgeID: edge.edgeID, limits: try edge.limits.recordLimits())
     }
 
@@ -728,8 +733,19 @@ final class ClusterLinkControlKeyAndMessageTests: XCTestCase {
         XCTAssertThrowsError(try LinkFrame.parse(frame.plaintext(), maximumBodyBytes: 1))
         var corrupted = frame.plaintext(); corrupted[1] = 99
         XCTAssertThrowsError(try LinkFrame.parse(corrupted, maximumBodyBytes: 64))
-        XCTAssertThrowsError(try LinkHandshake.parseChallenge(Data(count: 40)))
-        XCTAssertThrowsError(try LinkHandshake.parseHello(Data(count: 164)))
+        XCTAssertThrowsError(try LinkHandshake.parseChallenge(Data(count: 72)))
+        XCTAssertThrowsError(try LinkHandshake.parseHello(Data(count: 196)))
+        // Version 2 only: a version-1 header is its own refusal; another magic is malformed.
+        XCTAssertThrowsError(try LinkHandshake.requireVersion(Data("DBLC".utf8) + Data([1, 0, 0, 0]), hello: false)) {
+            XCTAssertEqual($0 as? ClusterLinkControlRefusal, .protocolVersionMismatch)
+        }
+        XCTAssertThrowsError(try LinkHandshake.requireVersion(Data("DBLH".utf8) + Data([1, 1, 0, 0]), hello: true)) {
+            XCTAssertEqual($0 as? ClusterLinkControlRefusal, .protocolVersionMismatch)
+        }
+        XCTAssertThrowsError(try LinkHandshake.requireVersion(Data("DBLH".utf8) + Data([2, 1, 0, 0]), hello: false)) {
+            XCTAssertEqual($0 as? ClusterLinkControlError, .malformedHandshake)
+        }
+        XCTAssertNoThrow(try LinkHandshake.requireVersion(Data("DBLC".utf8) + Data([2, 0, 0, 0]), hello: false))
         XCTAssertThrowsError(try LinkHandshake.parseAccept(Data(count: 79)))
         let resume = LinkHandshake.Resume(incarnation: UUID(), knownPeerIncarnation: nil, deliveredThrough: 12)
         var accept = LinkHandshake.acceptWithoutTag(resume); accept.append(Data(count: 32))

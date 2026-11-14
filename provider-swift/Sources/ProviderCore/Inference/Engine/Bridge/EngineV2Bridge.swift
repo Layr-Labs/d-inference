@@ -266,6 +266,8 @@ public actor EngineV2Bridge {
         var prefillReceipt: EnginePrefillReceipt? = nil
         /// A Darkbloom request's coordinator id (`MeFirstDarkbloomRequest`); nil for every other request.
         var darkbloomRequestId: String? = nil
+        /// Its engine admission priority (`EngineAdmissionPriority`): 0 but for a loop exit's continuation.
+        var priority: Int = 0
     }
 
     var active: [String: ActiveRequestState] = [:]

@@ -27,7 +27,7 @@ import Darwin
 public enum SDKFeatureDefaults {
     /// #2090 / SDK #408: Gemma quoted numeric tool arguments typed by the
     /// schema. One process-wide parser switch (`GemmaFunctionParser`).
-    static let gemmaQuotedNumbers: [String] = []
+    static let gemmaQuotedNumbers: [String] = ["DARKBLOOM_GEMMA_SCHEMA_COERCION"]
 
     /// #2101 / SDK #413: MTP drafting through free Qwen reasoning and text
     /// spans. A build is a `model_type` or a case-insensitive model-id part.

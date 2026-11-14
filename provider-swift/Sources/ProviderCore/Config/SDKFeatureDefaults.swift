@@ -17,7 +17,21 @@ import Darwin
 /// keep the SDK default (off).
 public enum SDKFeatureDefaults {
     /// Switches proven on hardware for this release; see `docs/reference/configuration.md`.
-    public static let onByDefault: [String] = []
+    /// One list per feature, so each default flip is its own one-line change.
+    public static let onByDefault: [String] =
+        constraintSpans + grammarMTP + gemmaQuotedNumbers + reasoningBudgets
+
+    /// #2101 / SDK #413: MTP drafting through free Qwen reasoning and text spans.
+    static let constraintSpans: [String] = []
+
+    /// SDK #409: grammar-aware MTP verification of constrained rows.
+    static let grammarMTP: [String] = []
+
+    /// #2090 / SDK #408: Gemma quoted numeric tool arguments typed by the schema.
+    static let gemmaQuotedNumbers: [String] = []
+
+    /// #2099 / SDK #411: Super / MiMo `reasoning.max_tokens` budgets.
+    static let reasoningBudgets: [String] = []
 
     /// The keys to set for `environment`: every listed key it leaves unset or
     /// empty (an empty value is what the LaunchAgent drops, so it means unset).

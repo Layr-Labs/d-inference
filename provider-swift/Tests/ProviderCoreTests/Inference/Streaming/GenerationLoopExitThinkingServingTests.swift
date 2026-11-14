@@ -482,9 +482,9 @@ struct GenerationLoopExitThinkingServingTests {
         }
     }
 
-    /// The Qwen 3.6 tests turn its exit on with a list set on the Mac: by default only the Qwen 3.5 builds the A/B
-    /// proved take it.
-    private static let qwenOn = GenerationLoopExitThinkingPolicy.Setting.modelTypes(["qwen3_5_moe"])
+    /// The Qwen 3.6 tests turn its exit on with a list set on the Mac that names the build: Qwen's families take only
+    /// the Qwen 3.5 builds the A/B proved unless a list names another.
+    private static let qwenOn = GenerationLoopExitThinkingPolicy.Setting.modelTypes(["qwen3_5_moe", "qwen3.6"])
 
     /// A clean process's setting. The scheduler's default reads the process's environment; these tests take this
     /// one unless they pass their own, so a runner with DARKBLOOM_LOOP_EXIT_THINKING set (an A/B box) gets the same
@@ -872,16 +872,31 @@ struct GenerationLoopExitThinkingServingTests {
         }
     }
 
-    @Test("a list set on the Mac turns the exit on for every build of its families")
-    func aListTakesEveryBuild() async throws {
-        let listed = GenerationLoopExitThinkingPolicy.setting(
-            environment: [GenerationLoopExitThinkingPolicy.environmentKey: "qwen3_5_moe,qwen3_5"])
-        let builds = [("qwen3.6-35b-a3b-vl-mtp-mxfp8", "qwen3_5_moe"), ("EigenLabs/Qwen3.8-27B-4bit-mtp", "qwen3_5")]
-        for (id, type) in builds {
+    @Test("a list set on the Mac keeps Qwen to its proven builds; another build takes the exit only when named")
+    func aListNamesOtherQwenBuilds() async throws {
+        let key = GenerationLoopExitThinkingPolicy.environmentKey
+        // The default list plus Nemotron 3.5 Super, as the docs' `…,nemotron_h_omni` reads.
+        let plusSuper = GenerationLoopExitThinkingPolicy.setting(
+            environment: [key: "gemma4,gemma4_text,gpt_oss,qwen3_5,qwen3_5_moe,nemotron_h_omni"])
+        let named = GenerationLoopExitThinkingPolicy.setting(
+            environment: [key: "qwen3_5_moe,qwen3_5,Qwen3.6,qwen3.8-27b"])
+        let cases: [(id: String, type: String, setting: GenerationLoopExitThinkingPolicy.Setting, answers: Bool)] = [
+            ("qwen3.5-35b-a3b", "qwen3_5_moe", plusSuper, true),
+            ("qwen3.6-35b-a3b-vl-mtp-mxfp8", "qwen3_5_moe", plusSuper, false),
+            ("EigenLabs/Qwen3.8-27B-4bit-mtp", "qwen3_5", plusSuper, false),
+            ("qwen3.6-35b-a3b-vl-mtp-mxfp8", "qwen3_5_moe", named, true),
+            ("EigenLabs/Qwen3.8-27B-4bit-mtp", "qwen3_5", named, true),
+        ]
+        for build in cases {
             let engine = ThoughtLoopCBv2Engine(loopInsideThought: true, family: .qwen)
-            let outcome = try await serve(engine, served: Self.qwenBuild(id, type), exitThinking: listed)
-            #expect(engine.requests.count == 2, "\(id)")
-            #expect(outcome.info?.stopReason == "stop", "\(id)")
+            let outcome = try await serve(
+                engine, served: Self.qwenBuild(build.id, build.type), exitThinking: build.setting)
+            let label = "\(build.id), \(build.setting)"
+            #expect(outcome.error == nil, "\(label)")
+            #expect(engine.requests.count == (build.answers ? 2 : 1), "\(label)")
+            #expect(outcome.info?.stopReason == (build.answers ? "stop" : "length"), "\(label)")
+            #expect(outcome.loopGuardStops == [build.answers], "\(label)")
+            if build.answers { #expect(outcome.content == "\n\nAnswer: B", "\(label)") }
         }
     }
 

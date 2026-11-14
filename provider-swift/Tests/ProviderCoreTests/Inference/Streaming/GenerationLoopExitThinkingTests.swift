@@ -419,6 +419,32 @@ struct GenerationLoopExitThinkingTests {
         }
     }
 
+    @Test("a row the strict-tool grammar constrains keeps its guard, not the exit: the answer would run unconstrained")
+    func strictToolRowKeepsItsLength() throws {
+        let body = #"{"model":"qwen3.5-35b-a3b","messages":[{"role":"user","content":"hi"}],"max_tokens":512,"#
+            + #""tools":[{"type":"function","function":{"name":"get_time","strict":true,"parameters":{"type":"object","#
+            + #""properties":{"city":{"type":"string"}},"required":["city"],"additionalProperties":false}}}]}"#
+        let raw = try JSONDecoder().decode(OpenAIChatCompletionRequest.self, from: Data(body.utf8))
+        let request = try JSONDecoder().decode(OpenAIChatCompletionRequest.self,
+            from: ToolSchemaNormalization.ensureParameterTypes(in: Data(body.utf8)))
+        var prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "qwen3_5_moe")
+        prepared.declaredTools = raw.tools
+        let constraint = try #require(QwenStrictToolGrammar.constraint(
+            prepared: prepared, request: request, parser: .qwen35, tokenizer: TokenizerHandle(Self.qwen),
+            modelType: "qwen3_5_moe", defaultMaxTokens: 512, stopTokenIDs: [248_044, 248_046],
+            promptTokens: Self.qwenThinking, runsTokenConstraints: true, setting: .models(["qwen3_5_moe"]),
+            allTools: false))
+        let exit = try #require(qwenExit())
+        let constrained = try #require(GenerationLoopGuardPolicy.resolve(
+            modelType: "qwen3_5_moe", request: request, prepared: prepared, tokenConstraint: constraint,
+            setting: .modelTypes(["qwen3_5_moe"]), exitThinking: exit))
+        #expect(constrained.exitThinking == nil)
+        let free = try #require(GenerationLoopGuardPolicy.resolve(
+            modelType: "qwen3_5_moe", request: request, prepared: prepared, tokenConstraint: nil,
+            setting: .modelTypes(["qwen3_5_moe"]), exitThinking: exit))
+        #expect(free.exitThinking?.record === exit.record)
+    }
+
     @Test("the guard's policy carries the exit to the guard")
     func guardPolicyCarriesTheExit() throws {
         let request = OpenAIChatCompletionRequest(

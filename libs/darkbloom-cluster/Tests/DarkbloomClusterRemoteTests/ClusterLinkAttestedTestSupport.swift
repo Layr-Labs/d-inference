@@ -79,14 +79,6 @@ struct LinkTestIdentities: Sendable {
     }
 }
 
-extension ClusterLinkControlEdge {
-    /// The identity of an attested edge; nil for an edge-key-only or undecided one.
-    var attestedIdentity: ClusterLinkIdentity? {
-        if case .attested(let identity)? = authentication { return identity }
-        return nil
-    }
-}
-
 extension Data {
     /// Bytes at offsets relative to the start, whatever this value's indices.
     func linkBytes(_ range: Range<Int>) -> Data { Data(self[(startIndex + range.lowerBound)..<(startIndex + range.upperBound)]) }
@@ -148,7 +140,7 @@ struct LinkV3Wire: Sendable {
         body.clusterLinkAppend(UInt32(limits.maximumPlaintextBytes))
         body.clusterLinkAppend(limits.maximumRecordsPerDirection)
         body.clusterLinkAppend(limits.maximumCumulativePlaintextBytesPerDirection)
-        precondition(body.count == 164)
+        precondition(body.count == connectorPin.lowerBound)
         return body
     }
 
@@ -183,15 +175,15 @@ struct LinkV3Wire: Sendable {
         return retagAccept(accept, challenge: challenge, hello: hello)
     }
 
-    /// The connector's tag over `challenge ‖ hello[0..<292]`, recomputed with the edge key.
+    /// The connector's tag over `challenge ‖ hello[..<helloTag]`, recomputed with the edge key.
     func retagHello(_ hello: Data, challenge: Data) -> Data {
-        let covered = hello.linkBytes(0..<292)
+        let covered = hello.linkBytes(0..<Self.helloTag.lowerBound)
         return covered + key.handshakeTag(role: .connector, transcript: challenge + covered)
     }
 
-    /// The listener's tag over `challenge ‖ hello ‖ accept[0..<112]`, recomputed with the edge key.
+    /// The listener's tag over `challenge ‖ hello ‖ accept[..<acceptTag]`, recomputed with the edge key.
     func retagAccept(_ accept: Data, challenge: Data, hello: Data) -> Data {
-        let covered = accept.linkBytes(0..<112)
+        let covered = accept.linkBytes(0..<Self.acceptTag.lowerBound)
         return covered + key.handshakeTag(role: .listener, transcript: challenge + hello + covered)
     }
 }

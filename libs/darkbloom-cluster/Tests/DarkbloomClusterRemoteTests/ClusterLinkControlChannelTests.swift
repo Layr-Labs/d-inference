@@ -117,7 +117,7 @@ final class RawLinkConnector: @unchecked Sendable {
                epoch: UUID? = nil, incarnation: UUID = UUID(),
                ephemeral: Curve25519.KeyAgreement.PrivateKey = .init(), publicKey: Data? = nil) throws -> Data {
         let epoch = epoch ?? edge.epoch
-        let identity = edge.attestedIdentity
+        let identity = edge.identity
         var bytes = LinkV3Wire.helloBody(epoch: epoch, edgeID: edge.edgeID,
             connectorKey: publicKey ?? ephemeral.publicKey.rawRepresentation, incarnation: incarnation,
             limits: try edge.limits.recordLimits())

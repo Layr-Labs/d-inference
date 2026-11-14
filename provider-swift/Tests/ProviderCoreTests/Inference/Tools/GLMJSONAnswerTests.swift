@@ -213,7 +213,8 @@ struct GLMJSONAnswerServingTests {
         let profile = JSONAnswerProfile.glm5Next
         let answer = try JSONAnswerFormat(try #require(request.responseFormat), forbidding: profile.contentMarkers,
                                           family: profile.family)
-        let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "glm5_next")
+        var prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "glm5_next")
+        prepared.cutAnswersEndAtLength = true
         #expect(prepared.glmResponseFormat != nil)
         let upstream = AsyncStream<GenerationEvent> { continuation in
             for chunk in output { continuation.yield(.chunk(chunk)) }
@@ -224,7 +225,7 @@ struct GLMJSONAnswerServingTests {
         let stream = try MultiModelBatchSchedulerEngine(registryProvider: { [:] })._testMakeEventStream(
             upstream: upstream, cancelUpstream: {}, prepared: prepared,
             releaseBox: OneShotRelease(release: { _ in }, modelId: "fixture"),
-            nativeReasoningPrefix: "<think>", answerFormat: answer)
+            nativeReasoningPrefix: "<think>", recordsWithheldOutput: true, answerFormat: answer)
         var outcome = QwenAnswerOutcome()
         do {
             for try await event in stream { outcome.record(event) }
@@ -236,7 +237,8 @@ struct GLMJSONAnswerServingTests {
     @Test func theAnswerLeavesAfterTheReasoningAndAMissIsATyped422() async throws {
         let valid = try await run(["Count the tables.", "</think>", #"{"tables_used":["a"],"#, #""count":3}"#])
         #expect(valid.error == nil && valid.reasoning == "Count the tables.")
-        #expect(valid.content == #"{"tables_used":["a"],"count":3}"#)
+        // The withheld answer leaves once, whole, at the end.
+        #expect(valid.content == #"{"tables_used":["a"],"count":3}"# && valid.contentDeltas.count == 1)
         let miss = try await run(["Plan.", "</think>", #"{"tables_used":["PRIVATE"]}"#])
         guard case .invalidResponseFormatOutput(let message)? = miss.error as? MLXOpenAIServiceError else {
             Issue.record("unexpected \(String(describing: miss.error))"); return
@@ -248,7 +250,8 @@ struct GLMJSONAnswerServingTests {
     /// as for every family (`TokenLimitCutPolicy`).
     @Test func anAnswerCutAtTheLimitLeavesAsGenerated() async throws {
         let cut = try await run(["Plan.", "</think>", #"{"tables_used":["a"],"co"#], finish: "length")
-        #expect(cut.error == nil && cut.content == #"{"tables_used":["a"],"co"#)
+        #expect(cut.error == nil && cut.info?.stopReason == "length")
+        #expect(cut.content == #"{"tables_used":["a"],"co"#)
     }
 }
 #endif

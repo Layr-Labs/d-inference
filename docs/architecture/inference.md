@@ -3738,7 +3738,7 @@ profiles that qualify logprob rows: every target row samples with the ordinary
 sampler), a cluster pair does not. Its reasoning-first prompts, the JSON
 default, are constrained too, so such a request decodes target-only throughout
 (the speculation cost is below); on GLM's engine a constrained row also never
-chains its decode steps. Admitted or declined, GLM keeps its withheld answer and
+chains its decode steps (`EngineLoopV2` in `libs/mlx-swift-lm`). Admitted or declined, GLM keeps its withheld answer and
 its check ([GLM5Next implementation boundary](#glm5next-implementation-boundary) above), and an admitted row donates no
 prefix checkpoint: GLM's assistant records no prompt history for a row that
 never drafts, so checkpoint capture declines it, and repeated JSON prompts do not
@@ -3851,8 +3851,8 @@ Tools or `tool_choice` beside the format keep today's behavior; Flint's
 format-over-tools precedence does not apply. Image and video requests take the
 media path, which installs no token constraint.
 
-A constrained row never drafts (`EngineLoopV2.mtpBasicEligible`). None of the
-Qwen 3.5 targets, Lightning's and GLM's declare the row-exact recurrent fallback
+A constrained row never drafts (`EngineLoopV2.mtpBasicEligible`). The Qwen 3.5
+targets, Lightning's and GLM's do not declare the row-exact recurrent fallback
 (`CBv2RecurrentMTPRequestScopedMediaFallback`), so
 `ineligibleRowsDecodeBesideSpeculation` is false for their MTP driver and
 `EngineLoopV2.mtpDraftBatchRows` keeps the whole cohort: while a constrained
@@ -3862,10 +3862,10 @@ Decoding such rows beside speculation needs that SDK capability and row-exactnes
 evidence for each target. Bonsai 2 27B has no drafter. Lightning drafts, so only
 its answer-first prompts (thinking off) are constrained: those trigger it, and
 every Lightning row sharing their decode step, thinking or not, stops
-speculating meanwhile. GLM drafts with at most two decode rows, so a lone GLM
-JSON request loses MTP for its whole reasoning and answer, a plain request
-sharing a two-row step with one loses it too, and at three or more rows nothing
-changes.
+speculating meanwhile. GLM's default rectangular profile drafts with at most two
+decode rows (the serial profile with one), so a lone GLM JSON request loses MTP
+for its whole reasoning and answer, a plain request sharing a two-row step with
+one loses it too, and at three or more rows nothing changes.
 
 Sources: `provider-swift/Sources/ProviderCore/Inference/Tools/JSONAnswerPolicy.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Tools/QwenJSONSchemaRewrite.swift`,

@@ -2268,7 +2268,7 @@ CPU-only JSON-answer suites from `provider-swift/` together with the Flint suite
 whose automaton they share:
 
 ```bash
-../scripts/run-nested-suite.sh 'QwenJSONAnswer(Constraint|Policy|Output|Serving)Tests|QwenJSONSchemaRewriteTests|JSONAnswerFamily(Serving)?Tests|FlintResponseFormat|FlintNativeProtocol|FlintAnswerStop' --no-parallel
+../scripts/run-nested-suite.sh 'QwenJSONAnswer(Constraint|Policy|Output|Serving)Tests|QwenJSONSchemaRewriteTests|JSONAnswerFamily(Serving)?Tests|GLMJSONAnswer(Serving)?Tests|FlintResponseFormat|FlintNativeProtocol|FlintAnswerStop' --no-parallel
 ```
 
 `QwenJSONAnswerConstraintTests` drives the production constraint over a
@@ -2310,12 +2310,11 @@ withheld answer.
 opt-in. Set `DARKBLOOM_TEST_QWEN_TOKENIZER_DIR` to a local Qwen 3.5, 3.6 or 3.8
 snapshot directory, `DARKBLOOM_TEST_BONSAI_TOKENIZER_DIR` to a Bonsai 2 27B one,
 `DARKBLOOM_TEST_NEMOTRON_TOKENIZER_DIR` to a Nemotron 3.5 Lightning one or
-`DARKBLOOM_TEST_GLM_TOKENIZER_DIR` to a GLM-5.3-Flash one (its template opens a
-thought in every prompt, so only the reasoning tail is checked), and
+`DARKBLOOM_TEST_GLM_TOKENIZER_DIR` to a GLM-5.3-Flash one, and
 select that suite alone; it reads only tokenizer, template and config files,
 checks the pinned contract (the Bonsai and Nemotron suites against the stop set
 the slot gets: the artifact's EOS plus the tokenizer's) and both rendered JSON
-prompt tails, and walks a real tokenization of an answer. Without the variable
+prompt tails (GLM's: its one, an open thought), and walks a real tokenization of an answer. Without the variable
 the suite is skipped, which the nested runner reports as an error. None of these
 suites loads weights or establishes answer quality or throughput. Sources:
 `provider-swift/Tests/ProviderCoreTests/Inference/Tools/QwenJSONAnswerConstraintTests.swift`,

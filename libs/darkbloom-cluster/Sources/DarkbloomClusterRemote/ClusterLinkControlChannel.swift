@@ -54,6 +54,9 @@ public enum ClusterLinkControlRefusal: Sendable, Equatable {
     case authenticationFailed
     case serverAuthenticationFailed
     case handshakeRejected
+    /// The peer speaks another handshake version (an older or newer build):
+    /// refused, never downgraded. Both Macs of a pair must run the same one.
+    case protocolVersionMismatch
     case connectFailed
     case interface(ClusterLinkInterfaceRefusal)
 }

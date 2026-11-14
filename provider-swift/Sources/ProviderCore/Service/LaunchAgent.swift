@@ -414,6 +414,9 @@ public enum LaunchAgent: Sendable {
     /// fully serial FIFO.
     /// `DARKBLOOM_GEMMA_JSON_ANSWERS`: Gemma 4 JSON `response_format` answers
     /// are grammar-constrained by default; `off` restores prompt-only answers.
+    /// `DARKBLOOM_GEMMA_PROMPT_CONTRACT_V2`: the provider advertises Gemma 4
+    /// prompt contract 2 and renders it when a coordinator request asks, by
+    /// default; `off` stops advertising it and renders version 1 everywhere.
     /// `DARKBLOOM_QWEN_JSON_SCHEMA_REWRITE`: Qwen JSON answers constrain client
     /// schemas outside the subset by default; `off` restores their decline.
     /// `DARKBLOOM_TTFT_SHAPE_WARMUP`: the load-time shape warmup is on by
@@ -438,6 +441,9 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_LOOP_GUARD` / `DARKBLOOM_LOOP_EXIT_THINKING`: the loop guard
     /// and its exit from a repeating Gemma 4 thought are on by default; `0`
     /// turns each off, a list of `model_type`s replaces its default list.
+    /// `DARKBLOOM_GPTOSS_FINAL_EXIT`: GPT-OSS's exit for a request without tools
+    /// (into the final channel) is on by default; `0`, `off` or `false` keeps it
+    /// to tool requests.
     /// `DARKBLOOM_QWEN35_9B_PRESENCE_PENALTY`: Qwen3.5-9B keeps the card's
     /// presence penalty by default; its `0` rollback must reach the job.
     /// `DARKBLOOM_GLM_TOOL_TEXT_FALLBACK`: unparsed `auto` GLM tool output is
@@ -465,6 +471,7 @@ public enum LaunchAgent: Sendable {
         "DARKBLOOM_TTFT_GDN_BLOCKED",
         EngineV2SlotFactory.mimoRectangularVerifyEnvironmentKey,
         GemmaJSONAnswerPolicy.environmentKey,
+        GemmaPromptContract.environmentKey,
         PromptTokenCachePolicy.environmentKey,
         PromptTokenCachePolicy.capacityEnvironmentKey,
         PromptTokenCachePolicy.verifyEnvironmentKey,
@@ -489,6 +496,7 @@ public enum LaunchAgent: Sendable {
         "DARKBLOOM_NATIVE_SEGMENT_RELEASE",
         GenerationLoopGuardPolicy.environmentKey,
         GenerationLoopExitThinkingPolicy.environmentKey,
+        GenerationLoopExitThinkingPolicy.finalExitEnvironmentKey,
         EngineV2SamplingDefaults.qwen35NineBPenaltyEnvironmentKey,
         GLM5ToolSuffix.environmentKey,
         GPTOSSForcedToolCalls.environmentKey,

@@ -61,6 +61,14 @@ enum LoopExitThinkingContinuation {
     /// worth it: the request ends as `length`, as before.
     static let minimumAnswerBudget = 256
 
+    /// The continuation's engine admission priority (`EngineAdmissionPriority`),
+    /// above every other request's 0. The continuation takes its stopped row's
+    /// place: on a busy Mac the requests waiting for a slot take the slot the
+    /// row frees, and a continuation queued behind them waits past the
+    /// engine's 120 s admission lease (`admission_timeout`, the held `length`).
+    /// Ahead of them, it is admitted at the next free slot.
+    static let admissionPriority = 1
+
     /// The spliced stream; its cancel, which stops whichever row is running;
     /// and `finished`, which returns once the splice is over: a continuation
     /// that a cancel overtook during the hand-off has been cancelled by then.
@@ -142,7 +150,9 @@ enum LoopExitThinkingContinuation {
         guard !control.isCancelled, !Task.isCancelled else { return endAsLength("cancelled") }
         let continuation: AsyncStream<GenerationEvent>
         do {
-            continuation = try await submit(promptTokens + generated + exit.exitTokens, budget)
+            continuation = try await EngineAdmissionPriority.$current.withValue(admissionPriority) {
+                try await submit(promptTokens + generated + exit.exitTokens, budget)
+            }
         } catch {
             return endAsLength("continuation refused: \(error)")
         }

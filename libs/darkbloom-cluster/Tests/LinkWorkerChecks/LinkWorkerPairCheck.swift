@@ -54,6 +54,7 @@ final class LinkHarness: @unchecked Sendable {
         let key = try ClusterLinkControlKey.qualification(secret: secret, epoch: linkEpoch, edgeID: edgeID)
         let loopback = ClusterLinkIPv4Address("127.0.0.1")!
         let edge = try ClusterLinkControlEdge(edgeID: edgeID, epoch: linkEpoch, key: key, peerAddress: nil)
+            .authenticatedByEdgeKeyOnly()
         let router = self.router
         listener = try ClusterLinkControlListener(configuration: .init(interface: "lo0", localAddress: loopback, port: 0,
             policy: .loopbackForTests, edges: [edge])) { event, _ in router.handle(event) }

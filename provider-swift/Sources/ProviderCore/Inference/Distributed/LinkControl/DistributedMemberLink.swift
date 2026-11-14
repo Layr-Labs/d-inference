@@ -61,6 +61,7 @@ public final class DistributedMemberLinkFollower: NativePairMemberServingHost, @
         }
         let leader = try DistributedInstalledLinkEdge.leaderAddress(configuration)
         let edge = try DistributedInstalledLinkEdge.edge(configuration: configuration, peerAddress: leader)
+            .authenticated(by: DistributedInstalledLinkIdentity.resolve(configuration: configuration))
         let box = self.box
         let reporter = ClusterFollowerStatusReporter(observability: .current(), modelID: configuration.publicModelID)
         self.reporter = reporter; linkEpoch = link.linkEpochUUID; rank = UInt16(configuration.localRank)
@@ -71,7 +72,7 @@ public final class DistributedMemberLinkFollower: NativePairMemberServingHost, @
             switch event {
             case .connected: events(.connected); reporter.note(.idle)
             case .disconnected: events(.disconnected)
-            case .refused(_, let reason): events(.refused("link edge: \(reason)"))
+            case .refused(_, let reason): events(.refused("link edge: " + DistributedInstalledLinkIdentity.describe(reason)))
             default: break
             }
             box.handle(event)

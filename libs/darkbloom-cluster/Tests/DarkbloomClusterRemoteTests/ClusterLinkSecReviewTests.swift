@@ -5,15 +5,16 @@ import Foundation
 import XCTest
 @testable import DarkbloomClusterRemote
 
-/// Independent review checks for handshake v2 (CLUSTER-PRIV): an attacker with
-/// the edge secret file and a full capture, using the product's own key API
-/// with every captured public key and its own ephemeral key, opens nothing; a
-/// record of one connection is refused on the next.
+/// Independent review checks for the handshake (v2's, kept on v3's attested
+/// sessions): an attacker with the edge secret file and a full capture, using
+/// the product's own key API with every captured public key and its own
+/// ephemeral key, opens nothing; a record of one connection is refused on the next.
 final class ClusterLinkSecReviewTests: XCTestCase {
     let epoch = UUID()
     let edgeID = UUID()
     let secret = Data((0..<32).map { UInt8(($0 * 7 + 3) % 251) })
     let prompt: [Int32] = [151_644, 872, 198, 3_555, 20_217, 31_415, 92_653, 151_645]
+    let identities = LinkTestIdentities()
 
     func limits() -> ClusterLinkControlLimits {
         var value = ClusterLinkControlLimits()
@@ -29,6 +30,9 @@ final class ClusterLinkSecReviewTests: XCTestCase {
         let key = try ClusterLinkControlKey.qualification(secret: secret, epoch: epoch, edgeID: edgeID)
         return try ClusterLinkControlEdge(edgeID: edgeID, epoch: epoch, key: key, peerAddress: .loopback, limits: limits())
     }
+
+    func listenerEdge() throws -> ClusterLinkControlEdge { try identities.asListener(makeEdge()) }
+    func connectorEdge() throws -> ClusterLinkControlEdge { try identities.asConnector(makeEdge()) }
 
     /// Opens what it can of one direction's record stream with one record pair.
     func openAll(_ stream: Data, with records: LinkRecordPair) -> Int {
@@ -47,13 +51,13 @@ final class ClusterLinkSecReviewTests: XCTestCase {
     func testOwnerWithSecretAndCaptureOpensNothingThroughTheProductAPI() throws {
         let leaderLog = LinkEventLog(), followerLog = LinkEventLog()
         let listener = try ClusterLinkControlListener(configuration: .init(interface: "lo0", port: 0,
-            policy: .loopbackForTests, edges: [makeEdge()])) { event, _ in leaderLog.record(event) }
+            policy: .loopbackForTests, edges: [listenerEdge()])) { event, _ in leaderLog.record(event) }
         let port = try listener.start()
         defer { listener.stop() }
         let relay = try LinkCaptureRelay(target: port)
         defer { relay.stop() }
         let follower = try ClusterLinkControlClient(configuration: .init(interface: "lo0", port: relay.port,
-            policy: .loopbackForTests, edge: makeEdge())) { event, _ in followerLog.record(event) }
+            policy: .loopbackForTests, edge: connectorEdge())) { event, _ in followerLog.record(event) }
         follower.start()
         defer { follower.stop() }
         let leader = try XCTUnwrap(listener.peer(for: edgeID))
@@ -73,8 +77,8 @@ final class ClusterLinkSecReviewTests: XCTestCase {
         let toListener = Data(session.toListener.dropFirst(LinkHandshake.helloBytes))
         XCTAssertGreaterThan(toConnector.count, 0)
         let transcript = LinkHandshake.transcriptSHA256(challenge: challenge, hello: hello, accept: accept)
-        let listenerPublic = try LinkHandshake.parseChallenge(challenge)
-        let connectorPublic = try LinkHandshake.parseHello(hello).0.ephemeralPublicKey
+        let listenerPublic = challenge.linkBytes(LinkV3Wire.challengeKey)
+        let connectorPublic = hello.linkBytes(LinkV3Wire.helloKey)
         // The owner's edge key, from the file, through the product's API: valid for the handshake tags...
         let ownerKey = try ClusterLinkControlKey.qualification(secret: secret, epoch: epoch, edgeID: edgeID)
         XCTAssertTrue(ownerKey.isValidHandshakeTag(Data(hello.suffix(32)), role: .connector,
@@ -105,9 +109,9 @@ final class ClusterLinkSecReviewTests: XCTestCase {
     /// A record sealed on one connection is refused on the next one of the same edge.
     func testRecordOfAnEarlierConnectionIsRefused() throws {
         let log = LinkEventLog()
-        let edge = try makeEdge()
+        let edge = try connectorEdge()
         let listener = try ClusterLinkControlListener(configuration: .init(interface: "lo0", port: 0,
-            policy: .loopbackForTests, edges: [edge])) { event, _ in log.record(event) }
+            policy: .loopbackForTests, edges: [listenerEdge()])) { event, _ in log.record(event) }
         let port = try listener.start()
         defer { listener.stop() }
         let status = ClusterLinkControlMessage.status(.init(epoch: epoch, rank: 1, state: .ready, linkReady: true))

@@ -5874,15 +5874,19 @@ listener or client refuses an edge whose authentication was not set:
   an ASCII `darkbloom/…` domain). Refusals: `peerNotPinned`,
   `identityMismatch`, `peerSignatureRejected`; this Mac's own key unusable:
   `localIdentityUnavailable`, or `localIdentityLocked` until someone logs in
-  once after a restart.
+  once after a restart. The key is looked up at the first handshake, not when
+  the edge is built (`DistributedInstalledLinkDeferredSigner`), so a member
+  that starts before that login keeps running and links by itself after it.
 - **Edge-key-only edges** carry no prompt: the pairing ceremony's bootstrap
   (the ceremony above it is signed and code-confirmed), the setup exchange
-  and model copies, and the hidden `cluster link-channel` qualification. They
-  send zero pins and signatures, and an attested end refuses them.
+  and model copies, GLM calibration's paired control (calibration traffic
+  under its own signed documents) and the hidden `cluster link-channel`
+  qualification. They send zero pins and signatures, and an attested end
+  refuses them.
 
 On both kinds the pairing's edge key tags each record up to its tag and is
-checked first, so a party without it never makes an end verify or sign, and
-it salts the session keys as a second factor. It is not what authenticates a
+checked first, so a party without it never makes the listener verify or
+sign (a connector signs once per dial, for that dial's keys only), and it salts the session keys as a second factor. It is not what authenticates a
 serving edge: the edge secret alone neither completes a handshake with an
 attested end nor opens a recorded one. Session keys come from the X25519
 agreement of two keys made for this connection only, salted by the SHA-256 of

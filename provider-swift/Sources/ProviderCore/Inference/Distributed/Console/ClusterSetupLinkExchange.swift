@@ -150,7 +150,9 @@ public enum ClusterSetupLinkExchange {
         var limits = ClusterLinkControlLimits()
         // A model copy's chunk is the largest body on the exchange.
         limits.maximumBodyBytes = max(maximumBytes, provisionChunkBytes) + 4096
-        return try ClusterLinkControlEdge(edgeID: edgeID, epoch: epoch, key: key, peerAddress: peerAddress, limits: limits).authenticatedByEdgeKeyOnly()
+        // No prompt crosses the exchange: its edge key authenticates it (handshake v3, edge key only).
+        return try ClusterLinkControlEdge(edgeID: edgeID, epoch: epoch, key: key, peerAddress: peerAddress, limits: limits)
+            .authenticatedByEdgeKeyOnly()
     }
 
     /// A UUID of its own for the exchange, derived from the pairing's link epoch.

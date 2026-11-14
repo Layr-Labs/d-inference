@@ -12,11 +12,13 @@ enum DistributedInstalledLinkIdentity {
 
     /// The signer is asked only once both keys are known, so a setup without a
     /// pairing is refused without touching this Mac's key. Signer errors pass through.
+    /// Without an injected signer, this Mac's key is looked up at the first
+    /// handshake, not here (`DistributedInstalledLinkDeferredSigner`).
     static func resolve(configuration: ClusterConfiguration, store: ClusterPairingStore = .default(),
-                        signer: () throws -> any ClusterLinkIdentitySigner = { try ClusterLinkSecureEnclaveSigner.existing() })
-        throws -> ClusterLinkIdentity {
+                        signer: (() throws -> any ClusterLinkIdentitySigner)? = nil) throws -> ClusterLinkIdentity {
         let pinned = try pinnedKeys(configuration: configuration, store: store)
-        return try ClusterLinkIdentity(signer: signer(), localIdentityKey: pinned.local, peerIdentityKey: pinned.peer,
+        let chosen = try signer?() ?? DistributedInstalledLinkDeferredSigner(pinnedKey: pinned.local)
+        return try ClusterLinkIdentity(signer: chosen, localIdentityKey: pinned.local, peerIdentityKey: pinned.peer,
                                        clusterID: pinned.clusterID)
     }
 
@@ -60,5 +62,33 @@ enum DistributedInstalledLinkIdentity {
     /// The refusal's name, then its guidance when it has one.
     static func describe(_ refusal: ClusterLinkControlRefusal) -> String {
         guidance(refusal).map { "\(refusal): \($0)" } ?? "\(refusal)"
+    }
+}
+
+/// This Mac's pinned key, looked up at its first signature instead of when the
+/// edge is built: a member that starts before anyone has logged in after a
+/// restart keeps running, its handshakes are refused (`localIdentityLocked`,
+/// retried with the link's backoff), and it links by itself after the login.
+/// The key it finds must be the pinned one; once found it is kept.
+final class DistributedInstalledLinkDeferredSigner: ClusterLinkIdentitySigner, @unchecked Sendable {
+    let identityPublicKey: Data
+    private let load: @Sendable () throws -> any ClusterLinkIdentitySigner
+    private let lock = NSLock()
+    private var loaded: (any ClusterLinkIdentitySigner)?
+
+    init(pinnedKey: Data,
+         load: @escaping @Sendable () throws -> any ClusterLinkIdentitySigner = { try ClusterLinkSecureEnclaveSigner.existing() }) {
+        identityPublicKey = pinnedKey; self.load = load
+    }
+
+    func linkSignature(for message: Data) throws -> Data {
+        let signer: any ClusterLinkIdentitySigner = try lock.withLock {
+            if let loaded { return loaded }
+            let found = try load()
+            guard found.identityPublicKey == identityPublicKey else { throw ClusterLinkIdentityError.signerMismatch }
+            loaded = found
+            return found
+        }
+        return try signer.linkSignature(for: message)
     }
 }

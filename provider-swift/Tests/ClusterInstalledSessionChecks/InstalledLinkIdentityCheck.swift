@@ -5,6 +5,14 @@ import DarkbloomClusterRemote
 import DarkbloomClusterSecurity
 @testable import InstalledContract
 
+/// Counts key lookups of a deferred signer.
+final class LinkIdentityAttempts: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    var count: Int { lock.withLock { value } }
+    func next() -> Int { lock.withLock { value += 1; return value } }
+}
+
 /// A software P-256 key standing in for a Mac's Secure Enclave key.
 struct SoftwareLinkSigner: ClusterLinkIdentitySigner {
     let key = P256.Signing.PrivateKey()
@@ -87,6 +95,33 @@ extension InstalledSessionCheck {
                 try require(message == DistributedInstalledLinkIdentity.noPairing && !asked,
                     "the missing pairing is refused in words, without this Mac's key: \(message)")
             }
+        }
+
+        // Without an injected signer, building the edge never touches this Mac's key: the lookup waits for the first
+        // handshake, so a key that is locked (or missing) at start is a retried refusal, not a failed start.
+        let deferred = try DistributedInstalledLinkIdentity.resolve(configuration: linked, store: store)
+        try require(deferred.localIdentityKey == local.identityPublicKey, "the deferred identity pins the record's key")
+        try refusedWith(.signerUnavailable) {
+            _ = try deferred.signature(role: .listener, epoch: epoch, edgeID: edge, transcript: Data([1]))
+        }
+        let attempts = LinkIdentityAttempts()
+        let resumes = DistributedInstalledLinkDeferredSigner(pinnedKey: local.identityPublicKey, load: {
+            if attempts.next() == 1 { throw ClusterLinkIdentityError.signerLocked }
+            return local
+        })
+        let afterLogin = try ClusterLinkIdentity(signer: resumes, localIdentityKey: local.identityPublicKey,
+                                                 peerIdentityKey: peer.identityPublicKey, clusterID: "loop-pair")
+        try refusedWith(.signerLocked) {
+            _ = try afterLogin.signature(role: .connector, epoch: epoch, edgeID: edge, transcript: Data([2]))
+        }
+        _ = try afterLogin.signature(role: .connector, epoch: epoch, edgeID: edge, transcript: Data([2]))
+        _ = try afterLogin.signature(role: .connector, epoch: epoch, edgeID: edge, transcript: Data([3]))
+        try require(attempts.count == 2, "a locked key is looked up again; once found it is kept")
+        let wrongKey = DistributedInstalledLinkDeferredSigner(pinnedKey: local.identityPublicKey, load: { other })
+        try refusedWith(.signerMismatch) {
+            _ = try ClusterLinkIdentity(signer: wrongKey, localIdentityKey: local.identityPublicKey,
+                peerIdentityKey: peer.identityPublicKey, clusterID: "loop-pair")
+                .signature(role: .listener, epoch: epoch, edgeID: edge, transcript: Data([4]))
         }
 
         // What the follower's events and the leader's log say for an identity refusal.

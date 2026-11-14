@@ -92,11 +92,13 @@ struct LinkFrame: Sendable, Equatable {
 /// ones each end holds for the other, never trusted from the wire: each end
 /// checks them against its own configuration, then the signature under the
 /// pinned key, before anything is derived. An edge-key-only edge (bootstrap,
-/// setup exchange, qualification) sends zero pins and signatures.
+/// setup exchange, GLM calibration control, qualification) sends zero pins and
+/// signatures.
 ///
 /// The edge key's tags cover each record up to the tag (signatures included);
-/// they are checked first, so a party without the edge secret never makes an
-/// end verify or sign. Session keys come from the X25519 agreement of the two
+/// they are checked first, so a party without the edge secret never makes the
+/// listener verify or sign (a connector signs once per dial, for that dial's
+/// keys only). Session keys come from the X25519 agreement of the two
 /// ephemeral keys (each made for this connection, in memory only), the SHA-256
 /// of all three records, the edge key, the epoch and the edge
 /// (`ClusterLinkControlKey.sessionKeys`). Each end reads the peer's first eight

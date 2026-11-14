@@ -385,6 +385,13 @@ enum NemotronSuperServingPolicy {
     /// (SUPER-IMAGE-504) for a request this Mac would serve next.
     static let finishingWait: Duration = .seconds(1)
 
+    /// How long a media request's cleanup, and so the image binding's
+    /// `drain`, waits for its video's frame reader to finish the reads queued
+    /// on it: after a cancel or a failure, the read its pull gave up on may
+    /// still be decoding a frame. The request's charges return only once
+    /// those reads have, also when that takes longer than this wait.
+    static let videoReaderDrainWait: Duration = .seconds(1)
+
     /// The longest a media request that finds the owner, or the image
     /// binding, busy with media answers already streaming waits for its slot
     /// instead of a 429 bounce: those answers end soon (production images:

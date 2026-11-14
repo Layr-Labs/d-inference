@@ -345,6 +345,10 @@ enum NemotronSuperVideoDecode {
             try await reader.cancellable(body)
         }
 
+        /// The reader's queue, without the reader, its frames or the movie:
+        /// a read a pull gave up on may still be decoding a frame there.
+        var readerQueue: ReaderQueue { reader.readerQueue }
+
         /// The next normalized frame; nil after the last.
         func next() throws -> [Float]? {
             let sampled = plan.frameIndices.count
@@ -430,6 +434,33 @@ enum NemotronSuperVideoDecode {
                 targetWidth: plan.grid.width, targetHeight: plan.grid.height)
         }
     }
+
+    /// A frame reader's serial queue, kept without the reader: a block
+    /// queued on it runs once every read and stop queued before it has
+    /// returned.
+    struct ReaderQueue: Sendable {
+        fileprivate let queue: DispatchQueue
+
+        /// Runs `body` once every read and stop queued so far has returned,
+        /// a read a pull gave up on included. Returns once `body` has run,
+        /// or after `limit` while a read is still running; `body` then runs
+        /// when that read returns.
+        func afterQueuedReads(waitingAtMost limit: Duration, _ body: @escaping @Sendable () async -> Void) async {
+            let (ran, finished) = AsyncStream.makeStream(of: Never.self)
+            queue.async {
+                Task {
+                    await body()
+                    finished.finish()
+                }
+            }
+            let timer = Task {
+                try? await Task.sleep(for: limit)
+                finished.finish()
+            }
+            for await _ in ran {}
+            timer.cancel()
+        }
+    }
 }
 
 /// Owns one reader's reads and its stop. Cancelling an AVAssetReader while a
@@ -440,7 +471,8 @@ enum NemotronSuperVideoDecode {
 /// left, and only until the task is cancelled. A wait given up on returns at
 /// once; its read finishes on the queue, its sample is dropped, and only then
 /// is the reader cancelled. Each queued block keeps this owner, and with it
-/// the reader, its output and the asset serving the bytes, alive.
+/// the reader, its output and the asset serving the bytes, alive. A block
+/// queued after them (`readerQueue`) runs once they have all returned.
 private final class SerialReader: @unchecked Sendable {
     /// One copy handed from the queue to the waiting thread. Its state is
     /// guarded by the owner's lock.
@@ -506,6 +538,9 @@ private final class SerialReader: @unchecked Sendable {
         let (total, carry) = whole.addingReportingOverflow(UInt64(attoseconds / 1_000_000_000))
         return overflow || carry ? .max : total
     }
+
+    /// The queue alone, for a block that must follow every queued read and stop.
+    var readerQueue: NemotronSuperVideoDecode.ReaderQueue { .init(queue: queue) }
 
     /// Runs `body` with a wait for a sample given up, and the reader
     /// stopped, as soon as the task is cancelled.

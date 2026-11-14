@@ -3656,6 +3656,50 @@ spliced across a boundary the reasoning parser later hides. Required and named
 (`provider-swift/Sources/ProviderCore/Inference/Tools/GemmaNoToolTokenConstraint.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Tools/GemmaTokenVocabulary.swift`).
 
+### Gemma 4 prompt contracts
+
+Gemma 4's template renders a string system message as is and a list of text
+parts with a space after each part (`item['text'] | trim + ' '`); it trims each
+part of any other list-shaped message on its own (`strip_thinking` for the
+model's turns) and joins the parts without a separator, and it joins a tool
+message's parts as they are. Two renders follow from it (`GemmaPromptContract`):
+
+- **Contract 1** (0.10.12, and what the coordinator's prompt sidecar plans and
+  counts unless told otherwise): message content as one string, list parts
+  joined first (`OpenAIMessageContent.text`).
+- **Contract 2**: every system message (string or list) and a user message's
+  list content as the template's text parts; assistant and tool content as in
+  contract 1. vLLM reads this template as OpenAI content format and hands it
+  every string as one text part, so for system and user content, and for
+  strings of any role, this is vLLM-served endpoints' prompt: one more token
+  before the first system turn closes (OpenRouter's GPQA prompt is 88 tokens,
+  not 87). vLLM renders list-shaped assistant content part by part; contract 2
+  keeps it joined, because `Gemma4TurnStructure` merges only string assistant
+  turns. Tool lists render the same either way. A null system content stays
+  contract 1's empty string, with no part and no trailing space (an empty
+  string is a part: one space).
+
+The provider registers `gemma_prompt_contract: 2` and renders contract 2 only
+for a coordinator `inference_request` that carries `gemma_prompt_contract: 2`
+(`ChatTemplateControls.servingCoordinatorRequest(planned:gemmaPromptContract:)`),
+on a text request of the model types `gemma4` and `gemma4_text`. The model
+types `gemma4_vision` and `diffusion_gemma` render contract 1 either way, as
+the coordinator's prompt sidecar plans them. The coordinator asks only a
+provider that registered contract 2, only for text requests, choosing again for
+every attempt, with contract 2's cache plan and exact count, so a cache plan or
+exact prompt-work count never meets a prompt it was not made for (a mismatching
+prompt fails its cache receipt with `prompt_anchor_mismatch` and fences the
+provider's cache routing; it also withdraws calibrated deadline admission,
+`PromptWork.reconciled`).
+Every other request, the local API, media requests and other models render
+contract 1, so the capability is dormant until the coordinator switches a model
+on. The usage floor recounts through the same pipeline
+(`ProviderPromptContractPipeline.normalizedInput`). A body cannot ask: only the
+authenticated coordinator frame can. `DARKBLOOM_GEMMA_PROMPT_CONTRACT_V2=off`
+stops advertising contract 2 and renders contract 1 everywhere.
+`ProductionPromptParityTests.gemmaPromptContractVectors` checks both contracts
+on the served artifacts against `fixtures/prompt-contract/v1/gemma4_prompt_contract_vectors.json`.
+
 ### Constrained Gemma 4 JSON answers
 
 Gemma 4 answers to a JSON `response_format` are sampled under the same JSON

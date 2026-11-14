@@ -19,7 +19,10 @@ public enum SDKFeatureDefaults {
     /// Switches proven on hardware for this release; see `docs/reference/configuration.md`.
     /// One list per feature, so each default flip is its own one-line change.
     public static let onByDefault: [String] =
-        constraintSpans + grammarMTP + gemmaQuotedNumbers + reasoningBudgets
+        constraintSpans + grammarMTP + gemmaQuotedNumbers + reasoningBudgets + gemmaReopenedThoughts
+
+    /// #2089 / SDK #407: reopened Gemma 4 thoughts go to reasoning; stray closes are absorbed.
+    static let gemmaReopenedThoughts: [String] = ["DARKBLOOM_GEMMA_REOPENED_THOUGHTS"]
 
     /// #2101 / SDK #413: MTP drafting through free Qwen reasoning and text spans.
     static let constraintSpans: [String] = []

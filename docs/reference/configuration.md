@@ -696,9 +696,9 @@ Installed processes still use the source defaults.
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
-| `DARKBLOOM_GEMMA_REOPENED_THOUGHTS` | exact `1` enables | unset (off); `0` keeps legacy behavior | `libs/mlx-swift-lm/Libraries/MLXLMServer/Parsing/StreamingGemma4ReasoningParser.swift` (`StreamingGemma4ReasoningParser`) | Opts in to Gemma reopened thought channels. Read once per process. |
+| `DARKBLOOM_GEMMA_REOPENED_THOUGHTS` | exact `1` enables (any other value is off) | **on** (provider default since 0.10.13, `SDKFeatureDefaults`); `0` restores 0.10.12 | `libs/mlx-swift-lm/Libraries/MLXLMServer/Parsing/StreamingGemma4ReasoningParser.swift` (`StreamingGemma4ReasoningParser`) | Opts in to Gemma reopened thought channels. Read once per process. |
 
-Set this variable before starting the provider. The LaunchAgent forwards the operator's value (`0` included) to the installed provider job (`LaunchAgent.inferencePassthroughEnvKeys`), so it applies to a service Mac as well as a foreground process; the watchdog does not receive it. Unset it or use `0` and restart the provider to roll back. See the [parser behavior](../architecture/inference.md#gemma-reopened-thought-channels).
+Set this variable before starting the provider. The LaunchAgent forwards the operator's value (`0` included) to the installed provider job (`LaunchAgent.inferencePassthroughEnvKeys`), so it applies to a service Mac as well as a foreground process; the watchdog does not receive it. Since 0.10.13 the provider turns it on when unset (`SDKFeatureDefaults`); `0` and a restart roll back to 0.10.12's parsing. See the [parser behavior](../architecture/inference.md#gemma-reopened-thought-channels).
 
 ### Native DiffusionGemma expert reduction
 

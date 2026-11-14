@@ -96,34 +96,78 @@ struct SDKFeatureDefaultsTests {
     }
 
     @Test func mtpDefaultsTurnOnOnlyForListedBuildsAndOnlyWhenUnset() {
-        // review prov-2109-d2 SF3: a default is on only where it was measured.
-        let builds: Set<String> = ["qwen3.8-27b"]
-        func config(spans: Bool = false, grammar: Bool = false, modelId: String, modelType: String?,
+        // review prov-2109-d2 SF3 / d4 SF1: a default is on only for the exact
+        // build it was measured on.
+        let builds: Set<String> = ["eigenlabs/qwen3.8-27b-4bit-mtp"]
+        func config(spans: Bool = false, grammar: Bool = false, modelId: String,
                     environment: [String: String] = [:]) -> CBv2MTPConfig {
             var config = CBv2MTPConfig(enabled: true, constrainedSpeculation: grammar, freeSpanSpeculation: spans)
-            SDKFeatureDefaults.applyMTPDefaults(to: &config, modelId: modelId, modelType: modelType,
-                environment: environment, spansBuilds: builds, grammarBuilds: builds)
+            SDKFeatureDefaults.applyMTPDefaults(to: &config, modelId: modelId, environment: environment,
+                processEnvironment: [:], spansBuilds: builds, grammarBuilds: builds)
             return config
         }
-        let qwen38 = config(modelId: "EigenLabs/Qwen3.8-27B-4bit-mtp", modelType: "qwen3_5")
+        let qwen38 = config(modelId: "EigenLabs/Qwen3.8-27B-4bit-mtp")
         #expect(qwen38.freeSpanSpeculation && qwen38.constrainedSpeculation)
-        for (id, type) in [("gemma-4-26b-qat-4bit", "gemma4"), ("mlx-community/Qwen3.6-35B-A3B-4bit", "qwen3_5_moe"),
-                           ("mlx-community/Qwen3.5-9B-MLX-4bit", "qwen3_5")] {
-            let other = config(modelId: id, modelType: type)
+        for id in ["gemma-4-26b-qat-4bit", "mlx-community/Qwen3.6-35B-A3B-4bit", "mlx-community/Qwen3.5-9B-MLX-4bit",
+                   "mlx-community/Qwen3.8-27B-8bit-mtp", "EigenLabs/Qwen3.8-27B-4bit",
+                   "EigenLabs/Qwen3.8-27B-4bit-mtp-dpo", "/Users/op/models/EigenLabs/Qwen3.8-27B-4bit-mtp"] {
+            let other = config(modelId: id)
             #expect(!other.freeSpanSpeculation && !other.constrainedSpeculation, "\(id)")
         }
         // The operator's value is the SDK's reading (here: the config as built):
         // `0` keeps the listed build off, `1` turns any build on.
-        let killed = config(modelId: "EigenLabs/Qwen3.8-27B-4bit-mtp", modelType: "qwen3_5",
+        let killed = config(modelId: "EigenLabs/Qwen3.8-27B-4bit-mtp",
             environment: [SDKFeatureDefaults.constraintSpansKey: "0", SDKFeatureDefaults.grammarMTPKey: "off"])
         #expect(!killed.freeSpanSpeculation && !killed.constrainedSpeculation)
-        let optedIn = config(spans: true, grammar: true, modelId: "gemma-4-26b-qat-4bit", modelType: "gemma4",
+        let optedIn = config(spans: true, grammar: true, modelId: "gemma-4-26b-qat-4bit",
             environment: [SDKFeatureDefaults.constraintSpansKey: "1", SDKFeatureDefaults.grammarMTPKey: "1"])
         #expect(optedIn.freeSpanSpeculation && optedIn.constrainedSpeculation)
         // Empty is unset, as everywhere else.
-        let empty = config(modelId: "EigenLabs/Qwen3.8-27B-4bit-mtp", modelType: "qwen3_5",
+        let empty = config(modelId: "EigenLabs/Qwen3.8-27B-4bit-mtp",
             environment: [SDKFeatureDefaults.constraintSpansKey: "", SDKFeatureDefaults.grammarMTPKey: ""])
         #expect(empty.freeSpanSpeculation && empty.constrainedSpeculation)
+    }
+
+    @Test func grammarMTPsDefaultRidesOnlyOnConstraintSpans() {
+        // review prov-2109-d4 SF2: grammar MTP was measured with spans on; with
+        // spans off every constrained position takes the grammar path instead.
+        let id = "EigenLabs/Qwen3.8-27B-4bit-mtp", builds: Set<String> = ["eigenlabs/qwen3.8-27b-4bit-mtp"]
+        var spansKilled = CBv2MTPConfig(enabled: true)
+        SDKFeatureDefaults.applyMTPDefaults(to: &spansKilled, modelId: id,
+            environment: [SDKFeatureDefaults.constraintSpansKey: "0"], processEnvironment: [:],
+            spansBuilds: builds, grammarBuilds: builds)
+        #expect(!spansKilled.freeSpanSpeculation && !spansKilled.constrainedSpeculation)
+        var spansUnlisted = CBv2MTPConfig(enabled: true)
+        SDKFeatureDefaults.applyMTPDefaults(to: &spansUnlisted, modelId: id, environment: [:],
+            processEnvironment: [:], spansBuilds: [], grammarBuilds: builds)
+        #expect(!spansUnlisted.constrainedSpeculation)
+        var spansByOperator = CBv2MTPConfig(enabled: true, freeSpanSpeculation: true)
+        SDKFeatureDefaults.applyMTPDefaults(to: &spansByOperator, modelId: id,
+            environment: [SDKFeatureDefaults.constraintSpansKey: "1"], processEnvironment: [:],
+            spansBuilds: [], grammarBuilds: builds)
+        #expect(spansByOperator.constrainedSpeculation)
+        // An operator value in the process environment wins over a slot
+        // environment that lacks it (review prov-2109-d4 NIT 7).
+        var scrubbed = CBv2MTPConfig(enabled: true)
+        SDKFeatureDefaults.applyMTPDefaults(to: &scrubbed, modelId: id, environment: [:],
+            processEnvironment: [SDKFeatureDefaults.constraintSpansKey: "0", SDKFeatureDefaults.grammarMTPKey: "0"],
+            spansBuilds: builds, grammarBuilds: builds)
+        #expect(!scrubbed.freeSpanSpeculation && !scrubbed.constrainedSpeculation)
+    }
+
+    @Test func aMarkerIsTrustedOnlyForKeysTheProviderInjects() {
+        // review prov-2109-d4 NIT 5/6: a stale or foreign marker never unsets an
+        // operator's value of another key; the marker alone identifies the
+        // release's own value (a process that never ran `apply`).
+        let marker = SDKFeatureDefaults.injectedMarkerKey
+        let foreign = SDKFeatureDefaults.plan(onByDefault: [],
+            environment: ["DARKBLOOM_CBV2_MTP": "1", marker: "DARKBLOOM_CBV2_MTP"])
+        #expect(!foreign.unset.contains("DARKBLOOM_CBV2_MTP"))
+        let key = NativeReasoningBudget.environmentKey
+        #expect(!NativeReasoningBudget.isEnabled(for: .mimoV26, environment: [key: "1", marker: key],
+            families: [.nemotronSuper], injected: []))
+        #expect(NativeReasoningBudget.isEnabled(for: .mimoV26, environment: [key: "1", marker: "DARKBLOOM_OTHER"],
+            families: [.nemotronSuper], injected: []))
     }
 
     @Test func reasoningBudgetsFollowTheFamilyDefaultUnlessTheOperatorSetsThem() {
@@ -149,7 +193,7 @@ struct SDKFeatureDefaultsTests {
         let source = try String(contentsOf: Self.sources.appendingPathComponent(
             "ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory.swift"), encoding: .utf8)
             .filter { !$0.isWhitespace }
-        #expect(source.contains("SDKFeatureDefaults.applyMTPDefaults(to:&mtpConfig,modelId:modelId,modelType:modelType"))
+        #expect(source.contains("SDKFeatureDefaults.applyMTPDefaults(to:&mtpConfig,modelId:modelId,environment:environment"))
     }
 
     static let sources = URL(fileURLWithPath: #filePath)

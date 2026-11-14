@@ -2345,11 +2345,17 @@ coordinator. Hold the machine's GPU lane while it runs. It needs:
 | `DARKBLOOM_MUSE_GLIMMER_HUB` | A Hugging Face hub root holding the pinned snapshot |
 | `DARKBLOOM_MUSE_GLIMMER_METALLIB` | The staged test `mlx.metallib`, bound before any GPU work as `darkbloom start` binds its own |
 | `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL`, `DARKBLOOM_PREFIX_CACHE_TEST_ROOT` | `1`, and an empty directory on an APFS volume with ownership enabled: the run's prefix cache, under a key held in memory |
-| `DARKBLOOM_MUSE_GLIMMER_LIVE_PHASES` | Optional subset of `http,speed,cache` |
+| `DARKBLOOM_MUSE_GLIMMER_LIVE_PHASES` | Optional subset of `http,drafter,speed,cache` |
 | `DARKBLOOM_MUSE_GLIMMER_RECEIPTS` | Optional file: one JSON line per request and memory sample |
+| `DARKBLOOM_MUSE_GLIMMER_DRAFTER` | Optional directory holding only the pinned quantized drafter's `config.json` and `model.safetensors`; the slot then loads it through the verified assistant funnel and must report it active with rectangular-exact verification |
+| `DARKBLOOM_MUSE_GLIMMER_REFERENCE` | Optional receipts file of an earlier run; every case present in both runs must have equal content, reasoning, finish reason and token count |
 
 `http` checks greedy, sampled and streamed text, a cut inside reasoning, and
-ATEM tool calls streamed and not, with no framing in any field. `speed` times
+ATEM tool calls streamed and not, with no framing in any field. `drafter`
+streams three prompts greedy and sampled under fixed seeds and records the
+engine's MTP counters for each (rounds, proposed and accepted tokens, accepted
+per round, depth). To check that the drafter changes no output, run once without
+it and once with it, passing the first run's receipts as the reference. `speed` times
 streamed requests and samples process and MLX memory at load, prefill and
 decode; its numbers describe that machine and build only. `cache` runs a
 six-turn conversation under one cache scope, through an engine built as a

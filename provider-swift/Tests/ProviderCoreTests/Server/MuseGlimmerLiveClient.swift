@@ -45,6 +45,17 @@ struct MuseGlimmerLiveClient {
         }
     }
 
+    /// A receipts file by case name; a later line of the same name wins.
+    static func receipts(_ url: URL) throws -> [String: [String: Any]] {
+        var cases: [String: [String: Any]] = [:]
+        for line in try String(contentsOf: url, encoding: .utf8).split(separator: "\n") {
+            guard let object = try JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                let name = object["case"] as? String else { continue }
+            cases[name] = object
+        }
+        return cases
+    }
+
     func record(_ fields: [String: Any]) throws {
         guard let receipt else { return }
         let line = try JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys])

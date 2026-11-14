@@ -2297,7 +2297,7 @@ mismatched contract, and the Nemotron vocabulary's admitted ids and terminators.
 `JSONAnswerFamilyServingTests` streams a Bonsai and a Lightning answer through
 the scheduler's forwarding body with the routing flags production passes.
 `GLMJSONAnswerTests` covers GLM-5.3-Flash on a GLM-shaped synthetic tokenizer:
-admission only with `DARKBLOOM_GLM_JSON_ANSWERS` on and an engine that runs
+admission unless `DARKBLOOM_GLM_JSON_ANSWERS` is off, and only on an engine that runs
 token constraints (both through `ToolConstraintFactory.make`), every decline,
 the vocabulary and automaton (free reasoning that cannot end the request or
 spell a turn marker, then one JSON value ending at `<|user|>` or

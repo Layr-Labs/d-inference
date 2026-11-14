@@ -1851,8 +1851,8 @@ It renders reasoning that OpenRouter returns on earlier assistant turns
 template's `clear_thinking` (`RawControls.contextClearThinking`). It serves
 `strict` tools by validating each `auto` call against its schema before
 exposure (`ToolConstraintValidation.validate`), not by constraining decoding.
-Without `DARKBLOOM_GLM_JSON_ANSWERS` a JSON `response_format` is likewise
-prompt-steered and validated, not constrained (with it, the answer is also
+With `DARKBLOOM_GLM_JSON_ANSWERS=0` a JSON `response_format` is likewise
+prompt-steered and validated, not constrained (by default the answer is also
 sampled under a grammar: [Constrained Qwen JSON answers](#constrained-qwen-json-answers)):
 the service's instruction message renders through the template, reasoning
 streams on a separate typed channel, and the answer is withheld until
@@ -3716,7 +3716,7 @@ when its model is admitted (`JSONAnswerPolicy.profile`):
 | Qwen 3.5, 3.6, 3.8 | `model_type` `qwen3_5` or `qwen3_5_moe` | `qwen35` |
 | PrismML Bonsai 2 27B | `prism_hadamard_qwen35` and a 27B listing id (`EngineV2SupportedModels.isBonsai2ListingModelID`; the 9B shares the type) | `bonsai2`: Qwen 3.5's tokenizer and ids, its own name in messages, `<|im_end|>` its one terminator |
 | Nemotron 3.5 Lightning | `nemotron_h` and a Lightning listing id (`EngineV2SupportedModels.isNemotron35ListingModelID`; Nano shares the type) | `nemotron35` |
-| GLM-5.3-Flash | `glm5_next`, `DARKBLOOM_GLM_JSON_ANSWERS` on, and an engine that runs token constraints (`EngineV2Bridge.acceptsTokenConstraints`) | `glm5Next` |
+| GLM-5.3-Flash | `glm5_next`, `DARKBLOOM_GLM_JSON_ANSWERS` not off, and an engine that runs token constraints (`EngineV2Bridge.acceptsTokenConstraints`) | `glm5Next` |
 
 Bonsai and Lightning are admitted for their answers only
 (`JSONAnswerProfile.constrainsReasoning` false): a prompt that opens a thought
@@ -3730,8 +3730,8 @@ keep prompt-only service. Qwen keeps both, as before. The Bonsai 2 9B is not
 admitted: it drafts, and its JSON prompts render thinking off by default, so
 each of its JSON rows would stop its whole decode cohort from speculating.
 
-GLM-5.3-Flash is admitted only with `DARKBLOOM_GLM_JSON_ANSWERS` `1`, `on`,
-`true` or `yes` (read once per process; forwarded to the LaunchAgent), and only
+GLM-5.3-Flash is admitted unless `DARKBLOOM_GLM_JSON_ANSWERS` is `0`, `off`,
+`false` or `no` (read once per process; forwarded to the LaunchAgent), and only
 where its engine runs token constraints: the native page-bank profiles qualify
 them in the SDK (`CBv2NativeExecutionContract.supportsTokenConstraints`, the
 profiles that qualify logprob rows: every target row samples with the ordinary

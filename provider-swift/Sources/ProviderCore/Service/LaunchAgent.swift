@@ -421,8 +421,7 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_GLM_RECTANGULAR_VERIFY`: rectangular adaptive MTP verification
     /// is the GLM default; its serial-target rollback must reach the job.
     /// `DARKBLOOM_GLM_JSON_ANSWERS`: GLM JSON `response_format` answers are
-    /// grammar-constrained only when it is on (`1`, `on`, `true`, `yes`); off
-    /// by default, so the opt-in must reach the job.
+    /// grammar-constrained by default; its `0` rollback must reach the job.
     /// `DARKBLOOM_GLM_JSON_SCHEMA_MISS=release`: a GLM JSON answer whose value
     /// misses its schema at a natural stop is exposed instead of refused.
     /// `DARKBLOOM_LENGTH_FINISH_AT_LIMIT` / `DARKBLOOM_STRICT_CALLS_AS_GENERATED`:

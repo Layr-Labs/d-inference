@@ -30,15 +30,15 @@ enum JSONAnswerPolicy {
     }
 
     /// `DARKBLOOM_GLM_JSON_ANSWERS`: GLM-5.3-Flash JSON answers are
-    /// constrained only with `1`, `on`, `true` or `yes`; unset or any other
-    /// value keeps them prompt-steered and checked after generation
-    /// (`GLM5NextResponseFormat`). Read once per process.
+    /// constrained by default; `0`, `off`, `false` or `no` keeps them
+    /// prompt-steered and checked after generation (`GLM5NextResponseFormat`).
+    /// Read once per process.
     static let glmEnvironmentKey = "DARKBLOOM_GLM_JSON_ANSWERS"
     static let glmEnabled = glmEnabled(environmentValue: ProcessInfo.processInfo.environment[glmEnvironmentKey])
 
     static func glmEnabled(environmentValue: String?) -> Bool {
         let value = environmentValue?.trimmingCharacters(in: .whitespaces).lowercased() ?? ""
-        return ["1", "on", "true", "yes"].contains(value)
+        return !["0", "off", "false", "no"].contains(value)
     }
 
     private static let logger = ProviderLogger(

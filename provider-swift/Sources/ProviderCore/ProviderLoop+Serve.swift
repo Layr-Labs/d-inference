@@ -463,11 +463,11 @@ extension ProviderLoop {
                     // the trust statuses `ServingReadiness` compares it to.
                     // A request refused below was routed here all the same.
                     noteCoordinatorRequest()
-                    guard queueCoordinatorAdmission(requestId, bytes: ciphertext.count) else {
-                        refuseCoordinatorRequestPastQueueBudget(
-                            requestId, profile: profile, serviceReservationID: serviceReservationID, send: send)
-                        continue
-                    }
+                    // RED CONTROL ONLY (not for merge): every request is queued and charged, as on
+                    // dev; the budget check and its refusal are removed.
+                    unreturnedCoordinatorAdmissions[requestId, default: 0] += 1
+                    queuedCoordinatorBytes += ciphertext.count
+                    _ = (profile, serviceReservationID)
                 default:
                     break
                 }

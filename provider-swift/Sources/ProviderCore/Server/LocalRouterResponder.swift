@@ -95,8 +95,8 @@ public final class LocalRouter: Sendable {
             response.headers[LocalRouterPolicy.servedByHeader] = LocalRouterPolicy.thisMac
             return response
         }
-        // Checked before this Mac's engine decodes the body and before a pass-on parses it: each recurses per JSON
-        // level on this task's stack, and this Mac's `/v1/completions` route has no check of its own.
+        // Checked here as well as by this Mac's routes: a pass-on parses the body, recursing per JSON level on this
+        // task's stack, and this Mac can answer before its own check runs (a pair's gate refuses a POST at once, 503).
         guard !JSONNestingLimit.refuses(body) else {
             var response = Self.errorResponse(.badRequest, message: JSONNestingLimit.refusalMessage)
             response.headers[LocalRouterPolicy.servedByHeader] = LocalRouterPolicy.thisMac

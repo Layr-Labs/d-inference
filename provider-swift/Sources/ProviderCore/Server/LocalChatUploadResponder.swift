@@ -17,7 +17,8 @@ public let localInferenceMaxUploadBytes = 32 * 1024 * 1024
 
 /// Responder that serves the chat-completions POSTs itself (with the
 /// raised body ceiling) and forwards everything else to the wrapped
-/// upstream router. Sits INSIDE `CORSResponder` so its responses get the
+/// upstream router, the SDK's other JSON routes once their bodies pass the
+/// same nesting checks. Sits INSIDE `CORSResponder` so its responses get the
 /// CORS header and its thrown errors get the OpenAI error-envelope
 /// mapping, exactly like upstream-raised ones.
 public struct LocalChatUploadResponder<Inner: HTTPResponder>: HTTPResponder
@@ -114,15 +115,24 @@ where Inner.Context == BasicRequestContext {
         if Self.isSDKJSONBodyPath(path) {
             var request = request
             let limit = 2 * 1024 * 1024
+            let body: ByteBuffer
             do {
-                guard !JSONNestingLimit.refuses(try await request.collectBody(upTo: limit)) else {
-                    return CORSResponder<Inner>.openAIErrorResponse(
-                        status: .badRequest, message: JSONNestingLimit.refusalMessage)
-                }
+                body = try await request.collectBody(upTo: limit)
             } catch is NIOTooManyBytesError {
                 return CORSResponder<Inner>.openAIErrorResponse(
                     status: .contentTooLarge,
                     message: "request body exceeds the \(limit / (1024 * 1024)) MiB local endpoint limit")
+            }
+            guard !JSONNestingLimit.refuses(body) else {
+                return CORSResponder<Inner>.openAIErrorResponse(
+                    status: .badRequest, message: JSONNestingLimit.refusalMessage)
+            }
+            // `/apply-template` renders its messages' tool calls, decoding each one's `arguments` as the chat path
+            // does (`templateMessageDict`). A body its route can't decode is left to the route's own 400.
+            if path == "/apply-template",
+               let template = try? JSONDecoder().decode(ApplyTemplateRequest.self, from: Data(buffer: body)),
+               JSONNestingLimit.refusesToolCallArguments(in: template.messages) {
+                return Self.toolCallArgumentsRefusal()
             }
             return try await inner.respond(to: request, context: context)
         }

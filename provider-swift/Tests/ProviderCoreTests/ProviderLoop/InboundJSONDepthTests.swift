@@ -20,8 +20,13 @@ struct InboundJSONDepthTests {
     /// A `"messages"` member whose assistant turn calls a tool with `depth`
     /// nested arrays as its JSON-encoded `arguments` string.
     static func messagesField(argumentNesting depth: Int) -> String {
-        let arguments = String(repeating: "[", count: depth) + String(repeating: "]", count: depth)
-        return #""messages":[{"role":"user","content":"hi"},{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"\#(arguments)"}}]},{"role":"tool","tool_call_id":"c1","content":"ok"}]"#
+        messagesField(arguments: String(repeating: "[", count: depth) + String(repeating: "]", count: depth))
+    }
+
+    /// A `"messages"` member whose assistant turn calls a tool with
+    /// `arguments`, written as the inside of a JSON string.
+    static func messagesField(arguments: String) -> String {
+        #""messages":[{"role":"user","content":"hi"},{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"\#(arguments)"}}]},{"role":"tool","tool_call_id":"c1","content":"ok"}]"#
     }
 
     /// A chat body whose one tool parameter nests `depth` arrays.
@@ -47,10 +52,16 @@ struct InboundJSONDepthTests {
 
     @Test("a UTF-16 or UTF-32 body, whose bytes the scan cannot count, is refused")
     func nonUTF8BodiesAreRefused() async throws {
-        let text = String(decoding: Self.body(nesting: 400), as: UTF8.self)
+        // The escaped quote's backslash escapes a NUL byte in these encodings,
+        // so the scan's string state inverts at the quote and it counts none of
+        // the schema's levels: only the NUL refuses these bodies.
+        let text = #"{"model":"m","messages":[{"role":"user","content":"\""}],"# + Self.toolsField(nesting: 400) + "}"
         for encoding in [String.Encoding.utf16LittleEndian, .utf16BigEndian, .utf32LittleEndian] {
             let body = try #require(text.data(using: encoding))
-            #expect(JSONNestingLimit.refuses(body), "\(encoding)")
+            let refused = JSONNestingLimit.refuses(body)
+            #expect(refused, "\(encoding)")
+            // Decoding a body the scan let through would end the test process.
+            guard refused else { continue }
             let failure = await Task.detached { () -> (any Error)? in
                 do {
                     _ = try ProviderLoop.decodeInboundChatRequest(body)
@@ -65,13 +76,14 @@ struct InboundJSONDepthTests {
 
     @Test("tool-call arguments nested past the limit are refused, not left to the renderer")
     func deepToolCallArgumentsAreRefused() throws {
-        let deep = Data(("{\"model\":\"m\"," + Self.messagesField(argumentNesting: 400) + "}").utf8)
-        #expect(!JSONNestingLimit.refuses(deep), "the body itself is shallow; the depth is inside a string")
-        #expect(throws: (any Error).self) { _ = try ProviderLoop.decodeInboundChatRequest(deep) }
-        do {
-            _ = try ProviderLoop.decodeInboundChatRequest(deep)
-        } catch {
-            #expect(InferenceRefusalReason(chatDecodeFailure: error) == .invalidToolArguments)
+        // The second's bytes nest one level, but for its NULs Foundation reads
+        // it as UTF-16: `["\"",[[[…`, 400 levels deep.
+        let utf16 = #"[\u0000\"\u0000\\\u0000\"\u0000\"\u0000,\u0000"# + String(repeating: #"[\u0000"#, count: 400)
+        for messages in [Self.messagesField(argumentNesting: 400), Self.messagesField(arguments: utf16)] {
+            let deep = Data(("{\"model\":\"m\"," + messages + "}").utf8)
+            #expect(!JSONNestingLimit.refuses(deep), "the body itself is shallow; the depth is inside a string")
+            let error = #expect(throws: (any Error).self) { _ = try ProviderLoop.decodeInboundChatRequest(deep) }
+            #expect(error.map { InferenceRefusalReason(chatDecodeFailure: $0) } == .invalidToolArguments)
         }
         let ordinary = Data(("{\"model\":\"m\"," + Self.messagesField(argumentNesting: 8) + "}").utf8)
         #expect(try ProviderLoop.decodeInboundChatRequest(ordinary).request.messages.count == 3)

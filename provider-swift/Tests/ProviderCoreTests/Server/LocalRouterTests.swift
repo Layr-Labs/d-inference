@@ -399,7 +399,7 @@ struct LocalRouterTests {
         #expect(fixture.upstream.requests.isEmpty)
     }
 
-    /// The router's own check: on this Mac nothing else checks `/v1/completions`, and the request is not passed on.
+    /// A deeply nested body is this Mac's 400 (the router's check, or this Mac's own after it) and is not passed on.
     @Test func aDeeplyNestedBodyIsRefusedBeforeAnything() async throws {
         let fixture = RouterFixture(route: .myMacs)
         let body = #"{"model":"absent","prompt":"hi","# + InboundJSONDepthTests.toolsField(nesting: 200) + "}"

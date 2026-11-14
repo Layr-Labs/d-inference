@@ -43,6 +43,8 @@ struct LocalRequestNestingTests {
                 ("/v1/chat/completions/batch", ByteBuffer(string: "[" + deepArguments + "]"),
                  JSONNestingLimit.argumentsRefusalMessage),
                 ("/v1/responses", ByteBuffer(string: responsesArguments), JSONNestingLimit.argumentsRefusalMessage),
+                // Rendered with each call's arguments decoded, as chat is; never reaches the tokenizer.
+                ("/apply-template", ByteBuffer(string: deepArguments), JSONNestingLimit.argumentsRefusalMessage),
             ] {
                 try await client.execute(uri: path, method: .post,
                     headers: [.contentType: "application/json", .authorization: "Bearer synthetic-fixture-token"],

@@ -3422,8 +3422,12 @@ stops such a row early.
   continuation asks, and on a full Mac work waiting for a slot takes it first,
   so the continuation is never refused for width
   (`acquireServiceAllowance(takesStoppedRowPlace:)`,
-  `WholeMacServiceBudget.acquire(overcommit:)`): it may exceed the width by
-  itself until it ends, while other work waits. The engine's KV
+  `WholeMacServiceBudget.acquire(overcommit:)`): each continuation may exceed
+  the width by one row until it ends (on a width-1 profile, a second whole
+  Mac), while other work waits; never beside the idle prefill-evidence
+  recovery before its prompt completes (`Charge.exclusive`). What the budget
+  reports (`whole_mac_service_used`, each model's deadline work) stays capped
+  at 1. The engine's KV
   preemption reads the same priority: the continuation is evicted after
   ordinary rows, and when its own chunk doesn't fit, the youngest ordinary
   running row is evicted instead (it re-prefills); at the queue's head, a

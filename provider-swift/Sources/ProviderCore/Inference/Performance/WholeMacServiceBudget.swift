@@ -25,6 +25,11 @@ final class WholeMacServiceBudget: @unchecked Sendable {
         let lifetime: ServiceReservationLifetime?
         let work: Work?
         let deadlineProof: DeadlineProof?
+        /// Taken with `requiresIdle` (the idle prefill-evidence recovery): the
+        /// Mac is its alone until `reduceExclusiveAllowance`, so no
+        /// continuation over-commits beside it. A width-1 profile's ordinary
+        /// charge is a whole Mac too, but not exclusive.
+        var exclusive = false
     }
     struct Snapshot: Sendable, Equatable {
         let usedFraction: Double
@@ -121,9 +126,10 @@ final class WholeMacServiceBudget: @unchecked Sendable {
 
     /// `overcommit`: charged even when the Mac is full (a loop exit's continuation, which takes its stopped row's
     /// place; `EngineV2Bridge.acquireServiceAllowance`): one row past the width per continuation, at most one per
-    /// stopped row. Its charge counts like any other until it is released, so other work waits for the sum to drop
-    /// below the width again. Never beside an exclusive (whole-Mac) charge. What this budget reports (`snapshot`) is
-    /// capped at 1; admission keeps the real sum.
+    /// stopped row (on a width-1 profile a row is the whole Mac). Its charge counts like any other until it is
+    /// released, so other work waits for the sum to drop below the width again. Never beside the idle
+    /// prefill-evidence recovery before its prompt completes (`Charge.exclusive`). What this budget reports
+    /// (`snapshot`, `usedFraction`) is capped at 1; admission keeps the real sum.
     func acquire(ownerID: String, concurrency: Int, serviceReservationID: String? = nil,
         serviceReservation: ServiceReservationLifetime? = nil, work: Work? = nil,
         deadlineApplicability: DeadlineApplicability? = nil, requiresIdle: Bool = false,
@@ -142,7 +148,7 @@ final class WholeMacServiceBudget: @unchecked Sendable {
             guard overcommit || charges.values.reduce(0, { $0 + $1.fraction }) + charge <= 1 + 1e-12 else {
                 return (false, nil)
             }
-            if overcommit, charges.values.contains(where: { $0.fraction >= 1 - 1e-12 }) { return (false, nil) }
+            if overcommit, charges.values.contains(where: \.exclusive) { return (false, nil) }
             guard serviceReservation?.acquireLease() ?? true else { return (false, nil) }
             let now = clockNow()
             let captured = deadlineApplicability.flatMap { requirement in
@@ -156,7 +162,7 @@ final class WholeMacServiceBudget: @unchecked Sendable {
                     postureEpoch: captured.epoch, activityEpoch: activityEpoch)
             } else { proof = nil }
             charges[ownerID] = Charge(fraction: charge, reservationID: reservationID,
-                lifetime: serviceReservation, work: work, deadlineProof: proof)
+                lifetime: serviceReservation, work: work, deadlineProof: proof, exclusive: requiresIdle)
             return (true, observer)
         }
         notification?.yield()
@@ -231,7 +237,7 @@ final class WholeMacServiceBudget: @unchecked Sendable {
         }
     }
 
-    var usedFraction: Double { lock.withLock { charges.values.reduce(0, { $0 + $1.fraction }) } }
+    var usedFraction: Double { lock.withLock { min(1, charges.values.reduce(0, { $0 + $1.fraction })) } }
     var count: Int { lock.withLock { charges.count } }
     var isIdle: Bool { lock.withLock { charges.isEmpty && unboundedActivities.isEmpty } }
 
@@ -292,6 +298,8 @@ final class WholeMacServiceBudget: @unchecked Sendable {
     /// Keep the same reservation/lifetime at the ordinary serving fraction.
     func reduceExclusiveAllowance(ownerID: String, concurrency: Int) {
         let notification = lock.withLock { () -> AsyncStream<Void>.Continuation? in
+            // At any width: a continuation may take its row's place beside it again.
+            charges[ownerID]?.exclusive = false
             guard concurrency > 1, var charge = charges[ownerID], charge.fraction == 1 else { return nil }
             charge.fraction = 1 / Double(concurrency)
             charges[ownerID] = charge

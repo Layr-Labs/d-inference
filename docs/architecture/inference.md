@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-13
+> Last updated: 2026-11-14
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -3976,6 +3976,37 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Tools/JSONAnswerPolicy.s
 `provider-swift/Sources/ProviderCore/Inference/Prompting/JSONAnswerFormat.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift` (`makeEventStream`),
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPPlanning.swift`.
+
+### Request JSON limits before decoding
+
+A decrypted coordinator request that nests objects and arrays more than 64
+deep (`JSONNestingLimit.maximumDepth`) is refused before anything parses it,
+as `invalid_request` with the `malformed_body` reason, and so is one passed to
+`ProviderLoop.decodeInboundChatRequest` or `decodeOpenAIRequest` from
+elsewhere. `JSONSerialization`, `JSONDecoder` and the provider's schema walks
+recurse once per level on Swift concurrency's 512 KiB task stacks, where a
+body of a few KB nested a few hundred levels deep (128 in a debug build) ended
+the process with SIGBUS, below `JSONSerialization`'s own 512-level limit. The
+coordinator forwards such a body unchanged: it parses with Go's decoder and
+normalizes tool schemas only to depth 64. The scan counts levels without
+recursing and skips brackets inside strings. It also refuses a body holding a
+NUL byte: Foundation's parsers read UTF-16 and UTF-32 JSON too, whose bytes the
+scan cannot count, and every such body has one while no UTF-8 JSON text does.
+A tool call's `arguments` is JSON inside a string, which the scan skips and
+template rendering decodes and walks, so after decoding each one is checked
+against the same limit and refused as `invalid_tool_arguments`. The local API
+applies the same limits ([direct mode](../provider/direct-mode.md)).
+
+Tool-schema normalization (`ToolSchemaNormalization.ensureParameterTypes`)
+rewrites at most 100,000 schema nodes per request
+(`ToolSchemaNormalization.maxNormalizedNodes`). Each positional `{}` or boolean
+becomes a two-key map, so a few MiB of them rewrote into tens of MiB of JSON
+and hundreds of MiB of objects before the request was decoded. Past the budget
+the body is decoded as sent, as one above `maxNormalizationBytes` (4 MiB)
+already is
+(`provider-swift/Sources/ProviderCore/Protocol/JSONNestingLimit.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Tools/ToolSchemaNormalization.swift`,
+`provider-swift/Sources/ProviderCore/ProviderLoop+InboundDecode.swift`).
 
 ### Tool-call parsers
 

@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-11-13
+> Last updated: 2026-11-14
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon in
@@ -1293,6 +1293,15 @@ Go `InferenceRequestMessage` · Swift `CoordinatorMessage.InferenceRequest`.
 | `cache_repeated_prefix_tokens` | `*int` | `Int?` | ptr | Coordinator-observed fleet-wide repeat demand: the deepest boundary another plan shared within the routing TTL among those a plan observes (multiples of 1,024 tokens, the final boundary, and a power-of-two ladder for very long prompts), 0 when none. Sent only with a granted scope; absent from older coordinators (providers then write every checkpoint) and cleared on retry/fallback (`CacheAttemptSnapshot.ApplyTo`, [coordinator/registry/cache_attempt_ownership.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/cache_attempt_ownership.go)). Integer count only, never a key, hash or boundary. Providers gate complete-checkpoint donations on it (`skipped_novel`; `SSDCheckpointDemand.admitsWrite`, `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDCheckpointDemand.swift`). Swift clamps a negative value to 0. The e2e wire relay projects it for `inference_request` (`copyFields`, [e2e/testbed/provider_wire_relay.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/e2e/testbed/provider_wire_relay.go)) |
 | `tool_schema_metadata_protocol` | `int` | `Int?` | opt | `1` = the coordinator rejected client-forged reserved keys before normalisation |
 | `gemma_prompt_contract` | `int` | `Int?` | opt | the [Gemma 4 prompt contract](../architecture/inference.md#gemma-4-prompt-contracts) the coordinator planned and counted this request with. `2` asks a provider that registered `gemma_prompt_contract: 2` for the text-parts render; absent (older coordinators, or a model the coordinator has not switched on) renders contract 1. A provider renders `2` only while it advertises it, only for the model types `gemma4` and `gemma4_text` (not `gemma4_vision` or `diffusion_gemma`) and only for text requests (no image, video or audio parts); any other value, or a malformed one, renders contract 1 and never refuses the frame. **Coordinator preconditions** (anything else serves a prompt other than the one planned, which fails the cache receipt and fences the provider): send `2` only to a provider that registered it, only for a text request, with contract 2's cache plan and prompt work (or none); choose again for every attempt, so a retry or handoff to another provider recomputes or clears it as it does the cache fields. For other model types both contracts plan the same prompt, so the ask changes nothing |
+
+A decrypted body that nests objects and arrays more than 64 deep
+(`JSONNestingLimit.maximumDepth`,
+`provider-swift/Sources/ProviderCore/Protocol/JSONNestingLimit.swift`) or holds
+a NUL byte is refused before it is parsed, with `failure_code`
+`invalid_request` (400) and `refusal_reason` `malformed_body`; a request whose
+tool-call `arguments` nest that deep is refused with `invalid_tool_arguments`. The coordinator's own tool-schema
+normalisation stops at depth 64 and forwards deeper nodes unchanged; see
+[request JSON limits](../architecture/inference.md#request-json-limits-before-decoding).
 
 `prompt_work` is defined in [coordinator/protocol/prompt_work.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/prompt_work.go) and
 `provider-swift/Sources/ProviderCore/Protocol/PromptWork.swift`:

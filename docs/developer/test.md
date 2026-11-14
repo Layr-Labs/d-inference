@@ -2355,10 +2355,16 @@ Focused provider suites, CPU only and without weights:
 `MuseGlimmerPolicyTests`, `MuseGlimmerEngineDispatchTests`,
 `MuseGlimmerReasoningStrengthTests`, `MuseGlimmerProtocolPolicyTests`,
 `MuseGlimmerHistoryTests`, `MuseGlimmerChannelSplitterTests`,
-`MuseGlimmerToolStreamTests`, `MuseGlimmerPromptGoldenTests` and
+`MuseGlimmerToolStreamTests`, `MuseGlimmerPromptGoldenTests`,
 `MuseGlimmerDrafterTests` (exact windows, the drafter's funnel, loader,
-checkpoint and engine wiring on a tiny seeded tower and drafter)
-(`--filter MuseGlimmer` selects them all), with
+checkpoint and engine wiring on a tiny seeded tower and drafter), and for image
+input `MuseGlimmerVisionArtifactTests` (the switch, identity, pinned stack and
+pinned metadata bytes, symlinks and size bounds), `MuseGlimmerVisionBudgetTests`
+(the per-image ceiling and the tower bound) and `MuseGlimmerImagePrefillTests`
+(the image render against the text render with `<|patch|>`, the reference
+processor's grids, expansion, causal spans on the 1,024-token grid, and the
+typed refusals) (`--filter MuseGlimmer` selects them all), with
+`MuseGlimmerVisionPolicyTests` in `ProviderCoreFoundationTests` and
 `CachePromptParityTests.reasoningEffortVectors` for the effort table.
 
 `provider-swift/Tests/ProviderCoreTests/Fixtures/MuseGlimmer/` holds the served
@@ -2398,6 +2404,20 @@ coordinator request's is, repeats each turn under a fresh scope, and requires
 the fresh scope never to hit. With `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION`
 unset the slot must store native checkpoint rows, and restored and cold outputs
 are required to agree whenever its rows are native.
+
+`MuseGlimmerVisionLiveTests` is the same kind of opt-in run for image input
+(`DARKBLOOM_MUSE_GLIMMER_VISION_LIVE=1`, with the variables above and an
+optional `DARKBLOOM_MUSE_GLIMMER_ZEBRA` photo). Hold the GPU lane. It sends the
+SDK image proofs' drawn receipt, swatch card and circle as PNG data URLs:
+zebra, the receipt's transcription scored by character error rate
+(`DARKBLOOM_MUSE_GLIMMER_RECEIPT_MAX_CER`, default `0.05`), two three-image
+questions, a text row batched beside an image row, image prompts that never
+hit the prefix cache, and the typed 400s (video, a remote URL, an image outside
+a user message, too many images). Three runs make the proofs: with
+`DARKBLOOM_MUSE_GLIMMER_VISION` unset (text cases, images refused with
+`unsupported_media`); with it set to `1` and the first run's receipts as the reference (text
+unchanged with vision on); and with the drafter and the second run's receipts
+(every case, images included, equal with the drafter on and off).
 
 ## Flint native validation
 

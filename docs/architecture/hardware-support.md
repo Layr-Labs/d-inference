@@ -1124,6 +1124,15 @@ model's own bound (`MuseGlimmerModelPolicy.contextLimit`, read by
 RAM-tier gate or measured-memory entry is added; those wait for measurements
 on the final build.
 
+An image request is charged to the media memory gate before any image is
+decoded (`MuseGlimmerVisionBudget`): every image at 4,098 prompt tokens of KV
+and its features at the 4,096-token ceiling (54,525,952 bytes in BF16), plus
+one tower run at 16,384 patches (images encode one at a time). The tower term,
+2,965,372,928 bytes, is an analytic bound with every activation charged at four
+bytes, not a measurement; qualification measures the real peak. The
+reservation ends when the features are evaluated, where the bridge's own KV
+admission takes over.
+
 ### Flint memory admission
 
 The native Flint adapter uses the existing attention-only geometry and memory

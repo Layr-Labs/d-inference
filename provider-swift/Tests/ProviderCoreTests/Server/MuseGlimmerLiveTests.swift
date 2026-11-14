@@ -66,7 +66,8 @@ struct MuseGlimmerLiveTests {
         let model = try #require(ModelScanner.parseModelInfo(snapshotDir: directory, modelName: id))
         try #require(model.modelType == MuseGlimmerModelPolicy.modelType && model.templateRenderOK == true)
         #expect(model.quantization == "nvfp4")
-        #expect(model.isVision == nil)
+        // Images are advertised only with the provider's switch on (`MuseGlimmerVisionPolicy`).
+        #expect(model.isVision == (MuseGlimmerVisionPolicy.isSwitchedOn(environment: env) ? true : nil))
         #expect(EngineV2SupportedModels.isSupported(model: model))
         // Present only for a directory that carries the served template.
         let contract = try? PromptContractIdentity.compute(modelDirectory: directory)

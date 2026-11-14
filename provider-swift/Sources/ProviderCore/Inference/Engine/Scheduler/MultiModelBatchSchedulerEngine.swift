@@ -549,6 +549,32 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             operation: "tool_constraint_mode",
             reason: prepared.mode.telemetryValue)
 
+        // Muse Glimmer images ride the text route below (`MuseGlimmerImagePrefill`):
+        // its prompt pipeline, parser, constraints and stream, with the image
+        // features spliced at their spans. A slot that serves no images, video,
+        // an image outside a user message and a forced tool choice are refused
+        // here, before any decode, reservation or tower work.
+        let museImageEncoder: MuseGlimmerImageEncoder?
+        if MuseGlimmerModelPolicy.isModelType(modelType), MediaIngest.hasMedia(request) {
+            do {
+                let service = await container?.perform { context in
+                    (context.processor as? MuseGlimmerServingProcessor)?.images
+                }
+                museImageEncoder = try MuseGlimmerImagePrefill.servingEncoder(
+                    service: service, request: request, prepared: prepared, modelID: modelId)
+            } catch {
+                await releaseBox.fire()
+                // The wire carries the closed code only; the reason (fixed
+                // text, never request content) is left in this Mac's log.
+                if case .mediaUnsupportedByModel(_, let reason?) = error as? MultiModelBatchSchedulerEngineError {
+                    Self.mediaGateLogger.notice("Muse Glimmer image request refused", metadata: ["reason": "\(reason)"])
+                }
+                throw error
+            }
+        } else {
+            museImageEncoder = nil
+        }
+
         let qwenOutputContext = ChatTemplateFixContext(modelId: modelId, modelType: modelType)
         let toolHandler: BatchedToolStreamHandler?
         var nativeMediaTools = false
@@ -561,8 +587,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     ctx.model is MLXVLM.Qwen4Exp || ctx.model is MLXVLM.PrismHadamardQwen35
                 }
             }
-            if !MediaIngest.hasMedia(request) || nativeMediaTools || modelType == "mimo_v2"
-                || GLM5NextPromptPolicy.applies(modelType: modelType) {
+            if !MediaIngest.hasMedia(request) || nativeMediaTools || museImageEncoder != nil
+                || modelType == "mimo_v2" || GLM5NextPromptPolicy.applies(modelType: modelType) {
                 toolHandler = try ToolStreamPreparation.makeHandler(
                     request: request, prepared: prepared, modelType: modelType)
             } else {
@@ -644,7 +670,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 throw MiMoV26EncodedMediaIngress.outwardFailure(error)
             }
         }
-        if MediaIngest.hasMedia(request), (isVLM && container != nil) || diffusionContainer != nil {
+        if museImageEncoder == nil, MediaIngest.hasMedia(request),
+            (isVLM && container != nil) || diffusionContainer != nil {
             try await checkFirstContentDeadline(releasing: releaseBox)
             var visionRequest = request
             visionRequest.tools = prepared.tools
@@ -1029,36 +1056,58 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // The batched text path below silently discards image/video parts, so
         // letting media fall through would answer a vision question from text
         // alone — a wrong, confusing result. Fail closed with a 4xx instead.
-        if MediaIngest.hasMedia(request) {
+        // Muse Glimmer's images continue on the text route with their spans.
+        if MediaIngest.hasMedia(request), museImageEncoder == nil {
             await releaseBox.fire()
             throw MultiModelBatchSchedulerEngineError.mediaUnsupportedByModel(modelId)
         }
 
         let promptTokens: [Int]
         let prepTiming: ProviderPromptContractPipeline.PrepTiming
-        do {
-            try checkFirstContentDeadline()
-            // Profiler: template render + BPE encode is the dominant CPU
-            // stage before submit.
+        let museImages: EngineV2VisionPrefill.PreparedSubmission?
+        // Tower work precedes bridge admission and has no text-token bound;
+        // as on the generic media path, the marker spans the handoff.
+        let museImageActivity = museImageEncoder == nil
+            ? nil : engineV2Bridge?.serviceBudget?.beginUnboundedActivity()
+        defer { museImageActivity?.finish() }
+        if let museImageEncoder {
+            let started = ContinuousClock.now
             profile?.mark(.promptPrepStart)
-            let measured = try ProviderPromptContractPipeline.tokenizeMeasured(
-                prepared: prepared,
-                request: request,
-                tokenizer: tokenizer.inner,
-                modelType: modelType,
-                templateControls: templateControls,
-                // Token reuse is partitioned exactly like the prefix KV cache.
-                promptCacheScope: cacheEnabled ? requestCacheScope : nil)
-            promptTokens = measured.tokens
-            prepTiming = measured.timing
-            try checkFirstContentDeadline()
-        } catch {
-            emitToolConstraintTelemetry(
-                operation: "tool_constraint_compile_rejection",
-                reason: prepared.mode.telemetryValue,
-                severity: .warn)
-            await releaseBox.fire()
-            throw error
+            let images = try await prepareMuseGlimmerImages(
+                encoder: museImageEncoder, request: request, prepared: prepared,
+                tokenizer: tokenizer.inner, modelType: modelType, templateControls: templateControls,
+                visionGate: visionGate, releaseBox: releaseBox)
+            museImages = images
+            promptTokens = images.promptTokens
+            let elapsedUs = RequestProfileBuilder.microseconds(ContinuousClock.now - started)
+            prepTiming = .init(normalizeMicroseconds: 0, templateTokenizeMicroseconds: elapsedUs)
+            profile?.update { f, _ in f.add(.visionPrep, us: elapsedUs) }
+        } else {
+            museImages = nil
+            do {
+                try checkFirstContentDeadline()
+                // Profiler: template render + BPE encode is the dominant CPU
+                // stage before submit.
+                profile?.mark(.promptPrepStart)
+                let measured = try ProviderPromptContractPipeline.tokenizeMeasured(
+                    prepared: prepared,
+                    request: request,
+                    tokenizer: tokenizer.inner,
+                    modelType: modelType,
+                    templateControls: templateControls,
+                    // Token reuse is partitioned exactly like the prefix KV cache.
+                    promptCacheScope: cacheEnabled ? requestCacheScope : nil)
+                promptTokens = measured.tokens
+                prepTiming = measured.timing
+                try checkFirstContentDeadline()
+            } catch {
+                emitToolConstraintTelemetry(
+                    operation: "tool_constraint_compile_rejection",
+                    reason: prepared.mode.telemetryValue,
+                    severity: .warn)
+                await releaseBox.fire()
+                throw error
+            }
         }
         var prepLine = Self.promptPrepMetadata(promptTokens: promptTokens.count, timing: prepTiming)
         if let profile {
@@ -1163,6 +1212,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             setting: exitThinkingSetting, finalExit: gptossFinalExit)
         if exitThinking != nil, await engineV2Bridge?.servesDistributedPair != false { exitThinking = nil }
         if nativeReasoningBudget != nil { exitThinking = nil }
+        // A continuation row would resubmit the prompt without its image
+        // spans; no Muse Glimmer marker exists today, and none may apply.
+        if museImages != nil { exitThinking = nil }
         let loopGuard = GenerationLoopGuardPolicy.resolve(
             modelType: modelType, request: request, prepared: prepared, tokenConstraint: tokenConstraint,
             exitThinking: exitThinking)
@@ -1210,6 +1262,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     cacheScope: requestCacheScope,
                     cacheEnabled: cacheEnabled,
                     usageSignal: requestUsage,
+                    // Muse Glimmer images: evaluated causal spans with no
+                    // prefix identity, so the row neither reuses nor
+                    // publishes the prefix cache and is never drafted.
+                    multimodal: museImages?.multimodalInput(),
+                    mediaKind: museImages == nil ? nil : .image,
                     tokenConstraint: tokenConstraint,
                     stopStringScope: stopStringScope,
                     donationDemand: donationDemand,
@@ -1731,6 +1788,61 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         } catch {
             await releaseBox.fire()
             throw error
+        }
+    }
+
+    /// Muse Glimmer image preparation on the text route, under the media
+    /// memory gate: every image is reserved at its ceiling (tower working
+    /// set, evaluated features, `maximumPromptTokensPerImage` KV tokens)
+    /// before any decode, and the reservation is released once the features
+    /// are evaluated, where the bridge's own admission takes over. Refusals
+    /// keep the generic media path's mappings: deadline, cancellation and
+    /// input faults as they are, the request's own image faults as 400s, and
+    /// anything else as a retryable construction refusal.
+    private func prepareMuseGlimmerImages(
+        encoder: MuseGlimmerImageEncoder, request: OpenAIChatCompletionRequest,
+        prepared: ToolChoicePromptPolicy.Prepared, tokenizer: any MLXLMCommon.Tokenizer,
+        modelType: String?, templateControls: ChatTemplateControls,
+        visionGate: VisionMemoryGate?, releaseBox: OneShotRelease
+    ) async throws -> EngineV2VisionPrefill.PreparedSubmission {
+        try await checkFirstContentDeadline(releasing: releaseBox)
+        let mediaReqId = "vlm-\(UUID().uuidString.prefix(12))"
+        let mediaGate = visionGate
+            ?? VisionMemoryGate(kvBudget: nil, fp16KVBytesPerToken: 0, contextLength: 0)
+        let reservation = MuseGlimmerVisionBudget.reservation(
+            request: request, defaultMaxTokens: defaultMaxTokens, contextLength: mediaGate.contextLength)
+        let (bytes, overflow) = MediaIngest.projectedDecodeBytes(request)
+            .addingReportingOverflow(reservation.bytes)
+        let projectedBytes = overflow ? UInt64.max : bytes
+        guard await mediaGate.reserve(
+            requestId: mediaReqId, mediaDecodeBytes: projectedBytes, kvTokens: reservation.kvTokens)
+        else {
+            await releaseBox.fire()
+            Self.mediaGateLogger.notice("vision request refused by the media memory gate", metadata: [
+                "media_decode_mib": "\(projectedBytes / (1024 * 1024))",
+                "kv_tokens": "\(reservation.kvTokens)"])
+            throw MultiModelBatchSchedulerEngineError.mediaMemoryUnavailable
+        }
+        do {
+            let images = try await MuseGlimmerImagePrefill.prepare(
+                prepared: prepared, request: request, tokenizer: tokenizer, modelType: modelType,
+                templateControls: templateControls, encoder: encoder,
+                checkpoint: { try checkFirstContentDeadline() })
+            await mediaGate.release(requestId: mediaReqId)
+            return images.submission
+        } catch {
+            await mediaGate.release(requestId: mediaReqId)
+            await releaseBox.fire()
+            if let failure = error as? PreContentDeadlineFailure { throw failure }
+            if error is CancellationError { throw CancellationError() }
+            if let mediaError = error as? MediaIngest.MediaError { throw mediaError }
+            if let engineError = error as? MultiModelBatchSchedulerEngineError { throw engineError }
+            if let clientFault = MuseGlimmerImagePrefill.clientFault(for: error, modelID: request.model) {
+                throw clientFault
+            }
+            (engineV2Vision ?? .production).emitTelemetry(EngineV2VisionPrefill.refusalTelemetryEvent(
+                modelId: request.model, mediaKind: .image, error: error))
+            throw EngineV2VisionPrefill.constructionRefusal(for: error, mediaKind: .image)
         }
     }
 

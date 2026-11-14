@@ -5681,10 +5681,10 @@ type under any other id is not advertised. No SDK model factory builds it.
 `MuseGlimmerServingLoad` calls the SDK's `MuseGlimmerInstallation.stage`, which
 verifies the pinned NVIDIA revision (the index and every shard by SHA-256) and
 installs the projections it reads from the verified shard headers, inside the
-slot owner's ordinary LOAD claim and weight-hash bracket. The model is text
-only here: the vision tower is verified and left unloaded, and
-`ModelMediaPolicy.advertisesMedia` is false for the type, so its retained
-`vision_config` selects neither media nor the vision factory.
+slot owner's ordinary LOAD claim and weight-hash bracket. The slot is a text
+slot: `ModelMediaPolicy.advertisesMedia` is false for the type, so its
+`vision_config` selects neither the vision factory nor the generic media path.
+Image input is separate ([below](#muse-glimmer-30b-images)) and off by default.
 
 The text tower is attention only, with sliding and full layers. Its
 `cbv2LayerKinds` and capabilities drive `ProductionModelAdapter` and the sizing
@@ -5765,6 +5765,57 @@ Sources: `provider-swift/Sources/ProviderCoreFoundation/MuseGlimmerModelPolicy.s
 `provider-swift/Sources/ProviderCore/Inference/Streaming/MuseGlimmerToolFrame.swift`,
 `provider-swift/Sources/ProviderCoreFoundation/PythonJSONTemplateFilter.swift`,
 and `libs/mlx-swift-lm/Libraries/MLXLLM/Models/MuseGlimmer/`.
+
+### Muse Glimmer 30B images
+
+Discovery advertises `is_vision` for the exact identity only when
+`DARKBLOOM_MUSE_GLIMMER_VISION=1` and `MuseGlimmerVisionArtifact` passes: the
+configuration declares the pinned vision stack
+(`MuseGlimmerVisionPolicy.configurationRefusal`: `model_type`, `vision_config`,
+the image and video token ids, no text-only overlay), and `config.json`,
+`processor_config.json` and the index are the pinned bytes, each read as a
+bounded regular file, never through a symlink. The load makes the same
+decision from the same files, after the installer has verified every shard,
+vision tensors included, and builds the SDK's `MuseGlimmerImageEncoder` from
+those verified sources with `config.json` cross-checked. An advertised slot
+whose encoder fails to load fails the whole load; it never serves text alone.
+The slot's input processor (`MuseGlimmerServingProcessor`) carries the
+encoder, or the reason images are refused.
+
+An image request takes the text route (`MuseGlimmerImagePrefill`), with its
+tool-choice preparation, template input, parser, constraints and stream. Each
+user image part renders as the template's `{"type": "image"}`, one
+`<|patch|>`, so the prompt is the text render with one placeholder at each
+image; a message the normalization changed is refused rather than rendered
+from other text. Images decode through `MediaIngest` (data URLs only, EXIF
+orientation, the per-image, per-request and count caps). The SDK's geometry
+(upstream's `smart_resize`, 28-pixel units, at most 4,096 merged tokens) gives
+each image's grid, `MuseGlimmerImagePrompt.expand` replaces each placeholder
+with `<|image_start|>`, the image's patches and `<|image_end|>`, and the
+encoder evaluates one image at a time under `MLX.withError`, checking
+cancellation and the first-content deadline before each. The features enter
+the engine as causal spans (`CBv2MultimodalAttention.causal`): no positions or
+span masks of their own, so the 1,024-token prompt grid cuts them as it cuts
+text. The row has no prefix identity, so it neither reuses nor publishes the
+prefix cache, and the SDK never drafts beside it.
+
+Before any decode, the media memory gate reserves each image at its ceiling:
+4,098 prompt tokens of KV and the encoded features, plus one full-size tower
+run (`MuseGlimmerVisionBudget`, an analytic bound until a measurement replaces
+it). Refusals are typed 400s, decided before any tower work: a slot that serves
+no images (`unsupported_media`; the reason, switch off, not the pinned
+artifact or no encoder, is logged on the Mac and never sent), video (`unsupported_media` until the SDK takes it), an
+image outside a user message, a placeholder count that does not match the
+images, an image size outside the processor's range (`invalid_media`), and a
+required or named tool choice. The memory gate's refusal is the retryable
+`media_memory_unavailable`.
+
+Sources: `provider-swift/Sources/ProviderCoreFoundation/MuseGlimmerVisionPolicy.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Vision/MuseGlimmerVisionArtifact.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Vision/MuseGlimmerImagePrefill.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Vision/MuseGlimmerVisionBudget.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MuseGlimmerServingLoad.swift`
+and `libs/mlx-swift-lm/Libraries/MLXVLM/Models/MuseGlimmerImageEncoder.swift`.
 
 ## Related
 

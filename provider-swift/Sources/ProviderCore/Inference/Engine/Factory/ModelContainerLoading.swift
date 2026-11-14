@@ -89,7 +89,7 @@ enum ModelContainerLoading {
         }
         // No SDK factory builds this model; its pinned installer does.
         if MuseGlimmerModelPolicy.isModelType(base.modelType) {
-            return try await MuseGlimmerServingLoad.container(from: directory)
+            return try await MuseGlimmerServingLoad.container(from: directory, modelID: modelID)
         }
         let selection = factorySelection(at: directory, modelID: modelID)
         guard selection != .nativeMiMo else { throw MiMoV26ServingLoadError.managedLoadRequired }

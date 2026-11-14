@@ -56,14 +56,15 @@ import DarkbloomClusterRemote
                    normalizedConfigurationSHA256: String? = nil,
                    profile: ClusterWorkerProfile? = nil,
                    initialLeaseNanoseconds: UInt64 = 1_000_000_000,
-                   renewalInterval: UInt64 = 50_000_000) throws -> ClusterCalibrationProcess {
+                   renewalInterval: UInt64 = 50_000_000,
+                   verifyLaunched: (@Sendable (pid_t) throws -> Void)? = nil) throws -> ClusterCalibrationProcess {
             let now = DispatchTime.now().uptimeNanoseconds, end = deadline ?? (now + 1_500_000_000)
             let file = root.appendingPathComponent(UUID().uuidString + ".json")
             try JSONSerialization.data(withJSONObject: report ?? self.report()).write(to: file)
             let credential = try ClusterDataPlaneLaunch.sessionCredentialLines(epoch: identity.membershipEpoch)[0]
             return try ClusterCalibrationProcess(launch: .init(executable: executable ?? self.executable,
                 arguments: [mode, file.path, control, identity.membershipEpoch.uuidString, String(end)] + (attachment?.workerArguments ?? []),
-                environment: [:], initialInput: credential), expectedIdentity: identity, rank: 0, profile: profile ?? self.profile,
+                environment: [:], initialInput: credential, verifyLaunched: verifyLaunched), expectedIdentity: identity, rank: 0, profile: profile ?? self.profile,
                 executionPlanSHA256: plan, authorizationSHA256: authority,
                 normalizedConfigurationSHA256: normalizedConfigurationSHA256 ?? normalizedConfiguration, environmentSHA256: environment,
                 initialLeaseDeadline: now + initialLeaseNanoseconds, experimentDeadline: end,
@@ -244,6 +245,30 @@ import DarkbloomClusterRemote
         let child = try f.launch("exit", report: report)
         #expect(child.waitUntilExited(deadline: child.retirementDeadline))
         #expect(throws: (any Error).self) { try child.successfulReport() }
+    }
+    /// The launch check sees a child that has not run (stopped, with no
+    /// process of its own); a refused child is reaped before the launch fails
+    /// and never reads its credential, an accepted one runs normally.
+    @Test func launchCheckRunsBeforeTheChildAndARefusalWritesNothing() throws {
+        let f = try Fixture(); defer { f.cleanup() }
+        let refusedStates = LaunchStates()
+        let refused = try f.child("wait", verifyLaunched: { refusedStates.record($0); throw CancellationError() })
+        #expect(throws: CancellationError.self) { try refused.launch() }
+        let refusedPID = try refusedStates.unstarted().get()
+        #expect(launchedChildReaped(refusedPID), "A refused child was not reaped before its launch failed")
+        #expect(refused.termination == .launchFailed); #expect(!refused.observedExit)
+        usleep(300_000)
+        #expect(!FileManager.default.fileExists(atPath: f.control + ".credential"))
+
+        let states = LaunchStates()
+        let child = try f.child("wait", verifyLaunched: { states.record($0) })
+        try child.launch(); f.children.append(child)
+        #expect(child.launchedProcessIdentifier == (try states.unstarted().get()))
+        try f.wait { child.provisionalReport != nil }
+        #expect(FileManager.default.fileExists(atPath: f.control + ".credential"))
+        try f.release()
+        #expect(child.waitUntilExited(deadline: child.retirementDeadline))
+        #expect(child.termination == .exited(0)); #expect(child.sentSignals.isEmpty)
     }
     @Test func launchFailureIsNotObservedChildExit() throws {
         let f = try Fixture(); defer { f.cleanup() }
@@ -620,3 +645,4 @@ import DarkbloomClusterRemote
     }
 
 }
+

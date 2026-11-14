@@ -673,6 +673,14 @@ Installed processes still use the source defaults.
 | `DARKBLOOM_QWEN4_QSA_PARALLEL_VALUE_PARTITIONS` | `1`, `2`, `4`, `8`, `16`, `32` | `32` for full KV; caller fallback for compact KV | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen4ExpParallelQSA.swift` (`valuePartitions`) | A valid explicit caller argument wins over the environment. Invalid explicit values retain the caller fallback. This changes scheduling, not arithmetic order, precision or MTP depth. |
 | `DARKBLOOM_QWEN4_LAYER_ASYNC` | unset or exact `1` enables; explicit `0` disables | on | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen4ExpLayerSubmission.swift` (`enabled`, `plan`) | Early singleton text layer submission on valid native paged caches at widths 1–6. Media/explicit positions, wider/batched shapes and faulted or unknown caches retain the existing scheduling. Other explicit spellings stay disabled. |
 
+### Gemma o5 conformance
+
+| Variable | Values / type | Default | Read in | Effect |
+|---|---|---|---|---|
+| `DARKBLOOM_GEMMA_REOPENED_THOUGHTS` | exact `1` enables | unset (off); `0` keeps legacy behavior | `libs/mlx-swift-lm/Libraries/MLXLMServer/Parsing/StreamingGemma4ReasoningParser.swift` (`StreamingGemma4ReasoningParser`) | Opts in to Gemma reopened thought channels. Read once per process. |
+
+Set this variable before starting an isolated foreground provider. It is not forwarded by the LaunchAgent allow-list. Unset it or use `0` and restart the process to roll back. See the [parser behavior](../architecture/inference.md#gemma-reopened-thought-channels).
+
 ### Native DiffusionGemma expert reduction
 
 These controls affect native DiffusionGemma inference, not its weights,
@@ -1847,11 +1855,3 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/C
 The wizard’s optional local stopDrain token is saved with stopped intent and retained after a local timeout. Leases preserve the peer’s prior intent until the local supervisor retires its owned part and outstanding lease. The token is not a wire or user-facing configuration field; older records decode without it. A new serve is refused while it remains, and a model change retries the shared stop first.
 
 Every write of the wizard's record (`~/.darkbloom/cluster-setup/wizard.json`) takes the `wizard.json.lock` flock. When another writer holds that lock, the write waits up to 2 seconds for it (`ClusterSetupStore.recordLockWaitSeconds`). After 2 seconds the write fails with "Configuration or native device lease is currently held". The cluster service writes the record while it holds its own service lock, so it tries once and writes again on its next supervision cycle. Source: `provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterSetupWizardStore.swift` (`ClusterSetupStore.updateRecord`).
-
-### Gemma o5 conformance
-
-| Variable | Values / type | Default | Read in | Effect |
-|---|---|---|---|---|
-| `DARKBLOOM_GEMMA_REOPENED_THOUGHTS` | exact `1` enables | unset (off); `0` keeps legacy behavior | `libs/mlx-swift-lm/Libraries/MLXLMServer/Parsing/StreamingGemma4ReasoningParser.swift` (`StreamingGemma4ReasoningParser`) | Opts in to Gemma reopened thought channels. Read once per process. |
-
-Set this variable before starting an isolated foreground provider. It is not forwarded by the LaunchAgent allow-list. Unset it or use `0` and restart the process to roll back. See the [parser behavior](../architecture/inference.md#gemma-reopened-thought-channels).

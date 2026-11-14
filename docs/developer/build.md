@@ -1088,6 +1088,10 @@ and keep MLX/device execution absent. MiMo page/history helpers and the native
 owner must be integrated together; a zero or omitted page/workspace quote
 cannot enable automatic widening. See [native quote checks](test.md#native-family-batch-quote-checks).
 
+### Gemma o5 dependency adoption
+
+The Gemma reopened thought channels conformance suite consumes the exact `libs/mlx-swift-lm` gitlink, including its parser tests. Use the normal recursive dependency checkout and test-product build; the [isolated conformance runs](test.md#gemma-o5-conformance) reuse those products without a second build. Native MLX and nested core pins are unchanged.
+
 ### Gemma request and paged restore checks
 
 Rebuild `darkbloom-cluster-pair-check` after changing
@@ -1134,7 +1138,3 @@ Qwen27 TP batch prefix capture/restore changes the Runtime target only; it
 reuses the pinned SDK owned-state APIs. Rebuild the worker and planner together
 because the same complete LOAD budget prices the additional snapshot banks.
 See [warm-prefix validation](test.md#qwen27-tp-warm-prefix-checks).
-
-### Gemma o5 dependency adoption
-
-The Gemma reopened thought channels conformance suite consumes the exact `libs/mlx-swift-lm` gitlink, including its parser tests. Use the normal recursive dependency checkout and test-product build; the [isolated conformance runs](test.md#gemma-o5-conformance) reuse those products without a second build. Native MLX and nested core pins are unchanged.

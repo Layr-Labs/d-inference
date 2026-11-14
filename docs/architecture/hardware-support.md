@@ -1335,6 +1335,10 @@ Source and CPU frame checks do not clear earlier full-artifact negative
 qualifications; rerun each affected rank orientation and schedule with the
 unchanged numerical comparator.
 
+## Gemma o5 parser qualification
+
+The [Gemma reopened thought channels change](inference.md#gemma-reopened-thought-channels) operates on CPU text and schema values. Parser tests do not establish full-model numerical, memory, throughput or concurrency qualification. This opt-in does not change hardware admission or model memory allowances.
+
 ## Gemma prefix frame preservation
 
 The [registered Gemma prefix plan](inference.md#gemma-prefix-chunk-arithmetic)
@@ -1617,7 +1621,3 @@ memory is free. Admission limits and native memory guards are unchanged. See
 [planned cluster stop ordering](inference.md#planned-cluster-stop-ordering) and
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterService.swift`
 (`ClusterService.stopLocalPart`).
-
-### Gemma o5 parser qualification
-
-The [Gemma reopened thought channels change](inference.md#gemma-reopened-thought-channels) operates on CPU text and schema values. Parser tests do not establish full-model numerical, memory, throughput or concurrency qualification. This opt-in does not change hardware admission or model memory allowances.

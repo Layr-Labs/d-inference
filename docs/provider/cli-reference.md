@@ -4238,6 +4238,10 @@ The watchdog plist carries its own list: `DARKBLOOM_NO_UPDATE_CHECK`,
 `DARKBLOOM_NO_UPDATE_CHECK` is **not** forwarded to the provider daemon; disable
 automatic updates with `darkbloom autoupdate disable`.
 
+### Gemma o5 parser switch
+
+For foreground qualification, set `DARKBLOOM_GEMMA_REOPENED_THOUGHTS` before starting the process. The [configuration reference](../reference/configuration.md#gemma-o5-conformance) defines activation and rollback; the daemon LaunchAgent does not inherit this switch.
+
 ## Runtime constants
 
 | Constant | Value | Source |
@@ -4420,7 +4424,3 @@ Source: `provider-swift/Sources/darkbloom/ClusterServiceCommand.swift`
 for the bounds and process custody rules.
 
 Qwen3.8 27B automatic cluster capacity changes keep the current tensor split and native request execution path. Widening occurs only when the complete reservation fits that split; otherwise the current capacity remains available. No additional command or user setting is required. Implementation: `DistributedAutomaticBatchPlanner` and `ClusterPlacementFlow` in `provider-swift/Sources/ProviderCore/Inference/Distributed/`.
-
-### Gemma o5 parser switch
-
-For foreground qualification, set `DARKBLOOM_GEMMA_REOPENED_THOUGHTS` before starting the process. The [configuration reference](../reference/configuration.md#gemma-o5-conformance) defines activation and rollback; the daemon LaunchAgent does not inherit this switch.

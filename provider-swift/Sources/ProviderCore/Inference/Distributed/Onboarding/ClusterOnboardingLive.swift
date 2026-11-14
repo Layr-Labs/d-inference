@@ -583,11 +583,8 @@ final class OnboardingLive: @unchecked Sendable {
                 defer { pendingAnswer = nil }
                 return pendingAnswer
             }
-            let posture = peer.posture
-            let security = [posture.sipEnabled ? "SIP on" : "SIP OFF", posture.secureBootEnabled ? "Secure Boot full" : "Secure Boot reduced",
-                            posture.authenticatedRootEnabled ? "sealed system volume" : "system volume NOT sealed"].joined(separator: ", ")
-            events(.code(code, peer: [peer.name, "\(posture.hardwareModel), macOS \(posture.osVersion); \(security)",
-                                      "Secure Enclave key pin \(peer.pin.prefix(16))…"]))
+            events(.code(code, peer: [peer.name, ClusterPairingTerminal.reportedPosture(peer.posture),
+                                      "key pin \(peer.pin.prefix(16))…"]))
             if let early { answer(early) }
         }, peerDecided: { events(.peerDecided($0)) })
         let result = ClusterLinkPairing.run(options: options, participant: participant, hooks: ClusterPairingProvider.hooks,

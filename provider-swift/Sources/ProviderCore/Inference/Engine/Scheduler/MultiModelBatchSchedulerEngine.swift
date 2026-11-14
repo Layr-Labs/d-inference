@@ -1142,8 +1142,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             modelType: modelType, tokenizer: tokenizer.inner, promptTokens: promptTokens,
             logprobs: engineV2Logprobs != nil, declaresTools: prepared.tools?.isEmpty == false,
             setting: exitThinkingSetting)
-        if nativeReasoningBudget != nil { exitThinking = nil }
         if exitThinking != nil, await engineV2Bridge?.servesDistributedPair != false { exitThinking = nil }
+        if nativeReasoningBudget != nil { exitThinking = nil }
         let loopGuard = GenerationLoopGuardPolicy.resolve(
             modelType: modelType, request: request, prepared: prepared, tokenConstraint: tokenConstraint,
             exitThinking: exitThinking)

@@ -26,11 +26,12 @@ public struct ClusterLinkControlAttachment: Codable, Sendable, Equatable {
     static let fields: Set<String> = ["schema", "port", "linkEpoch", "edgeID", "secretFile"]
 
     /// Whether `path` is a pairing's `edge-<16 hex>.secret` in the pairing store at `pairingDirectory`: a name for the
-    /// pairing's secret, which need not exist as a file (`ClusterPairingStore.secretFile(peerPin:)`).
+    /// pairing's secret, which need not exist as a file (`ClusterPairingStore.secretFile(peerPin:)`). The folders are
+    /// compared, not the file: `standardizedFileURL` drops `/private` from a path only while what it names exists.
     static func namesPairingSecret(_ path: String, in pairingDirectory: URL) -> Bool {
-        let url = URL(fileURLWithPath: path).standardizedFileURL
+        let url = URL(fileURLWithPath: path)
         let name = url.lastPathComponent
-        guard url.deletingLastPathComponent().path == pairingDirectory.standardizedFileURL.path,
+        guard url.deletingLastPathComponent().standardizedFileURL.path == pairingDirectory.standardizedFileURL.path,
               name.hasPrefix("edge-"), name.hasSuffix(".secret") else { return false }
         let pin = name.dropFirst("edge-".count).dropLast(".secret".count)
         return pin.utf8.count == 16 && pin.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }

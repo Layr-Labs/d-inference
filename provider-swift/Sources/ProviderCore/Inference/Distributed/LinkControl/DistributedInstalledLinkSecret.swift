@@ -68,13 +68,16 @@ enum DistributedInstalledLinkSecret {
     static func pairing(naming path: String, pairingDirectory: URL,
                         vaults: Vaults) throws -> (store: ClusterPairingStore, record: ClusterPairingRecord)? {
         guard ClusterLinkControlAttachment.namesPairingSecret(path, in: pairingDirectory) else { return nil }
-        let url = URL(fileURLWithPath: path).standardizedFileURL
+        let name = URL(fileURLWithPath: path).lastPathComponent
         let store = ClusterPairingStore(directory: pairingDirectory, vault: vaults(pairingDirectory))
         let records: ClusterPairingRecords?
         do { records = try store.load() } catch {
             throw ClusterConfigurationError.invalid("This Mac's pairing record couldn't be read (\(error))")
         }
-        guard let record = records?.pairings.first(where: { URL(fileURLWithPath: $0.link.secretFile).standardizedFileURL == url }) else {
+        guard let record = records?.pairings.first(where: {
+            URL(fileURLWithPath: $0.link.secretFile).lastPathComponent == name
+                && ClusterLinkControlAttachment.namesPairingSecret($0.link.secretFile, in: pairingDirectory)
+        }) else {
             throw ClusterConfigurationError.invalid(unpaired)
         }
         return (store, record)

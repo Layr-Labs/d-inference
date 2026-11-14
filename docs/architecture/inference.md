@@ -3736,8 +3736,13 @@ where its engine runs token constraints: the native page-bank profiles qualify
 them in the SDK (`CBv2NativeExecutionContract.supportsTokenConstraints`, the
 profiles that qualify logprob rows: every target row samples with the ordinary
 sampler), a cluster pair does not. Its reasoning-first prompts, the JSON
-default, are constrained too, so such a request decodes target-only throughout.
-Declined GLM requests keep the withheld answer and its check below.
+default, are constrained too, so such a request decodes target-only throughout
+(the speculation cost is below); on GLM's engine a constrained row also never
+chains its decode steps. Admitted or declined, GLM keeps its withheld answer and
+its check ([GLM5Next implementation boundary](#glm5next-implementation-boundary) above), and an admitted row donates no
+prefix checkpoint: GLM's assistant records no prompt history for a row that
+never drafts, so checkpoint capture declines it, and repeated JSON prompts do not
+reuse each other's prefix.
 
 `DARKBLOOM_JSON_ANSWER_GRAMMAR=qwen` (or `0`, `off`, `false`, `no`, `none`)
 keeps the grammar to the Qwen types, as before Bonsai and Lightning were
@@ -3792,7 +3797,8 @@ The request streams through the native reasoning split (`NativeToolStreamRouter`
 seeded from `JSONAnswerConstraint.channelPrefix`), so `JSONAnswerOutput` checks
 only the answer when generation ends: content that is not one JSON value of the
 schema is a 422 `MLXOpenAIServiceError.invalidResponseFormatOutput`
-(`tool_noncompliance`) after the content has streamed. A budget that ends first
+(`tool_noncompliance`) after the content has streamed (GLM's answer is withheld,
+so its 422 carries none). A budget that ends first
 ends the answer as a normal `length` finish with its content as generated
 ([cut answers](#answers-cut-at-the-token-limit)). Engine `stop` strings still
 apply as for the other Qwen requests; a stop that cuts the value short fails the
@@ -3833,8 +3839,8 @@ non-streaming API checks the request's own schema in the SDK
 (`OpenAIResponseFormatSupport`), as it does for prompt-only answers, and an
 answer that exhausts the grammar's interned states fails like any constrained
 answer (`tool_constraint_impossible_state`). The grammar's integers have at
-most 15 digits. Each widened answer logs one content-free line. Bonsai and
-Lightning keep declining these schemas.
+most 15 digits. Each widened answer logs one content-free line. Bonsai,
+Lightning and GLM keep declining these schemas.
 
 Every other case keeps prompt-only steering and gains no refusal. A schema
 outside the subset that is not widened (including an enum value containing a
@@ -3845,8 +3851,8 @@ Tools or `tool_choice` beside the format keep today's behavior; Flint's
 format-over-tools precedence does not apply. Image and video requests take the
 media path, which installs no token constraint.
 
-A constrained row never drafts (`EngineLoopV2.mtpBasicEligible`). Neither the
-Qwen 3.5 targets nor Lightning's declare the row-exact recurrent fallback
+A constrained row never drafts (`EngineLoopV2.mtpBasicEligible`). None of the
+Qwen 3.5 targets, Lightning's and GLM's declare the row-exact recurrent fallback
 (`CBv2RecurrentMTPRequestScopedMediaFallback`), so
 `ineligibleRowsDecodeBesideSpeculation` is false for their MTP driver and
 `EngineLoopV2.mtpDraftBatchRows` keeps the whole cohort: while a constrained
@@ -3856,7 +3862,10 @@ Decoding such rows beside speculation needs that SDK capability and row-exactnes
 evidence for each target. Bonsai 2 27B has no drafter. Lightning drafts, so only
 its answer-first prompts (thinking off) are constrained: those trigger it, and
 every Lightning row sharing their decode step, thinking or not, stops
-speculating meanwhile.
+speculating meanwhile. GLM drafts with at most two decode rows, so a lone GLM
+JSON request loses MTP for its whole reasoning and answer, a plain request
+sharing a two-row step with one loses it too, and at three or more rows nothing
+changes.
 
 Sources: `provider-swift/Sources/ProviderCore/Inference/Tools/JSONAnswerPolicy.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Tools/QwenJSONSchemaRewrite.swift`,

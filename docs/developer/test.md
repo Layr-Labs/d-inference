@@ -2296,12 +2296,22 @@ through `ToolConstraintFactory.make`), unlisted builds of a shared `model_type`
 mismatched contract, and the Nemotron vocabulary's admitted ids and terminators.
 `JSONAnswerFamilyServingTests` streams a Bonsai and a Lightning answer through
 the scheduler's forwarding body with the routing flags production passes.
+`GLMJSONAnswerTests` covers GLM-5.3-Flash on a GLM-shaped synthetic tokenizer:
+admission only with `DARKBLOOM_GLM_JSON_ANSWERS` on and an engine that runs
+token constraints (both through `ToolConstraintFactory.make`), every decline,
+the vocabulary and automaton (free reasoning that cannot end the request or
+spell a turn marker, then one JSON value ending at `<|user|>` or
+`<|endoftext|>`) and the switch; `GLMJSONAnswerServingTests` streams a
+reasoning-first answer, a miss and a cut through the forwarding body with GLM's
+withheld answer.
 
-`QwenJSONAnswerRealTokenizerTests`, `BonsaiJSONAnswerRealTokenizerTests` and
-`NemotronJSONAnswerRealTokenizerTests` are opt-in. Set
-`DARKBLOOM_TEST_QWEN_TOKENIZER_DIR` to a local Qwen 3.5, 3.6 or 3.8 snapshot
-directory, `DARKBLOOM_TEST_BONSAI_TOKENIZER_DIR` to a Bonsai 2 27B one or
-`DARKBLOOM_TEST_NEMOTRON_TOKENIZER_DIR` to a Nemotron 3.5 Lightning one, and
+`QwenJSONAnswerRealTokenizerTests`, `BonsaiJSONAnswerRealTokenizerTests`,
+`NemotronJSONAnswerRealTokenizerTests` and `GLMJSONAnswerRealTokenizerTests` are
+opt-in. Set `DARKBLOOM_TEST_QWEN_TOKENIZER_DIR` to a local Qwen 3.5, 3.6 or 3.8
+snapshot directory, `DARKBLOOM_TEST_BONSAI_TOKENIZER_DIR` to a Bonsai 2 27B one,
+`DARKBLOOM_TEST_NEMOTRON_TOKENIZER_DIR` to a Nemotron 3.5 Lightning one or
+`DARKBLOOM_TEST_GLM_TOKENIZER_DIR` to a GLM-5.3-Flash one (its template opens a
+thought in every prompt, so only the reasoning tail is checked), and
 select that suite alone; it reads only tokenizer, template and config files,
 checks the pinned contract (the Bonsai and Nemotron suites against the stop set
 the slot gets: the artifact's EOS plus the tokenizer's) and both rendered JSON
@@ -2312,6 +2322,7 @@ suites loads weights or establishes answer quality or throughput. Sources:
 `provider-swift/Tests/ProviderCoreTests/Inference/Tools/QwenJSONAnswerServingTests.swift`,
 `provider-swift/Tests/ProviderCoreTests/Inference/Tools/QwenJSONAnswerRealTokenizerTests.swift`,
 `provider-swift/Tests/ProviderCoreTests/Inference/Tools/JSONAnswerFamilyTests.swift`,
+`provider-swift/Tests/ProviderCoreTests/Inference/Tools/GLMJSONAnswerTests.swift`,
 `provider-swift/Tests/ProviderCoreTests/Inference/Tools/QwenJSONSchemaRewriteTests.swift`.
 
 ## Flint native validation

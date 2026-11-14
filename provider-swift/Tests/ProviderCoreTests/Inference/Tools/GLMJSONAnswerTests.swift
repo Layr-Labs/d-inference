@@ -134,13 +134,14 @@ struct GLMJSONAnswerTests {
     @Test func theFactoryPassesTheEngineFlagThrough() throws {
         let json = try request(F.jsonObject)
         for accepts in [false, true] {
-            let constraint = try ToolConstraintFactory.make(
-                prepared: ToolChoicePromptPolicy.prepare(json, modelType: "glm5_next"), request: json,
-                tokenizer: Self.handle, modelContext: .init(modelId: json.model, modelType: "glm5_next"),
-                defaultMaxTokens: 100, stopTokenIDs: T.stops, nativePromptTokens: Self.thinkingPrompt,
-                acceptsTokenConstraints: accepts)
-            let expected = accepts && JSONAnswerPolicy.glmEnabled
-            #expect((constraint is JSONAnswerConstraint) == expected, "accepts \(accepts)")
+            for glm in [false, true] {
+                let constraint = try ToolConstraintFactory.make(
+                    prepared: ToolChoicePromptPolicy.prepare(json, modelType: "glm5_next"), request: json,
+                    tokenizer: Self.handle, modelContext: .init(modelId: json.model, modelType: "glm5_next"),
+                    defaultMaxTokens: 100, stopTokenIDs: T.stops, nativePromptTokens: Self.thinkingPrompt,
+                    acceptsTokenConstraints: accepts, glmJSONAnswers: glm)
+                #expect((constraint is JSONAnswerConstraint) == (accepts && glm), "accepts \(accepts) glm \(glm)")
+            }
         }
     }
 
@@ -173,6 +174,8 @@ struct GLMJSONAnswerTests {
         let complete = try walk(#"{"tables_used":["a"],"count":2}"#, from: answer)
         #expect(constraint.nextState(state: complete, tokenID: T.user) == -1)
         #expect(constraint.nextState(state: complete, tokenID: T.endOfText) == -1)
+        // `<|observation|>` stops the engine but is not an answer terminator.
+        #expect(!constraint.allowedTokenIDs(state: complete, remainingTokens: 10).contains(T.observation))
         // A missing required key or an unknown key cannot be sampled.
         let open = try walk(#"{"tables_used":["a"]"#, from: answer)
         #expect(constraint.nextState(state: open, tokenID: Int(UInt8(ascii: "}"))) == nil)
@@ -194,6 +197,61 @@ struct GLMJSONAnswerTests {
         #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(JSONAnswerPolicy.glmEnvironmentKey))
     }
 }
+
+#if DEBUG
+/// The scheduler's forwarding body as production runs an admitted GLM JSON
+/// request: the native split seeded from the open thought
+/// (`JSONAnswerConstraint.channelPrefix`), the format the grammar compiled
+/// (`JSONAnswerOutput`) and GLM's withheld answer and its check.
+@Suite("JSON answer grammar: GLM serving")
+struct GLMJSONAnswerServingTests {
+    private typealias F = QwenAnswerFixture
+
+    private func run(_ output: [String], finish: String = "stop") async throws -> QwenAnswerOutcome {
+        var request = try F.request(format: F.schemaFormat(F.schema))
+        request.model = "glm-5.3-flash"
+        let profile = JSONAnswerProfile.glm5Next
+        let answer = try JSONAnswerFormat(try #require(request.responseFormat), forbidding: profile.contentMarkers,
+                                          family: profile.family)
+        let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "glm5_next")
+        #expect(prepared.glmResponseFormat != nil)
+        let upstream = AsyncStream<GenerationEvent> { continuation in
+            for chunk in output { continuation.yield(.chunk(chunk)) }
+            continuation.yield(.info(promptTokens: 1, completionTokens: output.count, tokensPerSecond: 0,
+                finishReason: finish))
+            continuation.finish()
+        }
+        let stream = try MultiModelBatchSchedulerEngine(registryProvider: { [:] })._testMakeEventStream(
+            upstream: upstream, cancelUpstream: {}, prepared: prepared,
+            releaseBox: OneShotRelease(release: { _ in }, modelId: "fixture"),
+            nativeReasoningPrefix: "<think>", answerFormat: answer)
+        var outcome = QwenAnswerOutcome()
+        do {
+            for try await event in stream { outcome.record(event) }
+        } catch { outcome.error = error }
+        outcome.finish()
+        return outcome
+    }
+
+    @Test func theAnswerLeavesAfterTheReasoningAndAMissIsATyped422() async throws {
+        let valid = try await run(["Count the tables.", "</think>", #"{"tables_used":["a"],"#, #""count":3}"#])
+        #expect(valid.error == nil && valid.reasoning == "Count the tables.")
+        #expect(valid.content == #"{"tables_used":["a"],"count":3}"#)
+        let miss = try await run(["Plan.", "</think>", #"{"tables_used":["PRIVATE"]}"#])
+        guard case .invalidResponseFormatOutput(let message)? = miss.error as? MLXOpenAIServiceError else {
+            Issue.record("unexpected \(String(describing: miss.error))"); return
+        }
+        #expect(message.hasPrefix("GLM ") && !message.contains("PRIVATE") && miss.content.isEmpty)
+    }
+
+    /// A cut at the token limit ends as `length` with the answer as generated,
+    /// as for every family (`TokenLimitCutPolicy`).
+    @Test func anAnswerCutAtTheLimitLeavesAsGenerated() async throws {
+        let cut = try await run(["Plan.", "</think>", #"{"tables_used":["a"],"co"#], finish: "length")
+        #expect(cut.error == nil && cut.content == #"{"tables_used":["a"],"co"#)
+    }
+}
+#endif
 
 extension QwenAnswerFixture {
     static func answerFormatGLM(_ format: String) throws -> JSONAnswerFormat {

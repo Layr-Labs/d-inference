@@ -254,14 +254,17 @@ extension NemotronSuperManagedSlotTests {
         #expect(await budget.outstandingReservedBytes() == 0)
     }
 
-    /// One image request runs at a time per owner. A second image that arrives
+    /// With concurrent images off (`DARKBLOOM_NEMOTRON_SUPER_CONCURRENT_IMAGES=0`,
+    /// the kill switch; on by default, two images share an owner, #2094) one
+    /// image request runs at a time per owner. A second image that arrives
     /// while the first streams gets 429 before any response and holds nothing
     /// when its first-content budget leaves no room to wait for the first; with
     /// room it waits for the first and is served (SUPER-SLOT). A video that is
     /// not a movie gets 400 from the shared inline ingest.
     @Test(.timeLimit(.minutes(3)))
     func concurrentImageIsRefusedWith429AndInvalidVideoWith400() async throws {
-        let fixture = try await Self.fixture(mode: .auto)
+        let fixture = try await Self.fixture(mode: .auto,
+            environment: [NemotronSuperLocalBridgeBuilder.concurrentImagesKey: "0"])
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
         let loop = fixture.loop, script = fixture.script
         try await loop.ensureModelLoaded(modelId: Self.modelID, allowEviction: false,

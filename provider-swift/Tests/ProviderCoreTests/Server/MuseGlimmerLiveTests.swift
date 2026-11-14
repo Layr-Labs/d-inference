@@ -324,21 +324,23 @@ struct MuseGlimmerLiveTests {
             return fields
         }
 
-        let system = ledger("Ledger C (conversation). Answer questions about these records.", lines: 200)
+        // Lookups a short reasoning pass can answer, so every turn ends with
+        // an answer the next turn's history carries.
+        let system = ledger("Ledger C (conversation). Answer questions about these records briefly.", lines: 120)
         let questions = [
-            "Which station logged the most rain on day 5? Answer in one sentence.",
-            "Which station logged the least rain on day 5?",
-            "On which days did Farrow log more than 90 millimetres?",
-            "What was the strongest wind recorded for Alder, and on which day?",
-            "How many records mention wind from the north?",
-            "Summarize what you found about day 5 in two sentences.",
+            "Which station logged record 12, and how much rain?",
+            "What wind direction does record 40 give?",
+            "On which day was record 77 logged?",
+            "Did record 101 log more rain than record 102?",
+            "What wind speed does record 55 give?",
+            "In one sentence, repeat your answers about records 12 and 40.",
         ]
         let scopeA = "glimmer-live-A-" + UUID().uuidString
         var messages: [[String: Any]] = [["role": "system", "content": system]]
         var promptTotal = 0, cachedTotal = 0, laterPrompt = 0, laterCached = 0, equalTurns = 0
         for (turn, question) in questions.enumerated() {
             messages.append(["role": "user", "content": question])
-            let body = chat(messages, maxTokens: 160, effort: "low")
+            let body = chat(messages, maxTokens: 512, effort: "low")
             let warm = try await scoped(body, scope: scopeA, name: "turn-\(turn + 1)-scope-A")
             let cold = try await scoped(body, scope: "glimmer-live-cold-" + UUID().uuidString,
                                         name: "turn-\(turn + 1)-cold")
@@ -360,7 +362,7 @@ struct MuseGlimmerLiveTests {
         }
         // The first turn's prompt again under scope A, then through local HTTP.
         let firstTurn = chat([["role": "system", "content": system], ["role": "user", "content": questions[0]]],
-                             maxTokens: 160, effort: "low")
+                             maxTokens: 512, effort: "low")
         let again = try await scoped(firstTurn, scope: scopeA, name: "turn-1-again-scope-A")
         let (localStatus, _) = try await client.post(firstTurn, name: "turn-1-local-http")
         #expect(localStatus == 200)

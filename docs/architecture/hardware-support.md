@@ -1210,7 +1210,7 @@ Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next
 
 ### Gemma o4 parser qualification
 
-The [Gemma quoted numeric tool arguments change](inference.md#gemma-quoted-numeric-tool-arguments) operates on CPU text and schema values. Parser tests do not establish full-model numerical, memory, throughput or concurrency qualification. This opt-in does not change hardware admission or model memory allowances.
+The [Gemma quoted numeric tool arguments change](inference.md#gemma-quoted-numeric-tool-arguments) operates on CPU text and schema values. Parser tests do not establish full-model numerical, memory, throughput or concurrency qualification. This parser switch does not change hardware admission or model memory allowances.
 
 ### Gemma batch arithmetic evidence boundary
 

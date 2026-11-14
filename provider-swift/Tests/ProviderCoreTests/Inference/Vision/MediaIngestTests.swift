@@ -716,25 +716,36 @@ func vlmBuildUserInputCapsImageCount() async throws {
     }
 }
 
-/// The image cap is per model (`imageCap(forModel:)`); in 0.10.12 every model,
-/// Qwen3.5-9B included, has 16, and the operator's override applies to every model.
-@Test("the image cap is per model: 16 for every model in 0.10.12")
+/// The image cap is per model (`imageCap(forModel:)`): 64 for the Qwen3VL-family
+/// builds (their per-request image budget keeps the visual tokens of 16 full-size
+/// images), 32 for Gemma 4 26B, 16 for every other model; the operator's override
+/// applies to every model.
+@Test("the image cap is per model: 64 for the Qwen builds, 32 for Gemma, 16 for the others")
 func vlmImageCapPerModel() {
-    #expect(MediaIngest.modelMaxImagesPerRequest.isEmpty)
-    for model in ["Qwen3.5-9B", "qwen3.6-35b-a3b-vl-mtp-mxfp8", "qwen3.5-35b-a3b", "qwen3.5-9b", "vlm", nil] as [String?] {
+    let qwen = ["Qwen3.5-9B", "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8", "EigenLabs/Qwen3.8-27B-4bit-mtp"]
+    #expect(Set(MediaIngest.modelMaxImagesPerRequest.keys) == Set(qwen + ["gemma-4-26b-qat-4bit"]))
+    for model in qwen {
+        #expect(MediaIngest.imageCap(forModel: model, environment: [:]) == 64)
+        #expect(MediaIngest.imageBudget(forModel: model) == .init(images: 16, pixels: 16 * 1_048_576))
+    }
+    #expect(MediaIngest.imageCap(forModel: "gemma-4-26b-qat-4bit", environment: [:]) == 32)
+    #expect(MediaIngest.imageBudget(forModel: "gemma-4-26b-qat-4bit") == nil)
+    // Exact ids only: a differently-cased id, Super and others keep 16.
+    for model in ["qwen3.5-9b", "nvidia-nemotron-3.5-super", "gemma-4-26b", "vlm", nil] as [String?] {
         #expect(MediaIngest.imageCap(forModel: model, environment: [:]) == 16)
+        #expect(MediaIngest.imageBudget(forModel: model) == nil)
     }
     let key = "DARKBLOOM_MAX_IMAGES_PER_REQUEST"
     #expect(MediaIngest.imageCap(forModel: "Qwen3.5-9B", environment: [key: "8"]) == 8)
     #expect(MediaIngest.imageCap(forModel: "vlm", environment: [key: "32"]) == 32)
     // An unusable override keeps each model's own default.
-    #expect(MediaIngest.imageCap(forModel: "Qwen3.5-9B", environment: [key: "0"]) == 16)
+    #expect(MediaIngest.imageCap(forModel: "Qwen3.5-9B", environment: [key: "0"]) == 64)
     #expect(MediaIngest.imageCap(forModel: "vlm", environment: [key: "many"]) == 16)
 }
 
 /// The vision prefill builds its input without an explicit cap
 /// (`EngineV2VisionPrefill.prepare`), so the request's model decides it.
-@Test("a Qwen3.5-9B request takes 16 images; its 17th and another model's 17th are refused")
+@Test("a Qwen build takes 64 images and refuses the 65th; Gemma 32; another model refuses its 17th")
 func vlmBuildUserInputUsesTheModelsImageCap() async throws {
     func request(model: String, images: Int) -> OpenAIChatCompletionRequest {
         OpenAIChatCompletionRequest(
@@ -745,22 +756,76 @@ func vlmBuildUserInputUsesTheModelsImageCap() async throws {
                         + (0 ..< images).map { _ in OpenAIContentPart.imageURL(tinyPNGDataURI) }))
             ])
     }
-    _ = try await MediaIngest.buildUserInput(from: request(model: "Qwen3.5-9B", images: 16))
-    do {
-        _ = try await MediaIngest.buildUserInput(from: request(model: "Qwen3.5-9B", images: 17))
-        Issue.record("expected the 17th image to be refused")
-    } catch let MediaIngest.MediaError.mediaTooLarge(detail) {
-        #expect(detail == "request has 17 images; cap is 16")
+    for model in ["Qwen3.5-9B", "EigenLabs/Qwen3.8-27B-4bit-mtp", "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8"] {
+        let input = try await MediaIngest.buildUserInput(from: request(model: model, images: 64))
+        #expect(input.images.count == 64)
+        do {
+            _ = try await MediaIngest.buildUserInput(from: request(model: model, images: 65))
+            Issue.record("expected the 65th image to be refused")
+        } catch let MediaIngest.MediaError.mediaTooLarge(detail) {
+            #expect(detail == "request has 65 images; cap is 64")
+        }
+    }
+    // Gemma 4 26B: 32 served, the 33rd refused; another model's 17th refused.
+    #expect(try await MediaIngest.buildUserInput(from: request(model: "gemma-4-26b-qat-4bit", images: 32)).images.count == 32)
+    await expectMediaTooLarge {
+        _ = try await MediaIngest.buildUserInput(from: request(model: "gemma-4-26b-qat-4bit", images: 33))
     }
     await expectMediaTooLarge {
-        _ = try await MediaIngest.buildUserInput(
-            from: request(model: "qwen3.6-35b-a3b-vl-mtp-mxfp8", images: 17))
+        _ = try await MediaIngest.buildUserInput(from: request(model: "nvidia-nemotron-3.5-super", images: 17))
     }
     // An explicit cap still wins (the pair's Qwen media path passes its own).
     await expectMediaTooLarge {
         _ = try await MediaIngest.buildUserInput(
-            from: request(model: "Qwen3.5-9B", images: 9), maxImagesPerRequest: 8)
+            from: request(model: "Qwen3.5-9B", images: 17), maxImagesPerRequest: 16)
     }
+}
+
+/// Past 16 images a Qwen build's request keeps the pixels (so the visual tokens,
+/// one per 32x32 px) of 16 full-size images: each image larger than its share is
+/// scaled down, aspect kept. 16 or fewer images, and other models, are untouched.
+@Test("past 16 images a Qwen request's images share 16 full-size images' pixels")
+func qwenImageBudgetScalesManyImages() async throws {
+    let page = makePNGDataURI(width: 1024, height: 768)  // 786,432 px
+    let small = makePNGDataURI(width: 200, height: 100)
+    func request(model: String, pages: Int, smalls: Int = 0) -> OpenAIChatCompletionRequest {
+        OpenAIChatCompletionRequest(
+            model: model,
+            messages: [
+                .init(role: .user, content: .parts(
+                    [.text("frames of one video, in order")]
+                        + (0 ..< pages).map { _ in OpenAIContentPart.imageURL(page) }
+                        + (0 ..< smalls).map { _ in OpenAIContentPart.imageURL(small) }))
+            ])
+    }
+    func sizes(_ input: UserInput) -> [CGSize] {
+        input.images.map { image -> CGSize in
+            guard case .ciImage(let ci) = image.source else { return .zero }
+            return ci.extent.size
+        }
+    }
+    // 16 pages: untouched.
+    let sixteen = try await MediaIngest.buildUserInput(from: request(model: "Qwen3.5-9B", pages: 16))
+    #expect(sizes(sixteen).allSatisfy { $0 == CGSize(width: 1024, height: 768) })
+    // 32 and 64 pages: each at most 16 x 1,048,576 / n px, aspect 4:3 kept, origin 0.
+    for (model, n) in [("EigenLabs/Qwen3.8-27B-4bit-mtp", 32), ("qwen3.6-35b-a3b-vl-mtp-mxfp8", 64)] {
+        let input = try await MediaIngest.buildUserInput(from: request(model: model, pages: n))
+        let share = 16 * 1_048_576 / n
+        for size in sizes(input) {
+            #expect(Int(size.width) * Int(size.height) <= share)
+            #expect(Int(size.width) * Int(size.height) >= share * 9 / 10)
+            #expect(abs(size.width / size.height - 4.0 / 3.0) < 0.01)
+            #expect(size.width == size.width.rounded() && size.height == size.height.rounded())
+        }
+        guard case .ciImage(let ci) = input.images[0].source else { Issue.record("not a CIImage"); return }
+        #expect(ci.extent.origin == .zero)
+    }
+    // An image already under its share is untouched: 20 pages + 12 small ones.
+    let mixed = try await MediaIngest.buildUserInput(from: request(model: "Qwen3.5-9B", pages: 20, smalls: 12))
+    #expect(sizes(mixed).suffix(12).allSatisfy { $0 == CGSize(width: 200, height: 100) })
+    // A model without a budget keeps its images as sent (16 is its cap).
+    let other = try await MediaIngest.buildUserInput(from: request(model: "gemma-4-26b-qat-4bit", pages: 16))
+    #expect(sizes(other).allSatisfy { $0 == CGSize(width: 1024, height: 768) })
 }
 
 /// Build a real PNG of the given dimensions (uniform gray) via ImageIO — to

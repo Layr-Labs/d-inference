@@ -516,6 +516,14 @@ public enum MediaIngest {
     /// Qwen3.5-9B's 64 waits on its first-token check with 60 images.
     static let modelMaxImagesPerRequest: [String: Int] = [:]
 
+    /// A per-request image budget (stub: no model has one yet).
+    public struct ImageBudget: Equatable, Sendable {
+        public let images: Int
+        public let pixels: Int
+    }
+
+    static func imageBudget(forModel model: String?) -> ImageBudget? { nil }
+
     /// The image cap for one request to `model`: the
     /// `DARKBLOOM_MAX_IMAGES_PER_REQUEST` override when set (every model), else
     /// the model's own default, else 16.

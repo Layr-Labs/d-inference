@@ -2355,15 +2355,25 @@ Focused provider suites, CPU only and without weights:
 `MuseGlimmerPolicyTests`, `MuseGlimmerEngineDispatchTests`,
 `MuseGlimmerReasoningStrengthTests`, `MuseGlimmerProtocolPolicyTests`,
 `MuseGlimmerHistoryTests`, `MuseGlimmerChannelSplitterTests`,
-`MuseGlimmerToolStreamTests`, `MuseGlimmerPromptGoldenTests` and
+`MuseGlimmerToolStreamTests`, `MuseGlimmerPromptGoldenTests`,
+`MuseGlimmerReferencePromptTests`, `MuseGlimmerLoopGuardTests`,
+`MuseGlimmerHardwareRequirementTests` and
 `MuseGlimmerDrafterTests` (exact windows, the drafter's funnel, loader,
 checkpoint and engine wiring on a tiny seeded tower and drafter)
 (`--filter MuseGlimmer` selects them all), with
 `CachePromptParityTests.reasoningEffortVectors` for the effort table.
 
+`MuseGlimmerLoopGuardTests.macBGPQAReplay` also needs
+`MUSE_GLIMMER_LOOP_RECEIPTS`: a JSON-lines file of loadgen receipts, one per
+draw, with the text each client received. It retokenizes each draw with the
+pinned tokenizer and feeds it through the production loop guard with Muse
+listed. It checks that the walled draws are cut inside the reasoning message
+and that no other draw is cut. Without both variables it is skipped.
+
 `provider-swift/Tests/ProviderCoreTests/Fixtures/MuseGlimmer/` holds the served
 chat template, its license and `prompt-golden.json`: for each request body, the
-prompt text and token IDs a reference renderer produces. The corpus is generated
+prompt text and token IDs a reference renderer produces, including the
+reference servers' system-message merge and tool schemas as sent. The corpus is generated
 by `scripts/muse-glimmer-qualification/prompt_golden.py` (its README lists the
 pinned inputs and versions) and never edited by hand. `MuseGlimmerPromptGoldenTests`
 checks the provider's prompt text against it on every run, and its token IDs

@@ -583,11 +583,14 @@ struct MuseGlimmerLoopGuardTests {
         #expect(framingFree(outcome.reasoning))
         #expect(outcome.info?.stopReason == "stop")
         #expect(outcome.loopGuardStops == [true])
-        // A client stop string still ends the answer the exit opened.
-        let stopped = try await serve(
-            MuseGlimmerLoopTestEngine(.reasoningLoop, then: .answerText), extra: #","stop":["B"]"#)
-        #expect(stopped.content == "Answer: ")
-        #expect(stopped.info?.stopReason == "stop")
+        // A client stop string reaches the continuation, scoped to the answer the exit opened.
+        // The engine applies it (this test engine does not); `onyxExitWithoutTools` checks the scope.
+        let stopEngine = MuseGlimmerLoopTestEngine(.reasoningLoop, then: .answerText)
+        let stopped = try await serve(stopEngine, extra: #","stop":["B"]"#)
+        #expect(stopped.error == nil)
+        #expect(stopEngine.requests.count == 2)
+        #expect(stopEngine.requests.last?.stopStrings == ["B"])
+        #expect(stopEngine.requests.last?.stopStringScope == MuseGlimmerTemplateFix.insideAnswerStopScope)
     }
 
     @Test("a continuation that reopens its reasoning and loops ends as length, with no second exit")
@@ -661,5 +664,113 @@ struct MuseGlimmerLoopGuardTests {
         #expect(tokenizer.encode(text: "<|start|>assistant to=user<|message|>", addSpecialTokens: false)
             == Array(Self.answerExitTokens.dropFirst()))
         #expect(tokenizer.encode(text: " to=self<|message|>", addSpecialTokens: false) == [328, 19_669, 200_023])
+    }
+
+    // MARK: Mac B's GPQA run, replayed
+
+    /// One draw of Mac B's run through the production guard.
+    private struct ReplayedDraw {
+        let id: String
+        let tokens: Int
+        let detection: GenerationLoopDetector.Detection?
+        let endsThought: Bool
+        let exitRequested: Bool
+        /// When the cut would have come, from the draw's own delta rate.
+        let seconds: Double?
+    }
+
+    private func chunks(_ tokens: [Int], of size: Int = 4) -> [[Int]] {
+        stride(from: 0, to: tokens.count, by: size).map { Array(tokens[$0..<min($0 + size, tokens.count)]) }
+    }
+
+    /// Mac B's full GPQA run (594 draws, effort medium, 8 rows, the defaults:
+    /// no guard). q101-e0 and q173-e0 repeated a reasoning phrase with no
+    /// answer until the client's 3,600 s wall, each holding a row for an hour.
+    /// Each draw is what its client received, spelled back into the raw output
+    /// (` to=self<|message|>` reasoning, then
+    /// `<|eom|><|start|>assistant to=user<|message|>` answer `<|eot|>`) and
+    /// retokenized with the pinned tokenizer. The tokens approximate the
+    /// generated ones; several reasoning messages read as one.
+    @Test("Mac B's GPQA loopers are cut inside the thought long before the client's wall, and no other draw is",
+          .enabled(if: ProcessInfo.processInfo.environment["MUSE_GLIMMER_NVFP4_DIR"] != nil
+                       && ProcessInfo.processInfo.environment["MUSE_GLIMMER_LOOP_RECEIPTS"] != nil,
+                   "set MUSE_GLIMMER_NVFP4_DIR and MUSE_GLIMMER_LOOP_RECEIPTS (Mac B's gpqa-pM/pM.jsonl)"))
+    func macBGPQAReplay() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        let directory = URL(fileURLWithPath: try #require(environment["MUSE_GLIMMER_NVFP4_DIR"]), isDirectory: true)
+        let tokenizer = try await LocalTokenizerLoader(environment: [:]).load(from: directory)
+        let lines = try String(contentsOfFile: try #require(environment["MUSE_GLIMMER_LOOP_RECEIPTS"]), encoding: .utf8)
+            .split(separator: "\n")
+        let receipts = try lines.map { line in
+            try #require(try JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any])
+        }
+        #expect(receipts.count == 594)
+        // GPQA declares no tools: the exit also writes the answer's header (`museOnyxToAnswer`).
+        let request = try request("")
+        let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: Self.modelType)
+        // At the defaults, as Mac B ran, there is no guard: each loop ran to the wall.
+        #expect(GenerationLoopGuardPolicy.resolve(
+            modelType: Self.modelType, request: request, prepared: prepared, tokenConstraint: nil,
+            setting: GenerationLoopGuardPolicy.setting(environment: [:])) == nil)
+        let prompt = tokenizer.encode(
+            text: "<|begin_of_text|><|start|>user<|message|>hi<|eot|><|start|>assistant", addSpecialTokens: false)
+        func spell(_ text: String) -> [Int] { tokenizer.encode(text: text, addSpecialTokens: false) }
+        let reasoningHeader = spell(" to=self<|message|>")
+        let answerHeader = spell("<|eom|><|start|>assistant to=user<|message|>")
+        let endOfTurn = spell("<|eot|>")
+        var draws: [ReplayedDraw] = []
+        for receipt in receipts {
+            let id = try #require(receipt["id"] as? String)
+            let content = receipt["content"] as? String ?? ""
+            // Headers and control tokens one at a time, text in deltas of four tokens.
+            var deltas = reasoningHeader.map { [$0] } + chunks(spell(receipt["reasoning"] as? String ?? ""))
+            if !content.isEmpty {
+                deltas += answerHeader.map { [$0] } + chunks(spell(content)) + endOfTurn.map { [$0] }
+            }
+            let exit = try #require(GenerationLoopExitThinkingPolicy.resolve(
+                modelType: Self.modelType, tokenizer: tokenizer, promptTokens: prompt, logprobs: false,
+                declaresTools: false, setting: Self.enabled))
+            var loopGuard = try #require(GenerationLoopGuardPolicy.resolve(
+                modelType: Self.modelType, request: request, prepared: prepared, tokenConstraint: nil,
+                setting: Self.guarded, exitThinking: exit))
+            var detection: GenerationLoopDetector.Detection?
+            for delta in deltas where detection == nil {
+                detection = loopGuard.observe(
+                    text: tokenizer.decode(tokenIds: delta, skipSpecialTokens: false), tokens: delta)
+            }
+            let tokens = deltas.reduce(0) { $0 + $1.count }
+            var seconds: Double?
+            if let detection, let send = receipt["t_send"] as? Double, let first = receipt["t_first"] as? Double,
+               let last = receipt["t_last"] as? Double, last > first {
+                seconds = first - send + Double(detection.generatedTokens) * (last - first) / Double(tokens)
+            }
+            draws.append(ReplayedDraw(
+                id: id, tokens: tokens, detection: detection, endsThought: loopGuard.endsThought,
+                exitRequested: exit.record.requested != nil, seconds: seconds))
+        }
+        let walled = Set(receipts.filter { $0["aborted"] as? String == "wall" }.compactMap { $0["id"] as? String })
+        #expect(walled == ["q101-e0", "q173-e0"])
+        for draw in draws where walled.contains(draw.id) {
+            let detection = try #require(draw.detection, "\(draw.id) is never cut")
+            // Inside the reasoning message: the thought ends and the answer is asked for.
+            #expect(draw.endsThought && draw.exitRequested, "\(draw.id)")
+            // Long before the wall: within the first quarter of the hour's tokens, and of the hour.
+            #expect(detection.generatedTokens * 4 < draw.tokens, "\(draw.id)")
+            #expect((draw.seconds ?? .infinity) < 900, "\(draw.id)")
+        }
+        let wronglyCut = draws.filter { !walled.contains($0.id) && $0.detection != nil }.map(\.id)
+        #expect(wronglyCut.isEmpty, "the guard would cut \(wronglyCut)")
+        let checked = draws.filter { $0.tokens >= GenerationLoopDetector.Thresholds().minTokens }
+        var report = ["id\ttokens\tcut_at_token\tperiod\tspan\tends_thought\tseconds"]
+        for draw in draws where draw.detection != nil || walled.contains(draw.id) {
+            report.append([draw.id, "\(draw.tokens)", draw.detection.map { "\($0.generatedTokens)" } ?? "-",
+                           draw.detection.map { "\($0.period)" } ?? "-", draw.detection.map { "\($0.span)" } ?? "-",
+                           "\(draw.endsThought)", draw.seconds.map { String(format: "%.0f", $0) } ?? "-"]
+                .joined(separator: "\t"))
+        }
+        report.append("# \(draws.count) draws; \(checked.count) reach the guard's first check; "
+            + "\(wronglyCut.count) cut outside the walled draws; longest other draw "
+            + "\(draws.filter { !walled.contains($0.id) }.map(\.tokens).max() ?? 0) tokens")
+        print(report.map { "loop-replay: " + $0 }.joined(separator: "\n"))
     }
 }

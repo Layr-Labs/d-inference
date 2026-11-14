@@ -293,7 +293,7 @@ struct MuseGlimmerToolStreamTests {
 
     @Test("auto without strict: each call the strict parser rejects is returned as generated, as vLLM returns it")
     func autoCallsAsGenerated() async throws {
-        // The strict parser's rejections, each a 500 before.
+        // The strict parser's rejections, each a 500 before, and an integral float both parsers read alike.
         let cases: [(String, [[String: Any]], String, [String: MLXLMCommon.JSONValue])] = [
             ("undeclared name", Self.tools, "delete_everything", ["path": .string("/")]),
             ("missing required parameter", Self.tools, "get_weather", ["days": .int(3)]),
@@ -320,8 +320,14 @@ struct MuseGlimmerToolStreamTests {
             #expect(outcome.content.isEmpty, "\(label)")
             #expect(outcome.info?.stopReason == "stop", "\(label)")
             expectNoFraming(outcome)
-            // The strict parser, kept behind the switch, refuses each, now as the model's failure.
-            await expectNoncompliance(try Fixture(tools: tools), output, reference: false)
+            // The strict parser, kept behind the switch, refuses each, now as the model's failure,
+            // except the integral float, which it also reads as the integer.
+            if label == "integral float for an integer" {
+                let strict = try await stream(try Fixture(tools: tools), output, reference: false)
+                #expect(strict.calls.first?.function.arguments == arguments, "\(label)")
+            } else {
+                await expectNoncompliance(try Fixture(tools: tools), output, reference: false)
+            }
         }
     }
 

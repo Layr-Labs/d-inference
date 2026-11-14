@@ -5528,7 +5528,9 @@ cache defaults on for the identity and stores complete historical-attention
 checkpoints ([prefix cache](prefix-cache.md#muse-glimmer-30b)).
 
 Requests render the served chat template: the publisher's text with the date
-taken from the request (`PromptRenderDate`), Python-compatible `tojson`
+taken from the request (`PromptRenderDate`) and one call argument parenthesized
+so that minijinja, the coordinator's renderer, compiles it (no rendered byte
+changes), Python-compatible `tojson`
 (`PythonJSONTemplateFilter`, bound to this type by `MuseGlimmerTemplateFilters`)
 and history normalization (`MuseGlimmerTemplateFix`). Tool-call arguments in
 history that are not a JSON object replay as an empty mapping. Reasoning effort

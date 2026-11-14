@@ -399,6 +399,21 @@ struct LocalRouterTests {
         #expect(fixture.upstream.requests.isEmpty)
     }
 
+    /// The router's own check: on this Mac nothing else checks `/v1/completions`, and the request is not passed on.
+    @Test func aDeeplyNestedBodyIsRefusedBeforeAnything() async throws {
+        let fixture = RouterFixture(route: .myMacs)
+        let body = #"{"model":"absent","prompt":"hi","# + InboundJSONDepthTests.toolsField(nesting: 200) + "}"
+        try await fixture.app.test(.router) { client in
+            try await client.execute(uri: "/v1/completions", method: .post, headers: RouterFixture.authorized,
+                                     body: ByteBuffer(string: body)) { response in
+                #expect(response.status == .badRequest)
+                #expect(response.headers[LocalRouterPolicy.servedByHeader] == "this-mac")
+                #expect(String(buffer: response.body).contains(JSONNestingLimit.refusalMessage))
+            }
+        }
+        #expect(fixture.upstream.requests.isEmpty)
+    }
+
     // MARK: - A `self` hop never comes back to this Mac
 
     @Test func aSelfHopIsSkippedWhenThisMacIsTheOnlyOneOfTheOwnersMacsServingTheModel() async throws {

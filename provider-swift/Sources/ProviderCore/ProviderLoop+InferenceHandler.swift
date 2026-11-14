@@ -342,7 +342,7 @@ extension ProviderLoop {
         }
 
         // Every parse below recurses per JSON level on this task's stack.
-        if JSONNestingLimit.exceeds(decryptedData) {
+        if JSONNestingLimit.refuses(decryptedData) {
             rejectInvalidRequest(.malformedBody)
             return
         }

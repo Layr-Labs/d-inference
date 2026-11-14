@@ -65,7 +65,8 @@ struct ToolSchemaNormalizationTests {
         // Under the budget the same shape is still normalized.
         let small = emptyUnionBody(count: 8)
         #expect(ToolSchemaNormalization.ensureParameterTypes(in: small) != small)
-        // At the budget, rewriting would grow ~300 KB of `{}` about twentyfold.
+        // Just past the budget (the parameters root and `x` count too),
+        // rewriting would grow ~300 KB of `{}` about twentyfold.
         let large = emptyUnionBody(count: ToolSchemaNormalization.maxNormalizedNodes)
         #expect(ToolSchemaNormalization.ensureParameterTypes(in: large) == large)
     }

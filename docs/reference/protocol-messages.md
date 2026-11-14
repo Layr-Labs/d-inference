@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-11-13
+> Last updated: 2026-11-14
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon in
@@ -1294,9 +1294,10 @@ Go `InferenceRequestMessage` · Swift `CoordinatorMessage.InferenceRequest`.
 
 A decrypted body that nests objects and arrays more than 64 deep
 (`JSONNestingLimit.maximumDepth`,
-`provider-swift/Sources/ProviderCore/Protocol/JSONNestingLimit.swift`) is
-refused before it is parsed, with `failure_code` `invalid_request` (400) and
-`refusal_reason` `malformed_body`. The coordinator's own tool-schema
+`provider-swift/Sources/ProviderCore/Protocol/JSONNestingLimit.swift`) or holds
+a NUL byte is refused before it is parsed, with `failure_code`
+`invalid_request` (400) and `refusal_reason` `malformed_body`; a request whose
+tool-call `arguments` nest that deep is refused with `invalid_tool_arguments`. The coordinator's own tool-schema
 normalisation stops at depth 64 and forwards deeper nodes unchanged; see
 [request JSON limits](../architecture/inference.md#request-json-limits-before-decoding).
 

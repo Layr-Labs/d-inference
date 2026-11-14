@@ -1,6 +1,6 @@
 # The local API: an OpenAI-compatible server on your Mac
 
-> Last updated: 2026-11-13
+> Last updated: 2026-11-14
 
 Your Mac's models as an OpenAI-compatible HTTP server for your own tools,
 served two ways: **Both**, the default (`darkbloom start`: beside the Darkbloom
@@ -457,11 +457,14 @@ value in [runtime constants](./cli-reference.md#runtime-constants))
 matches the coordinator WebSocket frame allowance. Per-image, per-video and
 per-audio limits are the same as fleet serving and are configured through the
 variables in [`reference/configuration.md`](../reference/configuration.md).
-A chat, batch or Responses body, or one the [local router](#when-this-mac-cant-take-a-request-the-local-router)
-would pass on, that nests objects and arrays more than 64 deep
-(`JSONNestingLimit.maximumDepth`) is HTTP `400` before it is parsed: the JSON
-parsers recurse once per level on the request task's 512 KiB stack, which a
-few KB nested a few hundred deep would exhaust, ending the process.
+A JSON body (chat, batch, Responses, completions, tokenizer utilities,
+embeddings, or one the [local router](#when-this-mac-cant-take-a-request-the-local-router)
+would pass on) that nests objects and arrays more than 64 deep
+(`JSONNestingLimit.maximumDepth`) or is not UTF-8 is HTTP `400` before it is
+parsed, and so is a chat, batch or Responses request whose tool-call
+`arguments` nest that deep: the JSON parsers recurse once per level on the
+request task's 512 KiB stack, which a few KB nested a few hundred deep would
+exhaust, ending the process.
 A request that omits `max_tokens` may write up to 32,768 tokens (`SlotSizingSnapshot.defaultOutputTokens`, as on a pair), cut to the context window its prompt leaves; a `max_tokens` may ask for the rest of the window ([each model's whole window](#each-models-whole-window-on-this-mac)).
 
 For Chat/Completions streaming, inspect every SSE event for `error`, even after

@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-13
+> Last updated: 2026-11-14
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -3863,8 +3863,13 @@ body of a few KB nested a few hundred levels deep (128 in a debug build) ended
 the process with SIGBUS, below `JSONSerialization`'s own 512-level limit. The
 coordinator forwards such a body unchanged: it parses with Go's decoder and
 normalizes tool schemas only to depth 64. The scan counts levels without
-recursing and skips brackets inside strings; the local API applies the same
-limit ([direct mode](../provider/direct-mode.md)).
+recursing and skips brackets inside strings. It also refuses a body holding a
+NUL byte: Foundation's parsers read UTF-16 and UTF-32 JSON too, whose bytes the
+scan cannot count, and every such body has one while no UTF-8 JSON text does.
+A tool call's `arguments` is JSON inside a string, which the scan skips and
+template rendering decodes and walks, so after decoding each one is checked
+against the same limit and refused as `invalid_tool_arguments`. The local API
+applies the same limits ([direct mode](../provider/direct-mode.md)).
 
 Tool-schema normalization (`ToolSchemaNormalization.ensureParameterTypes`)
 rewrites at most 100,000 schema nodes per request

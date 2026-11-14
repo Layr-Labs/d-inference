@@ -35,9 +35,6 @@ enum ToolSchemaNormalization {
         }
     }
 
-    /// Return `data` with default `type`s injected into tool parameter schemas.
-    /// Fast-paths out (returns the input unchanged) when the body carries no
-    /// `tools`, or when it isn't a JSON object we can repair.
     /// Upper bound on the body we'll JSON round-trip for tool-schema normalization.
     /// Tool definitions are tiny (KB), so a multi-MB body — e.g. a long prompt that
     /// merely contains the word "tools" — should not trigger a full parse + recursive
@@ -53,6 +50,10 @@ enum ToolSchemaNormalization {
 
     private struct NodeBudgetExceeded: Error {}
 
+    /// Return `data` with default `type`s injected into tool parameter schemas.
+    /// Fast-paths out (returns the input unchanged) when the body carries no
+    /// `tools`, when it isn't a JSON object we can repair, or when it is past
+    /// ``maxNormalizationBytes`` or its schemas past ``maxNormalizedNodes``.
     static func ensureParameterTypes(in data: Data) -> Data {
         // Bound the work: skip the round-trip for oversized bodies (see the constant).
         guard data.count <= maxNormalizationBytes else { return data }

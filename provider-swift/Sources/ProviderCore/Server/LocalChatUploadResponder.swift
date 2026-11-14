@@ -88,6 +88,19 @@ where Inner.Context == BasicRequestContext {
         path == "/v1/responses" || path == "/responses"
     }
 
+    /// The SDK's other JSON routes, which decode their bodies with the same
+    /// recursive parsers and keep BasicRequestContext's 2 MiB ceiling.
+    static func isSDKJSONBodyPath(_ path: String) -> Bool {
+        ["/v1/completions", "/completions", "/completion", "/tokenize", "/detokenize", "/apply-template",
+         "/v1/embeddings", "/embeddings", "/embedding"].contains(path)
+    }
+
+    /// Tool-call `arguments` hold JSON in a string, which the body scan skips
+    /// and template rendering parses recursively on this task's stack.
+    static func toolCallArgumentsRefusal() -> Response {
+        CORSResponder<Inner>.openAIErrorResponse(status: .badRequest, message: JSONNestingLimit.argumentsRefusalMessage)
+    }
+
     func resolveReasoningParser(_ item: inout LocalChatRequest) async {
         guard item.request.reasoningParser == nil, let reasoningParserFor else { return }
         item.request.reasoningParser = await reasoningParserFor(item.request.model)
@@ -98,6 +111,21 @@ where Inner.Context == BasicRequestContext {
             return try await inner.respond(to: request, context: context)
         }
         let path = request.uri.path
+        if Self.isSDKJSONBodyPath(path) {
+            var request = request
+            let limit = 2 * 1024 * 1024
+            do {
+                guard !JSONNestingLimit.refuses(try await request.collectBody(upTo: limit)) else {
+                    return CORSResponder<Inner>.openAIErrorResponse(
+                        status: .badRequest, message: JSONNestingLimit.refusalMessage)
+                }
+            } catch is NIOTooManyBytesError {
+                return CORSResponder<Inner>.openAIErrorResponse(
+                    status: .contentTooLarge,
+                    message: "request body exceeds the \(limit / (1024 * 1024)) MiB local endpoint limit")
+            }
+            return try await inner.respond(to: request, context: context)
+        }
         let isBatch = Self.isChatCompletionsBatchPath(path)
         let isResponses = Self.isResponsesCreationPath(path)
         guard isBatch || Self.isChatCompletionsPath(path) || isResponses else {
@@ -119,10 +147,9 @@ where Inner.Context == BasicRequestContext {
             )
         }
         // Every parse below recurses per JSON level on this task's stack.
-        guard !JSONNestingLimit.exceeds(buffer) else {
+        guard !JSONNestingLimit.refuses(buffer) else {
             return CORSResponder<Inner>.openAIErrorResponse(
-                status: .badRequest,
-                message: "request JSON nests deeper than \(JSONNestingLimit.maximumDepth) levels")
+                status: .badRequest, message: JSONNestingLimit.refusalMessage)
         }
 
         if isResponses {
@@ -144,6 +171,10 @@ where Inner.Context == BasicRequestContext {
             switch decodeBody(LocalResponseRequest.self, from: body) {
             case .success(let decoded): item = decoded
             case .failure(let badRequest): return badRequest
+            }
+            if case .messages(let messages) = item.request.input,
+               JSONNestingLimit.refusesToolCallArguments(in: messages) {
+                return Self.toolCallArgumentsRefusal()
             }
             // The same opt-out the service's own response store honours.
             if item.request.store == false { inputItems = nil }
@@ -178,6 +209,9 @@ where Inner.Context == BasicRequestContext {
             case .success(let decoded): requests = decoded
             case .failure(let badRequest): return badRequest
             }
+            if requests.contains(where: { JSONNestingLimit.refusesToolCallArguments(in: $0.request.messages) }) {
+                return Self.toolCallArgumentsRefusal()
+            }
             // Mirror of the upstream batch handler: sequential
             // createChatCompletion calls, one JSON array response.
             var responses: [OpenAIChatCompletionResponse] = []
@@ -203,6 +237,9 @@ where Inner.Context == BasicRequestContext {
                   case .success(let decoded) = decodeBody(LocalChatRequest.self, from: ByteBuffer(data: repaired))
             else { return badRequest }
             item = decoded
+        }
+        guard !JSONNestingLimit.refusesToolCallArguments(in: item.request.messages) else {
+            return Self.toolCallArgumentsRefusal()
         }
         let raw = Data(buffer: buffer), channel = EngineV2LogprobsChannel()
         item.templateControls = item.templateControls.capturingLocalTemplateJSON(from: raw)

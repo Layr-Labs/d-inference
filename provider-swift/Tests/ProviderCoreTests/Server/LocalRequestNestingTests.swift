@@ -23,23 +23,33 @@ struct LocalRequestNestingTests {
                 throw MultiModelBatchSchedulerEngineError.noModelLoadedForTokenization
             },
             availableModels: { ["fixture"] }, mtpSlots: { [] })
-        var schema = #"{"type":"string"}"#
-        for _ in 0 ..< 200 { schema = #"{"type":"array","items":"# + schema + "}" }
-        let tools = #""tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"x":"#
-            + schema + "}}}}]"
+        let tools = InboundJSONDepthTests.toolsField(nesting: 200)
         let chat = #"{"model":"fixture","messages":[{"role":"user","content":"hi"}],"# + tools + "}"
         try await app.test(.router) { client in
-            for (path, body) in [
-                ("/v1/chat/completions", chat),
-                ("/v1/chat/completions/batch", "[" + chat + "]"),
-                ("/v1/responses", #"{"model":"fixture","input":"hi","# + tools + "}"),
+            let deepArguments = #"{"model":"fixture","# + InboundJSONDepthTests.messagesField(argumentNesting: 200) + "}"
+            let responsesArguments = #"{"model":"fixture","input":[{"type":"function_call","call_id":"c1","name":"f","arguments":""#
+                + String(repeating: "[", count: 200) + String(repeating: "]", count: 200)
+                + #""},{"type":"function_call_output","call_id":"c1","output":"ok"}]}"#
+            let utf16 = try #require(chat.data(using: .utf16LittleEndian))
+            for (path, body, message) in [
+                ("/v1/chat/completions", ByteBuffer(string: chat), JSONNestingLimit.refusalMessage),
+                ("/v1/chat/completions/batch", ByteBuffer(string: "[" + chat + "]"), JSONNestingLimit.refusalMessage),
+                ("/v1/responses", ByteBuffer(string: #"{"model":"fixture","input":"hi","# + tools + "}"),
+                 JSONNestingLimit.refusalMessage),
+                ("/v1/chat/completions", ByteBuffer(data: utf16), JSONNestingLimit.refusalMessage),
+                ("/apply-template", ByteBuffer(string: chat), JSONNestingLimit.refusalMessage),
+                ("/tokenize", ByteBuffer(string: chat), JSONNestingLimit.refusalMessage),
+                ("/v1/chat/completions", ByteBuffer(string: deepArguments), JSONNestingLimit.argumentsRefusalMessage),
+                ("/v1/chat/completions/batch", ByteBuffer(string: "[" + deepArguments + "]"),
+                 JSONNestingLimit.argumentsRefusalMessage),
+                ("/v1/responses", ByteBuffer(string: responsesArguments), JSONNestingLimit.argumentsRefusalMessage),
             ] {
                 try await client.execute(uri: path, method: .post,
                     headers: [.contentType: "application/json", .authorization: "Bearer synthetic-fixture-token"],
-                    body: ByteBuffer(string: body)) { response in
+                    body: body) { response in
                     #expect(response.status == .badRequest, "\(path)")
                     let error = try JSONDecoder().decode(OpenAIErrorResponse.self, from: Data(buffer: response.body))
-                    #expect(error.error.message == "request JSON nests deeper than \(JSONNestingLimit.maximumDepth) levels")
+                    #expect(error.error.message == message, "\(path)")
                 }
             }
         }

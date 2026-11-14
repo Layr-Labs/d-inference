@@ -31,7 +31,7 @@ extension ProviderLoop {
         _ data: Data,
         modelType: String? = nil
     ) throws -> OpenAIChatCompletionRequest {
-        try decodeRepairedOpenAIRequest(repairedRequestBody(data, modelType: modelType))
+        try checkedToolCallArguments(decodeRepairedOpenAIRequest(repairedRequestBody(data, modelType: modelType)))
     }
 
     /// `decodeOpenAIRequest` plus the body extensions, equal to the separate
@@ -44,19 +44,29 @@ extension ProviderLoop {
             let decoded = try? JSONDecoder().decode(InboundChatRequest.self, from: data)
         {
             return InboundChatRequest(
-                request: decoded.request, extensions: decoded.extensions.capturingTemplateJSON(from: data))
+                request: try checkedToolCallArguments(decoded.request),
+                extensions: decoded.extensions.capturingTemplateJSON(from: data))
         }
         // The extensions always come from the original bytes, like the
         // per-field extractors; the request keeps the strict and repair paths.
         return InboundChatRequest(
-            request: try decodeRepairedOpenAIRequest(repaired),
+            request: try checkedToolCallArguments(decodeRepairedOpenAIRequest(repaired)),
             extensions: InboundChatExtensions(from: data).capturingTemplateJSON(from: data))
+    }
+
+    private static func checkedToolCallArguments(
+        _ request: OpenAIChatCompletionRequest
+    ) throws -> OpenAIChatCompletionRequest {
+        guard !JSONNestingLimit.refusesToolCallArguments(in: request.messages) else {
+            throw JSONNestingLimit.argumentsRefusal
+        }
+        return request
     }
 
     private static func repairedRequestBody(_ data: Data, modelType: String? = nil) throws -> Data {
         // Every parse below recurses per JSON level; refuse a body that could
         // exhaust the caller's task stack before one runs.
-        guard !JSONNestingLimit.exceeds(data) else { throw JSONNestingLimit.tooDeep }
+        guard !JSONNestingLimit.refuses(data) else { throw JSONNestingLimit.refusal }
         // Inject default `type`s into tool parameter schemas so a Gemma-style
         // chat template's `{{ value['type'] | upper }}` can't crash on a typeless
         // property (DAR-130). No-op for requests without tools.

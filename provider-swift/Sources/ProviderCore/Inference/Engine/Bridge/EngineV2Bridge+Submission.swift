@@ -389,13 +389,13 @@ extension EngineV2Bridge {
         // The engine is asked for the output resolved above, which the service
         // allowance was sized for, not the translation's `max_tokens ?? default`.
         cbv2Request.maxTokens = maxOutputTokens
-        cbv2Request.reasoningBudget = reasoningBudget
         cbv2Request.mimoClusterImages = mimoClusterImages
         cbv2Request.clusterStillImages = clusterStillImages
         cbv2Request.clusterGLMMedia = clusterGLMMedia
         cbv2Request.clusterQwenMedia = clusterQwenMedia
         cbv2Request.positionState = positionState ?? multimodal?.positionState
         cbv2Request.hybridPrefixIdentity = hybridPrefixIdentity
+        cbv2Request.reasoningBudget = reasoningBudget
         if let minP = request.min_p { cbv2Request.sampling.minP = minP }
         let checkpointScope = cbv2Request.checkpointCacheSalt ?? ""
         try await checkFirstContentDeadline(

@@ -37,6 +37,8 @@ public final class ClusterProcessExit: @unchecked Sendable {
     /// started.
     public func run(_ child: ClusterChildProcess) throws {
         try begin()
+        // A refused child has already reported its exit; settling again is a
+        // no-op there and is what settles a spawn that failed outright.
         do { try child.run(onExit: { [self] in settle() }) } catch { settle(); throw error }
     }
 

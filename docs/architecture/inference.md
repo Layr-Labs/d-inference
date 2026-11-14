@@ -9849,20 +9849,33 @@ the GLM calibration and quotation workers.
    child through `ClusterChildProcess`. With a check it spawns the child
    suspended (`POSIX_SPAWN_START_SUSPENDED`, inheriting only its three pipes,
    every signal at its default): the kernel has mapped the image, the child
-   has run none of it. The check runs then, so it judges the child before
-   the child can act; a check after an ordinary start would come too late.
-   `DistributedInstalledLaunchImage.require` needs Code Signing Services to
-   find the code valid, and both the kernel's cdhash of the image
-   (`CS_OPS_CDHASH`) and the reported one to be expected; the reported one
-   alone is read from the file on disk. An accepted child is resumed
-   (`SIGCONT`) and only then does the launcher start the loop that writes its
-   input. A refused child is killed and reaped without having run, and the
-   launch fails with a message that names no path or hash. A launch without a
-   check is a Foundation `Process` as before; the exit of either kind is
-   reported once, after the child is reaped (`ClusterProcessExit`).
+   has run none of it. The check runs then; a check after an ordinary start
+   would come too late. `DistributedInstalledLaunchImage.require` needs Code
+   Signing Services to find the code valid, and both the kernel's cdhash of
+   the image (`CS_OPS_CDHASH`) and the reported one to be expected; the
+   reported one alone is read from the file on disk.
+4. Suspension does not stop another process of the same user from resuming
+   the child during the check, and a child that ran could have changed what
+   the check saw. So after the check accepts the child, and before resuming
+   it, `ClusterChildProcess` requires proof that it never ran: it is still
+   this process's stopped child, its user time is zero (`proc_pid_rusage`,
+   which counts across exec; a suspended child was measured at exactly zero)
+   and it has no process of its own. On any doubt it is refused.
+5. An accepted child is resumed (`SIGCONT`) and only then does the launcher
+   start the loop that writes its input. A refused child is killed and
+   reaped, having been written nothing, and the launch fails with a message
+   that names no path or hash. A launch without a check is a Foundation
+   `Process` as before; the exit of either kind is reported once, after the
+   child is reaped (`ClusterProcessExit`).
 
-Unpinned owners (a setup without a coordinator approval) and the SSH route are
-launched without this check. Code map:
+This binds the main executable image only. Libraries the image loads are
+covered by library validation in release-signed builds (hardened runtime),
+not by this check, and not in ad-hoc builds.
+
+These launches carry no check: the local owner of a setup without a
+coordinator approval (`DistributedInstalledSession`), the link follower's
+owner (`DistributedInstalledLink`) and the SSH route (`/usr/bin/ssh`). Their
+owner is the provider's own `darkbloom` binary, which nothing pins. Code map:
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledLaunchImage.swift`,
 `DistributedInstalledOwner.nativeLaunch`, `NativePairMemberInstallation.launch`,
 `libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterChildProcess.swift`,

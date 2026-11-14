@@ -7,10 +7,13 @@ import Foundation
 ///
 /// A launch that carries `verifyLaunched` is spawned suspended: the kernel has
 /// mapped the image but the child has run none of its instructions. The check
-/// runs then, and only a child it accepts is resumed; a refused child is killed
-/// and reaped, having run nothing and read nothing. A check after an ordinary
-/// start would come too late, the child having already run. A launch without
-/// a check is a Foundation `Process`, as before.
+/// runs then. Suspension is not a lock, though: any process of the same user
+/// may resume the child while it is being checked, and a child that ran could
+/// have replaced its image or shared its input before the check looked. So
+/// after the check accepts it, the child must also prove it never ran: still
+/// stopped, no user time, no process of its own. Only then is it resumed; a
+/// refused child is killed and reaped and was written nothing. A launch
+/// without a check is a Foundation `Process`, as before.
 ///
 /// Read the termination only after the exit was reported (see `ClusterProcessExit`).
 public final class ClusterChildProcess: @unchecked Sendable {
@@ -83,6 +86,8 @@ public final class ClusterChildProcess: @unchecked Sendable {
         do {
             _ = try exits.get()
             try verify(pid)
+            // After the check: a child that ran before this point could have changed what the check saw.
+            try requireNeverRan(pid)
             guard signal(SIGCONT) else { throw ClusterWorkerOwnerError.invalid("The launched child could not be resumed") }
         } catch {
             _ = signal(SIGKILL)
@@ -120,6 +125,28 @@ public final class ClusterChildProcess: @unchecked Sendable {
         var collected: Int32 = 0
         while waitpid(pid, &collected, 0) < 0 && errno == EINTR {}
         lock.withLock { status = collected }
+    }
+
+    /// Refuses a child that may have run any user instruction since its spawn:
+    /// it must be this process's stopped child, with no user time (which
+    /// accrues across exec, and which anything that execs, forks or reads
+    /// needs) and no process of its own. Measured: a child spawned suspended
+    /// reports exactly zero user time; one resumed even briefly does not.
+    private func requireNeverRan(_ pid: pid_t) throws {
+        try lock.withLock {
+            var information = proc_bsdinfo(), usage = rusage_info_v4()
+            let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+            var children = [pid_t](repeating: 0, count: 16)
+            let read = withUnsafeMutablePointer(to: &usage) {
+                $0.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { proc_pid_rusage(pid, RUSAGE_INFO_V4, $0) }
+            }
+            guard !exited, proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &information, size) == size,
+                  information.pbi_pid == UInt32(pid), information.pbi_ppid == UInt32(getpid()),
+                  information.pbi_status == UInt32(SSTOP), read == 0, usage.ri_user_time == 0,
+                  proc_listchildpids(pid, &children, Int32(children.count * MemoryLayout<pid_t>.size)) == 0 else {
+                throw ClusterWorkerOwnerError.invalid("The launched child ran before its check was complete")
+            }
+        }
     }
 
     private func signal(_ number: Int32) -> Bool {

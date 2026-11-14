@@ -46,11 +46,13 @@ enum GLM5NextCalibrationQuoteLaunch {
             appSHA256: request.appSHA256, rank: p.rank)
         try requireCurrentSelection()
         let documentSHA256 = SHA256.hash(data: authorized.document).map { String(format: "%02x", $0) }.joined()
+        let appFile = try DistributedInstalledFiles.verify(installedApp, expectedSHA256: request.appSHA256,
+            maximumBytes: 256 << 20, executable: true, deadline: deadline)
+        let workerFile = try DistributedInstalledFiles.verify(worker, expectedSHA256: p.environment.binarySHA256,
+            maximumBytes: 256 << 20, executable: true, deadline: deadline)
         let files = try [
-            DistributedInstalledFiles.verify(installedApp, expectedSHA256: request.appSHA256,
-                maximumBytes: 256 << 20, executable: true, deadline: deadline),
-            DistributedInstalledFiles.verify(worker, expectedSHA256: p.environment.binarySHA256,
-                maximumBytes: 256 << 20, executable: true, deadline: deadline),
+            appFile,
+            workerFile,
             DistributedInstalledFiles.verify(metallib, expectedSHA256: p.environment.metallibSHA256,
                 maximumBytes: 256 << 20, deadline: deadline),
             DistributedInstalledFiles.verify(document, expectedSHA256: documentSHA256,
@@ -62,7 +64,7 @@ enum GLM5NextCalibrationQuoteLaunch {
                 "--rank", String(p.rank), "--deadline-uptime-nanoseconds", String(deadline)],
             environment: environment, initialInput: authorized.credentialInput,
             // The credential is written only to a child whose running image is the verified worker.
-            verifyLaunched: try files[1].launchVerifier())
+            verifyLaunched: try workerFile.launchVerifier())
         let prepared = Prepared(launch: launch, files: files, deadline: deadline,
             requireCurrentSelection: requireCurrentSelection)
         try prepared.requireUnchanged()

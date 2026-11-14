@@ -117,7 +117,9 @@ public enum CoordinatorEvent: Sendable {
         /// unconditionally, unlike the budget-derived deadline).
         profile: RequestProfileBuilder,
         serviceReservationID: String? = nil,
-        promptWork: PromptWork? = nil
+        promptWork: PromptWork? = nil,
+        /// See `InferenceRequest.gemmaPromptContract`; nil keeps version 1.
+        gemmaPromptContract: Int? = nil
     )
     /// `reason` is nil from a coordinator that sends none.
     case cancel(requestId: String, reason: CoordinatorCancelReason? = nil)

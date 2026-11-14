@@ -530,6 +530,10 @@ struct Start: AsyncParsableCommand {
             }
         }
 
+        // Applied in main.swift before any command; name what it turned on.
+        let sdkDefaults = SDKFeatureDefaults.injectedKeys.sorted()
+        if !sdkDefaults.isEmpty { print("SDK feature defaults on: \(sdkDefaults.joined(separator: ", "))") }
+
         // These controls are process-start latches in MLX/MLXLM. Project the
         // authoritative TOML, bind the immutable default runtime metallib, and
         // only then let requireMetal() perform the first MLX touch.

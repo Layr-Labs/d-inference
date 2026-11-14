@@ -4099,7 +4099,15 @@ Positive Gemma caps retain the 128-token floor; `0` defers prefill while decodin
 Pure-prefill stripes are unchanged. These variables are not forwarded to a LaunchAgent;
 see the [scheduler environment reference](../reference/configuration.md#engine-and-scheduler).
 
+### Gemma o4 parser switch
+
+Set `DARKBLOOM_GEMMA_SCHEMA_COERCION` before starting the process; the LaunchAgent forwards it to the installed service. The [configuration reference](../reference/configuration.md#engine-and-scheduler) defines activation and rollback.
+
 ## LaunchAgent environment passthrough
+
+`DARKBLOOM_NATIVE_REASONING_BUDGET` is forwarded to the service. Set it before
+engine construction; see [native reasoning budgets](../reference/configuration.md#native-reasoning-budgets)
+for its values and supported request behavior.
 
 The SDK's [Gemma row-mapped NAX route](../reference/configuration.md#gemma-4-row-mapped-nax)
 is enabled by default within its hardware and model guards. The provider forwards

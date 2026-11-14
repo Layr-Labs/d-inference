@@ -34,6 +34,12 @@ if rawArgs.first == AppAttestQualificationCommand.argument {
 // (`ClusterCandidateRecovery.startCheckFailure`).
 MacOSUpgradeNotice.emit()
 
+// SDK-read feature switches this release turns on by default, for every command
+// (serving, pair members, workers, benchmarks) before any engine or parser reads
+// them; an operator value (shell or LaunchAgent) wins, `0` = 0.10.12. Injected
+// keys are never written into a service plist (`LaunchAgent`).
+SDKFeatureDefaults.apply()
+
 // `darkbloom --opencode` / `--hermes` are short for `start --opencode` / `--hermes`. Expanded before the host check
 // and the parse, they are hosted and parsed exactly as `start` is (`Darkbloom.expandingToolShortcuts`).
 let commandArgs = Darkbloom.commandLineArguments

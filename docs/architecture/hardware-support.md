@@ -17,6 +17,11 @@ The native [cross-stream fence ordering](inference.md#cross-stream-fence-orderin
 uses the same memory reservations and command-buffer limits. Its component
 tests do not change a model's hardware qualification or usable-memory grant.
 
+[Native reasoning token budgets](inference.md#native-reasoning-token-budgets)
+use the existing model admission and native retirement owners. They add no
+hardware eligibility or memory grant; target-only budget rows can reduce mixed
+batch chaining, so the feature carries no throughput qualification.
+
 ## Context
 
 Automatic local cluster batching prices each lane's full registered request
@@ -1202,6 +1207,10 @@ These bounds are not measured image qualification or a new hardware minimum.
 Sources: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Resident/GLM5NextStageLoadResources.swift`,
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Metadata/GLM5NextImageBudget.swift`, and
 `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/GLM5Next/Metadata/GLM5NextServingMetadata.swift`.
+
+### Gemma o4 parser qualification
+
+The [Gemma quoted numeric tool arguments change](inference.md#gemma-quoted-numeric-tool-arguments) operates on CPU text and schema values. Parser tests do not establish full-model numerical, memory, throughput or concurrency qualification. This opt-in does not change hardware admission or model memory allowances.
 
 ### Gemma batch arithmetic evidence boundary
 

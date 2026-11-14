@@ -260,6 +260,11 @@ struct Benchmark: AsyncParsableCommand {
                 """)
             throw ExitCode.failure
         }
+        // SDK feature defaults are applied in main.swift; record them (stderr).
+        let sdkDefaults = SDKFeatureDefaults.injectedKeys.sorted()
+        if !sdkDefaults.isEmpty {
+            FileHandle.standardError.write(Data("SDK feature defaults on: \(sdkDefaults.joined(separator: ", "))\n".utf8))
+        }
         do {
             try ServeRuntimePreparer.prepareRuntime(settings: gemmaSettings)
         } catch {

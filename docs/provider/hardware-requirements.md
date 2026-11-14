@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-13
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -92,6 +92,9 @@ period. `doctor` does not name the reason.
 | Confirmed notification interest | The coordinator acknowledged persistence, or authenticated readback matched the selected hardware; this does not change hardware eligibility | [coordinator/api/accounts/small_models_interest.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/accounts/small_models_interest.go) (`HandleRegisterSmallModelsInterest`, `HandleGetSmallModelsInterest`) |
 
 Follow the [authenticated registration steps](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/consumer/authentication.md#6-register-hardware-interest). Registration is an opt-in record; email delivery is a separate operation.
+
+[Native reasoning budgets](../architecture/inference.md#native-reasoning-token-budgets)
+do not widen model eligibility, memory limits or hardware qualification.
 
 ## Minimum requirements
 

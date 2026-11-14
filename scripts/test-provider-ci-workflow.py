@@ -480,6 +480,9 @@ class ProviderCIWorkflowTests(unittest.TestCase):
             MIMO_HTTP_PREPARE,
             MIMO_PROVIDER_PREPARE,
             PROVIDER_TEST_COMMAND,
+            "for enabled in 0 1; do\n"
+            '  env DARKBLOOM_GEMMA_SCHEMA_COERCION="$enabled" ../scripts/run-nested-suite.sh GemmaQuotedArgumentConformanceTests --no-parallel\n'
+            "done",
             "python3 scripts/test-desktop-api.py provider-swift/.build/debug/darkbloom",
             "for enabled in 0 1; do\n"
             '  env DARKBLOOM_GEMMA_REOPENED_THOUGHTS="$enabled" ../scripts/run-nested-suite.sh GemmaReopenedThoughtRoutingTests --no-parallel\n'

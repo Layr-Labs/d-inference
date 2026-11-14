@@ -725,7 +725,7 @@ enum NemotronSuperLocalBridgeBuilder {
         return Owner(bridge: bridge, modelID: modelID, installed: installed, tokenizer: tokenizer,
                      budget: kvBudget, contextLength: sizing.maxContextLength,
                      speculates: mtp != nil, maximumLocalRequests: requests,
-                     maximumConcurrentImages: environment[concurrentImagesKey] == "1"
+                     maximumConcurrentImages: concurrentImagesEnabled(environment[concurrentImagesKey])
                         ? min(2, max(1, requests - 1)) : 1,
                      prefill: prefill, prefillLaneID: laneID, prefillLaneBytes: laneBytes,
                      prefixBankID: bank?.id, prefixBankBytes: bank?.bytes ?? 0,

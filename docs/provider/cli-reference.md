@@ -3241,13 +3241,13 @@ which is the point: an unproven paged rollout must not certify.
 
 ### Nemotron Super concurrent images
 
-`DARKBLOOM_NEMOTRON_SUPER_CONCURRENT_IMAGES` controls the opt-in image overlap
-when a Super owner is constructed. Its exact values, width requirement and
-default are in the [engine configuration table](../reference/configuration.md#engine-and-scheduler).
-It is not forwarded to a LaunchAgent. Keep it unset to retain current behavior.
+`DARKBLOOM_NEMOTRON_SUPER_CONCURRENT_IMAGES` controls the image overlap (on by
+default) when a Super owner is constructed. Its exact values, width requirement
+and default are in the [engine configuration table](../reference/configuration.md#engine-and-scheduler).
+The daemon allow-list forwards it: set an off word (`0`) before starting or
+restarting the daemon to restore single-media admission.
 The [native image path](../architecture/inference.md#managed-nemotron-super-slot)
-keeps encoding serial and memory charged through cleanup; full-checkpoint
-concurrent-image qualification remains pending.
+keeps encoding serial and memory charged through cleanup.
 
 ### GLM-5.3-Flash GPU wired-memory limit
 

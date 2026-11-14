@@ -784,6 +784,29 @@ struct GenerationLoopExitThinkingServingTests {
         #expect(budget.serviceBudget.count == width)
     }
 
+    @Test("width 1: a continuation takes its row's place beside the request that took the slot, not beside the recovery")
+    func continuationOnAWidthOneMac() {
+        let service = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
+            .init(total: 8 << 30, active: 0, cache: 0, systemAvailable: 8 << 30)
+        }.serviceBudget
+        // On a width-1 profile each row is a whole Mac: the request that took
+        // the stopped row's slot holds all of it.
+        #expect(service.acquire(ownerID: "took-the-slot", concurrency: 1))
+        #expect(!service.acquire(ownerID: "ordinary", concurrency: 1))
+        #expect(service.acquire(ownerID: "continuation", concurrency: 1, overcommit: true))
+        service.release(ownerID: "continuation")
+        service.release(ownerID: "took-the-slot")
+        // The idle prefill-evidence recovery (`requiresIdle`) has the Mac to
+        // itself until its prompt completes, at any width.
+        #expect(service.acquire(ownerID: "recovery", concurrency: 1, requiresIdle: true))
+        #expect(!service.acquire(ownerID: "continuation", concurrency: 8, overcommit: true))
+        service.reduceExclusiveAllowance(ownerID: "recovery", concurrency: 1)
+        #expect(service.acquire(ownerID: "continuation", concurrency: 8, overcommit: true))
+        service.release(ownerID: "continuation")
+        service.release(ownerID: "recovery")
+        #expect(service.count == 0)
+    }
+
     @Test("Qwen 3.6: a loop inside the thought ends it with `\\n</think>\\n\\n`, and stops apply to the answer")
     func qwenThoughtLoopEndsInAnAnswer() async throws {
         let engine = ThoughtLoopCBv2Engine(loopInsideThought: true, family: .qwen)

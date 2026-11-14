@@ -54,7 +54,8 @@ extension EngineV2Bridge {
     /// slot was released before it asks, and on a full Mac work waiting for a slot takes it first, so a width check
     /// would refuse the answer of a request already served. It is never refused for width: each continuation may
     /// exceed it by one row until it ends, at most one per stopped row (other work waits meanwhile), and the engine
-    /// admits it first.
+    /// admits it first. Only the idle prefill-evidence recovery, before its prompt completes, keeps it out
+    /// (`WholeMacServiceBudget.acquire(overcommit:)`).
     func acquireServiceAllowance(requestID: String, serviceReservationID: String? = nil,
         serviceReservation: ServiceReservationLifetime? = nil,
         promptTokens: Int? = nil, maxOutputTokens: Int? = nil,

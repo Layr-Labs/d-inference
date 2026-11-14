@@ -17,8 +17,11 @@ public enum ClusterLinkControlRole: UInt8, Sendable, Equatable {
 /// Long-term key of one link edge (two members over one cable). The value
 /// never leaves this module: callers get handshake tags, tag verification and
 /// fresh per-connection directional keys, nothing that re-creates the edge key.
-/// It authenticates the handshake; it never keys a connection by itself: each
-/// connection's keys also need that connection's ephemeral X25519 agreement.
+/// It tags the handshake and salts the keys as a second factor; it never keys a
+/// connection by itself (each connection's keys need that connection's
+/// ephemeral X25519 agreement) and it never proves who the peer is: on a
+/// serving edge each end proves the Secure Enclave key the other pinned
+/// (`ClusterLinkIdentity`, handshake v3), which the edge secret does not give.
 ///
 /// A paired setup (and local qualification) derives it from the edge secret
 /// both Macs keep in an owner-only file (or a secret handed over a pipe or
@@ -30,9 +33,9 @@ public struct ClusterLinkControlKey: Sendable, CustomStringConvertible, CustomDe
     public static let maximumSecretBytes = 1024
     private static let keyDomain = Data("darkbloom/link-control/key/v1\0".utf8)
     private static let qualificationDomain = Data("darkbloom/link-control/qualification-secret/v1\0".utf8)
-    private static let sessionDomain = Data("darkbloom/link-control/session/v2\0".utf8)
-    private static let listenerTagDomain = Data("darkbloom/link-control/handshake/listener/v1\0".utf8)
-    private static let connectorTagDomain = Data("darkbloom/link-control/handshake/connector/v1\0".utf8)
+    private static let sessionDomain = Data("darkbloom/link-control/session/v3\0".utf8)
+    private static let listenerTagDomain = Data("darkbloom/link-control/handshake/listener/v3\0".utf8)
+    private static let connectorTagDomain = Data("darkbloom/link-control/handshake/connector/v3\0".utf8)
 
     private let authentication: SymmetricKey
     private let sessionBase: SymmetricKey
@@ -125,10 +128,11 @@ public struct ClusterLinkControlKey: Sendable, CustomStringConvertible, CustomDe
             authenticating: Self.tagMessage(role: role, transcript: transcript), using: authentication)
     }
 
-    /// Fresh keys for one TCP connection (handshake v2), one per direction:
+    /// Fresh keys for one TCP connection (handshake v3), one per direction:
     /// HKDF of this connection's X25519 agreement between two ephemeral keys
     /// that exist only in the two processes, salted by the transcript digest
-    /// (both nonces, both public keys, the version) and mixed with this edge
+    /// (both nonces, both public keys, the version, both identities and their
+    /// signatures) and mixed with this edge
     /// key, bound to the epoch and the edge. The edge key alone derives
     /// nothing: neither it nor the handshake records reveal the agreement.
     /// Refuses a non-canonical, all-zero, low-order or reflected public key.

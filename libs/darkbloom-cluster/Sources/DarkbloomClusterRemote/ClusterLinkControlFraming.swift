@@ -69,7 +69,7 @@ struct LinkFrame: Sendable, Equatable {
     }
 }
 
-/// Fixed-size handshake records, big endian (version 2). Every read before
+/// Fixed-size handshake records, big endian (version 3). Every read before
 /// the peer is authenticated is fixed-size, so an unauthenticated peer never
 /// chooses an allocation, and the listener speaks first with only a fresh
 /// nonce and a fresh public key.
@@ -78,32 +78,59 @@ struct LinkFrame: Sendable, Equatable {
 ///   connector -> HELLO     "DBLH" v role 00 | epoch | edge | nonce(32) |
 ///                          ephemeral X25519(32) | incarnation | known
 ///                          listener incarnation | delivered u64 |
-///                          limits (u32 u64 u64) | tag(32)                  196 B
+///                          limits (u32 u64 u64) | connector pin(32) |
+///                          listener pin(32) | signature(64) | tag(32)      324 B
 ///   listener  -> ACCEPT    "DBLA" v 000 | incarnation | known connector
-///                          incarnation | delivered u64 | tag(32)            80 B
+///                          incarnation | delivered u64 | signature(64) |
+///                          tag(32)                                         144 B
 ///
-/// Connector tag: HMAC over CHALLENGE + HELLO-without-tag (proves the edge
-/// key against the listener's fresh nonce: a replayed hello fails). Listener
-/// tag: HMAC over CHALLENGE + HELLO + ACCEPT-without-tag (covers the
-/// connector's nonce: a replayed accept fails). Both tags cover both public
-/// keys and the version. Session keys come from the X25519 agreement of the
-/// two ephemeral keys (each made for this connection, in memory only), the
-/// SHA-256 of all three records, the edge key, the epoch and the edge
-/// (`ClusterLinkControlKey.sessionKeys`). Each end reads the peer's first
-/// eight bytes before the rest: another version is refused there, with no
-/// fallback (`protocolVersionMismatch`).
+/// On a serving edge each end signs with the Secure Enclave key the other
+/// pinned (`ClusterLinkIdentity`): the connector over CHALLENGE + HELLO up to
+/// its signature (the listener's fresh nonce and key, its own key, both pins),
+/// the listener, after it verified that, over CHALLENGE + HELLO + ACCEPT up to
+/// its signature (the connector's nonce, key and signature). The pins are the
+/// ones each end holds for the other, never trusted from the wire: each end
+/// checks them against its own configuration, then the signature under the
+/// pinned key, before anything is derived. An edge-key-only edge (bootstrap,
+/// setup exchange, qualification) sends zero pins and signatures.
+///
+/// The edge key's tags cover each record up to the tag (signatures included);
+/// they are checked first, so a party without the edge secret never makes an
+/// end verify or sign. Session keys come from the X25519 agreement of the two
+/// ephemeral keys (each made for this connection, in memory only), the SHA-256
+/// of all three records, the edge key, the epoch and the edge
+/// (`ClusterLinkControlKey.sessionKeys`). Each end reads the peer's first eight
+/// bytes before the rest: another version (v1 of 0.10.12, v2 of the DevNet
+/// builds) is refused there, with no fallback (`protocolVersionMismatch`).
 enum LinkHandshake {
-    static let version: UInt8 = 2
+    static let version: UInt8 = 2 // RED: v3 is not enforced yet
     /// Magic and version: what each end reads first of the peer's record.
     static let headerBytes = 8
     static let challengeBytes = 72
-    static let helloBytes = 196
-    static let acceptBytes = 80
+    static let helloBytes = 324
+    static let acceptBytes = 144
     static let publicKeyBytes = 32
+    static let pinBytes = 32
+    static let signatureBytes = 64
+    static let tagBytes = 32
     private static let challengeMagic: [UInt8] = Array("DBLC".utf8)
     private static let helloMagic: [UInt8] = Array("DBLH".utf8)
     private static let acceptMagic: [UInt8] = Array("DBLA".utf8)
-    private static let transcriptDomain = Data("darkbloom/link-control/transcript/v2\0".utf8)
+    private static let transcriptDomain = Data("darkbloom/link-control/transcript/v3\0".utf8)
+
+    /// Byte ranges of the HELLO's identity fields.
+    enum HelloLayout {
+        static let connectorPin = 164..<196
+        static let listenerPin = 196..<228
+        static let signature = 228..<292
+        static let tag = 292..<324
+    }
+
+    /// Byte ranges of the ACCEPT's identity fields.
+    enum AcceptLayout {
+        static let signature = 48..<112
+        static let tag = 112..<144
+    }
 
     /// The peer's challenge or hello header: the right magic, then this version
     /// only. Another version is a refusal of its own; anything else is malformed.
@@ -134,6 +161,9 @@ enum LinkHandshake {
         let maximumPlaintextBytes: UInt32
         let maximumRecords: UInt64
         let maximumCumulativeBytes: UInt64
+        /// The connector's own pin and the pin it holds for the listener (zero on an edge-key-only edge).
+        let connectorPin: Data
+        let listenerPin: Data
     }
 
     static func challenge(nonce: Data, ephemeralPublicKey: Data) -> Data {
@@ -150,7 +180,8 @@ enum LinkHandshake {
         return Data(bytes[40..<72])
     }
 
-    static func helloWithoutTag(_ hello: Hello) -> Data {
+    /// The HELLO up to the connector's signature: what the connector signs (after the challenge).
+    static func helloSigned(_ hello: Hello) -> Data {
         var result = Data(helloMagic)
         result.append(contentsOf: [version, ClusterLinkControlRole.connector.rawValue, 0, 0])
         result.append(uuidBytes(hello.epoch)); result.append(uuidBytes(hello.edgeID)); result.append(hello.nonce)
@@ -161,10 +192,17 @@ enum LinkHandshake {
         result.clusterLinkAppend(hello.maximumPlaintextBytes)
         result.clusterLinkAppend(hello.maximumRecords)
         result.clusterLinkAppend(hello.maximumCumulativeBytes)
+        result.append(hello.connectorPin); result.append(hello.listenerPin)
         return result
     }
 
-    static func parseHello(_ data: Data) throws -> (Hello, tag: Data) {
+    /// The HELLO up to its tag: what the edge key's connector tag covers (after the challenge).
+    static func helloWithoutTag(_ hello: Hello, signature: Data) -> Data {
+        var result = helloSigned(hello); result.append(signature)
+        return result
+    }
+
+    static func parseHello(_ data: Data) throws -> (Hello, signature: Data, tag: Data) {
         let bytes = Array(data)
         guard bytes.count == helloBytes, Array(bytes[0..<4]) == helloMagic, bytes[4] == version,
               bytes[5] == ClusterLinkControlRole.connector.rawValue, bytes[6] == 0, bytes[7] == 0 else {
@@ -174,23 +212,32 @@ enum LinkHandshake {
             throw ClusterLinkControlError.malformedHandshake
         }
         let data = Data(bytes)
-        let hello = Hello(epoch: epoch, edgeID: edge, nonce: Data(bytes[40..<72]), ephemeralPublicKey: Data(bytes[72..<104]),
+        let hello = Hello(epoch: epoch, edgeID: edge, nonce: Data(bytes[40..<72]),
+            ephemeralPublicKey: Data(bytes[72..<104]),
             resume: .init(incarnation: incarnation, knownPeerIncarnation: uuid(bytes, 120),
                           deliveredThrough: data.clusterLinkUInt64(at: 136)),
             maximumPlaintextBytes: data.clusterLinkUInt32(at: 144),
             maximumRecords: data.clusterLinkUInt64(at: 148),
-            maximumCumulativeBytes: data.clusterLinkUInt64(at: 156))
-        return (hello, Data(bytes[164..<196]))
+            maximumCumulativeBytes: data.clusterLinkUInt64(at: 156),
+            connectorPin: Data(bytes[HelloLayout.connectorPin]), listenerPin: Data(bytes[HelloLayout.listenerPin]))
+        return (hello, Data(bytes[HelloLayout.signature]), Data(bytes[HelloLayout.tag]))
     }
 
-    static func acceptWithoutTag(_ resume: Resume) -> Data {
+    /// The ACCEPT up to the listener's signature: what the listener signs (after the challenge and the hello).
+    static func acceptSigned(_ resume: Resume) -> Data {
         var result = Data(acceptMagic); result.append(contentsOf: [version, 0, 0, 0])
         result.append(uuidBytes(resume.incarnation)); result.append(uuidBytes(resume.knownPeerIncarnation))
         result.clusterLinkAppend(resume.deliveredThrough)
         return result
     }
 
-    static func parseAccept(_ data: Data) throws -> (Resume, tag: Data) {
+    /// The ACCEPT up to its tag: what the edge key's listener tag covers (after the challenge and the hello).
+    static func acceptWithoutTag(_ resume: Resume, signature: Data) -> Data {
+        var result = acceptSigned(resume); result.append(signature)
+        return result
+    }
+
+    static func parseAccept(_ data: Data) throws -> (Resume, signature: Data, tag: Data) {
         let bytes = Array(data)
         guard bytes.count == acceptBytes, Array(bytes[0..<4]) == acceptMagic, bytes[4] == version,
               bytes[5] == 0, bytes[6] == 0, bytes[7] == 0, let incarnation = uuid(bytes, 8) else {
@@ -198,7 +245,8 @@ enum LinkHandshake {
         }
         let data = Data(bytes)
         return (.init(incarnation: incarnation, knownPeerIncarnation: uuid(bytes, 24),
-                      deliveredThrough: data.clusterLinkUInt64(at: 40)), Data(bytes[48..<80]))
+                      deliveredThrough: data.clusterLinkUInt64(at: 40)),
+                Data(bytes[AcceptLayout.signature]), Data(bytes[AcceptLayout.tag]))
     }
 
     static func transcriptSHA256(challenge: Data, hello: Data, accept: Data) -> Data {

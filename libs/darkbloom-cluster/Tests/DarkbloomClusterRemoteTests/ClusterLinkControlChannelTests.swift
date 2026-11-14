@@ -109,25 +109,29 @@ final class RawLinkConnector: @unchecked Sendable {
         return false
     }
 
+    /// A version-3 hello as the connector of `edge` writes it: its identity's
+    /// pins and signature on an attested edge, zeros on an edge-key-only one.
+    /// `publicKey` replaces the ephemeral key's public half on the wire.
     func hello(edge: ClusterLinkControlEdge, key: ClusterLinkControlKey? = nil, challenge: Data,
                epoch: UUID? = nil, incarnation: UUID = UUID(),
-               ephemeral: Curve25519.KeyAgreement.PrivateKey = .init()) throws -> Data {
-        let limits = try edge.limits.recordLimits()
-        let hello = LinkHandshake.Hello(epoch: epoch ?? edge.epoch, edgeID: edge.edgeID, nonce: LinkHandshake.randomNonce(),
-            ephemeralPublicKey: ephemeral.publicKey.rawRepresentation,
-            resume: .init(incarnation: incarnation, knownPeerIncarnation: nil, deliveredThrough: 0),
-            maximumPlaintextBytes: UInt32(limits.maximumPlaintextBytes), maximumRecords: limits.maximumRecordsPerDirection,
-            maximumCumulativeBytes: limits.maximumCumulativePlaintextBytesPerDirection)
-        var bytes = LinkHandshake.helloWithoutTag(hello)
-        var signed = challenge; signed.append(bytes)
-        bytes.append((key ?? edge.key).handshakeTag(role: .connector, transcript: signed))
+               ephemeral: Curve25519.KeyAgreement.PrivateKey = .init(), publicKey: Data? = nil) throws -> Data {
+        let epoch = epoch ?? edge.epoch
+        let identity = edge.attestedIdentity
+        var bytes = LinkV3Wire.helloBody(epoch: epoch, edgeID: edge.edgeID,
+            connectorKey: publicKey ?? ephemeral.publicKey.rawRepresentation, incarnation: incarnation,
+            limits: try edge.limits.recordLimits())
+        bytes.append(identity?.localPin ?? Data(count: 32))
+        bytes.append(identity?.peerPin ?? Data(count: 32))
+        bytes.append(try identity?.signature(role: .connector, epoch: epoch, edgeID: edge.edgeID,
+            transcript: challenge + bytes) ?? Data(count: 64))
+        bytes.append((key ?? edge.key).handshakeTag(role: .connector, transcript: challenge + bytes))
         return bytes
     }
 
     /// Full handshake; returns the connector's record pair.
     func handshake(edge: ClusterLinkControlEdge) throws -> LinkRecordPair {
         let challenge = try read(LinkHandshake.challengeBytes)
-        let listenerKey = try LinkHandshake.parseChallenge(challenge)
+        let listenerKey = challenge.linkBytes(LinkV3Wire.challengeKey)
         let ephemeral = Curve25519.KeyAgreement.PrivateKey()
         let hello = try hello(edge: edge, challenge: challenge, ephemeral: ephemeral)
         try write(hello)
@@ -149,6 +153,7 @@ final class ClusterLinkControlChannelTests: XCTestCase {
     let epoch = UUID()
     let edgeID = UUID()
     let secret = Data((0..<32).map { UInt8($0 * 7 + 3) })
+    let identities = LinkTestIdentities()
 
     func limits(_ change: (inout ClusterLinkControlLimits) -> Void = { _ in }) -> ClusterLinkControlLimits {
         var value = ClusterLinkControlLimits()
@@ -161,6 +166,7 @@ final class ClusterLinkControlChannelTests: XCTestCase {
         return value
     }
 
+    /// An undecided edge: `makeListener`, `makeClient` and `connector(_:)` add each end's identity.
     func makeEdge(secret: Data? = nil, epoch: UUID? = nil, limits: ClusterLinkControlLimits? = nil) throws -> ClusterLinkControlEdge {
         let epoch = epoch ?? self.epoch
         let key = try ClusterLinkControlKey.qualification(secret: secret ?? self.secret, epoch: epoch, edgeID: edgeID)
@@ -171,16 +177,19 @@ final class ClusterLinkControlChannelTests: XCTestCase {
     func makeListener(_ log: LinkEventLog, edge: ClusterLinkControlEdge? = nil, port: UInt16 = 0) throws
         -> (ClusterLinkControlListener, UInt16) {
         let listener = try ClusterLinkControlListener(configuration: .init(interface: "lo0", port: port,
-            policy: .loopbackForTests, edges: [edge ?? makeEdge()])) { event, _ in log.record(event) }
+            policy: .loopbackForTests, edges: [identities.asListener(edge ?? makeEdge())])) { event, _ in log.record(event) }
         return (listener, try listener.start())
     }
 
     func makeClient(_ log: LinkEventLog, port: UInt16, edge: ClusterLinkControlEdge? = nil) throws -> ClusterLinkControlClient {
         let client = try ClusterLinkControlClient(configuration: .init(interface: "lo0", port: port,
-            policy: .loopbackForTests, edge: edge ?? makeEdge())) { event, _ in log.record(event) }
+            policy: .loopbackForTests, edge: identities.asConnector(edge ?? makeEdge()))) { event, _ in log.record(event) }
         client.start()
         return client
     }
+
+    /// The edge as the connector (a raw connector here) configures it.
+    func connector(_ edge: ClusterLinkControlEdge) throws -> ClusterLinkControlEdge { try identities.asConnector(edge) }
 
     func status(_ value: UInt16) -> ClusterLinkControlMessage {
         .status(.init(epoch: epoch, rank: value, state: .ready, linkReady: true, detail: "fixture"))
@@ -272,7 +281,7 @@ final class ClusterLinkControlChannelTests: XCTestCase {
         defer { listener.stop() }
         let first = try RawLinkConnector(port: port)
         let challenge = try first.read(LinkHandshake.challengeBytes)
-        let hello = try first.hello(edge: edge, challenge: challenge)
+        let hello = try first.hello(edge: connector(edge), challenge: challenge)
         try first.write(hello)
         _ = try first.read(LinkHandshake.acceptBytes) // the genuine hello is accepted
         let replay = try RawLinkConnector(port: port)
@@ -289,7 +298,7 @@ final class ClusterLinkControlChannelTests: XCTestCase {
         let (listener, port) = try makeListener(serverLog, edge: edge)
         defer { listener.stop() }
         let raw = try RawLinkConnector(port: port)
-        let records = try raw.handshake(edge: edge)
+        let records = try raw.handshake(edge: connector(edge))
         let record = try raw.sealMessage(records, id: 1, status(7))
         try raw.write(record)
         try raw.write(record) // byte-identical replay inside the session
@@ -298,7 +307,7 @@ final class ClusterLinkControlChannelTests: XCTestCase {
 
         // A record from that session replayed into a new session fails too.
         let second = try RawLinkConnector(port: port)
-        let secondRecords = try second.handshake(edge: edge)
+        let secondRecords = try second.handshake(edge: connector(edge))
         _ = secondRecords
         XCTAssertTrue(serverLog.wait { $0.filter(\.isConnected).count == 2 })
         try second.write(record)
@@ -322,7 +331,7 @@ final class ClusterLinkControlChannelTests: XCTestCase {
         // On the wire: a record prefix announcing more than the bound ends the
         // session before anything of that size is read or allocated.
         let raw = try RawLinkConnector(port: port)
-        _ = try raw.handshake(edge: edge)
+        _ = try raw.handshake(edge: connector(edge))
         var prefix = Data([0x44, 0x42, 0x52, 0x44, 1, 1, 1, ClusterRecordType.linkControl.rawValue])
         prefix.clusterLinkAppend(UInt64(0)); prefix.clusterLinkAppend(UInt32(64 * 1024 * 1024)); prefix.append(contentsOf: [0, 0, 0, 0])
         let started = linkNow()
@@ -365,7 +374,7 @@ final class ClusterLinkControlChannelTests: XCTestCase {
         let (listener, port) = try makeListener(serverLog, edge: edge)
         defer { listener.stop() }
         let raw = try RawLinkConnector(port: port)
-        _ = try raw.handshake(edge: edge)
+        _ = try raw.handshake(edge: connector(edge))
         XCTAssertTrue(serverLog.wait(seconds: 3) { _ in serverLog.disconnects.contains(.peerSilent) })
         raw.socket.close()
     }
@@ -505,10 +514,10 @@ final class ClusterLinkControlChannelTests: XCTestCase {
         let (listener, port) = try makeListener(serverLog, edge: edge)
         defer { listener.stop() }
         let first = try RawLinkConnector(port: port)
-        _ = try first.handshake(edge: edge)
+        _ = try first.handshake(edge: connector(edge))
         XCTAssertTrue(serverLog.wait { $0.contains(where: \.isConnected) })
         let second = try RawLinkConnector(port: port)
-        _ = try second.handshake(edge: edge)
+        _ = try second.handshake(edge: connector(edge))
         XCTAssertTrue(serverLog.wait { $0.filter(\.isConnected).count == 2 })
 
         // The listener stops sending on the first session, and its reader
@@ -733,22 +742,33 @@ final class ClusterLinkControlKeyAndMessageTests: XCTestCase {
         XCTAssertThrowsError(try LinkFrame.parse(frame.plaintext(), maximumBodyBytes: 1))
         var corrupted = frame.plaintext(); corrupted[1] = 99
         XCTAssertThrowsError(try LinkFrame.parse(corrupted, maximumBodyBytes: 64))
-        XCTAssertThrowsError(try LinkHandshake.parseChallenge(Data(count: 72)))
-        XCTAssertThrowsError(try LinkHandshake.parseHello(Data(count: 196)))
-        // Version 2 only: a version-1 header is its own refusal; another magic is malformed.
-        XCTAssertThrowsError(try LinkHandshake.requireVersion(Data("DBLC".utf8) + Data([1, 0, 0, 0]), hello: false)) {
-            XCTAssertEqual($0 as? ClusterLinkControlRefusal, .protocolVersionMismatch)
+        XCTAssertEqual(LinkHandshake.version, 3)
+        XCTAssertEqual([LinkHandshake.challengeBytes, LinkHandshake.helloBytes, LinkHandshake.acceptBytes], [72, 324, 144])
+        XCTAssertEqual(LinkHandshake.HelloLayout.connectorPin, LinkV3Wire.connectorPin)
+        XCTAssertEqual(LinkHandshake.HelloLayout.listenerPin, LinkV3Wire.listenerPin)
+        XCTAssertEqual(LinkHandshake.HelloLayout.signature, LinkV3Wire.helloSignature)
+        XCTAssertEqual(LinkHandshake.HelloLayout.tag, LinkV3Wire.helloTag)
+        XCTAssertEqual(LinkHandshake.AcceptLayout.signature, LinkV3Wire.acceptSignature)
+        XCTAssertEqual(LinkHandshake.AcceptLayout.tag, LinkV3Wire.acceptTag)
+        XCTAssertThrowsError(try LinkHandshake.parseChallenge(Data(count: LinkHandshake.challengeBytes)))
+        XCTAssertThrowsError(try LinkHandshake.parseHello(Data(count: LinkHandshake.helloBytes)))
+        // Version 3 only: a version-1 or version-2 header is its own refusal; another magic is malformed.
+        for old: UInt8 in [1, 2] {
+            XCTAssertThrowsError(try LinkHandshake.requireVersion(Data("DBLC".utf8) + Data([old, 0, 0, 0]), hello: false)) {
+                XCTAssertEqual($0 as? ClusterLinkControlRefusal, .protocolVersionMismatch)
+            }
+            XCTAssertThrowsError(try LinkHandshake.requireVersion(Data("DBLH".utf8) + Data([old, 1, 0, 0]), hello: true)) {
+                XCTAssertEqual($0 as? ClusterLinkControlRefusal, .protocolVersionMismatch)
+            }
         }
-        XCTAssertThrowsError(try LinkHandshake.requireVersion(Data("DBLH".utf8) + Data([1, 1, 0, 0]), hello: true)) {
-            XCTAssertEqual($0 as? ClusterLinkControlRefusal, .protocolVersionMismatch)
-        }
-        XCTAssertThrowsError(try LinkHandshake.requireVersion(Data("DBLH".utf8) + Data([2, 1, 0, 0]), hello: false)) {
+        XCTAssertThrowsError(try LinkHandshake.requireVersion(Data("DBLH".utf8) + Data([3, 1, 0, 0]), hello: false)) {
             XCTAssertEqual($0 as? ClusterLinkControlError, .malformedHandshake)
         }
-        XCTAssertNoThrow(try LinkHandshake.requireVersion(Data("DBLC".utf8) + Data([2, 0, 0, 0]), hello: false))
-        XCTAssertThrowsError(try LinkHandshake.parseAccept(Data(count: 79)))
+        XCTAssertNoThrow(try LinkHandshake.requireVersion(Data("DBLC".utf8) + Data([3, 0, 0, 0]), hello: false))
+        XCTAssertNoThrow(try LinkHandshake.requireVersion(Data("DBLH".utf8) + Data([3, 1, 0, 0]), hello: true))
+        XCTAssertThrowsError(try LinkHandshake.parseAccept(Data(count: LinkHandshake.acceptBytes - 1)))
         let resume = LinkHandshake.Resume(incarnation: UUID(), knownPeerIncarnation: nil, deliveredThrough: 12)
-        var accept = LinkHandshake.acceptWithoutTag(resume); accept.append(Data(count: 32))
+        let accept = LinkV3Wire.acceptBody(incarnation: resume.incarnation, delivered: 12) + Data(count: 96)
         XCTAssertEqual(try LinkHandshake.parseAccept(accept).0, resume)
     }
 

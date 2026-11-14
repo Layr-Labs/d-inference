@@ -182,6 +182,7 @@ func twoProcess(executable: String) throws {
     limits.reconnectMaximumDelay = .milliseconds(200)
     let key = try ClusterLinkControlKey.qualification(secret: hexData(secretHex), epoch: epoch, edgeID: edgeID)
     let edge = try ClusterLinkControlEdge(edgeID: edgeID, epoch: epoch, key: key, peerAddress: .loopback, limits: limits)
+        .authenticatedByEdgeKeyOnly()
     func listenArguments(port: UInt16, epoch: UUID = epoch) -> [String] {
         ["listen", "--interface", "lo0", "--policy", "loopbackForTests", "--port", String(port),
          "--epoch", epoch.uuidString, "--edge", edgeID.uuidString, "--seconds", "60",
@@ -249,7 +250,8 @@ func twoProcess(executable: String) throws {
     let responder = ClusterLinkControlProbe()
     let listener = try ClusterLinkControlListener(configuration: .init(interface: "lo0", port: 0,
         policy: .loopbackForTests, edges: [try ClusterLinkControlEdge(edgeID: edgeID, epoch: epoch, key: key,
-            peerAddress: .loopback, limits: limits)])) { event, peer in listenRecorder.record(event); responder.handle(event, peer: peer) }
+            peerAddress: .loopback, limits: limits)
+            .authenticatedByEdgeKeyOnly()])) { event, peer in listenRecorder.record(event); responder.handle(event, peer: peer) }
     let listenPort = try listener.start()
     func probeArguments() -> [String] {
         ["probe", "--interface", "lo0", "--policy", "loopbackForTests", "--peer-address", "127.0.0.1",

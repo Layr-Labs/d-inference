@@ -25,8 +25,9 @@
 //
 // So every Qwen image path here drives the tower ONE IMAGE AT A TIME and
 // evaluates its final plus DeepStack features before starting the next.
-// Qwen3.5's already-proven video path remains one full T×H×W clip at a time;
-// Qwen3-VL video never enters this file. Attention is block-diagonal per image
+// Qwen3.5's video path remains one full T×H×W clip per call, admitted by its
+// largest frame pair, the unit the tower attends within; Qwen3-VL video never
+// enters this file. Attention is block-diagonal per image
 // already, and every other tower stage is per-token or per-grid, so per-image
 // calls preserve the intended computation while avoiding the cross-image mask.
 // Peak attention bytes go from `(Σᵢ nᵢ)²` to `maxᵢ nᵢ²`.

@@ -33,31 +33,42 @@ struct QwenVideoBudgetTests {
             ])
     }
 
-    @Test("the four Qwen builds sample 64 frames under one 8,192-token budget")
-    func qwenBuildsDefault() {
-        for model in Self.qwenBuilds {
-            let processing = MediaIngest.videoProcessing(
-                for: Self.request(model: model, videos: 1), environment: [:])
-            #expect(processing.maxFrames == 64, "\(model) frames")
-            #expect(processing.maxPixels == 8_192 * 2_048, "\(model) clip pixels")
+    @Test("Qwen 3.8 samples 32 frames under 4,096 tokens, the faster builds under 8,192")
+    func qwenBuildsDefault() throws {
+        let expected = [
+            "EigenLabs/Qwen3.8-27B-4bit-mtp": 4_096, "Qwen3.5-9B": 8_192,
+            "qwen3.5-35b-a3b": 8_192, "qwen3.6-35b-a3b-vl-mtp-mxfp8": 8_192,
+        ]
+        #expect(Set(expected.keys) == Set(Self.qwenBuilds))
+        for (model, tokens) in expected {
+            let processing = try #require(
+                MediaIngest.videoProcessing(
+                    for: Self.request(model: model, videos: 1), environment: [:]))
+            #expect(processing.maxFrames == 32, "\(model) frames")
+            #expect(processing.maxPixels == tokens * 2_048, "\(model) clip pixels")
             #expect(processing.sampling == nil, "\(model) keeps the reference 2 fps")
         }
     }
 
-    @Test("the clips of one request share its token budget")
-    func clipsShareTheBudget() {
-        let processing = MediaIngest.videoProcessing(
-            for: Self.request(model: "EigenLabs/Qwen3.8-27B-4bit-mtp", videos: 4), environment: [:])
-        #expect(processing.maxFrames == 64)
+    @Test("the clips of the user messages share the request's token budget")
+    func clipsShareTheBudget() throws {
+        var request = Self.request(model: "Qwen3.5-9B", videos: 4)
+        let processing = try #require(MediaIngest.videoProcessing(for: request, environment: [:]))
+        #expect(processing.maxFrames == 32)
         #expect(processing.maxPixels == 2_048 * 2_048, "8,192 tokens / 4 clips")
+        // An assistant turn's video is dropped by buildUserInput: it takes no share.
+        request.messages.append(
+            .init(role: .assistant, content: .parts([.videoURL("data:video/mp4;base64,AA==")])))
+        #expect(MediaIngest.videoProcessing(for: request, environment: [:]) == processing)
     }
 
     @Test("other models keep their processor's defaults")
     func otherModelsUntouched() {
         for model in ["gemma-4-26b-qat-4bit", "nvidia-nemotron-3.5-super", "vlm", ""] {
             #expect(
-                MediaIngest.videoProcessing(for: Self.request(model: model, videos: 1), environment: [:])
-                    == UserInput.VideoProcessing(), "\(model)")
+                MediaIngest.videoProcessing(
+                    for: Self.request(model: model, videos: 1), environment: [:]) == nil,
+                "\(model)")
         }
     }
 
@@ -67,17 +78,17 @@ struct QwenVideoBudgetTests {
         let both = MediaIngest.videoBudget(
             forModel: model,
             environment: [
-                "DARKBLOOM_QWEN_VIDEO_MAX_FRAMES": "32", "DARKBLOOM_QWEN_VIDEO_MAX_TOKENS": "4096",
+                "DARKBLOOM_QWEN_VIDEO_MAX_FRAMES": "64", "DARKBLOOM_QWEN_VIDEO_MAX_TOKENS": "16384",
             ])
-        #expect(both == .init(frames: 32, visualTokens: 4_096))
-        for (frames, tokens) in [("0", "255"), ("769", "24577"), ("x", ""), ("-8", "1e4")] {
+        #expect(both == .init(frames: 64, visualTokens: 16_384))
+        for (frames, tokens) in [("0", "255"), ("65", "16385"), ("x", ""), ("-8", "1e4")] {
             let ignored = MediaIngest.videoBudget(
                 forModel: model,
                 environment: [
                     "DARKBLOOM_QWEN_VIDEO_MAX_FRAMES": frames,
                     "DARKBLOOM_QWEN_VIDEO_MAX_TOKENS": tokens,
                 ])
-            #expect(ignored == .init(frames: 64, visualTokens: 8_192), "\(frames) / \(tokens)")
+            #expect(ignored == .init(frames: 32, visualTokens: 8_192), "\(frames) / \(tokens)")
         }
         #expect(
             MediaIngest.videoBudget(
@@ -93,13 +104,28 @@ struct QwenVideoBudgetTests {
         }
     }
 
-    @Test("every allowed budget fits the per-video KV reservation")
-    func budgetFitsTheReservation() {
-        // A clip's prompt: its visual tokens plus, per frame pair, a
+    @Test("every allowed clip fits the per-video KV reservation")
+    func budgetFitsTheReservation() throws {
+        // The resize keeps each side at least 32 px, so a 200:1 clip can
+        // exceed a small pixel budget. Price extreme and ordinary shapes at the
+        // largest frame count; per frame pair the prompt adds a
         // `<ddd.d seconds>` label (8 tokens) and two vision delimiters.
         let frames = MediaIngest.qwenVideoFramesOverrideRange.upperBound
-        let tokens = MediaIngest.qwenVideoTokensOverrideRange.upperBound
-        #expect(tokens + (frames + 1) / 2 * 10 <= MediaIngest.visionTokensPerVideo)
+        let pairs = (frames + 1) / 2
+        var overshoot = false
+        for tokens in [256, 1_024, 4_096, MediaIngest.qwenVideoTokensOverrideRange.upperBound] {
+            for (height, width) in [(32, 6_400), (6_400, 32), (64, 6_400), (720, 1_280)] {
+                let size = try Qwen4ExpMediaGeometry.video(
+                    frames: frames, height: height, width: width, temporalFactor: 2, factor: 32,
+                    minPixels: 4_096, maxPixels: tokens * MediaIngest.qwenVideoPixelsPerToken)
+                let visual = pairs * (size.height / 32) * (size.width / 32)
+                overshoot = overshoot || visual > tokens
+                #expect(
+                    visual + pairs * 10 <= MediaIngest.visionTokensPerVideo,
+                    "\(tokens) tokens, \(height) x \(width): \(visual)")
+            }
+        }
+        #expect(overshoot, "a 32 px side overshoots a small budget")
     }
 }
 

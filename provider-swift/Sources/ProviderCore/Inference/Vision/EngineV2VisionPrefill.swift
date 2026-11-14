@@ -343,7 +343,9 @@ public enum EngineV2VisionPrefill {
             preserveTemplateFields: nativeToolMessages,
             modelType: nativeToolModelType)
         // The pair's Qwen media path keeps its contract's single-block clips.
-        userInput.processing.video = MediaIngest.videoProcessing(for: request)
+        if let video = MediaIngest.videoProcessing(for: request) {
+            userInput.processing.video = video
+        }
         let towerLimits = VisionTowerBudget.liveLimits
         return try await container.perform(nonSendable: userInput) { ctx, userInput in
             // MLX's DEFAULT error handler is `fatalError`. A C++ fault raised

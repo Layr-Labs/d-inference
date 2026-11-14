@@ -243,7 +243,8 @@ extension EngineV2Factory {
     }
 
     /// Consume the prepared resources exactly once. Preserve the scheduler config
-    /// used to size the pool; only cache enablement is decided during assembly.
+    /// used to size the pool; only cache enablement and the template's
+    /// message-boundary rule are decided during assembly.
     static func assembleProductionBuild(
         model: any LanguageModel,
         tokenizer: any MLXLMCommon.Tokenizer,
@@ -256,7 +257,8 @@ extension EngineV2Factory {
         preparedBackend: ProductionBackendPreparation,
         kvBudget: GlobalKVCacheBudget? = nil,
         constructionPurpose: ConstructionPurpose = .serving,
-        checkpointPartition: EngineV2BenchmarkCheckpointPartition = .production
+        checkpointPartition: EngineV2BenchmarkCheckpointPartition = .production,
+        templateBoundaryRule: CBv2CanonicalBoundaryRule? = nil
     ) throws -> ProductionBuild {
         if glm5NextTarget(model: model) != nil {
             guard let kvBudget,
@@ -294,6 +296,11 @@ extension EngineV2Factory {
         let effectivePrefixCache = modelCapabilities.supportsPrefixReuse
             ? prefixCache : nil
         var schedulerConfig = preparedBackend.schedulerConfig
+        // A rule only ends grid cells early, so the pool sizing still holds.
+        if schedulerConfig.canonicalPrefillGridTokens != nil,
+            schedulerConfig.canonicalBoundaryRule == nil {
+            schedulerConfig.canonicalBoundaryRule = templateBoundaryRule
+        }
         schedulerConfig.enablePrefixCache =
             effectivePrefixCache != nil || preparedBackend.residentPrefixCacheEnabled
                 || preparedBackend.hybridPrefixCache != nil

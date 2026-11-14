@@ -69,6 +69,9 @@ enum NemotronSuperLocalPrefill {
             config.maxConcurrentPartialPrefills = 1
             config.maxPrefillRowsPerStep = 1
             config.decodeStepsBetweenPrefillChunks = decodeStepsBetweenChunks
+            // This route already cuts every prompt at its own chunk.
+            config.canonicalPrefillGridTokens = nil
+            config.canonicalBoundaryRule = nil
         }
     }
 

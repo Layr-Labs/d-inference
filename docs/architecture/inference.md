@@ -2630,6 +2630,54 @@ disqualifies reviewed serving and deadline profiles
 no longer counts toward `soloStripeChunks`, which still counts chunks wider
 than `prefillChunkSize`.
 
+### Canonical prefill grid
+
+Off by default. `DARKBLOOM_CBV2_CANONICAL_PREFILL_GRID` sets
+`CBv2SchedulerConfig.canonicalPrefillGridTokens`: every text prompt chunk
+then ends at a multiple of the grid, whatever the load. A prompt that extends
+an earlier prompt is cut into the same chunks over the tokens they share, so
+state kept at a chunk end is the state a cold prefill of the longer prompt
+reaches there.
+
+The provider accepts a grid only when a whole cell fits beside decode rows
+(`canonicalPrefillGridTokens` in
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift`):
+a positive multiple of 128 tokens, at most `prefillChunkSize`, at most half of
+`maxBatchedTokensPerStep`, and at most a positive `mixedStepPrefillTokenCap`.
+A row whose step cannot hold its whole cell waits for the next step, so a
+larger grid could stall prompt rows. Any other value keeps ordinary chunking.
+
+With the grid on:
+
+- A lone text prompt runs in grid cells. The solo stripe does not widen a
+  cell, so cold prefill of one long prompt on an idle engine takes more,
+  smaller steps.
+- A message-boundary rule also ends a chunk where each assistant message
+  opens and closes. The slot reads the rule from its chat template at load
+  (`TemplateBoundaryRule.rule` in
+  `provider-swift/Sources/ProviderCore/Inference/Prompting/TemplateBoundaryRule.swift`).
+  It renders probe conversations through the request path
+  (`ProviderPromptContractPipeline.tokenizeProviderBody`), and the library
+  accepts the rule only when two-turn prompts confirm it
+  (`CBv2CanonicalBoundaryRule.derive`). A template that fails the check gets
+  no rule and keeps the grid alone. The template is never changed.
+  `DARKBLOOM_CBV2_CANONICAL_BOUNDARIES` replaces the template's rule.
+- The load logs one line with the model ID, the outcome, the pattern lengths
+  and the check names. It carries no token IDs and no prompt text.
+- Prompts with media blocks keep ordinary chunking. GLM5Next
+  (`glm5NextServingScheduler`) and Nemotron Super local serving
+  (`NemotronSuperLocalPrefill.Policy.apply`) set their own chunk and step, so
+  both clear the grid and the rule. The benchmark production path
+  (`EngineV2Factory.makeProductionBuild`) keeps the grid but reads no rule
+  from the template.
+
+Both keys are `DARKBLOOM_CBV2_*` keys: they enter the complete-checkpoint
+numerics fingerprint and disqualify reviewed serving and deadline profiles.
+Scheduler-prefill benchmark receipts do not record the grid. No serving path
+submits a continuation request (`EngineV2.submitContinuation`) yet, so the
+grid changes how prompts are chunked and where checkpoints can land, not when
+prefill starts.
+
 ### Deadlines
 
 The coordinator's relative first-content budget is anchored once at frame

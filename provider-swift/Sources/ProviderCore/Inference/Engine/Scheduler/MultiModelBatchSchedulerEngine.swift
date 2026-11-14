@@ -507,6 +507,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             ? (nativeLocalCacheScope ?? cacheScope) : cacheScope
         let prepared: ToolChoicePromptPolicy.Prepared
         let nativeMiMoThinkingEnabled: Bool
+        let nativeReasoningBudget: NativeReasoningBudget?
         // A GLM request on a cluster pair (`Prepared.glm5PairPostValidation`).
         let glm5PairPostValidation = GLM5NextPromptPolicy.applies(modelType: modelType)
             ? await engineV2Bridge?.servesDistributedPair == true : false
@@ -520,7 +521,13 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 try MiMoV26TemplateFix.validateRequest(request)
                 nativeMiMoThinkingEnabled = try MiMoV26TemplateFix.effectiveThinkingEnabled(
                     request: request, controls: templateControls)
-            } else { nativeMiMoThinkingEnabled = true }
+                nativeReasoningBudget = templateControls.rawMiMoControls.reasoningBudgetTokens.map {
+                    .init(maximumTokens: $0, family: .mimoV26)
+                }
+                if nativeReasoningBudget != nil, await engineV2Bridge?.supportsNativeReasoningBudgets != true {
+                    throw NativeReasoningBudget.refusal("this MiMo route cannot preserve a reasoning budget")
+                }
+            } else { nativeMiMoThinkingEnabled = true; nativeReasoningBudget = nil }
             try ReasoningEffortPolicy.validate(request, controls: templateControls, modelType: modelType)
             var policy = try ToolChoicePromptPolicy.prepare(
                 request,
@@ -630,7 +637,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             do {
                 return try await prepareNativeMiMoMedia(request:request,templateControls:templateControls,
                     requestUsage:requestUsage,prepared:prepared,toolHandler:toolHandler,
-                    thinkingEnabled:nativeMiMoThinkingEnabled,acquired:consume acquired)
+                    thinkingEnabled:nativeMiMoThinkingEnabled,reasoningBudget:nativeReasoningBudget,acquired:consume acquired)
             } catch {
                 await releaseBox.fire()
                 throw MiMoV26EncodedMediaIngress.outwardFailure(error)
@@ -1142,6 +1149,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             logprobs: engineV2Logprobs != nil, declaresTools: prepared.tools?.isEmpty == false,
             setting: exitThinkingSetting, finalExit: gptossFinalExit)
         if exitThinking != nil, await engineV2Bridge?.servesDistributedPair != false { exitThinking = nil }
+        if nativeReasoningBudget != nil { exitThinking = nil }
         let loopGuard = GenerationLoopGuardPolicy.resolve(
             modelType: modelType, request: request, prepared: prepared, tokenConstraint: tokenConstraint,
             exitThinking: exitThinking)
@@ -1180,7 +1188,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         logitBias: engineV2Sampling?.logitBias,
                         seed: engineV2Sampling?.seed,
                         // Exact Flint matches stops on its answer channel only.
-                        engineStopStrings: modelType != "flint"),
+                        engineStopStrings: modelType != "flint", nativeReasoningBudget: nativeReasoningBudget),
                     requestId: requestId,
                     // Same per-tenant scope the legacy submit threads into the
                     // checkpoint cache; the bridge maps it to CBv2Request.cacheSalt
@@ -1586,11 +1594,14 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     private func prepareNativeMiMoMedia(request: OpenAIChatCompletionRequest,
         templateControls: ChatTemplateControls, requestUsage: EngineV2RequestUsageSignal,
         prepared: ToolChoicePromptPolicy.Prepared, toolHandler: BatchedToolStreamHandler?,
-        thinkingEnabled: Bool, acquired: consuming AcquiredModel
+        thinkingEnabled: Bool, reasoningBudget: NativeReasoningBudget?, acquired: consuming AcquiredModel
     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent,Error> {
         try checkFirstContentDeadline()
         try templateControls.rawMiMoControls.validateMedia(modelType:acquired.modelType)
         if let bridge = acquired.engineV2Bridge, let binding = try await bridge.draftMiMoImageIngress() {
+            guard reasoningBudget == nil else {
+                throw NativeReasoningBudget.refusal("MiMo cluster media does not support reasoning budgets")
+            }
             guard engineV2Logprobs == nil,request.responseFormat?.requiresJSONOutput != true else {
                 throw MultiModelBatchSchedulerEngineError.multimodalRejected("MiMo cluster media output controls")
             }
@@ -1667,7 +1678,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         let id = "req-" + UUID().uuidString
         let upstream = try await bridge.submitTokenized(promptTokens:native.request.promptTokens,
             request:Self.translate(openAIRequest:request,defaultMaxTokens:maximumOutput,
-                logitBias:engineV2Sampling?.logitBias,seed:engineV2Sampling?.seed),
+                logitBias:engineV2Sampling?.logitBias,seed:engineV2Sampling?.seed,
+                nativeReasoningBudget:reasoningBudget),
             requestId:id,cacheScope:cacheScope,cacheEnabled:false,usageSignal:requestUsage,
             multimodal:native.request.multimodal,
             stopStringScope:ReasoningStopScope.scope(reasoningParser:request.reasoningParser,reasoningPrefix:nil,parsesToolCalls:toolHandler != nil),

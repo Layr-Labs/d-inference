@@ -3775,6 +3775,10 @@ Sources: `provider-swift/Sources/ProviderCore/Inference/Tools/GemmaJSONAnswerPol
 `provider-swift/Sources/ProviderCore/Inference/GemmaJSONAnswerConstraint.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`.
 
+### Gemma quoted numeric tool arguments
+
+The SDK parser behind `DARKBLOOM_GEMMA_SCHEMA_COERCION` is adopted through the `libs/mlx-swift-lm` gitlink. Numeric marker strings become numbers at frame close only when the parameter schema unambiguously requests a numeric type. Potentially converted values stay withheld from argument deltas until the completed parse; unsupported or ambiguous schemas preserve their quoted text. The provider still validates strict calls. See the [process switch](../reference/configuration.md#engine-and-scheduler). Source: `libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/Parsers/GemmaFunctionParser.swift` (`GemmaFunctionParser`).
+
 ### Constrained Qwen JSON answers
 
 Qwen, Bonsai 2 27B and Nemotron 3.5 Lightning share this machinery.
@@ -4298,6 +4302,42 @@ Which requests render this way:
   re-encodes the bodies it forwards sorted; darkbloom-platform#919 keeps the
   caller's order for the builds it names).
 
+### Native reasoning token budgets
+
+Supported local Super and MiMo requests can opt into a thought-token ceiling
+through [the default-off switch](../reference/configuration.md#native-reasoning-budgets).
+`NemotronSuperPromptContract` and `MiMoV26RawControlEvidence` retain validated
+`reasoning.max_tokens`; explicit thinking-off conflicts with the budget. MiMo
+retains the value across both Chat and Responses decoding. Super uses its bound
+Chat owner; this change does not register a Super Responses route.
+
+`NativeReasoningBudget` is an internal sidecar excluded from
+`ChatCompletionRequest` wire coding. Family owners set the initial thought
+state: Super's rendered prompt opens the thought, while MiMo waits for an open
+marker. `EngineV2Bridge.submitTokenized` checks its actual engine capability and
+validates atomic marker encode/decode round trips with the loaded tokenizer
+before admission. Distributed or unsupported engines refuse the control.
+
+The SDK default sampler counts confirmed thought payload tokens, permits an
+early natural close and forces the close at N before continuing the same
+request's answer. Markers do not spend N, later opens cannot reset it, and the
+original total output ceiling and stops still win. The close counts toward
+completion usage; logprobs remain the raw model probabilities. Budget rows use
+ordinary target decoding for their full lifetime; they do not chain or draft.
+Other rows keep their sampling semantics, but a mixed batch may lose chaining.
+A generic token constraint or cancel/resubmit thought-exit continuation cannot
+be combined with this first budget contract.
+
+Text and supported native image paths carry the same sidecar. Native media
+seals, admission, cancellation and retirement remain owned by the existing
+engine lifecycle. This capability changes no model memory limit or hardware
+qualification and makes no throughput or full-model quality claim.
+
+Sources: `provider-swift/Sources/ProviderCore/Inference/Prompting/NativeReasoningBudget.swift`
+(`resolved`), `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`
+(`submitTokenized`), and `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/ReasoningBudgetV2.swift`
+(`CBv2ReasoningBudget`).
+
 ### Reasoning effort
 
 Every model that reasons takes each effort a client names (`none`,
@@ -4392,6 +4432,36 @@ snapshotted into #721, and published only once #721 is deployed, each step on
 the owner's go.
 
 ### Strict tool-call grammar
+
+When the [constraint-span setting](../reference/configuration.md#engine-and-scheduler)
+(`DARKBLOOM_CONSTRAINT_SPANS`) enables speculation, `QwenStrictToolConstraint`
+exposes ordinary reasoning and content as free spans through
+`CBv2FreeSpanTokenConstraint`. Its pure preview accepts only tokens that stay
+in the same state without touching a marker prefix. Call openings, framing,
+arguments and partial markers remain protected; text after a closed call can
+become free again. `QwenJSONAnswerConstraint` (the Qwen-family
+`JSONAnswerConstraint` that `JSONAnswerPolicy` builds) exposes only Qwen
+reasoning before the answer: the JSON value, string bodies and trailing
+whitespace stay protected. Other JSON families build the plain
+`JSONAnswerConstraint`, which does not conform to `CBv2FreeSpanTokenConstraint`,
+so they neither draft nor keep MTP history and retain target-only decoding.
+Neither constraint mutates its interned states while previewing a speculative
+token.
+
+Disabling the setting retains request-wide target-only constrained decoding.
+Existing grammar admission, masks and sampler/model/lifecycle eligibility remain
+authoritative. Required/named calls acquire no new strict-auto grammar. An
+eligible native Qwen assistant retains committed history through protected
+spans, but starts no draft there. Engines with native completion tracking remain
+ineligible. The LaunchAgent forwards the flag at installation; the SDK snapshots
+it at engine construction.
+
+`QwenConstraintSpanServingTests` checks streamed content, reasoning, calls and
+accounting through the scheduler, bridge and engine. Coverage includes multiple
+calls, thinking on/off, short budgets, cancellation and refusal recovery. Tiny
+native Qwen target/assistant fixtures check committed history across protected
+entry and return to free text. These are bounded integration fixtures, not
+full-model throughput or production qualification.
 
 A `strict` `auto` call is checked against the caller's schema only when its
 frame closes ([streamed auto tool calls](#streamed-auto-tool-calls)), after the

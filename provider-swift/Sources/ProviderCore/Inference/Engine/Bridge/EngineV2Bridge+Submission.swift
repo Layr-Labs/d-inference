@@ -168,6 +168,18 @@ extension EngineV2Bridge {
         /// (`GenerationLoopGuardPolicy`); nil leaves it unguarded.
         loopGuard: GenerationLoopGuard? = nil
     ) async throws -> AsyncStream<GenerationEvent> {
+        let reasoningBudget: CBv2ReasoningBudget?
+        do {
+            if let budget = request.nativeReasoningBudget {
+                guard supportsNativeReasoningBudgets, tokenConstraint == nil, loopGuard?.exitThinking == nil else {
+                    throw NativeReasoningBudget.refusal("this engine route cannot preserve a reasoning budget")
+                }
+                reasoningBudget = try budget.resolved(tokenizer: tokenizer.inner)
+            } else { reasoningBudget = nil }
+        } catch {
+            usageSignal?.finalizeLookup(failure: .policy, fallbackTier: prefixCacheFallbackTier)
+            throw error
+        }
         let tokenConstraint = Self.admittedConstraint(tokenConstraint, servesDistributedPair: servesDistributedPair,
             tracksNativeShutdown: tracksNativeShutdown)
         if let clusterStillImages {
@@ -386,6 +398,7 @@ extension EngineV2Bridge {
         cbv2Request.clusterQwenMedia = clusterQwenMedia
         cbv2Request.positionState = positionState ?? multimodal?.positionState
         cbv2Request.hybridPrefixIdentity = hybridPrefixIdentity
+        cbv2Request.reasoningBudget = reasoningBudget
         if let minP = request.min_p { cbv2Request.sampling.minP = minP }
         let checkpointScope = cbv2Request.checkpointCacheSalt ?? ""
         try await checkFirstContentDeadline(

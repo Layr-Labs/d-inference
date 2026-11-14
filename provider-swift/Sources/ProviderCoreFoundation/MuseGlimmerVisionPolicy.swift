@@ -5,10 +5,9 @@ import Foundation
 
 /// Image input for Muse Glimmer 30B on one Mac.
 ///
-/// Discovery advertises image input (`is_vision`) for the exact serving
-/// identity only when all of these hold:
-/// - the operator switch is on (`switchEnvironmentKey`, off by default until
-///   the image proofs and qualification pass);
+/// Images are always on: there is no switch. Discovery advertises image input
+/// (`is_vision`) whenever the artifact passes its integrity checks:
+/// - the exact serving identity (registry id and `model_type`);
 /// - `config.json` declares the pinned vision stack (`configurationRefusal`);
 /// - `config.json`, `processor_config.json` and the index are the pinned
 ///   artifact's bytes (`MuseGlimmerVisionArtifact`, which reads them bounded).
@@ -16,15 +15,13 @@ import Foundation
 /// The managed load then verifies every shard, the vision tensors included,
 /// and loads the image encoder from that verified installation with the
 /// same decision, so a slot serves images exactly when discovery advertised
-/// them. Otherwise image parts are refused with a typed 400 that names the
-/// reason (`Refusal.reason`). Video is refused until the SDK takes it.
+/// them; an encoder that does not load fails the whole load. Otherwise image
+/// parts are refused with a typed 400; the reason (`Refusal.reason`) is in
+/// the error's description and this Mac's log, never on the wire. Video is
+/// refused until the SDK takes it.
 ///
 /// Pure: no MLX and no file access, so discovery and tests share it.
 public enum MuseGlimmerVisionPolicy {
-    /// `1` turns image input on for this provider. Any other value, or none,
-    /// keeps it off.
-    public static let switchEnvironmentKey = "DARKBLOOM_MUSE_GLIMMER_VISION"
-
     /// `<|patch|>`: the template writes one per image part.
     public static let imageTokenID = 200_092
     /// `<|video|>`: refused until the SDK takes video.
@@ -51,8 +48,6 @@ public enum MuseGlimmerVisionPolicy {
     /// Why this provider does not take a request's media for Muse Glimmer.
     /// Each reason is fixed text: no request content, path or value.
     public enum Refusal: Equatable, Sendable, CustomStringConvertible {
-        /// The operator switch is off.
-        case switchedOff
         /// Not the exact serving identity (registry id and `model_type`).
         case notServingIdentity
         /// `config.json` declares no vision stack, or not the pinned one.
@@ -66,7 +61,6 @@ public enum MuseGlimmerVisionPolicy {
 
         public var reason: String {
             switch self {
-            case .switchedOff: "image input is not enabled on this provider"
             case .notServingIdentity: "image input is served only for the pinned Muse Glimmer identity"
             case .configuration: "the checkpoint does not declare the pinned vision stack"
             case .unpinnedArtifact(let file): "the checkpoint's \(file) is not the pinned artifact"
@@ -78,18 +72,10 @@ public enum MuseGlimmerVisionPolicy {
         public var description: String { reason }
     }
 
-    public static func isSwitchedOn(environment: [String: String]) -> Bool {
-        environment[switchEnvironmentKey] == "1"
-    }
-
     /// The refusal a configuration and identity alone imply, before any file
     /// is hashed; nil when they declare the pinned vision stack for the exact
-    /// serving identity with the switch on.
-    public static func configurationRefusal(
-        _ configuration: [String: Any], modelID: String?,
-        environment: [String: String] = ProcessInfo.processInfo.environment
-    ) -> Refusal? {
-        guard isSwitchedOn(environment: environment) else { return .switchedOff }
+    /// serving identity.
+    public static func configurationRefusal(_ configuration: [String: Any], modelID: String?) -> Refusal? {
         // The exact spelling: the type rule trims and lowercases for wire
         // protocol rules, but media follows the pinned artifact only.
         guard configuration["model_type"] as? String == MuseGlimmerModelPolicy.modelType,

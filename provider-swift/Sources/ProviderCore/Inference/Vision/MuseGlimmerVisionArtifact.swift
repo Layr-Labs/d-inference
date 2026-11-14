@@ -6,8 +6,9 @@ import MLXLLM
 import MLXLMCommon
 import ProviderCoreFoundation
 
-/// Whether a Muse Glimmer snapshot serves images on this provider: the
-/// policy's switch, identity and configuration rules
+/// Whether a Muse Glimmer snapshot serves images on this provider. There is
+/// no switch: these are the artifact's integrity checks, the policy's
+/// identity and configuration rules
 /// (`MuseGlimmerVisionPolicy.configurationRefusal`), then the pinned bytes of
 /// `config.json`, `processor_config.json` and the index. Each file is read as
 /// a bounded regular file, never through a symlink, exactly as the installer
@@ -42,20 +43,12 @@ enum MuseGlimmerVisionArtifact {
     static let maximumProcessorConfigurationBytes = 64 << 10
     static let maximumIndexBytes = 4 << 20
 
-    static func decision(
-        snapshotDir: URL, modelID: String?,
-        environment: [String: String] = ProcessInfo.processInfo.environment,
-        pins: Pins = .init()
-    ) -> Decision {
-        guard MuseGlimmerVisionPolicy.isSwitchedOn(environment: environment) else {
-            return .refused(.switchedOff)
-        }
+    static func decision(snapshotDir: URL, modelID: String?, pins: Pins = .init()) -> Decision {
         guard let configuration = pinnedBytes(snapshotDir, configurationFile,
                 maximumBytes: maximumConfigurationBytes, sha256: pins.configuration),
             let object = (try? JSONSerialization.jsonObject(with: configuration)) as? [String: Any]
         else { return .refused(.unpinnedArtifact(file: configurationFile)) }
-        if let refusal = MuseGlimmerVisionPolicy.configurationRefusal(
-            object, modelID: modelID, environment: environment) {
+        if let refusal = MuseGlimmerVisionPolicy.configurationRefusal(object, modelID: modelID) {
             return .refused(refusal)
         }
         guard pinnedBytes(snapshotDir, processorConfigurationFile,

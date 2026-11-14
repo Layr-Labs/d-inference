@@ -5684,7 +5684,8 @@ installs the projections it reads from the verified shard headers, inside the
 slot owner's ordinary LOAD claim and weight-hash bracket. The slot is a text
 slot: `ModelMediaPolicy.advertisesMedia` is false for the type, so its
 `vision_config` selects neither the vision factory nor the generic media path.
-Image input is separate ([below](#muse-glimmer-30b-images)) and off by default.
+Image input takes its own route ([below](#muse-glimmer-30b-images)) and is
+always on for the pinned artifact.
 
 The text tower is attention only, with sliding and full layers. Its
 `cbv2LayerKinds` and capabilities drive `ProductionModelAdapter` and the sizing
@@ -5768,9 +5769,9 @@ and `libs/mlx-swift-lm/Libraries/MLXLLM/Models/MuseGlimmer/`.
 
 ### Muse Glimmer 30B images
 
-Discovery advertises `is_vision` for the exact identity only when
-`DARKBLOOM_MUSE_GLIMMER_VISION=1` and `MuseGlimmerVisionArtifact` passes: the
-configuration declares the pinned vision stack
+Images have no switch. Discovery advertises `is_vision` for the exact identity
+whenever the artifact passes its integrity checks (`MuseGlimmerVisionArtifact`):
+the configuration declares the pinned vision stack
 (`MuseGlimmerVisionPolicy.configurationRefusal`: `model_type`, `vision_config`,
 the image and video token ids, no text-only overlay), and `config.json`,
 `processor_config.json` and the index are the pinned bytes, each read as a
@@ -5802,9 +5803,10 @@ prefix cache, and the SDK never drafts beside it.
 Before any decode, the media memory gate reserves each image at its ceiling:
 4,098 prompt tokens of KV and the encoded features, plus one full-size tower
 run (`MuseGlimmerVisionBudget`, an analytic bound until a measurement replaces
-it). Refusals are typed 400s, decided before any tower work: a slot that serves
-no images (`unsupported_media`; the reason, switch off, not the pinned
-artifact or no encoder, is logged on the Mac and never sent), video (`unsupported_media` until the SDK takes it), an
+it). Refusals are typed 400s, decided before any tower work: a slot whose artifact
+fails an integrity check (`unsupported_media`; the reason, not the exact
+identity, not the pinned vision stack, an unpinned file or no encoder, is in
+the error's description and the Mac's log and never sent), video (`unsupported_media` until the SDK takes it), an
 image outside a user message, a placeholder count that does not match the
 images, an image size outside the processor's range (`invalid_media`), and a
 required or named tool choice. The memory gate's refusal is the retryable

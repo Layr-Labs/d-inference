@@ -176,8 +176,8 @@ extension ModelScanner {
         // nil (not false) for text-only builds, so a freshly-scanned text model is
         // wire-identical to one decoded from an older provider's registration.
         // Muse Glimmer's slot stays a text slot (`ModelMediaPolicy`); its
-        // images take their own route, advertised only for the pinned
-        // artifact with the switch on (`MuseGlimmerVisionArtifact`).
+        // images take their own route, advertised whenever the artifact
+        // passes its integrity checks (`MuseGlimmerVisionArtifact`).
         let isVision = FileManager.default.fileExists(atPath: configPath.path)
             && (configDeclaresVision(at: configPath, modelID: modelName)
                 || MuseGlimmerVisionArtifact.advertisesImages(

@@ -9,8 +9,8 @@ import Testing
 
 @testable import ProviderCore
 
-/// `MuseGlimmerVisionArtifact`: the switch, the identity, the pinned vision
-/// stack, then the pinned bytes of `config.json`, `processor_config.json`
+/// `MuseGlimmerVisionArtifact`: no switch, only integrity checks: the
+/// identity, the pinned vision stack, then the pinned bytes of `config.json`, `processor_config.json`
 /// and the index, each read as a bounded regular file. Discovery advertises
 /// images and the load builds the encoder from this one decision.
 ///
@@ -20,7 +20,6 @@ import Testing
 @Suite("Muse Glimmer vision artifact")
 struct MuseGlimmerVisionArtifactTests {
     typealias Artifact = MuseGlimmerVisionArtifact
-    static let on = [MuseGlimmerVisionPolicy.switchEnvironmentKey: "1"]
     static let modelID = MuseGlimmerModelPolicy.localModelID
     static let referenceDirectoryKey = "MUSE_GLIMMER_NVFP4_DIR"
 
@@ -62,11 +61,8 @@ struct MuseGlimmerVisionArtifactTests {
 
         func url(_ name: String) -> URL { directory.appendingPathComponent(name) }
 
-        func decision(
-            modelID: String? = MuseGlimmerVisionArtifactTests.modelID,
-            environment: [String: String] = MuseGlimmerVisionArtifactTests.on
-        ) -> Artifact.Decision {
-            Artifact.decision(snapshotDir: directory, modelID: modelID, environment: environment, pins: pins)
+        func decision(modelID: String? = MuseGlimmerVisionArtifactTests.modelID) -> Artifact.Decision {
+            Artifact.decision(snapshotDir: directory, modelID: modelID, pins: pins)
         }
 
         func remove() { try? FileManager.default.removeItem(at: directory) }
@@ -100,16 +96,12 @@ struct MuseGlimmerVisionArtifactTests {
         #expect(snapshot.decision(modelID: MuseGlimmerModelPolicy.catalogModelID) == .serves(configuration: expected))
     }
 
-    @Test("the switch is read before any file")
-    func switchFirst() throws {
+    @Test("a snapshot without its metadata is refused as unpinned")
+    func missingSnapshot() throws {
         let missing = FileManager.default.temporaryDirectory.appendingPathComponent("absent-\(UUID().uuidString)")
-        #expect(Artifact.decision(snapshotDir: missing, modelID: Self.modelID, environment: [:]) == .refused(.switchedOff))
-        let snapshot = try Snapshot()
-        defer { snapshot.remove() }
-        for value in ["0", "true", ""] {
-            #expect(snapshot.decision(environment: [MuseGlimmerVisionPolicy.switchEnvironmentKey: value])
-                == .refused(.switchedOff))
-        }
+        #expect(Artifact.decision(snapshotDir: missing, modelID: Self.modelID)
+            == .refused(.unpinnedArtifact(file: Artifact.configurationFile)))
+        #expect(!Artifact.advertisesImages(snapshotDir: missing, modelID: Self.modelID, modelType: "muse_glimmer"))
     }
 
     @Test("identity and stack refusals come from the hashed configuration")
@@ -211,11 +203,13 @@ struct MuseGlimmerVisionArtifactTests {
         let directory = URL(fileURLWithPath: path)
         let configuration = try Data(contentsOf: directory.appendingPathComponent(Artifact.configurationFile))
         #expect(Self.sha256(configuration) == MuseGlimmerVisionPolicy.pinnedConfigurationSHA256)
-        #expect(Artifact.decision(snapshotDir: directory, modelID: Self.modelID, environment: Self.on)
+        // Images are on for the pinned artifact, with no setting at all.
+        #expect(Artifact.decision(snapshotDir: directory, modelID: Self.modelID)
             == .serves(configuration: configuration))
-        #expect(Artifact.decision(snapshotDir: directory, modelID: Self.modelID, environment: [:])
-            == .refused(.switchedOff))
+        for id in [MuseGlimmerModelPolicy.localModelID, MuseGlimmerModelPolicy.catalogModelID] {
+            #expect(Artifact.advertisesImages(snapshotDir: directory, modelID: id, modelType: "muse_glimmer"))
+        }
         let object = try #require(JSONSerialization.jsonObject(with: configuration) as? [String: Any])
-        #expect(MuseGlimmerVisionPolicy.configurationRefusal(object, modelID: Self.modelID, environment: Self.on) == nil)
+        #expect(MuseGlimmerVisionPolicy.configurationRefusal(object, modelID: Self.modelID) == nil)
     }
 }

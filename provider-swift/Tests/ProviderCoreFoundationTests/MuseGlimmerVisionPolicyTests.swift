@@ -5,12 +5,10 @@ import XCTest
 
 @testable import ProviderCoreFoundation
 
-/// `MuseGlimmerVisionPolicy`: the operator switch, the exact identity and the
-/// pinned vision stack decide whether a Muse Glimmer configuration may
-/// advertise images; every other configuration is refused with a fixed reason.
+/// `MuseGlimmerVisionPolicy`: the exact identity and the pinned vision stack
+/// decide whether a Muse Glimmer configuration may advertise images (there is
+/// no switch); every other configuration is refused with a fixed reason.
 final class MuseGlimmerVisionPolicyTests: XCTestCase {
-    private static let on = [MuseGlimmerVisionPolicy.switchEnvironmentKey: "1"]
-
     /// The fields of the pinned `config.json` (revision 47818374) the policy reads.
     private static func pinned() -> [String: Any] {
         [
@@ -25,46 +23,36 @@ final class MuseGlimmerVisionPolicyTests: XCTestCase {
         ]
     }
 
-    func testTheSwitchIsOnForOneOnly() {
-        let key = MuseGlimmerVisionPolicy.switchEnvironmentKey
-        XCTAssertEqual(key, "DARKBLOOM_MUSE_GLIMMER_VISION")
-        XCTAssertTrue(MuseGlimmerVisionPolicy.isSwitchedOn(environment: [key: "1"]))
-        for value in ["", "0", "true", "on", "yes", " 1", "1 ", "01"] {
-            XCTAssertFalse(MuseGlimmerVisionPolicy.isSwitchedOn(environment: [key: value]), value)
-        }
-        XCTAssertFalse(MuseGlimmerVisionPolicy.isSwitchedOn(environment: [:]))
-    }
-
-    func testThePinnedStackServesBothIdentitiesWithTheSwitchOn() {
+    func testThePinnedStackServesBothIdentities() {
         for id in [MuseGlimmerModelPolicy.catalogModelID, MuseGlimmerModelPolicy.localModelID] {
-            XCTAssertNil(MuseGlimmerVisionPolicy.configurationRefusal(Self.pinned(), modelID: id, environment: Self.on))
+            XCTAssertNil(MuseGlimmerVisionPolicy.configurationRefusal(Self.pinned(), modelID: id))
         }
     }
 
-    func testTheSwitchIsReadFirst() {
-        let id = MuseGlimmerModelPolicy.localModelID
+    func testAnEmptyConfigurationIsRefused() {
+        XCTAssertEqual(MuseGlimmerVisionPolicy.configurationRefusal([:], modelID: nil), .notServingIdentity)
         XCTAssertEqual(
-            MuseGlimmerVisionPolicy.configurationRefusal(Self.pinned(), modelID: id, environment: [:]), .switchedOff)
-        XCTAssertEqual(MuseGlimmerVisionPolicy.configurationRefusal([:], modelID: nil, environment: [:]), .switchedOff)
+            MuseGlimmerVisionPolicy.configurationRefusal([:], modelID: MuseGlimmerModelPolicy.localModelID),
+            .notServingIdentity)
     }
 
     func testOnlyTheExactIdentity() {
         let id = MuseGlimmerModelPolicy.localModelID
         for modelID in [nil, "", "nvidia/Muse-Glimmer-30B-BF16", "muse-glimmer-30b-vision", id.uppercased()] {
             XCTAssertEqual(MuseGlimmerVisionPolicy.configurationRefusal(
-                Self.pinned(), modelID: modelID, environment: Self.on), .notServingIdentity, "\(modelID ?? "nil")")
+                Self.pinned(), modelID: modelID), .notServingIdentity, "\(modelID ?? "nil")")
         }
         // The wire-protocol rule trims and lowercases; media takes the exact spelling only.
         for modelType in ["MUSE_GLIMMER", " muse_glimmer", "muse_glimmer\n", "muse_glimmer_text"] {
             var configuration = Self.pinned()
             configuration["model_type"] = modelType
             XCTAssertEqual(MuseGlimmerVisionPolicy.configurationRefusal(
-                configuration, modelID: id, environment: Self.on), .notServingIdentity, modelType)
+                configuration, modelID: id), .notServingIdentity, modelType)
         }
         var missing = Self.pinned()
         missing.removeValue(forKey: "model_type")
         XCTAssertEqual(
-            MuseGlimmerVisionPolicy.configurationRefusal(missing, modelID: id, environment: Self.on), .notServingIdentity)
+            MuseGlimmerVisionPolicy.configurationRefusal(missing, modelID: id), .notServingIdentity)
     }
 
     func testEveryPinnedVisionFieldIsRequired() {
@@ -72,7 +60,7 @@ final class MuseGlimmerVisionPolicyTests: XCTestCase {
         func refusal(_ edit: (inout [String: Any]) -> Void) -> MuseGlimmerVisionPolicy.Refusal? {
             var configuration = Self.pinned()
             edit(&configuration)
-            return MuseGlimmerVisionPolicy.configurationRefusal(configuration, modelID: id, environment: Self.on)
+            return MuseGlimmerVisionPolicy.configurationRefusal(configuration, modelID: id)
         }
         func vision(_ key: String, _ value: Any?) -> MuseGlimmerVisionPolicy.Refusal? {
             refusal { configuration in
@@ -107,7 +95,7 @@ final class MuseGlimmerVisionPolicyTests: XCTestCase {
         func refusal(_ overlay: Any) -> MuseGlimmerVisionPolicy.Refusal? {
             var configuration = Self.pinned()
             configuration["language_model_only"] = overlay
-            return MuseGlimmerVisionPolicy.configurationRefusal(configuration, modelID: id, environment: Self.on)
+            return MuseGlimmerVisionPolicy.configurationRefusal(configuration, modelID: id)
         }
         XCTAssertEqual(refusal(true), .configuration)
         XCTAssertNil(refusal(false))
@@ -122,13 +110,13 @@ final class MuseGlimmerVisionPolicyTests: XCTestCase {
         let data = try JSONSerialization.data(withJSONObject: Self.pinned())
         let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         XCTAssertNil(MuseGlimmerVisionPolicy.configurationRefusal(
-            decoded, modelID: MuseGlimmerModelPolicy.catalogModelID, environment: Self.on))
+            decoded, modelID: MuseGlimmerModelPolicy.catalogModelID))
         let flagged = try XCTUnwrap(JSONSerialization.jsonObject(
             with: Data(#"{"language_model_only": false}"#.utf8)) as? [String: Any])
         var configuration = decoded
         configuration["language_model_only"] = flagged["language_model_only"]
         XCTAssertNil(MuseGlimmerVisionPolicy.configurationRefusal(
-            configuration, modelID: MuseGlimmerModelPolicy.catalogModelID, environment: Self.on))
+            configuration, modelID: MuseGlimmerModelPolicy.catalogModelID))
     }
 
     func testTheCeilingAndTokenIDs() {
@@ -146,7 +134,7 @@ final class MuseGlimmerVisionPolicyTests: XCTestCase {
 
     func testReasonsAreFixedAndDistinct() {
         let refusals: [MuseGlimmerVisionPolicy.Refusal] = [
-            .switchedOff, .notServingIdentity, .configuration, .unpinnedArtifact(file: "config.json"),
+            .notServingIdentity, .configuration, .unpinnedArtifact(file: "config.json"),
             .unpinnedArtifact(file: "processor_config.json"), .encoderUnavailable, .video,
         ]
         let reasons = refusals.map(\.reason)
@@ -157,6 +145,5 @@ final class MuseGlimmerVisionPolicyTests: XCTestCase {
             XCTAssertFalse(reason.contains("/"), reason)
         }
         XCTAssertEqual(MuseGlimmerVisionPolicy.Refusal.video.reason, "video input is not supported yet")
-        XCTAssertEqual(MuseGlimmerVisionPolicy.Refusal.switchedOff.reason, "image input is not enabled on this provider")
     }
 }

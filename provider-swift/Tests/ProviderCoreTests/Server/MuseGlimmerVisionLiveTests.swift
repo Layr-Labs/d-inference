@@ -19,23 +19,24 @@ import Testing
 ///   DARKBLOOM_MUSE_GLIMMER_HUB, DARKBLOOM_MUSE_GLIMMER_METALLIB,
 ///   DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL=1, DARKBLOOM_PREFIX_CACHE_TEST_ROOT
 ///                                            (as `MuseGlimmerLiveTests`)
-///   DARKBLOOM_MUSE_GLIMMER_VISION=1          (optional: the provider's image switch)
 ///   DARKBLOOM_MUSE_GLIMMER_RECEIPTS=<file>   (optional: one JSON line per request)
 ///   DARKBLOOM_MUSE_GLIMMER_DRAFTER=<dir>     (optional: the pinned drafter)
 ///   DARKBLOOM_MUSE_GLIMMER_REFERENCE=<receipts of an earlier run>   (optional)
-///   DARKBLOOM_MUSE_GLIMMER_ZEBRA=<photo of a zebra>                  (optional)
+///   DARKBLOOM_MUSE_GLIMMER_ZEBRA=<a local photo of a zebra>          (optional)
 ///   DARKBLOOM_MUSE_GLIMMER_RECEIPT_MAX_CER=<fraction>                (default 0.05)
 ///
-/// Three runs make the proofs:
-/// 1. switch off: the text cases, and every image refused (`unsupported_media`);
-/// 2. switch on, reference = run 1: the image cases, and the text cases
-///    unchanged with vision on;
-/// 3. switch on with the drafter, reference = run 2: every case, images and
-///    a text row batched beside an image row included, equal drafter on and off.
+/// Images are always on for the pinned artifact (no switch). The proofs:
+/// 1. `MuseGlimmerLiveTests` (text) with its reference = a run of the head
+///    before images: text unchanged with images served;
+/// 2. this test without the drafter: the image cases, the typed refusals,
+///    the text cases, a text row beside an image row, no prefix cache;
+/// 3. this test with the drafter, reference = run 2: every case, images and
+///    the batched text row included, equal drafter on and off.
 ///
 /// The image cases are the SDK's image proofs (`MuseGlimmerImageProofTests`):
 /// the same drawn receipt, swatch card and circle, the same questions and
-/// greedy decoding, sent as PNG data URLs.
+/// greedy decoding, sent as PNG data URLs, plus a drawn scene with objects
+/// and a sign. Every image is drawn here; nothing is downloaded.
 @Suite("Muse Glimmer image input over loopback HTTP", .serialized)
 struct MuseGlimmerVisionLiveTests {
     static let modelID = MuseGlimmerModelPolicy.localModelID
@@ -44,7 +45,6 @@ struct MuseGlimmerVisionLiveTests {
     @Test(.enabled(if: ProcessInfo.processInfo.environment["DARKBLOOM_MUSE_GLIMMER_VISION_LIVE"] == "1"))
     func imagesThroughLoopback() async throws {
         let env = Self.environment
-        let vision = MuseGlimmerVisionPolicy.isSwitchedOn(environment: env)
         _ = try #require(bindRuntimeMetallibForMLX(
             from: env["DARKBLOOM_MUSE_GLIMMER_METALLIB"].map { URL(fileURLWithPath: $0) }),
             "set DARKBLOOM_MUSE_GLIMMER_METALLIB to the staged mlx.metallib")
@@ -61,8 +61,8 @@ struct MuseGlimmerVisionLiveTests {
         let directory = try #require(ModelScanner.resolveLocalPath(modelID: id))
         let model = try #require(ModelScanner.parseModelInfo(snapshotDir: directory, modelName: id))
         try #require(model.modelType == MuseGlimmerModelPolicy.modelType)
-        // Advertised exactly when the switch is on and the artifact is the pinned one.
-        #expect(model.isVision == (vision ? true : nil))
+        // Advertised whenever the artifact passes its integrity checks; this one does.
+        try #require(model.isVision == true, "the pinned artifact must advertise images")
 
         let port = UInt16(env["DARKBLOOM_MUSE_GLIMMER_PORT"] ?? "19132") ?? 19132
         let token = UUID().uuidString + UUID().uuidString
@@ -90,17 +90,15 @@ struct MuseGlimmerVisionLiveTests {
             try client.record(MuseGlimmerLiveClient.memory("after-load"))
             let bridge = try #require(await server.slots[id]?.bridge)
             let mtp = await bridge.mtpStatusSnapshot()
-            try client.record(["case": "slot", "vision_switch": vision, "is_vision": model.isVision ?? false,
+            try client.record(["case": "slot", "is_vision": model.isVision ?? false,
                                "drafter_directory": drafter ?? "none", "mtp_active": mtp.active])
             if drafter != nil { try #require(mtp.active, "the drafter did not activate") }
 
             try await Self.text(client)
-            try await Self.refusals(client, vision: vision)
-            if vision {
-                try await Self.images(client)
-                try await Self.batched(client)
-                try await Self.cacheScope(client)
-            }
+            try await Self.refusals(client)
+            try await Self.images(client)
+            try await Self.batched(client)
+            try await Self.cacheScope(client)
             if let reference, let receipt {
                 try MuseGlimmerLiveTests.compare(receipt: receipt, reference: reference, client: client)
             }
@@ -134,7 +132,7 @@ struct MuseGlimmerVisionLiveTests {
         ("text-capital", "Name the capital of Australia. One word."),
     ]
 
-    /// Run 1 and run 2 compare these: vision on leaves text unchanged.
+    /// Text on an image-serving slot (run 3 compares them with run 2).
     static func text(_ client: MuseGlimmerLiveClient) async throws {
         for (name, question) in textCases {
             let result = try await client.stream(chat(question, maxTokens: 1024), name: name)
@@ -158,12 +156,8 @@ struct MuseGlimmerVisionLiveTests {
     }
 
     /// Typed 400s, never a 5xx: every one is decided before any tower work.
-    static func refusals(_ client: MuseGlimmerLiveClient, vision: Bool) async throws {
+    static func refusals(_ client: MuseGlimmerLiveClient) async throws {
         let receipt = try imagePart(MuseGlimmerVisionProofImages.receipt())
-        if !vision {
-            try await expectRefused(client, chat([receipt, ["type": "text", "text": "Read it."]]),
-                name: "refused-switched-off", code: "unsupported_media")
-        }
         let video: [String: Any] = ["type": "video_url", "video_url": ["url": "data:video/mp4;base64,AAAA"]]
         try await expectRefused(client, chat([video, ["type": "text", "text": "Describe it."]]),
             name: "refused-video", code: "unsupported_media")
@@ -171,26 +165,44 @@ struct MuseGlimmerVisionLiveTests {
         let remote: [String: Any] = ["type": "image_url", "image_url": ["url": "https://example.com/zebra.png"]]
         try await expectRefused(client, chat([remote, ["type": "text", "text": "Describe it."]]),
             name: "refused-remote-url")
-        if vision {
-            let assistant: [String: Any] = [
-                "model": modelID, "max_tokens": 32,
-                "messages": [
-                    ["role": "user", "content": "Show me."],
-                    ["role": "assistant", "content": [receipt]],
-                    ["role": "user", "content": "What was that?"],
-                ],
-            ]
-            try await expectRefused(client, assistant, name: "refused-assistant-image")
-            try await expectRefused(
-                client, chat(try parts(Array(repeating: MuseGlimmerVisionProofImages.circle(), count: 9), "Count them.")),
-                name: "refused-too-many-images")
-        }
+        let assistant: [String: Any] = [
+            "model": modelID, "max_tokens": 32,
+            "messages": [
+                ["role": "user", "content": "Show me."],
+                ["role": "assistant", "content": [receipt]],
+                ["role": "user", "content": "What was that?"],
+            ],
+        ]
+        try await expectRefused(client, assistant, name: "refused-assistant-image")
+        try await expectRefused(
+            client, chat(try parts(Array(repeating: MuseGlimmerVisionProofImages.circle(), count: 9), "Count them.")),
+            name: "refused-too-many-images")
+        // A forced tool choice with images stays refused (not advertised).
+        var forced = chat([receipt, ["type": "text", "text": "Look it up."]])
+        forced["tools"] = [["type": "function", "function": [
+            "name": "lookup", "parameters": ["type": "object", "properties": [:] as [String: Any]] as [String: Any],
+        ] as [String: Any]]]
+        forced["tool_choice"] = "required"
+        try await expectRefused(client, forced, name: "refused-forced-tool-choice")
     }
 
     /// The SDK proofs' cases, through the provider.
     static func images(_ client: MuseGlimmerLiveClient) async throws {
         let receipt = MuseGlimmerVisionProofImages.receipt()
         let swatches = MuseGlimmerVisionProofImages.swatchCard()
+        // A drawn scene: objects to name and a sign to read, at two sizes.
+        let scene = MuseGlimmerVisionProofImages.scene()
+        for (name, width, height) in [("scene-448", 448, 448), ("scene-1920x1080", 1920, 1080)] {
+            let result = try await client.stream(chat(try parts(
+                [MuseGlimmerVisionProofImages.fill(scene, width, height)],
+                "Name the objects in this picture, then read the sign's text exactly.")), name: name)
+            #expect(result.status == 200, "\(name): \(result.body.prefix(400))")
+            let answer = result.content.lowercased()
+            #expect(answer.contains("open 24 hours"), "\(name): \(result.content)")
+            #expect(["house", "home", "building", "cabin", "barn"].contains { answer.contains($0) }, "\(name): \(result.content)")
+            #expect(answer.contains("sun"), "\(name): \(result.content)")
+            #expect(answer.contains("tree"), "\(name): \(result.content)")
+        }
         var third = MuseGlimmerVisionProofImages.circle()
         if let path = environment["DARKBLOOM_MUSE_GLIMMER_ZEBRA"] {
             let photo = try #require(CIImage(contentsOf: URL(fileURLWithPath: path)))
@@ -236,7 +248,8 @@ struct MuseGlimmerVisionLiveTests {
     }
 
     /// A text row and an image row in one batch: with the drafter on, the
-    /// text row may draft and the image row may not; both must match run 2.
+    /// text row may draft and the image row may not; both must match run 2
+    /// (the run without the drafter).
     static func batched(_ client: MuseGlimmerLiveClient) async throws {
         let image = chat(try parts([MuseGlimmerVisionProofImages.swatchCard()], "List the four swatch colours in order."))
         let text = chat("Write the first ten prime numbers, comma separated.", maxTokens: 256)
@@ -315,6 +328,43 @@ enum MuseGlimmerVisionProofImages {
                 context.fill(CGRect(x: x, y: 90, width: 150, height: 170))
                 text("\(index + 1)", x: x + 64, y: 30, size: 40, in: context)
             }
+        }
+    }
+
+    /// 1024 x 768: sky, grass, a sun, a red house with a roof, a tree, and a
+    /// white sign that reads "OPEN 24 HOURS".
+    static func scene() -> CIImage {
+        canvas(width: 1024, height: 768) { context in
+            context.setFillColor(CGColor(red: 0.53, green: 0.78, blue: 0.96, alpha: 1))
+            context.fill(CGRect(x: 0, y: 240, width: 1024, height: 528))
+            context.setFillColor(CGColor(red: 0.3, green: 0.68, blue: 0.25, alpha: 1))
+            context.fill(CGRect(x: 0, y: 0, width: 1024, height: 240))
+            context.setFillColor(CGColor(red: 1, green: 0.84, blue: 0.1, alpha: 1))
+            context.fillEllipse(in: CGRect(x: 820, y: 580, width: 130, height: 130))
+            // House: walls, roof, door, window.
+            context.setFillColor(CGColor(red: 0.8, green: 0.15, blue: 0.12, alpha: 1))
+            context.fill(CGRect(x: 120, y: 170, width: 300, height: 220))
+            context.setFillColor(CGColor(red: 0.35, green: 0.2, blue: 0.12, alpha: 1))
+            context.move(to: CGPoint(x: 95, y: 390))
+            context.addLine(to: CGPoint(x: 270, y: 520))
+            context.addLine(to: CGPoint(x: 445, y: 390))
+            context.closePath()
+            context.fillPath()
+            context.fill(CGRect(x: 240, y: 170, width: 60, height: 110))
+            context.setFillColor(CGColor(red: 0.85, green: 0.93, blue: 1, alpha: 1))
+            context.fill(CGRect(x: 150, y: 290, width: 60, height: 60))
+            context.fill(CGRect(x: 330, y: 290, width: 60, height: 60))
+            // Tree: trunk and crown.
+            context.setFillColor(CGColor(red: 0.42, green: 0.26, blue: 0.13, alpha: 1))
+            context.fill(CGRect(x: 560, y: 170, width: 40, height: 140))
+            context.setFillColor(CGColor(red: 0.12, green: 0.5, blue: 0.16, alpha: 1))
+            context.fillEllipse(in: CGRect(x: 490, y: 280, width: 180, height: 180))
+            // Sign on a post.
+            context.setFillColor(CGColor(red: 0.3, green: 0.3, blue: 0.3, alpha: 1))
+            context.fill(CGRect(x: 812, y: 120, width: 16, height: 180))
+            context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+            context.fill(CGRect(x: 690, y: 290, width: 260, height: 90))
+            text("OPEN 24 HOURS", x: 708, y: 322, size: 34, in: context)
         }
     }
 

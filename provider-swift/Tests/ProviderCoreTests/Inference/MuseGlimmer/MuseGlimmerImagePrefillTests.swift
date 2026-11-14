@@ -190,12 +190,12 @@ struct MuseGlimmerImagePrefillTests {
         }
     }
 
-    @Test("a slot that serves no images refuses with its reason, as a 400")
+    @Test("a slot whose artifact fails an integrity check refuses with its reason, as a 400")
     func slotRefusals() throws {
         let request = try Self.prepare(try Self.body([["role": "user", "content": [Self.image, Self.text("Hi")]]]))
         let cases: [(MuseGlimmerImageService?, MuseGlimmerVisionPolicy.Refusal)] = [
             (nil, .encoderUnavailable),
-            (.refused(.switchedOff), .switchedOff),
+            (.refused(.configuration), .configuration),
             (.refused(.unpinnedArtifact(file: "processor_config.json")),
              .unpinnedArtifact(file: "processor_config.json")),
         ]

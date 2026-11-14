@@ -2358,8 +2358,8 @@ Focused provider suites, CPU only and without weights:
 `MuseGlimmerToolStreamTests`, `MuseGlimmerPromptGoldenTests`,
 `MuseGlimmerDrafterTests` (exact windows, the drafter's funnel, loader,
 checkpoint and engine wiring on a tiny seeded tower and drafter), and for image
-input `MuseGlimmerVisionArtifactTests` (the switch, identity, pinned stack and
-pinned metadata bytes, symlinks and size bounds), `MuseGlimmerVisionBudgetTests`
+input `MuseGlimmerVisionArtifactTests` (identity, pinned stack and pinned
+metadata bytes, symlinks and size bounds; images on with no setting), `MuseGlimmerVisionBudgetTests`
 (the per-image ceiling and the tower bound) and `MuseGlimmerImagePrefillTests`
 (the image render against the text render with `<|patch|>`, the reference
 processor's grids, expansion, causal spans on the 1,024-token grid, and the
@@ -2407,17 +2407,19 @@ are required to agree whenever its rows are native.
 
 `MuseGlimmerVisionLiveTests` is the same kind of opt-in run for image input
 (`DARKBLOOM_MUSE_GLIMMER_VISION_LIVE=1`, with the variables above and an
-optional `DARKBLOOM_MUSE_GLIMMER_ZEBRA` photo). Hold the GPU lane. It sends the
-SDK image proofs' drawn receipt, swatch card and circle as PNG data URLs:
-zebra, the receipt's transcription scored by character error rate
+optional local `DARKBLOOM_MUSE_GLIMMER_ZEBRA` photo). Hold the GPU lane. Images
+are always on for the pinned artifact, and every image is drawn locally: the
+SDK image proofs' receipt, swatch card and circle, and a scene with a house, a
+tree, the sun and a sign to read, sent as PNG data URLs. It checks the scene at
+two sizes, the receipt's transcription scored by character error rate
 (`DARKBLOOM_MUSE_GLIMMER_RECEIPT_MAX_CER`, default `0.05`), two three-image
 questions, a text row batched beside an image row, image prompts that never
 hit the prefix cache, and the typed 400s (video, a remote URL, an image outside
-a user message, too many images). Three runs make the proofs: with
-`DARKBLOOM_MUSE_GLIMMER_VISION` unset (text cases, images refused with
-`unsupported_media`); with it set to `1` and the first run's receipts as the reference (text
-unchanged with vision on); and with the drafter and the second run's receipts
-(every case, images included, equal with the drafter on and off).
+a user message, too many images, a required tool choice). The proofs:
+`MuseGlimmerLiveTests` with the receipts of a run from before images as the
+reference (text unchanged with images served); this test without the drafter;
+and this test with the drafter and the previous run's receipts (every case,
+images included, equal with the drafter on and off).
 
 ## Flint native validation
 

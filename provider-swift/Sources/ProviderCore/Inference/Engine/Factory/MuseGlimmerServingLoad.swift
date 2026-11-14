@@ -20,24 +20,21 @@ import ProviderCoreFoundation
 /// Images: the vision tensors are verified with every other shard. The
 /// encoder loads from those verified sources only when
 /// `MuseGlimmerVisionArtifact` makes the same decision discovery advertised
-/// (switch, exact identity, pinned metadata); an encoder that then fails to
-/// load fails the whole load, so an advertised slot never serves text alone.
-/// Otherwise the slot serves text and its processor records why images are
+/// (exact identity, the pinned vision stack, pinned metadata; there is no
+/// switch); an encoder that then fails to load fails the whole load, so an
+/// advertised slot never serves text alone. A snapshot that fails those
+/// integrity checks serves text, and its processor records why images are
 /// refused.
 ///
 /// The staged tower always serves with exact verify windows, drafter or not,
 /// so it has one numerics profile: neither its output nor its checkpoint
 /// identity depends on whether a drafter loaded.
 enum MuseGlimmerServingLoad {
-    static func container(
-        from directory: URL, modelID: String? = nil,
-        environment: [String: String] = ProcessInfo.processInfo.environment
-    ) async throws -> ModelContainer {
+    static func container(from directory: URL, modelID: String? = nil) async throws -> ModelContainer {
         async let tokenizer = LocalTokenizerLoader().load(from: directory)
         let installed = try MuseGlimmerInstallation.stage(directory: directory)
         try enableExactWindows(installed.model)
-        let images = try imageService(
-            installed: installed, directory: directory, modelID: modelID, environment: environment)
+        let images = try imageService(installed: installed, directory: directory, modelID: modelID)
         var configuration = ModelConfiguration(
             directory: directory,
             eosTokenIds: ModelEOSPolicy.artifactEOSTokenIds(modelDirectory: directory) ?? [])
@@ -70,11 +67,9 @@ enum MuseGlimmerServingLoad {
     /// vision sources with the hashed `config.json` cross-checked, or the
     /// reason images are refused.
     static func imageService(
-        installed: MuseGlimmerInstallation.Installed, directory: URL, modelID: String?,
-        environment: [String: String]
+        installed: MuseGlimmerInstallation.Installed, directory: URL, modelID: String?
     ) throws -> MuseGlimmerImageService {
-        switch MuseGlimmerVisionArtifact.decision(
-            snapshotDir: directory, modelID: modelID, environment: environment) {
+        switch MuseGlimmerVisionArtifact.decision(snapshotDir: directory, modelID: modelID) {
         case .refused(let refusal):
             return .refused(refusal)
         case .serves(let configuration):

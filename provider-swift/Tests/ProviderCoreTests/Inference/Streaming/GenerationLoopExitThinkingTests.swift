@@ -233,7 +233,7 @@ struct GenerationLoopExitThinkingTests {
     private static let qwen = QwenByteTestTokenizer()
     private static let qwenThinking = QwenByteTestTokenizer.tokens(QwenByteTestTokenizer.prompt(thinking: true))
 
-    /// The 35B families' exit alone, as a list set on the Mac turns it on.
+    /// The 35B family alone in a list set on the Mac (the Qwen 3.5 35B; Qwen 3.6 only when named).
     private static let qwenOn = GenerationLoopExitThinkingPolicy.Setting.modelTypes(["qwen3_5_moe"])
 
     private func qwenExit(_ modelType: String = "qwen3_5_moe",
@@ -317,6 +317,14 @@ struct GenerationLoopExitThinkingTests {
             #expect(!Policy.keepsLength(modelType: "qwen3_5", modelID: id, setting: named), "\(id)")
         }
         #expect(Policy.keepsLength(modelType: "qwen3_5_moe", modelID: "qwen3.6-35b-a3b-vl-mtp-mxfp8", setting: named))
+        // Entries shaped like a `model_type` name no build, even when they are part of every id.
+        let generic = Policy.setting(environment: [Policy.environmentKey: "qwen3_5,qwen3_5_moe,qwen3,qwen,mtp,4bit"])
+        for id in ModelRuntimeRequirements.qwen38ConcreteModelIDs {
+            #expect(Policy.keepsLength(modelType: "qwen3_5", modelID: id, setting: generic), "\(id)")
+        }
+        // A named build without its family stays off: the family's list entry turns the exit on.
+        let buildOnly = Policy.setting(environment: [Policy.environmentKey: "qwen3.6"])
+        #expect(qwenExit("qwen3_5_moe", setting: buildOnly) == nil)
     }
 
     @Test("a Qwen thought that loops asks to end the thought; a loop after `</think>` does not")

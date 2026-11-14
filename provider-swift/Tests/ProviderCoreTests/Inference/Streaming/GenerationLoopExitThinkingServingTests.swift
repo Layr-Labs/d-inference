@@ -883,7 +883,8 @@ struct GenerationLoopExitThinkingServingTests {
 
     @Test("by default Qwen 3.6 and the Qwen 3.8 27B builds keep today's length: their families, not the A/B's builds")
     func otherQwenBuildsKeepLengthByDefault() async throws {
-        let builds = [("qwen3.6-35b-a3b-vl-mtp-mxfp8", "qwen3_5_moe")]
+        let builds = [("qwen3.6-35b-a3b-vl-mtp-mxfp8", "qwen3_5_moe"),
+                      ("EigenLabs/Qwen3.5-9B-MLX-4bit-mtp", "qwen3_5")]
             + ModelRuntimeRequirements.qwen38ConcreteModelIDs.sorted().map { ($0, "qwen3_5") }
         for (id, type) in builds {
             let engine = ThoughtLoopCBv2Engine(loopInsideThought: true, family: .qwen)

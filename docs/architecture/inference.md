@@ -3367,7 +3367,7 @@ stops such a row early.
   (Super, text only), `glm5_next` and `mimo_v2`. `DARKBLOOM_LOOP_GUARD=0`
   (or `off`) turns it off; a comma-separated list of `model_type`s replaces
   the default list.
-- **A loop inside a Gemma 4, GPT-OSS or Qwen 3.5 9B/35B thought (or a listed Qwen 3.6, Qwen 3.8
+- **A loop inside a Gemma 4, GPT-OSS or Qwen 3.5 9B/35B thought (or a named Qwen 3.6, Qwen 3.8
   27B or Nemotron 3.5 Super one) ends the thought, not the answer** (`GenerationLoopExitThinkingPolicy`, `LoopExitThinkingContinuation`).
   For `gemma4`, `gemma4_text` and `gpt_oss` (on by default) and `qwen3_5_moe` (Qwen 3.5/3.6
   35B) and `qwen3_5` (Qwen 3.5 9B, Qwen 3.8 27B), on by default for the builds the GPU
@@ -3463,8 +3463,9 @@ stops such a row early.
   that have a marker (`gemma4,gemma4_text,gpt_oss,qwen3_5,qwen3_5_moe` is the default;
   `gemma4,gemma4_text,gpt_oss` turns Qwen's off, and `gemma4,gemma4_text` GPT-OSS's too).
   In any list Qwen's families take only the builds above, and another build when the list
-  names it by a case-insensitive part of its id (`…,qwen3.6` adds Qwen 3.6, `…,qwen3.8-27b`
-  both Qwen 3.8 27B builds). A row the strict-tool grammar constrains keeps its guard but
+  names it, its family listed too, by a case-insensitive part of its id with a `.`, `-` or
+  `/` (`…,qwen3.6` adds Qwen 3.6, `…,qwen3.8-27b` both Qwen 3.8 27B builds; `qwen3`, `mtp`
+  or `4bit` name no build). A row the strict-tool grammar constrains keeps its guard but
   not the exit (the continuation would answer without the grammar).
   Nemotron 3.5 Super (`nemotron_h_omni`: listed, off by default until its A/B;
   `…,nemotron_h_omni` turns it on) takes its owner's own route: its request

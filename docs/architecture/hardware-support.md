@@ -383,6 +383,18 @@ bytes plus native construction/tokenizer transients
 (`provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextLoadAdmission.swift`,
 `GLM5NextLoadQuotation`). Activation reserve and minimum KV headroom remain
 unchanged. The activated expert count is not a resident-weight estimate.
+
+Muse Glimmer 30B loads and is advertised only on an Apple M5 Ultra
+(`MuseGlimmerHardwareRequirement`, runtime capability `muse_glimmer_v1`,
+computed once at startup by `ProviderRuntimeCapabilityDetector`). The chip must
+be family M5, tier Ultra, and the default Metal device must be named
+"Apple M5 Ultra"; the device is read only when the chip qualifies. Both Muse
+identities embed `apple_m5`, `mlx_nax` and `muse_glimmer_v1`
+(`ModelRuntimeRequirements.museGlimmerRequiredCapabilities`), as GLM embeds
+its own. Without them the loop and the standalone server leave the model out of
+advertisement and `ensureModelLoaded` throws `ModelRuntimeIneligibleError`
+(permanent) before any disk or loader work; its message adds "it serves only
+on an Apple M5 Ultra".
 Standing GLM wired residency is optional only when disabled or unsupported
 before ticket creation (macOS 15 or later with Metal 3 support). A backend
 start/end fault is unproven application or restoration, not unsupported

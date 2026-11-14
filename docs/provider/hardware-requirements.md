@@ -55,6 +55,15 @@ refuses GLM loads and prefetches when MTP is disabled. The
 [native implementation](../design/glm53-flash-native.md) does not reduce these
 memory safeguards.
 
+Muse Glimmer 30B (`muse-glimmer-30b`, local `nvidia/Muse-Glimmer-30B-NVFP4`)
+loads and is advertised only on an Apple M5 Ultra. The provider reports
+runtime capability `muse_glimmer_v1` only when the chip is an M5 Ultra and its
+Metal device is named "Apple M5 Ultra"; both identities require `apple_m5`,
+`mlx_nax` and `muse_glimmer_v1` whatever the catalog lists. Every other Mac
+leaves the model out of advertisement and refuses a load with the typed,
+permanent ineligibility, before any disk or loader work
+(`MuseGlimmerHardwareRequirement`, `ModelRuntimeRequirements.museGlimmerRequiredCapabilities`).
+
 At full KV, GLM plans the whole 90% memory cap as GPU memory: about 247 GB on
 a 256 GB Mac. The macOS default GPU wired-memory limit (`iogpu.wired_limit_mb=0`)
 is Metal's recommended working set, about 222 GiB there, and Metal command

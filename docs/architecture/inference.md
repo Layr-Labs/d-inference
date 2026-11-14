@@ -3372,7 +3372,10 @@ stops such a row early.
   For `gemma4`, `gemma4_text` and `gpt_oss` (on by default) and `qwen3_5_moe` (Qwen 3.5/3.6
   35B) and `qwen3_5` (Qwen 3.5 9B, Qwen 3.8 27B), on by default for the builds the GPU
   A/B proved only, `Qwen3.5-9B` and `qwen3.5-35b-a3b` (`provenBuilds`, each with its own
-  `model_type`; TODO(A/B): the numbers), while Qwen 3.6, Qwen 3.8 27B and any other build
+  `model_type`; on the GPU A/B at OpenRouter's GPQA settings, T 0.5, on its loop-prone questions, the
+  35B answered 14 of the 27 thoughts the guard ended, 6 right, and the 9B 11 of 29, 3 right; the
+  others looped again and still ended `length`; no change where the guard did not fire), while
+  Qwen 3.6, Qwen 3.8 27B and any other build
   of these families keep `length` unless a list set on the Mac names them (`keepsLength`),
   the guard also
   follows the thought channel (`<|channel>` … `<channel|>`, `<think>` …

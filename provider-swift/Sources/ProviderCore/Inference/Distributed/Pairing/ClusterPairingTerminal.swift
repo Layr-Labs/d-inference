@@ -62,12 +62,17 @@ public final class ClusterPairingTerminal: @unchecked Sendable {
     public static func spaced(_ code: String) -> String { code.count == 6 ? "\(code.prefix(3)) \(code.suffix(3))" : code }
 
     public static func describe(_ peer: ClusterPairingPeer) -> [String] {
-        let posture = peer.posture
+        ["The other Mac:  \(peer.name)",
+         "                \(reportedPosture(peer.posture))",
+         "                key pin \(peer.pin.prefix(16))…, on its \(peer.interface)"]
+    }
+
+    /// The other Mac's account of itself. It signs it with the key it pairs with, which proves possession of that key
+    /// and binds the ceremony, not where the key lives or how that Mac booted, so it is shown as reported.
+    public static func reportedPosture(_ posture: ClusterPairingPeerPosture) -> String {
         let security = [posture.sipEnabled ? "SIP on" : "SIP OFF", posture.secureBootEnabled ? "Secure Boot full" : "Secure Boot reduced",
                         posture.authenticatedRootEnabled ? "sealed system volume" : "system volume NOT sealed"].joined(separator: ", ")
-        return ["The other Mac:  \(peer.name)",
-                "                \(posture.hardwareModel), macOS \(posture.osVersion); \(security)",
-                "                Secure Enclave key pin \(peer.pin.prefix(16))…, on its \(peer.interface)"]
+        return "\(posture.hardwareModel), macOS \(posture.osVersion); \(security) (reported by the other Mac, not verified)"
     }
 
     private func ask(code: String, peer: ClusterPairingPeer, respond: @escaping @Sendable (Bool) -> Void) {

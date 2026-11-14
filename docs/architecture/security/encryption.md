@@ -1,6 +1,6 @@
 # Provider Encryption And Privacy
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-13
 
 This page describes the provider's plaintext boundary, encrypted network traffic
 and local cache storage. Backend cryptographic implementation and consumer
@@ -189,10 +189,15 @@ Operator steps: [cache storage](../../provider/cache-storage.md).
 A [two-Mac cluster](../../provider/two-mac-cluster.md) keeps the same rules
 across the Thunderbolt cable:
 
-- **Pairing.** Each Mac's Secure Enclave identity signs the pairing (S17); both
-  screens show the same six-digit code and both owners confirm it. The peer's
-  pin is stored owner-only (0600), and both Macs verify each other before any
-  data-plane key exists. A DEBUG build without the signed build's keychain
+- **Pairing.** Each Mac's Secure Enclave identity signs the pairing (S17).
+  Each Mac checks that the other's attestation is signed by the key it pairs
+  with, binds this ceremony's ephemeral key and is fresh; both screens show the
+  same six-digit code, which commits to both keys, and both owners confirm it.
+  That check proves possession of the paired key, not that a Secure Enclave
+  holds it: nothing Apple-rooted binds the other Mac's key or the hardware and
+  boot posture shown beside the code, so the screen shows that posture as
+  reported by the other Mac, not verified (`ClusterPairingTerminal.reportedPosture`).
+  The peer's pin is stored owner-only (0600) before any data-plane key exists. A DEBUG build without the signed build's keychain
   entitlement may keep its Secure Enclave key's opaque handle in an owner-only
   file (`DARKBLOOM_DEBUG_SE_KEY_FILE`, `SecureEnclaveIdentity.debugPersisted`);
   the key itself never leaves the Secure Enclave, and a release build has no

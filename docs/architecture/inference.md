@@ -356,7 +356,11 @@ and `libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/ClusterPlacementBa
 ## Cluster setup presentation
 
 `ClusterOnboardingDriver` presents connection, pairing, model choice and
-startup (with its test response) as four steps. Completion requires the test response to
+startup (with its test response) as four steps. The pairing step, like
+`darkbloom cluster pair`, shows the other Mac's hardware and boot posture as
+that Mac's own report (`ClusterPairingTerminal.reportedPosture`): its
+attestation proves possession of the key it pairs with, not where the key lives
+([pairing](security/encryption.md#two-mac-cluster-experimental)). Completion requires the test response to
 succeed; a failed response retains the saved setup for a later retry. After
 the test response succeeds, the control leader registers the pair with the
 coordinator when the coordinator serves a cluster approval for this pair

@@ -6,8 +6,10 @@ import Foundation
 /// The provider's half of the pairing ceremony (S17): this Mac's Secure
 /// Enclave key (the attestation signer, so the pin the other Mac stores is the
 /// pin the coordinator derives from this Mac's attestation), its attestation
-/// bound to the ceremony's ephemeral key, the verification of the other Mac's
-/// attestation, and the roster bytes the coordinator checks.
+/// bound to the ceremony's ephemeral key, the check of the other Mac's
+/// attestation, and the roster bytes the coordinator checks. The other Mac's
+/// attestation is signed by the key it pairs with, not by anything Apple
+/// roots: its posture is its own report, shown for the person to judge.
 public enum ClusterPairingProvider {
     /// An attestation older or newer than this is refused.
     static let attestationSkewSeconds: Double = 600
@@ -91,7 +93,10 @@ public enum ClusterPairingProvider {
 
     /// The other Mac's signed attestation: its signature verifies under the
     /// key it names, that key is the identity key it pairs with, it binds this
-    /// ceremony's ephemeral key, the Secure Enclave was available, and it is fresh.
+    /// ceremony's ephemeral key, and it is fresh. That proves possession of the
+    /// key, not that a Secure Enclave holds it: `secureEnclaveAvailable` and the
+    /// posture are what the other Mac reports (a build that cannot use the
+    /// Secure Enclave says so, and is refused), returned for display only.
     static func verifyAttestation(_ data: Data, identityKey: Data, ephemeralKey: Data, now: Date) -> ClusterPairingPeerPosture? {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601

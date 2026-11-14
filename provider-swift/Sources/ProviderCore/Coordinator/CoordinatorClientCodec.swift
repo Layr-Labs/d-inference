@@ -98,7 +98,8 @@ public enum CoordinatorClientCodec {
             clusterModels: memberMode ? servingModels : nil,
             // A member away in its session's disconnect grace claims it here.
             clusterMembership: memberMode ? config.clusterMembership?.resuming(clusterResume) : nil,
-            busy: busy
+            busy: busy,
+            gemmaPromptContract: GemmaPromptContract.advertisedVersion
         ))
     }
 

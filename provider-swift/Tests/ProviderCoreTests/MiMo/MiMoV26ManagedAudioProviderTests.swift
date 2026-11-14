@@ -239,6 +239,12 @@ final class MiMoV26ManagedAudioProviderTests: XCTestCase {
             },tokenizerProvider:{ _ in .init(tokenizer:value.tokenizer,modelType:"mimo_v2") },
             availableModels:{ ["audio-fixture"] },mtpSlots:{ [] },
             modelTypeProvider:{ _ in "mimo_v2" })
+        // The engine delivers the stream's terminal event, then settles the
+        // request's one media reservation on a later engine-queue callback.
+        // The lease can join first, so wait for the settlement itself.
+        let removals = EventCounter()
+        value.transaction.setMediaReservationRemovalHookForTesting { removals.increment() }
+        let settled = removals.expectation(reaching:1,"media reservation settled")
         phase("sending authenticated media")
         try await app.test(.router) { client in
             try await client.execute(uri:"/v1/chat/completions",method:.post,
@@ -265,16 +271,9 @@ final class MiMoV26ManagedAudioProviderTests: XCTestCase {
         }
         await lease.joinFromOutside()
         phase("owner joined")
+        await fulfillment(of:[settled],timeout:10)
         XCTAssertGreaterThan(actual.stepCount,before)
         XCTAssertEqual(lease.snapshot().phase,.completed)
-        // The bridge returns the terminal before the row's native retirement
-        // (`EngineV2Bridge+Events`), and the lease is host ownership only, so
-        // the media reservation settles on the engine queue just after. Wait
-        // for it; a leaked reservation still fails here.
-        let settled = ContinuousClock.now + .seconds(10)
-        while value.transaction.managedMediaReservationCountForTesting != 0, ContinuousClock.now < settled {
-            try await Task.sleep(for: .milliseconds(5))
-        }
         XCTAssertEqual(value.transaction.managedMediaReservationCountForTesting,0)
         XCTAssertNil(actual.nativeCompletionFault)
         let receipt = try await retire(value)
@@ -302,7 +301,12 @@ final class MiMoV26ManagedAudioProviderTests: XCTestCase {
         let waveBody = Array("WAVEfmt ".utf8) + u32(16) + fmt
             + Array("data".utf8) + u32(UInt32(pcm.count)) + pcm
         let wave = Data(Array("RIFF".utf8) + u32(UInt32(waveBody.count)) + waveBody)
+        // Each request's media reservation settles on an engine-queue callback
+        // after its terminal event, so wait for that settlement, not the join.
+        let removals = EventCounter()
+        value.transaction.setMediaReservationRemovalHookForTesting { removals.increment() }
         for responses in [false, true] {
+            let settled = removals.expectation(reaching: responses ? 2 : 1, "media reservation settled")
             let messages: [[String: Any]] = [["role": "user", "content": [
                 ["type": "input_audio", "input_audio": ["format": "wav", "data": wave.base64EncodedString()]],
                 ["type": responses ? "input_text" : "text", "text": "describe"],
@@ -339,6 +343,7 @@ final class MiMoV26ManagedAudioProviderTests: XCTestCase {
                 }
             }
             await lease.joinFromOutside()
+            await fulfillment(of: [settled], timeout: 10)
             XCTAssertEqual(infos, 1)
             XCTAssertGreaterThan(actual.stepCount, before, "normal encoded-audio route must execute the real native engine")
             XCTAssertEqual(lease.snapshot().phase, .completed)

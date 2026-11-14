@@ -569,7 +569,9 @@ a Qwen pair before any output: a pair's ranks cannot apply the grammar
 request refused this way to a single Mac, which constrains it
 (darkbloom-platform `fix/coord-pair-refusal-failover`); a request to the owner's
 local cluster API gets the refusal. Other JSON requests are served with the
-format instruction only, as on one Mac
+format instruction only, as on one Mac, and so is every JSON request on a
+Bonsai 2 27B or Nemotron 3.5 Lightning pair, which a single Mac would constrain
+when the prompt starts in the answer
 ([constrained Qwen JSON answers](../architecture/inference.md#constrained-qwen-json-answers)).
 
 | # | Where | What you do | What it asks |
@@ -673,8 +675,15 @@ many at once ([Gemma pipeline lanes](../architecture/inference.md#gemma-pipeline
    be paired by the coordinator by itself. Check with `darkbloom status`." A
    `darkbloom cluster stop` from any window or either Mac ends the wait at once
    with "Stopped (by `darkbloom cluster stop` on one of the Macs): the pair
-   isn't starting any more." The Mac that joined says the same once the leading
-   Mac's status has stayed stopped for 20 seconds.
+   isn't starting any more." So does one while the leading Mac downloads or
+   copies the model (what arrived stays, and the next start goes on from
+   there), while both Macs load it, and at the test (`darkbloom stop` and
+   `restart` count too once the pair runs; before that, `darkbloom stop` stops
+   only what runs on its own Mac). The Mac
+   that joined says the same at once: the leading Mac counts each stop someone
+   asks for, and its status carries the count. A status that reads "Stopped" is
+   no stop on its own: it reads so through a whole download or copy, until both
+   parts start (0.10.9 to 0.10.12 took it for one after 20 seconds).
 
 An approval ends at its `not_after`, which the operator sets; one derived from
 a release ends 90 days after that release registered

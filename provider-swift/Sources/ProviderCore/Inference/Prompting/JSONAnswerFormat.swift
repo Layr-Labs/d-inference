@@ -13,6 +13,9 @@ struct JSONAnswerFormat: Sendable {
     /// `nil` for `json_object`, whose root must be an object.
     let schema: ToolValueSchema?
     let family: String
+    /// False for a format widened from the request's (`QwenJSONSchemaRewrite`):
+    /// best effort, so nothing is checked after generation and nothing refused.
+    private(set) var checksOutput = true
 
     /// Compiles a format whose `requiresJSONOutput` is true: `json_object`, or
     /// a `json_schema` within the shared fail-closed subset.
@@ -31,10 +34,20 @@ struct JSONAnswerFormat: Sendable {
         schema = compiled
     }
 
+    /// A forced call's arguments: one JSON object of the function's compiled
+    /// parameters, never spelling the family's markup.
+    init(arguments tool: CompiledToolSchema, profile: JSONAnswerProfile) throws {
+        grammar = try FlintJSONGrammar(schema: tool.parameters, forbidding: profile.contentMarkers,
+            family: profile.family)
+        schema = tool.parameters
+        family = profile.family
+    }
+
     /// Defense in depth after constrained decoding. A failure, including a
     /// budget that ended before the value completed, is a typed 422 and never
     /// a successful completion. Messages never quote generated content.
     func validate(content: String, finishReason: String) throws {
+        guard checksOutput else { return }
         let truncated = finishReason == "length"
         guard let value = try? JSONDecoder().decode(MLXLMCommon.JSONValue.self, from: Data(content.utf8)) else {
             throw failure(truncated
@@ -59,6 +72,13 @@ struct JSONAnswerFormat: Sendable {
         guard case .object = value else {
             throw failure("json_object content must be a JSON object")
         }
+    }
+
+    /// This format without the check after generation.
+    func unchecked() -> JSONAnswerFormat {
+        var format = self
+        format.checksOutput = false
+        return format
     }
 
     private func failure(_ message: String) -> MLXOpenAIServiceError {

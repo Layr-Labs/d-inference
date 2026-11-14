@@ -121,11 +121,14 @@ struct GLMSlotParityTests {
              collected: mediaOutputRefusal),
         Case(name: "16x16 image", body: body(picture), image: .sixteenPixels, tokens: sunny,
              collected: .answer(content: "It is sunny.", reasoning: "Need the weather.", calls: [], finish: "stop")),
+        // The cut answer leaves as generated and the stream ends `length`
+        // (`TokenLimitCutPolicy`); a complete response is the service's own
+        // cut-off 422, which names `max_tokens`.
         Case(name: "json_schema answer cut off by max_tokens", body: body(text, schema, maxTokens: 3),
              tokens: [10, GLMSlotPieces.endThink, 16], finish: .length,
-             collected: .refusal(status: 422, message: InferenceFailureCode.internalFailure.message, coordinator: ""),
-             streamed: .failedStream(reasoning: "Need the weather.", content: "",
-                                     error: "server_error Response generation failed")),
+             collected: .refusal(status: 422,
+                 message: MLXOpenAIServiceError.responseFormatCutOffByMaxTokens.errorDescription ?? "", coordinator: ""),
+             streamed: .answer(content: #"{"city": "Pa"#, reasoning: "Need the weather.", calls: [], finish: "length")),
         Case(name: "input_file part",
              body: body(#"[{"type":"text","text":"Summarize it."},{"type":"input_file","file_id":"file-fixture"}]"#),
              collected: unservedPart("input_file")),

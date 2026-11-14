@@ -424,12 +424,12 @@ enum ClusterSetupContent {
     }
 
     /// The pairing ceremony over the Thunderbolt link (S17): no SSH, a code on
-    /// both screens, each Mac pinning the other's attested Secure Enclave key.
+    /// both screens, each Mac pinning the key the other proves it holds.
     static func linkPairing(_ state: ClusterSetupState, _ b: inout Builder) {
         let g = b.glyphs
         b.heading("Pair over the link (no SSH)")
         for pairing in state.local?.linkPairings?.pairings ?? [] {
-            b.verdict(g.done, "Paired with \(pairing.peerName): its Secure Enclave key \(pairing.peerPin)\u{2026} is pinned; roster \(pairing.clusterID), generation \(pairing.generation).",
+            b.verdict(g.done, "Paired with \(pairing.peerName): its key \(pairing.peerPin)\u{2026} is pinned; roster \(pairing.clusterID), generation \(pairing.generation).",
                 .good, from: .wired("pair.link"))
         }
         if let error = state.local?.linkPairings?.error {
@@ -442,7 +442,7 @@ enum ClusterSetupContent {
                 for line in lines.dropFirst() { b.text(line, indent: 6, from: .wired("pair.link")) }
             }
             if !state.linkPaired {
-                b.text("Each Mac pins the other's attested Secure Enclave key. Both screens show one code; nothing to type but y or n.", from: .wired("pair.link"))
+                b.text("Each Mac pins the key the other proves it holds. Both screens show one code; nothing to type but y or n.", from: .wired("pair.link"))
             }
             b.action("l", state.linkPaired ? "Pair again: press l on both Macs" : "Pair: press l on both Macs; each finds the other on the cable", from: .wired("pair.link"))
             b.action("c", "Connect to an address the other Mac shows (only if finding it fails)", from: .wired("pair.link"))

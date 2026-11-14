@@ -307,3 +307,21 @@ final class ClusterApprovalRecorder<Value>: @unchecked Sendable {
     func append(_ value: Value) { lock.withLock { stored.append(value) } }
     var values: [Value] { lock.withLock { stored } }
 }
+
+extension ClusterApprovalMacs {
+    /// The leading Mac's cluster service for this pair, its pair started on the fixture's model. No loop runs: only what a
+    /// test calls acts on its record. `powerAssertionReason` keeps its power assertions apart from those of the other
+    /// services the test process runs.
+    func startedLeaderService(powerAssertionReason: String) throws -> ClusterService {
+        let wizard = ClusterSetupOperations.LiveSettings(providerConfiguration: leader.provider,
+            darkbloomExecutable: URL(fileURLWithPath: "/usr/bin/true"), sessionArguments: [], pair: nil, dryRun: true,
+            version: "fixture")
+        let service = ClusterService(settings: .init(wizard: wizard, leaderArguments: [], followerArguments: []),
+            paths: leader.paths, recoveryGraceSeconds: 0.2, supervisionIntervalSeconds: 0.1, powerAssertionReason: powerAssertionReason)
+        var leadership = ClusterOnboardingLeadership(role: "leader", leaderPin: leader.pin, peerPin: follower.pin,
+            peerName: "fixture peer", since: "fixture")
+        leadership.serving = true; leadership.modelName = Self.model
+        _ = try service.store.updateRecord { $0.leadership = leadership }
+        return service
+    }
+}

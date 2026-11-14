@@ -46,7 +46,7 @@ public struct ClusterLocalOwnerConfiguration: Sendable {
         self.glmDecodeSwitches = glmDecodeSwitches
     }
 
-    func launch() throws -> ClusterWorkerLaunch {
+    func launch(verifyLaunched: (@Sendable (pid_t) throws -> Void)? = nil) throws -> ClusterWorkerLaunch {
         var information = stat()
         guard lstat(installedDarkbloom.path, &information) == 0, information.st_mode & S_IFMT == S_IFREG,
               information.st_uid == geteuid(), information.st_nlink == 1,
@@ -61,6 +61,6 @@ public struct ClusterLocalOwnerConfiguration: Sendable {
         if let checkpointQuantization { environment["DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION"] = checkpointQuantization }
         environment.merge(glmDecodeSwitches) { current, _ in current }
         return .init(executable: installedDarkbloom, arguments: ["cluster", "worker-owner", "--stdio"],
-            environment: environment)
+            environment: environment, verifyLaunched: verifyLaunched)
     }
 }

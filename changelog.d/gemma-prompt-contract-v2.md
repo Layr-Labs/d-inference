@@ -1,0 +1,4 @@
+### Gemma 4 prompt contract 2 (vLLM's prompt), dormant until the coordinator asks
+
+- A provider now registers Gemma 4 prompt contract 2 and renders it for a coordinator request that asks for it: the system message, and list-shaped user content, as the chat template's text parts, which end in a space before the system turn closes. For system and user content that is the prompt vLLM-served endpoints render, so `usage.prompt_tokens` and the prompt the model reads then match theirs (OpenRouter's GPQA prompt: 88 tokens, not 87). Assistant and tool content renders as before.
+- No request asks yet: the coordinator asks only for models it switches on, and only for requests it planned and counted with contract 2. Until then every request renders exactly as before, as do the local API, media requests and other models. `DARKBLOOM_GEMMA_PROMPT_CONTRACT_V2=off` stops advertising contract 2 on a Mac.

@@ -393,10 +393,14 @@ struct SelfUpdaterTests {
         #expect(try LiveInferenceFixtures.buildProduct("darkbloom", testBundleURL: bundle) == active)
     }
 
+    /// `signedVersion` is the app's `CFBundleShortVersionString`, sealed by its
+    /// signature; the release is labelled `releaseVersion`, by default the same.
     private func makeSignedRuntimeFixture(
         root: URL,
         includeResource: Bool,
-        includeFanHelper: Bool = true
+        includeFanHelper: Bool = true,
+        signedVersion: String = "0.10.13",
+        releaseVersion: String? = nil
     ) throws -> (URL, ReleaseInfo, URL) {
         let fm = FileManager.default
         let stage = root.appendingPathComponent("signed-src", isDirectory: true)
@@ -436,6 +440,7 @@ struct SelfUpdaterTests {
             "CFBundleExecutable": "darkbloom",
             "CFBundlePackageType": "APPL",
             "CFBundleVersion": "1",
+            "CFBundleShortVersionString": signedVersion,
         ]
         try PropertyListSerialization.data(
             fromPropertyList: info,
@@ -498,7 +503,7 @@ struct SelfUpdaterTests {
             includeResource ? "signed-valid.tar.gz" : "signed-missing.tar.gz")
         try runTarCreate(sourceDir: stage, tarball: tarball)
         let release = ReleaseInfo(
-            version: "test",
+            version: releaseVersion ?? signedVersion,
             platform: "macos-arm64",
             url: "file://unused",
             bundleHash: sha256Hex(try Data(contentsOf: tarball)),
@@ -550,6 +555,41 @@ struct SelfUpdaterTests {
         #expect(
             !FileManager.default.fileExists(
                 atPath: missingInstall.appendingPathComponent("Darkbloom.app").path))
+    }
+
+    @Test("a signed app is staged only as the version it is signed as")
+    func signedVersionMustMatchRelease() throws {
+        _ = LiveInferenceFixtures.ensureMetallibColocated()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("self-updater-signed-version-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let updater = SelfUpdater(coordinatorBaseURL: "https://api.example.test")
+
+        // An older signed build offered under a newer label: every hash and
+        // the signature verify, only the sealed version tells them apart.
+        let (relabelled, relabelledRelease, relabelledInstall) = try makeSignedRuntimeFixture(
+            root: root.appendingPathComponent("relabelled", isDirectory: true),
+            includeResource: true, signedVersion: "0.10.11", releaseVersion: "99.0.0")
+        guard case .failure(let error) = updater.stageSignedBundleForTesting(
+            from: relabelled, release: relabelledRelease, installDir: relabelledInstall)
+        else {
+            Issue.record("an app signed as 0.10.11 staged as release 99.0.0")
+            return
+        }
+        #expect("\(error)".contains("is signed as version 0.10.11, not release 99.0.0"))
+
+        // A prerelease version, as dev and staging releases are signed,
+        // stages when the release names it exactly.
+        let (prerelease, prereleaseRelease, prereleaseInstall) = try makeSignedRuntimeFixture(
+            root: root.appendingPathComponent("prerelease", isDirectory: true),
+            includeResource: true, signedVersion: "0.10.13-dev.branch.7")
+        guard case .success(let staged) = updater.stageSignedBundleForTesting(
+            from: prerelease, release: prereleaseRelease, installDir: prereleaseInstall)
+        else {
+            Issue.record("an app signed as its release's own version was refused")
+            return
+        }
+        staged.discard()
     }
 
     @Test("fan-capable signed app without its helper is rejected")

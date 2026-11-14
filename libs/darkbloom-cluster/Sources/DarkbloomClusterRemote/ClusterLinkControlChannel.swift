@@ -59,6 +59,17 @@ public enum ClusterLinkControlRefusal: Sendable, Equatable {
     case protocolVersionMismatch
     case connectFailed
     case interface(ClusterLinkInterfaceRefusal)
+    /// The peer's identity is not the one this edge pins (or it sent one on an
+    /// edge that pins none, or none on an edge that pins one).
+    case peerNotPinned
+    /// The peer pins another key for this end (one of the Macs was paired again).
+    case identityMismatch
+    /// The peer's signature does not verify under the key this edge pins.
+    case peerSignatureRejected
+    /// This Mac's key could not sign the handshake (missing, or not the pinned one).
+    case localIdentityUnavailable
+    /// This Mac's key cannot sign until someone logs in once after a restart.
+    case localIdentityLocked
 }
 
 /// Delivered in order on the edge's own serial queue. The handler may call
@@ -132,6 +143,16 @@ extension Duration {
 
 /// One link edge: two members over one cable.
 public struct ClusterLinkControlEdge: Sendable {
+    /// How the two ends of an edge prove themselves in the handshake (v3).
+    public enum Authentication: Sendable {
+        /// Both ends prove the Secure Enclave key the other pinned: every
+        /// serving edge, which carries prompts.
+        case attested(ClusterLinkIdentity)
+        /// The edge key only: the pairing bootstrap, the setup exchange and
+        /// the link-channel qualification, which carry no prompt.
+        case edgeKeyOnly
+    }
+
     public let edgeID: UUID
     public let epoch: UUID
     public let key: ClusterLinkControlKey
@@ -139,6 +160,9 @@ public struct ClusterLinkControlEdge: Sendable {
     /// source on the bound interface). Connector: the address it dials.
     public let peerAddress: ClusterLinkIPv4Address?
     public let limits: ClusterLinkControlLimits
+    /// Nil until the caller decides: a listener or client refuses an edge
+    /// whose authentication was never set, so no edge runs unattested by omission.
+    public let authentication: Authentication?
 
     public init(edgeID: UUID, epoch: UUID, key: ClusterLinkControlKey, peerAddress: ClusterLinkIPv4Address?,
                 limits: ClusterLinkControlLimits = .init()) throws {
@@ -148,6 +172,26 @@ public struct ClusterLinkControlEdge: Sendable {
         }
         try limits.validate()
         self.edgeID = edgeID; self.epoch = epoch; self.key = key; self.peerAddress = peerAddress; self.limits = limits
+        authentication = nil
+    }
+
+    private init(_ edge: ClusterLinkControlEdge, authentication: Authentication) {
+        edgeID = edge.edgeID; epoch = edge.epoch; key = edge.key; peerAddress = edge.peerAddress; limits = edge.limits
+        self.authentication = authentication
+    }
+
+    /// This edge with both ends proving the keys `identity` pins.
+    public func authenticated(by identity: ClusterLinkIdentity) -> ClusterLinkControlEdge {
+        .init(self, authentication: .attested(identity))
+    }
+
+    /// This edge on its edge key alone (no identity exists to prove).
+    public func authenticatedByEdgeKeyOnly() -> ClusterLinkControlEdge { .init(self, authentication: .edgeKeyOnly) }
+
+    /// The identity a serving edge proves, nil on an edge-key-only one.
+    var identity: ClusterLinkIdentity? {
+        if case .attested(let identity)? = authentication { return identity }
+        return nil
     }
 
     /// Deterministic edge ID from both members' pins and the interfaces at

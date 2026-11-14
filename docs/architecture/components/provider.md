@@ -1,6 +1,6 @@
 # Provider process
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-14
 
 The provider is the Apple Silicon Mac that decrypts prompts and runs inference.
 It ships as one Swift package (`provider-swift/`) producing the `darkbloom` CLI,
@@ -100,6 +100,19 @@ at once; if the check fails, it waits for that load and is checked again,
 because the load already holds the memory the check sized for a second copy.
 Native MiMo requests keep the serial consumer.
 `DARKBLOOM_TTFT_COLD_LOAD_RELEASE=0` restores the fully serial consumer.
+
+Requests read off the connection hold their ciphertext until their admission
+returns. The reader queues at most 64 of them, and 512 MiB of ciphertext, at
+once (`CoordinatorQueueBudget`, `queueCoordinatorAdmission` in
+`provider-swift/Sources/ProviderCore/ProviderLoop+WorkFIFO.swift`). The
+coordinator keeps at most a provider's width pending, so this binds only while
+admission is stalled (a serial load) and expired or cancelled requests keep
+arriving. A request past it is refused on arrival with `queue_full` on a
+capacity 429, as the engine's own queue refuses, its service reservation
+released, and is never queued. Unlike a `draining` refusal, the coordinator
+spends a capacity retry on it and counts it against this Mac's capacity for
+the model. The reader never waits for room, so cancels, challenges and trust
+updates keep flowing.
 
 - **In-process inference.** The MLX stack is linked into the `darkbloom`
   binary; there is no Python interpreter and no inference subprocess. Runtime verification can launch a child for paged-kernel preflight

@@ -75,8 +75,9 @@ public enum ClusterLinkControlQualification {
 
     public static func edge(options: Options, secret: Data) throws -> ClusterLinkControlEdge {
         let key = try ClusterLinkControlKey.qualification(secret: secret, epoch: options.epoch, edgeID: options.edgeID)
+        // A qualification carries only its own probe data, under a throwaway secret.
         return try ClusterLinkControlEdge(edgeID: options.edgeID, epoch: options.epoch, key: key,
-            peerAddress: options.peerAddress, limits: options.limits)
+            peerAddress: options.peerAddress, limits: options.limits).authenticatedByEdgeKeyOnly()
     }
 
     /// Listens until standard input closes or `seconds` pass; prints one line

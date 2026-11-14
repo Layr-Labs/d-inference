@@ -16,6 +16,15 @@ private func decodeGeometryConfig<T: Decodable>(_ json: [String: Any]) throws ->
     try JSONDecoder().decode(T.self, from: JSONSerialization.data(withJSONObject: json))
 }
 
+/// The published attention shape and window over four small layers.
+private func geometryMuseGlimmer() throws -> MuseGlimmerTextModel {
+    MuseGlimmerTextModel(try decodeGeometryConfig([
+        "hidden_size": 64, "num_hidden_layers": 4, "num_attention_heads": 32,
+        "num_key_value_heads": 2, "head_dim": 128, "intermediate_size": 128,
+        "sliding_window": 2048, "vocab_size": 96, "rope_parameters": ["rope_theta": 500000.0],
+    ]))
+}
+
 private func geometryGPTOSS() throws -> GPTOSSModel {
     GPTOSSModel(try decodeGeometryConfig([
         "model_type": "gpt_oss", "num_hidden_layers": 2, "num_local_experts": 4,
@@ -112,6 +121,25 @@ struct EngineV2PrefillGeometryTests {
         }
         #expect(geometry(try geometryDenseQwen())
             == sdkGeometry(stripe: EngineV2Factory.defaultDenseQwenSoloPrefillStripeTokens))
+    }
+
+    /// A complete checkpoint lands only where a solo range ends on the SDK's
+    /// 1,024-token capture stride (the 2,048-token window ring keeps nothing
+    /// behind a range end), so Muse Glimmer's stripe is that stride.
+    @Test("Muse Glimmer's stripe ends a range on every checkpoint stride point")
+    func museGlimmerStripe() throws {
+        let glimmer = try geometryMuseGlimmer()
+        #expect(EngineV2Factory.museGlimmerSoloPrefillStripeTokens == 1024)
+        #expect(geometry(glimmer) == sdkGeometry(stripe: EngineV2Factory.museGlimmerSoloPrefillStripeTokens))
+        let config = EngineV2Factory.productionSchedulerConfig(
+            maxConcurrentRequests: 8, model: glimmer, environment: [:])
+        #expect(config.soloPrefillStripeTokens == 1024)
+        // The pool sizes window rings from max(chunk, stripe): still below the window.
+        let resolved = geometry(glimmer)
+        #expect(max(resolved.prefillChunkTokens, resolved.soloPrefillStripeTokens ?? 0) < 2048)
+        // An explicit stripe still wins, and the rollback restores the SDK chunk.
+        #expect(geometry(glimmer, [EngineV2Factory.soloPrefillStripeKey: "2048"]).soloPrefillStripeTokens == 2048)
+        #expect(geometry(glimmer, [EngineV2Factory.soloPrefillStripeKey: "0"]).soloPrefillStripeTokens == nil)
     }
 
     @Test("the scheduler config carries exactly the resolved geometry")

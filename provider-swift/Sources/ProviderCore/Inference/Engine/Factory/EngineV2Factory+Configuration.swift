@@ -13,6 +13,12 @@ extension EngineV2Factory {
     public static let defaultSoloPrefillStripeTokens = 2048
     /// Dense recurrent prefill can use a larger stripe without MoE tile limits.
     public static let defaultDenseQwenSoloPrefillStripeTokens = 4096
+    /// Muse Glimmer's sliding window (2,048 tokens) is as long as the default
+    /// stripe, so its window ring keeps no row behind a range end, and a complete
+    /// checkpoint lands only where a range ends on the SDK's 1,024-token capture
+    /// stride. This stripe ends a solo range on every stride point; cold and
+    /// restored requests run on the same grid, so a restore stays exact.
+    public static let museGlimmerSoloPrefillStripeTokens = 1024
 
     public static let maxPartialPrefillsKey = "DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS"
     public static let defaultMaxConcurrentPartialPrefills: Int? = 1
@@ -55,7 +61,9 @@ extension EngineV2Factory {
     static func defaultSoloPrefillStripeTokens(
         for model: (any LanguageModel)?
     ) -> Int {
-        isDenseQwen35(model) ? defaultDenseQwenSoloPrefillStripeTokens : defaultSoloPrefillStripeTokens
+        if isDenseQwen35(model) { return defaultDenseQwenSoloPrefillStripeTokens }
+        if model is MuseGlimmerTextModel { return museGlimmerSoloPrefillStripeTokens }
+        return defaultSoloPrefillStripeTokens
     }
 
     /// MoE subclasses the dense target, so exclude it explicitly.

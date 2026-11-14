@@ -35,6 +35,13 @@ struct MuseGlimmerLiveTests {
     @Test(.enabled(if: ProcessInfo.processInfo.environment["DARKBLOOM_MUSE_GLIMMER_LIVE"] == "1"))
     func servedThroughLoopback() async throws {
         let env = ProcessInfo.processInfo.environment
+        // As `darkbloom start` does before any GPU work: MLX loads one pinned
+        // metallib snapshot, whose digest enters the checkpoint identity.
+        // Without it the complete prefix cache stays off
+        // (`runtime_identity_unavailable`).
+        let metallib = try #require(bindRuntimeMetallibForMLX(
+            from: env["DARKBLOOM_MUSE_GLIMMER_METALLIB"].map { URL(fileURLWithPath: $0) }),
+            "set DARKBLOOM_MUSE_GLIMMER_METALLIB to the staged mlx.metallib")
         let phases = Set((env["DARKBLOOM_MUSE_GLIMMER_LIVE_PHASES"] ?? "http,speed,cache")
             .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) })
         let root = try #require(env["DARKBLOOM_MUSE_GLIMMER_HUB"])
@@ -81,6 +88,7 @@ struct MuseGlimmerLiveTests {
             try client.record(MuseGlimmerLiveClient.memory("after-load"))
             let (_, metrics) = try await client.get("/metrics")
             try client.record(["case": "slot", "kv_backend": "paged", "load_seconds": loadSeconds,
+                               "metallib_sha256": metallib,
                                "prompt_contract_id": contract ?? "none",
                                "weight_hash_present": model.weightHash?.isEmpty == false,
                                "checkpoint_precision_env": env["DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION"] ?? "default",
@@ -88,6 +96,10 @@ struct MuseGlimmerLiveTests {
                                    $0.contains("kv_backend") || $0.contains("prefix_cache")
                                }.map(String.init)])
             #expect(metrics.contains("backend=\"paged\""))
+            if phases.contains("cache") {
+                try #require(!metrics.contains("prefix_cache_status{model=\"\(id)\",state=\"disabled\""),
+                    "the prefix cache is off for this slot")
+            }
 
             if phases.contains("http") { try await Self.http(client) }
             if phases.contains("speed") { try await Self.speed(client) }

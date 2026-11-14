@@ -345,7 +345,7 @@ func vlmDecodeVideoDecidesByTheBytes() async throws {
     for header in [
         "data:video/mov;base64,", "data:video/x-m4v;base64,", "data:application/octet-stream;base64,",
         "data:video/mp4;codecs=avc1.64000b;base64,", "data:video/webm;base64,", "data:video/mpeg;base64,",
-        "data:;base64,", "data:VIDEO/MP4;base64,", "data:video/mov;BASE64,",
+        "data:;base64,", "data:VIDEO/MP4;base64,",
     ] {
         let (video, framePixels) = try await MediaIngest.decodeVideo(header + tinyMP4Base64)
         guard case .memoryBacked = video.source else {
@@ -368,12 +368,14 @@ func vlmDecodeVideoDamagedMP4IsMalformed() async {
 
 @Test("decodeVideo requires a base64 payload: a URI without ;base64 is malformed, not a foreign container")
 func vlmDecodeVideoRequiresBase64() async {
-    // An MP4's base64 text sent without the parameter, and percent-encoded
-    // bytes: either way the URI, not the container, is wrong.
+    // An MP4's base64 text sent without the parameter (or with it in upper
+    // case, which `dataFromDataURI` reads as percent-encoded text, as the pair
+    // leaders do), and percent-encoded text: the URI, not the container, is wrong.
     for uri in [
         "data:video/mp4,\(tinyMP4Base64)",
         "data:video/mp4;charset=binary,\(tinyMP4Base64)",
-        "data:video/mp4,%00%00%00%1Cftypmp42",
+        "data:video/mov;BASE64,\(tinyMP4Base64)",
+        "data:video/mp4,not%20a%20real%20video",
     ] {
         await expectVideoError("malformedDataURI") { _ = try await MediaIngest.decodeVideo(uri) }
     }

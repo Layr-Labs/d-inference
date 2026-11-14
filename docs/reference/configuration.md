@@ -584,13 +584,18 @@ and rollback are defined in the [provider configuration reference](../provider/c
 
 ### SDK feature defaults
 
-Some switches are read by the SDK itself (`libs/mlx-swift-lm`), which keeps each of them off unless set. Every `darkbloom` process (single-Mac serving, pair members, workers, benchmarks) turns on the ones listed in `SDKFeatureDefaults.onByDefault` when it starts, before any command runs, wherever the environment (the shell, or the LaunchAgent plist, which forwards each key) leaves them unset or empty. A non-empty operator value always wins; `<KEY>=0` restores the 0.10.12 behaviour. Defaults the process injected itself are never written into a service plist, so an installed service follows the running release's defaults. `darkbloom start` names the switches it turned on; `darkbloom benchmark` prints them on stderr. Source: `provider-swift/Sources/ProviderCore/Config/SDKFeatureDefaults.swift` (`SDKFeatureDefaults`).
+Some switches are read by the SDK itself (`libs/mlx-swift-lm`), which keeps each of them off unless set. The provider decides their defaults (`SDKFeatureDefaults`): a switch the environment (the shell, or the LaunchAgent plist, which forwards each key) sets to a non-empty value is the operator's on every model, so `<KEY>=0` is the kill switch and restores the 0.10.12 behaviour and `1` turns it on everywhere. A switch left unset or empty follows the release's default, which is on only where it was measured in its ON state:
+
+- **Per build:** `DARKBLOOM_CONSTRAINT_SPANS` and `DARKBLOOM_CBV2_MTP_GRAMMAR` are passed to each engine's MTP configuration by the slot factory, on for the builds in `constraintSpansBuilds` / `grammarMTPBuilds` (a `model_type` or a model-id part, as in `DARKBLOOM_STRICT_TOOL_GRAMMAR`) and off for every other build; `DARKBLOOM_NATIVE_REASONING_BUDGET` admits `reasoning.max_tokens` for the families in `reasoningBudgetFamilies` (`NativeReasoningBudget.isEnabled(for:)`). The load log names the per-build switches an engine turned on.
+- **Process-wide:** switches the SDK reads with no per-model hook (`onByDefault`; with a budget family listed, also `DARKBLOOM_NATIVE_REASONING_BUDGET`, so every engine accepts budget rows) are set by every `darkbloom` process at its entry, before any command or early branch. The process records them in `DARKBLOOM_SDK_DEFAULTS_INJECTED`, which its children inherit, so a `darkbloom` child (the desktop app's workers, a cluster service's parts) does not take them for the operator's. A default the provider injected is never written into a service plist, so an installed service follows the running release's defaults.
+
+`darkbloom start` prints `SDK feature defaults on: …` (the switches and the builds or families they cover); `darkbloom benchmark` prints it on stderr. Which switches are on by default in this release: the Default column of each row. Source: `provider-swift/Sources/ProviderCore/Config/SDKFeatureDefaults.swift` (`SDKFeatureDefaults`).
 
 ### Native reasoning budgets
 
 | Variable | Values | Default | Source | Effect |
 |---|---|---|---|---|
-| `DARKBLOOM_NATIVE_REASONING_BUDGET` | `1`, `true`, `yes`, `on` (case-insensitive) enable; every other value disables | **on** (provider default since 0.10.13, `SDKFeatureDefaults`); `0` restores 0.10.12 | `provider-swift/Sources/ProviderCore/Inference/Prompting/NativeReasoningBudget.swift` (`isEnabled`); SDK `CBv2ReasoningBudget.enabled` | Enables validated `reasoning.max_tokens` on supported local Super/MiMo routes. Set before engine construction; forwarded to the daemon. |
+| `DARKBLOOM_NATIVE_REASONING_BUDGET` | `1`, `true`, `yes`, `on` (case-insensitive) enable for every family; every other non-empty value disables | off | `provider-swift/Sources/ProviderCore/Inference/Prompting/NativeReasoningBudget.swift` (`isEnabled(for:)`); SDK `CBv2ReasoningBudget.enabled` | Enables validated `reasoning.max_tokens` on supported local Super/MiMo routes. Set before engine construction; forwarded to the daemon. |
 
 The request budget is a positive JSON integer no greater than 2,147,483,647;
 an explicit thinking-off setting conflicts with it. The total output ceiling

@@ -211,13 +211,18 @@ struct MuseGlimmerDrafterTests {
         let drafter = try #require(handle.drafter as? MuseGlimmerDFlashDrafter)
         #expect(drafter.settings.verification == .rectangularExact)
         #expect(drafter.settings.commitsAcceptedPrefixPerRow)
-        // Two decoding requests may share a round; the kill switch binds one.
-        #expect(drafter.settings.maximumSpeculativeRows == 2)
+        // One decoding request per round by default, the binding before paired
+        // rounds; `2` lets two share a round.
+        #expect(drafter.settings.maximumSpeculativeRows == 1)
         let rowsKey = MTPAutomaticVerificationPolicy.museGlimmerSpeculativeRowsEnvironmentKey
         let one = try #require(try MuseGlimmerDrafterBinding.bind(
             directory: directory, target: target, pin: pin, environment: [rowsKey: "1"]).drafter
             as? MuseGlimmerDFlashDrafter)
         #expect(one.settings.maximumSpeculativeRows == 1 && one.settings.verification == .rectangularExact)
+        let two = try #require(try MuseGlimmerDrafterBinding.bind(
+            directory: directory, target: target, pin: pin, environment: [rowsKey: "2"]).drafter
+            as? MuseGlimmerDFlashDrafter)
+        #expect(two.settings.maximumSpeculativeRows == 2 && two.settings.verification == .rectangularExact)
         #expect(drafter.batchesVerifyColumnsAsDecodeRows)
         #expect(drafter.requiresExactAcceptance)
         #expect(drafter.maximumDraftTokens == 7)
@@ -440,7 +445,7 @@ struct MuseGlimmerDrafterTests {
         let (directory, pin) = try Self.artifact(in: root)
         let target = try Self.exactTower()
         let rowsKey = MTPAutomaticVerificationPolicy.museGlimmerSpeculativeRowsEnvironmentKey
-        // The slot factory's resolution, default and kill switch.
+        // The slot factory's resolution: paired (`2`) and the one-row default.
         func resolved(_ environment: [String: String]) throws -> (any CBv2MTPDrafter, CBv2MTPConfig) {
             let drafter = try #require(try MuseGlimmerDrafterBinding.bind(
                 directory: directory, target: target, pin: pin, environment: environment).drafter)
@@ -464,7 +469,7 @@ struct MuseGlimmerDrafterTests {
             let off = try await concurrentTokens(plain, requests)
             await plain.shutdown()
             #expect(off.map(\.count) == [32, 32])
-            for (environment, pairs) in [([:], true), ([rowsKey: "1"], false)] as [([String: String], Bool)] {
+            for (environment, pairs) in [([rowsKey: "2"], true), ([:], false)] as [([String: String], Bool)] {
                 let (drafter, config) = try resolved(environment)
                 let speculative = try engine(target, drafter: drafter, config: config, requests: 2)
                 #expect(speculative.mtpInactiveReason == nil)
@@ -474,7 +479,7 @@ struct MuseGlimmerDrafterTests {
                 #expect(on == off, "temperature \(sampling.temperature) \(environment)")
                 #expect(metrics.serialVerificationRounds == 0)
                 // Paired: both rows pass the batch gate and their rounds draft three each.
-                // Kill switch: two decoding rows exceed the one-row gate and decode plainly.
+                // Default: two decoding rows exceed the one-row gate and decode plainly.
                 let gated = metrics.skippedRows["batch_gate"] ?? 0
                 #expect(pairs ? gated == 0 && (metrics.depthSelections[3] ?? 0) > 0 : gated > 0,
                         "\(metrics.skippedRows) \(metrics.depthSelections)")

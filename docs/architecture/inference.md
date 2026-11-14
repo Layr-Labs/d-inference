@@ -5745,15 +5745,15 @@ the SDK's `MuseGlimmerDFlashDraftModel.load` checks it against the pinned
 quantized DFlash drafter (`.museGlimmer30BQuantized`), a second check
 independent of the store's digests, so other bytes fail closed (`loadFailed`)
 even when a catalog publishes them. The drafter's settings
-(`MuseGlimmerDFlashDrafter.Settings.verifying`, two speculative rows) require
+(`MuseGlimmerDFlashDrafter.Settings.verifying`) require
 rectangular-exact verification on the exact tower: one target window scores each
 round, its columns attended as rows of one paged decode dispatch per layer, and
-accepted rows commit one by one. One decoding request drafts seven tokens a round;
+accepted rows commit one by one. One decoding request drafts seven tokens a round, and
+by default a round holds one request. With `DARKBLOOM_MTP_MUSE_GLIMMER_ROWS=2` (opt-in),
 two decoding requests share a round at three each
 (`MuseGlimmerModelPolicy.pairedRoundDraftTokens`, `fixedDraftTokensByDecodeRows`
-`[7, 3]`), the same 8 verify rows; three or more decode without drafting.
-`DARKBLOOM_MTP_MUSE_GLIMMER_ROWS=1` restores one request per round
-(`MTPAutomaticVerificationPolicy.applyMuseGlimmerSpeculativeRows`). To measure a drafter, `DARKBLOOM_DEBUG_MTP_RECEIPTS=1`
+`[7, 3]`, `MTPAutomaticVerificationPolicy.applyMuseGlimmerSpeculativeRows`), the same 8
+verify rows; three or more decode without drafting. To measure a drafter, `DARKBLOOM_DEBUG_MTP_RECEIPTS=1`
 keeps each finished request's round, proposed and accepted counts on the bridge (`MTPRequestReceiptRing`, recorded in
 `EngineV2Bridge+Accounting.swift` beside the usage), served only by an unkeyed local API. The drafter also requires exact acceptance: under
 an operator `typical` setting its requests run target only. Depth is fixed at seven

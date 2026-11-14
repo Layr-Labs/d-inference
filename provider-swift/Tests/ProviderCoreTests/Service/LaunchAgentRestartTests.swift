@@ -425,8 +425,8 @@ struct LaunchAgentEnvironmentTests {
             environment: LaunchAgent.passthroughEnvironment(from: [:])))
     }
 
-    @Test func forwardsMuseGlimmerSpeculativeRowsRollbackToProviderJob() {
-        // Paired Muse Glimmer rounds are the default; the one-row rollback
+    @Test func forwardsMuseGlimmerSpeculativeRowsOptInToProviderJob() {
+        // One Muse Glimmer request per round is the default; the paired opt-in
         // works on an installed provider only if its plist carries the key.
         let key = MTPAutomaticVerificationPolicy.museGlimmerSpeculativeRowsEnvironmentKey
         #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key))
@@ -442,9 +442,9 @@ struct LaunchAgentEnvironmentTests {
             #expect(MTPAutomaticVerificationPolicy.museGlimmerSpeculativeRows(environment: launchd).rows
                 == MTPAutomaticVerificationPolicy.museGlimmerSpeculativeRows(environment: foreground).rows)
         }
-        let rollback = LaunchAgent.passthroughEnvironment(from: [key: "1"])
-        #expect(rollback == [key: "1"])
-        #expect(MTPAutomaticVerificationPolicy.museGlimmerSpeculativeRows(environment: rollback).rows == .single)
+        let optIn = LaunchAgent.passthroughEnvironment(from: [key: "2"])
+        #expect(optIn == [key: "2"])
+        #expect(MTPAutomaticVerificationPolicy.museGlimmerSpeculativeRows(environment: optIn).rows == .paired)
     }
 
     @Test func forwardsGemmaRowMappedNAXRollbackWithoutInventingAnOverride() throws {

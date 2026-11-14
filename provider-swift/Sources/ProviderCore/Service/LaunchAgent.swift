@@ -395,8 +395,8 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION`: a donor's
     /// terminal follows its complete-checkpoint write by default; the opt-in
     /// to answer first must reach the job to apply to an installed provider.
-    /// `DARKBLOOM_MTP_MUSE_GLIMMER_ROWS`: exact Muse Glimmer rounds hold two
-    /// decoding requests by default; the `1` rollback must reach the job.
+    /// `DARKBLOOM_MTP_MUSE_GLIMMER_ROWS`: exact Muse Glimmer rounds hold one
+    /// decoding request by default; the `2` opt-in must reach the job.
     /// `DARKBLOOM_TTFT_GDN_BLOCKED`: the SDK keeps a four-row Qwen GDN prompt
     /// kernel wherever its parity probe finds it bit-exact, which says nothing
     /// about speed; the stock-kernel rollback must reach the job. Spelled out

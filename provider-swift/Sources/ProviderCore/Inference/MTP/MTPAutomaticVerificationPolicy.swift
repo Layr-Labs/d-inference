@@ -52,10 +52,10 @@ public enum MTPAutomaticVerificationPolicy {
             ])
     }
 
-    /// `1` restores one request per round (the binding before paired rounds);
-    /// unset, empty or `2` is the default, paired. The prefix puts the
-    /// variable in the complete-checkpoint fingerprint, and the batch is
-    /// there as `mtp.maxSpeculativeBatch`.
+    /// `2` opts in to two requests per round (paired); unset, empty or `1` is
+    /// the default, one request per round, the binding before paired rounds.
+    /// The prefix puts the variable in the complete-checkpoint fingerprint,
+    /// and the batch is there as `mtp.maxSpeculativeBatch`.
     public static let museGlimmerSpeculativeRowsEnvironmentKey = "DARKBLOOM_MTP_MUSE_GLIMMER_ROWS"
 
     /// The selected row policy and the value it could not read, if any. An
@@ -65,11 +65,11 @@ public enum MTPAutomaticVerificationPolicy {
     ) -> (rows: MuseGlimmerSpeculativeRows, unrecognized: String?) {
         guard let raw = environment[museGlimmerSpeculativeRowsEnvironmentKey]?
             .trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty
-        else { return (.paired, nil) }
+        else { return (.single, nil) }
         switch raw {
         case "1": return (.single, nil)
         case "2": return (.paired, nil)
-        default: return (.paired, raw)
+        default: return (.single, raw)
         }
     }
 

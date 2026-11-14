@@ -37,7 +37,7 @@ protocol ProviderMTPAssistantLoading: Sendable {
 /// retain their dedicated drafter path. Muse Glimmer loads only the pinned
 /// quantized DFlash drafter.
 struct ProductionProviderMTPAssistantLoader: ProviderMTPAssistantLoading {
-    /// Read only for Muse Glimmer's speculative-row kill switch.
+    /// Read only for Muse Glimmer's speculative-row switch.
     var environment: [String: String] = ProcessInfo.processInfo.environment
 
     func loadAndBind(
@@ -128,9 +128,9 @@ struct ProductionProviderMTPAssistantLoader: ProviderMTPAssistantLoading {
 /// Verification follows the tower: on exact verify windows (always on for
 /// the served tower) one rectangular forward scores a round and each row
 /// commits its own accepted prefix; otherwise rounds are serial, one request
-/// per round. Exact rounds hold up to two decoding requests (the slot factory
-/// gives them the paired depth); `DARKBLOOM_MTP_MUSE_GLIMMER_ROWS=1` binds one,
-/// the shape before paired rounds.
+/// per round. Exact rounds hold one decoding request by default;
+/// `DARKBLOOM_MTP_MUSE_GLIMMER_ROWS=2` lets two share a round (the slot
+/// factory gives them the paired depth).
 enum MuseGlimmerDrafterBinding {
     static func settings(
         target: MuseGlimmerTextModel,

@@ -107,6 +107,8 @@ struct ClusterLinkKeyKeychainTests {
         try FileManager.default.createDirectory(at: direct, withIntermediateDirectories: true)
         #expect(ClusterKeychainEdgeSecretVault.storeTag(direct) == before, "the folder created")
         #expect(ClusterKeychainEdgeSecretVault.storeTag(viaLink) == before, "through the link, after")
+        #expect(!direct.path.hasPrefix("/var/") || ClusterKeychainEdgeSecretVault.storeTag(privateSpelling) == before,
+                "/var and /private/var, after")
         #expect(ClusterKeychainEdgeSecretVault.realPath(viaLink) == ClusterKeychainEdgeSecretVault.realPath(direct))
     }
 
@@ -127,8 +129,9 @@ struct ClusterLinkKeyKeychainTests {
             #expect(release == ClusterLinkKeyRollback.firstKeychainRelease,
                     "the entry is in v\(release ?? "?")'s section: set ClusterLinkKeyRollback.firstKeychainRelease to it")
         } else {
-            #expect(FileManager.default.fileExists(atPath: repository.appendingPathComponent("changelog.d/cluster-link-key-keychain.md").path),
-                    "the entry is neither rendered nor pending: keep this test's heading in step with it")
+            let fragment = try? String(contentsOf: repository.appendingPathComponent("changelog.d/cluster-link-key-keychain.md"), encoding: .utf8)
+            #expect(fragment?.components(separatedBy: "\n").first == entry,
+                    "the entry is neither rendered nor pending under this heading: keep this test's heading in step with it")
         }
         #expect(SemanticVersion(ClusterLinkKeyRollback.firstKeychainRelease)! <= SemanticVersion(ProviderCore.version)!)
     }
@@ -337,6 +340,9 @@ struct ClusterLinkKeyKeychainTests {
         })
         #expect(throws: ProcessDeath.self) { _ = try rollback.rollBack(dying) }
         #expect(!FileManager.default.fileExists(atPath: keyFile))
+        let staging = ((try? FileManager.default.contentsOfDirectory(atPath: installRoot.path)) ?? []).filter { $0.hasPrefix(".rollback-staging-") }
+        #expect(path == "restores the kept copy" ? staging.isEmpty : !staging.isEmpty || path == "finds the swap done",
+                "\(path): the recovery has the staging it names (\(staging))")
         // The next lease holder of the rolled-back release (a watchdog tick) finishes the rollback, and the key with it.
         let next = rollback.store()
         let lock = try UpdateProcessLock.acquire(at: next.lockPath, operation: "next-tick")

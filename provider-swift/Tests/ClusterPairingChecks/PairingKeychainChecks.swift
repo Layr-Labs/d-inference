@@ -586,6 +586,16 @@ extension PairingCheck {
         expect(done.wait(timeout: .now() + 5) == .success, "once it is let go, the move runs")
         expectEqual(result.secret, outcome.edgeSecret, "and returns the key")
         expectEqual(secretFiles(store), [], "having moved the file")
+        // A holder that never lets go (a stopped process) holds a rollback's write-back up for two seconds at most.
+        let stuck = open(store.directory.appendingPathComponent(".edge-secrets.lock").path, O_RDWR | O_CLOEXEC)
+        expect(stuck >= 0 && flock(stuck, LOCK_EX) == 0, "(setup) a holder that stays")
+        let started = DispatchTime.now().uptimeNanoseconds
+        let lines = store.writeLegacyFilesForRollback(rewrite: true)
+        let seconds = Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000_000
+        flock(stuck, LOCK_UN); close(stuck)
+        expect(seconds >= 1.5 && seconds < 4, "the write-back waits about two seconds, no longer (took \(seconds) s)")
+        expect(lines.first?.contains("written back") == true && contents(store.secretFile(peerPin: outcome.peer.pin)) == hexLine(outcome.edgeSecret),
+               "and then writes the key back without the lock")
     }
 
     /// A signed build that gets errSecMissingEntitlement (a group it lacks) fails closed and writes no file.

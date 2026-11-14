@@ -6064,8 +6064,9 @@ access group (`SLDQ2GJ6TL.io.darkbloom.provider`, the Secure Enclave key's; `DAR
 overrides both), `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, not synchronisable, no access control, so the
 signed CLI and its LaunchAgents read it without a prompt once the Mac was unlocked since it started. One item per
 other Mac: service `<install's keychain prefix>.cluster-pairing.edge-secret.<store>` (production `io.darkbloom.…`,
-DevNet `io.darkbloom.dev.…`; `<store>` is 12 hex digits of SHA-256 of the store's path, `storeTag`, so two stores of one
-build in two homes never share an item), account its pin, `kSecAttrGeneric` the pairing's link epoch and edge
+DevNet `io.darkbloom.dev.…`; `<store>` is 12 hex digits of SHA-256 of the store's real path, `storeTag`: the deepest existing
+ancestor through `realpath`, then the rest, so the tag is the same before and after the folder exists, and two stores of
+one build in two homes never share an item), account its pin, `kSecAttrGeneric` the pairing's link epoch and edge
 (`ClusterPairingStore.binding(of:)`), so an item left from an earlier ceremony with the same Mac is never used; an item
 without that binding reads as such an earlier one. `ClusterPairingStore.default` opens the store with that vault. A
 store without one, or a process that holds no keychain access group at all (ad-hoc and local builds, tests: the
@@ -6074,7 +6075,8 @@ that gets that status fails closed instead. `pairings.json` keeps each record's 
 still reads the store, and that path stays the name a setup's `linkControl` gives the pairing's secret.
 
 `ClusterPairingStore.edgeSecret` reads the item. With no item of this pairing, it takes `.edge-secrets.lock` in the
-store (`flock`, as `commit`, `forget` and the rollback write-back do), checks the caller's record is still the store's
+store (`flock`, as `commit`, `forget` and the rollback write-back do; a holder that doesn't let go within 10 s, 2 s for
+the write-back, is not waited for, and each step's own checks carry on), checks the caller's record is still the store's
 (`pairingChanged` otherwise), reads the Keychain again, and moves 0.10.12's file in: add the item (create-if-absent), or
 replace an earlier pairing's item; read it back and compare; then overwrite the file in place (the inode it read),
 fsync and unlink. Any step may be cut short and the next read finishes it; a corrupt or unsafe file is refused and
@@ -6095,8 +6097,10 @@ the setup save needs no file for it). Any other name is a private file, as befor
 A rollback to a release older than `ClusterLinkKeyRollback.firstKeychainRelease` (0.10.13), which reads link keys only
 from files, gets them back: `UpdateRecoveryStore.rollback` (every updater rollback: `update --rollback`, the pair's
 follow-rollback, the cluster candidate recovery, the watchdog) writes each pairing's key from the Keychain into its
-`edge-<pin>.secret` once the predecessor is verified and staged, and again, as new files, once the rollback is complete;
-`recoverInterruptedTransaction` writes them when it finishes an interrupted rollback or restores a predecessor. The
+`edge-<pin>.secret`, each time as a new file: once the predecessor is verified and staged, and again once the rollback
+is complete; `recoverInterruptedTransaction` writes them when it finishes an interrupted rollback or restores a
+predecessor (a process of the restored release that recovers has no such step). Between two DevNet builds of 0.10.13
+the files are written and the restored build removes them at its first read. The
 items stay; the next release that keeps keys in the Keychain moves the files in again, and a pairing 0.10.12 made in
 between wins by its binding. A rollback to a later release writes no file. A 0.10.12 installed by hand finds no file
 and asks to pair again.

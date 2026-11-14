@@ -171,7 +171,7 @@ public final class ClusterPairingStore: @unchecked Sendable {
                 return item.secret
             }
             // The move, under the store's lock across processes; what another process did meanwhile is read again.
-            return try withSecretsLock {
+            return try withSecretsLock { _ in
                 guard try loadLocked()?.pairing(peerPin: record.peerPin) == record else {
                     throw ClusterPairingStoreError.pairingChanged
                 }
@@ -192,9 +192,9 @@ public final class ClusterPairingStore: @unchecked Sendable {
     /// holder that doesn't let go within `waitSeconds` (a stopped process) doesn't hold `body` up, nor does a lock
     /// file that can't be opened or a file system without `flock`: `body` then runs on the checks every step makes
     /// on its own (the read-back, the record check, the file's identity).
-    private func withSecretsLock<T>(waitSeconds: Double = 10, _ body: () throws -> T) throws -> T {
+    private func withSecretsLock<T>(waitSeconds: Double = 10, _ body: (_ held: Bool) throws -> T) throws -> T {
         let fd = open(directory.appendingPathComponent(".edge-secrets.lock").path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
-        guard fd >= 0 else { return try body() }
+        guard fd >= 0 else { return try body(false) }
         defer { close(fd) }
         let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(max(0, waitSeconds) * 1_000_000_000)
         var held = false
@@ -204,7 +204,7 @@ public final class ClusterPairingStore: @unchecked Sendable {
             usleep(20_000)
         }
         defer { if held { flock(fd, LOCK_UN) } }
-        return try body()
+        return try body(held)
     }
 
     /// A file still beside the item that holds its key was left by a move cut short, or written back for a rollback
@@ -352,7 +352,7 @@ public final class ClusterPairingStore: @unchecked Sendable {
         lock.withLock {
             guard let vault, (try? requireDirectory(create: false)) == true else { return [] }
             // A rollback waits at most two seconds for another process's secret change.
-            return (try? withSecretsLock(waitSeconds: 2) { (try? loadLocked())?.pairings.map { record in
+            return (try? withSecretsLock(waitSeconds: 2) { _ in (try? loadLocked())?.pairings.map { record in
                 let name = "the pairing with \(record.peerPin.prefix(16))"
                 guard let url = try? legacySecretFile(of: record) else { return "\(name): its record names no file in this store" }
                 var info = stat()
@@ -397,7 +397,7 @@ public final class ClusterPairingStore: @unchecked Sendable {
     public func commit(_ outcome: ClusterPairingOutcome, edgeID: UUID) throws -> Commit {
         try lock.withLock {
             _ = try requireDirectory(create: true)
-            return try withSecretsLock { try commitLocked(outcome, edgeID: edgeID) }
+            return try withSecretsLock { _ in try commitLocked(outcome, edgeID: edgeID) }
         }
     }
 
@@ -451,7 +451,7 @@ public final class ClusterPairingStore: @unchecked Sendable {
     /// Puts back what `commit` replaced (the other Mac did not finish).
     public func rollback(_ token: Commit) {
         lock.withLock {
-            _ = try? withSecretsLock { restoreLocked(token) }
+            _ = try? withSecretsLock { _ in restoreLocked(token) }
             auditLocked("rollback", ["peer_pin": String(token.peerPin.prefix(16))])
         }
     }
@@ -478,7 +478,7 @@ public final class ClusterPairingStore: @unchecked Sendable {
     public func forget(peerPin: String) throws -> ClusterPairingRecord {
         try lock.withLock {
             guard try requireDirectory(create: false) else { throw ClusterPairingStoreError.notPaired }
-            return try withSecretsLock {
+            return try withSecretsLock { held in
                 guard var records = try loadLocked(), let record = records.pairing(peerPin: peerPin) else {
                     throw ClusterPairingStoreError.notPaired
                 }
@@ -487,7 +487,8 @@ public final class ClusterPairingStore: @unchecked Sendable {
                 if records.pairings.isEmpty { unlink(recordsFile.path) } else { try writePrivate(try Self.encode(records), to: recordsFile) }
                 removeLegacySecret(secretFile(peerPin: peerPin))
                 if let vault {
-                    switch records.pairings.isEmpty ? vault.deleteAll() : vault.delete(peerPin: peerPin) {
+                    // The sweep only under the lock: a process stopped inside `commit` may hold an item it just stored.
+                    switch records.pairings.isEmpty && held ? vault.deleteAll() : vault.delete(peerPin: peerPin) {
                     case .done, .exists, .absent, .failed(.notEntitled): break
                     case .failed: auditLocked("link_key_not_deleted", ["peer_pin": String(peerPin.prefix(16))])
                     }

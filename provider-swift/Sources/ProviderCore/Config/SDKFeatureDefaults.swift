@@ -31,7 +31,7 @@ public enum SDKFeatureDefaults {
 
     /// #2101 / SDK #413: MTP drafting through free Qwen reasoning and text
     /// spans. A build is an exact model id, lowercased (`matches`).
-    static let constraintSpansBuilds: Set<String> = []
+    static let constraintSpansBuilds: Set<String> = ["eigenlabs/qwen3.8-27b-4bit-mtp"]
 
     /// SDK #409: grammar-aware MTP verification of constrained rows, on a
     /// listed build only where constraint spans are on (measured together).

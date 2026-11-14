@@ -75,35 +75,41 @@ public final class ClusterChildProcess: @unchecked Sendable {
         reaped.enter()
         lock.withLock { spawned = pid }
         // The exit is watched from before the check; without that watch the
-        // child could not be signalled safely, so it is not launched.
-        let exits = Self.exitWatch(pid), watchError = errno
-        Thread.detachNewThread { [self] in collect(pid, exits: exits); onExit() }
+        // child could not be signalled safely, so it is killed now, while
+        // nothing can have collected it yet, and not launched.
+        let exits = Result { try Self.exitWatch(pid) }
+        if case .failure = exits { _ = Darwin.kill(pid, SIGKILL) }
+        Thread.detachNewThread { [self] in collect(pid, exits: try? exits.get()); onExit(); reaped.leave() }
         do {
-            guard exits != nil else { throw Self.cannotStart(watchError) }
+            _ = try exits.get()
             try verify(pid)
             guard signal(SIGCONT) else { throw ClusterWorkerOwnerError.invalid("The launched child could not be resumed") }
         } catch {
-            if exits == nil { _ = Darwin.kill(pid, SIGKILL) } else { _ = signal(SIGKILL) }
+            _ = signal(SIGKILL)
             reaped.wait()
             throw error
         }
     }
 
-    /// A kernel queue that reports the child's exit (before it is collected),
-    /// or nil when none could be set up. Darwin's `waitid` cannot stand in: it
-    /// reports a suspended child as an event even when asked for exits only.
-    private static func exitWatch(_ pid: pid_t) -> Int32? {
+    /// A kernel queue that reports the child's exit (before it is collected).
+    /// Darwin's `waitid` cannot stand in: it reports a suspended child as an
+    /// event even when asked for exits only.
+    private static func exitWatch(_ pid: pid_t) throws -> Int32 {
         let queue = kqueue()
-        guard queue >= 0 else { return nil }
+        guard queue >= 0 else { throw cannotStart(errno) }
         var change = kevent(ident: UInt(pid), filter: Int16(EVFILT_PROC), flags: UInt16(EV_ADD | EV_ONESHOT),
                             fflags: NOTE_EXIT, data: 0, udata: nil)
-        guard kevent(queue, &change, 1, nil, 0, nil) == 0 else { Darwin.close(queue); return nil }
+        guard kevent(queue, &change, 1, nil, 0, nil) == 0 else {
+            let code = errno
+            Darwin.close(queue)
+            throw cannotStart(code)
+        }
         return queue
     }
 
     /// Learns of the exit before collecting the child, so that no signal is
     /// sent once its identifier is free to be used again. Without a watch the
-    /// child was killed unchecked and is only collected.
+    /// child was already killed unchecked and is only collected.
     private func collect(_ pid: pid_t, exits: Int32?) {
         if let exits {
             var event = kevent()
@@ -114,7 +120,6 @@ public final class ClusterChildProcess: @unchecked Sendable {
         var collected: Int32 = 0
         while waitpid(pid, &collected, 0) < 0 && errno == EINTR {}
         lock.withLock { status = collected }
-        reaped.leave()
     }
 
     private func signal(_ number: Int32) -> Bool {
@@ -130,9 +135,12 @@ public final class ClusterChildProcess: @unchecked Sendable {
     private func spawnSuspended() throws -> pid_t {
         var actions: posix_spawn_file_actions_t?
         var attributes: posix_spawnattr_t?
-        guard posix_spawn_file_actions_init(&actions) == 0 else { throw Self.cannotStart(errno) }
+        // These functions return their error rather than setting errno.
+        let actionsResult = posix_spawn_file_actions_init(&actions)
+        guard actionsResult == 0 else { throw Self.cannotStart(actionsResult) }
         defer { posix_spawn_file_actions_destroy(&actions) }
-        guard posix_spawnattr_init(&attributes) == 0 else { throw Self.cannotStart(errno) }
+        let attributesResult = posix_spawnattr_init(&attributes)
+        guard attributesResult == 0 else { throw Self.cannotStart(attributesResult) }
         defer { posix_spawnattr_destroy(&attributes) }
         var every = sigset_t(), none = sigset_t()
         sigfillset(&every); sigemptyset(&none)

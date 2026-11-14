@@ -94,9 +94,11 @@ public final class GenerationLoopExitRecord: @unchecked Sendable {
 /// (`harmonyAnalysis`) or, for a request without tools, by the final
 /// channel's header (`harmonyAnalysisToFinal`). Qwen 3.5/3.6
 /// (`qwen3_5_moe`, `qwen3_5`), whose template closes a thought with
-/// `\n</think>\n\n` (`</think>` is one special token), are listed but off by
-/// default: their thought loops were too rare in the A/B to show rescues, and
-/// `qwen3_5` is also Qwen 3.8 27B. The guard keeps ending every other loop as
+/// `\n</think>\n\n` (`</think>` is one special token), are on by default for
+/// the builds the GPU A/B proved only, Qwen 3.5 9B and 35B (`provenBuilds`):
+/// the same families serve Qwen 3.6 (`qwen3_5_moe`) and Qwen 3.8 27B
+/// (`qwen3_5`), whose loops keep ending as `length` unless a list set on the
+/// Mac names them (`keepsLength`). The guard keeps ending every other loop as
 /// `length`: a loop outside the thought, a family that is not on, a request
 /// that asked for logprobs (the forced tokens have none), a pair's request.
 /// Nemotron 3.5 Super (`nemotron_h_omni`) has the marker and is off by default
@@ -105,7 +107,8 @@ public final class GenerationLoopExitRecord: @unchecked Sendable {
 ///
 /// `DARKBLOOM_LOOP_EXIT_THINKING`: unset, `1` or `on` keeps the default list;
 /// `0` or `off` turns it off; any other value is the comma-separated list of
-/// `model_type`s to allow, among those with a listed marker.
+/// `model_type`s to allow, among those with a listed marker, and of model-id
+/// parts that add a build to a family with proven builds (`keepsLength`).
 /// `DARKBLOOM_GPTOSS_FINAL_EXIT`: `0`, `off` or `false` keeps GPT-OSS's exit to
 /// requests that declare tools (#2070's exit alone); anything else leaves it on.
 enum GenerationLoopExitThinkingPolicy {
@@ -162,7 +165,35 @@ enum GenerationLoopExitThinkingPolicy {
     /// `<think>\n…\n</think>\n\n` before the answer.
     static let qwenThink = Markers(open: "<think>", close: "</think>", before: "\n", after: "\n\n")
 
-    static let defaultModelTypes: Set<String> = ["gemma4", "gemma4_text", "gpt_oss"]
+    static let defaultModelTypes: Set<String> = ["gemma4", "gemma4_text", "gpt_oss", "qwen3_5", "qwen3_5_moe"]
+
+    /// Families whose exit takes only some of their builds: the builds the GPU
+    /// A/B proved, by catalog id, each with its own `model_type` (as
+    /// `EngineV2SamplingDefaults.qwen35CardModelTypes`).
+    static let provenBuilds: [String: String] = [
+        "Qwen3.5-9B": "qwen3_5",
+        "qwen3.5-35b-a3b": "qwen3_5_moe",
+    ]
+
+    /// Whether this build's loops keep ending as `length` although its family
+    /// is on: a family with proven builds (`provenBuilds`) takes the exit on
+    /// those, and on another build only when the list, its family listed too,
+    /// names it by a case-insensitive part of its id (`qwen3.6`, `qwen3.8-27b`).
+    /// An id part is shaped like an id (a `.`, `-` or `/`), never like a
+    /// `model_type`, so `qwen3`, `mtp` or `4bit` name no build, while a
+    /// punctuated part such as `-4bit` names every build that contains it
+    /// (stricter than `QwenStrictToolGrammar`'s lists, which take any part).
+    /// The same in the default list and in a list set on the Mac, so a list
+    /// that adds a family never turns Qwen's exit on for a build the A/B did
+    /// not prove.
+    static func keepsLength(modelType: String?, modelID: String, setting: Setting = current) -> Bool {
+        guard case .modelTypes(let entries) = setting, let type = modelType?.lowercased(),
+              provenBuilds.values.contains(type), provenBuilds[modelID] != type else { return false }
+        let id = modelID.lowercased()
+        return !entries.contains { entry in
+            entry.contains(where: { ".-/".contains($0) }) && id.contains(entry)
+        }
+    }
 
     /// The answer's own cap. Gemma's GPQA answers after a thought are under
     /// 1,000 tokens; a Tau2 reply or call is shorter.

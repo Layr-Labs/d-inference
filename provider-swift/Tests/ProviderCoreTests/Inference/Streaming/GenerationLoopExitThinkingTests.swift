@@ -233,9 +233,8 @@ struct GenerationLoopExitThinkingTests {
     private static let qwen = QwenByteTestTokenizer()
     private static let qwenThinking = QwenByteTestTokenizer.tokens(QwenByteTestTokenizer.prompt(thinking: true))
 
-    /// Qwen's exit is listed but off by default: these tests turn it on.
-    private static let qwenOn = GenerationLoopExitThinkingPolicy.Setting.modelTypes(
-        GenerationLoopExitThinkingPolicy.defaultModelTypes.union(["qwen3_5_moe"]))
+    /// The 35B family alone in a list set on the Mac (the Qwen 3.5 35B; Qwen 3.6 only when named).
+    private static let qwenOn = GenerationLoopExitThinkingPolicy.Setting.modelTypes(["qwen3_5_moe"])
 
     private func qwenExit(_ modelType: String = "qwen3_5_moe",
                           setting: GenerationLoopExitThinkingPolicy.Setting = Self.qwenOn) -> GenerationLoopExitThinking? {
@@ -256,13 +255,13 @@ struct GenerationLoopExitThinkingTests {
             // The served template opens the thought in the prompt.
             #expect(exit.startsInside)
         }
-        // Off by default (the A/B found too few Qwen loops to show rescues):
-        // the env list turns the 35B models (`qwen3_5_moe`) on. `qwen3_5` also
-        // covers Qwen 3.8 27B.
-        let defaults = GenerationLoopExitThinkingPolicy.Setting.modelTypes(
-            GenerationLoopExitThinkingPolicy.defaultModelTypes)
-        #expect(qwenExit("qwen3_5_moe", setting: defaults) == nil)
-        #expect(qwenExit("qwen3_5", setting: defaults) == nil)
+        // Both families are on by default. By default the scheduler keeps the
+        // exit to the builds the A/B proved (the 9B, the 35B), not Qwen 3.6
+        // (`qwen3_5_moe`) or Qwen 3.8 27B (`qwen3_5`). A list set on the Mac
+        // names the families it turns on.
+        let defaults = GenerationLoopExitThinkingPolicy.setting(environment: [:])
+        #expect(qwenExit("qwen3_5_moe", setting: defaults) != nil)
+        #expect(qwenExit("qwen3_5", setting: defaults) != nil)
         #expect(qwenExit("qwen3_5_moe") != nil)
         #expect(qwenExit("qwen3_5") == nil)
         // A prompt whose earlier turns closed their thoughts still opens this one.
@@ -285,6 +284,56 @@ struct GenerationLoopExitThinkingTests {
             modelType: "qwen3_5_moe", tokenizer: Self.qwen, promptTokens: Self.qwenThinking, logprobs: false,
             setting: gemmaOnly) == nil)
         #expect(resolve("gemma4", setting: gemmaOnly) != nil)
+    }
+
+    @Test("Qwen's exit takes the builds the A/B proved; another build only when a list set on the Mac names it")
+    func qwenProvenBuilds() {
+        typealias Policy = GenerationLoopExitThinkingPolicy
+        let defaults = Policy.setting(environment: [:])
+        #expect(Policy.setting(environment: [Policy.environmentKey: "on"]) == defaults)
+        #expect(!Policy.keepsLength(modelType: "qwen3_5", modelID: "Qwen3.5-9B", setting: defaults))
+        #expect(!Policy.keepsLength(modelType: "qwen3_5_moe", modelID: "qwen3.5-35b-a3b", setting: defaults))
+        // The same families' other builds: Qwen 3.6, Qwen 3.8 27B, another 9B build.
+        #expect(Policy.keepsLength(
+            modelType: "qwen3_5_moe", modelID: "qwen3.6-35b-a3b-vl-mtp-mxfp8", setting: defaults))
+        for id in ModelRuntimeRequirements.qwen38ConcreteModelIDs {
+            #expect(Policy.keepsLength(modelType: "qwen3_5", modelID: id, setting: defaults), "\(id)")
+        }
+        #expect(Policy.keepsLength(
+            modelType: "qwen3_5", modelID: "EigenLabs/Qwen3.5-9B-MLX-4bit-mtp", setting: defaults))
+        // A build counts only with its own `model_type`.
+        #expect(Policy.keepsLength(modelType: "qwen3_5_moe", modelID: "Qwen3.5-9B", setting: defaults))
+        // Gemma's and GPT-OSS's exits take every build.
+        #expect(!Policy.keepsLength(
+            modelType: "gemma4", modelID: "mlx-community/gemma-4-26B-A4B-it-qat-4bit", setting: defaults))
+        #expect(!Policy.keepsLength(modelType: "gpt_oss", modelID: "gpt-oss-20b", setting: defaults))
+        // A list that only names families keeps Qwen to its proven builds, whatever else it adds.
+        let families = Policy.setting(environment: [Policy.environmentKey: "qwen3_5,qwen3_5_moe,nemotron_h_omni"])
+        #expect(Policy.keepsLength(modelType: "qwen3_5", modelID: "EigenLabs/Qwen3.8-27B-4bit-mtp", setting: families))
+        #expect(!Policy.keepsLength(modelType: "qwen3_5", modelID: "Qwen3.5-9B", setting: families))
+        // A list adds a build by a case-insensitive part of its id; a family's own name is not an id part.
+        let named = Policy.setting(environment: [Policy.environmentKey: "qwen3_5,qwen3_5_moe,Qwen3.8-27B"])
+        for id in ModelRuntimeRequirements.qwen38ConcreteModelIDs {
+            #expect(!Policy.keepsLength(modelType: "qwen3_5", modelID: id, setting: named), "\(id)")
+        }
+        #expect(Policy.keepsLength(modelType: "qwen3_5_moe", modelID: "qwen3.6-35b-a3b-vl-mtp-mxfp8", setting: named))
+        // Entries shaped like a `model_type` name no build, even when they are part of every id.
+        let generic = Policy.setting(environment: [Policy.environmentKey: "qwen3_5,qwen3_5_moe,qwen3,qwen,mtp,4bit"])
+        for id in ModelRuntimeRequirements.qwen38ConcreteModelIDs {
+            #expect(Policy.keepsLength(modelType: "qwen3_5", modelID: id, setting: generic), "\(id)")
+        }
+        let qwen36 = "qwen3.6-35b-a3b-vl-mtp-mxfp8"
+        #expect(Policy.keepsLength(modelType: "qwen3_5_moe", modelID: qwen36, setting: generic))
+        // Each separator makes an id part: `-` alone, `/` alone.
+        let dashed = Policy.setting(environment: [Policy.environmentKey: "qwen3_5_moe,35b-a3b-vl"])
+        #expect(!Policy.keepsLength(modelType: "qwen3_5_moe", modelID: qwen36, setting: dashed))
+        let slashed = Policy.setting(environment: [Policy.environmentKey: "qwen3_5,EigenLabs/"])
+        for id in ModelRuntimeRequirements.qwen38ConcreteModelIDs {
+            #expect(!Policy.keepsLength(modelType: "qwen3_5", modelID: id, setting: slashed), "\(id)")
+        }
+        // A named build without its family stays off: the family's list entry turns the exit on.
+        let buildOnly = Policy.setting(environment: [Policy.environmentKey: "qwen3.6"])
+        #expect(qwenExit("qwen3_5_moe", setting: buildOnly) == nil)
     }
 
     @Test("a Qwen thought that loops asks to end the thought; a loop after `</think>` does not")
@@ -389,6 +438,32 @@ struct GenerationLoopExitThinkingTests {
             #expect(LaunchAgent.inferencePassthroughEnvKeys.contains(key), "\(key)")
             #expect(LaunchAgent.passthroughEnvironment(from: [key: "0"])[key] == "0", "\(key)")
         }
+    }
+
+    @Test("a row the strict-tool grammar constrains keeps its guard, not the exit: the answer would run unconstrained")
+    func strictToolRowKeepsItsLength() throws {
+        let body = #"{"model":"qwen3.5-35b-a3b","messages":[{"role":"user","content":"hi"}],"max_tokens":512,"#
+            + #""tools":[{"type":"function","function":{"name":"get_time","strict":true,"parameters":{"type":"object","#
+            + #""properties":{"city":{"type":"string"}},"required":["city"],"additionalProperties":false}}}]}"#
+        let raw = try JSONDecoder().decode(OpenAIChatCompletionRequest.self, from: Data(body.utf8))
+        let request = try JSONDecoder().decode(OpenAIChatCompletionRequest.self,
+            from: ToolSchemaNormalization.ensureParameterTypes(in: Data(body.utf8)))
+        var prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "qwen3_5_moe")
+        prepared.declaredTools = raw.tools
+        let constraint = try #require(QwenStrictToolGrammar.constraint(
+            prepared: prepared, request: request, parser: .qwen35, tokenizer: TokenizerHandle(Self.qwen),
+            modelType: "qwen3_5_moe", defaultMaxTokens: 512, stopTokenIDs: [248_044, 248_046],
+            promptTokens: Self.qwenThinking, runsTokenConstraints: true, setting: .models(["qwen3_5_moe"]),
+            allTools: false))
+        let exit = try #require(qwenExit())
+        let constrained = try #require(GenerationLoopGuardPolicy.resolve(
+            modelType: "qwen3_5_moe", request: request, prepared: prepared, tokenConstraint: constraint,
+            setting: .modelTypes(["qwen3_5_moe"]), exitThinking: exit))
+        #expect(constrained.exitThinking == nil)
+        let free = try #require(GenerationLoopGuardPolicy.resolve(
+            modelType: "qwen3_5_moe", request: request, prepared: prepared, tokenConstraint: nil,
+            setting: .modelTypes(["qwen3_5_moe"]), exitThinking: exit))
+        #expect(free.exitThinking?.record === exit.record)
     }
 
     @Test("the guard's policy carries the exit to the guard")

@@ -21,15 +21,15 @@ enum ClusterLinkKeyRollback {
     }
 
     /// Writes the keys back for `version` into the pairing store beside the install's app (`installRoot`, the
-    /// updater's; `ClusterUserPaths.pairingDirectory` for an installed app) when that release reads only files.
-    /// `rewrite`: once the rollback is done, a new file for every pairing, newer than every process running then.
-    /// Returns the lines it logged (no key material).
+    /// updater's; `ClusterUserPaths.pairingDirectory` for an installed app) when that release reads only files: a new
+    /// file for every pairing, newer than every process running then (a process of a release that keeps keys in the
+    /// Keychain removes only files older than itself). Between two DevNet builds of 0.10.13 this writes files the
+    /// restored build removes again at its first read. Returns the lines it logged (no key material).
     @discardableResult
-    static func keep(installRoot: URL, restoring version: String, rewrite: Bool,
-                     vault: (any ClusterEdgeSecretVault)?) -> [String] {
+    static func keep(installRoot: URL, restoring version: String, vault: (any ClusterEdgeSecretVault)?) -> [String] {
         guard restoresFileRelease(version) else { return [] }
         let lines = ClusterPairingStore(directory: pairingDirectory(installRoot: installRoot), vault: vault)
-            .writeLegacyFilesForRollback(rewrite: rewrite)
+            .writeLegacyFilesForRollback(rewrite: true)
         for line in lines { log.info("rollback to v\(version, privacy: .public): \(line, privacy: .public)") }
         return lines
     }

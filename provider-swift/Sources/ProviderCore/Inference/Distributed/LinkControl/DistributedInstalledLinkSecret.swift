@@ -18,10 +18,27 @@ extension ClusterKeychainEdgeSecretVault {
             service: environment.keychainServicePrefix + ".cluster-pairing.edge-secret." + storeTag(pairingDirectory), accessGroup: group)
     }
 
-    /// 12 hex digits of SHA-256 of the store's path (links resolved), the same for every caller that opens it.
+    /// 12 hex digits of SHA-256 of the store's real path (`realPath`), the same for every caller that opens it, before
+    /// and after its folder exists.
     static func storeTag(_ pairingDirectory: URL) -> String {
-        let path = pairingDirectory.standardizedFileURL.resolvingSymlinksInPath().path
-        return SHA256.hash(data: Data(path.utf8)).prefix(6).map { String(format: "%02x", $0) }.joined()
+        SHA256.hash(data: Data(realPath(pairingDirectory).utf8)).prefix(6).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// The deepest existing ancestor of `url` with every link resolved (`realpath`: `/var` is `/private/var`, a linked
+    /// home its target), then the components that don't exist yet.
+    static func realPath(_ url: URL) -> String {
+        var existing = url.standardizedFileURL
+        var missing: [String] = []
+        while true {
+            if let resolved = realpath(existing.path, nil) {
+                defer { free(resolved) }
+                return missing.reversed().reduce(URL(fileURLWithPath: String(cString: resolved))) { $0.appendingPathComponent($1) }.path
+            }
+            let parent = existing.deletingLastPathComponent()
+            guard parent.path != existing.path else { return url.standardizedFileURL.path }
+            missing.append(existing.lastPathComponent)
+            existing = parent
+        }
     }
 }
 

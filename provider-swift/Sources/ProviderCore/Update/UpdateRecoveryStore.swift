@@ -118,8 +118,8 @@ final class UpdateRecoveryStore: @unchecked Sendable {
     }
 
     /// The cluster pairing's link keys for `version`, the release a rollback restores (`ClusterLinkKeyRollback.keep`).
-    private func keepLinkKeys(restoring version: String, rewrite: Bool) {
-        ClusterLinkKeyRollback.keep(installRoot: installRoot, restoring: version, rewrite: rewrite, vault: linkKeyVault)
+    private func keepLinkKeys(restoring version: String) {
+        ClusterLinkKeyRollback.keep(installRoot: installRoot, restoring: version, vault: linkKeyVault)
     }
 
     func loadState() throws -> UpdateRecoveryState {
@@ -183,7 +183,7 @@ final class UpdateRecoveryStore: @unchecked Sendable {
             try ensureCanonicalLinks()
             try finalizeRecovered(transaction, state: &state, now: now)
             try cleanupTransaction(transaction)
-            if transaction.kind == .rollback { keepLinkKeys(restoring: transaction.target.version, rewrite: true) }
+            if transaction.kind == .rollback { keepLinkKeys(restoring: transaction.target.version) }
             return
         }
 
@@ -203,7 +203,7 @@ final class UpdateRecoveryStore: @unchecked Sendable {
             try ensureCanonicalLinks()
             try finalizeRecovered(transaction, state: &state, now: now)
             try cleanupTransaction(transaction)
-            if transaction.kind == .rollback { keepLinkKeys(restoring: transaction.target.version, rewrite: true) }
+            if transaction.kind == .rollback { keepLinkKeys(restoring: transaction.target.version) }
             return
         }
 
@@ -232,7 +232,7 @@ final class UpdateRecoveryStore: @unchecked Sendable {
         }
         try writeState(state)
         try cleanupTransaction(transaction)
-        keepLinkKeys(restoring: predecessor.release.version, rewrite: true)
+        keepLinkKeys(restoring: predecessor.release.version)
     }
 
     func commit(
@@ -311,7 +311,7 @@ final class UpdateRecoveryStore: @unchecked Sendable {
         try verifyStagedPredecessor(predecessor, at: stagingRoot)
         // The predecessor is verified and staged: the keys it reads go back before the swap (a process that dies after
         // it still leaves them), and again once the rollback is done (for a file a process started in between removed).
-        keepLinkKeys(restoring: predecessor.release.version, rewrite: false)
+        keepLinkKeys(restoring: predecessor.release.version)
 
         var transaction = Transaction(
             schema: 1,
@@ -338,7 +338,7 @@ final class UpdateRecoveryStore: @unchecked Sendable {
         try writeState(state)
         try faultInjector(.statePersisted)
         try finish(remove: stagingRoot)
-        keepLinkKeys(restoring: predecessor.release.version, rewrite: true)
+        keepLinkKeys(restoring: predecessor.release.version)
         return predecessor.release.version
     }
 

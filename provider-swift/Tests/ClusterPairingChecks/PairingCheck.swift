@@ -55,6 +55,7 @@ import Foundation
             ("keychain: the item's attributes and statuses", keychainItemAttributes),
             ("keychain: no secret in any description", keychainNothingPrinted),
             ("keychain: two processes interleaved, a stale reader", keychainInterleavings),
+            ("keychain: the store's lock holds a move back across processes", keychainLockExcludes),
             ("keychain: a signed build never falls back to the file", keychainSignedBuildNeverFallsBack),
             ("keychain: a broken item, orphans swept at the last unpairing", keychainBrokenAndOrphanItems),
             ("keychain: the rollback's second write is a new file", keychainRollbackRewrite),

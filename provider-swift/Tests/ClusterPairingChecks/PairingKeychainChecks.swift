@@ -495,7 +495,11 @@ extension PairingCheck {
         let read = recorder.copies.first { $0[kSecReturnData as String] as? Bool == true }
         expect(read?[kSecMatchLimit as String] as? String == kSecMatchLimitOne as String, "a read asks for one item")
         _ = try? store.forget(peerPin: outcome.peer.pin)
-        expectEqual(recorder.deletes.last?[kSecAttrAccount as String] as? String, outcome.peer.pin, "unpairing deletes that item")
+        let sweep = recorder.deletes.last
+        expect(sweep?[kSecAttrAccount as String] == nil && sweep?[kSecAttrService as String] as? String == "io.example.cluster-pairing.edge-secret"
+               && sweep?[kSecAttrAccessGroup as String] as? String == "TEAM.io.example" && sweep?[kSecUseDataProtectionKeychain as String] as? Bool == true,
+               "the last unpairing deletes the store's items: one delete of its service, in its group")
+        expectEqual(vault.read(peerPin: outcome.peer.pin), .absent, "so that item is gone")
         // Each Keychain status the store can meet.
         for (status, expected) in [(errSecInteractionNotAllowed, ClusterPairingStoreError.keychainLocked),
                                    (OSStatus(-25291), ClusterPairingStoreError.keychainUnavailable(-25291))] {
@@ -563,6 +567,25 @@ extension PairingCheck {
         backdate(olderFile)
         expectEqual(storeError { try keychain.edgeSecret(for: olderRecord) }, .pairingChanged, "a reader holding the earlier pairing is refused")
         expectEqual(vault.item(newer.peer.pin), newItem, "and the new pairing's item is untouched")
+    }
+
+    /// The store's lock across processes: a move waits while another holder has `.edge-secrets.lock`, then runs.
+    static func keychainLockExcludes() {
+        let vault = MemoryVault()
+        guard case let (_, store, outcome, record)? = legacyPairing("kc-lock", vault: vault) else { return }
+        let fd = open(store.directory.appendingPathComponent(".edge-secrets.lock").path, O_RDWR | O_CREAT | O_CLOEXEC, 0o600)
+        expect(fd >= 0 && flock(fd, LOCK_EX) == 0, "(setup) another holder takes the store's lock")
+        final class Result: @unchecked Sendable { var secret: Data? }
+        let result = Result(), done = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async { result.secret = try? store.edgeSecret(for: record); done.signal() }
+        usleep(400_000)
+        expect(done.wait(timeout: .now()) == .timedOut && vault.count == 0
+               && contents(store.secretFile(peerPin: outcome.peer.pin)) == hexLine(outcome.edgeSecret),
+               "while it is held, the move waits and nothing changes")
+        flock(fd, LOCK_UN); close(fd)
+        expect(done.wait(timeout: .now() + 5) == .success, "once it is let go, the move runs")
+        expectEqual(result.secret, outcome.edgeSecret, "and returns the key")
+        expectEqual(secretFiles(store), [], "having moved the file")
     }
 
     /// A signed build that gets errSecMissingEntitlement (a group it lacks) fails closed and writes no file.
@@ -649,5 +672,9 @@ extension PairingCheck {
         expectEqual(vault.add(peerPin: pin, item), .exists, "real Keychain: a second add finds the first")
         expectEqual(vault.delete(peerPin: pin), .done, "real Keychain: delete")
         expectEqual(vault.read(peerPin: pin), .absent, "real Keychain: gone")
+        let other = String(repeating: "cd", count: 32)
+        _ = vault.add(peerPin: pin, item); _ = vault.add(peerPin: other, item)
+        expectEqual(vault.deleteAll(), .done, "real Keychain: delete the store's every item")
+        expect(vault.read(peerPin: pin) == .absent && vault.read(peerPin: other) == .absent, "real Keychain: all gone")
     }
 }

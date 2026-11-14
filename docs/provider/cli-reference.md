@@ -4436,3 +4436,11 @@ The daemon allow-list forwards `DARKBLOOM_QWEN_FORCED_TOOL_THINKING`; see its
 [values, default and behavior](../reference/configuration.md#qwen-forced-call-thinking).
 Set it before starting or restarting the daemon. An environment change does
 not alter an already-running daemon.
+
+
+## GPT-OSS commentary content
+
+The daemon allow-list forwards `DARKBLOOM_GPTOSS_COMMENTARY_CONTENT`; see its
+[values, default and behavior](../reference/configuration.md#gpt-oss-commentary-content).
+Set it before starting or restarting the daemon. An environment change does
+not alter an already-running daemon.

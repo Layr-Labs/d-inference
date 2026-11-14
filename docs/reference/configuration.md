@@ -1878,3 +1878,10 @@ Every write of the wizard's record (`~/.darkbloom/cluster-setup/wizard.json`) ta
 | Variable | Values | Default | Reader | Scope |
 |---|---|---|---|---|
 | `DARKBLOOM_QWEN_FORCED_TOOL_THINKING` | `1`, `on`, `true`, `yes` enable, ignoring case and surrounding whitespace; other values disable | off (existing behavior) | `Qwen35TemplateFix.preservesForcedThinking` | [Qwen forced-call thinking](../architecture/inference.md#qwen-forced-call-thinking); forwarded by `LaunchAgent` |
+
+
+## GPT-OSS commentary content
+
+| Variable | Values | Default | Reader | Scope |
+|---|---|---|---|---|
+| `DARKBLOOM_GPTOSS_COMMENTARY_CONTENT` | an off word (`off`, `false`, `0`, `none`, `no`, `disabled`; any case, surrounding whitespace ignored) turns it off; unset or any other value leaves it on | on (an off word restores 0.10.12: the preamble is dropped) | `HarmonyFinalHeaderFilter.commentaryEnabled` | [GPT-OSS commentary content](../architecture/inference.md#gpt-oss-commentary-content); forwarded by `LaunchAgent` |

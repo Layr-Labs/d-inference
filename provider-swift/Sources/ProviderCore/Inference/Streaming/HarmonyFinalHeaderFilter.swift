@@ -8,14 +8,41 @@ import MLXLMServer
 /// `<|channel|>final<|message|>`. The Harmony reasoning parsers route only the
 /// exact header `final` to content and drop every other message, so without
 /// this filter such an answer reaches the client as empty content. Other
-/// headers and the messages of well-formed Harmony output pass byte for byte;
-/// message bodies are not tracked.
+/// headers and message bodies pass byte for byte. The commentary mode (on by
+/// default; an off word in `DARKBLOOM_GPTOSS_COMMENTARY_CONTENT` turns it off)
+/// also maps recipientless assistant commentary to content, retaining bounded
+/// header context so a recipient before the channel remains a tool call.
 struct HarmonyFinalHeaderFilter: Sendable {
     private static let channelMarker = "<|channel|>"
     private static let messageMarker = "<|message|>"
+    // Longest recognized boundary: <|message|>. Retain enough trailing
+    // characters to recognize a marker split across arbitrary chunks.
+    private static let controlTailLimit = messageMarker.count
     private static let constrainMarker = "<|constrain|>"
     /// A header is a few tokens; longer text after `<|channel|>` passes unchanged.
     private static let maximumHeaderBytes = 256
+
+    static let commentaryEnvironmentKey = "DARKBLOOM_GPTOSS_COMMENTARY_CONTENT"
+    private let includesCommentary: Bool
+    // Recipients can precede the channel marker. Retain only the bounded
+    // current header; never a message body or a previous message's recipient.
+    private var leadingHeader = ""
+    private var controlTail = ""
+    private var insideMessage = false
+    private var oversizedLeadingHeader = false
+
+    init(environment: [String: String] = ProcessInfo.processInfo.environment) {
+        includesCommentary = Self.commentaryEnabled(environment[Self.commentaryEnvironmentKey])
+    }
+
+    /// On by default. An off word (`off`, `false`, `0`, `none`, `no` or
+    /// `disabled`, in any case, surrounding space ignored) is the kill switch:
+    /// recipientless commentary is dropped, as in 0.10.12.
+    static func commentaryEnabled(_ value: String?) -> Bool {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !value.isEmpty else { return true }
+        return !["off", "false", "0", "none", "no", "disabled"].contains(value)
+    }
 
     private var pending = ""
     private var inHeader = false
@@ -35,6 +62,8 @@ struct HarmonyFinalHeaderFilter: Sendable {
                 guard let end = pending.range(of: Self.messageMarker) else {
                     // Past the limit plus a partial `<|message|>`: whatever ends it, the header is too long.
                     if pending.utf8.count >= Self.maximumHeaderBytes + Self.messageMarker.utf8.count {
+                        observeHeaderContext(pending)
+                        insideMessage = true
                         output += pending
                         pending = ""
                         inHeader = false
@@ -42,17 +71,21 @@ struct HarmonyFinalHeaderFilter: Sendable {
                     return output
                 }
                 let header = String(pending[..<end.lowerBound])
-                output += (header.utf8.count > Self.maximumHeaderBytes ? header : Self.answerHeader(header))
+                output += (header.utf8.count > Self.maximumHeaderBytes ? header : answerHeader(header))
                     + Self.messageMarker
+                observeHeaderContext(header + Self.messageMarker)
                 pending = String(pending[end.upperBound...])
                 inHeader = false
             } else if let start = pending.range(of: Self.channelMarker) {
+                observeHeaderContext(String(pending[..<start.lowerBound]))
                 output += pending[..<start.upperBound]
                 pending = String(pending[start.upperBound...])
                 inHeader = true
             } else {
                 let held = Self.markerPrefixLength(pending)
-                output += pending.dropLast(held)
+                let released = String(pending.dropLast(held))
+                observeHeaderContext(released)
+                output += released
                 pending = String(pending.suffix(held))
                 return output
             }
@@ -61,19 +94,55 @@ struct HarmonyFinalHeaderFilter: Sendable {
 
     /// The text still held: an unfinished header or a partial `<|channel|>`.
     mutating func finish() -> String {
-        defer { pending = ""; inHeader = false }
+        defer {
+            pending = ""
+            inHeader = false
+            leadingHeader = ""
+            controlTail = ""
+            insideMessage = false
+            oversizedLeadingHeader = false
+        }
         return pending
     }
 
-    /// `final` for an answer header: its first word is `final`, it names no
-    /// recipient (`to=` is a call) and it holds no control marker other than
-    /// `<|constrain|>` (another one means the header was cut short and a new
-    /// message began). Any other header as given.
-    private static func answerHeader(_ header: String) -> String {
+    /// `final` for an answer header: `final`, or (commentary mode) a
+    /// recipientless assistant `commentary`. An answer names no recipient
+    /// (`to=` is a call) and holds no control marker other than `<|constrain|>`
+    /// (another one means the header was cut short and a new message began).
+    /// Any other header as given.
+    private func answerHeader(_ header: String) -> String {
         let name = header.drop { $0.isWhitespace }.prefix { !$0.isWhitespace && $0 != "<" }
-        guard name == "final", !header.contains("to="),
-              !header.replacingOccurrences(of: constrainMarker, with: "").contains("<|") else { return header }
+        let role = leadingHeader.trimmingCharacters(in: .whitespacesAndNewlines)
+            .prefix { !$0.isWhitespace && $0 != "<" }
+        let commentary = includesCommentary && name == "commentary" && !insideMessage
+            && !oversizedLeadingHeader && !leadingHeader.contains("to=")
+            && (role.isEmpty || role == "assistant")
+        guard name == "final" || commentary, !header.contains("to="),
+              !header.replacingOccurrences(of: Self.constrainMarker, with: "").contains("<|") else { return header }
         return "final"
+    }
+
+    private mutating func observeHeaderContext(_ text: String) {
+        guard includesCommentary else { return }
+        for character in text {
+            controlTail.append(character)
+            controlTail = String(controlTail.suffix(Self.controlTailLimit))
+            if controlTail.hasSuffix("<|start|>") || controlTail.hasSuffix("<|end|>")
+                || controlTail.hasSuffix("<|return|>") || controlTail.hasSuffix("<|call|>") {
+                leadingHeader = ""
+                oversizedLeadingHeader = false
+                insideMessage = false
+            } else if controlTail.hasSuffix(Self.messageMarker) {
+                leadingHeader = ""
+                insideMessage = true
+            } else if !insideMessage && !oversizedLeadingHeader {
+                leadingHeader.append(character)
+                if leadingHeader.utf8.count > Self.maximumHeaderBytes {
+                    leadingHeader = ""
+                    oversizedLeadingHeader = true
+                }
+            }
+        }
     }
 
     /// Length of the longest suffix of `text` that is a proper prefix of

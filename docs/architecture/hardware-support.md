@@ -1633,3 +1633,10 @@ memory is free. Admission limits and native memory guards are unchanged. See
 The [qwen forced-call thinking](inference.md#qwen-forced-call-thinking) switch changes prompt/output
 processing only. It adds no hardware capability or memory grant; parser
 fixtures do not qualify model residency, throughput or concurrent GPU loads.
+
+
+## GPT-OSS commentary content
+
+The [gpt-oss commentary content](inference.md#gpt-oss-commentary-content) switch changes prompt/output
+processing only. It adds no hardware capability or memory grant; parser
+fixtures do not qualify model residency, throughput or concurrent GPU loads.

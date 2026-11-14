@@ -10138,3 +10138,11 @@ Forced required/named calls on qwen3_5 and qwen3_5_moe retain the resolved think
 
 The [rollout switch](../reference/configuration.md#qwen-forced-call-thinking) defaults off.
 CPU parser fixtures do not establish full-model output quality or GPU performance.
+
+
+## GPT-OSS commentary content
+
+GPT-OSS streams using the Harmony reasoning parser normalize recipientless assistant commentary to the answer channel before tool extraction and reasoning parsing. This keeps the preamble as content for both streamed and collected responses. Recipients before or after the channel marker remain tool calls; header context is bounded and message bodies are not promoted.
+
+It is on by default; its [kill switch](../reference/configuration.md#gpt-oss-commentary-content), `DARKBLOOM_GPTOSS_COMMENTARY_CONTENT=0`, restores 0.10.12, where the preamble is dropped.
+CPU parser fixtures do not establish full-model output quality or GPU performance.

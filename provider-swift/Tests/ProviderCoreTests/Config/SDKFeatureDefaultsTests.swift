@@ -89,6 +89,26 @@ struct SDKFeatureDefaultsTests {
         #expect(LaunchAgent.passthroughEnvironment(from: [key: "0", marker: key], injected: [])[key] == "0")
     }
 
+    @Test func theStartLineNamesWhatIsOnAndWhere() {
+        // review prov-2109-d5 NIT 1: grammar MTP's default rides on constraint
+        // spans, and the line says so (a grammar-only fold is a no-op there).
+        let id: Set<String> = ["eigenlabs/qwen3.8-27b-4bit-mtp"]
+        #expect(SDKFeatureDefaults.summary(environment: [:], injected: [], spansBuilds: [], grammarBuilds: []) == nil)
+        #expect(SDKFeatureDefaults.summary(environment: [:], injected: [], spansBuilds: id, grammarBuilds: id) ==
+            "SDK feature defaults on: DARKBLOOM_CONSTRAINT_SPANS (eigenlabs/qwen3.8-27b-4bit-mtp); "
+            + "DARKBLOOM_CBV2_MTP_GRAMMAR (eigenlabs/qwen3.8-27b-4bit-mtp, where constraint spans are on)")
+        #expect(SDKFeatureDefaults.summary(environment: [SDKFeatureDefaults.grammarMTPKey: "0"], injected: [],
+            spansBuilds: [], grammarBuilds: id) == nil)
+    }
+
+    @Test func aChildsPlistSkipsMarkedDefaultsEvenBeforeItRecordsThem() {
+        // review prov-2109-d5 NIT 4: the plist writer knows the release's value
+        // from the marker alone, like every other consumer.
+        let key = "DARKBLOOM_GEMMA_SCHEMA_COERCION", marker = SDKFeatureDefaults.injectedMarkerKey
+        #expect(LaunchAgent.passthroughEnvironment(from: [key: "1", marker: key], injected: [])[key] == nil)
+        #expect(LaunchAgent.passthroughEnvironment(from: [key: "0", marker: key], injected: [])[key] == "0")
+    }
+
     @Test func theMarkerIsNeverForwarded() {
         let marker = SDKFeatureDefaults.injectedMarkerKey
         #expect(!LaunchAgent.passthroughEnvKeys.contains(marker))
@@ -132,12 +152,12 @@ struct SDKFeatureDefaultsTests {
         // review prov-2109-d4 SF2: grammar MTP was measured with spans on; with
         // spans off every constrained position takes the grammar path instead.
         let id = "EigenLabs/Qwen3.8-27B-4bit-mtp", builds: Set<String> = ["eigenlabs/qwen3.8-27b-4bit-mtp"]
-        var spansKilled = CBv2MTPConfig(enabled: true)
+        var spansKilled = CBv2MTPConfig(enabled: true, constrainedSpeculation: false, freeSpanSpeculation: false)
         SDKFeatureDefaults.applyMTPDefaults(to: &spansKilled, modelId: id,
             environment: [SDKFeatureDefaults.constraintSpansKey: "0"], processEnvironment: [:],
             spansBuilds: builds, grammarBuilds: builds)
         #expect(!spansKilled.freeSpanSpeculation && !spansKilled.constrainedSpeculation)
-        var spansUnlisted = CBv2MTPConfig(enabled: true)
+        var spansUnlisted = CBv2MTPConfig(enabled: true, constrainedSpeculation: false, freeSpanSpeculation: false)
         SDKFeatureDefaults.applyMTPDefaults(to: &spansUnlisted, modelId: id, environment: [:],
             processEnvironment: [:], spansBuilds: [], grammarBuilds: builds)
         #expect(!spansUnlisted.constrainedSpeculation)
@@ -148,7 +168,7 @@ struct SDKFeatureDefaultsTests {
         #expect(spansByOperator.constrainedSpeculation)
         // An operator value in the process environment wins over a slot
         // environment that lacks it (review prov-2109-d4 NIT 7).
-        var scrubbed = CBv2MTPConfig(enabled: true)
+        var scrubbed = CBv2MTPConfig(enabled: true, constrainedSpeculation: false, freeSpanSpeculation: false)
         SDKFeatureDefaults.applyMTPDefaults(to: &scrubbed, modelId: id, environment: [:],
             processEnvironment: [SDKFeatureDefaults.constraintSpansKey: "0", SDKFeatureDefaults.grammarMTPKey: "0"],
             spansBuilds: builds, grammarBuilds: builds)

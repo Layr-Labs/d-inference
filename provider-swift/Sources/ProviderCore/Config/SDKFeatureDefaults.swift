@@ -31,7 +31,7 @@ public enum SDKFeatureDefaults {
 
     /// #2101 / SDK #413: MTP drafting through free Qwen reasoning and text
     /// spans. A build is an exact model id, lowercased (`matches`).
-    static let constraintSpansBuilds: Set<String> = ["eigenlabs/qwen3.8-27b-4bit-mtp"]
+    static let constraintSpansBuilds: Set<String> = []
 
     /// SDK #409: grammar-aware MTP verification of constrained rows, on a
     /// listed build only where constraint spans are on (measured together).
@@ -171,13 +171,20 @@ public enum SDKFeatureDefaults {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         injected: Set<String> = injectedKeys
     ) -> String? {
+        summary(environment: environment, injected: injected,
+                spansBuilds: constraintSpansBuilds, grammarBuilds: grammarMTPBuilds)
+    }
+
+    static func summary(environment: [String: String], injected: Set<String>,
+                        spansBuilds: Set<String>, grammarBuilds: Set<String>) -> String? {
         var on = injected.sorted().map { key in
             key == NativeReasoningBudget.environmentKey
                 ? "\(key) (\(reasoningBudgetFamilies.map { "\($0)" }.sorted().joined(separator: ", ")))" : key
         }
-        for (key, builds) in [(constraintSpansKey, constraintSpansBuilds), (grammarMTPKey, grammarMTPBuilds)]
+        for (key, builds, scope) in [(constraintSpansKey, spansBuilds, ""),
+                                     (grammarMTPKey, grammarBuilds, ", where constraint spans are on")]
         where !builds.isEmpty && followsDefault(key, in: environment, injected: []) {
-            on.append("\(key) (\(builds.sorted().joined(separator: ", ")))")
+            on.append("\(key) (\(builds.sorted().joined(separator: ", "))\(scope))")
         }
         return on.isEmpty ? nil : "SDK feature defaults on: \(on.joined(separator: "; "))"
     }

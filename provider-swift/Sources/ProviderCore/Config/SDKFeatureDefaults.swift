@@ -45,6 +45,12 @@ public enum SDKFeatureDefaults {
     /// `NativeReasoningBudget.isEnabled(for:)` admits a request's budget.
     public static let onByDefault: [String] =
         gemmaQuotedNumbers + (reasoningBudgetFamilies.isEmpty ? [] : [NativeReasoningBudget.environmentKey])
+        + gemmaReopenedThoughts
+
+    /// #2089 / SDK #407: reopened Gemma 4 thoughts go to reasoning and stray
+    /// closes are absorbed. One process-wide parser switch
+    /// (`StreamingGemma4ReasoningParser`), with no per-model hook.
+    static let gemmaReopenedThoughts: [String] = ["DARKBLOOM_GEMMA_REOPENED_THOUGHTS"]
 
     static let constraintSpansKey = "DARKBLOOM_CONSTRAINT_SPANS"
     static let grammarMTPKey = "DARKBLOOM_CBV2_MTP_GRAMMAR"
@@ -56,7 +62,9 @@ public enum SDKFeatureDefaults {
 
     /// Every key this mechanism may set process-wide, whatever a release
     /// lists; a marker naming any other key is not trusted.
-    static let injectableKeys: Set<String> = ["DARKBLOOM_GEMMA_SCHEMA_COERCION", NativeReasoningBudget.environmentKey]
+    static let injectableKeys: Set<String> = [
+        "DARKBLOOM_GEMMA_SCHEMA_COERCION", NativeReasoningBudget.environmentKey, "DARKBLOOM_GEMMA_REOPENED_THOUGHTS",
+    ]
 
     /// The keys a parent `darkbloom` injected: named in `environment`'s marker,
     /// injectable, with the value still `1`.

@@ -9,7 +9,7 @@ import Testing
 @testable import MLXLMCommon
 @testable import ProviderCore
 
-private struct GlimmerDrafterTokenizer: MLXLMCommon.Tokenizer {
+struct GlimmerDrafterTokenizer: MLXLMCommon.Tokenizer {
     func encode(text: String, addSpecialTokens: Bool) -> [Int] { [1, 2] }
     func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String { "x" }
     func convertTokenToId(_ token: String) -> Int? { nil }

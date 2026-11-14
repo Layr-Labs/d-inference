@@ -123,9 +123,10 @@ struct EngineV2PrefillGeometryTests {
             == sdkGeometry(stripe: EngineV2Factory.defaultDenseQwenSoloPrefillStripeTokens))
     }
 
-    /// A complete checkpoint lands only where a solo range ends on the SDK's
-    /// 1,024-token capture stride (the 2,048-token window ring keeps nothing
-    /// behind a range end), so Muse Glimmer's stripe is that stride.
+    /// The SDK cuts Muse Glimmer's prompts on its 1,024-token grid, which is
+    /// also its checkpoint capture stride; the stripe sizes the paged pool's
+    /// prompt write to one cell. Off-grid settings resolve here as for any
+    /// model, and the load refuses them (`MuseGlimmerPrefillGridTests`).
     @Test("Muse Glimmer's stripe ends a range on every checkpoint stride point")
     func museGlimmerStripe() throws {
         let glimmer = try geometryMuseGlimmer()

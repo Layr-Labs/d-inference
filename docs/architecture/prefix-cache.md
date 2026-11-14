@@ -270,17 +270,25 @@ restored turns and native rows on none. The global
 per-model entry or `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` still selects a
 profile, as for Nemotron 3.5 Super.
 
-A checkpoint lands only where a prefill range ends on the SDK's 1,024-token
-capture stride (`CBv2RecurrentCheckpointGeometry.recordHistorical`): the
-2,048-token sliding window's ring keeps no row behind a range end
+The SDK cuts every prompt of this type on a fixed 1,024-token grid
+(`CBv2ModelCapabilities.prefillChunkAlignment`,
+`MuseGlimmerTextModel.defaultPrefillChunkAlignment`): only at a multiple of
+1,024, at the prompt end or at a boundary the restore plan requires, and each
+cell runs whole or waits, so neither concurrent load nor another request's
+drafter moves a cut or a prompt's bytes. The grid is the checkpoint capture
+stride (`CBv2RecurrentCheckpointGeometry.recordHistorical`): the 2,048-token
+sliding window's ring keeps no row behind a range end
 (`PagedKVPool.ringPageCount`, `CBv2HistoricalWindow.reservationBytes`), so a
-point inside a range cannot be copied. The type's solo stripe is therefore
-1,024 tokens (`EngineV2Factory.museGlimmerSoloPrefillStripeTokens`), and a
-growing conversation reuses the deepest multiple of 1,024 below an earlier
-turn's prompt end. Cold and restored requests run on the same 1,024-token grid.
-The type has no entry in the demanded short-checkpoint or latest-checkpoint
-policy (`EngineV2Factory+DemandedCheckpoint.swift`): their 256-token boundaries
-are not on the capture stride.
+checkpoint lands at a cell end. A growing conversation reuses the deepest
+multiple of 1,024 below an earlier turn's prompt end, and cold and restored
+requests run on the same grid. The solo stripe cuts none of these prompts: its
+1,024-token default (`EngineV2Factory.museGlimmerSoloPrefillStripeTokens`) sizes
+the paged pool's prompt write to one cell, and a plain-chunk or stripe setting
+that leaves that write below a cell or off its multiples refuses the load
+(`EngineV2Factory.validatePrefillGrid`, `prefillGridUnfit`). The type has no entry
+in the demanded short-checkpoint or latest-checkpoint policy
+(`EngineV2Factory+DemandedCheckpoint.swift`): their 256-token boundaries are not
+on the grid, and grid rows take no demanded range.
 
 The tower serves one numerics profile, the SDK's row-exact windows, turned on
 by `MuseGlimmerServingLoad.enableExactWindows` for every load, with or without a

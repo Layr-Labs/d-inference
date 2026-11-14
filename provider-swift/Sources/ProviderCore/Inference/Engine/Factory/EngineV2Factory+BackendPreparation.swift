@@ -454,6 +454,7 @@ extension EngineV2Factory {
 
         if resolvedKind == .paged, let nativeKVTypes {
             let (schedulerConfig, performanceProfile) = servingPolicy(for: .paged)
+            try validatePrefillGrid(capabilities: modelCapabilities, scheduler: schedulerConfig)
             // Quantized reuse requires the typed complete packed checkpoint.
             // Legacy resident blocks have no native-tail/format identity.
             let resolvedResidentPrefix =

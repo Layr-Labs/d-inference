@@ -14,6 +14,8 @@ enum EngineV2ProductionError: Error, CustomStringConvertible {
     case pagedUnavailable(String)
     case invalidPagedPoolDType(String)
     case invalidDecodeStepsBetweenChunks(key: String, value: String, maximum: Int)
+    /// The model cuts prompts on a grid the paged pool's prompt write cannot hold.
+    case prefillGridUnfit(alignment: Int, pagedPrefillChunk: Int)
 
     var description: String {
         switch self {
@@ -30,6 +32,11 @@ enum EngineV2ProductionError: Error, CustomStringConvertible {
         case .invalidDecodeStepsBetweenChunks(let key, let value, let maximum):
             return "engine_v2: \(key)=\"\(value)\" is not a decode-step count "
                 + "(expected an integer from 0 to \(maximum))"
+        case .prefillGridUnfit(let alignment, let chunk):
+            return "engine_v2: the model cuts prompts into \(alignment)-token cells, and the paged "
+                + "pool's prompt write of \(chunk) tokens (the larger of "
+                + "\(EngineV2Factory.prefillChunkKey) and \(EngineV2Factory.soloPrefillStripeKey)) "
+                + "is not a positive multiple of one"
         }
     }
 }

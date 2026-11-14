@@ -2397,7 +2397,7 @@ elapsed nanoseconds. Numerics only — never tokens, text or hashes
 | `maxConcurrentRequests` | `engine_v2_max_concurrent` (default and clamp: [`../provider/cli-reference.md#providertoml-keys-read-by-the-cli`](../provider/cli-reference.md#providertoml-keys-read-by-the-cli); per-model map `engine_v2_max_concurrent_by_model`) | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`, `productionSchedulerConfig` |
 | `prefillChunkSize` / `maxBatchedTokensPerStep` | 2048 / 4096 (`widePrefillChunkTokens`; the step defaults to twice the chunk) for Gemma 4 (`usesWidePrefillChunk`); 512 / 2048 (`CBv2SchedulerConfig` init defaults) for every other family; `DARKBLOOM_CBV2_PREFILL_CHUNK`, `DARKBLOOM_CBV2_STEP_TOKENS` | `EngineV2Factory+Configuration.swift` (`prefillGeometry`) |
 | `maxWaiting` | 64 (`CBv2SchedulerConfig` init default) | `CBv2Contracts.swift`, `CBv2SchedulerConfig` |
-| `soloPrefillStripeTokens` | 4096 for dense Qwen3.5/3.8 (`Qwen35Model`, not `Qwen35MoEModel`); 1024 for Muse Glimmer (`museGlimmerSoloPrefillStripeTokens`, the complete-checkpoint capture stride; see [prefix cache](prefix-cache.md#muse-glimmer-30b)); 2048 (`defaultSoloPrefillStripeTokens`) for families on the 512-token chunk; none for Gemma 4, because a stripe arms only above the plain chunk; `DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE` | `EngineV2Factory+Configuration.swift` (`soloPrefillStripeTokens`) |
+| `soloPrefillStripeTokens` | 4096 for dense Qwen3.5/3.8 (`Qwen35Model`, not `Qwen35MoEModel`); 1024 for Muse Glimmer (`museGlimmerSoloPrefillStripeTokens`: one cell of the SDK's prompt grid, which cuts its prompts instead; off-grid settings refuse the load, see [prefix cache](prefix-cache.md#muse-glimmer-30b)); 2048 (`defaultSoloPrefillStripeTokens`) for families on the 512-token chunk; none for Gemma 4, because a stripe arms only above the plain chunk; `DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE` | `EngineV2Factory+Configuration.swift` (`soloPrefillStripeTokens`) |
 | `bidirectionalMediaPrefillChunkCeiling` | 512 whenever the plain chunk is wider, otherwise unset | `EngineV2Factory+Configuration.swift` (`prefillGeometry`); `CBv2Contracts.swift` (`plainPrefillChunkSize`) |
 | `demandedLatestCheckpointMinimumTokens` | The paged complete store's effective-token floor for dense Qwen3.5/3.8 (`Qwen35Model`, not `Qwen35MoEModel`), otherwise unset: a range ends just below the prompt end when that saves at least the floor ([end-of-prompt boundary](prefix-cache.md#streamed-complete-checkpoints)) | `EngineV2Factory+DemandedCheckpoint.swift` (`demandedLatestCheckpointMinimumTokens`) |
 | `maxConcurrentPartialPrefills` | 1; `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS` | `EngineV2Factory+Configuration.swift`, `maxPartialPrefillsKey` |
@@ -5563,7 +5563,8 @@ channel before the splitter reads its frame
 Every load turns on the SDK's exact windows right after staging
 (`MuseGlimmerServingLoad.enableExactWindows`), drafter or not: each decode or
 verify row then gets the projection and norm bytes it gets alone, at any row
-count, while prompt chunks keep MLX's arithmetic. The tower so has one numerics
+count, while prompt chunks keep MLX's arithmetic on the model's fixed 1,024-token
+grid (`prefillChunkAlignment`), so load does not move a prompt's bytes. The tower so has one numerics
 profile, the one `MuseGlimmerModelPolicy.servedNumericsProfile` names. A tower
 that cannot (`MuseGlimmerRowExactError`), or that reports another profile, fails
 the load rather than serve MLX's kernels.

@@ -377,6 +377,8 @@ extension EngineV2Bridge {
         // The engine is asked for the output resolved above, which the service
         // allowance was sized for, not the translation's `max_tokens ?? default`.
         cbv2Request.maxTokens = maxOutputTokens
+        // 0, but for a loop exit's continuation (`EngineAdmissionPriority`).
+        cbv2Request.priority = EngineAdmissionPriority.current
         cbv2Request.mimoClusterImages = mimoClusterImages
         cbv2Request.clusterStillImages = clusterStillImages
         cbv2Request.clusterGLMMedia = clusterGLMMedia
@@ -1147,7 +1149,8 @@ extension EngineV2Bridge {
             submittedAt: engineAdmittedAt,
             profile: profile,
             prefillReceipt: prefillReceipt,
-            darkbloomRequestId: MeFirstDarkbloomRequest.id
+            darkbloomRequestId: MeFirstDarkbloomRequest.id,
+            priority: cbv2Request.priority
         )
         consumePrefillReceipt(id: id, receipt: prefillReceipt)
         // Me first: while the owner's request waits in the queue, Darkbloom work still queued gives way.

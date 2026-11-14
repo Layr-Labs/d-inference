@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-11-12
+> Last updated: 2026-11-14
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -27,89 +27,34 @@ runs the resolve, build, qualification, signing, R2 staging and publication
 chain for one environment. To find the newest dev release, read
 `https://api.dev.darkbloom.dev/v1/releases/latest`.
 
-`ProviderCore.version` is prepared as `0.10.12`, a patch release over `v0.10.11`.
-A running request that one Mac's memory refuses now ends alone in every pair
-mode, and the pair keeps serving (#1932, #1934, #1935); a Gemma 4 pair's
-pipeline serves the model's whole context again (#1933, with #1928's capacity
-tests); Gemma 4 and GLM-5.3-Flash pairs in tensor parallel serve as many
-requests at once as both Macs' memory holds (#1936, #1939, with #1940's
-per-lane parity check), and a pair estimates each request's first token before
-it takes it (#1936). A pair's API answers a typed 503 from the first request
-(#1929), the words real-Mac tests found are fixed (#1931), media decode faults
-carry their own reason (#1921), and the watchdog no longer counts a requested
-restart as a failed start (#1948), restores a provider job launchd lost (#1945)
-and lets a pair's leader back off while the other Mac is away (#1949). Selected
-models come back by themselves (#1609); `status` reports fan control (#1942),
-paid early ends (#1950) and older authorization reports (#1943); Gemma 4
-reasons with `tool_choice` `none` (#1941); the desktop app recommends models by
-chip (#1610); GPT-OSS repack tooling is added (#1562). A GLM-5.3-Flash heartbeat
-reports only the requests it holds (#1964), and Nemotron Super
-serves JSON, tools and WebP/GIF/BMP with media (#1922, #1962); a verbatim-repeating
-answer stops early as `length` (#2005); GLM answers a JSON format with media on one
-Mac (#2009). A request no
-longer waits forever behind the idle speed check (#1966), and a drain stops
-waiting for requests the coordinator abandoned (#1968). Qwen 3.5/3.6 requests that
-can't speculate save prefix checkpoints again (#1965), Lightning serves plain
-decode (#1969), the checkpoint export batches its rows (#1971), and Gemma 4's
-MTP upgrade no longer runs a forward on the serving model (#1985); a native MiMo step may run
-120 s before the watchdog seals the engine (#1989); `status` lists early-ended
-requests by cause, paid or unpaid (#1980), and `models catalog` names the models this
-Mac could add (#1957); Gemma 4 QAT (#1974) and Qwen 3.8 27B on
-single Macs (#1999) draft with exact MTP acceptance; Nemotron Super saves native-precision
-prefix checkpoints, so its cached answers equal cold ones (#2002); tool calls under `tool_choice: auto`
-return as generated, while strict, required and named tools stay checked (#2003).
-`darkbloom start` serves Both without a question and `darkbloom local` serves only you
-(#2008); `darkbloom cluster` sets a pair up without the serving question and picks
-the mode itself (#2007). Also: a stopped pair keeps its last mode (#2013); a Gemma 4 pipeline checks its whole number of requests at load (#1937 via #2015); a refusal's error frame names its reason (#2016); `status` shows the answers in progress (#2017); a held local stream counts once at the fallback width (#2018); a media request a Mac can't hold is `media_memory_unavailable` (#2019); Super's text route gets the loop guard (#2020); the SDK fixes the drafting shared-event leak and keeps paged decode at one pass per layer (#2021: mlx-swift-lm #403, #404), and Qwen3.5-9B drops the default penalty with exact acceptance (#1961); a single Mac reads Bonsai 2 27B prompts batched again; pairs keep per-row arithmetic (#2022); a stale prefill estimate that keeps refusing gets one idle probe, never an unprojected request (#2024); `status` lists answers in progress on a Mac that serves only you (#2030); CI resumes the MiMo audio codec download (#2023, CI only); two Bonsai 2 27B requests decoding together on a single Mac run per-row again at full speed, while prompts and larger batches stay batched (#2028); a pair's cluster service restarts into the installed release after an update (#2033); a Super image arriving as the previous image finishes waits for its cleanup (#2029); a Super image stacked behind a streaming image waits up to 3 s within its budget (#2035). The SDK pin
-moves once more, to `ad8a5860e5` (mlx-swift-lm #378, #398, #399, #402: Gemma 4 admits
-deadline text beside an image row once its prompt is read). The SDK pin moves once to
-`libs/mlx-swift-lm` `093563be11`: Gemma 4's row-mapped NAX prefill on by default
-with compiled feed-forward graphs (#1608, #1611, #1614), Qwen 3.5 MTP prompts
-projecting only their last position (SDK #302), nullable tool parameters
-(#1944) and an opt-in early response before the checkpoint write (#1671, off). Both Macs of a pair must
-run 0.10.12, and a pair on 0.10.11 updates itself
-([updating Darkbloom on the pair](../provider/two-mac-cluster.md#updating-darkbloom-on-the-pair)).
-See the [`v0.10.12` changelog entry](../../CHANGELOG.md) for the full scope.
+`ProviderCore.version` is prepared as `0.10.13`, a patch release over `v0.10.12`
+with only the fixes listed in the [`v0.10.13` changelog entry](../../CHANGELOG.md): a Gemma 4 thought the loop guard stops ends in an answer (#2040); a pair being set up is no longer called stopped during the leader's download (#2042); a dead coordinator link is found in 6–8 s and the provider reconnects at once (#2047); Qwen 3.5 9B keeps its model card's presence penalty (#2051); Gemma 4 keeps a string parameter's unquoted `01000` as "01000" (#2050, SDK #405); a past turn's `reasoning`/`thinking` reaches the model (#2048); `parallel_tool_calls: false` returns the first call (#2049); a stray `<tool_call>` no longer fails a GLM response (#2052); an answer cut at `max_tokens` ends as `length`; strict calls after the start return as generated (#2053); the loop guard covers image and video requests (#2054); Qwen 3.5/3.6 exit-thinking, off by default (#2046); Qwen 3.5/3.6/3.8 parse tool calls after the thinking (#2057); tool JSON as Transformers renders it, on request (#2058); GPT-OSS answers under a `final` header with attributes reach the client (#2063); an optional release of GLM JSON schema misses, off by default (#2065); GPT-OSS serves forced tool choices (#2045); GLM and MiMo no longer refuse long prompts because of a short prompt's speed (#2072); GLM no longer refuses requests on idle Macs whose KV pool kept its free memory (#2060); Nemotron 3.5 Super exit-thinking, off by default (#2061); a looping GPT-OSS analysis on a tools request ends in an answer or call (#2070); strict Qwen tool calls are constrained to their schemas (#2069); Gemma 4 JSON answers follow the requested format (#2071); JSON answers on Bonsai 2 27B and Nemotron 3.5 Lightning follow their schemas (#2075); Qwen JSON answers follow Pydantic, OpenAI and zod schemas (#2084); the cluster-pair link encryption fix; a pair links only when both Macs run 0.10.13 (#2096); GPT-OSS's exit-thinking covers requests without tools (#2088); a looping thought's answer is admitted ahead of the queue (#2100); Gemma 4 prompt contract 2, dormant until the coordinator asks (#2098); a looping thought's answer takes its row's place in the allowance (#2115); qwen drafting around protected spans (#2101); native reasoning budgets for Nemotron Super and MiMo (off by default; #2099); gemma quoted numeric tool arguments (#2090); qwen forced tool calls keep the caller's thinking setting (off by default; #2091); gPT-OSS commentary before a tool call reaches the content (#2092); qwen stray `</think>` markers are absorbed (#2093); nemotron Super decodes two image requests at once (#2094); gemma reopened thought channels (off by default; #2089).
 
-Before tagging `v0.10.12`:
+Before tagging `v0.10.13`:
 
 - Toolchain unchanged: `mise.toml` `swift = "6.4.2"`, `release-provider.yml`
   sets `DARKBLOOM_PROVIDER_TOOLCHAIN: release` and asserts
-  `build_sdk_version == '27.2'`; `scripts/check-date-comparisons.py` passes; the
-  release build runs `scripts/check-provider-weak-imports.py`.
-- Pins: `libs/mlx` `72dffa2d` as v0.10.11 and `libs/mlx-swift` moves to `b1c94d29c5` (mlx-swift #70, #71: Swift sources only), so the tag
-  build's `metallib_hash` should equal v0.10.11's `5b97893c…70ac`;
-  `libs/mlx-swift-lm` moves to fork `main` `44ab17555f` (#403, #404 on top of `ad8a5860e5`) (Swift model code, no Metal kernels). Confirm against the final DevNet build's row first.
+  `build_sdk_version == '27.2'`; the release build runs
+  `scripts/check-provider-weak-imports.py`.
+- Pins: `libs/mlx` `72dffa2d` and `libs/mlx-swift` `b1c94d29` as v0.10.12;
+  `libs/mlx-swift-lm` moves to fork `main` `f41a5f9af3` (fork `main`) (Swift only), so the tag build's
+  `metallib_hash` should equal v0.10.12's `5b97893c…70ac`.
 - Cluster runtime facts: run the release's facts step read-only on the exact tag
-  tree. Expect the same models and grants as v0.10.11; Gemma 4's pipeline
-  qualification carries the whole context again (#1933). Parse the block with
-  the coordinator that ships with this release before tagging.
-- Catalog room: v0.10.11 and v0.10.12 hold 24 approvals each; v0.10.10's 24 are
-  left out (72 > 64). Pairs still on 0.10.10 stop serving through Darkbloom
+  tree; expect the same models and grants as v0.10.12.
+- Catalog room: v0.10.12 and v0.10.13 hold 24 approvals each; v0.10.11's 24 are
+  left out (72 > 64). Pairs still on 0.10.11 stop serving through Darkbloom
   until they update.
 - The tagged commit is on `master` and verified, holds `ProviderCore.version`
-  `0.10.12`, keeps the plain-build default `prod`, and its `changelog.d/` holds
+  `0.10.13`, keeps the plain-build default `prod`, and its `changelog.d/` holds
   only `README.md`.
 
-Roll out in this order; each step is a separate approval:
+After publish: the coordinator snapshot PR (pin + `LatestProviderVersion`
+0.10.13) rides the next coordinator update.
 
-1. Production platform: deploy the coordinator that ships with 0.10.12 (its
-   provider contracts snapshot this preparation's commit) first.
-2. Merge into `master`, each squash-merged after its approval: the `dev` to
-   `master` release branch, then this preparation.
-3. Re-run the facts dry run on the tag tree and parse the block with the
-   deployed coordinator's parser.
-4. Tag `v0.10.12` on this preparation's squash commit. After registration, check
-   `release/0.10.12/<model>/s<1|2>` approvals beside v0.10.11's.
-5. Pairs on 0.10.11 update themselves; check that each serves, including a
-   Gemma 4 pair in the pipeline with a long prompt.
-
+`v0.10.12` was [published on 2026-11-12](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.12)
+from `dafd15c65850c0e4dfb7b7801d39b890bcc8f9cd`,
 `v0.10.11` was [published on 2026-11-09](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.11)
-from `34c4a10d86aa72e823787cb9cccb5d6c850d540a`,
-`v0.10.10` was [published on 2026-11-06](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.10)
-from `102ba6f74b0e4d8620768b5f6f11a49c13d3c571`,
-`v0.10.9` was [published on 2026-11-05](https://github.com/Layr-Labs/d-inference/releases/tag/v0.10.9)
-from `95cc1ca37533aa860f1948bde0d6ec9c36a6bd4a`. Publication does not
+from `34c4a10d86aa72e823787cb9cccb5d6c850d540a`. Publication does not
 establish that every optional feature or environment has been activated.
 
 ## Prerequisites

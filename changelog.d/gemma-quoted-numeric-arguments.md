@@ -1,3 +1,0 @@
-### Gemma quoted numeric tool arguments
-
-Adopt the SDK parser fix, on by default since 0.10.13 (measured on Gemma 4 26B in its ON state; the parser is shared by every Gemma 4 size). `DARKBLOOM_GEMMA_SCHEMA_COERCION=0` restores 0.10.12's strings (the LaunchAgent forwards the switch to the installed service). Numeric marker strings become numbers at frame close only when the parameter schema unambiguously requests a numeric type. Potentially converted values stay withheld from argument deltas until the completed parse; unsupported or ambiguous schemas preserve their quoted text. The provider still validates strict calls.

@@ -22,9 +22,10 @@ publishes a dev release. DevNet runs the d-inference `dev` branch from end to
 end: its dev releases come from `.github/workflows/release-dev-branch.yml`.
 
 `.github/workflows/release-swift.yml` is the thin caller that routes each trigger
-to at most one environment lane. The reusable `.github/workflows/release-provider.yml`
-runs the resolve, build, qualification, signing, R2 staging and publication
-chain for one environment. To find the newest dev release, read
+to at most one environment lane. The reusable `.github/workflows/release-qualify.yml`
+runs the SDK qualification with no secrets first; then the reusable
+`.github/workflows/release-provider.yml` runs the resolve, build, signing, R2
+staging and publication chain for one environment. To find the newest dev release, read
 `https://api.dev.darkbloom.dev/v1/releases/latest`.
 
 `ProviderCore.version` is prepared as `0.10.13`, a patch release over `v0.10.12`
@@ -170,15 +171,18 @@ not seed `master`. Only pull-request runs can use Darkbloom Sandboxes, under
 dispatched runs always use these Blacksmith runners. A pull-request run on a
 Darkbloom Sandbox that the plane gave no Darkbloom cache skips every cache step
 of `.github/actions/provider-release-build`, so it builds cold
-([CI caching](../developer/build.md#ci-caching)). The release workflows never
-skip them.
+([CI caching](../developer/build.md#ci-caching)). The release workflows skip
+every cache step and always build cold: a routed job of the branch can write
+any cache key that a release would restore
+([release qualification on Darkbloom](../developer/build.md#release-qualification-on-darkbloom)).
+So the warmed caches speed up pull-request and CI builds only.
 
 The qualification lane prepares the bounded MiMo HTTP image fixtures before
 the full provider suite, including on cache hits. Keep that preparation as a
 separate step so its environment reaches the tests. See the
 [fixture recipe](../developer/test.md#mimo-regression-fixtures) for local runs.
 
-Inspect each **SDK 27 build cache** summary and actual restore key. Compatible
+In release preparation, inspect each **SDK 27 build cache** summary and actual restore key. Compatible
 prefix hits are useful even when the exact-hit output is false. Compiler, SDK,
 dependency, checkout-path, environment or recipe changes require new compatible
 products. The Metal compiler must execute successfully; a downloaded but
@@ -261,7 +265,7 @@ The optimized job sets `DARKBLOOM_RELEASE_ENVIRONMENT`. For `dev`,
 `DARKBLOOM_ENV_DEV`; defaults are `wss://api.dev.darkbloom.dev/ws/provider` and
 `https://models.darkbloom.ai`
 (`provider-swift/Sources/ProviderBuildEnvironment/BuildEnvironment.swift`).
-`qualify-sdk-shard` sets `DARKBLOOM_RELEASE_ENVIRONMENT: prod`, so its tests see
+`qualify-sdk-shard` (`release-qualify.yml`) sets `DARKBLOOM_RELEASE_ENVIRONMENT: prod`, so its tests see
 production defaults on every branch: on `dev`, an unset value compiles the dev
 identity (`provider-swift/Package.swift`). Config, CLI flags and
 `DARKBLOOM_R2_CDN_URL` still override defaults. Dev/prod products have different
@@ -479,11 +483,12 @@ starts `.github/workflows/release-dev-branch.yml`. A master push and a release
 tag run `release-swift.yml`. No workflow dispatches a build of another branch,
 and the dev-branch lane has no `workflow_dispatch`.
 
-`release-dev-branch.yml` is only a caller. Its one job checks
-`github.ref == 'refs/heads/dev'` and calls the reusable `release-provider.yml`
-with `environment: dev` and `secrets: inherit`. The reusable workflow runs the
-same chain as every release lane: the source gate, the build, the SDK
-qualification, Developer ID signing, notarization and stapling, R2 staging and
+`release-dev-branch.yml` is only a caller. Its two jobs check
+`github.ref == 'refs/heads/dev'`. Job `qualify` calls `release-qualify.yml`
+with read-only permissions and no secrets. After it passes, job `dev` calls the
+reusable `release-provider.yml` with `environment: dev` and `secrets: inherit`.
+Together they run the same chain as every release lane: the SDK qualification,
+the source gate, the build, Developer ID signing, notarization and stapling, R2 staging and
 registration on the dev coordinator. A dev-branch build therefore has the same
 signature as a master build and passes the same checks: the fan-helper
 requirement of `scripts/install.sh` and the self-updater's
@@ -546,10 +551,17 @@ fresh install takes the latest.
 
 ### 6. Sign, Stage And Register Exact Bytes
 
-After `build-provider` and `qualify-sdk` succeed, `build-and-release` consumes
-the source-bound unsigned artifact on `blacksmith-12vcpu-macos-27`. It does not
-wait for an environment approval. `qualify-sdk` passes only when all five
-`qualify-sdk-shard` jobs pass and together executed the full provider suite.
+SDK qualification runs first, in `release-qualify.yml`, called by each
+caller's job `qualify` with no secrets. Its gate, `qualify-sdk`, passes only
+when all five `qualify-sdk-shard` jobs pass and together executed the full
+provider suite. The shards can run on a Darkbloom Sandbox (lane
+`release-qualify`, not in tag runs). The release call starts only after the
+gate passed, or on a resume. After `build-provider` succeeds,
+`build-and-release` consumes the source-bound unsigned artifact on
+`blacksmith-12vcpu-macos-27`. It downloads exactly `build-provider`'s upload by
+artifact ID and checks the zip's SHA-256 against its digest, never by name
+([release qualification on Darkbloom](../developer/build.md#release-qualification-on-darkbloom)).
+It does not wait for an environment approval.
 Release SDK selection is SDK 27.2 / Apple Swift 6.4.2 (Xcode 27.2), with `SDKROOT` covering
 compilation and linking; the final recorded SDK must match. Before the
 handoff, the release lane runs `scripts/check-provider-weak-imports.py` on every

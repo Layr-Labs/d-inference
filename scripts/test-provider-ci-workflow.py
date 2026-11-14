@@ -1381,6 +1381,13 @@ class ProviderCIWorkflowTests(unittest.TestCase):
             text = path.read_text()
             if "\njobs:\n" not in text:
                 continue
+            # A workflow that pins CI_ACTIONS_CACHE off at its top (the release
+            # workflows) never uses a cache, so its routed jobs need no gate
+            # step; nothing in it may turn the cache back on.
+            code = re.sub(r"(?m)^\s*#.*\n", "", text)
+            pinned_off = re.search(r"(?m)^env:\n(?:  \S.*\n)*?  CI_ACTIONS_CACHE: 'off'\n", code) is not None
+            if pinned_off:
+                self.assertEqual(code.count("CI_ACTIONS_CACHE"), 1, path.name)
             for job_id, job in job_blocks(text.split("\njobs:\n", 1)[1]).items():
                 steps = step_blocks(job)
                 users = [index for index, step in enumerate(steps)
@@ -1390,6 +1397,9 @@ class ProviderCIWorkflowTests(unittest.TestCase):
                 if not users or "fromJSON(" not in runs_on:
                     # A job on a literal Blacksmith label never runs on Darkbloom.
                     self.assertTrue(not users or "darkbloom" not in runs_on, (path.name, job_id))
+                    continue
+                if pinned_off:
+                    self.assertNotIn(CACHE_GATE_STEP, [field(step, "name", indent=6) for step in steps])
                     continue
                 routed.append(job_id)
                 with self.subTest(workflow=path.name, job=job_id):

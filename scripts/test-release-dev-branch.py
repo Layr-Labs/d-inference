@@ -8,9 +8,11 @@ pushed commit to the DEV coordinator. Dev builds dev and master builds master.
 
 These assertions pin the caller: it starts only on a push to `dev`, with
 release-swift.yml's master push paths, has no dispatch, no input and no
-`ref:`, and its one job is guarded to `refs/heads/dev` and only calls the
-reusable workflow with environment `dev` and `secrets: inherit`. The caller
-names no secret, has no step and signs nothing itself, so there is no second
+`ref:`. Its job `qualify` calls the reusable `release-qualify.yml` (the SDK
+qualification, whose shards may run on a Darkbloom Sandbox) with read-only
+permissions and no secrets. Its job `dev` needs it, and only calls the
+reusable release workflow with environment `dev` and `secrets: inherit`. Both
+are guarded to `refs/heads/dev`. The caller names no secret, has no step and signs nothing itself, so there is no second
 build or signing path and no ad-hoc signature. They also pin the reusable
 workflow's dev path: the secrets it reads for a non-prod, non-staging lane are
 exactly the Apple signing and notarization set, used only in the signing job,
@@ -118,8 +120,23 @@ class ReleaseDevBranchCallerTests(unittest.TestCase):
                     for path in expected]
         self.assertEqual(push_paths(self.text), expected)
 
-    def test_the_only_job_is_the_guarded_call_of_the_reusable_workflow(self):
-        self.assertEqual(set(self.jobs), {"dev"})
+    def test_qualification_is_a_secret_free_read_only_call_before_the_release(self):
+        # The plane refuses a Darkbloom-routable job inside a call that passes
+        # secrets, and qualification must pass before anything is signed.
+        job = self.jobs["qualify"]
+        self.assertIn(DEV_GUARD, job)
+        self.assertEqual(re.findall(r"(?m)^    uses: (.+)$", job), ["./.github/workflows/release-qualify.yml"])
+        self.assertEqual(
+            [key for key in re.findall(r"(?m)^    ([a-z_-]+):", without_comments(job))],
+            ["if", "permissions", "uses", "with"])
+        self.assertIn("\n    permissions:\n      contents: read\n    uses:", job)
+        self.assertNotRegex(without_comments(job), r"(?i)secrets")
+        with_block = job.split("\n    with:\n", 1)[1]
+        self.assertEqual(re.findall(r"(?m)^      ([a-z_]+): (.+)$", with_block), [("environment", "dev")])
+        self.assertRegex(self.jobs["dev"], r"(?m)^    needs: qualify$")
+
+    def test_the_only_jobs_are_the_guarded_calls_of_the_reusable_workflows(self):
+        self.assertEqual(set(self.jobs), {"qualify", "dev"})
         job = self.jobs["dev"]
         self.assertIn(DEV_GUARD, job)
         self.assertEqual(len(re.findall(r"(?m)^    if:", job)), 1)
@@ -134,7 +151,7 @@ class ReleaseDevBranchCallerTests(unittest.TestCase):
                          [("environment", "dev")])
         self.assertEqual(
             [key for key in re.findall(r"(?m)^    ([a-z_-]+):", without_comments(job))],
-            ["if", "permissions", "uses", "with", "secrets"])
+            ["needs", "if", "permissions", "uses", "with", "secrets"])
         self.assertIn("\n    secrets: inherit\n", job)
         # The caller grants exactly what the reusable workflow declares.
         self.assertIn("\n    permissions:\n      contents: write\n      actions: read\n", job)
@@ -160,7 +177,7 @@ class ReleaseDevBranchCallerTests(unittest.TestCase):
                          ["secrets"])
         self.assertEqual(self.code.count("secrets: inherit"), 1)
         self.assertEqual(re.findall(r"(?m)^\s+environment:.*$", self.code),
-                         ["      environment: dev"])
+                         ["      environment: dev", "      environment: dev"])
         for token in ("PROD_", "STAGING_", "'prod'", '"prod"', "'staging'", "refs/tags",
                       "tags:", "github.ref_type", "ref_name"):
             self.assertNotIn(token, self.code, token)

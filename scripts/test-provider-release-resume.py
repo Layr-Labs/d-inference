@@ -285,17 +285,22 @@ class RecoveryTests(unittest.TestCase):
         sign=source.split("  build-and-release:\n",1)[1].split("    #",1)[0]
         expression=sign.split("${{",1)[1].split("}}",1)[0]
         variables={"needs.resolve-env.result":"resolve", "needs.resolve-env.outputs.resume":"resume",
-                   "needs.build-provider.result":"build", "needs.qualify-sdk.result":"qualify"}
+                   "needs.build-provider.result":"build"}
         for old,new in variables.items():expression=expression.replace(old,new)
         expression=expression.replace("!cancelled()","not cancelled").replace("&&","and").replace("||","or")
         expression=" ".join(expression.split())
-        for cancelled,resolve,resume,build,qualify in itertools.product([False,True],["success","failure"],["true","false","bad"],["success","failure","skipped"],["success","failure","skipped"]):
+        for cancelled,resolve,resume,build in itertools.product([False,True],["success","failure"],["true","false","bad"],["success","failure","skipped"]):
             actual=eval(expression,{"__builtins__":{}},locals())
-            expected=not cancelled and resolve=="success" and ((resume=="true" and build==qualify=="skipped") or (resume=="false" and build==qualify=="success"))
+            expected=not cancelled and resolve=="success" and ((resume=="true" and build=="skipped") or (resume=="false" and build=="success"))
             self.assertEqual(actual,expected)
-        for name in ["build-provider","qualify-sdk-shard","qualify-sdk"]:
-            body=source.split("  "+name+":\n",1)[1].split("    runs-on:",1)[0]
-            self.assertIn("if: needs.resolve-env.outputs.resume != 'true'",body)
+        body=source.split("  build-provider:\n",1)[1].split("    runs-on:",1)[0]
+        self.assertIn("if: needs.resolve-env.outputs.resume != 'true'",body)
+        # Qualification (release-qualify.yml) runs before this workflow; the
+        # caller skips it only for a resume, whose retained run passed it.
+        caller=(ROOT/".github/workflows/release-swift.yml").read_text()
+        qualify=caller.split("\n  qualify:\n",1)[1].split("\n  dev:\n",1)[0]
+        self.assertIn("${{ !inputs.resume_run_id &&",qualify)
+        self.assertNotIn("qualify-sdk",source)
 
 
 if __name__=="__main__":unittest.main()

@@ -45,8 +45,8 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '22'
-          cache: npm
-          cache-dependency-path: desktop-app/package-lock.json
+          # No npm cache: routed desktop.yml jobs can write this branch's
+          # Actions cache, and this job signs (docs/developer/build.md#release-qualification-on-darkbloom).
 
       - name: Resolve the version
         run: |

@@ -170,8 +170,11 @@ serving provider or changes its credentials.
 
 ## SDK 27 Release Builds And Caches
 
-Release compilation and SDK qualification use separate
-`blacksmith-12vcpu-macos-27` runners. Signed validation's older-OS smoke uses
+Release compilation uses `blacksmith-12vcpu-macos-27`. SDK qualification runs
+first, on five other Macs: a Darkbloom Sandbox for each shard when the plane
+grants lane `release-qualify`, else `blacksmith-12vcpu-macos-27`
+([Release qualification on Darkbloom](#release-qualification-on-darkbloom)).
+Both use the `release` toolchain. Signed validation's older-OS smoke uses
 `blacksmith-12vcpu-macos-26`: it runs the signed app and compiles nothing.
 `scripts/prepare-provider-release-toolchain.sh` selects the toolchain after
 checkout. It tries the image's Xcode first, then each installed
@@ -224,7 +227,12 @@ never silently switches to an older Xcode.
 Both release lanes call `.github/actions/provider-release-build/action.yml`.
 Only optimized compilation transfers an unsigned app, its inventory, SwiftPM
 resource bundles and matching metallib to signing. Qualification runs the
-provider tests and isolated native gates; restoring a cache never skips them.
+provider tests and isolated native gates. In a release, both lanes compile
+cold: `release-provider.yml` and `release-qualify.yml` set
+`CI_ACTIONS_CACHE: 'off'`, which skips every cache step of the action
+([Release qualification on Darkbloom](#release-qualification-on-darkbloom)).
+Only SDK 27 release preparation (`provider-release-cache.yml`) and CI use its
+caches.
 Signing verifies the source, version, SDK, inventory and entitlements before
 importing its certificate. See [release qualification](test.md#sdk-27-release-qualification).
 
@@ -329,7 +337,9 @@ The job `ci-plan-checks` (Check the CI plans) checks the CI plans on every
 run, skipped or not, beside the test jobs: the cluster plan's audit
 (`scripts/cluster-test-plan.py audit`) and the self-tests of the shard plans,
 the component classifier, the tested-change lookup, the route and the workflow
-pins. It also runs the offline self-tests of the prompt fixture downloaders
+pins, the release pins (`scripts/test-provider-release-pipeline.py`,
+`scripts/test-release-dev-branch.py`, `scripts/test-provider-release-resume.py`)
+included. It also runs the offline self-tests of the prompt fixture downloaders
 (`scripts/test-prepare-prompt-fixtures.py`,
 `scripts/test-prepare-mimo-prompt-fixtures.py`,
 `scripts/test-prepare-mimo-image-http-fixtures.py`) and of the MiMo audio codec
@@ -498,6 +508,7 @@ shard the lane its matrix entry names, `matrix.lane`.
 | `landing.yml`, `desktop.yml`, `nightly-linear-package.yml` | `check`, `frontend`, `test` | `blacksmith-4vcpu-ubuntu-2404` |
 | `desktop.yml` | `desktop-package`, manual dispatch only | `blacksmith-12vcpu-macos-27` |
 | `provider-release-cache.yml` | `warm`, pull requests only | `blacksmith-12vcpu-macos-27` |
+| `release-qualify.yml` (job `qualify` of `release-dev-branch.yml` and `release-swift.yml`) | `qualify-sdk-shard`, shards 1 to 5 on one lane, `release-qualify`; not in tag runs | `blacksmith-12vcpu-macos-27` |
 
 `.github/workflows/darkbloom-watchdog.yml` is darkbloom-sandbox's GitHub-side
 watchdog (`public/darkbloom-actions/.github/workflows/watchdog.yml` at
@@ -561,7 +572,9 @@ which pushed branches it admits. Other branches get `branch_not_admitted` and
 keep their fallback, so a push saves caches on Darkbloom only from an admitted
 branch and only in routed lanes ([CI Caching](#ci-caching)).
 Release, signing, publication, model registration, review automation and
-`master` or dispatched cache warming keep literal Blacksmith labels. In CI,
+`master` or dispatched cache warming keep literal Blacksmith labels. The one
+exception is the release's unsigned SDK qualification
+([Release qualification on Darkbloom](#release-qualification-on-darkbloom)). In CI,
 every macOS job reads its lane of the plan's one route request (the plane
 routes a run attempt once); the plan's own bookkeeping (the tree lookup, the
 component choice), the CI plan checks and the `Provider Tests` gate run on
@@ -580,6 +593,69 @@ Darkbloom Linux sandboxes are ARM64; the Blacksmith Linux fallback is x64. The
 decision is fixed for the run: **Re-run failed jobs** reuses it, so turn routing
 off and use **Re-run all jobs** to move a run back to Blacksmith. See the
 [routing checks](test.md#focused-tooling-checks).
+
+### Release Qualification On Darkbloom
+
+The plane refuses a routable job inside a reusable workflow call that passes
+secrets, and it requires read-only permissions on the calling job. So the
+release's SDK qualification is a workflow of its own, `release-qualify.yml`:
+the five `qualify-sdk-shard` jobs, their `route` job and the gate
+`qualify-sdk` ("Qualify provider with SDK 27", Blacksmith). Each caller,
+`release-dev-branch.yml` and `release-swift.yml`, calls it from one job,
+`qualify`, with `permissions: contents: read` and no `secrets`. Each caller's
+credentialed `release-provider.yml` call needs `qualify`. A resume skips
+`qualify`, because its retained run passed it. So a run sends one route request,
+and the gate passes before the source gate, the build and signing start.
+
+- The route asks for lane `release-qualify` (profile `macos_arm64`, count 5,
+  no size). A tag run (prod) asks for nothing. Recovery of a failed tag run
+  takes its retained unsigned artifact by name
+  (`scripts/provider_release_resume/identity.py`), so a tag run never has a
+  routed job. The plane does not admit tags either.
+- A lane the plane does not grant keeps `blacksmith-12vcpu-macos-27`. An
+  approval that lists lanes refuses an unlisted one with `lane_not_enabled`.
+- A shard tests an unsigned build at the run's commit. It gets no secret, no
+  OIDC token, only `contents: read`, and no signing keychain.
+  `.github/actions/provider-release-build` reads no secret.
+
+A shard on a host we do not own could upload anything under any artifact name.
+So no job that signs, notarizes, stages, publishes or smoke-tests signed bytes
+selects an artifact by name. The producing Blacksmith job exports its upload's
+`artifact-id` and `artifact-digest`. The consumer downloads that ID with
+`scripts/provider-release-publication.py download`. The downloader requires
+the same ID, digest and run in the artifact's metadata. It then compares the
+zip's SHA-256 with the digest before it extracts anything, and fails on a
+mismatch. These pins are on `build-provider` to `build-and-release`,
+`build-and-release` to stage, publish and the older-OS smoke, and in
+`provider-signing-validation.yml`, `build` to `signing`.
+
+No release job restores or saves an Actions cache. Every job of a run gets
+the run's Actions cache token, and that token can write any cache key in the
+branch's scope, a routed job's token too. GitHub cannot limit a key to
+Blacksmith jobs, so no key is safe to restore into signed bytes or a release
+gate. `release-provider.yml` and `release-qualify.yml` set
+`CI_ACTIONS_CACHE: 'off'` at their top, which skips every cache step of
+`.github/actions/provider-release-build`. Nothing in them turns it back on.
+The desktop release (`release-desktop.yml`) uses no npm cache, for the same
+reason. The route checks and the release pins fail if a release job restores
+a cache.
+
+Cost:
+
+- The build no longer runs beside qualification.
+- The build, each shard and the Metal library compile cold. With the Metal
+  library cached but no Swift cache, the release lane took 16.9 minutes and
+  the unsharded qualification 27.2 minutes (run 42918120844). A cold Metal
+  library build adds to that; it was not measured.
+- With caches, a dev release took 17 minutes from source gate to registration
+  (run 42597808851). Expect roughly 45 to 60 minutes now.
+
+A watchdog rescue of a stranded shard re-runs the route job and the jobs that
+need it, the release call included. That call cannot have started yet. The
+route checks (`scripts/test-darkbloom-route.py`) and the release pins
+(`scripts/test-provider-release-pipeline.py`) refuse a routed job in a call
+that passes secrets, a signing, staging or publishing download by name or
+without its digest, and a release job that restores a cache.
 
 ### Job sizes
 

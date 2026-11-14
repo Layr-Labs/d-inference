@@ -1468,6 +1468,15 @@ This Mac's pairing record couldn't be read (pairings.json is malformed; nothing 
 Next: Run `darkbloom cluster` on this Mac to check it.
 ```
 
+The pairing's link key is kept in this Mac's data-protection Keychain (this Mac only, after its first unlock, never
+synchronised), which stays locked after a restart until someone logs in. Until then the pair doesn't link (fail closed),
+and the reason and the next step say so; the pair resumes by itself after the login:
+
+```text
+This Mac's pairing record couldn't be read (the pairing's link key is in this Mac's Keychain, which stays locked after a restart until someone logs in to this Mac), so it may be in a two-Mac cluster.
+Next: Log in to this Mac once after its restart (at its screen or with Screen Sharing); the pair resumes by itself.
+```
+
 `--json` prints one object with the same exit status. Schema 1; every key is
 present, `null` when unknown; keys are only ever added
 (`ClusterPairSummary.JSON`):
@@ -4219,6 +4228,7 @@ must support the checkpoint contract described in
 | `DARKBLOOM_PREFIX_CACHE_SSD_TERMINAL_BEFORE_PUBLICATION` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` (`terminalBeforePublication`); an affirmative value answers an unseeded donor before its complete-checkpoint write settles (default off) |
 | `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26WiredResidency.swift` (`isEnabled`) |
 | `DARKBLOOM_GLM_PERSISTENT_WIRED_RESIDENCY` | `provider-swift/Sources/ProviderCore/Inference/Models/GLM5Next/GLM5NextWiredResidency.swift` (`isEnabled`); on by default, `0`/`false`/`no`/`off` rolls back to per-command-buffer residency |
+| `DARKBLOOM_GLM_JSON_ANSWERS` | `provider-swift/Sources/ProviderCore/Inference/Tools/JSONAnswerPolicy.swift` (`glmEnvironmentKey`); `1`/`on`/`true`/`yes` constrains GLM-5.3-Flash JSON answers with the JSON answer grammar |
 | `DARKBLOOM_GLM_JSON_SCHEMA_MISS` | `provider-swift/Sources/ProviderCore/Inference/Prompting/GLM5NextResponseFormat.swift` (`GLM5NextSchemaMiss`); `release` exposes a GLM JSON answer that misses its schema at a natural stop |
 | `DARKBLOOM_MLX_RESOURCE_DEBUG` | forwarded to `mlx-swift-lm` |
 | `DARKBLOOM_TTFT_GDN_BLOCKED` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/GatedDelta.swift` (`GatedDeltaPrefill.mode`); `0` keeps the stock Qwen GDN prompt kernel |

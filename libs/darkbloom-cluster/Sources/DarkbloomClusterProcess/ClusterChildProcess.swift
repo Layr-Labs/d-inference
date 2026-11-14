@@ -1,0 +1,195 @@
+import Darwin
+import Foundation
+
+/// A cluster launcher's child (a worker, an owner or a calibration process),
+/// started from a `ClusterWorkerLaunch` with its standard streams on the
+/// launcher's pipes.
+///
+/// A launch that carries `verifyLaunched` is spawned suspended: the kernel has
+/// mapped the image but the child has run none of its instructions. The check
+/// runs then. Suspension is not a lock, though: any process of the same user
+/// may resume the child while it is being checked, and a child that ran could
+/// have replaced its image or shared its input before the check looked. So
+/// after the check accepts it, the child must also prove it never ran: still
+/// stopped, no user time, no process of its own. Only then is it resumed; a
+/// refused child is killed and reaped and was written nothing. A launch
+/// without a check is a Foundation `Process`, as before.
+///
+/// Read the termination only after the exit was reported (see `ClusterProcessExit`).
+public final class ClusterChildProcess: @unchecked Sendable {
+    private let launch: ClusterWorkerLaunch
+    private let standardInput: Pipe, standardOutput: Pipe, standardError: Pipe
+    private let foundation = Process()
+    private let lock = NSLock()
+    private let reaped = DispatchGroup()
+    private var spawned: pid_t?
+    /// The spawned child has exited and is about to be (or was) reaped: no
+    /// signal is sent from then on, as its identifier may soon name another process.
+    private var exited = false
+    private var status: Int32?
+
+    public init(launch: ClusterWorkerLaunch, standardInput: Pipe, standardOutput: Pipe, standardError: Pipe) {
+        self.launch = launch
+        self.standardInput = standardInput; self.standardOutput = standardOutput; self.standardError = standardError
+        if launch.verifyLaunched == nil {
+            foundation.executableURL = launch.executable; foundation.arguments = launch.arguments
+            foundation.environment = launch.environment
+            foundation.standardInput = standardInput; foundation.standardOutput = standardOutput
+            foundation.standardError = standardError
+        }
+    }
+
+    public var processIdentifier: Int32 {
+        launch.verifyLaunched == nil ? foundation.processIdentifier : lock.withLock { spawned ?? 0 }
+    }
+
+    /// From the start until the exit has been collected.
+    public var isRunning: Bool {
+        launch.verifyLaunched == nil ? foundation.isRunning : lock.withLock { spawned != nil && status == nil }
+    }
+
+    public var terminationReason: Process.TerminationReason {
+        guard launch.verifyLaunched != nil else { return foundation.terminationReason }
+        return lock.withLock { status.map { $0 & 0x7f == 0 } ?? true } ? .exit : .uncaughtSignal
+    }
+
+    /// The exit status, or the signal that ended the child.
+    public var terminationStatus: Int32 {
+        guard launch.verifyLaunched != nil else { return foundation.terminationStatus }
+        return lock.withLock { status.map { $0 & 0x7f == 0 ? ($0 >> 8) & 0xff : $0 & 0x7f } ?? 0 }
+    }
+
+    /// Sends SIGTERM to a child that has not exited.
+    public func terminate() {
+        guard launch.verifyLaunched != nil else { foundation.terminate(); return }
+        _ = signal(SIGTERM)
+    }
+
+    /// Starts the child; `onExit` runs once, after it has been reaped. With a
+    /// check, a refused child has been killed and reaped (and `onExit` has
+    /// run) by the time its error is thrown.
+    func run(onExit: @escaping @Sendable () -> Void) throws {
+        guard let verify = launch.verifyLaunched else {
+            foundation.terminationHandler = { _ in onExit() }
+            try foundation.run()
+            return
+        }
+        let pid = try spawnSuspended()
+        reaped.enter()
+        lock.withLock { spawned = pid }
+        // The exit is watched from before the check; without that watch the
+        // child could not be signalled safely, so it is killed now, while
+        // nothing can have collected it yet, and not launched.
+        let exits = Result { try Self.exitWatch(pid) }
+        if case .failure = exits { _ = Darwin.kill(pid, SIGKILL) }
+        Thread.detachNewThread { [self] in collect(pid, exits: try? exits.get()); onExit(); reaped.leave() }
+        do {
+            _ = try exits.get()
+            try verify(pid)
+            // After the check: a child that ran before this point could have changed what the check saw.
+            try requireNeverRan(pid)
+            guard signal(SIGCONT) else { throw ClusterWorkerOwnerError.invalid("The launched child could not be resumed") }
+        } catch {
+            _ = signal(SIGKILL)
+            reaped.wait()
+            throw error
+        }
+    }
+
+    /// A kernel queue that reports the child's exit (before it is collected).
+    /// Darwin's `waitid` cannot stand in: it reports a suspended child as an
+    /// event even when asked for exits only.
+    private static func exitWatch(_ pid: pid_t) throws -> Int32 {
+        let queue = kqueue()
+        guard queue >= 0 else { throw cannotStart(errno) }
+        var change = kevent(ident: UInt(pid), filter: Int16(EVFILT_PROC), flags: UInt16(EV_ADD | EV_ONESHOT),
+                            fflags: NOTE_EXIT, data: 0, udata: nil)
+        guard kevent(queue, &change, 1, nil, 0, nil) == 0 else {
+            let code = errno
+            Darwin.close(queue)
+            throw cannotStart(code)
+        }
+        return queue
+    }
+
+    /// Learns of the exit before collecting the child, so that no signal is
+    /// sent once its identifier is free to be used again. Without a watch the
+    /// child was already killed unchecked and is only collected.
+    private func collect(_ pid: pid_t, exits: Int32?) {
+        if let exits {
+            var event = kevent()
+            while kevent(exits, nil, 0, &event, 1, nil) < 0 && errno == EINTR {}
+            Darwin.close(exits)
+        }
+        lock.withLock { exited = true }
+        var collected: Int32 = 0
+        while waitpid(pid, &collected, 0) < 0 && errno == EINTR {}
+        lock.withLock { status = collected }
+    }
+
+    /// Refuses a child that may have run any user instruction since its spawn:
+    /// it must be this process's stopped child, with no user time (which
+    /// anything that execs, forks or reads needs) and no process of its own.
+    /// Measured on this OS: a child spawned suspended reports exactly zero user
+    /// time; one resumed even briefly does not, and the time it ran still shows
+    /// after it is stopped again or replaces its image (exec).
+    private func requireNeverRan(_ pid: pid_t) throws {
+        try lock.withLock {
+            var information = proc_bsdinfo(), usage = rusage_info_v4()
+            let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+            var children = [pid_t](repeating: 0, count: 16)
+            let read = withUnsafeMutablePointer(to: &usage) {
+                $0.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { proc_pid_rusage(pid, RUSAGE_INFO_V4, $0) }
+            }
+            guard !exited, proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &information, size) == size,
+                  information.pbi_pid == UInt32(pid), information.pbi_ppid == UInt32(getpid()),
+                  information.pbi_status == UInt32(SSTOP), read == 0, usage.ri_user_time == 0,
+                  proc_listchildpids(pid, &children, Int32(children.count * MemoryLayout<pid_t>.size)) == 0 else {
+                throw ClusterWorkerOwnerError.invalid("The launched child ran before its check was complete")
+            }
+        }
+    }
+
+    private func signal(_ number: Int32) -> Bool {
+        lock.withLock {
+            guard let spawned, !exited else { return false }
+            return Darwin.kill(spawned, number) == 0
+        }
+    }
+
+    /// The launch's executable, arguments and environment, on the launcher's
+    /// pipes, inheriting no other descriptor, every signal at its default
+    /// disposition and none blocked, stopped before its first instruction.
+    private func spawnSuspended() throws -> pid_t {
+        var actions: posix_spawn_file_actions_t?
+        var attributes: posix_spawnattr_t?
+        // These functions return their error rather than setting errno.
+        let actionsResult = posix_spawn_file_actions_init(&actions)
+        guard actionsResult == 0 else { throw Self.cannotStart(actionsResult) }
+        defer { posix_spawn_file_actions_destroy(&actions) }
+        let attributesResult = posix_spawnattr_init(&attributes)
+        guard attributesResult == 0 else { throw Self.cannotStart(attributesResult) }
+        defer { posix_spawnattr_destroy(&attributes) }
+        var every = sigset_t(), none = sigset_t()
+        sigfillset(&every); sigemptyset(&none)
+        let flags = POSIX_SPAWN_START_SUSPENDED | POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK
+        guard posix_spawnattr_setsigdefault(&attributes, &every) == 0, posix_spawnattr_setsigmask(&attributes, &none) == 0,
+              posix_spawnattr_setflags(&attributes, Int16(flags)) == 0 else { throw Self.cannotStart(EINVAL) }
+        for (pipe, target) in [(standardInput.fileHandleForReading, STDIN_FILENO),
+                               (standardOutput.fileHandleForWriting, STDOUT_FILENO),
+                               (standardError.fileHandleForWriting, STDERR_FILENO)] {
+            guard posix_spawn_file_actions_adddup2(&actions, pipe.fileDescriptor, target) == 0 else { throw Self.cannotStart(EINVAL) }
+        }
+        let arguments = ([launch.executable.path] + launch.arguments).map { strdup($0) }
+        let environment = launch.environment.map { strdup("\($0.key)=\($0.value)") }
+        defer { (arguments + environment).forEach { free($0) } }
+        var pid: pid_t = 0
+        let result = posix_spawn(&pid, launch.executable.path, &actions, &attributes, arguments + [nil], environment + [nil])
+        guard result == 0 else { throw Self.cannotStart(result) }
+        return pid
+    }
+
+    private static func cannotStart(_ code: Int32) -> ClusterWorkerOwnerError {
+        .invalid("The child process could not be started (error \(code))")
+    }
+}

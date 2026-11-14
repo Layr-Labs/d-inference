@@ -51,7 +51,7 @@ extension ClusterConsoleCheck {
         d.send(.linkPairing(.peerDecided(true)))
         expectEqual(d.state.linkPairing, .confirmedHere(peerConfirmed: true), "both confirmed")
         expect(d.text.contains("Both Macs confirmed"), "the screen says so: \(d.text)")
-        let effects = d.send(.linkPairing(.finished(succeeded: true, lines: ["Paired. This Mac pins the other Mac's Secure Enclave key aaaabbbbccccdddd\u{2026}"])))
+        let effects = d.send(.linkPairing(.finished(succeeded: true, lines: ["Paired. This Mac pins the other Mac's key aaaabbbbccccdddd\u{2026}"])))
         expect(effects.contains(.refresh), "the store is read back")
         expect(d.state.activity.contains { $0.title == "Pairing over the link" && !$0.failed }, "the activity log records it")
         d.send(.snapshot(lone(paired)))
@@ -128,7 +128,7 @@ extension ClusterConsoleCheck {
             let accepted = answers.wait()
             ops.set(lone(paired))
             events(.peerDecided(true))
-            events(.finished(succeeded: accepted, lines: [accepted ? "Paired. This Mac pins the other Mac's Secure Enclave key aaaabbbbccccdddd\u{2026}"
+            events(.finished(succeeded: accepted, lines: [accepted ? "Paired. This Mac pins the other Mac's key aaaabbbbccccdddd\u{2026}"
                                                                    : "Not paired: the codes were not confirmed on this Mac. Nothing was stored."]))
         }
         operations.answerLinkCode = { answers.answer($0) }

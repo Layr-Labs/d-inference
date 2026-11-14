@@ -1,6 +1,6 @@
 # Build The Provider And Landing
 
-> Last updated: 2026-11-13
+> Last updated: 2026-11-14
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. Backend, sidecar, console and admin builds
@@ -151,6 +151,21 @@ The Qwen3.5/3.6 MoE tensor-parallel path uses these same native targets and pinn
 SDK; it introduces no alternate build flags. Run its
 [focused metadata and tensor checks](test.md#focused-qwen35-moe-tensor-parallel-checks)
 before installing a worker for paired hardware qualification.
+
+### Vendored TOMLKit
+
+`provider-swift/Package.swift` builds TOMLKit, which reads and writes
+`provider.toml`, from the local package `libs/TOMLKit`, not from the release. It
+is TOMLKit 0.6.0 (with toml++ v3.4.0) changed only to free what it allocates:
+0.6.0, the latest release, never freed the tree a parse builds or the buffers its
+reads return, so every parse of `provider.toml` stayed in memory. Each
+`TOMLTable`, `TOMLArray` and `TOMLValue` holds the `TOMLNodeOwner` of its node's
+tree, which deletes the tree once the last of them is gone
+(`libs/TOMLKit/Sources/TOMLKit/TOMLNodeOwner.swift`). The public API, parsing and
+formatting are unchanged. `libs/TOMLKit/README.md` records the upstream revision,
+every changed file and both MIT licenses. To take a newer release, copy it, reapply
+the change and run `TOMLParseMemoryTests`
+(`provider-swift/Tests/ProviderCoreTests/Config/TOMLParseMemoryTests.swift`).
 
 ## Electron Desktop App
 

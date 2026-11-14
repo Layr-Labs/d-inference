@@ -139,7 +139,7 @@ public struct NativePairMemberInstallation: Sendable {
         let gate = try ClusterDeviceExclusion(directoryURL: leaseDirectory, machineLock: machineLock)
         return try withExtendedLifetime(gate) { try verifyInstalledFiles(deadline: deadline) }
     }
-    /// Hashes the owner against its saved pin, and the native executable,
+    /// Hashes the owner (first) against its saved pin, and the native executable,
     /// metallib and resource library against the runtime's digests: the
     /// policy's own, or under a model approval this member's setup's worker
     /// pin and the digests it took when it built its registration.
@@ -153,20 +153,24 @@ public struct NativePairMemberInstallation: Sendable {
         for file in files { try file.requireUnchanged() }
         return files
     }
-    func launch(start: ClusterNativeAuthorizationStart, until: UInt64, relay: ClusterOwnerNativeKeyRelay) throws -> ClusterRemoteWorkerEndpoint {
+    /// `owner` is the owner's identity from `prepare`: the endpoint writes
+    /// nothing to a started owner whose running image is not those bytes.
+    func launch(start: ClusterNativeAuthorizationStart, until: UInt64, relay: ClusterOwnerNativeKeyRelay,
+                owner: DistributedInstalledFiles.Identity) throws -> ClusterRemoteWorkerEndpoint {
         try ClusterRemoteWorkerEndpoint(localOwner: localOwner, clusterID: clusterID,
             expectedIdentity: sessionIdentity(start), profile: profile, rank: rank,
-            executionPlanSHA256: executionPlanSHA256, lifetimeDeadlineUptimeNanoseconds: until, nativeKeyRelay: relay)
+            executionPlanSHA256: executionPlanSHA256, lifetimeDeadlineUptimeNanoseconds: until, nativeKeyRelay: relay,
+            verifyLaunched: owner.launchVerifier())
     }
     /// The combined profile: the owner's open carries the committed start,
     /// its prelude goes through the session and its mesh rounds wherever the
     /// serving host attaches them.
-    func launch(start: ClusterNativeAuthorizationStart, until: UInt64,
-                bootstrap: ClusterOwnerCommittedBootstrap, dataPlaneTrust: Data? = nil) throws -> ClusterRemoteWorkerEndpoint {
+    func launch(start: ClusterNativeAuthorizationStart, until: UInt64, bootstrap: ClusterOwnerCommittedBootstrap,
+                dataPlaneTrust: Data? = nil, owner: DistributedInstalledFiles.Identity) throws -> ClusterRemoteWorkerEndpoint {
         try ClusterRemoteWorkerEndpoint(localOwner: localOwner, clusterID: clusterID,
             expectedIdentity: sessionIdentity(start), profile: profile, rank: rank,
             executionPlanSHA256: executionPlanSHA256, lifetimeDeadlineUptimeNanoseconds: until, bootstrapRelay: bootstrap,
-            dataPlaneTrust: dataPlaneTrust)
+            dataPlaneTrust: dataPlaneTrust, verifyLaunched: owner.launchVerifier())
     }
     /// The installed worker identity under the start's membership epoch.
     func sessionIdentity(_ start: ClusterNativeAuthorizationStart) -> ClusterWorkerIdentity {

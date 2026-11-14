@@ -1365,7 +1365,7 @@ unchanged numerical comparator.
 
 ## Gemma o5 parser qualification
 
-The [Gemma reopened thought channels change](inference.md#gemma-reopened-thought-channels) operates on CPU text and schema values. Parser tests do not establish full-model numerical, memory, throughput or concurrency qualification. This opt-in does not change hardware admission or model memory allowances.
+The [Gemma reopened thought channels change](inference.md#gemma-reopened-thought-channels) operates on CPU text and schema values. Parser tests do not establish full-model numerical, memory, throughput or concurrency qualification. This switch (on by default since 0.10.13) does not change hardware admission or model memory allowances.
 
 ## Gemma prefix frame preservation
 

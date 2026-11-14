@@ -404,6 +404,30 @@ import DarkbloomClusterProtocol
         try require(try store.load(reference: .init(configuration: linkSaved.configuration, sha256: ClusterConfigurationCodec.sha256(
             Data(contentsOf: URL(fileURLWithPath: linkSaved.configuration))))).configuration.linkControl == linkSetup.linkControl,
             "Saved link control setup differs")
-        print("Cluster configuration: 14 schema/store groups passed; fabricated metadata and local files only")
+        // A setup made from a pairing names the pairing's secret in this install's store, whose key is in the
+        // Keychain: no file needs to be there (the start checks the pairing holds it). The same name anywhere else
+        // is any other secret file, which must exist.
+        try FileManager.default.createDirectory(at: paths.pairingDirectory, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        let pairedSecret = paths.pairingDirectory.appendingPathComponent("edge-0123456789abcdef.secret").path
+        var pairedSetup = linked; pairedSetup["linkControl"] = attachment.merging(["secretFile": pairedSecret]) { $1 }
+        try bytes(pairedSetup, pretty: true).write(to: linkInput)
+        let pairedSaved = try saveLink()
+        try require(try store.load(reference: .init(configuration: pairedSaved.configuration, sha256: pairedSaved.configurationSHA256))
+            .configuration.linkControl?.secretFile == pairedSecret, "A setup naming a pairing's secret did not save")
+        var elsewhere = linked
+        elsewhere["linkControl"] = attachment.merging(["secretFile": root.appendingPathComponent("cluster-pairing/edge-0123456789abcdef.secret").path]) { $1 }
+        try bytes(elsewhere, pretty: true).write(to: linkInput)
+        try rejected { _ = try saveLink() }
+        // A store under /private (a temporary folder's real path) names its pairing's key while the store exists and
+        // the key has no file: `standardizedFileURL` drops /private from a path only while what it names exists.
+        let privateRoot = URL(fileURLWithPath: "/private/tmp/configuration-check-" + UUID().uuidString.lowercased(), isDirectory: true)
+        let privateStore = privateRoot.appendingPathComponent("cluster-pairing", isDirectory: true)
+        try FileManager.default.createDirectory(at: privateStore, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: privateRoot) }
+        try require(ClusterLinkControlAttachment.namesPairingSecret(privateStore.appendingPathComponent("edge-0123456789abcdef.secret").path,
+                                                                    in: privateStore),
+                    "A store under /private does not name its pairing's key once the key has no file")
+        print("Cluster configuration: 15 schema/store groups passed; fabricated metadata and local files only")
     }
 }

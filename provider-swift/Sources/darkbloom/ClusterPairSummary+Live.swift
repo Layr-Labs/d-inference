@@ -89,15 +89,18 @@ extension ClusterPairSummary {
         let agents = ClusterServiceAgent.status()
         let running = ClusterService.running()
         let pairing: ClusterSetupLinkExchange.Pairing?, read: PairingRead
+        var keychainLocked = false
         do {
             pairing = try ClusterSetupLinkExchange.pairing()
             read = pairing == nil ? .none : .held
         } catch {
             pairing = nil
             read = .unreadable(shownReason(error))
+            keychainLocked = ClusterSetupLinkExchange.isKeychainLocked(error)
         }
         var summary = membership(read, serviceRunning: running, loginAgentInstalled: !agents.isEmpty,
                                  startsAtLogin: agents.contains { $0.loaded })
+        summary.keychainLocked = keychainLocked
         guard summary.paired else { return summary }
         summary.thisMacName = shownName(ClusterLocalNetworkAccess.computerName())
         guard !summary.pairingUnreadable, let paths = try? ClusterUserPaths() else { return summary }

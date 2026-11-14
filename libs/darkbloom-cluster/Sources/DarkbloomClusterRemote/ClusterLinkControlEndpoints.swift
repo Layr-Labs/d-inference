@@ -57,7 +57,8 @@ public final class ClusterLinkControlListener: @unchecked Sendable {
                 inspector: any ClusterLinkInterfaceInspecting = ClusterLinkSystemInterfaceInspector(),
                 handler: @escaping ClusterLinkControlEventHandler) throws {
         guard !configuration.edges.isEmpty,
-              Set(configuration.edges.map(\.edgeID)).count == configuration.edges.count else {
+              Set(configuration.edges.map(\.edgeID)).count == configuration.edges.count,
+              configuration.edges.allSatisfy({ $0.authentication != nil }) else {
             throw ClusterLinkControlError.invalidConfiguration
         }
         self.configuration = configuration; self.inspector = inspector; self.handler = handler
@@ -193,7 +194,7 @@ public final class ClusterLinkControlListener: @unchecked Sendable {
             var helloBytes = try reader.readExact(LinkHandshake.headerBytes, deadline: deadline)
             try LinkHandshake.requireVersion(helloBytes, hello: true)
             helloBytes.append(try reader.readExact(LinkHandshake.helloBytes - LinkHandshake.headerBytes, deadline: deadline))
-            let (hello, tag) = try LinkHandshake.parseHello(helloBytes)
+            let (hello, signature, tag) = try LinkHandshake.parseHello(helloBytes)
             edgeID = hello.edgeID
             guard let peer = peers[hello.edgeID] else { throw ClusterLinkControlRefusal.unknownEdge }
             guard hello.epoch == peer.edge.epoch else { throw ClusterLinkControlRefusal.wrongEpoch }
@@ -204,13 +205,18 @@ public final class ClusterLinkControlListener: @unchecked Sendable {
                   hello.maximumCumulativeBytes == limits.maximumCumulativePlaintextBytesPerDirection else {
                 throw ClusterLinkControlRefusal.limitsMismatch
             }
-            var signed = challenge; signed.append(helloBytes.prefix(LinkHandshake.helloBytes - 32))
-            guard peer.edge.key.isValidHandshakeTag(tag, role: .connector, transcript: signed) else {
+            // The edge key's tag first: without the edge secret nobody makes this
+            // end verify or sign. Then the peer's identity against this edge's
+            // own pins, then its signature, before anything is derived or signed.
+            guard peer.edge.key.isValidHandshakeTag(tag, role: .connector,
+                transcript: challenge + helloBytes.prefix(LinkHandshake.HelloLayout.tag.lowerBound)) else {
                 throw ClusterLinkControlRefusal.authenticationFailed
             }
-            var accept = LinkHandshake.acceptWithoutTag(peer.resumeInfo())
-            var covered = challenge; covered.append(helloBytes); covered.append(accept)
-            accept.append(peer.edge.key.handshakeTag(role: .listener, transcript: covered))
+            try LinkIdentityProof.verifyConnector(hello, signature: signature, edge: peer.edge,
+                signed: challenge + helloBytes.prefix(LinkHandshake.HelloLayout.signature.lowerBound))
+            var accept = LinkHandshake.acceptWithoutSignature(peer.resumeInfo())
+            accept.append(try LinkIdentityProof.sign(edge: peer.edge, role: .listener, transcript: challenge + helloBytes + accept))
+            accept.append(peer.edge.key.handshakeTag(role: .listener, transcript: challenge + helloBytes + accept))
             try connection.writeAll(accept, deadline: deadline)
             let transcript = LinkHandshake.transcriptSHA256(challenge: challenge, hello: helloBytes, accept: accept)
             let records = try LinkRecordPair(role: .listener, key: peer.edge.key, ephemeralPrivateKey: ephemeral,
@@ -280,7 +286,9 @@ public final class ClusterLinkControlClient: @unchecked Sendable {
     public init(configuration: Configuration,
                 inspector: any ClusterLinkInterfaceInspecting = ClusterLinkSystemInterfaceInspector(),
                 handler: @escaping ClusterLinkControlEventHandler) throws {
-        guard let target = configuration.edge.peerAddress else { throw ClusterLinkControlError.invalidConfiguration }
+        guard let target = configuration.edge.peerAddress, configuration.edge.authentication != nil else {
+            throw ClusterLinkControlError.invalidConfiguration
+        }
         self.configuration = configuration; self.target = target; self.inspector = inspector; self.handler = handler
         peer = ClusterLinkControlPeer(edge: configuration.edge, role: .connector, handler: handler)
     }
@@ -397,24 +405,28 @@ public final class ClusterLinkControlClient: @unchecked Sendable {
             // This connection's own key pair: in memory only, gone with the handshake.
             let ephemeral = Curve25519.KeyAgreement.PrivateKey()
             let limits = try edge.limits.recordLimits()
+            let pins = LinkIdentityProof.helloPins(edge)
             let hello = LinkHandshake.Hello(epoch: edge.epoch, edgeID: edge.edgeID, nonce: LinkHandshake.randomNonce(),
                 ephemeralPublicKey: ephemeral.publicKey.rawRepresentation,
                 resume: peer.resumeInfo(), maximumPlaintextBytes: UInt32(limits.maximumPlaintextBytes),
                 maximumRecords: limits.maximumRecordsPerDirection,
-                maximumCumulativeBytes: limits.maximumCumulativePlaintextBytesPerDirection)
-            var helloBytes = LinkHandshake.helloWithoutTag(hello)
-            var signed = challenge; signed.append(helloBytes)
-            helloBytes.append(edge.key.handshakeTag(role: .connector, transcript: signed))
+                maximumCumulativeBytes: limits.maximumCumulativePlaintextBytesPerDirection,
+                connectorPin: pins.connector, listenerPin: pins.listener)
+            var helloBytes = LinkHandshake.helloWithoutSignature(hello)
+            helloBytes.append(try LinkIdentityProof.sign(edge: edge, role: .connector, transcript: challenge + helloBytes))
+            helloBytes.append(edge.key.handshakeTag(role: .connector, transcript: challenge + helloBytes))
             try socket.writeAll(helloBytes, deadline: deadline)
             let acceptBytes: Data
             do { acceptBytes = try reader.readExact(LinkHandshake.acceptBytes, deadline: deadline) } catch {
                 throw ClusterLinkControlRefusal.handshakeRejected
             }
-            let (resume, tag) = try LinkHandshake.parseAccept(acceptBytes)
-            var covered = challenge; covered.append(helloBytes); covered.append(acceptBytes.prefix(LinkHandshake.acceptBytes - 32))
-            guard edge.key.isValidHandshakeTag(tag, role: .listener, transcript: covered) else {
+            let (resume, signature, tag) = try LinkHandshake.parseAccept(acceptBytes)
+            guard edge.key.isValidHandshakeTag(tag, role: .listener,
+                transcript: challenge + helloBytes + acceptBytes.prefix(LinkHandshake.AcceptLayout.tag.lowerBound)) else {
                 throw ClusterLinkControlRefusal.serverAuthenticationFailed
             }
+            try LinkIdentityProof.verifyListener(signature: signature, edge: edge,
+                signed: challenge + helloBytes + acceptBytes.prefix(LinkHandshake.AcceptLayout.signature.lowerBound))
             let transcript = LinkHandshake.transcriptSHA256(challenge: challenge, hello: helloBytes, accept: acceptBytes)
             let records = try LinkRecordPair(role: .connector, key: edge.key, ephemeralPrivateKey: ephemeral,
                 peerEphemeralPublicKey: listenerPublicKey, transcriptSHA256: transcript,
@@ -439,5 +451,57 @@ public final class ClusterLinkControlClient: @unchecked Sendable {
         eventQueue.async { [handler, edgeID = configuration.edge.edgeID] in
             handler(.refused(edgeID: edgeID, reason: refusal), nil)
         }
+    }
+}
+
+/// The identity half of handshake v3, by the edge's own authentication (never
+/// the wire's): the pins each end holds for the other, the signatures, and
+/// the refusals. An edge-key-only edge claims no identity and accepts none.
+enum LinkIdentityProof {
+    private static let noPin = Data(count: LinkHandshake.pinBytes)
+    private static let noSignature = Data(count: LinkHandshake.signatureBytes)
+
+    /// The connector's own pin and the pin it holds for the listener.
+    static func helloPins(_ edge: ClusterLinkControlEdge) -> (connector: Data, listener: Data) {
+        guard let identity = edge.identity else { return (noPin, noPin) }
+        return (identity.localPin, identity.peerPin)
+    }
+
+    /// The listener's check of a HELLO whose tag verified: the connector must
+    /// be the key this edge pins, pin this end's key, and have signed.
+    static func verifyConnector(_ hello: LinkHandshake.Hello, signature: Data, edge: ClusterLinkControlEdge,
+                                signed: Data) throws {
+        guard let identity = edge.identity else {
+            guard hello.connectorPin == noPin, hello.listenerPin == noPin, signature == noSignature else {
+                throw ClusterLinkControlRefusal.peerNotPinned
+            }
+            return
+        }
+        guard hello.connectorPin == identity.peerPin else { throw ClusterLinkControlRefusal.peerNotPinned }
+        guard hello.listenerPin == identity.localPin else { throw ClusterLinkControlRefusal.identityMismatch }
+        guard identity.isValidPeerSignature(signature, role: .connector, epoch: edge.epoch, edgeID: edge.edgeID,
+                                            transcript: signed) else {
+            throw ClusterLinkControlRefusal.peerSignatureRejected
+        }
+    }
+
+    /// The connector's check of an ACCEPT whose tag verified.
+    static func verifyListener(signature: Data, edge: ClusterLinkControlEdge, signed: Data) throws {
+        guard let identity = edge.identity else {
+            guard signature == noSignature else { throw ClusterLinkControlRefusal.peerNotPinned }
+            return
+        }
+        guard identity.isValidPeerSignature(signature, role: .listener, epoch: edge.epoch, edgeID: edge.edgeID,
+                                            transcript: signed) else {
+            throw ClusterLinkControlRefusal.peerSignatureRejected
+        }
+    }
+
+    /// This end's signature over `transcript` (zero on an edge-key-only edge).
+    static func sign(edge: ClusterLinkControlEdge, role: ClusterLinkControlRole, transcript: Data) throws -> Data {
+        guard let identity = edge.identity else { return noSignature }
+        do { return try identity.signature(role: role, epoch: edge.epoch, edgeID: edge.edgeID, transcript: transcript) }
+        catch ClusterLinkIdentityError.signerLocked { throw ClusterLinkControlRefusal.localIdentityLocked }
+        catch { throw ClusterLinkControlRefusal.localIdentityUnavailable }
     }
 }

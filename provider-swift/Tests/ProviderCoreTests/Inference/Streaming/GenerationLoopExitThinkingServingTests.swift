@@ -210,8 +210,9 @@ private final class AdmittedThoughtLoopEngine: CBv2Engine, @unchecked Sendable {
 
 /// A busy Mac: `slots` engine slots and a queue, admitted as `SchedulerV2`
 /// admits (the waiting requests by priority, higher first, then in arrival
-/// order). A request still waiting after `lease` ends `admission_timeout`, as
-/// `EngineLoopV2`'s admission lease ends it (120 s in production). The first
+/// order). The continuation, if still waiting after `lease`, ends
+/// `admission_timeout`, as `EngineLoopV2`'s admission lease ends it (120 s in
+/// production); the other requests have no lease here. The first
 /// request is a Gemma row whose thought repeats verbatim once the test opens
 /// its gate (the guard's stop cancels it); a request whose prompt ends with
 /// Gemma's exit (`<channel|>`) is the continuation: it answers "Answer: B".
@@ -287,7 +288,7 @@ private final class QueueingThoughtLoopEngine: CBv2Engine, @unchecked Sendable {
         }
         if admitNow {
             start(row)
-        } else {
+        } else if request.promptTokens.last == GemmaThoughtTestTokenizer.channelClose {
             Task { [weak self, lease] in
                 try? await Task.sleep(for: lease)
                 self?.expire(row.request.id)
@@ -398,6 +399,42 @@ private final class QueueingThoughtLoopEngine: CBv2Engine, @unchecked Sendable {
     func capacity() -> CBv2CapacitySnapshot {
         lock.withLock {
             .init(activeRequests: running.count, waitingRequests: waiting.count, kvBytesInUse: 0, kvBytesCapacity: 0,
+                  activeTokens: 0)
+        }
+    }
+
+    func shutdown() async {}
+}
+
+/// Holds every request (no token, no end until it is cancelled) and reports
+/// the waiting count the test sets, as the engine publishes it.
+private final class HeldQueueEngine: CBv2Engine, @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuations: [CBv2RequestID: AsyncStream<CBv2Event>.Continuation] = [:]
+    private var priorities: [Int] = []
+    private var waitingCount = 0
+
+    var submittedPriorities: [Int] { lock.withLock { priorities } }
+    func setWaiting(_ count: Int) { lock.withLock { waitingCount = count } }
+
+    func submit(_ request: CBv2Request) throws -> AsyncStream<CBv2Event> {
+        let (stream, continuation) = AsyncStream<CBv2Event>.makeStream()
+        lock.withLock {
+            continuations[request.id] = continuation
+            priorities.append(request.priority)
+        }
+        return stream
+    }
+
+    func cancel(_ id: CBv2RequestID) {
+        let continuation = lock.withLock { continuations.removeValue(forKey: id) }
+        continuation?.yield(.finished(reason: .cancelled, usage: CBv2Usage(promptTokens: 1, completionTokens: 0)))
+        continuation?.finish()
+    }
+
+    func capacity() -> CBv2CapacitySnapshot {
+        lock.withLock {
+            .init(activeRequests: 0, waitingRequests: waitingCount, kvBytesInUse: 0, kvBytesCapacity: 0,
                   activeTokens: 0)
         }
     }
@@ -649,6 +686,125 @@ struct GenerationLoopExitThinkingServingTests {
         #expect(engine.admitted.prefix(4) == [0, 1, 2, 4])
         #expect(outcome.stop == "stop")
         #expect(outcome.content == "Answer: B")
+    }
+
+    @Test("a continuation goes to the engine with priority 1, and the bridge reads the queue in the engine's order",
+          .timeLimit(.minutes(1)))
+    func queueStateFollowsPriority() async throws {
+        let engine = HeldQueueEngine()
+        let bridge = EngineV2Bridge(engine: engine, modelId: modelID, tokenizer: Self.tokenizer,
+            eosTokenIds: [GemmaThoughtTestTokenizer.turnClose, GemmaThoughtTestTokenizer.eos], defaultMaxTokens: 64,
+            maxConcurrentRequests: 8)
+        let request = MultiModelBatchSchedulerEngine.translate(
+            openAIRequest: try JSONDecoder().decode(OpenAIChatCompletionRequest.self, from: Data("""
+            {"model":"\(modelID)","messages":[{"role":"user","content":"hi"}],"max_tokens":256}
+            """.utf8)), defaultMaxTokens: 64)
+        let prompt = GemmaThoughtTestTokenizer.tokens("<|turn>user\nhi<turn|>\n<|turn>model\n")
+        var streams: [AsyncStream<GenerationEvent>] = []
+        for id in ["older", "newer"] {
+            streams.append(await MeFirstDarkbloomRequest.$id.withValue("req-\(id)") {
+                await bridge.submitTokenized(promptTokens: prompt, request: request, requestId: id)
+            })
+        }
+        streams.append(await MeFirstDarkbloomRequest.$id.withValue("req-continuation") {
+            await EngineAdmissionPriority.$current.withValue(LoopExitThinkingContinuation.admissionPriority) {
+                await bridge.submitTokenized(promptTokens: prompt, request: request, requestId: "continuation")
+            }
+        })
+        #expect(engine.submittedPriorities == [0, 0, 1])
+        // One request waits. If all three arrived while the engine was full,
+        // it admits the continuation first, then the older request, so the
+        // newer one waits; otherwise the continuation waits and the newer one
+        // misreads as waiting (an error toward waiting). The bridge counts
+        // only the requests that can't overtake a request, so it reads the
+        // newer one as waiting and the older one as admitted; the
+        // continuation reads as waiting too, but me first treats it as
+        // admitted: it never gives way.
+        engine.setWaiting(1)
+        #expect(await bridge.queueState(of: "newer")?.waiting == true)
+        #expect(await bridge.queueState(of: "older")?.waiting == false)
+        #expect(await bridge.queueState(of: "continuation")?.waiting == true)
+        #expect(await bridge.hasAdmitted(darkbloomRequest: "req-newer") == false)
+        #expect(await bridge.hasAdmitted(darkbloomRequest: "req-older"))
+        #expect(await bridge.hasAdmitted(darkbloomRequest: "req-continuation"))
+        // Nothing waits: all read as admitted.
+        engine.setWaiting(0)
+        #expect(await bridge.queueState(of: "continuation")?.waiting == false)
+        #expect(await bridge.hasAdmitted(darkbloomRequest: "req-newer"))
+        for id in ["older", "newer", "continuation"] { await bridge.cancel(requestId: id) }
+        for stream in streams { for await _ in stream {} }
+        await bridge.shutdown()
+    }
+
+    @Test("on a full Mac a continuation takes its stopped row's place in the whole-Mac allowance; other work is refused",
+          .timeLimit(.minutes(1)))
+    func continuationTakesItsRowsAllowance() async throws {
+        // Every whole-Mac slot is held: the stopped row's slot went to work
+        // that was waiting for it before the continuation could ask.
+        let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
+            .init(total: 8 << 30, active: 0, cache: 0, systemAvailable: 8 << 30)
+        }
+        let width = ServingPerformanceProfiles.legacyWholeMacConcurrency
+        for slot in 0..<width {
+            #expect(budget.serviceBudget.acquire(ownerID: "busy-\(slot)", concurrency: width))
+        }
+        let engine = HeldQueueEngine()
+        let bridge = EngineV2Bridge(engine: engine, modelId: modelID, tokenizer: Self.tokenizer,
+            eosTokenIds: [GemmaThoughtTestTokenizer.turnClose, GemmaThoughtTestTokenizer.eos], defaultMaxTokens: 64,
+            maxConcurrentRequests: 8, kvBytesPerToken: 4_000, kvBudget: budget)
+        let request = MultiModelBatchSchedulerEngine.translate(
+            openAIRequest: try JSONDecoder().decode(OpenAIChatCompletionRequest.self, from: Data("""
+            {"model":"\(modelID)","messages":[{"role":"user","content":"hi"}],"max_tokens":256}
+            """.utf8)), defaultMaxTokens: 64)
+        let prompt = GemmaThoughtTestTokenizer.tokens("<|turn>user\nhi<turn|>\n<|turn>model\n")
+        // Ordinary work is refused as capacity (503 locally; the coordinator re-routes it).
+        var refused: [String] = []
+        for await event in await bridge.submitTokenized(promptTokens: prompt, request: request, requestId: "ordinary") {
+            if case .error(let message) = event { refused.append(message) }
+        }
+        #expect(refused == [EngineV2Bridge.serviceAllowanceExhausted])
+        // The continuation is not: it reaches the engine, one row past the width.
+        let continuation = await EngineAdmissionPriority.$current.withValue(LoopExitThinkingContinuation.admissionPriority) {
+            await bridge.submitTokenized(promptTokens: prompt, request: request, requestId: "continuation")
+        }
+        #expect(engine.submittedPriorities == [1])
+        #expect(budget.serviceBudget.count == width + 1)
+        // What the budget reports stays capped at the whole Mac.
+        #expect(budget.serviceBudget.snapshot().usedFraction == 1)
+        // Other work still waits while it runs.
+        var refusedAgain: [String] = []
+        for await event in await bridge.submitTokenized(promptTokens: prompt, request: request, requestId: "ordinary-2") {
+            if case .error(let message) = event { refusedAgain.append(message) }
+        }
+        #expect(refusedAgain == [EngineV2Bridge.serviceAllowanceExhausted])
+        await bridge.cancel(requestId: "continuation")
+        for await _ in continuation {}
+        await bridge.shutdown()
+        // Its share is released when it ends.
+        #expect(budget.serviceBudget.count == width)
+    }
+
+    @Test("width 1: a continuation takes its row's place beside the request that took the slot, not beside the recovery")
+    func continuationOnAWidthOneMac() {
+        let service = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
+            .init(total: 8 << 30, active: 0, cache: 0, systemAvailable: 8 << 30)
+        }.serviceBudget
+        // On a width-1 profile each row is a whole Mac: the request that took
+        // the stopped row's slot holds all of it.
+        #expect(service.acquire(ownerID: "took-the-slot", concurrency: 1))
+        #expect(!service.acquire(ownerID: "ordinary", concurrency: 1))
+        #expect(service.acquire(ownerID: "continuation", concurrency: 1, overcommit: true))
+        service.release(ownerID: "continuation")
+        service.release(ownerID: "took-the-slot")
+        // The idle prefill-evidence recovery (`requiresIdle`) has the Mac to
+        // itself until its prompt completes, at any width.
+        #expect(service.acquire(ownerID: "recovery", concurrency: 1, requiresIdle: true))
+        #expect(!service.acquire(ownerID: "continuation", concurrency: 8, overcommit: true))
+        service.reduceExclusiveAllowance(ownerID: "recovery", concurrency: 1)
+        #expect(service.acquire(ownerID: "continuation", concurrency: 8, overcommit: true))
+        service.release(ownerID: "continuation")
+        service.release(ownerID: "recovery")
+        #expect(service.count == 0)
     }
 
     @Test("Qwen 3.6: a loop inside the thought ends it with `\\n</think>\\n\\n`, and stops apply to the answer")

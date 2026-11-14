@@ -1,3 +1,3 @@
 ### Grammar-aware MTP
 
-- Adopt SDK #409: with `DARKBLOOM_CBV2_MTP_GRAMMAR=1` (forwarded by the LaunchAgent), constrained rows draft with MTP and every committed position is verified under the row's grammar; unset or `0` keeps 0.10.12's target-only constrained rows. Default per `docs/reference/configuration.md` (SDK feature defaults).
+- Adopt SDK #409: constrained rows draft with MTP and every committed position is verified under the row's grammar. On by default since 0.10.13 for the measured Qwen 3.8 27B build only (`EigenLabs/Qwen3.8-27B-4bit-mtp`), where constraint spans are on (measured together); Gemma 4 and Super keep target-only constrained rows unless `DARKBLOOM_CBV2_MTP_GRAMMAR=1`. `DARKBLOOM_CBV2_MTP_GRAMMAR=0` (or `DARKBLOOM_CONSTRAINT_SPANS=0`) restores 0.10.12's target-only constrained rows. Forwarded by the LaunchAgent.

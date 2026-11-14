@@ -489,6 +489,7 @@ public enum LaunchAgent: Sendable {
         GLM5NextSchemaMiss.environmentKey,
         EngineV2Factory.glm5NextDecodeStepsKey,
         NemotronSuperLocalPrefill.decodeStepsKey,
+        NemotronSuperLocalBridgeBuilder.concurrentImagesKey,
         ToolStreamPreparation.streamToolCallsEnvironmentKey,
         JSONAnswerPolicy.familiesEnvironmentKey,
         QwenJSONSchemaRewrite.environmentKey,

@@ -3239,6 +3239,16 @@ box has loaded, let alone proved, the backend it was configured for. Under
 `--strict` (and therefore `darkbloom verify`) that warning exits non-zero,
 which is the point: an unproven paged rollout must not certify.
 
+### Nemotron Super concurrent images
+
+`DARKBLOOM_NEMOTRON_SUPER_CONCURRENT_IMAGES` controls the image overlap (on by
+default) when a Super owner is constructed. Its exact values, width requirement
+and default are in the [engine configuration table](../reference/configuration.md#engine-and-scheduler).
+The daemon allow-list forwards it: set an off word (`0`) before starting or
+restarting the daemon to restore single-media admission.
+The [native image path](../architecture/inference.md#managed-nemotron-super-slot)
+keeps encoding serial and memory charged through cleanup.
+
 ### GLM-5.3-Flash GPU wired-memory limit
 
 On a 256 GB M5 Mac where GLM-5.3-Flash is downloaded, named in `[backend]`

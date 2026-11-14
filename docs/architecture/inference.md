@@ -753,16 +753,31 @@ tests serve PNG, JPEG, WebP, GIF and BMP variants through the tiny synthetic own
 tokenizer parity, RADIO peak workspace and full-checkpoint image qualification
 remain required.
 
+By default (`DARKBLOOM_NEMOTRON_SUPER_CONCURRENT_IMAGES`; an off word turns
+it off), an owner that serves at least three requests may admit two image
+requests concurrently. Images
+prepare one at a time through the evaluated native fence, then enter the same
+engine for concurrent decode. Each image retains its full ingress, decoded
+media, feature and tower-workspace reservation through native terminal
+settlement; this switch supplies no extra memory credit or wider engine grant.
+Two media rows leave at least one configured owner slot for text. A second
+image whose full quote does not fit is still refused. An off word restores
+0.10.12's single-media behavior below. Video remains
+exclusive with all other media. Draining closes admission, cancels every
+tracked image and waits for every cleanup; a retained native fault keeps its
+charges.
+
 The same binding serves one inline video as the only media of a request
 (`data:video/mp4;base64,` or `data:video/quicktime;base64,`; one media request
-at a time, like images). A request that arrives while the owner's request, or
+at a time; two images at once by default on an owner serving three or more). A request that arrives while the
+owner's request, or
 the binding's media request, has finished its answer and only its settlement
 remains (native retirement, the media charge's release) waits up to
 `NemotronSuperServingPolicy.finishingWait` (1 s) for it instead of a 429
 `queue_full` (`NemotronSuperLocalBridgeBuilder.Owner.admitLocalRequest(waitingUpTo:stackedUntil:cancelled:)`,
-`NemotronSuperLocalImageBinding.admit(stackedUntil:)`). The managed slot's owner
+`NemotronSuperLocalImageBinding.admit(concurrentImage:stackedUntil:)`). The managed slot's owner
 admits up to eight requests at once (`loadPlan`, halved by the load fit), so its
-media requests meet the binding's one-at-a-time limit long before the owner's
+media requests meet the binding's default one-at-a-time limit before the owner's
 request limit. A media request that
 arrives while the media request ahead of it is already streaming its answer
 (its first chunk has passed; images end about 2 s later), at the binding, or at

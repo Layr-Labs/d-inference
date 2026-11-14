@@ -153,6 +153,13 @@ its tower and projector bound; a video's largest, `videoMediaChargeBytes`, is
 13.9 GiB of the cap, so a 16-image request (25.6 GiB of media) does not fit
 beside it. A resident slot's media
 probe is quoted against the ledger room its reservation is admitted by.
+The [concurrent image path](inference.md#managed-nemotron-super-slot) (on by default)
+does not widen that ledger room or discount a reservation after vision encoding.
+Each admitted image retains its full media charge until native settlement;
+overlapping decodes therefore require both quotes to fit. The owner's selected
+width remains authoritative (`NemotronSuperLocalBridgeBuilder.make`,
+`NemotronSuperLocalImageBinding`). The single-image measurements below do not
+measure concurrent images.
 At 65,536 tokens the round work would be 4.7 GiB. A dedicated 128 GiB Mac was emulated on the 256 GB
 machine at the earlier 65,536-token context (cap, OS-available memory and MLX
 limits of the smaller Mac, before the speculating admission split); prompts

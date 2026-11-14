@@ -30,14 +30,15 @@ public enum SDKFeatureDefaults {
     static let gemmaQuotedNumbers: [String] = []
 
     /// #2101 / SDK #413: MTP drafting through free Qwen reasoning and text
-    /// spans. A build is a `model_type` or a case-insensitive model-id part.
+    /// spans. A build is an exact model id, lowercased (`matches`).
     static let constraintSpansBuilds: Set<String> = []
 
-    /// SDK #409: grammar-aware MTP verification of constrained rows (builds as above).
+    /// SDK #409: grammar-aware MTP verification of constrained rows, on a
+    /// listed build only where constraint spans are on (measured together).
     static let grammarMTPBuilds: Set<String> = []
 
     /// #2099 / SDK #411: `reasoning.max_tokens` budgets, per family.
-    static let reasoningBudgetFamilies: Set<NativeReasoningBudget.Family> = [.nemotronSuper]
+    static let reasoningBudgetFamilies: Set<NativeReasoningBudget.Family> = []
 
     /// The process-wide switches. With a budget family listed, the budget
     /// switch is set too, so every engine accepts budget rows; only
@@ -53,38 +54,60 @@ public enum SDKFeatureDefaults {
     /// workers, a cluster service's parts) does not take them for the operator's.
     public static let injectedMarkerKey = "DARKBLOOM_SDK_DEFAULTS_INJECTED"
 
+    /// Every key this mechanism may set process-wide, whatever a release
+    /// lists; a marker naming any other key is not trusted.
+    static let injectableKeys: Set<String> = ["DARKBLOOM_GEMMA_SCHEMA_COERCION", NativeReasoningBudget.environmentKey]
+
+    /// The keys a parent `darkbloom` injected: named in `environment`'s marker,
+    /// injectable, with the value still `1`.
+    static func inherited(_ environment: [String: String]) -> Set<String> {
+        Set((environment[injectedMarkerKey] ?? "").split(separator: ",").map(String.init))
+            .filter { injectableKeys.contains($0) && environment[$0] == "1" }
+    }
+
+    /// Whether `key`'s value is the release's (this process's, or a parent's
+    /// per the marker, so a process that never ran `apply` knows too), not the
+    /// operator's.
+    static func isInjected(_ key: String, in environment: [String: String],
+                           injected: Set<String> = injectedKeys) -> Bool {
+        injected.contains(key) || inherited(environment).contains(key)
+    }
+
     /// Whether `key` follows this release's default: unset, empty (what the
     /// LaunchAgent drops, so foreground and service agree) or injected.
     static func followsDefault(_ key: String, in environment: [String: String],
                                injected: Set<String> = injectedKeys) -> Bool {
-        injected.contains(key) || (environment[key]?.isEmpty ?? true)
+        (environment[key]?.isEmpty ?? true) || isInjected(key, in: environment, injected: injected)
     }
 
-    /// `builds` holds `model_type`s or case-insensitive model-id parts, as
-    /// `DARKBLOOM_STRICT_TOOL_GRAMMAR` lists do (`qwen3.8-27b`).
-    static func matches(_ builds: Set<String>, modelId: String, modelType: String?) -> Bool {
-        let id = modelId.lowercased(), type = modelType?.lowercased()
-        return builds.contains { $0 == type || id.contains($0) }
+    /// Whether `modelId` is exactly one of `builds` (lowercased model ids): a
+    /// default never reaches another quantization, a fine-tune or a local path.
+    static func matches(_ builds: Set<String>, modelId: String) -> Bool {
+        builds.contains(modelId.lowercased())
     }
 
     /// The per-build MTP defaults for one engine. `config` holds the SDK's
     /// reading of the environment (the operator's value; off when unset); a
-    /// switch left unset is turned on for the listed builds only. Returns the
-    /// switches it turned on, for the load log.
+    /// switch left unset, in the slot's environment and in the process's (what
+    /// the SDK read), is turned on for the listed builds only, grammar MTP only
+    /// where constraint spans are on (measured together). Returns the switches
+    /// it turned on, for the load log.
     @discardableResult
     static func applyMTPDefaults(
-        to config: inout CBv2MTPConfig, modelId: String, modelType: String?,
-        environment: [String: String],
+        to config: inout CBv2MTPConfig, modelId: String, environment: [String: String],
+        processEnvironment: [String: String] = ProcessInfo.processInfo.environment,
         spansBuilds: Set<String> = constraintSpansBuilds, grammarBuilds: Set<String> = grammarMTPBuilds
     ) -> [String] {
+        func unset(_ key: String) -> Bool {
+            followsDefault(key, in: environment, injected: [])
+                && followsDefault(key, in: processEnvironment, injected: [])
+        }
         var on: [String] = []
-        if followsDefault(constraintSpansKey, in: environment, injected: []),
-           matches(spansBuilds, modelId: modelId, modelType: modelType) {
+        if unset(constraintSpansKey), matches(spansBuilds, modelId: modelId) {
             config.freeSpanSpeculation = true
             on.append(constraintSpansKey)
         }
-        if followsDefault(grammarMTPKey, in: environment, injected: []),
-           matches(grammarBuilds, modelId: modelId, modelType: modelType) {
+        if unset(grammarMTPKey), config.freeSpanSpeculation, matches(grammarBuilds, modelId: modelId) {
             config.constrainedSpeculation = true
             on.append(grammarMTPKey)
         }
@@ -114,13 +137,12 @@ public enum SDKFeatureDefaults {
     /// and recorded as injected if listed, unset if not. Every listed key the
     /// environment leaves unset or empty is turned on; the marker names them.
     static func plan(onByDefault: [String] = onByDefault, environment: [String: String]) -> Plan {
-        let inherited = Set((environment[injectedMarkerKey] ?? "").split(separator: ",").map(String.init))
-            .filter { environment[$0] == "1" }
+        let fromParent = inherited(environment)
         var operatorEnvironment = environment
-        for key in inherited { operatorEnvironment[key] = nil }
+        for key in fromParent { operatorEnvironment[key] = nil }
         var changes = Plan(set: projection(onByDefault: onByDefault, environment: operatorEnvironment))
         changes.injected = changes.set.keys.sorted()
-        changes.unset = inherited.subtracting(changes.injected).sorted()
+        changes.unset = fromParent.subtracting(changes.injected).sorted()
         if !changes.injected.isEmpty {
             changes.set[injectedMarkerKey] = changes.injected.joined(separator: ",")
         } else if environment[injectedMarkerKey] != nil {

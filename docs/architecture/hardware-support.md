@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-11-13
+> Last updated: 2026-11-14
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -1099,6 +1099,18 @@ grant or reported capacity field changes, so
 | Platform and hardware gates | `provider-swift/Package.swift`, `provider-swift/Sources/darkbloom/Start/StartCommand+Preflight.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/GPUEnforcement.swift`, `provider-swift/Sources/ProviderCore/Hardware/HardwareDetector.swift`, `provider-swift/Sources/ProviderCore/Security/BootSecurity.swift` |
 | Coordinator mirror | [coordinator/registry/servability.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/servability.go), [coordinator/registry/scheduler.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/scheduler.go) |
 | Measurements behind the floors | `docs/reports/2026-08-30-activation-floor-measurements.md` |
+
+### Muse Glimmer memory admission
+
+Muse Glimmer 30B uses the ordinary attention-only admission path. The sizing
+snapshot takes its KV rate from the loaded tower's layer kinds
+(`SlotSizingSnapshot`, `MuseGlimmerTextModel.cbv2LayerKinds`), so its full
+layers grow with context while its sliding layers stay at their window. A slot
+advertises the trained 131,072-token context, never more than the loaded
+model's own bound (`MuseGlimmerModelPolicy.contextLimit`, read by
+`EngineV2SlotFactory`). No Muse Glimmer activation floor, load transient,
+RAM-tier gate or measured-memory entry is added; those wait for measurements
+on the final build.
 
 ### Flint memory admission
 

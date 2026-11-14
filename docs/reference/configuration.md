@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-11-13
+> Last updated: 2026-11-14
 
 Provider CLI and native-runtime environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -524,7 +524,7 @@ and rollback are defined in the [provider configuration reference](../provider/c
 
 | Config key | Default | Read in | Effect |
 |---|---|---|---|
-| `[backend] mtp_acceptance`, `mtp_acceptance_by_model` | unset resolves to `typical` (delta `0.2`), except `exact` for the Bonsai 9B candidate, the catalog `Qwen3.5-9B`, `gemma-4-26b-qat-4bit` and the Qwen 3.8 27B builds `EigenLabs/Qwen3.8-27B-4bit-mtp` and `EigenLabs/Qwen3.8-27B-4bit` (`builtInIsExact`); model map `{}` | `provider-swift/Sources/ProviderCore/Inference/MTP/MTPAcceptancePolicy.swift` (`resolve`) | Exact model override precedes global, then the built-in default. Eligible sampled target-prefix MTP output is approximate, not distribution-exact; explicit `exact` opts out and invalid values safely resolve to `exact`. Greedy behavior and native MiMo exact acceptance are unchanged. Does not enable disabled MTP or widen eligibility. |
+| `[backend] mtp_acceptance`, `mtp_acceptance_by_model` | unset resolves to `typical` (delta `0.2`), except `exact` for the Bonsai 9B candidate, the two Muse Glimmer 30B identities, the catalog `Qwen3.5-9B`, `gemma-4-26b-qat-4bit` and the Qwen 3.8 27B builds `EigenLabs/Qwen3.8-27B-4bit-mtp` and `EigenLabs/Qwen3.8-27B-4bit` (`builtInIsExact`); model map `{}` | `provider-swift/Sources/ProviderCore/Inference/MTP/MTPAcceptancePolicy.swift` (`resolve`) | Exact model override precedes global, then the built-in default. Eligible sampled target-prefix MTP output is approximate, not distribution-exact; explicit `exact` opts out and invalid values safely resolve to `exact`. Greedy behavior and native MiMo exact acceptance are unchanged. Does not enable disabled MTP or widen eligibility. |
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|

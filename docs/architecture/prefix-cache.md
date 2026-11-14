@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-11-12
+> Last updated: 2026-11-14
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -246,6 +246,33 @@ their existing provider reservation path. See
 
 The [provider integration report](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reports/2026-09-05-paged-complete-provider.md)
 records factory and ownership tests, with exact-model and release gates still open.
+
+### Muse Glimmer 30B
+
+The two exact identities in `MuseGlimmerModelPolicy` default to SSD prefix
+caching (`PrefixCachePolicy+Activation.swift`); the type under any other id
+does not. The text tower is attention only and declares complete
+historical-attention checkpoints (`CBv2HistoricalAttentionCheckpointProviding`),
+so `prepareCompletePrefixCache` builds the complete encrypted SSD store with no
+model-specific provider code, on the paged backend it is served on
+([inference](inference.md#native-muse-glimmer-30b)). The store is built only
+when the runtime identity is complete: the verified load hash, the served
+prompt contract, the binary hash and the digest of the metallib bound before
+GPU work. A process that never bound one (`bindRuntimeMetallibForMLX`, which
+`darkbloom start` does) reports `runtime_identity_unavailable` and serves
+without the cache.
+
+Checkpoint rows take the provider's checkpoint precision, whose default is
+`balanced` (k4v4): unlike Flint and Nemotron 3.5 Lightning, the type is not in
+`PagedKVQuantizationPolicy`'s native set, so a restored request may continue
+differently from a cold one. `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION=native`
+or a per-model `native` setting stores exact rows. Which default this model
+should have is not decided here.
+
+The type has no entry in the demanded short-checkpoint policy
+(`EngineV2Factory+DemandedCheckpoint.swift`), so a prompt reuses the checkpoint
+boundaries its prefill reached. With no drafter loaded, the checkpoint identity
+records MTP as disabled.
 
 ### Block hashing
 

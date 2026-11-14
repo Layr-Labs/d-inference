@@ -13,8 +13,13 @@ import DarkbloomClusterSecurity
 // worker commands in (reserve with its prompt tokens, start, cancel, keep-warm,
 // shutdown), worker events out (ready, admitted, finished, retired, ...), the
 // bootstrap rounds of the follower's owner to the leader's relay, the rank
-// lease, and the follower's cleanup and release proofs. The link authenticates
-// and encrypts every message, so prompt token IDs never travel in the clear.
+// lease, and the follower's cleanup and release proofs. Every message is
+// encrypted and authenticated under keys of its own connection: an ephemeral
+// X25519 agreement made in each process for that connection, authenticated by
+// the pairing's edge key (handshake v2, `ClusterLinkControlKey.sessionKeys`).
+// The edge key alone, which both Macs keep in a file, opens no captured
+// connection. What it does not do yet: the peer is authenticated by the edge
+// key only, not by its provider identity or attestation.
 //
 // No host uptime crosses the link: a deadline travels as the time remaining
 // and is rebased on the receiving Mac's clock.

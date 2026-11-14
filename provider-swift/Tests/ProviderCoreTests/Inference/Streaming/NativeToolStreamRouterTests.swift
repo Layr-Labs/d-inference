@@ -6,14 +6,18 @@ import Testing
 
 @Suite("Native reasoning before tool parsing")
 struct NativeToolStreamRouterTests {
-    @Test func strayCloseAbsorptionIsExplicitAndNemotronScoped() throws {
+    /// Nemotron 3.5's listing builds absorb a close already in content; so do
+    /// the Qwen types by default (#2093, `QwenStrayThinkClose`; its kill switch
+    /// `DARKBLOOM_QWEN_ABSORB_STRAY_THINK_CLOSE=0` is covered by
+    /// `QwenStrayThinkCloseConformanceTests`). Other families keep the literal.
+    @Test func strayCloseAbsorptionIsExplicitAndFamilyScoped() throws {
         for (modelID, modelType, expectedAbsorption) in [
             ("nvidia-nemotron-3.5-lightning", "nemotron_h", true),
             ("nvidia-nemotron-3.5-lightning-hybrid8", "nemotron_h", true),
             ("nvidia-nemotron-3.5-lightning-4bit-r1", "nemotron_h", true),
-            ("nvidia-nemotron-3.5-lightning", "qwen4_exp", false),
+            ("nvidia-nemotron-3.5-lightning", "qwen4_exp", true),
             ("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B", "nemotron_h", false),
-            ("qwen3.8-flash-next", "qwen4_exp", false),
+            ("qwen3.8-flash-next", "qwen4_exp", true),
             ("mimo-v2.6-flash", "mimo_v2", false),
             ("ternary-bonsai-2-27b", "prism_hadamard_qwen35", false),
         ] {

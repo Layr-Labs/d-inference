@@ -315,6 +315,13 @@ enum EngineV2SlotFactory {
             verificationMode: mtpVerification.mode,
             maxAutomaticRectangularTokens: mtpVerification.automaticRectangularTokens,
             acceptance: mtpAcceptance.acceptance)
+        // Per-build SDK switches this release turns on where they were measured;
+        // the operator's value (read above by the SDK) wins.
+        let sdkDefaults = SDKFeatureDefaults.applyMTPDefaults(
+            to: &mtpConfig, modelId: modelId, environment: environment)
+        if !sdkDefaults.isEmpty, mtpConfig.enabled {
+            logInfo("engine_v2: \(modelId) SDK feature defaults on: \(sdkDefaults.joined(separator: ", "))")
+        }
         if let verification = assemblyOverrides.gemmaMTPVerification {
             mtpConfig = try verification.applying(
                 to: mtpConfig, target: servingModel, drafter: assistantHandle?.drafter)

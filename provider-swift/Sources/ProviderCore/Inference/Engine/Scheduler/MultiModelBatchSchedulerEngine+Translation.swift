@@ -43,6 +43,10 @@ public struct ChatTemplateControls: Sendable, Equatable {
     /// body. The coordinator path serves every request as a stream and the
     /// coordinator reassembles a complete one (`StrictToolCallPolicy`).
     var clientStreams: Bool?
+    /// The Gemma 4 prompt contract the coordinator asked for
+    /// (`askingGemmaPromptContract`): 2 renders the template's text parts
+    /// (`GemmaPromptContract`); nil renders version 1, as before.
+    private(set) var gemmaPromptContract: Int?
 
     public init(
         reasoningEffort: String? = nil,
@@ -120,6 +124,30 @@ public struct ChatTemplateControls: Sendable, Equatable {
         return copy
     }
 
+    /// The controls a coordinator `inference_request` renders with: the prompt
+    /// its plan was made for, in the Gemma 4 prompt contract the frame asks
+    /// for, with the request's date.
+    func servingCoordinatorRequest(
+        planned: Bool, gemmaPromptContract: Int?,
+        enabled: Bool = GemmaPromptContract.enabled, at now: Date = Date()
+    ) -> Self {
+        servingCoordinatorRequest(planned: planned)
+            .askingGemmaPromptContract(gemmaPromptContract, enabled: enabled)
+            .resolvingPromptDate(at: now)
+    }
+
+    /// The controls with the Gemma 4 prompt contract a coordinator request
+    /// carries: version 2 only while this provider advertises it, else as
+    /// before. Only the authenticated coordinator frame sets it, never a body.
+    func askingGemmaPromptContract(
+        _ version: Int?, enabled: Bool = GemmaPromptContract.enabled
+    ) -> Self {
+        guard enabled, version == GemmaPromptContract.partsVersion else { return self }
+        var copy = self
+        copy.gemmaPromptContract = version
+        return copy
+    }
+
     func resolvingPromptDate(at now: Date = Date()) -> Self {
         promptDate == nil ? withPromptDate(.capture(at: now)) : self
     }
@@ -166,12 +194,11 @@ extension MultiModelBatchSchedulerEngine {
         // reasons, at the model's lowest level, and is not rewritten to false.
         if requiresToolCall && Qwen35TemplateFix.applies(to: fixContext)
             && !ToolChoiceEnforcementPolicy.nativeStructuredTarget(fixContext)
+            && !Qwen35TemplateFix.preservesForcedThinking(fixContext)
         {
-            // Legacy Qwen text routing cannot separate reasoning before XML
-            // tool parsing. Native Qwen4/Nemotron use NativeToolStreamRouter,
-            // so they preserve caller thinking controls instead of inheriting
-            // this older tool-only workaround. Visible prose still fails the
-            // forced-call contract; reasoning is a separate typed channel.
+            // Keep the existing prompt contract unless the Qwen reasoning-first
+            // route is opted in. That route already separates the thought from
+            // the call and validates forced calls before exposing them.
             context["enable_thinking"] = false
         } else if let nested = request.reasoning?.enabled {
             context["enable_thinking"] = nested
@@ -234,13 +261,14 @@ extension MultiModelBatchSchedulerEngine {
         topLogprobs: Int? = nil,
         logitBias: [String: Float]? = nil,
         seed: UInt64? = nil,
-        engineStopStrings: Bool = true
+        engineStopStrings: Bool = true,
+        nativeReasoningBudget: NativeReasoningBudget? = nil
     ) -> ChatCompletionRequest {
         let stop: StopSequences? = {
             guard engineStopStrings, let stops = request.stop, !stops.isEmpty else { return nil }
             return .multiple(stops)
         }()
-        return ChatCompletionRequest(
+        var translated = ChatCompletionRequest(
             model: request.model,
             messages: request.messages.map { msg in
                 ChatMessage(role: msg.role.rawValue, content: msg.content.text)
@@ -264,6 +292,8 @@ extension MultiModelBatchSchedulerEngine {
             top_logprobs: topLogprobs,
             min_p: request.minP
         )
+        translated.nativeReasoningBudget = nativeReasoningBudget
+        return translated
     }
 }
 

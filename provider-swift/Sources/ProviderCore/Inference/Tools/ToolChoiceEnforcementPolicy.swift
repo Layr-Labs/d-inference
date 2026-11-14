@@ -176,11 +176,12 @@ enum ToolChoiceEnforcementPolicy {
         return type == "qwen3_5" || type == "qwen3_5_moe"
     }
 
-    /// Only the qualified Nemotron parser absorbs a close already in content.
-    /// Other native-channel families retain their existing literal handling.
+    /// Nemotron's existing behavior, plus the Qwen types (`QwenStrayThinkClose`,
+    /// on by default).
     static func absorbsStrayThinkClose(_ context: ChatTemplateFixContext) -> Bool {
-        context.modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "nemotron_h"
-            && EngineV2SupportedModels.isNemotron35ListingModelID(context.modelId)
+        QwenStrayThinkClose.applies(context)
+            || (context.modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "nemotron_h"
+                && EngineV2SupportedModels.isNemotron35ListingModelID(context.modelId))
     }
 
     /// Nested examples inside native XML-family reasoning stay reasoning.

@@ -343,6 +343,10 @@ public enum LaunchAgent: Sendable {
     /// rectangular cap override is the operator's lever to REDUCE speculative
     /// verification work short of disabling MTP entirely; it must survive
     /// install/restart like the kill switches.
+    /// `DARKBLOOM_CONSTRAINT_SPANS`: opt-in drafting through free Qwen
+    /// reasoning/text spans; the SDK snapshots it when constructing an engine.
+    /// `DARKBLOOM_CBV2_MTP_GRAMMAR`: grammar-aware MTP verification of
+    /// constrained rows (SDK-read, per engine); `0` keeps them target-only.
     /// `DARKBLOOM_KV_BACKEND_GUARD`: the crash-loop guard's record-path
     /// override (`KVBackendGuardStore.pathEnvKey`). The guard has one writer
     /// (the launchd watchdog — same key in `WatchdogAgent.passthroughEnvKeys`)
@@ -414,6 +418,9 @@ public enum LaunchAgent: Sendable {
     /// fully serial FIFO.
     /// `DARKBLOOM_GEMMA_JSON_ANSWERS`: Gemma 4 JSON `response_format` answers
     /// are grammar-constrained by default; `off` restores prompt-only answers.
+    /// `DARKBLOOM_GEMMA_PROMPT_CONTRACT_V2`: the provider advertises Gemma 4
+    /// prompt contract 2 and renders it when a coordinator request asks, by
+    /// default; `off` stops advertising it and renders version 1 everywhere.
     /// `DARKBLOOM_QWEN_JSON_SCHEMA_REWRITE`: Qwen JSON answers constrain client
     /// schemas outside the subset by default; `off` restores their decline.
     /// `DARKBLOOM_TTFT_SHAPE_WARMUP`: the load-time shape warmup is on by
@@ -438,6 +445,9 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_LOOP_GUARD` / `DARKBLOOM_LOOP_EXIT_THINKING`: the loop guard
     /// and its exit from a repeating Gemma 4 thought are on by default; `0`
     /// turns each off, a list of `model_type`s replaces its default list.
+    /// `DARKBLOOM_GPTOSS_FINAL_EXIT`: GPT-OSS's exit for a request without tools
+    /// (into the final channel) is on by default; `0`, `off` or `false` keeps it
+    /// to tool requests.
     /// `DARKBLOOM_QWEN35_9B_PRESENCE_PENALTY`: Qwen3.5-9B keeps the card's
     /// presence penalty by default; its `0` rollback must reach the job.
     /// `DARKBLOOM_GLM_TOOL_TEXT_FALLBACK`: unparsed `auto` GLM tool output is
@@ -446,6 +456,9 @@ public enum LaunchAgent: Sendable {
     /// default; an off word (`off`, `false`, `0`, `none`, `no`, `disabled`)
     /// refuses them and stops advertising them.
     static let inferencePassthroughEnvKeys = [
+        Qwen35TemplateFix.forcedThinkingEnvironmentKey,
+        HarmonyFinalHeaderFilter.commentaryEnvironmentKey,
+        QwenStrayThinkClose.environmentKey,
         EngineV2Factory.maxPartialPrefillsKey,
         EngineV2Factory.prefillChunkKey,
         EngineV2Factory.stepTokenBudgetKey,
@@ -465,12 +478,16 @@ public enum LaunchAgent: Sendable {
         "DARKBLOOM_TTFT_GDN_BLOCKED",
         EngineV2SlotFactory.mimoRectangularVerifyEnvironmentKey,
         GemmaJSONAnswerPolicy.environmentKey,
+        GemmaPromptContract.environmentKey,
         PromptTokenCachePolicy.environmentKey,
         PromptTokenCachePolicy.capacityEnvironmentKey,
         PromptTokenCachePolicy.verifyEnvironmentKey,
         QwenStrictToolGrammar.environmentKey,
         QwenStrictToolGrammar.allToolsEnvironmentKey,
         ChatTemplateLoopRewrites.environmentKey,
+        // SDK-read (`StreamingGemma4ReasoningParser.reopenedThoughtsEnabled`, once per
+        // process): reopened Gemma thoughts go to reasoning; `0` keeps 0.10.12's parsing.
+        "DARKBLOOM_GEMMA_REOPENED_THOUGHTS",
         WorkFIFOPolicy.coldLoadReleaseEnvironmentKey,
         ModelCalibrationPolicy.shapeWarmupEnvironmentKey,
         TokenLimitCutPolicy.environmentKey,
@@ -479,6 +496,7 @@ public enum LaunchAgent: Sendable {
         GLM5NextSchemaMiss.environmentKey,
         EngineV2Factory.glm5NextDecodeStepsKey,
         NemotronSuperLocalPrefill.decodeStepsKey,
+        NemotronSuperLocalBridgeBuilder.concurrentImagesKey,
         ToolStreamPreparation.streamToolCallsEnvironmentKey,
         JSONAnswerPolicy.familiesEnvironmentKey,
         QwenJSONSchemaRewrite.environmentKey,
@@ -487,8 +505,13 @@ public enum LaunchAgent: Sendable {
         // SDK-read (`EngineLoopV2.nativeSegmentReleaseEnvironmentKey`): idle seconds
         // before an issued GLM pool returns its free segments; `0` is the rollback.
         "DARKBLOOM_NATIVE_SEGMENT_RELEASE",
+        NativeReasoningBudget.environmentKey,
+        // SDK-read (`GemmaFunctionParser.schemaCoercionEnabled`): quoted Gemma
+        // numbers typed by the tool's schema at frame close; `0` keeps strings.
+        "DARKBLOOM_GEMMA_SCHEMA_COERCION",
         GenerationLoopGuardPolicy.environmentKey,
         GenerationLoopExitThinkingPolicy.environmentKey,
+        GenerationLoopExitThinkingPolicy.finalExitEnvironmentKey,
         EngineV2SamplingDefaults.qwen35NineBPenaltyEnvironmentKey,
         GLM5ToolSuffix.environmentKey,
         GPTOSSForcedToolCalls.environmentKey,
@@ -504,6 +527,7 @@ public enum LaunchAgent: Sendable {
         "DARKBLOOM_CBV2_KV_QUANTIZATION",
         "DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION",
         "DARKBLOOM_CBV2_MTP", "DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS",
+        "DARKBLOOM_CONSTRAINT_SPANS", "DARKBLOOM_CBV2_MTP_GRAMMAR",
         "DARKBLOOM_KV_BACKEND_GUARD",
         "DARKBLOOM_MLX_CACHE_LIMIT_GB", "DARKBLOOM_MLX_MEMORY_RESERVE_GB",
         "DARKBLOOM_R2_CDN_URL",
@@ -522,10 +546,16 @@ public enum LaunchAgent: Sendable {
     /// would collapse a drain export back to `trust`. Config-backed `0` /
     /// `trust` remain excluded — `provider.toml` stays authoritative for
     /// whether the route runs, and `trust` is the default whenever it does.
-    static func passthroughEnvironment(from environment: [String: String]) -> [String: String] {
+    /// Keys `SDKFeatureDefaults` injected into this process are not the
+    /// operator's: they are left out, so the installed service applies the
+    /// running release's own defaults (`injected`).
+    static func passthroughEnvironment(
+        from environment: [String: String],
+        injected: Set<String> = SDKFeatureDefaults.injectedKeys
+    ) -> [String: String] {
         var out = GemmaOptimizationEnvironment.daemonDrainPassthrough(
             from: environment)
-        for key in passthroughEnvKeys {
+        for key in passthroughEnvKeys where !SDKFeatureDefaults.isInjected(key, in: environment, injected: injected) {
             if let value = environment[key], !value.isEmpty {
                 out[key] = value
             }

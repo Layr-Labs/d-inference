@@ -278,8 +278,9 @@ public final class ClusterPairingStore: @unchecked Sendable {
 
     /// Where a pairing's link key is now, without reading it.
     public enum LinkKeyLocation: Equatable, Sendable {
-        /// The Keychain item of this pairing, as the Keychain protects it.
-        case keychain(ClusterEdgeSecretItemProtection)
+        /// The Keychain item of this pairing, as the Keychain protects it; `legacyFileLeft` when 0.10.12's file is still
+        /// beside it (removed by the next process that reads the key).
+        case keychain(ClusterEdgeSecretItemProtection, legacyFileLeft: Bool)
         /// 0.10.12's file (not moved yet, or a build that keeps files).
         case file
         case missing
@@ -294,7 +295,8 @@ public final class ClusterPairingStore: @unchecked Sendable {
             let file: LinkKeyLocation = lstat(url.path, &info) == 0 ? .file : .missing
             guard let vault else { return file }
             switch vault.protection(peerPin: record.peerPin) {
-            case .success(let protection?) where protection.binding == Self.binding(of: record): return .keychain(protection)
+            case .success(let protection?) where protection.binding == Self.binding(of: record):
+                return .keychain(protection, legacyFileLeft: file == .file)
             case .success, .failure(.notEntitled): return file
             case .failure(.locked): return .keychainLocked
             case .failure(.status(let status)): return .keychainUnavailable(status)

@@ -126,10 +126,11 @@ public enum ClusterPairCommandLine {
     /// Where a pairing's link key is, as `--status` says it (never the key).
     static func linkKeyWords(_ location: ClusterPairingStore.LinkKeyLocation) -> String {
         switch location {
-        case .keychain(let protection):
+        case .keychain(let protection, let legacyFileLeft):
             let kept = protection.afterFirstUnlockThisDeviceOnly ? "this Mac only, readable after its first unlock, not synchronised"
                 : "kept as \(protection.accessible ?? "unknown")\(protection.synchronizable ? ", synchronised" : "")"
             return "in this Mac's Keychain (\(kept); access group \(protection.accessGroup ?? "unknown"))"
+                + (legacyFileLeft ? "; an earlier release's key file is still beside it and goes at the next start" : "; no key file")
         case .file: return "in its owner-only file (this build keeps no Keychain items, or it moves there at the next use)"
         case .missing: return "gone: the Macs must pair again"
         case .keychainLocked: return "in this Mac's Keychain, which is locked until someone logs in to this Mac"

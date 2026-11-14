@@ -203,7 +203,12 @@ extension PairingCheck {
         // A second name for the same file shows it was overwritten before it was removed.
         let witness = file.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("witness")
         expect(link(file.path, witness.path) == 0, "(setup) a hard link to the legacy file")
+        expectEqual(store.linkKeyLocation(for: record), .file, "before the first read, the key is 0.10.12's file")
         expectEqual(try? store.edgeSecret(for: record), outcome.edgeSecret, "the first read returns 0.10.12's secret")
+        guard case .keychain(let protection, legacyFileLeft: false) = store.linkKeyLocation(for: record) else {
+            expect(false, "after the move the key is in the Keychain, with no file"); return
+        }
+        expect(protection.afterFirstUnlockThisDeviceOnly, "as the Keychain reports it")
         expectEqual(secretFiles(store), [], "after migration no secret file remains")
         expectEqual(vault.item(outcome.peer.pin)?.secret, outcome.edgeSecret, "the secret is in the Keychain")
         expectEqual(vault.item(outcome.peer.pin)?.binding, ClusterPairingStore.binding(of: record), "bound to this pairing")
@@ -282,6 +287,7 @@ extension PairingCheck {
         else { expect(false, "commit"); return }
         vault.put(outcome.peer.pin, nil)
         expectEqual(storeError { try store.edgeSecret(for: record) }, .linkKeyMissing, "no item and no file: the key is missing")
+        expectEqual(store.linkKeyLocation(for: record), .missing, "and its location says so")
         // A corrupt or unsafe legacy file is refused, kept as it is, and never moved into the Keychain.
         for (name, bytes, permissions) in [("not hex", Data("not-a-secret\n".utf8), mode_t(0o600)),
                                            ("31 bytes", hexLine(Data(repeating: 7, count: 31)), mode_t(0o600)),
@@ -319,6 +325,7 @@ extension PairingCheck {
                "and says why: locked until someone logs in")
         expectEqual(contents(file), hexLine(outcome.edgeSecret), "the file is not touched")
         expectEqual(vault.count, 0, "nothing was stored")
+        expectEqual(store.linkKeyLocation(for: record), .keychainLocked, "the location says locked")
         let (other, _) = pairedOutcomes()
         expectEqual(storeError { try store.commit(other, edgeID: UUID()) }, .keychainLocked, "pairing while locked is refused")
         expectEqual((try? store.load())?.pairings.count, 1, "and changes no record")
@@ -348,6 +355,9 @@ extension PairingCheck {
         expectEqual(try? legacy.edgeSecret(for: record), outcome.edgeSecret, "0.10.12's way of reading gets the same secret")
         expectEqual(vault.item(outcome.peer.pin)?.secret, outcome.edgeSecret, "the item stays")
         // The release being rolled back still runs (its cluster service drives the rollback) and keeps reading.
+        if case .keychain(_, legacyFileLeft: true) = store.linkKeyLocation(for: record) {} else {
+            expect(false, "--status says a key file is beside the item after the write-back")
+        }
         let second = ClusterPairingStore(directory: store.directory, vault: vault)
         expectEqual(try? second.edgeSecret(for: record), outcome.edgeSecret, "a process started before the write-back reads the item")
         expectEqual(contents(file), hexLine(outcome.edgeSecret), "and leaves the written-back file for the release the rollback restores")

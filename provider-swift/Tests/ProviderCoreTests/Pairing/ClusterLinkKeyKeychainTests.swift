@@ -139,8 +139,11 @@ struct ClusterLinkKeyKeychainTests {
     @Test func pairStatusSaysWhereTheKeyIsWithoutIt() {
         let protection = ClusterEdgeSecretItemProtection(accessGroup: "SLDQ2GJ6TL.io.darkbloom.provider",
             accessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String, synchronizable: false, binding: "b")
-        #expect(ClusterPairCommandLine.linkKeyWords(.keychain(protection))
-            == "in this Mac's Keychain (this Mac only, readable after its first unlock, not synchronised; access group SLDQ2GJ6TL.io.darkbloom.provider)")
+        #expect(ClusterPairCommandLine.linkKeyWords(.keychain(protection, legacyFileLeft: false))
+            == "in this Mac's Keychain (this Mac only, readable after its first unlock, not synchronised; access group "
+               + "SLDQ2GJ6TL.io.darkbloom.provider); no key file")
+        #expect(ClusterPairCommandLine.linkKeyWords(.keychain(protection, legacyFileLeft: true))
+            .hasSuffix("an earlier release's key file is still beside it and goes at the next start"))
         #expect(ClusterPairCommandLine.linkKeyWords(.keychainLocked).contains("locked until someone logs in"))
         #expect(ClusterPairCommandLine.linkKeyWords(.missing).contains("pair again"))
         #expect(ClusterPairCommandLine.linkKeyWords(.file).contains("owner-only file"))

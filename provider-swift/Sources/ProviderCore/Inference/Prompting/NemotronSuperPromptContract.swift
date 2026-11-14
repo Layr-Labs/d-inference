@@ -92,7 +92,8 @@ enum NemotronSuperPromptContract {
             nestedEffort = try reasoning?.decodeIfPresent(String.self, forKey: .effort)
             budget = try reasoning?.decodeIfPresent(Int.self, forKey: .maxTokens)
             if let budget {
-                guard NativeReasoningBudget.isEnabled, NativeReasoningBudget.acceptsMaximumTokens(budget)
+                guard NativeReasoningBudget.isEnabled(for: .nemotronSuper),
+                      NativeReasoningBudget.acceptsMaximumTokens(budget)
                 else { throw Failure.unsupportedControl }
             }
         }

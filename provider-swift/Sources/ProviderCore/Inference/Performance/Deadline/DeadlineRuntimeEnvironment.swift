@@ -18,7 +18,8 @@ enum DeadlineRuntimeEnvironment {
     ]
 
     static func permitsQualification(_ environment: [String: String],
-        cacheIsolation: DeadlineQualificationCacheIsolation? = nil) -> Bool {
+        cacheIsolation: DeadlineQualificationCacheIsolation? = nil,
+        injected: Set<String> = SDKFeatureDefaults.injectedKeys) -> Bool {
         if let cacheIsolation {
             do { try cacheIsolation.validate(environment: environment) }
             catch { return false }

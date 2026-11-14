@@ -681,6 +681,84 @@ struct GemmaToolConstraintTests {
         #expect(start.duration(to: clock.now) < .seconds(3))
     }
 
+    /// Optional `a` (null) and optional `b`, the next level down, repeated
+    /// `depth` times: every `b` is reached both with and without `a` emitted
+    /// before it, so a grammar that copies a property's value per path doubles
+    /// at every level.
+    private func nestedOptionalParameters(depth: Int) -> MLXLMCommon.JSONValue {
+        var level: MLXLMCommon.JSONValue = .object(["type": .string("null")])
+        for _ in 0 ..< depth {
+            level = .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "a": .object(["type": .string("null")]),
+                    "b": level,
+                ]),
+            ])
+        }
+        return level
+    }
+
+    private func gemmaStateCount(_ parameters: MLXLMCommon.JSONValue) throws -> Int {
+        let compiled = try ToolConstraintSchemaCompiler.compile(
+            tools: [tool(parameters: parameters)], mode: .required)
+        var builder = GemmaByteNFABuilder()
+        return try builder.build(tools: compiled, allowsParallel: false).nodes.count
+    }
+
+    @Test("nested optional objects compile once per property, not once per path")
+    func nestedOptionalObjectsAreLinear() throws {
+        let shallow = try gemmaStateCount(nestedOptionalParameters(depth: 4))
+        let deep = try gemmaStateCount(nestedOptionalParameters(depth: 12))
+        // Three times the levels may cost about three times the states; a
+        // per-path copy costs 2^8 times as many.
+        #expect(deep < shallow * 4)
+
+        // The deepest shape the compiler accepts still compiles quickly.
+        let request = request(
+            choice: .mode(.required),
+            tools: [tool(parameters: nestedOptionalParameters(
+                depth: ToolConstraintSchemaCompiler.maxDepth))])
+        let prepared = try ToolChoicePromptPolicy.prepare(request)
+        let clock = ContinuousClock()
+        let start = clock.now
+        let built = try ToolConstraintFactory.make(
+            prepared: prepared,
+            request: request,
+            tokenizer: tokenizer,
+            modelContext: .init(
+                modelId: request.model, modelType: "gemma4_text"),
+            defaultMaxTokens: 512,
+            stopTokenIDs: [128])
+        #expect(built != nil)
+        #expect(start.duration(to: clock.now) < .seconds(3))
+    }
+
+    @Test("a grammar over the state limit is refused while it is built")
+    func stateLimitStopsConstruction() throws {
+        // Built directly, past the compiler's cost ceiling: eight objects of
+        // 128 properties, each a 32-value string enum (~800,000 states).
+        let names = (0 ..< 128).map { "property_\($0)" }
+        let leaf = ToolValueSchema.string(values: Array(names.prefix(32)), nullable: false)
+        let object = ToolValueSchema.object(
+            properties: names.map { .init(name: $0, schema: leaf, required: true) },
+            allowsAdditional: false, nullable: false)
+        let parameters = ToolValueSchema.object(
+            properties: (0 ..< 8).map { .init(name: "o\($0)", schema: object, required: true) },
+            allowsAdditional: false, nullable: false)
+        var builder = GemmaByteNFABuilder()
+        #expect(throws: GemmaByteNFABuilder.stateLimitError) {
+            _ = try builder.build(
+                tools: [CompiledToolSchema(name: "wide", parameters: parameters)],
+                allowsParallel: false)
+        }
+        // Stopped within one value of the limit rather than after the whole grammar.
+        #expect(builder.nodes.count < GemmaByteNFABuilder.maxStates + 10_000)
+        // The refusal detail clients receive through `invalidToolPayload`.
+        #expect(GemmaByteNFABuilder.stateLimitError == .unsupported(
+            "compiled tool grammar exceeds the 100000-state safety limit"))
+    }
+
     @Test("nullable branches count toward the grammar complexity ceiling")
     func nullableBranchesAreCharged() {
         var properties: [String: MLXLMCommon.JSONValue] = [:]
@@ -2610,4 +2688,12 @@ struct GemmaToolConstraintTests {
             unicodeConstraint.nextState(
                 state: unicodeState, tokenID: eos) == -1)
     }
+}
+
+// RED CONTROL ONLY (not for merge): the two names #2111 adds, with dev's values
+// (`GemmaToolCallTokenConstraint`'s post-build check), so its tests compile on dev.
+extension GemmaByteNFABuilder {
+    static let maxStates = 100_000
+    static let stateLimitError = ToolConstraintSchemaError.unsupported(
+        "compiled tool grammar exceeds the 100000-state safety limit")
 }

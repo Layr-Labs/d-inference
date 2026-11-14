@@ -1154,6 +1154,9 @@ public actor ProviderLoop {
     static func inferReasoningParser(for modelType: String?) -> ReasoningParserFormat {
         guard let type = modelType?.lowercased() else { return .qwen3 }
         if type == "gpt_oss" { return .harmony }
+        // Muse Glimmer's framed channels are split natively
+        // (`MuseGlimmerChannelSplitter`); no think-tag parser may reread them.
+        if MuseGlimmerModelPolicy.isModelType(type) { return .none }
         if type.hasPrefix("gemma") || type == "diffusion_gemma" { return .gemma4 }
         if type.hasPrefix("qwen") { return .qwen3 }
         if type.hasPrefix("deepseek") { return .deepseekR1 }

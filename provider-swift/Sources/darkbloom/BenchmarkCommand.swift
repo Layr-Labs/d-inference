@@ -300,11 +300,10 @@ struct Benchmark: AsyncParsableCommand {
             modelType: selectedModel.modelType, global: snapshot.config.backend.engineV2KVQuantization,
             byModel: snapshot.config.backend.engineV2KVQuantizationByModel,
             modelID: selectedModel.id, environment: ProcessInfo.processInfo.environment)
-        let checkpointPrecision = try EngineV2KVQuantizationPolicy.resolve(
+        let checkpointPrecision = try EngineV2KVQuantizationPolicy.resolveProviderCheckpoint(
             modelType: selectedModel.modelType, global: snapshot.config.backend.engineV2KVCheckpointQuantization,
             byModel: snapshot.config.backend.engineV2KVCheckpointQuantizationByModel,
-            modelID: selectedModel.id, environment: ProcessInfo.processInfo.environment,
-            purpose: .checkpoint)
+            modelID: selectedModel.id, environment: ProcessInfo.processInfo.environment)
         setenv(EngineV2KVQuantizationPolicy.environmentKey, precision.rawValue, 1)
 
         if let error = nativeBlockModeError(modelType: selectedModel.modelType) {

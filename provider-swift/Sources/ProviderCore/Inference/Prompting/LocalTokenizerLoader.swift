@@ -82,8 +82,9 @@ private struct LocalTokenizerBridge: @unchecked Sendable, MLXLMCommon.Tokenizer,
     private let upstream: any Tokenizers.Tokenizer
     private let chatTemplate: String?
     private let modelType: String?
-    /// Nemotron's filters, which every render uses.
-    private let nemotronFilters: [String: any Sendable]?
+    /// The family's own filters (Nemotron's, Muse Glimmer's), which every
+    /// render uses (`ReferenceTemplateFilters`).
+    private let referenceFilters: [String: any Sendable]?
     /// The renamed `string` filter of a family a request may render with
     /// Transformers' filters (`HFTemplateFilters`); the request's own wins.
     private let transformersBinding: [String: any Sendable]?
@@ -104,7 +105,7 @@ private struct LocalTokenizerBridge: @unchecked Sendable, MLXLMCommon.Tokenizer,
                 modelType: modelType, environment: environment)
         }
         self.modelType = modelType
-        nemotronFilters = NemotronTemplateFilters.additionalContext(modelType: modelType)
+        referenceFilters = ReferenceTemplateFilters.additionalContext(modelType: modelType)
         transformersBinding = HFTemplateFilters.bindingContext(modelType: modelType, environment: environment)
         if let promptCacheConfigurations, let template = self.chatTemplate,
             let pretrained = upstream as? PreTrainedTokenizer
@@ -112,7 +113,7 @@ private struct LocalTokenizerBridge: @unchecked Sendable, MLXLMCommon.Tokenizer,
             promptTokenCache = PromptTokenCache(
                 upstream: pretrained, configurations: promptCacheConfigurations,
                 chatTemplate: template,
-                selfCheckContext: nemotronFilters ?? transformersBinding,
+                selfCheckContext: referenceFilters ?? transformersBinding,
                 environment: environment)
         } else {
             promptTokenCache = nil
@@ -219,7 +220,7 @@ private struct LocalTokenizerBridge: @unchecked Sendable, MLXLMCommon.Tokenizer,
 
     private func effectiveContext(_ additionalContext: [String: any Sendable]?) -> [String: any Sendable]? {
         var effectiveContext = additionalContext ?? [:]
-        if let filters = nemotronFilters {
+        if let filters = referenceFilters {
             effectiveContext.merge(filters) { _, referenceFilter in referenceFilter }
         }
         if let binding = transformersBinding {

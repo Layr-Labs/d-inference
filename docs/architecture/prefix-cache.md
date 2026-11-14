@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-11-12
+> Last updated: 2026-11-14
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -246,6 +246,66 @@ their existing provider reservation path. See
 
 The [provider integration report](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reports/2026-09-05-paged-complete-provider.md)
 records factory and ownership tests, with exact-model and release gates still open.
+
+### Muse Glimmer 30B
+
+The two exact identities in `MuseGlimmerModelPolicy` default to SSD prefix
+caching (`PrefixCachePolicy+Activation.swift`); the type under any other id
+does not. The text tower is attention only and declares complete
+historical-attention checkpoints (`CBv2HistoricalAttentionCheckpointProviding`),
+so `prepareCompletePrefixCache` builds the complete encrypted SSD store with no
+model-specific provider code, on the paged backend it is served on
+([inference](inference.md#native-muse-glimmer-30b)). The store is built only
+when the runtime identity is complete: the verified load hash, the served
+prompt contract, the binary hash and the digest of the metallib bound before
+GPU work. A process that never bound one (`bindRuntimeMetallibForMLX`, which
+`darkbloom start` does) reports `runtime_identity_unavailable` and serves
+without the cache.
+
+Checkpoint rows are native, so a restored request continues exactly as its cold
+run (`EngineV2KVQuantizationPolicy.resolveProviderCheckpoint`). Measured on one
+six-turn conversation, `balanced` rows changed the emitted tokens on 3 of 5
+restored turns and native rows on none. The global
+`engine_v2_kv_checkpoint_quantization` does not apply to this type; its own
+per-model entry or `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` still selects a
+profile, as for Nemotron 3.5 Super.
+
+The SDK cuts every prompt of this type on a fixed 1,024-token grid
+(`CBv2ModelCapabilities.prefillChunkAlignment`,
+`MuseGlimmerTextModel.defaultPrefillChunkAlignment`): only at a multiple of
+1,024, at the prompt end or at a boundary the restore plan requires, and each
+cell runs whole or waits, so neither concurrent load nor another request's
+drafter moves a cut or a prompt's bytes. The grid is the checkpoint capture
+stride (`CBv2RecurrentCheckpointGeometry.recordHistorical`): the 2,048-token
+sliding window's ring keeps no row behind a range end
+(`PagedKVPool.ringPageCount`, `CBv2HistoricalWindow.reservationBytes`), so a
+checkpoint lands at a cell end. A growing conversation reuses the deepest
+multiple of 1,024 below an earlier turn's prompt end, and cold and restored
+requests run on the same grid. The solo stripe cuts none of these prompts: its
+1,024-token default (`EngineV2Factory.museGlimmerSoloPrefillStripeTokens`) sizes
+the paged pool's prompt write to one cell, and a plain-chunk or stripe setting
+that leaves that write below a cell or off its multiples refuses the load
+(`EngineV2Factory.validatePrefillGrid`, `prefillGridUnfit`). The type has no entry
+in the demanded short-checkpoint or latest-checkpoint policy
+(`EngineV2Factory+DemandedCheckpoint.swift`): their 256-token boundaries are not
+on the grid, and grid rows take no demanded range.
+
+The tower serves one numerics profile, the SDK's row-exact windows, turned on
+by `MuseGlimmerServingLoad.enableExactWindows` for every load, with or without a
+drafter. The checkpoint identity carries the tower's own `numericsProfile` as
+`museGlimmer.numericsProfile` (`EngineV2SlotFactory.completeCheckpointNumerics`),
+and a tower that reports anything but `MuseGlimmerModelPolicy.servedNumericsProfile`
+gets no store (`runtime_identity_unavailable`). The pinned drafter's
+request state is advisory under exact acceptance
+(`CBv2MTPAdvisoryHistoryDrafter.requestStateIsAdvisory`), so it classifies as
+`CompleteCheckpointAssistant.advisory`: checkpoints keep the target-only
+historical layout and fingerprint fields and carry no drafter history, and exact
+acceptance keeps a restored request's output equal to its cold run. The identity
+still records MTP enablement, depth and verification, so checkpoints written with
+and without the drafter, or under fixed and adaptive depth, never mix. Under an
+operator `typical` acceptance the state is not advisory and the slot gets no
+checkpoints, as for any persistent drafter it cannot encode. An advisory drafter
+on a recurrent target is refused the same way.
 
 ### Block hashing
 

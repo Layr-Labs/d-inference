@@ -1383,7 +1383,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             answerStopFilter: answerStopFilter,
             answerFormat: jsonAnswer?.format,
             withholdReasoning: withholdsReasoning,
-            rewriteHarmonyFinalHeaders: HarmonyFinalHeaderFilter.applies(to: request, modelId: modelId, modelType: modelType)
+            rewriteHarmonyFinalHeaders: HarmonyFinalHeaderFilter.applies(to: request, modelId: modelId, modelType: modelType),
+            nativeGlimmerChannels: MuseGlimmerModelPolicy.isModelType(modelType)
         )
     }
 
@@ -1766,7 +1767,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         answerStopFilter: FlintAnswerStopFilter? = nil,
         answerFormat: JSONAnswerFormat? = nil,
         withholdReasoning: Bool = false,
-        rewriteHarmonyFinalHeaders: Bool = false
+        rewriteHarmonyFinalHeaders: Bool = false,
+        nativeGlimmerChannels: Bool = false
     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         do {
             try checkFirstContentDeadline()
@@ -1796,7 +1798,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 answerStopFilter: answerStopFilter,
                 answerFormat: answerFormat,
                 withholdReasoning: withholdReasoning,
-                rewriteHarmonyFinalHeaders: rewriteHarmonyFinalHeaders)
+                rewriteHarmonyFinalHeaders: rewriteHarmonyFinalHeaders,
+                nativeGlimmerChannels: nativeGlimmerChannels)
             try checkFirstContentDeadline()
             return stream
         } catch {
@@ -1835,7 +1838,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         answerStopFilter: FlintAnswerStopFilter? = nil,
         answerFormat: JSONAnswerFormat? = nil,
         withholdReasoning: Bool = false,
-        rewriteHarmonyFinalHeaders: Bool = false
+        rewriteHarmonyFinalHeaders: Bool = false,
+        nativeGlimmerChannels: Bool = false
     ) throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         // One forwarding implementation preserves all parser/event bytes. The
         // native path changes only task ownership and cancellation handoff.
@@ -1866,7 +1870,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     nativeMiMoThinkingEnabled: nativeMiMoThinkingEnabled,
                     nativeMiMoRequiresConstraint: nativeMiMoChannels && prepared.mode.requiresInferenceConstraint,
                     absorbStrayThinkClose: absorbStrayThinkClose,
-                    withholdReasoning: withholdReasoning, streamedCalls: prepared)
+                    withholdReasoning: withholdReasoning, streamedCalls: prepared,
+                    nativeGlimmerChannels: nativeGlimmerChannels)
                 // Withheld reasoning must not return as logprob entry tokens. A
                 // prompt that opens the thought (GLM with thinking on, which
                 // seeds the native channel with an open block) starts inside it.
@@ -1874,6 +1879,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     ? WithheldReasoningLogprobsFilter(
                         startsInThought: nativeReasoningPrefix == ReasoningPromptProbe.thinkOpen)
                     : nil
+                // That filter reads think tags. Muse Glimmer's reasoning is a
+                // framed message it cannot tell from the answer, so a request
+                // that declines reasoning gets no logprob entries at all,
+                // never its withheld reasoning's.
+                let withholdsEveryLogprob = nativeGlimmerChannels && withholdReasoning
                 // Raw output passes this holdback before channel/tool parsing,
                 // so a matched answer stop and its tail are never parsed.
                 var answerStops = answerStopFilter
@@ -1954,7 +1964,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     }
                     switch event {
                     case .logprobs(let entries):
-                        guard let engineV2Logprobs else { continue }
+                        guard let engineV2Logprobs, !withholdsEveryLogprob else { continue }
                         let requested = engineV2Logprobs.requested(entries)
                         let visible = reasoningLogprobs?.visible(requested) ?? requested
                         // Before the chunk these entries precede, as the frames
@@ -2326,7 +2336,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         absorbStrayThinkClose: Bool = false,
         answerStopFilter: FlintAnswerStopFilter? = nil,
         answerFormat: JSONAnswerFormat? = nil,
-        rewriteHarmonyFinalHeaders: Bool = false
+        rewriteHarmonyFinalHeaders: Bool = false,
+        withholdReasoning: Bool = false,
+        nativeGlimmerChannels: Bool = false
     ) throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         try makeEventStream(upstream: upstream, cancelUpstream: cancelUpstream,
             toolHandler: toolHandler, prepared: prepared, releaseBox: releaseBox,
@@ -2335,7 +2347,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             preserveInnerReasoningSpans: preserveInnerReasoningSpans,
             promotesTrailingReasoningCalls: promotesTrailingReasoningCalls, absorbStrayThinkClose: absorbStrayThinkClose,
             answerStopFilter: answerStopFilter, answerFormat: answerFormat,
-            rewriteHarmonyFinalHeaders: rewriteHarmonyFinalHeaders)
+            withholdReasoning: withholdReasoning,
+            rewriteHarmonyFinalHeaders: rewriteHarmonyFinalHeaders,
+            nativeGlimmerChannels: nativeGlimmerChannels)
     }
     #endif
 

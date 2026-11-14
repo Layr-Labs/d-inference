@@ -27,6 +27,10 @@
 //                       (`GLM5NextCoordinatorServing.catalogModelID`); its load
 //                       still requires the catalog identity, hardware gate and
 //                       embedded MTP. The local download stays local-only.
+//   * `muse_glimmer` — only the exact identities of `MuseGlimmerModelPolicy`
+//                       (the catalog id and the pinned NVIDIA download),
+//                       staged by `MuseGlimmerServingLoad` and served text
+//                       only on paged KV; the type alone stays unsupported.
 //   * `nemotron_h_omni` — only the exact registry id
 //                       `NemotronSuperServingPolicy.modelID`, served by the
 //                       managed Super load; the type alone stays unsupported.
@@ -88,6 +92,8 @@ public enum EngineV2SupportedModels {
         }
         switch normalized(model.modelType) {
         case "nemotron_h": return isNemotron35ListingModelID(model.id)
+        case MuseGlimmerModelPolicy.modelType:
+            return MuseGlimmerModelPolicy.matches(modelId: model.id, modelType: model.modelType)
         case NemotronSuperServingPolicy.modelType:
             return NemotronSuperServingPolicy.isServingIdentity(modelID: model.id, modelType: model.modelType)
         default: return isSupported(modelType: model.modelType)

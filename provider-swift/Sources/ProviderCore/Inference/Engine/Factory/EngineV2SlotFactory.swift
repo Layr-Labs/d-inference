@@ -219,10 +219,10 @@ enum EngineV2SlotFactory {
         let kvPrecision = try EngineV2KVQuantizationPolicy.resolve(
             modelType: modelType, global: kvQuantizationConfig,
             byModel: kvQuantizationConfigByModel, modelID: modelId, environment: environment)
-        let checkpointPrecision = try EngineV2KVQuantizationPolicy.resolve(
+        let checkpointPrecision = try EngineV2KVQuantizationPolicy.resolveProviderCheckpoint(
             modelType: modelType, global: checkpointQuantizationConfig,
             byModel: checkpointQuantizationConfigByModel, modelID: modelId,
-            environment: environment, purpose: .checkpoint)
+            environment: environment)
         environment[EngineV2KVQuantizationPolicy.environmentKey] = kvPrecision.rawValue
         logInfo("engine_v2: \(modelId) live KV precision \(kvPrecision.rawValue)")
         // Check explicit fixture ownership before any cache or model preparation.
@@ -287,7 +287,15 @@ enum EngineV2SlotFactory {
             usesRequestStatefulDrafter:
                 assistantHandle?.drafter is any CBv2MTPRequestStatefulDrafter,
             modelID: modelId,
-            hasBenchmarkVerificationOverride: assemblyOverrides.gemmaMTPVerification != nil)
+            hasBenchmarkVerificationOverride: assemblyOverrides.gemmaMTPVerification != nil,
+            environment: environment)
+        if MuseGlimmerModelPolicy.matchesModelID(modelId),
+            let unrecognized = MTPAutomaticVerificationPolicy.museGlimmerDraftDepth(
+                environment: environment).unrecognized {
+            logWarning(
+                "engine_v2: unrecognized \(MTPAutomaticVerificationPolicy.museGlimmerDraftDepthEnvironmentKey) "
+                    + "value \"\(unrecognized)\" for \(modelId) — using \"fixed\"")
+        }
         let mtpAcceptance = MTPAcceptancePolicy.resolve(
             global: mtpAcceptanceConfig, byModel: mtpAcceptanceConfigByModel, modelID: modelId)
         if let unrecognized = mtpAcceptance.unrecognized {
@@ -601,6 +609,8 @@ enum EngineV2SlotFactory {
                 modelID: modelId, modelType: modelType,
                 nativeContextTokens: sizing.maxContextLength, environment: environment)
                 ?? Bonsai9BModelPolicy.contextLimit(modelId: modelId, modelType: modelType,
+                    nativeContextTokens: sizing.maxContextLength)
+                ?? MuseGlimmerModelPolicy.contextLimit(modelId: modelId, modelType: modelType,
                     nativeContextTokens: sizing.maxContextLength)
                 ?? (preparedBackend?.performanceProfile == nil && deadlineProfile == nil ? nil : sizing.maxContextLength),
             pagedPageSize: preparedBackend?.pagedPoolConfig?.pageSize,

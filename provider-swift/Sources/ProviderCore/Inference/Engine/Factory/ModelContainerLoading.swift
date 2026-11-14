@@ -87,6 +87,10 @@ enum ModelContainerLoading {
         guard !GLM5NextPromptPolicy.applies(modelType: base.modelType) else {
             throw GLM5NextManagedLoadError.managedLoadRequired
         }
+        // No SDK factory builds this model; its pinned installer does.
+        if MuseGlimmerModelPolicy.isModelType(base.modelType) {
+            return try await MuseGlimmerServingLoad.container(from: directory)
+        }
         let selection = factorySelection(at: directory, modelID: modelID)
         guard selection != .nativeMiMo else { throw MiMoV26ServingLoadError.managedLoadRequired }
         let adopted = try Qwen4ExpPLEResidency.adoptForLoadIfQwen4Exp(directory: directory)

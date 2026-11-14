@@ -13,6 +13,14 @@ extension EngineV2Factory {
     public static let defaultSoloPrefillStripeTokens = 2048
     /// Dense recurrent prefill can use a larger stripe without MoE tile limits.
     public static let defaultDenseQwenSoloPrefillStripeTokens = 4096
+    /// Muse Glimmer's prompt grid (`MuseGlimmerTextModel.defaultPrefillChunkAlignment`,
+    /// 1,024 tokens): the SDK cuts every prompt of the model at its multiples,
+    /// whatever the load (`CBv2ModelCapabilities.prefillChunkAlignment`), and
+    /// its complete checkpoints are captured on it. The stripe cuts no such
+    /// prompt; it sizes the paged pool's prompt write to one grid cell
+    /// (`pagedPrefillChunkTokens`, checked by `validatePrefillGrid`), below the
+    /// 2,048-token sliding window.
+    public static let museGlimmerSoloPrefillStripeTokens = MuseGlimmerTextModel.defaultPrefillChunkAlignment
 
     public static let maxPartialPrefillsKey = "DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS"
     public static let defaultMaxConcurrentPartialPrefills: Int? = 1
@@ -52,10 +60,34 @@ extension EngineV2Factory {
         return value
     }
 
+    /// The longest prompt write a paged pool built from `scheduler` takes:
+    /// its window rings and prefill scratch are sized from it.
+    static func pagedPrefillChunkTokens(_ scheduler: CBv2SchedulerConfig) -> Int {
+        max(scheduler.prefillChunkSize, scheduler.soloPrefillStripeTokens ?? 0)
+    }
+
+    /// A model that cuts prompts on a grid (`CBv2ModelCapabilities.prefillChunkAlignment`)
+    /// writes one grid cell at a time, so the paged pool's prompt write must be
+    /// a positive multiple of the cell. A plain chunk or stripe that leaves it
+    /// otherwise (`DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE=0`, a stripe or chunk off
+    /// the grid) refuses the load; the model never serves on other cuts. The
+    /// step budget needs no check: a step always carries one cell.
+    static func validatePrefillGrid(
+        capabilities: CBv2ModelCapabilities, scheduler: CBv2SchedulerConfig
+    ) throws {
+        guard let alignment = capabilities.prefillChunkAlignment else { return }
+        let poolChunk = pagedPrefillChunkTokens(scheduler)
+        guard alignment > 0, poolChunk >= alignment, poolChunk % alignment == 0 else {
+            throw EngineV2ProductionError.prefillGridUnfit(alignment: alignment, pagedPrefillChunk: poolChunk)
+        }
+    }
+
     static func defaultSoloPrefillStripeTokens(
         for model: (any LanguageModel)?
     ) -> Int {
-        isDenseQwen35(model) ? defaultDenseQwenSoloPrefillStripeTokens : defaultSoloPrefillStripeTokens
+        if isDenseQwen35(model) { return defaultDenseQwenSoloPrefillStripeTokens }
+        if model is MuseGlimmerTextModel { return museGlimmerSoloPrefillStripeTokens }
+        return defaultSoloPrefillStripeTokens
     }
 
     /// MoE subclasses the dense target, so exclude it explicitly.

@@ -2419,7 +2419,7 @@ elapsed nanoseconds. Numerics only — never tokens, text or hashes
 | `maxConcurrentRequests` | `engine_v2_max_concurrent` (default and clamp: [`../provider/cli-reference.md#providertoml-keys-read-by-the-cli`](../provider/cli-reference.md#providertoml-keys-read-by-the-cli); per-model map `engine_v2_max_concurrent_by_model`) | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`, `productionSchedulerConfig` |
 | `prefillChunkSize` / `maxBatchedTokensPerStep` | 2048 / 4096 (`widePrefillChunkTokens`; the step defaults to twice the chunk) for Gemma 4 (`usesWidePrefillChunk`); 512 / 2048 (`CBv2SchedulerConfig` init defaults) for every other family; `DARKBLOOM_CBV2_PREFILL_CHUNK`, `DARKBLOOM_CBV2_STEP_TOKENS` | `EngineV2Factory+Configuration.swift` (`prefillGeometry`) |
 | `maxWaiting` | 64 (`CBv2SchedulerConfig` init default) | `CBv2Contracts.swift`, `CBv2SchedulerConfig` |
-| `soloPrefillStripeTokens` | 4096 for dense Qwen3.5/3.8 (`Qwen35Model`, not `Qwen35MoEModel`); 2048 (`defaultSoloPrefillStripeTokens`) for families on the 512-token chunk; none for Gemma 4, because a stripe arms only above the plain chunk; `DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE` | `EngineV2Factory+Configuration.swift` (`soloPrefillStripeTokens`) |
+| `soloPrefillStripeTokens` | 4096 for dense Qwen3.5/3.8 (`Qwen35Model`, not `Qwen35MoEModel`); 1024 for Muse Glimmer (`museGlimmerSoloPrefillStripeTokens`: one cell of the SDK's prompt grid, which cuts its prompts instead; off-grid settings refuse the load, see [prefix cache](prefix-cache.md#muse-glimmer-30b)); 2048 (`defaultSoloPrefillStripeTokens`) for families on the 512-token chunk; none for Gemma 4, because a stripe arms only above the plain chunk; `DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE` | `EngineV2Factory+Configuration.swift` (`soloPrefillStripeTokens`) |
 | `bidirectionalMediaPrefillChunkCeiling` | 512 whenever the plain chunk is wider, otherwise unset | `EngineV2Factory+Configuration.swift` (`prefillGeometry`); `CBv2Contracts.swift` (`plainPrefillChunkSize`) |
 | `demandedLatestCheckpointMinimumTokens` | The paged complete store's effective-token floor for dense Qwen3.5/3.8 (`Qwen35Model`, not `Qwen35MoEModel`), otherwise unset: a range ends just below the prompt end when that saves at least the floor ([end-of-prompt boundary](prefix-cache.md#streamed-complete-checkpoints)) | `EngineV2Factory+DemandedCheckpoint.swift` (`demandedLatestCheckpointMinimumTokens`) |
 | `maxConcurrentPartialPrefills` | 1; `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS` | `EngineV2Factory+Configuration.swift`, `maxPartialPrefillsKey` |
@@ -3060,7 +3060,9 @@ memory-ineligible assistants preserve target-only serving; explicit `off` and
 `MTPAutomaticVerificationPolicy`: `initialDraftTokens = 1`;
 `fixedDraftTokens = nil` for request-stateful drafters (controller bounded by
 the assistant: Qwen 0…4, Nemotron 0…7)
-and exact stateless `gemma-4-26b-qat-4bit` (controller bounded to 0…1).
+and exact stateless `gemma-4-26b-qat-4bit` (controller bounded to 0…1); the
+two Muse Glimmer 30B identities are fixed at `7` unless
+`DARKBLOOM_MTP_MUSE_GLIMMER_DEPTH=adaptive` (controller bounded to 0…7).
 Other stateless assistants and explicit offline Gemma verification controls
 retain fixed depth `1`; `maxRectangularTokens = 8` on
 M3/M4/M5 and `4` on M1/M2/unknown, lowered only by
@@ -4485,6 +4487,7 @@ as it is, or passes the request's body on unchanged.
 | Nemotron 3.5 Lightning | a thinking switch | `none` switches thinking off; any other effort keeps the template's default (on) | `MultiModelBatchSchedulerEngine.templateAdditionalContext` |
 | GPT-OSS | Harmony's `low`, `medium` (its default) and `high`; no thinking switch | `none`, `minimal` and `low` render `low`, `medium` renders `medium`, `high`, `xhigh` and `max` render `high`. OpenRouter's traffic is capped at `medium` by the coordinator's service cap (darkbloom-platform#721, #703's rule), which must be live before any Mac runs this table (below) | `ReasoningEffort.harmonyLevel`, `ReasoningEffortPolicy.templateEffort` |
 | Flint | none: Flint decides whether to reason | Every effort is taken, with no effect | `FlintRequestPolicy` |
+| Muse Glimmer 30B (`muse_glimmer`) | `Reasoning strength:` `low`, `medium`, `high` (its default) and `xhigh`; no thinking switch | `none`, `minimal` and `low` render `low`, `medium` renders `medium`, `high` renders `high`, `xhigh` and `max` render `xhigh`. A thinking switch set to off (`reasoning.enabled`, else `enable_thinking`) renders `low` whatever effort comes with it | `ReasoningEffort.museGlimmerStrength` (`MuseGlimmerRequestPolicy.templateContext`) |
 
 An effort that is none of the names is refused on any model that reasons,
 with `MultiModelBatchSchedulerEngineError.unsupportedReasoningEffort(field)`
@@ -4522,7 +4525,7 @@ served.
 The coordinator maps every effort from a copy of these tables: darkbloom-platform's
 ingress refusal, first-party pool and prompt sidecar, which plans these prompts
 for cache-aware routing. `fixtures/prompt-contract/v1/reasoning_effort_vectors.json`
-is the agreement test, the provider's reading of 446 requests: every family and
+is the agreement test, the provider's reading of 475 requests: every family and
 every type that reasons, every effort in both fields, other spellings, an effort
 that is none of the names, and both fields together. It also lists the sets
 these tables keep (the types that reason, the Qwen 3.5 template family's, the
@@ -4742,7 +4745,7 @@ Quantization is detected by name, in order: `4bit`|`q4`|`int4` → `4bit`;
 (`provider-swift/Sources/ProviderCore/Models/ModelScanner+Discovery.swift`,
 `detectQuantization`). Weight precision is independent of live KV and checkpoint
 precision. `EngineV2KVQuantizationPolicy` defaults to native live execution and
-separately requests balanced checkpoint storage (native for `nemotron_h`). Native `auto` backend selection
+separately requests balanced checkpoint storage (native for `nemotron_h` and `muse_glimmer`). Native `auto` backend selection
 is unchanged; storage compression never forces paging. Eligible native paged
 and contiguous checkpoints encode older attention rows and restore into native
 state, preserving exact recent and recurrent/auxiliary state. Older reconstructed
@@ -5768,6 +5771,100 @@ Sources: `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Flint/`,
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Production.swift`,
 and [SDK notices](../../libs/mlx-swift-lm/ThirdPartyNotices/Flint.md) (Prince Canuma/mlx-vlm, MIT;
 Recursive rec, Apache-2.0, immutable revisions and full license texts).
+
+### Native Muse Glimmer 30B
+
+`model_type: muse_glimmer` is served for two exact identities only, the catalog
+id `muse-glimmer-30b` and the local id `nvidia/Muse-Glimmer-30B-NVFP4`
+(`MuseGlimmerModelPolicy`, `EngineV2SupportedModels.isSupported(model:)`); the
+type under any other id is not advertised. No SDK model factory builds it.
+`MuseGlimmerServingLoad` calls the SDK's `MuseGlimmerInstallation.stage`, which
+verifies the pinned NVIDIA revision (the index and every shard by SHA-256) and
+installs the projections it reads from the verified shard headers, inside the
+slot owner's ordinary LOAD claim and weight-hash bracket. The model is text
+only here: the vision tower is verified and left unloaded, and
+`ModelMediaPolicy.advertisesMedia` is false for the type, so its retained
+`vision_config` selects neither media nor the vision factory.
+
+The text tower is attention only, with sliding and full layers. Its
+`cbv2LayerKinds` and capabilities drive `ProductionModelAdapter` and the sizing
+snapshot's KV rate. It is served only on paged attention, as Flint is:
+`EngineV2KVBackendPolicy` resolves automatic to paged for the identity, and
+`EngineV2Factory.prepareProductionBackend` refuses the load, keyed on the
+loaded model's `requiresPagedKV` capability, when a contiguous selection, the
+paged kill switch or the crash-loop guard would serve it contiguous. The engine
+steps it through the SDK's `MuseGlimmerCBv2Adapter`
+(`EngineV2Factory.steppableModel`) instead of the generic
+`CBv2SteppableLanguageModelAdapter`, on which a request-stateful drafter never
+activates for an attention-only target; without a drafter both serve the same
+tokens. The SSD prefix
+cache defaults on for the identity and stores complete historical-attention
+checkpoints ([prefix cache](prefix-cache.md#muse-glimmer-30b)).
+
+Requests render the served chat template: the publisher's text with the date
+taken from the request (`PromptRenderDate`) and one call argument parenthesized
+so that minijinja, the coordinator's renderer, compiles it (no rendered byte
+changes), Python-compatible `tojson`
+(`PythonJSONTemplateFilter`, bound to this type by `MuseGlimmerTemplateFilters`)
+and history normalization (`MuseGlimmerTemplateFix`). Tool-call arguments in
+history that are not a JSON object replay as an empty mapping. Reasoning effort
+becomes the template's `reasoning_strength` ([table](#reasoning-effort)).
+Omitted sampling fields take the model card's values: temperature 1.0, top-p
+0.95, top-k 64 (`EngineV2SamplingDefaults`).
+
+The model writes framed channels. `MuseGlimmerChannelSplitter`, routed by
+`NativeToolStreamRouter` (`nativeGlimmerChannels`), sends the reasoning channel
+to `reasoning_content`, the answer channel to `content`, and each ATEM invoke on
+a tool channel through `MuseGlimmerToolFrame` to the ATEM parser and the
+declared tools' validation, then to `tool_calls`; no framing reaches the client,
+and `ProviderLoop.inferReasoningParser` selects no think-tag parser for the type.
+A rejected call (undeclared name, wrong type, missing required argument) fails
+the request: `toolChoiceViolation` (HTTP 422) when a call was forced, otherwise
+`generationFailed` (HTTP 500), as for Flint, GLM and MiMo. A request cut by its
+token limit inside a frame ends with what was complete, without that check.
+Declined reasoning (`reasoning.exclude`, `include_reasoning: false`,
+`reasoning.enabled: false`) is generated, counted and withheld; such a request
+gets no logprob entries at all, because a logprob cannot be told apart by
+channel before the splitter reads its frame
+(`MuseGlimmerRequestPolicy.withholdsReasoning`).
+
+Every load turns on the SDK's exact windows right after staging
+(`MuseGlimmerServingLoad.enableExactWindows`), drafter or not: each decode or
+verify row then gets the projection and norm bytes it gets alone, at any row
+count, while prompt chunks keep MLX's arithmetic on the model's fixed 1,024-token
+grid (`prefillChunkAlignment`), so load does not move a prompt's bytes. The tower so has one numerics
+profile, the one `MuseGlimmerModelPolicy.servedNumericsProfile` names. A tower
+that cannot (`MuseGlimmerRowExactError`), or that reports another profile, fails
+the load rather than serve MLX's kernels.
+
+MTP intent is automatic for the identity (`MTPMode.isAutomaticExternalTarget`)
+and acceptance is exact (`MTPAcceptancePolicy.builtInIsExact`).
+`SpecDecArtifactFunnel` admits the two identities only, and the store's verified
+artifact (`SpecDecLimits` unchanged) binds through `MuseGlimmerDrafterBinding`:
+the SDK's `MuseGlimmerDFlashDraftModel.load` checks it against the pinned
+quantized DFlash drafter (`.museGlimmer30BQuantized`), a second check
+independent of the store's digests, so other bytes fail closed (`loadFailed`)
+even when a catalog publishes them. The drafter's settings
+(`MuseGlimmerDFlashDrafter.Settings.verifying`, one speculative row) require
+rectangular-exact verification on the exact tower: one target window scores each
+round, its columns attended as rows of one paged decode dispatch per layer, and
+accepted rows commit one by one. The drafter also requires exact acceptance: under
+an operator `typical` setting its requests run target only. Depth is fixed at seven
+(`MuseGlimmerModelPolicy.maximumDraftTokens`); `DARKBLOOM_MTP_MUSE_GLIMMER_DEPTH=adaptive`
+selects the adaptive controller bounded by seven
+(`MTPAutomaticVerificationPolicy.draftDepthPolicy`). Admission is the generic
+bounded charge: fixed bytes per request, none per token. A missing, invalid or
+incompatible artifact keeps target-only serving.
+
+Sources: `provider-swift/Sources/ProviderCoreFoundation/MuseGlimmerModelPolicy.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MuseGlimmerServingLoad.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BackendPreparation.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Prompting/MuseGlimmerRequestPolicy.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Prompting/MuseGlimmerTemplateFix.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Streaming/MuseGlimmerChannelSplitter.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Streaming/MuseGlimmerToolFrame.swift`,
+`provider-swift/Sources/ProviderCoreFoundation/PythonJSONTemplateFilter.swift`,
+and `libs/mlx-swift-lm/Libraries/MLXLLM/Models/MuseGlimmer/`.
 
 ## Related
 

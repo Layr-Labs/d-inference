@@ -38,6 +38,8 @@ extension ModelBenchmark {
             // Flint is served only on paged attention; scalar generate would
             // run its non-paged scalar caches.
             || modelType == "flint"
+            // Muse Glimmer has no contiguous form to generate on.
+            || MuseGlimmerModelPolicy.isModelType(modelType)
     }
 
     static func decodedModelType(from data: Data) throws -> String? {

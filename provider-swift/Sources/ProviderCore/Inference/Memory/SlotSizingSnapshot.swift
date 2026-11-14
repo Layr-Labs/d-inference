@@ -138,6 +138,8 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
                 rate = fp16KVBytesPerToken(layerKinds: gemma.cbv2LayerKinds)
             case let gptoss as GPTOSSModel:
                 rate = fp16KVBytesPerToken(layerKinds: gptoss.cbv2LayerKinds)
+            case let glimmer as MuseGlimmerTextModel:
+                rate = fp16KVBytesPerToken(layerKinds: glimmer.cbv2LayerKinds)
             case let gemma as MLXVLM.Gemma4:
                 // Direct ownership makes the loaded tower engine truth with
                 // no config re-decode or second topology that can drift.

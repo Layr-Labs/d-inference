@@ -14,6 +14,8 @@ enum EngineV2ProductionError: Error, CustomStringConvertible {
     case pagedUnavailable(String)
     case invalidPagedPoolDType(String)
     case invalidDecodeStepsBetweenChunks(key: String, value: String, maximum: Int)
+    /// The model cuts prompts on a grid the paged pool's prompt write cannot hold.
+    case prefillGridUnfit(alignment: Int, pagedPrefillChunk: Int)
 
     var description: String {
         switch self {
@@ -30,6 +32,11 @@ enum EngineV2ProductionError: Error, CustomStringConvertible {
         case .invalidDecodeStepsBetweenChunks(let key, let value, let maximum):
             return "engine_v2: \(key)=\"\(value)\" is not a decode-step count "
                 + "(expected an integer from 0 to \(maximum))"
+        case .prefillGridUnfit(let alignment, let chunk):
+            return "engine_v2: the model cuts prompts into \(alignment)-token cells, and the paged "
+                + "pool's prompt write of \(chunk) tokens (the larger of "
+                + "\(EngineV2Factory.prefillChunkKey) and \(EngineV2Factory.soloPrefillStripeKey)) "
+                + "is not a positive multiple of one"
         }
     }
 }
@@ -357,7 +364,7 @@ extension EngineV2Factory {
                 cacheProvider = CBv2LayerCacheBank(caches: caches)
             }
         } else {
-            steppable = CBv2SteppableLanguageModelAdapter(model)
+            steppable = steppableModel(model)
             cacheProvider = CBv2LayerCacheBank(caches: caches)
         }
         let engine = EngineV2(
@@ -426,5 +433,18 @@ extension EngineV2Factory {
             build.glm5NextMaximumContextTokens = (model as? GLM5NextProtectedModel)?.maximumContextLength
         }
         return build
+    }
+}
+
+extension EngineV2Factory {
+    /// The engine's view of an ordinary (not GLM) target. Muse Glimmer takes
+    /// its own adapter: it is the one on which the round driver accepts a
+    /// request-stateful drafter for an attention-only target, and its prompt
+    /// forward keeps the drafter's hidden rows. It wraps the same model and
+    /// forwards plain decode and prefill to the same calls, so without a
+    /// drafter it serves the same tokens.
+    static func steppableModel(_ model: any LanguageModel) -> any CBv2SteppableModel {
+        if let glimmer = model as? MuseGlimmerTextModel { return MuseGlimmerCBv2Adapter(glimmer) }
+        return CBv2SteppableLanguageModelAdapter(model)
     }
 }

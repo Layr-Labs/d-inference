@@ -1,6 +1,6 @@
 # Model registry format
 
-> Last updated: 2026-11-13
+> Last updated: 2026-11-14
 
 Exact shapes for everything the model registry stores or accepts: the
 `manifest.json` a publisher uploads to R2, the registration and admin requests,
@@ -469,6 +469,19 @@ means R2-only for a new version and preserves the stored source on retry.
 | Weight format | Official group-64 affine INT4 projections/experts, INT8 embeddings and BF16 sensitive tensors, or documented BF16; strict complete inventory; not NVFP4 | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Flint/FlintCheckpoint.swift`, `FlintModel.installFlintWeights` |
 | KV precision | Native live KV and native checkpoint storage; official export uses BF16 KV | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift`, `resolve` |
 | Catalog publication | Separate manifest/review operation; local discovery does not publish to HF/R2 or activate a catalog | `provider-swift/Sources/ProviderCoreFoundation/ModelScanner.swift`, `ModelScanner` |
+
+## Muse Glimmer 30B local package
+
+| Contract | Value | Source |
+|---|---|---|
+| Identity | Exact ids `muse-glimmer-30b` (catalog placeholder) and `nvidia/Muse-Glimmer-30B-NVFP4` (local cache name) with `model_type` `muse_glimmer`; the type under any other id is unsupported | `provider-swift/Sources/ProviderCoreFoundation/MuseGlimmerModelPolicy.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2SupportedModels.swift` (`isSupported(model:)`) |
+| Artifact | NVIDIA's NVFP4 snapshot at revision `47818374517751c48c55cde2621594926b1888b6`; the index and every shard verified by SHA-256 before load | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/MuseGlimmer/MuseGlimmerCheckpointPin.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MuseGlimmerServingLoad.swift` |
+| Scan label | `quantization` `nvfp4`: the repository name carries no bit width the name detector reads | `provider-swift/Sources/ProviderCore/Models/ModelScanner+Discovery.swift` |
+| Media | None advertised: the retained `vision_config` is ignored for the type and the vision tower is left unloaded | `provider-swift/Sources/ProviderCoreFoundation/ModelMediaPolicy.swift` (`advertisesMedia`) |
+| Template | The served template is the publisher's with two edits, the request's date and one parenthesized call argument that the coordinator's renderer (minijinja) needs; the scan's render check and the runtime tokenizer bind the same Python-compatible `tojson` for the type | `provider-swift/Sources/ProviderCoreFoundation/ReferenceTemplateFilters.swift`, `MuseGlimmerTemplateFilters.swift`, `PythonJSONTemplateFilter.swift`, `TemplateRenderCheck.swift` |
+| Numerics | One served profile, `MuseGlimmerModelPolicy.servedNumericsProfile`: the SDK's exact windows are turned on for every load (decode and verify rows exact at any row count, prompt chunks on MLX's arithmetic, cut on the model's fixed 1,024-token grid), the tower must then report that profile or the load fails, and the complete-checkpoint fingerprint carries the tower's own report. An SDK pin that renames the profile changes that one constant | `provider-swift/Sources/ProviderCoreFoundation/MuseGlimmerModelPolicy.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MuseGlimmerServingLoad.swift` (`enableExactWindows`) |
+| Drafter | The quantized DFlash drafter (`config.json` and `model.safetensors`, 1,968,222,936 bytes) through the verified assistant funnel with the usual artifact limits; the loader also requires the SDK pin `MuseGlimmerDFlashArtifactPin.museGlimmer30BQuantized` (weights `38f92e9a…6a87`, config `af24b73c…e2fd`), so other bytes fail closed. Not published in the catalog by this change | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/MuseGlimmer/DFlash/MuseGlimmerDFlashLoading.swift`, `provider-swift/Sources/ProviderCore/Inference/MTP/EngineV2MTPAssistant.swift` (`MuseGlimmerDrafterBinding`) |
+| Catalog publication | Not part of the provider change; local discovery does not publish or activate a catalog entry | `provider-swift/Sources/ProviderCoreFoundation/ModelScanner.swift`, `ModelScanner` |
 
 ## Related
 

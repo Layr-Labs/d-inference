@@ -10,6 +10,11 @@ struct NativeToolStreamRouter {
     private let requiresToolCall: Bool
     private var parser: NativeChannelSplitter?
     private var gemmaParser: DiffusionGemmaChannelSplitter?
+    private var glimmerParser: MuseGlimmerChannelSplitter?
+    /// Declared tool names, for the doubled name Muse Glimmer sometimes emits.
+    private let declaredToolNames: Set<String>
+    /// Muse Glimmer tool channels that held no parseable call.
+    private var glimmerToolFailures = 0
     private let nativeGemmaReasoningEnabled: Bool
     private let nativeMiMoChannels: Bool
     private let nativeMiMoRequiresConstraint: Bool
@@ -65,8 +70,13 @@ struct NativeToolStreamRouter {
          nativeMiMoThinkingEnabled: Bool = true, nativeMiMoRequiresConstraint: Bool = false,
          absorbStrayThinkClose: Bool = false, withholdReasoning: Bool = false,
          streamedCalls: ToolChoicePromptPolicy.Prepared? = nil,
-         glmUnparsedOutputIsText: Bool = GLM5ToolSuffix.returnsUnparsedOutputAsTextByDefault) {
+         glmUnparsedOutputIsText: Bool = GLM5ToolSuffix.returnsUnparsedOutputAsTextByDefault,
+         nativeGlimmerChannels: Bool = false) {
         self.handler = handler
+        self.declaredToolNames = nativeGlimmerChannels
+            ? Set((tools ?? []).compactMap { tool in
+                ((tool["function"] as? [String: any Sendable]) ?? tool)["name"] as? String
+            }) : []
         self.withholdReasoning = withholdReasoning
         self.tools = tools
         self.glmUnparsedOutputIsText = glmUnparsedOutputIsText
@@ -81,6 +91,8 @@ struct NativeToolStreamRouter {
         if requiresToolCall, handler?.format == .harmony { harmonyAnalysis = HarmonyForcedCallText() }
         if nativeGemmaChannels {
             gemmaParser = DiffusionGemmaChannelSplitter()
+        } else if nativeGlimmerChannels {
+            glimmerParser = MuseGlimmerChannelSplitter()
         } else if let nativePrefix {
             self.parser = NativeChannelSplitter(prefix: nativePrefix, protectToolFrames: handler != nil,
                 qwenStructuredFrames: handler?.format == .qwen35 || handler?.format == .mimoV2,
@@ -92,7 +104,7 @@ struct NativeToolStreamRouter {
         }
     }
 
-    var usesNativeChannels: Bool { parser != nil || gemmaParser != nil }
+    var usesNativeChannels: Bool { parser != nil || gemmaParser != nil || glimmerParser != nil }
 
     /// True when calls leave as `.toolCallDelta` events while generated.
     var streamsToolCalls: Bool { streamedCallPolicy != nil }
@@ -112,6 +124,7 @@ struct NativeToolStreamRouter {
     }
 
     mutating func process(_ text: String) throws -> [MLXServerGenerationEvent] {
+        if glimmerParser != nil { return try route(glimmerParser!.parse(text)) }
         let pieces: [ParsedReasoning]
         if gemmaParser != nil { pieces = gemmaParser!.parse(text) }
         else { pieces = parser != nil ? parser!.parse(text) : [.init(content: text, reasoningContent: nil)] }
@@ -124,7 +137,11 @@ struct NativeToolStreamRouter {
     /// as `length` (`TokenLimitCutPolicy`). What the flush releases is then an
     /// unfinished frame: forced-choice text is dropped and a native frame
     /// that no longer parses is not refused (the caller drops its text).
+    /// Muse Glimmer then drops a tool call cut off mid-invoke.
     mutating func finishText(cutAtLimit: Bool = false) throws -> [MLXServerGenerationEvent] {
+        if glimmerParser != nil {
+            return try route(glimmerParser!.finish(truncated: cutAtLimit), cutAtLimit: cutAtLimit)
+        }
         let pieces = gemmaParser != nil ? gemmaParser!.finish() : (parser?.finish() ?? [])
         try checkReasoningState()
         try checkNativeToolFailure()
@@ -203,11 +220,13 @@ struct NativeToolStreamRouter {
             ? .toolChoiceViolation(message) : .generationFailed(message)
     }
 
-    /// A native family's (MiMo, GLM, Flint) own call frame failed to parse.
-    /// An `auto` GLM suffix that `finishCompleteCalls` returned as text is not
-    /// a failure; one the SDK refused while streaming still is.
+    /// A native family's (MiMo, GLM, Flint, Muse Glimmer) own call frame
+    /// failed to parse. An `auto` GLM suffix that `finishCompleteCalls`
+    /// returned as text is not a failure; one the SDK refused while streaming
+    /// still is.
     var hasNativeToolFailure: Bool {
-        (nativeMiMoChannels || handler?.format == .glm5 || handler?.format == .flint)
+        if glimmerParser != nil { return (handler?.parseFailureCount ?? 0) + glimmerToolFailures > 0 }
+        return (nativeMiMoChannels || handler?.format == .glm5 || handler?.format == .flint)
             && (handler?.parseFailureCount ?? 0) > 0 && !glmSuffixSplit
     }
 
@@ -218,7 +237,8 @@ struct NativeToolStreamRouter {
     /// oversized while streaming still fails.
     func checkNativeToolFailure() throws {
         guard hasNativeToolFailure else { return }
-        let model = handler?.format == .glm5 ? "GLM" : handler?.format == .flint ? "Flint" : "MiMo"
+        let model = glimmerParser != nil ? "Muse Glimmer"
+            : handler?.format == .glm5 ? "GLM" : handler?.format == .flint ? "Flint" : "MiMo"
         let message = "native \(model) tool output is invalid"
         if requiresToolCall || nativeMiMoRequiresConstraint {
             throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(message)
@@ -263,6 +283,55 @@ struct NativeToolStreamRouter {
 
     private var returnsUnparsedGLMOutputAsText: Bool {
         handler?.format == .glm5 && glmUnparsedOutputIsText && autoToolChoice
+    }
+
+    /// Under a forced tool choice, visible text is either framing whitespace
+    /// around and between call frames (true: not an answer on any path,
+    /// including legacy Qwen text without native channels), the unfinished
+    /// frame a cut flushes (true), or a violation.
+    private func isFramingOnly(_ visible: String, cutAtLimit: Bool) throws -> Bool {
+        guard requiresToolCall else { return false }
+        if cutAtLimit || ToolChoiceEnforcementPolicy.isFramingWhitespace(visible) { return true }
+        throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(
+            "forced tool_choice produced visible text before a validated call")
+    }
+
+    /// Muse Glimmer's channels are already scoped: reasoning and the answer
+    /// never pass the tool parser, and only a tool channel's invokes reach it.
+    /// A call leaves at the engine terminal, validated like any complete call.
+    /// At a cut (`cutAtLimit`) a frame that failed is dropped, not refused.
+    private mutating func route(
+        _ pieces: [MuseGlimmerChannelSplitter.Piece], cutAtLimit: Bool = false
+    ) throws -> [MLXServerGenerationEvent] {
+        var events: [MLXServerGenerationEvent] = []
+        for piece in pieces {
+            switch piece {
+            case .reasoning(let text):
+                if withholdReasoning {
+                    withheldReasoning += text
+                } else {
+                    events.append(.parsed(.init(content: "", reasoningContent: text)))
+                }
+            case .content(let text):
+                if try isFramingOnly(text, cutAtLimit: cutAtLimit) { continue }
+                events.append(visibleEvent(text))
+            case .invoke(let element):
+                // Without declared tools there is no parser: the call is invalid.
+                guard let handler else {
+                    glimmerToolFailures += 1
+                    continue
+                }
+                // The parser returns a frame it rejects as text. On a tool
+                // channel that text is protocol, never an answer: the count
+                // below fails the request instead.
+                _ = handler.processChunk(
+                    MuseGlimmerToolFrame.block(invoke: element, declaredNames: declaredToolNames))
+            case .malformedToolFrame:
+                glimmerToolFailures += 1
+            }
+        }
+        if !cutAtLimit { try checkNativeToolFailure() }
+        return events
     }
 
     private mutating func route(_ pieces: [ParsedReasoning], cutAtLimit: Bool = false) throws
@@ -313,14 +382,7 @@ struct NativeToolStreamRouter {
                 if !shown.isEmpty { events.append(visibleEvent(shown)) }
                 continue
             }
-            if requiresToolCall {
-                // Framing whitespace around and between call frames is not an
-                // answer on any path, including legacy Qwen text without
-                // native channels. Neither is the unfinished frame a cut flushes.
-                if cutAtLimit || ToolChoiceEnforcementPolicy.isFramingWhitespace(visible) { continue }
-                throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(
-                    "forced tool_choice produced visible text before a validated call")
-            }
+            if try isFramingOnly(visible, cutAtLimit: cutAtLimit) { continue }
             events.append(visibleEvent(visible))
         }
         return events

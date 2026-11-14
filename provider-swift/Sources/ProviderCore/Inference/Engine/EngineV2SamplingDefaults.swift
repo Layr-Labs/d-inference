@@ -29,6 +29,7 @@
 //   `max_tokens` about three times as often in production (5.5 % against
 //   1.7 %); 0.10.13 gives it back (`DARKBLOOM_QWEN35_9B_PRESENCE_PENALTY=0`
 //   is the rollback).
+//   Muse Glimmer 30B takes its model card's values (`museGlimmerCardDefaults`).
 //   Every other model keeps the legacy defaults byte-for-byte.
 // * `do_sample: false` in the file means greedy (legacy), matching HF
 //   semantics; an absent or unreadable file is legacy.
@@ -94,6 +95,14 @@ public struct EngineV2SamplingDefaults: Sendable, Equatable {
         temperature: 1.0, topP: 0.95, topK: 20)
     static let qwen35NineBModelID = "Qwen3.5-9B"
 
+    /// Muse Glimmer 30B's model-card values. The NVIDIA NVFP4 repository's
+    /// `generation_config.json` declares `do_sample: false`; the card, and the
+    /// base repository's own file, give these. A reasoning model decoded
+    /// greedily is outside what the card evaluates, so the exact identity
+    /// takes them whatever that file says.
+    static let museGlimmerCardDefaults = EngineV2SamplingDefaults(
+        temperature: 1.0, topP: 0.95, topK: 64)
+
     /// `DARKBLOOM_QWEN35_9B_PRESENCE_PENALTY`: `0`, `off`, `false` or `no`
     /// (trimmed, case-insensitive) restores 0.10.12's no-penalty default for
     /// Qwen3.5-9B requests that omit a presence penalty; unset or any other
@@ -149,6 +158,9 @@ public struct EngineV2SamplingDefaults: Sendable, Equatable {
                 return qwen35NineBNoPenaltyDefaults
             }
             return qwen35CardDefaults
+        }
+        if MuseGlimmerModelPolicy.matches(modelId: modelId, modelType: modelType) {
+            return museGlimmerCardDefaults
         }
         guard honorsArtifactDefaults(modelId: modelId, modelType: modelType),
             let modelDirectory

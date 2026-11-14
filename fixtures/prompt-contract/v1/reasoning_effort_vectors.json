@@ -31,7 +31,8 @@
   "glm5_next",
   "glm5_next_text",
   "glm5_next_mtp",
-  "flint"
+  "flint",
+  "muse_glimmer"
  ],
  "qwen35_template_model_types": [
   "qwen3_5",
@@ -4375,6 +4376,350 @@
     }
    },
    "refused": "reasoning.effort"
+  },
+  {
+   "name": "muse_glimmer/reasoning_effort=none",
+   "model": "muse-glimmer-30b",
+   "model_type": "muse_glimmer",
+   "controls": {
+    "reasoning_effort": "none"
+   },
+   "context": {
+    "reasoning_strength": "low"
+   }
+  },
+  {
+   "name": "muse_glimmer/reasoning.effort=none",
+   "model": "muse-glimmer-30b",
+   "model_type": "muse_glimmer",
+   "controls": {
+    "reasoning": {
+     "effort": "none"
+    }
+   },
+   "context": {
+    "reasoning_strength": "low"
+   }
+  },
+  {
+   "name": "muse_glimmer/reasoning_effort=minimal",
+   "model": "muse-glimmer-30b",
+   "model_type": "muse_glimmer",
+   "controls": {
+    "reasoning_effort": "minimal"
+   },
+   "context": {
+    "reasoning_strength": "low"
+   }
+  },
+  {
+   "name": "muse_glimmer/reasoning.effort=minimal",
+   "model": "muse-glimmer-30b",
+   "model_type": "muse_glimmer",
+   "controls": {
+    "reasoning": {
+     "effort": "minimal"
+    }
+   },
+   "context": {
+    "reasoning_strength": "low"
+   }
+  },
+  {
+   "name": "muse_glimmer/reasoning_effort=low",
+   "model": "muse-glimmer-30b",
+   "model_type": "muse_glimmer",
+   "controls": {
+    "reasoning_effort": "low"
+   },
+   "context": {
+    "reasoning_strength": "low"
+   }
+  },
+  {
+   "name": "muse_glimmer/reasoning.effort=low",
+   "model": "muse-glimmer-30b",
+   "model_type": "muse_glimmer",
+   "controls": {
+    "reasoning": {
+     "effort": "low"
+    }
+   },
+   "context": {
+    "reasoning_strength": "low"
+   }
+  },
+  {
+   "name": "muse_glimmer/reasoning_effort=medium",
+   "model": "muse-glimmer-30b",
+   "model_type": "muse_glimmer",
+   "controls": {
+    "reasoning_effort": "medium"
+   },
+   "context": {
+    "reasoning_strength": "medium"
+   }
+  },
+  {
+   "name": "muse_glimmer/reasoning.effort=medium",
+   "model": "muse-glimmer-30b",
+   "model_type": "muse_glimmer",
+   "controls": {
+    "reasoning": {
+     "effort": "medium"
+    }
+   },
+   "context": {
+    "reasoning_strength": "medium"
+   }
+  },
+  {
+   "name": "muse_glimmer/reasoning_effort=high",
+   "model": "muse-glimmer-30b",
+   "model_type": "muse_glimmer",
+   "controls": {
+    "reasoning_effort": "high"
+   },
+   "context": {
+    "reasoning_strength": "high"
+   }
+  },
+  {
+   "name": "muse_glimmer/reasoning.effort=high",
+   "model": "muse-glimmer-30b",
+   "model_type": "muse_glimmer",
+   "controls": {
+    "reasoning": {
+     "effort": "high"
+    }
+   },
+   "context": {
+    "reasoning_strength": "high"
+   }
+  },
+  {
+   "name": "muse_glimmer/reasoning_effort=xhigh",
+   "model": "muse-glimmer-30b",
+   "model_type": "muse_glimmer",
+   "controls": {
+    "reasoning_effort": "xhigh"
+   },
+   "context": {
+    "reasoning_strength": "xhigh"
+   }
+  },
+  {
+   "name": "muse_glimmer/reasoning.effort=xhigh",
+   "model": "muse-glimmer-30b",
+   "model_type": "muse_glimmer",
+   "controls": {
+    "reasoning": {
+     "effort": "xhigh"
+    }
+   },
+   "context": {
+    "reasoning_strength": "xhigh"
+   }
+  },
+  {
+   "name": "muse_glimmer/reasoning_effort=max",
+   "model": "muse-glimmer-30b",
+   "model_type": "muse_glimmer",
+   "controls": {
+    "reasoning_effort": "max"
+   },
+   "context": {
+    "reasoning_strength": "xhigh"
+   }
+  },
+  {
+   "name": "muse_glimmer/reasoning.effort=max",
+   "model": "muse-glimmer-30b",
+   "model_type": "muse_glimmer",
+   "controls": {
+    "reasoning": {
+     "effort": "max"
+    }
+   },
+   "context": {
+    "reasoning_strength": "xhigh"
+   }
+  },
+  {
+   "name": "muse_glimmer/reasoning_effort=High",
+   "model": "muse-glimmer-30b",
+   "model_type": "muse_glimmer",
+   "controls": {
+    "reasoning_effort": " High "
+   },
+   "context": {
+    "reasoning_strength": "high"
+   }
+  },
+  {
+   "name": "muse_glimmer/reasoning.effort=High",
+   "model": "muse-glimmer-30b",
+   "model_type": "muse_glimmer",
+   "controls": {
+    "reasoning": {
+     "effort": " High "
+    }
+   },
+   "context": {
+    "reasoning_strength": "high"
+   }
+  },
+  {
+   "name": "muse_glimmer/reasoning_effort=OFF",
+   "model": "muse-glimmer-30b",
+   "model_type": "muse_glimmer",
+   "controls": {
+    "reasoning_effort": "OFF"
+   },
+   "context": {
+    "reasoning_strength": "low"
+   }
+  },
+  {
+   "name": "muse_glimmer/reasoning.effort=OFF",
+   "model": "muse-glimmer-30b",
+   "model_type": "muse_glimmer",
+   "controls": {
+    "reasoning": {
+     "effort": "OFF"
+    }
+   },
+   "context": {
+    "reasoning_strength": "low"
+   }
+  },
+  {
+   "name": "muse_glimmer/reasoning_effort=0",
+   "model": "muse-glimmer-30b",
+   "model_type": "muse_glimmer",
+   "controls": {
+    "reasoning_effort": "0"
+   },
+   "context": {
+    "reasoning_strength": "low"
+   }
+  },
+  {
+   "name": "muse_glimmer/reasoning.effort=0",
+   "model": "muse-glimmer-30b",
+   "model_type": "muse_glimmer",
+   "controls": {
+    "reasoning": {
+     "effort": "0"
+    }
+   },
+   "context": {
+    "reasoning_strength": "low"
+   }
+  },
+  {
+   "name": "muse_glimmer/reasoning_effort=off",
+   "model": "muse-glimmer-30b",
+   "model_type": "muse_glimmer",
+   "controls": {
+    "reasoning_effort": "off"
+   },
+   "context": {
+    "reasoning_strength": "low"
+   }
+  },
+  {
+   "name": "muse_glimmer/reasoning.effort=off",
+   "model": "muse-glimmer-30b",
+   "model_type": "muse_glimmer",
+   "controls": {
+    "reasoning": {
+     "effort": "off"
+    }
+   },
+   "context": {
+    "reasoning_strength": "low"
+   }
+  },
+  {
+   "name": "muse_glimmer/reasoning_effort=HİGH",
+   "model": "muse-glimmer-30b",
+   "model_type": "muse_glimmer",
+   "controls": {
+    "reasoning_effort": "HİGH"
+   },
+   "refused": "reasoning_effort"
+  },
+  {
+   "name": "muse_glimmer/reasoning.effort=HİGH",
+   "model": "muse-glimmer-30b",
+   "model_type": "muse_glimmer",
+   "controls": {
+    "reasoning": {
+     "effort": "HİGH"
+    }
+   },
+   "refused": "reasoning.effort"
+  },
+  {
+   "name": "muse_glimmer/reasoning_effort=turbo",
+   "model": "muse-glimmer-30b",
+   "model_type": "muse_glimmer",
+   "controls": {
+    "reasoning_effort": "turbo"
+   },
+   "refused": "reasoning_effort"
+  },
+  {
+   "name": "muse_glimmer/reasoning.effort=turbo",
+   "model": "muse-glimmer-30b",
+   "model_type": "muse_glimmer",
+   "controls": {
+    "reasoning": {
+     "effort": "turbo"
+    }
+   },
+   "refused": "reasoning.effort"
+  },
+  {
+   "name": "muse_glimmer/reasoning_effort=turbo+reasoning.effort=low",
+   "model": "muse-glimmer-30b",
+   "model_type": "muse_glimmer",
+   "controls": {
+    "reasoning_effort": "turbo",
+    "reasoning": {
+     "effort": "low"
+    }
+   },
+   "context": {
+    "reasoning_strength": "low"
+   }
+  },
+  {
+   "name": "muse_glimmer/reasoning_effort=low+reasoning.effort=turbo",
+   "model": "muse-glimmer-30b",
+   "model_type": "muse_glimmer",
+   "controls": {
+    "reasoning_effort": "low",
+    "reasoning": {
+     "effort": "turbo"
+    }
+   },
+   "refused": "reasoning.effort"
+  },
+  {
+   "name": "muse_glimmer/reasoning_effort=high+reasoning.effort=HIGH",
+   "model": "muse-glimmer-30b",
+   "model_type": "muse_glimmer",
+   "controls": {
+    "reasoning_effort": "high",
+    "reasoning": {
+     "effort": "HIGH"
+    }
+   },
+   "context": {
+    "reasoning_strength": "high"
+   }
   },
   {
    "name": "llama/reasoning_effort=none",

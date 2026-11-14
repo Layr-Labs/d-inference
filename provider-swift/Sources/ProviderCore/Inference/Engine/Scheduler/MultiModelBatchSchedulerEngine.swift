@@ -1312,8 +1312,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             nativeReasoningPrefix = ReasoningPromptProbe.streamingPrefix(forPromptTail:
                 tokenizer.inner.decode(tokenIds: Array(promptTokens.suffix(ReasoningPromptProbe.tailTokenCount)),
                                        skipSpecialTokens: false)) ?? "<think></think>"
-        } else if toolHandler?.format == .qwen35,
-            ToolChoiceEnforcementPolicy.splitsQwenReasoningBeforeTools(modelContext) {
+        } else if Qwen35TemplateFix.routesReasoningBeforeTools(format: toolHandler?.format,
+            requiresToolCall: prepared.requiresToolCall, context: modelContext) {
             // The think parser's own seed, the prompt's think state, starts the
             // split: reasoning is classified before tool parsing, with call
             // frames found by the Qwen parser's own scanner. Without a seed, or

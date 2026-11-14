@@ -82,6 +82,9 @@ actor NemotronSuperLocalImageBinding {
         private let admittedAt = ContinuousClock.now
         /// Told once, at the first chunk, the time since admission.
         private let onFirstChunk: (@Sendable (Duration) -> Void)?
+        /// A video's frame reader, once its frames decode: `settle` returns
+        /// the charges only after the reads queued on it.
+        private var reader: NemotronSuperVideoDecode.ReaderQueue?
 
         init(onFirstChunk: (@Sendable (Duration) -> Void)? = nil) { self.onFirstChunk = onFirstChunk }
         #if DEBUG
@@ -106,6 +109,10 @@ actor NemotronSuperLocalImageBinding {
         func markEnded() { lock.withLock { ended = true } }
 
         func markCancelled() { lock.withLock { ended = true } }
+
+        var readerQueue: NemotronSuperVideoDecode.ReaderQueue? { lock.withLock { reader } }
+
+        func markDecoding(on reader: NemotronSuperVideoDecode.ReaderQueue) { lock.withLock { self.reader = reader } }
     }
 
     private let owner: NemotronSuperLocalBridgeBuilder.Owner
@@ -269,7 +276,7 @@ actor NemotronSuperLocalImageBinding {
     /// before any frame decodes. Frames then decode one at a time into the
     /// tower's tubelet batches; cancelling the request, as `drain` does,
     /// ends a wait on the decoder at once, and the reader stops once the read
-    /// in progress returns.
+    /// in progress returns. The charges return only after that read (`settle`).
     private static func executeEncodedVideo(_ uri: String, plan requestPlan: NemotronSuperRequestPlan,
         body: Data, templateBytes: Data,
         request: ChatCompletionRequest, owner: NemotronSuperLocalBridgeBuilder.Owner, gate: VisionMemoryGate,
@@ -285,6 +292,7 @@ actor NemotronSuperLocalImageBinding {
         try Task.checkCancellation()
         try await prepareAndExecute(owner: owner, prepare: { construction in
             let frames = try await NemotronSuperVideoDecode.Frames(video)
+            progress.markDecoding(on: frames.readerQueue)
             return try await frames.withCancellableReader {
                 try owner.prepareLocalVideo(frames, prompt: prompt, maximumFeatureBytes: plan.featureBytes,
                                             construction: construction)
@@ -294,14 +302,26 @@ actor NemotronSuperLocalImageBinding {
     }
 
     /// Cleanup coordinator holds no image arrays. Actual work task completion
-    /// drops its captures before refund. drain awaits this same cleanup task.
+    /// drops its captures before refund; a video's refund also follows the
+    /// reads queued on its frame reader. The cleanup waits for that refund at
+    /// most `NemotronSuperServingPolicy.videoReaderDrainWait`; past that it
+    /// ends, and the refund runs when those reads return. drain awaits this
+    /// same cleanup task.
     private func settle(_ work: Task<Void, Error>, requestID: String, reservations: [String],
                         progress: MediaProgress, concurrentImage: Bool) async throws {
         let owner = self.owner, gate = self.gate
         let cleanup = Task<Void, Error> {
             let result = await work.result
             if !owner.hasRetainedImageFault {
-                for id in reservations { await gate.release(requestId: id) }
+                let release: @Sendable () async -> Void = {
+                    for id in reservations { await gate.release(requestId: id) }
+                }
+                if let reader = progress.readerQueue {
+                    await reader.afterQueuedReads(waitingAtMost: NemotronSuperServingPolicy.videoReaderDrainWait,
+                                                  release)
+                } else {
+                    await release()
+                }
             }
             try result.get()
         }
@@ -320,8 +340,10 @@ actor NemotronSuperLocalImageBinding {
     /// the active answer has ended and only its settlement remains, and until
     /// `stackedUntil` while the active answer streams and the owner still has
     /// a free request slot besides this one's. The active request's charge is
-    /// released before the waiting one reserves. Any other request is refused
-    /// at once, as before.
+    /// released before the waiting one reserves, unless a frame read of its
+    /// video outlasts `NemotronSuperServingPolicy.videoReaderDrainWait`: that
+    /// charge stays until the read returns (`settle`). Any other request is
+    /// refused at once, as before.
     private func admit(concurrentImage: Bool, stackedUntil: ContinuousClock.Instant?) async throws {
         let finishingEnd = ContinuousClock.now + NemotronSuperServingPolicy.finishingWait
         let id = UUID()

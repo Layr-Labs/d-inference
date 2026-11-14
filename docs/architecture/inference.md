@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-11-13
+> Last updated: 2026-11-14
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -796,8 +796,9 @@ slot free besides its own (`Owner.hasFreeLocalAdmission`), so a waiting image
 never takes the slot a text request would get. One request waits at a time and
 takes the next admission before any newcomer; any other request, text
 mid-answer included, is still refused at once. A waiting request reserves nothing, so the previous request's media
-charge is released before it reserves; cancellation (a coordinator cancel or a
-local disconnect) ends the wait. Under the ingress reservation `NemotronSuperVideoDecode.inspect`
+charge is released before it reserves, unless a frame read of that request's
+video outlasts `NemotronSuperServingPolicy.videoReaderDrainWait` (below);
+cancellation (a coordinator cancel or a local disconnect) ends the wait. Under the ingress reservation `NemotronSuperVideoDecode.inspect`
 runs the shared `MediaIngest.decodeVideo` checks (label, decoded bytes,
 container, duration, coded frame size up to
 `NemotronSuperServingPolicy.maximumVideoFramePixels` pixels in any shape),
@@ -859,7 +860,14 @@ retryable 503 (failure code `capacity`, error reason
 another provider without a capacity strike or a budget clamp.
 Cancelling the request, as the binding's `drain` does, ends the wait
 at once. Either way the reader is cancelled once the read in progress
-returns, and that read's sample is dropped.
+returns, and that read's sample is dropped. That read may still be decoding
+a frame, so the request's ingress and media charges return only after it and
+the cancellation have run on the reader's queue
+(`NemotronSuperVideoDecode.ReaderQueue.afterQueuedReads`). The request's
+cleanup, and so `drain`, waits for them at most
+`NemotronSuperServingPolicy.videoReaderDrainWait` (1 s); a read still decoding
+after that returns the charges when it ends, so the ledger keeps counting its
+memory meanwhile.
 `NemotronSuperVideoFeatures.prepare` runs
 `videoFeatures(normalizedFrames:)` over batches of `tubeletBatch` tubelets in
 the installation's native setup, checking every evaluation with

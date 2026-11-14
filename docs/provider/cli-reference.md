@@ -4240,7 +4240,7 @@ automatic updates with `darkbloom autoupdate disable`.
 
 ### Gemma o5 parser switch
 
-For foreground qualification, set `DARKBLOOM_GEMMA_REOPENED_THOUGHTS` before starting the process. The [configuration reference](../reference/configuration.md#gemma-o5-conformance) defines activation and rollback; the daemon LaunchAgent does not inherit this switch.
+Set `DARKBLOOM_GEMMA_REOPENED_THOUGHTS` before `darkbloom start`, or before installing the service: the LaunchAgent forwards the operator's value to the provider job. The [configuration reference](../reference/configuration.md#gemma-o5-conformance) defines activation and rollback.
 
 ## Runtime constants
 

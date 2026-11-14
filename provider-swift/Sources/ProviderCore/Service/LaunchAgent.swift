@@ -471,6 +471,9 @@ public enum LaunchAgent: Sendable {
         QwenStrictToolGrammar.environmentKey,
         QwenStrictToolGrammar.allToolsEnvironmentKey,
         ChatTemplateLoopRewrites.environmentKey,
+        // SDK-read (`StreamingGemma4ReasoningParser.reopenedThoughtsEnabled`, once per
+        // process): reopened Gemma thoughts go to reasoning; `0` keeps 0.10.12's parsing.
+        "DARKBLOOM_GEMMA_REOPENED_THOUGHTS",
         WorkFIFOPolicy.coldLoadReleaseEnvironmentKey,
         ModelCalibrationPolicy.shapeWarmupEnvironmentKey,
         TokenLimitCutPolicy.environmentKey,

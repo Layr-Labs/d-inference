@@ -3,19 +3,24 @@ import MLXLMServer
 
 /// This process's memory of Responses conversations for `previous_response_id`, least recently used dropped
 /// first. Bounded by bytes as well as by count: each entry holds its whole conversation, inline media included,
-/// so a long chat's entries grow with every turn.
+/// so a long chat's entries grow with every turn. One entry is at most `maxEntryBytes`, by default the largest
+/// body the local API takes: every continuation parses its history and serializes it again before admission, so a
+/// larger one is not kept, and continuing it is refused as an unknown response.
 final class LocalResponseConversationStore: @unchecked Sendable {
     private let lock = NSLock()
     private let maxResponses: Int
     private let maxBytes: Int
+    private let maxEntryBytes: Int
     private var conversations: [String: Data] = [:]
     /// Least recently used first.
     private var recency: [String] = []
     private var bytes = 0
 
-    init(maxResponses: Int = 256, maxBytes: Int = 64 * 1024 * 1024) {
+    init(maxResponses: Int = 256, maxBytes: Int = 64 * 1024 * 1024,
+         maxEntryBytes: Int = localInferenceMaxUploadBytes) {
         self.maxResponses = maxResponses
         self.maxBytes = maxBytes
+        self.maxEntryBytes = maxEntryBytes
     }
 
     /// The input items a request continuing `responseID` starts from, as a JSON array.
@@ -31,7 +36,7 @@ final class LocalResponseConversationStore: @unchecked Sendable {
     func save(responseID: String, conversation: Data) {
         lock.withLock {
             remove(responseID)
-            guard conversation.count <= maxBytes else { return }
+            guard conversation.count <= maxEntryBytes, conversation.count <= maxBytes else { return }
             while recency.count >= maxResponses || bytes + conversation.count > maxBytes, let oldest = recency.first {
                 remove(oldest)
             }

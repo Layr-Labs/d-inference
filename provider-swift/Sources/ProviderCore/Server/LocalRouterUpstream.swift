@@ -46,11 +46,15 @@ public struct LocalRouterUpstreamResponse: Sendable {
 public enum LocalRouterUpstreamError: Error, Equatable, CustomStringConvertible {
     case connectTimedOut
     case unreachable(String)
+    /// More of an answer than the transport holds waited for its reader (a client that stopped reading); the request
+    /// was stopped at the coordinator.
+    case readerFellBehind
 
     public var description: String {
         switch self {
         case .connectTimedOut: return "Darkbloom did not answer the connection in time"
         case .unreachable(let reason): return reason
+        case .readerFellBehind: return "the answer's reader fell too far behind Darkbloom"
         }
     }
 }
@@ -65,6 +69,11 @@ public protocol LocalRouterTransport: Sendable {
 /// The product transport: one ephemeral `URLSession` (no cookies, no cache, no credential storage), created with the
 /// router's first upstream request. Body chunks are handed on as they arrive, so a streamed answer is never held back.
 public final class URLSessionLocalRouterTransport: LocalRouterTransport, @unchecked Sendable {
+    /// The most of an answer held for a reader that fell behind the coordinator (the relay waiting on a client that
+    /// stopped reading). URLSession pushes each chunk as it arrives on one delegate queue that serves every request,
+    /// so nothing there waits for a reader: past this, the request is stopped instead (`UpstreamTaskHandler`).
+    static let backlogCeiling = 32 * 1024 * 1024
+
     private let session: URLSession
 
     public init() {
@@ -130,7 +139,9 @@ public final class URLSessionLocalRouterTransport: LocalRouterTransport, @unchec
     }
 }
 
-/// One upstream request's delegate: resumes the head once, then yields each body chunk as URLSession delivers it.
+/// One upstream request's delegate: resumes the head once, then yields each body chunk as URLSession delivers it. It
+/// never waits for the body's reader: it counts what the reader hasn't taken, and past
+/// `URLSessionLocalRouterTransport.backlogCeiling` stops the request and ends the body with `readerFellBehind`.
 private final class UpstreamTaskHandler: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     private let lock = NSLock()
     var headContinuation: CheckedContinuation<LocalRouterUpstreamResponse, Error>? {
@@ -145,6 +156,9 @@ private final class UpstreamTaskHandler: NSObject, URLSessionDataDelegate, @unch
     /// ends it (`onTermination`) and with it the request.
     private var body: AsyncThrowingStream<ByteBuffer, Error>?
     private let continuation: AsyncThrowingStream<ByteBuffer, Error>.Continuation
+    /// Bytes yielded that the reader hasn't taken.
+    private var backlog = 0
+    private var fellBehind = false
 
     var receivedHead: Bool { lock.withLock { _receivedHead } }
 
@@ -192,11 +206,40 @@ private final class UpstreamTaskHandler: NSObject, URLSessionDataDelegate, @unch
         completionHandler(.allow)
         guard let pending, let body else { return }
         pending.resume(returning: LocalRouterUpstreamResponse(
-            status: http.statusCode, headers: headers, body: body, cancel: { [weak dataTask] in dataTask?.cancel() }))
+            status: http.statusCode, headers: headers, body: pulled(body),
+            cancel: { [weak dataTask] in dataTask?.cancel() }))
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-        continuation.yield(ByteBuffer(data: data))
+        // nil: the request was already stopped, and these are URLSession's last chunks.
+        let handOn: Bool? = lock.withLock {
+            guard !fellBehind else { return nil }
+            backlog += data.count
+            fellBehind = backlog > URLSessionLocalRouterTransport.backlogCeiling
+            return !fellBehind
+        }
+        switch handOn {
+        case true?:
+            continuation.yield(ByteBuffer(data: data))
+        case false?:
+            continuation.finish(throwing: LocalRouterUpstreamError.readerFellBehind)
+            dataTask.cancel()
+        case nil:
+            break
+        }
+    }
+
+    /// `body` as its reader pulls it: a chunk leaves the backlog when taken. Once the request was stopped for falling
+    /// behind, the next pull ends the body with that error; what still waits is never handed on, so the answer can't
+    /// read as whole.
+    private func pulled(_ body: AsyncThrowingStream<ByteBuffer, Error>) -> AsyncThrowingStream<ByteBuffer, Error> {
+        let chunks = BodyChunks(body)
+        return AsyncThrowingStream(unfolding: { [self] in
+            if lock.withLock({ fellBehind }) { throw LocalRouterUpstreamError.readerFellBehind }
+            guard let chunk = try await chunks.next() else { return nil }
+            lock.withLock { backlog -= chunk.readableBytes }
+            return chunk
+        })
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
@@ -235,4 +278,14 @@ private final class UpstreamTaskHandler: NSObject, URLSessionDataDelegate, @unch
             return LocalRouterUpstreamError.unreachable("Darkbloom could not be reached")
         }
     }
+}
+
+/// The raw body's one iterator, for its one reader, which pulls a chunk at a time (`AsyncThrowingStream.Iterator`
+/// isn't Sendable).
+private final class BodyChunks: @unchecked Sendable {
+    private var iterator: AsyncThrowingStream<ByteBuffer, Error>.Iterator
+
+    init(_ body: AsyncThrowingStream<ByteBuffer, Error>) { iterator = body.makeAsyncIterator() }
+
+    func next() async throws -> ByteBuffer? { try await iterator.next() }
 }

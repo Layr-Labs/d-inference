@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-11-13
+> Last updated: 2026-11-14
 
 Run isolated Swift, native-resource, public-fixture and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -231,7 +231,8 @@ credentials and no live provider endpoint.
 Hummingbird `.router` responder. Its acquisition counter must remain zero for
 non-null invalid ID types and unknown/empty strings, on both URL aliases and
 both response modes. Null and omitted IDs must reach acquisition. Retain the
-known-ID, tool-history, storage opt-out and bounded-LRU controls.
+known-ID, tool-history, storage opt-out, bounded-LRU and per-entry cap
+controls.
 `ReasoningPromptProbeTests` composes the actual prompt probe, service and
 continued history for a prompt-open length stop; it must retain reasoning and
 leave answer text empty. These sources are in

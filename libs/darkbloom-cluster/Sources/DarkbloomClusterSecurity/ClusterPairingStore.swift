@@ -471,9 +471,10 @@ public final class ClusterPairingStore: @unchecked Sendable {
     }
 
     /// Unpairs: removes the record (the trust anchor) first, then the edge
-    /// secret (the vault's item and any 0.10.12 file); with no pairing left,
-    /// every item of the vault (none is used). A locked Keychain, which could
-    /// not delete the item, refuses before anything changes.
+    /// secret (the vault's item and any 0.10.12 file); with no pairing left
+    /// and the store's lock held, every item of the vault (none is used). A
+    /// locked Keychain, which could not delete the item, refuses before
+    /// anything changes.
     @discardableResult
     public func forget(peerPin: String) throws -> ClusterPairingRecord {
         try lock.withLock {

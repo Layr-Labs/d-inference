@@ -6085,8 +6085,8 @@ beside an item of this pairing is removed only by a process started after the fi
 path writes such a file while the release it rolls back still runs. A locked Keychain (`errSecInteractionNotAllowed`)
 refuses with `keychainLocked` and changes nothing; `ClusterSetupLinkExchange.pairing` callers that take an unreadable
 store for "nothing changed" retry it each tick, and `cluster status` says to log in once. Pairing and unpairing while
-locked are refused before anything changes; unpairing deletes the item, and the last unpairing every item of the
-store's service. The move does not rotate the secret: a copy of 0.10.12's file (a backup, a snapshot) stays valid
+locked are refused before anything changes; unpairing deletes the item, and the last unpairing, while it holds the store's lock, every item of the store's
+service. The move does not rotate the secret: a copy of 0.10.12's file (a backup, a snapshot) stays valid
 until the Macs pair again.
 
 A saved setup's `linkControl.secretFile` that names this install's `cluster-pairing/edge-<16 hex>.secret`

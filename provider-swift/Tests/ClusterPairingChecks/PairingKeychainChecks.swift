@@ -598,6 +598,24 @@ extension PairingCheck {
                "and then writes the key back without the lock")
     }
 
+    /// An unpairing that couldn't take the store's lock deletes only its own item, never the store's others (a process
+    /// stopped inside `commit` may hold one it has just stored).
+    static func keychainUnheldForgetKeepsOthers() {
+        let vault = MemoryVault()
+        let store = ClusterPairingStore(directory: freshDirectory("kc-unheld").appendingPathComponent("cluster-pairing"), vault: vault)
+        let (outcome, _) = pairedOutcomes()
+        _ = try? store.commit(outcome, edgeID: UUID())
+        let other = String(repeating: "e", count: 64)
+        vault.put(other, ClusterEdgeSecretItem(secret: Data(repeating: 5, count: 32), binding: "another process's new pairing"))
+        // A link in place of the lock file: `open` refuses it (O_NOFOLLOW), so the unpairing runs without the lock.
+        let lockFile = store.directory.appendingPathComponent(".edge-secrets.lock")
+        unlink(lockFile.path)
+        expect(symlink("/nonexistent-lock-target", lockFile.path) == 0, "(setup) the lock can't be taken")
+        expect((try? store.forget(peerPin: outcome.peer.pin)) != nil, "the unpairing runs")
+        expectEqual(vault.item(outcome.peer.pin), nil, "and deletes its own item")
+        expect(vault.item(other) != nil, "but no other item of the store")
+    }
+
     /// A signed build that gets errSecMissingEntitlement (a group it lacks) fails closed and writes no file.
     static func keychainSignedBuildNeverFallsBack() {
         let recorder = KeychainRecorder()

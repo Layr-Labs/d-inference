@@ -174,8 +174,10 @@ struct MuseGlimmerVisionLiveTests {
             ],
         ]
         try await expectRefused(client, assistant, name: "refused-assistant-image")
+        // One image over the per-request cap (`MediaIngest`), refused before decode.
+        let overCap = MediaIngest.imageCap(forModel: modelID) + 1
         try await expectRefused(
-            client, chat(try parts(Array(repeating: MuseGlimmerVisionProofImages.circle(), count: 9), "Count them.")),
+            client, chat(try parts(Array(repeating: MuseGlimmerVisionProofImages.circle(), count: overCap), "Count them.")),
             name: "refused-too-many-images")
         // A forced tool choice with images stays refused (not advertised).
         var forced = chat([receipt, ["type": "text", "text": "Look it up."]])
@@ -252,7 +254,7 @@ struct MuseGlimmerVisionLiveTests {
     /// (the run without the drafter).
     static func batched(_ client: MuseGlimmerLiveClient) async throws {
         let image = chat(try parts([MuseGlimmerVisionProofImages.swatchCard()], "List the four swatch colours in order."))
-        let text = chat("Write the first ten prime numbers, comma separated.", maxTokens: 256)
+        let text = chat("Write the first ten prime numbers, comma separated.", maxTokens: 1024)
         async let imageRow = client.stream(image, name: "batch-image")
         async let textRow = client.stream(text, name: "batch-text")
         let (imageResult, textResult) = try await (imageRow, textRow)
@@ -302,6 +304,15 @@ enum MuseGlimmerVisionProofImages {
         CTLineDraw(CTLineCreateWithAttributedString(NSAttributedString(string: string, attributes: attributes)), context)
     }
 
+    /// One line of black Helvetica, centred on `centreX` by its measured width.
+    static func centredText(_ string: String, centreX: CGFloat, y: CGFloat, size: CGFloat, in context: CGContext) {
+        let font = CTFontCreateWithName("Helvetica" as CFString, size, nil)
+        let line = CTLineCreateWithAttributedString(NSAttributedString(
+            string: string, attributes: [NSAttributedString.Key(kCTFontAttributeName as String): font]))
+        let width = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
+        text(string, x: centreX - width / 2, y: y, size: size, in: context)
+    }
+
     /// 640 x 900: item name left, price right, one line each.
     static func receipt() -> CIImage {
         canvas(width: 640, height: 900) { context in
@@ -332,7 +343,8 @@ enum MuseGlimmerVisionProofImages {
     }
 
     /// 1024 x 768: sky, grass, a sun, a red house with a roof, a tree, and a
-    /// white sign that reads "OPEN 24 HOURS".
+    /// white sign that reads "OPEN 24 HOURS". Every object sits inside what
+    /// both `fill` crops keep: x 128 to 896 (1:1) and y 96 to 672 (16:9).
     static func scene() -> CIImage {
         canvas(width: 1024, height: 768) { context in
             context.setFillColor(CGColor(red: 0.53, green: 0.78, blue: 0.96, alpha: 1))
@@ -340,31 +352,31 @@ enum MuseGlimmerVisionProofImages {
             context.setFillColor(CGColor(red: 0.3, green: 0.68, blue: 0.25, alpha: 1))
             context.fill(CGRect(x: 0, y: 0, width: 1024, height: 240))
             context.setFillColor(CGColor(red: 1, green: 0.84, blue: 0.1, alpha: 1))
-            context.fillEllipse(in: CGRect(x: 820, y: 580, width: 130, height: 130))
-            // House: walls, roof, door, window.
+            context.fillEllipse(in: CGRect(x: 730, y: 540, width: 110, height: 110))
+            // House: walls, roof, door, windows.
             context.setFillColor(CGColor(red: 0.8, green: 0.15, blue: 0.12, alpha: 1))
-            context.fill(CGRect(x: 120, y: 170, width: 300, height: 220))
+            context.fill(CGRect(x: 170, y: 170, width: 260, height: 200))
             context.setFillColor(CGColor(red: 0.35, green: 0.2, blue: 0.12, alpha: 1))
-            context.move(to: CGPoint(x: 95, y: 390))
-            context.addLine(to: CGPoint(x: 270, y: 520))
-            context.addLine(to: CGPoint(x: 445, y: 390))
+            context.move(to: CGPoint(x: 150, y: 370))
+            context.addLine(to: CGPoint(x: 300, y: 490))
+            context.addLine(to: CGPoint(x: 450, y: 370))
             context.closePath()
             context.fillPath()
-            context.fill(CGRect(x: 240, y: 170, width: 60, height: 110))
+            context.fill(CGRect(x: 275, y: 170, width: 50, height: 100))
             context.setFillColor(CGColor(red: 0.85, green: 0.93, blue: 1, alpha: 1))
-            context.fill(CGRect(x: 150, y: 290, width: 60, height: 60))
-            context.fill(CGRect(x: 330, y: 290, width: 60, height: 60))
+            context.fill(CGRect(x: 195, y: 280, width: 50, height: 50))
+            context.fill(CGRect(x: 355, y: 280, width: 50, height: 50))
             // Tree: trunk and crown.
             context.setFillColor(CGColor(red: 0.42, green: 0.26, blue: 0.13, alpha: 1))
-            context.fill(CGRect(x: 560, y: 170, width: 40, height: 140))
+            context.fill(CGRect(x: 510, y: 170, width: 30, height: 130))
             context.setFillColor(CGColor(red: 0.12, green: 0.5, blue: 0.16, alpha: 1))
-            context.fillEllipse(in: CGRect(x: 490, y: 280, width: 180, height: 180))
-            // Sign on a post.
+            context.fillEllipse(in: CGRect(x: 450, y: 280, width: 150, height: 150))
+            // Sign on a post, its text centred on the board.
             context.setFillColor(CGColor(red: 0.3, green: 0.3, blue: 0.3, alpha: 1))
-            context.fill(CGRect(x: 812, y: 120, width: 16, height: 180))
+            context.fill(CGRect(x: 742, y: 120, width: 16, height: 210))
             context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
-            context.fill(CGRect(x: 690, y: 290, width: 260, height: 90))
-            text("OPEN 24 HOURS", x: 708, y: 322, size: 34, in: context)
+            context.fill(CGRect(x: 620, y: 330, width: 260, height: 80))
+            centredText("OPEN 24 HOURS", centreX: 750, y: 360, size: 28, in: context)
         }
     }
 

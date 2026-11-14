@@ -39,7 +39,8 @@ public final class ClusterProcessExit: @unchecked Sendable {
         process.terminationHandler = { [self] _ in settle() }
         do { try process.run() } catch { settle(); throw error }
         do { try verifyLaunched?(process.processIdentifier) } catch {
-            _ = Darwin.kill(process.processIdentifier, SIGKILL)
+            // A child already reported gone was reaped; its identifier may name another process now.
+            if !hasExited { _ = Darwin.kill(process.processIdentifier, SIGKILL) }
             wait()
             throw error
         }

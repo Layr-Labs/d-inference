@@ -21,9 +21,8 @@ enum DistributedInstalledLaunchImage {
         return { pid in try require(pid: pid, expected: expected) }
     }
 
-    /// The child is ours and not yet reaped, so its process identifier still
-    /// names it. Code Signing Services must find it valid, and both the
-    /// kernel's cdhash of the running image (`CS_OPS_CDHASH`) and the one
+    /// Called right after the spawn; a child that already exited is refused.
+    /// Code Signing Services must find it valid, and both the kernel's cdhash of the running image (`CS_OPS_CDHASH`) and the one
     /// Code Signing Services reports must be expected. The kernel's own value
     /// is required because the reported one is read from the file on disk.
     static func require(pid: pid_t, expected: Set<Data>) throws {
@@ -40,10 +39,10 @@ enum DistributedInstalledLaunchImage {
         }
     }
 
+    private static let csOpsCDHash: UInt32 = 5
     private static func kernelHash(_ pid: pid_t) -> Data? {
         var hash = [UInt8](repeating: 0, count: DistributedInstalledCodeDirectory.hashBytes)
-        // CS_OPS_CDHASH
-        guard csops(pid, 5, &hash, hash.count) == 0 else { return nil }
+        guard csops(pid, csOpsCDHash, &hash, hash.count) == 0 else { return nil }
         return Data(hash)
     }
 }

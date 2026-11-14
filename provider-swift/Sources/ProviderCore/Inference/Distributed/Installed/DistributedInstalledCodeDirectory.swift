@@ -21,7 +21,7 @@ struct DistributedInstalledCodeDirectory {
     private enum Part {
         case magic
         case architectures(count: Int, wide: Bool)
-        case header(slice: Int, size: Int, cpu: UInt32?)
+        case header(slice: Int, size: Int)
         case commands(slice: Int, size: Int, count: Int)
         case signature
     }
@@ -93,25 +93,25 @@ struct DistributedInstalledCodeDirectory {
                 guard (1...Self.maximumSlices).contains(count) else { failed = true; return }
                 want(8, count * (wide ? 32 : 20), .architectures(count: count, wide: wide))
             } else {
-                want(0, 32, .header(slice: 0, size: fileSize, cpu: nil))
+                want(0, 32, .header(slice: 0, size: fileSize))
             }
         case .architectures(let count, let wide):
-            var slices: [(offset: Int, size: Int, cpu: UInt32)] = []
+            var slices: [(offset: Int, size: Int)] = []
             for entry in 0..<count {
                 let at = entry * (wide ? 32 : 20)
                 let cpu = Self.big(bytes, at)
                 let offset = wide ? Self.big64(bytes, at + 8) : UInt64(Self.big(bytes, at + 8))
                 let size = wide ? Self.big64(bytes, at + 16) : UInt64(Self.big(bytes, at + 12))
                 guard offset <= UInt64(fileSize), size <= UInt64(fileSize) - offset, size >= 32 else { failed = true; return }
-                if cpu == Self.arm64 { slices.append((Int(offset), Int(size), cpu)) }
+                if cpu == Self.arm64 { slices.append((Int(offset), Int(size))) }
             }
             guard !slices.isEmpty else { failed = true; return }
             for slice in slices.sorted(by: { $0.offset < $1.offset }) {
-                want(slice.offset, 32, .header(slice: slice.offset, size: slice.size, cpu: slice.cpu))
+                want(slice.offset, 32, .header(slice: slice.offset, size: slice.size))
             }
-        case .header(let slice, let size, let cpu):
+        case .header(let slice, let size):
             let commands = Int(Self.little(bytes, 20))
-            guard Self.little(bytes, 0) == 0xfeed_facf, Self.little(bytes, 4) == (cpu ?? Self.arm64),
+            guard Self.little(bytes, 0) == 0xfeed_facf, Self.little(bytes, 4) == Self.arm64,
                   (1...Self.maximumCommandBytes).contains(commands), commands <= size - 32 else { failed = true; return }
             want(slice + 32, commands, .commands(slice: slice, size: size, count: Int(Self.little(bytes, 16))))
         case .commands(let slice, let size, let count):

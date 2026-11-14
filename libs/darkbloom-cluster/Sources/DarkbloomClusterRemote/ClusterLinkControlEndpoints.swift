@@ -214,7 +214,7 @@ public final class ClusterLinkControlListener: @unchecked Sendable {
             }
             try LinkIdentityProof.verifyConnector(hello, signature: signature, edge: peer.edge,
                 signed: challenge + helloBytes.prefix(LinkHandshake.HelloLayout.signature.lowerBound))
-            var accept = LinkHandshake.acceptSigned(peer.resumeInfo())
+            var accept = LinkHandshake.acceptWithoutSignature(peer.resumeInfo())
             accept.append(try LinkIdentityProof.sign(edge: peer.edge, role: .listener, transcript: challenge + helloBytes + accept))
             accept.append(peer.edge.key.handshakeTag(role: .listener, transcript: challenge + helloBytes + accept))
             try connection.writeAll(accept, deadline: deadline)
@@ -412,7 +412,7 @@ public final class ClusterLinkControlClient: @unchecked Sendable {
                 maximumRecords: limits.maximumRecordsPerDirection,
                 maximumCumulativeBytes: limits.maximumCumulativePlaintextBytesPerDirection,
                 connectorPin: pins.connector, listenerPin: pins.listener)
-            var helloBytes = LinkHandshake.helloSigned(hello)
+            var helloBytes = LinkHandshake.helloWithoutSignature(hello)
             helloBytes.append(try LinkIdentityProof.sign(edge: edge, role: .connector, transcript: challenge + helloBytes))
             helloBytes.append(edge.key.handshakeTag(role: .connector, transcript: challenge + helloBytes))
             try socket.writeAll(helloBytes, deadline: deadline)

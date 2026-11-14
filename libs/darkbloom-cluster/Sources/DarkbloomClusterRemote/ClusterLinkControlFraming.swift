@@ -112,7 +112,6 @@ enum LinkHandshake {
     static let publicKeyBytes = 32
     static let pinBytes = 32
     static let signatureBytes = 64
-    static let tagBytes = 32
     private static let challengeMagic: [UInt8] = Array("DBLC".utf8)
     private static let helloMagic: [UInt8] = Array("DBLH".utf8)
     private static let acceptMagic: [UInt8] = Array("DBLA".utf8)
@@ -181,7 +180,7 @@ enum LinkHandshake {
     }
 
     /// The HELLO up to the connector's signature: what the connector signs (after the challenge).
-    static func helloSigned(_ hello: Hello) -> Data {
+    static func helloWithoutSignature(_ hello: Hello) -> Data {
         var result = Data(helloMagic)
         result.append(contentsOf: [version, ClusterLinkControlRole.connector.rawValue, 0, 0])
         result.append(uuidBytes(hello.epoch)); result.append(uuidBytes(hello.edgeID)); result.append(hello.nonce)
@@ -193,12 +192,6 @@ enum LinkHandshake {
         result.clusterLinkAppend(hello.maximumRecords)
         result.clusterLinkAppend(hello.maximumCumulativeBytes)
         result.append(hello.connectorPin); result.append(hello.listenerPin)
-        return result
-    }
-
-    /// The HELLO up to its tag: what the edge key's connector tag covers (after the challenge).
-    static func helloWithoutTag(_ hello: Hello, signature: Data) -> Data {
-        var result = helloSigned(hello); result.append(signature)
         return result
     }
 
@@ -224,16 +217,10 @@ enum LinkHandshake {
     }
 
     /// The ACCEPT up to the listener's signature: what the listener signs (after the challenge and the hello).
-    static func acceptSigned(_ resume: Resume) -> Data {
+    static func acceptWithoutSignature(_ resume: Resume) -> Data {
         var result = Data(acceptMagic); result.append(contentsOf: [version, 0, 0, 0])
         result.append(uuidBytes(resume.incarnation)); result.append(uuidBytes(resume.knownPeerIncarnation))
         result.clusterLinkAppend(resume.deliveredThrough)
-        return result
-    }
-
-    /// The ACCEPT up to its tag: what the edge key's listener tag covers (after the challenge and the hello).
-    static func acceptWithoutTag(_ resume: Resume, signature: Data) -> Data {
-        var result = acceptSigned(resume); result.append(signature)
         return result
     }
 
